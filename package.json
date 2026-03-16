@@ -41,6 +41,10 @@
     "directories": {
       "output": "release"
     },
+    "asar": true,
+    "asarUnpack": [
+      "**/node_modules/node-pty/**"
+    ],
     "files": [
       "dist/**/*",
       "electron/**/*",
