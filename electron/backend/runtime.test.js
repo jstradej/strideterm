@@ -436,7 +436,34 @@ describe("runtime integration", () => {
   });
 
   test("raises and clears project alerts for background terminal exits", async () => {
-    const fixture = await createFixture();
+    const fixture = await createFixture({
+      initialState: {
+        activeProjectId: "frontend",
+        projects: [
+          {
+            id: "frontend",
+            name: "Frontend",
+            kind: "terminal",
+            cwd: "/tmp/frontend",
+            activePanelId: "claude",
+            panels: [
+              { id: "claude", title: "Claude Code", command: "claude", shell: true, startup: "default" },
+            ],
+          },
+          {
+            id: "backend",
+            name: "Backend",
+            kind: "terminal",
+            cwd: "/tmp/backend",
+            activePanelId: "shell",
+            panels: [
+              { id: "shell", title: "Shell", command: "", shell: true, startup: "default" },
+              { id: "tests", title: "Tests", command: "npm test", shell: true, startup: "manual" },
+            ],
+          },
+        ],
+      },
+    });
     fixtures.push(fixture);
 
     await fixture.runtime.syncAttentionContext({ visibleSessionIds: ["frontend:claude"] });
@@ -669,7 +696,20 @@ describe("runtime integration", () => {
   });
 
   test("opens docker session as a new panel and ensures a terminal session exists", async () => {
-    const fixture = await createFixture();
+    const fixture = await createFixture({
+      initialState: {
+        activeProjectId: "docker",
+        projects: [
+          {
+            id: "docker",
+            name: "Docker",
+            kind: "docker",
+            cwd: "/tmp/docker",
+            panels: [],
+          },
+        ],
+      },
+    });
     fixtures.push(fixture);
 
     const payload = await fixture.runtime.openDockerSession({

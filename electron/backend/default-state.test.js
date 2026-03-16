@@ -8,10 +8,10 @@ describe("default state", () => {
     expect(token).toMatch(/^[A-Za-z0-9_-]+$/);
   });
 
-  test("default state includes docker workspace and remote access", () => {
+  test("default state includes remote access enabled and empty workspaces", () => {
     const state = createDefaultState();
     expect(state.settings.remoteAccess.enabled).toBe(true);
-    expect(state.workspaces.some((workspace) => workspace.kind === "docker")).toBe(true);
+    expect(state.workspaces).toEqual([]);
   });
 
   test("normalizeWorkspace preserves explicit launch config", () => {
