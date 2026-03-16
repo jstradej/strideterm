@@ -1,0 +1,26 @@
+{
+  "id": "docker-ops",
+  "name": "Docker Ops",
+  "version": "1.0.0",
+  "description": "Docker container management with shell access, log streaming, and lazydocker integration.",
+  "author": "strIDEterm",
+  "license": "MIT",
+  "icon": "DK",
+  "color": "#8892ff",
+  "kind": "docker",
+  "workspaceDefaults": {
+    "name": "Docker Ops",
+    "icon": "DK",
+    "color": "#8892ff",
+    "kind": "docker",
+    "notes": "Container control room. Manage Docker containers, attach shells, and stream logs.",
+    "panels": []
+  },
+  "capabilities": [
+    "docker:list-containers",
+    "docker:container-actions",
+    "docker:attach-shell",
+    "docker:stream-logs",
+    "docker:lazydocker"
+  ]
+}
