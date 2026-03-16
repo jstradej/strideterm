@@ -1,0 +1,41 @@
+{
+  "id": "system-monitor",
+  "name": "System Monitor",
+  "version": "1.1.0",
+  "description": "Live CPU, memory & disk monitoring. Uses bottom (btm) for a beautiful TUI.",
+  "author": "strIDEterm",
+  "license": "MIT",
+  "icon": "SM",
+  "color": "#e0a040",
+  "kind": "terminal",
+  "workspaceDefaults": {
+    "name": "System Monitor",
+    "icon": "SM",
+    "color": "#e0a040",
+    "kind": "terminal",
+    "notes": "Real-time system performance monitor with graphs.\n\nRecommended: Install 'bottom' for a beautiful TUI dashboard:\n  Windows: winget install Clement.bottom\n  Linux:   snap install bottom  (or see github.com/ClementTsang/bottom)\n  macOS:   brew install bottom\n\nThen reopen this tab. Without bottom, a basic PowerShell/top fallback is used.",
+    "panels": [
+      {
+        "id": "monitor",
+        "title": "Monitor",
+        "command": "",
+        "shell": true,
+        "startup": "default",
+        "platforms": {
+          "win32": { "command": "\"C:\\Program Files\\bottom\\bin\\btm.exe\" 2>nul || btm 2>nul || powershell -ExecutionPolicy Bypass -Command \"& { Write-Host 'bottom (btm) not found. Install it:' -Fore Yellow; Write-Host '  winget install Clement.bottom' -Fore Cyan; Write-Host ''; Write-Host 'Then restart this tab.' -Fore Gray; pause }\"" },
+          "linux": { "command": "btm 2>/dev/null || btop 2>/dev/null || htop 2>/dev/null || top" },
+          "darwin": { "command": "btm 2>/dev/null || btop 2>/dev/null || htop 2>/dev/null || top" }
+        }
+      },
+      { "id": "shell", "title": "Shell", "command": "", "shell": true, "startup": "manual" }
+    ]
+  },
+  "capabilities": [
+    "system:read-metrics",
+    "terminal:create-panel"
+  ],
+  "recommendedPackages": [
+    { "name": "bottom", "install": "winget install Clement.bottom", "license": "MIT", "description": "A cross-platform graphical process/system monitor with a beautiful TUI" },
+    { "name": "btop", "install": "winget install aristocratos.btop4win", "license": "Apache-2.0", "description": "Resource monitor with a rich TUI (alternative)" }
+  ]
+}
