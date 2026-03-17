@@ -140,8 +140,12 @@ function createWindow() {
       const digit = input.code?.match(/^Digit([1-9])$/)?.[1] || (input.key >= "1" && input.key <= "9" ? input.key : null);
       if (digit) {
         event.preventDefault();
-        const workspaces = runtimeState.runtime?.getPayload()?.appState?.workspaces;
-        const workspace = workspaces?.[parseInt(digit, 10) - 1];
+        const appState = runtimeState.runtime?.getPayload()?.appState;
+        const activeProfileId = appState?.activeProfileId || "default";
+        const workspaces = (appState?.workspaces || []).filter(
+          (w) => (w.profileId || "default") === activeProfileId,
+        );
+        const workspace = workspaces[parseInt(digit, 10) - 1];
         if (workspace) {
           runtimeState.runtime.activateWorkspace(workspace.id).catch(() => {});
         }
