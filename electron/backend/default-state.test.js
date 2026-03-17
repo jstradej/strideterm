@@ -112,6 +112,20 @@ describe("default state", () => {
     expect(state.workspaces[0].activePanelId).toBe("lazydocker");
   });
 
+  test("normalizeState groups worktrees right after their parent", () => {
+    const state = normalizeState({
+      workspaces: [
+        { id: "mhub", name: "mhub" },
+        { id: "ide", name: "IDE" },
+        { id: "ale", name: "ALE" },
+        { id: "ide-meta", name: "IDE / metaterm", notes: "Worktree of IDE" },
+      ],
+    });
+
+    const names = state.workspaces.map((w) => w.name);
+    expect(names).toEqual(["mhub", "IDE", "IDE / metaterm", "ALE"]);
+  });
+
   test("normalizeState removes legacy empty git panel from terminal workspaces", () => {
     const state = normalizeState({
       projects: [

@@ -115,10 +115,43 @@ function normalizeProfiles(rawProfiles, defaults) {
     : defaults.profiles;
 }
 
+/**
+ * Ensure worktree children are positioned right after their parent workspace.
+ */
+function groupWorktrees(workspaces) {
+  const children = new Map(); // parentName -> [child workspaces]
+  const roots = [];
+  for (const ws of workspaces) {
+    if ((ws.notes || "").startsWith("Worktree of ")) {
+      const parentName = ws.name.split(" / ")[0];
+      if (!children.has(parentName)) children.set(parentName, []);
+      children.get(parentName).push(ws);
+    } else {
+      roots.push(ws);
+    }
+  }
+  const result = [];
+  for (const ws of roots) {
+    result.push(ws);
+    const kids = children.get(ws.name);
+    if (kids) {
+      result.push(...kids);
+      children.delete(ws.name);
+    }
+  }
+  // Append any orphaned worktrees (parent missing/renamed)
+  for (const kids of children.values()) {
+    result.push(...kids);
+  }
+  return result;
+}
+
 export function normalizeState(rawState = {}) {
   const defaults = createDefaultState();
   const rawWorkspaces = rawState.workspaces || rawState.projects || defaults.workspaces;
-  const workspaces = rawWorkspaces.map((workspace, index) => normalizeWorkspace(workspace, index));
+  const workspaces = groupWorktrees(
+    rawWorkspaces.map((workspace, index) => normalizeWorkspace(workspace, index)),
+  );
   const profiles = normalizeProfiles(rawState.profiles, defaults);
   const activeProfileId = profiles.some((profile) => profile.id === rawState.activeProfileId)
     ? rawState.activeProfileId
