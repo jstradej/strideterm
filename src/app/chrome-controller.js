@@ -1,3 +1,10 @@
+import { nothing, render as renderTemplate } from "lit";
+import {
+  renderBootstrapErrorCard,
+  renderLayoutPicker,
+  renderTabContextMenu,
+} from "./chrome-render.js";
+
 export function createChromeController({
   state,
   api,
@@ -12,7 +19,6 @@ export function createChromeController({
   layouts,
   writeSidebarCollapsed,
   writeSidebarWidth,
-  escapeHtml,
   isInSplitGroup,
   activeSplitLayout,
   isGitViewId,
@@ -38,7 +44,7 @@ export function createChromeController({
     writeSidebarCollapsed(state.sidebarCollapsed);
     frame.classList.toggle("frame--sidebar-collapsed", state.sidebarCollapsed);
     if (sidebarCollapseButton) {
-      sidebarCollapseButton.innerHTML = state.sidebarCollapsed ? "&#9654;" : "&#9664;";
+      sidebarCollapseButton.textContent = state.sidebarCollapsed ? "\u25B6" : "\u25C0";
       sidebarCollapseButton.title = state.sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar";
       sidebarCollapseButton.setAttribute("aria-label", sidebarCollapseButton.title);
     }
@@ -51,34 +57,23 @@ export function createChromeController({
   function showTabContextMenu(x, y, viewId) {
     hideContextMenu();
     const inGroup = isInSplitGroup(viewId);
-    const menu = document.createElement("div");
-    menu.className = "context-menu";
-
-    let items = "";
     const isTerminal = !isGitViewId(viewId) && !isDockerViewId(viewId);
     const persistentTarget = getWorkspacePanelByViewId(viewId);
-    if (isTerminal) {
-      items += `<button class="context-menu__item" data-action="restart-session" data-session-id="${viewId}">&#8635;  Restart</button>`;
-      if (persistentTarget) {
-        items += `<button class="context-menu__item" data-action="rename-tab" data-view-id="${viewId}">&#9998;  Rename tab</button>`;
-      }
-    }
-    if (inGroup) {
-      if (isTerminal) items += '<div class="context-menu__divider"></div>';
-      items += `<button class="context-menu__item" data-action="ctx-remove-from-group" data-view-id="${viewId}">\u2715  Remove from split</button>`;
-      items += `<button class="context-menu__item context-menu__item--danger" data-action="ctx-disband-group">\u2573  Disband split</button>`;
-    } else if (state.splitGroup) {
-      const slots = layouts[state.splitGroup.layout]?.slots || 2;
-      if (state.splitGroup.viewIds.length < slots) {
-        if (isTerminal) items += '<div class="context-menu__divider"></div>';
-        items += `<button class="context-menu__item" data-action="ctx-add-to-group" data-view-id="${viewId}">\u002B  Add to split</button>`;
-      }
-    }
-    menu.innerHTML = items;
-
-    if (!items) {
+    const slots = state.splitGroup ? (layouts[state.splitGroup.layout]?.slots || 2) : 0;
+    const canAddToSplit = !inGroup && Boolean(state.splitGroup) && state.splitGroup.viewIds.length < slots;
+    if (!isTerminal && !inGroup && !canAddToSplit) {
       return;
     }
+
+    const menu = document.createElement("div");
+    menu.className = "context-menu";
+    renderTemplate(renderTabContextMenu({
+      viewId,
+      isTerminal,
+      hasRenameAction: Boolean(persistentTarget),
+      inGroup,
+      canAddToSplit,
+    }), menu);
 
     menu.style.left = `${x}px`;
     menu.style.top = `${y}px`;
@@ -97,40 +92,13 @@ export function createChromeController({
     root.querySelectorAll(".layout-picker").forEach((element) => element.remove());
   }
 
-  function layoutThumbSvg(layout) {
-    const radius = 'rx="1.5"';
-    switch (layout) {
-      case "cols":
-        return `<rect x="1" y="1" width="18" height="28" ${radius} fill="currentColor" opacity="0.5"/><rect x="21" y="1" width="18" height="28" ${radius} fill="currentColor" opacity="0.3"/>`;
-      case "rows":
-        return `<rect x="1" y="1" width="38" height="13" ${radius} fill="currentColor" opacity="0.5"/><rect x="1" y="16" width="38" height="13" ${radius} fill="currentColor" opacity="0.3"/>`;
-      case "top-split":
-        return `<rect x="1" y="1" width="38" height="13" ${radius} fill="currentColor" opacity="0.5"/><rect x="1" y="16" width="18" height="13" ${radius} fill="currentColor" opacity="0.3"/><rect x="21" y="16" width="18" height="13" ${radius} fill="currentColor" opacity="0.3"/>`;
-      case "left-split":
-        return `<rect x="1" y="1" width="18" height="28" ${radius} fill="currentColor" opacity="0.5"/><rect x="21" y="1" width="18" height="13" ${radius} fill="currentColor" opacity="0.3"/><rect x="21" y="16" width="18" height="13" ${radius} fill="currentColor" opacity="0.3"/>`;
-      case "grid":
-        return `<rect x="1" y="1" width="18" height="13" ${radius} fill="currentColor" opacity="0.5"/><rect x="21" y="1" width="18" height="13" ${radius} fill="currentColor" opacity="0.3"/><rect x="1" y="16" width="18" height="13" ${radius} fill="currentColor" opacity="0.3"/><rect x="21" y="16" width="18" height="13" ${radius} fill="currentColor" opacity="0.3"/>`;
-      default:
-        return `<rect x="1" y="1" width="38" height="28" ${radius} fill="currentColor" opacity="0.5"/>`;
-    }
-  }
-
   function showLayoutPicker(anchorElement) {
     hideLayoutPicker();
     hideContextMenu();
     const picker = document.createElement("div");
     picker.className = "layout-picker";
     const currentLayout = activeSplitLayout();
-    picker.innerHTML = `
-      <div class="layout-picker__grid">
-        ${Object.entries(layouts).filter(([key]) => key !== "solo").map(([key, { label }]) => `
-          <button class="layout-picker__item ${currentLayout === key ? "layout-picker__item--active" : ""}" data-action="pick-layout" data-layout="${key}" title="${escapeHtml(label)}">
-            <svg class="layout-thumb" viewBox="0 0 40 30">${layoutThumbSvg(key)}</svg>
-            <span>${escapeHtml(label)}</span>
-          </button>
-        `).join("")}
-      </div>
-    `;
+    renderTemplate(renderLayoutPicker({ layouts, currentLayout }), picker);
 
     root.appendChild(picker);
     const buttonRect = anchorElement.getBoundingClientRect();
@@ -162,26 +130,11 @@ export function createChromeController({
     const shell = document.createElement("div");
     shell.className = "boot-shell";
     shell.dataset.role = "boot-shell";
-    shell.innerHTML = `
-      <section class="boot-card">
-        <p class="eyebrow">${api.isRemote ? "Remote Access" : "Startup Error"}</p>
-        <h1>strIDEterm could not load the workspace</h1>
-        <p class="boot-copy">${escapeHtml(message)}</p>
-        ${
-          api.isRemote
-            ? `
-              <form class="boot-form" data-role="remote-auth-form">
-                <label>
-                  <span>Access token</span>
-                  <input name="token" value="${escapeHtml(api.getRemoteToken())}" placeholder="Paste the strIDEterm token" />
-                </label>
-                <button type="submit" class="button">Connect</button>
-              </form>
-            `
-            : `<button type="button" class="button" data-action="retry-bootstrap">Retry</button>`
-        }
-      </section>
-    `;
+    renderTemplate(renderBootstrapErrorCard({
+      isRemote: api.isRemote,
+      message,
+      remoteToken: api.getRemoteToken(),
+    }), shell);
     root.append(shell);
 
     if (api.isRemote) {

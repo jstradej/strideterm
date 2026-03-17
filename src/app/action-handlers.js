@@ -1,4 +1,6 @@
 import { cloneWorkspace } from "../workspace-state.js";
+import { render as renderTemplate } from "lit";
+import { renderTabPickerDropdown } from "./action-render.js";
 import { preferredRemoteUrl, withRemoteToken } from "./helpers.js";
 
 const FALLBACK_TAB_TEMPLATES = [
@@ -357,9 +359,7 @@ export function createActionHandlers(context) {
       const quickTemplates = Array.isArray(stateTemplates) && stateTemplates.length ? stateTemplates : FALLBACK_TAB_TEMPLATES;
       const dropdown = document.createElement("div");
       dropdown.className = "tab-picker-dropdown";
-      dropdown.innerHTML = quickTemplates.map((t) =>
-        `<button class="tab-picker-dropdown__item" data-action="quick-add-template-tab" data-title="${(t.icon || '') + ' ' + (t.title || 'Shell')}" data-command="${(t.command || '').replace(/"/g, '&quot;')}">${t.icon || ''} ${t.title || 'Shell'}</button>`
-      ).join("") + '<button class="tab-picker-dropdown__item" data-action="quick-add-tab">+ Custom</button>';
+      renderTemplate(renderTabPickerDropdown(quickTemplates), dropdown);
       const btn = actionElement;
       const rect = btn.getBoundingClientRect();
       const rootRect = root.getBoundingClientRect();

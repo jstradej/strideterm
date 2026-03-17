@@ -3,7 +3,6 @@ import { cloneWorkspace, normalizeWorkspaces, statusTone } from "./workspace-sta
 import { APP_CONFIG } from "../config/app-config.js";
 import {
   downloadTextFile,
-  escapeHtml,
   getWindowsPtyOptions,
   isBrowserViewId,
   isContainerRunning,
@@ -58,6 +57,7 @@ import { renderDockerMarkup as renderDockerPaneMarkup, renderGitMarkup as render
 import { renderSidebarFooter, renderSidebarList } from "./ui/sidebar-view.js";
 import { renderTabStrip } from "./ui/tab-strip-view.js";
 import { renderRemoteAccessMarkup } from "./ui/remote-access-view.js";
+import { renderAppShell } from "./ui/app-shell-view.js";
 import { renderPaneShell } from "./ui/pane-view.js";
 
 export function createApp(root, { api }) {
@@ -171,39 +171,10 @@ export function createApp(root, { api }) {
 
   }
 
-  root.innerHTML = `
-    <div class="frame ${api.isRemote ? "frame--remote" : ""} ${state.sidebarCollapsed ? "frame--sidebar-collapsed" : ""}">
-      <div class="sidebar-backdrop" data-role="sidebar-backdrop"></div>
-      <aside class="sidebar">
-        <div class="sidebar__head">
-          <h1 class="brand">str<em>IDE</em>term</h1>
-          <div class="sidebar__tools">
-            <button class="sidebar__icon-btn" data-action="new-workspace" title="Add workspace">+</button>
-            <button class="sidebar__icon-btn sidebar__collapse-btn" data-action="toggle-sidebar-collapse" data-role="sidebar-collapse" title="${state.sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}">${state.sidebarCollapsed ? "&#9654;" : "&#9664;"}</button>
-            <button class="sidebar__icon-btn" data-action="open-profiles" title="Profiles">&#9783;</button>
-            <button class="sidebar__icon-btn" data-action="open-settings" title="Settings">&#9881;</button>
-            <button class="sidebar__icon-btn" data-action="open-help" title="Help">?</button>
-          </div>
-        </div>
-        <button class="profile-bar" data-role="profile-bar" data-action="open-profiles"></button>
-        <div class="workspace-list" data-role="workspace-list"></div>
-        <section class="remote-access" data-role="remote-access"></section>
-        <footer class="sidebar-footer" data-role="sidebar-footer"></footer>
-        <div class="sidebar-resize-handle" data-role="sidebar-resize-handle"></div>
-      </aside>
-      <main class="workspace">
-        <section class="workspace-main">
-            <section data-role="workspace-hero"></section>
-            <div class="terminal-toolbar">
-              <button class="mobile-hamburger" data-action="toggle-sidebar" title="Menu">&#9776;<span class="mobile-hamburger__badge" data-role="hamburger-badge"></span></button>
-              <div class="tab-strip" data-role="tab-strip"></div>
-              <div class="terminal-toolbar__actions" data-role="tab-actions"></div>
-            </div>
-            <div class="terminal-stage" data-role="terminal-stage"></div>
-          </section>
-      </main>
-    </div>
-  `;
+  renderAppShell(root, {
+    isRemote: api.isRemote,
+    sidebarCollapsed: state.sidebarCollapsed,
+  });
 
   const workspaceList = root.querySelector('[data-role="workspace-list"]');
   const remoteAccess = root.querySelector('[data-role="remote-access"]');
@@ -237,7 +208,6 @@ export function createApp(root, { api }) {
     layouts: LAYOUTS,
     writeSidebarCollapsed,
     writeSidebarWidth,
-    escapeHtml,
     isInSplitGroup,
     activeSplitLayout,
     isGitViewId,
