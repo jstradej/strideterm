@@ -143,13 +143,8 @@ export function createTerminalController({
         term.clearSelection();
         return false;
       }
-      // Ctrl+V pastes from clipboard
-      if (event.type === "keydown" && event.key.toLowerCase() === "v") {
-        navigator.clipboard.readText().then((text) => {
-          if (text) term.paste(text);
-        });
-        return false;
-      }
+      // Ctrl+V — let browser handle natively (xterm picks up the paste event)
+      if (event.key.toLowerCase() === "v") return false;
       return true;
     });
     // Right-click: copy selection or paste (PuTTY-style)
