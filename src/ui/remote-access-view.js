@@ -1,6 +1,5 @@
-import { html, render } from "lit";
-import { unsafeHTML } from "lit/directives/unsafe-html.js";
+import { nothing, render } from "lit";
 
 export function renderRemoteAccessMarkup(container, markup) {
-  render(html`${unsafeHTML(markup || "")}`, container);
+  render(markup || nothing, container);
 }

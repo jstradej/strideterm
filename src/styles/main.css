@@ -822,6 +822,9 @@ dt {
   min-height: 0;
   overflow: auto;
   padding-right: 4px;
+  list-style: none;
+  padding-left: 0;
+  margin: 0;
 }
 
 .docker-stat,
@@ -1953,6 +1956,11 @@ dt {
   display: grid;
   grid-template-rows: auto auto minmax(0, 1fr);
   gap: 10px;
+}
+
+.git-view__panel {
+  min-height: 0;
+  overflow: hidden;
 }
 
 .git-view__toolbar,

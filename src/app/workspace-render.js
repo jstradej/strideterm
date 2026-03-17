@@ -1,6 +1,6 @@
+import { html, nothing } from "lit";
 import {
   attentionTitle,
-  escapeHtml,
   isContainerRunning,
   isFreshAlert,
   isFreshAttention,
@@ -17,8 +17,10 @@ export function renderWorkspaceHero({
   isRemote = false,
 }) {
   if (!workspace) {
-    return `
-      ${isRemote && remoteConnectionIssue ? `<div class="workspace-remote-alert"><strong>Remote connection issue.</strong> ${escapeHtml(remoteConnectionIssue)}</div>` : ""}
+    return html`
+      ${isRemote && remoteConnectionIssue
+        ? html`<div class="workspace-remote-alert"><strong>Remote connection issue.</strong> ${remoteConnectionIssue}</div>`
+        : nothing}
       <p class="workspace-empty-copy">Select or create a workspace to open it.</p>
     `;
   }
@@ -26,34 +28,43 @@ export function renderWorkspaceHero({
   const activeWorkspace = workspace.workspace || workspace.project;
   const running = workspace.sessions.filter((session) => session.status === "running").length;
   const accent = safeColor(activeWorkspace.color);
-  const gitBranchHtml = gitSnapshot?.available
-    ? `<span class="workspace-chip" style="border-color:${gitSnapshot.dirty ? "rgba(255,111,141,0.4)" : "rgba(110,223,182,0.4)"};">
-         <strong style="color:${gitSnapshot.dirty ? "#ff6f8d" : "#6edfb6"};">${escapeHtml(gitSnapshot.branch)}</strong>
-         ${gitSnapshot.dirty ? `<span style="color:#ff6f8d;margin-left:4px;">${escapeHtml(String(gitSnapshot.dirtyCount))} uncommitted</span>` : '<span style="color:#6edfb6;margin-left:4px;">clean</span>'}
-       </span>`
-    : "";
-  const dockerInfoHtml = activeWorkspace.kind === "docker" && dockerState.available
-    ? `<span class="workspace-chip"><strong>${(dockerState.containers || []).filter(isContainerRunning).length}</strong>/${(dockerState.containers || []).length} containers up</span>`
-    : "";
   const attentionFresh = isFreshAttention(attention);
   const attentionTooltip = attentionTitle(attention);
 
-  return `
-    ${isRemote && remoteConnectionIssue ? `<div class="workspace-remote-alert"><strong>Remote connection issue.</strong> ${escapeHtml(remoteConnectionIssue)}</div>` : ""}
-    <div class="workspace-meta" style="--accent:${accent}">
+  return html`
+    ${isRemote && remoteConnectionIssue
+      ? html`<div class="workspace-remote-alert"><strong>Remote connection issue.</strong> ${remoteConnectionIssue}</div>`
+      : nothing}
+    <div class="workspace-meta" style=${`--accent:${accent}`}>
       <div class="workspace-meta__main">
-        <span class="workspace-meta__path" title="${escapeHtml(activeWorkspace.cwd || "")}">${escapeHtml(activeWorkspace.cwd || "Not set")}</span>
+        <span class="workspace-meta__path" title=${activeWorkspace.cwd || ""}>${activeWorkspace.cwd || "Not set"}</span>
       </div>
       <div class="workspace-meta__stats">
         <span class="workspace-chip"><strong>${workspace.sessions.length}</strong> tabs</span>
         <span class="workspace-chip"><strong>${running}</strong> running</span>
-        ${gitBranchHtml}
-        ${dockerInfoHtml}
-        ${
-          attention?.count
-            ? `<span class="workspace-chip workspace-chip--alert ${attentionFresh ? "workspace-chip--alert-fresh" : ""}" title="${escapeHtml(attentionTooltip)}"><strong>${escapeHtml(String(attention.count))}</strong> attention</span>`
-            : ""
-        }
+        ${gitSnapshot?.available
+          ? html`
+              <span class="workspace-chip" style=${`border-color:${gitSnapshot.dirty ? "rgba(255,111,141,0.4)" : "rgba(110,223,182,0.4)"};`}>
+                <strong style=${`color:${gitSnapshot.dirty ? "#ff6f8d" : "#6edfb6"};`}>${gitSnapshot.branch}</strong>
+                ${gitSnapshot.dirty
+                  ? html`<span style="color:#ff6f8d;margin-left:4px;">${String(gitSnapshot.dirtyCount)} uncommitted</span>`
+                  : html`<span style="color:#6edfb6;margin-left:4px;">clean</span>`}
+              </span>
+            `
+          : nothing}
+        ${activeWorkspace.kind === "docker" && dockerState.available
+          ? html`<span class="workspace-chip"><strong>${(dockerState.containers || []).filter(isContainerRunning).length}</strong>/${(dockerState.containers || []).length} containers up</span>`
+          : nothing}
+        ${attention?.count
+          ? html`
+              <span
+                class=${`workspace-chip workspace-chip--alert ${attentionFresh ? "workspace-chip--alert-fresh" : ""}`}
+                title=${attentionTooltip}
+              >
+                <strong>${String(attention.count)}</strong> attention
+              </span>
+            `
+          : nothing}
       </div>
     </div>
   `;
@@ -90,19 +101,20 @@ export function renderTabActions({
   currentLayout,
   layouts,
 }) {
-  return `
-    ${
-      workspaceKind !== "docker"
-        ? '<button class="button button--ghost" data-action="toggle-tab-picker">+ Tab</button>'
-        : ""
-    }
-    ${
-      splitGroup
-        ? '<button class="button button--ghost" data-action="disband-split">Unsplit</button>'
-        : ""
-    }
-    <button class="button button--ghost ${currentLayout !== "solo" ? "button--active" : ""}" data-action="open-layout-picker" title="Layout">
-      ${currentLayout !== "solo" ? escapeHtml(layouts[currentLayout]?.label || "Split") : "Split"}
+  return html`
+    ${workspaceKind !== "docker"
+      ? html`<button type="button" class="button button--ghost" data-action="toggle-tab-picker">+ Tab</button>`
+      : nothing}
+    ${splitGroup
+      ? html`<button type="button" class="button button--ghost" data-action="disband-split">Unsplit</button>`
+      : nothing}
+    <button
+      type="button"
+      class=${`button button--ghost ${currentLayout !== "solo" ? "button--active" : ""}`}
+      data-action="open-layout-picker"
+      title="Layout"
+    >
+      ${currentLayout !== "solo" ? (layouts[currentLayout]?.label || "Split") : "Split"}
     </button>
   `;
 }

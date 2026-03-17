@@ -1,34 +1,6 @@
+import { html, nothing } from "lit";
 import { APP_CONFIG } from "../../config/app-config.js";
-import { currentDockerContext, escapeHtml, isContainerRunning } from "./helpers.js";
-
-function colorizeDiff(rawDiff) {
-  if (!rawDiff) {
-    return "";
-  }
-
-  return rawDiff
-    .split("\n")
-    .map((line) => {
-      const escaped = escapeHtml(line);
-      if (line.startsWith("+++") || line.startsWith("---")) {
-        return `<span class="diff-meta">${escaped}</span>`;
-      }
-      if (line.startsWith("@@")) {
-        return `<span class="diff-hunk">${escaped}</span>`;
-      }
-      if (line.startsWith("+")) {
-        return `<span class="diff-add">${escaped}</span>`;
-      }
-      if (line.startsWith("-")) {
-        return `<span class="diff-del">${escaped}</span>`;
-      }
-      if (line.startsWith("diff ") || line.startsWith("index ") || line.startsWith("new ") || line.startsWith("deleted ") || line.startsWith("similarity ") || line.startsWith("rename ")) {
-        return `<span class="diff-meta">${escaped}</span>`;
-      }
-      return escaped;
-    })
-    .join("\n");
-}
+import { currentDockerContext, isContainerRunning } from "./helpers.js";
 
 function formatDateLabel(value) {
   if (!value) {
@@ -43,13 +15,17 @@ function formatDateLabel(value) {
 }
 
 function renderDiffStat(diffStat = {}) {
-  return `
+  return html`
     <div class="git-stat-row">
-      <span class="workspace-chip"><strong>${escapeHtml(String(diffStat.files || 0))}</strong> files</span>
-      <span class="workspace-chip"><strong>${escapeHtml(String(diffStat.insertions || 0))}</strong> +</span>
-      <span class="workspace-chip"><strong>${escapeHtml(String(diffStat.deletions || 0))}</strong> -</span>
-      ${(diffStat.renames || 0) ? `<span class="workspace-chip"><strong>${escapeHtml(String(diffStat.renames || 0))}</strong> renames</span>` : ""}
-      ${(diffStat.deletes || 0) ? `<span class="workspace-chip"><strong>${escapeHtml(String(diffStat.deletes || 0))}</strong> deletes</span>` : ""}
+      <span class="workspace-chip"><strong>${String(diffStat.files || 0)}</strong> files</span>
+      <span class="workspace-chip"><strong>${String(diffStat.insertions || 0)}</strong> +</span>
+      <span class="workspace-chip"><strong>${String(diffStat.deletions || 0)}</strong> -</span>
+      ${(diffStat.renames || 0)
+        ? html`<span class="workspace-chip"><strong>${String(diffStat.renames || 0)}</strong> renames</span>`
+        : nothing}
+      ${(diffStat.deletes || 0)
+        ? html`<span class="workspace-chip"><strong>${String(diffStat.deletes || 0)}</strong> deletes</span>`
+        : nothing}
     </div>
   `;
 }
@@ -71,39 +47,78 @@ function statusTooltip(code) {
   return STATUS_LABELS[code] || STATUS_LABELS[code?.[0]] || code || "Unknown";
 }
 
+function splitFilePath(filePath = "") {
+  const fileName = filePath.split("/").pop() || filePath;
+  const dirPath = filePath.slice(0, -(fileName.length || 0));
+  return { fileName, dirPath };
+}
+
+function renderFilePath(filePath) {
+  const { fileName, dirPath } = splitFilePath(filePath);
+  return html`
+    <span class="git-file__name">
+      ${dirPath ? html`<span class="git-file__dir">${dirPath}</span>` : nothing}
+      ${fileName}
+    </span>
+  `;
+}
+
+function renderDiffLine(line) {
+  if (line.startsWith("+++") || line.startsWith("---") || line.startsWith("diff ")
+    || line.startsWith("index ") || line.startsWith("new ") || line.startsWith("deleted ")
+    || line.startsWith("similarity ") || line.startsWith("rename ")) {
+    return html`<span class="diff-meta">${line}</span>`;
+  }
+  if (line.startsWith("@@")) {
+    return html`<span class="diff-hunk">${line}</span>`;
+  }
+  if (line.startsWith("+")) {
+    return html`<span class="diff-add">${line}</span>`;
+  }
+  if (line.startsWith("-")) {
+    return html`<span class="diff-del">${line}</span>`;
+  }
+  return line;
+}
+
+function renderDiffPreview(rawDiff) {
+  if (!rawDiff) {
+    return nothing;
+  }
+
+  return rawDiff.split("\n").map((line, index) => html`${index > 0 ? "\n" : nothing}${renderDiffLine(line)}`);
+}
+
 function renderChangeList({ title, scope, files = [], selectedDiff = null, workspaceId }) {
-  return `
+  return html`
     <section class="git-change-section">
-      <p class="eyebrow">${escapeHtml(title)} <strong>${escapeHtml(String(files.length))}</strong></p>
-      ${
-        files.length
-          ? `
+      <p class="eyebrow">${title} <strong>${String(files.length)}</strong></p>
+      ${files.length
+        ? html`
             <ul class="git-file-list">
               ${files.slice(0, APP_CONFIG.ui.recentGitEntriesVisible).map((entry) => {
                 const code = entry.code || entry.stagedStatus || entry.unstagedStatus || "??";
                 const isSelected = selectedDiff?.path === entry.path && selectedDiff?.scope === scope;
-                const fileName = entry.path.split("/").pop();
-                const dirPath = entry.path.slice(0, -(fileName?.length || 0));
-                return `
+                return html`
                   <li>
                     <button
-                      class="git-file ${isSelected ? "git-file--active" : ""}"
+                      type="button"
+                      class=${`git-file ${isSelected ? "git-file--active" : ""}`}
                       data-action="git-select-diff"
-                      data-workspace-id="${workspaceId}"
-                      data-path="${escapeHtml(entry.path)}"
-                      data-scope="${scope}"
-                      title="${escapeHtml(statusTooltip(code))}: ${escapeHtml(entry.path)}"
+                      data-workspace-id=${workspaceId}
+                      data-path=${entry.path}
+                      data-scope=${scope}
+                      title=${`${statusTooltip(code)}: ${entry.path}`}
                     >
-                      <span class="git-status-code" title="${escapeHtml(statusTooltip(code))}">${escapeHtml(code || "??")}</span>
-                      <span class="git-file__name">${dirPath ? `<span class="git-file__dir">${escapeHtml(dirPath)}</span>` : ""}${escapeHtml(fileName)}</span>
+                      <span class="git-status-code" title=${statusTooltip(code)}>${code || "??"}</span>
+                      ${renderFilePath(entry.path)}
                     </button>
                   </li>
                 `;
-              }).join("")}
+              })}
             </ul>
           `
-          : '<p class="git-card__hint">No files.</p>'
-      }
+        : html`<p class="git-card__hint">No files.</p>`}
     </section>
   `;
 }
@@ -113,45 +128,48 @@ function renderWorktreeList(snapshot, workspaces = []) {
   const siblings = snapshot.siblingWorktrees || [];
 
   return siblings.length
-    ? `
-      <ul class="git-sibling-list">
-        ${siblings.map((entry) => {
-          const targetWorkspaceId = workspaceIdsByPath.get(String(entry.path || "").toLowerCase()) || "";
-          const action = targetWorkspaceId && !entry.isCurrent
-            ? `<button class="button button--ghost" data-action="activate-workspace" data-workspace-id="${targetWorkspaceId}">Open</button>`
-            : "";
-          return `
-            <li class="${entry.isCurrent ? "git-sibling--current" : ""}">
-              <div class="git-sibling__meta">
-                <strong>${escapeHtml(entry.branch || "detached")}</strong>
-                <small>${escapeHtml(entry.path)}</small>
-              </div>
-              <div class="git-sibling__badges">
-                <span class="workspace-chip"><strong>${entry.isMainWorktree ? "main" : "linked"}</strong> worktree</span>
-                <span class="workspace-chip"><strong>${entry.dirty ? escapeHtml(String(entry.dirtyCount || 0)) : "0"}</strong> ${entry.dirty ? "dirty" : "clean"}</span>
-                ${entry.isCurrent ? '<span class="workspace-chip workspace-chip--alert"><strong>active</strong></span>' : action}
-              </div>
-            </li>
-          `;
-        }).join("")}
-      </ul>
-    `
-    : '<p class="git-card__hint">No sibling worktrees detected.</p>';
+    ? html`
+        <ul class="git-sibling-list">
+          ${siblings.map((entry) => {
+            const targetWorkspaceId = workspaceIdsByPath.get(String(entry.path || "").toLowerCase()) || "";
+            return html`
+              <li class=${entry.isCurrent ? "git-sibling--current" : ""}>
+                <div class="git-sibling__meta">
+                  <strong>${entry.branch || "detached"}</strong>
+                  <small>${entry.path}</small>
+                </div>
+                <div class="git-sibling__badges">
+                  <span class="workspace-chip"><strong>${entry.isMainWorktree ? "main" : "linked"}</strong> worktree</span>
+                  <span class="workspace-chip"><strong>${entry.dirty ? String(entry.dirtyCount || 0) : "0"}</strong> ${entry.dirty ? "dirty" : "clean"}</span>
+                  ${entry.isCurrent
+                    ? html`<span class="workspace-chip workspace-chip--alert"><strong>active</strong></span>`
+                    : targetWorkspaceId
+                      ? html`<button type="button" class="button button--ghost" data-action="activate-workspace" data-workspace-id=${targetWorkspaceId}>Open</button>`
+                      : nothing}
+                </div>
+              </li>
+            `;
+          })}
+        </ul>
+      `
+    : html`<p class="git-card__hint">No sibling worktrees detected.</p>`;
 }
 
 function renderPendingActionBanner(workspaceId, gitUi = {}) {
   const pending = gitUi.pendingAction;
   if (!pending) {
-    return "";
+    return nothing;
   }
 
-  return `
+  const lines = String(pending.message || "").split("\n");
+
+  return html`
     <div class="git-operation-banner git-operation-banner--confirm">
-      <strong>${escapeHtml(pending.message.split("\n")[0])}</strong>
-      ${pending.message.split("\n").slice(1).map((line) => `<p>${escapeHtml(line)}</p>`).join("")}
+      <strong>${lines[0] || ""}</strong>
+      ${lines.slice(1).map((line) => html`<p>${line}</p>`)}
       <div class="git-operation-actions">
-        <button class="button" data-action="git-confirm-action" data-workspace-id="${workspaceId}">Confirm</button>
-        <button class="button button--ghost" data-action="git-cancel-action" data-workspace-id="${workspaceId}">Cancel</button>
+        <button type="button" class="button" data-action="git-confirm-action" data-workspace-id=${workspaceId}>Confirm</button>
+        <button type="button" class="button button--ghost" data-action="git-cancel-action" data-workspace-id=${workspaceId}>Cancel</button>
       </div>
     </div>
   `;
@@ -160,10 +178,11 @@ function renderPendingActionBanner(workspaceId, gitUi = {}) {
 function renderOperationCard(snapshot, workspaceId, gitUi = {}) {
   const operation = snapshot.operationState || {};
   const result = gitUi.lastResult || null;
+  const hasPendingAction = Boolean(gitUi.pendingAction);
   const pendingBanner = renderPendingActionBanner(workspaceId, gitUi);
 
-  if (!operation.inProgress && !result && !pendingBanner) {
-    return `
+  if (!operation.inProgress && !result && !hasPendingAction) {
+    return html`
       <article class="git-card">
         <div class="section-head">
           <div>
@@ -177,53 +196,53 @@ function renderOperationCard(snapshot, workspaceId, gitUi = {}) {
   }
 
   const activeBlock = operation.inProgress
-    ? `
-      <div class="git-operation-banner git-operation-banner--warning">
-        <strong>${escapeHtml(operation.label || "Git operation in progress")}</strong>
-        ${operation.details ? `<p>${escapeHtml(operation.details)}</p>` : ""}
-        ${operation.conflicts?.length
-          ? `<small>${escapeHtml(operation.conflicts.join(", "))}</small>`
-          : ""}
-        <div class="git-operation-actions">
-          ${operation.canContinue ? `<button class="button" data-action="git-continue" data-workspace-id="${workspaceId}">Continue</button>` : ""}
-          ${operation.canAbort ? `<button class="button button--ghost danger" data-action="git-abort" data-workspace-id="${workspaceId}">Abort</button>` : ""}
-          <button class="button button--ghost" data-action="open-lazygit" data-workspace-id="${workspaceId}">Open Lazygit</button>
+    ? html`
+        <div class="git-operation-banner git-operation-banner--warning">
+          <strong>${operation.label || "Git operation in progress"}</strong>
+          ${operation.details ? html`<p>${operation.details}</p>` : nothing}
+          ${operation.conflicts?.length
+            ? html`<small>${operation.conflicts.join(", ")}</small>`
+            : nothing}
+          <div class="git-operation-actions">
+            ${operation.canContinue ? html`<button type="button" class="button" data-action="git-continue" data-workspace-id=${workspaceId}>Continue</button>` : nothing}
+            ${operation.canAbort ? html`<button type="button" class="button button--ghost danger" data-action="git-abort" data-workspace-id=${workspaceId}>Abort</button>` : nothing}
+            <button type="button" class="button button--ghost" data-action="open-lazygit" data-workspace-id=${workspaceId}>Open Lazygit</button>
+          </div>
         </div>
-      </div>
-    `
-    : "";
+      `
+    : nothing;
 
   const resultTone = result?.ok ? "ok" : "error";
   const resultBlock = result
-    ? `
-      <div class="git-operation-banner git-operation-banner--${resultTone}">
-        <div class="section-head">
-          <strong>${escapeHtml(result.summary || (result.ok ? "Git action completed." : "Git action failed."))}</strong>
-          <button class="button button--ghost" data-action="git-clear-result" data-workspace-id="${workspaceId}">Clear</button>
+    ? html`
+        <div class=${`git-operation-banner git-operation-banner--${resultTone}`}>
+          <div class="section-head">
+            <strong>${result.summary || (result.ok ? "Git action completed." : "Git action failed.")}</strong>
+            <button type="button" class="button button--ghost" data-action="git-clear-result" data-workspace-id=${workspaceId}>Clear</button>
+          </div>
+          ${result.warnings?.length
+            ? html`<ul class="git-inline-list">${result.warnings.map((warning) => html`<li>${warning}</li>`)}</ul>`
+            : nothing}
+          ${result.conflicts?.length
+            ? html`<p class="git-card__hint">Conflicts: ${result.conflicts.join(", ")}</p>`
+            : nothing}
+          ${result.rawOutput
+            ? html`<pre class="git-output">${result.rawOutput}</pre>`
+            : nothing}
         </div>
-        ${result.warnings?.length
-          ? `<ul class="git-inline-list">${result.warnings.map((warning) => `<li>${escapeHtml(warning)}</li>`).join("")}</ul>`
-          : ""}
-        ${result.conflicts?.length
-          ? `<p class="git-card__hint">Conflicts: ${escapeHtml(result.conflicts.join(", "))}</p>`
-          : ""}
-        ${result.rawOutput
-          ? `<pre class="git-output">${escapeHtml(result.rawOutput)}</pre>`
-          : ""}
-      </div>
-    `
-    : "";
+      `
+    : nothing;
 
-  const heading = pendingBanner
+  const heading = hasPendingAction
     ? "Confirm action"
     : operation.inProgress ? operation.label : "Last result";
 
-  return `
+  return html`
     <article class="git-card">
       <div class="section-head">
         <div>
           <p class="eyebrow">Operation Status</p>
-          <h3>${escapeHtml(heading)}</h3>
+          <h3>${heading}</h3>
         </div>
       </div>
       ${pendingBanner}
@@ -241,16 +260,21 @@ function renderTabNav(activeTab, workspaceId, { operation, dirtyCount }) {
     { id: "worktrees", label: "Worktrees", badge: "" },
   ];
 
-  return `
-    <nav class="git-tabs">
-      ${tabs.map((tab) => `
+  return html`
+    <nav class="git-tabs" role="tablist" aria-label="Git sections">
+      ${tabs.map((tab) => html`
         <button
+          type="button"
+          id="git-tab-${workspaceId}-${tab.id}"
+          role="tab"
+          aria-selected="${tab.id === activeTab ? "true" : "false"}"
+          aria-controls="git-panel-${workspaceId}"
           class="git-tabs__item ${tab.id === activeTab ? "git-tabs__item--active" : ""}"
           data-action="git-switch-tab"
-          data-workspace-id="${workspaceId}"
-          data-tab="${tab.id}"
-        >${escapeHtml(tab.label)}${tab.badge ? ` <span class="git-tabs__badge">${escapeHtml(tab.badge)}</span>` : ""}</button>
-      `).join("")}
+          data-workspace-id=${workspaceId}
+          data-tab=${tab.id}
+        >${tab.label}${tab.badge ? html` <span class="git-tabs__badge">${tab.badge}</span>` : nothing}</button>
+      `)}
     </nav>
   `;
 }
@@ -265,12 +289,12 @@ function renderMergeBackCard(gitSnapshot, workspaceId, workspaces, gitUi) {
   const mainWorktreeWorkspaceId = mainWorktree ? (workspaceIdsByPath.get(String(mainWorktree.path || "").toLowerCase()) || "") : "";
 
   if (!baseBranch) {
-    return `
+    return html`
       <article class="git-card">
         <div class="section-head">
           <div>
             <p class="eyebrow">Merge Back</p>
-            <h3>${escapeHtml(gitSnapshot.branch)} &rarr; ?</h3>
+            <h3>${gitSnapshot.branch} &rarr; ?</h3>
           </div>
         </div>
         <p class="git-card__hint">Base branch was not detected.</p>
@@ -285,26 +309,48 @@ function renderMergeBackCard(gitSnapshot, workspaceId, workspaces, gitUi) {
     : [];
 
   if (!compare.aheadCount) {
-    const commitBlock = gitSnapshot.dirty
-      ? `
-        <p class="git-card__hint">No commits ahead of ${escapeHtml(baseBranch)} yet. Commit your changes first.</p>
-        <div class="git-commit-form">
-          <input name="commit-message" type="text" value="${escapeHtml(gitSnapshot.branch.replace(/-/g, " "))}" placeholder="Commit message" />
-          <button class="button" data-action="git-commit-all" data-workspace-id="${workspaceId}" ${busyAction ? "disabled" : ""}>${busyAction === "commit" ? "Committing..." : "Commit all changes"}</button>
-        </div>
-        ${dirtyConflicts.length > 0
-          ? `<p class="git-card__hint git-card__hint--warning">Warning: ${escapeHtml(String(dirtyConflicts.length))} of your dirty files were also changed on ${escapeHtml(baseBranch)}: ${escapeHtml(dirtyConflicts.slice(0, 5).join(", "))}${dirtyConflicts.length > 5 ? "..." : ""}. Conflicts are likely when merging.</p>`
-          : ""
-        }
+    const overlapWarning = dirtyConflicts.length > 0
+      ? html`
+        <details class="git-details">
+          <summary class="git-card__hint git-card__hint--warning">Conflict risk: ${String(dirtyConflicts.length)} overlapping dirty file${dirtyConflicts.length === 1 ? "" : "s"}</summary>
+          <p class="git-card__hint git-card__hint--warning">Some dirty files were also changed on ${baseBranch}. Resolve or stash them before merging back.</p>
+          <details class="git-details">
+            <summary>Show overlapping files</summary>
+            <ul class="git-file-list">
+              ${dirtyConflicts.slice(0, 30).map((filePath) => {
+                return html`
+                  <li>
+                    <span class="git-file" title=${`Potential conflict: ${filePath}`}>
+                      <span class="git-status-code">!</span>
+                      ${renderFilePath(filePath)}
+                    </span>
+                  </li>
+                `;
+              })}
+              ${dirtyConflicts.length > 30 ? html`<li><p class="git-card__hint">... and ${dirtyConflicts.length - 30} more files.</p></li>` : nothing}
+            </ul>
+          </details>
+        </details>
       `
-      : `<p class="git-card__hint">Branch is clean and up to date with ${escapeHtml(baseBranch)}. Nothing to merge back.</p>`;
+      : nothing;
 
-    return `
+    const commitBlock = gitSnapshot.dirty
+      ? html`
+        <p class="git-card__hint">No commits ahead of ${baseBranch} yet. Commit your changes first.</p>
+        <div class="git-commit-form">
+          <input name="commit-message" type="text" .value=${gitSnapshot.branch.replace(/-/g, " ")} placeholder="Commit message" />
+          <button type="button" class="button" data-action="git-commit-all" data-workspace-id=${workspaceId} ?disabled=${Boolean(busyAction)}>${busyAction === "commit" ? "Committing..." : "Commit all changes"}</button>
+        </div>
+        ${overlapWarning}
+      `
+      : html`<p class="git-card__hint">Branch is clean and up to date with ${baseBranch}. Nothing to merge back.</p>`;
+
+    return html`
       <article class="git-card">
         <div class="section-head">
           <div>
             <p class="eyebrow">Merge Back</p>
-            <h3>${escapeHtml(gitSnapshot.branch)} &rarr; ${escapeHtml(baseBranch)}</h3>
+            <h3>${gitSnapshot.branch} &rarr; ${baseBranch}</h3>
           </div>
         </div>
         ${commitBlock}
@@ -314,95 +360,92 @@ function renderMergeBackCard(gitSnapshot, workspaceId, workspaces, gitUi) {
 
   const potentialConflicts = compare.potentialConflicts || [];
 
-  return `
+  return html`
     <article class="git-card">
       <div class="section-head">
         <div>
           <p class="eyebrow">Merge Back</p>
-          <h3>${escapeHtml(gitSnapshot.branch)} &rarr; ${escapeHtml(baseBranch)}</h3>
+          <h3>${gitSnapshot.branch} &rarr; ${baseBranch}</h3>
         </div>
       </div>
       <div class="git-stat-row">
-        <span class="workspace-chip"><strong>${escapeHtml(String(compare.aheadCount || 0))}</strong> commits to merge</span>
-        <span class="workspace-chip"><strong>${escapeHtml(String(files.length))}</strong> files changed</span>
-        ${compare.behindCount > 0 ? `<span class="workspace-chip workspace-chip--alert"><strong>${escapeHtml(String(compare.behindCount))}</strong> behind base</span>` : ""}
+        <span class="workspace-chip"><strong>${String(compare.aheadCount || 0)}</strong> commits to merge</span>
+        <span class="workspace-chip"><strong>${String(files.length)}</strong> files changed</span>
+        ${compare.behindCount > 0 ? html`<span class="workspace-chip workspace-chip--alert"><strong>${String(compare.behindCount)}</strong> behind base</span>` : nothing}
       </div>
       ${compare.behindCount > 0
-        ? `<p class="git-card__hint git-card__hint--warning">This branch is ${escapeHtml(String(compare.behindCount))} commit(s) behind ${escapeHtml(baseBranch)}. Rebase or merge base first to reduce conflict risk.</p>`
-        : ""
+        ? html`<p class="git-card__hint git-card__hint--warning">This branch is ${String(compare.behindCount)} commit(s) behind ${baseBranch}. Rebase or merge base first to reduce conflict risk.</p>`
+        : nothing
       }
       ${files.length
-        ? `
+        ? html`
           <details class="git-details">
-            <summary>Changed files (${escapeHtml(String(files.length))})</summary>
+            <summary>Changed files (${String(files.length)})</summary>
             <ul class="git-file-list">
               ${files.slice(0, 30).map((entry) => {
-                const fileName = entry.path.split("/").pop();
-                const dirPath = entry.path.slice(0, -(fileName?.length || 0));
-                return `
+                return html`
                   <li>
-                    <span class="git-file" title="${escapeHtml(entry.code || "M")}: ${escapeHtml(entry.path)}">
-                      <span class="git-status-code">${escapeHtml(entry.code || "M")}</span>
-                      <span class="git-file__name">${dirPath ? `<span class="git-file__dir">${escapeHtml(dirPath)}</span>` : ""}${escapeHtml(fileName)}</span>
+                    <span class="git-file" title=${`${entry.code || "M"}: ${entry.path}`}>
+                      <span class="git-status-code">${entry.code || "M"}</span>
+                      ${renderFilePath(entry.path)}
                     </span>
                   </li>
                 `;
-              }).join("")}
-              ${files.length > 30 ? `<li><p class="git-card__hint">... and ${files.length - 30} more files.</p></li>` : ""}
+              })}
+              ${files.length > 30 ? html`<li><p class="git-card__hint">... and ${files.length - 30} more files.</p></li>` : nothing}
             </ul>
           </details>
         `
-        : ""
+        : nothing
       }
       ${potentialConflicts.length > 0
-        ? `
+        ? html`
           <details class="git-details">
-            <summary class="git-card__hint--warning">Potential conflicts (${escapeHtml(String(potentialConflicts.length))})</summary>
-            <p class="git-card__hint git-card__hint--warning">These files were modified on both your branch and ${escapeHtml(baseBranch)}. Merging may require manual conflict resolution.</p>
+            <summary class="git-card__hint--warning">Potential conflicts (${String(potentialConflicts.length)})</summary>
+            <p class="git-card__hint git-card__hint--warning">These files were modified on both your branch and ${baseBranch}. Merging may require manual conflict resolution.</p>
             <ul class="git-file-list">
               ${potentialConflicts.slice(0, 30).map((filePath) => {
-                const fileName = filePath.split("/").pop();
-                const dirPath = filePath.slice(0, -(fileName?.length || 0));
-                return `
+                return html`
                   <li>
-                    <span class="git-file" title="Potential conflict: ${escapeHtml(filePath)}">
+                    <span class="git-file" title=${`Potential conflict: ${filePath}`}>
                       <span class="git-status-code">!</span>
-                      <span class="git-file__name">${dirPath ? `<span class="git-file__dir">${escapeHtml(dirPath)}</span>` : ""}${escapeHtml(fileName)}</span>
+                      ${renderFilePath(filePath)}
                     </span>
                   </li>
                 `;
-              }).join("")}
-              ${potentialConflicts.length > 30 ? `<li><p class="git-card__hint">... and ${potentialConflicts.length - 30} more files.</p></li>` : ""}
+              })}
+              ${potentialConflicts.length > 30 ? html`<li><p class="git-card__hint">... and ${potentialConflicts.length - 30} more files.</p></li>` : nothing}
             </ul>
           </details>
         `
-        : ""
+        : nothing
       }
       <div class="git-operation-actions">
         <button
+          type="button"
           class="button"
           data-action="git-merge-into-base"
-          data-workspace-id="${workspaceId}"
-          data-base-branch="${escapeHtml(baseBranch)}"
-          title="Runs: git merge ${escapeHtml(gitSnapshot.branch)} in the ${escapeHtml(baseBranch)} worktree."
-        >Merge ${escapeHtml(gitSnapshot.branch)} &rarr; ${escapeHtml(baseBranch)}</button>
+          data-workspace-id=${workspaceId}
+          data-base-branch=${baseBranch}
+          title=${`Runs: git merge ${gitSnapshot.branch} in the ${baseBranch} worktree.`}
+        >Merge ${gitSnapshot.branch} &rarr; ${baseBranch}</button>
         ${mainWorktreeWorkspaceId
-          ? `<button class="button button--ghost" data-action="activate-workspace" data-workspace-id="${mainWorktreeWorkspaceId}" title="Switch to ${escapeHtml(baseBranch)} worktree.">Open ${escapeHtml(baseBranch)} worktree</button>`
-          : ""
+          ? html`<button type="button" class="button button--ghost" data-action="activate-workspace" data-workspace-id=${mainWorktreeWorkspaceId} title=${`Switch to ${baseBranch} worktree.`}>Open ${baseBranch} worktree</button>`
+          : nothing
         }
       </div>
       ${gitSnapshot.worktreePath && !gitSnapshot.isMainWorktree
-        ? `
+        ? html`
           <details class="git-details">
             <summary>After merge: clean up worktree</summary>
             <p class="git-card__hint">Once merged, you can remove this worktree and delete the branch.</p>
             <div class="git-operation-actions">
-              <button class="button button--ghost danger" data-action="git-remove-worktree" data-workspace-id="${workspaceId}" data-worktree-path="${escapeHtml(gitSnapshot.worktreePath)}" data-delete-branch="true" title="Removes this worktree directory and deletes the branch.">Remove worktree + delete branch</button>
-              <button class="button button--ghost" data-action="git-remove-worktree" data-workspace-id="${workspaceId}" data-worktree-path="${escapeHtml(gitSnapshot.worktreePath)}" data-delete-branch="false" title="Removes the worktree but keeps the branch.">Remove worktree only</button>
+              <button type="button" class="button button--ghost danger" data-action="git-remove-worktree" data-workspace-id=${workspaceId} data-worktree-path=${gitSnapshot.worktreePath} data-delete-branch="true" title="Removes this worktree directory and deletes the branch.">Remove worktree + delete branch</button>
+              <button type="button" class="button button--ghost" data-action="git-remove-worktree" data-workspace-id=${workspaceId} data-worktree-path=${gitSnapshot.worktreePath} data-delete-branch="false" title="Removes the worktree but keeps the branch.">Remove worktree only</button>
             </div>
           </details>
         `
-        : ""
+        : nothing
       }
     </article>
   `;
@@ -414,46 +457,48 @@ function renderStatusSection(gitSnapshot, workspaceId, gitUi, workspaces) {
   const operation = gitSnapshot.operationState || {};
   const canIntegrateWithBase = Boolean(baseBranch);
 
-  return `
+  return html`
     <div class="git-section">
       ${renderOperationCard(gitSnapshot, workspaceId, gitUi)}
       <article class="git-card">
         <div class="section-head">
           <div>
             <p class="eyebrow">Update Current Branch</p>
-            <h3>${escapeHtml(baseBranch || "?")} &rarr; ${escapeHtml(gitSnapshot.branch)}</h3>
+            <h3>${baseBranch || "?"} &rarr; ${gitSnapshot.branch}</h3>
           </div>
         </div>
         <div class="git-detail-list">
-          <span><strong>Current branch:</strong> ${escapeHtml(gitSnapshot.branch)}</span>
-          <span><strong>Base branch (local):</strong> ${escapeHtml(baseBranch || "not detected")}</span>
-          <span><strong>Upstream:</strong> ${escapeHtml(gitSnapshot.upstream || "none")}</span>
-          <span><strong>Ahead/behind upstream:</strong> ${escapeHtml(String(gitSnapshot.aheadCount || 0))} / ${escapeHtml(String(gitSnapshot.behindCount || 0))}</span>
-          <span><strong>Last fetch:</strong> ${escapeHtml(formatDateLabel(gitSnapshot.lastFetchAt))}</span>
+          <span><strong>Current branch:</strong> ${gitSnapshot.branch}</span>
+          <span><strong>Base branch (local):</strong> ${baseBranch || "not detected"}</span>
+          <span><strong>Upstream:</strong> ${gitSnapshot.upstream || "none"}</span>
+          <span><strong>Ahead/behind upstream:</strong> ${String(gitSnapshot.aheadCount || 0)} / ${String(gitSnapshot.behindCount || 0)}</span>
+          <span><strong>Last fetch:</strong> ${formatDateLabel(gitSnapshot.lastFetchAt)}</span>
         </div>
         ${canIntegrateWithBase
-          ? `
+          ? html`
             <div class="git-operation-actions">
               <button
+                type="button"
                 class="button"
                 data-action="git-rebase-base"
-                data-workspace-id="${workspaceId}"
-                data-base-branch="${escapeHtml(baseBranch)}"
-                ${busyAction || operation.inProgress ? "disabled" : ""}
-                title="Runs: git rebase ${escapeHtml(baseBranch)} (local). Replays your commits on top of the local ${escapeHtml(baseBranch)} branch."
-              >${busyAction === "rebase" ? "Rebasing..." : `Rebase onto ${escapeHtml(baseBranch)}`}</button>
+                data-workspace-id=${workspaceId}
+                data-base-branch=${baseBranch}
+                ?disabled=${Boolean(busyAction || operation.inProgress)}
+                title=${`Runs: git rebase ${baseBranch} (local). Replays your commits on top of the local ${baseBranch} branch.`}
+              >${busyAction === "rebase" ? "Rebasing..." : `Rebase onto ${baseBranch}`}</button>
               <button
+                type="button"
                 class="button button--ghost"
                 data-action="git-merge-base"
-                data-workspace-id="${workspaceId}"
-                data-base-branch="${escapeHtml(baseBranch)}"
-                ${busyAction || operation.inProgress ? "disabled" : ""}
-                title="Runs: git merge ${escapeHtml(baseBranch)} (local). Brings commits from the local ${escapeHtml(baseBranch)} branch into ${escapeHtml(gitSnapshot.branch)}."
-              >${busyAction === "merge" ? "Merging..." : `Merge ${escapeHtml(baseBranch)} in`}</button>
+                data-workspace-id=${workspaceId}
+                data-base-branch=${baseBranch}
+                ?disabled=${Boolean(busyAction || operation.inProgress)}
+                title=${`Runs: git merge ${baseBranch} (local). Brings commits from the local ${baseBranch} branch into ${gitSnapshot.branch}.`}
+              >${busyAction === "merge" ? "Merging..." : `Merge ${baseBranch} in`}</button>
             </div>
-            <p class="git-card__hint">Operations use the local ${escapeHtml(baseBranch)} branch. Fetch first to sync with remote.</p>
+            <p class="git-card__hint">Operations use the local ${baseBranch} branch. Fetch first to sync with remote.</p>
           `
-          : '<p class="git-card__hint">Base branch could not be detected automatically for this repository.</p>'
+          : html`<p class="git-card__hint">Base branch could not be detected automatically for this repository.</p>`
         }
       </article>
       ${renderMergeBackCard(gitSnapshot, workspaceId, workspaces, gitUi)}
@@ -466,7 +511,7 @@ function renderChangesSection(gitSnapshot, workspaceId, gitUi) {
   const selectedDiff = gitUi.selectedDiff || null;
   const operation = gitSnapshot.operationState || {};
 
-  return `
+  return html`
     <div class="git-section git-section--changes">
       <div class="git-section__files">
         <article class="git-card">
@@ -487,15 +532,15 @@ function renderChangesSection(gitSnapshot, workspaceId, gitUi) {
           <div class="section-head">
             <div>
               <p class="eyebrow">Diff Preview</p>
-              <h3>${escapeHtml(diffPreview?.path || "Select a file")}</h3>
+              <h3>${diffPreview?.path || "Select a file"}</h3>
             </div>
           </div>
           ${diffPreview
-            ? `
-              ${diffPreview.summary ? `<p class="git-card__hint">${escapeHtml(diffPreview.summary)}</p>` : ""}
-              <pre class="git-output git-output--preview">${colorizeDiff(diffPreview.diff || "")}</pre>
-            `
-            : '<p class="git-card__hint">Click a file to load a diff preview.</p>'
+            ? html`
+                ${diffPreview.summary ? html`<p class="git-card__hint">${diffPreview.summary}</p>` : nothing}
+                <pre class="git-output git-output--preview">${renderDiffPreview(diffPreview.diff || "")}</pre>
+              `
+            : html`<p class="git-card__hint">Click a file to load a diff preview.</p>`
           }
         </article>
       </div>
@@ -518,59 +563,59 @@ function renderHistorySection(gitSnapshot, workspaceId, gitUi) {
     allCommits.push(entry);
   }
 
-  return `
+  return html`
     <div class="git-section git-section--history">
       <div class="git-history__header">
         <article class="git-card">
           <div class="section-head">
             <div>
               <p class="eyebrow">Compare With Base</p>
-              <h3>${escapeHtml(baseBranch || "No base branch")}</h3>
+              <h3>${baseBranch || "No base branch"}</h3>
             </div>
           </div>
           ${renderDiffStat(compare.diffStat)}
           <div class="git-detail-list">
-            <span><strong>Branch commits:</strong> ${escapeHtml(String(compare.aheadCount || 0))}</span>
-            <span><strong>Missing from base:</strong> ${escapeHtml(String(compare.behindCount || 0))}</span>
+            <span><strong>Branch commits:</strong> ${String(compare.aheadCount || 0)}</span>
+            <span><strong>Missing from base:</strong> ${String(compare.behindCount || 0)}</span>
           </div>
         </article>
       </div>
       <div class="git-history__panels">
         <div class="git-history__log">
           ${allCommits.length
-            ? `
+            ? html`
               <table class="git-log-table">
                 <thead>
-                  <tr><th>Hash</th><th>Message</th><th>Date</th><th>Author</th></tr>
+                  <tr><th scope="col">Hash</th><th scope="col">Message</th><th scope="col">Date</th><th scope="col">Author</th></tr>
                 </thead>
                 <tbody>
-                  ${allCommits.map((entry) => `
+                  ${allCommits.map((entry) => html`
                     <tr
-                      class="${selectedCommit === entry.shortHash ? "git-log-table--active" : ""}"
+                      class=${selectedCommit === entry.shortHash ? "git-log-table--active" : ""}
                       data-action="git-select-commit"
-                      data-workspace-id="${workspaceId}"
-                      data-hash="${escapeHtml(entry.shortHash)}"
-                      title="${escapeHtml(entry.subject)}"
+                      data-workspace-id=${workspaceId}
+                      data-hash=${entry.shortHash}
+                      title=${entry.subject}
                     >
-                      <td class="git-log-table__hash">${escapeHtml(entry.shortHash)}</td>
-                      <td class="git-log-table__msg">${escapeHtml(entry.subject)}</td>
-                      <td class="git-log-table__date">${escapeHtml(entry.relativeDate)}</td>
-                      <td class="git-log-table__author">${escapeHtml(entry.author || "")}</td>
+                      <td class="git-log-table__hash">${entry.shortHash}</td>
+                      <td class="git-log-table__msg">${entry.subject}</td>
+                      <td class="git-log-table__date">${entry.relativeDate}</td>
+                      <td class="git-log-table__author">${entry.author || ""}</td>
                     </tr>
-                  `).join("")}
+                  `)}
                 </tbody>
               </table>
             `
-            : '<p class="git-card__hint">No commit history available yet.</p>'
+            : html`<p class="git-card__hint">No commit history available yet.</p>`
           }
         </div>
         <div class="git-history__detail">
           ${commitDiffPreview
-            ? `
-              ${commitDiffPreview.summary ? `<p class="git-card__hint">${escapeHtml(commitDiffPreview.summary)}</p>` : ""}
-              <pre class="git-output git-output--preview">${colorizeDiff(commitDiffPreview.diff || "")}</pre>
-            `
-            : '<p class="git-card__hint">Select a commit to view its diff.</p>'
+            ? html`
+                ${commitDiffPreview.summary ? html`<p class="git-card__hint">${commitDiffPreview.summary}</p>` : nothing}
+                <pre class="git-output git-output--preview">${renderDiffPreview(commitDiffPreview.diff || "")}</pre>
+              `
+            : html`<p class="git-card__hint">Select a commit to view its diff.</p>`
           }
         </div>
       </div>
@@ -579,20 +624,20 @@ function renderHistorySection(gitSnapshot, workspaceId, gitUi) {
 }
 
 function renderWorktreesSection(gitSnapshot, workspaceId, workspaces) {
-  return `
+  return html`
     <div class="git-section">
       <article class="git-card">
         <div class="section-head">
           <div>
             <p class="eyebrow">Worktree Context</p>
-            <h3>${escapeHtml(gitSnapshot.repository || gitSnapshot.root)}</h3>
+            <h3>${gitSnapshot.repository || gitSnapshot.root}</h3>
           </div>
         </div>
-        <p class="git-card__path">${escapeHtml(gitSnapshot.root)}</p>
+        <p class="git-card__path">${gitSnapshot.root}</p>
         <div class="git-detail-list">
-          <span><strong>Current branch:</strong> ${escapeHtml(gitSnapshot.branch)}</span>
-          <span><strong>Main worktree:</strong> ${escapeHtml(gitSnapshot.mainWorktreePath || gitSnapshot.root)}</span>
-          <span><strong>Current path:</strong> ${escapeHtml(gitSnapshot.worktreePath || gitSnapshot.root)}</span>
+          <span><strong>Current branch:</strong> ${gitSnapshot.branch}</span>
+          <span><strong>Main worktree:</strong> ${gitSnapshot.mainWorktreePath || gitSnapshot.root}</span>
+          <span><strong>Current path:</strong> ${gitSnapshot.worktreePath || gitSnapshot.root}</span>
         </div>
         ${renderWorktreeList(gitSnapshot, workspaces)}
       </article>
@@ -602,7 +647,7 @@ function renderWorktreesSection(gitSnapshot, workspaceId, workspaces) {
 
 export function renderGitMarkup(gitSnapshot, workspaceId, gitUi = {}, workspaces = []) {
   if (!gitSnapshot?.available) {
-    return `
+    return html`
       <div class="terminal-empty">
         <p>Git workspace is unavailable</p>
         <small>This workspace is not inside a Git repository.</small>
@@ -623,29 +668,31 @@ export function renderGitMarkup(gitSnapshot, workspaceId, gitUi = {}, workspaces
 
   const sectionContent = (sectionRenderers[activeTab] || sectionRenderers.status)();
 
-  return `
+  return html`
     <div class="git-view">
       <div class="git-view__toolbar">
         <div class="git-view__summary">
-          <span class="workspace-chip"><strong>${escapeHtml(gitSnapshot.branch)}</strong> branch</span>
+          <span class="workspace-chip"><strong>${gitSnapshot.branch}</strong> branch</span>
           <span class="workspace-chip"><strong>${gitSnapshot.isMainWorktree ? "main" : "linked"}</strong> worktree</span>
-          <span class="workspace-chip"><strong>${escapeHtml(String(gitSnapshot.aheadCount || 0))}</strong> ahead</span>
-          <span class="workspace-chip"><strong>${escapeHtml(String(gitSnapshot.behindCount || 0))}</strong> behind</span>
-          <span class="workspace-chip"><strong>${gitSnapshot.dirty ? escapeHtml(String(gitSnapshot.dirtyCount)) : "0"}</strong> ${gitSnapshot.dirty ? "dirty" : "clean"}</span>
-          ${operation.inProgress ? `<span class="workspace-chip workspace-chip--alert"><strong>${escapeHtml(operation.kind)}</strong> in progress</span>` : ""}
+          <span class="workspace-chip"><strong>${String(gitSnapshot.aheadCount || 0)}</strong> ahead</span>
+          <span class="workspace-chip"><strong>${String(gitSnapshot.behindCount || 0)}</strong> behind</span>
+          <span class="workspace-chip"><strong>${gitSnapshot.dirty ? String(gitSnapshot.dirtyCount) : "0"}</strong> ${gitSnapshot.dirty ? "dirty" : "clean"}</span>
+          ${operation.inProgress ? html`<span class="workspace-chip workspace-chip--alert"><strong>${operation.kind}</strong> in progress</span>` : nothing}
         </div>
         <div class="git-view__actions">
-          <button class="button button--ghost" data-action="refresh-git" data-workspace-id="${workspaceId}">Refresh</button>
-          <button class="button button--ghost" data-action="git-fetch" data-workspace-id="${workspaceId}" ${busyAction ? "disabled" : ""}>${busyAction === "fetch" ? "Fetching..." : "Fetch"}</button>
-          <button class="button button--ghost" data-action="create-worktree" data-workspace-id="${workspaceId}">New worktree</button>
+          <button type="button" class="button button--ghost" data-action="refresh-git" data-workspace-id=${workspaceId}>Refresh</button>
+          <button type="button" class="button button--ghost" data-action="git-fetch" data-workspace-id=${workspaceId} ?disabled=${Boolean(busyAction)}>${busyAction === "fetch" ? "Fetching..." : "Fetch"}</button>
+          <button type="button" class="button button--ghost" data-action="create-worktree" data-workspace-id=${workspaceId}>New worktree</button>
           ${gitSnapshot.lazygit?.available
-            ? `<button class="button" data-action="open-lazygit" data-workspace-id="${workspaceId}" style="white-space:nowrap;">Open Lazygit</button>`
-            : `<button class="button button--ghost" disabled style="white-space:nowrap;border:1px dashed var(--accent);color:var(--accent);opacity:0.9;" title="Install lazygit to enable">Install Lazygit</button>`
+            ? html`<button type="button" class="button" data-action="open-lazygit" data-workspace-id=${workspaceId} style="white-space:nowrap;">Open Lazygit</button>`
+            : html`<button type="button" class="button button--ghost" disabled style="white-space:nowrap;border:1px dashed var(--accent);color:var(--accent);opacity:0.9;" title="Install lazygit to enable">Install Lazygit</button>`
           }
         </div>
       </div>
       ${renderTabNav(activeTab, workspaceId, { operation, dirtyCount: gitSnapshot.dirtyCount || 0 })}
-      ${sectionContent}
+      <section id="git-panel-${workspaceId}" role="tabpanel" aria-labelledby="git-tab-${workspaceId}-${activeTab}">
+        ${sectionContent}
+      </section>
     </div>
   `;
 }
@@ -656,20 +703,20 @@ export function renderDockerMarkup(dockerState = {}) {
   const activeContext = currentDockerContext(dockerState.contexts);
 
   if (!dockerState.available) {
-    return `<div class="empty-card"><p>Docker runtime is unavailable.</p><small>${escapeHtml(dockerState.error || "Install Docker CLI on Windows or expose it via WSL.")}</small></div>`;
+    return html`<div class="empty-card"><p>Docker runtime is unavailable.</p><small>${dockerState.error || "Install Docker CLI on Windows or expose it via WSL."}</small></div>`;
   }
 
   const lazydockerInfo = dockerState.lazydocker || {};
   const lazydockerAvailable = lazydockerInfo.available || false;
 
-  return `
-    <div class="docker-manager">
-      <div class="docker-manager__header">
+  return html`
+    <section class="docker-manager" aria-label="Docker manager">
+      <header class="docker-manager__header">
         <div class="docker-manager__summary">
           <article class="docker-stat">
             <span class="eyebrow">Context</span>
-            <strong>${escapeHtml(activeContext?.Name || "n/a")}</strong>
-            <small>${escapeHtml(activeContext?.DockerEndpoint || "No context")}</small>
+            <strong>${activeContext?.Name || "n/a"}</strong>
+            <small>${activeContext?.DockerEndpoint || "No context"}</small>
           </article>
           <article class="docker-stat">
             <span class="eyebrow">Containers</span>
@@ -679,45 +726,43 @@ export function renderDockerMarkup(dockerState = {}) {
         </div>
         <div style="display:flex;gap:6px;flex-wrap:wrap;">
           ${lazydockerAvailable
-            ? '<button class="button" data-action="open-lazydocker" style="white-space:nowrap;">Open Lazydocker</button>'
-            : '<button class="button button--ghost" disabled style="white-space:nowrap;border:1px dashed var(--accent);color:var(--accent);opacity:0.9;" title="Install lazydocker: winget install JesseDuffield.lazygit or brew install lazydocker">Install Lazydocker</button>'
+            ? html`<button type="button" class="button" data-action="open-lazydocker" style="white-space:nowrap;">Open Lazydocker</button>`
+            : html`<button type="button" class="button button--ghost" disabled style="white-space:nowrap;border:1px dashed var(--accent);color:var(--accent);opacity:0.9;" title="Install lazydocker: winget install JesseDuffield.lazygit or brew install lazydocker">Install Lazydocker</button>`
           }
         </div>
-      </div>
-      <div class="docker-list">
-        ${
-          containers.length
-            ? containers
-                .map((container) => {
-                  const running = isContainerRunning(container);
-                  return `
-                    <article class="docker-card ${running ? "docker-card--running" : ""}">
-                      <div class="docker-card__head">
-                        <div>
-                          <h4>${escapeHtml(container.Names || container.ID)}</h4>
-                          <p class="docker-card__meta">${escapeHtml(container.Image || "Unknown image")}</p>
-                        </div>
-                        <span class="docker-state docker-state--${running ? "running" : "stopped"}">${escapeHtml(container.State || (running ? "running" : "stopped"))}</span>
+      </header>
+      <ul class="docker-list" role="list">
+        ${containers.length
+          ? containers.map((container) => {
+              const running = isContainerRunning(container);
+              return html`
+                <li>
+                  <article class=${`docker-card ${running ? "docker-card--running" : ""}`}>
+                    <div class="docker-card__head">
+                      <div>
+                        <h4>${container.Names || container.ID}</h4>
+                        <p class="docker-card__meta">${container.Image || "Unknown image"}</p>
                       </div>
-                      <div class="docker-card__meta">
-                        <span>${escapeHtml(container.Status || "Unknown status")}</span>
-                        <span>${escapeHtml(container.Ports || "No ports")}</span>
-                      </div>
-                      <div class="docker-card__actions">
-                        <button class="button button--ghost" data-action="docker-shell" data-container-id="${container.ID}" ${running ? "" : "disabled"}>Shell</button>
-                        <button class="button button--ghost" data-action="docker-logs" data-container-id="${container.ID}">Logs</button>
-                        <button class="button button--ghost" data-action="docker-start" data-container-id="${container.ID}" ${running ? "disabled" : ""}>Start</button>
-                        <button class="button button--ghost" data-action="docker-stop" data-container-id="${container.ID}" ${running ? "" : "disabled"}>Stop</button>
-                        <button class="button button--ghost" data-action="docker-restart" data-container-id="${container.ID}" ${running ? "" : "disabled"}>Restart</button>
-                        <button class="button button--ghost danger" data-action="docker-remove" data-container-id="${container.ID}">Remove</button>
-                      </div>
-                    </article>
-                  `;
-                })
-                .join("")
-            : '<div class="empty-card"><p>No containers found.</p><small>When Docker services appear, you can open logs or attach a shell here.</small></div>'
-        }
-      </div>
-    </div>
+                      <span class=${`docker-state docker-state--${running ? "running" : "stopped"}`}>${container.State || (running ? "running" : "stopped")}</span>
+                    </div>
+                    <div class="docker-card__meta">
+                      <span>${container.Status || "Unknown status"}</span>
+                      <span>${container.Ports || "No ports"}</span>
+                    </div>
+                    <div class="docker-card__actions" aria-label="Container actions">
+                      <button type="button" class="button button--ghost" data-action="docker-shell" data-container-id=${container.ID} ?disabled=${!running}>Shell</button>
+                      <button type="button" class="button button--ghost" data-action="docker-logs" data-container-id=${container.ID}>Logs</button>
+                      <button type="button" class="button button--ghost" data-action="docker-start" data-container-id=${container.ID} ?disabled=${running}>Start</button>
+                      <button type="button" class="button button--ghost" data-action="docker-stop" data-container-id=${container.ID} ?disabled=${!running}>Stop</button>
+                      <button type="button" class="button button--ghost" data-action="docker-restart" data-container-id=${container.ID} ?disabled=${!running}>Restart</button>
+                      <button type="button" class="button button--ghost danger" data-action="docker-remove" data-container-id=${container.ID}>Remove</button>
+                    </div>
+                  </article>
+                </li>
+              `;
+            })
+          : html`<li><div class="empty-card"><p>No containers found.</p><small>When Docker services appear, you can open logs or attach a shell here.</small></div></li>`}
+      </ul>
+    </section>
   `;
 }
