@@ -692,7 +692,9 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
     }
 
     dockerPoll = setInterval(() => {
-      refreshDocker().catch(() => {});
+      refreshDocker().catch((error) => {
+        console.warn(`[runtime] Docker poll error: ${error.message}`);
+      });
     }, APP_CONFIG.runtime.dockerPollMs);
   }
 
@@ -702,13 +704,17 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
     }
 
     gitPoll = setInterval(async () => {
-      await refreshGit().catch(() => {});
+      await refreshGit().catch((error) => {
+        console.warn(`[runtime] Git poll error: ${error.message}`);
+      });
       try {
         if (await syncWorktrees()) {
           sessions.syncWithState(getState());
           broadcastState();
         }
-      } catch {}
+      } catch (error) {
+        console.warn(`[runtime] Worktree sync error: ${error.message}`);
+      }
     }, APP_CONFIG.runtime.gitPollMs);
   }
 
@@ -739,13 +745,20 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
       broadcastState();
     },
     async getInitialState() {
-      if (findWorkspace(getState(), getState().activeWorkspaceId)?.kind === "docker") {
-        await refreshDocker();
+      try {
+        if (findWorkspace(getState(), getState().activeWorkspaceId)?.kind === "docker") {
+          await refreshDocker();
+        }
+        await refreshGit(getState().activeWorkspaceId);
+        await syncWorktrees();
+        ensureVisibleSession();
+        const payload = getPayload();
+        console.log(`[runtime] Initial state ready: ${payload.appState?.workspaces?.length ?? 0} workspaces`);
+        return payload;
+      } catch (error) {
+        console.error(`[runtime] getInitialState failed: ${error.message}`);
+        throw error;
       }
-      await refreshGit(getState().activeWorkspaceId);
-      await syncWorktrees();
-      ensureVisibleSession();
-      return getPayload();
     },
     async activateWorkspace(workspaceId) {
       await store.mutate((draft) => {
