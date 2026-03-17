@@ -482,11 +482,26 @@ describe("runtime integration", () => {
       exitCode: 2,
     });
 
+    // Switching to the tab should NOT clear the alert — it stays until user types
     const payload = await fixture.runtime.activateSession("backend:tests");
 
-    expect(payload.attention.byProject.backend).toBeUndefined();
+    expect(payload.attention.byProject.backend).toMatchObject({ count: 1 });
     expect(payload.appState.activeProjectId).toBe("backend");
     expect(payload.workspace.project.activePanelId).toBe("tests");
+
+    // Typing before 15s should NOT clear the alert
+    fixture.runtime.writeToSession("backend:tests", "x");
+    expect(fixture.runtime.getPayload().attention.byProject.backend).toMatchObject({ count: 1 });
+
+    // Typing after 15s should clear the alert
+    const originalNow = Date.now;
+    Date.now = () => originalNow() + 16_000;
+    try {
+      fixture.runtime.writeToSession("backend:tests", "x");
+      expect(fixture.runtime.getPayload().attention.byProject.backend).toBeUndefined();
+    } finally {
+      Date.now = originalNow;
+    }
   });
 
   test("does not raise alerts for terminals that are currently visible", async () => {

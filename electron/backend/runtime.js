@@ -29,6 +29,7 @@ function findWorkspace(state, workspaceId) {
 function createAttentionContext() {
   return {
     visibleSessionIds: new Set(),
+    recentlyVisibleUntil: new Map(),
   };
 }
 
@@ -36,6 +37,8 @@ const ANSI_ESCAPE_RE = /\u001B\[[0-?]*[ -/]*[@-~]|\u001B\][^\u0007]*(?:\u0007|\u
 const AGENT_NAME_RE = /\b(claude|codex|opencode|aider|gemini)\b/i;
 const AGENT_OUTPUT_RE = /\b(claude code|openai codex|codex|claude)\b/i;
 const PROMPT_QUIET_MS = 900;
+const ATTENTION_MIN_DISPLAY_MS = 15_000;
+const ATTENTION_VISIBILITY_GRACE_MS = 5_000;
 const WAITING_PATTERNS = [
   /\bwaiting for input\b/i,
   /\bneeds your input\b/i,
@@ -433,8 +436,29 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
     );
   }
 
+  function updateVisibleSessions(nextIds) {
+    const prev = attentionContext.visibleSessionIds;
+    const next = new Set(nextIds);
+    const now = Date.now();
+    for (const sessionId of prev) {
+      if (!next.has(sessionId)) {
+        attentionContext.recentlyVisibleUntil.set(sessionId, now + ATTENTION_VISIBILITY_GRACE_MS);
+      }
+    }
+    for (const sessionId of next) {
+      attentionContext.recentlyVisibleUntil.delete(sessionId);
+    }
+    // Prune expired grace period entries
+    for (const [sessionId, until] of attentionContext.recentlyVisibleUntil) {
+      if (now >= until) attentionContext.recentlyVisibleUntil.delete(sessionId);
+    }
+    attentionContext.visibleSessionIds = next;
+  }
+
   function isSessionVisible(sessionId) {
-    return attentionContext.visibleSessionIds.has(sessionId);
+    if (attentionContext.visibleSessionIds.has(sessionId)) return true;
+    const until = attentionContext.recentlyVisibleUntil.get(sessionId);
+    return until != null && Date.now() < until;
   }
 
   sessions.on("terminal:data", (payload) => {
@@ -711,7 +735,13 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
           draft.activeWorkspaceId = workspaceId;
         }
       });
-      if (findWorkspace(getState(), workspaceId)?.kind === "docker") {
+      // Proactively update visible sessions BEFORE starting terminals,
+      // so terminal startup output doesn't trigger false alerts
+      const workspace = findWorkspace(getState(), workspaceId);
+      if (workspace) {
+        updateVisibleSessions(workspace.panels.map((p) => createSessionId(workspaceId, p.id)));
+      }
+      if (workspace?.kind === "docker") {
         await refreshDocker();
       }
       await refreshGit(workspaceId);
@@ -740,7 +770,6 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
         }
       });
 
-      clearProjectAlerts(descriptor.workspaceId, descriptor.panelId);
       sessions.ensureSession(getState(), sessionId);
       broadcastState();
       return getPayload();
@@ -869,24 +898,39 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
     },
     writeToSession(sessionId, data) {
       resetSessionSignal(sessionId);
+      const descriptor = parseSessionId(sessionId);
+      if (descriptor) {
+        const current = projectAlerts.get(descriptor.workspaceId);
+        const alert = current?.alerts?.find((a) => a.panelId === descriptor.panelId);
+        if (alert && (Date.now() - new Date(alert.at).getTime()) >= ATTENTION_MIN_DISPLAY_MS) {
+          clearProjectAlerts(descriptor.workspaceId, descriptor.panelId);
+          broadcastState();
+        }
+      }
       sessions.writeToSession(sessionId, data);
     },
     syncAttentionContext({ visibleSessionIds = [] } = {}) {
-      const nextVisibleSessionIds = new Set(
-        (Array.isArray(visibleSessionIds) ? visibleSessionIds : [])
-          .map((sessionId) => String(sessionId || "").trim())
-          .filter(Boolean),
-      );
-      attentionContext.visibleSessionIds = nextVisibleSessionIds;
+      const nextIds = (Array.isArray(visibleSessionIds) ? visibleSessionIds : [])
+        .map((sessionId) => String(sessionId || "").trim())
+        .filter(Boolean);
+      updateVisibleSessions(nextIds);
 
+      // Clear alerts for visible sessions that have been shown long enough
+      const now = Date.now();
       let changed = false;
       for (const sessionId of attentionContext.visibleSessionIds) {
-        changed = clearAlertSession(sessionId) || changed;
+        const descriptor = parseSessionId(sessionId);
+        if (!descriptor) continue;
+        const current = projectAlerts.get(descriptor.workspaceId);
+        const alert = current?.alerts?.find((a) => a.panelId === descriptor.panelId);
+        if (alert && (now - new Date(alert.at).getTime()) >= ATTENTION_MIN_DISPLAY_MS) {
+          clearProjectAlerts(descriptor.workspaceId, descriptor.panelId);
+          resetSessionSignal(sessionId);
+          changed = true;
+        }
       }
+      if (changed) broadcastState();
 
-      if (changed) {
-        broadcastState();
-      }
       return getPayload();
     },
     async restartSession(sessionId) {
