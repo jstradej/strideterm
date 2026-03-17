@@ -960,6 +960,7 @@ dt {
   gap: 4px;
   align-items: center;
   justify-content: space-between;
+  overflow: hidden;
 }
 
 .project__title-row strong,
@@ -1527,12 +1528,6 @@ dt {
   grid-row: 2;
 }
 
-.tab__attention,
-.tab__rename,
-.tab__close {
-  grid-row: 1;
-}
-
 .tab:hover {
   color: var(--text);
   background: rgba(255, 255, 255, 0.03);
@@ -1569,6 +1564,7 @@ dt {
 
 .tab__close {
   grid-row: 1;
+  grid-column: 5;
   align-self: start;
   width: 16px;
   height: 16px;
@@ -1584,6 +1580,7 @@ dt {
 
 .tab__rename {
   grid-row: 1;
+  grid-column: 4;
   align-self: start;
   width: 16px;
   height: 16px;
@@ -1609,6 +1606,7 @@ dt {
 
 .tab__attention {
   grid-row: 1;
+  grid-column: 3;
   align-self: start;
   width: 16px;
   height: 18px;
