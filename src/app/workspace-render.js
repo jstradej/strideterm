@@ -119,6 +119,63 @@ export function renderTabActions({
   `;
 }
 
+export function renderBrowserUrlBar({ homeUrl = "about:blank" } = {}) {
+  return html`
+    <button type="button" class="browser-url-bar__btn" data-browser-action="back" title="Back">\u25C0</button>
+    <button type="button" class="browser-url-bar__btn" data-browser-action="forward" title="Forward">\u25B6</button>
+    <button type="button" class="browser-url-bar__btn" data-browser-action="reload" title="Reload">\u21BB</button>
+    <button type="button" class="browser-url-bar__btn" data-browser-action="home" title="Home">\u{1F3E0}</button>
+    <form class="browser-url-bar__form">
+      <input class="browser-url-bar__input" .value=${homeUrl} placeholder="https://..." />
+    </form>
+    <button type="button" class="browser-url-bar__btn" data-browser-action="external" title="Open in browser">\u{1F517}</button>
+  `;
+}
+
+export function renderEmptyTerminalState() {
+  return html`
+    <div class="terminal-empty">
+      <p>No active terminal</p>
+      <small>Select a tab or open a Docker shell/log stream.</small>
+    </div>
+  `;
+}
+
+export function renderWelcomeScreen() {
+  return html`
+    <div class="welcome-screen">
+      <div class="welcome-screen__card">
+        <h1 class="welcome-screen__title">Welcome to str<em>IDE</em>term</h1>
+        <p class="welcome-screen__subtitle">Multi-workspace terminal hub for developers</p>
+        <div class="welcome-screen__steps">
+          <div class="welcome-screen__step">
+            <span class="welcome-screen__step-num">1</span>
+            <div>
+              <strong>Create a workspace</strong>
+              <small>Click <strong>+</strong> in the sidebar or press <strong>Ctrl+N</strong></small>
+            </div>
+          </div>
+          <div class="welcome-screen__step">
+            <span class="welcome-screen__step-num">2</span>
+            <div>
+              <strong>Pick a working directory</strong>
+              <small>Browse to your project folder</small>
+            </div>
+          </div>
+          <div class="welcome-screen__step">
+            <span class="welcome-screen__step-num">3</span>
+            <div>
+              <strong>Add terminal tabs</strong>
+              <small>Shell, Claude Code, Codex, Gemini, Dev Server, Browser...</small>
+            </div>
+          </div>
+        </div>
+        <button type="button" class="button" data-action="new-workspace" style="margin-top:16px;padding:10px 24px;font-size:14px;">+ Create your first workspace</button>
+      </div>
+    </div>
+  `;
+}
+
 export function buildWorkspaceCards({
   workspaces,
   activeWorkspaceId,

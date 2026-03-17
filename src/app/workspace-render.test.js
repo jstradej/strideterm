@@ -1,6 +1,12 @@
 import { describe, expect, test } from "vitest";
 import { render } from "lit";
-import { renderTabActions, renderWorkspaceHero } from "./workspace-render.js";
+import {
+  renderBrowserUrlBar,
+  renderEmptyTerminalState,
+  renderTabActions,
+  renderWelcomeScreen,
+  renderWorkspaceHero,
+} from "./workspace-render.js";
 
 function renderTemplate(template) {
   const container = document.createElement("div");
@@ -53,5 +59,24 @@ describe("renderTabActions", () => {
     expect(container.querySelector('[data-action="toggle-tab-picker"]')?.getAttribute("type")).toBe("button");
     expect(container.querySelector('[data-action="disband-split"]')?.textContent).toContain("Unsplit");
     expect(container.querySelector('[data-action="open-layout-picker"]')?.textContent).toContain("Side by side");
+  });
+});
+
+describe("workspace helper views", () => {
+  test("renders browser url bar with button actions and seeded value", () => {
+    const container = renderTemplate(renderBrowserUrlBar({ homeUrl: "https://example.com" }));
+
+    expect(container.querySelector('[data-browser-action="back"]')?.getAttribute("type")).toBe("button");
+    expect(container.querySelector(".browser-url-bar__input")?.value).toBe("https://example.com");
+    expect(container.querySelector('[data-browser-action="external"]')?.textContent).toContain("\u{1F517}");
+  });
+
+  test("renders empty terminal and welcome screens through Lit", () => {
+    const empty = renderTemplate(renderEmptyTerminalState());
+    const welcome = renderTemplate(renderWelcomeScreen());
+
+    expect(empty.querySelector(".terminal-empty")?.textContent).toContain("No active terminal");
+    expect(welcome.querySelector(".welcome-screen__title")?.textContent).toContain("strIDEterm");
+    expect(welcome.querySelector('[data-action="new-workspace"]')?.getAttribute("type")).toBe("button");
   });
 });

@@ -34,9 +34,12 @@ import {
 } from "./app/remote-access.js";
 import { createActionHandlers } from "./app/action-handlers.js";
 import {
+  renderBrowserUrlBar,
   buildTabStripModel,
   buildWorkspaceCards,
+  renderEmptyTerminalState,
   renderTabActions,
+  renderWelcomeScreen,
   renderWorkspaceHero,
 } from "./app/workspace-render.js";
 import { wireRuntimeBindings } from "./app/runtime-bindings.js";
@@ -422,6 +425,9 @@ export function createApp(root, { api }) {
       renderSidebarList,
       renderSidebarFooter,
       getRemoteQrTarget,
+    renderBrowserUrlBar,
+    renderEmptyTerminalState,
+    renderWelcomeScreen,
     renderWorkspaceHero,
     renderTabActions,
     renderTabStrip,
