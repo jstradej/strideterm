@@ -1,3 +1,5 @@
+import { nothing, render } from "lit";
+
 export function createWorkspaceUiController({
   state,
   api,
@@ -43,6 +45,15 @@ export function createWorkspaceUiController({
   isGitViewId,
   isDockerViewId,
 }) {
+  function renderPaneBodyMarkup(container, markup) {
+    if (typeof markup === "string") {
+      container.innerHTML = markup;
+      return;
+    }
+
+    render(markup ?? nothing, container);
+  }
+
   function createTerminalPane(viewTab, showHeader = false) {
     const sessionId = viewTab.id;
     const pane = document.createElement("article");
@@ -81,12 +92,12 @@ export function createWorkspaceUiController({
         { className: "workspace-pane__icon-btn workspace-pane__icon-btn--danger", action: "close-tab", viewId: viewTab.id, title: "Close tab", label: "\u00D7" },
       ],
     });
-    pane.querySelector(".workspace-pane__body").innerHTML = renderGitPaneMarkup(
+    renderPaneBodyMarkup(pane.querySelector(".workspace-pane__body"), renderGitPaneMarkup(
       getGitSnapshot(workspaceId),
       workspaceId,
       getGitUiState(workspaceId),
       state.payload?.appState?.workspaces || [],
-    );
+    ));
     return pane;
   }
 
@@ -105,7 +116,7 @@ export function createWorkspaceUiController({
         { className: "workspace-pane__icon-btn workspace-pane__icon-btn--danger", action: "close-tab", viewId: viewTab.id, title: "Close tab", label: "\u00D7" },
       ],
     });
-    pane.querySelector(".workspace-pane__body").innerHTML = renderDockerPaneMarkup(state.payload?.docker || {});
+    renderPaneBodyMarkup(pane.querySelector(".workspace-pane__body"), renderDockerPaneMarkup(state.payload?.docker || {}));
     return pane;
   }
 
@@ -415,9 +426,9 @@ export function createWorkspaceUiController({
 
     // Welcome screen: only when no workspaces exist at all
     if (allWorkspaces.length === 0 && !workspace) {
-      workspaceHero.innerHTML = "";
+      render(nothing, workspaceHero);
       renderTabStrip(tabStrip, []);
-      tabActions.innerHTML = "";
+      render(nothing, tabActions);
       terminalStage.className = "terminal-stage";
       terminalStage.innerHTML = `
         <div class="welcome-screen">
@@ -456,13 +467,13 @@ export function createWorkspaceUiController({
     }
 
     if (!workspace) {
-      workspaceHero.innerHTML = renderWorkspaceHero({
+      render(renderWorkspaceHero({
         workspace: null,
         remoteConnectionIssue: state.remoteConnectionIssue,
         isRemote: api.isRemote,
-      });
+      }), workspaceHero);
       renderTabStrip(tabStrip, []);
-      tabActions.innerHTML = "";
+      render(nothing, tabActions);
       renderVisibleViews(null, []);
       syncAttentionContext([]);
       return;
@@ -472,14 +483,14 @@ export function createWorkspaceUiController({
     const gitSnapshot = getGitSnapshot(activeWorkspace.id);
     const attention = getWorkspaceAttention(activeWorkspace.id);
     const dockerState = state.payload?.docker || {};
-    workspaceHero.innerHTML = renderWorkspaceHero({
+    render(renderWorkspaceHero({
       workspace,
       dockerState,
       gitSnapshot,
       attention,
       remoteConnectionIssue: state.remoteConnectionIssue,
       isRemote: api.isRemote,
-    });
+    }), workspaceHero);
 
     const preferredSessionId = activeWorkspace.activePanelId
       ? `${activeWorkspace.id}:${activeWorkspace.activePanelId}`
@@ -500,12 +511,12 @@ export function createWorkspaceUiController({
     }));
 
     const currentLayout = activeSplitLayout();
-    tabActions.innerHTML = renderTabActions({
+    render(renderTabActions({
       workspaceKind: activeWorkspace.kind,
       splitGroup: state.splitGroup,
       currentLayout,
       layouts,
-    });
+    }), tabActions);
 
     renderVisibleViews(workspace, visibleTabs);
     syncAttentionContext(visibleTabs);
