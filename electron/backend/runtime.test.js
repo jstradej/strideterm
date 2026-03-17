@@ -202,6 +202,7 @@ class FakeGitManager extends EventEmitter {
     super();
     this.snapshots = new Map();
     this.refreshArgs = [];
+    this.actions = [];
   }
 
   getProjectMap() {
@@ -227,7 +228,43 @@ class FakeGitManager extends EventEmitter {
         dirty: false,
         dirtyCount: 0,
         status: [],
+        staged: [],
+        unstaged: [],
+        untracked: [],
+        changes: {
+          staged: { name: "Staged", files: [], diffStat: { files: 0, insertions: 0, deletions: 0, renames: 0, deletes: 0 } },
+          unstaged: { name: "Unstaged", files: [], diffStat: { files: 0, insertions: 0, deletions: 0, renames: 0, deletes: 0 } },
+          untracked: { name: "Untracked", files: [], diffStat: { files: 0, insertions: 0, deletions: 0, renames: 0, deletes: 0 } },
+        },
+        diffStat: { files: 0, insertions: 0, deletions: 0, renames: 0, deletes: 0 },
         log: [],
+        isWorktree: false,
+        isMainWorktree: true,
+        worktreePath: project.cwd || "",
+        mainWorktreePath: project.cwd || "",
+        siblingWorktrees: [],
+        upstream: "origin/main",
+        baseBranch: "main",
+        aheadCount: 0,
+        behindCount: 0,
+        compareWithBase: {
+          baseBranch: "main",
+          aheadCount: 0,
+          behindCount: 0,
+          commits: [],
+          files: [],
+          diffStat: { files: 0, insertions: 0, deletions: 0, renames: 0, deletes: 0 },
+        },
+        lastFetchAt: null,
+        operationState: {
+          kind: "idle",
+          inProgress: false,
+          label: "",
+          details: "",
+          conflicts: [],
+          canContinue: false,
+          canAbort: false,
+        },
         lazygit: {
           available: project.kind !== "docker",
           backend: project.kind !== "docker" ? "host" : null,
@@ -240,6 +277,117 @@ class FakeGitManager extends EventEmitter {
     ]));
     this.emit("updated", this.getProjectMap());
     return this.getProjectMap();
+  }
+
+  async fetch(workspace) {
+    this.actions.push({ kind: "fetch", workspaceId: workspace.id });
+    return {
+      ok: true,
+      summary: "Fetch completed.",
+      warnings: [],
+      conflicts: [],
+      rawOutput: "fetch ok",
+      operationState: {
+        kind: "idle",
+        inProgress: false,
+        label: "",
+        details: "",
+        conflicts: [],
+        canContinue: false,
+        canAbort: false,
+      },
+    };
+  }
+
+  async mergeIntoCurrent(workspace, payload) {
+    this.actions.push({ kind: "merge", workspaceId: workspace.id, payload });
+    return {
+      ok: true,
+      summary: "Merge completed.",
+      warnings: [],
+      conflicts: [],
+      rawOutput: "merge ok",
+      operationState: {
+        kind: "idle",
+        inProgress: false,
+        label: "",
+        details: "",
+        conflicts: [],
+        canContinue: false,
+        canAbort: false,
+      },
+    };
+  }
+
+  async rebaseOnto(workspace, payload) {
+    this.actions.push({ kind: "rebase", workspaceId: workspace.id, payload });
+    return {
+      ok: true,
+      summary: "Rebase completed.",
+      warnings: [],
+      conflicts: [],
+      rawOutput: "rebase ok",
+      operationState: {
+        kind: "idle",
+        inProgress: false,
+        label: "",
+        details: "",
+        conflicts: [],
+        canContinue: false,
+        canAbort: false,
+      },
+    };
+  }
+
+  async continueOperation(workspace) {
+    this.actions.push({ kind: "continue", workspaceId: workspace.id });
+    return {
+      ok: true,
+      summary: "Continue completed.",
+      warnings: [],
+      conflicts: [],
+      rawOutput: "continue ok",
+      operationState: {
+        kind: "idle",
+        inProgress: false,
+        label: "",
+        details: "",
+        conflicts: [],
+        canContinue: false,
+        canAbort: false,
+      },
+    };
+  }
+
+  async abortOperation(workspace) {
+    this.actions.push({ kind: "abort", workspaceId: workspace.id });
+    return {
+      ok: true,
+      summary: "Abort completed.",
+      warnings: [],
+      conflicts: [],
+      rawOutput: "abort ok",
+      operationState: {
+        kind: "idle",
+        inProgress: false,
+        label: "",
+        details: "",
+        conflicts: [],
+        canContinue: false,
+        canAbort: false,
+      },
+    };
+  }
+
+  async diffPreview(workspace, payload) {
+    this.actions.push({ kind: "diff", workspaceId: workspace.id, payload });
+    return {
+      ok: true,
+      scope: payload.scope || "unstaged",
+      path: payload.path,
+      diff: "diff --git a/file b/file",
+      summary: "",
+    };
   }
 
   createLazygitLaunch(projectId) {
@@ -780,6 +928,54 @@ describe("runtime integration", () => {
     expect(payload.appState.projects).toHaveLength(2);
     expect(payload.appState.activeProjectId).toBe(payload.appState.projects[1].id);
     expect(payload.appState.projects[1].cwd).toBe(path.join(projectRoot, ".strideterm", "tree", "feature-x"));
+  });
+
+  test("returns structured payload for git fetch and diff preview actions", async () => {
+    const fixture = await createFixture({
+      initialState: {
+        activeProjectId: "backend",
+        projects: [
+          {
+            id: "backend",
+            name: "Backend",
+            kind: "terminal",
+            cwd: "/tmp/backend",
+            activePanelId: "shell",
+            panels: [
+              { id: "shell", title: "Shell", command: "", shell: true, startup: "default" },
+            ],
+          },
+        ],
+      },
+    });
+    fixtures.push(fixture);
+
+    await fixture.runtime.refreshGitState("backend");
+    const fetchResult = await fixture.runtime.gitFetch({ projectId: "backend" });
+    const diffResult = await fixture.runtime.gitDiffPreview({
+      projectId: "backend",
+      path: "src/app.js",
+      scope: "unstaged",
+    });
+
+    expect(fetchResult.result).toMatchObject({
+      ok: true,
+      summary: "Fetch completed.",
+    });
+    expect(fetchResult.payload.git.activeWorkspace).toBeTruthy();
+    expect(fixture.git.actions[0]).toMatchObject({
+      kind: "fetch",
+      workspaceId: "backend",
+    });
+    expect(diffResult).toMatchObject({
+      ok: true,
+      path: "src/app.js",
+      scope: "unstaged",
+    });
+    expect(fixture.git.actions[1]).toMatchObject({
+      kind: "diff",
+      workspaceId: "backend",
+    });
   });
 
   test("saves, activates, and deletes profiles while preserving a fallback default profile", async () => {

@@ -1,93 +1,324 @@
-import { describe, expect, test } from "vitest";
+import os from "node:os";
+import path from "node:path";
+import fs from "node:fs/promises";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import { GitManager } from "./git-manager.js";
 
-class FakeGitManager extends GitManager {
-  constructor({ hostLazygit = null, wslLazygit = null, responses = {} } = {}) {
-    super();
-    this.hostLazygit = hostLazygit;
-    this.wslLazygit = wslLazygit;
-    this.responses = responses;
-  }
+const tempPaths = [];
 
-  async detectLazygit(workspace) {
-    return this.hostLazygit || this.wslLazygit || {
-      available: false,
-      backend: null,
-      error: "missing",
-      launch: null,
-    };
-  }
+afterEach(async () => {
+  await Promise.all(tempPaths.splice(0).map((targetPath) => fs.rm(targetPath, { recursive: true, force: true })));
+});
 
-  async inspectWorkspace(workspace) {
-    if (this.responses[workspace.id]) {
-      return this.responses[workspace.id];
+async function createGitFixture() {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-git-"));
+  const sibling = path.join(root, ".strideterm", "tree", "feature-y");
+  await fs.mkdir(path.join(root, ".git"), { recursive: true });
+  await fs.mkdir(sibling, { recursive: true });
+  await fs.writeFile(path.join(root, ".git", "FETCH_HEAD"), "origin/main\n", "utf8");
+  tempPaths.push(root);
+  return { root, sibling };
+}
+
+function createExecMock(responses) {
+  return vi.fn(async (cwd, args) => {
+    const key = `${cwd}::${args.join(" ")}`;
+    if (!(key in responses)) {
+      throw { stderr: `Unexpected git call: ${key}`, stdout: "" };
     }
-    return super.inspectWorkspace(workspace);
-  }
+    const value = responses[key];
+    if (value instanceof Error) {
+      throw { stderr: value.message, stdout: "" };
+    }
+    if (value && value.__reject) {
+      throw value.__reject;
+    }
+    return value;
+  });
 }
 
 describe("GitManager", () => {
-  test("refreshWorkspaces builds a snapshot map keyed by workspace id", async () => {
-    const manager = new FakeGitManager({
-      responses: {
-        frontend: {
-          workspaceId: "frontend",
-          cwd: "/home/user/workspace",
-          available: true,
-          root: "/home/user/workspace",
-          repository: "workspace",
-          branch: "main",
-          commitCount: 42,
-          dirty: true,
-          dirtyCount: 3,
-          status: [{ code: "M", path: "src/app.js" }],
-          log: [{ shortHash: "abc123", relativeDate: "2 hours ago", author: "Jaromir", refs: "(HEAD -> main)", subject: "Refine workspace" }],
-          lazygit: { available: true, backend: "host", error: "", launch: { file: "lazygit", args: [] } },
-          error: "",
-          lastUpdatedAt: "2026-03-14T18:00:00.000Z",
-        },
+  test("inspectWorkspace returns enriched worktree, sync, and changes snapshot", async () => {
+    const { root, sibling } = await createGitFixture();
+    const execGitImpl = createExecMock({
+      [`${root}::rev-parse --show-toplevel`]: { stdout: `${root}\n`, stderr: "" },
+      [`${root}::rev-parse --abbrev-ref HEAD`]: { stdout: "feature-x\n", stderr: "" },
+      [`${root}::rev-list --count HEAD`]: { stdout: "42\n", stderr: "" },
+      [`${root}::status --porcelain=v2 --branch`]: {
+        stdout: [
+          "# branch.oid abcdef",
+          "# branch.head feature-x",
+          "# branch.upstream origin/feature-x",
+          "# branch.ab +2 -1",
+          "1 M. N... 100644 100644 100644 abc def src/app.js",
+          "1 .M N... 100644 100644 100644 abc def config/app.json",
+          "? docs/notes.md",
+        ].join("\n"),
+        stderr: "",
       },
+      [`${root}::status --short`]: { stdout: "M  src/app.js\n M config/app.json\n?? docs/notes.md\n", stderr: "" },
+      [`${root}::log --date=relative --pretty=format:%h%x09%ad%x09%an%x09%d%x09%s -n 18`]: {
+        stdout: "abc123\t2 hours ago\tJaromir\t(HEAD -> feature-x)\tRefine git tab",
+        stderr: "",
+      },
+      [`${root}::rev-parse --git-dir`]: { stdout: ".git\n", stderr: "" },
+      [`${root}::rev-parse --git-common-dir`]: { stdout: ".git\n", stderr: "" },
+      [`${root}::worktree list --porcelain`]: {
+        stdout: [
+          `worktree ${root}`,
+          "HEAD abcdef1",
+          "branch refs/heads/main",
+          "",
+          `worktree ${sibling}`,
+          "HEAD bcdefa2",
+          "branch refs/heads/feature-y",
+          "",
+        ].join("\n"),
+        stderr: "",
+      },
+      [`${root}::for-each-ref --format=%(refname:short) refs/heads refs/remotes`]: {
+        stdout: "feature-x\nmain\norigin/feature-x\norigin/main\n",
+        stderr: "",
+      },
+      [`${root}::rev-list --left-right --count HEAD...main`]: { stdout: "3\t1\n", stderr: "" },
+      [`${root}::log --date=relative --pretty=format:%h%x09%ad%x09%an%x09%d%x09%s -n 18 main..HEAD`]: {
+        stdout: "bbb222\t1 hour ago\tJaromir\t\tAdd compare panel",
+        stderr: "",
+      },
+      [`${root}::diff --name-status main...HEAD`]: { stdout: "M\tsrc/app.js\nA\tdocs/notes.md\n", stderr: "" },
+      [`${root}::diff --shortstat main...HEAD`]: { stdout: " 2 files changed, 7 insertions(+), 1 deletion(-)\n", stderr: "" },
+      [`${root}::diff --cached --shortstat`]: { stdout: " 1 file changed, 5 insertions(+)\n", stderr: "" },
+      [`${root}::diff --shortstat`]: { stdout: " 1 file changed, 2 deletions(-)\n", stderr: "" },
+      [`${root}::diff --name-only --diff-filter=U`]: { stdout: "", stderr: "" },
+      [`${sibling}::status --short`]: { stdout: " M src/other.js\n", stderr: "" },
+    });
+    const manager = new GitManager({ execGitImpl, now: () => new Date("2026-03-17T12:00:00.000Z") });
+    manager.detectLazygit = async () => ({
+      available: true,
+      backend: "host",
+      error: "",
+      launch: { file: "lazygit", args: [] },
     });
 
-    const snapshots = await manager.refreshWorkspaces([{ id: "frontend", cwd: "/home/user/workspace", kind: "terminal" }]);
+    const snapshot = await manager.inspectWorkspace({ id: "frontend", cwd: root, kind: "terminal" });
 
-    expect(snapshots.frontend.branch).toBe("main");
-    expect(snapshots.frontend.dirtyCount).toBe(3);
-    expect(manager.getSnapshot("frontend").repository).toBe("workspace");
+    expect(snapshot.available).toBe(true);
+    expect(snapshot.branch).toBe("feature-x");
+    expect(snapshot.baseBranch).toBe("main");
+    expect(snapshot.aheadCount).toBe(2);
+    expect(snapshot.behindCount).toBe(1);
+    expect(snapshot.staged.map((entry) => entry.path)).toEqual(["src/app.js"]);
+    expect(snapshot.unstaged.map((entry) => entry.path)).toEqual(["config/app.json"]);
+    expect(snapshot.untracked.map((entry) => entry.path)).toEqual(["docs/notes.md"]);
+    expect(snapshot.diffStat).toMatchObject({
+      files: 3,
+      insertions: 5,
+      deletions: 2,
+    });
+    expect(snapshot.compareWithBase).toMatchObject({
+      baseBranch: "main",
+      aheadCount: 3,
+      behindCount: 1,
+    });
+    expect(snapshot.siblingWorktrees).toHaveLength(2);
+    expect(snapshot.siblingWorktrees[1]).toMatchObject({
+      branch: "feature-y",
+      dirty: true,
+    });
+    expect(snapshot.lastFetchAt).toBeTruthy();
   });
 
-  test("createLazygitLaunch returns a cloned launch config", async () => {
-    const manager = new FakeGitManager({
-      responses: {
-        frontend: {
-          workspaceId: "frontend",
-          cwd: "/home/user/workspace",
-          available: true,
-          root: "/home/user/workspace",
-          repository: "workspace",
-          branch: "main",
-          commitCount: 1,
-          dirty: false,
-          dirtyCount: 0,
-          status: [],
-          log: [],
-          lazygit: {
-            available: true,
-            backend: "wsl",
-            error: "",
-            launch: { file: "wsl.exe", args: ["-e", "sh", "-lc", "cd '/home/user/workspace' && exec lazygit"] },
-          },
-          error: "",
-          lastUpdatedAt: "2026-03-14T18:00:00.000Z",
-        },
-      },
+  test("inspectWorkspace detects active merge operation and conflicts", async () => {
+    const { root } = await createGitFixture();
+    await fs.writeFile(path.join(root, ".git", "MERGE_HEAD"), "abcdef\n", "utf8");
+    const execGitImpl = createExecMock({
+      [`${root}::rev-parse --show-toplevel`]: { stdout: `${root}\n`, stderr: "" },
+      [`${root}::rev-parse --abbrev-ref HEAD`]: { stdout: "feature-x\n", stderr: "" },
+      [`${root}::rev-list --count HEAD`]: { stdout: "1\n", stderr: "" },
+      [`${root}::status --porcelain=v2 --branch`]: { stdout: "# branch.head feature-x\n", stderr: "" },
+      [`${root}::status --short`]: { stdout: "UU src/app.js\n", stderr: "" },
+      [`${root}::log --date=relative --pretty=format:%h%x09%ad%x09%an%x09%d%x09%s -n 18`]: { stdout: "", stderr: "" },
+      [`${root}::rev-parse --git-dir`]: { stdout: ".git\n", stderr: "" },
+      [`${root}::rev-parse --git-common-dir`]: { stdout: ".git\n", stderr: "" },
+      [`${root}::worktree list --porcelain`]: { stdout: `worktree ${root}\nHEAD abc\nbranch refs/heads/feature-x\n`, stderr: "" },
+      [`${root}::for-each-ref --format=%(refname:short) refs/heads refs/remotes`]: { stdout: "feature-x\nmain\n", stderr: "" },
+      [`${root}::diff --cached --shortstat`]: { stdout: "", stderr: "" },
+      [`${root}::diff --shortstat`]: { stdout: "", stderr: "" },
+      [`${root}::diff --name-only --diff-filter=U`]: { stdout: "src/app.js\n", stderr: "" },
+    });
+    const manager = new GitManager({ execGitImpl });
+    manager.detectLazygit = async () => ({ available: false, backend: null, error: "missing", launch: null });
+
+    const snapshot = await manager.inspectWorkspace({ id: "frontend", cwd: root, kind: "terminal" });
+
+    expect(snapshot.operationState).toMatchObject({
+      kind: "merge",
+      inProgress: true,
+      conflicts: ["src/app.js"],
+      canContinue: true,
+      canAbort: true,
+    });
+  });
+
+  test("inspectWorkspace prefers remote base branch when local main is missing", async () => {
+    const { root } = await createGitFixture();
+    const execGitImpl = createExecMock({
+      [`${root}::rev-parse --show-toplevel`]: { stdout: `${root}\n`, stderr: "" },
+      [`${root}::rev-parse --abbrev-ref HEAD`]: { stdout: "feature-x\n", stderr: "" },
+      [`${root}::rev-list --count HEAD`]: { stdout: "1\n", stderr: "" },
+      [`${root}::status --porcelain=v2 --branch`]: { stdout: "# branch.head feature-x\n# branch.upstream origin/feature-x\n", stderr: "" },
+      [`${root}::status --short`]: { stdout: "", stderr: "" },
+      [`${root}::log --date=relative --pretty=format:%h%x09%ad%x09%an%x09%d%x09%s -n 18`]: { stdout: "", stderr: "" },
+      [`${root}::rev-parse --git-dir`]: { stdout: ".git\n", stderr: "" },
+      [`${root}::rev-parse --git-common-dir`]: { stdout: ".git\n", stderr: "" },
+      [`${root}::worktree list --porcelain`]: { stdout: `worktree ${root}\nHEAD abc\nbranch refs/heads/feature-x\n`, stderr: "" },
+      [`${root}::for-each-ref --format=%(refname:short) refs/heads refs/remotes`]: { stdout: "feature-x\norigin/main\norigin/feature-x\n", stderr: "" },
+      [`${root}::rev-list --left-right --count HEAD...origin/main`]: { stdout: "1\t0\n", stderr: "" },
+      [`${root}::log --date=relative --pretty=format:%h%x09%ad%x09%an%x09%d%x09%s -n 18 origin/main..HEAD`]: { stdout: "", stderr: "" },
+      [`${root}::diff --name-status origin/main...HEAD`]: { stdout: "", stderr: "" },
+      [`${root}::diff --shortstat origin/main...HEAD`]: { stdout: "", stderr: "" },
+      [`${root}::diff --cached --shortstat`]: { stdout: "", stderr: "" },
+      [`${root}::diff --shortstat`]: { stdout: "", stderr: "" },
+      [`${root}::diff --name-only --diff-filter=U`]: { stdout: "", stderr: "" },
+    });
+    const manager = new GitManager({ execGitImpl });
+    manager.detectLazygit = async () => ({ available: false, backend: null, error: "missing", launch: null });
+
+    const snapshot = await manager.inspectWorkspace({ id: "frontend", cwd: root, kind: "terminal" });
+
+    expect(snapshot.baseBranch).toBe("origin/main");
+    expect(snapshot.compareWithBase.baseBranch).toBe("origin/main");
+  });
+
+  test("mergeIntoCurrent refuses dirty workspace without explicit stash flow", async () => {
+    const { root } = await createGitFixture();
+    const manager = new GitManager({ execGitImpl: vi.fn() });
+    manager.inspectWorkspace = vi.fn().mockResolvedValue({
+      available: true,
+      branch: "feature-x",
+      baseBranch: "main",
+      upstream: "origin/feature-x",
+      aheadCount: 2,
+      behindCount: 0,
+      dirty: true,
+      operationState: { kind: "idle", inProgress: false, conflicts: [] },
     });
 
-    await manager.refreshWorkspaces([{ id: "frontend", cwd: "/home/user/workspace", kind: "terminal" }]);
-    const launch = manager.createLazygitLaunch("frontend");
-    launch.args.push("mutated");
+    const result = await manager.mergeIntoCurrent({ id: "frontend", cwd: root }, { baseBranch: "main" });
 
-    expect(manager.getSnapshot("frontend").lazygit.launch.args).not.toContain("mutated");
-    expect(launch.file).toBe("wsl.exe");
+    expect(result.ok).toBe(false);
+    expect(result.summary).toContain("Working tree is dirty");
+    expect(manager.execGitImpl).not.toHaveBeenCalled();
+  });
+
+  test("rebaseOnto stashes dirty changes, runs rebase, and restores stash", async () => {
+    const { root } = await createGitFixture();
+    const execGitImpl = vi.fn()
+      .mockResolvedValueOnce({ stdout: "Saved working directory and index state\n", stderr: "" })
+      .mockResolvedValueOnce({ stdout: "Successfully rebased\n", stderr: "" })
+      .mockResolvedValueOnce({ stdout: "Dropped refs/stash@{0}\n", stderr: "" });
+    const manager = new GitManager({ execGitImpl, now: () => new Date("2026-03-17T12:00:00.000Z") });
+    manager.inspectWorkspace = vi.fn()
+      .mockResolvedValueOnce({
+        available: true,
+        branch: "feature-x",
+        baseBranch: "main",
+        upstream: "origin/feature-x",
+        aheadCount: 1,
+        behindCount: 0,
+        dirty: true,
+        operationState: { kind: "idle", inProgress: false, conflicts: [] },
+      });
+
+    const result = await manager.rebaseOnto({ id: "frontend", cwd: root }, { baseBranch: "main", stashDirty: true });
+
+    expect(result.ok).toBe(true);
+    expect(execGitImpl).toHaveBeenNthCalledWith(1, root, expect.arrayContaining(["stash", "push", "--include-untracked"]));
+    expect(execGitImpl).toHaveBeenNthCalledWith(2, root, ["rebase", "main"]);
+    expect(execGitImpl).toHaveBeenNthCalledWith(3, root, ["stash", "pop"]);
+    expect(result.rawOutput).toContain("Successfully rebased");
+  });
+
+  test("reuses cached sibling dirty state within a short inspection window", async () => {
+    const { root, sibling } = await createGitFixture();
+    let nowValue = new Date("2026-03-17T12:00:00.000Z");
+    const execGitImpl = createExecMock({
+      [`${root}::rev-parse --show-toplevel`]: { stdout: `${root}\n`, stderr: "" },
+      [`${root}::rev-parse --abbrev-ref HEAD`]: { stdout: "feature-x\n", stderr: "" },
+      [`${root}::rev-list --count HEAD`]: { stdout: "42\n", stderr: "" },
+      [`${root}::status --porcelain=v2 --branch`]: { stdout: "# branch.head feature-x\n", stderr: "" },
+      [`${root}::status --short`]: { stdout: "", stderr: "" },
+      [`${root}::log --date=relative --pretty=format:%h%x09%ad%x09%an%x09%d%x09%s -n 18`]: { stdout: "", stderr: "" },
+      [`${root}::rev-parse --git-dir`]: { stdout: ".git\n", stderr: "" },
+      [`${root}::rev-parse --git-common-dir`]: { stdout: ".git\n", stderr: "" },
+      [`${root}::worktree list --porcelain`]: {
+        stdout: [
+          `worktree ${root}`,
+          "HEAD abcdef1",
+          "branch refs/heads/main",
+          "",
+          `worktree ${sibling}`,
+          "HEAD bcdefa2",
+          "branch refs/heads/feature-y",
+          "",
+        ].join("\n"),
+        stderr: "",
+      },
+      [`${root}::for-each-ref --format=%(refname:short) refs/heads refs/remotes`]: { stdout: "feature-x\nmain\n", stderr: "" },
+      [`${root}::rev-list --left-right --count HEAD...main`]: { stdout: "0\t0\n", stderr: "" },
+      [`${root}::log --date=relative --pretty=format:%h%x09%ad%x09%an%x09%d%x09%s -n 18 main..HEAD`]: { stdout: "", stderr: "" },
+      [`${root}::diff --name-status main...HEAD`]: { stdout: "", stderr: "" },
+      [`${root}::diff --shortstat main...HEAD`]: { stdout: "", stderr: "" },
+      [`${root}::diff --cached --shortstat`]: { stdout: "", stderr: "" },
+      [`${root}::diff --shortstat`]: { stdout: "", stderr: "" },
+      [`${root}::diff --name-only --diff-filter=U`]: { stdout: "", stderr: "" },
+      [`${sibling}::status --short`]: { stdout: " M src/other.js\n", stderr: "" },
+    });
+    const manager = new GitManager({ execGitImpl, now: () => nowValue });
+    manager.detectLazygit = async () => ({ available: false, backend: null, error: "missing", launch: null });
+
+    await manager.inspectWorkspace({ id: "frontend", cwd: root, kind: "terminal" });
+    nowValue = new Date(nowValue.getTime() + 1000);
+    await manager.inspectWorkspace({ id: "frontend", cwd: root, kind: "terminal" });
+
+    expect(execGitImpl.mock.calls.filter(([cwd, args]) => cwd === sibling && args.join(" ") === "status --short")).toHaveLength(1);
+  });
+
+  test("diffPreview returns a preview for untracked files", async () => {
+    const { root } = await createGitFixture();
+    const execGitImpl = vi.fn(async (cwd, args) => {
+      if (cwd !== root) {
+        throw { stderr: "unexpected cwd", stdout: "" };
+      }
+
+      if (args[0] === "diff" && args[1] === "--no-index") {
+        throw {
+          stdout: [
+            "diff --git a/empty b/new-file.txt",
+            "new file mode 100644",
+            "--- a/empty",
+            "+++ b/new-file.txt",
+            "@@ -0,0 +1 @@",
+            "+hello",
+          ].join("\n"),
+          stderr: "",
+        };
+      }
+
+      throw { stderr: `Unexpected git call: ${args.join(" ")}`, stdout: "" };
+    });
+    const manager = new GitManager({ execGitImpl });
+
+    const result = await manager.diffPreview(
+      { id: "frontend", cwd: root, kind: "terminal" },
+      { path: "new-file.txt", scope: "untracked" },
+    );
+
+    expect(result).toMatchObject({
+      ok: true,
+      scope: "untracked",
+      path: "new-file.txt",
+    });
+    expect(result.diff).toContain("new file mode");
   });
 });

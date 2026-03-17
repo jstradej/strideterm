@@ -567,6 +567,24 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
     return git.refreshWorkspaces ? git.refreshWorkspaces(workspaces) : git.refreshProjects(workspaces);
   }
 
+  function resolveGitWorkspace(workspaceId = null, projectId = null) {
+    const targetWorkspaceId = workspaceId || projectId || getState().activeWorkspaceId || getState().activeProjectId;
+    const workspace = findWorkspace(getState(), targetWorkspaceId);
+    if (!workspace?.cwd) {
+      throw new Error("Workspace not found or has no working directory.");
+    }
+    return workspace;
+  }
+
+  async function runGitWorkspaceAction(workspace, actionPromise) {
+    const result = await actionPromise;
+    await refreshGit(workspace.id);
+    return {
+      payload: getPayload(),
+      result,
+    };
+  }
+
   let syncWorktreesRunning = false;
   async function syncWorktrees() {
     if (syncWorktreesRunning) return false;
@@ -964,6 +982,48 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
     async refreshGitState(projectId = null) {
       await refreshGit(projectId);
       return getPayload();
+    },
+    async gitFetch(payload = {}) {
+      const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId);
+      return runGitWorkspaceAction(workspace, git.fetch(workspace));
+    },
+    async gitMergeIntoCurrent(payload = {}) {
+      const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId);
+      return runGitWorkspaceAction(workspace, git.mergeIntoCurrent(workspace, payload));
+    },
+    async gitRebaseOnto(payload = {}) {
+      const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId);
+      return runGitWorkspaceAction(workspace, git.rebaseOnto(workspace, payload));
+    },
+    async gitContinueOperation(payload = {}) {
+      const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId);
+      return runGitWorkspaceAction(workspace, git.continueOperation(workspace));
+    },
+    async gitAbortOperation(payload = {}) {
+      const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId);
+      return runGitWorkspaceAction(workspace, git.abortOperation(workspace));
+    },
+    async gitDiffPreview(payload = {}) {
+      const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId);
+      return git.diffPreview(workspace, payload);
+    },
+    async gitMergeCurrentIntoBase(payload = {}) {
+      const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId);
+      return runGitWorkspaceAction(workspace, git.mergeCurrentIntoBase(workspace, payload));
+    },
+    async gitRemoveWorktree(payload = {}) {
+      const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId);
+      const result = await git.removeWorktree(workspace, payload);
+      await syncWorktrees();
+      return { payload: getPayload(), result };
+    },
+    async gitCommitAll(payload = {}) {
+      const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId);
+      return runGitWorkspaceAction(workspace, git.commitAll(workspace, payload));
+    },
+    async gitCommitDiff(payload = {}) {
+      const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId);
+      return git.commitDiff(workspace, payload);
     },
     async refreshTunnelState() {
       await tunnel.refreshAvailability();
