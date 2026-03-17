@@ -178,6 +178,56 @@ async function handleApiRequest(runtime, request, response) {
       return;
     }
 
+    if (request.method === "POST" && url.pathname === "/api/git/fetch") {
+      json(response, 200, await runtime.gitFetch(body));
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/git/merge-into-current") {
+      json(response, 200, await runtime.gitMergeIntoCurrent(body));
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/git/rebase-onto") {
+      json(response, 200, await runtime.gitRebaseOnto(body));
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/git/continue") {
+      json(response, 200, await runtime.gitContinueOperation(body));
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/git/abort") {
+      json(response, 200, await runtime.gitAbortOperation(body));
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/git/diff-preview") {
+      json(response, 200, await runtime.gitDiffPreview(body));
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/git/merge-into-base") {
+      json(response, 200, await runtime.gitMergeCurrentIntoBase(body));
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/git/remove-worktree") {
+      json(response, 200, await runtime.gitRemoveWorktree(body));
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/git/commit-all") {
+      json(response, 200, await runtime.gitCommitAll(body));
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/git/commit-diff") {
+      json(response, 200, await runtime.gitCommitDiff(body));
+      return;
+    }
+
     if (request.method === "POST" && url.pathname === "/api/docker/action") {
       json(response, 200, await runtime.dockerAction(body.action, body.containerId));
       return;

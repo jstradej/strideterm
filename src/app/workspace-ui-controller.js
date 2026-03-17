@@ -35,6 +35,7 @@ export function createWorkspaceUiController({
   activeSplitLayout,
   getWorkspace,
   getGitSnapshot,
+  getGitUiState,
   getWorkspaceAttention,
   getTabAttention,
   getWorkspaceTabs,
@@ -80,7 +81,12 @@ export function createWorkspaceUiController({
         { className: "workspace-pane__icon-btn workspace-pane__icon-btn--danger", action: "close-tab", viewId: viewTab.id, title: "Close tab", label: "\u00D7" },
       ],
     });
-    pane.querySelector(".workspace-pane__body").innerHTML = renderGitPaneMarkup(getGitSnapshot(workspaceId), workspaceId);
+    pane.querySelector(".workspace-pane__body").innerHTML = renderGitPaneMarkup(
+      getGitSnapshot(workspaceId),
+      workspaceId,
+      getGitUiState(workspaceId),
+      state.payload?.appState?.workspaces || [],
+    );
     return pane;
   }
 

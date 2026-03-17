@@ -34,6 +34,7 @@ export function createActionHandlers(context) {
     focusActiveTerminal,
     getWorkspace,
     getActiveWorkspace,
+    getGitSnapshot,
     getWorkspaceTabs,
     render,
     renderRemoteAccess,
@@ -43,6 +44,136 @@ export function createActionHandlers(context) {
     isGitViewId,
     isDockerViewId,
   } = context;
+
+  function ensureGitUiState(workspaceId) {
+    if (!workspaceId) {
+      return {};
+    }
+    state.gitUiState[workspaceId] = state.gitUiState[workspaceId] || {};
+    return state.gitUiState[workspaceId];
+  }
+
+  function clearGitBusy(workspaceId) {
+    const gitUi = ensureGitUiState(workspaceId);
+    gitUi.busyAction = "";
+  }
+
+  async function runGitAction(workspaceId, busyAction, runner) {
+    const gitUi = ensureGitUiState(workspaceId);
+    gitUi.busyAction = busyAction;
+    render();
+
+    try {
+      const response = await runner();
+      state.payload = response?.payload || state.payload;
+      gitUi.lastResult = response?.result
+        ? {
+            ...response.result,
+            at: new Date().toISOString(),
+          }
+        : null;
+
+      if (gitUi.selectedDiff?.path) {
+        const snapshot = getGitSnapshot(workspaceId);
+        const preview = await api.gitDiffPreview({
+          workspaceId,
+          path: gitUi.selectedDiff.path,
+          scope: gitUi.selectedDiff.scope,
+          baseBranch: snapshot?.baseBranch || snapshot?.compareWithBase?.baseBranch || "",
+        }).catch(() => null);
+        if (preview) {
+          gitUi.diffPreview = preview;
+        }
+      }
+    } catch (error) {
+      gitUi.lastResult = {
+        ok: false,
+        summary: error?.message || "Git action failed.",
+        warnings: [],
+        conflicts: [],
+        rawOutput: "",
+        operationState: null,
+        at: new Date().toISOString(),
+      };
+    } finally {
+      clearGitBusy(workspaceId);
+      render();
+    }
+  }
+
+  async function loadGitDiffPreview(workspaceId, path, scope) {
+    const gitUi = ensureGitUiState(workspaceId);
+    gitUi.selectedDiff = { path, scope };
+    gitUi.diffPreview = {
+      ok: true,
+      path,
+      scope,
+      diff: "",
+      summary: "Loading diff preview...",
+    };
+    render();
+
+    const snapshot = getGitSnapshot(workspaceId);
+    try {
+      gitUi.diffPreview = await api.gitDiffPreview({
+        workspaceId,
+        path,
+        scope,
+        baseBranch: snapshot?.baseBranch || snapshot?.compareWithBase?.baseBranch || "",
+      });
+    } catch (error) {
+      gitUi.diffPreview = {
+        ok: false,
+        path,
+        scope,
+        diff: "",
+        summary: error?.message || "Diff preview failed to load.",
+      };
+    }
+    render();
+  }
+
+  function buildConfirmMessage({ type, snapshot, baseBranch }) {
+    const target = baseBranch || snapshot?.baseBranch || "base";
+    const lines = [];
+
+    if (type === "merge") {
+      lines.push(`Merge ${target} into ${snapshot.branch}?`);
+    } else if (type === "rebase") {
+      lines.push(`Rebase ${snapshot.branch} onto ${target}? Your commits will be replayed on top of ${target} (commit hashes will change, content is preserved).`);
+    } else if (type === "merge-into-base") {
+      lines.push(`Merge ${snapshot?.branch || "current branch"} into ${target}?`);
+      lines.push("This runs git merge in the base worktree.");
+    } else if (type === "abort") {
+      lines.push("Abort the current Git operation?");
+    }
+
+    if (snapshot?.dirty && type !== "abort") {
+      lines.push("This workspace has uncommitted changes. Local changes will be stashed and restored afterwards.");
+    }
+    if (snapshot?.upstream && type !== "abort") {
+      lines.push(`Upstream: ${snapshot.upstream}.`);
+    }
+
+    return lines.join("\n");
+  }
+
+  function setPendingGitAction(workspaceId, { type, baseBranch, snapshot }) {
+    const gitUi = ensureGitUiState(workspaceId);
+    gitUi.pendingAction = {
+      type,
+      baseBranch,
+      stashDirty: snapshot?.dirty || false,
+      message: buildConfirmMessage({ type, snapshot, baseBranch }),
+    };
+    render();
+  }
+
+  function clearPendingGitAction(workspaceId) {
+    const gitUi = ensureGitUiState(workspaceId);
+    gitUi.pendingAction = null;
+    render();
+  }
 
   async function handleRootAction(action, actionElement) {
     if (action === "toggle-sidebar") {
@@ -487,6 +618,173 @@ export function createActionHandlers(context) {
     }
     if (action === "refresh-git") {
       state.payload = await api.refreshGit(actionElement.dataset.workspaceId);
+      render();
+      return true;
+    }
+    if (action === "git-fetch") {
+      const workspaceId = actionElement.dataset.workspaceId || getActiveWorkspace()?.id;
+      if (!workspaceId) {
+        return true;
+      }
+      await runGitAction(workspaceId, "fetch", () => api.gitFetch({ workspaceId }));
+      return true;
+    }
+    if (action === "git-merge-base" || action === "git-rebase-base") {
+      const workspaceId = actionElement.dataset.workspaceId || getActiveWorkspace()?.id;
+      const snapshot = getGitSnapshot(workspaceId);
+      if (!workspaceId || !snapshot?.available) {
+        return true;
+      }
+
+      const type = action === "git-merge-base" ? "merge" : "rebase";
+      setPendingGitAction(workspaceId, {
+        type,
+        snapshot,
+        baseBranch: actionElement.dataset.baseBranch || snapshot.baseBranch,
+      });
+      return true;
+    }
+    if (action === "git-confirm-action") {
+      const workspaceId = actionElement.dataset.workspaceId || getActiveWorkspace()?.id;
+      if (!workspaceId) {
+        return true;
+      }
+      const gitUi = ensureGitUiState(workspaceId);
+      const pending = gitUi.pendingAction;
+      if (!pending) {
+        return true;
+      }
+      gitUi.pendingAction = null;
+
+      if (pending.type === "abort") {
+        await runGitAction(workspaceId, "abort", () => api.gitAbortOperation({ workspaceId }));
+        return true;
+      }
+
+      if (pending.type === "merge-into-base") {
+        await runGitAction(workspaceId, "merge-into-base", () => api.gitMergeCurrentIntoBase({
+          workspaceId,
+          baseBranch: pending.baseBranch,
+        }));
+        return true;
+      }
+
+      const payload = {
+        workspaceId,
+        baseBranch: pending.baseBranch,
+        stashDirty: pending.stashDirty,
+      };
+      await runGitAction(
+        workspaceId,
+        pending.type,
+        () => (pending.type === "merge" ? api.gitMergeIntoCurrent(payload) : api.gitRebaseOnto(payload)),
+      );
+      return true;
+    }
+    if (action === "git-cancel-action") {
+      const workspaceId = actionElement.dataset.workspaceId || getActiveWorkspace()?.id;
+      if (workspaceId) {
+        clearPendingGitAction(workspaceId);
+      }
+      return true;
+    }
+    if (action === "git-continue") {
+      const workspaceId = actionElement.dataset.workspaceId || getActiveWorkspace()?.id;
+      if (!workspaceId) {
+        return true;
+      }
+      await runGitAction(workspaceId, "continue", () => api.gitContinueOperation({ workspaceId }));
+      return true;
+    }
+    if (action === "git-abort") {
+      const workspaceId = actionElement.dataset.workspaceId || getActiveWorkspace()?.id;
+      const snapshot = getGitSnapshot(workspaceId);
+      if (!workspaceId) {
+        return true;
+      }
+      setPendingGitAction(workspaceId, { type: "abort", snapshot, baseBranch: "" });
+      return true;
+    }
+    if (action === "git-merge-into-base") {
+      const workspaceId = actionElement.dataset.workspaceId || getActiveWorkspace()?.id;
+      const snapshot = getGitSnapshot(workspaceId);
+      if (!workspaceId || !snapshot?.available) {
+        return true;
+      }
+      const baseBranch = actionElement.dataset.baseBranch || snapshot.baseBranch;
+      setPendingGitAction(workspaceId, {
+        type: "merge-into-base",
+        snapshot,
+        baseBranch,
+      });
+      return true;
+    }
+    if (action === "git-remove-worktree") {
+      const workspaceId = actionElement.dataset.workspaceId || getActiveWorkspace()?.id;
+      const worktreePath = actionElement.dataset.worktreePath || "";
+      const deleteBranch = actionElement.dataset.deleteBranch === "true";
+      if (!workspaceId || !worktreePath) {
+        return true;
+      }
+      await runGitAction(workspaceId, "remove-worktree", () => api.gitRemoveWorktree({ workspaceId, worktreePath, deleteBranch }));
+      return true;
+    }
+    if (action === "git-commit-all") {
+      const workspaceId = actionElement.dataset.workspaceId || getActiveWorkspace()?.id;
+      if (!workspaceId) {
+        return true;
+      }
+      const message = actionElement.closest('.git-card')?.querySelector('input[name="commit-message"]')?.value;
+      if (!message) {
+        return true;
+      }
+      await runGitAction(workspaceId, "commit", () => api.gitCommitAll({ workspaceId, message }));
+      return true;
+    }
+    if (action === "git-select-commit") {
+      const workspaceId = actionElement.dataset.workspaceId || getActiveWorkspace()?.id;
+      const hash = actionElement.dataset.hash || "";
+      if (!workspaceId || !hash) {
+        return true;
+      }
+      const gitUi = ensureGitUiState(workspaceId);
+      gitUi.selectedCommit = hash;
+      gitUi.commitDiffPreview = { ok: true, hash, diff: "", summary: "Loading..." };
+      render();
+      try {
+        const preview = await api.gitCommitDiff({ workspaceId, hash });
+        gitUi.commitDiffPreview = preview;
+      } catch (error) {
+        gitUi.commitDiffPreview = { ok: false, hash, diff: "", summary: error?.message || "Failed to load commit diff." };
+      }
+      render();
+      return true;
+    }
+    if (action === "git-switch-tab") {
+      const workspaceId = actionElement.dataset.workspaceId || getActiveWorkspace()?.id;
+      const tab = actionElement.dataset.tab || "status";
+      if (workspaceId) {
+        ensureGitUiState(workspaceId).activeTab = tab;
+        render();
+      }
+      return true;
+    }
+    if (action === "git-select-diff") {
+      const workspaceId = actionElement.dataset.workspaceId || getActiveWorkspace()?.id;
+      const filePath = actionElement.dataset.path || "";
+      const scope = actionElement.dataset.scope || "unstaged";
+      if (!workspaceId || !filePath) {
+        return true;
+      }
+      await loadGitDiffPreview(workspaceId, filePath, scope);
+      return true;
+    }
+    if (action === "git-clear-result") {
+      const workspaceId = actionElement.dataset.workspaceId || getActiveWorkspace()?.id;
+      if (!workspaceId) {
+        return true;
+      }
+      ensureGitUiState(workspaceId).lastResult = null;
       render();
       return true;
     }
