@@ -137,7 +137,32 @@ export function createTerminalController({
       if (!event.altKey && /^Digit[1-9]$/.test(event.code)) return false;
       if (event.key.toLowerCase() === "n" || event.key.toLowerCase() === "r") return false;
       if (shortcutTabDirection(event) !== 0) return false;
+      // Ctrl+C copies when text is selected, otherwise let xterm send SIGINT
+      if (event.type === "keydown" && event.key.toLowerCase() === "c" && term.hasSelection()) {
+        navigator.clipboard.writeText(term.getSelection());
+        term.clearSelection();
+        return false;
+      }
+      // Ctrl+V pastes from clipboard
+      if (event.type === "keydown" && event.key.toLowerCase() === "v") {
+        navigator.clipboard.readText().then((text) => {
+          if (text) term.paste(text);
+        });
+        return false;
+      }
       return true;
+    });
+    // Right-click: copy selection or paste (PuTTY-style)
+    mount.addEventListener("contextmenu", (event) => {
+      event.preventDefault();
+      if (term.hasSelection()) {
+        navigator.clipboard.writeText(term.getSelection());
+        term.clearSelection();
+      } else {
+        navigator.clipboard.readText().then((text) => {
+          if (text) term.paste(text);
+        });
+      }
     });
     term.onData((data) => api.writeTerminal(sessionId, data));
     state.terminalViews.set(sessionId, {
