@@ -16,7 +16,7 @@ function workspaceCardTemplate(workspace) {
         <span class="workspace-card__title-row">
           <strong>${workspace.name}</strong>
           ${workspace.attentionCount
-            ? html`<span class="workspace-card__attention" title=${workspace.attentionTooltip}>🔔 ${workspace.attentionCount}</span>`
+            ? html`<span class="workspace-card__attention" title=${workspace.attentionTooltip}>🔔<span class="workspace-card__attention-count">${workspace.attentionCount}</span></span>`
             : null}
         </span>
         <small>${workspace.summary}</small>
