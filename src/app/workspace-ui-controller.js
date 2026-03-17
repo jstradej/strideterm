@@ -48,15 +48,6 @@ export function createWorkspaceUiController({
   isGitViewId,
   isDockerViewId,
 }) {
-  function renderPaneBodyMarkup(container, markup) {
-    if (typeof markup === "string") {
-      container.innerHTML = markup;
-      return;
-    }
-
-    render(markup ?? nothing, container);
-  }
-
   function createTerminalPane(viewTab, showHeader = false) {
     const sessionId = viewTab.id;
     const pane = document.createElement("article");
@@ -95,12 +86,12 @@ export function createWorkspaceUiController({
         { className: "workspace-pane__icon-btn workspace-pane__icon-btn--danger", action: "close-tab", viewId: viewTab.id, title: "Close tab", label: "\u00D7" },
       ],
     });
-    renderPaneBodyMarkup(pane.querySelector(".workspace-pane__body"), renderGitPaneMarkup(
+    render(renderGitPaneMarkup(
       getGitSnapshot(workspaceId),
       workspaceId,
       getGitUiState(workspaceId),
       state.payload?.appState?.workspaces || [],
-    ));
+    ), pane.querySelector(".workspace-pane__body"));
     return pane;
   }
 
@@ -119,7 +110,7 @@ export function createWorkspaceUiController({
         { className: "workspace-pane__icon-btn workspace-pane__icon-btn--danger", action: "close-tab", viewId: viewTab.id, title: "Close tab", label: "\u00D7" },
       ],
     });
-    renderPaneBodyMarkup(pane.querySelector(".workspace-pane__body"), renderDockerPaneMarkup(state.payload?.docker || {}));
+    render(renderDockerPaneMarkup(state.payload?.docker || {}), pane.querySelector(".workspace-pane__body"));
     return pane;
   }
 
