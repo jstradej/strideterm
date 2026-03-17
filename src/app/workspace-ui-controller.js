@@ -25,6 +25,9 @@ export function createWorkspaceUiController({
   renderSidebarList,
   renderSidebarFooter,
   getRemoteQrTarget,
+  renderBrowserUrlBar,
+  renderEmptyTerminalState,
+  renderWelcomeScreen,
   renderWorkspaceHero,
   renderTabActions,
   renderTabStrip,
@@ -147,14 +150,7 @@ export function createWorkspaceUiController({
     // URL bar with inline nav buttons
     const urlBar = document.createElement("div");
     urlBar.className = "browser-url-bar";
-    urlBar.innerHTML = `
-      <button type="button" class="browser-url-bar__btn" data-browser-action="back" title="Back">\u25C0</button>
-      <button type="button" class="browser-url-bar__btn" data-browser-action="forward" title="Forward">\u25B6</button>
-      <button type="button" class="browser-url-bar__btn" data-browser-action="reload" title="Reload">\u21BB</button>
-      <button type="button" class="browser-url-bar__btn" data-browser-action="home" title="Home">\u{1F3E0}</button>
-      <form class="browser-url-bar__form"><input class="browser-url-bar__input" value="${homeUrl.replace(/"/g, "&quot;")}" placeholder="https://..." /></form>
-      <button type="button" class="browser-url-bar__btn" data-browser-action="external" title="Open in browser">\u{1F517}</button>
-    `;
+    render(renderBrowserUrlBar({ homeUrl }), urlBar);
     body.appendChild(urlBar);
 
     // Embed - only set src if it's a real URL (not just "https://")
@@ -262,12 +258,7 @@ export function createWorkspaceUiController({
   function renderVisibleViews(workspace, visibleTabs) {
     if (!visibleTabs.length) {
       terminalStage.className = "terminal-stage";
-      terminalStage.innerHTML = `
-        <div class="terminal-empty">
-          <p>No active terminal</p>
-          <small>Select a tab or open a Docker shell/log stream.</small>
-        </div>
-      `;
+      render(renderEmptyTerminalState(), terminalStage);
       state.attachedSessionId = null;
       terminalController.disconnectHiddenPaneObservers(new Set());
       return;
@@ -304,8 +295,10 @@ export function createWorkspaceUiController({
       if (!nextSet.has(child)) child.remove();
     }
     // Clear any leftover innerHTML (welcome screen etc.) if panes are present
-    if (nextPanes.length && terminalStage.querySelector(".welcome-screen, .terminal-empty")) {
-      terminalStage.innerHTML = "";
+    if (nextPanes.length) {
+      for (const stale of terminalStage.querySelectorAll(".welcome-screen, .terminal-empty")) {
+        stale.remove();
+      }
     }
     // Append/reorder to match nextPanes order
     nextPanes.forEach((pane, i) => {
@@ -421,7 +414,9 @@ export function createWorkspaceUiController({
     // Clear welcome screen / empty state if workspaces now exist
     if (allWorkspaces.length > 0 || workspace) {
       const stale = terminalStage.querySelector(".welcome-screen");
-      if (stale) terminalStage.innerHTML = "";
+      if (stale) {
+        stale.remove();
+      }
     }
 
     // Welcome screen: only when no workspaces exist at all
@@ -430,38 +425,7 @@ export function createWorkspaceUiController({
       renderTabStrip(tabStrip, []);
       render(nothing, tabActions);
       terminalStage.className = "terminal-stage";
-      terminalStage.innerHTML = `
-        <div class="welcome-screen">
-          <div class="welcome-screen__card">
-            <h1 class="welcome-screen__title">Welcome to str<em>IDE</em>term</h1>
-            <p class="welcome-screen__subtitle">Multi-workspace terminal hub for developers</p>
-            <div class="welcome-screen__steps">
-              <div class="welcome-screen__step">
-                <span class="welcome-screen__step-num">1</span>
-                <div>
-                  <strong>Create a workspace</strong>
-                  <small>Click <strong>+</strong> in the sidebar or press <strong>Ctrl+N</strong></small>
-                </div>
-              </div>
-              <div class="welcome-screen__step">
-                <span class="welcome-screen__step-num">2</span>
-                <div>
-                  <strong>Pick a working directory</strong>
-                  <small>Browse to your project folder</small>
-                </div>
-              </div>
-              <div class="welcome-screen__step">
-                <span class="welcome-screen__step-num">3</span>
-                <div>
-                  <strong>Add terminal tabs</strong>
-                  <small>Shell, Claude Code, Codex, Gemini, Dev Server, Browser...</small>
-                </div>
-              </div>
-            </div>
-            <button class="button" data-action="new-workspace" style="margin-top:16px;padding:10px 24px;font-size:14px;">+ Create your first workspace</button>
-          </div>
-        </div>
-      `;
+      render(renderWelcomeScreen(), terminalStage);
       syncAttentionContext([]);
       return;
     }
