@@ -2,7 +2,7 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import { readFile, writeFile, mkdir } from "node:fs/promises";
+import { readFile, writeFile, mkdir, readdir, access } from "node:fs/promises";
 import { EventEmitter } from "node:events";
 import { createRequire } from "node:module";
 import { createStore } from "./store.js";
@@ -543,6 +543,107 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
     return git.refreshWorkspaces ? git.refreshWorkspaces(workspaces) : git.refreshProjects(workspaces);
   }
 
+  let syncWorktreesRunning = false;
+  async function syncWorktrees() {
+    if (syncWorktreesRunning) return false;
+    syncWorktreesRunning = true;
+    try {
+      return await syncWorktreesImpl();
+    } finally {
+      syncWorktreesRunning = false;
+    }
+  }
+
+  async function syncWorktreesImpl() {
+    const state = getState();
+    const parents = state.workspaces.filter((w) => !(w.notes || "").startsWith("Worktree of "));
+    const worktrees = state.workspaces.filter((w) => (w.notes || "").startsWith("Worktree of "));
+
+    // Build parent lookup: treeDir → parent workspace
+    const parentByTreeDir = new Map();
+    for (const parent of parents) {
+      if (!parent.cwd) continue;
+      parentByTreeDir.set(path.join(parent.cwd, ".strideterm", "tree"), parent);
+    }
+
+    const toAdd = [];
+    const toRemove = [];
+    const toRepair = []; // { id, profileId }
+
+    // Discover new worktrees on disk
+    for (const [treeDir, parent] of parentByTreeDir) {
+      let entries;
+      try {
+        entries = await readdir(treeDir, { withFileTypes: true });
+      } catch {
+        continue;
+      }
+      for (const entry of entries) {
+        if (!entry.isDirectory()) continue;
+        const treePath = path.join(treeDir, entry.name);
+        const existing = worktrees.find((w) => w.cwd === treePath);
+        if (existing) {
+          // Repair profileId if it drifted from parent
+          if ((existing.profileId || "default") !== (parent.profileId || "default")) {
+            toRepair.push({ id: existing.id, profileId: parent.profileId || "default" });
+          }
+          continue;
+        }
+        if (toAdd.some((w) => w.cwd === treePath)) continue;
+        toAdd.push(normalizeWorkspace({
+          id: `workspace-${randomUUID()}`,
+          name: `${parent.name} / ${entry.name}`,
+          icon: parent.icon,
+          color: parent.color,
+          kind: parent.kind,
+          source: parent.source,
+          pluginId: parent.pluginId,
+          profileId: parent.profileId,
+          cwd: treePath,
+          notes: `Worktree of ${parent.name}`,
+          activePanelId: "",
+          panels: parent.panels.map((p) => ({
+            ...p,
+            id: `panel-${randomUUID()}`,
+          })),
+        }));
+      }
+    }
+
+    // Remove worktrees whose directories no longer exist on disk
+    for (const wt of worktrees) {
+      if (!wt.cwd) continue;
+      try {
+        await access(wt.cwd);
+      } catch {
+        toRemove.push(wt.id);
+      }
+    }
+
+    if (toAdd.length === 0 && toRemove.length === 0 && toRepair.length === 0) return false;
+
+    await store.mutate((draft) => {
+      if (toRemove.length > 0) {
+        const removeSet = new Set(toRemove);
+        draft.workspaces = draft.workspaces.filter((w) => !removeSet.has(w.id));
+        if (removeSet.has(draft.activeWorkspaceId)) {
+          const activeProfileId = draft.activeProfileId || "default";
+          const fallback = draft.workspaces.find((w) => (w.profileId || "default") === activeProfileId);
+          draft.activeWorkspaceId = fallback?.id || draft.workspaces[0]?.id || "";
+        }
+      }
+      for (const repair of toRepair) {
+        const ws = draft.workspaces.find((w) => w.id === repair.id);
+        if (ws) ws.profileId = repair.profileId;
+      }
+      for (const workspace of toAdd) {
+        draft.workspaces.push(workspace);
+      }
+    });
+
+    return true;
+  }
+
   function ensureDockerPolling() {
     if (dockerPoll) {
       return;
@@ -558,8 +659,14 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
       return;
     }
 
-    gitPoll = setInterval(() => {
-      refreshGit().catch(() => {});
+    gitPoll = setInterval(async () => {
+      await refreshGit().catch(() => {});
+      try {
+        if (await syncWorktrees()) {
+          sessions.syncWithState(getState());
+          broadcastState();
+        }
+      } catch {}
     }, APP_CONFIG.runtime.gitPollMs);
   }
 
@@ -573,6 +680,7 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
   ensureGitPolling();
   await refreshDocker();
   await refreshGit();
+  await syncWorktrees();
   await tunnel.refreshAvailability();
 
   return {
@@ -593,6 +701,7 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
         await refreshDocker();
       }
       await refreshGit(getState().activeWorkspaceId);
+      await syncWorktrees();
       ensureVisibleSession();
       return getPayload();
     },
@@ -1004,6 +1113,7 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
         kind: project.kind,
         source: project.source,
         pluginId: project.pluginId,
+        profileId: project.profileId,
         cwd: treePath,
         notes: `Worktree of ${project.name}`,
         activePanelId: "",
@@ -1066,6 +1176,7 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
           draft.activeWorkspaceId = profileWorkspaces[0]?.id || "";
         }
       });
+      await syncWorktrees();
       sessions.syncWithState(getState());
       ensureVisibleSession();
       broadcastState();
