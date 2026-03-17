@@ -1168,7 +1168,22 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
       });
 
       await store.mutate((draft) => {
-        draft.workspaces.push(newProject);
+        // Insert worktree right after parent (and any existing sibling worktrees)
+        const parentIndex = draft.workspaces.findIndex((w) => w.id === targetWorkspaceId);
+        if (parentIndex >= 0) {
+          const prefix = project.name + " / ";
+          let insertAt = parentIndex + 1;
+          while (
+            insertAt < draft.workspaces.length &&
+            draft.workspaces[insertAt].name.startsWith(prefix) &&
+            (draft.workspaces[insertAt].notes || "").startsWith("Worktree of ")
+          ) {
+            insertAt++;
+          }
+          draft.workspaces.splice(insertAt, 0, newProject);
+        } else {
+          draft.workspaces.push(newProject);
+        }
         draft.activeWorkspaceId = newProject.id;
       });
 
