@@ -60,8 +60,8 @@ describe("renderGitMarkup", () => {
   test("shows branch sync card on status tab with no-base-branch state", () => {
     const markup = renderGitMarkup(createSnapshot(), "workspace-1", { activeTab: "status" }, []);
 
-    expect(markup).toContain("Base branch:</strong> not detected");
-    expect(markup).toContain("Base branch could not be detected automatically");
+    expect(markup).toContain("Merge Back");
+    expect(markup).toContain("Base branch was not detected.");
   });
 
   test("renders pending action confirmation banner on status tab", () => {
