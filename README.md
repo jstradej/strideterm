@@ -1,6 +1,6 @@
 # strIDEterm
 
-A multi-workspace terminal hub for developers. Run shells, AI coding agents, Docker, Git, and embedded browsers side by side in one app.
+Stop losing terminals in a mess of scattered windows. strIDEterm puts all your shells, AI coding agents, Docker, Git, and browsers in one organized place — so you always know where everything is and can focus on the work, not the chaos.
 
 ![Workspace](docs/images/screenshot-workspace.png)
 
@@ -10,11 +10,13 @@ A multi-workspace terminal hub for developers. Run shells, AI coding agents, Doc
 - **Tab Templates** - quickly add Shell, Claude Code, Codex, Gemini CLI, Dev Server, and other preset tabs
 - **Embedded Browser** - open web pages directly in a tab with URL bar and navigation controls
 - **Profiles** - switch between different sets of workspaces (e.g. Work, Personal, Client projects) with colored profile bar
-- **Split Layouts** - view multiple terminals side by side in columns, rows, or grid
+- **Split Layouts** - arrange terminals in columns, rows, or a grid — see everything at once without switching tabs
 - **Git Integration** - branch info, dirty count, commit log, worktree creation, and Lazygit support
 - **Docker Manager** - list containers, run actions, open shells, and stream logs
 - **Remote Access** - access your workspace from any device via LAN or Cloudflare tunnel with QR code
 - **Plugins** - extend functionality with plugins (Docker Ops and System Monitor built-in)
+- **Finish Notifications** - get notified when a long-running command completes so you can stay focused on other work
+- **Keyboard Shortcuts** - navigate workspaces, tabs, and layouts entirely from the keyboard for a fast, mouse-free workflow
 - **Light/Dark Theme** - full theme support including terminal colors and title bar
 - **Drag & Drop** - reorder workspaces and tabs by dragging
 
@@ -34,7 +36,23 @@ A multi-workspace terminal hub for developers. Run shells, AI coding agents, Doc
 - macOS (DMG, x64 + arm64)
 - Linux (AppImage + deb)
 
-## Requirements
+## Installation
+
+**[Download the latest release](https://github.com/jstradej/strideterm/releases/latest)** — pre-built installers are available for all platforms:
+
+| Platform | Format |
+|----------|--------|
+| Windows  | NSIS installer (`.exe`) + portable |
+| macOS    | DMG (`.dmg`) — x64 and arm64 |
+| Linux    | AppImage (`.AppImage`) + Debian package (`.deb`) |
+
+Nightly builds from the latest `master` are available on the [Releases page](https://github.com/jstradej/strideterm/releases) for bleeding-edge users.
+
+## Building from Source
+
+Most users should use the [pre-built releases](https://github.com/jstradej/strideterm/releases/latest) above. The instructions below are for contributors and developers.
+
+### Requirements
 
 **Required:**
 - Node.js 20+
@@ -48,7 +66,7 @@ A multi-workspace terminal hub for developers. Run shells, AI coding agents, Doc
 
 **Native build note:** `node-pty` requires local build tools (Visual Studio Build Tools on Windows, Xcode CLT on macOS, `build-essential` + `python3` on Linux).
 
-## Quick Start
+### Build & Run
 
 ```bash
 # Install dependencies
