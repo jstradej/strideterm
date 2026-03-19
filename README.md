@@ -56,7 +56,7 @@ Most users should use the [pre-built releases](https://github.com/jstradej/strid
 ### Requirements
 
 **Required:**
-- Node.js 20+
+- Node.js 22+
 - npm
 
 **Optional:**

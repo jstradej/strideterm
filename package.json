@@ -5,7 +5,7 @@
   "author": "strIDEterm Contributors <strideterm@stradej.cz>",
   "license": "MIT",
   "engines": {
-    "node": ">=20",
+    "node": ">=22",
     "npm": ">=10"
   },
   "keywords": [
