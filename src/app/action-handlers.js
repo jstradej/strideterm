@@ -9,6 +9,14 @@ const FALLBACK_TAB_TEMPLATES = [
   { title: "Browser", command: "https://", icon: "\u{1F310}" },
 ];
 
+function getUserVisibleErrorMessage(error, fallback = "Action failed.") {
+  let message = error instanceof Error ? error.message : String(error || fallback);
+  message = String(message || "").trim();
+  message = message.replace(/^Error invoking remote method '[^']+':\s*/i, "");
+  message = message.replace(/^Error:\s*/i, "");
+  return message || fallback;
+}
+
 export function createActionHandlers(context) {
   const {
     state,
@@ -45,7 +53,61 @@ export function createActionHandlers(context) {
     getRemoteShareUrl,
     isGitViewId,
     isDockerViewId,
+    isAzureViewId,
+    isReviewViewId,
+    openAzureConnectionDialog,
+    createTextAreaDialog,
+    createTextInputDialog,
   } = context;
+
+  function isBrowserPanel(panel = {}) {
+    return /^https?:\/\//i.test(String(panel.command || "").trim());
+  }
+
+  function buildWorkspacePayloadSnapshot(workspaceId) {
+    const appState = state.payload?.appState;
+    if (!appState) {
+      return null;
+    }
+
+    const workspace = (appState.workspaces || []).find((entry) => entry.id === workspaceId);
+    if (!workspace) {
+      return null;
+    }
+
+    return {
+      workspace,
+      project: workspace,
+      sessions: (workspace.panels || [])
+        .filter((panel) => !isBrowserPanel(panel))
+        .map((panel) => ({
+          sessionId: `${workspace.id}:${panel.id}`,
+          panelId: panel.id,
+          title: panel.title,
+          command: panel.command,
+          launch: panel.launch,
+          startup: panel.startup,
+          status: "idle",
+        })),
+    };
+  }
+
+  function applyOptimisticWorkspaceActivation(workspaceId) {
+    const appState = state.payload?.appState;
+    if (!appState || !(appState.workspaces || []).some((workspace) => workspace.id === workspaceId)) {
+      return false;
+    }
+
+    appState.activeWorkspaceId = workspaceId;
+    appState.activeProjectId = workspaceId;
+    state.pendingWorkspaceActivationId = workspaceId;
+    state.payload = {
+      ...state.payload,
+      appState,
+      workspace: buildWorkspacePayloadSnapshot(workspaceId),
+    };
+    return true;
+  }
 
   function ensureGitUiState(workspaceId) {
     if (!workspaceId) {
@@ -216,11 +278,460 @@ export function createActionHandlers(context) {
       }
       return true;
     }
+    if (action === "open-azure-connection-dialog") {
+      openAzureConnectionDialog(actionElement.dataset.connectionId || "");
+      return true;
+    }
+    if (action === "delete-azure-connection") {
+      const connectionId = actionElement.dataset.connectionId;
+      if (!connectionId) {
+        return true;
+      }
+      if (!window.confirm("Delete this Azure DevOps connection?")) {
+        return true;
+      }
+      state.payload = await api.deleteAzureConnection(connectionId);
+      render();
+      return true;
+    }
+    if (action === "azure-switch-tab") {
+      const tab = actionElement.dataset.tab;
+      if (!tab) return true;
+      const inbox = actionElement.closest(".azure-inbox");
+      if (!inbox) return true;
+      inbox.querySelectorAll(".azure-tab").forEach((btn) => btn.classList.toggle("azure-tab--active", btn.dataset.tab === tab));
+      inbox.querySelectorAll(".azure-section").forEach((sec) => sec.classList.toggle("azure-section--active", sec.dataset.azureSection === tab));
+      return true;
+    }
+    if (action === "review-switch-tab") {
+      const tab = actionElement.dataset.tab || "summary";
+      const workspaceId = actionElement.dataset.workspaceId || getActiveWorkspace()?.id;
+      if (!workspaceId) {
+        return true;
+      }
+      ensureGitUiState(workspaceId).activeReviewTab = tab;
+      render();
+      return true;
+    }
+    if (action === "review-comment-filter") {
+      const filter = actionElement.dataset.filter || "all";
+      const workspaceId = actionElement.dataset.workspaceId || getActiveWorkspace()?.id;
+      if (!workspaceId) return true;
+      ensureGitUiState(workspaceId).commentFilter = filter;
+      render();
+      return true;
+    }
+    if (action === "review-agent-subtab") {
+      const subtab = actionElement.dataset.subtab || "prompts";
+      const workspaceId = actionElement.dataset.workspaceId || getActiveWorkspace()?.id;
+      if (!workspaceId) return true;
+      ensureGitUiState(workspaceId).agentSubTab = subtab;
+      render();
+      return true;
+    }
+    if (action === "review-comment-sort") {
+      const sort = actionElement.dataset.sort || "index";
+      const workspaceId = actionElement.dataset.workspaceId || getActiveWorkspace()?.id;
+      if (!workspaceId) return true;
+      ensureGitUiState(workspaceId).commentSort = sort;
+      render();
+      return true;
+    }
+    if (action === "review-comment-search") {
+      const workspaceId = actionElement.dataset.workspaceId || getActiveWorkspace()?.id;
+      if (!workspaceId) return true;
+      ensureGitUiState(workspaceId).commentSearch = actionElement.value || "";
+      render();
+      return true;
+    }
+    if (action === "review-comment-nav") {
+      const direction = actionElement.dataset.direction || "next";
+      const list = actionElement.closest(".review-panel")?.querySelector("[data-scroll-key='comments-list']");
+      if (!list) return true;
+      const cards = [...list.querySelectorAll(".review-comment-card")];
+      if (!cards.length) return true;
+      const listRect = list.getBoundingClientRect();
+      // Find the first card whose top is below the list's top edge (current visible card)
+      const currentIndex = cards.findIndex((card) => card.getBoundingClientRect().top >= listRect.top - 2);
+      const targetIndex = direction === "prev"
+        ? Math.max(0, (currentIndex <= 0 ? 0 : currentIndex - 1))
+        : Math.min(cards.length - 1, (currentIndex < 0 ? 0 : currentIndex + 1));
+      cards[targetIndex]?.scrollIntoView({ block: "start", behavior: "smooth" });
+      return true;
+    }
+    if (action === "refresh-azure") {
+      const btn = actionElement;
+      const originalText = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = "Refreshing\u2026";
+      try {
+        state.payload = await api.refreshAzure();
+      } finally {
+        btn.disabled = false;
+        btn.textContent = originalText;
+      }
+      render();
+      return true;
+    }
+    if (action === "open-azure-browser") {
+      const url = String(actionElement.dataset.url || "").trim();
+      if (url) {
+        api.openExternal?.(url);
+      }
+      return true;
+    }
+    if (action === "mark-azure-pr-seen") {
+      const prKey = actionElement.dataset.prKey;
+      if (!prKey) {
+        return true;
+      }
+      state.payload = await api.markAzurePullRequestSeen(prKey);
+      render();
+      return true;
+    }
+    if (action === "open-azure-pull-request") {
+      const prKey = actionElement.dataset.prKey;
+      if (!prKey) {
+        return true;
+      }
+      try {
+        actionElement.disabled = true;
+        actionElement.textContent = "Opening\u2026";
+        state.payload = await api.openAzurePullRequest({
+          prKey,
+          workspaceId: actionElement.dataset.workspaceId || "",
+        });
+        render();
+        focusActiveTerminal();
+      } catch (error) {
+        actionElement.disabled = false;
+        actionElement.textContent = "Retry";
+        window.alert(`Review workspace could not be opened.\n\n${getUserVisibleErrorMessage(error, "Unknown Azure DevOps error.")}`);
+      }
+      return true;
+    }
+    if (action === "azure-resolve-thread") {
+      const prKey = actionElement.dataset.prKey;
+      const threadId = Number.parseInt(actionElement.dataset.threadId || "", 10);
+      if (!prKey || !threadId) {
+        return true;
+      }
+      state.payload = await api.updateAzureThreadStatus({ prKey, threadId, status: "fixed" });
+      render();
+      return true;
+    }
+    if (action === "azure-reactivate-thread") {
+      const prKey = actionElement.dataset.prKey;
+      const threadId = Number.parseInt(actionElement.dataset.threadId || "", 10);
+      if (!prKey || !threadId) {
+        return true;
+      }
+      state.payload = await api.updateAzureThreadStatus({ prKey, threadId, status: "active" });
+      render();
+      return true;
+    }
+    if (action === "azure-comment" || action === "azure-reply-thread") {
+      const prKey = actionElement.dataset.prKey;
+      if (!prKey) {
+        return true;
+      }
+      const isReply = action === "azure-reply-thread";
+      const threadId = isReply
+        ? Number.parseInt(actionElement.dataset.threadId || "", 10)
+        : null;
+      const parentCommentId = Number.parseInt(actionElement.dataset.parentCommentId || "0", 10) || 0;
+      const dialog = createTextAreaDialog({
+        eyebrow: "Azure DevOps",
+        title: isReply ? "Reply to thread" : "New comment",
+        label: "Comment",
+        placeholder: "Write your review comment...",
+        submitLabel: isReply ? "Reply" : "Post comment",
+        secondarySubmitLabel: isReply ? "Reply & resolve" : "",
+        onCancel: () => { closeOverlay(); focusActiveTerminal(); },
+        onSubmit: async (content) => {
+          closeOverlay();
+          state.payload = await api.commentAzurePullRequest({
+            prKey,
+            content,
+            threadId,
+            parentCommentId,
+          });
+          render();
+          focusActiveTerminal();
+        },
+        onSecondarySubmit: isReply ? async (content) => {
+          closeOverlay();
+          state.payload = await api.commentAzurePullRequest({
+            prKey,
+            content,
+            threadId,
+            parentCommentId,
+          });
+          if (threadId) {
+            state.payload = await api.updateAzureThreadStatus({ prKey, threadId, status: "fixed" });
+          }
+          render();
+          focusActiveTerminal();
+        } : null,
+      });
+      closeOverlay();
+      state.overlay = dialog;
+      root.appendChild(dialog);
+      dialog.querySelector("textarea")?.focus();
+      return true;
+    }
+    if (action === "review-bridge-edit-draft") {
+      const prKey = actionElement.dataset.prKey;
+      const commentKey = actionElement.dataset.commentKey;
+      if (!prKey || !commentKey) {
+        return true;
+      }
+      const reviewBridge = state.payload?.reviewBridge?.pullRequests?.[prKey] || {};
+      const draft = (reviewBridge.drafts || []).find((entry) => entry.commentKey === commentKey) || null;
+      const dialog = createTextAreaDialog({
+        eyebrow: "Review Bridge",
+        title: draft ? "Edit local draft" : "Create local draft",
+        label: "Draft reply",
+        value: draft?.body || "",
+        placeholder: "Write the local draft reply that can later be queued and published to Azure DevOps...",
+        submitLabel: draft ? "Save draft" : "Create draft",
+        onCancel: () => { closeOverlay(); focusActiveTerminal(); },
+        onSubmit: async (content) => {
+          closeOverlay();
+          state.payload = await api.saveReviewBridgeDraft({
+            prKey,
+            commentKey,
+            body: content,
+            authorAgent: "human",
+          });
+          render();
+          focusActiveTerminal();
+        },
+      });
+      closeOverlay();
+      state.overlay = dialog;
+      root.appendChild(dialog);
+      dialog.querySelector("textarea")?.focus();
+      return true;
+    }
+    if (action === "review-bridge-create-local-comment") {
+      const prKey = actionElement.dataset.prKey;
+      if (!prKey) {
+        return true;
+      }
+      const dialog = createTextAreaDialog({
+        eyebrow: "Review Bridge",
+        title: "New local comment",
+        label: "Comment or follow-up",
+        value: "",
+        placeholder: "Describe the local review comment, follow-up, or note the agent should work on...",
+        submitLabel: "Create comment",
+        onCancel: () => { closeOverlay(); focusActiveTerminal(); },
+        onSubmit: async (content) => {
+          closeOverlay();
+          state.payload = await api.createReviewBridgeLocalComment({
+            prKey,
+            body: content,
+            authorAgent: "human",
+          });
+          render();
+          focusActiveTerminal();
+        },
+      });
+      closeOverlay();
+      state.overlay = dialog;
+      root.appendChild(dialog);
+      dialog.querySelector("textarea")?.focus();
+      return true;
+    }
+    if (action === "edit-agent-prompt") {
+      const promptId = actionElement.dataset.promptId || "";
+      const currentTitle = actionElement.dataset.promptTitle || "";
+      const currentTemplate = actionElement.dataset.promptTemplate || "";
+      const currentDescription = actionElement.dataset.promptDescription || "";
+      const dialog = createTextAreaDialog({
+        eyebrow: "Agent Prompt",
+        title: `Edit: ${currentTitle}`,
+        label: "Prompt template (use plain text — PR details are auto-inserted)",
+        value: currentTemplate,
+        placeholder: "Enter the prompt template...",
+        submitLabel: "Save prompt",
+        onCancel: () => { closeOverlay(); focusActiveTerminal(); },
+        onSubmit: async (content) => {
+          closeOverlay();
+          state.payload = await api.saveAgentPrompt({
+            promptId,
+            title: currentTitle,
+            description: currentDescription,
+            template: content,
+          });
+          render();
+          focusActiveTerminal();
+        },
+      });
+      closeOverlay();
+      state.overlay = dialog;
+      root.appendChild(dialog);
+      dialog.querySelector("textarea")?.focus();
+      return true;
+    }
+    if (action === "delete-agent-prompt") {
+      const promptId = actionElement.dataset.promptId || "";
+      if (!promptId) return true;
+      if (!window.confirm("Delete this prompt?")) return true;
+      state.payload = await api.deleteAgentPrompt({ promptId });
+      render();
+      return true;
+    }
+    if (action === "review-bridge-delete-comment") {
+      const prKey = actionElement.dataset.prKey;
+      const commentKey = actionElement.dataset.commentKey;
+      if (!prKey || !commentKey) {
+        return true;
+      }
+      if (!window.confirm("Delete this local comment and its drafts? This cannot be undone.")) {
+        return true;
+      }
+      state.payload = await api.deleteReviewBridgeComment({ prKey, commentKey });
+      render();
+      return true;
+    }
+    if (action === "review-bridge-delete-draft") {
+      const prKey = actionElement.dataset.prKey;
+      const draftId = actionElement.dataset.draftId;
+      if (!prKey || !draftId) {
+        return true;
+      }
+      if (!window.confirm("Delete this draft? This cannot be undone.")) {
+        return true;
+      }
+      state.payload = await api.deleteReviewBridgeDraft({ prKey, draftId });
+      render();
+      return true;
+    }
+    if (action === "review-bridge-queue-draft") {
+      const prKey = actionElement.dataset.prKey;
+      const draftId = actionElement.dataset.draftId;
+      if (!prKey || !draftId) {
+        return true;
+      }
+      state.payload = await api.queueReviewBridgeDraft({ prKey, draftId });
+      render();
+      return true;
+    }
+    if (action === "review-bridge-sync") {
+      const prKey = actionElement.dataset.prKey;
+      if (!prKey) {
+        return true;
+      }
+      state.payload = await api.syncReviewBridgePullRequest({ prKey });
+      render();
+      return true;
+    }
+    if (action === "copy-text") {
+      const text = actionElement.dataset.text || "";
+      if (text) {
+        await copyText(text);
+      }
+      return true;
+    }
+    if (action === "review-select-file-diff") {
+      const workspaceId = actionElement.dataset.workspaceId || getActiveWorkspace()?.id;
+      const filePath = (actionElement.dataset.path || "").replace(/^\/+/, "");
+      const explicitBase = actionElement.dataset.baseBranch || "";
+      if (!workspaceId || !filePath) {
+        return true;
+      }
+      const gitUi = ensureGitUiState(workspaceId);
+      gitUi.reviewSelectedFile = filePath;
+      gitUi.reviewFileDiffPreview = {
+        ok: true,
+        path: filePath,
+        diff: "",
+        summary: "Loading diff preview...",
+      };
+      render();
+      const snapshot = getGitSnapshot(workspaceId);
+      const baseBranch = explicitBase || snapshot?.baseBranch || snapshot?.compareWithBase?.baseBranch || "";
+      try {
+        gitUi.reviewFileDiffPreview = await api.gitDiffPreview({
+          workspaceId,
+          path: filePath,
+          scope: "branch",
+          baseBranch: baseBranch ? `origin/${baseBranch}` : "",
+        });
+      } catch (error) {
+        gitUi.reviewFileDiffPreview = {
+          ok: false,
+          path: filePath,
+          diff: "",
+          summary: error?.message || "Diff preview failed to load.",
+        };
+      }
+      render();
+      return true;
+    }
+    if (action === "azure-vote") {
+      const prKey = actionElement.dataset.prKey;
+      const vote = Number.parseInt(actionElement.dataset.vote || "0", 10);
+      if (!prKey) {
+        return true;
+      }
+      state.payload = await api.voteAzurePullRequest({ prKey, vote });
+      render();
+      return true;
+    }
+    if (action === "azure-fetch-review-workspace") {
+      const workspaceId = actionElement.dataset.workspaceId || getActiveWorkspace()?.id;
+      if (!workspaceId) {
+        return true;
+      }
+      state.payload = await api.fetchAzureReviewWorkspace(workspaceId);
+      render();
+      return true;
+    }
+    if (action === "azure-rebase-review-workspace") {
+      const workspaceId = actionElement.dataset.workspaceId || getActiveWorkspace()?.id;
+      if (!workspaceId) {
+        return true;
+      }
+      state.payload = await api.rebaseAzureReviewWorkspace(workspaceId);
+      render();
+      return true;
+    }
+    if (action === "azure-push-review-workspace") {
+      const workspaceId = actionElement.dataset.workspaceId || getActiveWorkspace()?.id;
+      if (!workspaceId) {
+        return true;
+      }
+      state.payload = await api.pushAzureReviewWorkspace(workspaceId);
+      render();
+      return true;
+    }
     if (action === "activate-workspace") {
-      state.payload = await api.activateWorkspace(actionElement.dataset.workspaceId);
+      const workspaceId = actionElement.dataset.workspaceId;
+      if (!workspaceId) {
+        return true;
+      }
+      applyOptimisticWorkspaceActivation(workspaceId);
       state.splitGroup = null;
       render();
       focusActiveTerminal();
+      try {
+        const nextPayload = await api.activateWorkspace(workspaceId);
+        const isBootstrapPayload = Boolean(nextPayload?.meta?.bootstrap);
+        if (!state.pendingWorkspaceActivationId || nextPayload?.appState?.activeWorkspaceId === state.pendingWorkspaceActivationId) {
+          state.payload = nextPayload;
+          if (!isBootstrapPayload) {
+            state.pendingWorkspaceActivationId = "";
+          }
+          render();
+          focusActiveTerminal();
+        }
+      } catch (error) {
+        state.pendingWorkspaceActivationId = "";
+        throw error;
+      }
       return true;
     }
     if (action === "select-tab") {
@@ -306,6 +817,9 @@ export function createActionHandlers(context) {
       if (!viewId) {
         return true;
       }
+      if (isAzureViewId(viewId) || isReviewViewId(viewId)) {
+        return true;
+      }
       if (state.splitGroup) {
         state.splitGroup.viewIds = state.splitGroup.viewIds.filter((id) => id !== viewId);
         if (state.splitGroup.viewIds.length < 2) {
@@ -374,7 +888,7 @@ export function createActionHandlers(context) {
       root.querySelector(".tab-picker-dropdown")?.remove();
       const workspace = getWorkspace();
       const activeWorkspace = workspace?.workspace || workspace?.project;
-      if (!workspace || activeWorkspace.kind === "docker") return true;
+      if (!workspace || activeWorkspace.kind === "docker" || activeWorkspace.kind === "azure") return true;
       const nextWorkspace = cloneWorkspace(activeWorkspace);
       const panelId = `panel-${crypto.randomUUID()}`;
       const command = actionElement.dataset.command || "";
@@ -399,7 +913,7 @@ export function createActionHandlers(context) {
       root.querySelector(".tab-picker-dropdown")?.remove();
       const workspace = getWorkspace();
       const activeWorkspace = workspace?.workspace || workspace?.project;
-      if (!workspace || activeWorkspace.kind === "docker") {
+      if (!workspace || activeWorkspace.kind === "docker" || activeWorkspace.kind === "azure") {
         return true;
       }
 

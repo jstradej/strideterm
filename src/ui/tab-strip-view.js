@@ -13,9 +13,11 @@ function tabTemplate(tab) {
     >
       <span>${tab.title}</span>
       <small>${tab.status}</small>
-      ${tab.attention ? html`<span class="tab__attention" title=${tab.attentionTooltip}>🔔</span>` : null}
-      ${tab.persistent ? html`<span class="tab__rename" data-action="rename-tab" data-view-id=${tab.id} title="Rename tab">✎</span>` : null}
-      <span class="tab__close" data-action="close-tab" data-view-id=${tab.id} title="Close tab">×</span>
+      ${tab.attention ? html`<span class="tab__attention" title=${tab.attentionTooltip}>\u{1F514}</span>` : null}
+      ${tab.persistent ? html`<span class="tab__rename" data-action="rename-tab" data-view-id=${tab.id} title="Rename tab">\u270E</span>` : null}
+      ${tab.closable !== false
+        ? html`<span class="tab__close" data-action="close-tab" data-view-id=${tab.id} title="Close tab">\u00D7</span>`
+        : null}
     </button>
   `;
 }

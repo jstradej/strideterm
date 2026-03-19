@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
 import { render } from "lit";
 import {
+  buildWorkspaceCards,
   renderBrowserUrlBar,
   renderEmptyTerminalState,
   renderTabActions,
@@ -45,6 +46,66 @@ describe("renderWorkspaceHero", () => {
     expect(container.textContent).toContain("feature-x");
     expect(container.textContent).toContain("3 uncommitted");
   });
+
+  test("renders Azure workspace hero through Lit", () => {
+    const container = renderTemplate(renderWorkspaceHero({
+      workspace: {
+        workspace: {
+          color: "#0078d4",
+          kind: "azure",
+          cwd: "C:/reviews",
+          panels: [{ id: "shell" }, { id: "codex" }],
+        },
+        sessions: [],
+      },
+      attention: {
+        count: 3,
+        alerts: [{ title: "PR waiting" }],
+        latestAt: new Date().toISOString(),
+      },
+    }));
+
+    expect(container.querySelector(".workspace-meta__path")?.textContent).toContain("C:/reviews");
+    expect(container.textContent).toContain("Azure inbox");
+    expect(container.textContent).toContain("2 review tabs");
+    expect(container.textContent).toContain("3 attention");
+  });
+});
+
+describe("buildWorkspaceCards", () => {
+  test("marks managed Azure review workspaces as child cards", () => {
+    const [azureCard, reviewCard] = buildWorkspaceCards({
+      workspaces: [
+        {
+          id: "azure-root",
+          name: "Azure DevOps",
+          kind: "azure",
+          color: "#0078d4",
+          icon: "AZ",
+          cwd: "C:/reviews",
+          panels: [{ id: "shell" }],
+        },
+        {
+          id: "review-1",
+          name: "web-app PR #123",
+          kind: "terminal",
+          color: "#0078d4",
+          icon: "AZ",
+          panels: [{ id: "shell" }],
+          review: {
+            provider: "azure-devops",
+            checkout: { mode: "managed-worktree" },
+          },
+        },
+      ],
+      activeWorkspaceId: "azure-root",
+      getGitSnapshot: () => null,
+      getWorkspaceAttention: () => null,
+    });
+
+    expect(azureCard.summary).toContain("C:/reviews");
+    expect(reviewCard.isWorktree).toBe(true);
+  });
 });
 
 describe("renderTabActions", () => {
@@ -59,6 +120,18 @@ describe("renderTabActions", () => {
     expect(container.querySelector('[data-action="toggle-tab-picker"]')?.getAttribute("type")).toBe("button");
     expect(container.querySelector('[data-action="disband-split"]')?.textContent).toContain("Unsplit");
     expect(container.querySelector('[data-action="open-layout-picker"]')?.textContent).toContain("Side by side");
+  });
+
+  test("hides add-tab action for Azure workspaces", () => {
+    const container = renderTemplate(renderTabActions({
+      workspaceKind: "azure",
+      splitGroup: null,
+      currentLayout: "solo",
+      layouts: { solo: { label: "Solo" } },
+    }));
+
+    expect(container.querySelector('[data-action="toggle-tab-picker"]')).toBeNull();
+    expect(container.querySelector('[data-action="open-layout-picker"]')).not.toBeNull();
   });
 });
 

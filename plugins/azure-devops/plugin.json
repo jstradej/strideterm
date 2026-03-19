@@ -1,0 +1,20 @@
+{
+  "id": "azure-devops",
+  "name": "Azure DevOps",
+  "version": "1.0.0",
+  "description": "Azure DevOps pull request inbox and code review integration.",
+  "author": "strIDEterm",
+  "license": "MIT",
+  "icon": "AZ",
+  "color": "#0078d4",
+  "kind": "azure",
+  "workspaceDefaults": {
+    "name": "Azure DevOps",
+    "icon": "AZ",
+    "color": "#0078d4",
+    "kind": "azure",
+    "notes": "Azure DevOps inbox",
+    "panels": []
+  },
+  "capabilities": []
+}

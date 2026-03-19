@@ -43,6 +43,7 @@ function createUnavailableSnapshot(workspace, error = "") {
     root: "",
     repository: "",
     branch: "",
+    remotes: {},
     commitCount: 0,
     dirty: false,
     dirtyCount: 0,
@@ -196,6 +197,23 @@ function parseNameStatus(rawText) {
         previousPath: secondPath ? firstPath : "",
       };
     });
+}
+
+function parseGitRemotes(rawText) {
+  return rawText
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .reduce((result, line) => {
+      const match = line.match(/^(\S+)\s+(\S+)\s+\((fetch|push)\)$/);
+      if (!match) {
+        return result;
+      }
+      const [, name, url, kind] = match;
+      result[name] = result[name] || url;
+      result[`${name}:${kind}`] = url;
+      return result;
+    }, {});
 }
 
 function parseRevListCount(rawText) {
@@ -726,6 +744,7 @@ export class GitManager extends EventEmitter {
       const root = rootResult.stdout.trim();
       const [
         branchResult,
+        remoteResult,
         commitCountResult,
         statusV2Result,
         statusShortResult,
@@ -737,6 +756,7 @@ export class GitManager extends EventEmitter {
         branchListResult,
       ] = await Promise.all([
         this.execGit(workspace.cwd, ["rev-parse", "--abbrev-ref", "HEAD"]).catch(() => ({ stdout: "HEAD", stderr: "" })),
+        this.execGit(workspace.cwd, ["remote", "-v"]).catch(() => ({ stdout: "", stderr: "" })),
         this.execGit(workspace.cwd, ["rev-list", "--count", "HEAD"]).catch(() => ({ stdout: "0", stderr: "" })),
         this.execGit(workspace.cwd, ["status", "--porcelain=v2", "--branch"]).catch(() => ({ stdout: "", stderr: "" })),
         this.execGit(workspace.cwd, ["status", "--short"]).catch(() => ({ stdout: "", stderr: "" })),
@@ -804,6 +824,7 @@ export class GitManager extends EventEmitter {
         root,
         repository: path.basename(root),
         branch,
+        remotes: parseGitRemotes(remoteResult.stdout),
         commitCount: parseIntSafe(commitCountResult.stdout),
         dirty: dirtyCount > 0,
         dirtyCount,

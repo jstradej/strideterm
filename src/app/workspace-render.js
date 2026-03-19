@@ -26,6 +26,33 @@ export function renderWorkspaceHero({
   }
 
   const activeWorkspace = workspace.workspace || workspace.project;
+  if (activeWorkspace.kind === "azure") {
+    const reviewTemplateCount = activeWorkspace.panels?.length || 0;
+    return html`
+      ${isRemote && remoteConnectionIssue
+        ? html`<div class="workspace-remote-alert"><strong>Remote connection issue.</strong> ${remoteConnectionIssue}</div>`
+        : nothing}
+      <div class="workspace-meta" style=${`--accent:${safeColor(activeWorkspace.color)}`}>
+        <div class="workspace-meta__main">
+          <span class="workspace-meta__path" title=${activeWorkspace.cwd || ""}>${activeWorkspace.cwd || "Azure DevOps inbox"}</span>
+        </div>
+        <div class="workspace-meta__stats">
+          <span class="workspace-chip"><strong>Azure</strong> inbox</span>
+          <span class="workspace-chip"><strong>${String(reviewTemplateCount)}</strong> review tabs</span>
+          ${attention?.count
+            ? html`
+                <span
+                  class=${`workspace-chip workspace-chip--alert ${isFreshAttention(attention) ? "workspace-chip--alert-fresh" : ""}`}
+                  title=${attentionTitle(attention)}
+                >
+                  <strong>${String(attention.count)}</strong> attention
+                </span>
+              `
+            : nothing}
+        </div>
+      </div>
+    `;
+  }
   const running = workspace.sessions.filter((session) => session.status === "running").length;
   const accent = safeColor(activeWorkspace.color);
   const attentionFresh = isFreshAttention(attention);
@@ -87,10 +114,11 @@ export function buildTabStripModel({
       active: session.id === activeViewId,
       grouped: isInSplitGroup(session.id),
       persistent: !!session.persistent,
+      closable: session.closable !== false,
       attention: !!tabAttention,
       attentionFresh: isFreshAlert(tabAttention),
       attentionTooltip,
-      titleTooltip: attentionTooltip || (session.persistent ? "Double click to rename. Drag to reorder." : session.title),
+      titleTooltip: attentionTooltip || (session.persistent ? "Double click to rename. Drag to reorder." : `${session.title}${session.status ? `\n${session.status}` : ""}`),
     };
   });
 }
@@ -102,7 +130,7 @@ export function renderTabActions({
   layouts,
 }) {
   return html`
-    ${workspaceKind !== "docker"
+    ${workspaceKind !== "docker" && workspaceKind !== "azure"
       ? html`<button type="button" class="button button--ghost" data-action="toggle-tab-picker">+ Tab</button>`
       : nothing}
     ${splitGroup
@@ -187,8 +215,14 @@ export function buildWorkspaceCards({
     const gitSnapshot = getGitSnapshot(workspace.id);
     const attention = getWorkspaceAttention(workspace.id);
     const attentionTooltip = attentionTitle(attention);
+    const isReviewChild = workspace.review?.provider === "azure-devops"
+      && workspace.review?.checkout?.mode === "managed-worktree";
     const summary = workspace.kind === "docker"
       ? "Docker"
+      : workspace.kind === "azure"
+        ? `${workspace.cwd || "Azure inbox"}${workspace.panels?.length ? ` \u00B7 ${workspace.panels.length} review tabs` : ""}`
+      : isReviewChild
+        ? `Azure review \u00B7 ${gitSnapshot?.branch || `${workspace.panels.length} tabs`}${gitSnapshot?.dirty ? ` \u00B7 ${gitSnapshot.dirtyCount} dirty` : ""}`
       : gitSnapshot?.available
         ? `${gitSnapshot.branch}${gitSnapshot.dirty ? ` \u00B7 ${gitSnapshot.dirtyCount} dirty` : ""}`
         : `${workspace.panels.length} tabs`;
@@ -206,7 +240,7 @@ export function buildWorkspaceCards({
       attentionFresh: isFreshAttention(attention),
       attentionTooltip,
       gitAvailable: !!gitSnapshot?.available,
-      isWorktree: (workspace.notes || "").startsWith("Worktree of "),
+      isWorktree: (workspace.notes || "").startsWith("Worktree of ") || isReviewChild,
     };
   });
 }

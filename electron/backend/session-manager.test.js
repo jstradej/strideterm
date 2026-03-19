@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, test, vi } from "vitest";
 
 const handles = [];
+const spawnCalls = [];
 
 class FakePtyHandle {
   constructor() {
@@ -29,9 +30,10 @@ class FakePtyHandle {
 
 vi.mock("node-pty", () => ({
   default: {
-    spawn: vi.fn(() => {
+    spawn: vi.fn((file, args, options) => {
       const handle = new FakePtyHandle();
       handles.push(handle);
+      spawnCalls.push({ file, args, options });
       return handle;
     }),
   },
@@ -63,6 +65,7 @@ function createState() {
 describe("SessionManager", () => {
   beforeEach(() => {
     handles.length = 0;
+    spawnCalls.length = 0;
   });
 
   test("hard restart spawns a fresh session and marks old exit as intentional", async () => {
@@ -98,5 +101,57 @@ describe("SessionManager", () => {
         intentional: false,
       });
     });
+  });
+
+  test("merges session-specific environment variables into the shell", () => {
+    const manager = new SessionManager({
+      getSessionEnv: ({ workspace, panel, sessionId }) => ({
+        STRIDETERM_REVIEW_PR_KEY: `${workspace.id}:${panel.id}:${sessionId}`,
+        STRIDETERM_REVIEW_BRIEF_MD: "/tmp/review/agent-brief.md",
+      }),
+    });
+
+    manager.ensureSession(createState(), "workspace-a:shell");
+
+    expect(spawnCalls).toHaveLength(1);
+    expect(spawnCalls[0].options.env.STRIDETERM_REVIEW_PR_KEY).toBe("workspace-a:shell:workspace-a:shell");
+    expect(spawnCalls[0].options.env.STRIDETERM_REVIEW_BRIEF_MD).toBe("/tmp/review/agent-brief.md");
+  });
+
+  test("uses session launch overrides for review-aware agent sessions", () => {
+    const manager = new SessionManager({
+      getSessionLaunch: () => ({
+        file: "claude",
+        args: ["--mcp-config", "{\"mcpServers\":{}}"],
+        cwd: "/tmp/review-worktree",
+        env: {
+          STRIDETERM_REVIEW_MCP: "1",
+        },
+        skipCommandInjection: true,
+      }),
+    });
+
+    manager.ensureSession(createState(), "workspace-a:shell");
+
+    expect(spawnCalls).toHaveLength(1);
+    expect(spawnCalls[0].file).toBe("claude");
+    expect(spawnCalls[0].args).toEqual(["--mcp-config", "{\"mcpServers\":{}}"]);
+    expect(spawnCalls[0].options.cwd).toBe("/tmp/review-worktree");
+    expect(spawnCalls[0].options.env.STRIDETERM_REVIEW_MCP).toBe("1");
+  });
+
+  test("ignores resize errors after a pty has already exited", () => {
+    const manager = new SessionManager();
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    manager.ensureSession(createState(), "workspace-a:shell");
+    handles[0].resize = vi.fn(() => {
+      throw new Error("Cannot resize a pty that has already exited");
+    });
+
+    expect(() => manager.resizeSession("workspace-a:shell", 120, 40)).not.toThrow();
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("Ignoring resize failure"));
+
+    warnSpy.mockRestore();
   });
 });

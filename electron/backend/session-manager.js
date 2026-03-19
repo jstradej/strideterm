@@ -31,10 +31,12 @@ function isBrowserPanel(panel) {
 }
 
 export class SessionManager extends EventEmitter {
-  constructor() {
+  constructor({ getSessionEnv = null, getSessionLaunch = null } = {}) {
     super();
     this.sessions = new Map();
     this.suppressedExits = new Map();
+    this.getSessionEnv = typeof getSessionEnv === "function" ? getSessionEnv : null;
+    this.getSessionLaunch = typeof getSessionLaunch === "function" ? getSessionLaunch : null;
   }
 
   suppressNextExit(sessionId) {
@@ -110,7 +112,19 @@ export class SessionManager extends EventEmitter {
       return existing;
     }
 
-    const launcher = panel.launch?.file
+    const launchOverride = this.getSessionLaunch?.({
+      state,
+      workspace,
+      panel,
+      sessionId: key,
+    }) || null;
+
+    const launcher = launchOverride?.file
+      ? {
+          file: launchOverride.file,
+          args: [...(launchOverride.args || [])],
+        }
+      : panel.launch?.file
       ? {
           file: panel.launch.file,
           args: [...(panel.launch.args || [])],
@@ -121,11 +135,18 @@ export class SessionManager extends EventEmitter {
       name: APP_CONFIG.session.termName,
       cols: APP_CONFIG.session.defaultCols,
       rows: APP_CONFIG.session.defaultRows,
-      cwd: workspace.cwd,
+      cwd: launchOverride?.cwd || workspace.cwd,
       env: {
         ...process.env,
         TERM_PROGRAM: APP_CONFIG.session.termProgram,
         FORCE_COLOR: APP_CONFIG.session.forceColor,
+        ...(this.getSessionEnv?.({
+          state,
+          workspace,
+          panel,
+          sessionId: key,
+        }) || {}),
+        ...(launchOverride?.env || {}),
       },
     });
 
@@ -153,10 +174,14 @@ export class SessionManager extends EventEmitter {
 
     this.sessions.set(key, session);
 
-    if (!panel.launch?.file && panel.command) {
+    const injectedCommand = typeof launchOverride?.command === "string" && launchOverride.command.trim()
+      ? launchOverride.command
+      : ((!panel.launch?.file && !launchOverride?.file) ? panel.command : "");
+
+    if (!launchOverride?.skipCommandInjection && injectedCommand) {
       setTimeout(() => {
         if (session.status === "running" && session.processHandle) {
-          session.processHandle.write(`${panel.command}\r`);
+          session.processHandle.write(`${injectedCommand}\r`);
         }
       }, APP_CONFIG.session.shellLaunchDelayMs);
     }
@@ -172,10 +197,14 @@ export class SessionManager extends EventEmitter {
 
     session.cols = cols;
     session.rows = rows;
-    session.processHandle.resize(
-      Math.max(cols, APP_CONFIG.session.minCols),
-      Math.max(rows, APP_CONFIG.session.minRows),
-    );
+    try {
+      session.processHandle.resize(
+        Math.max(cols, APP_CONFIG.session.minCols),
+        Math.max(rows, APP_CONFIG.session.minRows),
+      );
+    } catch (error) {
+      console.warn(`[session-manager] Ignoring resize failure for ${sessionId}: ${error?.message || error}`);
+    }
   }
 
   writeToSession(sessionId, data) {

@@ -3,11 +3,13 @@ import { cloneWorkspace, normalizeWorkspaces, statusTone } from "./workspace-sta
 import { APP_CONFIG } from "../config/app-config.js";
 import {
   downloadTextFile,
+  isAzureViewId,
   getWindowsPtyOptions,
   isBrowserViewId,
   isContainerRunning,
   isDockerViewId,
   isGitViewId,
+  isReviewViewId,
   openTerminalLink,
   preferredRemoteUrl,
   readSidebarCollapsed,
@@ -19,10 +21,12 @@ import {
 } from "./app/helpers.js";
 import { createTerminalController } from "./app/terminal-controller.js";
 import {
+  createAzureConnectionDialog,
   createHelpDialog,
   createNewWorkspacePicker,
   createProfilesDialog,
   createSettingsDialog,
+  createTextAreaDialog,
   createTextInputDialog,
   createWorkspaceDialog,
 } from "./app/dialogs.js";
@@ -53,7 +57,14 @@ import {
   getWorkspaceTabs as selectWorkspaceTabs,
   summarizeAttention as selectAttentionSummary,
 } from "./app/selectors.js";
-import { renderDockerMarkup as renderDockerPaneMarkup, renderGitMarkup as renderGitPaneMarkup } from "./app/pane-markup.js";
+import {
+  renderDockerMarkup as renderDockerPaneMarkup,
+  renderGitMarkup as renderGitPaneMarkup,
+} from "./app/pane-markup.js";
+import {
+  renderAzureInboxView as renderAzureInboxPaneMarkup,
+  renderAzureReviewView as renderAzureReviewPaneMarkup,
+} from "./ui/azure-devops-view.js";
 import { renderSidebarFooter, renderSidebarList } from "./ui/sidebar-view.js";
 import { renderTabStrip } from "./ui/tab-strip-view.js";
 import { renderRemoteAccessMarkup } from "./ui/remote-access-view.js";
@@ -105,6 +116,8 @@ export function createApp(root, { api }) {
     terminalViews: new Map(),
     terminalBuffers: new Map(),
     lastBackendViewId: null,
+    pendingWorkspaceActivationId: "",
+    pendingViewActivationId: "",
   };
 
   const terminalController = createTerminalController({
@@ -285,7 +298,7 @@ export function createApp(root, { api }) {
   }
 
   function getWorkspacePanelByViewId(viewId, workspace = getWorkspace()) {
-    return selectWorkspacePanelByViewId(viewId, workspace, { isGitViewId, isDockerViewId });
+    return selectWorkspacePanelByViewId(viewId, workspace, { isGitViewId, isDockerViewId, isAzureViewId, isReviewViewId });
   }
   const dialogActionController = createDialogActionController({
     state,
@@ -298,12 +311,16 @@ export function createApp(root, { api }) {
     getWorkspaceTabs,
     isGitViewId,
     isDockerViewId,
+    isAzureViewId,
+    isReviewViewId,
     cloneWorkspace,
+    createAzureConnectionDialog,
     createWorkspaceDialog,
     createNewWorkspacePicker,
     createSettingsDialog,
     createHelpDialog,
     createProfilesDialog,
+    createTextAreaDialog,
     createTextInputDialog,
   });
 
@@ -388,6 +405,8 @@ export function createApp(root, { api }) {
     qrCode: QRCode,
     terminalController,
     renderPaneShell,
+    renderAzureInboxPaneMarkup,
+    renderAzureReviewPaneMarkup,
     renderGitPaneMarkup,
     renderDockerPaneMarkup,
       renderRemoteAccessMarkup,
@@ -417,6 +436,8 @@ export function createApp(root, { api }) {
     getVisibleTabs,
     isGitViewId,
     isDockerViewId,
+    isAzureViewId,
+    isReviewViewId,
   });
   function getFilteredWorkspaces() {
     return workspaceUiController.getFilteredWorkspaces();
@@ -428,6 +449,10 @@ export function createApp(root, { api }) {
 
   function renderRemoteAccess() {
     return workspaceUiController.renderRemoteAccess();
+  }
+
+  function renderBackground() {
+    return workspaceUiController.renderBackground();
   }
 
   function render() {
@@ -456,6 +481,7 @@ export function createApp(root, { api }) {
     openSettingsDialog,
     openHelpDialog,
     openProfilesDialog,
+    openAzureConnectionDialog: dialogActionController.openAzureConnectionDialog,
     activateView,
     renameWorkspacePanel,
     exportTerminalTranscript: terminalController.exportTerminalTranscript,
@@ -477,6 +503,9 @@ export function createApp(root, { api }) {
     }),
     isGitViewId,
     isDockerViewId,
+    isAzureViewId,
+    isReviewViewId,
+    createTextAreaDialog,
     createTextInputDialog,
   });
 
@@ -500,12 +529,20 @@ export function createApp(root, { api }) {
 
     await actionHandlers.handleRootAction(action, actionElement);
   });
+  root.addEventListener("input", async (event) => {
+    const actionElement = event.target.closest("[data-action]");
+    const action = actionElement?.dataset.action;
+    if (action) {
+      await actionHandlers.handleRootAction(action, actionElement);
+    }
+  });
   wireRuntimeBindings({
     api,
     state,
     terminalStage,
     focusActiveTerminal,
     render,
+    renderBackground,
     renderBootstrapError,
     clearRemoteConnectionIssue,
     setRemoteConnectionIssue,
@@ -518,6 +555,8 @@ export function createApp(root, { api }) {
     scheduleActiveResize,
     isGitViewId,
     isDockerViewId,
+    isAzureViewId,
+    isReviewViewId,
     isBrowserViewId,
     terminalController,
   });

@@ -133,6 +133,97 @@ async function handleApiRequest(runtime, request, response) {
       return;
     }
 
+    if (request.method === "POST" && url.pathname === "/api/azure/verify-connection") {
+      json(response, 200, await runtime.verifyAzureConnection(body.connection || {}));
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/azure/save-connection") {
+      const result = await runtime.saveAzureConnection(body.connection || {});
+      json(response, 200, result.payload);
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/azure/delete-connection") {
+      json(response, 200, await runtime.deleteAzureConnection(body.connectionId));
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/azure/refresh") {
+      json(response, 200, await runtime.refreshAzureState());
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/azure/pull-request/seen") {
+      json(response, 200, await runtime.markAzurePullRequestSeen(body.prKey));
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/azure/pull-request/open") {
+      json(response, 200, await runtime.openAzurePullRequest(body));
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/azure/pull-request/comment") {
+      json(response, 200, await runtime.commentAzurePullRequest(body));
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/azure/pull-request/thread-status") {
+      json(response, 200, await runtime.updateAzureThreadStatus(body));
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/review-bridge/local-comment/create") {
+      json(response, 200, await runtime.createReviewBridgeLocalComment(body));
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/review-bridge/draft/save") {
+      json(response, 200, await runtime.saveReviewBridgeDraft(body));
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/review-bridge/draft/queue") {
+      json(response, 200, await runtime.queueReviewBridgeDraft(body));
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/review-bridge/draft/delete") {
+      json(response, 200, await runtime.deleteReviewBridgeDraft(body));
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/review-bridge/comment/delete") {
+      json(response, 200, await runtime.deleteReviewBridgeComment(body));
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/review-bridge/pull-request/sync") {
+      json(response, 200, await runtime.syncReviewBridgePullRequest(body));
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/azure/pull-request/vote") {
+      json(response, 200, await runtime.voteAzurePullRequest(body));
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/azure/workspace/fetch") {
+      json(response, 200, await runtime.fetchAzureReviewWorkspace(body.workspaceId));
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/azure/workspace/rebase") {
+      json(response, 200, await runtime.rebaseAzureReviewWorkspace(body.workspaceId));
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/azure/workspace/push") {
+      json(response, 200, await runtime.pushAzureReviewWorkspace(body.workspaceId));
+      return;
+    }
+
     if (request.method === "POST" && url.pathname === "/api/remote/token/regenerate") {
       json(response, 200, await runtime.regenerateRemoteToken());
       return;

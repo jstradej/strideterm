@@ -1,13 +1,15 @@
 import { ipcMain, dialog, BrowserWindow, shell } from "electron";
 
-export function registerIpc(runtime, emitToRenderer) {
+export function registerIpc(runtime, emitToRenderer, { includeStateGet = true } = {}) {
   const subscriptions = [
     runtime.on("state:updated", (payload) => emitToRenderer("state:updated", payload)),
     runtime.on("terminal:data", (payload) => emitToRenderer("terminal:data", payload)),
     runtime.on("terminal:exit", (payload) => emitToRenderer("terminal:exit", payload)),
   ];
 
-  ipcMain.handle("state:get", async () => runtime.getInitialState());
+  if (includeStateGet) {
+    ipcMain.handle("state:get", async () => runtime.getInitialState());
+  }
   ipcMain.handle("shell:open-external", async (_event, url) => {
     if (typeof url === "string" && /^https?:\/\//i.test(url)) {
       return shell.openExternal(url);
@@ -25,6 +27,26 @@ export function registerIpc(runtime, emitToRenderer) {
     const { payload, remoteAccessChanged } = await runtime.updateSettings(settings);
     return { payload, remoteAccessChanged };
   });
+  ipcMain.handle("azure:verify-connection", async (_event, connection) => runtime.verifyAzureConnection(connection));
+  ipcMain.handle("azure:save-connection", async (_event, connection) => runtime.saveAzureConnection(connection));
+  ipcMain.handle("azure:delete-connection", async (_event, connectionId) => runtime.deleteAzureConnection(connectionId));
+  ipcMain.handle("azure:refresh", async () => runtime.refreshAzureState());
+  ipcMain.handle("azure:pull-request:seen", async (_event, prKey) => runtime.markAzurePullRequestSeen(prKey));
+  ipcMain.handle("azure:pull-request:open", async (_event, payload) => runtime.openAzurePullRequest(payload));
+  ipcMain.handle("azure:pull-request:comment", async (_event, payload) => runtime.commentAzurePullRequest(payload));
+  ipcMain.handle("azure:pull-request:thread-status", async (_event, payload) => runtime.updateAzureThreadStatus(payload));
+  ipcMain.handle("review-bridge:local-comment:create", async (_event, payload) => runtime.createReviewBridgeLocalComment(payload));
+  ipcMain.handle("review-bridge:draft:save", async (_event, payload) => runtime.saveReviewBridgeDraft(payload));
+  ipcMain.handle("review-bridge:draft:queue", async (_event, payload) => runtime.queueReviewBridgeDraft(payload));
+  ipcMain.handle("review-bridge:draft:delete", async (_event, payload) => runtime.deleteReviewBridgeDraft(payload));
+  ipcMain.handle("review-bridge:comment:delete", async (_event, payload) => runtime.deleteReviewBridgeComment(payload));
+  ipcMain.handle("review-bridge:agent-prompt:save", async (_event, payload) => runtime.saveAgentPrompt(payload));
+  ipcMain.handle("review-bridge:agent-prompt:delete", async (_event, payload) => runtime.deleteAgentPrompt(payload));
+  ipcMain.handle("review-bridge:pull-request:sync", async (_event, payload) => runtime.syncReviewBridgePullRequest(payload));
+  ipcMain.handle("azure:pull-request:vote", async (_event, payload) => runtime.voteAzurePullRequest(payload));
+  ipcMain.handle("azure:workspace:fetch", async (_event, workspaceId) => runtime.fetchAzureReviewWorkspace(workspaceId));
+  ipcMain.handle("azure:workspace:rebase", async (_event, workspaceId) => runtime.rebaseAzureReviewWorkspace(workspaceId));
+  ipcMain.handle("azure:workspace:push", async (_event, workspaceId) => runtime.pushAzureReviewWorkspace(workspaceId));
   ipcMain.handle("session:activate", async (_event, sessionId) => runtime.activateSession(sessionId));
   ipcMain.handle("attention:sync", async (_event, payload) => runtime.syncAttentionContext(payload));
   ipcMain.handle("terminal:restart", async (_event, sessionId) => runtime.restartSession(sessionId));
@@ -85,7 +107,9 @@ export function registerIpc(runtime, emitToRenderer) {
 
   return () => {
     subscriptions.forEach((unsubscribe) => unsubscribe());
-    ipcMain.removeHandler("state:get");
+    if (includeStateGet) {
+      ipcMain.removeHandler("state:get");
+    }
     ipcMain.removeHandler("workspace:activate");
     ipcMain.removeHandler("project:activate");
     ipcMain.removeHandler("workspace:save");
@@ -95,6 +119,26 @@ export function registerIpc(runtime, emitToRenderer) {
     ipcMain.removeHandler("workspace:reorder");
     ipcMain.removeHandler("project:reorder");
     ipcMain.removeHandler("settings:update");
+    ipcMain.removeHandler("azure:verify-connection");
+    ipcMain.removeHandler("azure:save-connection");
+    ipcMain.removeHandler("azure:delete-connection");
+    ipcMain.removeHandler("azure:refresh");
+    ipcMain.removeHandler("azure:pull-request:seen");
+    ipcMain.removeHandler("azure:pull-request:open");
+    ipcMain.removeHandler("azure:pull-request:comment");
+    ipcMain.removeHandler("azure:pull-request:thread-status");
+    ipcMain.removeHandler("review-bridge:local-comment:create");
+    ipcMain.removeHandler("review-bridge:draft:save");
+    ipcMain.removeHandler("review-bridge:draft:queue");
+    ipcMain.removeHandler("review-bridge:draft:delete");
+    ipcMain.removeHandler("review-bridge:comment:delete");
+    ipcMain.removeHandler("review-bridge:agent-prompt:save");
+    ipcMain.removeHandler("review-bridge:agent-prompt:delete");
+    ipcMain.removeHandler("review-bridge:pull-request:sync");
+    ipcMain.removeHandler("azure:pull-request:vote");
+    ipcMain.removeHandler("azure:workspace:fetch");
+    ipcMain.removeHandler("azure:workspace:rebase");
+    ipcMain.removeHandler("azure:workspace:push");
     ipcMain.removeHandler("session:activate");
     ipcMain.removeHandler("attention:sync");
     ipcMain.removeHandler("terminal:restart");

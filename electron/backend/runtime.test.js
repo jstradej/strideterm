@@ -9,6 +9,7 @@ import { createSessionId, normalizeState } from "./default-state.js";
 function createMemoryStore(initialState) {
   let state = normalizeState(initialState);
   let pending = Promise.resolve();
+  let saveCalls = 0;
 
   function enqueue(operation) {
     const next = pending.then(operation, operation);
@@ -35,7 +36,13 @@ function createMemoryStore(initialState) {
       });
     },
     async save() {
-      return enqueue(async () => state);
+      return enqueue(async () => {
+        saveCalls += 1;
+        return state;
+      });
+    },
+    get saveCalls() {
+      return saveCalls;
     },
   };
 }
@@ -481,13 +488,20 @@ function createPluginManagerStub() {
   });
 }
 
-async function createFixture({ initialState, execFileTextImpl } = {}) {
+async function createFixture({ initialState, execFileTextImpl, dependencies = {} } = {}) {
   const userDataPath = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-runtime-"));
   const store = createMemoryStore(initialState);
   const sessionManager = new FakeSessionManager();
   const docker = new FakeDockerManager();
   const git = new FakeGitManager();
   const tunnel = new FakeTunnelManager();
+  const reviewBridgeStore = {
+    getPullRequestContext: vi.fn(() => null),
+    saveDraftResponse: vi.fn().mockResolvedValue(null),
+    queueDraftResponse: vi.fn().mockResolvedValue(null),
+    syncPendingDrafts: vi.fn().mockResolvedValue(null),
+    close: vi.fn().mockResolvedValue(undefined),
+  };
   const execFileText = execFileTextImpl || vi.fn().mockResolvedValue({ stdout: "", stderr: "" });
   const checkRemoteOrigin = vi.fn().mockResolvedValue(undefined);
 
@@ -518,8 +532,10 @@ async function createFixture({ initialState, execFileTextImpl } = {}) {
         }
       },
       createPluginManager: createPluginManagerStub,
+      createReviewBridgeStore: async () => reviewBridgeStore,
       execFileText,
       checkRemoteOrigin,
+      ...dependencies,
     },
   });
 
@@ -530,6 +546,7 @@ async function createFixture({ initialState, execFileTextImpl } = {}) {
     docker,
     git,
     tunnel,
+    reviewBridgeStore,
     execFileText,
     checkRemoteOrigin,
     userDataPath,
@@ -581,6 +598,293 @@ describe("runtime integration", () => {
     fixtures.push(fixture);
 
     expect(fixture.runtime.getPayload().environment).toEqual(detectTerminalEnvironment());
+  });
+
+  test("closes the review bridge store on shutdown", async () => {
+    const fixture = await createFixture();
+    await fixture.runtime.stop();
+
+    expect(fixture.reviewBridgeStore.close).toHaveBeenCalledTimes(1);
+    await fs.rm(fixture.userDataPath, { recursive: true, force: true });
+  });
+
+  test("includes review bridge context for active azure review workspaces", async () => {
+    const fixture = await createFixture({
+      initialState: {
+        activeWorkspaceId: "workspace-review",
+        workspaces: [
+          {
+            id: "workspace-review",
+            name: "Review",
+            kind: "terminal",
+            cwd: "/tmp/review",
+            activePanelId: "shell",
+            review: {
+              provider: "azure-devops",
+              prKey: "ado-main:repo-1:123",
+            },
+            panels: [
+              { id: "shell", title: "Shell", command: "", startup: "default" },
+            ],
+          },
+        ],
+      },
+    });
+    fixtures.push(fixture);
+    fixture.reviewBridgeStore.getPullRequestContext.mockReturnValue({
+      prKey: "ado-main:repo-1:123",
+      briefMarkdownPath: "/tmp/review/agent-brief.md",
+      databasePath: "/tmp/review/review-bridge.db",
+      tasks: [{ taskKey: "ado-main:repo-1:123:thread:10" }],
+      drafts: [],
+      syncQueue: [],
+    });
+
+    const payload = fixture.runtime.getPayload();
+
+    expect(payload.reviewBridge.pullRequests["ado-main:repo-1:123"]).toMatchObject({
+      briefMarkdownPath: "/tmp/review/agent-brief.md",
+      databasePath: "/tmp/review/review-bridge.db",
+    });
+  });
+
+  test("repairs persisted azure review workspaces that lost review metadata", async () => {
+    class FakeAzureManager extends EventEmitter {
+      constructor() {
+        super();
+        this.snapshot = {
+          connections: [],
+          inbox: {
+            needsMyReview: [],
+            myPullRequests: [],
+            recentlyUpdated: [],
+            needsAttention: [],
+          },
+          trackedPullRequests: {},
+          pullRequests: {
+            "ado-main:repo-1:123": {
+              prKey: "ado-main:repo-1:123",
+              connectionId: "ado-main",
+              orgUrl: "https://dev.azure.com/acme",
+              project: { id: "project-1", name: "Platform" },
+              repository: { id: "repo-1", name: "web-app", remoteUrl: "https://dev.azure.com/acme/Platform/_git/web-app" },
+              pullRequest: {
+                id: 123,
+                title: "Fix login redirect",
+                status: "active",
+                sourceRefName: "refs/heads/feature/login-fix",
+                targetRefName: "refs/heads/main",
+              },
+              role: "reviewer",
+            },
+          },
+          sync: { running: false, lastStartedAt: null, lastCompletedAt: null },
+        };
+      }
+
+      getSnapshot() {
+        return structuredClone(this.snapshot);
+      }
+
+      async sync() {
+        return this.getSnapshot();
+      }
+
+      stopPolling() {}
+
+      configurePolling() {}
+
+      findConnection() {
+        return { id: "ado-main", reviewRoot: "C:/reviews", login: "me@example.com", tokenRef: "cred:ado-main" };
+      }
+
+      buildManagedReviewPaths() {
+        return {
+          parentWorkspaceId: "azure-root",
+          reviewRoot: "C:/reviews",
+          cacheRepoPath: "C:/reviews/repos/ado-main/repo-1",
+          rootPath: "C:/reviews/reviews/ado-main/pr-123",
+        };
+      }
+
+      buildReviewMetadata(summary, checkout, mode, extra = {}) {
+        return {
+          provider: "azure-devops",
+          prKey: summary.prKey,
+          connectionId: summary.connectionId,
+          orgUrl: summary.orgUrl,
+          parentWorkspaceId: extra.parentWorkspaceId || "",
+          project: summary.project,
+          repository: summary.repository,
+          pullRequest: summary.pullRequest,
+          role: summary.role,
+          checkout: {
+            mode,
+            rootPath: checkout.rootPath,
+            cacheRepoPath: checkout.cacheRepoPath,
+          },
+        };
+      }
+    }
+
+    const azureReviewStore = {
+      getState: () => ({ trackedPullRequests: {}, connections: {} }),
+      getTrackedPullRequest: () => null,
+      upsertTrackedPullRequest: vi.fn().mockResolvedValue(undefined),
+      upsertConnectionState: vi.fn().mockResolvedValue(undefined),
+    };
+
+    const fixture = await createFixture({
+      initialState: {
+        activeWorkspaceId: "workspace-review",
+        workspaces: [
+          {
+            id: "azure-root",
+            name: "Azure DevOps",
+            kind: "azure",
+            cwd: "C:/reviews",
+            profileId: "default",
+            panels: [],
+          },
+          {
+            id: "workspace-review",
+            name: "web-app PR #123",
+            kind: "terminal",
+            cwd: "C:/reviews/reviews/ado-main/pr-123",
+            notes: "Azure DevOps review workspace for web-app PR #123",
+            profileId: "default",
+            activePanelId: "shell",
+            panels: [
+              { id: "shell", title: "Shell", command: "", startup: "default" },
+            ],
+          },
+        ],
+      },
+      dependencies: {
+        AzureDevOpsManager: FakeAzureManager,
+        createAzureReviewStore: async () => azureReviewStore,
+      },
+    });
+    fixtures.push(fixture);
+
+    const repairedWorkspace = fixture.runtime.getPayload().appState.workspaces.find((workspace) => workspace.id === "workspace-review");
+    expect(repairedWorkspace?.review).toMatchObject({
+      provider: "azure-devops",
+      parentWorkspaceId: "azure-root",
+    });
+    expect(azureReviewStore.upsertTrackedPullRequest).toHaveBeenCalledWith("ado-main:repo-1:123", {
+      reviewWorkspaceId: "workspace-review",
+    });
+  });
+
+  test("repairs persisted inactive azure review workspaces from tracked pull requests", async () => {
+    class FakeAzureManager extends EventEmitter {
+      constructor() {
+        super();
+        this.snapshot = {
+          connections: [],
+          inbox: {
+            needsMyReview: [],
+            myPullRequests: [],
+            recentlyUpdated: [],
+            needsAttention: [],
+          },
+          trackedPullRequests: {},
+          pullRequests: {},
+          sync: { running: false, lastStartedAt: null, lastCompletedAt: null },
+        };
+      }
+
+      getSnapshot() {
+        return structuredClone(this.snapshot);
+      }
+
+      async sync() {
+        return this.getSnapshot();
+      }
+
+      stopPolling() {}
+
+      configurePolling() {}
+    }
+
+    const azureReviewStore = {
+      getState: () => ({
+        trackedPullRequests: {
+          "ado-main:repo-1:123": {
+            key: "ado-main:repo-1:123",
+            connectionId: "ado-main",
+            pullRequestId: 123,
+            repositoryId: "repo-1",
+            repositoryName: "web-app",
+            projectName: "Platform",
+          },
+        },
+        connections: {},
+      }),
+      getTrackedPullRequest: () => null,
+      upsertTrackedPullRequest: vi.fn().mockResolvedValue(undefined),
+      upsertConnectionState: vi.fn().mockResolvedValue(undefined),
+    };
+
+    const fixture = await createFixture({
+      initialState: {
+        activeWorkspaceId: "workspace-review",
+        settings: {
+          integrations: {
+            azureDevops: {
+              enabled: true,
+              reviewRoot: "C:/reviews",
+              defaultPollSeconds: 120,
+              connections: [
+                {
+                  id: "ado-main",
+                  enabled: true,
+                  orgUrl: "https://dev.azure.com/acme",
+                  login: "me@example.com",
+                  tokenRef: "cred:ado-main",
+                  reviewRoot: "C:/reviews",
+                },
+              ],
+            },
+          },
+        },
+        workspaces: [
+          {
+            id: "azure-root",
+            name: "Azure DevOps",
+            kind: "azure",
+            cwd: "C:/reviews",
+            profileId: "default",
+            panels: [],
+          },
+          {
+            id: "workspace-review",
+            name: "web-app PR #123",
+            kind: "terminal",
+            cwd: "C:/reviews/reviews/ado-main-a2ae23c8c9/pr-123",
+            notes: "Azure DevOps review workspace for web-app PR #123",
+            profileId: "default",
+            activePanelId: "shell",
+            panels: [
+              { id: "shell", title: "Shell", command: "", startup: "default" },
+            ],
+          },
+        ],
+      },
+      dependencies: {
+        AzureDevOpsManager: FakeAzureManager,
+        createAzureReviewStore: async () => azureReviewStore,
+      },
+    });
+    fixtures.push(fixture);
+
+    const repairedWorkspace = fixture.runtime.getPayload().appState.workspaces.find((workspace) => workspace.id === "workspace-review");
+    expect(repairedWorkspace?.review).toMatchObject({
+      provider: "azure-devops",
+      prKey: "ado-main:repo-1:123",
+      parentWorkspaceId: "azure-root",
+    });
   });
 
   test("raises and clears project alerts for background terminal exits", async () => {
@@ -925,9 +1229,10 @@ describe("runtime integration", () => {
     );
     const gitignore = await fs.readFile(path.join(projectRoot, ".gitignore"), "utf8");
     expect(gitignore).toContain(".strideterm/");
-    expect(payload.appState.projects).toHaveLength(2);
-    expect(payload.appState.activeProjectId).toBe(payload.appState.projects[1].id);
-    expect(payload.appState.projects[1].cwd).toBe(path.join(projectRoot, ".strideterm", "tree", "feature-x"));
+    const projectWorkspaces = payload.appState.projects.filter((project) => project.kind !== "azure");
+    expect(projectWorkspaces).toHaveLength(2);
+    expect(payload.appState.activeProjectId).toBe(projectWorkspaces[1].id);
+    expect(projectWorkspaces[1].cwd).toBe(path.join(projectRoot, ".strideterm", "tree", "feature-x"));
   });
 
   test("returns structured payload for git fetch and diff preview actions", async () => {
@@ -997,5 +1302,14 @@ describe("runtime integration", () => {
     expect(payload.appState.profiles).toEqual([
       { id: "default", name: "Default", color: "#ffa424", workspaceIds: [], projectIds: [] },
     ]);
+  });
+
+  test("does not rewrite the store during runtime stop", async () => {
+    const fixture = await createFixture();
+    fixtures.push(fixture);
+
+    expect(fixture.store.saveCalls).toBe(0);
+    await fixture.runtime.stop();
+    expect(fixture.store.saveCalls).toBe(0);
   });
 });

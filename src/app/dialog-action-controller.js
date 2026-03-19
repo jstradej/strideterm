@@ -9,12 +9,16 @@ export function createDialogActionController({
   getWorkspaceTabs,
   isGitViewId,
   isDockerViewId,
+  isAzureViewId,
+  isReviewViewId,
   cloneWorkspace,
+  createAzureConnectionDialog,
   createWorkspaceDialog,
   createNewWorkspacePicker,
   createSettingsDialog,
   createHelpDialog,
   createProfilesDialog,
+  createTextAreaDialog,
   createTextInputDialog,
 }) {
   function openWorkspaceDialog(workspace = null) {
@@ -104,6 +108,27 @@ export function createDialogActionController({
       },
     });
     document.body.append(state.overlay);
+  }
+
+  function openAzureConnectionDialog(connectionId = "") {
+    closeOverlay();
+    const azureSettings = state.payload?.appState?.settings?.integrations?.azureDevops || {};
+    const connection = (azureSettings.connections || []).find((entry) => entry.id === connectionId) || null;
+    state.overlay = createAzureConnectionDialog({
+      connection,
+      defaultReviewRoot: azureSettings.reviewRoot || "",
+      api,
+      onCancel: closeOverlay,
+      onSave: async (draft) => {
+        state.payload = await api.saveAzureConnection(draft);
+        closeOverlay();
+        render();
+      },
+    });
+    document.body.append(state.overlay);
+    requestAnimationFrame(() => {
+      state.overlay?.querySelector('input[name="label"]')?.focus();
+    });
   }
 
   function openHelpDialog() {
@@ -222,7 +247,8 @@ export function createDialogActionController({
     }
 
     state.activeViewId = viewId;
-    if (isGitViewId(viewId) || isDockerViewId(viewId)) {
+    if (isGitViewId(viewId) || isDockerViewId(viewId) || isAzureViewId(viewId) || isReviewViewId(viewId)) {
+      state.pendingViewActivationId = "";
       state.activeSessionId = null;
       render();
       if (focus) {
@@ -231,20 +257,39 @@ export function createDialogActionController({
       return;
     }
 
-    state.payload = await api.activateSession(viewId);
+    state.pendingViewActivationId = viewId;
+    state.activeSessionId = viewId;
     render();
     if (focus) {
       focusActiveTerminal();
+    }
+
+    try {
+      state.payload = await api.activateSession(viewId);
+      if (state.pendingViewActivationId === viewId && !state.payload?.meta?.bootstrap) {
+        state.pendingViewActivationId = "";
+      }
+      render();
+      if (focus) {
+        focusActiveTerminal();
+      }
+    } catch (error) {
+      if (state.pendingViewActivationId === viewId) {
+        state.pendingViewActivationId = "";
+      }
+      throw error;
     }
   }
 
   return {
     activateView,
+    openAzureConnectionDialog,
     openHelpDialog,
     openNewWorkspaceFlow,
     openProfilesDialog,
     openSettingsDialog,
     openWorkspaceDialog,
+    createTextAreaDialog,
     renameWorkspacePanel,
     reorderWorkspacePanels,
   };

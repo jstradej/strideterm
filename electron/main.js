@@ -1,10 +1,17 @@
-import { app, BrowserWindow, nativeImage, nativeTheme } from "electron";
+import { app, BrowserWindow, ipcMain, nativeImage, nativeTheme, safeStorage } from "electron";
 import os from "node:os";
 import path from "node:path";
+import { readFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 import { createRuntime } from "./backend/runtime.js";
 import { registerIpc } from "./backend/ipc.js";
 import { startRemoteServer } from "./backend/remote-server.js";
+import { parseReviewBridgeMcpArgs, runReviewBridgeMcpServer } from "./backend/review-bridge-mcp.js";
+import { createDefaultState, normalizeState } from "./backend/default-state.js";
 import { APP_CONFIG, getRendererDevUrl } from "../config/app-config.js";
+
+const require = createRequire(import.meta.url);
+const { version: packageVersion = "0.0.0" } = require("../package.json");
 
 const isDev = !app.isPackaged;
 const rendererUrl = getRendererDevUrl();
@@ -13,6 +20,11 @@ const forceDist = process.env.STRIDETERM_FORCE_DIST === "1" || process.env.STRID
 const runtimeState = {
   window: null,
   runtime: null,
+  runtimeReady: Promise.resolve(),
+  runtimeInteractive: false,
+  bootstrapPayload: null,
+  desiredWorkspaceId: "",
+  desiredSessionId: "",
   disposeIpc: null,
   remoteServer: null,
   remoteServerRestart: Promise.resolve(),
@@ -20,6 +32,9 @@ const runtimeState = {
   unsubscribeStateUpdated: null,
   lastAttentionCount: 0,
 };
+
+const mcpMode = parseReviewBridgeMcpArgs(process.argv.slice(1));
+const gotSingleInstanceLock = !mcpMode && app.requestSingleInstanceLock();
 
 function summarizeAttention(payload) {
   const alerts = Object.values(payload?.attention?.byProject || {})
@@ -195,6 +210,206 @@ function emitToRenderer(channel, payload) {
   runtimeState.window.webContents.send(channel, payload);
 }
 
+function isBrowserPanel(panel = {}) {
+  return /^https?:\/\//i.test(String(panel.command || "").trim());
+}
+
+function createBootstrapWorkspacePayload(appState) {
+  const workspace = (appState.workspaces || []).find((entry) => entry.id === appState.activeWorkspaceId) || null;
+  if (!workspace) {
+    return null;
+  }
+
+  return {
+    workspace,
+    project: workspace,
+    sessions: (workspace.panels || [])
+      .filter((panel) => !isBrowserPanel(panel))
+      .map((panel) => ({
+        sessionId: `${workspace.id}:${panel.id}`,
+        panelId: panel.id,
+        title: panel.title,
+        command: panel.command,
+        launch: panel.launch,
+        startup: panel.startup,
+        status: "idle",
+      })),
+  };
+}
+
+function updateBootstrapWorkspaceSelection(workspaceId, { sessionId = "" } = {}) {
+  if (!runtimeState.bootstrapPayload?.appState) {
+    return null;
+  }
+
+  const appState = runtimeState.bootstrapPayload.appState;
+  const workspace = (appState.workspaces || []).find((entry) => entry.id === workspaceId) || null;
+  if (!workspace) {
+    return null;
+  }
+
+  appState.activeWorkspaceId = workspaceId;
+  appState.activeProjectId = workspaceId;
+  runtimeState.desiredWorkspaceId = workspaceId;
+  runtimeState.desiredSessionId = sessionId || "";
+
+  if (sessionId) {
+    const panelId = String(sessionId).split(":").slice(1).join(":");
+    if (panelId && (workspace.panels || []).some((panel) => panel.id === panelId)) {
+      workspace.activePanelId = panelId;
+    }
+  }
+
+  runtimeState.bootstrapPayload = {
+    ...runtimeState.bootstrapPayload,
+    appState,
+    workspace: createBootstrapWorkspacePayload(appState),
+  };
+  return runtimeState.bootstrapPayload;
+}
+
+async function invokeRuntimeMethod(methodName, ...args) {
+  await runtimeState.runtimeReady;
+  if (!runtimeState.runtime || typeof runtimeState.runtime[methodName] !== "function") {
+    throw new Error(`Runtime method '${methodName}' is not available.`);
+  }
+  return runtimeState.runtime[methodName](...args);
+}
+
+function registerBootstrapIpcHandlers() {
+  ipcMain.handle("state:get", async () => {
+    if (runtimeState.runtimeInteractive && runtimeState.runtime) {
+      return runtimeState.runtime.getInitialState();
+    }
+    return loadBootstrapPayload();
+  });
+  ipcMain.handle("workspace:activate", async (_event, workspaceId) => {
+    if (runtimeState.runtimeInteractive && runtimeState.runtime) {
+      return invokeRuntimeMethod("activateWorkspace", workspaceId);
+    }
+    await loadBootstrapPayload();
+    const payload = updateBootstrapWorkspaceSelection(workspaceId);
+    if (payload) {
+      emitToRenderer("state:updated", payload);
+      return payload;
+    }
+    return runtimeState.bootstrapPayload;
+  });
+  ipcMain.handle("project:activate", async (_event, projectId) => {
+    if (runtimeState.runtimeInteractive && runtimeState.runtime) {
+      return invokeRuntimeMethod("activateProject", projectId);
+    }
+    await loadBootstrapPayload();
+    const payload = updateBootstrapWorkspaceSelection(projectId);
+    if (payload) {
+      emitToRenderer("state:updated", payload);
+      return payload;
+    }
+    return runtimeState.bootstrapPayload;
+  });
+  ipcMain.handle("session:activate", async (_event, sessionId) => {
+    if (runtimeState.runtimeInteractive && runtimeState.runtime) {
+      return invokeRuntimeMethod("activateSession", sessionId);
+    }
+    await loadBootstrapPayload();
+    const workspaceId = String(sessionId || "").split(":")[0] || "";
+    const payload = updateBootstrapWorkspaceSelection(workspaceId, { sessionId });
+    if (payload) {
+      emitToRenderer("state:updated", payload);
+      return payload;
+    }
+    return runtimeState.bootstrapPayload;
+  });
+  ipcMain.handle("attention:sync", async (_event, payload) => {
+    if (runtimeState.runtimeInteractive && runtimeState.runtime) {
+      return invokeRuntimeMethod("syncAttentionContext", payload);
+    }
+    return runtimeState.bootstrapPayload || await loadBootstrapPayload();
+  });
+}
+
+function unregisterBootstrapIpcHandlers() {
+  ipcMain.removeHandler("state:get");
+  ipcMain.removeHandler("workspace:activate");
+  ipcMain.removeHandler("project:activate");
+  ipcMain.removeHandler("session:activate");
+  ipcMain.removeHandler("attention:sync");
+}
+
+async function loadBootstrapPayload() {
+  if (runtimeState.bootstrapPayload) {
+    return runtimeState.bootstrapPayload;
+  }
+
+  runtimeState.bootstrapPayload = (async () => {
+    const statePath = path.join(os.homedir(), ".strideterm", "strideterm-state.json");
+    let appState = createDefaultState();
+
+    try {
+      const raw = await readFile(statePath, "utf8");
+      if (raw.trim()) {
+        appState = normalizeState(JSON.parse(raw));
+      }
+    } catch {
+      // Fall back to defaults when the state file is missing or temporarily unreadable.
+    }
+
+    const activeWorkspace = createBootstrapWorkspacePayload(appState);
+    return {
+      meta: {
+        appVersion: packageVersion,
+        repositoryUrl: APP_CONFIG.app.repositoryUrl,
+        bootstrap: true,
+      },
+      appState,
+      workspace: activeWorkspace,
+      attention: {
+        byWorkspace: {},
+        byProject: {},
+        activeWorkspace: null,
+        activeProject: null,
+      },
+      docker: {
+        containers: [],
+        projects: [],
+      },
+      git: {
+        workspaces: {},
+        projects: {},
+        activeWorkspace: null,
+        activeProject: null,
+      },
+      azureDevops: {
+        connections: [],
+        inbox: {
+          needsMyReview: [],
+          myPullRequests: [],
+          needsAttention: [],
+        },
+        pullRequests: {},
+      },
+      reviewBridge: {
+        pullRequests: {},
+      },
+      plugins: [],
+      environment: {},
+      themeSource: nativeTheme.shouldUseDarkColors ? "dark" : "light",
+      remoteAccess: {
+        enabled: Boolean(appState.settings?.remoteAccess?.enabled),
+        host: appState.settings?.remoteAccess?.host || "0.0.0.0",
+        port: appState.settings?.remoteAccess?.port || 43123,
+        urls: [],
+        tunnel: {
+          status: "idle",
+          publicUrl: "",
+        },
+      },
+    };
+  })();
+
+  return runtimeState.bootstrapPayload;
+}
+
 async function restartRemoteServer() {
   runtimeState.remoteServerRestart = runtimeState.remoteServerRestart
     .catch(() => {})
@@ -210,14 +425,20 @@ async function restartRemoteServer() {
 }
 
 async function startServices() {
+  runtimeState.runtimeInteractive = false;
   const userDataPath = path.join(os.homedir(), ".strideterm");
   runtimeState.runtime = await createRuntime({
     userDataPath,
     builtinPluginsDir: path.join(app.getAppPath(), "plugins"),
     getThemeSource: () => (nativeTheme.shouldUseDarkColors ? "dark" : "light"),
+    deferInitialRefresh: true,
+    dependencies: {
+      safeStorage,
+    },
   });
 
-  runtimeState.disposeIpc = registerIpc(runtimeState.runtime, emitToRenderer);
+  unregisterBootstrapIpcHandlers();
+  runtimeState.disposeIpc = registerIpc(runtimeState.runtime, emitToRenderer, { includeStateGet: false });
   runtimeState.unsubscribeRemoteConfig = runtimeState.runtime.on("remote:config-changed", async () => {
     await restartRemoteServer().catch((error) => {
       console.warn(`Remote access server restart failed: ${error.message}`);
@@ -231,19 +452,56 @@ async function startServices() {
   });
   nativeTheme.on("updated", () => syncTitleBarTheme());
   await restartRemoteServer();
+  const desiredWorkspaceId = runtimeState.desiredWorkspaceId
+    || runtimeState.bootstrapPayload?.appState?.activeWorkspaceId
+    || "";
+  const runtimeWorkspaceId = runtimeState.runtime.getPayload()?.appState?.activeWorkspaceId || "";
+  if (desiredWorkspaceId && desiredWorkspaceId !== runtimeWorkspaceId) {
+    await runtimeState.runtime.activateWorkspace(desiredWorkspaceId).catch(() => {});
+  }
+  if (runtimeState.desiredSessionId) {
+    await runtimeState.runtime.activateSession(runtimeState.desiredSessionId).catch(() => {});
+  }
+  runtimeState.runtimeInteractive = true;
+  emitToRenderer("state:updated", runtimeState.runtime.getPayload());
 }
 
-app.whenReady().then(async () => {
-  await startServices();
-  createWindow();
+if (mcpMode) {
+  runReviewBridgeMcpServer(mcpMode)
+    .then(() => process.exit(0))
+    .catch((error) => {
+      process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+      process.exit(1);
+    });
+} else if (!gotSingleInstanceLock) {
+  app.quit();
+} else {
+  registerBootstrapIpcHandlers();
 
-
-  app.on("activate", () => {
-    if (BrowserWindow.getAllWindows().length === 0) {
-      createWindow();
+  app.on("second-instance", () => {
+    if (!runtimeState.window || runtimeState.window.isDestroyed()) {
+      return;
     }
+    if (runtimeState.window.isMinimized()) {
+      runtimeState.window.restore();
+    }
+    runtimeState.window.show();
+    runtimeState.window.focus();
   });
-});
+
+  app.whenReady().then(async () => {
+    runtimeState.runtimeReady = startServices().catch((error) => {
+      console.error(`Startup services failed: ${error?.message || error}`);
+    });
+    createWindow();
+
+    app.on("activate", () => {
+      if (BrowserWindow.getAllWindows().length === 0) {
+        createWindow();
+      }
+    });
+  });
+}
 
 app.on("window-all-closed", () => {
   if (process.platform !== "darwin") {

@@ -18,6 +18,8 @@ export function createWorkspaceUiController({
   qrCode,
   terminalController,
   renderPaneShell,
+  renderAzureInboxPaneMarkup,
+  renderAzureReviewPaneMarkup,
   renderGitPaneMarkup,
   renderDockerPaneMarkup,
   renderRemoteAccessMarkup,
@@ -47,7 +49,58 @@ export function createWorkspaceUiController({
   getVisibleTabs,
   isGitViewId,
   isDockerViewId,
+  isAzureViewId,
+  isReviewViewId,
 }) {
+  function findExistingPane(viewId) {
+    return Array.from(terminalStage.children || []).find((child) => child?.dataset?.viewId === viewId) || null;
+  }
+
+  function capturePaneScroll(container) {
+    if (!container) {
+      return [];
+    }
+
+    const entries = [{
+      key: "__pane_body__",
+      top: container.scrollTop || 0,
+      left: container.scrollLeft || 0,
+    }];
+
+    container.querySelectorAll("[data-scroll-key]").forEach((element) => {
+      entries.push({
+        key: element.dataset.scrollKey,
+        top: element.scrollTop || 0,
+        left: element.scrollLeft || 0,
+      });
+    });
+    return entries;
+  }
+
+  function restorePaneScroll(container, entries = []) {
+    if (!container || !entries.length) {
+      return;
+    }
+
+    for (const entry of entries) {
+      if (!entry?.key) {
+        continue;
+      }
+
+      if (entry.key === "__pane_body__") {
+        container.scrollTop = entry.top || 0;
+        container.scrollLeft = entry.left || 0;
+        continue;
+      }
+
+      const element = container.querySelector(`[data-scroll-key="${entry.key}"]`);
+      if (element) {
+        element.scrollTop = entry.top || 0;
+        element.scrollLeft = entry.left || 0;
+      }
+    }
+  }
+
   function createTerminalPane(viewTab, showHeader = false) {
     const sessionId = viewTab.id;
     const pane = document.createElement("article");
@@ -73,7 +126,9 @@ export function createWorkspaceUiController({
   }
 
   function createGitPane(viewTab, workspaceId, showHeader = false) {
-    const pane = document.createElement("article");
+    const existingPane = findExistingPane(viewTab.id);
+    const scrollState = capturePaneScroll(existingPane?.querySelector(".workspace-pane__body"));
+    const pane = existingPane || document.createElement("article");
     pane.className = `workspace-pane ${viewTab.id === state.activeViewId ? "workspace-pane--active" : ""} ${showHeader ? "" : "workspace-pane--plain"}`;
     pane.dataset.viewId = viewTab.id;
     renderPaneShell(pane, {
@@ -92,11 +147,85 @@ export function createWorkspaceUiController({
       getGitUiState(workspaceId),
       state.payload?.appState?.workspaces || [],
     ), pane.querySelector(".workspace-pane__body"));
+    restorePaneScroll(pane.querySelector(".workspace-pane__body"), scrollState);
+    return pane;
+  }
+
+  function createAzurePane(viewTab, workspaceId, showHeader = false) {
+    const existingPane = findExistingPane(viewTab.id);
+    const scrollState = capturePaneScroll(existingPane?.querySelector(".workspace-pane__body"));
+    const pane = existingPane || document.createElement("article");
+    pane.className = `workspace-pane ${viewTab.id === state.activeViewId ? "workspace-pane--active" : ""} ${showHeader ? "" : "workspace-pane--plain"}`;
+    pane.dataset.viewId = viewTab.id;
+    renderPaneShell(pane, {
+      showHeader,
+      title: viewTab.title,
+      status: viewTab.status,
+      bodyClass: "workspace-pane__body workspace-pane__body--git",
+      actions: [
+        { className: "workspace-pane__icon-btn", action: "refresh-azure", title: "Refresh Azure DevOps", label: "\u21BB" },
+      ],
+    });
+    render(renderAzureInboxPaneMarkup(
+      state.payload?.azureDevops || {},
+      state.payload?.appState?.settings?.integrations?.azureDevops || {},
+    ), pane.querySelector(".workspace-pane__body"));
+    restorePaneScroll(pane.querySelector(".workspace-pane__body"), scrollState);
+    return pane;
+  }
+
+  function createReviewPane(viewTab, workspace, showHeader = false) {
+    const activeWorkspace = workspace.workspace || workspace.project;
+    const prKey = activeWorkspace.review?.prKey || "";
+    const detail = state.payload?.azureDevops?.pullRequests?.[prKey] || {};
+    const reviewBridge = {
+      ...(state.payload?.reviewBridge?.pullRequests?.[prKey] || {}),
+      agentPrompts: state.payload?.reviewBridge?.agentPrompts || [],
+    };
+    const reviewUi = state.gitUiState?.[activeWorkspace.id] || {};
+    const existingPane = findExistingPane(viewTab.id);
+    const scrollState = capturePaneScroll(existingPane?.querySelector(".workspace-pane__body"));
+    const pane = existingPane || document.createElement("article");
+    pane.className = `workspace-pane ${viewTab.id === state.activeViewId ? "workspace-pane--active" : ""} ${showHeader ? "" : "workspace-pane--plain"}`;
+    pane.dataset.viewId = viewTab.id;
+    renderPaneShell(pane, {
+      showHeader,
+      title: viewTab.title,
+      status: viewTab.status,
+      bodyClass: "workspace-pane__body workspace-pane__body--git",
+      actions: [
+        { className: "workspace-pane__icon-btn", action: "refresh-azure", title: "Refresh Azure DevOps", label: "\u21BB" },
+      ],
+    });
+    render(renderAzureReviewPaneMarkup(detail, activeWorkspace.id, reviewBridge, reviewUi), pane.querySelector(".workspace-pane__body"));
+    restorePaneScroll(pane.querySelector(".workspace-pane__body"), scrollState);
+
+    // Auto-refresh if PR detail is empty (e.g. after app restart)
+    if (prKey && (!detail.pullRequest?.title || !detail.checks?.items) && !pane._reviewAutoRefreshed) {
+      pane._reviewAutoRefreshed = true;
+      api.refreshAzure().then((payload) => {
+        state.payload = payload;
+        renderAll();
+        // If checks are still missing, force re-open the PR to trigger ensurePullRequestDetail
+        const refreshedDetail = payload?.azureDevops?.pullRequests?.[prKey];
+        if (refreshedDetail && !refreshedDetail.checks?.items) {
+          return api.openAzurePullRequest({ prKey, workspaceId: activeWorkspace.id });
+        }
+      }).then((payload) => {
+        if (payload) {
+          state.payload = payload;
+          renderAll();
+        }
+      }).catch(() => {});
+    }
+
     return pane;
   }
 
   function createDockerPane(viewTab, showHeader = false) {
-    const pane = document.createElement("article");
+    const existingPane = findExistingPane(viewTab.id);
+    const scrollState = capturePaneScroll(existingPane?.querySelector(".workspace-pane__body"));
+    const pane = existingPane || document.createElement("article");
     pane.className = `workspace-pane ${viewTab.id === state.activeViewId ? "workspace-pane--active" : ""} ${showHeader ? "" : "workspace-pane--plain"}`;
     pane.dataset.viewId = viewTab.id;
     renderPaneShell(pane, {
@@ -111,6 +240,7 @@ export function createWorkspaceUiController({
       ],
     });
     render(renderDockerPaneMarkup(state.payload?.docker || {}), pane.querySelector(".workspace-pane__body"));
+    restorePaneScroll(pane.querySelector(".workspace-pane__body"), scrollState);
     return pane;
   }
 
@@ -266,6 +396,10 @@ export function createWorkspaceUiController({
       let pane;
       if (tab.type === "git") {
         pane = createGitPane(tab, (workspace.workspace || workspace.project).id, isSplit);
+      } else if (tab.type === "azure") {
+        pane = createAzurePane(tab, (workspace.workspace || workspace.project).id, isSplit);
+      } else if (tab.type === "review") {
+        pane = createReviewPane(tab, workspace, isSplit);
       } else if (tab.type === "docker") {
         pane = createDockerPane(tab, isSplit);
       } else if (tab.type === "browser") {
@@ -451,11 +585,16 @@ export function createWorkspaceUiController({
       ? `${activeWorkspace.id}:${activeWorkspace.activePanelId}`
       : workspace.sessions[0]?.sessionId || null;
     const tabs = getWorkspaceTabs(workspace);
-    const fallbackViewId = tabs.some((tab) => tab.id === preferredSessionId)
-      ? preferredSessionId
-      : tabs[0]?.id || null;
+    const preferredVirtualViewId = activeWorkspace.kind === "azure"
+      ? `azure:${activeWorkspace.id}`
+      : (activeWorkspace.review?.provider === "azure-devops" ? `review:${activeWorkspace.id}` : null);
+    const fallbackViewId = preferredVirtualViewId && tabs.some((tab) => tab.id === preferredVirtualViewId)
+      ? preferredVirtualViewId
+      : (tabs.some((tab) => tab.id === preferredSessionId)
+        ? preferredSessionId
+        : tabs[0]?.id || null);
     state.activeViewId = tabs.some((tab) => tab.id === state.activeViewId) ? state.activeViewId : fallbackViewId;
-    state.activeSessionId = (isGitViewId(state.activeViewId) || isDockerViewId(state.activeViewId)) ? null : state.activeViewId;
+    state.activeSessionId = (isGitViewId(state.activeViewId) || isDockerViewId(state.activeViewId) || isAzureViewId(state.activeViewId) || isReviewViewId(state.activeViewId)) ? null : state.activeViewId;
     const visibleTabs = getVisibleTabs(tabs);
 
     renderTabStrip(tabStrip, buildTabStripModel({
@@ -504,7 +643,7 @@ export function createWorkspaceUiController({
     });
 
     const plugins = (state.payload?.plugins || []).filter((plugin) => plugin.workspaceDefaults && !plugin.error);
-    const existingNames = new Set(state.payload.appState.workspaces.map((workspace) => workspace.name.toLowerCase()));
+    const existingNames = new Set(workspaces.map((workspace) => workspace.name.toLowerCase()));
     const suggestions = plugins
       .filter((plugin) => !existingNames.has((plugin.workspaceDefaults.name || plugin.name).toLowerCase()))
       .map((plugin) => ({
@@ -520,10 +659,32 @@ export function createWorkspaceUiController({
     });
   }
 
+  function renderAttentionBadges() {
+    const { count } = summarizeAttention();
+    const hamburgerBadge = root.querySelector('[data-role="hamburger-badge"]');
+    if (hamburgerBadge) {
+      hamburgerBadge.textContent = count > 0 ? String(count) : "";
+      hamburgerBadge.classList.toggle("mobile-hamburger__badge--visible", count > 0);
+    }
+  }
+
   function applyTheme() {
     const requested = state.payload.appState.settings.theme || "dark";
     document.documentElement.dataset.theme = requested === "system" ? state.payload.themeSource : requested;
     terminalController.syncTheme();
+  }
+
+  function renderBackground() {
+    if (!state.payload || state.bootstrapError) {
+      return;
+    }
+
+    renderSidebarFooterView(state.payload);
+    renderWorkspaces();
+    renderRemoteAccess();
+    applyTheme();
+    syncBrowserAttentionBadge();
+    renderAttentionBadges();
   }
 
   function renderAll(renderBootstrapError) {
@@ -551,19 +712,14 @@ export function createWorkspaceUiController({
     renderWorkspace();
     applyTheme();
     syncBrowserAttentionBadge();
-
-    const { count } = summarizeAttention();
-    const hamburgerBadge = root.querySelector('[data-role="hamburger-badge"]');
-    if (hamburgerBadge) {
-      hamburgerBadge.textContent = count > 0 ? String(count) : "";
-      hamburgerBadge.classList.toggle("mobile-hamburger__badge--visible", count > 0);
-    }
+    renderAttentionBadges();
   }
 
   return {
     getFilteredWorkspaces,
     readCustomPublicUrl,
     render: renderAll,
+    renderBackground,
     renderRemoteAccess,
   };
 }

@@ -43,20 +43,47 @@ export function getWorkspaceTabs({
   const panels = activeWorkspace.panels || [];
   const panelMap = new Map(panels.map((panel) => [panel.id, panel]));
 
+  if (activeWorkspace.kind === "azure") {
+    const azureTab = {
+      id: `azure:${activeWorkspace.id}`,
+      type: "azure",
+      title: "Azure DevOps",
+      status: `${payload?.azureDevops?.inbox?.needsMyReview?.length || 0} reviews waiting`,
+      tone: (payload?.azureDevops?.inbox?.needsAttention?.length || 0) > 0 ? "error" : "running",
+      persistent: true,
+      closable: false,
+    };
+    return hiddenViewIds.has(azureTab.id) ? [] : [azureTab];
+  }
+
   // Identify browser panels (URL commands) — these get virtual tabs, not terminal sessions
   const browserPanelIds = new Set(panels.filter((p) => /^https?:\/\//i.test(p.command || "")).map((p) => p.id));
 
   // Terminal tabs from real sessions (exclude sessions for browser panels)
-  const tabs = workspace.sessions
-    .filter((session) => !browserPanelIds.has(session.panelId))
-    .map((session) => ({
-      id: session.sessionId,
-      type: "terminal",
-      title: session.title,
-      status: session.status,
-      tone: statusTone(session.status),
-      persistent: panelMap.has(session.panelId),
-    }));
+  const tabs = [
+    ...(activeWorkspace.review?.provider === "azure-devops"
+      ? [{
+          id: `review:${activeWorkspace.id}`,
+          type: "review",
+          title: "Review",
+          status: activeWorkspace.review.pullRequest?.title || "Azure review",
+          tone: "running",
+          persistent: true,
+          closable: false,
+        }]
+      : []),
+    ...workspace.sessions
+      .filter((session) => !browserPanelIds.has(session.panelId))
+      .map((session) => ({
+        id: session.sessionId,
+        type: "terminal",
+        title: session.title,
+        status: session.status,
+        tone: statusTone(session.status),
+        persistent: panelMap.has(session.panelId),
+        closable: true,
+      })),
+  ];
 
   // Browser tabs from panels directly (stable ID, no backend session dependency)
   for (const panel of panels) {
@@ -74,6 +101,7 @@ export function getWorkspaceTabs({
         status: domain || "browser",
         tone: "running",
         persistent: true,
+        closable: true,
         url: panel.command,
       });
     }
@@ -89,6 +117,7 @@ export function getWorkspaceTabs({
       title: "Docker",
       status: `${containers.length} containers, ${runningCount} up`,
       tone: runningCount > 0 ? "running" : "idle",
+      closable: true,
     });
   }
 
@@ -100,6 +129,7 @@ export function getWorkspaceTabs({
       title: "Git",
       status: gitSnapshot.dirty ? `${gitSnapshot.dirtyCount} dirty` : "clean",
       tone: gitSnapshot.dirty ? "error" : "running",
+      closable: true,
     });
   }
 
@@ -145,8 +175,8 @@ export function getVisibleTabs({
   };
 }
 
-export function getWorkspacePanelByViewId(viewId, workspace, { isGitViewId, isDockerViewId }) {
-  if (!workspace || isGitViewId(viewId) || isDockerViewId(viewId)) {
+export function getWorkspacePanelByViewId(viewId, workspace, { isGitViewId, isDockerViewId, isAzureViewId, isReviewViewId }) {
+  if (!workspace || isGitViewId(viewId) || isDockerViewId(viewId) || isAzureViewId(viewId) || isReviewViewId(viewId)) {
     return null;
   }
 

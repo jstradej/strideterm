@@ -1,6 +1,34 @@
 import os from "node:os";
+import path from "node:path";
 import { randomBytes } from "node:crypto";
 import { APP_CONFIG } from "../../config/app-config.js";
+
+const UTF8_DECODER = (() => {
+  try {
+    return new TextDecoder("utf-8", { fatal: true });
+  } catch {
+    return null;
+  }
+})();
+
+const WINDOWS_1250_ENCODER_MAP = (() => {
+  try {
+    const decoder = new TextDecoder("windows-1250");
+    const bytes = Uint8Array.from({ length: 256 }, (_value, index) => index);
+    const decoded = decoder.decode(bytes);
+    const map = new Map();
+    for (let index = 0; index < decoded.length; index += 1) {
+      if (!map.has(decoded[index])) {
+        map.set(decoded[index], index);
+      }
+    }
+    return map;
+  } catch {
+    return null;
+  }
+})();
+
+const MOJIBAKE_MARKER_RE = /[ĂÂÄÅĹâđź]/u;
 
 function defaultCwd() {
   return os.homedir();
@@ -10,14 +38,51 @@ function defaultRootCwd() {
   return os.homedir();
 }
 
+function defaultAzureReviewRoot() {
+  return path.join(os.homedir(), ".strideterm", "azure-pr");
+}
+
 export function createAccessToken() {
   return randomBytes(18).toString("base64url");
+}
+
+function decodeUtf8Mojibake(value) {
+  if (!value || !UTF8_DECODER || !WINDOWS_1250_ENCODER_MAP || !MOJIBAKE_MARKER_RE.test(value)) {
+    return value;
+  }
+
+  const bytes = [];
+  for (const character of value) {
+    const nextByte = WINDOWS_1250_ENCODER_MAP.get(character);
+    if (nextByte == null) {
+      return value;
+    }
+    bytes.push(nextByte);
+  }
+
+  try {
+    return UTF8_DECODER.decode(Uint8Array.from(bytes));
+  } catch {
+    return value;
+  }
+}
+
+function repairVisibleText(value, fallback = "") {
+  let current = String(value ?? fallback);
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const repaired = decodeUtf8Mojibake(current);
+    if (repaired === current) {
+      break;
+    }
+    current = repaired;
+  }
+  return current;
 }
 
 function normalizePanel(panel, panelIndex = 0) {
   return {
     id: panel.id || `panel-${panelIndex + 1}`,
-    title: panel.title || `Panel ${panelIndex + 1}`,
+    title: repairVisibleText(panel.title || `Panel ${panelIndex + 1}`),
     command: panel.command || "",
     launch: panel.launch
       ? {
@@ -32,6 +97,7 @@ function normalizePanel(panel, panelIndex = 0) {
 
 export function normalizeWorkspace(workspace, index = 0) {
   const isDockerWorkspace = (workspace.id || "") === "docker" || workspace.kind === "docker";
+  const isAzureWorkspace = workspace.kind === "azure";
   const rawPanels = isDockerWorkspace
     ? (workspace.panels || []).filter((panel) => !(panel.id === "lazydocker" && panel.command === "lazydocker" && !panel.launch))
     : (workspace.panels || []).filter((panel) => !(panel.id === "git" && !panel.command && !panel.launch));
@@ -43,17 +109,59 @@ export function normalizeWorkspace(workspace, index = 0) {
 
   return {
     id: workspace.id || `workspace-${index + 1}`,
-    name: workspace.name || `Workspace ${index + 1}`,
-    icon: workspace.icon || APP_CONFIG.ui.defaultProjectIcon,
+    name: repairVisibleText(workspace.name || `Workspace ${index + 1}`),
+    icon: repairVisibleText(workspace.icon || APP_CONFIG.ui.defaultProjectIcon),
     color: workspace.color || APP_CONFIG.ui.defaultProjectColor,
-    kind: isDockerWorkspace ? "docker" : (workspace.kind || APP_CONFIG.ui.defaultProjectKind),
+    kind: isDockerWorkspace ? "docker" : (isAzureWorkspace ? "azure" : (workspace.kind || APP_CONFIG.ui.defaultProjectKind)),
     source: workspace.source === "plugin" ? "plugin" : "manual",
     pluginId: workspace.pluginId || "",
-    cwd: workspace.cwd || defaultCwd(),
-    notes: workspace.notes || "",
+    cwd: workspace.cwd || (isAzureWorkspace ? "" : defaultCwd()),
+    notes: repairVisibleText(workspace.notes || ""),
     profileId: workspace.profileId || "default",
     activePanelId,
     panels,
+    review: workspace.review
+      ? {
+          provider: workspace.review.provider || "",
+          prKey: workspace.review.prKey || "",
+          connectionId: workspace.review.connectionId || "",
+          orgUrl: workspace.review.orgUrl || "",
+          parentWorkspaceId: workspace.review.parentWorkspaceId || "",
+          project: workspace.review.project
+            ? {
+                id: workspace.review.project.id || "",
+                name: workspace.review.project.name || "",
+              }
+            : null,
+          repository: workspace.review.repository
+            ? {
+                id: workspace.review.repository.id || "",
+                name: workspace.review.repository.name || "",
+                remoteUrl: workspace.review.repository.remoteUrl || "",
+              }
+            : null,
+          pullRequest: workspace.review.pullRequest
+            ? {
+                id: workspace.review.pullRequest.id || 0,
+                title: workspace.review.pullRequest.title || "",
+                status: workspace.review.pullRequest.status || "",
+                mergeStatus: workspace.review.pullRequest.mergeStatus || "",
+                url: workspace.review.pullRequest.url || "",
+                webUrl: workspace.review.pullRequest.webUrl || "",
+                sourceRefName: workspace.review.pullRequest.sourceRefName || "",
+                targetRefName: workspace.review.pullRequest.targetRefName || "",
+              }
+            : null,
+          role: workspace.review.role || "",
+          checkout: workspace.review.checkout
+            ? {
+                mode: workspace.review.checkout.mode || "",
+                rootPath: workspace.review.checkout.rootPath || "",
+                cacheRepoPath: workspace.review.checkout.cacheRepoPath || "",
+              }
+            : null,
+        }
+      : null,
   };
 }
 
@@ -72,6 +180,14 @@ export function createDefaultState() {
         token: createAccessToken(),
         customPublicUrl: "",
         cloudflaredPath: "",
+      },
+      integrations: {
+        azureDevops: {
+          enabled: true,
+          reviewRoot: defaultAzureReviewRoot(),
+          defaultPollSeconds: 120,
+          connections: [],
+        },
       },
     },
     tabTemplates: [
@@ -116,30 +232,68 @@ function normalizeProfiles(rawProfiles, defaults) {
 }
 
 /**
- * Ensure worktree children are positioned right after their parent workspace.
+ * Ensure child workspaces are positioned right after their parent workspace.
  */
-function groupWorktrees(workspaces) {
-  const children = new Map(); // parentName -> [child workspaces]
+function groupChildWorkspaces(workspaces) {
+  const byId = new Map(workspaces.map((workspace) => [workspace.id, workspace]));
+  const children = new Map(); // parentId -> [child workspaces]
   const roots = [];
-  for (const ws of workspaces) {
-    if ((ws.notes || "").startsWith("Worktree of ")) {
-      const parentName = ws.name.split(" / ")[0];
-      if (!children.has(parentName)) children.set(parentName, []);
-      children.get(parentName).push(ws);
-    } else {
-      roots.push(ws);
+
+  function addChild(parentId, workspace) {
+    if (!parentId) {
+      roots.push(workspace);
+      return;
     }
+    if (!children.has(parentId)) {
+      children.set(parentId, []);
+    }
+    children.get(parentId).push(workspace);
   }
+
+  for (const workspace of workspaces) {
+    if ((workspace.notes || "").startsWith("Worktree of ")) {
+      const parentName = workspace.name.split(" / ")[0];
+      const parent = workspaces.find((candidate) => candidate.name === parentName && candidate.id !== workspace.id) || null;
+      addChild(parent?.id || "", workspace);
+      continue;
+    }
+
+    if (workspace.review?.provider === "azure-devops" && workspace.review?.checkout?.mode === "managed-worktree") {
+      const explicitParent = workspace.review.parentWorkspaceId && byId.has(workspace.review.parentWorkspaceId)
+        ? workspace.review.parentWorkspaceId
+        : "";
+      const fallbackParent = explicitParent
+        || workspaces.find((candidate) => (
+          candidate.kind === "azure"
+          && candidate.id !== workspace.id
+          && (candidate.profileId || "default") === (workspace.profileId || "default")
+        ))?.id
+        || "";
+      addChild(fallbackParent, workspace);
+      continue;
+    }
+
+    roots.push(workspace);
+  }
+
   const result = [];
-  for (const ws of roots) {
-    result.push(ws);
-    const kids = children.get(ws.name);
-    if (kids) {
-      result.push(...kids);
-      children.delete(ws.name);
+  const appendChildren = (parentId) => {
+    const kids = children.get(parentId);
+    if (!kids) {
+      return;
     }
+    for (const child of kids) {
+      result.push(child);
+      appendChildren(child.id);
+    }
+    children.delete(parentId);
+  };
+
+  for (const workspace of roots) {
+    result.push(workspace);
+    appendChildren(workspace.id);
   }
-  // Append any orphaned worktrees (parent missing/renamed)
+
   for (const kids of children.values()) {
     result.push(...kids);
   }
@@ -149,48 +303,80 @@ function groupWorktrees(workspaces) {
 export function normalizeState(rawState = {}) {
   const defaults = createDefaultState();
   const rawWorkspaces = rawState.workspaces || rawState.projects || defaults.workspaces;
-  const workspaces = groupWorktrees(
-    rawWorkspaces.map((workspace, index) => normalizeWorkspace(workspace, index)),
-  );
+  const rawTemplates = rawState.tabTemplates;
+  const tabTemplates = Array.isArray(rawTemplates) && rawTemplates.length
+    ? rawTemplates.map((tmpl) => ({
+        id: tmpl.id || `tmpl-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        title: repairVisibleText(tmpl.title || "Untitled"),
+        command: tmpl.command ?? "",
+        icon: repairVisibleText(tmpl.icon || "\u{1F4BB}"),
+      }))
+    : defaults.tabTemplates;
   const profiles = normalizeProfiles(rawState.profiles, defaults);
   const activeProfileId = profiles.some((profile) => profile.id === rawState.activeProfileId)
     ? rawState.activeProfileId
     : profiles[0]?.id || "default";
 
+  const normalizedSettings = {
+    ...defaults.settings,
+    ...(rawState.settings || {}),
+    remoteAccess: {
+      ...defaults.settings.remoteAccess,
+      ...((rawState.settings || {}).remoteAccess || {}),
+      host: ((rawState.settings || {}).remoteAccess || {}).host === "127.0.0.1"
+        ? "0.0.0.0"
+        : (((rawState.settings || {}).remoteAccess || {}).host || defaults.settings.remoteAccess.host),
+      token: ((rawState.settings || {}).remoteAccess || {}).token || defaults.settings.remoteAccess.token,
+    },
+    integrations: {
+      ...defaults.settings.integrations,
+      ...((rawState.settings || {}).integrations || {}),
+      azureDevops: {
+        ...defaults.settings.integrations.azureDevops,
+        ...(((rawState.settings || {}).integrations || {}).azureDevops || {}),
+        connections: Array.isArray((((rawState.settings || {}).integrations || {}).azureDevops || {}).connections)
+          ? (((rawState.settings || {}).integrations || {}).azureDevops || {}).connections.map((connection, index) => ({
+              id: connection.id || `ado-${index + 1}`,
+              label: connection.label || connection.id || `Azure ${index + 1}`,
+              orgUrl: connection.orgUrl || "",
+              login: connection.login || "",
+              tokenRef: connection.tokenRef || "",
+              enabled: connection.enabled !== false,
+              projectFilters: Array.isArray(connection.projectFilters) ? [...connection.projectFilters] : [],
+              repositoryFilters: Array.isArray(connection.repositoryFilters) ? [...connection.repositoryFilters] : [],
+              pollSeconds: Number(connection.pollSeconds) || defaults.settings.integrations.azureDevops.defaultPollSeconds,
+              reviewRoot: connection.reviewRoot || defaults.settings.integrations.azureDevops.reviewRoot,
+            }))
+          : [],
+      },
+    },
+  };
+  const workspaces = groupChildWorkspaces(
+    rawWorkspaces
+      .map((workspace, index) => normalizeWorkspace(workspace, index))
+      .map((workspace) => (
+        workspace.kind === "azure" && !String(workspace.cwd || "").trim()
+          ? {
+              ...workspace,
+              cwd: normalizedSettings.integrations.azureDevops.reviewRoot || defaults.settings.integrations.azureDevops.reviewRoot,
+            }
+          : workspace
+      )),
+  );
+
   // Validate activeWorkspaceId against workspaces in the active profile
-  const profileWorkspaces = workspaces.filter((w) => (w.profileId || "default") === activeProfileId);
+  const profileWorkspaces = workspaces.filter((workspace) => (workspace.profileId || "default") === activeProfileId);
   const requestedActiveWorkspaceId = rawState.activeWorkspaceId || rawState.activeProjectId;
-  const activeWorkspaceId = profileWorkspaces.some((w) => w.id === requestedActiveWorkspaceId)
+  const activeWorkspaceId = profileWorkspaces.some((workspace) => workspace.id === requestedActiveWorkspaceId)
     ? requestedActiveWorkspaceId
     : profileWorkspaces[0]?.id || "";
-
-  const rawTemplates = rawState.tabTemplates;
-  const tabTemplates = Array.isArray(rawTemplates) && rawTemplates.length
-    ? rawTemplates.map((tmpl) => ({
-        id: tmpl.id || `tmpl-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-        title: tmpl.title || "Untitled",
-        command: tmpl.command ?? "",
-        icon: tmpl.icon || "\u{1F4BB}",
-      }))
-    : defaults.tabTemplates;
 
   const normalized = {
     ...defaults,
     ...rawState,
     activeWorkspaceId,
     activeProfileId,
-    settings: {
-      ...defaults.settings,
-      ...(rawState.settings || {}),
-      remoteAccess: {
-        ...defaults.settings.remoteAccess,
-        ...((rawState.settings || {}).remoteAccess || {}),
-        host: ((rawState.settings || {}).remoteAccess || {}).host === "127.0.0.1"
-          ? "0.0.0.0"
-          : (((rawState.settings || {}).remoteAccess || {}).host || defaults.settings.remoteAccess.host),
-        token: ((rawState.settings || {}).remoteAccess || {}).token || defaults.settings.remoteAccess.token,
-      },
-    },
+    settings: normalizedSettings,
     tabTemplates,
     profiles,
     workspaces,

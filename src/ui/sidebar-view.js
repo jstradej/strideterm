@@ -1,6 +1,13 @@
 import { html, render } from "lit";
 import { repeat } from "lit/directives/repeat.js";
 
+const SIDEBAR_ICONS = {
+  attention: "\u{1F514}",
+  createWorktree: "\u{1F33F}",
+  edit: "\u270E",
+  delete: "\u2715",
+};
+
 function workspaceCardTemplate(workspace) {
   return html`
     <div
@@ -16,16 +23,16 @@ function workspaceCardTemplate(workspace) {
         <span class="workspace-card__title-row">
           <strong>${workspace.name}</strong>
           ${workspace.attentionCount
-            ? html`<span class="workspace-card__attention" title=${workspace.attentionTooltip}>🔔<span class="workspace-card__attention-count">${workspace.attentionCount}</span></span>`
+            ? html`<span class="workspace-card__attention" title=${workspace.attentionTooltip}>${SIDEBAR_ICONS.attention}<span class="workspace-card__attention-count">${workspace.attentionCount}</span></span>`
             : null}
         </span>
         <small>${workspace.summary}</small>
       </span>
       ${workspace.active ? html`
         <span class="workspace-card__actions">
-          ${workspace.gitAvailable ? html`<button class="workspace-card__action" data-action="create-worktree" data-workspace-id=${workspace.id} title="New worktree">🌿</button>` : null}
-          <button class="workspace-card__action" data-action="edit-workspace" data-workspace-id=${workspace.id} title="Edit">✎</button>
-          <button class="workspace-card__action workspace-card__action--danger" data-action="delete-workspace" data-workspace-id=${workspace.id} title="Delete">×</button>
+          ${workspace.gitAvailable ? html`<button class="workspace-card__action" data-action="create-worktree" data-workspace-id=${workspace.id} title="New worktree">${SIDEBAR_ICONS.createWorktree}</button>` : null}
+          <button class="workspace-card__action" data-action="edit-workspace" data-workspace-id=${workspace.id} title="Edit">${SIDEBAR_ICONS.edit}</button>
+          <button class="workspace-card__action workspace-card__action--danger" data-action="delete-workspace" data-workspace-id=${workspace.id} title="Delete">${SIDEBAR_ICONS.delete}</button>
         </span>
       ` : null}
     </div>

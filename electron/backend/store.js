@@ -52,20 +52,10 @@ async function loadState(statePath) {
 
   console.error(`[store] All ${LOAD_RETRIES} load attempts failed for ${statePath}`);
   console.error(`[store] Last error: ${lastError?.message}`);
-
-  const brokenPath = `${statePath}.broken-${Date.now()}.json`;
-  try {
-    await fs.rename(statePath, brokenPath);
-    console.warn(`[store] Renamed broken state to ${brokenPath}`);
-  } catch (renameError) {
-    console.warn(`[store] Could not rename broken state: ${renameError.message}`);
-  }
-
-  const defaults = createDefaultState();
-  await fs.mkdir(path.dirname(statePath), { recursive: true });
-  await atomicWriteFile(statePath, JSON.stringify(defaults, null, 2));
-  console.warn(`[store] Falling back to default state`);
-  return { state: defaults, isDefaults: true };
+  throw new Error(
+    `State file at ${statePath} could not be loaded after ${LOAD_RETRIES} attempts. ` +
+    "Existing file was left untouched to avoid overwriting user data.",
+  );
 }
 
 export async function createStore(statePath) {

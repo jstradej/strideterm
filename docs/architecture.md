@@ -157,6 +157,31 @@ Current behavior:
 - present Docker as a special workspace rather than as a generic tab
 - support both a structured manager surface and an optional `lazydocker` TUI
 
+## Azure DevOps Review Runtime
+
+Relevant files:
+
+- `electron/backend/azure-devops-manager.js`
+- `electron/backend/azure-devops-api.js`
+- `electron/backend/azure-devops-pr-summary.js`
+- `electron/backend/azure-devops-utils.js`
+- `electron/backend/credential-store.js`
+- `electron/backend/azure-review-store.js`
+- `electron/backend/review-bridge-store.js`
+- `electron/backend/review-bridge-mcp.js`
+- `src/app/pane-markup.js`
+- `src/app/workspace-ui-controller.js`
+
+Responsibilities:
+
+- manage Azure DevOps pull request polling and inbox state
+- store connection metadata and credentials separately
+- create managed review worktrees
+- expose Azure inbox and review UI surfaces
+- bridge cloud PR metadata with local Git-backed workspaces
+
+Detailed workflow and usage notes live in [Azure DevOps Pull Request Review](./azure-devops-review.md).
+
 ## Session Model
 
 A session is keyed by:

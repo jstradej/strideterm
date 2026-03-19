@@ -1501,7 +1501,7 @@ dt {
   color: var(--muted);
   padding: 6px 8px 6px 10px;
   display: grid;
-  grid-template-columns: auto 1fr auto auto auto;
+  grid-template-columns: minmax(0, 1fr) auto auto auto auto;
   grid-template-rows: auto auto;
   gap: 0 2px;
   align-items: center;
@@ -1521,11 +1521,15 @@ dt {
   grid-row: 1;
   overflow: hidden;
   text-overflow: ellipsis;
+  min-width: 0;
 }
 
 .tab > small {
   grid-column: 1;
   grid-row: 2;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
 }
 
 .tab:hover {
@@ -2360,6 +2364,695 @@ dt {
   font-style: italic;
 }
 
+/* Azure DevOps */
+/* ── Azure DevOps Inbox ── */
+.azure-inbox {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.azure-inbox__toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.azure-inbox__tabs {
+  display: flex;
+  gap: 2px;
+}
+
+.azure-inbox__actions {
+  display: flex;
+  gap: 6px;
+  margin-left: auto;
+}
+
+.azure-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 12px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 13px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: color 0.15s, border-color 0.15s;
+}
+
+.azure-tab:hover {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.azure-tab--active {
+  color: var(--text);
+  border-color: var(--accent);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.azure-tab--alert {
+  color: var(--danger);
+}
+
+.azure-tab--alert.azure-tab--active {
+  border-color: var(--danger);
+}
+
+.azure-tab__count {
+  font-weight: 700;
+  font-size: 12px;
+  min-width: 18px;
+  text-align: center;
+  border-radius: 8px;
+  padding: 0 5px;
+  background: rgba(255, 255, 255, 0.08);
+  line-height: 18px;
+}
+
+.azure-tab--active .azure-tab__count {
+  background: var(--accent);
+  color: var(--bg);
+}
+
+.azure-tab--alert.azure-tab--active .azure-tab__count {
+  background: var(--danger);
+}
+
+.azure-inbox__content {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0;
+}
+
+.azure-section {
+  display: none;
+}
+
+.azure-section--active {
+  display: block;
+}
+
+.azure-pr-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+  transition: background 0.1s;
+}
+
+.azure-pr-row:hover {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.azure-pr-row__main {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.azure-pr-row__title {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.azure-pr-row__title strong {
+  font-size: 14px;
+}
+
+.azure-pr-row__id {
+  color: var(--muted);
+  font-size: 12px;
+  flex-shrink: 0;
+}
+
+.azure-pr-row__meta {
+  display: flex;
+  gap: 4px;
+  color: var(--muted);
+  font-size: 12px;
+  flex-wrap: wrap;
+}
+
+.azure-pr-row__branch {
+  color: var(--muted);
+  font-size: 12px;
+  font-family: var(--mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.azure-pr-row__actions {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+  padding-top: 2px;
+}
+
+.azure-empty {
+  padding: 32px 16px;
+  text-align: center;
+  color: var(--muted);
+}
+
+.azure-connection-list {
+  padding: 0 4px 4px;
+}
+
+.azure-review-root,
+.azure-review__description {
+  white-space: pre-wrap;
+}
+
+.review-shell {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.review-subtabs {
+  display: flex;
+  gap: 2px;
+  padding: 8px 12px 0;
+  flex-wrap: wrap;
+  border-bottom: 1px solid var(--border);
+}
+
+.review-content {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+}
+
+.review-content > * {
+  min-height: 0;
+}
+
+.review-panel {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  padding-right: 4px;
+}
+
+.review-grid {
+  display: grid;
+  gap: 8px;
+  align-content: start;
+}
+
+.review-grid--summary {
+  grid-template-columns: minmax(320px, 1.2fr) minmax(240px, 0.8fr);
+  align-items: start;
+}
+
+.review-sidebar {
+  display: grid;
+  gap: 8px;
+  align-content: start;
+}
+
+.review-grid--drafts {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.review-grid--agent {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.review-card {
+  min-height: 0;
+}
+
+.review-card--hero {
+  grid-column: 1;
+}
+
+
+.review-card--stack {
+  min-height: 0;
+  flex: 1;
+}
+
+.review-card__list {
+  min-height: 0;
+  max-height: 360px;
+  overflow: auto;
+  padding-right: 4px;
+}
+
+.review-card__list--dense {
+  max-height: none;
+  height: 100%;
+}
+
+.review-meta-list {
+  display: grid;
+  gap: 8px;
+}
+
+.review-check__meta,
+.review-check__actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  align-items: center;
+  margin-top: 4px;
+}
+
+.review-check__meta {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.review-check__description {
+  display: block;
+  margin-top: 4px;
+  color: var(--muted);
+  white-space: pre-wrap;
+}
+
+.review-agent-prompts {
+  display: grid;
+  gap: 8px;
+}
+
+/* ── Enhanced checks ────────────────────────────────────────────────── */
+
+.review-check-item {
+  transition: background 0.15s ease;
+}
+
+.review-check-item:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.review-check__error {
+  display: block;
+  margin-top: 6px;
+  padding: 8px 10px;
+  background: rgba(255, 50, 50, 0.12);
+  border: 1px solid rgba(255, 50, 50, 0.25);
+  border-radius: 3px;
+  color: #ff9090;
+  font-size: 11.5px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: "Cascadia Mono", "JetBrains Mono", "Fira Code", "Consolas", monospace;
+  max-height: 140px;
+  overflow-y: auto;
+}
+
+/* ── Comment cards ──────────────────────────────────────────────────── */
+
+.review-comment-card {
+  border-left: 3px solid var(--border);
+  transition: border-color 0.2s ease;
+}
+
+.review-comment-card:hover {
+  border-left-color: var(--accent);
+}
+
+.review-comment-card--local {
+  border-left-color: color-mix(in srgb, var(--accent), transparent 50%);
+  background: rgba(255, 164, 36, 0.03);
+}
+
+/* File context header */
+.review-comment-file {
+  font-size: 12px;
+  font-family: "Cascadia Mono", "JetBrains Mono", "Fira Code", "Consolas", monospace;
+  color: var(--text);
+  font-weight: 600;
+}
+
+.review-comment-line {
+  color: var(--accent);
+}
+
+.review-comment-context {
+  padding: 6px 10px;
+  background: rgba(0, 0, 0, 0.2);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  overflow-x: auto;
+}
+
+.review-comment-context__path {
+  font-size: 11px;
+  color: var(--muted);
+  word-break: break-all;
+}
+
+.review-code-snippet {
+  margin: 6px 0 0;
+  padding: 8px 10px;
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 3px;
+  font-family: "Cascadia Mono", "JetBrains Mono", "Fira Code", "Consolas", monospace;
+  font-size: 11.5px;
+  line-height: 1.5;
+  white-space: pre;
+  overflow-x: auto;
+  max-height: 180px;
+  color: var(--text);
+  tab-size: 4;
+}
+
+/* Thread container */
+.review-comment-thread {
+  display: grid;
+  gap: 0;
+}
+
+/* Individual comment */
+.review-comment {
+  padding: 10px 12px;
+  border-top: 1px solid var(--border);
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+}
+
+.review-comment:first-child {
+  border-top: none;
+}
+
+.review-comment--reply {
+  padding-left: 24px;
+  background: rgba(255, 255, 255, 0.015);
+}
+
+.review-comment--draft {
+  background: rgba(255, 164, 36, 0.05);
+  border-left: 2px solid var(--accent);
+  margin: 4px 0;
+  border-radius: 3px;
+  display: block;
+  padding: 10px 12px;
+}
+
+/* Avatar */
+.review-comment__avatar {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 700;
+  color: #fff;
+  flex-shrink: 0;
+  letter-spacing: 0.02em;
+}
+
+/* Comment header */
+.review-comment__header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 13px;
+  margin-bottom: 4px;
+}
+
+.review-comment__header strong {
+  font-weight: 600;
+}
+
+.review-comment__date {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+/* Markdown body */
+.review-comment__body {
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.review-comment__body code {
+  padding: 1px 5px;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 3px;
+  font-family: "Cascadia Mono", "JetBrains Mono", "Fira Code", "Consolas", monospace;
+  font-size: 12px;
+}
+
+.review-comment__body strong {
+  font-weight: 700;
+}
+
+.review-comment__body em {
+  font-style: italic;
+  color: color-mix(in srgb, var(--text), var(--muted) 20%);
+}
+
+.review-comment__body pre {
+  margin: 6px 0;
+  padding: 8px 10px;
+  background: rgba(0, 0, 0, 0.25);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  overflow-x: auto;
+  font-family: "Cascadia Mono", "JetBrains Mono", "Fira Code", "Consolas", monospace;
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+}
+
+.review-comment__body pre code {
+  padding: 0;
+  background: none;
+  border: none;
+  font-size: inherit;
+}
+
+/* Section divider */
+.review-section-divider {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 12px 0 8px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--muted);
+}
+
+.review-section-divider::before,
+.review-section-divider::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--border);
+}
+
+/* Files tab — split layout like Git Changes */
+.review-files-split {
+  display: grid;
+  grid-template-columns: minmax(260px, 0.38fr) minmax(0, 1fr);
+  gap: 0;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.review-files-split__left {
+  padding: 10px;
+  overflow-y: auto;
+  border-right: 1px solid var(--border);
+  min-height: 0;
+}
+
+.review-files-split__right {
+  padding: 10px;
+  overflow-y: auto;
+  min-height: 0;
+  display: grid;
+  gap: 8px;
+  align-content: start;
+}
+
+.review-files-split__right .git-output--preview {
+  max-height: none;
+  flex: 1;
+  min-height: 0;
+  font-size: 11.5px;
+}
+
+.review-files-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  gap: 8px;
+  opacity: 0.5;
+}
+
+/* File tree */
+.review-file-tree {
+  font-size: 13px;
+}
+
+.review-tree-dir {
+  margin: 0;
+}
+
+.review-tree-dir > summary {
+  list-style: none;
+}
+
+.review-tree-dir > summary::-webkit-details-marker {
+  display: none;
+}
+
+.review-tree-dir__label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 6px;
+  cursor: pointer;
+  color: var(--text);
+  font-size: 13px;
+  border-radius: 3px;
+  user-select: none;
+}
+
+.review-tree-dir__label:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.review-tree-dir__icon::before {
+  content: "\25B6";
+  display: inline-block;
+  font-size: 8px;
+  color: var(--muted);
+  transition: transform 0.15s ease;
+  width: 10px;
+  text-align: center;
+}
+
+details[open] > .review-tree-dir__label .review-tree-dir__icon::before {
+  transform: rotate(90deg);
+}
+
+.review-tree-dir__label span:last-child {
+  color: var(--accent);
+  font-weight: 500;
+}
+
+.review-tree-file {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 6px;
+  border: none;
+  border-radius: 3px;
+  background: none;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+  width: 100%;
+}
+
+.review-tree-file:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.review-tree-file--active {
+  background: color-mix(in srgb, var(--panel-elevated, rgba(255,255,255,0.06)), var(--accent) 10%);
+}
+
+.review-tree-file__name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.review-diff-output {
+  max-height: none;
+  font-size: 11.5px;
+}
+
+/* Conflicts */
+.review-conflict-status {
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+/* Agent prompt cards */
+.review-agent-card .docker-card__head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+}
+
+.review-copy-btn {
+  padding: 4px 6px !important;
+  min-width: 0 !important;
+  opacity: 0.5;
+  transition: opacity 0.2s ease;
+}
+
+.review-copy-btn:hover {
+  opacity: 1;
+}
+
+.review-agent-prompt {
+  font-size: 11.5px;
+  max-height: 140px;
+  cursor: text;
+  user-select: all;
+}
+
+.workspace-chip--muted {
+  opacity: 0.6;
+}
+
+.workspace-chip--local {
+  border-color: color-mix(in srgb, var(--accent), transparent 50%);
+  background: rgba(255, 164, 36, 0.1);
+  color: var(--accent);
+}
+
 .git-list,
 .git-log {
   list-style: none;
@@ -2384,6 +3077,16 @@ dt {
   align-items: start;
 }
 
+.git-list__text {
+  min-width: 0;
+  line-height: 1.4;
+}
+
+.git-list__text--path {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
 .git-status-code {
   display: inline-block;
   min-width: 22px;
@@ -2395,6 +3098,25 @@ dt {
   text-align: center;
   line-height: 18px;
   flex-shrink: 0;
+}
+
+.git-status-code--failed {
+  background: rgba(255, 111, 141, 0.16);
+  color: #ffd7df;
+}
+
+.git-status-code--pending {
+  background: rgba(255, 164, 36, 0.16);
+  color: #ffd28c;
+}
+
+.git-status-code--success {
+  background: rgba(110, 223, 182, 0.16);
+  color: #9aecc9;
+}
+
+.git-status-code--neutral {
+  color: var(--muted);
 }
 
 .overlay {
@@ -2734,6 +3456,12 @@ textarea {
   }
 
   .git-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .review-grid--summary,
+  .review-grid--drafts,
+  .review-grid--agent {
     grid-template-columns: 1fr;
   }
 

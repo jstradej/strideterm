@@ -2,9 +2,11 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
+import { watch } from "node:fs";
 import { readFile, writeFile, mkdir, readdir, access } from "node:fs/promises";
 import { EventEmitter } from "node:events";
 import { createRequire } from "node:module";
+import { fileURLToPath } from "node:url";
 import { createStore } from "./store.js";
 import { SessionManager } from "./session-manager.js";
 import { createAccessToken, createSessionId, normalizeWorkspace, parseSessionId } from "./default-state.js";
@@ -13,10 +15,16 @@ import { DockerManager } from "./docker-manager.js";
 import { GitManager } from "./git-manager.js";
 import { CloudflareTunnelManager } from "./tunnel-manager.js";
 import { createPluginManager } from "./plugin-loader.js";
+import { createCredentialStore } from "./credential-store.js";
+import { createAzureReviewStore } from "./azure-review-store.js";
+import { createReviewBridgeStore } from "./review-bridge-store.js";
+import { buildReviewAgentLaunch, buildMcpServerSpec } from "./review-bridge-agent-launch.js";
+import { AzureDevOpsManager, normalizeConnectionInput, normalizeReviewRoot, shortPathKey } from "./azure-devops-manager.js";
 import { APP_CONFIG } from "../../config/app-config.js";
 
 const require = createRequire(import.meta.url);
 const { version: packageVersion = "0.0.0" } = require("../../package.json");
+const reviewBridgeCliPath = fileURLToPath(new URL("./review-bridge-cli.js", import.meta.url));
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value));
@@ -180,23 +188,88 @@ async function checkRemoteOrigin(originUrl, { attempts = 16, delayMs = 250, time
   );
 }
 
-export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeSource, dependencies = {} }) {
+export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeSource, deferInitialRefresh = false, dependencies = {} }) {
   const createStoreImpl = dependencies.createStore || createStore;
+  const createCredentialStoreImpl = dependencies.createCredentialStore || createCredentialStore;
+  const createAzureReviewStoreImpl = dependencies.createAzureReviewStore || createAzureReviewStore;
+  const createReviewBridgeStoreImpl = dependencies.createReviewBridgeStore || createReviewBridgeStore;
   const SessionManagerImpl = dependencies.SessionManager || SessionManager;
   const DockerManagerImpl = dependencies.DockerManager || DockerManager;
   const GitManagerImpl = dependencies.GitManager || GitManager;
   const TunnelManagerImpl = dependencies.CloudflareTunnelManager || CloudflareTunnelManager;
+  const AzureDevOpsManagerImpl = dependencies.AzureDevOpsManager || AzureDevOpsManager;
   const createPluginManagerImpl = dependencies.createPluginManager || createPluginManager;
   const execFileTextImpl = dependencies.execFileText || execFileText;
   const checkRemoteOriginImpl = dependencies.checkRemoteOrigin || checkRemoteOrigin;
   const getTerminalEnvironmentImpl = dependencies.getTerminalEnvironment || detectTerminalEnvironment;
   const statePath = path.join(userDataPath, "strideterm-state.json");
+  const credentialsPath = path.join(userDataPath, "credentials.json");
+  const azureReviewPath = path.join(userDataPath, "azure-review.json");
+  const reviewBridgeRoot = path.join(userDataPath, "review-bridge");
+  const processInfo = {
+    execPath: process.execPath,
+    argv: process.argv,
+    defaultApp: process.defaultApp,
+  };
   const pluginsDir = path.join(userDataPath, "plugins");
   const store = await createStoreImpl(statePath);
-  const sessions = new SessionManagerImpl();
+  const credentialStore = await createCredentialStoreImpl(credentialsPath, {
+    safeStorage: dependencies.safeStorage || null,
+  });
+  const azureReviewStore = await createAzureReviewStoreImpl(azureReviewPath);
+  const reviewBridgeStore = await createReviewBridgeStoreImpl(reviewBridgeRoot);
+  const sessions = new SessionManagerImpl({
+    getSessionEnv: ({ workspace }) => {
+      if (workspace?.review?.provider !== "azure-devops" || !workspace.review?.prKey) {
+        return {};
+      }
+
+      const context = reviewBridgeStore.getPullRequestContext?.(workspace.review.prKey);
+      if (!context) {
+        return {};
+      }
+
+      return {
+        STRIDETERM_REVIEW_PROVIDER: context.provider || "azure-devops",
+        STRIDETERM_REVIEW_PR_KEY: context.prKey,
+        STRIDETERM_REVIEW_ROOT: context.rootPath,
+        STRIDETERM_REVIEW_DB: context.databasePath,
+        STRIDETERM_REVIEW_STORE_DIR: context.exportDir,
+        STRIDETERM_REVIEW_EXPORT_DIR: context.exportDir,
+        STRIDETERM_REVIEW_BRIEF_MD: context.briefMarkdownPath,
+        STRIDETERM_REVIEW_BRIEF_JSON: context.briefJsonPath,
+        STRIDETERM_REVIEW_CLI: reviewBridgeCliPath,
+        STRIDETERM_REVIEW_WORKSPACE_ID: workspace.id,
+      };
+    },
+    getSessionLaunch: ({ workspace, panel }) => {
+      if (workspace?.review?.provider !== "azure-devops" || !workspace.review?.prKey) {
+        return null;
+      }
+
+      const context = reviewBridgeStore.getPullRequestContext?.(workspace.review.prKey);
+      if (!context) {
+        return null;
+      }
+
+      return buildReviewAgentLaunch({
+        workspace,
+        panel,
+        context,
+        processInfo,
+      });
+    },
+  });
   const docker = new DockerManagerImpl();
   const git = new GitManagerImpl();
   const tunnel = new TunnelManagerImpl();
+  const azure = new AzureDevOpsManagerImpl({
+    credentialStore,
+    reviewStore: azureReviewStore,
+    reviewBridgeStore,
+    fetchImpl: dependencies.fetchImpl || globalThis.fetch,
+    execFileTextImpl,
+  });
   const events = new EventEmitter();
   const terminalEnvironment = getTerminalEnvironmentImpl();
   let remoteInfo = null;
@@ -208,6 +281,306 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
 
   function getState() {
     return store.getState();
+  }
+
+  function getAzureSettings(state = getState()) {
+    return state.settings?.integrations?.azureDevops || {
+      enabled: true,
+      reviewRoot: path.join(os.homedir(), ".strideterm", "azure-pr"),
+      defaultPollSeconds: 120,
+      connections: [],
+    };
+  }
+
+  function getAzureConnections(state = getState()) {
+    const all = getAzureSettings(state).connections || [];
+    const activeProfile = state.activeProfileId || "default";
+    return all.filter((c) => !c.profileId || c.profileId === activeProfile);
+  }
+
+  function normalizeFsPath(value) {
+    const resolved = path.resolve(String(value || "").trim() || ".");
+    return process.platform === "win32" ? resolved.toLowerCase() : resolved;
+  }
+
+  function parseAzureReviewWorkspaceHint(workspace) {
+    const cwd = String(workspace?.cwd || "");
+    const cwdMatch = cwd.match(/[\\/]pr-(\d+)(?:[\\/]|$)/i);
+    const nameMatch = String(workspace?.name || "").match(/\bPR\s*#(\d+)\b/i);
+    const prId = Number.parseInt(cwdMatch?.[1] || nameMatch?.[1] || "", 10);
+    const connectionPathKey = cwdMatch ? path.basename(path.dirname(cwd)) : "";
+    return {
+      prId: Number.isInteger(prId) ? prId : null,
+      connectionPathKey: String(connectionPathKey || "").trim().toLowerCase(),
+    };
+  }
+
+  function getAzureWorkspace(profileId = getState().activeProfileId || "default") {
+    return getState().workspaces.find((workspace) => workspace.kind === "azure" && (workspace.profileId || "default") === profileId) || null;
+  }
+
+  function getReviewBridgeSnapshot(state = getState()) {
+    try {
+      const prKeys = new Set([
+        ...Object.keys(azure.getSnapshot().pullRequests || {}),
+        ...(state.workspaces || [])
+          .map((workspace) => workspace.review?.provider === "azure-devops" ? workspace.review.prKey : "")
+          .filter(Boolean),
+      ]);
+      const pullRequests = {};
+      const processInfo = { execPath: process.execPath, platform: process.platform, defaultApp: Boolean(process.defaultApp) };
+      for (const prKey of prKeys) {
+        const context = reviewBridgeStore.getPullRequestContext?.(prKey);
+        if (context) {
+          let mcpSpec = null;
+          try { mcpSpec = buildMcpServerSpec({ context, processInfo }); } catch {}
+          pullRequests[prKey] = {
+            ...context,
+            cliPath: reviewBridgeCliPath,
+            mcpServerSpec: mcpSpec,
+          };
+        }
+      }
+      return {
+        rootPath: reviewBridgeStore.getRootPath?.() || reviewBridgeRoot,
+        databasePath: reviewBridgeStore.getDatabasePath?.() || "",
+        pullRequests,
+        agentPrompts: reviewBridgeStore.getAgentPrompts?.() || [],
+      };
+    } catch {
+      // Store may be closed during shutdown
+      return { rootPath: reviewBridgeRoot, databasePath: "", pullRequests: {}, agentPrompts: [] };
+    }
+  }
+
+  function createAzureWorkspaceReviewPanels(tabTemplates = []) {
+    const preferredTemplates = ["shell", "claude", "codex"];
+    const selected = [];
+
+    for (const templateId of preferredTemplates) {
+      const template = tabTemplates.find((entry) => entry.id === templateId);
+      if (template) {
+        selected.push(template);
+      }
+    }
+    if (!selected.length) {
+      selected.push(...tabTemplates.slice(0, 3));
+    }
+    if (!selected.length) {
+      selected.push(
+        { title: "Shell", command: "" },
+        { title: "Claude Code", command: "claude" },
+        { title: "Codex", command: "codex" },
+      );
+    }
+
+    return selected.map((template, index) => ({
+      id: `panel-${randomUUID()}`,
+      title: template.title || (index === 0 ? "Shell" : `Panel ${index + 1}`),
+      command: template.command || "",
+      shell: true,
+      startup: template.startup || (index === 0 ? APP_CONFIG.ui.defaultPanelStartup : APP_CONFIG.ui.manualPanelStartup),
+    }));
+  }
+
+  async function ensureAzureWorkspace(profileId = getState().activeProfileId || "default") {
+    const existing = getAzureWorkspace(profileId);
+    if (existing) {
+      return existing;
+    }
+
+    const panels = createAzureWorkspaceReviewPanels(getState().tabTemplates || []);
+
+    const workspace = normalizeWorkspace({
+      id: `workspace-${randomUUID()}`,
+      name: "Azure DevOps",
+      icon: "AZ",
+      color: "#0078d4",
+      kind: "azure",
+      cwd: getAzureSettings().reviewRoot || path.join(os.homedir(), ".strideterm", "azure-pr"),
+      notes: "Azure DevOps inbox",
+      profileId,
+      panels,
+      activePanelId: panels[0]?.id || "",
+    });
+    await store.mutate((draft) => {
+      draft.workspaces.push(workspace);
+      if (!draft.activeWorkspaceId) {
+        draft.activeWorkspaceId = workspace.id;
+      }
+    });
+    return workspace;
+  }
+
+  async function refreshAzure() {
+    const state = getState();
+    await azure.sync({
+      connections: getAzureConnections(state),
+      workspaces: state.workspaces,
+      gitSnapshots: git.getProjectMap(),
+      activeProfileId: state.activeProfileId || "default",
+    });
+    await repairAzureReviewWorkspaceMetadata();
+
+    const refreshedState = getState();
+    const activeWorkspace = findWorkspace(refreshedState, refreshedState.activeWorkspaceId);
+    if (
+      activeWorkspace?.review?.provider === "azure-devops"
+      && activeWorkspace.review.prKey
+      && typeof azure.ensurePullRequestDetail === "function"
+    ) {
+      await azure.ensurePullRequestDetail(activeWorkspace.review.prKey, {
+        workspaces: refreshedState.workspaces,
+        force: true,
+      }).catch(() => {});
+    }
+
+    return azure.getSnapshot();
+  }
+
+  async function repairAzureReviewWorkspaceMetadata(snapshot = azure.getSnapshot()) {
+    const state = getState();
+    const repairs = [];
+    const summaries = Object.values(snapshot?.pullRequests || {});
+    const trackedPullRequests = Object.values(azureReviewStore.getState().trackedPullRequests || {});
+
+    for (const workspace of state.workspaces || []) {
+      const hasAzureReview = workspace.review?.provider === "azure-devops";
+      const looksLikeAzureReview = String(workspace.notes || "").startsWith("Azure DevOps review workspace for ");
+      if (workspace.kind === "azure" || !workspace.cwd || (!looksLikeAzureReview && !hasAzureReview)) {
+        continue;
+      }
+
+      if (hasAzureReview && workspace.review?.checkout?.mode === "managed-worktree" && workspace.review?.parentWorkspaceId) {
+        continue;
+      }
+
+      const match = summaries.find((summary) => {
+        const paths = azure.buildManagedReviewPaths?.(summary, {
+          profileId: workspace.profileId || "default",
+          workspaces: state.workspaces,
+        });
+        return paths && normalizeFsPath(paths.rootPath) === normalizeFsPath(workspace.cwd);
+      });
+      if (match) {
+        const paths = azure.buildManagedReviewPaths(match, {
+          profileId: workspace.profileId || "default",
+          workspaces: state.workspaces,
+        });
+        if (!paths) {
+          continue;
+        }
+
+        repairs.push({
+          workspaceId: workspace.id,
+          prKey: match.prKey,
+          review: azure.buildReviewMetadata(match, {
+            mode: "managed-worktree",
+            rootPath: paths.rootPath,
+            cacheRepoPath: paths.cacheRepoPath,
+          }, "managed-worktree", {
+            parentWorkspaceId: paths.parentWorkspaceId || "",
+          }),
+        });
+        continue;
+      }
+
+      const hint = parseAzureReviewWorkspaceHint(workspace);
+      if (!hint.prId || !hint.connectionPathKey) {
+        continue;
+      }
+      const connection = getAzureConnections(state).find((entry) => shortPathKey(entry.id, "connection") === hint.connectionPathKey);
+      if (!connection) {
+        continue;
+      }
+      const tracked = trackedPullRequests.find((entry) => (
+        entry.connectionId === connection.id && Number(entry.pullRequestId) === hint.prId
+      ));
+      if (!tracked) {
+        continue;
+      }
+      const parentAzureWorkspace = state.workspaces.find((entry) => (
+        entry.kind === "azure" && (entry.profileId || "default") === (workspace.profileId || "default")
+      )) || null;
+      const reviewRoot = parentAzureWorkspace?.cwd || connection.reviewRoot || getAzureSettings(state).reviewRoot;
+      repairs.push({
+        workspaceId: workspace.id,
+        prKey: tracked.key,
+        review: {
+          provider: "azure-devops",
+          prKey: tracked.key,
+          connectionId: connection.id,
+          orgUrl: connection.orgUrl || "",
+          parentWorkspaceId: parentAzureWorkspace?.id || "",
+          project: {
+            id: "",
+            name: tracked.projectName || "",
+          },
+          repository: {
+            id: tracked.repositoryId || "",
+            name: tracked.repositoryName || "",
+            remoteUrl: "",
+          },
+          pullRequest: {
+            id: tracked.pullRequestId || hint.prId,
+            title: workspace.name || `PR #${hint.prId}`,
+            status: "",
+            mergeStatus: "",
+            url: "",
+            webUrl: "",
+            sourceRefName: "",
+            targetRefName: "",
+          },
+          role: "",
+          checkout: {
+            mode: "managed-worktree",
+            rootPath: workspace.cwd,
+            cacheRepoPath: path.join(
+              normalizeReviewRoot(reviewRoot),
+              "repos",
+              shortPathKey(connection.id, "connection"),
+              shortPathKey(tracked.repositoryId || tracked.repositoryName, "repository"),
+            ),
+          },
+        },
+      });
+    }
+
+    if (!repairs.length) {
+      return false;
+    }
+
+    await store.mutate((draft) => {
+      for (const repair of repairs) {
+        const workspace = draft.workspaces.find((entry) => entry.id === repair.workspaceId);
+        if (workspace) {
+          workspace.review = repair.review;
+        }
+      }
+    });
+    for (const repair of repairs) {
+      await azureReviewStore.upsertTrackedPullRequest(repair.prKey, {
+        reviewWorkspaceId: repair.workspaceId,
+      });
+    }
+    return true;
+  }
+
+  function scheduleAzurePolling() {
+    const settings = getAzureSettings();
+    const enabledConnections = getAzureConnections().filter((connection) => connection.enabled !== false);
+    if (!settings.enabled || !enabledConnections.length) {
+      azure.stopPolling();
+      return;
+    }
+
+    const pollSeconds = Math.max(
+      15,
+      Math.min(
+        ...enabledConnections.map((connection) => Number(connection.pollSeconds) || Number(settings.defaultPollSeconds) || 120),
+      ),
+    );
+    azure.configurePolling(pollSeconds * 1000, refreshAzure);
   }
 
   tunnel.setBinaryPreference?.(getState().settings.remoteAccess.cloudflaredPath || "");
@@ -234,6 +607,8 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
         activeWorkspace: git.getSnapshot(state.activeWorkspaceId),
         activeProject: git.getSnapshot(state.activeProjectId),
       },
+      azureDevops: azure.getSnapshot(),
+      reviewBridge: getReviewBridgeSnapshot(state),
       plugins: pluginManager ? pluginManager.getPlugins() : [],
       environment: terminalEnvironment,
       themeSource: getThemeSource?.() || "dark",
@@ -385,6 +760,9 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
     const state = getState();
     const workspace = state.workspaces.find((w) => w.id === workspaceId);
     if (!workspace) return null;
+    if (workspace.kind === "azure") {
+      return null;
+    }
     // Start all panels with "default" startup (not just the active one)
     for (const panel of workspace.panels) {
       if (panel.startup === APP_CONFIG.ui.defaultPanelStartup && !/^https?:\/\//i.test(panel.command || "")) {
@@ -553,9 +931,48 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
     broadcastState();
   });
 
+  azure.on("updated", () => {
+    broadcastState();
+  });
+
   tunnel.on("updated", () => {
     broadcastState();
   });
+
+  // Detect external review bridge changes (MCP agents writing drafts).
+  // Uses fs.watch for instant notification + PRAGMA data_version polling as reliable fallback.
+  let reviewBridgeWatcher = null;
+  let reviewBridgeDebounce = null;
+  let reviewBridgeDataVersion = reviewBridgeStore.getDataVersion?.() || 0;
+
+  function onReviewBridgeChange() {
+    if (reviewBridgeDebounce) clearTimeout(reviewBridgeDebounce);
+    reviewBridgeDebounce = setTimeout(() => {
+      reviewBridgeDebounce = null;
+      reviewBridgeDataVersion = reviewBridgeStore.getDataVersion?.() || 0;
+      broadcastState();
+    }, 100);
+  }
+
+  // 1. fs.watch on signal file — instant but unreliable on Windows
+  const reviewBridgeSignalPath = reviewBridgeStore.getSignalPath?.() || "";
+  if (reviewBridgeSignalPath) {
+    writeFile(reviewBridgeSignalPath, "0").catch(() => {});
+    try {
+      reviewBridgeWatcher = watch(reviewBridgeSignalPath, () => onReviewBridgeChange());
+      reviewBridgeWatcher.on("error", () => {});
+    } catch {
+      // fs.watch not available
+    }
+  }
+
+  // 2. PRAGMA data_version polling — reliable fallback, catches anything the watcher misses
+  let reviewBridgePoll = setInterval(() => {
+    const currentVersion = reviewBridgeStore.getDataVersion?.() || 0;
+    if (currentVersion !== reviewBridgeDataVersion) {
+      onReviewBridgeChange();
+    }
+  }, 3000);
 
   async function refreshDocker() {
     return docker.refresh();
@@ -563,7 +980,10 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
 
   async function refreshGit(projectId = null) {
     const state = getState();
-    const workspaces = state.workspaces.filter((workspace) => !projectId || workspace.id === projectId);
+    const workspaces = state.workspaces.filter((workspace) => (
+      (!projectId || workspace.id === projectId)
+      && workspace.kind !== "azure"
+    ));
     return git.refreshWorkspaces ? git.refreshWorkspaces(workspaces) : git.refreshProjects(workspaces);
   }
 
@@ -598,7 +1018,11 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
 
   async function syncWorktreesImpl() {
     const state = getState();
-    const parents = state.workspaces.filter((w) => !(w.notes || "").startsWith("Worktree of "));
+    const parents = state.workspaces.filter((workspace) => (
+      !(workspace.notes || "").startsWith("Worktree of ")
+      && workspace.kind !== "azure"
+      && workspace.review?.provider !== "azure-devops"
+    ));
     const worktrees = state.workspaces.filter((w) => (w.notes || "").startsWith("Worktree of "));
 
     // Build parent lookup: treeDir → parent workspace
@@ -724,12 +1148,29 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
     runtime: null, // Will be set after construction
   });
 
+  async function runInitialRefresh() {
+    await refreshDocker();
+    await refreshGit();
+    await refreshAzure();
+    scheduleAzurePolling();
+    await syncWorktrees();
+    await tunnel.refreshAvailability();
+  }
+
   ensureDockerPolling();
   ensureGitPolling();
-  await refreshDocker();
-  await refreshGit();
-  await syncWorktrees();
-  await tunnel.refreshAvailability();
+  if (deferInitialRefresh) {
+    scheduleAzurePolling();
+    runInitialRefresh().then(() => {
+      ensureVisibleSession();
+      broadcastState();
+    }).catch((error) => {
+      console.warn(`[runtime] Initial refresh error: ${error.message}`);
+      broadcastState();
+    });
+  } else {
+    await runInitialRefresh();
+  }
 
   return {
     on(channel, handler) {
@@ -770,7 +1211,7 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
       // so terminal startup output doesn't trigger false alerts
       const workspace = findWorkspace(getState(), workspaceId);
       if (workspace) {
-        updateVisibleSessions(workspace.panels.map((p) => createSessionId(workspaceId, p.id)));
+        updateVisibleSessions(workspace.kind === "azure" ? [] : workspace.panels.map((panel) => createSessionId(workspaceId, panel.id)));
       }
       if (workspace?.kind === "docker") {
         await refreshDocker();
@@ -823,6 +1264,7 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
       sessions.syncWithState(getState());
       syncSessionSignalsWithState();
       await refreshGit();
+      await refreshAzure();
       ensureVisibleSession();
       broadcastState();
       return getPayload();
@@ -846,6 +1288,7 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
       }
       clearProjectAlerts(workspaceId);
       await refreshGit();
+      await refreshAzure();
       ensureVisibleSession();
       broadcastState();
       return getPayload();
@@ -863,6 +1306,7 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
       sessions.syncWithState(getState());
       syncSessionSignalsWithState();
       await refreshGit();
+      await refreshAzure();
       broadcastState();
       return getPayload();
     },
@@ -907,6 +1351,211 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
       }
       broadcastState();
       return { payload: getPayload(), remoteAccessChanged };
+    },
+    async verifyAzureConnection(connection) {
+      return azure.verifyConnection(connection);
+    },
+    async saveAzureConnection(connection) {
+      const normalizedInput = normalizeConnectionInput(connection);
+      const connectionId = normalizedInput.id || `ado-${randomUUID()}`;
+      const tokenRef = connection.tokenRef || `cred:${connectionId}`;
+      const pat = connection.pat || credentialStore.getSecret(tokenRef);
+      const verification = await azure.verifyConnection({
+        ...normalizedInput,
+        pat,
+      });
+      const normalizedConnection = {
+        id: connectionId,
+        label: String(normalizedInput.label || connectionId).trim(),
+        orgUrl: String(normalizedInput.orgUrl || "").trim().replace(/\/+$/, ""),
+        login: String(normalizedInput.login || "").trim(),
+        tokenRef,
+        enabled: normalizedInput.enabled !== false,
+        profileId: connection.profileId || getState().activeProfileId || "default",
+        projectFilters: Array.isArray(normalizedInput.projectFilters) ? [...normalizedInput.projectFilters] : [],
+        repositoryFilters: Array.isArray(normalizedInput.repositoryFilters) ? [...normalizedInput.repositoryFilters] : [],
+        pollSeconds: Number(normalizedInput.pollSeconds) || getAzureSettings().defaultPollSeconds || 120,
+        reviewRoot: String(normalizedInput.reviewRoot || getAzureSettings().reviewRoot || "").trim(),
+      };
+
+      if (pat) {
+        await credentialStore.setSecret(tokenRef, pat);
+      }
+
+      await store.mutate((draft) => {
+        const azureSettings = draft.settings.integrations.azureDevops;
+        azureSettings.reviewRoot = normalizedConnection.reviewRoot || azureSettings.reviewRoot;
+        const index = azureSettings.connections.findIndex((entry) => entry.id === connectionId);
+        if (index >= 0) {
+          azureSettings.connections[index] = normalizedConnection;
+        } else {
+          azureSettings.connections.push(normalizedConnection);
+        }
+      });
+
+      await ensureAzureWorkspace();
+      await refreshAzure();
+      scheduleAzurePolling();
+      broadcastState();
+      return {
+        payload: getPayload(),
+        verification,
+      };
+    },
+    async deleteAzureConnection(connectionId) {
+      const connection = getAzureConnections().find((entry) => entry.id === connectionId);
+      if (connection?.tokenRef) {
+        await credentialStore.deleteSecret(connection.tokenRef);
+      }
+      await store.mutate((draft) => {
+        draft.settings.integrations.azureDevops.connections = draft.settings.integrations.azureDevops.connections
+          .filter((entry) => entry.id !== connectionId);
+      });
+      await refreshAzure();
+      scheduleAzurePolling();
+      broadcastState();
+      return getPayload();
+    },
+    async refreshAzureState() {
+      await refreshAzure();
+      return getPayload();
+    },
+    async markAzurePullRequestSeen(prKey) {
+      await azure.markPullRequestSeen(prKey);
+      return getPayload();
+    },
+    async openAzurePullRequest(payload) {
+      let result;
+      try {
+        result = await azure.openReviewWorkspace({
+          state: getState(),
+          prKey: payload.prKey,
+          workspaceId: payload.workspaceId || "",
+        });
+      } catch (err) {
+        const message = err instanceof Error
+          ? err.message
+          : (err?.stderr || err?.error?.message || String(err));
+        throw new Error(message);
+      }
+      await store.mutate((draft) => {
+        const normalized = normalizeWorkspace(result.workspace);
+        const index = draft.workspaces.findIndex((entry) => entry.id === normalized.id);
+        if (index >= 0) {
+          draft.workspaces[index] = normalized;
+        } else {
+          draft.workspaces.push(normalized);
+        }
+        draft.activeWorkspaceId = normalized.id;
+      });
+      await refreshGit(result.workspace.id);
+      await azure.markPullRequestSeen(payload.prKey);
+      await refreshAzure();
+      sessions.syncWithState(getState());
+      ensureVisibleSession(result.workspace.id);
+      broadcastState();
+      return getPayload();
+    },
+    async commentAzurePullRequest(payload) {
+      await azure.addPullRequestComment(payload);
+      await refreshAzure();
+      return getPayload();
+    },
+    async updateAzureThreadStatus(payload) {
+      await azure.updateThreadStatus(payload);
+      await refreshAzure();
+      return getPayload();
+    },
+    async createReviewBridgeLocalComment(payload) {
+      await reviewBridgeStore.createLocalComment(payload);
+      broadcastState();
+      return getPayload();
+    },
+    async saveReviewBridgeDraft(payload) {
+      await reviewBridgeStore.saveDraftResponse(payload);
+      broadcastState();
+      return getPayload();
+    },
+    async queueReviewBridgeDraft(payload) {
+      await reviewBridgeStore.queueDraftResponse(payload);
+      broadcastState();
+      return getPayload();
+    },
+    async saveAgentPrompt(payload) {
+      reviewBridgeStore.saveAgentPrompt(payload);
+      broadcastState();
+      return getPayload();
+    },
+    async deleteAgentPrompt(payload) {
+      reviewBridgeStore.deleteAgentPrompt(payload.promptId);
+      broadcastState();
+      return getPayload();
+    },
+    async deleteReviewBridgeComment(payload) {
+      await reviewBridgeStore.deleteComment(payload);
+      broadcastState();
+      return getPayload();
+    },
+    async deleteReviewBridgeDraft(payload) {
+      await reviewBridgeStore.deleteDraft(payload);
+      broadcastState();
+      return getPayload();
+    },
+    async syncReviewBridgePullRequest(payload) {
+      const prKey = String(payload?.prKey || "").trim();
+      if (!prKey) {
+        throw new Error("Pull request key is required.");
+      }
+      await reviewBridgeStore.syncPendingDrafts(prKey, async (entry) => {
+        await azure.addPullRequestComment({
+          prKey,
+          content: entry.body,
+          threadId: entry.remoteThreadId,
+          parentCommentId: entry.parentCommentId || 0,
+        });
+        return {
+          publishedAt: new Date().toISOString(),
+          threadId: entry.remoteThreadId,
+        };
+      });
+      await refreshAzure();
+      broadcastState();
+      return getPayload();
+    },
+    async voteAzurePullRequest(payload) {
+      await azure.setPullRequestVote(payload);
+      await refreshAzure();
+      return getPayload();
+    },
+    async fetchAzureReviewWorkspace(workspaceId) {
+      const workspace = findWorkspace(getState(), workspaceId);
+      if (!workspace?.review) {
+        throw new Error("Azure review workspace not found.");
+      }
+      await azure.fetchReviewWorkspace({ workspace });
+      await refreshGit(workspaceId);
+      await refreshAzure();
+      return getPayload();
+    },
+    async rebaseAzureReviewWorkspace(workspaceId) {
+      const workspace = findWorkspace(getState(), workspaceId);
+      if (!workspace?.review) {
+        throw new Error("Azure review workspace not found.");
+      }
+      await azure.rebaseReviewWorkspace({ workspace });
+      await refreshGit(workspaceId);
+      await refreshAzure();
+      return getPayload();
+    },
+    async pushAzureReviewWorkspace(workspaceId) {
+      const workspace = findWorkspace(getState(), workspaceId);
+      if (!workspace?.review) {
+        throw new Error("Azure review workspace not found.");
+      }
+      await azure.pushReviewWorkspace({ workspace });
+      await refreshGit(workspaceId);
+      await refreshAzure();
+      return getPayload();
     },
     async regenerateRemoteToken() {
       await store.mutate((draft) => {
@@ -994,6 +1643,7 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
     },
     async refreshGitState(projectId = null) {
       await refreshGit(projectId);
+      await refreshAzure();
       return getPayload();
     },
     async gitFetch(payload = {}) {
@@ -1262,6 +1912,7 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
 
       sessions.syncWithState(getState());
       await refreshGit();
+      await refreshAzure();
       ensureVisibleSession();
       broadcastState();
       return getPayload();
@@ -1333,10 +1984,23 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
         clearInterval(gitPoll);
         gitPoll = null;
       }
+      if (reviewBridgeWatcher) {
+        reviewBridgeWatcher.close();
+        reviewBridgeWatcher = null;
+      }
+      if (reviewBridgePoll) {
+        clearInterval(reviewBridgePoll);
+        reviewBridgePoll = null;
+      }
+      azure.stopPolling();
       await tunnel.stop({ preserveAvailability: true, quiet: true });
       await pluginManager.stopAll();
       sessions.stopAll();
-      return store.save();
+      await reviewBridgeStore.close?.();
+      // State is already persisted on each mutate/replace operation.
+      // Avoid rewriting the file on shutdown, which can overwrite newer
+      // on-disk state if another instance touched it more recently.
+      return undefined;
     },
     listRemoteUrls() {
       return remoteInfo?.urls || [];

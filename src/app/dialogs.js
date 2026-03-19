@@ -84,6 +84,10 @@ export function createWorkspaceDialog({ workspace = null, api = null, tabTemplat
     return draft.kind === "docker";
   }
 
+  function isAzureWorkspace() {
+    return draft.kind === "azure";
+  }
+
   function renderPanels() {
     const panelList = overlay.querySelector(".panel-list");
     if (!panelList) {
@@ -104,7 +108,7 @@ export function createWorkspaceDialog({ workspace = null, api = null, tabTemplat
         </div>
         <form class="form">
           <label>
-            <span>Working directory</span>
+            <span>${isAzureWorkspace() ? "Review checkout root" : "Working directory"}</span>
             <div class="input-with-action">
               <input name="cwd" .value=${draft.cwd} placeholder=${APP_CONFIG.ui.defaultProjectCwdPlaceholder} maxlength="500" />
               ${api?.browseDirectory
@@ -139,11 +143,14 @@ export function createWorkspaceDialog({ workspace = null, api = null, tabTemplat
           ${isDockerWorkspace()
             ? html`<p style="color:var(--muted);font-size:13px;border:1px solid var(--border);border-radius:4px;padding:10px;">Docker tabs (shells, logs) are created from the Docker manager inside the workspace. No manual tab setup needed.</p>`
             : html`
+                ${isAzureWorkspace()
+                  ? html`<p style="color:var(--muted);font-size:13px;border:1px solid var(--border);border-radius:4px;padding:10px;">This workspace is the Azure DevOps parent. Its checkout root is used for managed review checkouts, and these tabs are copied into each new review subworkspace.</p>`
+                  : nothing}
                 <section class="panel-editor">
                   <div class="section-head">
                     <div>
                       <p class="eyebrow">Panels</p>
-                      <h3>Terminal tabs</h3>
+                      <h3>${isAzureWorkspace() ? "Review workspace tabs" : "Terminal tabs"}</h3>
                     </div>
                   </div>
                   <div style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:8px;">
@@ -500,6 +507,257 @@ export function createSettingsDialog({ settings, tabTemplates = [], appVersion =
   });
 
   renderContent();
+  return overlay;
+}
+
+export function createAzureConnectionDialog({
+  connection = null,
+  defaultReviewRoot = "",
+  api = null,
+  onCancel,
+  onSave,
+}) {
+  const draft = {
+    id: connection?.id || "",
+    label: connection?.label || "",
+    orgUrl: connection?.orgUrl || "",
+    login: connection?.login || "",
+    pat: "",
+    reviewRoot: connection?.reviewRoot || defaultReviewRoot || "",
+    projectFilters: (connection?.projectFilters || []).join(", "),
+    repositoryFilters: (connection?.repositoryFilters || []).join(", "),
+    pollSeconds: connection?.pollSeconds || 120,
+    enabled: connection?.enabled !== false,
+  };
+  let verification = null;
+  let errorMessage = "";
+  let busy = false;
+  const overlay = document.createElement("div");
+  overlay.className = "overlay";
+
+  function renderContent() {
+    renderInto(overlay, html`
+      <div class="dialog" style="width:min(680px,100%);">
+        <div class="dialog__header">
+          <div>
+            <p class="eyebrow">Azure DevOps</p>
+            <h2>${connection ? "Edit connection" : "Add connection"}</h2>
+          </div>
+          <button type="button" class="button button--ghost" data-action="cancel">Close</button>
+        </div>
+        <form class="form">
+          <div class="grid">
+            <label>
+              <span>Label</span>
+              <input name="label" .value=${draft.label} required maxlength="60" />
+            </label>
+            <label>
+              <span>Poll seconds</span>
+              <input name="poll-seconds" type="number" min="15" max="3600" .value=${String(draft.pollSeconds || 120)} />
+            </label>
+          </div>
+          <label>
+            <span>Organization URL</span>
+            <input name="org-url" .value=${draft.orgUrl} placeholder="https://dev.azure.com/your-org" required maxlength="300" />
+            <small style="color:var(--muted);font-size:12px;">A project or repository page URL also works. The app will normalize it.</small>
+          </label>
+          <div class="grid">
+            <label>
+              <span>Login / UPN</span>
+              <input name="login" .value=${draft.login} placeholder="me@company.com" required maxlength="200" />
+            </label>
+            <label>
+              <span>PAT ${connection ? "(leave empty to keep current token)" : ""}</span>
+              <input name="pat" type="password" .value=${draft.pat} placeholder="Personal Access Token" maxlength="300" />
+            </label>
+          </div>
+          <label>
+            <span>Review checkout root</span>
+            <div class="input-with-action">
+              <input name="review-root" .value=${draft.reviewRoot} placeholder="C:/Users/me/.strideterm/azure-pr" maxlength="500" />
+              ${api?.browseDirectory
+                ? html`<button type="button" class="button button--ghost input-with-action__btn" data-action="browse-review-root">Browse</button>`
+                : nothing}
+            </div>
+          </label>
+          <div class="grid">
+            <label>
+              <span>Project filters</span>
+              <input name="project-filters" .value=${draft.projectFilters} placeholder="Platform, Mobile" maxlength="500" />
+              <small style="color:var(--muted);font-size:12px;">Comma-separated project ids or names.</small>
+            </label>
+            <label>
+              <span>Repository filters</span>
+              <input name="repository-filters" .value=${draft.repositoryFilters} placeholder="web-app, api" maxlength="500" />
+              <small style="color:var(--muted);font-size:12px;">Optional repo ids or names.</small>
+            </label>
+          </div>
+          <label style="display:flex;align-items:center;gap:8px;">
+            <input name="enabled" type="checkbox" ?checked=${draft.enabled} />
+            <span>Enable polling for this connection</span>
+          </label>
+          ${errorMessage ? html`<p style="margin:0;color:var(--danger);">${errorMessage}</p>` : nothing}
+          ${verification ? html`
+            <div style="border:1px solid var(--border);border-radius:6px;padding:12px;background:rgba(255,255,255,0.03);display:grid;gap:6px;">
+              <strong>Connection verified</strong>
+              <small style="color:var(--muted);">${verification.projectCount} projects available.</small>
+              <div style="display:flex;flex-wrap:wrap;gap:6px;">
+                ${verification.projects.slice(0, 8).map((project) => html`<span class="workspace-chip">${project.name}</span>`)}
+              </div>
+            </div>
+          ` : nothing}
+          <footer class="dialog__footer">
+            <button type="button" class="button button--ghost" data-action="cancel">Cancel</button>
+            <button type="button" class="button button--ghost" data-action="test-connection" ?disabled=${busy}>Test connection</button>
+            <button type="submit" class="button" ?disabled=${busy}>Save connection</button>
+          </footer>
+        </form>
+      </div>
+    `);
+  }
+
+  function readDraft() {
+    const form = overlay.querySelector("form");
+    draft.label = form.elements.label.value.trim();
+    draft.orgUrl = form.elements["org-url"].value.trim();
+    draft.login = form.elements.login.value.trim();
+    draft.pat = form.elements.pat.value.trim();
+    draft.reviewRoot = form.elements["review-root"].value.trim();
+    draft.projectFilters = form.elements["project-filters"].value.trim();
+    draft.repositoryFilters = form.elements["repository-filters"].value.trim();
+    draft.pollSeconds = Number.parseInt(form.elements["poll-seconds"].value, 10) || 120;
+    draft.enabled = form.elements.enabled.checked;
+    return {
+      id: draft.id,
+      label: draft.label,
+      orgUrl: draft.orgUrl,
+      login: draft.login,
+      pat: draft.pat,
+      reviewRoot: draft.reviewRoot,
+      enabled: draft.enabled,
+      pollSeconds: draft.pollSeconds,
+      projectFilters: draft.projectFilters.split(",").map((value) => value.trim()).filter(Boolean),
+      repositoryFilters: draft.repositoryFilters.split(",").map((value) => value.trim()).filter(Boolean),
+    };
+  }
+
+  overlay.addEventListener("click", async (event) => {
+    const element = event.target.closest("[data-action]");
+    const action = element?.dataset.action;
+    if (!action) {
+      if (event.target === overlay) {
+        onCancel();
+      }
+      return;
+    }
+    if (action === "cancel") {
+      onCancel();
+      return;
+    }
+    if (action === "browse-review-root" && api?.browseDirectory) {
+      const selected = await api.browseDirectory(draft.reviewRoot || defaultReviewRoot || "");
+      if (selected) {
+        draft.reviewRoot = selected;
+        overlay.querySelector('[name="review-root"]').value = selected;
+      }
+      return;
+    }
+    if (action === "test-connection") {
+      busy = true;
+      errorMessage = "";
+      verification = null;
+      renderContent();
+      try {
+        verification = await api.verifyAzureConnection(readDraft());
+      } catch (error) {
+        errorMessage = error?.message || "Azure DevOps connection test failed.";
+      } finally {
+        busy = false;
+        renderContent();
+      }
+    }
+  });
+
+  overlay.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    busy = true;
+    errorMessage = "";
+    renderContent();
+    try {
+      await onSave(readDraft());
+    } catch (error) {
+      errorMessage = error?.message || "Saving Azure DevOps connection failed.";
+      busy = false;
+      renderContent();
+    }
+  });
+
+  renderContent();
+  return overlay;
+}
+
+export function createTextAreaDialog({
+  eyebrow = "Workspace",
+  title,
+  label,
+  value = "",
+  placeholder = "",
+  submitLabel = "Save",
+  secondarySubmitLabel = "",
+  onCancel,
+  onSubmit,
+  onSecondarySubmit,
+}) {
+  const overlay = document.createElement("div");
+  overlay.className = "overlay";
+
+  renderInto(overlay, html`
+    <div class="dialog" style="width:min(560px,100%);">
+      <div class="dialog__header">
+        <div>
+          <p class="eyebrow">${eyebrow}</p>
+          <h2>${title}</h2>
+        </div>
+        <button type="button" class="button button--ghost" data-action="cancel">Close</button>
+      </div>
+      <form class="form">
+        <label>
+          <span>${label}</span>
+          <textarea name="value" rows="8" placeholder=${placeholder}>${value}</textarea>
+        </label>
+        <footer class="dialog__footer">
+          <button type="button" class="button button--ghost" data-action="cancel">Cancel</button>
+          ${secondarySubmitLabel && onSecondarySubmit
+            ? html`<button type="button" class="button button--ghost" data-action="secondary-submit">${secondarySubmitLabel}</button>`
+            : nothing}
+          <button type="submit" class="button">${submitLabel}</button>
+        </footer>
+      </form>
+    </div>
+  `);
+
+  overlay.addEventListener("click", (event) => {
+    const action = event.target.closest("[data-action]")?.dataset.action;
+    if (action === "cancel" || event.target === overlay) {
+      onCancel();
+    }
+    if (action === "secondary-submit" && onSecondarySubmit) {
+      const nextValue = overlay.querySelector('[name="value"]')?.value?.trim() || "";
+      if (nextValue) {
+        onSecondarySubmit(nextValue);
+      }
+    }
+  });
+
+  overlay.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const nextValue = overlay.querySelector('[name="value"]')?.value?.trim() || "";
+    if (!nextValue) {
+      return;
+    }
+    onSubmit(nextValue);
+  });
+
   return overlay;
 }
 

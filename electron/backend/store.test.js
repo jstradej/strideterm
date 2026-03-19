@@ -35,4 +35,13 @@ describe("store", () => {
     expect(store.getState().settings.remoteAccess.port).toBe(50001);
     expect(store.getState().settings.sidebarWidth).toBe(360);
   });
+
+  test("does not overwrite an unreadable existing state file", async () => {
+    const statePath = await createTempStatePath();
+    const brokenContent = "{ not-valid-json";
+    await fs.writeFile(statePath, brokenContent, "utf8");
+
+    await expect(createStore(statePath)).rejects.toThrow(/left untouched/i);
+    await expect(fs.readFile(statePath, "utf8")).resolves.toBe(brokenContent);
+  });
 });

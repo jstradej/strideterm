@@ -43,6 +43,10 @@ describe("GitManager", () => {
     const execGitImpl = createExecMock({
       [`${root}::rev-parse --show-toplevel`]: { stdout: `${root}\n`, stderr: "" },
       [`${root}::rev-parse --abbrev-ref HEAD`]: { stdout: "feature-x\n", stderr: "" },
+      [`${root}::remote -v`]: {
+        stdout: "origin\thttps://dev.azure.com/acme/Platform/_git/web-app (fetch)\norigin\thttps://dev.azure.com/acme/Platform/_git/web-app (push)\n",
+        stderr: "",
+      },
       [`${root}::rev-list --count HEAD`]: { stdout: "42\n", stderr: "" },
       [`${root}::status --porcelain=v2 --branch`]: {
         stdout: [
@@ -104,6 +108,7 @@ describe("GitManager", () => {
 
     expect(snapshot.available).toBe(true);
     expect(snapshot.branch).toBe("feature-x");
+    expect(snapshot.remotes.origin).toBe("https://dev.azure.com/acme/Platform/_git/web-app");
     expect(snapshot.baseBranch).toBe("main");
     expect(snapshot.aheadCount).toBe(2);
     expect(snapshot.behindCount).toBe(1);
@@ -134,6 +139,7 @@ describe("GitManager", () => {
     const execGitImpl = createExecMock({
       [`${root}::rev-parse --show-toplevel`]: { stdout: `${root}\n`, stderr: "" },
       [`${root}::rev-parse --abbrev-ref HEAD`]: { stdout: "feature-x\n", stderr: "" },
+      [`${root}::remote -v`]: { stdout: "", stderr: "" },
       [`${root}::rev-list --count HEAD`]: { stdout: "1\n", stderr: "" },
       [`${root}::status --porcelain=v2 --branch`]: { stdout: "# branch.head feature-x\n", stderr: "" },
       [`${root}::status --short`]: { stdout: "UU src/app.js\n", stderr: "" },
@@ -165,6 +171,7 @@ describe("GitManager", () => {
     const execGitImpl = createExecMock({
       [`${root}::rev-parse --show-toplevel`]: { stdout: `${root}\n`, stderr: "" },
       [`${root}::rev-parse --abbrev-ref HEAD`]: { stdout: "feature-x\n", stderr: "" },
+      [`${root}::remote -v`]: { stdout: "", stderr: "" },
       [`${root}::rev-list --count HEAD`]: { stdout: "1\n", stderr: "" },
       [`${root}::status --porcelain=v2 --branch`]: { stdout: "# branch.head feature-x\n# branch.upstream origin/feature-x\n", stderr: "" },
       [`${root}::status --short`]: { stdout: "", stderr: "" },
@@ -245,6 +252,7 @@ describe("GitManager", () => {
     const execGitImpl = createExecMock({
       [`${root}::rev-parse --show-toplevel`]: { stdout: `${root}\n`, stderr: "" },
       [`${root}::rev-parse --abbrev-ref HEAD`]: { stdout: "feature-x\n", stderr: "" },
+      [`${root}::remote -v`]: { stdout: "", stderr: "" },
       [`${root}::rev-list --count HEAD`]: { stdout: "42\n", stderr: "" },
       [`${root}::status --porcelain=v2 --branch`]: { stdout: "# branch.head feature-x\n", stderr: "" },
       [`${root}::status --short`]: { stdout: "", stderr: "" },

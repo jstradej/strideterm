@@ -40,6 +40,10 @@ out/
 # strIDEterm local artifacts
 .strideterm/
 .private/
+credentials.json
+*.db
+*.db-wal
+*.db-shm
 strideterm-state.json
 strideterm-state.*.json
 strideterm-export*.json

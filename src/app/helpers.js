@@ -143,6 +143,14 @@ export function isBrowserViewId(value) {
   return String(value || "").startsWith("browser:");
 }
 
+export function isAzureViewId(value) {
+  return String(value || "").startsWith("azure:");
+}
+
+export function isReviewViewId(value) {
+  return String(value || "").startsWith("review:");
+}
+
 export function isUrlCommand(value) {
   const cmd = String(value || "").trim();
   return /^https?:\/\//i.test(cmd);

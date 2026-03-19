@@ -1,9 +1,97 @@
+function readActiveAttention(payload, workspaceId) {
+  return payload?.attention?.byWorkspace?.[workspaceId]
+    || payload?.attention?.byProject?.[workspaceId]
+    || null;
+}
+
+function readActiveGitSnapshot(payload, workspaceId) {
+  return payload?.git?.workspaces?.[workspaceId]
+    || payload?.git?.projects?.[workspaceId]
+    || null;
+}
+
+function readActiveReviewBridge(payload, reviewPrKey) {
+  const context = reviewPrKey ? (payload?.reviewBridge?.pullRequests?.[reviewPrKey] || null) : null;
+  if (!context) {
+    return null;
+  }
+  return {
+    prKey: context.prKey,
+    exportDir: context.exportDir,
+    comments: (context.comments || []).map((c) => ({
+      commentKey: c.commentKey,
+      commentKind: c.commentKind,
+      displayIndex: c.displayIndex,
+      remoteThreadId: c.remoteThreadId,
+      title: c.title,
+      summary: c.summary,
+      status: c.status,
+      priority: c.priority,
+      updatedAt: c.updatedAt,
+      payload: c.payload || {},
+    })),
+    drafts: (context.drafts || []).map((draft) => ({
+      draftId: draft.draftId,
+      commentKey: draft.commentKey,
+      body: draft.body,
+      status: draft.status,
+      authorAgent: draft.authorAgent,
+      updatedAt: draft.updatedAt,
+    })),
+    syncQueue: (context.syncQueue || []).map((item) => ({
+      queueId: item.queueId,
+      operation: item.operation,
+      status: item.status,
+      attempts: item.attempts,
+      lastError: item.lastError,
+      updatedAt: item.updatedAt,
+    })),
+    briefMarkdownPath: context.briefMarkdownPath,
+    briefJsonPath: context.briefJsonPath,
+    threadsMarkdownPath: context.threadsMarkdownPath,
+    draftsMarkdownPath: context.draftsMarkdownPath,
+    syncStatusMarkdownPath: context.syncStatusMarkdownPath,
+    databasePath: context.databasePath,
+    cliPath: context.cliPath,
+    agentInstructions: context.agentInstructions || null,
+  };
+}
+
+function selectActiveWorkspaceRenderState(payload) {
+  const activeWorkspaceId = payload?.appState?.activeWorkspaceId || "";
+  const activeWorkspace = (payload?.appState?.workspaces || []).find((workspace) => workspace.id === activeWorkspaceId) || null;
+  const reviewPrKey = activeWorkspace?.review?.provider === "azure-devops"
+    ? activeWorkspace.review.prKey
+    : "";
+
+  return {
+    activeWorkspaceId,
+    activeWorkspace,
+    workspacePayload: payload?.workspace || null,
+    attention: readActiveAttention(payload, activeWorkspaceId),
+    git: readActiveGitSnapshot(payload, activeWorkspaceId),
+    docker: activeWorkspace?.kind === "docker" ? (payload?.docker || null) : null,
+    azureInbox: activeWorkspace?.kind === "azure" ? (payload?.azureDevops || null) : null,
+    azureReview: reviewPrKey ? (payload?.azureDevops?.pullRequests?.[reviewPrKey] || null) : null,
+    reviewBridge: readActiveReviewBridge(payload, reviewPrKey),
+  };
+}
+
+export function shouldRenderActiveWorkspace(nextPayload, previousPayload) {
+  if (!previousPayload) {
+    return true;
+  }
+  return JSON.stringify(selectActiveWorkspaceRenderState(nextPayload))
+    !== JSON.stringify(selectActiveWorkspaceRenderState(previousPayload));
+}
+
 export function wireRuntimeBindings({
   api,
   state,
   terminalStage,
   focusActiveTerminal,
   render,
+  renderBackground,
   renderBootstrapError,
   clearRemoteConnectionIssue,
   setRemoteConnectionIssue,
@@ -16,19 +104,53 @@ export function wireRuntimeBindings({
   scheduleActiveResize,
   isGitViewId,
   isDockerViewId,
+  isAzureViewId,
+  isReviewViewId,
   isBrowserViewId,
   terminalController,
 }) {
   api.onStateUpdated((payload) => {
+    const pendingWorkspaceId = state.pendingWorkspaceActivationId || "";
+    const incomingWorkspaceId = payload?.appState?.activeWorkspaceId || "";
+    const isBootstrapPayload = Boolean(payload?.meta?.bootstrap);
+    if (pendingWorkspaceId && incomingWorkspaceId && incomingWorkspaceId !== pendingWorkspaceId) {
+      return;
+    }
+    if (pendingWorkspaceId && incomingWorkspaceId === pendingWorkspaceId && !isBootstrapPayload) {
+      state.pendingWorkspaceActivationId = "";
+    }
     state.bootstrapError = "";
     clearRemoteConnectionIssue();
-    if (payload?.appState?.activeWorkspaceId !== state.payload?.appState?.activeWorkspaceId) {
+    const previousPayload = state.payload;
+    const shouldRefreshActiveWorkspace = shouldRenderActiveWorkspace(payload, previousPayload);
+    if (payload?.appState?.activeWorkspaceId !== previousPayload?.appState?.activeWorkspaceId) {
       state.splitGroup = null;
+    }
+    if (state.pendingViewActivationId) {
+      const nextWorkspace = payload?.workspace;
+      const nextTabs = nextWorkspace
+        ? getWorkspaceTabs(nextWorkspace)
+        : [];
+      if (!nextTabs.some((tab) => tab.id === state.pendingViewActivationId)) {
+        return;
+      }
+      state.activeViewId = state.pendingViewActivationId;
+      state.activeSessionId = state.pendingViewActivationId;
+      if (!isBootstrapPayload) {
+        state.pendingViewActivationId = "";
+      }
     }
     state.payload = payload;
     if (!state._suppressBroadcastRender) {
-      render();
-      focusActiveTerminal();
+      if (shouldRefreshActiveWorkspace) {
+        render();
+        // Don't steal focus from open dialogs/overlays (e.g. user editing a draft)
+        if (!state.overlay) {
+          focusActiveTerminal();
+        }
+      } else {
+        renderBackground?.();
+      }
     }
   });
 
@@ -115,7 +237,7 @@ export function wireRuntimeBindings({
     }
 
     state.activeViewId = pane.dataset.viewId || state.activeViewId;
-    state.activeSessionId = (isGitViewId(state.activeViewId) || isDockerViewId(state.activeViewId) || isBrowserViewId(state.activeViewId)) ? null : state.activeViewId;
+    state.activeSessionId = (isGitViewId(state.activeViewId) || isDockerViewId(state.activeViewId) || isAzureViewId(state.activeViewId) || isReviewViewId(state.activeViewId) || isBrowserViewId(state.activeViewId)) ? null : state.activeViewId;
     focusActiveTerminal();
   });
 
@@ -135,8 +257,30 @@ export function wireRuntimeBindings({
   }
 
   api.getState().then((payload) => {
+    const pendingWorkspaceId = state.pendingWorkspaceActivationId || "";
+    const incomingWorkspaceId = payload?.appState?.activeWorkspaceId || "";
+    const isBootstrapPayload = Boolean(payload?.meta?.bootstrap);
+    if (pendingWorkspaceId && incomingWorkspaceId && incomingWorkspaceId !== pendingWorkspaceId) {
+      return;
+    }
+    if (pendingWorkspaceId && incomingWorkspaceId === pendingWorkspaceId && !isBootstrapPayload) {
+      state.pendingWorkspaceActivationId = "";
+    }
     state.bootstrapError = "";
     clearRemoteConnectionIssue();
+    if (state.pendingViewActivationId) {
+      const nextWorkspace = payload?.workspace;
+      const nextTabs = nextWorkspace
+        ? getWorkspaceTabs(nextWorkspace)
+        : [];
+      if (nextTabs.some((tab) => tab.id === state.pendingViewActivationId)) {
+        state.activeViewId = state.pendingViewActivationId;
+        state.activeSessionId = state.pendingViewActivationId;
+        if (!isBootstrapPayload) {
+          state.pendingViewActivationId = "";
+        }
+      }
+    }
     state.payload = payload;
     render();
     focusActiveTerminal();

@@ -766,3 +766,230 @@ export function renderDockerMarkup(dockerState = {}) {
     </section>
   `;
 }
+
+function renderPullRequestRow(item) {
+  return `
+    <div class="azure-pr-row">
+      <div class="azure-pr-row__main">
+        <div class="azure-pr-row__title">
+          <span class="azure-pr-row__id">#${escapeHtml(String(item.pullRequest.id))}</span>
+          <strong>${escapeHtml(item.pullRequest.title)}</strong>
+          ${item.hasAttention ? `<span class="workspace-chip workspace-chip--alert">${escapeHtml(item.attentionReason || "attention")}</span>` : ""}
+        </div>
+        <div class="azure-pr-row__meta">
+          <span>${escapeHtml(item.project.name)} / ${escapeHtml(item.repository.name)}</span>
+          <span>\u00B7</span>
+          <span>${escapeHtml(item.author.displayName)}</span>
+          <span>\u00B7</span>
+          <span>${escapeHtml(item.role)}</span>
+        </div>
+        <div class="azure-pr-row__branch">
+          ${escapeHtml(item.pullRequest.sourceRefName.replace(/^refs\/heads\//, ""))} \u2192 ${escapeHtml(item.pullRequest.targetRefName.replace(/^refs\/heads\//, ""))}
+        </div>
+      </div>
+      <div class="azure-pr-row__actions">
+        <button class="button" data-action="open-azure-pull-request" data-pr-key="${escapeHtml(item.prKey)}" data-workspace-id="${escapeHtml(item.role === "author" && item.existingWorkspaceId && !item.reviewWorkspaceId ? item.existingWorkspaceId : "")}">
+          ${item.role === "author" && item.existingWorkspaceId && !item.reviewWorkspaceId ? "Attach" : (item.reviewWorkspaceId ? "Open" : "Review")}
+        </button>
+        <button class="button button--ghost" data-action="open-azure-browser" data-url="${escapeHtml(item.pullRequest.webUrl || item.pullRequest.url)}">Browser</button>
+        ${item.hasAttention ? `<button class="button button--ghost" data-action="mark-azure-pr-seen" data-pr-key="${escapeHtml(item.prKey)}">Seen</button>` : ""}
+      </div>
+    </div>`;
+}
+
+function renderPullRequestList(items = []) {
+  if (!items.length) {
+    return '<div class="azure-empty"><p>No pull requests in this view.</p></div>';
+  }
+  return items.map(renderPullRequestRow).join("");
+}
+
+export function renderAzureInboxMarkup(azure = {}, settings = {}) {
+  const connections = azure.connections || [];
+  const inbox = azure.inbox || {};
+  if (!connections.length) {
+    return `
+      <div class="terminal-empty">
+        <p>No Azure DevOps connections yet</p>
+        <small>Add a connection with organization URL, login, PAT and review checkout path.</small>
+        <div class="docker-card__actions" style="margin-top:12px;">
+          <button class="button" data-action="open-azure-connection-dialog">Add Azure connection</button>
+        </div>
+      </div>
+    `;
+  }
+
+  const needsReviewCount = inbox.needsMyReview?.length || 0;
+  const myPrsCount = inbox.myPullRequests?.length || 0;
+  const attentionCount = inbox.needsAttention?.length || 0;
+
+  return `
+    <div class="azure-inbox">
+      <div class="azure-inbox__toolbar">
+        <div class="azure-inbox__tabs">
+          <button class="azure-tab azure-tab--active" data-action="azure-switch-tab" data-tab="needs-review">
+            Needs review <span class="azure-tab__count">${escapeHtml(String(needsReviewCount))}</span>
+          </button>
+          <button class="azure-tab" data-action="azure-switch-tab" data-tab="my-prs">
+            My PRs <span class="azure-tab__count">${escapeHtml(String(myPrsCount))}</span>
+          </button>
+          ${attentionCount ? `
+            <button class="azure-tab azure-tab--alert" data-action="azure-switch-tab" data-tab="attention">
+              Attention <span class="azure-tab__count">${escapeHtml(String(attentionCount))}</span>
+            </button>
+          ` : ""}
+          <button class="azure-tab" data-action="azure-switch-tab" data-tab="connections">
+            Connections <span class="azure-tab__count">${escapeHtml(String(connections.length))}</span>
+          </button>
+        </div>
+        <div class="azure-inbox__actions">
+          <button class="button button--ghost" data-action="refresh-azure">Refresh</button>
+          <button class="button" data-action="open-azure-connection-dialog">Add connection</button>
+        </div>
+      </div>
+
+      <div class="azure-inbox__content">
+        <div class="azure-section azure-section--active" data-azure-section="needs-review">
+          ${renderPullRequestList(inbox.needsMyReview)}
+        </div>
+        <div class="azure-section" data-azure-section="my-prs">
+          ${renderPullRequestList(inbox.myPullRequests)}
+        </div>
+        ${attentionCount ? `
+          <div class="azure-section" data-azure-section="attention">
+            ${renderPullRequestList(inbox.needsAttention)}
+          </div>
+        ` : ""}
+        <div class="azure-section" data-azure-section="connections">
+          <div class="docker-list" style="padding:0 4px 4px;">
+            ${connections.map((connection) => `
+              <div class="docker-card">
+                <div class="docker-card__head">
+                  <div>
+                    <h4>${escapeHtml(connection.label)}</h4>
+                    <p class="docker-card__meta">${escapeHtml(connection.orgUrl)}</p>
+                  </div>
+                  <span class="docker-state docker-state--${connection.status === "ok" ? "running" : "stopped"}">${escapeHtml(connection.status || "idle")}</span>
+                </div>
+                <div class="docker-card__meta">
+                  <span>${escapeHtml(connection.login)} ${escapeHtml(connection.projectFilters?.join(", ") || "all projects")}</span>
+                </div>
+                <div class="docker-card__actions">
+                  <button class="button button--ghost" data-action="open-azure-connection-dialog" data-connection-id="${escapeHtml(connection.id)}">Edit</button>
+                  <button class="button button--ghost danger" data-action="delete-azure-connection" data-connection-id="${escapeHtml(connection.id)}">Delete</button>
+                </div>
+              </div>
+            `).join("")}
+          </div>
+          <p class="git-card__hint" style="padding:8px 4px;">Review root: ${escapeHtml(settings.reviewRoot || "")}</p>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+export function renderAzureReviewMarkup(detail = {}, workspaceId = "") {
+  const threads = detail.threads || [];
+  const changedFiles = detail.changedFiles || [];
+  const localChangedFiles = detail.localChangedFiles || [];
+  return `
+    <div class="git-view">
+      <div class="git-view__toolbar">
+        <div class="git-view__summary">
+          <span class="workspace-chip"><strong>PR #${escapeHtml(String(detail.pullRequest?.id || ""))}</strong></span>
+          <span class="workspace-chip">${escapeHtml(detail.project?.name || "")} / ${escapeHtml(detail.repository?.name || "")}</span>
+          <span class="workspace-chip">${escapeHtml(detail.role || "")}</span>
+          ${detail.hasAttention ? `<span class="workspace-chip workspace-chip--alert">${escapeHtml(detail.attentionReason || "attention")}</span>` : ""}
+        </div>
+        <div class="git-view__actions" style="margin-left:auto;">
+          <button class="button button--ghost" data-action="refresh-azure">Refresh</button>
+          <button class="button button--ghost" data-action="mark-azure-pr-seen" data-pr-key="${escapeHtml(detail.prKey || "")}">Mark seen</button>
+          <button class="button button--ghost" data-action="open-azure-browser" data-url="${escapeHtml(detail.pullRequest?.webUrl || detail.pullRequest?.url || "")}">Browser</button>
+        </div>
+      </div>
+      <div class="git-grid">
+        <article class="git-card">
+          <div class="section-head">
+            <div>
+              <p class="eyebrow">Overview</p>
+              <h3>${escapeHtml(detail.pullRequest?.title || "Azure review")}</h3>
+            </div>
+          </div>
+          <p class="git-card__hint">${escapeHtml(detail.pullRequest?.description || "No description.")}</p>
+          <p class="git-card__hint">${escapeHtml((detail.pullRequest?.sourceRefName || "").replace(/^refs\/heads\//, ""))} → ${escapeHtml((detail.pullRequest?.targetRefName || "").replace(/^refs\/heads\//, ""))}</p>
+          <div class="docker-card__actions">
+            <button class="button button--ghost" data-action="azure-fetch-review-workspace" data-workspace-id="${escapeHtml(workspaceId)}">Fetch</button>
+            <button class="button button--ghost" data-action="azure-rebase-review-workspace" data-workspace-id="${escapeHtml(workspaceId)}">Rebase on target</button>
+            <button class="button button--ghost" data-action="azure-push-review-workspace" data-workspace-id="${escapeHtml(workspaceId)}">Push branch</button>
+            <button class="button button--ghost" data-action="open-lazygit" data-workspace-id="${escapeHtml(workspaceId)}">Open Lazygit</button>
+          </div>
+          <div class="docker-card__actions">
+            <button class="button button--ghost" data-action="azure-vote" data-pr-key="${escapeHtml(detail.prKey || "")}" data-vote="10">Approve</button>
+            <button class="button button--ghost" data-action="azure-vote" data-pr-key="${escapeHtml(detail.prKey || "")}" data-vote="5">Approve with suggestions</button>
+            <button class="button button--ghost" data-action="azure-vote" data-pr-key="${escapeHtml(detail.prKey || "")}" data-vote="-5">Wait</button>
+            <button class="button button--ghost danger" data-action="azure-vote" data-pr-key="${escapeHtml(detail.prKey || "")}" data-vote="-10">Reject</button>
+            <button class="button button--ghost" data-action="azure-vote" data-pr-key="${escapeHtml(detail.prKey || "")}" data-vote="0">Clear vote</button>
+          </div>
+          <div class="docker-card__actions">
+            <button class="button" data-action="azure-comment" data-pr-key="${escapeHtml(detail.prKey || "")}">New comment</button>
+          </div>
+        </article>
+        <article class="git-card">
+          <div class="section-head">
+            <div>
+              <p class="eyebrow">Reviewers</p>
+              <h3>${escapeHtml(String(detail.reviewerSummary?.totalCount || 0))} reviewers</h3>
+            </div>
+          </div>
+          <ul class="git-list">
+            ${(detail.reviewerSummary?.reviewers || []).map((reviewer) => `
+              <li><span class="git-status-code">${escapeHtml(String(reviewer.vote))}</span><span class="git-list__text">${escapeHtml(reviewer.displayName)}</span></li>
+            `).join("") || '<li><span>No reviewers</span></li>'}
+          </ul>
+        </article>
+        <article class="git-card">
+          <div class="section-head">
+            <div>
+              <p class="eyebrow">Changed Files</p>
+              <h3>${escapeHtml(String(changedFiles.length || localChangedFiles.length))} files</h3>
+            </div>
+          </div>
+          <ul class="git-list">
+            ${(changedFiles.length ? changedFiles : localChangedFiles).map((file) => `
+              <li><span class="git-status-code">${escapeHtml(String(file.changeType || "M"))}</span><span class="git-list__text git-list__text--path">${escapeHtml(file.path || "")}</span></li>
+            `).join("") || '<li><span>No changed files found.</span></li>'}
+          </ul>
+        </article>
+        <article class="git-card git-card--wide">
+          <div class="section-head">
+            <div>
+              <p class="eyebrow">Conversation</p>
+              <h3>${escapeHtml(String(threads.length))} threads</h3>
+            </div>
+          </div>
+          <div class="docker-list">
+            ${threads.map((thread) => `
+              <div class="docker-card">
+                <div class="docker-card__head">
+                  <div>
+                    <h4>Thread #${escapeHtml(String(thread.id))}</h4>
+                    <p class="docker-card__meta">${escapeHtml(thread.status || "unknown")}</p>
+                  </div>
+                </div>
+                ${(thread.comments || []).map((comment) => `
+                  <div style="padding:8px 0;border-top:1px solid var(--border);">
+                    <strong>${escapeHtml(comment.author?.displayName || "Unknown author")}</strong>
+                    <p style="margin:6px 0 0;white-space:pre-wrap;">${escapeHtml(comment.content || "")}</p>
+                  </div>
+                `).join("")}
+                <div class="docker-card__actions">
+                  <button class="button button--ghost" data-action="azure-reply-thread" data-pr-key="${escapeHtml(detail.prKey || "")}" data-thread-id="${escapeHtml(String(thread.id))}" data-parent-comment-id="${escapeHtml(String((thread.comments || []).at(-1)?.id || 0))}">Reply</button>
+                </div>
+              </div>
+            `).join("") || '<div class="empty-card"><p>No conversation yet.</p></div>'}
+          </div>
+        </article>
+      </div>
+    </div>
+  `;
+}
