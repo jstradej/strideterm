@@ -61,7 +61,9 @@ export function createWorkspaceActions(ctx) {
       }
       const _api = ctx.getApi();
       if (!isGitViewId(viewId) && !isDockerViewId(viewId) && _api.closeTerminal) {
-        _api.closeTerminal(viewId).then((p) => { ctx.payload.value = p; }).catch(() => {});
+        _api.closeTerminal(viewId).then((p) => { ctx.payload.value = p; }).catch((err) => {
+          console.warn("[closeTab] failed to close terminal:", err?.message || err);
+        });
       }
       return;
     }
@@ -78,7 +80,9 @@ export function createWorkspaceActions(ctx) {
       const tabs = getWorkspaceTabs({ workspace, payload: ctx.payload.value, hiddenViewIds: ctx.hiddenViewIds.value, statusTone, isContainerRunning });
       ctx.activeViewId.value = ctx.splitGroup.value?.viewIds[0] || tabs[0]?.id || null;
     }
-    ctx.getApi().saveWorkspace(nextWorkspace).then((p) => { ctx.payload.value = p; });
+    ctx.getApi().saveWorkspace(nextWorkspace).then((p) => { ctx.payload.value = p; }).catch((err) => {
+      console.warn("[closeTab] failed to save workspace after panel removal:", err?.message || err);
+    });
   }
 
   async function quickAddTab() {

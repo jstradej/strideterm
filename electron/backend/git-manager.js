@@ -25,6 +25,7 @@ const DEFAULT_OPERATION_STATE = Object.freeze({
 });
 
 const WORKTREE_DIRTY_CACHE_TTL_MS = 1500;
+const SNAPSHOT_CACHE_TTL_MS = 8000;
 
 function createGitChangeBucket(name) {
   return {
@@ -626,12 +627,14 @@ async function renderUntrackedDiffPreview(execGit, cwd, targetPath) {
 }
 
 export class GitManager extends EventEmitter {
-  constructor({ execGitImpl = null, now = null } = {}) {
+  constructor({ execGitImpl = null, now = null, snapshotCacheTtlMs = SNAPSHOT_CACHE_TTL_MS } = {}) {
     super();
     this.snapshots = new Map();
     this.execGitImpl = execGitImpl;
     this.now = now || (() => new Date());
     this.worktreeDirtyCache = new Map();
+    this.snapshotCache = new Map();
+    this.snapshotCacheTtlMs = snapshotCacheTtlMs;
   }
 
   async execGit(cwd, args) {
@@ -1000,10 +1003,27 @@ export class GitManager extends EventEmitter {
     }
   }
 
+  invalidateSnapshotCache(workspaceId = null) {
+    if (workspaceId) {
+      this.snapshotCache.delete(workspaceId);
+    } else {
+      this.snapshotCache.clear();
+    }
+  }
+
   async refreshWorkspaces(workspaces = []) {
+    const now = this.now().getTime();
     const nextSnapshots = new Map();
     const results = await Promise.all(
-      workspaces.map(async (workspace) => [workspace.id, await this.inspectWorkspace(workspace)]),
+      workspaces.map(async (workspace) => {
+        const cached = this.snapshotCache.get(workspace.id);
+        if (cached && (now - cached.at) < this.snapshotCacheTtlMs) {
+          return [workspace.id, cached.snapshot];
+        }
+        const snapshot = await this.inspectWorkspace(workspace);
+        this.snapshotCache.set(workspace.id, { at: this.now().getTime(), snapshot });
+        return [workspace.id, snapshot];
+      }),
     );
 
     for (const [workspaceId, snapshot] of results) {
@@ -1202,6 +1222,7 @@ export class GitManager extends EventEmitter {
     skipPreflight = false,
     run,
   }) {
+    this.invalidateSnapshotCache(workspace.id);
     const snapshot = await this.inspectWorkspace(workspace);
     if (!snapshot.available) {
       return createStructuredResult({

@@ -8,7 +8,7 @@ import { APP_CONFIG } from "../../config/app-config.js";
 const QUICK_TUNNEL_URL = /(https:\/\/[a-z0-9-]+\.trycloudflare\.com)/i;
 
 function clone(value) {
-  return JSON.parse(JSON.stringify(value));
+  return structuredClone(value);
 }
 
 function createSnapshot(overrides = {}) {

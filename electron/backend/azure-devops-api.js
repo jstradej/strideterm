@@ -6,6 +6,9 @@ import {
 } from "./azure-devops-utils.js";
 
 export function createAzureApi(fetchImpl) {
+  const etagCache = new Map();
+  const ETAG_CACHE_MAX_SIZE = 200;
+
   async function requestJson(url, {
     login,
     token,
@@ -13,16 +16,32 @@ export function createAzureApi(fetchImpl) {
     body = null,
     headers = {},
   } = {}) {
+    const requestHeaders = {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+      Authorization: `Basic ${Buffer.from(`${login}:${token}`, "utf8").toString("base64")}`,
+      ...headers,
+    };
+
+    // Add ETag/If-None-Match for GET requests
+    if (method === "GET") {
+      const cached = etagCache.get(url);
+      if (cached?.etag) {
+        requestHeaders["If-None-Match"] = cached.etag;
+      }
+    }
+
     const response = await fetchImpl(url, {
       method,
-      headers: {
-        Accept: "application/json",
-        "Content-Type": "application/json",
-        Authorization: `Basic ${Buffer.from(`${login}:${token}`, "utf8").toString("base64")}`,
-        ...headers,
-      },
+      headers: requestHeaders,
       body: body == null ? undefined : JSON.stringify(body),
     });
+
+    // Return cached response on 304 Not Modified
+    if (response.status === 304 && method === "GET") {
+      const cached = etagCache.get(url);
+      if (cached?.data) return cached.data;
+    }
 
     if (!response.ok) {
       const text = await response.text().catch(() => "");
@@ -34,7 +53,22 @@ export function createAzureApi(fetchImpl) {
       throw new Error(`Azure DevOps request failed (${response.status}): ${message}`);
     }
 
-    return response.json();
+    const data = await response.json();
+
+    // Cache ETag for GET responses
+    if (method === "GET") {
+      const etag = typeof response.headers?.get === "function" ? response.headers.get("etag") : null;
+      if (etag) {
+        // Evict oldest entries if cache grows too large
+        if (etagCache.size >= ETAG_CACHE_MAX_SIZE) {
+          const firstKey = etagCache.keys().next().value;
+          etagCache.delete(firstKey);
+        }
+        etagCache.set(url, { etag, data });
+      }
+    }
+
+    return data;
   }
 
   function buildProjectsUrl(connection) {

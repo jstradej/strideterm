@@ -9,16 +9,29 @@ import { existsSync } from "node:fs";
 const ALLOWED_SCRIPT_EXTENSIONS = new Set([".ps1", ".sh", ".bash", ".py", ".js", ".mjs"]);
 
 /**
+ * Escape a file path for safe embedding in a shell command string.
+ * Uses single quotes on POSIX (prevents all expansion) and double
+ * quotes on Windows PowerShell (with internal double-quote escaping).
+ */
+function shellQuote(filePath) {
+  if (process.platform === "win32") {
+    return `"${filePath.replace(/"/g, '`"')}"`;
+  }
+  return `'${filePath.replace(/'/g, "'\\''")}'`;
+}
+
+/**
  * Script runners per extension. The loader uses these to construct
  * the actual shell command — the plugin never provides the runner.
+ * Paths are shell-quoted to prevent injection via crafted directory names.
  */
 const SCRIPT_RUNNERS = {
-  ".ps1": (scriptPath) => `powershell -ExecutionPolicy Bypass -File "${scriptPath}"`,
-  ".sh": (scriptPath) => `bash "${scriptPath}"`,
-  ".bash": (scriptPath) => `bash "${scriptPath}"`,
-  ".py": (scriptPath) => `python3 "${scriptPath}" 2>/dev/null || python "${scriptPath}"`,
-  ".js": (scriptPath) => `node "${scriptPath}"`,
-  ".mjs": (scriptPath) => `node "${scriptPath}"`,
+  ".ps1": (scriptPath) => `powershell -ExecutionPolicy Bypass -File ${shellQuote(scriptPath)}`,
+  ".sh": (scriptPath) => `bash ${shellQuote(scriptPath)}`,
+  ".bash": (scriptPath) => `bash ${shellQuote(scriptPath)}`,
+  ".py": (scriptPath) => `python3 ${shellQuote(scriptPath)} 2>/dev/null || python ${shellQuote(scriptPath)}`,
+  ".js": (scriptPath) => `node ${shellQuote(scriptPath)}`,
+  ".mjs": (scriptPath) => `node ${shellQuote(scriptPath)}`,
 };
 
 /**

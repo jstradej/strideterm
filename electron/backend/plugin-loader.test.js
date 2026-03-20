@@ -75,6 +75,41 @@ describe("plugin-loader", () => {
     expect(template.icon).toBe("MP");
   });
 
+  test("platform script runner applies shell quoting to paths", async () => {
+    const pluginsDir = await createTempDir("strideterm-plugins-");
+    const pluginDir = path.join(pluginsDir, "script-plugin");
+    await fs.mkdir(pluginDir);
+    await fs.writeFile(path.join(pluginDir, "monitor.sh"), "#!/bin/bash\necho ok");
+    await fs.writeFile(path.join(pluginDir, "plugin.json"), JSON.stringify({
+      id: "script-plugin",
+      name: "Script Plugin",
+      version: "1.0.0",
+      workspaceDefaults: {
+        name: "Script WS",
+        icon: "SC",
+        kind: "terminal",
+        panels: [{
+          id: "p1",
+          title: "Monitor",
+          platforms: {
+            linux: { script: "monitor.sh" },
+            win32: { script: "monitor.sh" },
+            darwin: { script: "monitor.sh" },
+          },
+        }],
+      },
+    }));
+
+    const manager = await createPluginManager({ pluginsDir, runtime: null });
+    const plugins = manager.getPlugins();
+
+    expect(plugins).toHaveLength(1);
+    const panel = plugins[0].workspaceDefaults?.panels?.[0];
+    expect(panel).toBeTruthy();
+    // The command should contain proper quoting (single or double quotes depending on platform)
+    expect(panel.command).toMatch(/bash\s+['"].*monitor\.sh['"]/);
+  });
+
   test("discovers builtin plugins from builtinPluginsDir", async () => {
     const builtinDir = await createTempDir("strideterm-builtin-");
     const pluginsDir = await createTempDir("strideterm-user-");

@@ -109,7 +109,7 @@ export function createTerminalController({
     const term = new Terminal({
       fontFamily: '"Cascadia Mono", "JetBrains Mono", monospace',
       fontSize: 13,
-      scrollback: 6000,
+      scrollback: appConfig.session?.scrollback ?? 3000,
       scrollSensitivity: 1.15,
       fastScrollModifier: "shift",
       fastScrollSensitivity: 4,

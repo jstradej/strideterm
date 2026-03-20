@@ -110,7 +110,7 @@
 </template>
 
 <script setup>
-import { computed, inject, onMounted, ref } from "vue";
+import { computed, inject, onErrorCaptured, onMounted, ref } from "vue";
 import { useAppStore } from "./stores/app.js";
 import { useGlobalEvents } from "./composables/useGlobalEvents.js";
 import { useAttentionSync } from "./composables/useAttentionSync.js";
@@ -194,6 +194,11 @@ onMounted(() => {
   if (savedWidth && frameRef.value) {
     frameRef.value.style.setProperty("--sidebar-width", `${savedWidth}px`);
   }
+});
+
+onErrorCaptured((err, instance, info) => {
+  console.error(`[ErrorBoundary] Unhandled error in ${instance?.$options?.name || "component"} (${info}):`, err);
+  return false;
 });
 
 useGlobalEvents();

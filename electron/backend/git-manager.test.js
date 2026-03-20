@@ -292,6 +292,70 @@ describe("GitManager", () => {
     expect(execGitImpl.mock.calls.filter(([cwd, args]) => cwd === sibling && args.join(" ") === "status --short")).toHaveLength(1);
   });
 
+  test("refreshWorkspaces uses snapshot cache within TTL", async () => {
+    let inspectCount = 0;
+    let nowValue = new Date("2026-03-17T12:00:00.000Z");
+    const manager = new GitManager({ execGitImpl: vi.fn(), now: () => nowValue, snapshotCacheTtlMs: 5000 });
+    manager.inspectWorkspace = vi.fn(async (workspace) => {
+      inspectCount++;
+      return { workspaceId: workspace.id, available: true, branch: "main", inspectCount };
+    });
+
+    const workspaces = [{ id: "ws-1", cwd: "/tmp/project", kind: "terminal" }];
+
+    await manager.refreshWorkspaces(workspaces);
+    expect(inspectCount).toBe(1);
+
+    // Within TTL — should use cache
+    nowValue = new Date(nowValue.getTime() + 3000);
+    await manager.refreshWorkspaces(workspaces);
+    expect(inspectCount).toBe(1);
+
+    // After TTL — should re-inspect
+    nowValue = new Date(nowValue.getTime() + 3000);
+    await manager.refreshWorkspaces(workspaces);
+    expect(inspectCount).toBe(2);
+  });
+
+  test("invalidateSnapshotCache forces re-inspection", async () => {
+    let inspectCount = 0;
+    const nowValue = new Date("2026-03-17T12:00:00.000Z");
+    const manager = new GitManager({ execGitImpl: vi.fn(), now: () => nowValue, snapshotCacheTtlMs: 60000 });
+    manager.inspectWorkspace = vi.fn(async (workspace) => {
+      inspectCount++;
+      return { workspaceId: workspace.id, available: true };
+    });
+
+    const workspaces = [{ id: "ws-1", cwd: "/tmp/project", kind: "terminal" }];
+    await manager.refreshWorkspaces(workspaces);
+    expect(inspectCount).toBe(1);
+
+    manager.invalidateSnapshotCache("ws-1");
+    await manager.refreshWorkspaces(workspaces);
+    expect(inspectCount).toBe(2);
+  });
+
+  test("invalidateSnapshotCache with no args clears all", async () => {
+    let inspectCount = 0;
+    const nowValue = new Date("2026-03-17T12:00:00.000Z");
+    const manager = new GitManager({ execGitImpl: vi.fn(), now: () => nowValue, snapshotCacheTtlMs: 60000 });
+    manager.inspectWorkspace = vi.fn(async (workspace) => {
+      inspectCount++;
+      return { workspaceId: workspace.id, available: true };
+    });
+
+    const workspaces = [
+      { id: "ws-1", cwd: "/tmp/a", kind: "terminal" },
+      { id: "ws-2", cwd: "/tmp/b", kind: "terminal" },
+    ];
+    await manager.refreshWorkspaces(workspaces);
+    expect(inspectCount).toBe(2);
+
+    manager.invalidateSnapshotCache();
+    await manager.refreshWorkspaces(workspaces);
+    expect(inspectCount).toBe(4);
+  });
+
   test("diffPreview returns a preview for untracked files", async () => {
     const { root } = await createGitFixture();
     const execGitImpl = vi.fn(async (cwd, args) => {

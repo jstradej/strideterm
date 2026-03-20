@@ -39,7 +39,8 @@ export const useGitUiStore = defineStore("git-ui", () => {
   function ensure(workspaceId) {
     if (!workspaceId) return {};
     if (!state.value[workspaceId]) {
-      state.value[workspaceId] = {};
+      // Assign via spread to guarantee Vue detects the new key
+      state.value = { ...state.value, [workspaceId]: {} };
     }
     return state.value[workspaceId];
   }
@@ -54,7 +55,8 @@ export const useGitUiStore = defineStore("git-ui", () => {
   }
 
   function cleanup(workspaceId) {
-    delete state.value[workspaceId];
+    const { [workspaceId]: _, ...rest } = state.value;
+    state.value = rest;
   }
 
   async function runGitAction(workspaceId, busyAction, runner) {

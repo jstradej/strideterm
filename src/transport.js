@@ -24,18 +24,18 @@ function bindElectronTransport() {
 function createRemoteTransport() {
   const listeners = createEventHub();
   const query = new URLSearchParams(window.location.search);
-  let token = query.get("token") || window.localStorage.getItem("strideterm-token") || "";
+  let token = query.get("token") || window.sessionStorage.getItem("strideterm-token") || "";
 
   function persistToken(nextToken) {
     token = String(nextToken || "").trim();
     if (token) {
-      window.localStorage.setItem("strideterm-token", token);
+      window.sessionStorage.setItem("strideterm-token", token);
       query.set("token", token);
       window.history.replaceState({}, "", `${window.location.pathname}?${query.toString()}`);
       return;
     }
 
-    window.localStorage.removeItem("strideterm-token");
+    window.sessionStorage.removeItem("strideterm-token");
     query.delete("token");
     window.history.replaceState({}, "", window.location.pathname);
   }

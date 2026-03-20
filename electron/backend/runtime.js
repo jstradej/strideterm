@@ -27,7 +27,7 @@ const { version: packageVersion = "0.0.0" } = require("../../package.json");
 const reviewBridgeCliPath = fileURLToPath(new URL("./review-bridge-cli.js", import.meta.url));
 
 function clone(value) {
-  return JSON.parse(JSON.stringify(value));
+  return structuredClone(value);
 }
 
 function findWorkspace(state, workspaceId) {
@@ -212,12 +212,14 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
     defaultApp: process.defaultApp,
   };
   const pluginsDir = path.join(userDataPath, "plugins");
-  const store = await createStoreImpl(statePath);
-  const credentialStore = await createCredentialStoreImpl(credentialsPath, {
-    safeStorage: dependencies.safeStorage || null,
-  });
-  const azureReviewStore = await createAzureReviewStoreImpl(azureReviewPath);
-  const reviewBridgeStore = await createReviewBridgeStoreImpl(reviewBridgeRoot);
+  const [store, credentialStore, azureReviewStore, reviewBridgeStore] = await Promise.all([
+    createStoreImpl(statePath),
+    createCredentialStoreImpl(credentialsPath, {
+      safeStorage: dependencies.safeStorage || null,
+    }),
+    createAzureReviewStoreImpl(azureReviewPath),
+    createReviewBridgeStoreImpl(reviewBridgeRoot),
+  ]);
   const sessions = new SessionManagerImpl({
     getSessionEnv: ({ workspace }) => {
       if (workspace?.review?.provider !== "azure-devops" || !workspace.review?.prKey) {
@@ -278,6 +280,10 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
   const projectAlerts = new Map();
   const attentionContext = createAttentionContext();
   const sessionSignals = new Map();
+
+  // --- Broadcast coalescing ---
+  let broadcastScheduled = false;
+  let lastPayloadJson = "";
 
   function getState() {
     return store.getState();
@@ -632,6 +638,17 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
   }
 
   function broadcastState() {
+    if (broadcastScheduled) return;
+    broadcastScheduled = true;
+    queueMicrotask(() => {
+      broadcastScheduled = false;
+      const payload = getPayload();
+      events.emit("state:updated", payload);
+    });
+  }
+
+  function broadcastStateImmediate() {
+    broadcastScheduled = false;
     events.emit("state:updated", getPayload());
   }
 
@@ -986,6 +1003,7 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
   }
 
   async function refreshGit(projectId = null) {
+    git.invalidateSnapshotCache?.(projectId || null);
     const state = getState();
     const workspaces = state.workspaces.filter((workspace) => (
       (!projectId || workspace.id === projectId)

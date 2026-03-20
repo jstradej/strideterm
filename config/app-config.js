@@ -52,6 +52,7 @@ export const APP_CONFIG = {
     port: envNumber("STRIDETERM_REMOTE_PORT", 43123),
   },
   session: {
+    scrollback: envNumber("STRIDETERM_TERM_SCROLLBACK", 3000),
     termName: envString("STRIDETERM_TERM_NAME", "xterm-color"),
     termProgram: envString("STRIDETERM_TERM_PROGRAM", "strideterm"),
     forceColor: envString("STRIDETERM_FORCE_COLOR", "1"),
