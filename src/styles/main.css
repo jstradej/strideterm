@@ -2612,6 +2612,9 @@ dt {
 .review-card--stack {
   min-height: 0;
   flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 }
 
 .review-card__list {
@@ -2623,7 +2626,7 @@ dt {
 
 .review-card__list--dense {
   max-height: none;
-  height: 100%;
+  flex: 1;
 }
 
 .review-meta-list {

@@ -253,7 +253,7 @@ export function buildAgentInstructions(context) {
       tools: [
         "list_review_comments",
         "get_review_comment",
-        "create_local_comment",
+        "create_review_comment",
         "save_review_draft",
         "queue_review_draft",
       ],
@@ -263,7 +263,7 @@ export function buildAgentInstructions(context) {
       "Open the review brief markdown or json for the active PR when you need extra narrative context.",
       "Read active comments with status ready-for-agent, agent-working, draft-ready, or ready-to-sync.",
       "Inspect the matching review thread and changed files before drafting an answer.",
-      "If a follow-up is needed and no imported comment exists for it, create a local comment in the bridge.",
+      "If a follow-up is needed and no imported comment exists for it, create a local comment in the bridge. Always provide filePath and lineNumber so the comment is anchored to the code. Create one comment per finding — never combine multiple findings into a single comment.",
       "Prepare or refine a local draft response for each active comment.",
       "Do not post to Azure DevOps directly; save drafts to the local bridge only.",
       "Queue a draft for sync only when the response is ready for review or publishing.",

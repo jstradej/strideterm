@@ -127,11 +127,17 @@ describe("review bridge store", () => {
     });
     const localComment = localCommentContext?.comments.find((comment) => comment.commentKind === "local-comment");
     expect(localComment).toMatchObject({
-      status: "ready-for-agent",
+      status: "draft-ready",
       commentKind: "local-comment",
     });
     expect(localComment?.payload?.questionBody).toContain("loading-state test");
 
+    // createLocalComment now auto-creates a draft
+    const autoDraft = localCommentContext?.drafts.find((draft) => draft.commentKey === localComment?.commentKey);
+    expect(autoDraft?.status).toBe("draft");
+    expect(autoDraft?.body).toContain("loading-state test");
+
+    // Overwriting with saveDraftResponse still works
     const localCommentDraftContext = await store.saveDraftResponse({
       prKey: "ado-main:repo-1:123",
       commentKey: localComment?.commentKey,
@@ -140,6 +146,7 @@ describe("review bridge store", () => {
     });
     const localCommentDraft = localCommentDraftContext?.drafts.find((draft) => draft.commentKey === localComment?.commentKey);
     expect(localCommentDraft?.status).toBe("draft");
+    expect(localCommentDraft?.body).toContain("regression note");
 
     await store.close();
   });

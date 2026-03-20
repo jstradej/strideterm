@@ -178,11 +178,13 @@ export function createReviewBridgeMcpHandlers({ store, prKey }) {
         ...detail,
       });
     },
-    async createLocalComment({ body, title = "", priority = "medium", authorAgent = "" }) {
+    async createLocalComment({ body, title = "", filePath = "", lineNumber = null, priority = "medium", authorAgent = "" }) {
       const context = await store.createLocalComment({
         prKey,
         body,
         title,
+        filePath,
+        lineNumber,
         priority,
         authorAgent,
       });
@@ -190,13 +192,15 @@ export function createReviewBridgeMcpHandlers({ store, prKey }) {
         .filter((comment) => comment.commentKind === "local-comment" && comment.payload?.questionBody === body)
         .sort((left, right) => Date.parse(right.updatedAt || right.createdAt || 0) - Date.parse(left.updatedAt || left.createdAt || 0))[0] || null;
       const comment = latestComment && latestComment.displayIndex ? serializeComment(latestComment) : null;
+      const latestDraft = comment ? (context?.drafts || []).find((d) => d.commentKey === latestComment.commentKey) || null : null;
       return toolResult(
         comment
-          ? `Created local comment ${comment.index}. ${comment.title}`
-          : "Created local comment.",
+          ? `Created local comment ${comment.index} with draft. ${comment.title}`
+          : "Created local comment with draft.",
         {
           prKey,
           comment,
+          draft: latestDraft ? serializeDraft(latestDraft) : null,
         },
       );
     },
@@ -314,7 +318,7 @@ export async function runReviewBridgeMcpServer({ rootPath, prKey }) {
             "1. Start with list_review_comments to see all comment threads and their current status.",
             "2. For each comment that needs attention (status: ready-for-agent), use get_review_comment to read the full thread with code context.",
             "3. Write thoughtful draft replies with save_review_draft. Focus on actionable, specific feedback.",
-            "4. If you discover issues not covered by existing comments, create new ones with create_local_comment.",
+            "4. If you discover issues not covered by existing comments, create new ones with create_review_comment.",
             "5. When your drafts are ready for the user to review, queue them with queue_review_draft.",
             "Do not publish to Azure DevOps directly — the user controls when drafts are published.",
           ].join("\n"),
@@ -337,12 +341,14 @@ export async function runReviewBridgeMcpServer({ rootPath, prKey }) {
     },
   }, async (input) => handlers.getReviewComment(input));
 
-  server.registerTool("create_local_comment", {
+  server.registerTool("create_review_comment", {
     title: "Create Local Comment",
-    description: "Create a new local comment for follow-up questions or observations that should stay in the review bridge. These appear in the UI alongside remote Azure DevOps threads. Use this when you discover something worth noting that isn't covered by existing threads.",
+    description: "Create a new local comment with an auto-created draft for follow-up questions or observations. The draft can be edited and queued for publishing to Azure DevOps. Use this when you discover something worth noting that isn't covered by existing threads. IMPORTANT: Create one comment per finding — do not combine multiple findings into a single comment. Always provide filePath and lineNumber so the comment is anchored to the right location in the code.",
     inputSchema: {
       body: z.string().min(1).describe("Body of the new local comment."),
       title: z.string().optional().describe("Optional short title for the comment."),
+      filePath: z.string().optional().describe("Relative file path the comment refers to, e.g. 'src/app/service.cs'. Always provide this for file-specific comments."),
+      lineNumber: z.number().int().positive().optional().describe("Line number in the file the comment refers to."),
       priority: z.enum(["low", "medium", "high"]).optional().describe("Priority for the local comment."),
       authorAgent: z.string().optional().describe("Agent label such as claude or codex."),
     },

@@ -1956,7 +1956,9 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
           draft.activeProfileId = profileId;
           // Set activeWorkspaceId to first workspace in new profile (or null)
           const profileWorkspaces = draft.workspaces.filter((w) => (w.profileId || "default") === profileId);
-          draft.activeWorkspaceId = profileWorkspaces[0]?.id || "";
+          const firstId = profileWorkspaces[0]?.id || "";
+          draft.activeWorkspaceId = firstId;
+          draft.activeProjectId = firstId;
         }
       });
       await syncWorktrees();

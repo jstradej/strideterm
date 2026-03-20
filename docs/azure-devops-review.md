@@ -155,7 +155,7 @@ The bridge exposes five tools via MCP (stdio transport):
 |------|---------|
 | `list_review_comments` | List all comment threads with status, priority, and draft previews |
 | `get_review_comment` | Get full thread detail by `#N` index (replies, file context, code snippet) |
-| `create_local_comment` | Create a new local-only comment for follow-ups or observations |
+| `create_review_comment` | Create a new review comment with an auto-created draft |
 | `save_review_draft` | Save or replace a local draft reply for a comment |
 | `queue_review_draft` | Queue a draft for publishing to Azure DevOps |
 

@@ -376,12 +376,17 @@ export function createWorkspaceUiController({
     return pane;
   }
 
+  /** Replace terminalStage with static HTML (avoids broken Lit state after manual DOM ops). */
+  function resetStage(html) {
+    terminalStage.className = "terminal-stage";
+    terminalStage.innerHTML = html;
+    state.attachedSessionId = null;
+    terminalController.disconnectHiddenPaneObservers(new Set());
+  }
+
   function renderVisibleViews(workspace, visibleTabs) {
     if (!visibleTabs.length) {
-      terminalStage.className = "terminal-stage";
-      render(renderEmptyTerminalState(), terminalStage);
-      state.attachedSessionId = null;
-      terminalController.disconnectHiddenPaneObservers(new Set());
+      resetStage('<div class="terminal-empty"><p>No active terminal</p><small>Select a tab or open a Docker shell/log stream.</small></div>');
       return;
     }
 
@@ -536,6 +541,7 @@ export function createWorkspaceUiController({
     const workspace = getWorkspace();
     const allWorkspaces = getFilteredWorkspaces();
 
+
     // Clear welcome screen / empty state if workspaces now exist
     if (allWorkspaces.length > 0 || workspace) {
       const stale = terminalStage.querySelector(".welcome-screen");
@@ -549,8 +555,18 @@ export function createWorkspaceUiController({
       render(nothing, workspaceHero);
       renderTabStrip(tabStrip, []);
       render(nothing, tabActions);
-      terminalStage.className = "terminal-stage";
-      render(renderWelcomeScreen(), terminalStage);
+      resetStage(
+        '<div class="welcome-screen"><div class="welcome-screen__card">'
+        + '<h1 class="welcome-screen__title">Welcome to str<em>IDE</em>term</h1>'
+        + '<p class="welcome-screen__subtitle">Multi-workspace terminal hub for developers</p>'
+        + '<div class="welcome-screen__steps">'
+        + '<div class="welcome-screen__step"><span class="welcome-screen__step-num">1</span><div><strong>Create a workspace</strong><small>Click <strong>+</strong> in the sidebar or press <strong>Ctrl+N</strong></small></div></div>'
+        + '<div class="welcome-screen__step"><span class="welcome-screen__step-num">2</span><div><strong>Pick a working directory</strong><small>Browse to your project folder</small></div></div>'
+        + '<div class="welcome-screen__step"><span class="welcome-screen__step-num">3</span><div><strong>Add terminal tabs</strong><small>Shell, Claude Code, Codex, Gemini, Dev Server, Browser...</small></div></div>'
+        + '</div>'
+        + '<button type="button" class="button" data-action="new-workspace" style="margin-top:16px;padding:10px 24px;font-size:14px;">+ Create your first workspace</button>'
+        + '</div></div>',
+      );
       syncAttentionContext([]);
       return;
     }

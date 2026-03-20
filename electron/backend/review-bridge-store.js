@@ -807,6 +807,8 @@ export async function createReviewBridgeStore(rootPath) {
       prKey,
       body = "",
       title = "",
+      filePath = "",
+      lineNumber = null,
       priority = "medium",
       authorAgent = "",
     } = {}) {
@@ -821,11 +823,24 @@ export async function createReviewBridgeStore(rootPath) {
         const now = new Date().toISOString();
         const commentKey = `${prKey}:local:${randomUUID()}`;
         const normalizedBody = String(body || "").trim();
+        const normalizedFilePath = String(filePath || "").trim();
+        const normalizedLine = Number.isInteger(lineNumber) && lineNumber > 0 ? lineNumber : null;
         const commentPayload = {
           source: "local-comment",
           authorAgent: String(authorAgent || ""),
           questionBody: normalizedBody,
+          ...(normalizedFilePath ? { filePath: normalizedFilePath } : {}),
+          ...(normalizedLine ? { lineNumber: normalizedLine } : {}),
         };
+
+        const locationPrefix = normalizedFilePath
+          ? `${normalizedFilePath}${normalizedLine ? `:${normalizedLine}` : ""}`
+          : "";
+        const autoTitle = String(title || "").trim()
+          || (locationPrefix ? `${locationPrefix} — ${buildLocalCommentTitle(normalizedBody)}` : buildLocalCommentTitle(normalizedBody));
+
+        const draftId = `${commentKey}:draft`;
+        const draftPayload = { threadId: null, source: "local-bridge" };
 
         try {
           db.exec("BEGIN IMMEDIATE TRANSACTION");
@@ -836,9 +851,9 @@ export async function createReviewBridgeStore(rootPath) {
             null,
             "local-comment",
             displayIndex,
-            String(title || "").trim() || buildLocalCommentTitle(normalizedBody),
+            autoTitle,
             buildLocalCommentSummary(normalizedBody),
-            "ready-for-agent",
+            "draft-ready",
             String(priority || "medium"),
             "",
             "",
@@ -846,6 +861,19 @@ export async function createReviewBridgeStore(rootPath) {
             now,
             now,
             toJson(commentPayload),
+          );
+          statements.upsertDraft.run(
+            draftId,
+            commentKey,
+            prKey,
+            normalizedBody,
+            "draft",
+            String(authorAgent || ""),
+            null,
+            1,
+            now,
+            now,
+            toJson(draftPayload),
           );
           db.exec("COMMIT");
         } catch (error) {
@@ -1043,13 +1071,13 @@ export async function createReviewBridgeStore(rootPath) {
       ensureOpen();
       const now = new Date().toISOString();
       const defaults = [
-        { id: "full-review", title: "Full code review", description: "Comprehensive review of all changed files", sort: 0, template: `Review this PR thoroughly.\n\n1. Use list_review_comments to see all existing comment threads.\n2. Read the review brief and inspect each changed file.\n3. For each file check:\n   - Bugs, null pointer issues, off-by-one errors\n   - Security vulnerabilities (injection, auth bypass, data exposure)\n   - Performance (N+1 queries, missing indexes, memory leaks)\n   - Code style and naming consistency\n4. For existing comments that need a reply, use save_review_draft to write a draft response.\n5. For new issues you find, use create_local_comment to create a new comment.\n\nUse Azure DevOps markdown in your drafts:\n- **CRITICAL:** for blocking issues\n- **MAJOR:** for significant concerns\n- **MINOR:** for suggestions\n- Use \`code\` for identifiers and \`\`\`lang for code blocks\n\nDo NOT queue any drafts — let me review them first.` },
+        { id: "full-review", title: "Full code review", description: "Comprehensive review of all changed files", sort: 0, template: `Review this PR thoroughly.\n\n1. Use list_review_comments to see all existing comment threads.\n2. Read the review brief and inspect each changed file.\n3. For each file check:\n   - Bugs, null pointer issues, off-by-one errors\n   - Security vulnerabilities (injection, auth bypass, data exposure)\n   - Performance (N+1 queries, missing indexes, memory leaks)\n   - Code style and naming consistency\n4. For existing comments that need a reply, use save_review_draft to write a draft response.\n5. For new issues you find, create a SEPARATE create_review_comment call for EACH finding. A draft is auto-created for each comment so I can edit and queue it.\n\nIMPORTANT: Do NOT combine multiple findings into a single comment. Each finding must be its own create_review_comment call with:\n- filePath: the relative path to the file (e.g. "src/app/service.cs")\n- lineNumber: the specific line number where the issue is\n- body: the comment text for that single finding\n\nUse Azure DevOps markdown in your comments:\n- **CRITICAL:** for blocking issues\n- **MAJOR:** for significant concerns\n- **MINOR:** for suggestions\n- Use \`code\` for identifiers and \`\`\`lang for code blocks\n\nDo NOT queue any drafts — let me review them first.` },
         { id: "quick-summary", title: "Quick summary", description: "High-level overview of the changes", sort: 1, template: `Summarize the changes in this PR:\n1. What was changed and in which files\n2. Why it was likely changed (infer from context)\n3. Any risks or concerns\n4. Is the change complete or are there missing pieces?\n\nUse list_review_comments to check what reviewers have already flagged.\nKeep it concise — 5-10 lines max.` },
-        { id: "write-comment", title: "Write a review comment", description: "Create a targeted comment about a specific concern", sort: 2, template: `Write a review comment about [DESCRIBE YOUR CONCERN].\n\nUse create_local_comment to create a new comment, or save_review_draft to reply to an existing one.\n\nFormat for Azure DevOps:\n- Start with severity: **CRITICAL:**, **MAJOR:**, or **MINOR:**\n- Explain the issue clearly\n- Suggest a fix with a code snippet if applicable\n- Use \`backticks\` for code references\n\nSave it as a local draft for my review.` },
+        { id: "write-comment", title: "Write a review comment", description: "Create a targeted comment about a specific concern", sort: 2, template: `Write a review comment about [DESCRIBE YOUR CONCERN].\n\nUse create_review_comment to create a new comment, or save_review_draft to reply to an existing one.\nAlways provide filePath and lineNumber so the comment is anchored to the exact code location.\n\nFormat for Azure DevOps:\n- Start with severity: **CRITICAL:**, **MAJOR:**, or **MINOR:**\n- Explain the issue clearly\n- Suggest a fix with a code snippet if applicable\n- Use \`backticks\` for code references\n\nSave it as a local draft for my review.` },
         { id: "process-comments", title: "Process review comments", description: "Work through all open review comments in order", sort: 3, template: `Use list_review_comments to see all open review comments for this PR.\n\nFor each comment that needs attention:\n1. Use get_review_comment with the #N index to read the full thread and code context\n2. Analyze the concern raised\n3. Use save_review_draft to write a thoughtful reply that addresses the issue\n\nDo NOT queue any drafts — let me review them first.` },
-        { id: "security-scan", title: "Security & correctness scan", description: "Focused security and bug analysis", sort: 4, template: `Analyze changed files for:\n\n**Security:**\n- SQL injection, XSS, command injection\n- Authentication/authorization bypass\n- Sensitive data exposure (passwords, keys, PII in logs)\n- Insecure deserialization\n\n**Correctness:**\n- Null/undefined handling\n- Race conditions, concurrency issues\n- Resource leaks (unclosed connections, streams)\n- Edge cases and boundary conditions\n\nFor each finding, use create_local_comment with file path, line number, and severity.\nDo NOT queue any drafts — let me review them first.` },
-        { id: "suggest-improvements", title: "Suggest improvements", description: "Code quality and best practice suggestions", sort: 5, template: `Review this PR for improvement opportunities:\n- Better naming for variables, methods, classes\n- Cleaner abstractions or design patterns\n- Missing or inadequate tests\n- Documentation gaps\n- Simpler implementations\n\nUse create_local_comment for each suggestion. Frame them constructively.\nDo NOT queue any drafts — let me review them first.` },
-        { id: "create-note", title: "Create a local comment", description: "Add a follow-up question or observation", sort: 6, template: `Use create_local_comment to create a new local review comment: "[YOUR QUESTION OR NOTE]"\n\nThis comment stays local in strIDEterm and won't be published to Azure DevOps unless you explicitly create a draft and sync it.` },
+        { id: "security-scan", title: "Security & correctness scan", description: "Focused security and bug analysis", sort: 4, template: `Analyze changed files for:\n\n**Security:**\n- SQL injection, XSS, command injection\n- Authentication/authorization bypass\n- Sensitive data exposure (passwords, keys, PII in logs)\n- Insecure deserialization\n\n**Correctness:**\n- Null/undefined handling\n- Race conditions, concurrency issues\n- Resource leaks (unclosed connections, streams)\n- Edge cases and boundary conditions\n\nIMPORTANT: Create a SEPARATE create_review_comment for EACH finding. Never combine multiple findings into one comment. Always provide filePath (relative path) and lineNumber so each comment is anchored to the exact location in the code.\nDo NOT queue any drafts — let me review them first.` },
+        { id: "suggest-improvements", title: "Suggest improvements", description: "Code quality and best practice suggestions", sort: 5, template: `Review this PR for improvement opportunities:\n- Better naming for variables, methods, classes\n- Cleaner abstractions or design patterns\n- Missing or inadequate tests\n- Documentation gaps\n- Simpler implementations\n\nCreate a SEPARATE create_review_comment for each suggestion — never combine multiple suggestions into one comment. Always provide filePath and lineNumber so the suggestion is anchored to the exact code location. Frame them constructively.\nDo NOT queue any drafts — let me review them first.` },
+        { id: "create-note", title: "Create a review comment", description: "Add a review comment with a draft", sort: 6, template: `Use create_review_comment to create a new review comment: "[YOUR QUESTION OR NOTE]"\n\nAlways provide filePath and lineNumber to anchor the comment to the code.\nA draft is auto-created so you can edit and queue it for publishing to Azure DevOps.` },
       ];
       for (const d of defaults) {
         statements.upsertAgentPrompt.run(d.id, d.title, d.description, d.template, d.sort, 1, now, now);

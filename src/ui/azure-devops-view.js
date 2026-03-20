@@ -760,6 +760,7 @@ function renderLocalDraftCard(comment = {}, draft = null, prKey = "", commentInd
         <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;width:100%;">
           ${commentIndex ? html`<span class="workspace-chip" style="font-weight:bold;min-width:28px;text-align:center;" title="Comment #${String(commentIndex)} — use this number with MCP tools">#${String(commentIndex)}</span>` : nothing}
           <span class="workspace-chip workspace-chip--local">local</span>
+          ${comment.payload?.filePath ? html`<span class="workspace-chip" style="font-size:11px;" title="${comment.payload.filePath}${comment.payload.lineNumber ? `:${String(comment.payload.lineNumber)}` : ""}">${comment.payload.filePath.split("/").pop()}${comment.payload.lineNumber ? `:${String(comment.payload.lineNumber)}` : ""}</span>` : nothing}
           <strong style="font-size:13px;">${comment.title || comment.commentKey}</strong>
           <span class="review-comment__date">${comment.status || "ready-for-agent"} &middot; ${comment.priority || "medium"}</span>
         </div>
@@ -1136,7 +1137,7 @@ function renderReviewAgentPanel(detail = {}, reviewBridge = {}, reviewUi = {}, w
               ${[
                 { name: "list_review_comments", desc: "List all comment threads with status and draft previews" },
                 { name: "get_review_comment", desc: "Get full detail for a comment by #N index" },
-                { name: "create_local_comment", desc: "Create a new local comment or follow-up" },
+                { name: "create_review_comment", desc: "Create a new review comment with auto-created draft" },
                 { name: "save_review_draft", desc: "Save a draft reply for a comment" },
                 { name: "queue_review_draft", desc: "Queue a draft for publishing to Azure DevOps" },
               ].map((tool) => html`
