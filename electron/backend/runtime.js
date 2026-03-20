@@ -45,7 +45,7 @@ const ANSI_ESCAPE_RE = /\u001B\[[0-?]*[ -/]*[@-~]|\u001B\][^\u0007]*(?:\u0007|\u
 const AGENT_NAME_RE = /\b(claude|codex|opencode|aider|gemini)\b/i;
 const AGENT_OUTPUT_RE = /\b(claude code|openai codex|codex|claude)\b/i;
 const PROMPT_QUIET_MS = 900;
-const ATTENTION_MIN_DISPLAY_MS = 15_000;
+const ATTENTION_MIN_DISPLAY_MS = 3_000;
 const ATTENTION_VISIBILITY_GRACE_MS = 5_000;
 const WAITING_PATTERNS = [
   /\bwaiting for input\b/i,

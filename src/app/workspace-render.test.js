@@ -1,76 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { render } from "lit";
-import {
-  buildWorkspaceCards,
-  renderBrowserUrlBar,
-  renderEmptyTerminalState,
-  renderTabActions,
-  renderWelcomeScreen,
-  renderWorkspaceHero,
-} from "./workspace-render.js";
-
-function renderTemplate(template) {
-  const container = document.createElement("div");
-  render(template, container);
-  return container;
-}
-
-describe("renderWorkspaceHero", () => {
-  test("renders remote alert and git stats through Lit", () => {
-    const container = renderTemplate(renderWorkspaceHero({
-      workspace: {
-        project: {
-          cwd: "/repo",
-          color: "#123456",
-          kind: "terminal",
-        },
-        sessions: [{ status: "running" }, { status: "idle" }],
-      },
-      gitSnapshot: {
-        available: true,
-        branch: "feature-x",
-        dirty: true,
-        dirtyCount: 3,
-      },
-      attention: {
-        count: 2,
-        alerts: [{ title: "Build failed" }],
-        latestAt: new Date().toISOString(),
-      },
-      remoteConnectionIssue: "Socket disconnected",
-      isRemote: true,
-    }));
-
-    expect(container.querySelector(".workspace-remote-alert")?.textContent).toContain("Socket disconnected");
-    expect(container.querySelector(".workspace-meta__path")?.textContent).toContain("/repo");
-    expect(container.textContent).toContain("feature-x");
-    expect(container.textContent).toContain("3 uncommitted");
-  });
-
-  test("renders Azure workspace hero through Lit", () => {
-    const container = renderTemplate(renderWorkspaceHero({
-      workspace: {
-        workspace: {
-          color: "#0078d4",
-          kind: "azure",
-          cwd: "C:/reviews",
-          panels: [{ id: "shell" }, { id: "codex" }],
-        },
-        sessions: [],
-      },
-      attention: {
-        count: 3,
-        alerts: [{ title: "PR waiting" }],
-        latestAt: new Date().toISOString(),
-      },
-    }));
-
-    expect(container.querySelector(".workspace-meta__path")?.textContent).toContain("C:/reviews");
-    expect(container.textContent).toContain("Azure inbox");
-    expect(container.textContent).toContain("2 review tabs");
-    expect(container.textContent).toContain("3 attention");
-  });
-});
+import { buildWorkspaceCards, buildTabStripModel } from "./workspace-render.js";
 
 describe("buildWorkspaceCards", () => {
   test("marks managed Azure review workspaces as child cards", () => {
@@ -106,50 +35,51 @@ describe("buildWorkspaceCards", () => {
     expect(azureCard.summary).toContain("C:/reviews");
     expect(reviewCard.isWorktree).toBe(true);
   });
-});
 
-describe("renderTabActions", () => {
-  test("renders tab actions with stable data-action hooks", () => {
-    const container = renderTemplate(renderTabActions({
-      workspaceKind: "terminal",
-      splitGroup: { layout: "cols", viewIds: ["a", "b"] },
-      currentLayout: "cols",
-      layouts: { cols: { label: "Side by side" } },
-    }));
+  test("builds docker workspace card with Docker summary", () => {
+    const [card] = buildWorkspaceCards({
+      workspaces: [
+        { id: "d1", name: "Docker", kind: "docker", color: "#0db7ed", icon: "D", panels: [] },
+      ],
+      activeWorkspaceId: "d1",
+      getGitSnapshot: () => null,
+      getWorkspaceAttention: () => null,
+    });
 
-    expect(container.querySelector('[data-action="toggle-tab-picker"]')?.getAttribute("type")).toBe("button");
-    expect(container.querySelector('[data-action="disband-split"]')?.textContent).toContain("Unsplit");
-    expect(container.querySelector('[data-action="open-layout-picker"]')?.textContent).toContain("Side by side");
-  });
-
-  test("hides add-tab action for Azure workspaces", () => {
-    const container = renderTemplate(renderTabActions({
-      workspaceKind: "azure",
-      splitGroup: null,
-      currentLayout: "solo",
-      layouts: { solo: { label: "Solo" } },
-    }));
-
-    expect(container.querySelector('[data-action="toggle-tab-picker"]')).toBeNull();
-    expect(container.querySelector('[data-action="open-layout-picker"]')).not.toBeNull();
+    expect(card.summary).toBe("Docker");
+    expect(card.active).toBe(true);
   });
 });
 
-describe("workspace helper views", () => {
-  test("renders browser url bar with button actions and seeded value", () => {
-    const container = renderTemplate(renderBrowserUrlBar({ homeUrl: "https://example.com" }));
+describe("buildTabStripModel", () => {
+  test("marks active tab and grouped tab", () => {
+    const model = buildTabStripModel({
+      tabs: [
+        { id: "t1", title: "Shell", status: "running", tone: "ok", persistent: true, closable: true },
+        { id: "t2", title: "Log", status: "idle", tone: "ok", persistent: false, closable: true },
+      ],
+      activeViewId: "t1",
+      isInSplitGroup: (id) => id === "t2",
+      getTabAttention: () => null,
+    });
 
-    expect(container.querySelector('[data-browser-action="back"]')?.getAttribute("type")).toBe("button");
-    expect(container.querySelector(".browser-url-bar__input")?.value).toBe("https://example.com");
-    expect(container.querySelector('[data-browser-action="external"]')?.textContent).toContain("\u{1F517}");
+    expect(model[0].active).toBe(true);
+    expect(model[0].grouped).toBe(false);
+    expect(model[0].persistent).toBe(true);
+    expect(model[1].active).toBe(false);
+    expect(model[1].grouped).toBe(true);
   });
 
-  test("renders empty terminal and welcome screens through Lit", () => {
-    const empty = renderTemplate(renderEmptyTerminalState());
-    const welcome = renderTemplate(renderWelcomeScreen());
+  test("sets attention fields from tabAttention", () => {
+    const now = new Date().toISOString();
+    const [tab] = buildTabStripModel({
+      tabs: [{ id: "t1", title: "Shell", status: "", tone: "ok" }],
+      activeViewId: "",
+      isInSplitGroup: () => false,
+      getTabAttention: () => ({ count: 1, alerts: [{ title: "Build failed" }], latestAt: now }),
+    });
 
-    expect(empty.querySelector(".terminal-empty")?.textContent).toContain("No active terminal");
-    expect(welcome.querySelector(".welcome-screen__title")?.textContent).toContain("strIDEterm");
-    expect(welcome.querySelector('[data-action="new-workspace"]')?.getAttribute("type")).toBe("button");
+    expect(tab.attention).toBe(true);
+    expect(tab.attentionTooltip).not.toBe("");
   });
 });

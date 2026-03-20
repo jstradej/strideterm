@@ -24,7 +24,7 @@ The important shift is:
 - `xterm.js` for terminal rendering
 - `ws` for remote event streaming
 - `qrcode` for desktop-to-mobile handoff
-- `lit` as a lightweight renderer templating layer
+- `Vue 3` + `Pinia` for the renderer UI (Composition API, single-file components)
 
 ## High-Level Architecture
 
@@ -79,17 +79,18 @@ Current model:
 - built renderer served from the same host
 - intended for monitoring and lightweight interaction from another device
 
-### 4. Shared Renderer
+### 4. Shared Renderer (Vue 3 + Pinia)
 
 Files:
 
-- `src/main.js`
-- `src/transport.js`
-- `src/app.js`
-- `src/app-legacy.js`
-- `src/app/*.js`
-- `src/ui/*.js`
-- `src/styles/main.css`
+- `src/main.js` — Vue app mount, Pinia init, transport provide
+- `src/App.vue` — root component (sidebar, workspace, dialogs)
+- `src/transport.js` — Electron IPC / WebSocket remote transport
+- `src/stores/` — Pinia stores (app, git-ui, terminal + action modules)
+- `src/components/` — Vue single-file components
+- `src/composables/` — reusable Composition API hooks
+- `src/app/` — pure utilities (selectors, helpers, terminal-controller)
+- `src/styles/main.css` — global stylesheet
 
 Responsibilities:
 
@@ -102,11 +103,12 @@ Responsibilities:
 
 Renderer design:
 
-- `src/app.js` is the bootstrap entry
-- `src/app-legacy.js` holds top-level orchestration glue
-- `src/app/` contains controllers, selectors, actions, and helpers
-- `src/ui/` contains Lit-based render modules
-- `xterm` lifecycle stays imperative in `src/app/terminal-controller.js`
+- Vue 3 Composition API with `<script setup>` single-file components
+- Pinia store for centralized state (`payload` as `shallowRef` for performance)
+- Store split into focused modules: `app.js` (core), `app-dialog-actions.js`, `app-workspace-actions.js`, `app-api-actions.js`
+- Composables for reusable logic: `useTerminal`, `useDragDrop`, `useSidebarResize`, `useReviewComments`, etc.
+- `xterm.js` lifecycle stays imperative in `src/app/terminal-controller.js`
+- Terminal data flows outside Vue reactivity for performance (direct controller calls)
 
 ## Runtime Model
 
@@ -230,7 +232,7 @@ Practical rule:
 Known limitations:
 
 - remote auth is token-based (no user accounts)
-- renderer still has some imperative DOM orchestration alongside Lit
+- terminal panes use imperative DOM attachment (xterm.js requires stable mount points)
 - remote UI is usable on mobile but not phone-first optimized
 - Docker manager is container-centric rather than compose-centric
 - browser tabs use `<webview>` in Electron (bypasses X-Frame-Options) but `<iframe>` in remote mode (subject to site restrictions)

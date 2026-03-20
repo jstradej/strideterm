@@ -198,7 +198,7 @@ When an MCP agent writes to the SQLite database, the UI updates automatically:
 2. The runtime watches this file with `fs.watch()` for instant notification (~150ms)
 3. As a reliable fallback, `PRAGMA data_version` is polled every 3 seconds
 4. On change, `broadcastState()` pushes the new state to the renderer
-5. The renderer re-renders with scroll position preservation and dialog protection
+5. Vue reactivity updates the renderer automatically (Pinia store → computed → components)
 
 ### Agent Prompts
 
@@ -260,17 +260,21 @@ Core files:
 | `agent_notes` | Agent working notes |
 | `agent_prompts` | Editable prompt templates |
 
-### Renderer
+### Renderer (Vue 3)
 
 Core files:
 
 | File | Responsibility |
 |------|----------------|
-| `src/ui/azure-devops-view.js` | Review pane UI (Lit templates for all 6 tabs) |
-| `src/app/workspace-ui-controller.js` | Pane lifecycle, scroll capture/restore |
-| `src/app/action-handlers.js` | UI action dispatch (reply, resolve, draft edit, filter, navigate) |
-| `src/app/runtime-bindings.js` | State broadcast handling, smart re-render decisions |
-| `src/app/selectors.js` | Workspace/tab selectors |
+| `src/components/workspace/AzureInboxPane.vue` | PR inbox with tabs (assigned/created/all), connection management |
+| `src/components/workspace/AzureReviewPane.vue` | Review pane orchestrator (toolbar, tabs, files, conflicts) |
+| `src/components/workspace/azure/ReviewSummaryTab.vue` | PR overview, reviewers, vote buttons |
+| `src/components/workspace/azure/ReviewCommentsTab.vue` | Comment threads, drafts, filtering, sorting, bulk actions |
+| `src/components/workspace/azure/ReviewAgentTab.vue` | Agent prompts, MCP server command |
+| `src/components/workspace/azure/AzurePrRow.vue` | Individual PR card in inbox |
+| `src/composables/useReviewComments.js` | Comment filtering, sorting, thread/draft map building |
+| `src/stores/app-api-actions.js` | Azure/review bridge API action wrappers |
+| `src/stores/git-ui.js` | Per-workspace review UI state (active tab, filters, selected diff) |
 
 ### Communication Flow
 
