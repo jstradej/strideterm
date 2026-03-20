@@ -140,17 +140,18 @@ export function wireRuntimeBindings({
         state.pendingViewActivationId = "";
       }
     }
+    if (state._suppressBroadcastRender) {
+      return;
+    }
     state.payload = payload;
-    if (!state._suppressBroadcastRender) {
-      if (shouldRefreshActiveWorkspace) {
-        render();
-        // Don't steal focus from open dialogs/overlays (e.g. user editing a draft)
-        if (!state.overlay) {
-          focusActiveTerminal();
-        }
-      } else {
-        renderBackground?.();
+    if (shouldRefreshActiveWorkspace) {
+      render();
+      // Don't steal focus from open dialogs/overlays (e.g. user editing a draft)
+      if (!state.overlay) {
+        focusActiveTerminal();
       }
+    } else {
+      renderBackground?.();
     }
   });
 

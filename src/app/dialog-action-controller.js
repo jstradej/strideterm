@@ -120,7 +120,9 @@ export function createDialogActionController({
       api,
       onCancel: closeOverlay,
       onSave: async (draft) => {
-        state.payload = await api.saveAzureConnection(draft);
+        draft.profileId = state.payload?.appState?.activeProfileId || "default";
+        const result = await api.saveAzureConnection(draft);
+        state.payload = result.payload || result;
         closeOverlay();
         render();
       },
@@ -153,8 +155,9 @@ export function createDialogActionController({
         state._suppressBroadcastRender = true;
         try {
           state.payload = await api.activateProfile(profileId);
-        } finally {
+        } catch (error) {
           state._suppressBroadcastRender = false;
+          throw error;
         }
         state.activeViewId = null;
         state.activeSessionId = null;
@@ -163,6 +166,8 @@ export function createDialogActionController({
         closeOverlay();
         render();
         focusActiveTerminal();
+        // Release suppress after render, delayed to let queued IPC broadcasts drain
+        setTimeout(() => { state._suppressBroadcastRender = false; }, 200);
       },
       onDelete: async (profileId) => {
         state.payload = await api.deleteProfile(profileId);

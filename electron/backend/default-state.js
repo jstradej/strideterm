@@ -342,6 +342,7 @@ export function normalizeState(rawState = {}) {
               login: connection.login || "",
               tokenRef: connection.tokenRef || "",
               enabled: connection.enabled !== false,
+              profileId: connection.profileId || "",
               projectFilters: Array.isArray(connection.projectFilters) ? [...connection.projectFilters] : [],
               repositoryFilters: Array.isArray(connection.repositoryFilters) ? [...connection.repositoryFilters] : [],
               pollSeconds: Number(connection.pollSeconds) || defaults.settings.integrations.azureDevops.defaultPollSeconds,

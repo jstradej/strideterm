@@ -1371,6 +1371,7 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
         ...normalizedInput,
         pat,
       });
+      const resolvedProfileId = connection.profileId || getState().activeProfileId || "default";
       const normalizedConnection = {
         id: connectionId,
         label: String(normalizedInput.label || connectionId).trim(),
@@ -1378,7 +1379,7 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
         login: String(normalizedInput.login || "").trim(),
         tokenRef,
         enabled: normalizedInput.enabled !== false,
-        profileId: connection.profileId || getState().activeProfileId || "default",
+        profileId: resolvedProfileId,
         projectFilters: Array.isArray(normalizedInput.projectFilters) ? [...normalizedInput.projectFilters] : [],
         repositoryFilters: Array.isArray(normalizedInput.repositoryFilters) ? [...normalizedInput.repositoryFilters] : [],
         pollSeconds: Number(normalizedInput.pollSeconds) || getAzureSettings().defaultPollSeconds || 120,
