@@ -765,7 +765,7 @@ function renderLocalDraftCard(comment = {}, draft = null, prKey = "", commentInd
           <span class="review-comment__date">${comment.status || "ready-for-agent"} &middot; ${comment.priority || "medium"}</span>
         </div>
       </div>
-      ${comment.summary && !draft ? html`<p class="git-card__hint" style="margin:0;">${comment.summary}</p>` : nothing}
+      ${comment.commentKind !== "local-comment" && comment.summary && !draft ? html`<p class="git-card__hint" style="margin:0;">${comment.summary}</p>` : nothing}
       ${comment.commentKind === "local-comment" && comment.payload?.questionBody && !draft ? html`
         <div class="review-comment review-comment--draft">
           <div class="review-comment__body">${unsafeHTML(renderMarkdownToHtml(comment.payload.questionBody))}</div>
@@ -876,7 +876,8 @@ function renderReviewCommentsPanel(detail = {}, threads = [], reviewBridge = {},
   const isFiltered = filter !== "all" || searchTerm;
 
   const allDrafts = (reviewBridge.drafts || []).filter((d) => d.status === "draft");
-  const draftCount = allDrafts.length;
+  const localCommentCount = localComments.length;
+  const hasClearable = allDrafts.length > 0 || localCommentCount > 0;
 
   const sortOptions = [
     { id: "index", label: "#N" },
@@ -894,9 +895,11 @@ function renderReviewCommentsPanel(detail = {}, threads = [], reviewBridge = {},
             <h3>${isFiltered ? `${String(visibleCount)} / ${String(totalCount)}` : String(totalCount)} conversation${totalCount !== 1 ? "s" : ""}</h3>
           </div>
           <div class="docker-card__actions">
-            ${draftCount ? html`
-              <button type="button" class="button button--ghost danger" data-action="review-bridge-delete-all-drafts" data-pr-key=${prKey} title="Delete all ${String(draftCount)} drafts">Delete all drafts</button>
-              <button type="button" class="button button--ghost" data-action="review-bridge-queue-all-drafts" data-pr-key=${prKey} title="Queue all ${String(draftCount)} drafts for sync">Queue all drafts</button>
+            ${hasClearable ? html`
+              <button type="button" class="button button--ghost danger" data-action="review-bridge-delete-all-drafts" data-pr-key=${prKey} title="Delete all drafts and local comments">Clear all</button>
+            ` : nothing}
+            ${allDrafts.length ? html`
+              <button type="button" class="button button--ghost" data-action="review-bridge-queue-all-drafts" data-pr-key=${prKey} title="Queue all ${String(allDrafts.length)} drafts for sync">Queue all drafts</button>
             ` : nothing}
             <button type="button" class="button button--ghost" data-action="review-comment-nav" data-direction="prev" title="Previous comment">\u25B2 Prev</button>
             <button type="button" class="button button--ghost" data-action="review-comment-nav" data-direction="next" title="Next comment">\u25BC Next</button>

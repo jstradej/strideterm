@@ -622,11 +622,20 @@ export function createActionHandlers(context) {
     if (action === "review-bridge-delete-all-drafts") {
       const prKey = actionElement.dataset.prKey;
       if (!prKey) return true;
-      const drafts = (state.payload?.reviewBridge?.pullRequests?.[prKey]?.drafts || []).filter((d) => d.status === "draft");
-      if (!drafts.length) return true;
-      if (!window.confirm(`Delete all ${drafts.length} drafts? This cannot be undone.`)) return true;
+      const bridge = state.payload?.reviewBridge?.pullRequests?.[prKey] || {};
+      const drafts = (bridge.drafts || []).filter((d) => d.status === "draft");
+      const localComments = (bridge.comments || []).filter((c) => c.commentKind === "local-comment");
+      const totalCount = drafts.length + localComments.length;
+      if (!totalCount) return true;
+      if (!window.confirm(`Delete ${drafts.length} draft${drafts.length !== 1 ? "s" : ""} and ${localComments.length} local comment${localComments.length !== 1 ? "s" : ""}? This cannot be undone.`)) return true;
+      for (const comment of localComments) {
+        state.payload = await api.deleteReviewBridgeComment({ prKey, commentKey: comment.commentKey });
+      }
       for (const draft of drafts) {
-        state.payload = await api.deleteReviewBridgeDraft({ prKey, draftId: draft.draftId });
+        // Skip drafts whose comments were already deleted above
+        if (!localComments.some((c) => c.commentKey === draft.commentKey)) {
+          state.payload = await api.deleteReviewBridgeDraft({ prKey, draftId: draft.draftId });
+        }
       }
       render();
       return true;
