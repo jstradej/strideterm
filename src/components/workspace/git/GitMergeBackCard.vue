@@ -1,0 +1,139 @@
+<template>
+  <article class="git-card">
+    <div class="section-head">
+      <div>
+        <p class="eyebrow">Merge Back</p>
+        <h3>{{ snapshot.branch }} &rarr; {{ baseBranch || '?' }}</h3>
+      </div>
+    </div>
+
+    <template v-if="!baseBranch">
+      <p class="git-card__hint">Base branch was not detected.</p>
+    </template>
+
+    <template v-else-if="!compare.aheadCount">
+      <!-- Nothing to merge back yet -->
+      <template v-if="snapshot.dirty">
+        <p class="git-card__hint">No commits ahead of {{ baseBranch }} yet. Commit your changes first.</p>
+        <div class="git-commit-form">
+          <input ref="commitInputRef" name="commit-message" type="text" :value="snapshot.branch.replace(/-/g, ' ')" placeholder="Commit message" />
+          <button type="button" class="button" :disabled="!!gitUi.busyAction" @click="onCommitAll">{{ gitUi.busyAction === 'commit' ? 'Committing…' : 'Commit all changes' }}</button>
+        </div>
+        <details v-if="dirtyConflicts.length" class="git-details">
+          <summary class="git-card__hint git-card__hint--warning">Conflict risk: {{ dirtyConflicts.length }} overlapping dirty file{{ dirtyConflicts.length === 1 ? '' : 's' }}</summary>
+          <p class="git-card__hint git-card__hint--warning">Some dirty files were also changed on {{ baseBranch }}. Resolve or stash them before merging back.</p>
+          <details class="git-details">
+            <summary>Show overlapping files</summary>
+            <ul class="git-file-list">
+              <li v-for="(filePath, i) in dirtyConflicts.slice(0, 30)" :key="i">
+                <span class="git-file" :title="`Potential conflict: ${filePath}`">
+                  <span class="git-status-code">!</span>
+                  <span class="git-file__name">{{ filePath }}</span>
+                </span>
+              </li>
+              <li v-if="dirtyConflicts.length > 30"><p class="git-card__hint">… and {{ dirtyConflicts.length - 30 }} more files.</p></li>
+            </ul>
+          </details>
+        </details>
+      </template>
+      <p v-else class="git-card__hint">Branch is clean and up to date with {{ baseBranch }}. Nothing to merge back.</p>
+    </template>
+
+    <template v-else>
+      <!-- Has commits to merge back -->
+      <div class="git-stat-row">
+        <span class="workspace-chip"><strong>{{ compare.aheadCount || 0 }}</strong> commits to merge</span>
+        <span class="workspace-chip"><strong>{{ compare.files?.length || 0 }}</strong> files changed</span>
+        <span v-if="compare.behindCount > 0" class="workspace-chip workspace-chip--alert"><strong>{{ compare.behindCount }}</strong> behind base</span>
+      </div>
+      <p v-if="compare.behindCount > 0" class="git-card__hint git-card__hint--warning">This branch is {{ compare.behindCount }} commit(s) behind {{ baseBranch }}. Rebase or merge base first to reduce conflict risk.</p>
+
+      <details v-if="compare.files?.length" class="git-details">
+        <summary>Changed files ({{ compare.files.length }})</summary>
+        <ul class="git-file-list">
+          <li v-for="(entry, i) in compare.files.slice(0, 30)" :key="i">
+            <span class="git-file" :title="`${entry.code || 'M'}: ${entry.path}`">
+              <span class="git-status-code">{{ entry.code || 'M' }}</span>
+              <span class="git-file__name">{{ entry.path }}</span>
+            </span>
+          </li>
+          <li v-if="compare.files.length > 30"><p class="git-card__hint">… and {{ compare.files.length - 30 }} more files.</p></li>
+        </ul>
+      </details>
+
+      <details v-if="potentialConflicts.length" class="git-details">
+        <summary class="git-card__hint--warning">Potential conflicts ({{ potentialConflicts.length }})</summary>
+        <p class="git-card__hint git-card__hint--warning">These files were modified on both your branch and {{ baseBranch }}.</p>
+        <ul class="git-file-list">
+          <li v-for="(filePath, i) in potentialConflicts.slice(0, 30)" :key="i">
+            <span class="git-file" :title="`Potential conflict: ${filePath}`">
+              <span class="git-status-code">!</span>
+              <span class="git-file__name">{{ filePath }}</span>
+            </span>
+          </li>
+          <li v-if="potentialConflicts.length > 30"><p class="git-card__hint">… and {{ potentialConflicts.length - 30 }} more files.</p></li>
+        </ul>
+      </details>
+
+      <div class="git-operation-actions">
+        <button type="button" :class="['button', gitUi.busyAction === 'mergeIntoBase' && 'button--busy']" :disabled="!!gitUi.busyAction" :title="`Runs: git merge ${snapshot.branch} in the ${baseBranch} worktree.`" @click="gitUiStore.gitMergeIntoBase(workspaceId, baseBranch)">{{ gitUi.busyAction === 'mergeIntoBase' ? 'Merging…' : `Merge ${snapshot.branch}` }} &rarr; {{ baseBranch }}</button>
+        <button v-if="mainWorktreeWorkspaceId" type="button" class="button button--ghost" :title="`Switch to ${baseBranch} worktree.`" @click="appStore.activateWorkspace(mainWorktreeWorkspaceId)">Open {{ baseBranch }} worktree</button>
+      </div>
+
+      <details v-if="snapshot.worktreePath && !snapshot.isMainWorktree" class="git-details">
+        <summary>After merge: clean up worktree</summary>
+        <p class="git-card__hint">Once merged, you can remove this worktree and delete the branch.</p>
+        <div class="git-operation-actions">
+          <button type="button" class="button button--ghost danger" :disabled="!!gitUi.busyAction" title="Removes this worktree directory and deletes the branch." @click="gitUiStore.gitRemoveWorktree(workspaceId, snapshot.worktreePath, true)">Remove worktree + delete branch</button>
+          <button type="button" class="button button--ghost" :disabled="!!gitUi.busyAction" title="Removes the worktree but keeps the branch." @click="gitUiStore.gitRemoveWorktree(workspaceId, snapshot.worktreePath, false)">Remove worktree only</button>
+        </div>
+      </details>
+    </template>
+  </article>
+</template>
+
+<script setup>
+import { computed, ref } from "vue";
+import { useAppStore } from "../../../stores/app.js";
+import { useGitUiStore } from "../../../stores/git-ui.js";
+
+const props = defineProps({
+  snapshot: { type: Object, required: true },
+  workspaceId: { type: String, required: true },
+  workspaces: { type: Array, default: () => [] },
+  gitUi: { type: Object, default: () => ({}) },
+});
+
+const appStore = useAppStore();
+const gitUiStore = useGitUiStore();
+
+const commitInputRef = ref(null);
+
+const compare = computed(() => props.snapshot.compareWithBase || {});
+const baseBranch = computed(() => props.snapshot.baseBranch || compare.value.baseBranch || "");
+const potentialConflicts = computed(() => compare.value.potentialConflicts || []);
+
+const workspaceIdsByPath = computed(() =>
+  new Map(props.workspaces.map((ws) => [String(ws.cwd || "").toLowerCase(), ws.id])),
+);
+const mainWorktree = computed(() =>
+  (props.snapshot.siblingWorktrees || []).find((e) => e.isMainWorktree && !e.isCurrent),
+);
+const mainWorktreeWorkspaceId = computed(() =>
+  mainWorktree.value ? (workspaceIdsByPath.value.get(String(mainWorktree.value.path || "").toLowerCase()) || "") : "",
+);
+
+const dirtyFiles = computed(() =>
+  [...(props.snapshot.staged || []), ...(props.snapshot.unstaged || [])].map((e) => e.path),
+);
+const baseChangedFiles = computed(() => new Set(compare.value.baseChangedFiles || []));
+const dirtyConflicts = computed(() =>
+  baseChangedFiles.value.size > 0 ? dirtyFiles.value.filter((p) => baseChangedFiles.value.has(p)) : [],
+);
+
+function onCommitAll() {
+  const message = commitInputRef.value?.value;
+  if (!message) return;
+  gitUiStore.gitCommitAll(props.workspaceId, message);
+}
+</script>

@@ -1,0 +1,234 @@
+import { cloneWorkspace } from "../workspace-state.js";
+
+/**
+ * Factory for dialog / overlay / context-menu / layout-picker actions.
+ *
+ * @param {object} ctx  Shared refs and helpers injected by the app store.
+ *   overlay, overlayProps, contextMenu, layoutPickerAnchor,
+ *   payload, activeViewId, activeSessionId, splitGroup, suppressBroadcast,
+ *   hiddenViewIds, getApi, withSuppressedBroadcast, getPanelByViewId,
+ *   createWorktree
+ */
+export function createDialogActions(ctx) {
+  // --- Dialog / overlay --------------------------------------------------
+
+  function openDialog(name, props = {}) {
+    ctx.overlay.value = name;
+    ctx.overlayProps.value = props;
+  }
+
+  function closeDialog() {
+    ctx.overlay.value = null;
+    ctx.overlayProps.value = {};
+  }
+
+  // --- Context menu ------------------------------------------------------
+
+  function showContextMenu(x, y, viewId) {
+    ctx.contextMenu.value = { x, y, viewId };
+  }
+
+  function hideContextMenu() {
+    ctx.contextMenu.value = null;
+  }
+
+  // --- Layout picker -----------------------------------------------------
+
+  function showLayoutPicker(anchorRect) {
+    ctx.layoutPickerAnchor.value = anchorRect;
+  }
+
+  function hideLayoutPicker() {
+    ctx.layoutPickerAnchor.value = null;
+  }
+
+  // --- Tab rename dialog -------------------------------------------------
+
+  function renameTabWithDialog(viewId) {
+    const target = ctx.getPanelByViewId(viewId);
+    if (!target) return;
+    openDialog("TextInputDialog", {
+      eyebrow: "Workspace",
+      title: "Rename tab",
+      label: "Tab name",
+      value: target.panel.title || "",
+      submitLabel: "Rename",
+      onCancel: closeDialog,
+      onSubmit: async (nextTitle) => {
+        const trimmedTitle = nextTitle.trim();
+        if (!trimmedTitle || trimmedTitle === target.panel.title) {
+          closeDialog();
+          return;
+        }
+        const nextWorkspace = cloneWorkspace(target.workspace);
+        nextWorkspace.panels = nextWorkspace.panels.map((p) =>
+          p.id === target.panel.id ? { ...p, title: trimmedTitle } : p,
+        );
+        ctx.payload.value = await ctx.getApi().saveWorkspace(nextWorkspace);
+        closeDialog();
+      },
+    });
+  }
+
+  // --- Workspace dialog --------------------------------------------------
+
+  function isBrowserPanel(panel = {}) {
+    return /^https?:\/\//i.test(String(panel.command || "").trim());
+  }
+
+  function openWorkspaceDialog(workspace = null) {
+    const tabTemplates = ctx.payload.value?.appState?.tabTemplates || [];
+    openDialog("WorkspaceDialog", {
+      workspace,
+      tabTemplates,
+      onCancel: closeDialog,
+      onSubmit: async (draft) => {
+        if (!workspace) draft.profileId = ctx.payload.value?.appState?.activeProfileId || "default";
+        const firstPanel = draft.panels?.[0];
+        if (firstPanel) {
+          ctx.activeViewId.value = isBrowserPanel(firstPanel)
+            ? `browser:${firstPanel.id}`
+            : `${draft.id}:${firstPanel.id}`;
+        }
+        await ctx.withSuppressedBroadcast(async () => {
+          ctx.payload.value = await ctx.getApi().saveWorkspace(draft);
+        });
+        closeDialog();
+      },
+    });
+  }
+
+  function openNewWorkspaceFlow() {
+    const plugins = ctx.payload.value?.plugins || [];
+    const hasPluginTemplates = plugins.some((p) => p.workspaceDefaults && !p.error);
+    if (hasPluginTemplates) {
+      openDialog("NewWorkspacePicker", {
+        plugins,
+        onCancel: closeDialog,
+        onPickEmpty: () => { closeDialog(); openWorkspaceDialog(); },
+        onPickPlugin: (pluginId) => {
+          closeDialog();
+          const plugin = plugins.find((p) => p.id === pluginId);
+          if (!plugin?.workspaceDefaults) { openWorkspaceDialog(); return; }
+          const tpl = plugin.workspaceDefaults;
+          const draft = {
+            id: `workspace-${crypto.randomUUID()}`,
+            name: tpl.name || plugin.name,
+            icon: tpl.icon || plugin.icon || "PL",
+            color: tpl.color || plugin.color || "#ffa424",
+            kind: tpl.kind || "terminal",
+            source: "plugin",
+            pluginId,
+            cwd: "",
+            notes: tpl.notes || "",
+            activePanelId: tpl.panels?.[0]?.id || "",
+            panels: (tpl.panels || []).map((panel) => ({ ...panel })),
+          };
+          openWorkspaceDialog(draft);
+        },
+      });
+      return;
+    }
+    openWorkspaceDialog();
+  }
+
+  // --- Settings / help / profiles / azure connection dialogs -------------
+
+  function openSettingsDialog() {
+    openDialog("SettingsDialog", {
+      settings: ctx.payload.value?.appState?.settings || {},
+      tabTemplates: ctx.payload.value?.appState?.tabTemplates || [],
+      appVersion: ctx.payload.value?.meta?.appVersion || "",
+      repositoryUrl: ctx.payload.value?.meta?.repositoryUrl || "",
+      onCancel: closeDialog,
+      onSave: async (patch) => {
+        ctx.payload.value = await ctx.getApi().updateSettings(patch);
+        closeDialog();
+      },
+    });
+  }
+
+  function openHelpDialog() {
+    openDialog("HelpDialog", { onClose: closeDialog });
+  }
+
+  function openProfilesDialog() {
+    const appState = ctx.payload.value?.appState || {};
+    openDialog("ProfilesDialog", {
+      profiles: JSON.parse(JSON.stringify(appState.profiles || [])),
+      activeProfileId: appState.activeProfileId || "default",
+      workspaces: appState.workspaces || [],
+      onCancel: closeDialog,
+      onSave: async (profile) => {
+        ctx.payload.value = await ctx.getApi().saveProfile(profile);
+      },
+      onActivate: async (profileId) => {
+        ctx.suppressBroadcast.value = true;
+        try {
+          ctx.payload.value = await ctx.getApi().activateProfile(profileId);
+        } catch (err) {
+          ctx.suppressBroadcast.value = false;
+          throw err;
+        }
+        ctx.activeViewId.value = null;
+        ctx.activeSessionId.value = null;
+        ctx.splitGroup.value = null;
+        closeDialog();
+        setTimeout(() => { ctx.suppressBroadcast.value = false; }, 200);
+      },
+      onDelete: async (profileId) => {
+        ctx.payload.value = await ctx.getApi().deleteProfile(profileId);
+      },
+    });
+  }
+
+  function openAzureConnectionDialog(connectionId = "") {
+    const azureSettings = ctx.payload.value?.appState?.settings?.integrations?.azureDevops || {};
+    const connection = (azureSettings.connections || []).find((c) => c.id === connectionId) || null;
+    openDialog("AzureConnectionDialog", {
+      connection,
+      defaultReviewRoot: azureSettings.reviewRoot || "",
+      onCancel: closeDialog,
+      onSave: async (draft) => {
+        draft.profileId = ctx.payload.value?.appState?.activeProfileId || "default";
+        const result = await ctx.getApi().saveAzureConnection(draft);
+        ctx.payload.value = result.payload || result;
+        closeDialog();
+      },
+    });
+  }
+
+  // --- Worktree dialog ---------------------------------------------------
+
+  function createWorktreeWithDialog(workspaceId) {
+    openDialog("TextInputDialog", {
+      eyebrow: "Git",
+      title: "New worktree",
+      label: "Branch name",
+      value: "",
+      submitLabel: "Create",
+      onCancel: closeDialog,
+      onSubmit: async (name) => {
+        closeDialog();
+        await ctx.createWorktree(workspaceId, name);
+      },
+    });
+  }
+
+  return {
+    openDialog,
+    closeDialog,
+    showContextMenu,
+    hideContextMenu,
+    showLayoutPicker,
+    hideLayoutPicker,
+    renameTabWithDialog,
+    openWorkspaceDialog,
+    openNewWorkspaceFlow,
+    openSettingsDialog,
+    openHelpDialog,
+    openProfilesDialog,
+    openAzureConnectionDialog,
+    createWorktreeWithDialog,
+  };
+}

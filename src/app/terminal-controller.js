@@ -3,7 +3,11 @@ import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 
 export function createTerminalController({
-  state,
+  views,
+  buffers,
+  getActiveSessionId,
+  getOverlay,
+  getPayload,
   api,
   appConfig,
   openTerminalLink,
@@ -13,8 +17,8 @@ export function createTerminalController({
   safeFilenamePart,
 }) {
   function focusActiveTerminal() {
-    if (state.overlay) return;
-    const activeView = state.activeSessionId ? state.terminalViews.get(state.activeSessionId) : null;
+    if (getOverlay()) return;
+    const activeView = getActiveSessionId() ? views.value.get(getActiveSessionId()) : null;
     if (!activeView) {
       return;
     }
@@ -22,7 +26,7 @@ export function createTerminalController({
   }
 
   function pruneTerminalViews(validSessionIds) {
-    for (const [sessionId, view] of state.terminalViews.entries()) {
+    for (const [sessionId, view] of views.value.entries()) {
       if (validSessionIds.has(sessionId)) {
         continue;
       }
@@ -31,13 +35,13 @@ export function createTerminalController({
       view.resizeObserver?.disconnect();
       view.term.dispose();
       view.mount.remove();
-      state.terminalViews.delete(sessionId);
-      state.terminalBuffers.delete(sessionId);
+      views.value.delete(sessionId);
+      buffers.value.delete(sessionId);
     }
   }
 
   function scheduleSessionResize(sessionId, { force = false } = {}) {
-    const view = state.terminalViews.get(sessionId);
+    const view = views.value.get(sessionId);
     if (!view || !view.mount.isConnected) {
       return;
     }
@@ -62,31 +66,31 @@ export function createTerminalController({
   function scheduleDeferredTerminalFits(sessionId) {
     window.requestAnimationFrame(() => {
       scheduleSessionResize(sessionId, { force: true });
-      const view = state.terminalViews.get(sessionId);
+      const view = views.value.get(sessionId);
       view?.term?.refresh?.(0, Math.max(0, view.term.rows - 1));
     });
     window.setTimeout(() => {
       scheduleSessionResize(sessionId, { force: true });
-      const view = state.terminalViews.get(sessionId);
+      const view = views.value.get(sessionId);
       view?.term?.refresh?.(0, Math.max(0, view.term.rows - 1));
     }, 120);
 
     document.fonts?.ready?.then(() => {
       scheduleSessionResize(sessionId, { force: true });
-      const view = state.terminalViews.get(sessionId);
+      const view = views.value.get(sessionId);
       view?.term?.refresh?.(0, Math.max(0, view.term.rows - 1));
     }).catch(() => {});
   }
 
   function scheduleActiveResize(options) {
-    if (!state.activeSessionId) {
+    if (!getActiveSessionId()) {
       return;
     }
-    scheduleSessionResize(state.activeSessionId, options);
+    scheduleSessionResize(getActiveSessionId(), options);
   }
 
   function scheduleAllVisibleResize() {
-    for (const [sessionId, view] of state.terminalViews.entries()) {
+    for (const [sessionId, view] of views.value.entries()) {
       if (view.mount.isConnected) {
         scheduleSessionResize(sessionId, { force: true });
       }
@@ -94,15 +98,14 @@ export function createTerminalController({
   }
 
   function ensureTerminal(sessionId) {
-    if (state.terminalViews.has(sessionId)) {
-      return state.terminalViews.get(sessionId);
+    if (views.value.has(sessionId)) {
+      return views.value.get(sessionId);
     }
 
     const mount = document.createElement("div");
     mount.className = "terminal-host";
     mount.dataset.sessionId = sessionId;
-    const windowsPty = getWindowsPtyOptions(state.payload);
-    const isLight = document.documentElement.dataset.theme === "light";
+    const windowsPty = getWindowsPtyOptions(getPayload());
     const term = new Terminal({
       fontFamily: '"Cascadia Mono", "JetBrains Mono", monospace',
       fontSize: 13,
@@ -113,9 +116,6 @@ export function createTerminalController({
       cursorBlink: true,
       allowTransparency: false,
       smoothScrollDuration: 0,
-      theme: isLight
-        ? { background: "#f7f7f9", foreground: "#18181b", cursor: "#18181b", selectionBackground: "rgba(0,0,0,0.15)" }
-        : { background: "#141416", foreground: "#d8e4f5", cursor: "#d8e4f5", selectionBackground: "rgba(255,255,255,0.15)" },
       ...(windowsPty ? { windowsPty } : {}),
       linkHandler: {
         activate: openTerminalLink,
@@ -160,7 +160,7 @@ export function createTerminalController({
       }
     });
     term.onData((data) => api.writeTerminal(sessionId, data));
-    state.terminalViews.set(sessionId, {
+    views.value.set(sessionId, {
       mount,
       term,
       fitAddon,
@@ -170,11 +170,11 @@ export function createTerminalController({
       opened: false,
     });
 
-    return state.terminalViews.get(sessionId);
+    return views.value.get(sessionId);
   }
 
   function disconnectHiddenPaneObservers(visibleSessionIds) {
-    for (const [sessionId, view] of state.terminalViews.entries()) {
+    for (const [sessionId, view] of views.value.entries()) {
       if (visibleSessionIds.has(sessionId)) {
         continue;
       }
@@ -189,10 +189,10 @@ export function createTerminalController({
     if (!view.opened) {
       view.term.open(view.mount);
       view.opened = true;
-      const queued = state.terminalBuffers.get(sessionId);
+      const queued = buffers.value.get(sessionId);
       if (queued) {
         view.term.write(queued);
-        state.terminalBuffers.delete(sessionId);
+        buffers.value.delete(sessionId);
       }
       scheduleDeferredTerminalFits(sessionId);
     } else {
@@ -209,7 +209,7 @@ export function createTerminalController({
   }
 
   function getTerminalTranscript(sessionId, { lineCount = 500 } = {}) {
-    const view = state.terminalViews.get(sessionId);
+    const view = views.value.get(sessionId);
     const buffer = view?.term?.buffer?.active;
     if (!buffer) {
       return "";
@@ -235,7 +235,7 @@ export function createTerminalController({
   }
 
   function clearTerminalViewport(sessionId) {
-    const view = state.terminalViews.get(sessionId);
+    const view = views.value.get(sessionId);
     view?.term?.clear();
   }
 
@@ -252,9 +252,9 @@ export function createTerminalController({
   }
 
   function handleTerminalData({ sessionId, data }) {
-    const view = state.terminalViews.get(sessionId);
+    const view = views.value.get(sessionId);
     if (!view || !view.opened) {
-      state.terminalBuffers.set(sessionId, `${state.terminalBuffers.get(sessionId) || ""}${data}`);
+      buffers.value.set(sessionId, `${buffers.value.get(sessionId) || ""}${data}`);
       return;
     }
     view.term.write(data);
@@ -264,12 +264,12 @@ export function createTerminalController({
     if (intentional) {
       return;
     }
-    const view = state.terminalViews.get(sessionId);
+    const view = views.value.get(sessionId);
     const line = `\r\n[process exited with code ${exitCode}]\r\n`;
     if (view?.opened) {
       view.term.writeln(line);
     } else {
-      state.terminalBuffers.set(sessionId, `${state.terminalBuffers.get(sessionId) || ""}${line}`);
+      buffers.value.set(sessionId, `${buffers.value.get(sessionId) || ""}${line}`);
     }
   }
 
@@ -290,7 +290,7 @@ export function createTerminalController({
       const theme = isLight
         ? { background: "#f7f7f9", foreground: "#18181b", cursor: "#18181b", selectionBackground: "rgba(0,0,0,0.15)" }
         : { background: "#141416", foreground: "#d8e4f5", cursor: "#d8e4f5", selectionBackground: "rgba(255,255,255,0.15)" };
-      for (const view of state.terminalViews.values()) {
+      for (const view of views.value.values()) {
         view.term.options.theme = theme;
       }
     },

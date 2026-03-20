@@ -139,7 +139,7 @@ npm run smoke   # Startup smoke test
 
 The app is split into:
 - **Electron backend** (`electron/`) - runtime, session manager, store, Docker/Git/tunnel managers
-- **Renderer** (`src/`) - modular JS with Lit components for UI
+- **Renderer** (`src/`) - Vue 3 + Pinia single-page application with Composition API
 - **Shared config** (`config/`) - app-wide configuration
 
 See [Architecture](docs/architecture.md) for details.
