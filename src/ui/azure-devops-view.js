@@ -875,6 +875,9 @@ function renderReviewCommentsPanel(detail = {}, threads = [], reviewBridge = {},
   const visibleCount = filteredThreads.length + filteredLocalComments.length;
   const isFiltered = filter !== "all" || searchTerm;
 
+  const allDrafts = (reviewBridge.drafts || []).filter((d) => d.status === "draft");
+  const draftCount = allDrafts.length;
+
   const sortOptions = [
     { id: "index", label: "#N" },
     { id: "newest", label: "Newest" },
@@ -891,6 +894,10 @@ function renderReviewCommentsPanel(detail = {}, threads = [], reviewBridge = {},
             <h3>${isFiltered ? `${String(visibleCount)} / ${String(totalCount)}` : String(totalCount)} conversation${totalCount !== 1 ? "s" : ""}</h3>
           </div>
           <div class="docker-card__actions">
+            ${draftCount ? html`
+              <button type="button" class="button button--ghost danger" data-action="review-bridge-delete-all-drafts" data-pr-key=${prKey} title="Delete all ${String(draftCount)} drafts">Delete all drafts</button>
+              <button type="button" class="button button--ghost" data-action="review-bridge-queue-all-drafts" data-pr-key=${prKey} title="Queue all ${String(draftCount)} drafts for sync">Queue all drafts</button>
+            ` : nothing}
             <button type="button" class="button button--ghost" data-action="review-comment-nav" data-direction="prev" title="Previous comment">\u25B2 Prev</button>
             <button type="button" class="button button--ghost" data-action="review-comment-nav" data-direction="next" title="Next comment">\u25BC Next</button>
             <button type="button" class="button" data-action="azure-comment" data-pr-key=${prKey}>New comment</button>

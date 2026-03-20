@@ -619,6 +619,29 @@ export function createActionHandlers(context) {
       render();
       return true;
     }
+    if (action === "review-bridge-delete-all-drafts") {
+      const prKey = actionElement.dataset.prKey;
+      if (!prKey) return true;
+      const drafts = (state.payload?.reviewBridge?.pullRequests?.[prKey]?.drafts || []).filter((d) => d.status === "draft");
+      if (!drafts.length) return true;
+      if (!window.confirm(`Delete all ${drafts.length} drafts? This cannot be undone.`)) return true;
+      for (const draft of drafts) {
+        state.payload = await api.deleteReviewBridgeDraft({ prKey, draftId: draft.draftId });
+      }
+      render();
+      return true;
+    }
+    if (action === "review-bridge-queue-all-drafts") {
+      const prKey = actionElement.dataset.prKey;
+      if (!prKey) return true;
+      const drafts = (state.payload?.reviewBridge?.pullRequests?.[prKey]?.drafts || []).filter((d) => d.status === "draft");
+      if (!drafts.length) return true;
+      for (const draft of drafts) {
+        state.payload = await api.queueReviewBridgeDraft({ prKey, draftId: draft.draftId });
+      }
+      render();
+      return true;
+    }
     if (action === "review-bridge-sync") {
       const prKey = actionElement.dataset.prKey;
       if (!prKey) {
