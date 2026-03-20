@@ -19,7 +19,7 @@ jobs:
           fetch-depth: 2
       - id: check
         run: |
-          if git diff --quiet HEAD~1 HEAD -- '*.js' '*.json' '*.css' '*.html' '*.mjs' '*.ps1'; then
+          if git diff --quiet HEAD~1 HEAD -- '*.js' '*.json' '*.css' '*.html' '*.mjs' '*.ps1' '*.vue'; then
             echo "has_changes=false" >> "$GITHUB_OUTPUT"
           else
             echo "has_changes=true" >> "$GITHUB_OUTPUT"
