@@ -150,7 +150,12 @@ export function createDialogActionController({
         render();
       },
       onActivate: async (profileId) => {
-        state.payload = await api.activateProfile(profileId);
+        state._suppressBroadcastRender = true;
+        try {
+          state.payload = await api.activateProfile(profileId);
+        } finally {
+          state._suppressBroadcastRender = false;
+        }
         state.activeViewId = null;
         state.activeSessionId = null;
         state.attachedSessionId = null;

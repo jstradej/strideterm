@@ -371,6 +371,17 @@ export function normalizeState(rawState = {}) {
     ? requestedActiveWorkspaceId
     : profileWorkspaces[0]?.id || "";
 
+  // Migrate Azure connections without profileId: assign to the profile that owns
+  // the Azure workspace, or fallback to the active profile.
+  const azureConnections = normalizedSettings.integrations?.azureDevops?.connections || [];
+  const hasUntaggedConnections = azureConnections.some((c) => !c.profileId);
+  if (hasUntaggedConnections) {
+    const azureWorkspaceProfile = workspaces.find((w) => w.kind === "azure")?.profileId || activeProfileId;
+    normalizedSettings.integrations.azureDevops.connections = azureConnections.map((c) =>
+      c.profileId ? c : { ...c, profileId: azureWorkspaceProfile },
+    );
+  }
+
   const normalized = {
     ...defaults,
     ...rawState,

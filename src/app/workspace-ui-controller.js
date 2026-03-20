@@ -168,13 +168,19 @@ export function createWorkspaceUiController({
     });
     const azureSettings = state.payload?.appState?.settings?.integrations?.azureDevops || {};
     const azureSnapshot = state.payload?.azureDevops || {};
-    // Use connections count from appState (profile-filtered) as the source of truth
-    // to avoid race conditions with the azure snapshot during profile switch
     const hasConnections = (azureSettings.connections || []).length > 0;
-    render(renderAzureInboxPaneMarkup(
-      hasConnections ? azureSnapshot : { ...azureSnapshot, connections: [] },
-      azureSettings,
-    ), pane.querySelector(".workspace-pane__body"));
+    const body = pane.querySelector(".workspace-pane__body");
+    if (!hasConnections) {
+      // Use innerHTML for empty state to avoid Lit render issues after profile switch
+      body.innerHTML = '<div class="terminal-empty" style="align-content:start;padding-top:32px;">'
+        + '<p>No Azure DevOps connections yet</p>'
+        + '<small>Add a connection with organization URL, login, PAT and review checkout path.</small>'
+        + '<div class="docker-card__actions" style="margin-top:12px;">'
+        + '<button type="button" class="button" data-action="open-azure-connection-dialog">Add Azure connection</button>'
+        + '</div></div>';
+    } else {
+      render(renderAzureInboxPaneMarkup(azureSnapshot, azureSettings), body);
+    }
     restorePaneScroll(pane.querySelector(".workspace-pane__body"), scrollState);
     return pane;
   }
