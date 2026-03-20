@@ -265,7 +265,7 @@ export function renderAzureInboxView(azure = {}, settings = {}) {
 
   if (!connections.length) {
     return html`
-      <div class="terminal-empty">
+      <div class="terminal-empty" style="place-items:start center;padding-top:32px;">
         <p>No Azure DevOps connections yet</p>
         <small>Add a connection with organization URL, login, PAT and review checkout path.</small>
         <div class="docker-card__actions" style="margin-top:12px;">

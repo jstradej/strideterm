@@ -166,9 +166,14 @@ export function createWorkspaceUiController({
         { className: "workspace-pane__icon-btn", action: "refresh-azure", title: "Refresh Azure DevOps", label: "\u21BB" },
       ],
     });
+    const azureSettings = state.payload?.appState?.settings?.integrations?.azureDevops || {};
+    const azureSnapshot = state.payload?.azureDevops || {};
+    // Use connections count from appState (profile-filtered) as the source of truth
+    // to avoid race conditions with the azure snapshot during profile switch
+    const hasConnections = (azureSettings.connections || []).length > 0;
     render(renderAzureInboxPaneMarkup(
-      state.payload?.azureDevops || {},
-      state.payload?.appState?.settings?.integrations?.azureDevops || {},
+      hasConnections ? azureSnapshot : { ...azureSnapshot, connections: [] },
+      azureSettings,
     ), pane.querySelector(".workspace-pane__body"));
     restorePaneScroll(pane.querySelector(".workspace-pane__body"), scrollState);
     return pane;

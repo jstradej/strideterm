@@ -295,7 +295,7 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
   function getAzureConnections(state = getState()) {
     const all = getAzureSettings(state).connections || [];
     const activeProfile = state.activeProfileId || "default";
-    return all.filter((c) => !c.profileId || c.profileId === activeProfile);
+    return all.filter((c) => (c.profileId || "default") === activeProfile);
   }
 
   function normalizeFsPath(value) {
@@ -592,7 +592,14 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
         appVersion: packageVersion,
         repositoryUrl: APP_CONFIG.app.repositoryUrl,
       },
-      appState: clone(state),
+      appState: (() => {
+        const cloned = clone(state);
+        // Filter Azure connections to active profile only
+        if (cloned.settings?.integrations?.azureDevops) {
+          cloned.settings.integrations.azureDevops.connections = getAzureConnections(state);
+        }
+        return cloned;
+      })(),
       workspace: sessions.getWorkspace(state),
       attention: {
         byWorkspace: Object.fromEntries(projectAlerts.entries()),
@@ -1964,6 +1971,8 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
       await syncWorktrees();
       sessions.syncWithState(getState());
       ensureVisibleSession();
+      await refreshAzure();
+      scheduleAzurePolling();
       broadcastState();
       return getPayload();
     },

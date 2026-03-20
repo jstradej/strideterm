@@ -170,8 +170,13 @@ export class AzureDevOpsManager extends EventEmitter {
   } = {}) {
     const reviewState = this.reviewStore.getState();
     const startedAt = new Date(this.now()).toISOString();
+    // Immediately apply the new connections list so any intermediate broadcastState
+    // (triggered by emitUpdated) reflects the correct profile-filtered connections.
+    const connectionsChanged = JSON.stringify(connections.map((c) => c.id).sort())
+      !== JSON.stringify((this.snapshot.connections || []).map((c) => c.id).sort());
     this.snapshot = {
-      ...this.snapshot,
+      ...(connectionsChanged ? createEmptySnapshot() : this.snapshot),
+      connections,
       sync: {
         ...this.snapshot.sync,
         running: true,
