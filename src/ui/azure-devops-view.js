@@ -765,7 +765,7 @@ function renderLocalDraftCard(comment = {}, draft = null, prKey = "", commentInd
           <span class="review-comment__date">${comment.status || "ready-for-agent"} &middot; ${comment.priority || "medium"}</span>
         </div>
       </div>
-      ${comment.summary ? html`<p class="git-card__hint" style="margin:0;">${comment.summary}</p>` : nothing}
+      ${comment.summary && !draft ? html`<p class="git-card__hint" style="margin:0;">${comment.summary}</p>` : nothing}
       ${comment.commentKind === "local-comment" && comment.payload?.questionBody && !draft ? html`
         <div class="review-comment review-comment--draft">
           <div class="review-comment__body">${unsafeHTML(renderMarkdownToHtml(comment.payload.questionBody))}</div>
