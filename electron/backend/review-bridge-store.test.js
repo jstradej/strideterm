@@ -120,33 +120,96 @@ describe("review bridge store", () => {
     expect(syncedContext?.comments[0].status).toBe("synced");
     expect(syncedContext?.syncQueue[0].status).toBe("synced");
 
-    const localCommentContext = await store.createLocalComment({
+    // createDraftComment — new standalone comment (no thread)
+    const draftCommentContext = await store.createDraftComment({
       prKey: "ado-main:repo-1:123",
       body: "Should we add a follow-up note about the missing loading-state test?",
       authorAgent: "human",
     });
-    const localComment = localCommentContext?.comments.find((comment) => comment.commentKind === "local-comment");
-    expect(localComment).toMatchObject({
+    const draftComment = draftCommentContext?.comments.find((comment) => comment.commentKind === "draft");
+    expect(draftComment).toMatchObject({
       status: "draft-ready",
-      commentKind: "local-comment",
+      commentKind: "draft",
     });
-    expect(localComment?.payload?.questionBody).toContain("loading-state test");
+    expect(draftComment?.payload?.questionBody).toContain("loading-state test");
 
-    // createLocalComment now auto-creates a draft
-    const autoDraft = localCommentContext?.drafts.find((draft) => draft.commentKey === localComment?.commentKey);
+    // createDraftComment auto-creates a draft
+    const autoDraft = draftCommentContext?.drafts.find((draft) => draft.commentKey === draftComment?.commentKey);
     expect(autoDraft?.status).toBe("draft");
     expect(autoDraft?.body).toContain("loading-state test");
 
     // Overwriting with saveDraftResponse still works
-    const localCommentDraftContext = await store.saveDraftResponse({
+    const draftCommentDraftContext = await store.saveDraftResponse({
       prKey: "ado-main:repo-1:123",
-      commentKey: localComment?.commentKey,
+      commentKey: draftComment?.commentKey,
       body: "Yes. I would add a short regression note and ask for a focused test.",
       authorAgent: "codex",
     });
-    const localCommentDraft = localCommentDraftContext?.drafts.find((draft) => draft.commentKey === localComment?.commentKey);
-    expect(localCommentDraft?.status).toBe("draft");
-    expect(localCommentDraft?.body).toContain("regression note");
+    const draftCommentDraft = draftCommentDraftContext?.drafts.find((draft) => draft.commentKey === draftComment?.commentKey);
+    expect(draftCommentDraft?.status).toBe("draft");
+    expect(draftCommentDraft?.body).toContain("regression note");
+
+    await store.close();
+  });
+
+  test("createDraftComment reply to existing thread with autoQueue", async () => {
+    const rootPath = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-review-bridge-reply-"));
+    tempPaths.push(rootPath);
+    const store = await createReviewBridgeStore(rootPath);
+
+    await store.syncPullRequest({
+      provider: "azure-devops",
+      prKey: "ado-main:repo-1:200",
+      connectionId: "ado-main",
+      repository: { id: "repo-1", name: "web-app" },
+      pullRequest: { id: 200, title: "Add tests", status: "active" },
+      role: "reviewer",
+      threads: [
+        {
+          id: 50,
+          status: "active",
+          filePath: "/src/test.js",
+          lineStart: 10,
+          publishedDate: "2026-03-20T10:00:00.000Z",
+          comments: [
+            { id: 500, parentCommentId: 0, content: "Missing test coverage.", publishedDate: "2026-03-20T10:00:00.000Z", author: { displayName: "Reviewer" } },
+          ],
+        },
+      ],
+    });
+
+    // Reply to thread 50 without autoQueue
+    const replyContext = await store.createDraftComment({
+      prKey: "ado-main:repo-1:200",
+      body: "I'll add the missing tests.",
+      threadId: 50,
+      authorAgent: "human",
+    });
+    const replyDraft = replyContext?.drafts.find((d) => d.body.includes("missing tests"));
+    expect(replyDraft).toBeTruthy();
+    expect(replyDraft?.status).toBe("draft");
+    expect(replyContext?.syncQueue?.filter((q) => q.status === "pending")).toHaveLength(0);
+
+    // Reply to thread 50 with autoQueue
+    const autoQueueContext = await store.createDraftComment({
+      prKey: "ado-main:repo-1:200",
+      body: "Actually, I added them already.",
+      threadId: 50,
+      authorAgent: "human",
+      autoQueue: true,
+    });
+    const queuedDraft = autoQueueContext?.drafts.find((d) => d.body.includes("added them already"));
+    expect(queuedDraft?.status).toBe("ready-to-sync");
+    const pendingQueue = autoQueueContext?.syncQueue?.filter((q) => q.status === "pending");
+    expect(pendingQueue).toHaveLength(1);
+
+    // Publish pipeline works with auto-queued reply
+    const publishedContext = await store.syncPendingDrafts("ado-main:repo-1:200", async (entry) => {
+      expect(entry.remoteThreadId).toBe(50);
+      expect(entry.body).toContain("added them already");
+      return { remoteCommentId: 501 };
+    });
+    expect(publishedContext?.syncQueue?.[0]?.status).toBe("synced");
 
     await store.close();
   });

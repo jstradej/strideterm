@@ -37,10 +37,10 @@ const emit = defineEmits(["cancel", "submit"]);
 const inputRef = ref(null);
 const inputValue = ref(props.value);
 
-onMounted(() => {
+onMounted(() => requestAnimationFrame(() => {
   inputRef.value?.focus();
   inputRef.value?.select();
-});
+}));
 
 function handleSubmit() {
   const val = inputValue.value.trim();

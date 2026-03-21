@@ -25,7 +25,7 @@ contextBridge.exposeInMainWorld("strideterm", {
   openAzurePullRequest: (payload) => ipcRenderer.invoke("azure:pull-request:open", payload),
   commentAzurePullRequest: (payload) => ipcRenderer.invoke("azure:pull-request:comment", payload),
   updateAzureThreadStatus: (payload) => ipcRenderer.invoke("azure:pull-request:thread-status", payload),
-  createReviewBridgeLocalComment: (payload) => ipcRenderer.invoke("review-bridge:local-comment:create", payload),
+  createReviewBridgeDraftComment: (payload) => ipcRenderer.invoke("review-bridge:draft-comment:create", payload),
   saveReviewBridgeDraft: (payload) => ipcRenderer.invoke("review-bridge:draft:save", payload),
   queueReviewBridgeDraft: (payload) => ipcRenderer.invoke("review-bridge:draft:queue", payload),
   deleteReviewBridgeDraft: (payload) => ipcRenderer.invoke("review-bridge:draft:delete", payload),

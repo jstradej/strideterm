@@ -44,7 +44,7 @@ const emit = defineEmits(["cancel", "submit", "secondary-submit"]);
 const textareaRef = ref(null);
 const textValue = ref(props.value);
 
-onMounted(() => textareaRef.value?.focus());
+onMounted(() => requestAnimationFrame(() => textareaRef.value?.focus()));
 
 function handleSubmit() {
   const val = textValue.value.trim();

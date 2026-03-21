@@ -94,8 +94,8 @@ export function createApiActions(ctx) {
     ctx.payload.value = await ctx.getApi().deleteReviewBridgeComment({ prKey, commentKey });
   }
 
-  async function createReviewBridgeLocalComment(params) {
-    ctx.payload.value = await ctx.getApi().createReviewBridgeLocalComment(params);
+  async function createReviewBridgeDraftComment(params) {
+    ctx.payload.value = await ctx.getApi().createReviewBridgeDraftComment(params);
   }
 
   async function syncReviewBridgePullRequest(prKey) {
@@ -107,16 +107,16 @@ export function createApiActions(ctx) {
     if (!prKey) return;
     const bridge = ctx.payload.value?.reviewBridge?.pullRequests?.[prKey] || {};
     const drafts = (bridge.drafts || []).filter((d) => d.status === "draft");
-    const localComments = (bridge.comments || []).filter((c) => c.commentKind === "local-comment");
-    const totalCount = drafts.length + localComments.length;
+    const draftComments = (bridge.comments || []).filter((c) => c.commentKind === "draft" || c.commentKind === "local-comment");
+    const totalCount = drafts.length + draftComments.length;
     if (!totalCount) return;
-    if (!window.confirm(`Delete ${drafts.length} draft${drafts.length !== 1 ? "s" : ""} and ${localComments.length} local comment${localComments.length !== 1 ? "s" : ""}? This cannot be undone.`)) return;
+    if (!window.confirm(`Delete ${drafts.length} draft${drafts.length !== 1 ? "s" : ""} and ${draftComments.length} draft comment${draftComments.length !== 1 ? "s" : ""}? This cannot be undone.`)) return;
     const api = ctx.getApi();
-    for (const comment of localComments) {
+    for (const comment of draftComments) {
       ctx.payload.value = await api.deleteReviewBridgeComment({ prKey, commentKey: comment.commentKey });
     }
     for (const draft of drafts) {
-      if (!localComments.some((c) => c.commentKey === draft.commentKey)) {
+      if (!draftComments.some((c) => c.commentKey === draft.commentKey)) {
         ctx.payload.value = await api.deleteReviewBridgeDraft({ prKey, draftId: draft.draftId });
       }
     }
@@ -270,7 +270,7 @@ export function createApiActions(ctx) {
     deleteAzureConnection, saveAzureConnection,
     // Review bridge
     saveReviewBridgeDraft, deleteReviewBridgeDraft, queueReviewBridgeDraft,
-    deleteReviewBridgeComment, createReviewBridgeLocalComment, syncReviewBridgePullRequest,
+    deleteReviewBridgeComment, createReviewBridgeDraftComment, syncReviewBridgePullRequest,
     reviewBridgeDeleteAllDrafts, reviewBridgeQueueAllDrafts,
     // Agent prompts
     saveAgentPrompt, deleteAgentPrompt,

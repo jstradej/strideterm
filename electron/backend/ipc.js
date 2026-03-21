@@ -10,6 +10,7 @@ import {
   azureThreadStatusSchema,
   openPrSchema,
   reviewBridgeDraftSchema,
+  reviewBridgeDraftCommentSchema,
   reviewBridgeQueueSchema,
   reviewBridgeDeleteDraftSchema,
   reviewBridgeDeleteCommentSchema,
@@ -61,7 +62,7 @@ export function registerIpc(runtime, emitToRenderer, { includeStateGet = true } 
   ipcMain.handle("azure:pull-request:open", async (_event, payload) => runtime.openAzurePullRequest(validateIpc(openPrSchema, payload, "azure:pull-request:open")));
   ipcMain.handle("azure:pull-request:comment", async (_event, payload) => runtime.commentAzurePullRequest(validateIpc(azureCommentSchema, payload, "azure:pull-request:comment")));
   ipcMain.handle("azure:pull-request:thread-status", async (_event, payload) => runtime.updateAzureThreadStatus(validateIpc(azureThreadStatusSchema, payload, "azure:pull-request:thread-status")));
-  ipcMain.handle("review-bridge:local-comment:create", async (_event, payload) => runtime.createReviewBridgeLocalComment(payload));
+  ipcMain.handle("review-bridge:draft-comment:create", async (_event, payload) => runtime.createReviewBridgeDraftComment(validateIpc(reviewBridgeDraftCommentSchema, payload, "review-bridge:draft-comment:create")));
   ipcMain.handle("review-bridge:draft:save", async (_event, payload) => runtime.saveReviewBridgeDraft(validateIpc(reviewBridgeDraftSchema, payload, "review-bridge:draft:save")));
   ipcMain.handle("review-bridge:draft:queue", async (_event, payload) => runtime.queueReviewBridgeDraft(validateIpc(reviewBridgeQueueSchema, payload, "review-bridge:draft:queue")));
   ipcMain.handle("review-bridge:draft:delete", async (_event, payload) => runtime.deleteReviewBridgeDraft(validateIpc(reviewBridgeDeleteDraftSchema, payload, "review-bridge:draft:delete")));
@@ -158,7 +159,7 @@ export function registerIpc(runtime, emitToRenderer, { includeStateGet = true } 
     ipcMain.removeHandler("azure:pull-request:open");
     ipcMain.removeHandler("azure:pull-request:comment");
     ipcMain.removeHandler("azure:pull-request:thread-status");
-    ipcMain.removeHandler("review-bridge:local-comment:create");
+    ipcMain.removeHandler("review-bridge:draft-comment:create");
     ipcMain.removeHandler("review-bridge:draft:save");
     ipcMain.removeHandler("review-bridge:draft:queue");
     ipcMain.removeHandler("review-bridge:draft:delete");

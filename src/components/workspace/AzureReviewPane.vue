@@ -24,10 +24,10 @@
           <span v-if="pendingSyncCount" class="workspace-chip">{{ pendingSyncCount }} queued drafts</span>
         </div>
         <div class="git-view__actions" style="margin-left:auto;">
-          <button type="button" :class="['button', 'button--ghost', busyAction === 'refresh' && 'button--busy']" :disabled="!!busyAction" @click="handleRefresh">{{ busyAction === 'refresh' ? 'Refreshing…' : 'Refresh' }}</button>
-          <button type="button" :class="['button', 'button--ghost', busyAction === 'markSeen' && 'button--busy']" :disabled="!!busyAction" @click="handleMarkSeen">Mark seen</button>
-          <button type="button" :class="['button', busyAction === 'publish' && 'button--busy']" :disabled="!!busyAction || !pendingSyncCount" @click="handlePublish">{{ busyAction === 'publish' ? 'Publishing…' : `Publish queued drafts${pendingSyncCount ? ` (${pendingSyncCount})` : ''}` }}</button>
-          <button type="button" class="button button--ghost" @click="openBrowser">Browser</button>
+          <button type="button" :class="['button', 'button--ghost', busyAction === 'refresh' && 'button--busy']" :disabled="!!busyAction" title="Fetch the latest PR data, threads, and comments from Azure DevOps" @click="handleRefresh">{{ busyAction === 'refresh' ? 'Refreshing…' : 'Refresh' }}<span v-if="newCommentsCount" class="azure-tab__count" style="margin-left:4px;">{{ newCommentsCount }}</span></button>
+          <button type="button" :class="['button', 'button--ghost', busyAction === 'markSeen' && 'button--busy']" :disabled="!!busyAction" title="Mark all current activity as seen — clears the new-comments badge and attention indicator" @click="handleMarkSeen">Mark seen</button>
+          <button type="button" :class="['button', busyAction === 'publish' && 'button--busy']" :disabled="!!busyAction || !pendingSyncCount" title="Send all queued draft replies to Azure DevOps as real comments" @click="handlePublish">{{ busyAction === 'publish' ? 'Publishing…' : `Publish queued drafts${pendingSyncCount ? ` (${pendingSyncCount})` : ''}` }}</button>
+          <button type="button" class="button button--ghost" title="Open this pull request in the browser on Azure DevOps" @click="openBrowser">Browser</button>
         </div>
       </div>
 
@@ -35,7 +35,7 @@
       <div v-if="failedSyncItems.length" style="padding:4px 12px;font-size:11px;background:rgba(255,80,80,0.08);border-bottom:1px solid var(--border);display:flex;flex-wrap:wrap;gap:6px;align-items:center;">
         <span class="workspace-chip workspace-chip--alert" style="font-size:10px;">Sync failed</span>
         <span v-for="entry in failedSyncItems" :key="entry.queueId" style="color:var(--muted);" :title="entry.lastError || ''">{{ entry.operation || 'publish' }} · {{ entry.attempts || 0 }} attempt(s){{ entry.lastError ? ` — ${entry.lastError.slice(0, 80)}` : '' }}</span>
-        <button type="button" :class="['button', 'button--ghost', busyAction === 'publish' && 'button--busy']" style="font-size:10px;padding:1px 8px;margin-left:auto;" :disabled="!!busyAction" @click="handlePublish">{{ busyAction === 'publish' ? 'Retrying…' : 'Retry' }}</button>
+        <button type="button" :class="['button', 'button--ghost', busyAction === 'publish' && 'button--busy']" style="font-size:10px;padding:1px 8px;margin-left:auto;" :disabled="!!busyAction" title="Retry publishing the failed drafts to Azure DevOps" @click="handlePublish">{{ busyAction === 'publish' ? 'Retrying…' : 'Retry' }}</button>
       </div>
 
       <!-- Sub-tabs -->
@@ -100,7 +100,7 @@
           :pr-key="prKey"
           :workspace-id="workspaceId"
           :filtered-threads="filteredThreads"
-          :filtered-local-comments="filteredLocalComments"
+          :filtered-draft-comments="filteredDraftComments"
           :draft-by-thread="draftByThread"
           :draft-by-comment="draftByComment"
           :thread-index="threadIndex"
@@ -122,8 +122,8 @@
               <div class="section-head">
                 <div><p class="eyebrow">Merge Status</p><h3>{{ conflictInfo.label }}</h3></div>
                 <div class="docker-card__actions">
-                  <button type="button" :class="['button', 'button--ghost', busyAction === 'refresh' && 'button--busy']" :disabled="!!busyAction" @click="handleRefresh">{{ busyAction === 'refresh' ? 'Refreshing…' : 'Refresh' }}</button>
-                  <button type="button" class="button button--ghost" @click="openBrowser">View in Azure DevOps</button>
+                  <button type="button" :class="['button', 'button--ghost', busyAction === 'refresh' && 'button--busy']" :disabled="!!busyAction" title="Fetch the latest PR data, threads, and merge status from Azure DevOps" @click="handleRefresh">{{ busyAction === 'refresh' ? 'Refreshing…' : 'Refresh' }}</button>
+                  <button type="button" class="button button--ghost" title="Open this pull request in the browser on Azure DevOps" @click="openBrowser">View in Azure DevOps</button>
                 </div>
               </div>
               <p class="git-card__hint">
@@ -208,10 +208,11 @@ const pendingSyncCount = computed(() =>
   syncQueue.value.filter((item) => item.status === "pending" || item.status === "failed").length,
 );
 const failedSyncItems = computed(() => syncQueue.value.filter((item) => item.status === "failed"));
+const newCommentsCount = computed(() => detail.value?.newCommentsCount || 0);
 
 // Comments (extracted to composable)
 const {
-  filteredThreads, filteredLocalComments, draftByThread, draftByComment,
+  filteredThreads, filteredDraftComments, draftByThread, draftByComment,
   threadIndex, threadToCommentKey, filter, sort, searchTerm,
   isFiltered, totalCommentCount, allDrafts, hasClearable, sortOptions,
 } = useReviewComments(detail, reviewBridge, reviewUi, pullRequest);
@@ -285,12 +286,12 @@ function openBrowser() {
 
 function openAzureComment() {
   appStore.openDialog("TextAreaDialog", {
-    eyebrow: "Azure DevOps",
+    eyebrow: "Review Bridge",
     title: "New comment",
     label: "Comment",
     placeholder: "Write your review comment...",
-    submitLabel: "Post comment",
-    onSubmit: (content) => appStore.azureComment(prKey.value, content),
+    submitLabel: "Create draft",
+    onSubmit: (content) => appStore.createReviewBridgeDraftComment({ prKey: prKey.value, body: content, authorAgent: "human" }),
   });
 }
 </script>

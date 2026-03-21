@@ -188,7 +188,7 @@ function createRemoteTransport() {
     markAzurePullRequestSeen: (prKey) => fetchJson("/api/azure/pull-request/seen", { prKey }),
     openAzurePullRequest: (payload) => fetchJson("/api/azure/pull-request/open", payload),
     commentAzurePullRequest: (payload) => fetchJson("/api/azure/pull-request/comment", payload),
-    createReviewBridgeLocalComment: (payload) => fetchJson("/api/review-bridge/local-comment/create", payload),
+    createReviewBridgeDraftComment: (payload) => fetchJson("/api/review-bridge/draft-comment/create", payload),
     saveReviewBridgeDraft: (payload) => fetchJson("/api/review-bridge/draft/save", payload),
     queueReviewBridgeDraft: (payload) => fetchJson("/api/review-bridge/draft/queue", payload),
     syncReviewBridgePullRequest: (payload) => fetchJson("/api/review-bridge/pull-request/sync", payload),

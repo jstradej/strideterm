@@ -13,22 +13,22 @@
 
         <div class="review-section-divider"><span>Review actions</span></div>
         <div class="docker-card__actions">
-          <button type="button" :class="['button', 'button--ghost', busyAction === 'vote-10' && 'button--busy']" :disabled="!!busyAction" @click="handleVote(prKey, 10, 'Approve')">{{ busyAction === 'vote-10' ? 'Approving…' : 'Approve' }}</button>
-          <button type="button" :class="['button', 'button--ghost', busyAction === 'vote-5' && 'button--busy']" :disabled="!!busyAction" @click="handleVote(prKey, 5, 'Approve')">{{ busyAction === 'vote-5' ? 'Submitting…' : 'Approve with suggestions' }}</button>
-          <button type="button" :class="['button', 'button--ghost', busyAction === 'vote--5' && 'button--busy']" :disabled="!!busyAction" @click="handleVote(prKey, -5, 'Wait')">{{ busyAction === 'vote--5' ? 'Submitting…' : 'Wait' }}</button>
-          <button type="button" :class="['button', 'button--ghost', 'danger', busyAction === 'vote--10' && 'button--busy']" :disabled="!!busyAction" @click="handleVote(prKey, -10, 'Reject')">{{ busyAction === 'vote--10' ? 'Rejecting…' : 'Reject' }}</button>
-          <button type="button" :class="['button', 'button--ghost', busyAction === 'vote-0' && 'button--busy']" :disabled="!!busyAction" @click="handleVote(prKey, 0, 'Clear')">{{ busyAction === 'vote-0' ? 'Clearing…' : 'Clear vote' }}</button>
+          <button type="button" :class="['button', 'button--ghost', busyAction === 'vote-10' && 'button--busy']" :disabled="!!busyAction" title="Vote +10: Approve this PR on Azure DevOps" @click="handleVote(prKey, 10, 'Approve')">{{ busyAction === 'vote-10' ? 'Approving…' : 'Approve' }}</button>
+          <button type="button" :class="['button', 'button--ghost', busyAction === 'vote-5' && 'button--busy']" :disabled="!!busyAction" title="Vote +5: Approve with suggestions — looks good but has minor feedback" @click="handleVote(prKey, 5, 'Approve')">{{ busyAction === 'vote-5' ? 'Submitting…' : 'Approve with suggestions' }}</button>
+          <button type="button" :class="['button', 'button--ghost', busyAction === 'vote--5' && 'button--busy']" :disabled="!!busyAction" title="Vote -5: Wait for author — changes needed before approval" @click="handleVote(prKey, -5, 'Wait')">{{ busyAction === 'vote--5' ? 'Submitting…' : 'Wait' }}</button>
+          <button type="button" :class="['button', 'button--ghost', 'danger', busyAction === 'vote--10' && 'button--busy']" :disabled="!!busyAction" title="Vote -10: Reject this PR on Azure DevOps" @click="handleVote(prKey, -10, 'Reject')">{{ busyAction === 'vote--10' ? 'Rejecting…' : 'Reject' }}</button>
+          <button type="button" :class="['button', 'button--ghost', busyAction === 'vote-0' && 'button--busy']" :disabled="!!busyAction" title="Reset your vote to 0 (no vote) on Azure DevOps" @click="handleVote(prKey, 0, 'Clear')">{{ busyAction === 'vote-0' ? 'Clearing…' : 'Clear vote' }}</button>
         </div>
         <div class="docker-card__actions">
-          <button type="button" class="button" :disabled="!!busyAction" @click="$emit('new-comment')">New comment</button>
+          <button type="button" class="button" :disabled="!!busyAction" title="Create a new draft comment — saved locally, you can edit and publish to Azure later" @click="$emit('new-comment')">New comment</button>
         </div>
 
         <div class="review-section-divider"><span>Git operations</span></div>
         <div class="docker-card__actions">
-          <button type="button" :class="['button', 'button--ghost', busyAction === 'fetch' && 'button--busy']" :disabled="!!busyAction" @click="handleFetch(workspaceId)">{{ busyAction === 'fetch' ? 'Fetching…' : 'Fetch' }}</button>
-          <button type="button" :class="['button', 'button--ghost', busyAction === 'rebase' && 'button--busy']" :disabled="!!busyAction" @click="handleRebase(workspaceId)">{{ busyAction === 'rebase' ? 'Rebasing…' : 'Rebase on target' }}</button>
-          <button type="button" :class="['button', 'button--ghost', busyAction === 'push' && 'button--busy']" :disabled="!!busyAction" @click="handlePush(workspaceId)">{{ busyAction === 'push' ? 'Pushing…' : 'Push branch' }}</button>
-          <button type="button" class="button button--ghost" :disabled="!!busyAction" @click="gitUiStore.openLazygit(workspaceId)">Open Lazygit</button>
+          <button type="button" :class="['button', 'button--ghost', busyAction === 'fetch' && 'button--busy']" :disabled="!!busyAction" title="Git fetch — download the latest commits from the remote for this review worktree" @click="handleFetch(workspaceId)">{{ busyAction === 'fetch' ? 'Fetching…' : 'Fetch' }}</button>
+          <button type="button" :class="['button', 'button--ghost', busyAction === 'rebase' && 'button--busy']" :disabled="!!busyAction" title="Rebase the PR source branch onto the latest target branch in this review worktree" @click="handleRebase(workspaceId)">{{ busyAction === 'rebase' ? 'Rebasing…' : 'Rebase on target' }}</button>
+          <button type="button" :class="['button', 'button--ghost', busyAction === 'push' && 'button--busy']" :disabled="!!busyAction" title="Push the current branch of this review worktree to the remote" @click="handlePush(workspaceId)">{{ busyAction === 'push' ? 'Pushing…' : 'Push branch' }}</button>
+          <button type="button" class="button button--ghost" :disabled="!!busyAction" title="Open Lazygit in a terminal for this review worktree" @click="gitUiStore.openLazygit(workspaceId)">Open Lazygit</button>
         </div>
       </article>
       <div class="review-sidebar">

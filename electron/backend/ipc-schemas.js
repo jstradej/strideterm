@@ -60,6 +60,18 @@ export const reviewBridgeDraftSchema = z.object({
   prKey: nonEmptyString,
 }).passthrough();
 
+export const reviewBridgeDraftCommentSchema = z.object({
+  prKey: nonEmptyString,
+  body: z.string().min(1),
+  title: z.string().optional(),
+  filePath: z.string().optional(),
+  lineNumber: z.number().int().positive().nullable().optional(),
+  priority: z.string().optional(),
+  authorAgent: z.string().optional(),
+  threadId: z.number().int().nullable().optional(),
+  autoQueue: z.boolean().optional(),
+});
+
 export const reviewBridgeQueueSchema = z.object({
   prKey: nonEmptyString,
   draftId: nonEmptyString,

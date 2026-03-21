@@ -803,7 +803,7 @@ export async function createReviewBridgeStore(rootPath) {
         return context;
       });
     },
-    async createLocalComment({
+    async createDraftComment({
       prKey,
       body = "",
       title = "",
@@ -811,22 +811,75 @@ export async function createReviewBridgeStore(rootPath) {
       lineNumber = null,
       priority = "medium",
       authorAgent = "",
+      threadId = null,
+      autoQueue = false,
     } = {}) {
       ensureOpen();
       if (!prKey) {
         throw new Error("Pull request key is required.");
       }
       if (!String(body || "").trim()) {
-        throw new Error("Local question body is required.");
+        throw new Error("Draft comment body is required.");
       }
       return enqueue(async () => {
         const now = new Date().toISOString();
-        const commentKey = `${prKey}:local:${randomUUID()}`;
         const normalizedBody = String(body || "").trim();
         const normalizedFilePath = String(filePath || "").trim();
         const normalizedLine = Number.isInteger(lineNumber) && lineNumber > 0 ? lineNumber : null;
+        const resolvedThreadId = Number.isInteger(threadId) ? threadId : null;
+
+        // Reply to existing thread — reuse existing comment row
+        if (resolvedThreadId !== null) {
+          const existingComment = statements.selectCommentByThread.get(prKey, resolvedThreadId);
+          if (!existingComment) {
+            throw new Error(`No review comment found for thread ${resolvedThreadId}.`);
+          }
+          const resolvedCommentKey = existingComment.comment_key;
+          const existingDraft = statements.selectLatestDraftByComment.get(resolvedCommentKey) || null;
+          const draftId = existingDraft?.draft_id || `${resolvedCommentKey}:draft`;
+          const draftPayload = { threadId: resolvedThreadId, source: "draft-comment" };
+
+          try {
+            db.exec("BEGIN IMMEDIATE TRANSACTION");
+            statements.upsertDraft.run(
+              draftId,
+              resolvedCommentKey,
+              prKey,
+              normalizedBody,
+              "draft",
+              String(authorAgent || ""),
+              null,
+              1,
+              existingDraft?.created_at || now,
+              now,
+              toJson(draftPayload),
+            );
+            statements.updateCommentState.run("draft-ready", now, resolvedCommentKey);
+            if (autoQueue) {
+              const queueId = `sync:${draftId}`;
+              statements.upsertQueueItem.run(
+                queueId, prKey, resolvedCommentKey, "publish-comment", "pending", 0, "", toJson({ draftId }), now, now,
+              );
+              statements.updateDraftState.run("ready-to-sync", now, toJson(draftPayload), draftId);
+              statements.updateCommentState.run("ready-to-sync", now, resolvedCommentKey);
+            }
+            db.exec("COMMIT");
+          } catch (error) {
+            try { db.exec("ROLLBACK"); } catch {}
+            throw error;
+          }
+
+          const context = readContext(prKey);
+          if (context) {
+            await writeExports(context);
+          }
+          return context;
+        }
+
+        // New standalone draft comment (no thread)
+        const commentKey = `${prKey}:local:${randomUUID()}`;
         const commentPayload = {
-          source: "local-comment",
+          source: "draft-comment",
           authorAgent: String(authorAgent || ""),
           questionBody: normalizedBody,
           ...(normalizedFilePath ? { filePath: normalizedFilePath } : {}),
@@ -840,7 +893,7 @@ export async function createReviewBridgeStore(rootPath) {
           || (locationPrefix ? `${locationPrefix} — ${buildLocalCommentTitle(normalizedBody)}` : buildLocalCommentTitle(normalizedBody));
 
         const draftId = `${commentKey}:draft`;
-        const draftPayload = { threadId: null, source: "local-bridge" };
+        const draftPayload = { threadId: null, source: "draft-comment" };
 
         try {
           db.exec("BEGIN IMMEDIATE TRANSACTION");
@@ -849,7 +902,7 @@ export async function createReviewBridgeStore(rootPath) {
             commentKey,
             prKey,
             null,
-            "local-comment",
+            "draft",
             displayIndex,
             autoTitle,
             buildLocalCommentSummary(normalizedBody),
@@ -875,6 +928,14 @@ export async function createReviewBridgeStore(rootPath) {
             now,
             toJson(draftPayload),
           );
+          if (autoQueue) {
+            const queueId = `sync:${draftId}`;
+            statements.upsertQueueItem.run(
+              queueId, prKey, commentKey, "publish-comment", "pending", 0, "", toJson({ draftId }), now, now,
+            );
+            statements.updateDraftState.run("ready-to-sync", now, toJson(draftPayload), draftId);
+            statements.updateCommentState.run("ready-to-sync", now, commentKey);
+          }
           db.exec("COMMIT");
         } catch (error) {
           try {

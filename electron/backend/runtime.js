@@ -1492,8 +1492,8 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
       await refreshAzure();
       return getPayload();
     },
-    async createReviewBridgeLocalComment(payload) {
-      await reviewBridgeStore.createLocalComment(payload);
+    async createReviewBridgeDraftComment(payload) {
+      await reviewBridgeStore.createDraftComment(payload);
       broadcastState();
       return getPayload();
     },

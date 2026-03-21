@@ -230,15 +230,15 @@ async function main() {
 
     if (command === "create-comment") {
       const body = await readBody(options);
-      const nextContext = await store.createLocalComment({
+      const nextContext = await store.createDraftComment({
         prKey,
         body,
         title: String(options.title || ""),
         priority: String(options.priority || "medium"),
         authorAgent: String(options["author-agent"] || process.env.USER || process.env.USERNAME || "agent"),
       });
-      const createdComment = [...(nextContext?.tasks || [])]
-        .filter((entry) => entry.commentKind === "local-comment")
+      const createdComment = [...(nextContext?.comments || [])]
+        .filter((entry) => entry.commentKind === "draft" || entry.commentKind === "local-comment")
         .sort((left, right) => Date.parse(right.updatedAt || 0) - Date.parse(left.updatedAt || 0))[0];
       console.log(JSON.stringify({
         ok: true,

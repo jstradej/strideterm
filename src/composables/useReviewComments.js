@@ -16,8 +16,8 @@ export function useReviewComments(detail, reviewBridge, reviewUi, pullRequest) {
   const allThreads = computed(() =>
     (detail.value?.threads || []).filter((t) => String(t.status || "").toLowerCase() !== "unknown" && !t.isDeleted),
   );
-  const localComments = computed(() =>
-    (reviewBridge.value.comments || []).filter((c) => c.commentKind === "local-comment"),
+  const draftComments = computed(() =>
+    (reviewBridge.value.comments || []).filter((c) => c.commentKind === "draft" || c.commentKind === "local-comment"),
   );
   const draftMap = computed(() => new Map((reviewBridge.value.drafts || []).map((d) => [d.commentKey, d])));
 
@@ -25,7 +25,7 @@ export function useReviewComments(detail, reviewBridge, reviewUi, pullRequest) {
   const threadToCommentKey = computed(() => {
     const map = new Map();
     for (const comment of reviewBridge.value.comments || []) {
-      if (comment.commentKind !== "local-comment" && comment.remoteThreadId) {
+      if (comment.remoteThreadId && comment.commentKind !== "local-comment" && comment.commentKind !== "draft") {
         map.set(String(comment.remoteThreadId), comment.commentKey);
       }
     }
@@ -106,8 +106,8 @@ export function useReviewComments(detail, reviewBridge, reviewUi, pullRequest) {
     return [...threads].sort((a, b) => (threadIndex(a) || 9999) - (threadIndex(b) || 9999));
   });
 
-  const filteredLocalComments = computed(() => {
-    let comments = localComments.value;
+  const filteredDraftComments = computed(() => {
+    let comments = draftComments.value;
     if (filter.value === "has-draft") {
       comments = comments.filter((c) => draftMap.value.has(c.commentKey));
     }
@@ -120,13 +120,13 @@ export function useReviewComments(detail, reviewBridge, reviewUi, pullRequest) {
   });
 
   const isFiltered = computed(() => filter.value !== "all" || !!searchTerm.value);
-  const totalCommentCount = computed(() => allThreads.value.length + localComments.value.length);
+  const totalCommentCount = computed(() => allThreads.value.length + draftComments.value.length);
   const allDrafts = computed(() => (reviewBridge.value.drafts || []).filter((d) => d.status === "draft"));
-  const hasClearable = computed(() => allDrafts.value.length > 0 || localComments.value.length > 0);
+  const hasClearable = computed(() => allDrafts.value.length > 0 || draftComments.value.length > 0);
 
   return {
     allThreads,
-    localComments,
+    draftComments,
     draftMap,
     threadToCommentKey,
     commentKeyToIndex,
@@ -138,7 +138,7 @@ export function useReviewComments(detail, reviewBridge, reviewUi, pullRequest) {
     sort,
     searchTerm,
     filteredThreads,
-    filteredLocalComments,
+    filteredDraftComments,
     isFiltered,
     totalCommentCount,
     allDrafts,

@@ -174,8 +174,8 @@ async function handleApiRequest(runtime, request, response) {
       return;
     }
 
-    if (request.method === "POST" && url.pathname === "/api/review-bridge/local-comment/create") {
-      json(response, 200, await runtime.createReviewBridgeLocalComment(body));
+    if (request.method === "POST" && url.pathname === "/api/review-bridge/draft-comment/create") {
+      json(response, 200, await runtime.createReviewBridgeDraftComment(body));
       return;
     }
 

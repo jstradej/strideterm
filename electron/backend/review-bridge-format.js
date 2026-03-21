@@ -160,7 +160,7 @@ export function buildBriefMarkdown(context) {
         `  Title: ${comment.title}`,
         `  Summary: ${comment.summary || ""}`,
       );
-      if (comment.commentKind === "local-comment" && comment.payload?.questionBody) {
+      if ((comment.commentKind === "draft" || comment.commentKind === "local-comment") && comment.payload?.questionBody) {
         lines.push(`  Body: ${collapseText(comment.payload.questionBody)}`);
       }
     }

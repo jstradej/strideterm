@@ -178,8 +178,8 @@ export function createReviewBridgeMcpHandlers({ store, prKey }) {
         ...detail,
       });
     },
-    async createLocalComment({ body, title = "", filePath = "", lineNumber = null, priority = "medium", authorAgent = "" }) {
-      const context = await store.createLocalComment({
+    async createDraftComment({ body, title = "", filePath = "", lineNumber = null, priority = "medium", authorAgent = "" }) {
+      const context = await store.createDraftComment({
         prKey,
         body,
         title,
@@ -189,14 +189,14 @@ export function createReviewBridgeMcpHandlers({ store, prKey }) {
         authorAgent,
       });
       const latestComment = [...(context?.comments || [])]
-        .filter((comment) => comment.commentKind === "local-comment" && comment.payload?.questionBody === body)
+        .filter((comment) => (comment.commentKind === "draft" || comment.commentKind === "local-comment") && comment.payload?.questionBody === body)
         .sort((left, right) => Date.parse(right.updatedAt || right.createdAt || 0) - Date.parse(left.updatedAt || left.createdAt || 0))[0] || null;
       const comment = latestComment && latestComment.displayIndex ? serializeComment(latestComment) : null;
       const latestDraft = comment ? (context?.drafts || []).find((d) => d.commentKey === latestComment.commentKey) || null : null;
       return toolResult(
         comment
-          ? `Created local comment ${comment.index} with draft. ${comment.title}`
-          : "Created local comment with draft.",
+          ? `Created draft comment ${comment.index}. ${comment.title}`
+          : "Created draft comment.",
         {
           prKey,
           comment,
@@ -352,7 +352,7 @@ export async function runReviewBridgeMcpServer({ rootPath, prKey }) {
       priority: z.enum(["low", "medium", "high"]).optional().describe("Priority for the local comment."),
       authorAgent: z.string().optional().describe("Agent label such as claude or codex."),
     },
-  }, async (input) => handlers.createLocalComment(input));
+  }, async (input) => handlers.createDraftComment(input));
 
   server.registerTool("save_review_draft", {
     title: "Save Review Draft",
