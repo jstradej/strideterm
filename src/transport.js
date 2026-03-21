@@ -199,7 +199,7 @@ function createRemoteTransport() {
     voteAzurePullRequest: (payload) => fetchJson("/api/azure/pull-request/vote", payload),
     fetchAzureReviewWorkspace: (workspaceId) => fetchJson("/api/azure/workspace/fetch", { workspaceId }),
     rebaseAzureReviewWorkspace: (workspaceId) => fetchJson("/api/azure/workspace/rebase", { workspaceId }),
-    pushAzureReviewWorkspace: (workspaceId) => fetchJson("/api/azure/workspace/push", { workspaceId }),
+    pushAzureReviewWorkspace: (workspaceId, options) => fetchJson("/api/azure/workspace/push", { workspaceId, ...options }),
     regenerateRemoteToken: () => fetchJson("/api/remote/token/regenerate", {}),
     refreshTunnel: () => fetchJson("/api/tunnel/refresh", {}),
     createCloudflareTunnel: () => fetchJson("/api/tunnel/create", {}),

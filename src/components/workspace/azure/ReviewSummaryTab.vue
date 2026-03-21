@@ -58,6 +58,7 @@
           <button type="button" :class="['button', 'button--ghost', busyAction === 'fetch' && 'button--busy']" :disabled="!!busyAction" title="Git fetch — download the latest commits from the remote for this review worktree" @click="handleFetch(workspaceId)">{{ busyAction === 'fetch' ? 'Fetching…' : 'Fetch' }}</button>
           <button type="button" :class="['button', 'button--ghost', busyAction === 'rebase' && 'button--busy']" :disabled="!!busyAction" title="Rebase the PR source branch onto the latest target branch in this review worktree" @click="handleRebase(workspaceId)">{{ busyAction === 'rebase' ? 'Rebasing…' : 'Rebase on target' }}</button>
           <button type="button" :class="['button', 'button--ghost', busyAction === 'push' && 'button--busy']" :disabled="!!busyAction" title="Push the current branch of this review worktree to the remote" @click="handlePush(workspaceId)">{{ busyAction === 'push' ? 'Pushing…' : 'Push branch' }}</button>
+          <button type="button" :class="['button', 'button--ghost', busyAction === 'force-push' && 'button--busy']" :disabled="!!busyAction" title="Force push (--force-with-lease) — use after rebase to update the PR branch" @click="handleForcePush(workspaceId)">{{ busyAction === 'force-push' ? 'Force pushing…' : 'Force push' }}</button>
           <button type="button" class="button button--ghost" :disabled="!!busyAction" title="Open Lazygit in a terminal for this review worktree" @click="gitUiStore.openLazygit(workspaceId)">Open Lazygit</button>
         </div>
         <div v-if="pendingSyncCount > 0" class="docker-card__actions">
@@ -181,6 +182,14 @@ async function handlePush(workspaceId) {
   pushError.value = "";
   try { await appStore.azurePushReviewWorkspace(workspaceId); }
   catch (error) { pushError.value = error?.message || String(error || "Push failed."); }
+  finally { busyAction.value = ""; }
+}
+
+async function handleForcePush(workspaceId) {
+  busyAction.value = "force-push";
+  pushError.value = "";
+  try { await appStore.azurePushReviewWorkspace(workspaceId, { force: true }); }
+  catch (error) { pushError.value = error?.message || String(error || "Force push failed."); }
   finally { busyAction.value = ""; }
 }
 

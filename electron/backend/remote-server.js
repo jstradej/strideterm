@@ -230,7 +230,7 @@ async function handleApiRequest(runtime, request, response) {
     }
 
     if (request.method === "POST" && url.pathname === "/api/azure/workspace/push") {
-      json(response, 200, await runtime.pushAzureReviewWorkspace(body.workspaceId));
+      json(response, 200, await runtime.pushAzureReviewWorkspace(body.workspaceId, { force: Boolean(body.force) }));
       return;
     }
 

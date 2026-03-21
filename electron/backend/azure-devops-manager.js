@@ -968,7 +968,7 @@ export class AzureDevOpsManager extends EventEmitter {
     await this.runGit(workspace.cwd, ["rebase", `origin/${targetBranch}`]);
   }
 
-  async pushReviewWorkspace({ workspace }) {
+  async pushReviewWorkspace({ workspace, force = false }) {
     const connection = this.findConnection(workspace.review?.connectionId);
     if (!connection) {
       throw new Error("Azure DevOps connection was not found.");
@@ -978,7 +978,10 @@ export class AzureDevOpsManager extends EventEmitter {
       throw new Error("PAT is missing.");
     }
     const sourceBranch = stripRefsPrefix(workspace.review?.pullRequest?.sourceRefName);
-    await this.runGit(workspace.cwd, ["push", "origin", `HEAD:${sourceBranch}`], {
+    const pushArgs = force
+      ? ["push", "--force-with-lease", "origin", `HEAD:${sourceBranch}`]
+      : ["push", "origin", `HEAD:${sourceBranch}`];
+    await this.runGit(workspace.cwd, pushArgs, {
       login: connection.login,
       token,
     });

@@ -1620,7 +1620,7 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
       await refreshAzure();
       return getPayload();
     },
-    async pushAzureReviewWorkspace(workspaceId) {
+    async pushAzureReviewWorkspace(workspaceId, { force = false } = {}) {
       const workspace = findWorkspace(getState(), workspaceId);
       if (!workspace?.review) {
         throw new Error("Azure review workspace not found.");
@@ -1632,7 +1632,7 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
           + "Commit your changes first, then try again.",
         );
       }
-      await azure.pushReviewWorkspace({ workspace });
+      await azure.pushReviewWorkspace({ workspace, force });
       await refreshGit(workspaceId);
       await refreshAzure();
       return getPayload();

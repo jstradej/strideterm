@@ -66,14 +66,14 @@
               <template v-if="baseBranch">
                 <div class="git-operation-actions">
                   <button type="button" class="button" :disabled="!!(gitUi.busyAction || operation.inProgress)" @click="gitUiStore.gitRebaseBase(workspaceId, baseBranch)">{{ gitUi.busyAction === 'rebase' ? 'Rebasing…' : `Rebase onto ${baseBranch}` }}</button>
-                  <button type="button" class="button button--ghost" :disabled="!!(gitUi.busyAction || operation.inProgress)" @click="gitUiStore.gitMergeBase(workspaceId, baseBranch)">{{ gitUi.busyAction === 'merge' ? 'Merging…' : `Merge ${baseBranch} in` }}</button>
+                  <button v-if="!isReviewWorkspace" type="button" class="button button--ghost" :disabled="!!(gitUi.busyAction || operation.inProgress)" @click="gitUiStore.gitMergeBase(workspaceId, baseBranch)">{{ gitUi.busyAction === 'merge' ? 'Merging…' : `Merge ${baseBranch} in` }}</button>
                 </div>
                 <p class="git-card__hint">Operations use the local {{ baseBranch }} branch. Fetch first to sync with remote.</p>
               </template>
               <p v-else class="git-card__hint">Base branch could not be detected automatically for this repository.</p>
             </article>
-            <!-- Merge back card -->
-            <GitMergeBackCard :snapshot="snapshot" :workspace-id="workspaceId" :workspaces="workspaces" :git-ui="gitUi" />
+            <!-- Merge back card (hidden for review workspaces — merging into target is done via Azure DevOps) -->
+            <GitMergeBackCard v-if="!isReviewWorkspace" :snapshot="snapshot" :workspace-id="workspaceId" :workspaces="workspaces" :git-ui="gitUi" />
           </div>
         </template>
 
@@ -197,6 +197,8 @@ const snapshot = computed(() => appStore.getGitSnapshot(props.workspaceId));
 const gitUi = computed(() => gitUiStore.get(props.workspaceId));
 const workspaces = computed(() => appStore.filteredWorkspaces);
 
+const workspace = computed(() => (appStore.filteredWorkspaces || []).find((ws) => ws.id === props.workspaceId));
+const isReviewWorkspace = computed(() => !!workspace.value?.review?.prKey);
 const operation = computed(() => snapshot.value?.operationState || {});
 const baseBranch = computed(() => snapshot.value?.baseBranch || snapshot.value?.compareWithBase?.baseBranch || "");
 const compare = computed(() => snapshot.value?.compareWithBase || {});

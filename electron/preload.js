@@ -38,7 +38,7 @@ contextBridge.exposeInMainWorld("strideterm", {
   voteAzurePullRequest: (payload) => ipcRenderer.invoke("azure:pull-request:vote", payload),
   fetchAzureReviewWorkspace: (workspaceId) => ipcRenderer.invoke("azure:workspace:fetch", workspaceId),
   rebaseAzureReviewWorkspace: (workspaceId) => ipcRenderer.invoke("azure:workspace:rebase", workspaceId),
-  pushAzureReviewWorkspace: (workspaceId) => ipcRenderer.invoke("azure:workspace:push", workspaceId),
+  pushAzureReviewWorkspace: (workspaceId, options) => ipcRenderer.invoke("azure:workspace:push", workspaceId, options),
   regenerateRemoteToken: () => ipcRenderer.invoke("remote:token:regenerate"),
   refreshTunnel: () => ipcRenderer.invoke("tunnel:refresh"),
   createCloudflareTunnel: () => ipcRenderer.invoke("tunnel:create"),

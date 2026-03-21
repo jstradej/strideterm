@@ -55,9 +55,9 @@ export function createApiActions(ctx) {
     ctx.payload.value = await ctx.getApi().rebaseAzureReviewWorkspace(workspaceId);
   }
 
-  async function azurePushReviewWorkspace(workspaceId) {
+  async function azurePushReviewWorkspace(workspaceId, { force = false } = {}) {
     if (!workspaceId) return;
-    ctx.payload.value = await ctx.getApi().pushAzureReviewWorkspace(workspaceId);
+    ctx.payload.value = await ctx.getApi().pushAzureReviewWorkspace(workspaceId, { force });
   }
 
   async function deleteAzureConnection(connectionId) {
