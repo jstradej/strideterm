@@ -237,6 +237,18 @@ export async function createReviewBridgeStore(rootPath) {
     // Column already exists
   }
 
+  // Migration: add fix_status and fix_summary columns if missing
+  try {
+    db.exec("ALTER TABLE review_comments ADD COLUMN fix_status TEXT DEFAULT NULL");
+  } catch {
+    // Column already exists
+  }
+  try {
+    db.exec("ALTER TABLE review_comments ADD COLUMN fix_summary TEXT DEFAULT NULL");
+  } catch {
+    // Column already exists
+  }
+
   // Backfill display_index for existing rows that don't have one
   db.exec(`
     UPDATE review_comments SET display_index = (
@@ -421,6 +433,11 @@ export async function createReviewBridgeStore(rootPath) {
     deleteQueueByComment: db.prepare(`
       DELETE FROM sync_queue WHERE comment_key = ?
     `),
+    updateCommentFixStatus: db.prepare(`
+      UPDATE review_comments
+      SET fix_status = ?, fix_summary = ?, updated_at = ?
+      WHERE comment_key = ?
+    `),
     selectPullRequestContext: db.prepare(`
       SELECT * FROM pull_requests WHERE pr_key = ?
     `),
@@ -513,6 +530,8 @@ export async function createReviewBridgeStore(rootPath) {
       status: row.status || "ready-for-agent",
       priority: row.priority || "medium",
       assignedAgent: row.assigned_agent || "",
+      fixStatus: row.fix_status || null,
+      fixSummary: row.fix_summary || null,
       createdAt: row.created_at || null,
       updatedAt: row.updated_at || null,
       payload: fromJson(row.payload_json, {}),
@@ -1049,6 +1068,72 @@ export async function createReviewBridgeStore(rootPath) {
           try {
             db.exec("ROLLBACK");
           } catch {}
+          throw error;
+        }
+
+        const context = readContext(prKey);
+        if (context) {
+          await writeExports(context);
+        }
+        return context;
+      });
+    },
+    async replyWithCodeChanges({
+      prKey,
+      commentKey = "",
+      threadId = null,
+      body = "",
+      authorAgent = "",
+      autoQueue = true,
+    } = {}) {
+      ensureOpen();
+      if (!prKey) {
+        throw new Error("Pull request key is required.");
+      }
+      return enqueue(async () => {
+        const commentRow = resolveCommentRow({ prKey, commentKey, threadId });
+        if (!commentRow) {
+          throw new Error("Review comment was not found for this pull request.");
+        }
+        const now = new Date().toISOString();
+        const resolvedCommentKey = commentRow.comment_key;
+        const replyBody = collapseText(body) || "Done.";
+
+        try {
+          db.exec("BEGIN IMMEDIATE TRANSACTION");
+          statements.updateCommentFixStatus.run("has-code-changes", replyBody, now, resolvedCommentKey);
+          // Create a draft reply so it gets published to the Azure thread
+          const existingDraft = statements.selectLatestDraftByComment.get(resolvedCommentKey) || null;
+          const canReuse = existingDraft && existingDraft.status === "draft";
+          const draftId = canReuse ? existingDraft.draft_id : `${resolvedCommentKey}:reply-changes:${randomUUID()}`;
+          const resolvedThreadId = Number.isInteger(commentRow.remote_thread_id) ? commentRow.remote_thread_id : null;
+          const draftPayload = { threadId: resolvedThreadId, source: "reply-with-changes" };
+          statements.upsertDraft.run(
+            draftId,
+            resolvedCommentKey,
+            prKey,
+            replyBody,
+            "draft",
+            String(authorAgent || ""),
+            null,
+            0,
+            canReuse ? existingDraft.created_at : now,
+            now,
+            toJson(draftPayload),
+          );
+          if (autoQueue) {
+            const queueId = `sync:${draftId}`;
+            statements.upsertQueueItem.run(
+              queueId, prKey, resolvedCommentKey, "publish-comment", "pending", 0, "", toJson({ draftId }), now, now,
+            );
+            statements.updateDraftState.run("ready-to-sync", now, toJson(draftPayload), draftId);
+            statements.updateCommentState.run("ready-to-sync", now, resolvedCommentKey);
+          } else {
+            statements.updateCommentState.run("draft-ready", now, resolvedCommentKey);
+          }
+          db.exec("COMMIT");
+        } catch (error) {
+          try { db.exec("ROLLBACK"); } catch {}
           throw error;
         }
 

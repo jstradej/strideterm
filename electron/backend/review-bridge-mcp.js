@@ -250,6 +250,27 @@ export function createReviewBridgeMcpHandlers({ store, prKey }) {
         },
       );
     },
+    async replyWithCodeChanges({ index = null, commentKey = "", body = "", authorAgent = "" }) {
+      const baseContext = readContextOrThrow(store, prKey);
+      const selection = resolveComment(baseContext, { index, commentKey });
+      const context = await store.replyWithCodeChanges({
+        prKey,
+        commentKey: selection.comment.commentKey,
+        body,
+        authorAgent,
+        autoQueue: true,
+      });
+      const latestDraft = context?.drafts.find((entry) => entry.commentKey === selection.comment.commentKey) || null;
+      return toolResult(
+        `Queued reply for comment #${selection.comment.displayIndex}: ${body}`,
+        {
+          prKey,
+          comment: serializeComment(selection.comment),
+          draft: latestDraft ? serializeDraft(latestDraft) : null,
+          hasCodeChanges: true,
+        },
+      );
+    },
   };
 }
 
@@ -376,6 +397,26 @@ export async function runReviewBridgeMcpServer({ rootPath, prKey }) {
       commentKey: z.string().optional().describe("Exact comment key when you already know it."),
     },
   }, async (input) => handlers.queueReviewDraft(input));
+
+  server.registerTool("reply_with_code_changes", {
+    title: "Reply to Review Comment After Code Changes",
+    description: "Reply to a review comment after you have made code changes that address it. "
+      + "Write your reply as you would respond to the reviewer — e.g. "
+      + "'Good catch. Added a null guard in parseInput() and a test case for null input.' "
+      + "This creates a queued reply that will be published to Azure DevOps when the user pushes. "
+      + "You do NOT need to call save_review_draft or queue_review_draft separately — this tool handles both. "
+      + "Only call this when you actually changed code for this comment. "
+      + "For text-only replies without code changes, use save_review_draft instead.",
+    inputSchema: {
+      index: z.number().int().positive().optional().describe("1-based comment index from list_review_comments."),
+      commentKey: z.string().optional().describe("Exact comment key when you already know it."),
+      body: z.string().min(1).describe(
+        "Your reply to the reviewer. This is the full text that will appear on the Azure DevOps thread. "
+        + "Describe what you changed and why. Write naturally as a response to the reviewer's comment.",
+      ),
+      authorAgent: z.string().optional().describe("Agent label such as claude or codex."),
+    },
+  }, async (input) => handlers.replyWithCodeChanges(input));
 
   const transport = new StdioServerTransport();
   try {

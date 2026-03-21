@@ -1517,6 +1517,11 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
       broadcastState();
       return getPayload();
     },
+    async replyWithCodeChanges(payload) {
+      await reviewBridgeStore.replyWithCodeChanges(payload);
+      broadcastState();
+      return getPayload();
+    },
     async deleteReviewBridgeComment(payload) {
       await reviewBridgeStore.deleteComment(payload);
       broadcastState();
@@ -1544,6 +1549,48 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
           threadId: entry.remoteThreadId,
         };
       });
+      await refreshAzure();
+      broadcastState();
+      return getPayload();
+    },
+    async pushAndPublishReview(payload) {
+      const workspaceId = String(payload?.workspaceId || "").trim();
+      if (!workspaceId) {
+        throw new Error("Workspace ID is required.");
+      }
+      const state = getState();
+      const workspace = (state.workspaces || []).find((ws) => ws.id === workspaceId);
+      if (!workspace) {
+        throw new Error("Workspace was not found.");
+      }
+      const prKey = workspace.review?.prKey;
+      if (!prKey) {
+        throw new Error("This workspace is not associated with a pull request.");
+      }
+      // Check for uncommitted changes before pushing
+      const dirtyState = await git.getCachedWorktreeDirtyState(workspace.cwd);
+      if (dirtyState.dirty) {
+        throw new Error(
+          `Cannot push: ${dirtyState.dirtyCount} uncommitted change${dirtyState.dirtyCount !== 1 ? "s" : ""} in the worktree. `
+          + "Commit your changes first, then try again.",
+        );
+      }
+      // Step 1: push (with PAT via azure-devops-manager)
+      await azure.pushReviewWorkspace({ workspace });
+      // Step 2: publish queued drafts (only if push succeeded)
+      await reviewBridgeStore.syncPendingDrafts(prKey, async (entry) => {
+        await azure.addPullRequestComment({
+          prKey,
+          content: entry.body,
+          threadId: entry.remoteThreadId,
+          parentCommentId: entry.parentCommentId || 0,
+        });
+        return {
+          publishedAt: new Date().toISOString(),
+          threadId: entry.remoteThreadId,
+        };
+      });
+      await refreshGit(workspaceId);
       await refreshAzure();
       broadcastState();
       return getPayload();
@@ -1577,6 +1624,13 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
       const workspace = findWorkspace(getState(), workspaceId);
       if (!workspace?.review) {
         throw new Error("Azure review workspace not found.");
+      }
+      const dirtyState = await git.getCachedWorktreeDirtyState(workspace.cwd);
+      if (dirtyState.dirty) {
+        throw new Error(
+          `Cannot push: ${dirtyState.dirtyCount} uncommitted change${dirtyState.dirtyCount !== 1 ? "s" : ""} in the worktree. `
+          + "Commit your changes first, then try again.",
+        );
       }
       await azure.pushReviewWorkspace({ workspace });
       await refreshGit(workspaceId);

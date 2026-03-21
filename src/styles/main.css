@@ -2780,6 +2780,15 @@ dt {
   padding: 10px 12px;
 }
 
+.review-comment--fix-summary {
+  background: rgba(76, 175, 80, 0.06);
+  border-left: 2px solid var(--success, #4caf50);
+  margin: 4px 0;
+  border-radius: 3px;
+  display: block;
+  padding: 10px 12px;
+}
+
 /* Avatar */
 .review-comment__avatar {
   width: 28px;
@@ -3199,6 +3208,12 @@ details[open] > .review-tree-dir__label .review-tree-dir__icon::before {
 
 .workspace-chip--muted {
   opacity: 0.6;
+}
+
+.workspace-chip--fixed {
+  border-color: color-mix(in srgb, var(--success, #4caf50), transparent 40%);
+  background: rgba(76, 175, 80, 0.12);
+  color: var(--success, #4caf50);
 }
 
 .workspace-chip--local {

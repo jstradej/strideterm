@@ -12,7 +12,7 @@
 
       <!-- Filter/sort bar -->
       <div style="display:flex;gap:4px;padding:0 10px 6px;flex-wrap:wrap;align-items:center;">
-        <button v-for="f in ['all', 'active', 'has-draft', 'mine']" :key="f" type="button" :class="['button', 'button--ghost', filter === f && 'button--active']" :style="filter === f ? 'font-size:11px;padding:2px 8px;background:var(--accent);color:var(--bg);' : 'font-size:11px;padding:2px 8px;'" :title="{ all: 'Show all threads and comments', active: 'Show only threads with Active status', 'has-draft': 'Show only threads that have a local draft reply', mine: 'Show threads where you are an author or have a draft' }[f]" @click="gitUiStore.reviewSetCommentFilter(workspaceId, f)">{{ { all: 'All', active: 'Active', 'has-draft': 'Has draft', mine: 'Mine' }[f] }}</button>
+        <button v-for="f in ['all', 'active', 'fixed', 'has-draft', 'mine']" :key="f" type="button" :class="['button', 'button--ghost', filter === f && 'button--active']" :style="filter === f ? 'font-size:11px;padding:2px 8px;background:var(--accent);color:var(--bg);' : 'font-size:11px;padding:2px 8px;'" :title="{ all: 'Show all threads and comments', active: 'Show only threads with Active status', fixed: 'Show only threads marked as fixed by the agent', 'has-draft': 'Show only threads that have a local draft reply', mine: 'Show threads where you are an author or have a draft' }[f]" @click="gitUiStore.reviewSetCommentFilter(workspaceId, f)">{{ { all: 'All', active: 'Active', fixed: 'Fixed', 'has-draft': 'Has draft', mine: 'Mine' }[f] }}</button>
         <span style="width:1px;height:16px;background:var(--border);margin:0 2px;"></span>
         <button v-for="s in sortOptions" :key="s.id" type="button" :class="['button', 'button--ghost', sort === s.id && 'button--active']" :style="sort === s.id ? 'font-size:11px;padding:2px 8px;background:var(--accent);color:var(--bg);' : 'font-size:11px;padding:2px 8px;'" :title="`Sort comments by ${s.label.toLowerCase()}`" @click="gitUiStore.reviewSetCommentSort(workspaceId, s.id)">↕ {{ s.label }}</button>
         <span style="flex:1;"></span>
@@ -33,6 +33,7 @@
               <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
                 <h4 style="margin:0;">{{ threadIndex(thread) ? `#${threadIndex(thread)}` : `Thread #${thread.id}` }}</h4>
                 <span :class="['workspace-chip', statusChipClass(thread.status)]" style="font-size:10px;">{{ threadStatusLabel(thread.status) }}</span>
+                <span v-if="threadFixStatus.get(String(thread.id))" class="workspace-chip workspace-chip--fixed" style="font-size:10px;">Fixed</span>
                 <span v-if="thread.filePath" class="review-comment-file">
                   {{ shortFilePath(thread.filePath) }}<span v-if="thread.lineStart" class="review-comment-line">:{{ thread.lineStart }}</span>
                 </span>
@@ -67,6 +68,15 @@
                   </div>
                 </div>
               </div>
+            </div>
+
+            <!-- Code changes reply banner -->
+            <div v-if="threadFixStatus.get(String(thread.id))?.fixSummary" class="review-comment review-comment--fix-summary">
+              <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;">
+                <strong style="color:var(--success,#4caf50);">Reply with code changes</strong>
+                <span class="workspace-chip workspace-chip--fixed" style="font-size:10px;">queued</span>
+              </div>
+              <div class="review-comment__body" style="opacity:0.85;">{{ threadFixStatus.get(String(thread.id)).fixSummary }}</div>
             </div>
 
             <!-- Draft replies for this thread -->
@@ -169,6 +179,7 @@ const props = defineProps({
   draftsByComment: { type: Function, required: true },
   threadIndex: { type: Function, required: true },
   threadToCommentKey: { type: Map, required: true },
+  threadFixStatus: { type: Map, required: true },
   filter: { type: String, required: true },
   sort: { type: String, required: true },
   searchTerm: { type: String, required: true },

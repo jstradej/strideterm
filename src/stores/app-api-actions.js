@@ -132,6 +132,11 @@ export function createApiActions(ctx) {
     }
   }
 
+  async function pushAndPublishReview(workspaceId) {
+    if (!workspaceId) return;
+    ctx.payload.value = await ctx.getApi().pushAndPublishReview({ workspaceId });
+  }
+
   // --- Agent prompts ---------------------------------------------------
 
   async function saveAgentPrompt(params) {
@@ -271,7 +276,7 @@ export function createApiActions(ctx) {
     // Review bridge
     saveReviewBridgeDraft, deleteReviewBridgeDraft, queueReviewBridgeDraft,
     deleteReviewBridgeComment, createReviewBridgeDraftComment, syncReviewBridgePullRequest,
-    reviewBridgeDeleteAllDrafts, reviewBridgeQueueAllDrafts,
+    reviewBridgeDeleteAllDrafts, reviewBridgeQueueAllDrafts, pushAndPublishReview,
     // Agent prompts
     saveAgentPrompt, deleteAgentPrompt,
     // Remote access

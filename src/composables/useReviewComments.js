@@ -60,6 +60,17 @@ export function useReviewComments(detail, reviewBridge, reviewUi, pullRequest) {
     return map;
   });
 
+  // Build threadId -> fixStatus (null | 'has-code-changes')
+  const threadFixStatus = computed(() => {
+    const map = new Map();
+    for (const comment of reviewBridge.value.comments || []) {
+      if (comment.remoteThreadId && comment.fixStatus) {
+        map.set(String(comment.remoteThreadId), { fixStatus: comment.fixStatus, fixSummary: comment.fixSummary || "" });
+      }
+    }
+    return map;
+  });
+
   function threadIndex(thread) { return threadToIndex.value.get(String(thread.id)) || 0; }
   function draftsByThread(thread) {
     const commentKey = threadToCommentKey.value.get(String(thread.id));
@@ -85,6 +96,8 @@ export function useReviewComments(detail, reviewBridge, reviewUi, pullRequest) {
       threads = threads.filter((t) => threadsWithDraft.has(String(t.id)));
     } else if (filter.value === "active") {
       threads = threads.filter((t) => String(t.status || "").toLowerCase() === "active");
+    } else if (filter.value === "fixed") {
+      threads = threads.filter((t) => threadFixStatus.value.has(String(t.id)));
     } else if (filter.value === "mine") {
       threads = threads.filter((t) => {
         const authors = (t.comments || []).map((c) => c.author?.displayName || "");
@@ -139,6 +152,7 @@ export function useReviewComments(detail, reviewBridge, reviewUi, pullRequest) {
     threadToCommentKey,
     commentKeyToIndex,
     threadToIndex,
+    threadFixStatus,
     threadIndex,
     draftsByThread,
     draftsByComment,

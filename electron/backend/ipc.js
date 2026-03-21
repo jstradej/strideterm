@@ -67,9 +67,11 @@ export function registerIpc(runtime, emitToRenderer, { includeStateGet = true } 
   ipcMain.handle("review-bridge:draft:queue", async (_event, payload) => runtime.queueReviewBridgeDraft(validateIpc(reviewBridgeQueueSchema, payload, "review-bridge:draft:queue")));
   ipcMain.handle("review-bridge:draft:delete", async (_event, payload) => runtime.deleteReviewBridgeDraft(validateIpc(reviewBridgeDeleteDraftSchema, payload, "review-bridge:draft:delete")));
   ipcMain.handle("review-bridge:comment:delete", async (_event, payload) => runtime.deleteReviewBridgeComment(validateIpc(reviewBridgeDeleteCommentSchema, payload, "review-bridge:comment:delete")));
+  ipcMain.handle("review-bridge:comment:reply-with-changes", async (_event, payload) => runtime.replyWithCodeChanges(payload));
   ipcMain.handle("review-bridge:agent-prompt:save", async (_event, payload) => runtime.saveAgentPrompt(validateIpc(agentPromptSaveSchema, payload, "review-bridge:agent-prompt:save")));
   ipcMain.handle("review-bridge:agent-prompt:delete", async (_event, payload) => runtime.deleteAgentPrompt(validateIpc(agentPromptDeleteSchema, payload, "review-bridge:agent-prompt:delete")));
   ipcMain.handle("review-bridge:pull-request:sync", async (_event, payload) => runtime.syncReviewBridgePullRequest(payload));
+  ipcMain.handle("review-bridge:pull-request:push-and-publish", async (_event, payload) => runtime.pushAndPublishReview(payload));
   ipcMain.handle("azure:pull-request:vote", async (_event, payload) => runtime.voteAzurePullRequest(validateIpc(azureVoteSchema, payload, "azure:pull-request:vote")));
   ipcMain.handle("azure:workspace:fetch", async (_event, workspaceId) => runtime.fetchAzureReviewWorkspace(workspaceId));
   ipcMain.handle("azure:workspace:rebase", async (_event, workspaceId) => runtime.rebaseAzureReviewWorkspace(workspaceId));
@@ -164,9 +166,11 @@ export function registerIpc(runtime, emitToRenderer, { includeStateGet = true } 
     ipcMain.removeHandler("review-bridge:draft:queue");
     ipcMain.removeHandler("review-bridge:draft:delete");
     ipcMain.removeHandler("review-bridge:comment:delete");
+    ipcMain.removeHandler("review-bridge:comment:reply-with-changes");
     ipcMain.removeHandler("review-bridge:agent-prompt:save");
     ipcMain.removeHandler("review-bridge:agent-prompt:delete");
     ipcMain.removeHandler("review-bridge:pull-request:sync");
+    ipcMain.removeHandler("review-bridge:pull-request:push-and-publish");
     ipcMain.removeHandler("azure:pull-request:vote");
     ipcMain.removeHandler("azure:workspace:fetch");
     ipcMain.removeHandler("azure:workspace:rebase");

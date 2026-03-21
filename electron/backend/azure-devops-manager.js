@@ -692,7 +692,14 @@ export class AzureDevOpsManager extends EventEmitter {
         });
         const status = await this.runGit(worktreePath, ["status", "--porcelain"]);
         if (!status.stdout.trim()) {
-          await this.runGit(worktreePath, ["reset", "--hard", `refs/remotes/origin/${sourceBranch}`]);
+          // Only reset if local branch has no commits ahead of remote,
+          // to avoid discarding unpushed work from a previous session.
+          const ahead = await this.runGit(worktreePath, [
+            "rev-list", "--count", `refs/remotes/origin/${sourceBranch}..HEAD`,
+          ]).catch(() => ({ stdout: "0" }));
+          if (Number(ahead.stdout.trim()) === 0) {
+            await this.runGit(worktreePath, ["reset", "--hard", `refs/remotes/origin/${sourceBranch}`]);
+          }
         }
       }
 

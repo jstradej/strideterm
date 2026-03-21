@@ -60,6 +60,10 @@
           <button type="button" :class="['button', 'button--ghost', busyAction === 'push' && 'button--busy']" :disabled="!!busyAction" title="Push the current branch of this review worktree to the remote" @click="handlePush(workspaceId)">{{ busyAction === 'push' ? 'Pushing…' : 'Push branch' }}</button>
           <button type="button" class="button button--ghost" :disabled="!!busyAction" title="Open Lazygit in a terminal for this review worktree" @click="gitUiStore.openLazygit(workspaceId)">Open Lazygit</button>
         </div>
+        <div v-if="pendingSyncCount > 0" class="docker-card__actions">
+          <button type="button" :class="['button', busyAction === 'push-publish' && 'button--busy']" :disabled="!!busyAction" :title="`Push commits to remote and publish ${pendingSyncCount} queued draft${pendingSyncCount !== 1 ? 's' : ''} to Azure DevOps`" @click="handlePushAndPublish(workspaceId)">{{ busyAction === 'push-publish' ? 'Pushing & publishing…' : `Push & publish ${pendingSyncCount} comment${pendingSyncCount !== 1 ? 's' : ''}` }}</button>
+        </div>
+        <p v-if="pushError || pushPublishError" class="git-card__hint" style="color:var(--danger,#e53935);padding:4px 0;">{{ pushError || pushPublishError }}</p>
       </article>
       <div class="review-sidebar">
         <!-- Checks -->
@@ -109,6 +113,7 @@ const props = defineProps({
   changedFiles: { type: Array, required: true },
   prKey: { type: String, required: true },
   workspaceId: { type: String, required: true },
+  pendingSyncCount: { type: Number, default: 0 },
 });
 
 defineEmits(["new-comment"]);
@@ -169,10 +174,28 @@ async function handleRebase(workspaceId) {
   finally { busyAction.value = ""; }
 }
 
+const pushError = ref("");
+
 async function handlePush(workspaceId) {
   busyAction.value = "push";
+  pushError.value = "";
   try { await appStore.azurePushReviewWorkspace(workspaceId); }
+  catch (error) { pushError.value = error?.message || String(error || "Push failed."); }
   finally { busyAction.value = ""; }
+}
+
+const pushPublishError = ref("");
+
+async function handlePushAndPublish(workspaceId) {
+  busyAction.value = "push-publish";
+  pushPublishError.value = "";
+  try {
+    await appStore.pushAndPublishReview(workspaceId);
+  } catch (error) {
+    pushPublishError.value = error?.message || String(error || "Push or publish failed.");
+  } finally {
+    busyAction.value = "";
+  }
 }
 
 function stripRef(ref) { return String(ref || "").replace(/^refs\/heads\//, ""); }

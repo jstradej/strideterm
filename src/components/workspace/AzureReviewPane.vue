@@ -56,6 +56,7 @@
           :changed-files="changedFiles"
           :pr-key="prKey"
           :workspace-id="workspaceId"
+          :pending-sync-count="pendingSyncCount"
           @new-comment="openAzureComment"
         />
 
@@ -136,6 +137,7 @@
           :drafts-by-comment="draftsByComment"
           :thread-index="threadIndex"
           :thread-to-comment-key="threadToCommentKey"
+          :thread-fix-status="threadFixStatus"
           :filter="filter"
           :sort="sort"
           :search-term="searchTerm"
@@ -292,7 +294,7 @@ const newCommentsCount = computed(() => detail.value?.newCommentsCount || 0);
 // Comments (extracted to composable)
 const {
   filteredThreads, filteredDraftComments, draftsByThread, draftsByComment,
-  threadIndex, threadToCommentKey, filter, sort, searchTerm,
+  threadIndex, threadToCommentKey, threadFixStatus, filter, sort, searchTerm,
   isFiltered, totalCommentCount, allDrafts, hasClearable, sortOptions,
 } = useReviewComments(detail, reviewBridge, reviewUi, pullRequest);
 
