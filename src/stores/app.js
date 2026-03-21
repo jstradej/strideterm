@@ -96,6 +96,22 @@ export const useAppStore = defineStore("app", () => {
     return result.visibleTabs;
   });
 
+  // Auto-mark notifications as read when switching to the relevant tab
+  watch(activeViewId, async (viewId) => {
+    if (!viewId) return;
+    try {
+      const { useNotificationStore } = await import("./notifications.js");
+      const notifStore = useNotificationStore();
+      for (const item of notifStore.items) {
+        if (!item.read && item.viewId && item.viewId === viewId) {
+          notifStore.markRead(item.id);
+        }
+      }
+    } catch {
+      // Notification store may not be available during bootstrap
+    }
+  });
+
   // Normalize activeViewId and splitGroup when tabs change
   watch(workspaceTabs, (tabs) => {
     const validIds = new Set(tabs.map((t) => t.id));

@@ -35,10 +35,15 @@ export function useNotificationCapture() {
 
   seedSeen();
 
+  // Grace period after startup — ignore alerts during initial tab launch
+  const startupAt = Date.now();
+  const STARTUP_GRACE_MS = 15_000;
+
   watch(
     () => appStore.payload?.attention,
     (attention) => {
       if (!attention) return;
+      const inStartupGrace = Date.now() - startupAt < STARTUP_GRACE_MS;
       const byWs = attention.byWorkspace || attention.byProject || {};
       const workspaces = appStore.payload?.appState?.workspaces || [];
       const wsMap = new Map(workspaces.map((ws) => [ws.id, ws]));
@@ -48,6 +53,9 @@ export function useNotificationCapture() {
           const key = alertKey(wsId, alert);
           if (seenAlertKeys.has(key)) continue;
           seenAlertKeys.add(key);
+
+          // During startup grace period, mark as seen but don't notify
+          if (inStartupGrace) continue;
 
           const ws = wsMap.get(wsId);
           const wsName = ws?.name || wsId;
