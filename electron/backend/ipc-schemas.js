@@ -84,6 +84,18 @@ export const reviewBridgeDeleteCommentSchema = z.object({
   commentKey: nonEmptyString,
 });
 
+export const reviewBridgeReplyWithChangesSchema = z.object({
+  prKey: nonEmptyString,
+}).passthrough();
+
+export const reviewBridgeSyncSchema = z.object({
+  prKey: nonEmptyString,
+});
+
+export const reviewBridgePushAndPublishSchema = z.object({
+  workspaceId: nonEmptyString,
+});
+
 export const agentPromptSaveSchema = z.object({}).passthrough();
 
 export const agentPromptDeleteSchema = z.object({

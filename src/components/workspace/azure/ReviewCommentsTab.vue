@@ -253,11 +253,7 @@ async function handleDeleteAllDrafts() {
   finally { busyAction.value = ""; }
 }
 
-async function handleQueueAllDrafts() {
-  busyAction.value = "queueAll";
-  try { await appStore.reviewBridgeQueueAllDrafts(props.prKey); }
-  finally { busyAction.value = ""; }
-}
+
 
 async function handleQueueDraft(draftId) {
   busyAction.value = `queue-${draftId}`;

@@ -367,11 +367,6 @@ async function handleRefresh() {
   } finally { busyAction.value = ""; }
 }
 
-async function handleMarkSeen() {
-  busyAction.value = "markSeen";
-  try { await appStore.markAzurePrSeen(prKey.value); }
-  finally { busyAction.value = ""; }
-}
 
 const toolbarError = ref("");
 
