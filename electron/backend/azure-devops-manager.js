@@ -605,10 +605,20 @@ export class AzureDevOpsManager extends EventEmitter {
     if (token) {
       extraArgs.push("-c", `http.extraheader=${encodeAuthHeader(login, token)}`);
     }
-    return this.execFileText("git", [...extraArgs, ...args], {
-      cwd,
-      env: sanitizeGitEnvironment(),
-    });
+    try {
+      return await this.execFileText("git", [...extraArgs, ...args], {
+        cwd,
+        env: sanitizeGitEnvironment(),
+      });
+    } catch (error) {
+      // Strip credentials from error messages to prevent PAT leaks in UI/logs
+      const sanitize = (text) => String(text || "").replace(/AUTHORIZATION:\s*Basic\s+\S+/gi, "AUTHORIZATION: [REDACTED]");
+      const message = sanitize(error instanceof Error ? error.message : String(error));
+      const sanitized = new Error(message);
+      if (error?.stderr) sanitized.stderr = sanitize(error.stderr);
+      if (error?.stdout) sanitized.stdout = sanitize(error.stdout);
+      throw sanitized;
+    }
   }
 
   async ensureCacheRepo({ connection, token, repository, reviewRoot }) {

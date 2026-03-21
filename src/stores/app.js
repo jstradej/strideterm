@@ -115,7 +115,7 @@ export const useAppStore = defineStore("app", () => {
   // Normalize activeViewId and splitGroup when tabs change
   watch(workspaceTabs, (tabs) => {
     const validIds = new Set(tabs.map((t) => t.id));
-    if (activeViewId.value && !validIds.has(activeViewId.value)) {
+    if (!activeViewId.value || !validIds.has(activeViewId.value)) {
       activeViewId.value = tabs[0]?.id || null;
     }
     if (splitGroup.value) {
