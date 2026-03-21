@@ -4,7 +4,7 @@
       <div class="section-head">
         <div><p class="eyebrow">Comments</p><h3>{{ totalCommentCount }} conversation{{ totalCommentCount !== 1 ? 's' : '' }}</h3></div>
         <div class="docker-card__actions">
-          <button v-if="hasClearable" type="button" :class="['button', 'button--ghost', 'danger', busyAction === 'deleteAll' && 'button--busy']" :disabled="!!busyAction" title="Delete all local drafts and draft comments permanently" @click="handleDeleteAllDrafts">{{ busyAction === 'deleteAll' ? 'Clearing\u2026' : 'Clear all' }}</button>
+          <button type="button" :class="['button', 'button--ghost', 'danger', busyAction === 'deleteAll' && 'button--busy']" :disabled="!!busyAction || !hasClearable" title="Delete all local draft replies and draft comments permanently" @click="handleDeleteAllDrafts">{{ busyAction === 'deleteAll' ? 'Deleting\u2026' : 'Delete all drafts' }}</button>
           <button type="button" class="button" title="Create a new draft comment — saved locally, you can edit and publish to Azure later" @click="openNewDraftComment">New comment</button>
         </div>
       </div>
