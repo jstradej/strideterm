@@ -2693,6 +2693,8 @@ dt {
 .review-comment-card {
   border-left: 3px solid var(--border);
   transition: border-color 0.2s ease;
+  gap: 2px;
+  padding: 6px 10px;
 }
 
 .review-comment-card:hover {
@@ -2754,11 +2756,11 @@ dt {
 
 /* Individual comment */
 .review-comment {
-  padding: 10px 12px;
+  padding: 8px 10px;
   border-top: 1px solid var(--border);
   display: grid;
   grid-template-columns: 28px minmax(0, 1fr);
-  gap: 10px;
+  gap: 8px;
   align-items: start;
 }
 

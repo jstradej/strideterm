@@ -2,7 +2,7 @@
   <div class="review-panel">
     <article class="git-card review-card review-card--stack">
       <div class="section-head">
-        <div><p class="eyebrow">Comments</p><h3>{{ totalCommentCount }} conversation{{ totalCommentCount !== 1 ? 's' : '' }}</h3></div>
+        <div><p class="eyebrow">Comments</p><h3>{{ filteredThreads.length + filteredDraftComments.length }} conversation{{ (filteredThreads.length + filteredDraftComments.length) !== 1 ? 's' : '' }}{{ isFiltered ? ` (${totalCommentCount} total)` : '' }}</h3></div>
         <div class="docker-card__actions">
           <button type="button" :class="['button', 'button--ghost', 'danger', busyAction === 'deleteAll' && 'button--busy']" :disabled="!!busyAction || !hasClearable" title="Delete all local draft replies and draft comments permanently" @click="handleDeleteAllDrafts">{{ busyAction === 'deleteAll' ? 'Deleting\u2026' : 'Delete all drafts' }}</button>
           <button type="button" class="button" title="Create a new draft comment — saved locally, you can edit and publish to Azure later" @click="openNewDraftComment">New comment</button>
