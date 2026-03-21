@@ -380,13 +380,19 @@ async function handlePushAndPublish() {
     const result = await appStore.pushAndPublishReview(props.workspaceId);
     const commits = result?.commitCount || 0;
     const published = result?.publishedCount || 0;
+    const pubError = result?.publishError || "";
     const parts = [];
     if (commits > 0) parts.push(`${commits} commit${commits !== 1 ? "s" : ""} pushed`);
     else parts.push("Push completed (no new commits)");
-    if (published > 0) parts.push(`${published} comment${published !== 1 ? "s" : ""} published to Azure DevOps`);
+    if (published > 0) parts.push(`${published} comment${published !== 1 ? "s" : ""} published`);
     pushPublishSuccess.value = parts.join(", ") + ".";
+    if (pubError) {
+      // Push succeeded but some comments failed — show both success and error
+      toolbarError.value = `Push succeeded, but publishing failed: ${pubError}`;
+    }
   } catch (error) {
-    toolbarError.value = error?.message || String(error || "Push or publish failed.");
+    // Push itself failed (before any publishing)
+    toolbarError.value = error?.message || String(error || "Push failed.");
   } finally {
     busyAction.value = "";
   }

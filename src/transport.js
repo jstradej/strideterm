@@ -196,6 +196,7 @@ function createRemoteTransport() {
     replyWithCodeChanges: (payload) => fetchJson("/api/review-bridge/comment/reply-with-changes", payload),
     syncReviewBridgePullRequest: (payload) => fetchJson("/api/review-bridge/pull-request/sync", payload),
     pushAndPublishReview: (payload) => fetchJson("/api/review-bridge/pull-request/push-and-publish", payload),
+    updateAzureThreadStatus: (payload) => fetchJson("/api/azure/pull-request/thread-status", payload),
     voteAzurePullRequest: (payload) => fetchJson("/api/azure/pull-request/vote", payload),
     fetchAzureReviewWorkspace: (workspaceId) => fetchJson("/api/azure/workspace/fetch", { workspaceId }),
     rebaseAzureReviewWorkspace: (workspaceId) => fetchJson("/api/azure/workspace/rebase", { workspaceId }),

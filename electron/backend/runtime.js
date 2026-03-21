@@ -1583,26 +1583,32 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
       const commitCount = Number(aheadResult.stdout.trim()) || 0;
       // Step 1: push (with PAT via azure-devops-manager)
       await azure.pushReviewWorkspace({ workspace });
+      const pushOk = true;
       // Step 2: publish queued drafts (only if push succeeded)
       let publishedCount = 0;
-      await reviewBridgeStore.syncPendingDrafts(prKey, async (entry) => {
-        await azure.addPullRequestComment({
-          prKey,
-          content: entry.body,
-          threadId: entry.remoteThreadId,
-          parentCommentId: entry.parentCommentId || 0,
+      let publishError = "";
+      try {
+        await reviewBridgeStore.syncPendingDrafts(prKey, async (entry) => {
+          await azure.addPullRequestComment({
+            prKey,
+            content: entry.body,
+            threadId: entry.remoteThreadId,
+            parentCommentId: entry.parentCommentId || 0,
+          });
+          publishedCount += 1;
+          return {
+            publishedAt: new Date().toISOString(),
+            threadId: entry.remoteThreadId,
+          };
         });
-        publishedCount += 1;
-        return {
-          publishedAt: new Date().toISOString(),
-          threadId: entry.remoteThreadId,
-        };
-      });
+      } catch (error) {
+        publishError = error instanceof Error ? error.message : String(error || "Publish failed.");
+      }
       await refreshGit(workspaceId);
       await refreshAzure();
       broadcastState();
       const result = getPayload();
-      result.pushAndPublishResult = { commitCount, publishedCount };
+      result.pushAndPublishResult = { commitCount, publishedCount, pushOk, publishError };
       return result;
     },
     async voteAzurePullRequest(payload) {
