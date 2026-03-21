@@ -793,9 +793,11 @@ export class GitManager extends EventEmitter {
         ? parsedStatus.branch
         : (branchResult.stdout.trim() || "HEAD");
       const upstream = parsedStatus.upstream || await this.readUpstream(workspace.cwd);
-      const reviewTargetRef = String(workspace.review?.pullRequest?.targetRefName || "").replace(/^refs\/heads\//, "").trim();
-      const baseBranch = reviewTargetRef
-        ? preferBaseBranch(branch, reviewTargetRef, branchNames) || reviewTargetRef
+      // For review workspaces, compare against the remote source branch (where we push to).
+      // The target branch (where the PR merges into) is handled by the Summary tab's "Rebase on target".
+      const reviewSourceRef = String(workspace.review?.pullRequest?.sourceRefName || "").replace(/^refs\/heads\//, "").trim();
+      const baseBranch = reviewSourceRef
+        ? `origin/${reviewSourceRef}`
         : preferBaseBranch(branch, upstream, branchNames);
       const compareWithBase = await this.readBaseComparison(workspace.cwd, baseBranch, branch);
       const operationState = await this.inspectOperationState(workspace.cwd, { gitDir, gitCommonDir });

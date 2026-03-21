@@ -24,12 +24,15 @@
         <tr
           v-for="entry in sortedCommits"
           :key="entry.shortHash"
-          :class="{ 'git-log-table--active': selectedCommit === entry.shortHash }"
+          :class="{ 'git-log-table--active': selectedCommit === entry.shortHash, 'git-log-table--unpushed': aheadCount > 0 && entry._originalIndex < aheadCount }"
           :title="entry.subject"
           @click="$emit('select', entry.shortHash)"
         >
           <td class="git-log-table__hash">{{ entry.shortHash }}</td>
-          <td class="git-log-table__msg">{{ entry.subject }}</td>
+          <td class="git-log-table__msg">
+            <span v-if="aheadCount > 0 && entry._originalIndex < aheadCount" class="git-log-unpushed-badge">unpushed</span>
+            {{ entry.subject }}
+          </td>
           <td class="git-log-table__date">{{ entry.relativeDate }}</td>
           <td class="git-log-table__author">{{ entry.author || '' }}</td>
         </tr>
@@ -45,6 +48,7 @@ import { ref, computed } from "vue";
 const props = defineProps({
   commits: { type: Array, default: () => [] },
   selectedCommit: { type: String, default: "" },
+  aheadCount: { type: Number, default: 0 },
 });
 
 defineEmits(["select"]);
@@ -69,16 +73,21 @@ function toggleSort(key) {
   }
 }
 
+// Tag each commit with its original index so we can identify unpushed commits after sorting
+const indexedCommits = computed(() =>
+  props.commits.map((entry, i) => ({ ...entry, _originalIndex: i })),
+);
+
 const sortedCommits = computed(() => {
-  if (!sortKey.value) return props.commits;
+  if (!sortKey.value) return indexedCommits.value;
 
   const col = columns.find((c) => c.key === sortKey.value);
-  if (!col) return props.commits;
+  if (!col) return indexedCommits.value;
 
   const field = col.field;
   const dir = sortDir.value === "asc" ? 1 : -1;
 
-  return [...props.commits].sort((a, b) => {
+  return [...indexedCommits.value].sort((a, b) => {
     const va = String(a[field] || "").toLowerCase();
     const vb = String(b[field] || "").toLowerCase();
     return va < vb ? -dir : va > vb ? dir : 0;
@@ -118,5 +127,22 @@ const sortedCommits = computed(() => {
   font-size: 9px;
   margin-left: 4px;
   opacity: 0.7;
+}
+
+.git-log-table--unpushed {
+  background: rgba(255, 164, 36, 0.06);
+  border-left: 2px solid var(--accent);
+}
+
+.git-log-unpushed-badge {
+  display: inline-block;
+  font-size: 9px;
+  padding: 0 4px;
+  border-radius: 3px;
+  background: rgba(255, 164, 36, 0.15);
+  color: var(--accent);
+  margin-right: 6px;
+  vertical-align: middle;
+  line-height: 16px;
 }
 </style>

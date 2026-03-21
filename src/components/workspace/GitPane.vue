@@ -133,6 +133,7 @@
                 <GitCommitLog
                   :commits="allCommits"
                   :selected-commit="gitUi.selectedCommit"
+                  :ahead-count="snapshot.aheadCount || 0"
                   @select="(hash) => gitUiStore.gitSelectCommit(workspaceId, hash)"
                 />
               </div>
