@@ -83,9 +83,9 @@ export function createApiActions(ctx) {
     ctx.payload.value = await ctx.getApi().deleteReviewBridgeDraft({ prKey, draftId });
   }
 
-  async function queueReviewBridgeDraft(prKey, draftId) {
-    if (!prKey || !draftId) return;
-    ctx.payload.value = await ctx.getApi().queueReviewBridgeDraft({ prKey, draftId });
+  async function queueReviewBridgeDraft(prKey, draftId, commentKey) {
+    if (!prKey || (!draftId && !commentKey)) return;
+    ctx.payload.value = await ctx.getApi().queueReviewBridgeDraft({ prKey, draftId, commentKey });
   }
 
   async function deleteReviewBridgeComment(prKey, commentKey) {
