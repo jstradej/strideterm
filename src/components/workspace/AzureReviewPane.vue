@@ -32,9 +32,15 @@
         </div>
       </div>
 
+      <!-- Toolbar success -->
+      <div v-if="pushPublishSuccess" style="padding:6px 12px;font-size:12px;background:rgba(76,175,80,0.08);border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px;">
+        <span style="color:var(--success,#4caf50);font-weight:600;">{{ pushPublishSuccess }}</span>
+        <button type="button" class="button button--ghost" style="font-size:10px;padding:1px 8px;margin-left:auto;" @click="pushPublishSuccess = ''">Dismiss</button>
+      </div>
       <!-- Toolbar error -->
-      <div v-if="toolbarError" style="padding:4px 12px;font-size:11px;background:rgba(255,80,80,0.08);border-bottom:1px solid var(--border);">
+      <div v-if="toolbarError" style="padding:6px 12px;font-size:12px;background:rgba(255,80,80,0.08);border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px;">
         <span style="color:var(--danger,#e53935);">{{ toolbarError }}</span>
+        <button type="button" class="button button--ghost" style="font-size:10px;padding:1px 8px;margin-left:auto;" @click="toolbarError = ''">Dismiss</button>
       </div>
 
       <!-- Failed sync banner -->
@@ -356,17 +362,32 @@ async function handleMarkSeen() {
 
 const toolbarError = ref("");
 
+const pushPublishSuccess = ref("");
+
 async function handlePushAndPublish() {
   busyAction.value = "pushPublish";
   toolbarError.value = "";
-  try { await appStore.pushAndPublishReview(props.workspaceId); }
-  catch (error) { toolbarError.value = error?.message || String(error || "Push or publish failed."); }
-  finally { busyAction.value = ""; }
+  pushPublishSuccess.value = "";
+  try {
+    const result = await appStore.pushAndPublishReview(props.workspaceId);
+    const commits = result?.commitCount || 0;
+    const published = result?.publishedCount || 0;
+    const parts = [];
+    if (commits > 0) parts.push(`${commits} commit${commits !== 1 ? "s" : ""} pushed`);
+    else parts.push("Push completed (no new commits)");
+    if (published > 0) parts.push(`${published} comment${published !== 1 ? "s" : ""} published to Azure DevOps`);
+    pushPublishSuccess.value = parts.join(", ") + ".";
+  } catch (error) {
+    toolbarError.value = error?.message || String(error || "Push or publish failed.");
+  } finally {
+    busyAction.value = "";
+  }
 }
 
 async function handlePublish() {
   busyAction.value = "publish";
   toolbarError.value = "";
+  pushPublishSuccess.value = "";
   try { await appStore.syncReviewBridgePullRequest(prKey.value); }
   catch (error) { toolbarError.value = error?.message || String(error || "Publish failed."); }
   finally { busyAction.value = ""; }

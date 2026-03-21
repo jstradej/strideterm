@@ -133,8 +133,11 @@ export function createApiActions(ctx) {
   }
 
   async function pushAndPublishReview(workspaceId) {
-    if (!workspaceId) return;
-    ctx.payload.value = await ctx.getApi().pushAndPublishReview({ workspaceId });
+    if (!workspaceId) return null;
+    const result = await ctx.getApi().pushAndPublishReview({ workspaceId });
+    const summary = result?.pushAndPublishResult || null;
+    ctx.payload.value = result;
+    return summary;
   }
 
   // --- Agent prompts ---------------------------------------------------

@@ -1575,9 +1575,16 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
           + "Commit your changes first, then try again.",
         );
       }
+      // Count commits ahead of remote before pushing
+      const sourceBranch = String(workspace.review?.pullRequest?.sourceRefName || "").replace(/^refs\/heads\//, "");
+      const aheadResult = await git.execGit(workspace.cwd, [
+        "rev-list", "--count", `refs/remotes/origin/${sourceBranch}..HEAD`,
+      ]).catch(() => ({ stdout: "0" }));
+      const commitCount = Number(aheadResult.stdout.trim()) || 0;
       // Step 1: push (with PAT via azure-devops-manager)
       await azure.pushReviewWorkspace({ workspace });
       // Step 2: publish queued drafts (only if push succeeded)
+      let publishedCount = 0;
       await reviewBridgeStore.syncPendingDrafts(prKey, async (entry) => {
         await azure.addPullRequestComment({
           prKey,
@@ -1585,6 +1592,7 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
           threadId: entry.remoteThreadId,
           parentCommentId: entry.parentCommentId || 0,
         });
+        publishedCount += 1;
         return {
           publishedAt: new Date().toISOString(),
           threadId: entry.remoteThreadId,
@@ -1593,7 +1601,9 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
       await refreshGit(workspaceId);
       await refreshAzure();
       broadcastState();
-      return getPayload();
+      const result = getPayload();
+      result.pushAndPublishResult = { commitCount, publishedCount };
+      return result;
     },
     async voteAzurePullRequest(payload) {
       await azure.setPullRequestVote(payload);
