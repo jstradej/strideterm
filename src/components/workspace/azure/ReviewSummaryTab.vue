@@ -11,6 +11,36 @@
         <p v-if="pullRequest.description" class="git-card__hint azure-review__description">{{ pullRequest.description }}</p>
         <p class="git-card__hint" style="font-family:monospace;font-size:12px;">{{ stripRef(pullRequest.sourceRefName) }} &rarr; {{ stripRef(pullRequest.targetRefName) }}</p>
 
+        <!-- Author & meta -->
+        <div v-if="detail" style="display:flex;flex-wrap:wrap;gap:6px 16px;padding:4px 0;">
+          <span v-if="detail.author" class="review-meta"><span class="review-meta__label">Author</span> {{ detail.author.displayName }}</span>
+          <span v-if="pullRequest.creationDate" class="review-meta"><span class="review-meta__label">Created</span> {{ formatDate(pullRequest.creationDate) }}</span>
+          <span v-if="pullRequest.isDraft" class="workspace-chip" style="background:var(--accent);color:var(--bg);font-size:10px;">Draft</span>
+          <span class="review-meta"><span class="review-meta__label">Status</span> {{ pullRequest.status || 'unknown' }}</span>
+          <span v-if="detail.role" class="review-meta"><span class="review-meta__label">Role</span> {{ detail.role }}</span>
+        </div>
+
+        <!-- Merge status / Conflicts — always prominent -->
+        <div v-if="conflictInfo.hasConflicts" class="review-conflict-banner review-conflict-banner--danger">
+          <span class="review-conflict-banner__icon">✗</span>
+          <div>
+            <strong>{{ conflictInfo.label }}</strong>
+            <p class="review-conflict-banner__hint">Merge conflicts between <code>{{ stripRef(pullRequest.sourceRefName) }}</code> and <code>{{ stripRef(pullRequest.targetRefName) }}</code></p>
+            <ul v-if="changedFiles.length" class="review-conflict-files">
+              <li v-for="file in changedFiles" :key="file.path">
+                <span class="git-status-code">{{ file.changeType || 'edit' }}</span>
+                <span class="git-list__text git-list__text--path">{{ file.path }}</span>
+              </li>
+            </ul>
+          </div>
+        </div>
+        <div v-else class="review-conflict-banner review-conflict-banner--ok">
+          <span class="review-conflict-banner__icon">✓</span>
+          <div>
+            <strong>{{ conflictInfo.label }}</strong>
+          </div>
+        </div>
+
         <div class="review-section-divider"><span>Review actions</span></div>
         <div class="docker-card__actions">
           <button type="button" :class="['button', 'button--ghost', busyAction === 'vote-10' && 'button--busy']" :disabled="!!busyAction" title="Vote +10: Approve this PR on Azure DevOps" @click="handleVote(prKey, 10, 'Approve')">{{ busyAction === 'vote-10' ? 'Approving…' : 'Approve' }}</button>
@@ -32,27 +62,34 @@
         </div>
       </article>
       <div class="review-sidebar">
+        <!-- Checks -->
+        <article class="git-card review-card">
+          <div class="section-head"><div><p class="eyebrow">Checks</p></div></div>
+          <template v-if="checks.items?.length">
+            <div v-for="item in checks.items" :key="item.id" class="review-check-row">
+              <span :class="['review-check-icon', `review-check-icon--${item.state}`]">{{ checkIcon(item.state) }}</span>
+              <div>
+                <strong style="font-size:12px;">{{ item.name }}</strong>
+                <p v-if="item.stateLabel && item.stateLabel !== item.state" class="git-card__hint" style="margin:0;">{{ item.stateLabel }}</p>
+                <p v-if="item.source" class="git-card__hint" style="margin:0;font-size:10px;color:var(--muted);">{{ item.optional ? 'optional' : 'required' }} &middot; {{ item.source }}</p>
+              </div>
+            </div>
+          </template>
+          <p v-else class="git-card__hint" style="color:var(--muted);">No checks configured</p>
+        </article>
         <!-- Reviewers -->
         <article class="git-card review-card">
           <div class="section-head"><div><p class="eyebrow">Reviewers</p></div></div>
           <ul v-if="reviewers.length" class="git-list">
-            <li v-for="r in reviewers" :key="r.displayName">
-              <span class="git-status-code">{{ r.vote }}</span>
-              <span class="git-list__text">{{ r.displayName }}</span>
+            <li v-for="r in reviewers" :key="r.displayName" style="display:flex;align-items:center;gap:8px;">
+              <span :class="['review-vote-badge', `review-vote-badge--${voteClass(r.vote)}`]">{{ r.vote }}</span>
+              <div>
+                <span class="git-list__text">{{ r.displayName }}</span>
+                <br><small style="color:var(--muted);">{{ voteLabel(r.vote) }}{{ r.isRequired ? '' : ' (optional)' }}</small>
+              </div>
             </li>
           </ul>
           <p v-else class="git-card__hint" style="color:var(--muted);">No reviewers assigned</p>
-        </article>
-        <!-- Changed files count -->
-        <article class="git-card review-card">
-          <div class="section-head"><div><p class="eyebrow">Changed Files</p><h3>{{ changedFiles.length }} files</h3></div></div>
-          <ul class="git-list">
-            <li v-for="file in changedFiles.slice(0, 10)" :key="file.path">
-              <span class="git-status-code">{{ file.changeType || 'M' }}</span>
-              <span class="git-list__text git-list__text--path">{{ file.path }}</span>
-            </li>
-            <li v-if="changedFiles.length > 10"><span class="git-card__hint">… and {{ changedFiles.length - 10 }} more</span></li>
-          </ul>
         </article>
       </div>
     </div>
@@ -60,12 +97,12 @@
 </template>
 
 <script setup>
-import { ref } from "vue";
+import { ref, computed } from "vue";
 import { useAppStore } from "../../../stores/app.js";
 import { useGitUiStore } from "../../../stores/git-ui.js";
 
-defineProps({
-  detail: { type: Object, required: true },
+const props = defineProps({
+  detail: { type: Object, default: null },
   pullRequest: { type: Object, required: true },
   reviewers: { type: Array, required: true },
   checks: { type: Object, required: true },
@@ -80,6 +117,39 @@ const appStore = useAppStore();
 const gitUiStore = useGitUiStore();
 
 const busyAction = ref("");
+
+const conflictInfo = computed(() => {
+  const status = props.pullRequest.mergeStatus || "";
+  const conflictStatuses = ["conflicts", "rejectedByPolicy", "renamedSourceBranch", "manualMergeRequired"];
+  const hasConflicts = conflictStatuses.includes(status);
+  return { hasConflicts, label: hasConflicts ? "Merge conflicts detected" : (status === "succeeded" ? "No merge conflicts" : `Merge status: ${status || "unknown"}`) };
+});
+
+function checkIcon(state) {
+  if (state === "passed" || state === "approved") return "✓";
+  if (state === "failed" || state === "rejected") return "✗";
+  return "●";
+}
+
+function voteClass(vote) {
+  if (vote > 0) return "approved";
+  if (vote < 0) return "rejected";
+  return "none";
+}
+
+function voteLabel(vote) {
+  if (vote === 10) return "Approved";
+  if (vote === 5) return "Approved with suggestions";
+  if (vote === -5) return "Waiting for author";
+  if (vote === -10) return "Rejected";
+  return "No vote yet";
+}
+
+function formatDate(iso) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  return d.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
+}
 
 async function handleVote(prKey, vote, label) {
   busyAction.value = `vote-${vote}`;

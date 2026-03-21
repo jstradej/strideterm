@@ -3034,6 +3034,144 @@ details[open] > .review-tree-dir__label .review-tree-dir__icon::before {
   background: rgba(255, 255, 255, 0.02);
 }
 
+/* Summary tab meta */
+.review-meta {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.review-meta__label {
+  font-weight: 600;
+  color: var(--text);
+  margin-right: 4px;
+}
+
+/* Conflict banner on Summary */
+.review-conflict-banner {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 10px 12px;
+  border-radius: 4px;
+  margin: 8px 0 4px;
+}
+
+.review-conflict-banner--danger {
+  background: rgba(255, 111, 141, 0.08);
+  border: 1px solid rgba(255, 111, 141, 0.25);
+}
+
+.review-conflict-banner--ok {
+  background: rgba(110, 223, 182, 0.06);
+  border: 1px solid rgba(110, 223, 182, 0.18);
+}
+
+.review-conflict-banner__icon {
+  font-size: 16px;
+  line-height: 20px;
+  flex-shrink: 0;
+}
+
+.review-conflict-banner--danger .review-conflict-banner__icon {
+  color: var(--danger);
+}
+
+.review-conflict-banner--ok .review-conflict-banner__icon {
+  color: #6edfb6;
+}
+
+.review-conflict-banner strong {
+  font-size: 13px;
+}
+
+.review-conflict-banner__hint {
+  margin: 2px 0 0;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.review-conflict-banner__hint code {
+  font-size: 11px;
+  background: rgba(255, 255, 255, 0.06);
+  padding: 1px 4px;
+  border-radius: 2px;
+}
+
+.review-conflict-files {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.review-conflict-files li {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  font-size: 11px;
+  color: var(--danger);
+}
+
+/* Check row in sidebar */
+.review-check-row {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  padding: 6px 0;
+}
+
+.review-check-icon {
+  font-size: 13px;
+  line-height: 18px;
+  flex-shrink: 0;
+  width: 16px;
+  text-align: center;
+}
+
+.review-check-icon--passed,
+.review-check-icon--approved {
+  color: #6edfb6;
+}
+
+.review-check-icon--failed,
+.review-check-icon--rejected {
+  color: var(--danger);
+}
+
+.review-check-icon--pending {
+  color: var(--accent);
+}
+
+/* Vote badge */
+.review-vote-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 24px;
+  height: 24px;
+  border-radius: 12px;
+  font-size: 11px;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
+.review-vote-badge--approved {
+  background: rgba(110, 223, 182, 0.15);
+  color: #6edfb6;
+}
+
+.review-vote-badge--rejected {
+  background: rgba(255, 111, 141, 0.15);
+  color: var(--danger);
+}
+
+.review-vote-badge--none {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--muted);
+}
+
 /* Agent prompt cards */
 .review-agent-card .docker-card__head {
   display: flex;
