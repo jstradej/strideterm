@@ -96,10 +96,9 @@
 
             <!-- Thread actions -->
             <div class="docker-card__actions" style="padding:6px 10px;">
-              <button type="button" class="button button--ghost" style="font-size:11px;" :disabled="!!busyAction" title="Write a draft reply to this thread — saved locally until you queue and publish it" @click="replyToThread(thread)">Reply</button>
-              <button type="button" :class="['button', 'button--ghost', busyAction === `resolve-${thread.id}` && 'button--busy']" style="font-size:11px;" :disabled="!!busyAction" title="Mark this thread as resolved on Azure DevOps (status → Fixed)" @click="handleResolveThread(thread.id)">Resolve</button>
-              <button v-if="thread.status !== 'active'" type="button" :class="['button', 'button--ghost', busyAction === `reactivate-${thread.id}` && 'button--busy']" style="font-size:11px;" :disabled="!!busyAction" title="Reopen this thread on Azure DevOps (status → Active)" @click="handleReactivateThread(thread.id)">Reactivate</button>
-              <button v-if="!draftsByThread(thread).length" type="button" class="button button--ghost" style="font-size:11px;" :disabled="!!busyAction" title="Create a local draft reply for this thread — you can edit and publish it later" @click="editDraft(thread)">Create draft</button>
+              <button type="button" class="button button--ghost" style="font-size:11px;" :disabled="!!busyAction" title="Write a reply to this thread — saved as draft, published with Push & publish" @click="replyToThread(thread)">Reply</button>
+              <button type="button" :class="['button', 'button--ghost', busyAction === `resolve-${thread.id}` && 'button--busy']" style="font-size:11px;" :disabled="!!busyAction" title="Mark this thread as resolved on Azure DevOps (immediate)" @click="handleResolveThread(thread.id)">Resolve</button>
+              <button v-if="thread.status !== 'active'" type="button" :class="['button', 'button--ghost', busyAction === `reactivate-${thread.id}` && 'button--busy']" style="font-size:11px;" :disabled="!!busyAction" title="Reopen this thread on Azure DevOps (immediate)" @click="handleReactivateThread(thread.id)">Reactivate</button>
             </div>
           </article>
 
