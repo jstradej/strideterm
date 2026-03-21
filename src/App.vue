@@ -77,6 +77,21 @@
             @contextmenu-tab="onTabContextMenu"
           />
 
+          <button
+            type="button"
+            class="notification-bell"
+            :class="{ 'notification-bell--has-unread': notifStore.unreadCount > 0 }"
+            data-role="notification-bell"
+            title="Notifications"
+            @click="notifStore.togglePanel()"
+          >
+            🔔
+            <span
+              class="notification-bell__badge"
+              :class="{ 'notification-bell__badge--visible': notifStore.unreadCount > 0 }"
+            >{{ notifStore.unreadCount > 0 ? (notifStore.unreadCount > 9 ? '9+' : notifStore.unreadCount) : '' }}</span>
+          </button>
+
           <TabActions
             @toggle-tab-picker="onToggleTabPicker"
             @disband-split="store.disbandSplit()"
@@ -107,6 +122,12 @@
 
   <!-- Tab picker dropdown -->
   <TabPickerDropdown :anchor-rect="tabPickerAnchor" @close="tabPickerAnchor = null" />
+
+  <!-- Notification center panel -->
+  <NotificationCenter />
+
+  <!-- Notification toast -->
+  <NotificationToast :toast="latestToast" @dismissed="latestToast = null" />
 </template>
 
 <script setup>
@@ -130,9 +151,15 @@ import BootstrapError from "./components/layout/BootstrapError.vue";
 import ContextMenu from "./components/layout/ContextMenu.vue";
 import LayoutPicker from "./components/layout/LayoutPicker.vue";
 import TabPickerDropdown from "./components/layout/TabPickerDropdown.vue";
+import NotificationCenter from "./components/layout/NotificationCenter.vue";
+import NotificationToast from "./components/layout/NotificationToast.vue";
+import { useNotificationCapture } from "./composables/useNotificationCapture.js";
+import { useNotificationStore } from "./stores/notifications.js";
 
 const api = inject("api");
 const store = useAppStore();
+const notifStore = useNotificationStore();
+const { latestToast } = useNotificationCapture();
 
 const frameRef = ref(null);
 const sidebarRef = ref(null);

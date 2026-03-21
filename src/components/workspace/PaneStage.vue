@@ -63,17 +63,17 @@
 </template>
 
 <script setup>
-import { computed, watch } from "vue";
+import { computed, watch, defineAsyncComponent } from "vue";
 import { useAppStore } from "../../stores/app.js";
 import { useTerminalStore } from "../../stores/terminal.js";
 import { isGitViewId, isDockerViewId, isAzureViewId, isReviewViewId, isBrowserViewId } from "../../app/helpers.js";
 import PaneShell from "../layout/PaneShell.vue";
 import TerminalPane from "./TerminalPane.vue";
-import GitPane from "./GitPane.vue";
-import DockerPane from "./DockerPane.vue";
-import AzureInboxPane from "./AzureInboxPane.vue";
-import AzureReviewPane from "./AzureReviewPane.vue";
-import BrowserPane from "./BrowserPane.vue";
+const GitPane = defineAsyncComponent(() => import("./GitPane.vue"));
+const DockerPane = defineAsyncComponent(() => import("./DockerPane.vue"));
+const AzureInboxPane = defineAsyncComponent(() => import("./AzureInboxPane.vue"));
+const AzureReviewPane = defineAsyncComponent(() => import("./AzureReviewPane.vue"));
+const BrowserPane = defineAsyncComponent(() => import("./BrowserPane.vue"));
 
 const AREA_NAMES = ["a", "b", "c", "d"];
 const AREA_LAYOUTS = new Set(["top-split", "left-split"]);

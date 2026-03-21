@@ -16,26 +16,18 @@
 </template>
 
 <script setup>
-import { computed } from "vue";
+import { computed, defineAsyncComponent } from "vue";
 import { useAppStore } from "../../stores/app.js";
-import TextInputDialog from "./TextInputDialog.vue";
-import TextAreaDialog from "./TextAreaDialog.vue";
-import HelpDialog from "./HelpDialog.vue";
-import NewWorkspacePicker from "./NewWorkspacePicker.vue";
-import WorkspaceDialog from "./WorkspaceDialog.vue";
-import SettingsDialog from "./SettingsDialog.vue";
-import ProfilesDialog from "./ProfilesDialog.vue";
-import AzureConnectionDialog from "./AzureConnectionDialog.vue";
 
 const DIALOGS = {
-  TextInputDialog,
-  TextAreaDialog,
-  HelpDialog,
-  NewWorkspacePicker,
-  WorkspaceDialog,
-  SettingsDialog,
-  ProfilesDialog,
-  AzureConnectionDialog,
+  TextInputDialog: defineAsyncComponent(() => import("./TextInputDialog.vue")),
+  TextAreaDialog: defineAsyncComponent(() => import("./TextAreaDialog.vue")),
+  HelpDialog: defineAsyncComponent(() => import("./HelpDialog.vue")),
+  NewWorkspacePicker: defineAsyncComponent(() => import("./NewWorkspacePicker.vue")),
+  WorkspaceDialog: defineAsyncComponent(() => import("./WorkspaceDialog.vue")),
+  SettingsDialog: defineAsyncComponent(() => import("./SettingsDialog.vue")),
+  ProfilesDialog: defineAsyncComponent(() => import("./ProfilesDialog.vue")),
+  AzureConnectionDialog: defineAsyncComponent(() => import("./AzureConnectionDialog.vue")),
 };
 
 const store = useAppStore();

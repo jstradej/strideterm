@@ -13,6 +13,15 @@ import { APP_CONFIG, getRendererDevUrl } from "../config/app-config.js";
 const require = createRequire(import.meta.url);
 const { version: packageVersion = "0.0.0" } = require("../package.json");
 
+// Suppress EPIPE errors that occur when the renderer disconnects during dev reload
+process.on("uncaughtException", (error) => {
+  if (error?.code === "EPIPE" || error?.message?.includes("EPIPE")) {
+    return;
+  }
+  console.error("Uncaught exception:", error);
+  app.quit();
+});
+
 const isDev = !app.isPackaged;
 const rendererUrl = getRendererDevUrl();
 const forceDist = process.env.STRIDETERM_FORCE_DIST === "1" || process.env.STRIDETERM_SMOKE_TEST === "1";
@@ -207,7 +216,14 @@ function emitToRenderer(channel, payload) {
     return;
   }
 
-  runtimeState.window.webContents.send(channel, payload);
+  try {
+    runtimeState.window.webContents.send(channel, payload);
+  } catch (error) {
+    if (error?.code === "EPIPE" || error?.message?.includes("EPIPE")) {
+      return;
+    }
+    throw error;
+  }
 }
 
 function isBrowserPanel(panel = {}) {
