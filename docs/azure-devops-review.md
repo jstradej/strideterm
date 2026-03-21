@@ -1,280 +1,239 @@
 # Azure DevOps Pull Request Review
 
-This document describes the Azure DevOps integration in strIDEterm: what it does, how it is wired into the app, how users are expected to work with it, and what remains intentionally outside the current scope.
+strIDEterm turns your pull request inbox into a local review workspace where AI agents help you review and fix code.
 
-## Goals
+---
 
-The integration is designed around one central promise:
+## Getting Started
 
-`Turn a pull request inbox into a local review workspace where AI agents can help you review code.`
+### Add a Connection
 
-The current implementation focuses on:
+Open the Azure DevOps workspace and click **Add connection**. You need:
 
-- Azure DevOps connections without Azure CLI
-- PAT-based authentication for REST and Git operations
-- a prioritized pull request inbox
-- managed local review checkouts
-- AI agent integration via MCP (Model Context Protocol)
-- local draft management with human-controlled publishing
-- review actions directly from the app
+- **Organization URL** — e.g. `https://dev.azure.com/myorg`
+- **Login** — your email or UPN
+- **PAT** — Personal Access Token (minimum `Code: Read`; `Code: Read & Write` for push)
+- **Review root** — local directory where PR worktrees are created
+- **Project filters** — optional, limit to specific projects
+- **Repository filters** — optional, limit to specific repos
 
-It does not try to replicate the full Azure DevOps web UI.
+PAT is stored encrypted, separately from the main state file.
 
-## User Workflow
+### The Inbox
 
-### 1. Open the Azure DevOps Workspace
+The inbox shows all active pull requests across your connections, grouped by repository. Filter tabs:
 
-strIDEterm creates an `Azure DevOps` workspace automatically. It is the home for:
+- **All** — every PR sorted by recent activity
+- **Needs attention** — PRs with new comments, vote changes, or check failures
+- **Needs review** — PRs where you are a reviewer
+- **My PRs** — PRs you authored
+- **Connections** — manage Azure DevOps connections
 
-- connection management
-- pull request inbox sections
-- refresh and attention state
+When you have multiple repositories, filter buttons appear at the top to show only PRs from a specific repo.
 
-If no connections exist yet, the workspace shows an onboarding empty state with an `Add Azure connection` action.
+Each PR card shows: number, title, author, branches, role (author/reviewer), and attention reason. Actions: **Open/Review** (opens review workspace), **Browser** (opens in Azure DevOps).
 
-### 2. Add a Connection
+### Open a Review Workspace
 
-Each connection stores:
+Clicking **Review** on a PR creates a local workspace:
 
-- label
-- organization URL
-- login or UPN
-- PAT (must have `Code: Read` scope minimum; `Code: Read & Write` for push)
-- review checkout root (where git worktrees are created)
-- optional project filters
-- optional repository filters
-- polling interval
+1. Clones the repository (cached, shared across PRs from the same repo)
+2. Creates a git worktree at `{reviewRoot}/reviews/{connection}/pr-{id}/`
+3. Checks out the PR source branch
+4. Opens the workspace with terminal tabs (Claude Code, Codex, Shell) and review pane
 
-PAT values are stored separately from the main state file. The main state file keeps only a `tokenRef`.
+For PRs you authored, strIDEterm can attach to your existing workspace instead of creating a duplicate.
 
-### 3. Review the Inbox
+---
 
-The inbox is split into:
+## The Review Pane
 
-- `Needs My Review`
-- `My Pull Requests`
-- `Needs Attention`
-- connection status cards
+The review pane has five tabs:
 
-Each pull request card includes:
+### Summary
 
-- PR number and title
-- project and repository
-- source and target branches
-- author
-- role (`reviewer` or `author`)
-- attention reason when applicable
-- check/pipeline status (failed count, pending count)
-- actions to open the review workspace, attach to an existing workspace, open the PR in the browser, or mark it as seen
+- PR metadata: title, author, branches, merge status, draft indicator
+- **Review actions**: Approve, Approve with suggestions, Wait, Reject, Clear vote
+- **Git operations**: Fetch, Rebase on target, Push branch, Force push, Open Lazygit
+- **Checks**: pipeline status with pass/fail/pending indicators
+- **Reviewers**: who reviewed and their vote
 
-### 4. Open a Review Workspace
+### Files
 
-Opening a pull request creates or reuses a file-backed workspace. The process:
+Split view: changed files tree on the left, diff preview on the right. Click a file to see its diff.
 
-1. Fetch PR details from Azure DevOps API (threads, iterations, checks)
-2. Get the repository `remoteUrl` from the PR metadata
-3. Create or reuse a cache repository clone (`git clone --no-checkout`)
-4. Fetch the source and target branches
-5. Create a git worktree for the PR at `{reviewRoot}/reviews/{connectionId}/pr-{prId}/`
+### Comments
 
-For reviewer workflows, strIDEterm uses:
+All review threads with inline code context. Each thread shows:
+- Thread number (`#N`), status chip (Active/Fixed/etc.), file path, relative time
+- All published replies with author avatars
+- Draft replies (queued for publishing) with edit/delete actions
+- **"Reply with code changes"** banner (green) when an agent marked code changes for this thread
 
-- a cached repository clone under the configured review root
-- a managed Git worktree for the specific PR
+**Actions per thread:**
+- **Reply** — create a draft reply (auto-queued for publishing)
+- **Resolve** — immediately resolve on Azure DevOps
+- **Reactivate** — reopen a resolved thread
 
-For author workflows, strIDEterm tries to match an existing local workspace by:
+**Toolbar:**
+- **Filters**: All, Active, Fixed, Has draft, Mine
+- **Sort**: by #N, Newest, Status, File — click again to toggle ascending/descending
+- **Search**: filter by file path or comment text
+- **Delete all drafts** — remove all local drafts at once
 
-- Git remote URL
-- current branch
+**Badge** on the Comments tab shows only active (unresolved) thread count.
 
-If a suitable workspace is found, the PR can be attached to that workspace instead of creating a duplicate checkout.
+### Conflicts
 
-On workspace open, auto-refresh fetches the latest PR data (threads, checks, files). If checks are still missing, a second request triggers full detail loading.
+Merge conflict detection with file tree and diff preview. Shows merge status from Azure DevOps.
 
-### 5. Work Inside the Review Workspace
+### Agent
 
-A review workspace behaves like a normal strIDEterm workspace with terminal tabs, a Git tab, and a dedicated Review pane.
+Ready-to-use prompt templates for AI agents. Copy a prompt and paste it into Claude Code or Codex. Templates are editable and stored locally.
 
-The Review pane has five tabs:
+Also shows the MCP server command line for connecting custom agents.
 
-#### Summary
-- PR metadata (number, title, author, branches, merge status)
-- Reviewer votes with vote buttons (Approve, Approve with suggestions, Wait, Reject)
-- Check/pipeline status with failure details
-- Changed file count
+---
 
-#### Files
-- Directory tree of changed files with change type indicators (M/A/D)
-- Diff preview panel with syntax highlighting
-- Supports both PR diff (remote vs target) and worktree diff (local changes)
+## Push & Publish
 
-#### Comments
-- All Azure DevOps review threads with inline code context and diff snippets
-- Local comments created by users or agents
-- Inline draft replies with author badge (e.g., "by claude")
-- Draft management inline: edit, queue, delete, publish
-- Stable `#N` numbering matching MCP tool indices
-- Filter bar: All / Active / Has draft / Mine
-- Prev/Next navigation buttons
-- Actions: Reply, Reply & resolve, Resolve, Reactivate, Edit draft, Queue draft, Delete draft
+The **Push & publish** button in the toolbar is the main action for sending your work to Azure DevOps. It shows dynamic counts:
 
-#### Conflicts
-- Merge status from Azure DevOps (succeeded, failure, queued, etc.)
-- Conflict detection with file tree and diff preview
-- Split view with clickable files
+> **Push (3) & publish (2)**
 
-#### Agent
-- Ready-to-use agent prompt templates (copy to clipboard)
-- Editable prompts stored in SQLite
-- MCP tools reference and environment info
+This means: 3 commits to push, 2 draft comments to publish.
 
-### 6. Work with AI Agents
+What it does (in order):
+1. **Checks for uncommitted changes** — if the worktree is dirty, shows an error asking you to commit first
+2. **Pushes commits** to the remote PR branch (with PAT authentication)
+3. **Publishes all queued draft comments** to Azure DevOps threads
 
-The review workspace integrates with AI agents (Claude Code, Codex) through MCP:
+If push succeeds but publishing fails, you see both a success message (commits pushed) and an error (which comments failed). Retry will only publish the remaining comments since commits are already pushed.
 
-1. Open a terminal tab in the review workspace (Claude Code or Codex)
+**"Publish only"** is available as a secondary button if you only want to publish comments without pushing.
+
+After completion, a green banner shows the result:
+
+> **3 commits pushed, 2 comments published to Azure DevOps.**
+
+---
+
+## Working with AI Agents
+
+### Review Mode (agent reads code, writes replies)
+
+1. Open a Claude Code or Codex tab in the review workspace
 2. The agent automatically gets MCP tools for the review bridge
-3. Use an agent prompt from the Agent tab, or give the agent custom instructions
-4. The agent reads comments via `list_review_comments` and `get_review_comment`
-5. The agent writes draft replies via `save_review_draft`
-6. Drafts appear instantly in the Comments tab (live sync via signal file)
-7. Review, edit, or delete drafts in the UI
-8. When satisfied, queue drafts and publish to Azure DevOps
+3. Use a prompt template from the Agent tab, or give custom instructions
+4. The agent reads comments via MCP, analyzes code, writes draft replies
+5. Drafts appear instantly in the Comments tab
+6. Review, edit, or delete drafts
+7. Click **Push & publish** to send everything to Azure DevOps
 
-Agents cannot publish directly to Azure DevOps. All publishing goes through the user-controlled queue.
+### Fix Mode (agent fixes code based on review comments)
 
-## Review Bridge
+1. Discuss a review comment with the agent
+2. Tell the agent to implement the fix
+3. The agent edits files in the worktree (which is the PR branch)
+4. The agent writes a reply to the reviewer describing what was changed — the comment gets a green **"Reply with code changes"** banner in the UI
+5. Tell the agent to commit
+6. Click **Push & publish** — pushes the commit and publishes the reply
 
-The review bridge is a local SQLite-backed system that connects Azure DevOps threads with AI agents through MCP.
+Agents cannot publish directly to Azure DevOps. All publishing goes through the user-controlled **Push & publish** action.
 
 ### MCP Tools
 
-The bridge exposes five tools via MCP (stdio transport):
+The review bridge exposes these tools to agents:
 
 | Tool | Purpose |
 |------|---------|
-| `list_review_comments` | List all comment threads with status, priority, and draft previews |
-| `get_review_comment` | Get full thread detail by `#N` index (replies, file context, code snippet) |
-| `create_review_comment` | Create a new review comment with an auto-created draft |
-| `save_review_draft` | Save or replace a local draft reply for a comment |
-| `queue_review_draft` | Queue a draft for publishing to Azure DevOps |
+| `list_review_comments` | List all threads with status, priority, and draft previews |
+| `get_review_comment` | Full thread detail by `#N` index (replies, file context, code snippet) |
+| `create_review_comment` | Create a new local comment with an auto-queued draft |
+| `save_review_draft` | Save a draft reply and auto-queue it for publishing |
+| `queue_review_draft` | Explicitly queue a draft (rarely needed — drafts auto-queue) |
+| `reply_with_code_changes` | Reply to a comment after making code changes — marks the thread and queues the reply |
 
 Additionally:
 - **Resource** `review://brief` — current PR review brief in markdown
 - **Prompt** `process-review-comments` — step-by-step review workflow guide
 
-### Comment Model
+---
 
-Two types of comments:
+## Git Tab in Review Workspace
 
-| Type | Source | Description |
-|------|--------|-------------|
-| `answer-question` | Imported from Azure DevOps | A remote thread that needs a reply |
-| `local-comment` | Created locally by user or agent | A local-only observation or follow-up |
+The Git tab adapts for review workspaces:
 
-Comment status lifecycle:
+- **Base branch** is set to `origin/{source-branch}` (where you push), not `origin/master`
+- **"Compare with base"** shows only unpushed commits, not the full diff against the merge target
+- **Unpushed commits** are highlighted with an orange border and "unpushed" badge
+- **Merge buttons are hidden** — merging into the target branch is done through Azure DevOps, not locally
+- **Rebase on target** is available in the Summary tab (rebases onto the PR target branch)
+- **Force push** is available after rebase (uses `--force-with-lease` for safety)
+
+Both Push and Force push check for uncommitted changes before pushing.
+
+---
+
+## Draft Workflow
+
+All draft creation paths (UI reply, agent MCP calls) automatically queue drafts for publishing. There is no manual "queue" step.
+
+1. Create a draft (Reply button, agent MCP tool, or edit dialog)
+2. Draft appears in the Comments tab as "queued"
+3. Edit or delete if needed
+4. Click **Push & publish** to send to Azure DevOps
+5. After publishing, drafts disappear from the UI (published replies show as normal Azure comments)
+
+---
+
+## Authentication and Security
+
+### PAT Storage
+
+PAT values are stored encrypted in a separate `credentials.json` file, not in the main state. On Electron, `safeStorage` is used when available.
+
+### Git Authentication
+
+Git commands authenticate via `http.extraheader`, not by embedding tokens in remote URLs. This keeps `.git/config` clean.
+
+### Agent Isolation
+
+MCP agents interact only with the local SQLite database. They cannot publish to Azure DevOps directly — all publishing requires explicit user action.
+
+---
+
+## Technical Details
+
+### Data Storage
+
+- **Main state** (`~/.strideterm/strideterm-state.json`) — workspaces, connections (without PAT), settings
+- **Review bridge** (SQLite per review root) — imported threads, local comments, drafts, sync queue, agent prompts
+- **Review cache** — PR tracking state, seen timestamps, workspace mapping
+- **Exports** — markdown/JSON context files for agent consumption (`agent-brief.md`, `threads.md`, etc.)
+
+### Comment Status Lifecycle
+
 ```
 ready-for-agent → agent-working → draft-ready → ready-to-sync → synced
                                                                   ↓
                                                                conflict (on failure)
 ```
 
-Each comment has a stable `display_index` (assigned on creation, never changes). This index is used in the UI (`#1`, `#2`, ...) and in MCP tools for cross-referencing.
-
-### Draft Workflow
-
-1. Agent or human creates a draft via `save_review_draft` or the Edit dialog
-2. Draft stays local with status `draft`
-3. User reviews the draft in Comments tab or Drafts & Sync tab
-4. User queues the draft (status → `ready-to-sync`, added to `sync_queue`)
-5. User clicks "Publish queued drafts" → drafts are posted to Azure DevOps via REST API
-6. On success: status → `synced`. On failure: status → `failed` with error message and retry option.
+Comments with code changes get `fix_status = 'has-code-changes'` alongside their regular status.
 
 ### Live Sync
 
-When an MCP agent writes to the SQLite database, the UI updates automatically:
+When an MCP agent writes to the database, the UI updates within ~150ms:
 
-1. The store writes a `.bridge-signal` file after every mutation
-2. The runtime watches this file with `fs.watch()` for instant notification (~150ms)
-3. As a reliable fallback, `PRAGMA data_version` is polled every 3 seconds
-4. On change, `broadcastState()` pushes the new state to the renderer
-5. Vue reactivity updates the renderer automatically (Pinia store → computed → components)
+1. Store writes a `.bridge-signal` file after every mutation
+2. Runtime watches this file for instant notification
+3. Fallback: `PRAGMA data_version` polled every 3 seconds
+4. State broadcast pushes changes to the renderer via IPC/WebSocket
 
-### Agent Prompts
+### Worktree Management
 
-Seven built-in prompt templates are stored in SQLite and editable in the Agent tab:
-
-- Full code review
-- Quick summary
-- Write a review comment
-- Process review comments
-- Security & correctness scan
-- Suggest improvements
-- Create a local comment
-
-Each prompt references the correct MCP tool names so agents know which tools to call.
-
-### Export Files
-
-The bridge exports context files for agent consumption:
-
-- `agent-brief.json` / `agent-brief.md` — full PR context with comments and drafts
-- `threads.md` — remote thread content
-- `drafts.md` — all draft responses with statuses
-- `sync-status.md` — queue status
-
-## Architecture
-
-### Backend
-
-Core files:
-
-| File | Responsibility |
-|------|----------------|
-| `azure-devops-manager.js` | Inbox orchestration, worktree management, polling |
-| `azure-devops-api.js` | Azure DevOps REST API calls |
-| `azure-devops-pr-summary.js` | PR summary formatting and card data |
-| `azure-devops-utils.js` | Shared utilities (URL normalization, key helpers) |
-| `review-bridge-store.js` | SQLite database for comments, drafts, sync queue, prompts |
-| `review-bridge-mcp.js` | MCP server with tool/resource/prompt definitions |
-| `review-bridge-mcp-stdio.js` | Stdio entry point for MCP subprocess |
-| `review-bridge-agent-launch.js` | Agent launch configuration (Claude, Codex) |
-| `review-bridge-format.js` | Markdown/JSON export formatting |
-| `review-bridge-cli.js` | CLI for testing and automation |
-| `credential-store.js` | Encrypted PAT storage |
-| `azure-review-store.js` | PR tracking state (seen timestamps, workspace mapping) |
-| `runtime.js` | Orchestration, IPC handlers, broadcast, polling |
-| `ipc.js` | Electron IPC channel registration |
-| `remote-server.js` | WebSocket/HTTP remote access server |
-
-### SQLite Schema (review-bridge-store)
-
-| Table | Purpose |
-|-------|---------|
-| `pull_requests` | PR metadata from Azure DevOps |
-| `review_threads` | Comment threads from Azure |
-| `thread_comments` | Individual replies within threads |
-| `review_comments` | Mapped comments (remote threads + local) with `display_index` |
-| `draft_responses` | Local draft replies (not yet published) |
-| `sync_queue` | Queue of drafts pending publishing |
-| `agent_notes` | Agent working notes |
-| `agent_prompts` | Editable prompt templates |
-
-### Renderer (Vue 3)
-
-Core files:
-
-| File | Responsibility |
-|------|----------------|
-| `src/components/workspace/AzureInboxPane.vue` | PR inbox with tabs (assigned/created/all), connection management |
-| `src/components/workspace/AzureReviewPane.vue` | Review pane orchestrator (toolbar, tabs, files, conflicts) |
-| `src/components/workspace/azure/ReviewSummaryTab.vue` | PR overview, reviewers, vote buttons |
-| `src/components/workspace/azure/ReviewCommentsTab.vue` | Comment threads, drafts, filtering, sorting, bulk actions |
-| `src/components/workspace/azure/ReviewAgentTab.vue` | Agent prompts, MCP server command |
-| `src/components/workspace/azure/AzurePrRow.vue` | Individual PR card in inbox |
-| `src/composables/useReviewComments.js` | Comment filtering, sorting, thread/draft map building |
-| `src/stores/app-api-actions.js` | Azure/review bridge API action wrappers |
-| `src/stores/git-ui.js` | Per-workspace review UI state (active tab, filters, selected diff) |
+Review worktrees persist on disk after closing a workspace. Reopening the same PR reuses the existing worktree with all local commits and data intact. Worktrees are not automatically cleaned up.
 
 ### Communication Flow
 
@@ -283,144 +242,13 @@ Azure DevOps REST API
     ↓
 AzureDevOpsManager (fetch threads, comments, checks)
     ↓
-ReviewBridgeStore (import into SQLite)
-    ↓ (exports)
-MCP Agent (Claude/Codex reads via MCP tools, writes drafts)
+ReviewBridgeStore (import into SQLite, export context files)
+    ↓
+MCP Agent (reads via tools, writes drafts)
     ↓ (signal file)
-Runtime (detects change, broadcastState)
+Runtime (detects change, broadcasts state)
     ↓ (IPC / WebSocket)
-Renderer (re-renders with scroll preservation)
-    ↓ (user action: publish)
+Renderer (re-renders Comments tab)
+    ↓ (user clicks Push & publish)
 Runtime → AzureDevOpsManager → Azure DevOps REST API
 ```
-
-## Authentication and Security
-
-### PAT Storage
-
-PAT values are not stored in `strideterm-state.json`.
-
-Instead:
-
-- connection metadata is stored in the main state
-- secrets are stored in `credentials.json`
-- on Electron builds, `safeStorage` is used when available
-
-If secure encryption is unavailable, the fallback store still keeps secrets separate from the main state file.
-
-### Git Authentication
-
-Git clone, fetch, and push commands do not write PAT values into remote URLs or `.git/config`.
-
-The integration authenticates Git commands with:
-
-- `git -c http.extraheader=AUTHORIZATION: Basic ...`
-
-This keeps remotes clean and avoids leaking tokens into repository configuration.
-
-### Agent Isolation
-
-MCP agents cannot publish comments directly to Azure DevOps. All drafts must pass through the human-controlled queue. Agents only interact with the local SQLite database via MCP tools.
-
-## Persisted Data
-
-### Main State
-
-The app state stores:
-
-- Azure DevOps integration settings
-- connection metadata (with `tokenRef`, not the PAT itself)
-- review workspaces and their review metadata
-- profile associations
-
-### Review Bridge (SQLite)
-
-The review bridge database stores:
-
-- imported PR threads and comments
-- local comments created by users or agents
-- draft responses with status lifecycle
-- sync queue with attempt tracking
-- agent prompt templates
-- stable display indices for comment numbering
-
-### Review Cache
-
-The Azure review store keeps runtime-adjacent metadata:
-
-- tracked pull request state
-- last seen timestamps
-- last known review workspace mapping
-- per-connection sync status
-
-## Attention Model
-
-The current attention model raises inbox attention for:
-
-- new comments from other users
-- source branch updates after the last seen activity
-- reviewer vote changes
-- merge or policy status changes
-- check/pipeline failures
-
-Opening a review workspace or marking the PR as seen clears the current attention snapshot.
-
-## Profile Support
-
-The integration supports multiple profiles:
-
-- Each workspace has a `profileId` field (default: `"default"`)
-- PR-to-workspace mapping is scoped to the active profile
-- Review workspaces are created in the active profile
-
-## Current Scope
-
-The current implementation includes:
-
-- connection verification and PAT-based auth
-- polling-based inbox refresh with attention model
-- full PR detail (metadata, threads, checks, iterations, changed files)
-- five-tab review UI (Summary, Files, Comments, Conflicts, Agent)
-- comment filtering and navigation
-- general comments and replies to existing threads
-- reviewer vote display and changes
-- local review checkout creation (cache repo + git worktree)
-- fetch, rebase, and push actions
-- MCP-based AI agent integration (Claude Code, Codex)
-- local draft management with queue-based publishing
-- live MCP-to-UI sync (signal file + data version polling)
-- stable comment numbering across sessions
-- editable agent prompt templates
-- auto-refresh on workspace open
-- local comment creation and deletion
-
-## Explicitly Out of Scope
-
-The current implementation does not yet cover:
-
-- inline thread creation on exact file and line anchors
-- full policy API visualization beyond the merge status signal
-- webhook-first synchronization (currently polling-only)
-- Azure Entra or device-flow authentication
-- full PR completion or merge orchestration
-
-## Testing
-
-The codebase includes automated coverage for:
-
-- Azure manager logic (`azure-devops-manager.test.js`)
-- credential persistence
-- review store persistence (`review-bridge-store.test.js`)
-- MCP tool handlers (`review-bridge-mcp.test.js`)
-- agent launch configuration (`review-bridge-agent-launch.test.js`)
-- runtime wiring (`runtime.test.js`)
-- selector behavior for Azure and review virtual tabs
-- render state change detection (`runtime-bindings.test.js`)
-
-Automated tests do not replace live verification against a real Azure DevOps organization. Before release, run an end-to-end check with:
-
-- a real organization URL and PAT
-- at least one reviewer workflow and one author workflow
-- comment, reply, vote, fetch, rebase, and push actions
-- MCP agent draft creation and publishing flow
-- draft edit, queue, delete, and sync operations

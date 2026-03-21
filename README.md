@@ -12,7 +12,7 @@ Stop losing terminals in a mess of scattered windows. strIDEterm puts all your s
 - **Profiles** - switch between different sets of workspaces (e.g. Work, Personal, Client projects) with colored profile bar
 - **Split Layouts** - arrange terminals in columns, rows, or a grid — see everything at once without switching tabs
 - **Git Integration** - branch info, dirty count, commit log, worktree creation, and Lazygit support
-- **Azure DevOps PR Review** *(experimental)* - connection-based inbox, managed PR workspaces, review threads, AI agent integration, and checkout workflows — see [docs](docs/azure-devops-review.md)
+- **Azure DevOps PR Review** - pull request inbox grouped by repo, managed review workspaces, AI agent integration (review + fix code), push & publish workflow, and MCP bridge — see [docs](docs/azure-devops-review.md)
 - **Docker Manager** - list containers, run actions, open shells, and stream logs
 - **Remote Access** - access your workspace from any device via LAN or Cloudflare tunnel with QR code
 - **Plugins** - extend functionality with plugins (Docker Ops and System Monitor built-in)
