@@ -19,7 +19,15 @@ export function useReviewComments(detail, reviewBridge, reviewUi, pullRequest) {
   const draftComments = computed(() =>
     (reviewBridge.value.comments || []).filter((c) => c.commentKind === "draft" || c.commentKind === "local-comment"),
   );
-  const draftMap = computed(() => new Map((reviewBridge.value.drafts || []).map((d) => [d.commentKey, d])));
+  const draftMap = computed(() => {
+    const map = new Map();
+    for (const d of reviewBridge.value.drafts || []) {
+      const list = map.get(d.commentKey);
+      if (list) list.push(d);
+      else map.set(d.commentKey, [d]);
+    }
+    return map;
+  });
 
   // Build threadId -> commentKey mapping for draft lookup
   const threadToCommentKey = computed(() => {
@@ -53,11 +61,11 @@ export function useReviewComments(detail, reviewBridge, reviewUi, pullRequest) {
   });
 
   function threadIndex(thread) { return threadToIndex.value.get(String(thread.id)) || 0; }
-  function draftByThread(thread) {
+  function draftsByThread(thread) {
     const commentKey = threadToCommentKey.value.get(String(thread.id));
-    return commentKey ? draftMap.value.get(commentKey) : null;
+    return commentKey ? (draftMap.value.get(commentKey) || []) : [];
   }
-  function draftByComment(comment) { return draftMap.value.get(comment.commentKey) || null; }
+  function draftsByComment(comment) { return draftMap.value.get(comment.commentKey) || []; }
 
   // Filtering/sorting
   const filter = computed(() => reviewUi.value.commentFilter || "all");
@@ -132,8 +140,8 @@ export function useReviewComments(detail, reviewBridge, reviewUi, pullRequest) {
     commentKeyToIndex,
     threadToIndex,
     threadIndex,
-    draftByThread,
-    draftByComment,
+    draftsByThread,
+    draftsByComment,
     filter,
     sort,
     searchTerm,

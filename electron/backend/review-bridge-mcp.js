@@ -187,6 +187,7 @@ export function createReviewBridgeMcpHandlers({ store, prKey }) {
         lineNumber,
         priority,
         authorAgent,
+        autoQueue: true,
       });
       const latestComment = [...(context?.comments || [])]
         .filter((comment) => (comment.commentKind === "draft" || comment.commentKind === "local-comment") && comment.payload?.questionBody === body)

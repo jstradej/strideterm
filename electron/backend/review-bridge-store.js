@@ -836,7 +836,10 @@ export async function createReviewBridgeStore(rootPath) {
           }
           const resolvedCommentKey = existingComment.comment_key;
           const existingDraft = statements.selectLatestDraftByComment.get(resolvedCommentKey) || null;
-          const draftId = existingDraft?.draft_id || `${resolvedCommentKey}:draft`;
+          // Reuse existing draft only if it's still in editable "draft" state;
+          // otherwise create a new one so multiple replies can be queued per thread.
+          const canReuse = existingDraft && existingDraft.status === "draft";
+          const draftId = canReuse ? existingDraft.draft_id : `${resolvedCommentKey}:draft:${randomUUID()}`;
           const draftPayload = { threadId: resolvedThreadId, source: "draft-comment" };
 
           try {
@@ -850,7 +853,7 @@ export async function createReviewBridgeStore(rootPath) {
               String(authorAgent || ""),
               null,
               1,
-              existingDraft?.created_at || now,
+              canReuse ? existingDraft.created_at : now,
               now,
               toJson(draftPayload),
             );

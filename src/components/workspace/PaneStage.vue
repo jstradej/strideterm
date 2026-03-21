@@ -11,41 +11,37 @@
       <small>Select a tab or open a Docker shell/log stream.</small>
     </div>
 
-    <!-- Terminal panes (v-if — terminal instance lives in store Map, re-attaches on mount) -->
+    <!-- Panes rendered in split-group order (active tab first) -->
     <article
-      v-for="(tab, index) in visibleTerminalTabs"
+      v-for="(tab, index) in visibleTabs"
       :key="tab.id"
       class="workspace-pane"
-      :class="paneClasses(tab)"
+      :class="[paneClasses(tab), tab.type !== 'terminal' && `workspace-pane--${tab.type}`]"
       :style="gridAreaStyle(index)"
       :data-view-id="tab.id"
     >
-      <PaneShell
-        v-if="isSplit"
-        :title="tab.title"
-        :status="tab.status"
-        :actions="terminalPaneActions(tab)"
-        @action="onPaneAction($event, tab)"
-      />
-      <TerminalPane :session-id="tab.id" />
-    </article>
+      <!-- Terminal pane -->
+      <template v-if="tab.type === 'terminal'">
+        <PaneShell
+          v-if="isSplit"
+          :title="tab.title"
+          :status="tab.status"
+          :actions="terminalPaneActions(tab)"
+          @action="onPaneAction($event, tab)"
+        />
+        <TerminalPane :session-id="tab.id" />
+      </template>
 
-    <!-- Non-terminal panes (dynamic component — rendered per type) -->
-    <article
-      v-for="(tab, index) in visibleNonTerminalTabs"
-      :key="tab.id"
-      class="workspace-pane"
-      :class="[paneClasses(tab), `workspace-pane--${tab.type}`]"
-      :style="gridAreaStyle(terminalTabCount + index)"
-      :data-view-id="tab.id"
-    >
-      <component
-        v-if="paneComponent(tab.type)"
-        :is="paneComponent(tab.type)"
-        v-bind="paneProps(tab)"
-        :show-header="isSplit"
-      />
-      <!-- Placeholder for pane types not yet implemented -->
+      <!-- Non-terminal pane (dynamic component) -->
+      <template v-else-if="paneComponent(tab.type)">
+        <component
+          :is="paneComponent(tab.type)"
+          v-bind="paneProps(tab)"
+          :show-header="isSplit"
+        />
+      </template>
+
+      <!-- Placeholder for unknown pane types -->
       <template v-else>
         <PaneShell
           v-if="isSplit"
@@ -90,16 +86,6 @@ const currentLayout = computed(() => {
 });
 
 const isSplit = computed(() => visibleTabs.value.length > 1);
-
-const visibleTerminalTabs = computed(() =>
-  visibleTabs.value.filter((t) => t.type === "terminal"),
-);
-
-const visibleNonTerminalTabs = computed(() =>
-  visibleTabs.value.filter((t) => t.type !== "terminal"),
-);
-
-const terminalTabCount = computed(() => visibleTerminalTabs.value.length);
 
 const stageClasses = computed(() => ({
   [`terminal-stage--${currentLayout.value}`]: true,

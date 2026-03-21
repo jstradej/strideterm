@@ -101,8 +101,8 @@
           :workspace-id="workspaceId"
           :filtered-threads="filteredThreads"
           :filtered-draft-comments="filteredDraftComments"
-          :draft-by-thread="draftByThread"
-          :draft-by-comment="draftByComment"
+          :drafts-by-thread="draftsByThread"
+          :drafts-by-comment="draftsByComment"
           :thread-index="threadIndex"
           :thread-to-comment-key="threadToCommentKey"
           :filter="filter"
@@ -212,7 +212,7 @@ const newCommentsCount = computed(() => detail.value?.newCommentsCount || 0);
 
 // Comments (extracted to composable)
 const {
-  filteredThreads, filteredDraftComments, draftByThread, draftByComment,
+  filteredThreads, filteredDraftComments, draftsByThread, draftsByComment,
   threadIndex, threadToCommentKey, filter, sort, searchTerm,
   isFiltered, totalCommentCount, allDrafts, hasClearable, sortOptions,
 } = useReviewComments(detail, reviewBridge, reviewUi, pullRequest);
@@ -290,8 +290,8 @@ function openAzureComment() {
     title: "New comment",
     label: "Comment",
     placeholder: "Write your review comment...",
-    submitLabel: "Create draft",
-    onSubmit: (content) => { appStore.createReviewBridgeDraftComment({ prKey: prKey.value, body: content, authorAgent: "human" }); appStore.closeDialog(); },
+    submitLabel: "Create & queue",
+    onSubmit: (content) => { appStore.createReviewBridgeDraftComment({ prKey: prKey.value, body: content, authorAgent: "human", autoQueue: true }); appStore.closeDialog(); },
   });
 }
 </script>
