@@ -12,7 +12,24 @@
     <link rel="stylesheet" href="./styles/main.css" />
   </head>
   <body>
-    <div id="app"></div>
+    <div id="app">
+      <!-- Splash screen — replaced when Vue mounts -->
+      <div id="splash" style="
+        height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;
+        background:#141416;gap:20px;padding:20px;
+      ">
+        <img src="./splash.png" alt="strIDEterm" style="max-width:480px;width:90%;border-radius:8px;opacity:0.92;" />
+        <div style="width:220px;height:3px;background:rgba(255,255,255,0.08);border-radius:2px;overflow:hidden;">
+          <div id="splash-bar" style="
+            height:100%;width:0%;background:#ffa424;border-radius:2px;
+            animation:splash-fill 28s cubic-bezier(0.1,0.4,0.2,1) forwards;
+          "></div>
+        </div>
+        <style>
+          @keyframes splash-fill{0%{width:0%}15%{width:30%}40%{width:55%}70%{width:78%}90%{width:90%}100%{width:97%}}
+        </style>
+      </div>
+    </div>
     <script type="module" src="./main.js"></script>
   </body>
 </html>
