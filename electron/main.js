@@ -150,7 +150,9 @@ function createWindow() {
     },
   });
 
-  runtimeState.window.once("ready-to-show", () => {
+  // Show window as soon as the DOM is ready (splash screen HTML is visible),
+  // rather than waiting for ready-to-show which includes JS module loading.
+  runtimeState.window.webContents.once("dom-ready", () => {
     runtimeState.window.show();
   });
 
