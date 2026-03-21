@@ -316,7 +316,7 @@ const newCommentsCount = computed(() => detail.value?.newCommentsCount || 0);
 const {
   filteredThreads, filteredDraftComments, draftsByThread, draftsByComment,
   threadIndex, threadToCommentKey, threadFixStatus, filter, sort, sortDir, searchTerm,
-  isFiltered, totalCommentCount, allDrafts, hasClearable, sortOptions,
+  isFiltered, totalCommentCount, activeCommentCount, allDrafts, hasClearable, sortOptions,
 } = useReviewComments(detail, reviewBridge, reviewUi, pullRequest);
 
 // Conflict info
@@ -331,7 +331,7 @@ const conflictInfo = computed(() => {
 const reviewTabs = computed(() => [
   { id: "summary", label: "Summary", count: null, alert: false },
   { id: "files", label: "Files", count: changedFiles.value.length, alert: false },
-  { id: "comments", label: "Comments", count: totalCommentCount.value, alert: false },
+  { id: "comments", label: "Comments", count: activeCommentCount.value || null, alert: false },
   { id: "conflicts", label: "Conflicts", count: conflictInfo.value.hasConflicts ? changedFiles.value.length : 0, alert: conflictInfo.value.hasConflicts },
   { id: "agent", label: "Agent", count: null, alert: false },
 ]);

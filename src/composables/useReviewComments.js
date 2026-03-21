@@ -146,6 +146,9 @@ export function useReviewComments(detail, reviewBridge, reviewUi, pullRequest) {
 
   const isFiltered = computed(() => filter.value !== "all" || !!searchTerm.value);
   const totalCommentCount = computed(() => allThreads.value.length + draftComments.value.length);
+  const activeCommentCount = computed(() =>
+    allThreads.value.filter((t) => String(t.status || "").toLowerCase() === "active").length + draftComments.value.length,
+  );
   const allDrafts = computed(() => (reviewBridge.value.drafts || []).filter((d) => d.status === "draft"));
   const hasClearable = computed(() => allDrafts.value.length > 0 || draftComments.value.length > 0);
 
@@ -168,6 +171,7 @@ export function useReviewComments(detail, reviewBridge, reviewUi, pullRequest) {
     filteredDraftComments,
     isFiltered,
     totalCommentCount,
+    activeCommentCount,
     allDrafts,
     hasClearable,
     sortOptions,
