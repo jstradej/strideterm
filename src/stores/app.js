@@ -54,36 +54,75 @@ export const useAppStore = defineStore("app", () => {
     return _api;
   }
 
-  // --- Computed ---
+  // --- Memoized computed ---
+  // These computed properties return the same reference when the result is structurally
+  // identical, preventing unnecessary downstream re-renders on every payload broadcast.
+
+  // --- Memoized computed ---
+  // These return the same reference when the result is structurally identical,
+  // preventing unnecessary downstream re-renders on every payload broadcast.
+  // Each fingerprint must include ALL fields that downstream consumers read.
+
   const activeWorkspace = computed(() => {
     const ws = payload.value?.workspace;
     return ws?.workspace || ws?.project || null;
   });
 
+  let _prevFilteredWsKey = "";
+  let _prevFilteredWs = [];
   const filteredWorkspaces = computed(() => {
     const workspaces = payload.value?.appState?.workspaces || [];
     const activeProfileId = payload.value?.appState?.activeProfileId || "default";
-    return workspaces.filter((ws) => (ws.profileId || "default") === activeProfileId);
+    const result = workspaces.filter((ws) => (ws.profileId || "default") === activeProfileId);
+    // Include names and panel counts — these change on rename/add-tab/remove-tab
+    const key = result.map((ws) => `${ws.id}:${ws.name}:${(ws.panels || []).length}`).join(",");
+    if (key === _prevFilteredWsKey) return _prevFilteredWs;
+    _prevFilteredWsKey = key;
+    _prevFilteredWs = result;
+    return result;
   });
 
+  let _prevProfileKey = "";
+  let _prevProfile = null;
   const activeProfile = computed(() => {
     const profiles = payload.value?.appState?.profiles || [];
     const activeId = payload.value?.appState?.activeProfileId || "default";
-    return profiles.find((p) => p.id === activeId) || { id: "default", name: "Default", color: "#ffa424" };
+    const found = profiles.find((p) => p.id === activeId) || { id: "default", name: "Default", color: "#ffa424" };
+    const key = `${found.id}:${found.name}:${found.color}`;
+    if (key === _prevProfileKey && _prevProfile) return _prevProfile;
+    _prevProfileKey = key;
+    _prevProfile = found;
+    return found;
   });
 
-  const attentionSummary = computed(() => summarizeAttention(payload.value));
+  let _prevAttention = { count: 0, waitingCount: 0 };
+  const attentionSummary = computed(() => {
+    const next = summarizeAttention(payload.value);
+    if (next.count === _prevAttention.count && next.waitingCount === _prevAttention.waitingCount) {
+      return _prevAttention;
+    }
+    _prevAttention = next;
+    return next;
+  });
 
+  let _prevTabsKey = "";
+  let _prevTabs = [];
   const workspaceTabs = computed(() => {
     const workspace = payload.value?.workspace;
     if (!workspace) return [];
-    return getWorkspaceTabs({
+    const result = getWorkspaceTabs({
       workspace,
       payload: payload.value,
       hiddenViewIds: hiddenViewIds.value,
       statusTone,
       isContainerRunning,
     });
+    // Fingerprint includes all visible fields: id, title, status, tone
+    const key = result.map((t) => `${t.id}:${t.title}:${t.status}:${t.tone}`).join("|");
+    if (key === _prevTabsKey) return _prevTabs;
+    _prevTabsKey = key;
+    _prevTabs = result;
+    return result;
   });
 
   const visibleTabs = computed(() => {

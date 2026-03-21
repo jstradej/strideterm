@@ -29,8 +29,8 @@
 
       <div class="azure-inbox__content">
         <section v-for="tab in inboxTabs" :key="tab.id" :class="['azure-section', activeTab === tab.id && 'azure-section--active']">
-          <!-- Connections tab -->
-          <template v-if="tab.id === 'connections'">
+          <!-- Only render heavy content for the active tab -->
+          <template v-if="tab.id === 'connections' && activeTab === 'connections'">
             <div class="section-head" style="padding:0 0 8px;">
               <div>
                 <p class="eyebrow">Azure DevOps Connections</p>
@@ -59,15 +59,15 @@
               📂 Review root: <code>{{ reviewRoot || 'not set' }}</code>
             </div>
           </template>
-          <!-- PR list tabs -->
-          <template v-else>
+          <!-- PR list tabs — only render when this tab is active -->
+          <template v-else-if="activeTab === tab.id">
             <!-- Repo filter -->
-            <div v-if="repoNames.length > 1 && tabItems(tab.id).length" style="display:flex;gap:4px;padding:0 0 8px;flex-wrap:wrap;">
+            <div v-if="repoNames.length > 1 && tabItems(activeTab).length" style="display:flex;gap:4px;padding:0 0 8px;flex-wrap:wrap;">
               <button type="button" :class="['button', 'button--ghost', !repoFilter && 'button--active']" :style="!repoFilter ? 'font-size:11px;padding:2px 8px;background:var(--accent);color:var(--bg);' : 'font-size:11px;padding:2px 8px;'" @click="repoFilter = ''">All repos</button>
               <button v-for="repo in repoNames" :key="repo" type="button" :class="['button', 'button--ghost', repoFilter === repo && 'button--active']" :style="repoFilter === repo ? 'font-size:11px;padding:2px 8px;background:var(--accent);color:var(--bg);' : 'font-size:11px;padding:2px 8px;'" @click="repoFilter = repoFilter === repo ? '' : repo">{{ repo }}</button>
             </div>
-            <template v-if="groupedItems(tab.id).length">
-              <div v-for="group in groupedItems(tab.id)" :key="group.repo" class="azure-repo-group">
+            <template v-if="activeGroupedItems.length">
+              <div v-for="group in activeGroupedItems" :key="group.repo" class="azure-repo-group">
                 <div v-if="!repoFilter && repoNames.length > 1" class="azure-repo-group__header">
                   <span class="azure-repo-group__name">{{ group.repo }}</span>
                   <span class="azure-repo-group__count">{{ group.items.length }}</span>
@@ -136,9 +136,9 @@ const repoNames = computed(() => {
   return names.sort();
 });
 
-// Group items by project/repo, respecting the repo filter
-function groupedItems(tabId) {
-  let items = tabItems(tabId);
+// Group items by project/repo for the active tab, cached as computed
+const activeGroupedItems = computed(() => {
+  let items = tabItems(activeTab.value);
   if (repoFilter.value) {
     items = items.filter((item) => `${item.project?.name || ""}/${item.repository?.name || ""}` === repoFilter.value);
   }
@@ -149,7 +149,7 @@ function groupedItems(tabId) {
     groups.get(repo).push(item);
   }
   return [...groups.entries()].map(([repo, items]) => ({ repo, items }));
-}
+});
 
 const headerStatus = computed(() => `${inbox.value.recentlyUpdated?.length || 0} PRs`);
 const headerActions = computed(() => [

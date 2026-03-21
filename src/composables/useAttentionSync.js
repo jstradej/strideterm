@@ -6,6 +6,8 @@ export function useAttentionSync(api) {
   const documentTitleBase = document.title || "strIDEterm";
   let browserBadgeKey = "";
   let resyncTimer = null;
+  let syncDebounce = null;
+  let lastSyncKey = "";
 
   function sync() {
     const { count, waitingCount } = appStore.attentionSummary;
@@ -14,10 +16,19 @@ export function useAttentionSync(api) {
     const base = documentTitleBase + profileLabel;
     document.title = count > 0 ? `(${count}) ${base}` : base;
 
-    // Update browser badge (deduplicated to avoid redundant API calls)
-    const nextKey = `${count}:${waitingCount}:${profile.id}`;
-    if (browserBadgeKey !== nextKey) {
-      browserBadgeKey = nextKey;
+    const visibleSessionIds = appStore.visibleTabs
+      .filter((tab) => tab.type === "terminal")
+      .map((tab) => tab.id);
+
+    // Deduplicate: skip API call if nothing changed
+    const syncKey = `${count}:${waitingCount}:${profile.id}:${visibleSessionIds.join(",")}`;
+    if (syncKey === lastSyncKey) return;
+    lastSyncKey = syncKey;
+
+    // Update browser badge
+    const nextBadgeKey = `${count}:${waitingCount}:${profile.id}`;
+    if (browserBadgeKey !== nextBadgeKey) {
+      browserBadgeKey = nextBadgeKey;
       if (typeof navigator.setAppBadge === "function") {
         const action = count > 0
           ? navigator.setAppBadge(count)
@@ -26,10 +37,6 @@ export function useAttentionSync(api) {
       }
     }
 
-    // Always sync visible sessions with backend (even if badge didn't change)
-    const visibleSessionIds = appStore.visibleTabs
-      .filter((tab) => tab.type === "terminal")
-      .map((tab) => tab.id);
     api.syncAttentionContext?.({ visibleSessionIds });
 
     // If any visible tab still has an attention alert, schedule a re-sync
@@ -40,18 +47,23 @@ export function useAttentionSync(api) {
     );
     if (hasVisibleAlert) {
       resyncTimer = setTimeout(() => {
-        const ids = appStore.visibleTabs
-          .filter((tab) => tab.type === "terminal")
-          .map((tab) => tab.id);
-        api.syncAttentionContext?.({ visibleSessionIds: ids });
+        lastSyncKey = ""; // Force next sync
+        sync();
       }, 3500);
     }
   }
 
   watch(
     () => [appStore.attentionSummary, appStore.activeProfile.id, appStore.visibleTabs],
-    () => sync(),
+    () => {
+      // Debounce rapid payload updates (e.g., multiple broadcasts in quick succession)
+      clearTimeout(syncDebounce);
+      syncDebounce = setTimeout(sync, 50);
+    },
   );
 
-  onScopeDispose(() => clearTimeout(resyncTimer));
+  onScopeDispose(() => {
+    clearTimeout(resyncTimer);
+    clearTimeout(syncDebounce);
+  });
 }
