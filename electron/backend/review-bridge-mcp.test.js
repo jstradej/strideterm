@@ -125,6 +125,7 @@ describe("review bridge mcp handlers", () => {
     const store = {
       getPullRequestContext: vi.fn(() => createContext()),
       saveDraftResponse: vi.fn().mockResolvedValue(nextContext),
+      queueDraftResponse: vi.fn().mockResolvedValue(nextContext),
     };
     const handlers = createReviewBridgeMcpHandlers({
       store,

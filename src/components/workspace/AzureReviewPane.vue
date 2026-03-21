@@ -26,9 +26,15 @@
         <div class="git-view__actions" style="margin-left:auto;">
           <button type="button" :class="['button', 'button--ghost', busyAction === 'refresh' && 'button--busy']" :disabled="!!busyAction" title="Fetch the latest PR data, threads, and comments from Azure DevOps" @click="handleRefresh">{{ busyAction === 'refresh' ? 'Refreshing…' : 'Refresh' }}<span v-if="newCommentsCount" class="azure-tab__count" style="margin-left:4px;">{{ newCommentsCount }}</span></button>
           <button type="button" :class="['button', 'button--ghost', busyAction === 'markSeen' && 'button--busy']" :disabled="!!busyAction" title="Mark all current activity as seen — clears the new-comments badge and attention indicator" @click="handleMarkSeen">Mark seen</button>
-          <button type="button" :class="['button', busyAction === 'publish' && 'button--busy']" :disabled="!!busyAction || !pendingSyncCount" title="Send all queued draft replies to Azure DevOps as real comments" @click="handlePublish">{{ busyAction === 'publish' ? 'Publishing…' : `Publish queued drafts${pendingSyncCount ? ` (${pendingSyncCount})` : ''}` }}</button>
+          <button type="button" :class="['button', busyAction === 'pushPublish' && 'button--busy']" :disabled="!!busyAction || !pendingSyncCount" :title="`Push commits and publish ${pendingSyncCount || 0} queued draft${pendingSyncCount !== 1 ? 's' : ''} to Azure DevOps`" @click="handlePushAndPublish">{{ busyAction === 'pushPublish' ? 'Pushing & publishing…' : `Push & publish${pendingSyncCount ? ` (${pendingSyncCount})` : ''}` }}</button>
+          <button type="button" :class="['button', 'button--ghost', busyAction === 'publish' && 'button--busy']" :disabled="!!busyAction || !pendingSyncCount" title="Publish queued drafts to Azure DevOps without pushing" @click="handlePublish">{{ busyAction === 'publish' ? 'Publishing…' : 'Publish only' }}</button>
           <button type="button" class="button button--ghost" title="Open this pull request in the browser on Azure DevOps" @click="openBrowser">Browser</button>
         </div>
+      </div>
+
+      <!-- Toolbar error -->
+      <div v-if="toolbarError" style="padding:4px 12px;font-size:11px;background:rgba(255,80,80,0.08);border-bottom:1px solid var(--border);">
+        <span style="color:var(--danger,#e53935);">{{ toolbarError }}</span>
       </div>
 
       <!-- Failed sync banner -->
@@ -56,7 +62,6 @@
           :changed-files="changedFiles"
           :pr-key="prKey"
           :workspace-id="workspaceId"
-          :pending-sync-count="pendingSyncCount"
           @new-comment="openAzureComment"
         />
 
@@ -349,9 +354,21 @@ async function handleMarkSeen() {
   finally { busyAction.value = ""; }
 }
 
+const toolbarError = ref("");
+
+async function handlePushAndPublish() {
+  busyAction.value = "pushPublish";
+  toolbarError.value = "";
+  try { await appStore.pushAndPublishReview(props.workspaceId); }
+  catch (error) { toolbarError.value = error?.message || String(error || "Push or publish failed."); }
+  finally { busyAction.value = ""; }
+}
+
 async function handlePublish() {
   busyAction.value = "publish";
+  toolbarError.value = "";
   try { await appStore.syncReviewBridgePullRequest(prKey.value); }
+  catch (error) { toolbarError.value = error?.message || String(error || "Publish failed."); }
   finally { busyAction.value = ""; }
 }
 

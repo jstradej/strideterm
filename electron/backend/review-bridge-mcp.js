@@ -215,7 +215,7 @@ export function createReviewBridgeMcpHandlers({ store, prKey }) {
     }) {
       const baseContext = readContextOrThrow(store, prKey);
       const selection = resolveComment(baseContext, { index, commentKey });
-      const context = await store.saveDraftResponse({
+      await store.saveDraftResponse({
         prKey,
         commentKey: selection.comment.commentKey,
         body,
@@ -223,9 +223,14 @@ export function createReviewBridgeMcpHandlers({ store, prKey }) {
         confidence,
         needsHumanApproval,
       });
+      // Auto-queue: agent-created drafts go straight to the publish queue
+      const context = await store.queueDraftResponse({
+        prKey,
+        commentKey: selection.comment.commentKey,
+      });
       const latestDraft = context?.drafts.find((entry) => entry.commentKey === selection.comment.commentKey) || null;
       return toolResult(
-        `Saved draft for comment ${selection.comment.displayIndex}.`,
+        `Saved and queued draft for comment ${selection.comment.displayIndex}.`,
         {
           prKey,
           comment: serializeComment(selection.comment),
@@ -378,7 +383,7 @@ export async function runReviewBridgeMcpServer({ rootPath, prKey }) {
 
   server.registerTool("save_review_draft", {
     title: "Save Review Draft",
-    description: "Save or replace a local draft reply for a review comment. The draft stays local until explicitly queued and published. Use the #N index from list_review_comments to specify which comment to reply to. The user can review, edit, or delete your draft before publishing.",
+    description: "Save a draft reply for a review comment and queue it for publishing. The draft is automatically queued — the user can publish it with 'Push & publish' or delete it if not needed. Use the #N index from list_review_comments to specify which comment to reply to.",
     inputSchema: {
       index: z.number().int().positive().optional().describe("1-based comment index from list_review_comments."),
       commentKey: z.string().optional().describe("Exact comment key when you already know it."),

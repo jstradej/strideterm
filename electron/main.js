@@ -133,6 +133,7 @@ function createWindow() {
     title: APP_CONFIG.electron.title,
     icon: windowIconPath,
     backgroundColor: APP_CONFIG.electron.backgroundColor,
+    show: false,
     autoHideMenuBar: true,
     titleBarStyle: process.platform === "darwin" ? "hiddenInset" : "hidden",
     titleBarOverlay: {
@@ -147,6 +148,10 @@ function createWindow() {
       sandbox: false,
       webviewTag: true,
     },
+  });
+
+  runtimeState.window.once("ready-to-show", () => {
+    runtimeState.window.show();
   });
 
   runtimeState.window.on("focus", () => {
