@@ -65,18 +65,49 @@
             <div class="review-files-split__left">
               <div class="section-head" style="padding:0 6px;"><div><p class="eyebrow">Changed files</p><h3>{{ changedFiles.length }} files</h3></div></div>
               <div v-if="changedFiles.length" class="review-file-tree" style="margin-top:8px;">
-                <button
-                  v-for="file in changedFiles"
-                  :key="file.path"
-                  type="button"
-                  :class="['review-tree-file', reviewUi.reviewSelectedFile === file.path && 'review-tree-file--active']"
-                  style="padding-left:6px;"
-                  :title="file.path"
-                  @click="gitUiStore.reviewSelectFileDiff(workspaceId, file.path)"
-                >
-                  <span :class="changeTypeClass(file.changeType)">{{ changeTypeLabel(file.changeType) }}</span>
-                  <span class="review-tree-file__name">{{ file.path?.split('/').pop() || file.path }}</span>
-                </button>
+                <template v-for="node in fileTree" :key="node.key">
+                  <details v-if="node.children" class="review-tree-dir" open>
+                    <summary class="review-tree-dir__label"><span class="review-tree-dir__icon"></span><span>{{ node.name }}</span></summary>
+                    <template v-for="child in node.children" :key="child.key">
+                      <details v-if="child.children" class="review-tree-dir" open style="padding-left:14px;">
+                        <summary class="review-tree-dir__label"><span class="review-tree-dir__icon"></span><span>{{ child.name }}</span></summary>
+                        <button
+                          v-for="leaf in child.children"
+                          :key="leaf.key"
+                          type="button"
+                          :class="['review-tree-file', reviewUi.reviewSelectedFile === leaf.path && 'review-tree-file--active']"
+                          style="padding-left:28px;"
+                          :title="leaf.path"
+                          @click="onSelectFile(leaf.path)"
+                        >
+                          <span :class="changeTypeClass(leaf.changeType)">{{ changeTypeLabel(leaf.changeType) }}</span>
+                          <span class="review-tree-file__name">{{ leaf.name }}</span>
+                        </button>
+                      </details>
+                      <button
+                        v-else
+                        type="button"
+                        :class="['review-tree-file', reviewUi.reviewSelectedFile === child.path && 'review-tree-file--active']"
+                        style="padding-left:14px;"
+                        :title="child.path"
+                        @click="onSelectFile(child.path)"
+                      >
+                        <span :class="changeTypeClass(child.changeType)">{{ changeTypeLabel(child.changeType) }}</span>
+                        <span class="review-tree-file__name">{{ child.name }}</span>
+                      </button>
+                    </template>
+                  </details>
+                  <button
+                    v-else
+                    type="button"
+                    :class="['review-tree-file', reviewUi.reviewSelectedFile === node.path && 'review-tree-file--active']"
+                    :title="node.path"
+                    @click="onSelectFile(node.path)"
+                  >
+                    <span :class="changeTypeClass(node.changeType)">{{ changeTypeLabel(node.changeType) }}</span>
+                    <span class="review-tree-file__name">{{ node.name }}</span>
+                  </button>
+                </template>
               </div>
               <p v-else class="git-card__hint" style="padding:6px;">No changed files found.</p>
             </div>
@@ -127,19 +158,55 @@
                 </div>
               </div>
               <p class="git-card__hint">
-                <template v-if="conflictInfo.hasConflicts">Merge conflicts detected between <strong>{{ stripRef(pullRequest.sourceRefName) }}</strong> and <strong>{{ stripRef(pullRequest.targetRefName) }}</strong>.</template>
+                <template v-if="conflictInfo.hasConflicts">Merge conflicts detected between <strong>{{ stripRef(pullRequest.sourceRefName) }}</strong> and <strong>{{ stripRef(pullRequest.targetRefName) }}</strong>. Resolve conflicts in the source branch.</template>
                 <template v-else-if="pullRequest.mergeStatus === 'succeeded'"><strong>{{ stripRef(pullRequest.sourceRefName) }}</strong> can be merged without conflicts.</template>
                 <template v-else>Azure DevOps merge status: <code>{{ pullRequest.mergeStatus || 'not set' }}</code></template>
               </p>
             </article>
-            <template v-if="!conflictInfo.hasConflicts">
-              <article class="git-card review-card" style="margin-top:8px;">
-                <div style="display:flex;align-items:center;gap:10px;padding:4px 0;">
-                  <span class="git-status-code" style="font-size:1.2em;">✓</span>
-                  <div><p style="margin:0;"><strong>No conflicts</strong></p></div>
-                </div>
-              </article>
-            </template>
+
+            <article v-if="conflictInfo.hasConflicts && changedFiles.length" class="git-card review-card" style="margin-top:8px;">
+              <div class="section-head"><div><p class="eyebrow">Affected files</p><h3>{{ changedFiles.length }} files</h3></div></div>
+              <p class="git-card__hint">Click a file to see its diff. Resolve conflicts in your local worktree.</p>
+              <div class="review-file-tree" style="margin-top:6px;">
+                <template v-for="node in fileTree" :key="node.key">
+                  <details v-if="node.children" class="review-tree-dir" open>
+                    <summary class="review-tree-dir__label"><span class="review-tree-dir__icon"></span><span>{{ node.name }}</span></summary>
+                    <template v-for="child in node.children" :key="child.key">
+                      <details v-if="child.children" class="review-tree-dir" open style="padding-left:14px;">
+                        <summary class="review-tree-dir__label"><span class="review-tree-dir__icon"></span><span>{{ child.name }}</span></summary>
+                        <button
+                          v-for="leaf in child.children"
+                          :key="leaf.key"
+                          type="button"
+                          class="review-tree-file"
+                          style="padding-left:28px;"
+                          :title="leaf.path"
+                          @click="onSelectFile(leaf.path)"
+                        >
+                          <span :class="changeTypeClass(leaf.changeType)">{{ changeTypeLabel(leaf.changeType) }}</span>
+                          <span class="review-tree-file__name">{{ leaf.name }}</span>
+                        </button>
+                      </details>
+                      <button v-else type="button" class="review-tree-file" style="padding-left:14px;" :title="child.path" @click="onSelectFile(child.path)">
+                        <span :class="changeTypeClass(child.changeType)">{{ changeTypeLabel(child.changeType) }}</span>
+                        <span class="review-tree-file__name">{{ child.name }}</span>
+                      </button>
+                    </template>
+                  </details>
+                  <button v-else type="button" class="review-tree-file" :title="node.path" @click="onSelectFile(node.path)">
+                    <span :class="changeTypeClass(node.changeType)">{{ changeTypeLabel(node.changeType) }}</span>
+                    <span class="review-tree-file__name">{{ node.name }}</span>
+                  </button>
+                </template>
+              </div>
+            </article>
+
+            <article v-else-if="!conflictInfo.hasConflicts" class="git-card review-card" style="margin-top:8px;">
+              <div style="display:flex;align-items:center;gap:10px;padding:4px 0;">
+                <span class="git-status-code" style="font-size:1.2em;color:#6edfb6;">✓</span>
+                <div><p style="margin:0;"><strong>No merge conflicts</strong></p></div>
+              </div>
+            </article>
           </div>
         </template>
 
@@ -272,6 +339,66 @@ async function handlePublish() {
   busyAction.value = "publish";
   try { await appStore.syncReviewBridgePullRequest(prKey.value); }
   finally { busyAction.value = ""; }
+}
+
+// File tree builder — groups files by directory segments
+const fileTree = computed(() => {
+  const files = changedFiles.value;
+  if (!files.length) return [];
+
+  // Find common prefix to strip
+  const paths = files.map((f) => String(f.path || "").replace(/^\//, "").split("/"));
+  let prefix = 0;
+  if (paths.length > 1) {
+    outer: for (let i = 0; i < (paths[0]?.length || 0) - 1; i++) {
+      const seg = paths[0][i];
+      for (let j = 1; j < paths.length; j++) {
+        if (paths[j][i] !== seg) break outer;
+      }
+      prefix = i + 1;
+    }
+  }
+
+  // Build nested map
+  const root = new Map();
+  for (const file of files) {
+    const segs = String(file.path || "").replace(/^\//, "").split("/").slice(prefix);
+    let node = root;
+    for (let i = 0; i < segs.length - 1; i++) {
+      if (!node.has(segs[i])) node.set(segs[i], new Map());
+      node = node.get(segs[i]);
+    }
+    node.set(segs.at(-1), file);
+  }
+
+  // Convert to array, collapsing single-child dirs
+  function toArray(map, pathPrefix = "") {
+    const result = [];
+    for (const [name, value] of map) {
+      if (value instanceof Map) {
+        const items = toArray(value, pathPrefix ? `${pathPrefix}/${name}` : name);
+        // Collapse dir with single child dir
+        if (items.length === 1 && items[0].children) {
+          result.push({ ...items[0], name: `${name}/${items[0].name}`, key: `${pathPrefix}/${name}` });
+        } else {
+          result.push({ name, key: `${pathPrefix}/${name}`, children: items });
+        }
+      } else {
+        result.push({ name, key: value.path, path: value.path, changeType: value.changeType || "edit" });
+      }
+    }
+    return result;
+  }
+
+  return toArray(root);
+});
+
+function onSelectFile(filePath) {
+  // Strip leading / for git operations
+  const normalized = String(filePath || "").replace(/^\//, "");
+  // Pass the PR target branch so diff uses the correct base
+  const targetBranch = stripRef(pullRequest.value.targetRefName || "");
+  gitUiStore.reviewSelectFileDiff(props.workspaceId, normalized, targetBranch);
 }
 
 // Helpers

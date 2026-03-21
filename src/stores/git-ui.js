@@ -282,7 +282,7 @@ export const useGitUiStore = defineStore("git-ui", () => {
         workspaceId,
         path: filePath,
         scope: "branch",
-        baseBranch: resolvedBase ? `origin/${resolvedBase}` : "",
+        baseBranch: resolvedBase.startsWith("origin/") ? resolvedBase : (resolvedBase ? `origin/${resolvedBase}` : ""),
       });
     } catch (error) {
       ui.reviewFileDiffPreview = { ok: false, path: filePath, diff: "", summary: error?.message || "Diff preview failed to load." };
