@@ -25,7 +25,6 @@
         </div>
         <div class="git-view__actions" style="margin-left:auto;">
           <button type="button" :class="['button', 'button--ghost', busyAction === 'refresh' && 'button--busy']" :disabled="!!busyAction" title="Fetch the latest PR data, threads, and comments from Azure DevOps" @click="handleRefresh">{{ busyAction === 'refresh' ? 'Refreshing…' : 'Refresh' }}<span v-if="newCommentsCount" class="azure-tab__count" style="margin-left:4px;">{{ newCommentsCount }}</span></button>
-          <button type="button" :class="['button', 'button--ghost', busyAction === 'markSeen' && 'button--busy']" :disabled="!!busyAction" title="Mark all current activity as seen — clears the new-comments badge and attention indicator" @click="handleMarkSeen">Mark seen</button>
           <button type="button" :class="['button', busyAction === 'pushPublish' && 'button--busy']" :disabled="!!busyAction || (!pendingSyncCount && !aheadCount)" :title="`Push ${aheadCount} commit${aheadCount !== 1 ? 's' : ''} and publish ${pendingSyncCount} comment${pendingSyncCount !== 1 ? 's' : ''} to Azure DevOps`" @click="handlePushAndPublish">{{ busyAction === 'pushPublish' ? 'Pushing & publishing…' : pushPublishLabel }}</button>
           <button type="button" :class="['button', 'button--ghost', busyAction === 'publish' && 'button--busy']" :disabled="!!busyAction || !pendingSyncCount" title="Publish queued drafts to Azure DevOps without pushing" @click="handlePublish">{{ busyAction === 'publish' ? 'Publishing…' : 'Publish only' }}</button>
           <button type="button" class="button button--ghost" title="Open this pull request in the browser on Azure DevOps" @click="openBrowser">Browser</button>
@@ -360,8 +359,11 @@ const busyAction = ref("");
 
 async function handleRefresh() {
   busyAction.value = "refresh";
-  try { await appStore.refreshAzure(); }
-  finally { busyAction.value = ""; }
+  try {
+    await appStore.refreshAzure();
+    // Auto-mark as seen — user actively opened the review, so comments are "seen"
+    if (prKey.value) await appStore.markAzurePrSeen(prKey.value);
+  } finally { busyAction.value = ""; }
 }
 
 async function handleMarkSeen() {
