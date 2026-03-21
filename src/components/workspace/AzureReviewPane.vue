@@ -148,26 +148,34 @@
 
         <!-- Conflicts panel -->
         <template v-else-if="activeTab === 'conflicts'">
-          <div class="review-panel">
+          <!-- No conflicts — simple card -->
+          <div v-if="!conflictInfo.hasConflicts" class="review-panel">
             <article class="git-card review-card">
               <div class="section-head">
                 <div><p class="eyebrow">Merge Status</p><h3>{{ conflictInfo.label }}</h3></div>
                 <div class="docker-card__actions">
-                  <button type="button" :class="['button', 'button--ghost', busyAction === 'refresh' && 'button--busy']" :disabled="!!busyAction" title="Fetch the latest PR data, threads, and merge status from Azure DevOps" @click="handleRefresh">{{ busyAction === 'refresh' ? 'Refreshing…' : 'Refresh' }}</button>
-                  <button type="button" class="button button--ghost" title="Open this pull request in the browser on Azure DevOps" @click="openBrowser">View in Azure DevOps</button>
+                  <button type="button" :class="['button', 'button--ghost', busyAction === 'refresh' && 'button--busy']" :disabled="!!busyAction" @click="handleRefresh">{{ busyAction === 'refresh' ? 'Refreshing…' : 'Refresh' }}</button>
                 </div>
               </div>
-              <p class="git-card__hint">
-                <template v-if="conflictInfo.hasConflicts">Merge conflicts detected between <strong>{{ stripRef(pullRequest.sourceRefName) }}</strong> and <strong>{{ stripRef(pullRequest.targetRefName) }}</strong>. Resolve conflicts in the source branch.</template>
-                <template v-else-if="pullRequest.mergeStatus === 'succeeded'"><strong>{{ stripRef(pullRequest.sourceRefName) }}</strong> can be merged without conflicts.</template>
-                <template v-else>Azure DevOps merge status: <code>{{ pullRequest.mergeStatus || 'not set' }}</code></template>
-              </p>
+              <div style="display:flex;align-items:center;gap:10px;padding:8px 0;">
+                <span style="font-size:1.2em;color:#6edfb6;">✓</span>
+                <p style="margin:0;"><strong>{{ stripRef(pullRequest.sourceRefName) }}</strong> can be merged without conflicts into <strong>{{ stripRef(pullRequest.targetRefName) }}</strong>.</p>
+              </div>
             </article>
+          </div>
 
-            <article v-if="conflictInfo.hasConflicts && changedFiles.length" class="git-card review-card" style="margin-top:8px;">
-              <div class="section-head"><div><p class="eyebrow">Affected files</p><h3>{{ changedFiles.length }} files</h3></div></div>
-              <p class="git-card__hint">Click a file to see its diff. Resolve conflicts in your local worktree.</p>
-              <div class="review-file-tree" style="margin-top:6px;">
+          <!-- Has conflicts — split layout like Files tab -->
+          <div v-else class="review-files-split">
+            <div class="review-files-split__left">
+              <div class="review-conflict-banner review-conflict-banner--danger" style="margin:0 0 8px;">
+                <span class="review-conflict-banner__icon">✗</span>
+                <div>
+                  <strong>{{ conflictInfo.label }}</strong>
+                  <p class="review-conflict-banner__hint"><code>{{ stripRef(pullRequest.sourceRefName) }}</code> &rarr; <code>{{ stripRef(pullRequest.targetRefName) }}</code></p>
+                </div>
+              </div>
+              <div class="section-head" style="padding:0 6px;"><div><p class="eyebrow">Affected files</p><h3>{{ changedFiles.length }} files</h3></div></div>
+              <div v-if="changedFiles.length" class="review-file-tree" style="margin-top:6px;">
                 <template v-for="node in fileTree" :key="node.key">
                   <details v-if="node.children" class="review-tree-dir" open>
                     <summary class="review-tree-dir__label"><span class="review-tree-dir__icon"></span><span>{{ node.name }}</span></summary>
@@ -178,7 +186,7 @@
                           v-for="leaf in child.children"
                           :key="leaf.key"
                           type="button"
-                          class="review-tree-file"
+                          :class="['review-tree-file', reviewUi.reviewSelectedFile === leaf.path && 'review-tree-file--active']"
                           style="padding-left:28px;"
                           :title="leaf.path"
                           @click="onSelectFile(leaf.path)"
@@ -187,26 +195,30 @@
                           <span class="review-tree-file__name">{{ leaf.name }}</span>
                         </button>
                       </details>
-                      <button v-else type="button" class="review-tree-file" style="padding-left:14px;" :title="child.path" @click="onSelectFile(child.path)">
+                      <button v-else type="button" :class="['review-tree-file', reviewUi.reviewSelectedFile === child.path && 'review-tree-file--active']" style="padding-left:14px;" :title="child.path" @click="onSelectFile(child.path)">
                         <span :class="changeTypeClass(child.changeType)">{{ changeTypeLabel(child.changeType) }}</span>
                         <span class="review-tree-file__name">{{ child.name }}</span>
                       </button>
                     </template>
                   </details>
-                  <button v-else type="button" class="review-tree-file" :title="node.path" @click="onSelectFile(node.path)">
+                  <button v-else type="button" :class="['review-tree-file', reviewUi.reviewSelectedFile === node.path && 'review-tree-file--active']" :title="node.path" @click="onSelectFile(node.path)">
                     <span :class="changeTypeClass(node.changeType)">{{ changeTypeLabel(node.changeType) }}</span>
                     <span class="review-tree-file__name">{{ node.name }}</span>
                   </button>
                 </template>
               </div>
-            </article>
-
-            <article v-else-if="!conflictInfo.hasConflicts" class="git-card review-card" style="margin-top:8px;">
-              <div style="display:flex;align-items:center;gap:10px;padding:4px 0;">
-                <span class="git-status-code" style="font-size:1.2em;color:#6edfb6;">✓</span>
-                <div><p style="margin:0;"><strong>No merge conflicts</strong></p></div>
+            </div>
+            <div class="review-files-split__right">
+              <template v-if="reviewUi.reviewFileDiffPreview">
+                <div class="section-head" style="padding:0 6px;"><div><p class="eyebrow">Diff preview</p><h3>{{ reviewUi.reviewFileDiffPreview.path }}</h3></div></div>
+                <DiffViewer v-if="reviewUi.reviewFileDiffPreview.diff" :diff="reviewUi.reviewFileDiffPreview.diff" />
+                <p v-else class="git-card__hint" style="padding:6px;">{{ reviewUi.reviewFileDiffPreview.summary || 'No diff available.' }}</p>
+              </template>
+              <div v-else class="review-files-empty">
+                <p class="eyebrow">Diff preview</p>
+                <p class="git-card__hint">Click a file to see its diff. Resolve conflicts in your local worktree.</p>
               </div>
-            </article>
+            </div>
           </div>
         </template>
 
