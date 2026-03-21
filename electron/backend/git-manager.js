@@ -793,7 +793,10 @@ export class GitManager extends EventEmitter {
         ? parsedStatus.branch
         : (branchResult.stdout.trim() || "HEAD");
       const upstream = parsedStatus.upstream || await this.readUpstream(workspace.cwd);
-      const baseBranch = preferBaseBranch(branch, upstream, branchNames);
+      const reviewTargetRef = String(workspace.review?.pullRequest?.targetRefName || "").replace(/^refs\/heads\//, "").trim();
+      const baseBranch = reviewTargetRef
+        ? preferBaseBranch(branch, reviewTargetRef, branchNames) || reviewTargetRef
+        : preferBaseBranch(branch, upstream, branchNames);
       const compareWithBase = await this.readBaseComparison(workspace.cwd, baseBranch, branch);
       const operationState = await this.inspectOperationState(workspace.cwd, { gitDir, gitCommonDir });
       const stagedDiffStat = await this.readDiffStat(workspace.cwd, ["diff", "--cached", "--shortstat"]);
