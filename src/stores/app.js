@@ -39,6 +39,12 @@ export const useAppStore = defineStore("app", () => {
   const pendingViewActivationId = ref("");
   const suppressBroadcast = ref(false);
 
+  // --- Workspace state cache (avoids tab-status flicker on switch) ---
+  // Stores workspace-specific payload parts keyed by workspace ID.
+  // On switch-back, cached data is restored instantly during the optimistic phase,
+  // so tabs keep their real statuses ("running"/"idle") instead of flashing to "idle".
+  const _workspacePayloadCache = new Map();
+
   // --- Error handling ---
   const lastError = ref(null); // { label, message, timestamp } | null
 
@@ -168,11 +174,32 @@ export const useAppStore = defineStore("app", () => {
   });
 
   // --- Helpers ---
+
+  /** Save workspace-specific payload parts for the current workspace. */
+  function _cacheCurrentWorkspace() {
+    const p = payload.value;
+    const wsId = p?.appState?.activeWorkspaceId;
+    if (!wsId || !p?.workspace) return;
+    _workspacePayloadCache.set(wsId, {
+      workspace: p.workspace,
+      docker: p.docker,
+      attention: p.attention,
+      activeWorkspaceGit: p.git?.activeWorkspace,
+      activeProjectGit: p.git?.activeProject,
+    });
+  }
+
   function buildWorkspacePayloadSnapshot(workspaceId) {
     const appState = payload.value?.appState;
     if (!appState) return null;
     const workspace = (appState.workspaces || []).find((ws) => ws.id === workspaceId);
     if (!workspace) return null;
+
+    // Strategy 2: return full cached workspace payload if available
+    const cached = _workspacePayloadCache.get(workspaceId);
+    if (cached?.workspace) return cached.workspace;
+
+    // Strategy 1 fallback: build snapshot, no cache → status stays "idle"
     return {
       workspace,
       project: workspace,
@@ -195,11 +222,28 @@ export const useAppStore = defineStore("app", () => {
     if (!appState || !(appState.workspaces || []).some((ws) => ws.id === workspaceId)) {
       return false;
     }
+
+    // Cache current workspace state before switching away
+    _cacheCurrentWorkspace();
+
     pendingWorkspaceActivationId.value = workspaceId;
+
+    const cached = _workspacePayloadCache.get(workspaceId);
+    const prevGit = payload.value.git;
     payload.value = {
       ...payload.value,
       appState: { ...appState, activeWorkspaceId: workspaceId, activeProjectId: workspaceId },
       workspace: buildWorkspacePayloadSnapshot(workspaceId),
+      // Restore cached workspace-specific data (docker, attention, active git)
+      ...(cached ? {
+        docker: cached.docker ?? payload.value.docker,
+        attention: cached.attention ?? payload.value.attention,
+        git: {
+          ...prevGit,
+          activeWorkspace: cached.activeWorkspaceGit ?? prevGit?.activeWorkspace,
+          activeProject: cached.activeProjectGit ?? prevGit?.activeProject,
+        },
+      } : {}),
     };
     return true;
   }
@@ -235,6 +279,8 @@ export const useAppStore = defineStore("app", () => {
 
     if (suppressBroadcast.value) return;
     payload.value = nextPayload;
+    // Keep workspace cache fresh on every broadcast for the active workspace
+    _cacheCurrentWorkspace();
   }
 
   // --- Actions ---
@@ -256,6 +302,8 @@ export const useAppStore = defineStore("app", () => {
       const nextPayload = await _api.activateWorkspace(workspaceId);
       if (!pendingWorkspaceActivationId.value || nextPayload?.appState?.activeWorkspaceId === pendingWorkspaceActivationId.value) {
         payload.value = nextPayload;
+        // Update cache with fresh server data for the newly activated workspace
+        _cacheCurrentWorkspace();
         if (!nextPayload?.meta?.bootstrap) pendingWorkspaceActivationId.value = "";
       }
     } catch {
@@ -375,6 +423,8 @@ export const useAppStore = defineStore("app", () => {
         }
 
         payload.value = nextPayload;
+        // Seed cache with the initial workspace state on bootstrap
+        _cacheCurrentWorkspace();
       })
       .catch((error) => {
         const message = error?.message?.includes("401")
