@@ -1,4 +1,4 @@
-import { watch } from "vue";
+import { watch, onScopeDispose } from "vue";
 import { useAppStore } from "../stores/app.js";
 
 export function useAttentionSync(api) {
@@ -52,4 +52,6 @@ export function useAttentionSync(api) {
     () => [appStore.attentionSummary, appStore.activeProfile.id, appStore.visibleTabs],
     () => sync(),
   );
+
+  onScopeDispose(() => clearTimeout(resyncTimer));
 }

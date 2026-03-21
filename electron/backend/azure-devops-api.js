@@ -23,10 +23,10 @@ export function createAzureApi(fetchImpl) {
       ...headers,
     };
 
-    // Add ETag/If-None-Match for GET requests
+    // Add ETag/If-None-Match for GET requests (only when cached data exists to fall back to)
     if (method === "GET") {
       const cached = etagCache.get(url);
-      if (cached?.etag) {
+      if (cached?.etag && cached?.data) {
         requestHeaders["If-None-Match"] = cached.etag;
       }
     }

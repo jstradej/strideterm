@@ -74,6 +74,19 @@ export function useNotificationCapture() {
           latestToast.value = entry;
         }
       }
+
+      // Prune seen keys that are no longer in the attention payload to prevent unbounded growth
+      if (seenAlertKeys.size > 500) {
+        const currentKeys = new Set();
+        for (const [wsId, wsEntry] of Object.entries(byWs)) {
+          for (const alert of wsEntry?.alerts || []) {
+            currentKeys.add(alertKey(wsId, alert));
+          }
+        }
+        for (const key of seenAlertKeys) {
+          if (!currentKeys.has(key)) seenAlertKeys.delete(key);
+        }
+      }
     },
   );
 

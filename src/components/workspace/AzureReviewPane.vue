@@ -291,7 +291,7 @@ function openAzureComment() {
     label: "Comment",
     placeholder: "Write your review comment...",
     submitLabel: "Create draft",
-    onSubmit: (content) => appStore.createReviewBridgeDraftComment({ prKey: prKey.value, body: content, authorAgent: "human" }),
+    onSubmit: (content) => { appStore.createReviewBridgeDraftComment({ prKey: prKey.value, body: content, authorAgent: "human" }); appStore.closeDialog(); },
   });
 }
 </script>
