@@ -100,6 +100,8 @@ function pickLayout(key) {
 }
 
 function onDocumentClick(e) {
+  // Ignore clicks on the Split button itself (it triggers showLayoutPicker)
+  if (e.target.closest("[data-role='tab-actions']")) return;
   if (pickerRef.value && !pickerRef.value.contains(e.target)) {
     store.hideLayoutPicker();
   }
