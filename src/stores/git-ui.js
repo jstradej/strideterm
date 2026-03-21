@@ -257,7 +257,15 @@ export const useGitUiStore = defineStore("git-ui", () => {
   }
 
   function reviewSetCommentSort(workspaceId, sort) {
-    ensure(workspaceId).commentSort = sort || "index";
+    const state = ensure(workspaceId);
+    if (state.commentSort === sort) {
+      // Toggle direction when clicking the same sort
+      state.commentSortDir = state.commentSortDir === "asc" ? "desc" : "asc";
+    } else {
+      state.commentSort = sort || "index";
+      // Default direction: newest→desc, others→asc
+      state.commentSortDir = sort === "newest" ? "desc" : "asc";
+    }
   }
 
   function reviewSetCommentSearch(workspaceId, search) {

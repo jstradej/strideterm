@@ -13,7 +13,7 @@
       <div style="display:flex;gap:4px;padding:0 10px 6px;flex-wrap:wrap;align-items:center;">
         <button v-for="f in ['all', 'active', 'fixed', 'has-draft', 'mine']" :key="f" type="button" :class="['button', 'button--ghost', filter === f && 'button--active']" :style="filter === f ? 'font-size:11px;padding:2px 8px;background:var(--accent);color:var(--bg);' : 'font-size:11px;padding:2px 8px;'" :title="{ all: 'Show all threads and comments', active: 'Show only threads with Active status', fixed: 'Show only threads marked as fixed by the agent', 'has-draft': 'Show only threads that have a local draft reply', mine: 'Show threads where you are an author or have a draft' }[f]" @click="gitUiStore.reviewSetCommentFilter(workspaceId, f)">{{ { all: 'All', active: 'Active', fixed: 'Fixed', 'has-draft': 'Has draft', mine: 'Mine' }[f] }}</button>
         <span style="width:1px;height:16px;background:var(--border);margin:0 2px;"></span>
-        <button v-for="s in sortOptions" :key="s.id" type="button" :class="['button', 'button--ghost', sort === s.id && 'button--active']" :style="sort === s.id ? 'font-size:11px;padding:2px 8px;background:var(--accent);color:var(--bg);' : 'font-size:11px;padding:2px 8px;'" :title="`Sort comments by ${s.label.toLowerCase()}`" @click="gitUiStore.reviewSetCommentSort(workspaceId, s.id)">↕ {{ s.label }}</button>
+        <button v-for="s in sortOptions" :key="s.id" type="button" :class="['button', 'button--ghost', sort === s.id && 'button--active']" :style="sort === s.id ? 'font-size:11px;padding:2px 8px;background:var(--accent);color:var(--bg);' : 'font-size:11px;padding:2px 8px;'" :title="`Sort comments by ${s.label.toLowerCase()}${sort === s.id ? ' (click to reverse)' : ''}`" @click="gitUiStore.reviewSetCommentSort(workspaceId, s.id)">{{ sort === s.id ? (sortDir === 'asc' ? '↑' : '↓') : '↕' }} {{ s.label }}</button>
         <span style="flex:1;"></span>
         <input type="text" class="input" style="font-size:11px;padding:2px 8px;width:140px;min-width:80px;" placeholder="Search..." title="Filter comments by text in file paths or comment body" :value="searchTerm" @input="gitUiStore.reviewSetCommentSearch(workspaceId, $event.target.value)" />
       </div>
@@ -178,6 +178,7 @@ const props = defineProps({
   threadFixStatus: { type: Map, required: true },
   filter: { type: String, required: true },
   sort: { type: String, required: true },
+  sortDir: { type: String, required: true },
   searchTerm: { type: String, required: true },
   isFiltered: { type: Boolean, required: true },
   allDrafts: { type: Array, required: true },

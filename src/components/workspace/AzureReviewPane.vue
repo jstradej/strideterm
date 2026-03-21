@@ -150,6 +150,7 @@
           :thread-fix-status="threadFixStatus"
           :filter="filter"
           :sort="sort"
+          :sort-dir="sortDir"
           :search-term="searchTerm"
           :is-filtered="isFiltered"
           :all-drafts="allDrafts"
@@ -314,7 +315,7 @@ const newCommentsCount = computed(() => detail.value?.newCommentsCount || 0);
 // Comments (extracted to composable)
 const {
   filteredThreads, filteredDraftComments, draftsByThread, draftsByComment,
-  threadIndex, threadToCommentKey, threadFixStatus, filter, sort, searchTerm,
+  threadIndex, threadToCommentKey, threadFixStatus, filter, sort, sortDir, searchTerm,
   isFiltered, totalCommentCount, allDrafts, hasClearable, sortOptions,
 } = useReviewComments(detail, reviewBridge, reviewUi, pullRequest);
 

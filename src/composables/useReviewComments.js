@@ -83,6 +83,7 @@ export function useReviewComments(detail, reviewBridge, reviewUi, pullRequest) {
   // Filtering/sorting
   const filter = computed(() => reviewUi.value.commentFilter || "all");
   const sort = computed(() => reviewUi.value.commentSort || "index");
+  const sortDir = computed(() => reviewUi.value.commentSortDir || (sort.value === "newest" ? "desc" : "asc"));
   const searchTerm = computed(() => (reviewUi.value.commentSearch || "").toLowerCase().trim());
 
   const filteredThreads = computed(() => {
@@ -114,19 +115,20 @@ export function useReviewComments(detail, reviewBridge, reviewUi, pullRequest) {
       });
     }
 
+    const dir = sortDir.value === "desc" ? -1 : 1;
     const statusOrder = { active: 0, pending: 1, "": 2, fixed: 3, closed: 4, wontfix: 5, bydesign: 6 };
     if (sort.value === "newest") {
       return [...threads].sort((a, b) => {
         const lastA = (a.comments || []).at(-1)?.publishedDate || "";
         const lastB = (b.comments || []).at(-1)?.publishedDate || "";
-        return (lastB || "").localeCompare(lastA || "");
+        return dir * (lastB || "").localeCompare(lastA || "");
       });
     } else if (sort.value === "status") {
-      return [...threads].sort((a, b) => (statusOrder[String(a.status || "").toLowerCase()] ?? 2) - (statusOrder[String(b.status || "").toLowerCase()] ?? 2));
+      return [...threads].sort((a, b) => dir * ((statusOrder[String(a.status || "").toLowerCase()] ?? 2) - (statusOrder[String(b.status || "").toLowerCase()] ?? 2)));
     } else if (sort.value === "file") {
-      return [...threads].sort((a, b) => (a.filePath || "").localeCompare(b.filePath || ""));
+      return [...threads].sort((a, b) => dir * (a.filePath || "").localeCompare(b.filePath || ""));
     }
-    return [...threads].sort((a, b) => (threadIndex(a) || 9999) - (threadIndex(b) || 9999));
+    return [...threads].sort((a, b) => dir * ((threadIndex(a) || 9999) - (threadIndex(b) || 9999)));
   });
 
   const filteredDraftComments = computed(() => {
@@ -160,6 +162,7 @@ export function useReviewComments(detail, reviewBridge, reviewUi, pullRequest) {
     draftsByComment,
     filter,
     sort,
+    sortDir,
     searchTerm,
     filteredThreads,
     filteredDraftComments,
