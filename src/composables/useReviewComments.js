@@ -22,6 +22,8 @@ export function useReviewComments(detail, reviewBridge, reviewUi, pullRequest) {
   const draftMap = computed(() => {
     const map = new Map();
     for (const d of reviewBridge.value.drafts || []) {
+      // Skip synced drafts — they're already published as real Azure comments
+      if (d.status === "synced") continue;
       const list = map.get(d.commentKey);
       if (list) list.push(d);
       else map.set(d.commentKey, [d]);
