@@ -2464,6 +2464,38 @@ dt {
   display: block;
 }
 
+.azure-repo-group {
+  margin-bottom: 4px;
+}
+
+.azure-repo-group__header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px 4px;
+  border-bottom: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.02);
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+
+.azure-repo-group__name {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent);
+  letter-spacing: 0.02em;
+}
+
+.azure-repo-group__count {
+  font-size: 10px;
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.06);
+  padding: 0 5px;
+  border-radius: 8px;
+  line-height: 16px;
+}
+
 .azure-pr-row {
   display: flex;
   align-items: flex-start;

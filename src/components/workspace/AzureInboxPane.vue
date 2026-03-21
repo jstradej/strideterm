@@ -61,15 +61,26 @@
           </template>
           <!-- PR list tabs -->
           <template v-else>
-            <template v-if="tabItems(tab.id).length">
-              <AzurePrRow
-                v-for="item in tabItems(tab.id)"
-                :key="item.prKey"
-                :item="item"
-                @open="onOpenPr"
-                @browser="onOpenBrowser"
-                @seen="onMarkSeen"
-              />
+            <!-- Repo filter -->
+            <div v-if="repoNames.length > 1 && tabItems(tab.id).length" style="display:flex;gap:4px;padding:0 0 8px;flex-wrap:wrap;">
+              <button type="button" :class="['button', 'button--ghost', !repoFilter && 'button--active']" :style="!repoFilter ? 'font-size:11px;padding:2px 8px;background:var(--accent);color:var(--bg);' : 'font-size:11px;padding:2px 8px;'" @click="repoFilter = ''">All repos</button>
+              <button v-for="repo in repoNames" :key="repo" type="button" :class="['button', 'button--ghost', repoFilter === repo && 'button--active']" :style="repoFilter === repo ? 'font-size:11px;padding:2px 8px;background:var(--accent);color:var(--bg);' : 'font-size:11px;padding:2px 8px;'" @click="repoFilter = repoFilter === repo ? '' : repo">{{ repo }}</button>
+            </div>
+            <template v-if="groupedItems(tab.id).length">
+              <div v-for="group in groupedItems(tab.id)" :key="group.repo" class="azure-repo-group">
+                <div v-if="!repoFilter && repoNames.length > 1" class="azure-repo-group__header">
+                  <span class="azure-repo-group__name">{{ group.repo }}</span>
+                  <span class="azure-repo-group__count">{{ group.items.length }}</span>
+                </div>
+                <AzurePrRow
+                  v-for="item in group.items"
+                  :key="item.prKey"
+                  :item="item"
+                  @open="onOpenPr"
+                  @browser="onOpenBrowser"
+                  @seen="onMarkSeen"
+                />
+              </div>
             </template>
             <div v-else class="azure-empty"><p>{{ tab.emptyMessage }}</p></div>
           </template>
@@ -108,12 +119,36 @@ const inboxTabs = computed(() => [
   { id: "connections", label: "Connections", count: connections.value.length, alert: false },
 ]);
 
+const repoFilter = ref("");
+
 function tabItems(tabId) {
   if (tabId === "all") return inbox.value.recentlyUpdated || [];
   if (tabId === "attention") return inbox.value.needsAttention || [];
   if (tabId === "needs-review") return inbox.value.needsMyReview || [];
   if (tabId === "my-prs") return inbox.value.myPullRequests || [];
   return [];
+}
+
+// All unique repo names across all PRs (for filter buttons)
+const repoNames = computed(() => {
+  const all = inbox.value.recentlyUpdated || [];
+  const names = [...new Set(all.map((item) => `${item.project?.name || ""}/${item.repository?.name || ""}`))];
+  return names.sort();
+});
+
+// Group items by project/repo, respecting the repo filter
+function groupedItems(tabId) {
+  let items = tabItems(tabId);
+  if (repoFilter.value) {
+    items = items.filter((item) => `${item.project?.name || ""}/${item.repository?.name || ""}` === repoFilter.value);
+  }
+  const groups = new Map();
+  for (const item of items) {
+    const repo = `${item.project?.name || ""}/${item.repository?.name || ""}`;
+    if (!groups.has(repo)) groups.set(repo, []);
+    groups.get(repo).push(item);
+  }
+  return [...groups.entries()].map(([repo, items]) => ({ repo, items }));
 }
 
 const headerStatus = computed(() => `${inbox.value.recentlyUpdated?.length || 0} PRs`);
