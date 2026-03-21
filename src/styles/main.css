@@ -2628,6 +2628,7 @@ dt {
 .review-card__list--dense {
   max-height: none;
   flex: 1;
+  align-content: start;
 }
 
 .review-meta-list {
@@ -2695,6 +2696,14 @@ dt {
   transition: border-color 0.2s ease;
   gap: 2px;
   padding: 6px 10px;
+  align-content: start;
+}
+
+/* Keep review comment actions compact — override the responsive grid */
+.review-comment-card .docker-card__actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
 }
 
 .review-comment-card:hover {
