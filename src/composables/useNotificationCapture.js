@@ -121,7 +121,6 @@ export function useNotificationCapture() {
               notifStore.remove(item.id);
             }
           }
-          seenAlertKeys.delete(viewId);
         }
       }
       activeAlertViewIds = nextActiveViewIds;

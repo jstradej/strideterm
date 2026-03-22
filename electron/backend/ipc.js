@@ -80,8 +80,8 @@ export function registerIpc(runtime, emitToRenderer, { includeStateGet = true } 
   ipcMain.handle("azure:workspace:fetch", async (_event, workspaceId) => runtime.fetchAzureReviewWorkspace(workspaceId));
   ipcMain.handle("azure:workspace:rebase", async (_event, workspaceId) => runtime.rebaseAzureReviewWorkspace(workspaceId));
   ipcMain.handle("azure:workspace:push", async (_event, workspaceId, options) => runtime.pushAzureReviewWorkspace(workspaceId, options));
-  ipcMain.handle("azure:create-pull-request", async (_event, payload) => runtime.azureCreatePullRequest(payload));
-  ipcMain.handle("azure:list-remote-branches", async (_event, payload) => runtime.azureListRemoteBranches(payload));
+  ipcMain.handle("azure:create-pull-request", async (_event, payload) => runtime.azureCreatePullRequest(validateIpc(gitPayloadSchema, payload, "azure:create-pull-request")));
+  ipcMain.handle("azure:list-remote-branches", async (_event, payload) => runtime.azureListRemoteBranches(validateIpc(gitPayloadSchema, payload, "azure:list-remote-branches")));
   ipcMain.handle("session:activate", async (_event, sessionId) => runtime.activateSession(sessionId));
   ipcMain.handle("attention:sync", async (_event, payload) => runtime.syncAttentionContext(payload));
   ipcMain.handle("attention:clear-all", async () => runtime.clearAllAttention());
@@ -188,6 +188,7 @@ export function registerIpc(runtime, emitToRenderer, { includeStateGet = true } 
     ipcMain.removeHandler("azure:list-remote-branches");
     ipcMain.removeHandler("session:activate");
     ipcMain.removeHandler("attention:sync");
+    ipcMain.removeHandler("attention:clear-all");
     ipcMain.removeHandler("terminal:restart");
     ipcMain.removeHandler("terminal:close");
     ipcMain.removeHandler("remote:token:regenerate");
