@@ -174,6 +174,7 @@ function createRemoteTransport() {
     activateProject: (projectId) => fetchJson("/api/project/activate", { projectId }),
     activateSession: (sessionId) => fetchJson("/api/session/activate", { sessionId }),
     syncAttentionContext: (payload) => fetchJson("/api/attention/sync", payload),
+    clearAllAttention: () => fetchJson("/api/attention/clear-all", {}),
     saveWorkspace: (workspace) => fetchJson("/api/workspace/save", { workspace }),
     saveProject: (project) => fetchJson("/api/project/save", { project }),
     deleteWorkspace: (workspaceId) => fetchJson("/api/workspace/delete", { workspaceId }),

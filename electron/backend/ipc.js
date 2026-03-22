@@ -81,6 +81,7 @@ export function registerIpc(runtime, emitToRenderer, { includeStateGet = true } 
   ipcMain.handle("azure:workspace:push", async (_event, workspaceId, options) => runtime.pushAzureReviewWorkspace(workspaceId, options));
   ipcMain.handle("session:activate", async (_event, sessionId) => runtime.activateSession(sessionId));
   ipcMain.handle("attention:sync", async (_event, payload) => runtime.syncAttentionContext(payload));
+  ipcMain.handle("attention:clear-all", async () => runtime.clearAllAttention());
   ipcMain.handle("terminal:restart", async (_event, sessionId) => runtime.restartSession(sessionId));
   ipcMain.handle("terminal:close", async (_event, sessionId) => runtime.closeSession(sessionId));
   ipcMain.handle("remote:token:regenerate", async () => runtime.regenerateRemoteToken());

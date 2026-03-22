@@ -1293,10 +1293,10 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
 
       sessions.syncWithState(getState());
       syncSessionSignalsWithState();
-      await refreshGit();
-      await refreshAzure();
+      await refreshGit(workspace.id || null);
       ensureVisibleSession();
       broadcastState();
+      refreshAzure().catch(() => {});
       return getPayload();
     },
     async saveProject(project) {
@@ -1690,6 +1690,14 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
       }
       sessions.writeToSession(sessionId, data);
     },
+    clearAllAttention() {
+      projectAlerts.clear();
+      for (const [, signal] of sessionSignals) {
+        signal.status = "idle";
+      }
+      broadcastState();
+      return getPayload();
+    },
     syncAttentionContext({ visibleSessionIds = [] } = {}) {
       const nextIds = (Array.isArray(visibleSessionIds) ? visibleSessionIds : [])
         .map((sessionId) => String(sessionId || "").trim())
@@ -2012,10 +2020,10 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
       });
 
       sessions.syncWithState(getState());
-      await refreshGit();
-      await refreshAzure();
+      await refreshGit(newProject.id);
       ensureVisibleSession();
       broadcastState();
+      refreshAzure().catch(() => {});
       return getPayload();
     },
     async saveProfile(profile) {

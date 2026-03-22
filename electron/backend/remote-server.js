@@ -264,6 +264,11 @@ async function handleApiRequest(runtime, request, response) {
       return;
     }
 
+    if (request.method === "POST" && url.pathname === "/api/attention/clear-all") {
+      json(response, 200, runtime.clearAllAttention());
+      return;
+    }
+
     if (request.method === "POST" && url.pathname === "/api/terminal/restart") {
       json(response, 200, await runtime.restartSession(body.sessionId));
       return;
