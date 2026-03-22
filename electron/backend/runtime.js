@@ -1153,9 +1153,6 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
     }
 
     gitPoll = setInterval(async () => {
-      await refreshGit().catch((error) => {
-        console.warn(`[runtime] Git poll error: ${error.message}`);
-      });
       try {
         if (await syncWorktrees()) {
           sessions.syncWithState(getState());

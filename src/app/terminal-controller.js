@@ -113,7 +113,7 @@ export function createTerminalController({
       scrollSensitivity: 1.15,
       fastScrollModifier: "shift",
       fastScrollSensitivity: 4,
-      cursorBlink: true,
+      cursorBlink: false,
       allowTransparency: false,
       smoothScrollDuration: 0,
       ...(windowsPty ? { windowsPty } : {}),

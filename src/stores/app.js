@@ -318,6 +318,18 @@ export const useAppStore = defineStore("app", () => {
     if (isGitViewId(viewId) || isDockerViewId(viewId) || isAzureViewId(viewId) || isReviewViewId(viewId)) {
       pendingViewActivationId.value = "";
       activeSessionId.value = null;
+      // Refresh git data on-demand when the Git tab is activated
+      if (isGitViewId(viewId) && _api) {
+        const wsId = payload.value?.appState?.activeWorkspaceId;
+        if (wsId) {
+          _api.refreshGit(wsId).then((nextPayload) => {
+            if (nextPayload && !pendingWorkspaceActivationId.value) {
+              payload.value = nextPayload;
+              _cacheCurrentWorkspace();
+            }
+          }).catch(() => {});
+        }
+      }
       return;
     }
 

@@ -1549,7 +1549,7 @@ dt {
 }
 
 .tab--attention .tab__attention {
-  animation: project-bell-ring 0.9s ease-out infinite;
+  animation: project-bell-ring 0.9s ease-out 5;
   transform-origin: 68% 12%;
 }
 
@@ -1622,7 +1622,7 @@ dt {
 }
 
 .tab--attention-fresh .tab__attention {
-  animation: project-bell-ring 0.5s ease-out infinite;
+  animation: project-bell-ring 0.5s ease-out 6;
   transform-origin: 68% 12%;
 }
 
@@ -3948,7 +3948,7 @@ textarea {
 }
 
 .notification-bell--has-unread {
-  animation: project-bell-ring 0.9s ease-out infinite;
+  animation: project-bell-ring 0.9s ease-out 5;
   transform-origin: 50% 10%;
 }
 
