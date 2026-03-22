@@ -43,7 +43,7 @@ function createAttentionContext() {
 
 const ANSI_ESCAPE_RE = /\u001B\[[0-?]*[ -/]*[@-~]|\u001B\][^\u0007]*(?:\u0007|\u001B\\)|\u009B[0-?]*[ -/]*[@-~]/g;
 const AGENT_NAME_RE = /\b(claude|codex|opencode|aider|gemini)\b/i;
-const AGENT_OUTPUT_RE = /\b(claude code|openai codex|codex|claude)\b/i;
+const AGENT_OUTPUT_RE = /\b(claude code|openai codex|codex|claude|gemini|aider|opencode)\b/i;
 const PROMPT_QUIET_MS = 900;
 const AGENT_PROMPT_QUIET_MS = 12_000;
 const ALERT_COOLDOWN_MS = 15_000;
