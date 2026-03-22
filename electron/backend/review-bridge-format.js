@@ -135,8 +135,8 @@ export function buildBriefMarkdown(context) {
   const lines = [
     "# Review Brief",
     "",
-    "Read comments here, prepare local drafts, and let the review bridge publish approved replies.",
-    "When asked to process review comments, inspect the matching thread and changed files, then save or refine local drafts only.",
+    "Read comments here, prepare draft responses, and let the review bridge publish approved replies.",
+    "When asked to process review comments, inspect the matching thread and changed files, then save or refine drafts only.",
     "",
     `- Provider: ${context.provider}`,
     `- PR Key: ${context.prKey}`,
@@ -247,7 +247,7 @@ export function buildSyncStatusMarkdown(context) {
 
 export function buildAgentInstructions(context) {
   return {
-    purpose: "Read review comments, prepare local draft answers, create local follow-up comments when needed, and never call Azure DevOps directly.",
+    purpose: "Read review comments, prepare draft answers, create follow-up draft comments when needed, and never call Azure DevOps directly.",
     mcp: {
       mode: "embedded-review-tab",
       tools: [
@@ -263,9 +263,9 @@ export function buildAgentInstructions(context) {
       "Open the review brief markdown or json for the active PR when you need extra narrative context.",
       "Read active comments with status ready-for-agent, agent-working, draft-ready, or ready-to-sync.",
       "Inspect the matching review thread and changed files before drafting an answer.",
-      "If a follow-up is needed and no imported comment exists for it, create a local comment in the bridge. Always provide filePath and lineNumber so the comment is anchored to the code. Create one comment per finding — never combine multiple findings into a single comment.",
-      "Prepare or refine a local draft response for each active comment.",
-      "Do not post to Azure DevOps directly; save drafts to the local bridge only.",
+      "If a follow-up is needed and no imported comment exists for it, create a draft comment in the bridge. Always provide filePath and lineNumber so the comment is anchored to the code. Create one comment per finding — never combine multiple findings into a single comment.",
+      "Prepare or refine a draft response for each active comment.",
+      "Do not post to Azure DevOps directly; save drafts to the bridge and queue them for publishing.",
       "Queue a draft for sync only when the response is ready for review or publishing.",
     ],
     naturalPrompts: [

@@ -369,14 +369,14 @@ export async function runReviewBridgeMcpServer({ rootPath, prKey }) {
   }, async (input) => handlers.getReviewComment(input));
 
   server.registerTool("create_review_comment", {
-    title: "Create Local Comment",
-    description: "Create a new local comment with an auto-created draft for follow-up questions or observations. The draft can be edited and queued for publishing to Azure DevOps. Use this when you discover something worth noting that isn't covered by existing threads. IMPORTANT: Create one comment per finding — do not combine multiple findings into a single comment. Always provide filePath and lineNumber so the comment is anchored to the right location in the code.",
+    title: "Create Draft Comment",
+    description: "Create a new draft comment for follow-up questions or observations. The draft is auto-queued for publishing to Azure DevOps and can be edited before publish. Use this when you discover something worth noting that isn't covered by existing threads. IMPORTANT: Create one comment per finding — do not combine multiple findings into a single comment. Always provide filePath and lineNumber so the comment is anchored to the right location in the code.",
     inputSchema: {
-      body: z.string().min(1).describe("Body of the new local comment."),
+      body: z.string().min(1).describe("Body of the draft comment."),
       title: z.string().optional().describe("Optional short title for the comment."),
       filePath: z.string().optional().describe("Relative file path the comment refers to, e.g. 'src/app/service.cs'. Always provide this for file-specific comments."),
       lineNumber: z.number().int().positive().optional().describe("Line number in the file the comment refers to."),
-      priority: z.enum(["low", "medium", "high"]).optional().describe("Priority for the local comment."),
+      priority: z.enum(["low", "medium", "high"]).optional().describe("Priority for the draft comment."),
       authorAgent: z.string().optional().describe("Agent label such as claude or codex."),
     },
   }, async (input) => handlers.createDraftComment(input));

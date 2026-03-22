@@ -81,7 +81,7 @@ describe("review bridge store", () => {
 
     expect(briefJson.pullRequest.title).toBe("Fix login redirect");
     expect(briefJson.threads[0].comments[0].content).toContain("clarify");
-    expect(briefMarkdown).toContain("Read comments here, prepare local drafts");
+    expect(briefMarkdown).toContain("Read comments here, prepare draft responses");
     expect(briefMarkdown).toContain("Please clarify this condition.");
 
     const reopenedContext = store.getPullRequestContext("ado-main:repo-1:123");

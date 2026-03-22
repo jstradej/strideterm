@@ -4,7 +4,7 @@
       <div class="section-head">
         <div><p class="eyebrow">Comments</p><h3>{{ filteredThreads.length + filteredDraftComments.length }} conversation{{ (filteredThreads.length + filteredDraftComments.length) !== 1 ? 's' : '' }}{{ isFiltered ? ` (${totalCommentCount} total)` : '' }}</h3></div>
         <div class="docker-card__actions">
-          <button type="button" :class="['button', 'button--ghost', 'danger', busyAction === 'deleteAll' && 'button--busy']" :disabled="!!busyAction || !hasClearable" title="Delete all local draft replies and draft comments permanently" @click="handleDeleteAllDrafts">{{ busyAction === 'deleteAll' ? 'Deleting\u2026' : 'Delete all drafts' }}</button>
+          <button type="button" :class="['button', 'button--ghost', 'danger', busyAction === 'deleteAll' && 'button--busy']" :disabled="!!busyAction || !hasClearable" title="Delete all draft replies and draft comments permanently" @click="handleDeleteAllDrafts">{{ busyAction === 'deleteAll' ? 'Deleting\u2026' : 'Delete all drafts' }}</button>
           <button type="button" class="button" title="Create a new draft comment — saved locally, you can edit and publish to Azure later" @click="openNewDraftComment">New comment</button>
         </div>
       </div>
@@ -82,7 +82,7 @@
             <div v-for="draft in draftsByThread(thread)" :key="draft.draftId" class="review-comment review-comment--draft">
               <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px;">
                 <strong>Draft reply</strong>
-                <span class="workspace-chip workspace-chip--local" style="font-size:10px;">{{ draft.status === 'queued' || draft.status === 'ready-to-sync' ? 'queued' : 'local draft' }}</span>
+                <span class="workspace-chip workspace-chip--local" style="font-size:10px;">{{ draft.status === 'queued' || draft.status === 'ready-to-sync' ? 'queued' : 'draft' }}</span>
                 <span v-if="draft.authorAgent" class="review-comment__date">by {{ draft.authorAgent }}</span>
               </div>
               <div class="review-comment__body">
@@ -115,7 +115,7 @@
               </div>
             </div>
 
-            <div v-if="comment.summary" class="review-comment" style="border-top:none;">
+            <div v-if="comment.summary && !draftsByComment(comment).length" class="review-comment" style="border-top:none;">
               <span
                 class="review-comment__avatar"
                 :style="{ background: avatarColor(comment.authorAgent || 'agent') }"

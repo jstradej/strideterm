@@ -90,7 +90,7 @@ export function createApiActions(ctx) {
 
   async function deleteReviewBridgeComment(prKey, commentKey) {
     if (!prKey || !commentKey) return;
-    if (!window.confirm("Delete this local comment and its drafts? This cannot be undone.")) return;
+    if (!window.confirm("Delete this draft comment? This cannot be undone.")) return;
     ctx.payload.value = await ctx.getApi().deleteReviewBridgeComment({ prKey, commentKey });
   }
 

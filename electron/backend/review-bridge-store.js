@@ -519,12 +519,12 @@ export async function createReviewBridgeStore(rootPath) {
       });
     }
 
-    const comments = statements.selectCommentsForPr.all(prKey).map((row) => ({
+    const comments = statements.selectCommentsForPr.all(prKey).map((row, index) => ({
       commentKey: row.comment_key,
       prKey: row.pr_key,
       remoteThreadId: Number.isInteger(row.remote_thread_id) ? row.remote_thread_id : null,
       commentKind: row.comment_kind || "answer-question",
-      displayIndex: row.display_index || 0,
+      displayIndex: index + 1,
       title: row.title || "",
       summary: row.summary || "",
       status: row.status || "ready-for-agent",
