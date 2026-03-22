@@ -1051,10 +1051,18 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
     const worktrees = state.workspaces.filter((w) => (w.notes || "").startsWith("Worktree of "));
 
     // Build parent lookup: treeDir → parent workspace
+    // When multiple workspaces share the same cwd (across profiles),
+    // prefer the one in the active profile so new worktrees land in
+    // the correct sidebar section.
+    const activeProfileId = state.activeProfileId || "default";
     const parentByTreeDir = new Map();
     for (const parent of parents) {
       if (!parent.cwd) continue;
-      parentByTreeDir.set(path.join(parent.cwd, ".strideterm", "tree"), parent);
+      const treeDir = path.join(parent.cwd, ".strideterm", "tree");
+      const existing = parentByTreeDir.get(treeDir);
+      if (!existing || (parent.profileId || "default") === activeProfileId) {
+        parentByTreeDir.set(treeDir, parent);
+      }
     }
 
     const toAdd = [];
