@@ -1043,8 +1043,11 @@ describe("runtime integration", () => {
       });
       fixtures.push(fixture);
 
-      // Advance past the backend startup grace period (20s)
-      await vi.advanceTimersByTimeAsync(21_000);
+      // Advance past the per-session cooldown (15s) — the signal is created
+      // with lastAlertAt=Date.now() to suppress alerts from buffer replay.
+      // Send a dummy event first to create the signal, then advance time.
+      fixture.sessionManager.emit("terminal:data", { sessionId: "frontend:codex", data: "" });
+      await vi.advanceTimersByTimeAsync(16_000);
 
       fixture.sessionManager.emit("terminal:data", {
         sessionId: "frontend:codex",
