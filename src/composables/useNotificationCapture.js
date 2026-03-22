@@ -41,7 +41,7 @@ export function useNotificationCapture() {
     return ids;
   }
 
-  // Seed seen keys from current payload so we don't fire on existing alerts.
+  // Seed seen keys from current payload so startup alerts don't fire notifications.
   function seedSeen() {
     const attention = appStore.payload?.attention;
     const byWs = attention?.byWorkspace || attention?.byProject || {};
@@ -54,12 +54,8 @@ export function useNotificationCapture() {
   }
 
   seedSeen();
-
-  // On startup, mark notifications as read if their alert is no longer active.
-  // This cleans up stale notifications from previous sessions.
   markStaleNotificationsRead();
 
-  // Grace period after startup — ignore alerts during initial tab launch
   const startupAt = Date.now();
   const STARTUP_GRACE_MS = 15_000;
 
@@ -115,45 +111,43 @@ export function useNotificationCapture() {
         }
       }
 
-      // --- Phase 2: Detect DISAPPEARED alerts and auto-mark notifications read ---
+      // --- Phase 2: Detect DISAPPEARED alerts and remove their notifications ---
       const nextActiveViewIds = collectActiveViewIds(byWs);
       for (const viewId of activeAlertViewIds) {
         if (!nextActiveViewIds.has(viewId)) {
-          // Alert for this viewId disappeared — mark matching notifications as read
-          for (const item of notifStore.items) {
-            if (!item.read && item.viewId === viewId) {
-              notifStore.markRead(item.id);
+          // Alert for this viewId disappeared — remove matching notifications
+          for (const item of [...notifStore.items]) {
+            if (item.viewId === viewId) {
+              notifStore.remove(item.id);
             }
           }
+          seenAlertKeys.delete(viewId);
         }
       }
       activeAlertViewIds = nextActiveViewIds;
 
-      // Prune seen keys that are no longer in the attention payload to prevent unbounded growth
-      if (seenAlertKeys.size > 500) {
-        const currentKeys = new Set();
-        for (const [wsId, wsEntry] of Object.entries(byWs)) {
-          for (const alert of wsEntry?.alerts || []) {
-            currentKeys.add(alertKey(wsId, alert));
-          }
+      // Prune seen keys that no longer have active alerts so they can re-trigger
+      const currentKeys = new Set();
+      for (const [wsId, wsEntry] of Object.entries(byWs)) {
+        for (const alert of wsEntry?.alerts || []) {
+          currentKeys.add(alertKey(wsId, alert));
         }
-        for (const key of seenAlertKeys) {
-          if (!currentKeys.has(key)) seenAlertKeys.delete(key);
-        }
+      }
+      for (const key of seenAlertKeys) {
+        if (!currentKeys.has(key)) seenAlertKeys.delete(key);
       }
     },
   );
 
   /**
-   * On startup, mark any unread notifications as read if their corresponding
-   * attention alert no longer exists. This handles stale notifications from
-   * previous sessions or alerts that were cleared while the client was offline.
+   * On startup, remove any notifications whose corresponding attention alert
+   * no longer exists. Notifications mirror live alert state, not history.
    */
   function markStaleNotificationsRead() {
     let changed = false;
-    for (const item of notifStore.items) {
-      if (!item.read && item.viewId && !activeAlertViewIds.has(item.viewId)) {
-        notifStore.markRead(item.id);
+    for (const item of [...notifStore.items]) {
+      if (item.viewId && !activeAlertViewIds.has(item.viewId)) {
+        notifStore.remove(item.id);
         changed = true;
       }
     }
