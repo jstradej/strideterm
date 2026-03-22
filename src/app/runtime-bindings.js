@@ -85,6 +85,8 @@ export function shouldRenderActiveWorkspace(nextPayload, previousPayload) {
     !== JSON.stringify(selectActiveWorkspaceRenderState(previousPayload));
 }
 
+const _splitGroupCache = new Map();
+
 export function wireRuntimeBindings({
   api,
   state,
@@ -124,7 +126,10 @@ export function wireRuntimeBindings({
     const previousPayload = state.payload;
     const shouldRefreshActiveWorkspace = shouldRenderActiveWorkspace(payload, previousPayload);
     if (payload?.appState?.activeWorkspaceId !== previousPayload?.appState?.activeWorkspaceId) {
-      state.splitGroup = null;
+      const prevWsId = previousPayload?.appState?.activeWorkspaceId;
+      if (prevWsId && state.splitGroup) _splitGroupCache.set(prevWsId, state.splitGroup);
+      const nextWsId = payload?.appState?.activeWorkspaceId;
+      state.splitGroup = (nextWsId && _splitGroupCache.get(nextWsId)) || null;
     }
     if (state.pendingViewActivationId) {
       const nextWorkspace = payload?.workspace;
@@ -195,8 +200,10 @@ export function wireRuntimeBindings({
         const workspaces = getFilteredWorkspaces();
         const index = parseInt(digitMatch[1], 10) - 1;
         if (index < workspaces.length) {
+          const prevId = state.payload?.appState?.activeWorkspaceId;
+          if (prevId && state.splitGroup) _splitGroupCache.set(prevId, state.splitGroup);
           state.payload = await api.activateWorkspace(workspaces[index].id);
-          state.splitGroup = null;
+          state.splitGroup = _splitGroupCache.get(workspaces[index].id) || null;
           render();
           focusActiveTerminal();
         }

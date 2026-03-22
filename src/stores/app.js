@@ -45,6 +45,11 @@ export const useAppStore = defineStore("app", () => {
   // so tabs keep their real statuses ("running"/"idle") instead of flashing to "idle".
   const _workspacePayloadCache = new Map();
 
+  // --- Per-workspace split layout cache ---
+  // Preserves split configuration when switching away from a workspace,
+  // so the layout is restored when the user returns.
+  const _splitGroupCache = new Map();
+
   // --- Error handling ---
   const lastError = ref(null); // { label, message, timestamp } | null
 
@@ -157,6 +162,17 @@ export const useAppStore = defineStore("app", () => {
     }
   });
 
+  // Keep per-workspace split cache in sync with current splitGroup
+  watch(splitGroup, (next) => {
+    const wsId = payload.value?.appState?.activeWorkspaceId;
+    if (!wsId) return;
+    if (next) {
+      _splitGroupCache.set(wsId, next);
+    } else {
+      _splitGroupCache.delete(wsId);
+    }
+  });
+
   // Normalize activeViewId and splitGroup when tabs change
   watch(workspaceTabs, (tabs) => {
     const validIds = new Set(tabs.map((t) => t.id));
@@ -263,7 +279,12 @@ export const useAppStore = defineStore("app", () => {
     clearRemoteConnectionIssue();
 
     if (nextPayload?.appState?.activeWorkspaceId !== payload.value?.appState?.activeWorkspaceId) {
-      splitGroup.value = null;
+      const prevWsId = payload.value?.appState?.activeWorkspaceId;
+      if (prevWsId && splitGroup.value) {
+        _splitGroupCache.set(prevWsId, splitGroup.value);
+      }
+      const nextWsId = nextPayload?.appState?.activeWorkspaceId;
+      splitGroup.value = (nextWsId && _splitGroupCache.get(nextWsId)) || null;
     }
 
     if (pendingViewActivationId.value) {
@@ -294,8 +315,12 @@ export const useAppStore = defineStore("app", () => {
   }
 
   async function activateWorkspace(workspaceId) {
+    const prevWsId = payload.value?.appState?.activeWorkspaceId;
+    if (prevWsId && splitGroup.value) {
+      _splitGroupCache.set(prevWsId, splitGroup.value);
+    }
     applyOptimisticWorkspaceActivation(workspaceId);
-    splitGroup.value = null;
+    splitGroup.value = _splitGroupCache.get(workspaceId) || null;
     activeViewId.value = null;
     activeSessionId.value = null;
     try {
