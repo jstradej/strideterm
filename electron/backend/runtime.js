@@ -1663,6 +1663,33 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
       await refreshAzure();
       return getPayload();
     },
+    async azureCreatePullRequest(payload = {}) {
+      const workspace = resolveGitWorkspace(payload.workspaceId);
+      const snapshot = git.getSnapshot(workspace.id);
+      if (!snapshot?.available) throw new Error("Git workspace is unavailable.");
+      const remoteUrl = snapshot.remotes?.origin || "";
+      if (!remoteUrl) throw new Error("No origin remote found for this workspace.");
+      const result = await azure.createPullRequestForWorkspace({
+        remoteUrl,
+        sourceBranch: payload.sourceBranch || snapshot.branch,
+        targetBranch: payload.targetBranch,
+        title: payload.title,
+        description: payload.description || "",
+      });
+      await refreshAzure();
+      return { payload: getPayload(), result };
+    },
+    async azureListRemoteBranches(payload = {}) {
+      const workspace = resolveGitWorkspace(payload.workspaceId);
+      const snapshot = git.getSnapshot(workspace.id);
+      if (!snapshot?.available) throw new Error("Git workspace is unavailable.");
+      const remoteUrl = snapshot.remotes?.origin || "";
+      if (!remoteUrl) throw new Error("No origin remote found for this workspace.");
+      const connection = azure.findConnectionForRemote(remoteUrl);
+      if (!connection) return { branches: [] };
+      const branches = await azure.listRemoteBranches(connection.id, remoteUrl);
+      return { branches };
+    },
     async regenerateRemoteToken() {
       await store.mutate((draft) => {
         draft.settings.remoteAccess.token = createAccessToken();
@@ -1797,6 +1824,14 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
     async gitCommitAll(payload = {}) {
       const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId);
       return runGitWorkspaceAction(workspace, git.commitAll(workspace, payload));
+    },
+    async gitStash(payload = {}) {
+      const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId);
+      return runGitWorkspaceAction(workspace, git.stash(workspace, payload));
+    },
+    async gitStashPop(payload = {}) {
+      const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId);
+      return runGitWorkspaceAction(workspace, git.stashPop(workspace));
     },
     async gitCommitDiff(payload = {}) {
       const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId);

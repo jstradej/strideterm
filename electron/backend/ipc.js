@@ -80,6 +80,8 @@ export function registerIpc(runtime, emitToRenderer, { includeStateGet = true } 
   ipcMain.handle("azure:workspace:fetch", async (_event, workspaceId) => runtime.fetchAzureReviewWorkspace(workspaceId));
   ipcMain.handle("azure:workspace:rebase", async (_event, workspaceId) => runtime.rebaseAzureReviewWorkspace(workspaceId));
   ipcMain.handle("azure:workspace:push", async (_event, workspaceId, options) => runtime.pushAzureReviewWorkspace(workspaceId, options));
+  ipcMain.handle("azure:create-pull-request", async (_event, payload) => runtime.azureCreatePullRequest(payload));
+  ipcMain.handle("azure:list-remote-branches", async (_event, payload) => runtime.azureListRemoteBranches(payload));
   ipcMain.handle("session:activate", async (_event, sessionId) => runtime.activateSession(sessionId));
   ipcMain.handle("attention:sync", async (_event, payload) => runtime.syncAttentionContext(payload));
   ipcMain.handle("attention:clear-all", async () => runtime.clearAllAttention());
@@ -100,6 +102,8 @@ export function registerIpc(runtime, emitToRenderer, { includeStateGet = true } 
   ipcMain.handle("git:merge-into-base", async (_event, payload) => runtime.gitMergeCurrentIntoBase(validateIpc(gitPayloadSchema, payload, "git:merge-into-base")));
   ipcMain.handle("git:remove-worktree", async (_event, payload) => runtime.gitRemoveWorktree(validateIpc(removeWorktreeSchema, payload, "git:remove-worktree")));
   ipcMain.handle("git:commit-all", async (_event, payload) => runtime.gitCommitAll(validateIpc(gitCommitSchema, payload, "git:commit-all")));
+  ipcMain.handle("git:stash", async (_event, payload) => runtime.gitStash(validateIpc(gitPayloadSchema, payload, "git:stash")));
+  ipcMain.handle("git:stash-pop", async (_event, payload) => runtime.gitStashPop(validateIpc(gitPayloadSchema, payload, "git:stash-pop")));
   ipcMain.handle("git:commit-diff", async (_event, payload) => runtime.gitCommitDiff(validateIpc(gitPayloadSchema, payload, "git:commit-diff")));
   ipcMain.handle("docker:action", async (_event, action, containerId) => runtime.dockerAction(action, containerId));
   ipcMain.handle("docker:open-session", async (_event, payload) => runtime.openDockerSession(validateIpc(dockerSessionSchema, payload, "docker:open-session")));
@@ -180,6 +184,8 @@ export function registerIpc(runtime, emitToRenderer, { includeStateGet = true } 
     ipcMain.removeHandler("azure:workspace:fetch");
     ipcMain.removeHandler("azure:workspace:rebase");
     ipcMain.removeHandler("azure:workspace:push");
+    ipcMain.removeHandler("azure:create-pull-request");
+    ipcMain.removeHandler("azure:list-remote-branches");
     ipcMain.removeHandler("session:activate");
     ipcMain.removeHandler("attention:sync");
     ipcMain.removeHandler("terminal:restart");
@@ -199,6 +205,8 @@ export function registerIpc(runtime, emitToRenderer, { includeStateGet = true } 
     ipcMain.removeHandler("git:merge-into-base");
     ipcMain.removeHandler("git:remove-worktree");
     ipcMain.removeHandler("git:commit-all");
+    ipcMain.removeHandler("git:stash");
+    ipcMain.removeHandler("git:stash-pop");
     ipcMain.removeHandler("git:commit-diff");
     ipcMain.removeHandler("docker:action");
     ipcMain.removeHandler("docker:open-session");

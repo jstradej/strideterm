@@ -239,6 +239,16 @@ async function handleApiRequest(runtime, request, response) {
       return;
     }
 
+    if (request.method === "POST" && url.pathname === "/api/azure/create-pull-request") {
+      json(response, 200, await runtime.azureCreatePullRequest(body));
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/azure/list-remote-branches") {
+      json(response, 200, await runtime.azureListRemoteBranches(body));
+      return;
+    }
+
     if (request.method === "POST" && url.pathname === "/api/remote/token/regenerate") {
       json(response, 200, await runtime.regenerateRemoteToken());
       return;
@@ -331,6 +341,16 @@ async function handleApiRequest(runtime, request, response) {
 
     if (request.method === "POST" && url.pathname === "/api/git/commit-all") {
       json(response, 200, await runtime.gitCommitAll(body));
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/git/stash") {
+      json(response, 200, await runtime.gitStash(body));
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/git/stash-pop") {
+      json(response, 200, await runtime.gitStashPop(body));
       return;
     }
 

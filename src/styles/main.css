@@ -2368,6 +2368,83 @@ dt {
   font-style: italic;
 }
 
+/* ── Git Branch Select & PR Form ── */
+.git-branch-select {
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.2);
+  color: var(--text);
+  font-size: 12px;
+  font-family: inherit;
+  min-width: 180px;
+  max-width: 320px;
+}
+
+.git-branch-select:focus {
+  border-color: var(--accent);
+  outline: none;
+}
+
+.git-branch-select option {
+  background: var(--panel);
+  color: var(--text);
+}
+
+.git-detail-list__row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.git-pr-form {
+  display: grid;
+  gap: 10px;
+}
+
+.git-pr-form__field {
+  display: grid;
+  grid-template-columns: 120px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+}
+
+.git-pr-form__label {
+  font-size: 12px;
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.git-pr-form__input {
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.2);
+  color: var(--text);
+  font-size: 12px;
+  font-family: inherit;
+}
+
+.git-pr-form__input:focus {
+  border-color: var(--accent);
+  outline: none;
+}
+
+.git-pr-form__input:disabled {
+  opacity: 0.6;
+}
+
+.git-pr-form__textarea {
+  resize: vertical;
+  min-height: 60px;
+  grid-column: 2 / -1;
+}
+
+.button--small {
+  padding: 3px 8px;
+  font-size: 11px;
+}
+
 /* Azure DevOps */
 /* ── Azure DevOps Inbox ── */
 .azure-inbox {

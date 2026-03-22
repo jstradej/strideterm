@@ -433,6 +433,27 @@ function preferBaseBranch(currentBranch, upstream, branchNames = []) {
   return "";
 }
 
+function buildBaseBranchCandidates(currentBranch, upstream, branchNames = []) {
+  const normalizedCurrent = normalizeBranchName(currentBranch);
+  const seen = new Set();
+  const candidates = [];
+
+  function add(name) {
+    const norm = normalizeBranchName(name);
+    if (norm && norm !== normalizedCurrent && !seen.has(norm)) {
+      seen.add(norm);
+      candidates.push(name);
+    }
+  }
+
+  if (upstream) add(upstream);
+  for (const name of ["develop", "origin/develop", "main", "origin/main", "master", "origin/master"]) {
+    if (branchNames.includes(name)) add(name);
+  }
+
+  return candidates;
+}
+
 function readBranchList(rawText) {
   return String(rawText || "")
     .split(/\r?\n/)
@@ -798,8 +819,11 @@ export class GitManager extends EventEmitter {
       const reviewSourceRef = String(workspace.review?.pullRequest?.sourceRefName || "").replace(/^refs\/heads\//, "").trim();
       const baseBranch = reviewSourceRef
         ? `origin/${reviewSourceRef}`
-        : preferBaseBranch(branch, upstream, branchNames);
-      const compareWithBase = await this.readBaseComparison(workspace.cwd, baseBranch, branch);
+        : await this.detectBestBaseBranch(workspace.cwd, branch, upstream, branchNames);
+      const [compareWithBase, stashCount] = await Promise.all([
+        this.readBaseComparison(workspace.cwd, baseBranch, branch),
+        this.getStashCount(workspace.cwd),
+      ]);
       const operationState = await this.inspectOperationState(workspace.cwd, { gitDir, gitCommonDir });
       const stagedDiffStat = await this.readDiffStat(workspace.cwd, ["diff", "--cached", "--shortstat"]);
       const unstagedDiffStat = await this.readDiffStat(workspace.cwd, ["diff", "--shortstat"]);
@@ -857,6 +881,8 @@ export class GitManager extends EventEmitter {
         siblingWorktrees,
         upstream,
         baseBranch,
+        branchNames,
+        stashCount,
         aheadCount: parsedStatus.aheadCount,
         behindCount: parsedStatus.behindCount,
         compareWithBase,
@@ -1452,6 +1478,81 @@ export class GitManager extends EventEmitter {
       summary: `Worktree removed.${branchName && deleteBranch ? ` Branch ${branchName} deleted.` : ""}`,
       rawOutput: branchOutput,
     });
+  }
+
+  async detectBestBaseBranch(cwd, currentBranch, upstream, branchNames = []) {
+    const candidates = buildBaseBranchCandidates(currentBranch, upstream, branchNames);
+    if (!candidates.length) {
+      return preferBaseBranch(currentBranch, upstream, branchNames);
+    }
+
+    const distances = await Promise.all(candidates.map(async (candidate) => {
+      try {
+        const result = await this.execGit(cwd, ["merge-base", "HEAD", candidate]);
+        const mergeBase = result.stdout.trim();
+        if (!mergeBase) return { candidate, distance: Infinity };
+
+        const countResult = await this.execGit(cwd, ["rev-list", "--count", `${mergeBase}..HEAD`]);
+        return { candidate, distance: parseInt(countResult.stdout.trim(), 10) || Infinity };
+      } catch {
+        return { candidate, distance: Infinity };
+      }
+    }));
+
+    const best = distances.reduce((a, b) => (a.distance <= b.distance ? a : b));
+    return best.distance < Infinity ? best.candidate : preferBaseBranch(currentBranch, upstream, branchNames);
+  }
+
+  async getStashCount(cwd) {
+    try {
+      const result = await this.execGit(cwd, ["stash", "list"]);
+      const lines = String(result.stdout || "").split(/\r?\n/).filter(Boolean);
+      return lines.length;
+    } catch {
+      return 0;
+    }
+  }
+
+  async stash(workspace, { message = "" } = {}) {
+    if (!workspace?.cwd) {
+      return createStructuredResult({ ok: false, summary: "Workspace has no working directory." });
+    }
+    try {
+      const args = ["stash", "push"];
+      if (message) args.push("-m", message);
+      const result = await this.execGit(workspace.cwd, args);
+      return createStructuredResult({
+        ok: true,
+        summary: "Changes stashed successfully.",
+        rawOutput: joinRawOutput(result.stdout, result.stderr),
+      });
+    } catch (error) {
+      return createStructuredResult({
+        ok: false,
+        summary: "Stash failed.",
+        rawOutput: joinRawOutput(error.stdout, error.stderr),
+      });
+    }
+  }
+
+  async stashPop(workspace) {
+    if (!workspace?.cwd) {
+      return createStructuredResult({ ok: false, summary: "Workspace has no working directory." });
+    }
+    try {
+      const result = await this.execGit(workspace.cwd, ["stash", "pop"]);
+      return createStructuredResult({
+        ok: true,
+        summary: "Stash applied and removed.",
+        rawOutput: joinRawOutput(result.stdout, result.stderr),
+      });
+    } catch (error) {
+      return createStructuredResult({
+        ok: false,
+        summary: "Stash pop failed.",
+        rawOutput: joinRawOutput(error.stdout, error.stderr),
+      });
+    }
   }
 
   async restoreStridetermStash(cwd) {

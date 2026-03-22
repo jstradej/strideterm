@@ -25,8 +25,9 @@
     </div>
   </template>
 
-  <!-- Expanded full card -->
-  <div v-else :class="['remote-card', !remoteConfig.enabled && 'remote-card--disabled']">
+  <!-- Expanded full card — teleported to body so position:fixed works (sidebar has container-type) -->
+  <Teleport to="body">
+  <div v-if="store.remoteAccessExpanded" :class="['remote-card', 'remote-access--expanded', !remoteConfig.enabled && 'remote-card--disabled']">
     <div class="section-head">
       <div>
         <p class="eyebrow">{{ isRemote ? 'Connected Client' : 'Remote Access' }}</p>
@@ -178,6 +179,7 @@
       </div>
     </div>
   </div>
+  </Teleport>
 </template>
 
 <script setup>

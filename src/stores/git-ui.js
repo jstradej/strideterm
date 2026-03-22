@@ -239,6 +239,42 @@ export const useGitUiStore = defineStore("git-ui", () => {
     ensure(workspaceId).lastResult = null;
   }
 
+  async function gitStash(workspaceId, message) {
+    await runGitAction(workspaceId, "stash", () => _api.gitStash({ workspaceId, message: message || "" }));
+  }
+
+  async function gitStashPop(workspaceId) {
+    await runGitAction(workspaceId, "stash-pop", () => _api.gitStashPop({ workspaceId }));
+  }
+
+  async function gitSetBaseBranch(workspaceId, baseBranch) {
+    const ui = ensure(workspaceId);
+    ui.overrideBaseBranch = baseBranch || "";
+  }
+
+  async function azureCreatePullRequest(workspaceId, { title, description, sourceBranch, targetBranch }) {
+    return runGitAction(workspaceId, "create-pr", () => _api.azureCreatePullRequest({
+      workspaceId,
+      title,
+      description,
+      sourceBranch,
+      targetBranch,
+    }));
+  }
+
+  async function azureListRemoteBranches(workspaceId) {
+    const ui = ensure(workspaceId);
+    ui.remoteBranchesLoading = true;
+    try {
+      const result = await _api.azureListRemoteBranches({ workspaceId });
+      ui.remoteBranches = result?.branches || [];
+    } catch {
+      ui.remoteBranches = [];
+    } finally {
+      ui.remoteBranchesLoading = false;
+    }
+  }
+
   async function openLazygit(workspaceId) {
     const { useAppStore } = await import("./app.js");
     const appStore = useAppStore();
@@ -308,6 +344,8 @@ export const useGitUiStore = defineStore("git-ui", () => {
     gitMergeBase, gitRebaseBase, gitMergeIntoBase,
     gitRemoveWorktree, gitCommitAll, gitSelectCommit,
     gitSelectDiff, gitSwitchTab, gitClearResult, openLazygit,
+    gitStash, gitStashPop, gitSetBaseBranch,
+    azureCreatePullRequest, azureListRemoteBranches,
     // Azure review UI actions
     reviewSwitchTab, reviewSetCommentFilter, reviewSetCommentSort,
     reviewSetCommentSearch, reviewSetAgentSubtab, reviewSelectFileDiff,

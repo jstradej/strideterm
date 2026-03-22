@@ -613,7 +613,11 @@ export class AzureDevOpsManager extends EventEmitter {
     } catch (error) {
       // Strip credentials from error messages to prevent PAT leaks in UI/logs
       const sanitize = (text) => String(text || "").replace(/AUTHORIZATION:\s*Basic\s+\S+/gi, "AUTHORIZATION: [REDACTED]");
-      const message = sanitize(error instanceof Error ? error.message : String(error));
+      // execFileText rejects with { error, stdout, stderr } plain object — extract the real message
+      const rawMessage = error instanceof Error
+        ? error.message
+        : (error?.stderr || error?.error?.message || error?.stdout || "Git command failed.");
+      const message = sanitize(rawMessage);
       const sanitized = new Error(message);
       if (error?.stderr) sanitized.stderr = sanitize(error.stderr);
       if (error?.stdout) sanitized.stdout = sanitize(error.stdout);
@@ -976,6 +980,65 @@ export class AzureDevOpsManager extends EventEmitter {
     await this.fetchReviewWorkspace({ workspace });
     const targetBranch = stripRefsPrefix(workspace.review?.pullRequest?.targetRefName);
     await this.runGit(workspace.cwd, ["rebase", `origin/${targetBranch}`]);
+  }
+
+  findConnectionForRemote(remoteUrl) {
+    const normalized = normalizeRemoteUrl(remoteUrl);
+    if (!normalized) return null;
+    for (const connection of this.snapshot.connections) {
+      if (!connection.enabled) continue;
+      const orgNorm = normalizeRemoteUrl(connection.orgUrl);
+      if (orgNorm && normalized.startsWith(orgNorm)) {
+        return connection;
+      }
+    }
+    return null;
+  }
+
+  async resolveRepository(connectionId, remoteUrl) {
+    const connection = this.findConnection(connectionId);
+    if (!connection) throw new Error("Azure DevOps connection not found.");
+    const token = this.credentialStore.getSecret(connection.tokenRef);
+    if (!token) throw new Error("PAT is missing.");
+
+    const normalized = normalizeRemoteUrl(remoteUrl);
+    const projects = await this.api.listProjects(connection, token);
+    const filteredProjects = connection.projectFilters?.length
+      ? projects.filter((p) => connection.projectFilters.includes(p.name) || connection.projectFilters.includes(p.id))
+      : projects;
+
+    for (const project of filteredProjects) {
+      const repos = await this.api.listRepositories(connection, token, project.name);
+      for (const repo of repos) {
+        if (normalizeRemoteUrl(repo.remoteUrl) === normalized) {
+          return { connection, token, projectName: project.name, repository: repo };
+        }
+      }
+    }
+    throw new Error("Could not find a matching Azure DevOps repository for this workspace.");
+  }
+
+  async listRemoteBranches(connectionId, remoteUrl) {
+    const { connection, token, projectName, repository } = await this.resolveRepository(connectionId, remoteUrl);
+    const refs = await this.api.listRepositoryRefs(connection, token, projectName, repository.id, "heads");
+    return refs.map((ref) => stripRefsPrefix(ref.name));
+  }
+
+  async createPullRequestForWorkspace({ remoteUrl, sourceBranch, targetBranch, title, description }) {
+    const connection = this.findConnectionForRemote(remoteUrl);
+    if (!connection) throw new Error("No Azure DevOps connection found for this repository.");
+    const { token, projectName, repository } = await this.resolveRepository(connection.id, remoteUrl);
+    const result = await this.api.createPullRequest(connection, token, projectName, repository.id, {
+      title,
+      description,
+      sourceBranch,
+      targetBranch,
+    });
+    return {
+      pullRequestId: result.pullRequestId,
+      url: result._links?.web?.href || "",
+      title: result.title,
+    };
   }
 
   async pushReviewWorkspace({ workspace, force = false }) {

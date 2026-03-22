@@ -225,6 +225,48 @@ export function createAzureApi(fetchImpl) {
     }));
   }
 
+  function buildListRepositoriesUrl(connection, projectName) {
+    return `${trimTrailingSlash(connection.orgUrl)}/${encodeURIComponent(projectName)}/_apis/git/repositories?api-version=${API_VERSION}`;
+  }
+
+  function buildListRefsUrl(connection, projectName, repositoryId, filter = "heads") {
+    return `${trimTrailingSlash(connection.orgUrl)}/${encodeURIComponent(projectName)}/_apis/git/repositories/${repositoryId}/refs?filter=${encodeURIComponent(filter)}&api-version=${API_VERSION}&$top=500`;
+  }
+
+  function buildCreatePullRequestUrl(connection, projectName, repositoryId) {
+    return `${trimTrailingSlash(connection.orgUrl)}/${encodeURIComponent(projectName)}/_apis/git/repositories/${repositoryId}/pullrequests?api-version=${API_VERSION}`;
+  }
+
+  async function listRepositories(connection, token, projectName) {
+    const result = await requestJson(buildListRepositoriesUrl(connection, projectName), {
+      login: connection.login,
+      token,
+    });
+    return result.value || [];
+  }
+
+  async function listRepositoryRefs(connection, token, projectName, repositoryId, filter = "heads") {
+    const result = await requestJson(buildListRefsUrl(connection, projectName, repositoryId, filter), {
+      login: connection.login,
+      token,
+    });
+    return result.value || [];
+  }
+
+  async function createPullRequest(connection, token, projectName, repositoryId, { title, description, sourceBranch, targetBranch }) {
+    return requestJson(buildCreatePullRequestUrl(connection, projectName, repositoryId), {
+      login: connection.login,
+      token,
+      method: "POST",
+      body: {
+        sourceRefName: sourceBranch.startsWith("refs/") ? sourceBranch : `refs/heads/${sourceBranch}`,
+        targetRefName: targetBranch.startsWith("refs/") ? targetBranch : `refs/heads/${targetBranch}`,
+        title,
+        description: description || "",
+      },
+    });
+  }
+
   return {
     requestJson,
     buildProjectsUrl,
@@ -239,6 +281,9 @@ export function createAzureApi(fetchImpl) {
     buildPullRequestStatusesUrl,
     buildPolicyEvaluationsUrl,
     buildBuildTimelineUrl,
+    buildListRepositoriesUrl,
+    buildListRefsUrl,
+    buildCreatePullRequestUrl,
     fetchBuildErrors,
     listProjects,
     listPullRequestsByProject,
@@ -246,5 +291,8 @@ export function createAzureApi(fetchImpl) {
     listPullRequestStatuses,
     listPolicyEvaluations,
     listIterationChanges,
+    listRepositories,
+    listRepositoryRefs,
+    createPullRequest,
   };
 }
