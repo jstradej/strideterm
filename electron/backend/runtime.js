@@ -45,6 +45,7 @@ const ANSI_ESCAPE_RE = /\u001B\[[0-?]*[ -/]*[@-~]|\u001B\][^\u0007]*(?:\u0007|\u
 const AGENT_NAME_RE = /\b(claude|codex|opencode|aider|gemini)\b/i;
 const AGENT_OUTPUT_RE = /\b(claude code|openai codex|codex|claude)\b/i;
 const PROMPT_QUIET_MS = 900;
+const ALERT_COOLDOWN_MS = 15_000;
 const ATTENTION_MIN_DISPLAY_MS = 3_000;
 const ATTENTION_VISIBILITY_GRACE_MS = 5_000;
 const WAITING_PATTERNS = [
@@ -97,6 +98,7 @@ function createSessionSignal(sessionId) {
     waitingRaised: false,
     agentLike: false,
     promptTimer: null,
+    lastAlertAt: 0,
   };
 }
 
@@ -104,6 +106,7 @@ const PROMPT_PATTERNS_SAFE = [
   /^PS [^\n>]{0,200}>\s*$/,
   /^[A-Za-z]:[^\n]{0,180}>\s*$/,
   /^(?:\([^)\n]{1,80}\)\s*)?[^$\n]{1,180}[$#]\s*$/,
+  /^(?:\([^)\n]{1,80}\)\s*)?.{0,180}[›❯➜]\s*$/,
 ];
 
 function createTunnelOriginUrl(remoteConfig = {}) {
@@ -775,6 +778,7 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
     if (signal) {
       signal.waitingRaised = true;
       signal.busy = false;
+      signal.lastAlertAt = Date.now();
     }
     broadcastState();
     return true;
@@ -872,9 +876,12 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
       const signal = getSessionSignal(payload.sessionId, project, panel);
       const rawText = String(payload.data || "");
       const cleanText = stripAnsi(rawText);
-      const lowerText = cleanText.toLowerCase();
       const lastLine = lastNonEmptyLine(cleanText);
-      const explicitWaiting = rawText.includes("\u0007") || WAITING_PATTERNS.some((pattern) => pattern.test(lowerText));
+      const lastLineLower = lastLine.toLowerCase();
+      // Match waiting patterns only on the last line (not the full text chunk)
+      // to avoid false positives from words like "approve" appearing in code output.
+      // Bell character is still checked on the full raw text.
+      const explicitWaiting = rawText.includes("\u0007") || WAITING_PATTERNS.some((pattern) => pattern.test(lastLineLower));
       const promptLike = signal.agentLike && matchesPrompt(lastLine);
       const onlyPrompt = promptLike && cleanText.trim() === lastLine.trim();
 
@@ -884,11 +891,18 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
 
       if (cleanText.trim() && !onlyPrompt) {
         signal.busy = true;
-        signal.waitingRaised = false;
+        // Don't reset waitingRaised here — it should only reset when the
+        // session becomes visible or is explicitly cleared. Resetting on every
+        // non-prompt output caused repeated alerts when Claude Code produces
+        // interleaved status updates and prompt lines.
         cancelPromptTimer(signal);
       }
 
-      if (explicitWaiting) {
+      // Cooldown: don't raise another alert if one was raised recently for this session.
+      const now = Date.now();
+      const inCooldown = signal.lastAlertAt > 0 && (now - signal.lastAlertAt) < ALERT_COOLDOWN_MS;
+
+      if (explicitWaiting && !inCooldown) {
         cancelPromptTimer(signal);
         if (isSessionVisible(payload.sessionId)) {
           resetSessionSignal(payload.sessionId);
@@ -901,7 +915,7 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
             detail: "explicit-input",
           });
         }
-      } else if (promptLike && signal.busy) {
+      } else if (promptLike && signal.busy && !inCooldown) {
         cancelPromptTimer(signal);
         signal.promptTimer = setTimeout(() => {
           signal.promptTimer = null;

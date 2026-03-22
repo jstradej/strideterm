@@ -25,8 +25,9 @@ export function useNotificationCapture() {
   let activeAlertViewIds = new Set();
 
   // Build a stable key for an alert to detect duplicates.
+  // Uses panelId only (no timestamp) so repeated alerts for the same tab are suppressed.
   function alertKey(workspaceId, alert) {
-    return `${workspaceId}:${alert.panelId || alert.sessionId}:${alert.at}`;
+    return `${workspaceId}:${alert.panelId || alert.sessionId}`;
   }
 
   // Collect all viewIds that currently have active alerts.
@@ -84,6 +85,13 @@ export function useNotificationCapture() {
           const ws = wsMap.get(wsId);
           const wsName = ws?.name || wsId;
           const tabName = alert.title || alert.panelId || "";
+
+          // Skip if there's already an unread notification for this tab
+          const alertViewId = alert.sessionId || "";
+          const hasUnread = alertViewId && notifStore.items.some(
+            (n) => !n.read && n.viewId === alertViewId,
+          );
+          if (hasUnread) continue;
 
           let body;
           if (alert.kind === "waiting") {
