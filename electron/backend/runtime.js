@@ -1738,8 +1738,12 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
     },
     clearAllAttention() {
       projectAlerts.clear();
+      const now = Date.now();
       for (const [, signal] of sessionSignals) {
-        signal.status = "idle";
+        cancelPromptTimer(signal);
+        signal.busy = false;
+        signal.waitingRaised = false;
+        signal.lastAlertAt = now;
       }
       broadcastState();
       return getPayload();
