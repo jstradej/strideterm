@@ -1043,6 +1043,9 @@ describe("runtime integration", () => {
       });
       fixtures.push(fixture);
 
+      // Advance past the backend startup grace period (20s)
+      await vi.advanceTimersByTimeAsync(21_000);
+
       fixture.sessionManager.emit("terminal:data", {
         sessionId: "frontend:codex",
         data: "Planning changes\r\nApplying patch\r\n",

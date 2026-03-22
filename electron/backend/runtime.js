@@ -284,6 +284,8 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
   const projectAlerts = new Map();
   const attentionContext = createAttentionContext();
   const sessionSignals = new Map();
+  const runtimeStartedAt = Date.now();
+  const RUNTIME_STARTUP_GRACE_MS = 20_000;
 
   // --- Broadcast coalescing ---
   let broadcastScheduled = false;
@@ -873,7 +875,10 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
     const state = getState();
     const project = descriptor ? findWorkspace(state, descriptor.workspaceId) : null;
     const panel = project?.panels.find((item) => item.id === descriptor?.panelId) || null;
-    if (descriptor && shouldTrackProjectAlert(project, panel)) {
+    // Suppress alert detection during startup — terminals replay their buffers
+    // which includes prompts that would trigger false "idle" alerts.
+    const inStartupGrace = (Date.now() - runtimeStartedAt) < RUNTIME_STARTUP_GRACE_MS;
+    if (descriptor && shouldTrackProjectAlert(project, panel) && !inStartupGrace) {
       const signal = getSessionSignal(payload.sessionId, project, panel);
       const rawText = String(payload.data || "");
       const cleanText = stripAnsi(rawText);
