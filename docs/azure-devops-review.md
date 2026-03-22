@@ -79,7 +79,7 @@ All review threads with inline code context. Each thread shows:
 - **Filters**: All, Active, Fixed, Has draft, Mine
 - **Sort**: by #N, Newest, Status, File — click again to toggle ascending/descending
 - **Search**: filter by file path or comment text
-- **Delete all drafts** — remove all local drafts at once
+- **Delete all drafts** — remove all drafts at once
 
 **Badge** on the Comments tab shows only active (unresolved) thread count.
 
@@ -149,7 +149,7 @@ The review bridge exposes these tools to agents:
 |------|---------|
 | `list_review_comments` | List all threads with status, priority, and draft previews |
 | `get_review_comment` | Full thread detail by `#N` index (replies, file context, code snippet) |
-| `create_review_comment` | Create a new local comment with an auto-queued draft |
+| `create_review_comment` | Create a new draft comment, auto-queued for publishing |
 | `save_review_draft` | Save a draft reply and auto-queue it for publishing |
 | `queue_review_draft` | Explicitly queue a draft (rarely needed — drafts auto-queue) |
 | `reply_with_code_changes` | Reply to a comment after making code changes — marks the thread and queues the reply |
@@ -208,7 +208,7 @@ MCP agents interact only with the local SQLite database. They cannot publish to 
 ### Data Storage
 
 - **Main state** (`~/.strideterm/strideterm-state.json`) — workspaces, connections (without PAT), settings
-- **Review bridge** (SQLite per review root) — imported threads, local comments, drafts, sync queue, agent prompts
+- **Review bridge** (SQLite per review root) — imported threads, draft comments, drafts, sync queue, agent prompts
 - **Review cache** — PR tracking state, seen timestamps, workspace mapping
 - **Exports** — markdown/JSON context files for agent consumption (`agent-brief.md`, `threads.md`, etc.)
 
