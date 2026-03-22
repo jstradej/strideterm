@@ -879,62 +879,102 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
       const cleanText = stripAnsi(rawText);
       const lastLine = lastNonEmptyLine(cleanText);
       const lastLineLower = lastLine.toLowerCase();
-      // Match waiting patterns only on the last line (not the full text chunk)
-      // to avoid false positives from words like "approve" appearing in code output.
-      // Bell character is still checked on the full raw text.
-      const explicitWaiting = rawText.includes("\u0007") || WAITING_PATTERNS.some((pattern) => pattern.test(lastLineLower));
-      const promptLike = signal.agentLike && matchesPrompt(lastLine);
-      const onlyPrompt = promptLike && cleanText.trim() === lastLine.trim();
 
       if (AGENT_OUTPUT_RE.test(cleanText)) {
         signal.agentLike = true;
       }
 
-      if (cleanText.trim() && !onlyPrompt) {
-        signal.busy = true;
-        // Don't reset waitingRaised here — it should only reset when the
-        // session becomes visible or is explicitly cleared. Resetting on every
-        // non-prompt output caused repeated alerts when Claude Code produces
-        // interleaved status updates and prompt lines.
-        cancelPromptTimer(signal);
-      }
+      // --- Agent sessions: silence-based detection ---
+      // Claude Code shows its prompt `>` at all times (even while thinking),
+      // and sends periodic status updates (token count, thinking time).
+      // Instead of matching prompt patterns, we detect idle by watching for
+      // complete silence: no terminal data for AGENT_PROMPT_QUIET_MS.
+      // Any terminal data resets the timer.
+      if (signal.agentLike) {
+        const now = Date.now();
+        const inCooldown = signal.lastAlertAt > 0 && (now - signal.lastAlertAt) < ALERT_COOLDOWN_MS;
 
-      // Cooldown: don't raise another alert if one was raised recently for this session.
-      const now = Date.now();
-      const inCooldown = signal.lastAlertAt > 0 && (now - signal.lastAlertAt) < ALERT_COOLDOWN_MS;
-
-      if (explicitWaiting && !inCooldown) {
-        cancelPromptTimer(signal);
-        if (isSessionVisible(payload.sessionId)) {
-          resetSessionSignal(payload.sessionId);
-        } else {
-          raiseWaitingAlert({
-            sessionId: payload.sessionId,
-            projectId: descriptor.workspaceId,
-            panelId: descriptor.panelId,
-            title: panel?.title || descriptor.panelId,
-            detail: "explicit-input",
-          });
-        }
-      } else if (promptLike && signal.busy && !inCooldown) {
-        cancelPromptTimer(signal);
-        // Use a longer quiet period for agent sessions (Claude Code, Codex, etc.)
-        // to avoid false positives when the agent pauses between tool calls.
-        const quietMs = signal.agentLike ? AGENT_PROMPT_QUIET_MS : PROMPT_QUIET_MS;
-        signal.promptTimer = setTimeout(() => {
-          signal.promptTimer = null;
+        // Bell character = explicit input request, always raise immediately
+        if (rawText.includes("\u0007") && !inCooldown) {
+          cancelPromptTimer(signal);
           if (isSessionVisible(payload.sessionId)) {
             resetSessionSignal(payload.sessionId);
-            return;
+          } else {
+            raiseWaitingAlert({
+              sessionId: payload.sessionId,
+              projectId: descriptor.workspaceId,
+              panelId: descriptor.panelId,
+              title: panel?.title || descriptor.panelId,
+              detail: "explicit-input",
+            });
           }
-          raiseWaitingAlert({
-            sessionId: payload.sessionId,
-            projectId: descriptor.workspaceId,
-            panelId: descriptor.panelId,
-            title: panel?.title || descriptor.panelId,
-            detail: "prompt-returned",
-          });
-        }, quietMs);
+        } else {
+          // Any terminal data = agent is active. Mark busy and restart the silence timer.
+          if (cleanText.trim()) {
+            signal.busy = true;
+          }
+          cancelPromptTimer(signal);
+          if (signal.busy && !inCooldown) {
+            signal.promptTimer = setTimeout(() => {
+              signal.promptTimer = null;
+              if (isSessionVisible(payload.sessionId)) {
+                resetSessionSignal(payload.sessionId);
+                return;
+              }
+              raiseWaitingAlert({
+                sessionId: payload.sessionId,
+                projectId: descriptor.workspaceId,
+                panelId: descriptor.panelId,
+                title: panel?.title || descriptor.panelId,
+                detail: "prompt-returned",
+              });
+            }, AGENT_PROMPT_QUIET_MS);
+          }
+        }
+      } else {
+        // --- Non-agent sessions: prompt-pattern detection ---
+        const explicitWaiting = rawText.includes("\u0007") || WAITING_PATTERNS.some((pattern) => pattern.test(lastLineLower));
+        const promptLike = matchesPrompt(lastLine);
+        const onlyPrompt = promptLike && cleanText.trim() === lastLine.trim();
+
+        if (cleanText.trim() && !onlyPrompt) {
+          signal.busy = true;
+          cancelPromptTimer(signal);
+        }
+
+        const now = Date.now();
+        const inCooldown = signal.lastAlertAt > 0 && (now - signal.lastAlertAt) < ALERT_COOLDOWN_MS;
+
+        if (explicitWaiting && !inCooldown) {
+          cancelPromptTimer(signal);
+          if (isSessionVisible(payload.sessionId)) {
+            resetSessionSignal(payload.sessionId);
+          } else {
+            raiseWaitingAlert({
+              sessionId: payload.sessionId,
+              projectId: descriptor.workspaceId,
+              panelId: descriptor.panelId,
+              title: panel?.title || descriptor.panelId,
+              detail: "explicit-input",
+            });
+          }
+        } else if (promptLike && signal.busy && !inCooldown) {
+          cancelPromptTimer(signal);
+          signal.promptTimer = setTimeout(() => {
+            signal.promptTimer = null;
+            if (isSessionVisible(payload.sessionId)) {
+              resetSessionSignal(payload.sessionId);
+              return;
+            }
+            raiseWaitingAlert({
+              sessionId: payload.sessionId,
+              projectId: descriptor.workspaceId,
+              panelId: descriptor.panelId,
+              title: panel?.title || descriptor.panelId,
+              detail: "prompt-returned",
+            });
+          }, PROMPT_QUIET_MS);
+        }
       }
     }
 
