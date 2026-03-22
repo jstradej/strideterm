@@ -73,6 +73,7 @@ export function registerIpc(runtime, emitToRenderer, { includeStateGet = true } 
   ipcMain.handle("review-bridge:comment:reply-with-changes", async (_event, payload) => runtime.replyWithCodeChanges(validateIpc(reviewBridgeReplyWithChangesSchema, payload, "review-bridge:comment:reply-with-changes")));
   ipcMain.handle("review-bridge:agent-prompt:save", async (_event, payload) => runtime.saveAgentPrompt(validateIpc(agentPromptSaveSchema, payload, "review-bridge:agent-prompt:save")));
   ipcMain.handle("review-bridge:agent-prompt:delete", async (_event, payload) => runtime.deleteAgentPrompt(validateIpc(agentPromptDeleteSchema, payload, "review-bridge:agent-prompt:delete")));
+  ipcMain.handle("review-bridge:agent-prompt:reset", async () => runtime.resetAgentPrompts());
   ipcMain.handle("review-bridge:pull-request:sync", async (_event, payload) => runtime.syncReviewBridgePullRequest(validateIpc(reviewBridgeSyncSchema, payload, "review-bridge:pull-request:sync")));
   ipcMain.handle("review-bridge:pull-request:push-and-publish", async (_event, payload) => runtime.pushAndPublishReview(validateIpc(reviewBridgePushAndPublishSchema, payload, "review-bridge:pull-request:push-and-publish")));
   ipcMain.handle("azure:pull-request:vote", async (_event, payload) => runtime.voteAzurePullRequest(validateIpc(azureVoteSchema, payload, "azure:pull-request:vote")));

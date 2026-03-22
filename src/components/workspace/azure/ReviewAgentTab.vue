@@ -5,7 +5,12 @@
       <button type="button" :class="['button', 'button--ghost', reviewUi.agentSubTab === 'connect' && 'button--active']" :style="reviewUi.agentSubTab === 'connect' ? 'font-size:12px;padding:4px 12px;background:var(--accent);color:var(--bg);' : 'font-size:12px;padding:4px 12px;'" @click="gitUiStore.reviewSetAgentSubtab(workspaceId, 'connect')">Connect your agent</button>
     </div>
     <article v-if="reviewUi.agentSubTab !== 'connect'" class="git-card review-card review-card--stack">
-      <div class="section-head"><div><p class="eyebrow">Review Prompts</p><h3>Ready-to-use prompts for AI agents</h3></div></div>
+      <div class="section-head">
+        <div><p class="eyebrow">Review Prompts</p><h3>Ready-to-use prompts for AI agents</h3></div>
+        <div class="docker-card__actions">
+          <button type="button" :class="['button', 'button--ghost', busyAction === 'reset-prompts' && 'button--busy']" :disabled="!!busyAction" title="Delete all custom prompts and restore built-in defaults" @click="handleResetPrompts">{{ busyAction === 'reset-prompts' ? 'Resetting\u2026' : 'Reset to defaults' }}</button>
+        </div>
+      </div>
       <p class="git-card__hint">Copy a prompt and paste it into Claude Code, Codex, or any MCP-capable agent.</p>
       <div class="docker-list review-card__list review-card__list--dense review-agent-prompts">
         <template v-if="agentPrompts.length">
@@ -53,6 +58,13 @@ const appStore = useAppStore();
 const gitUiStore = useGitUiStore();
 
 const busyAction = ref("");
+
+async function handleResetPrompts() {
+  if (!window.confirm("Reset all prompts to built-in defaults? Custom prompts will be lost.")) return;
+  busyAction.value = "reset-prompts";
+  try { await appStore.resetAgentPrompts(); }
+  finally { busyAction.value = ""; }
+}
 
 async function handleDeletePrompt(promptId) {
   busyAction.value = `delete-${promptId}`;

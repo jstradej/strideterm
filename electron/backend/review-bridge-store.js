@@ -1216,6 +1216,12 @@ export async function createReviewBridgeStore(rootPath) {
       statements.deleteAgentPrompt.run(promptId);
       return this.getAgentPrompts();
     },
+    resetAgentPrompts() {
+      ensureOpen();
+      statements.deleteAllAgentPrompts.run();
+      this.seedDefaultAgentPrompts();
+      return this.getAgentPrompts();
+    },
     seedDefaultAgentPrompts() {
       ensureOpen();
       const now = new Date().toISOString();

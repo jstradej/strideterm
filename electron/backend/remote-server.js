@@ -199,6 +199,11 @@ async function handleApiRequest(runtime, request, response) {
       return;
     }
 
+    if (request.method === "POST" && url.pathname === "/api/review-bridge/agent-prompt/reset") {
+      json(response, 200, await runtime.resetAgentPrompts());
+      return;
+    }
+
     if (request.method === "POST" && url.pathname === "/api/review-bridge/comment/reply-with-changes") {
       json(response, 200, await runtime.replyWithCodeChanges(body));
       return;

@@ -195,6 +195,7 @@ function createRemoteTransport() {
     queueReviewBridgeDraft: (payload) => fetchJson("/api/review-bridge/draft/queue", payload),
     deleteReviewBridgeComment: (payload) => fetchJson("/api/review-bridge/comment/delete", payload),
     replyWithCodeChanges: (payload) => fetchJson("/api/review-bridge/comment/reply-with-changes", payload),
+    resetAgentPrompts: () => fetchJson("/api/review-bridge/agent-prompt/reset", {}),
     syncReviewBridgePullRequest: (payload) => fetchJson("/api/review-bridge/pull-request/sync", payload),
     pushAndPublishReview: (payload) => fetchJson("/api/review-bridge/pull-request/push-and-publish", payload),
     updateAzureThreadStatus: (payload) => fetchJson("/api/azure/pull-request/thread-status", payload),

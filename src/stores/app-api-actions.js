@@ -146,6 +146,10 @@ export function createApiActions(ctx) {
     ctx.payload.value = await ctx.getApi().saveAgentPrompt(params);
   }
 
+  async function resetAgentPrompts() {
+    ctx.payload.value = await ctx.getApi().resetAgentPrompts();
+  }
+
   async function deleteAgentPrompt(promptId) {
     if (!promptId) return;
     if (!window.confirm("Delete this prompt?")) return;
@@ -281,7 +285,7 @@ export function createApiActions(ctx) {
     deleteReviewBridgeComment, createReviewBridgeDraftComment, syncReviewBridgePullRequest,
     reviewBridgeDeleteAllDrafts, reviewBridgeQueueAllDrafts, pushAndPublishReview,
     // Agent prompts
-    saveAgentPrompt, deleteAgentPrompt,
+    saveAgentPrompt, deleteAgentPrompt, resetAgentPrompts,
     // Remote access
     setRemoteMode, toggleRemotePanel, toggleRemoteAccess,
     regenerateRemoteToken, saveCustomPublicUrl, clearCustomPublicUrl,

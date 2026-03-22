@@ -1522,6 +1522,11 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
       broadcastState();
       return getPayload();
     },
+    async resetAgentPrompts() {
+      reviewBridgeStore.resetAgentPrompts();
+      broadcastState();
+      return getPayload();
+    },
     async replyWithCodeChanges(payload) {
       await reviewBridgeStore.replyWithCodeChanges(payload);
       broadcastState();
