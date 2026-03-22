@@ -141,6 +141,10 @@ export function useReviewComments(detail, reviewBridge, reviewUi, pullRequest) {
         [c.title || "", c.summary || ""].some((t) => t.toLowerCase().includes(searchTerm.value)),
       );
     }
+    const dir = sortDir.value === "desc" ? -1 : 1;
+    if (sort.value === "index" || sort.value === "newest") {
+      comments = [...comments].sort((a, b) => dir * ((a.displayIndex || 9999) - (b.displayIndex || 9999)));
+    }
     return comments;
   });
 

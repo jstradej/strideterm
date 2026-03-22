@@ -141,15 +141,12 @@
               </div>
               <div class="docker-card__actions" style="margin-top:6px;">
                 <button v-if="draft.status !== 'ready-to-sync'" type="button" class="button button--ghost" style="font-size:11px;padding:2px 8px;" :disabled="!!busyAction" title="Edit the text of this draft" @click="editLocalDraft(comment)">Edit</button>
-                <button type="button" :class="['button', 'button--ghost', 'danger', busyAction === `delete-${draft.draftId}` && 'button--busy']" style="font-size:11px;padding:2px 8px;" :disabled="!!busyAction" title="Permanently delete this draft" @click="handleDeleteDraft(draft.draftId)">Delete</button>
+                <button type="button" :class="['button', 'button--ghost', 'danger', busyAction === `deleteComment-${comment.commentKey}` && 'button--busy']" style="font-size:11px;padding:2px 8px;" :disabled="!!busyAction" title="Permanently delete this comment and its draft" @click="handleDeleteComment(comment.commentKey)">Delete</button>
               </div>
             </div>
             <div v-if="!draftsByComment(comment).length" class="docker-card__actions" style="padding:6px 10px;">
               <button type="button" class="button button--ghost" style="font-size:11px;" title="Write a draft for this comment — saved locally until you queue and publish it" @click="editLocalDraft(comment)">Add draft</button>
-            </div>
-
-            <div class="docker-card__actions" style="padding:2px 10px 6px;">
-              <button type="button" :class="['button', 'button--ghost', 'danger', busyAction === `deleteComment-${comment.commentKey}` && 'button--busy']" style="font-size:11px;" :disabled="!!busyAction" title="Permanently delete this draft comment and all its drafts" @click="handleDeleteComment(comment.commentKey)">Delete</button>
+              <button type="button" :class="['button', 'button--ghost', 'danger', busyAction === `deleteComment-${comment.commentKey}` && 'button--busy']" style="font-size:11px;" :disabled="!!busyAction" title="Permanently delete this draft comment" @click="handleDeleteComment(comment.commentKey)">Delete</button>
             </div>
           </article>
 
