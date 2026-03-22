@@ -45,6 +45,7 @@ const ANSI_ESCAPE_RE = /\u001B\[[0-?]*[ -/]*[@-~]|\u001B\][^\u0007]*(?:\u0007|\u
 const AGENT_NAME_RE = /\b(claude|codex|opencode|aider|gemini)\b/i;
 const AGENT_OUTPUT_RE = /\b(claude code|openai codex|codex|claude)\b/i;
 const PROMPT_QUIET_MS = 900;
+const AGENT_PROMPT_QUIET_MS = 12_000;
 const ALERT_COOLDOWN_MS = 15_000;
 const ATTENTION_MIN_DISPLAY_MS = 3_000;
 const ATTENTION_VISIBILITY_GRACE_MS = 5_000;
@@ -917,6 +918,9 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
         }
       } else if (promptLike && signal.busy && !inCooldown) {
         cancelPromptTimer(signal);
+        // Use a longer quiet period for agent sessions (Claude Code, Codex, etc.)
+        // to avoid false positives when the agent pauses between tool calls.
+        const quietMs = signal.agentLike ? AGENT_PROMPT_QUIET_MS : PROMPT_QUIET_MS;
         signal.promptTimer = setTimeout(() => {
           signal.promptTimer = null;
           if (isSessionVisible(payload.sessionId)) {
@@ -930,7 +934,7 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
             title: panel?.title || descriptor.panelId,
             detail: "prompt-returned",
           });
-        }, PROMPT_QUIET_MS);
+        }, quietMs);
       }
     }
 

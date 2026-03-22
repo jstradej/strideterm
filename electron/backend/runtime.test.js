@@ -1052,7 +1052,8 @@ describe("runtime integration", () => {
         data: "PS C:\\repo> ",
       });
 
-      await vi.advanceTimersByTimeAsync(950);
+      // Agent sessions use a longer quiet period (12s) before raising prompt-returned alerts
+      await vi.advanceTimersByTimeAsync(12100);
 
       expect(fixture.runtime.getPayload().attention.byProject.frontend).toMatchObject({
         count: 1,
