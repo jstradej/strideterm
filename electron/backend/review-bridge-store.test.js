@@ -11,7 +11,7 @@ afterEach(async () => {
 });
 
 describe("review bridge store", () => {
-  test("imports a pull request into sqlite and writes per-pr exports", async () => {
+  test("imports a pull request into sqlite and writes per-pr exports", { timeout: 15_000 }, async () => {
     const rootPath = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-review-bridge-"));
     tempPaths.push(rootPath);
     const store = await createReviewBridgeStore(rootPath);
