@@ -231,10 +231,6 @@ export class AzureDevOpsManager extends EventEmitter {
               activeProfileId,
               now: this.now,
             });
-            if (summary.role === "observer") {
-              continue;
-            }
-
             visibleSummaries.push(summary);
             if (this.reviewBridgeStore?.syncPullRequest) {
               try {
