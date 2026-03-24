@@ -118,7 +118,7 @@ async function handleApiRequest(runtime, request, response) {
     }
 
     if (request.method === "POST" && (url.pathname === "/api/workspace/delete" || url.pathname === "/api/project/delete")) {
-      json(response, 200, await runtime.deleteWorkspace(body.workspaceId || body.projectId));
+      json(response, 200, await runtime.deleteWorkspace(body.workspaceId || body.projectId, body));
       return;
     }
 

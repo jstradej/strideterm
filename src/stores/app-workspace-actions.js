@@ -33,7 +33,24 @@ export function createWorkspaceActions(ctx) {
     const ws = (ctx.payload.value?.appState?.workspaces || []).find((w) => w.id === workspaceId);
     if (!ws) return;
     if (!window.confirm(`Delete workspace "${ws.name}"?`)) return;
-    ctx.payload.value = await ctx.getApi().deleteWorkspace(workspaceId);
+
+    const worktreePath = ws.review?.checkout?.mode === "managed-worktree" && ws.review?.checkout?.rootPath
+      ? ws.review.checkout.rootPath
+      : ws.quickfix?.rootPath || "";
+    const diskPath = worktreePath || (ws.cwd && ws.review ? ws.cwd : "");
+
+    let deleteFromDisk = false;
+    if (diskPath) {
+      deleteFromDisk = window.confirm(
+        `Also delete the worktree files from disk?\n\n${diskPath}\n\nOK = delete files, Cancel = keep files`,
+      );
+    }
+
+    const result = await ctx.getApi().deleteWorkspace(workspaceId, { deleteFromDisk, diskPath });
+    if (result?.deleteWorkspaceError) {
+      window.alert(`Workspace was deleted, but files could not be removed:\n\n${result.deleteWorkspaceError}\n\nYou can delete the directory manually.`);
+    }
+    ctx.payload.value = result;
   }
 
   // --- Tab management ----------------------------------------------------

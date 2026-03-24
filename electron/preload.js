@@ -10,7 +10,7 @@ contextBridge.exposeInMainWorld("strideterm", {
   clearAllAttention: () => ipcRenderer.invoke("attention:clear-all"),
   saveWorkspace: (workspace) => ipcRenderer.invoke("workspace:save", workspace),
   saveProject: (project) => ipcRenderer.invoke("project:save", project),
-  deleteWorkspace: (workspaceId) => ipcRenderer.invoke("workspace:delete", workspaceId),
+  deleteWorkspace: (workspaceId, options) => ipcRenderer.invoke("workspace:delete", workspaceId, options),
   deleteProject: (projectId) => ipcRenderer.invoke("project:delete", projectId),
   reorderWorkspaces: (workspaceIds) => ipcRenderer.invoke("workspace:reorder", workspaceIds),
   reorderProjects: (projectIds) => ipcRenderer.invoke("project:reorder", projectIds),

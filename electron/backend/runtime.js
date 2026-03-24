@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { watch } from "node:fs";
-import { readFile, writeFile, mkdir, readdir, access } from "node:fs/promises";
+import { readFile, writeFile, mkdir, readdir, access, rm } from "node:fs/promises";
 import { EventEmitter } from "node:events";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
@@ -1368,7 +1368,10 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
     async saveProject(project) {
       return this.saveWorkspace(project);
     },
-    async deleteWorkspace(workspaceId) {
+    async deleteWorkspace(workspaceId, options = {}) {
+      const state = getState();
+      const workspace = findWorkspace(state, workspaceId);
+
       await store.mutate((draft) => {
         draft.workspaces = draft.workspaces.filter((item) => item.id !== workspaceId);
         if (draft.activeWorkspaceId === workspaceId) {
@@ -1383,11 +1386,56 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
         }
       }
       clearProjectAlerts(workspaceId);
+
+      // Delete worktree files from disk if requested
+      let diskDeleteError = "";
+      if (options.deleteFromDisk && workspace) {
+        const diskPath = String(options.diskPath || workspace.review?.checkout?.rootPath || "").trim();
+        if (diskPath && path.isAbsolute(diskPath)) {
+          // Wait for killed PTY processes to fully exit (Windows holds file locks until exit)
+          await new Promise((resolve) => setTimeout(resolve, 500));
+
+          // Try git worktree remove first — cleans both directory and cache repo reference
+          const cacheRepoPath = workspace.review?.checkout?.cacheRepoPath || "";
+          let gitRemoved = false;
+          if (cacheRepoPath) {
+            try {
+              await execFileTextImpl("git", ["worktree", "remove", "--force", diskPath], { cwd: cacheRepoPath });
+              gitRemoved = true;
+            } catch {}
+            // Prune any other dangling worktree references
+            try { await execFileTextImpl("git", ["worktree", "prune"], { cwd: cacheRepoPath }); } catch {}
+          }
+
+          // Fallback: direct rm if git worktree remove didn't handle it
+          if (!gitRemoved) {
+            // Retry on Windows where file locks may linger after process exit
+            for (let attempt = 0; attempt < 3; attempt++) {
+              try {
+                await rm(diskPath, { recursive: true, force: true });
+                break;
+              } catch (err) {
+                if (attempt < 2 && (err.code === "EBUSY" || err.code === "EPERM")) {
+                  await new Promise((resolve) => setTimeout(resolve, 1000));
+                  continue;
+                }
+                diskDeleteError = `Could not delete ${diskPath}: ${err?.message || err}`;
+                console.warn(`[workspace] ${diskDeleteError}`);
+              }
+            }
+          }
+        }
+      }
+
       await refreshGit();
       await refreshAzure();
       ensureVisibleSession();
       broadcastState();
-      return getPayload();
+      const result = getPayload();
+      if (diskDeleteError) {
+        result.deleteWorkspaceError = diskDeleteError;
+      }
+      return result;
     },
     async deleteProject(projectId) {
       return this.deleteWorkspace(projectId);

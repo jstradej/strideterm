@@ -177,7 +177,7 @@ function createRemoteTransport() {
     clearAllAttention: () => fetchJson("/api/attention/clear-all", {}),
     saveWorkspace: (workspace) => fetchJson("/api/workspace/save", { workspace }),
     saveProject: (project) => fetchJson("/api/project/save", { project }),
-    deleteWorkspace: (workspaceId) => fetchJson("/api/workspace/delete", { workspaceId }),
+    deleteWorkspace: (workspaceId, options) => fetchJson("/api/workspace/delete", { workspaceId, ...options }),
     deleteProject: (projectId) => fetchJson("/api/project/delete", { projectId }),
     reorderWorkspaces: (workspaceIds) => fetchJson("/api/workspace/reorder", { workspaceIds }),
     reorderProjects: (projectIds) => fetchJson("/api/project/reorder", { projectIds }),
