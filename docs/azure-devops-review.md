@@ -273,7 +273,9 @@ When an MCP agent writes to the database, the UI updates within ~150ms:
 
 ### Worktree Management
 
-Review worktrees persist on disk after closing a workspace. Reopening the same PR reuses the existing worktree with all local commits and data intact. Worktrees are not automatically cleaned up.
+Review worktrees persist on disk after closing a workspace. Reopening the same PR reuses the existing worktree with all local commits and data intact.
+
+When you delete a review or quickfix workspace (click the ✕ button in the sidebar), the app asks whether you also want to remove the worktree files from disk. If you confirm, the directory and its git worktree reference are cleaned up. If you decline, the workspace is removed from the sidebar but the files stay on disk for manual cleanup later. If file deletion fails (e.g. a process is still using the directory), you get a message with the path so you can delete it yourself.
 
 ### Communication Flow
 
