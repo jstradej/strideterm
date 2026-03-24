@@ -169,6 +169,7 @@ Relevant files:
 - `electron/backend/azure-devops-utils.js`
 - `electron/backend/credential-store.js`
 - `electron/backend/azure-review-store.js`
+- `electron/backend/azure-audit-log-store.js`
 - `electron/backend/review-bridge-store.js`
 - `electron/backend/review-bridge-mcp.js`
 - `src/app/pane-markup.js`
@@ -181,6 +182,7 @@ Responsibilities:
 - create managed review worktrees
 - expose Azure inbox and review UI surfaces
 - bridge cloud PR metadata with local Git-backed workspaces
+- audit log every Azure DevOps API call with transparent interception in the API layer
 
 Detailed workflow and usage notes live in [Azure DevOps Pull Request Review](./azure-devops-review.md).
 

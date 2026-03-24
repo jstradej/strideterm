@@ -28,6 +28,7 @@ The inbox shows all active pull requests across your connections, grouped by rep
 - **Needs review** — PRs where you are a reviewer
 - **My PRs** — PRs you authored
 - **Connections** — manage Azure DevOps connections
+- **Activity Log** — see what strIDEterm did on your behalf in Azure DevOps (see [Activity Log](#activity-log) below)
 
 When you have multiple repositories, filter buttons appear at the top to show only PRs from a specific repo.
 
@@ -203,12 +204,51 @@ MCP agents interact only with the local SQLite database. They cannot publish to 
 
 ---
 
+## Activity Log
+
+strIDEterm regularly communicates with Azure DevOps in the background — fetching pull requests, loading review threads, posting your comments, and creating branches. The **Activity Log** tab gives you a complete record of everything strIDEterm did on your behalf, so you can always verify what happened and when.
+
+This is useful when you want to:
+- confirm that a comment was actually published
+- investigate why a sync failed or a connection timed out
+- see how often the app polls Azure DevOps and how fast it responds
+- check exactly which operations were triggered by your actions vs. automatic background sync
+
+### Browsing the Log
+
+Open the **Activity Log** tab in the Azure DevOps inbox. Each row represents one request to Azure DevOps — for example, fetching the list of pull requests or posting a comment.
+
+Click any row to expand its detail panel showing the full URL, exact timestamp, connection, and error message (if the request failed). You can **copy the detail to clipboard** for sharing or troubleshooting.
+
+### Filtering
+
+Use the filter bar at the top to narrow down the log:
+
+- **Category** — show only reads (data fetching) or writes (comments, votes, PR creation)
+- **Status** — focus on successful operations or errors only
+- **Source** — distinguish between operations you triggered (clicking Refresh, posting a comment) and automatic background sync
+- **Date range** — last 24 hours, 7 days, or 30 days
+- **Search** — type to search across operation names, projects, URLs, and error messages
+
+The stats bar below the filters gives a quick overview: total count, success/error ratio, read vs. write breakdown, and average response time.
+
+### Sorting and Resizing
+
+Column headers are clickable — click to sort by that column, click again to reverse the direction. Column borders can be dragged to adjust widths.
+
+### Retention
+
+The log keeps the last 30 days of history. Older entries are automatically cleaned up when the application starts.
+
+---
+
 ## Technical Details
 
 ### Data Storage
 
 - **Main state** (`~/.strideterm/strideterm-state.json`) — workspaces, connections (without PAT), settings
 - **Review bridge** (SQLite per review root) — imported threads, draft comments, drafts, sync queue, agent prompts
+- **Audit log** (`azure-audit-log.db` per review root) — every Azure DevOps API call with timing, status, and context (30-day retention)
 - **Review cache** — PR tracking state, seen timestamps, workspace mapping
 - **Exports** — markdown/JSON context files for agent consumption (`agent-brief.md`, `threads.md`, etc.)
 
@@ -239,8 +279,8 @@ Review worktrees persist on disk after closing a workspace. Reopening the same P
 
 ```
 Azure DevOps REST API
-    ↓
-AzureDevOpsManager (fetch threads, comments, checks)
+    ↓                    ↘
+AzureDevOpsManager        AuditLogStore (logs every API call)
     ↓
 ReviewBridgeStore (import into SQLite, export context files)
     ↓
@@ -248,7 +288,7 @@ MCP Agent (reads via tools, writes drafts)
     ↓ (signal file)
 Runtime (detects change, broadcasts state)
     ↓ (IPC / WebSocket)
-Renderer (re-renders Comments tab)
+Renderer (re-renders Comments tab, Activity Log)
     ↓ (user clicks Push & publish)
 Runtime → AzureDevOpsManager → Azure DevOps REST API
 ```
