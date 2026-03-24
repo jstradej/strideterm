@@ -1390,7 +1390,13 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
       // Delete worktree files from disk if requested
       let diskDeleteError = "";
       if (options.deleteFromDisk && workspace) {
-        const diskPath = String(options.diskPath || workspace.review?.checkout?.rootPath || "").trim();
+        // Only allow deletion of the workspace's own worktree path — never trust diskPath from the client
+        const allowedPaths = [
+          workspace.review?.checkout?.rootPath,
+          workspace.cwd,
+        ].map((p) => (p ? path.resolve(String(p).trim()) : "")).filter(Boolean);
+        const requestedPath = path.resolve(String(options.diskPath || allowedPaths[0] || "").trim());
+        const diskPath = allowedPaths.includes(requestedPath) ? requestedPath : "";
         if (diskPath && path.isAbsolute(diskPath)) {
           // Wait for killed PTY processes to fully exit (Windows holds file locks until exit)
           await new Promise((resolve) => setTimeout(resolve, 500));

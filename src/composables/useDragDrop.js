@@ -1,8 +1,33 @@
 import { useAppStore } from "../stores/app.js";
 
+function getParentWorkspaceId(ws) {
+  // Azure review or quickfix children reference their parent explicitly
+  if (ws.review?.checkout?.mode === "managed-worktree" && ws.review?.parentWorkspaceId) return ws.review.parentWorkspaceId;
+  if (ws.quickfix?.parentWorkspaceId) return ws.quickfix.parentWorkspaceId;
+  // Legacy worktree children use notes convention
+  if ((ws.notes || "").startsWith("Worktree of ")) {
+    return null; // handled by name-based lookup below
+  }
+  return null;
+}
+
+function isChildOf(child, parentId) {
+  const explicitParent = getParentWorkspaceId(child);
+  if (explicitParent) return explicitParent === parentId;
+  return false;
+}
+
 function getWorktreeGroup(workspaceId, workspaces) {
   const ws = workspaces.find((w) => w.id === workspaceId);
   if (!ws) return [workspaceId];
+
+  // If this workspace is a child, find the parent and build group from there
+  const explicitParentId = getParentWorkspaceId(ws);
+  if (explicitParentId) {
+    const parent = workspaces.find((w) => w.id === explicitParentId);
+    if (parent) return getWorktreeGroup(parent.id, workspaces);
+  }
+  // Legacy worktree child — find parent by name
   if ((ws.notes || "").startsWith("Worktree of ")) {
     const parentName = ws.name.split(" / ")[0];
     const parent = workspaces.find(
@@ -10,9 +35,18 @@ function getWorktreeGroup(workspaceId, workspaces) {
     );
     if (parent) return getWorktreeGroup(parent.id, workspaces);
   }
-  const prefix = ws.name + " / ";
+
+  // This is a parent — collect all children
   const groupIds = [ws.id];
+  const prefix = ws.name + " / ";
   for (const w of workspaces) {
+    if (w.id === ws.id) continue;
+    // Explicit parent reference (review/quickfix children)
+    if (isChildOf(w, ws.id)) {
+      groupIds.push(w.id);
+      continue;
+    }
+    // Legacy worktree children by name convention
     if (w.name.startsWith(prefix) && (w.notes || "").startsWith("Worktree of ")) {
       groupIds.push(w.id);
     }
