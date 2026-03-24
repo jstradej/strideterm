@@ -5,7 +5,7 @@ import {
   firstNonEmpty,
 } from "./azure-devops-utils.js";
 
-export function createAzureApi(fetchImpl) {
+export function createAzureApi(fetchImpl, { auditLogger } = {}) {
   const etagCache = new Map();
   const ETAG_CACHE_MAX_SIZE = 200;
 
@@ -16,6 +16,9 @@ export function createAzureApi(fetchImpl) {
     body = null,
     headers = {},
   } = {}) {
+    const startTime = Date.now();
+    let statusCode = 0;
+
     const requestHeaders = {
       Accept: "application/json",
       "Content-Type": "application/json",
@@ -31,44 +34,62 @@ export function createAzureApi(fetchImpl) {
       }
     }
 
-    const response = await fetchImpl(url, {
-      method,
-      headers: requestHeaders,
-      body: body == null ? undefined : JSON.stringify(body),
-    });
+    try {
+      const response = await fetchImpl(url, {
+        method,
+        headers: requestHeaders,
+        body: body == null ? undefined : JSON.stringify(body),
+      });
 
-    // Return cached response on 304 Not Modified
-    if (response.status === 304 && method === "GET") {
-      const cached = etagCache.get(url);
-      if (cached?.data) return cached.data;
-    }
+      statusCode = response.status;
 
-    if (!response.ok) {
-      const text = await response.text().catch(() => "");
-      let message = text || response.statusText;
-      try {
-        const parsed = JSON.parse(text);
-        message = parsed?.message || parsed?.error?.message || message;
-      } catch {}
-      throw new Error(`Azure DevOps request failed (${response.status}): ${message}`);
-    }
-
-    const data = await response.json();
-
-    // Cache ETag for GET responses
-    if (method === "GET") {
-      const etag = typeof response.headers?.get === "function" ? response.headers.get("etag") : null;
-      if (etag) {
-        // Evict oldest entries if cache grows too large
-        if (etagCache.size >= ETAG_CACHE_MAX_SIZE) {
-          const firstKey = etagCache.keys().next().value;
-          etagCache.delete(firstKey);
+      // Return cached response on 304 Not Modified
+      if (response.status === 304 && method === "GET") {
+        const cached = etagCache.get(url);
+        if (cached?.data) {
+          if (auditLogger) {
+            try { auditLogger({ method, url, statusCode: 304, success: true, durationMs: Date.now() - startTime }); } catch {}
+          }
+          return cached.data;
         }
-        etagCache.set(url, { etag, data });
       }
-    }
 
-    return data;
+      if (!response.ok) {
+        const text = await response.text().catch(() => "");
+        let message = text || response.statusText;
+        try {
+          const parsed = JSON.parse(text);
+          message = parsed?.message || parsed?.error?.message || message;
+        } catch {}
+        throw new Error(`Azure DevOps request failed (${response.status}): ${message}`);
+      }
+
+      const data = await response.json();
+
+      // Cache ETag for GET responses
+      if (method === "GET") {
+        const etag = typeof response.headers?.get === "function" ? response.headers.get("etag") : null;
+        if (etag) {
+          // Evict oldest entries if cache grows too large
+          if (etagCache.size >= ETAG_CACHE_MAX_SIZE) {
+            const firstKey = etagCache.keys().next().value;
+            etagCache.delete(firstKey);
+          }
+          etagCache.set(url, { etag, data });
+        }
+      }
+
+      if (auditLogger) {
+        try { auditLogger({ method, url, statusCode, success: true, durationMs: Date.now() - startTime }); } catch {}
+      }
+
+      return data;
+    } catch (err) {
+      if (auditLogger) {
+        try { auditLogger({ method, url, statusCode, success: false, errorMessage: err.message, durationMs: Date.now() - startTime }); } catch {}
+      }
+      throw err;
+    }
   }
 
   function buildProjectsUrl(connection) {

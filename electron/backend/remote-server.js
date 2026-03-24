@@ -154,6 +154,16 @@ async function handleApiRequest(runtime, request, response) {
       return;
     }
 
+    if (request.method === "POST" && url.pathname === "/api/azure/audit-log/query") {
+      json(response, 200, runtime.queryAzureAuditLog(body));
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/azure/audit-log/stats") {
+      json(response, 200, runtime.getAzureAuditStats(body));
+      return;
+    }
+
     if (request.method === "POST" && url.pathname === "/api/azure/pull-request/seen") {
       json(response, 200, await runtime.markAzurePullRequestSeen(body.prKey));
       return;

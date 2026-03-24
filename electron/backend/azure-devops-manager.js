@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir } from "node:fs/promises";
 import { execFileText } from "./process-utils.js";
 import { createAzureApi } from "./azure-devops-api.js";
+import { classifyAzureRequest, parseAzureUrl } from "./azure-audit-log-store.js";
 import {
   buildPullRequestSummary,
   findWorkspaceForPullRequest,
@@ -82,6 +83,7 @@ export class AzureDevOpsManager extends EventEmitter {
     credentialStore,
     reviewStore,
     reviewBridgeStore = null,
+    auditLogStore = null,
     fetchImpl = globalThis.fetch,
     execFileTextImpl = execFileText,
     now = () => Date.now(),
@@ -90,12 +92,52 @@ export class AzureDevOpsManager extends EventEmitter {
     this.credentialStore = credentialStore;
     this.reviewStore = reviewStore;
     this.reviewBridgeStore = reviewBridgeStore;
+    this.auditLogStore = auditLogStore;
     this.fetchImpl = fetchImpl;
     this.execFileText = execFileTextImpl;
     this.now = now;
-    this.api = createAzureApi(fetchImpl);
+
+    // Audit context — set by the manager before API calls so the logger can enrich entries
+    this._auditConnectionId = "";
+    this._auditUserInitiated = false;
+
+    this.api = createAzureApi(fetchImpl, {
+      auditLogger: (raw) => this._logAudit(raw),
+    });
     this.snapshot = createEmptySnapshot();
     this.syncTimer = null;
+  }
+
+  /**
+   * Log an Azure DevOps API call to the audit store.
+   * Enriches raw request data with current audit context and URL classification.
+   */
+  _logAudit(raw) {
+    if (!this.auditLogStore) return;
+    const classification = classifyAzureRequest(raw.method, raw.url);
+    const urlInfo = parseAzureUrl(raw.url);
+    this.auditLogStore.logEntry({
+      ...classification,
+      timestamp: new Date().toISOString(),
+      connectionId: this._auditConnectionId,
+      organization: urlInfo.organization,
+      project: urlInfo.project,
+      method: raw.method || "GET",
+      url: raw.url || "",
+      statusCode: raw.statusCode,
+      success: raw.success !== false,
+      errorMessage: raw.errorMessage || null,
+      durationMs: raw.durationMs ?? null,
+      userInitiated: this._auditUserInitiated,
+    });
+  }
+
+  /**
+   * Set audit context for the next batch of API calls.
+   */
+  setAuditContext({ connectionId = "", userInitiated = false } = {}) {
+    this._auditConnectionId = connectionId;
+    this._auditUserInitiated = userInitiated;
   }
 
   getSnapshot() {
@@ -128,6 +170,7 @@ export class AzureDevOpsManager extends EventEmitter {
   }
 
   async verifyConnection(connectionInput) {
+    this.setAuditContext({ connectionId: connectionInput.id || "", userInitiated: true });
     const connection = normalizeConnectionInput(connectionInput);
     const token = String(connectionInput.pat || "").trim();
     if (!connection.orgUrl || !connection.login || !token) {
@@ -191,6 +234,7 @@ export class AzureDevOpsManager extends EventEmitter {
     const trackedPullRequests = {};
 
     for (const connection of connections.filter((entry) => entry.enabled !== false)) {
+      this.setAuditContext({ connectionId: connection.id, userInitiated: false });
       const persistedState = reviewState.connections?.[connection.id] || {};
       const connectionSnapshot = createConnectionSnapshot(connection, persistedState);
       connectionSnapshots.push(connectionSnapshot);
@@ -400,6 +444,7 @@ export class AzureDevOpsManager extends EventEmitter {
       return current;
     }
 
+    this.setAuditContext({ connectionId: current.connectionId || "", userInitiated: true });
     const connection = this.findConnection(current.connectionId);
     if (!connection) {
       throw new Error("Azure DevOps connection was not found.");
@@ -877,6 +922,7 @@ export class AzureDevOpsManager extends EventEmitter {
 
   async addPullRequestComment({ prKey, content, threadId = null, parentCommentId = 0 }) {
     const summary = await this.ensurePullRequestDetail(prKey);
+    this.setAuditContext({ connectionId: summary.connectionId || "", userInitiated: true });
     const connection = this.findConnection(summary.connectionId);
     if (!connection) {
       throw new Error("Azure DevOps connection was not found.");
@@ -914,6 +960,7 @@ export class AzureDevOpsManager extends EventEmitter {
 
   async updateThreadStatus({ prKey, threadId, status }) {
     const summary = await this.ensurePullRequestDetail(prKey);
+    this.setAuditContext({ connectionId: summary.connectionId || "", userInitiated: true });
     const connection = this.findConnection(summary.connectionId);
     if (!connection) {
       throw new Error("Azure DevOps connection was not found.");
@@ -935,6 +982,7 @@ export class AzureDevOpsManager extends EventEmitter {
 
   async setPullRequestVote({ prKey, vote }) {
     const summary = await this.ensurePullRequestDetail(prKey);
+    this.setAuditContext({ connectionId: summary.connectionId || "", userInitiated: true });
     const connection = this.findConnection(summary.connectionId);
     if (!connection) {
       throw new Error("Azure DevOps connection was not found.");
@@ -1015,6 +1063,7 @@ export class AzureDevOpsManager extends EventEmitter {
   }
 
   async listRemoteBranches(connectionId, remoteUrl) {
+    this.setAuditContext({ connectionId, userInitiated: true });
     const { connection, token, projectName, repository } = await this.resolveRepository(connectionId, remoteUrl);
     const refs = await this.api.listRepositoryRefs(connection, token, projectName, repository.id, "heads");
     return refs.map((ref) => stripRefsPrefix(ref.name));
@@ -1023,6 +1072,7 @@ export class AzureDevOpsManager extends EventEmitter {
   async createPullRequestForWorkspace({ remoteUrl, sourceBranch, targetBranch, title, description }) {
     const connection = this.findConnectionForRemote(remoteUrl);
     if (!connection) throw new Error("No Azure DevOps connection found for this repository.");
+    this.setAuditContext({ connectionId: connection.id, userInitiated: true });
     const { token, projectName, repository } = await this.resolveRepository(connection.id, remoteUrl);
     const result = await this.api.createPullRequest(connection, token, projectName, repository.id, {
       title,
@@ -1073,6 +1123,7 @@ export class AzureDevOpsManager extends EventEmitter {
   }
 
   async listQuickFixProjects(connectionId) {
+    this.setAuditContext({ connectionId, userInitiated: true });
     const { connection, token } = this.resolveConnectionAndToken(connectionId);
     const projects = await this.api.listProjects(connection, token);
     const filtered = connection.projectFilters?.length
@@ -1082,6 +1133,7 @@ export class AzureDevOpsManager extends EventEmitter {
   }
 
   async listQuickFixRepositories(connectionId, projectName) {
+    this.setAuditContext({ connectionId, userInitiated: true });
     const { connection, token } = this.resolveConnectionAndToken(connectionId);
     const repos = await this.api.listRepositories(connection, token, projectName);
     const filtered = connection.repositoryFilters?.length
@@ -1091,6 +1143,7 @@ export class AzureDevOpsManager extends EventEmitter {
   }
 
   async listQuickFixBranches(connectionId, projectName, repositoryId) {
+    this.setAuditContext({ connectionId, userInitiated: true });
     const { connection, token } = this.resolveConnectionAndToken(connectionId);
     const refs = await this.api.listRepositoryRefs(connection, token, projectName, repositoryId, "heads");
     return refs.map((ref) => stripRefsPrefix(ref.name));

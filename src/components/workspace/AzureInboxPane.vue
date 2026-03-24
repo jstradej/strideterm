@@ -18,7 +18,7 @@
       <div class="azure-inbox__toolbar">
         <div class="azure-inbox__tabs">
           <button v-for="tab in inboxTabs" :key="tab.id" type="button" :class="['azure-tab', activeTab === tab.id && 'azure-tab--active', tab.alert && 'azure-tab--alert']" @click="activeTab = tab.id">
-            {{ tab.label }} <span class="azure-tab__count">{{ tab.count }}</span>
+            {{ tab.label }} <span v-if="tab.count != null" class="azure-tab__count">{{ tab.count }}</span>
           </button>
         </div>
         <div class="azure-inbox__actions">
@@ -60,10 +60,14 @@
               📂 Review root: <code>{{ reviewRoot || 'not set' }}</code>
             </div>
           </template>
+          <!-- Activity log tab -->
+          <template v-else-if="tab.id === 'activity' && activeTab === 'activity'">
+            <AzureAuditLog />
+          </template>
           <!-- PR list tabs — only render when this tab is active -->
           <template v-else-if="activeTab === tab.id">
             <!-- Repo filter -->
-            <div v-if="repoNames.length > 1 && tabItems(activeTab).length" style="display:flex;gap:4px;padding:0 0 8px;flex-wrap:wrap;">
+            <div v-if="repoNames.length > 1 && tabItems(activeTab).length" style="display:flex;gap:4px;padding:0 12px 8px;flex-wrap:wrap;">
               <button type="button" :class="['button', 'button--ghost', !repoFilter && 'button--active']" :style="!repoFilter ? 'font-size:11px;padding:2px 8px;background:var(--accent);color:var(--bg);' : 'font-size:11px;padding:2px 8px;'" @click="repoFilter = ''">All repos</button>
               <button v-for="repo in repoNames" :key="repo" type="button" :class="['button', 'button--ghost', repoFilter === repo && 'button--active']" :style="repoFilter === repo ? 'font-size:11px;padding:2px 8px;background:var(--accent);color:var(--bg);' : 'font-size:11px;padding:2px 8px;'" @click="repoFilter = repoFilter === repo ? '' : repo">{{ repo }}</button>
             </div>
@@ -96,6 +100,7 @@ import { computed, ref } from "vue";
 import { useAppStore } from "../../stores/app.js";
 import PaneShell from "../layout/PaneShell.vue";
 import AzurePrRow from "./azure/AzurePrRow.vue";
+import AzureAuditLog from "./azure/AzureAuditLog.vue";
 
 const props = defineProps({
   workspaceId: { type: String, required: true },
@@ -118,6 +123,7 @@ const inboxTabs = computed(() => [
   { id: "needs-review", label: "Needs review", count: inbox.value.needsMyReview?.length || 0, alert: false, emptyMessage: "No pull requests waiting for your review." },
   { id: "my-prs", label: "My PRs", count: inbox.value.myPullRequests?.length || 0, alert: false, emptyMessage: "You have no active pull requests." },
   { id: "connections", label: "Connections", count: connections.value.length, alert: false },
+  { id: "activity", label: "Activity Log", count: null, alert: false },
 ]);
 
 const repoFilter = ref("");

@@ -18,6 +18,7 @@ import { createPluginManager } from "./plugin-loader.js";
 import { createCredentialStore } from "./credential-store.js";
 import { createAzureReviewStore } from "./azure-review-store.js";
 import { createReviewBridgeStore } from "./review-bridge-store.js";
+import { createAzureAuditLogStore } from "./azure-audit-log-store.js";
 import { buildReviewAgentLaunch, buildMcpServerSpec } from "./review-bridge-agent-launch.js";
 import { AzureDevOpsManager, normalizeConnectionInput, normalizeReviewRoot, shortPathKey } from "./azure-devops-manager.js";
 import { APP_CONFIG } from "../../config/app-config.js";
@@ -269,6 +270,9 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
       });
     },
   });
+  const auditLogDbPath = path.join(reviewBridgeRoot, "azure-audit-log.db");
+  const auditLogStore = createAzureAuditLogStore(auditLogDbPath);
+
   const docker = new DockerManagerImpl();
   const git = new GitManagerImpl();
   const tunnel = new TunnelManagerImpl();
@@ -276,6 +280,7 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
     credentialStore,
     reviewStore: azureReviewStore,
     reviewBridgeStore,
+    auditLogStore,
     fetchImpl: dependencies.fetchImpl || globalThis.fetch,
     execFileTextImpl,
   });
@@ -1512,6 +1517,12 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
       await refreshAzure();
       return getPayload();
     },
+    queryAzureAuditLog(filters = {}) {
+      return auditLogStore.query(filters);
+    },
+    getAzureAuditStats(filters = {}) {
+      return auditLogStore.getStats(filters);
+    },
     async markAzurePullRequestSeen(prKey) {
       await azure.markPullRequestSeen(prKey);
       return getPayload();
@@ -2322,6 +2333,7 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
       await pluginManager.stopAll();
       sessions.stopAll();
       await reviewBridgeStore.close?.();
+      auditLogStore.close?.();
       // State is already persisted on each mutate/replace operation.
       // Avoid rewriting the file on shutdown, which can overwrite newer
       // on-disk state if another instance touched it more recently.

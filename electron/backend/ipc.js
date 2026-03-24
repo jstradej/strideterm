@@ -31,6 +31,8 @@ import {
   quickFixListRepositoriesSchema,
   quickFixListBranchesSchema,
   quickFixCreateSchema,
+  azureAuditLogQuerySchema,
+  azureAuditLogStatsSchema,
 } from "./ipc-schemas.js";
 
 export function registerIpc(runtime, emitToRenderer, { includeStateGet = true } = {}) {
@@ -65,6 +67,8 @@ export function registerIpc(runtime, emitToRenderer, { includeStateGet = true } 
   ipcMain.handle("azure:save-connection", async (_event, connection) => runtime.saveAzureConnection(validateIpc(azureConnectionSchema, connection, "azure:save-connection")));
   ipcMain.handle("azure:delete-connection", async (_event, connectionId) => runtime.deleteAzureConnection(connectionId));
   ipcMain.handle("azure:refresh", async () => runtime.refreshAzureState());
+  ipcMain.handle("azure:audit-log:query", async (_event, payload) => runtime.queryAzureAuditLog(validateIpc(azureAuditLogQuerySchema, payload, "azure:audit-log:query")));
+  ipcMain.handle("azure:audit-log:stats", async (_event, payload) => runtime.getAzureAuditStats(validateIpc(azureAuditLogStatsSchema, payload, "azure:audit-log:stats")));
   ipcMain.handle("azure:pull-request:seen", async (_event, prKey) => runtime.markAzurePullRequestSeen(prKey));
   ipcMain.handle("azure:pull-request:open", async (_event, payload) => runtime.openAzurePullRequest(validateIpc(openPrSchema, payload, "azure:pull-request:open")));
   ipcMain.handle("azure:pull-request:comment", async (_event, payload) => runtime.commentAzurePullRequest(validateIpc(azureCommentSchema, payload, "azure:pull-request:comment")));
@@ -174,6 +178,8 @@ export function registerIpc(runtime, emitToRenderer, { includeStateGet = true } 
     ipcMain.removeHandler("azure:save-connection");
     ipcMain.removeHandler("azure:delete-connection");
     ipcMain.removeHandler("azure:refresh");
+    ipcMain.removeHandler("azure:audit-log:query");
+    ipcMain.removeHandler("azure:audit-log:stats");
     ipcMain.removeHandler("azure:pull-request:seen");
     ipcMain.removeHandler("azure:pull-request:open");
     ipcMain.removeHandler("azure:pull-request:comment");

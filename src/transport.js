@@ -186,6 +186,8 @@ function createRemoteTransport() {
     saveAzureConnection: (connection) => fetchJson("/api/azure/save-connection", { connection }),
     deleteAzureConnection: (connectionId) => fetchJson("/api/azure/delete-connection", { connectionId }),
     refreshAzure: () => fetchJson("/api/azure/refresh", {}),
+    queryAzureAuditLog: (filters) => fetchJson("/api/azure/audit-log/query", filters),
+    getAzureAuditStats: (filters) => fetchJson("/api/azure/audit-log/stats", filters),
     markAzurePullRequestSeen: (prKey) => fetchJson("/api/azure/pull-request/seen", { prKey }),
     openAzurePullRequest: (payload) => fetchJson("/api/azure/pull-request/open", payload),
     commentAzurePullRequest: (payload) => fetchJson("/api/azure/pull-request/comment", payload),

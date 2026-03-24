@@ -175,6 +175,24 @@ export const quickFixCreateSchema = z.object({
   newBranchName: nonEmptyString,
 });
 
+export const azureAuditLogQuerySchema = z.object({
+  from: z.string().optional(),
+  to: z.string().optional(),
+  category: z.string().optional(),
+  connectionId: z.string().optional(),
+  success: z.boolean().optional(),
+  operation: z.string().optional(),
+  userInitiated: z.boolean().optional(),
+  search: z.string().optional(),
+  limit: z.number().int().positive().optional(),
+  offset: z.number().int().min(0).optional(),
+});
+
+export const azureAuditLogStatsSchema = z.object({
+  from: z.string().optional(),
+  connectionId: z.string().optional(),
+});
+
 /**
  * Validate an IPC payload against a Zod schema.
  * Returns { ok: true, data } or throws with a descriptive message.
