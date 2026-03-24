@@ -1,4 +1,6 @@
 import { DatabaseSync } from "node:sqlite";
+import { mkdirSync } from "node:fs";
+import { dirname } from "node:path";
 
 /**
  * Classify an Azure DevOps API request by URL pattern and HTTP method.
@@ -75,6 +77,7 @@ function sanitizeUrl(url) {
 const MAX_RETENTION_DAYS = 30;
 
 export function createAzureAuditLogStore(databasePath) {
+  mkdirSync(dirname(databasePath), { recursive: true });
   const db = new DatabaseSync(databasePath);
 
   db.exec(`
