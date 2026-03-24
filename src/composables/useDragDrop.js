@@ -83,15 +83,49 @@ export function useWorkspaceDragDrop(workspaceListRef) {
     });
   }
 
+  /**
+   * Find the group boundary card element for a drop target.
+   * If the target is inside another group (not the dragged group), snap to group edge:
+   *   - hovering top half → show indicator before the group's first card (parent)
+   *   - hovering bottom half → show indicator after the group's last card
+   * Returns { card, before } or null if drop is not allowed here.
+   */
+  function resolveDropTarget(targetCard, clientY) {
+    if (!targetCard || targetCard.classList.contains("workspace-card--dragging")) return null;
+    const targetId = targetCard.dataset.workspaceId;
+    const workspaces = store.payload?.appState?.workspaces || [];
+    const targetGroup = getWorktreeGroup(targetId, workspaces);
+
+    // Single workspace or the parent itself — allow drop directly
+    if (targetGroup.length <= 1 || targetGroup[0] === targetId) {
+      const rect = targetCard.getBoundingClientRect();
+      return { card: targetCard, before: clientY < rect.top + rect.height / 2 };
+    }
+
+    // Target is a child inside a group — snap to group boundary
+    const cards = Array.from(workspaceListRef.value?.querySelectorAll(".workspace-card") || []);
+    const rect = targetCard.getBoundingClientRect();
+    const before = clientY < rect.top + rect.height / 2;
+
+    if (before) {
+      // Snap to before the parent (first card in group)
+      const parentCard = cards.find((c) => c.dataset.workspaceId === targetGroup[0]);
+      return parentCard ? { card: parentCard, before: true } : null;
+    }
+    // Snap to after the last child in group
+    const lastId = targetGroup[targetGroup.length - 1];
+    const lastCard = cards.find((c) => c.dataset.workspaceId === lastId);
+    return lastCard ? { card: lastCard, before: false } : null;
+  }
+
   function onDragover(event) {
     event.preventDefault();
     event.dataTransfer.dropEffect = "move";
-    const card = event.target.closest(".workspace-card");
     clearDragIndicators();
-    if (card && !card.classList.contains("workspace-card--dragging")) {
-      const rect = card.getBoundingClientRect();
-      const before = event.clientY < rect.top + rect.height / 2;
-      card.classList.add(before ? "workspace-card--drag-before" : "workspace-card--drag-after");
+    const targetCard = event.target.closest(".workspace-card");
+    const resolved = resolveDropTarget(targetCard, event.clientY);
+    if (resolved) {
+      resolved.card.classList.add(resolved.before ? "workspace-card--drag-before" : "workspace-card--drag-after");
     }
   }
 
@@ -102,18 +136,19 @@ export function useWorkspaceDragDrop(workspaceListRef) {
   async function onDrop(event) {
     event.preventDefault();
     const draggedId = event.dataTransfer.getData("text/plain");
-    const dropTarget = event.target.closest(".workspace-card");
     clearDragIndicators();
-    if (!dropTarget || dropTarget.dataset.workspaceId === draggedId) return;
-    const rect = dropTarget.getBoundingClientRect();
-    const insertBefore = event.clientY < rect.top + rect.height / 2;
+    const targetCard = event.target.closest(".workspace-card");
+    const resolved = resolveDropTarget(targetCard, event.clientY);
+    if (!resolved) return;
+    const dropId = resolved.card.dataset.workspaceId;
+    if (dropId === draggedId) return;
     const workspaces = store.payload?.appState?.workspaces || [];
     const allIds = workspaces.map((w) => w.id);
     const groupIds = getWorktreeGroup(draggedId, workspaces);
     const remaining = allIds.filter((id) => !groupIds.includes(id));
-    let toIndex = remaining.indexOf(dropTarget.dataset.workspaceId);
+    let toIndex = remaining.indexOf(dropId);
     if (toIndex < 0) return;
-    if (!insertBefore) toIndex++;
+    if (!resolved.before) toIndex++;
     remaining.splice(toIndex, 0, ...groupIds);
     await store.reorderWorkspaces(remaining);
   }

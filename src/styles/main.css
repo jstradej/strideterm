@@ -877,6 +877,7 @@ dt {
   border: 1px solid color-mix(in srgb, var(--accent), transparent 84%);
   background: color-mix(in srgb, var(--panel-elevated), var(--accent) 6%);
   border-radius: 4px;
+  cursor: grab;
   padding: 5px 7px;
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
@@ -1042,15 +1043,33 @@ dt {
 
 .project--dragging,
 .workspace-card--dragging {
-  opacity: 0.4;
+  opacity: 0.3;
+  cursor: grabbing;
 }
 
-.workspace-card--drag-before {
-  box-shadow: 0 -2px 0 0 var(--accent);
-}
-
+.workspace-card--drag-before,
 .workspace-card--drag-after {
-  box-shadow: 0 2px 0 0 var(--accent);
+  position: relative;
+}
+
+.workspace-card--drag-before::before,
+.workspace-card--drag-after::after {
+  content: '';
+  position: absolute;
+  left: 4px;
+  right: 4px;
+  height: 2px;
+  background: var(--accent);
+  border-radius: 1px;
+  z-index: 2;
+}
+
+.workspace-card--drag-before::before {
+  top: -1px;
+}
+
+.workspace-card--drag-after::after {
+  bottom: -1px;
 }
 
 .workspace-card--worktree {

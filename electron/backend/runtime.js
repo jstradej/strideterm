@@ -1434,7 +1434,6 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
       }
 
       await refreshGit();
-      await refreshAzure();
       ensureVisibleSession();
       broadcastState();
       const result = getPayload();
@@ -1453,10 +1452,6 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
           .filter(Boolean);
       });
 
-      sessions.syncWithState(getState());
-      syncSessionSignalsWithState();
-      await refreshGit();
-      await refreshAzure();
       broadcastState();
       return getPayload();
     },
@@ -1759,7 +1754,7 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
       }
       await azure.fetchReviewWorkspace({ workspace });
       await refreshGit(workspaceId);
-      await refreshAzure();
+      broadcastState();
       return getPayload();
     },
     async rebaseAzureReviewWorkspace(workspaceId) {
@@ -1769,7 +1764,7 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
       }
       await azure.rebaseReviewWorkspace({ workspace });
       await refreshGit(workspaceId);
-      await refreshAzure();
+      broadcastState();
       return getPayload();
     },
     async pushAzureReviewWorkspace(workspaceId, { force = false } = {}) {
@@ -2021,7 +2016,7 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
     },
     async refreshGitState(projectId = null) {
       await refreshGit(projectId);
-      await refreshAzure();
+      broadcastState();
       return getPayload();
     },
     async gitFetch(payload = {}) {

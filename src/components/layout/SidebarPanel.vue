@@ -1,9 +1,19 @@
 <template>
-  <div class="workspace-list" data-role="workspace-list">
+  <div
+    ref="listRef"
+    class="workspace-list"
+    data-role="workspace-list"
+    @dragstart="dragDrop.onDragstart"
+    @dragover.prevent="dragDrop.onDragover"
+    @dragleave="dragDrop.onDragleave"
+    @drop="dragDrop.onDrop"
+    @dragend="dragDrop.onDragend"
+  >
     <WorkspaceCard
       v-for="ws in workspaceCards"
       :key="ws.id"
       :workspace="ws"
+      :data-workspace-id="ws.id"
       @activate="store.activateWorkspace(ws.id)"
       @quick-fix="store.openQuickFixWizard()"
       @create-worktree="$emit('create-worktree', ws.id)"
@@ -32,12 +42,15 @@
 </template>
 
 <script setup>
-import { computed } from "vue";
+import { computed, ref } from "vue";
 import { useAppStore } from "../../stores/app.js";
+import { useWorkspaceDragDrop } from "../../composables/useDragDrop.js";
 import { buildWorkspaceCards } from "../../app/workspace-render.js";
 import WorkspaceCard from "./WorkspaceCard.vue";
 
 const store = useAppStore();
+const listRef = ref(null);
+const dragDrop = useWorkspaceDragDrop(listRef);
 
 const workspaceCards = computed(() => {
   const payload = store.payload;
