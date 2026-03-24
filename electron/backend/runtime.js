@@ -1737,7 +1737,52 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
         title: payload.title,
         description: payload.description || "",
       });
+
+      // Promote quickfix workspace → full review workspace after PR creation
+      if (workspace.quickfix && result.pullRequestId) {
+        const qf = workspace.quickfix;
+        const prKey = azure.buildPrKey(qf.connectionId, qf.repositoryId, result.pullRequestId);
+        await store.mutate((draft) => {
+          const ws = draft.workspaces.find((w) => w.id === workspace.id);
+          if (ws) {
+            ws.name = `${qf.repositoryName} PR #${result.pullRequestId}`;
+            ws.review = {
+              ...(ws.review || {}),
+              provider: "azure-devops",
+              prKey,
+              connectionId: qf.connectionId,
+              orgUrl: ws.review?.orgUrl || "",
+              parentWorkspaceId: ws.review?.parentWorkspaceId || qf.parentWorkspaceId || "",
+              project: { id: "", name: qf.projectName },
+              repository: { id: qf.repositoryId, name: qf.repositoryName, remoteUrl: qf.remoteUrl },
+              pullRequest: {
+                id: result.pullRequestId,
+                title: result.title || payload.title || "",
+                status: "active",
+                mergeStatus: "",
+                url: result.url || "",
+                webUrl: result.url || "",
+                sourceRefName: `refs/heads/${payload.sourceBranch || snapshot.branch}`,
+                targetRefName: `refs/heads/${payload.targetBranch}`,
+              },
+              role: "author",
+              checkout: ws.review?.checkout || {
+                mode: "managed-worktree",
+                rootPath: workspace.cwd,
+                cacheRepoPath: "",
+              },
+            };
+            ws.quickfix = null;
+          }
+        });
+        await azure.reviewStore?.upsertTrackedPullRequest(prKey, {
+          reviewWorkspaceId: workspace.id,
+          lastSeenActivityAt: new Date().toISOString(),
+        });
+      }
+
       await refreshAzure();
+      broadcastState();
       return { payload: getPayload(), result };
     },
     async azureListRemoteBranches(payload = {}) {
@@ -1751,6 +1796,68 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
       const branches = await azure.listRemoteBranches(connection.id, remoteUrl);
       return { branches };
     },
+
+    // --- Quick Fix wizard endpoints -----------------------------------------
+    async azureQuickFixListProjects(payload = {}) {
+      return { projects: await azure.listQuickFixProjects(payload.connectionId) };
+    },
+    async azureQuickFixListRepositories(payload = {}) {
+      return { repositories: await azure.listQuickFixRepositories(payload.connectionId, payload.projectName) };
+    },
+    async azureQuickFixListBranches(payload = {}) {
+      return { branches: await azure.listQuickFixBranches(payload.connectionId, payload.projectName, payload.repositoryId) };
+    },
+    async azureQuickFixCreate(payload = {}) {
+      let result;
+      try {
+        result = await azure.openQuickFixWorkspace({
+          state: getState(),
+          connectionId: payload.connectionId,
+          projectName: payload.projectName,
+          repositoryId: payload.repositoryId,
+          repositoryName: payload.repositoryName,
+          remoteUrl: payload.remoteUrl,
+          baseBranch: payload.baseBranch,
+          newBranchName: payload.newBranchName,
+        });
+      } catch (err) {
+        const message = err instanceof Error
+          ? err.message
+          : (err?.stderr || err?.error?.message || String(err));
+        throw new Error(message);
+      }
+      await store.mutate((draft) => {
+        const normalized = normalizeWorkspace(result.workspace);
+        // Insert after the Azure parent workspace and its existing children
+        const parentId = result.parentWorkspaceId;
+        if (parentId) {
+          let insertIdx = draft.workspaces.findIndex((ws) => ws.id === parentId);
+          if (insertIdx >= 0) {
+            insertIdx++;
+            while (insertIdx < draft.workspaces.length) {
+              const ws = draft.workspaces[insertIdx];
+              const isChild = ws.review?.checkout?.mode === "managed-worktree"
+                || ws.quickfix?.parentWorkspaceId === parentId
+                || ((ws.notes || "").startsWith("Worktree of ") && ws.review?.parentWorkspaceId === parentId);
+              if (!isChild) break;
+              insertIdx++;
+            }
+            draft.workspaces.splice(insertIdx, 0, normalized);
+          } else {
+            draft.workspaces.push(normalized);
+          }
+        } else {
+          draft.workspaces.push(normalized);
+        }
+        draft.activeWorkspaceId = normalized.id;
+      });
+      await refreshGit(result.workspace.id);
+      sessions.syncWithState(getState());
+      ensureVisibleSession(result.workspace.id);
+      broadcastState();
+      return getPayload();
+    },
+
     async regenerateRemoteToken() {
       await store.mutate((draft) => {
         draft.settings.remoteAccess.token = createAccessToken();

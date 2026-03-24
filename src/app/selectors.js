@@ -66,8 +66,8 @@ export function getWorkspaceTabs({
           id: `review:${activeWorkspace.id}`,
           type: "review",
           title: "Review",
-          status: activeWorkspace.review.pullRequest?.title || "Azure review",
-          tone: "running",
+          status: activeWorkspace.review.pullRequest?.title || (activeWorkspace.quickfix ? "No PR yet" : "Azure review"),
+          tone: activeWorkspace.review.pullRequest ? "running" : "idle",
           persistent: true,
           closable: false,
         }]

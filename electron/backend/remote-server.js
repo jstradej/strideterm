@@ -249,6 +249,26 @@ async function handleApiRequest(runtime, request, response) {
       return;
     }
 
+    if (request.method === "POST" && url.pathname === "/api/azure/quickfix/list-projects") {
+      json(response, 200, await runtime.azureQuickFixListProjects(body));
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/azure/quickfix/list-repositories") {
+      json(response, 200, await runtime.azureQuickFixListRepositories(body));
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/azure/quickfix/list-branches") {
+      json(response, 200, await runtime.azureQuickFixListBranches(body));
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/azure/quickfix/create") {
+      json(response, 200, await runtime.azureQuickFixCreate(body));
+      return;
+    }
+
     if (request.method === "POST" && url.pathname === "/api/remote/token/regenerate") {
       json(response, 200, await runtime.regenerateRemoteToken());
       return;

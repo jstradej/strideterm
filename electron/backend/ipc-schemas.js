@@ -150,6 +150,31 @@ export const removeWorktreeSchema = z.object({
   deleteBranch: z.boolean().optional(),
 });
 
+export const quickFixListProjectsSchema = z.object({
+  connectionId: nonEmptyString,
+});
+
+export const quickFixListRepositoriesSchema = z.object({
+  connectionId: nonEmptyString,
+  projectName: nonEmptyString,
+});
+
+export const quickFixListBranchesSchema = z.object({
+  connectionId: nonEmptyString,
+  projectName: nonEmptyString,
+  repositoryId: nonEmptyString,
+});
+
+export const quickFixCreateSchema = z.object({
+  connectionId: nonEmptyString,
+  projectName: nonEmptyString,
+  repositoryId: nonEmptyString,
+  repositoryName: nonEmptyString,
+  remoteUrl: nonEmptyString,
+  baseBranch: nonEmptyString,
+  newBranchName: nonEmptyString,
+});
+
 /**
  * Validate an IPC payload against a Zod schema.
  * Returns { ok: true, data } or throws with a descriptive message.

@@ -45,12 +45,13 @@ export function buildWorkspaceCards({
     const attentionTooltip = attentionTitle(attention);
     const isReviewChild = workspace.review?.provider === "azure-devops"
       && workspace.review?.checkout?.mode === "managed-worktree";
+    const isQuickFixChild = !!workspace.quickfix?.parentWorkspaceId;
     const summary = workspace.kind === "docker"
       ? "Docker"
       : workspace.kind === "azure"
         ? `${workspace.cwd || "Azure inbox"}${workspace.panels?.length ? ` \u00B7 ${workspace.panels.length} review tabs` : ""}`
       : isReviewChild
-        ? `Azure review \u00B7 ${gitSnapshot?.branch || `${workspace.panels.length} tabs`}${gitSnapshot?.dirty ? ` \u00B7 ${gitSnapshot.dirtyCount} dirty` : ""}`
+        ? `${workspace.review?.pullRequest ? "Azure review" : "New branch"} \u00B7 ${gitSnapshot?.branch || `${workspace.panels.length} tabs`}${gitSnapshot?.dirty ? ` \u00B7 ${gitSnapshot.dirtyCount} dirty` : ""}`
       : gitSnapshot?.available
         ? `${gitSnapshot.branch}${gitSnapshot.dirty ? ` \u00B7 ${gitSnapshot.dirtyCount} dirty` : ""}`
         : `${workspace.panels.length} tabs`;
@@ -67,8 +68,9 @@ export function buildWorkspaceCards({
       attentionCount: attention?.count || 0,
       attentionFresh: isFreshAttention(attention),
       attentionTooltip,
+      kind: workspace.kind || "terminal",
       gitAvailable: !!gitSnapshot?.available,
-      isWorktree: (workspace.notes || "").startsWith("Worktree of ") || isReviewChild,
+      isWorktree: (workspace.notes || "").startsWith("Worktree of ") || isReviewChild || isQuickFixChild,
     };
   });
 }

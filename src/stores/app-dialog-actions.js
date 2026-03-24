@@ -198,6 +198,29 @@ export function createDialogActions(ctx) {
     });
   }
 
+  // --- Quick Fix wizard ---------------------------------------------------
+
+  function openQuickFixWizard() {
+    const azureSettings = ctx.payload.value?.appState?.settings?.integrations?.azureDevops || {};
+    const connections = (azureSettings.connections || []).filter((c) => c.enabled !== false);
+    if (!connections.length) {
+      openAzureConnectionDialog("");
+      return;
+    }
+    openDialog("QuickFixWizardDialog", {
+      connections,
+      onCancel: closeDialog,
+      onCreate: (result) => {
+        closeDialog();
+        if (result) {
+          ctx.payload.value = result;
+          ctx.activeViewId.value = null;
+          ctx.splitGroup.value = null;
+        }
+      },
+    });
+  }
+
   // --- Worktree dialog ---------------------------------------------------
 
   function createWorktreeWithDialog(workspaceId) {
@@ -229,6 +252,7 @@ export function createDialogActions(ctx) {
     openHelpDialog,
     openProfilesDialog,
     openAzureConnectionDialog,
+    openQuickFixWizard,
     createWorktreeWithDialog,
   };
 }

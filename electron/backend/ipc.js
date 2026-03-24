@@ -27,6 +27,10 @@ import {
   profileSchema,
   worktreeSchema,
   removeWorktreeSchema,
+  quickFixListProjectsSchema,
+  quickFixListRepositoriesSchema,
+  quickFixListBranchesSchema,
+  quickFixCreateSchema,
 } from "./ipc-schemas.js";
 
 export function registerIpc(runtime, emitToRenderer, { includeStateGet = true } = {}) {
@@ -82,6 +86,10 @@ export function registerIpc(runtime, emitToRenderer, { includeStateGet = true } 
   ipcMain.handle("azure:workspace:push", async (_event, workspaceId, options) => runtime.pushAzureReviewWorkspace(workspaceId, options));
   ipcMain.handle("azure:create-pull-request", async (_event, payload) => runtime.azureCreatePullRequest(validateIpc(gitPayloadSchema, payload, "azure:create-pull-request")));
   ipcMain.handle("azure:list-remote-branches", async (_event, payload) => runtime.azureListRemoteBranches(validateIpc(gitPayloadSchema, payload, "azure:list-remote-branches")));
+  ipcMain.handle("azure:quickfix:list-projects", async (_event, payload) => runtime.azureQuickFixListProjects(validateIpc(quickFixListProjectsSchema, payload, "azure:quickfix:list-projects")));
+  ipcMain.handle("azure:quickfix:list-repositories", async (_event, payload) => runtime.azureQuickFixListRepositories(validateIpc(quickFixListRepositoriesSchema, payload, "azure:quickfix:list-repositories")));
+  ipcMain.handle("azure:quickfix:list-branches", async (_event, payload) => runtime.azureQuickFixListBranches(validateIpc(quickFixListBranchesSchema, payload, "azure:quickfix:list-branches")));
+  ipcMain.handle("azure:quickfix:create", async (_event, payload) => runtime.azureQuickFixCreate(validateIpc(quickFixCreateSchema, payload, "azure:quickfix:create")));
   ipcMain.handle("session:activate", async (_event, sessionId) => runtime.activateSession(sessionId));
   ipcMain.handle("attention:sync", async (_event, payload) => runtime.syncAttentionContext(payload));
   ipcMain.handle("attention:clear-all", async () => runtime.clearAllAttention());
@@ -186,6 +194,10 @@ export function registerIpc(runtime, emitToRenderer, { includeStateGet = true } 
     ipcMain.removeHandler("azure:workspace:push");
     ipcMain.removeHandler("azure:create-pull-request");
     ipcMain.removeHandler("azure:list-remote-branches");
+    ipcMain.removeHandler("azure:quickfix:list-projects");
+    ipcMain.removeHandler("azure:quickfix:list-repositories");
+    ipcMain.removeHandler("azure:quickfix:list-branches");
+    ipcMain.removeHandler("azure:quickfix:create");
     ipcMain.removeHandler("session:activate");
     ipcMain.removeHandler("attention:sync");
     ipcMain.removeHandler("attention:clear-all");

@@ -28,6 +28,7 @@
       <small>{{ workspace.summary }}</small>
     </span>
     <span v-if="workspace.active" class="workspace-card__actions">
+      <button v-if="workspace.kind === 'azure'" class="workspace-card__action" type="button" title="New Branch" @click.stop="$emit('quick-fix')">🪄</button>
       <button v-if="workspace.gitAvailable" class="workspace-card__action" type="button" title="New worktree" @click.stop="$emit('create-worktree')">🌿</button>
       <button class="workspace-card__action" type="button" title="Edit" @click.stop="$emit('edit')">✎</button>
       <button class="workspace-card__action workspace-card__action--danger" type="button" title="Delete" @click.stop="$emit('delete')">✕</button>
@@ -39,5 +40,5 @@
 defineProps({
   workspace: { type: Object, required: true },
 });
-defineEmits(["activate", "create-worktree", "edit", "delete", "dragstart", "dragover", "drop"]);
+defineEmits(["activate", "quick-fix", "create-worktree", "edit", "delete", "dragstart", "dragover", "drop"]);
 </script>

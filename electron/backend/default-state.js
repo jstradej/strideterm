@@ -162,6 +162,17 @@ export function normalizeWorkspace(workspace, index = 0) {
             : null,
         }
       : null,
+    quickfix: workspace.quickfix
+      ? {
+          connectionId: workspace.quickfix.connectionId || "",
+          projectName: workspace.quickfix.projectName || "",
+          repositoryId: workspace.quickfix.repositoryId || "",
+          repositoryName: workspace.quickfix.repositoryName || "",
+          remoteUrl: workspace.quickfix.remoteUrl || "",
+          baseBranch: workspace.quickfix.baseBranch || "",
+          parentWorkspaceId: workspace.quickfix.parentWorkspaceId || "",
+        }
+      : null,
   };
 }
 
@@ -270,6 +281,19 @@ function groupChildWorkspaces(workspaces) {
         ))?.id
         || "";
       addChild(fallbackParent, workspace);
+      continue;
+    }
+
+    if (workspace.quickfix?.parentWorkspaceId) {
+      const parentId = byId.has(workspace.quickfix.parentWorkspaceId)
+        ? workspace.quickfix.parentWorkspaceId
+        : workspaces.find((candidate) => (
+          candidate.kind === "azure"
+          && candidate.id !== workspace.id
+          && (candidate.profileId || "default") === (workspace.profileId || "default")
+        ))?.id
+        || "";
+      addChild(parentId, workspace);
       continue;
     }
 

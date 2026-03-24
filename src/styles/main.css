@@ -3415,7 +3415,8 @@ details[open] > .review-tree-dir__label .review-tree-dir__icon::before {
 .overlay {
   position: fixed;
   inset: 0;
-  background: rgba(5, 10, 18, 0.6);
+  z-index: 9000;
+  background: rgba(5, 10, 18, 0.75);
   display: grid;
   place-items: center;
   padding: 20px;

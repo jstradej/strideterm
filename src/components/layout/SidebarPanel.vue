@@ -5,6 +5,7 @@
       :key="ws.id"
       :workspace="ws"
       @activate="store.activateWorkspace(ws.id)"
+      @quick-fix="store.openQuickFixWizard()"
       @create-worktree="$emit('create-worktree', ws.id)"
       @edit="$emit('edit-workspace', ws.id)"
       @delete="$emit('delete-workspace', ws.id)"

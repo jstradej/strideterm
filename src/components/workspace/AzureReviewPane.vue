@@ -7,7 +7,95 @@
       :actions="headerActions"
       @action="onHeaderAction"
     />
-    <div v-if="!detail" class="terminal-empty">
+    <div v-if="!detail && isPrePrWorkspace" class="git-view review-shell" style="overflow-y:auto;">
+      <div style="padding:16px 20px;max-width:720px;">
+        <div class="section-head">
+          <div>
+            <p class="eyebrow">New Branch</p>
+            <h3>{{ gitSnapshot?.branch || 'Working branch' }}</h3>
+          </div>
+        </div>
+
+        <!-- Workflow steps -->
+        <div style="margin-top:16px;display:grid;gap:8px;">
+          <div :class="['nb-step', hasDirtyOrCommits && 'nb-step--done']">
+            <span class="nb-step__check">{{ hasDirtyOrCommits ? '\u2705' : '\u2B1C' }}</span>
+            <div>
+              <strong>1. Implement your changes</strong>
+              <p>Use the terminal tabs to write code, run tests, and verify your work.</p>
+            </div>
+          </div>
+          <div :class="['nb-step', hasCommits && 'nb-step--done']">
+            <span class="nb-step__check">{{ hasCommits ? '\u2705' : '\u2B1C' }}</span>
+            <div>
+              <strong>2. Commit your changes</strong>
+              <p>{{ gitSnapshot?.dirty ? `You have ${gitSnapshot.dirtyCount} uncommitted file(s).` : hasCommits ? `${gitSnapshot?.aheadCount || 0} commit(s) ready to push.` : 'Working tree is clean. Make some changes first.' }}</p>
+            </div>
+          </div>
+          <div :class="['nb-step', 'nb-step--active']">
+            <span class="nb-step__check">{{ '\u2B1C' }}</span>
+            <div>
+              <strong>3. Create a pull request</strong>
+              <p>{{ hasCommits ? 'Fill in the form below and create your PR.' : 'Commit your changes first, then create a PR.' }}</p>
+            </div>
+          </div>
+        </div>
+
+        <!-- Commits -->
+        <div v-if="hasCommits" style="margin-top:20px;">
+          <p class="eyebrow">Commits ({{ gitSnapshot?.aheadCount || 0 }} ahead of base)</p>
+          <div style="margin-top:6px;">
+            <GitCommitLog
+              :commits="recentCommits"
+              :ahead-count="gitSnapshot?.aheadCount || 0"
+              selected-commit=""
+            />
+          </div>
+        </div>
+
+        <!-- PR creation form -->
+        <div style="margin-top:20px;border-top:1px solid var(--border);padding-top:16px;">
+          <p class="eyebrow">Create Pull Request</p>
+          <h3 style="margin-top:4px;">{{ gitSnapshot?.branch || '?' }} &rarr; {{ prFormTarget || baseBranch || '?' }}</h3>
+          <div class="git-pr-form" style="margin-top:12px;">
+            <label class="git-pr-form__field">
+              <span class="git-pr-form__label">Source branch</span>
+              <input class="git-pr-form__input" type="text" :value="gitSnapshot?.branch || ''" disabled />
+            </label>
+            <label class="git-pr-form__field">
+              <span class="git-pr-form__label">Target branch</span>
+              <select class="git-branch-select" v-model="prFormTarget">
+                <option value="" disabled>-- select target --</option>
+                <option v-for="b in prFormBranches" :key="b" :value="b">{{ b }}</option>
+              </select>
+              <button v-if="!prFormLoadingBranches" type="button" class="button button--ghost button--small" style="margin-left:6px" @click="loadPrBranches">Load remote branches</button>
+              <span v-else style="font-size:12px;color:var(--muted);margin-left:6px;">Loading...</span>
+            </label>
+            <label class="git-pr-form__field">
+              <span class="git-pr-form__label">Title</span>
+              <input class="git-pr-form__input" type="text" v-model="prFormTitle" placeholder="Pull request title" />
+            </label>
+            <label class="git-pr-form__field">
+              <span class="git-pr-form__label">Description</span>
+              <textarea class="git-pr-form__input git-pr-form__textarea" v-model="prFormDescription" placeholder="Optional description" rows="4"></textarea>
+            </label>
+            <div class="git-operation-actions">
+              <button
+                type="button"
+                class="button"
+                :disabled="!prFormCanSubmit || prFormBusy"
+                @click="handleCreatePr"
+              >{{ prFormBusy ? 'Creating…' : 'Create Pull Request' }}</button>
+            </div>
+            <p v-if="prFormResult" :class="['git-card__hint', prFormResult.ok ? '' : 'git-card__hint--warning']">
+              {{ prFormResult.summary }}
+              <a v-if="prFormResult.url" :href="prFormResult.url" @click.prevent="openExternal(prFormResult.url)" style="color:var(--accent);text-decoration:underline;">Open in browser</a>
+            </p>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div v-else-if="!detail" class="terminal-empty">
       <p>Review workspace</p>
       <small>PR data is loading or not available.</small>
     </div>
@@ -251,12 +339,13 @@
 </template>
 
 <script setup>
-import { computed, ref } from "vue";
+import { computed, ref, inject, watch } from "vue";
 import { useAppStore } from "../../stores/app.js";
 import { useGitUiStore } from "../../stores/git-ui.js";
 import { useReviewComments } from "../../composables/useReviewComments.js";
 import PaneShell from "../layout/PaneShell.vue";
 import DiffViewer from "./DiffViewer.vue";
+import GitCommitLog from "./git/GitCommitLog.vue";
 import ReviewSummaryTab from "./azure/ReviewSummaryTab.vue";
 import ReviewCommentsTab from "./azure/ReviewCommentsTab.vue";
 import ReviewAgentTab from "./azure/ReviewAgentTab.vue";
@@ -291,6 +380,117 @@ const changedFiles = computed(() => {
 const agentPrompts = computed(() => reviewBridge.value.agentPrompts || []);
 const gitSnapshot = computed(() => appStore.getGitSnapshot(props.workspaceId));
 const aheadCount = computed(() => gitSnapshot.value?.aheadCount || 0);
+
+// --- Pre-PR (new branch) state ---
+const isPrePrWorkspace = computed(() => !workspace.value?.review?.prKey && workspace.value?.review?.provider === "azure-devops");
+const baseBranch = computed(() => workspace.value?.quickfix?.baseBranch || "");
+const hasDirtyOrCommits = computed(() => !!(gitSnapshot.value?.dirty || (gitSnapshot.value?.aheadCount || 0) > 0));
+const hasCommits = computed(() => (gitSnapshot.value?.aheadCount || 0) > 0);
+const recentCommits = computed(() => {
+  const log = gitSnapshot.value?.log || [];
+  return log;
+});
+const aheadCommits = computed(() => {
+  const log = gitSnapshot.value?.log || [];
+  const ahead = gitSnapshot.value?.aheadCount || 0;
+  return log.slice(0, ahead);
+});
+
+const prFormTarget = ref("");
+const prFormTitle = ref("");
+const prFormDescription = ref("");
+const prFormBranches = ref([]);
+const prFormLoadingBranches = ref(false);
+const prFormBusy = ref(false);
+const prFormResult = ref(null);
+let prFormAutoFilled = false;
+
+const prFormCanSubmit = computed(() => prFormTarget.value && prFormTitle.value.trim());
+
+const api = inject("api");
+
+function generatePrTitleAndDescription() {
+  if (prFormAutoFilled) return;
+  const commits = aheadCommits.value;
+  if (!commits.length) return;
+
+  if (commits.length === 1) {
+    // Single commit: use subject as title
+    prFormTitle.value = commits[0].subject || "";
+  } else {
+    // Multiple commits: use branch name as title, list commits as description
+    const branch = gitSnapshot.value?.branch || "";
+    // Try to extract meaningful name from branch (e.g., "fix/MSP-12345-some-description" → "MSP-12345 some description")
+    const branchSuffix = branch.includes("/") ? branch.split("/").slice(1).join("/") : branch;
+    prFormTitle.value = branchSuffix.replace(/[-_]/g, " ").replace(/\s+/g, " ").trim();
+    prFormDescription.value = commits
+      .map((c) => `- ${c.subject}`)
+      .join("\n");
+  }
+  prFormAutoFilled = true;
+}
+
+async function loadPrBranches() {
+  prFormLoadingBranches.value = true;
+  try {
+    const result = await api.azureListRemoteBranches({ workspaceId: props.workspaceId });
+    prFormBranches.value = result.branches || [];
+    if (!prFormTarget.value) {
+      prFormTarget.value = prFormBranches.value.find((b) => b === baseBranch.value)
+        || prFormBranches.value.find((b) => b === "develop")
+        || prFormBranches.value.find((b) => b === "main")
+        || prFormBranches.value[0] || "";
+    }
+    generatePrTitleAndDescription();
+  } catch {
+    prFormBranches.value = [];
+  } finally {
+    prFormLoadingBranches.value = false;
+  }
+}
+
+// Auto-load branches when pre-PR view is active
+watch(isPrePrWorkspace, (active) => {
+  if (active && !prFormBranches.value.length) {
+    loadPrBranches();
+  }
+}, { immediate: true });
+
+// Auto-generate title when commits change
+watch(aheadCommits, () => {
+  if (isPrePrWorkspace.value && !prFormAutoFilled) {
+    generatePrTitleAndDescription();
+  }
+});
+
+async function handleCreatePr() {
+  if (!prFormCanSubmit.value || prFormBusy.value) return;
+  prFormBusy.value = true;
+  prFormResult.value = null;
+  try {
+    const { result } = await api.azureCreatePullRequest({
+      workspaceId: props.workspaceId,
+      targetBranch: prFormTarget.value,
+      title: prFormTitle.value.trim(),
+      description: prFormDescription.value.trim(),
+    });
+    prFormResult.value = {
+      ok: true,
+      summary: `PR #${result.pullRequestId} created.`,
+      url: result.url,
+    };
+  } catch (err) {
+    prFormResult.value = { ok: false, summary: err?.message || "Failed to create pull request." };
+  } finally {
+    prFormBusy.value = false;
+  }
+}
+
+function openExternal(url) {
+  if (api?.openExternal) api.openExternal(url);
+  else window.open(url, "_blank");
+}
+
 const pushPublishLabel = computed(() => {
   const parts = [];
   if (aheadCount.value > 0) parts.push(`Push (${aheadCount.value})`);
@@ -488,3 +688,40 @@ function openAzureComment() {
   });
 }
 </script>
+
+<style scoped>
+.nb-step {
+  display: flex;
+  gap: 10px;
+  padding: 10px 14px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.03);
+  font-size: 13px;
+}
+
+.nb-step strong {
+  display: block;
+}
+
+.nb-step p {
+  margin: 2px 0 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.nb-step--done {
+  opacity: 0.5;
+}
+
+.nb-step--active {
+  border-color: var(--accent, #ffa424);
+  background: rgba(255, 164, 36, 0.06);
+}
+
+.nb-step__check {
+  font-size: 16px;
+  flex-shrink: 0;
+  line-height: 1.2;
+}
+</style>

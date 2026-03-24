@@ -22,8 +22,9 @@
           </button>
         </div>
         <div class="azure-inbox__actions">
+          <button type="button" class="button" @click="appStore.openQuickFixWizard()">New Branch</button>
           <button type="button" :class="['button', 'button--ghost', busyAction === 'refresh' && 'button--busy']" :disabled="!!busyAction" @click="handleRefresh">{{ busyAction === 'refresh' ? 'Refreshing…' : 'Refresh' }}</button>
-          <button type="button" class="button" @click="appStore.openAzureConnectionDialog('')">Add connection</button>
+          <button type="button" class="button button--ghost" @click="appStore.openAzureConnectionDialog('')">Add connection</button>
         </div>
       </div>
 
