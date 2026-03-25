@@ -242,6 +242,7 @@ export class SessionManager extends EventEmitter {
   }
 
   removeWorkspaceSessions(workspaceId) {
+    const exitPromises = [];
     for (const [sessionId, session] of this.sessions.entries()) {
       if (session.workspaceId !== workspaceId) {
         continue;
@@ -249,10 +250,16 @@ export class SessionManager extends EventEmitter {
 
       if (session.processHandle) {
         this.suppressNextExit(sessionId);
-        session.processHandle.kill();
+        const handle = session.processHandle;
+        exitPromises.push(new Promise((resolve) => {
+          const timeout = setTimeout(resolve, 5000);
+          handle.onExit(() => { clearTimeout(timeout); resolve(); });
+        }));
+        handle.kill();
       }
       this.sessions.delete(sessionId);
     }
+    return exitPromises.length ? Promise.all(exitPromises) : Promise.resolve();
   }
 
   syncWithState(state) {

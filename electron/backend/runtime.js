@@ -1379,7 +1379,7 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
         }
       });
 
-      sessions.removeWorkspaceSessions(workspaceId);
+      const sessionsExited = sessions.removeWorkspaceSessions(workspaceId);
       for (const sessionId of [...sessionSignals.keys()]) {
         if (sessionId.startsWith(`${workspaceId}:`)) {
           deleteSessionSignal(sessionId);
@@ -1399,7 +1399,7 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
         const diskPath = allowedPaths.includes(requestedPath) ? requestedPath : "";
         if (diskPath && path.isAbsolute(diskPath)) {
           // Wait for killed PTY processes to fully exit (Windows holds file locks until exit)
-          await new Promise((resolve) => setTimeout(resolve, 500));
+          await sessionsExited;
 
           // Try git worktree remove first — cleans both directory and cache repo reference
           const cacheRepoPath = workspace.review?.checkout?.cacheRepoPath || "";

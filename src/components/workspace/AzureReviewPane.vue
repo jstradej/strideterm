@@ -469,6 +469,18 @@ async function handleCreatePr() {
   prFormBusy.value = true;
   prFormResult.value = null;
   try {
+    // Check for unpushed commits
+    if (aheadCount.value > 0) {
+      const pushConfirmed = window.confirm(
+        `You have ${aheadCount.value} unpushed commit(s). Push to remote before creating the PR?`,
+      );
+      if (!pushConfirmed) {
+        prFormResult.value = { ok: false, summary: "Push your commits to remote first, then try again." };
+        return;
+      }
+      await appStore.azurePushReviewWorkspace(props.workspaceId);
+    }
+
     const { result } = await api.azureCreatePullRequest({
       workspaceId: props.workspaceId,
       targetBranch: prFormTarget.value,
