@@ -11,7 +11,7 @@
     <template v-else-if="activeWorkspace?.kind === 'azure'">
       <div class="workspace-meta" :style="`--accent:${safeColor(activeWorkspace.color)}`">
         <div class="workspace-meta__main">
-          <span class="workspace-meta__path" :title="activeWorkspace.cwd || ''">{{ activeWorkspace.cwd || 'Azure DevOps inbox' }}</span>
+          <span class="workspace-meta__path workspace-meta__path--copyable" :title="activeWorkspace.cwd ? 'Click to copy path' : ''" @click="copyPath">{{ pathCopied ? 'Copied!' : (activeWorkspace.cwd || 'Azure DevOps inbox') }}</span>
         </div>
         <div class="workspace-meta__stats">
           <span class="workspace-chip"><strong>Azure</strong> inbox</span>
@@ -31,7 +31,7 @@
     <template v-else>
       <div class="workspace-meta" :style="`--accent:${safeColor(activeWorkspace.color)}`">
         <div class="workspace-meta__main">
-          <span class="workspace-meta__path" :title="activeWorkspace.cwd || ''">{{ activeWorkspace.cwd || 'Not set' }}</span>
+          <span class="workspace-meta__path workspace-meta__path--copyable" :title="activeWorkspace.cwd ? 'Click to copy path' : ''" @click="copyPath">{{ pathCopied ? 'Copied!' : (activeWorkspace.cwd || 'Not set') }}</span>
         </div>
         <div class="workspace-meta__stats">
           <span class="workspace-chip"><strong>{{ sessionCount }}</strong> tabs</span>
@@ -64,12 +64,24 @@
 </template>
 
 <script setup>
-import { computed, inject } from "vue";
+import { computed, inject, ref } from "vue";
 import { useAppStore } from "../../stores/app.js";
 import { safeColor, attentionTitle, isFreshAttention, isContainerRunning } from "../../app/helpers.js";
 
 const api = inject("api");
 const store = useAppStore();
+
+const pathCopied = ref(false);
+let pathCopiedTimer = null;
+function copyPath() {
+  const cwd = activeWorkspace.value?.cwd;
+  if (!cwd) return;
+  navigator.clipboard.writeText(cwd).then(() => {
+    pathCopied.value = true;
+    clearTimeout(pathCopiedTimer);
+    pathCopiedTimer = setTimeout(() => { pathCopied.value = false; }, 1200);
+  });
+}
 
 const isRemote = computed(() => api?.isRemote || false);
 const workspace = computed(() => store.payload?.workspace || null);

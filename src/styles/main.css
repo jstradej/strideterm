@@ -1347,7 +1347,8 @@ dt {
 }
 
 .workspace-meta button,
-.workspace-meta a {
+.workspace-meta a,
+.workspace-meta__path--copyable {
   -webkit-app-region: no-drag;
 }
 
@@ -1382,6 +1383,14 @@ dt {
   overflow: hidden;
   text-overflow: ellipsis;
   max-width: 100%;
+}
+
+.workspace-meta__path--copyable {
+  cursor: pointer;
+}
+
+.workspace-meta__path--copyable:hover {
+  color: var(--fg);
 }
 
 .workspace-meta__notes {

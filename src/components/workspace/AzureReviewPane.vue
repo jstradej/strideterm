@@ -14,25 +14,26 @@
             <p class="eyebrow">New Branch</p>
             <h3>{{ gitSnapshot?.branch || 'Working branch' }}</h3>
           </div>
+          <button type="button" class="button button--ghost button--small" :disabled="busyAction === 'refresh'" @click="handleRefresh">{{ busyAction === 'refresh' ? 'Refreshing…' : '↻ Refresh' }}</button>
         </div>
 
         <!-- Workflow steps -->
         <div style="margin-top:16px;display:grid;gap:8px;">
-          <div :class="['nb-step', hasDirtyOrCommits && 'nb-step--done']">
+          <div :class="['nb-step', hasDirtyOrCommits && 'nb-step--done', !hasDirtyOrCommits && 'nb-step--active']">
             <span class="nb-step__check">{{ hasDirtyOrCommits ? '\u2705' : '\u2B1C' }}</span>
             <div>
               <strong>1. Implement your changes</strong>
               <p>Use the terminal tabs to write code, run tests, and verify your work.</p>
             </div>
           </div>
-          <div :class="['nb-step', hasCommits && 'nb-step--done']">
+          <div :class="['nb-step', hasCommits && 'nb-step--done', hasDirtyOrCommits && !hasCommits && 'nb-step--active']">
             <span class="nb-step__check">{{ hasCommits ? '\u2705' : '\u2B1C' }}</span>
             <div>
               <strong>2. Commit your changes</strong>
               <p>{{ gitSnapshot?.dirty ? `You have ${gitSnapshot.dirtyCount} uncommitted file(s).` : hasCommits ? `${gitSnapshot?.aheadCount || 0} commit(s) ready to push.` : 'Working tree is clean. Make some changes first.' }}</p>
             </div>
           </div>
-          <div :class="['nb-step', 'nb-step--active']">
+          <div :class="['nb-step', hasCommits && 'nb-step--active']">
             <span class="nb-step__check">{{ '\u2B1C' }}</span>
             <div>
               <strong>3. Create a pull request</strong>
@@ -554,6 +555,18 @@ const headerActions = computed(() => [
 function onHeaderAction(action) {
   if (action.action === "refresh-azure") appStore.refreshAzure();
 }
+
+// Auto-refresh when the Review pane becomes the active view
+watch(
+  () => appStore.activeViewId,
+  (viewId) => {
+    if (viewId === `review:${props.workspaceId}`) {
+      appStore.refreshAzure();
+      if (prKey.value) appStore.markAzurePrSeen(prKey.value);
+    }
+  },
+  { immediate: true },
+);
 
 // Busy state for async toolbar actions
 const busyAction = ref("");

@@ -1563,6 +1563,8 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
       return getPayload();
     },
     async refreshAzureState() {
+      const activeWsId = getState().activeWorkspaceId;
+      await refreshGit(activeWsId);
       await refreshAzure();
       return getPayload();
     },
