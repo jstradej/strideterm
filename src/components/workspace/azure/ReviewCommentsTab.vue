@@ -89,7 +89,7 @@
                 <MarkdownContent :text="draft.body || ''" />
               </div>
               <div class="docker-card__actions" style="margin-top:6px;">
-                <button v-if="draft.status !== 'ready-to-sync'" type="button" class="button button--ghost" style="font-size:11px;padding:2px 8px;" :disabled="!!busyAction" title="Edit the text of this draft reply" @click="editDraft(thread)">Edit</button>
+                <button v-if="draft.status !== 'synced'" type="button" class="button button--ghost" style="font-size:11px;padding:2px 8px;" :disabled="!!busyAction" title="Edit the text of this draft reply" @click="editDraft(thread)">Edit</button>
                 <button type="button" :class="['button', 'button--ghost', 'danger', busyAction === `delete-${draft.draftId}` && 'button--busy']" style="font-size:11px;padding:2px 8px;" :disabled="!!busyAction" title="Permanently delete this draft reply" @click="handleDeleteDraft(draft.draftId)">Delete</button>
               </div>
             </div>
@@ -140,7 +140,7 @@
                 <MarkdownContent :text="draft.body || ''" />
               </div>
               <div class="docker-card__actions" style="margin-top:6px;">
-                <button v-if="draft.status !== 'ready-to-sync'" type="button" class="button button--ghost" style="font-size:11px;padding:2px 8px;" :disabled="!!busyAction" title="Edit the text of this draft" @click="editLocalDraft(comment)">Edit</button>
+                <button v-if="draft.status !== 'synced'" type="button" class="button button--ghost" style="font-size:11px;padding:2px 8px;" :disabled="!!busyAction" title="Edit the text of this draft" @click="editLocalDraft(comment)">Edit</button>
                 <button type="button" :class="['button', 'button--ghost', 'danger', busyAction === `deleteComment-${comment.commentKey}` && 'button--busy']" style="font-size:11px;padding:2px 8px;" :disabled="!!busyAction" title="Permanently delete this comment and its draft" @click="handleDeleteComment(comment.commentKey)">Delete</button>
               </div>
             </div>
@@ -308,7 +308,7 @@ function replyToThread(thread) {
 
 function editDraft(thread) {
   const drafts = props.draftsByThread(thread);
-  const draft = drafts.find((d) => d.status === "draft") || null;
+  const draft = drafts.find((d) => d.status !== "synced") || null;
   const commentKey = props.threadToCommentKey.get(String(thread.id)) || "";
   appStore.openDialog("TextAreaDialog", {
     eyebrow: "Review Bridge",
@@ -324,7 +324,7 @@ function editDraft(thread) {
 
 function editLocalDraft(comment) {
   const drafts = props.draftsByComment(comment);
-  const draft = drafts.find((d) => d.status === "draft") || null;
+  const draft = drafts.find((d) => d.status !== "synced") || null;
   appStore.openDialog("TextAreaDialog", {
     eyebrow: "Review Bridge",
     title: draft ? "Edit draft" : "Add draft",

@@ -274,7 +274,7 @@ export function createAzureApi(fetchImpl, { auditLogger } = {}) {
     return result.value || [];
   }
 
-  async function createPullRequest(connection, token, projectName, repositoryId, { title, description, sourceBranch, targetBranch }) {
+  async function createPullRequest(connection, token, projectName, repositoryId, { title, description, sourceBranch, targetBranch, isDraft = false }) {
     return requestJson(buildCreatePullRequestUrl(connection, projectName, repositoryId), {
       login: connection.login,
       token,
@@ -284,6 +284,7 @@ export function createAzureApi(fetchImpl, { auditLogger } = {}) {
         targetRefName: targetBranch.startsWith("refs/") ? targetBranch : `refs/heads/${targetBranch}`,
         title,
         description: description || "",
+        isDraft,
       },
     });
   }

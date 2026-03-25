@@ -4,7 +4,20 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import { createReviewBridgeStore } from "./review-bridge-store.js";
 
-function readContextOrThrow(store, prKey) {
+function resolvePrKey(store, { prKey, workspaceId }) {
+  if (prKey) return prKey;
+  if (workspaceId) {
+    const resolved = store.getPrKeyByWorkspaceId?.(workspaceId);
+    if (resolved) return resolved;
+  }
+  return null;
+}
+
+function readContextOrThrow(store, keySpec) {
+  const prKey = resolvePrKey(store, keySpec);
+  if (!prKey) {
+    throw new Error("No pull request found for this workspace yet. Create a PR first.");
+  }
   const context = store.getPullRequestContext?.(prKey);
   if (!context) {
     throw new Error(`Review bridge context was not found for ${prKey}.`);
@@ -159,10 +172,11 @@ function toolResult(text, structuredContent) {
   };
 }
 
-export function createReviewBridgeMcpHandlers({ store, prKey }) {
+export function createReviewBridgeMcpHandlers({ store, prKey, workspaceId }) {
+  const keySpec = { prKey, workspaceId };
   return {
     listReviewComments() {
-      const context = readContextOrThrow(store, prKey);
+      const context = readContextOrThrow(store, keySpec);
       const { text, comments } = formatCommentList(context);
       return toolResult(text, {
         prKey: context.prKey,
@@ -170,7 +184,7 @@ export function createReviewBridgeMcpHandlers({ store, prKey }) {
       });
     },
     getReviewComment({ index = null, commentKey = "" } = {}) {
-      const context = readContextOrThrow(store, prKey);
+      const context = readContextOrThrow(store, keySpec);
       const selection = resolveComment(context, { index, commentKey });
       const detail = formatCommentDetail(context, selection);
       return toolResult(detail.text, {
@@ -179,8 +193,10 @@ export function createReviewBridgeMcpHandlers({ store, prKey }) {
       });
     },
     async createDraftComment({ body, title = "", filePath = "", lineNumber = null, priority = "medium", authorAgent = "" }) {
+      const resolvedPrKey = resolvePrKey(store, keySpec);
+      if (!resolvedPrKey) throw new Error("No pull request found for this workspace yet. Create a PR first.");
       const context = await store.createDraftComment({
-        prKey,
+        prKey: resolvedPrKey,
         body,
         title,
         filePath,
@@ -199,7 +215,7 @@ export function createReviewBridgeMcpHandlers({ store, prKey }) {
           ? `Created draft comment ${comment.index}. ${comment.title}`
           : "Created draft comment.",
         {
-          prKey,
+          prKey: resolvedPrKey,
           comment,
           draft: latestDraft ? serializeDraft(latestDraft) : null,
         },
@@ -213,10 +229,10 @@ export function createReviewBridgeMcpHandlers({ store, prKey }) {
       confidence = null,
       needsHumanApproval = true,
     }) {
-      const baseContext = readContextOrThrow(store, prKey);
+      const baseContext = readContextOrThrow(store, keySpec);
       const selection = resolveComment(baseContext, { index, commentKey });
       await store.saveDraftResponse({
-        prKey,
+        prKey: baseContext.prKey,
         commentKey: selection.comment.commentKey,
         body,
         authorAgent,
@@ -225,41 +241,41 @@ export function createReviewBridgeMcpHandlers({ store, prKey }) {
       });
       // Auto-queue: agent-created drafts go straight to the publish queue
       const context = await store.queueDraftResponse({
-        prKey,
+        prKey: baseContext.prKey,
         commentKey: selection.comment.commentKey,
       });
       const latestDraft = context?.drafts.find((entry) => entry.commentKey === selection.comment.commentKey) || null;
       return toolResult(
         `Saved and queued draft for comment ${selection.comment.displayIndex}.`,
         {
-          prKey,
+          prKey: baseContext.prKey,
           comment: serializeComment(selection.comment),
           draft: latestDraft ? serializeDraft(latestDraft) : null,
         },
       );
     },
     async queueReviewDraft({ index = null, commentKey = "" }) {
-      const contextBefore = readContextOrThrow(store, prKey);
+      const contextBefore = readContextOrThrow(store, keySpec);
       const selection = resolveComment(contextBefore, { index, commentKey });
       const context = await store.queueDraftResponse({
-        prKey,
+        prKey: contextBefore.prKey,
         commentKey: selection.comment.commentKey,
       });
       const latestDraft = context?.drafts.find((entry) => entry.commentKey === selection.comment.commentKey) || null;
       return toolResult(
         `Queued draft for comment ${selection.comment.displayIndex}.`,
         {
-          prKey,
+          prKey: contextBefore.prKey,
           comment: serializeComment(selection.comment),
           draft: latestDraft ? serializeDraft(latestDraft) : null,
         },
       );
     },
     async replyWithCodeChanges({ index = null, commentKey = "", body = "", authorAgent = "" }) {
-      const baseContext = readContextOrThrow(store, prKey);
+      const baseContext = readContextOrThrow(store, keySpec);
       const selection = resolveComment(baseContext, { index, commentKey });
       const context = await store.replyWithCodeChanges({
-        prKey,
+        prKey: baseContext.prKey,
         commentKey: selection.comment.commentKey,
         body,
         authorAgent,
@@ -269,7 +285,7 @@ export function createReviewBridgeMcpHandlers({ store, prKey }) {
       return toolResult(
         `Queued reply for comment #${selection.comment.displayIndex}: ${body}`,
         {
-          prKey,
+          prKey: baseContext.prKey,
           comment: serializeComment(selection.comment),
           draft: latestDraft ? serializeDraft(latestDraft) : null,
           hasCodeChanges: true,
@@ -296,19 +312,21 @@ export function parseReviewBridgeMcpArgs(argv = process.argv.slice(1)) {
   return {
     rootPath: readFlag("--review-root"),
     prKey: readFlag("--review-pr-key"),
+    workspaceId: readFlag("--review-workspace-id"),
   };
 }
 
-export async function runReviewBridgeMcpServer({ rootPath, prKey }) {
+export async function runReviewBridgeMcpServer({ rootPath, prKey, workspaceId }) {
   if (!rootPath) {
     throw new Error("Missing --review-root for review bridge MCP mode.");
   }
-  if (!prKey) {
-    throw new Error("Missing --review-pr-key for review bridge MCP mode.");
+  if (!prKey && !workspaceId) {
+    throw new Error("Missing --review-pr-key or --review-workspace-id for review bridge MCP mode.");
   }
 
   const store = await createReviewBridgeStore(rootPath);
-  const handlers = createReviewBridgeMcpHandlers({ store, prKey });
+  const keySpec = { prKey, workspaceId };
+  const handlers = createReviewBridgeMcpHandlers({ store, prKey, workspaceId });
   const server = new McpServer({
     name: "strideterm-review-bridge",
     version: "1.0.0",
@@ -319,7 +337,7 @@ export async function runReviewBridgeMcpServer({ rootPath, prKey }) {
     description: "Current PR review brief exported by strIDEterm.",
     mimeType: "text/markdown",
   }, async () => {
-    const context = readContextOrThrow(store, prKey);
+    const context = readContextOrThrow(store, keySpec);
     const text = await fs.readFile(context.briefMarkdownPath, "utf8").catch(() => "");
     return {
       contents: [
@@ -341,7 +359,7 @@ export async function runReviewBridgeMcpServer({ rootPath, prKey }) {
         content: {
           type: "text",
           text: [
-            `Review the PR comments for ${prKey}.`,
+            `Review the PR comments for ${prKey || workspaceId || "this workspace"}.`,
             "1. Start with list_review_comments to see all comment threads and their current status.",
             "2. For each comment that needs attention (status: ready-for-agent), use get_review_comment to read the full thread with code context.",
             "3. Write thoughtful draft replies with save_review_draft. Focus on actionable, specific feedback.",

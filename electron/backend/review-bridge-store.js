@@ -441,6 +441,9 @@ export async function createReviewBridgeStore(rootPath) {
     selectPullRequestContext: db.prepare(`
       SELECT * FROM pull_requests WHERE pr_key = ?
     `),
+    selectPrKeyByWorkspaceId: db.prepare(`
+      SELECT pr_key FROM pull_requests WHERE review_workspace_id = ? ORDER BY rowid DESC LIMIT 1
+    `),
     selectThreadsForPr: db.prepare(`
       SELECT * FROM review_threads WHERE pr_key = ? ORDER BY COALESCE(updated_at, published_at, '') DESC, remote_thread_id DESC
     `),
@@ -663,6 +666,13 @@ export async function createReviewBridgeStore(rootPath) {
         return null;
       }
       return readContext(prKey);
+    },
+    getPrKeyByWorkspaceId(workspaceId) {
+      if (closed || !workspaceId) {
+        return null;
+      }
+      const row = statements.selectPrKeyByWorkspaceId.get(workspaceId);
+      return row?.pr_key || null;
     },
     async syncPullRequest(summary) {
       ensureOpen();

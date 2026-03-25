@@ -1069,7 +1069,7 @@ export class AzureDevOpsManager extends EventEmitter {
     return refs.map((ref) => stripRefsPrefix(ref.name));
   }
 
-  async createPullRequestForWorkspace({ remoteUrl, sourceBranch, targetBranch, title, description }) {
+  async createPullRequestForWorkspace({ remoteUrl, sourceBranch, targetBranch, title, description, isDraft = false }) {
     const connection = this.findConnectionForRemote(remoteUrl);
     if (!connection) throw new Error("No Azure DevOps connection found for this repository.");
     this.setAuditContext({ connectionId: connection.id, userInitiated: true });
@@ -1079,6 +1079,7 @@ export class AzureDevOpsManager extends EventEmitter {
       description,
       sourceBranch,
       targetBranch,
+      isDraft,
     });
     return {
       pullRequestId: result.pullRequestId,
@@ -1087,7 +1088,7 @@ export class AzureDevOpsManager extends EventEmitter {
     };
   }
 
-  async pushReviewWorkspace({ workspace, force = false }) {
+  async pushReviewWorkspace({ workspace, force = false, branch = "" }) {
     const connection = this.findConnection(workspace.review?.connectionId);
     if (!connection) {
       throw new Error("Azure DevOps connection was not found.");
@@ -1096,10 +1097,14 @@ export class AzureDevOpsManager extends EventEmitter {
     if (!token) {
       throw new Error("PAT is missing.");
     }
-    const sourceBranch = stripRefsPrefix(workspace.review?.pullRequest?.sourceRefName);
+    const prRef = stripRefsPrefix(workspace.review?.pullRequest?.sourceRefName);
+    const sourceBranch = prRef || branch;
+    if (!sourceBranch) {
+      throw new Error("Cannot determine branch name for push.");
+    }
     const pushArgs = force
-      ? ["push", "--force-with-lease", "origin", `HEAD:${sourceBranch}`]
-      : ["push", "origin", `HEAD:${sourceBranch}`];
+      ? ["push", "--force-with-lease", "-u", "origin", sourceBranch]
+      : ["push", "-u", "origin", sourceBranch];
     await this.runGit(workspace.cwd, pushArgs, {
       login: connection.login,
       token,

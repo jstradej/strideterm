@@ -124,10 +124,18 @@ function pushWorkspaceScope(args, workspaceCwd) {
 
 function buildReviewPrompt(context) {
   const repository = String(context?.repository?.name || context?.repository?.id || "the repository").trim();
-  const pullRequestId = Number.isInteger(context?.pullRequest?.id) ? `PR #${context.pullRequest.id}` : "this PR";
+  const pullRequestId = Number.isInteger(context?.pullRequest?.id) ? `PR #${context.pullRequest.id}` : null;
   const title = String(context?.pullRequest?.title || "").trim();
-  const label = title ? `${pullRequestId} (${title})` : pullRequestId;
 
+  if (!pullRequestId) {
+    return [
+      "You are working inside a strIDEterm review workspace.",
+      "Review MCP tools are available but will activate once a pull request is created.",
+      "For now, focus on implementing and committing your changes.",
+    ].join(" ");
+  }
+
+  const label = title ? `${pullRequestId} (${title})` : pullRequestId;
   return [
     `You are working inside a strIDEterm review workspace for ${label} in ${repository}.`,
     "Use the embedded review MCP tools first.",
@@ -205,9 +213,14 @@ function buildMcpServerSpec({ context, processInfo }) {
     "--review-bridge-mcp",
     "--review-root",
     String(context?.rootPath || ""),
-    "--review-pr-key",
-    String(context?.prKey || ""),
   ];
+  const workspaceId = context?.reviewWorkspaceId || context?.workspaceId || "";
+  if (workspaceId) {
+    args.push("--review-workspace-id", String(workspaceId));
+  }
+  if (context?.prKey) {
+    args.push("--review-pr-key", String(context.prKey));
+  }
 
   const platform = processInfo?.platform || process.platform;
   if (platform === "win32") {
@@ -360,7 +373,7 @@ export function detectReviewAgentPanel(panel = {}) {
 export { buildMcpServerSpec };
 
 export function buildReviewAgentLaunch({ workspace, panel, context, processInfo }) {
-  if (!workspace?.review?.prKey || !context?.prKey || !context?.rootPath) {
+  if (!context?.rootPath) {
     return null;
   }
 

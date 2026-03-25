@@ -80,13 +80,17 @@
               <span class="git-pr-form__label">Description</span>
               <textarea class="git-pr-form__input git-pr-form__textarea" v-model="prFormDescription" placeholder="Optional description" rows="4"></textarea>
             </label>
+            <label class="git-pr-form__field" style="flex-direction:row;align-items:center;gap:8px;">
+              <input type="checkbox" v-model="prFormDraft" />
+              <span>Create as draft</span>
+            </label>
             <div class="git-operation-actions">
               <button
                 type="button"
                 class="button"
                 :disabled="!prFormCanSubmit || prFormBusy"
                 @click="handleCreatePr"
-              >{{ prFormBusy ? 'Creating…' : 'Create Pull Request' }}</button>
+              >{{ prFormBusy ? 'Creating…' : (prFormDraft ? 'Create Draft Pull Request' : 'Create Pull Request') }}</button>
             </div>
             <p v-if="prFormResult" :class="['git-card__hint', prFormResult.ok ? '' : 'git-card__hint--warning']">
               {{ prFormResult.summary }}
@@ -404,6 +408,7 @@ const prFormBranches = ref([]);
 const prFormLoadingBranches = ref(false);
 const prFormBusy = ref(false);
 const prFormResult = ref(null);
+const prFormDraft = ref(false);
 let prFormAutoFilled = false;
 
 const prFormCanSubmit = computed(() => prFormTarget.value && prFormTitle.value.trim());
@@ -486,6 +491,7 @@ async function handleCreatePr() {
       targetBranch: prFormTarget.value,
       title: prFormTitle.value.trim(),
       description: prFormDescription.value.trim(),
+      isDraft: prFormDraft.value,
     });
     prFormResult.value = {
       ok: true,
@@ -699,7 +705,7 @@ function changeTypeLabel(t) { return t === "add" ? "A" : t === "delete" ? "D" : 
 
 function openBrowser() {
   const url = pullRequest.value.webUrl || pullRequest.value.url || "";
-  if (url) window.open(url, "_blank", "noopener,noreferrer");
+  if (url) openExternal(url);
 }
 
 function openAzureComment() {

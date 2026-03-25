@@ -165,6 +165,7 @@ describe("parseReviewBridgeMcpArgs", () => {
     ])).toEqual({
       rootPath: "C:/bridge",
       prKey: "ado-main:repo-1:123",
+      workspaceId: "",
     });
   });
 });

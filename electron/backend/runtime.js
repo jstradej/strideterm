@@ -253,13 +253,20 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
       };
     },
     getSessionLaunch: ({ workspace, panel }) => {
-      if (workspace?.review?.provider !== "azure-devops" || !workspace.review?.prKey) {
+      if (workspace?.review?.provider !== "azure-devops") {
         return null;
       }
 
-      const context = reviewBridgeStore.getPullRequestContext?.(workspace.review.prKey);
+      // Build context from PR data if available, or minimal context for pre-PR workspaces
+      let context = workspace.review.prKey
+        ? reviewBridgeStore.getPullRequestContext?.(workspace.review.prKey)
+        : null;
+
       if (!context) {
-        return null;
+        // Pre-PR workspace: provide minimal context with workspaceId for dynamic prKey resolution
+        const rootPath = reviewBridgeStore.getRootPath?.() || "";
+        if (!rootPath) return null;
+        context = { rootPath, workspaceId: workspace.id, prKey: "" };
       }
 
       return buildReviewAgentLaunch({
@@ -1398,8 +1405,10 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
         const requestedPath = path.resolve(String(options.diskPath || allowedPaths[0] || "").trim());
         const diskPath = allowedPaths.includes(requestedPath) ? requestedPath : "";
         if (diskPath && path.isAbsolute(diskPath)) {
-          // Wait for killed PTY processes to fully exit (Windows holds file locks until exit)
+          // Wait for killed PTY processes to fully exit, then give Windows
+          // extra time to release file handles (they lag behind process exit)
           await sessionsExited;
+          await new Promise((resolve) => setTimeout(resolve, 1000));
 
           // Try git worktree remove first — cleans both directory and cache repo reference
           const cacheRepoPath = workspace.review?.checkout?.cacheRepoPath || "";
@@ -1416,13 +1425,13 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
           // Fallback: direct rm if git worktree remove didn't handle it
           if (!gitRemoved) {
             // Retry on Windows where file locks may linger after process exit
-            for (let attempt = 0; attempt < 3; attempt++) {
+            for (let attempt = 0; attempt < 5; attempt++) {
               try {
                 await rm(diskPath, { recursive: true, force: true });
                 break;
               } catch (err) {
-                if (attempt < 2 && (err.code === "EBUSY" || err.code === "EPERM")) {
-                  await new Promise((resolve) => setTimeout(resolve, 1000));
+                if (attempt < 4 && (err.code === "EBUSY" || err.code === "EPERM")) {
+                  await new Promise((resolve) => setTimeout(resolve, 1500));
                   continue;
                 }
                 diskDeleteError = `Could not delete ${diskPath}: ${err?.message || err}`;
@@ -1781,7 +1790,8 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
           + "Commit your changes first, then try again.",
         );
       }
-      await azure.pushReviewWorkspace({ workspace, force });
+      const snapshot = git.getSnapshot(workspaceId);
+      await azure.pushReviewWorkspace({ workspace, force, branch: snapshot?.branch });
       await refreshGit(workspaceId);
       await refreshAzure();
       return getPayload();
@@ -1798,6 +1808,7 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
         targetBranch: payload.targetBranch,
         title: payload.title,
         description: payload.description || "",
+        isDraft: payload.isDraft || false,
       });
 
       // Promote quickfix workspace → full review workspace after PR creation
@@ -1843,6 +1854,7 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
         });
       }
 
+      await refreshGit(workspace.id);
       await refreshAzure();
       broadcastState();
       return { payload: getPayload(), result };
