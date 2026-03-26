@@ -28,8 +28,8 @@ describe("TabPickerDropdown", () => {
     const dropdown = document.querySelector(".tab-picker-dropdown");
     expect(dropdown).not.toBeNull();
     const buttons = dropdown.querySelectorAll("button");
-    // 3 fallback templates + 1 custom
-    expect(buttons.length).toBe(4);
+    // 4 fallback templates + 1 custom
+    expect(buttons.length).toBe(5);
     const texts = Array.from(buttons).map((b) => b.textContent.trim());
     expect(texts.some((t) => t.includes("Shell"))).toBe(true);
     expect(texts.some((t) => t.includes("Custom"))).toBe(true);

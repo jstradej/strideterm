@@ -193,6 +193,47 @@ export const azureAuditLogStatsSchema = z.object({
   connectionId: z.string().optional(),
 });
 
+// --- File manager schemas ---
+
+export const fileListSchema = z.object({
+  rootPath: z.string().min(1),
+  relativePath: z.string(),
+});
+
+export const fileReadSchema = z.object({
+  rootPath: z.string().min(1),
+  relativePath: z.string().min(1),
+});
+
+export const fileWriteSchema = z.object({
+  rootPath: z.string().min(1),
+  relativePath: z.string().min(1),
+  content: z.string(),
+});
+
+export const fileCreateSchema = z.object({
+  rootPath: z.string().min(1),
+  parentPath: z.string(),
+  name: z.string().min(1),
+});
+
+export const fileRenameSchema = z.object({
+  rootPath: z.string().min(1),
+  relativePath: z.string().min(1),
+  newName: z.string().min(1),
+});
+
+export const fileDeleteSchema = z.object({
+  rootPath: z.string().min(1),
+  relativePath: z.string().min(1),
+});
+
+export const fileMoveSchema = z.object({
+  rootPath: z.string().min(1),
+  fromPath: z.string().min(1),
+  toPath: z.string().min(1),
+});
+
 /**
  * Validate an IPC payload against a Zod schema.
  * Returns { ok: true, data } or throws with a descriptive message.

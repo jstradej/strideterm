@@ -1,5 +1,6 @@
 import { ipcMain, dialog, BrowserWindow, shell, Notification, app } from "electron";
 import { join } from "node:path";
+import * as fm from "./file-manager.js";
 import {
   validateIpc,
   workspaceSchema,
@@ -20,6 +21,13 @@ import {
   reviewBridgePushAndPublishSchema,
   agentPromptSaveSchema,
   agentPromptDeleteSchema,
+  fileListSchema,
+  fileReadSchema,
+  fileWriteSchema,
+  fileCreateSchema,
+  fileRenameSchema,
+  fileDeleteSchema,
+  fileMoveSchema,
   gitPayloadSchema,
   gitDiffPreviewSchema,
   gitCommitSchema,
@@ -149,6 +157,21 @@ export function registerIpc(runtime, emitToRenderer, { includeStateGet = true } 
     notif.show();
   });
 
+  // --- File manager ---
+  ipcMain.handle("file:list", async (_event, payload) => { const p = validateIpc(fileListSchema, payload, "file:list"); return fm.listDirectory(p.rootPath, p.relativePath); });
+  ipcMain.handle("file:tree", async (_event, payload) => { const p = validateIpc(fileListSchema, payload, "file:tree"); return fm.getDirectoryTree(p.rootPath, p.relativePath); });
+  ipcMain.handle("file:preview", async (_event, payload) => { const p = validateIpc(fileReadSchema, payload, "file:preview"); return fm.readFilePreview(p.rootPath, p.relativePath); });
+  ipcMain.handle("file:read", async (_event, payload) => { const p = validateIpc(fileReadSchema, payload, "file:read"); return fm.readFileContent(p.rootPath, p.relativePath); });
+  ipcMain.handle("file:write", async (_event, payload) => { const p = validateIpc(fileWriteSchema, payload, "file:write"); return fm.writeFileContent(p.rootPath, p.relativePath, p.content); });
+  ipcMain.handle("file:create-file", async (_event, payload) => { const p = validateIpc(fileCreateSchema, payload, "file:create-file"); return fm.createFile(p.rootPath, p.parentPath, p.name); });
+  ipcMain.handle("file:create-dir", async (_event, payload) => { const p = validateIpc(fileCreateSchema, payload, "file:create-dir"); return fm.createDirectory(p.rootPath, p.parentPath, p.name); });
+  ipcMain.handle("file:rename", async (_event, payload) => { const p = validateIpc(fileRenameSchema, payload, "file:rename"); return fm.renameEntry(p.rootPath, p.relativePath, p.newName); });
+  ipcMain.handle("file:delete", async (_event, payload) => { const p = validateIpc(fileDeleteSchema, payload, "file:delete"); return fm.deleteEntry(p.rootPath, p.relativePath); });
+  ipcMain.handle("file:move", async (_event, payload) => { const p = validateIpc(fileMoveSchema, payload, "file:move"); return fm.moveEntry(p.rootPath, p.fromPath, p.toPath); });
+  ipcMain.handle("file:copy", async (_event, payload) => { const p = validateIpc(fileMoveSchema, payload, "file:copy"); return fm.copyEntry(p.rootPath, p.fromPath, p.toPath); });
+  ipcMain.handle("file:open-in-explorer", async (_event, absPath) => { if (typeof absPath === "string") shell.showItemInFolder(absPath); });
+  ipcMain.handle("file:info", async (_event, payload) => { const p = validateIpc(fileReadSchema, payload, "file:info"); return fm.getFileInfo(p.rootPath, p.relativePath); });
+
   ipcMain.handle("dialog:browse-directory", async (_event, defaultPath) => {
     const win = BrowserWindow.getFocusedWindow();
     const result = await dialog.showOpenDialog(win, {
@@ -262,6 +285,19 @@ export function registerIpc(runtime, emitToRenderer, { includeStateGet = true } 
     ipcMain.removeHandler("profile:delete");
     ipcMain.removeHandler("profile:activate");
     ipcMain.removeHandler("notification:show-system");
+    ipcMain.removeHandler("file:list");
+    ipcMain.removeHandler("file:tree");
+    ipcMain.removeHandler("file:preview");
+    ipcMain.removeHandler("file:read");
+    ipcMain.removeHandler("file:write");
+    ipcMain.removeHandler("file:create-file");
+    ipcMain.removeHandler("file:create-dir");
+    ipcMain.removeHandler("file:rename");
+    ipcMain.removeHandler("file:delete");
+    ipcMain.removeHandler("file:move");
+    ipcMain.removeHandler("file:copy");
+    ipcMain.removeHandler("file:open-in-explorer");
+    ipcMain.removeHandler("file:info");
     ipcMain.removeHandler("dialog:browse-directory");
     ipcMain.removeHandler("dialog:browse-file");
     ipcMain.removeHandler("shell:open-external");

@@ -62,7 +62,7 @@
 import { computed, watch, defineAsyncComponent } from "vue";
 import { useAppStore } from "../../stores/app.js";
 import { useTerminalStore } from "../../stores/terminal.js";
-import { isGitViewId, isDockerViewId, isAzureViewId, isReviewViewId, isBrowserViewId } from "../../app/helpers.js";
+import { isGitViewId, isDockerViewId, isAzureViewId, isReviewViewId, isBrowserViewId, isFilesViewId } from "../../app/helpers.js";
 import PaneShell from "../layout/PaneShell.vue";
 import TerminalPane from "./TerminalPane.vue";
 const GitPane = defineAsyncComponent(() => import("./GitPane.vue"));
@@ -70,6 +70,7 @@ const DockerPane = defineAsyncComponent(() => import("./DockerPane.vue"));
 const AzureInboxPane = defineAsyncComponent(() => import("./AzureInboxPane.vue"));
 const AzureReviewPane = defineAsyncComponent(() => import("./AzureReviewPane.vue"));
 const BrowserPane = defineAsyncComponent(() => import("./BrowserPane.vue"));
+const FileManagerPane = defineAsyncComponent(() => import("./FileManagerPane.vue"));
 
 const AREA_NAMES = ["a", "b", "c", "d"];
 const AREA_LAYOUTS = new Set(["top-split", "left-split"]);
@@ -135,6 +136,12 @@ function nonTerminalPaneActions(tab) {
       { className: "workspace-pane__icon-btn", action: "refresh-azure", title: "Refresh Azure DevOps", label: "↻" },
     ];
   }
+  if (isFilesViewId(tab.id)) {
+    return [
+      { className: "workspace-pane__icon-btn", action: "select-tab", viewId: tab.id, title: "Focus tab", label: "◉" },
+      { className: "workspace-pane__icon-btn workspace-pane__icon-btn--danger", action: "close-tab", viewId: tab.id, title: "Close tab", label: "×" },
+    ];
+  }
   return [];
 }
 
@@ -144,6 +151,7 @@ const PANE_COMPONENTS = {
   azure: AzureInboxPane,
   review: AzureReviewPane,
   browser: BrowserPane,
+  files: FileManagerPane,
 };
 
 function paneComponent(type) {
@@ -155,6 +163,7 @@ function paneProps(tab) {
   if (tab.type === "docker") return { workspaceId: tab.id.replace(/^docker:/, "") };
   if (tab.type === "azure") return { workspaceId: tab.id.replace(/^azure:/, "") };
   if (tab.type === "review") return { workspaceId: tab.id.replace(/^review:/, "") };
+  if (tab.type === "files") return { workspaceId: tab.id.replace(/^files:/, "") };
   return { tab };  // browser and others get the full tab object
 }
 
@@ -169,7 +178,7 @@ function onStageMousedown(event) {
   store.activeViewId = viewId;
   store.activeSessionId = (
     isGitViewId(viewId) || isDockerViewId(viewId) ||
-    isAzureViewId(viewId) || isReviewViewId(viewId) || isBrowserViewId(viewId)
+    isAzureViewId(viewId) || isReviewViewId(viewId) || isBrowserViewId(viewId) || isFilesViewId(viewId)
   ) ? null : viewId;
   termStore.focusActiveTerminal();
 }
