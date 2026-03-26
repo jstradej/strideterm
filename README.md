@@ -7,7 +7,8 @@ Stop losing terminals in a mess of scattered windows. strIDEterm puts all your s
 ## Features
 
 - **Workspaces** - organize projects into separate workspaces, each with its own terminal tabs, working directory, and settings
-- **Tab Templates** - quickly add Shell, Claude Code, Codex, Gemini CLI, Dev Server, and other preset tabs
+- **Tab Templates** - quickly add Shell, Claude Code, Codex, Gemini CLI, Dev Server, Files, and other preset tabs
+- **File Manager** - browse, preview, and edit files with an expandable tree, resizable panels, and right-click context menu (copy, rename, delete)
 - **Embedded Browser** - open web pages directly in a tab with URL bar and navigation controls
 - **Profiles** - switch between different sets of workspaces (e.g. Work, Personal, Client projects) with colored profile bar
 - **Split Layouts** - arrange terminals in columns, rows, or a grid — see everything at once without switching tabs
@@ -16,7 +17,7 @@ Stop losing terminals in a mess of scattered windows. strIDEterm puts all your s
 - **Docker Manager** - list containers, run actions, open shells, and stream logs
 - **Remote Access** - access your workspace from any device via LAN or Cloudflare tunnel with QR code
 - **Plugins** - extend functionality with plugins (Docker Ops and System Monitor built-in)
-- **Finish Notifications** - get notified when a long-running command completes so you can stay focused on other work
+- **Finish Notifications** - audio ding when focused, system notification when in background — so you know when a command finishes without watching the screen
 - **Keyboard Shortcuts** - navigate workspaces, tabs, and layouts entirely from the keyboard for a fast, mouse-free workflow
 - **Light/Dark Theme** - full theme support including terminal colors and title bar
 - **Drag & Drop** - reorder workspaces and tabs by dragging
