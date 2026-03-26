@@ -2047,9 +2047,10 @@ dt {
 .git-section {
   min-height: 0;
   display: grid;
-  gap: 8px;
+  gap: 12px;
   align-content: start;
   overflow-y: auto;
+  padding-bottom: 12px;
 }
 
 .git-section--changes {
@@ -2182,10 +2183,10 @@ dt {
 .git-card {
   border: 1px solid var(--border);
   border-radius: 4px;
-  padding: 10px;
+  padding: 12px;
   background: rgba(255, 255, 255, 0.03);
   display: grid;
-  gap: 8px;
+  gap: 10px;
   min-height: 0;
 }
 

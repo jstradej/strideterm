@@ -48,7 +48,7 @@
         >{{ tab.label }}<span v-if="tab.badge" class="git-tabs__badge">{{ tab.badge }}</span></button>
       </nav>
 
-      <section role="tabpanel" style="min-height:0;overflow:hidden;display:grid;">
+      <section role="tabpanel" style="min-height:0;overflow:auto;display:grid;">
         <!-- ===== Branch tab ===== -->
         <template v-if="activeTab === 'branch'">
           <div class="git-section">
