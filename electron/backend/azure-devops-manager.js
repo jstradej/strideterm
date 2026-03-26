@@ -1069,8 +1069,8 @@ export class AzureDevOpsManager extends EventEmitter {
     return refs.map((ref) => stripRefsPrefix(ref.name));
   }
 
-  async createPullRequestForWorkspace({ remoteUrl, sourceBranch, targetBranch, title, description, isDraft = false }) {
-    const connection = this.findConnectionForRemote(remoteUrl);
+  async createPullRequestForWorkspace({ remoteUrl, sourceBranch, targetBranch, title, description, isDraft = false, connectionId = "" }) {
+    const connection = (connectionId && this.findConnection(connectionId)) || this.findConnectionForRemote(remoteUrl);
     if (!connection) throw new Error("No Azure DevOps connection found for this repository.");
     this.setAuditContext({ connectionId: connection.id, userInitiated: true });
     const { token, projectName, repository } = await this.resolveRepository(connection.id, remoteUrl);

@@ -86,7 +86,7 @@ export const useAppStore = defineStore("app", () => {
     const activeProfileId = payload.value?.appState?.activeProfileId || "default";
     const result = workspaces.filter((ws) => (ws.profileId || "default") === activeProfileId);
     // Include names and panel counts — these change on rename/add-tab/remove-tab
-    const key = result.map((ws) => `${ws.id}:${ws.name}:${(ws.panels || []).length}`).join(",");
+    const key = result.map((ws) => `${ws.id}:${ws.name}:${(ws.panels || []).length}:${ws.connectionId || ""}`).join(",");
     if (key === _prevFilteredWsKey) return _prevFilteredWs;
     _prevFilteredWsKey = key;
     _prevFilteredWs = result;

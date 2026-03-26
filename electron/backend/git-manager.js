@@ -4,6 +4,7 @@ import { EventEmitter } from "node:events";
 import { existsSync, readdirSync, statSync } from "node:fs";
 import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import { execFileText, quotePosixArg } from "./process-utils.js";
+import { encodeAuthHeader, sanitizeGitEnvironment } from "./shared/git-auth-utils.js";
 import { APP_CONFIG } from "../../config/app-config.js";
 
 const DEFAULT_DIFF_STAT = Object.freeze({
@@ -648,7 +649,7 @@ async function renderUntrackedDiffPreview(execGit, cwd, targetPath) {
 }
 
 export class GitManager extends EventEmitter {
-  constructor({ execGitImpl = null, now = null, snapshotCacheTtlMs = SNAPSHOT_CACHE_TTL_MS } = {}) {
+  constructor({ execGitImpl = null, now = null, snapshotCacheTtlMs = SNAPSHOT_CACHE_TTL_MS, credentialStore = null, auditLogStore = null } = {}) {
     super();
     this.snapshots = new Map();
     this.execGitImpl = execGitImpl;
@@ -656,6 +657,8 @@ export class GitManager extends EventEmitter {
     this.worktreeDirtyCache = new Map();
     this.snapshotCache = new Map();
     this.snapshotCacheTtlMs = snapshotCacheTtlMs;
+    this.credentialStore = credentialStore;
+    this.auditLogStore = auditLogStore;
   }
 
   async execGit(cwd, args) {
@@ -663,6 +666,34 @@ export class GitManager extends EventEmitter {
       return this.execGitImpl(cwd, args);
     }
     return execFileText("git", args, { cwd });
+  }
+
+  /**
+   * Run a git command with optional token-based authentication.
+   * When a connection provides login + tokenRef, the PAT is injected via
+   * `git -c http.extraheader=…` so the operation is audited under the
+   * correct Azure DevOps / provider identity.
+   */
+  async execAuthGit(cwd, args, { connection = null } = {}) {
+    if (!connection?.tokenRef || !this.credentialStore) {
+      return this.execGit(cwd, args);
+    }
+
+    const token = this.credentialStore.getSecret(connection.tokenRef);
+    if (!token) {
+      return this.execGit(cwd, args);
+    }
+
+    const extraArgs = [];
+    if (process.platform === "win32") {
+      extraArgs.push("-c", "core.longpaths=true");
+    }
+    extraArgs.push("-c", `http.extraheader=${encodeAuthHeader(connection.login, token)}`);
+
+    if (this.execGitImpl) {
+      return this.execGitImpl(cwd, [...extraArgs, ...args]);
+    }
+    return execFileText("git", [...extraArgs, ...args], { cwd, env: sanitizeGitEnvironment() });
   }
 
   getWorkspaceMap() {
@@ -1080,12 +1111,39 @@ export class GitManager extends EventEmitter {
       : null;
   }
 
-  async fetch(workspace) {
+  async fetch(workspace, { connection = null } = {}) {
     return this.runWriteAction(workspace, {
       type: "fetch",
       label: "Fetch",
-      run: async (cwd) => this.execGit(cwd, ["fetch", "--all", "--prune"]),
+      run: async (cwd) => this.execAuthGit(cwd, ["fetch", "--all", "--prune"], { connection }),
       allowDirty: true,
+      connection,
+    });
+  }
+
+  async push(workspace, { connection = null } = {}) {
+    const snapshot = await this.inspectWorkspace(workspace);
+    if (!snapshot.available) {
+      return createStructuredResult({ ok: false, summary: snapshot.error || "Git workspace is unavailable." });
+    }
+
+    const branch = snapshot.branch;
+    if (!branch) {
+      return createStructuredResult({ ok: false, summary: "Cannot push: no branch is checked out (detached HEAD)." });
+    }
+
+    const upstream = snapshot.upstream;
+    const pushArgs = upstream
+      ? ["push"]
+      : ["push", "--set-upstream", "origin", branch];
+
+    return this.runWriteAction(workspace, {
+      type: "push",
+      label: "Push",
+      allowDirty: true,
+      skipPreflight: true,
+      run: async (cwd) => this.execAuthGit(cwd, pushArgs, { connection }),
+      connection,
     });
   }
 
@@ -1252,6 +1310,7 @@ export class GitManager extends EventEmitter {
     allowDirty = false,
     skipPreflight = false,
     run,
+    connection = null,
   }) {
     this.invalidateSnapshotCache(workspace.id);
     const snapshot = await this.inspectWorkspace(workspace);
@@ -1303,11 +1362,13 @@ export class GitManager extends EventEmitter {
         stashOutput = stashResult.stdout || stashResult.stderr || "";
       }
 
+      const startTime = Date.now();
       const actionResult = await run(workspace.cwd, resolvedBaseBranch);
       let restoreOutput = "";
       if (stashLabel) {
         restoreOutput = await this.restoreStash(workspace.cwd);
       }
+      this._logGitAudit({ type, connection, success: true, durationMs: Date.now() - startTime });
       return createStructuredResult({
         ok: true,
         summary: resolvedBaseBranch
@@ -1317,6 +1378,7 @@ export class GitManager extends EventEmitter {
         rawOutput: joinRawOutput(stashOutput, actionResult.stdout, actionResult.stderr, restoreOutput),
       });
     } catch (error) {
+      this._logGitAudit({ type, connection, success: false, errorMessage: extractErrorMessage(error) });
       const operationSnapshot = await this.inspectWorkspace(workspace);
       let restoreOutput = "";
       if (stashLabel && !operationSnapshot.operationState.inProgress) {
@@ -1336,6 +1398,36 @@ export class GitManager extends EventEmitter {
         rawOutput: joinRawOutput(stashOutput, error.stdout, error.stderr, restoreOutput),
         operationState: operationSnapshot.operationState,
       });
+    }
+  }
+
+  _logGitAudit({ type, connection, success, durationMs, errorMessage }) {
+    if (!connection?.id || !this.auditLogStore) {
+      return;
+    }
+    try {
+      // Use orgUrl (Azure), or future provider base URLs, falling back to label.
+      const organization = connection.orgUrl || connection.baseUrl || connection.label || "";
+      this.auditLogStore.logEntry({
+        timestamp: new Date().toISOString(),
+        connectionId: connection.id,
+        organization,
+        project: "",
+        operation: `git${type.charAt(0).toUpperCase()}${type.slice(1)}`,
+        category: ["push"].includes(type) ? "write" : "read",
+        method: "GIT",
+        url: "",
+        statusCode: null,
+        success,
+        errorMessage: errorMessage || null,
+        durationMs: durationMs ?? null,
+        resourceType: "git",
+        resourceId: "",
+        summary: `git ${type} (${connection.provider || "unknown"})`,
+        userInitiated: true,
+      });
+    } catch {
+      // Never let audit logging break the main flow
     }
   }
 

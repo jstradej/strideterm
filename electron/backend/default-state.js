@@ -118,6 +118,7 @@ export function normalizeWorkspace(workspace, index = 0) {
     cwd: workspace.cwd || (isAzureWorkspace ? "" : defaultCwd()),
     notes: repairVisibleText(workspace.notes || ""),
     profileId: workspace.profileId || "default",
+    connectionId: workspace.connectionId || "",
     activePanelId,
     panels,
     review: workspace.review

@@ -3,6 +3,9 @@ import path from "node:path";
 import { createHash } from "node:crypto";
 import { access } from "node:fs/promises";
 
+// Re-export shared git auth utilities so existing consumers keep working.
+export { encodeAuthHeader, sanitizeGitEnvironment } from "./shared/git-auth-utils.js";
+
 export const API_VERSION = "7.1";
 export const POLICY_API_VERSION = "7.1-preview.1";
 export const AZURE_REVIEW_ICON = "AZ";
@@ -55,10 +58,6 @@ export function uniqueList(values = []) {
     result.push(value);
   }
   return result;
-}
-
-export function encodeAuthHeader(login, token) {
-  return `AUTHORIZATION: Basic ${Buffer.from(`${String(login || "").trim()}:${String(token || "")}`, "utf8").toString("base64")}`;
 }
 
 export function createPullRequestKey(connectionId, repositoryId, pullRequestId) {
@@ -142,18 +141,6 @@ export function buildRepositoryRemoteUrl(connection, projectName, repositoryName
     return "";
   }
   return `${baseUrl}/${encodeURIComponent(project)}/_git/${encodeURIComponent(repository)}`;
-}
-
-export function sanitizeGitEnvironment() {
-  const env = { ...process.env };
-  delete env.GIT_DIR;
-  delete env.GIT_WORK_TREE;
-  delete env.GIT_COMMON_DIR;
-  delete env.GIT_INDEX_FILE;
-  delete env.GIT_PREFIX;
-  delete env.GIT_OBJECT_DIRECTORY;
-  delete env.GIT_ALTERNATE_OBJECT_DIRECTORIES;
-  return env;
 }
 
 export function shortPathKey(value, fallback = "item") {

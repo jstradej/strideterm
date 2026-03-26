@@ -106,6 +106,7 @@ export function registerIpc(runtime, emitToRenderer, { includeStateGet = true } 
   ipcMain.handle("docker:refresh", async () => runtime.refreshDockerState());
   ipcMain.handle("git:refresh", async (_event, projectId) => runtime.refreshGitState(projectId));
   ipcMain.handle("git:fetch", async (_event, payload) => runtime.gitFetch(validateIpc(gitPayloadSchema, payload, "git:fetch")));
+  ipcMain.handle("git:push", async (_event, payload) => runtime.gitPush(validateIpc(gitPayloadSchema, payload, "git:push")));
   ipcMain.handle("git:merge-into-current", async (_event, payload) => runtime.gitMergeIntoCurrent(validateIpc(gitPayloadSchema, payload, "git:merge-into-current")));
   ipcMain.handle("git:rebase-onto", async (_event, payload) => runtime.gitRebaseOnto(validateIpc(gitPayloadSchema, payload, "git:rebase-onto")));
   ipcMain.handle("git:continue", async (_event, payload) => runtime.gitContinueOperation(validateIpc(gitPayloadSchema, payload, "git:continue")));
@@ -216,6 +217,7 @@ export function registerIpc(runtime, emitToRenderer, { includeStateGet = true } 
     ipcMain.removeHandler("docker:refresh");
     ipcMain.removeHandler("git:refresh");
     ipcMain.removeHandler("git:fetch");
+    ipcMain.removeHandler("git:push");
     ipcMain.removeHandler("git:merge-into-current");
     ipcMain.removeHandler("git:rebase-onto");
     ipcMain.removeHandler("git:continue");

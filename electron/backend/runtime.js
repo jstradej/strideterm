@@ -281,7 +281,7 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
   const auditLogStore = createAzureAuditLogStore(auditLogDbPath);
 
   const docker = new DockerManagerImpl();
-  const git = new GitManagerImpl();
+  const git = new GitManagerImpl({ credentialStore, auditLogStore });
   const tunnel = new TunnelManagerImpl();
   const azure = new AzureDevOpsManagerImpl({
     credentialStore,
@@ -321,6 +321,35 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
     const all = getAzureSettings(state).connections || [];
     const activeProfile = state.activeProfileId || "default";
     return all.filter((c) => (c.profileId || "default") === activeProfile);
+  }
+
+  /**
+   * Return all provider connections (Azure DevOps, and future GitHub/GitLab)
+   * visible to the active profile.  Each provider stores connections under
+   * its own settings key; this helper merges them into a single list so the
+   * git tab can offer a unified dropdown.
+   */
+  function getAllProviderConnections(state = getState()) {
+    const activeProfile = state.activeProfileId || "default";
+    const matchProfile = (c) => (c.profileId || "default") === activeProfile;
+
+    const azure = (getAzureSettings(state).connections || []).filter(matchProfile);
+    // Future: const github = (getGithubSettings(state).connections || []).filter(matchProfile);
+    return [...azure];
+  }
+
+  /**
+   * Resolve the provider connection for a workspace's git operations.
+   * Returns `null` when the workspace has no connectionId assigned or the
+   * connection cannot be found (falls back to system git credentials).
+   */
+  function resolveGitConnection(workspace) {
+    const connectionId = workspace?.connectionId;
+    if (!connectionId) {
+      return null;
+    }
+    const connections = getAllProviderConnections();
+    return connections.find((c) => c.id === connectionId && c.enabled !== false) || null;
   }
 
   function normalizeFsPath(value) {
@@ -638,6 +667,7 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
         projects: git.getProjectMap(),
         activeWorkspace: git.getSnapshot(state.activeWorkspaceId),
         activeProject: git.getSnapshot(state.activeProjectId),
+        connections: getAllProviderConnections(state).map((c) => ({ id: c.id, label: c.label || c.id, provider: c.provider || "azure-devops", enabled: c.enabled !== false })),
       },
       azureDevops: azure.getSnapshot(),
       reviewBridge: getReviewBridgeSnapshot(state),
@@ -1809,6 +1839,7 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
         title: payload.title,
         description: payload.description || "",
         isDraft: payload.isDraft || false,
+        connectionId: payload.connectionId || workspace.connectionId || "",
       });
 
       // Promote quickfix workspace → full review workspace after PR creation
@@ -2035,7 +2066,13 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
     },
     async gitFetch(payload = {}) {
       const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId);
-      return runGitWorkspaceAction(workspace, git.fetch(workspace));
+      const connection = resolveGitConnection(workspace);
+      return runGitWorkspaceAction(workspace, git.fetch(workspace, { connection }));
+    },
+    async gitPush(payload = {}) {
+      const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId);
+      const connection = resolveGitConnection(workspace);
+      return runGitWorkspaceAction(workspace, git.push(workspace, { connection }));
     },
     async gitMergeIntoCurrent(payload = {}) {
       const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId);

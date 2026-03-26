@@ -106,14 +106,18 @@ export const useGitUiStore = defineStore("git-ui", () => {
   // --- Git actions ---
 
   async function refreshGit(workspaceId) {
-    const { useAppStore } = await import("./app.js");
-    const appStore = useAppStore();
-    const nextPayload = await _api.refreshGit(workspaceId);
-    appStore.payload = nextPayload;
+    await runGitAction(workspaceId, "refresh", async () => {
+      const payload = await _api.refreshGit(workspaceId);
+      return { payload };
+    });
   }
 
   async function gitFetch(workspaceId) {
     await runGitAction(workspaceId, "fetch", () => _api.gitFetch({ workspaceId }));
+  }
+
+  async function gitPush(workspaceId) {
+    await runGitAction(workspaceId, "push", () => _api.gitPush({ workspaceId }));
   }
 
   function setPendingGitAction(workspaceId, { type, baseBranch, snapshot }) {
@@ -252,13 +256,14 @@ export const useGitUiStore = defineStore("git-ui", () => {
     ui.overrideBaseBranch = baseBranch || "";
   }
 
-  async function azureCreatePullRequest(workspaceId, { title, description, sourceBranch, targetBranch }) {
+  async function azureCreatePullRequest(workspaceId, { title, description, sourceBranch, targetBranch, connectionId }) {
     return runGitAction(workspaceId, "create-pr", () => _api.azureCreatePullRequest({
       workspaceId,
       title,
       description,
       sourceBranch,
       targetBranch,
+      connectionId,
     }));
   }
 
@@ -338,7 +343,7 @@ export const useGitUiStore = defineStore("git-ui", () => {
     get, cleanup, init,
     // Git actions
     runGitAction,
-    refreshGit, gitFetch,
+    refreshGit, gitFetch, gitPush,
     setPendingGitAction, clearPendingGitAction,
     gitConfirmAction, gitContinue, gitAbort,
     gitMergeBase, gitRebaseBase, gitMergeIntoBase,

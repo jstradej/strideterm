@@ -15,7 +15,7 @@
       <div class="git-view__toolbar">
         <div class="git-view__summary">
           <span class="workspace-chip"><strong>{{ snapshot.branch }}</strong> branch</span>
-          <span class="workspace-chip"><strong>{{ snapshot.isMainWorktree ? 'main' : 'linked' }}</strong> worktree</span>
+          <span :class="['workspace-chip', isLinkedWorktree && 'workspace-chip--alert']"><strong>{{ snapshot.isMainWorktree ? 'main' : 'linked' }}</strong> worktree</span>
           <span class="workspace-chip"><strong>{{ snapshot.aheadCount || 0 }}</strong> ahead</span>
           <span class="workspace-chip"><strong>{{ snapshot.behindCount || 0 }}</strong> behind</span>
           <span class="workspace-chip"><strong>{{ snapshot.dirty ? snapshot.dirtyCount : 0 }}</strong> {{ snapshot.dirty ? 'dirty' : 'clean' }}</span>
@@ -24,9 +24,14 @@
         <div class="git-view__actions">
           <button type="button" :class="['button', 'button--ghost', gitUi.busyAction === 'refresh' && 'button--busy']" :disabled="!!gitUi.busyAction" @click="gitUiStore.refreshGit(workspaceId)">{{ gitUi.busyAction === 'refresh' ? 'Refreshing…' : 'Refresh' }}</button>
           <button type="button" :class="['button', 'button--ghost', gitUi.busyAction === 'fetch' && 'button--busy']" :disabled="!!gitUi.busyAction" @click="gitUiStore.gitFetch(workspaceId)">{{ gitUi.busyAction === 'fetch' ? 'Fetching…' : 'Fetch' }}</button>
+          <button v-if="!isLinkedWorktree" type="button" :class="['button', gitUi.busyAction === 'push' && 'button--busy']" :disabled="!!gitUi.busyAction" @click="gitUiStore.gitPush(workspaceId)">{{ gitUi.busyAction === 'push' ? 'Pushing…' : 'Push' }}</button>
           <button type="button" class="button button--ghost" @click="onCreateWorktree">New worktree</button>
           <button v-if="snapshot.lazygit?.available" type="button" class="button" style="white-space:nowrap" @click="gitUiStore.openLazygit(workspaceId)">Open Lazygit</button>
           <button v-else type="button" class="button button--ghost" disabled style="white-space:nowrap;border:1px dashed var(--accent);color:var(--accent);opacity:0.9" title="Install lazygit to enable">Install Lazygit</button>
+          <select v-if="availableConnections.length && !isLinkedWorktree" class="git-branch-select" :value="activeConnectionId" @change="onConnectionChange" title="Git credentials source">
+            <option value="">System credentials</option>
+            <option v-for="c in availableConnections" :key="c.id" :value="c.id">{{ c.label || c.id }}</option>
+          </select>
         </div>
       </div>
 
@@ -61,7 +66,8 @@
                 <span><strong>Current branch:</strong> {{ snapshot.branch }}</span>
                 <span class="git-detail-list__row">
                   <strong>Base branch:</strong>
-                  <select class="git-branch-select" :value="effectiveBaseBranch" @change="onBaseBranchChange">
+                  <template v-if="isLinkedWorktree">{{ effectiveBaseBranch || '?' }}</template>
+                  <select v-else class="git-branch-select" :value="effectiveBaseBranch" @change="onBaseBranchChange">
                     <option v-if="!effectiveBaseBranch" value="" disabled>-- select --</option>
                     <option v-for="b in baseBranchOptions" :key="b" :value="b">{{ b }}</option>
                   </select>
@@ -95,7 +101,7 @@
               <p class="git-card__hint">Stash saves uncommitted changes. Unstash restores the most recent stash entry.</p>
             </article>
 
-            <GitMergeBackCard v-if="!isReviewWorkspace" :snapshot="snapshot" :workspace-id="workspaceId" :workspaces="workspaces" :git-ui="gitUi" />
+            <GitMergeBackCard v-if="!isReviewWorkspace" :snapshot="snapshot" :workspace-id="workspaceId" :workspaces="workspaces" :git-ui="gitUi" :effective-base-branch="effectiveBaseBranch" :base-branch-options="baseBranchOptions" :is-linked-worktree="isLinkedWorktree" />
           </div>
         </template>
 
@@ -182,10 +188,11 @@
                   <h3>{{ snapshot.branch }} &rarr; {{ prTargetBranch || '?' }}</h3>
                 </div>
               </div>
-              <div v-if="!hasAzureConnection" class="git-card__hint git-card__hint--warning" style="margin-bottom:8px;">
-                No Azure DevOps connection found for this repository. Configure a connection in Settings to enable PR creation.
+              <div v-if="!activeConnectionId && !hasAzureConnection" class="git-card__hint git-card__hint--warning" style="margin-bottom:8px;">
+                No connection selected. Choose a connection in the toolbar dropdown to enable PR creation.
               </div>
               <template v-else>
+                <p class="git-card__hint" style="margin-bottom:8px;">Using connection: <strong>{{ activeConnectionLabel }}</strong></p>
                 <div class="git-pr-form">
                   <label class="git-pr-form__field">
                     <span class="git-pr-form__label">Source branch</span>
@@ -279,6 +286,7 @@ const workspaces = computed(() => appStore.filteredWorkspaces);
 
 const workspace = computed(() => (appStore.filteredWorkspaces || []).find((ws) => ws.id === props.workspaceId));
 const isReviewWorkspace = computed(() => !!workspace.value?.review?.prKey);
+const isLinkedWorktree = computed(() => snapshot.value?.isWorktree && !snapshot.value?.isMainWorktree);
 const operation = computed(() => snapshot.value?.operationState || {});
 const baseBranch = computed(() => snapshot.value?.baseBranch || snapshot.value?.compareWithBase?.baseBranch || "");
 const compare = computed(() => snapshot.value?.compareWithBase || {});
@@ -313,6 +321,16 @@ const hasAzureConnection = computed(() => {
   if (!remoteUrl) return false;
   const connections = azureSnapshot.value.connections || [];
   return connections.some((c) => c.enabled && remoteUrl.startsWith(c.orgUrl?.toLowerCase().replace(/\/+$/, "") || "---"));
+});
+
+// Connection selection for authenticated git operations (push/fetch/PR).
+// Reads from git.connections which merges all providers (Azure, future GitHub/GitLab).
+const availableConnections = computed(() => (appStore.payload?.git?.connections || []).filter((c) => c.enabled));
+const activeConnectionId = computed(() => workspace.value?.connectionId || "");
+const activeConnectionLabel = computed(() => {
+  if (!activeConnectionId.value) return "auto-detected";
+  const found = availableConnections.value.find((c) => c.id === activeConnectionId.value);
+  return found?.label || activeConnectionId.value;
 });
 
 // PR form state
@@ -357,7 +375,7 @@ const tabs = computed(() => {
     { id: "changes", label: "Changes", badge: (snapshot.value?.dirtyCount || 0) > 0 ? String(snapshot.value.dirtyCount) : "" },
     { id: "history", label: "History", badge: "" },
   ];
-  if (!isReviewWorkspace.value) {
+  if (!isReviewWorkspace.value && !isLinkedWorktree.value) {
     list.push({ id: "pr", label: "Pull Request", badge: "" });
   }
   list.push({ id: "worktrees", label: "Worktrees", badge: "" });
@@ -412,6 +430,13 @@ function onBaseBranchChange(event) {
   gitUiStore.gitSetBaseBranch(props.workspaceId, event.target.value);
 }
 
+function onConnectionChange(event) {
+  const existing = (appStore.payload?.appState?.workspaces || []).find((ws) => ws.id === props.workspaceId);
+  if (existing) {
+    appStore.saveWorkspace({ ...existing, connectionId: event.target.value });
+  }
+}
+
 async function onCreatePr() {
   prResult.value = null;
   const payload = await gitUiStore.azureCreatePullRequest(props.workspaceId, {
@@ -419,6 +444,7 @@ async function onCreatePr() {
     description: prDescription.value.trim(),
     sourceBranch: snapshot.value?.branch || "",
     targetBranch: prTargetBranch.value,
+    connectionId: activeConnectionId.value || "",
   });
   const result = gitUi.value.lastResult;
   if (result?.ok) {

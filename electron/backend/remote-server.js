@@ -334,6 +334,11 @@ async function handleApiRequest(runtime, request, response) {
       return;
     }
 
+    if (request.method === "POST" && url.pathname === "/api/git/push") {
+      json(response, 200, await runtime.gitPush(body));
+      return;
+    }
+
     if (request.method === "POST" && url.pathname === "/api/git/merge-into-current") {
       json(response, 200, await runtime.gitMergeIntoCurrent(body));
       return;
