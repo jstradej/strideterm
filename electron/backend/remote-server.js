@@ -339,6 +339,16 @@ async function handleApiRequest(runtime, request, response) {
       return;
     }
 
+    if (request.method === "POST" && url.pathname === "/api/git/checkout-branch") {
+      json(response, 200, await runtime.gitCheckoutBranch(body));
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/git/create-branch") {
+      json(response, 200, await runtime.gitCreateBranch(body));
+      return;
+    }
+
     if (request.method === "POST" && url.pathname === "/api/git/merge-into-current") {
       json(response, 200, await runtime.gitMergeIntoCurrent(body));
       return;

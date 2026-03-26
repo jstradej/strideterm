@@ -2074,6 +2074,14 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
       const connection = resolveGitConnection(workspace);
       return runGitWorkspaceAction(workspace, git.push(workspace, { connection }));
     },
+    async gitCheckoutBranch(payload = {}) {
+      const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId);
+      return runGitWorkspaceAction(workspace, git.checkoutBranch(workspace, payload));
+    },
+    async gitCreateBranch(payload = {}) {
+      const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId);
+      return runGitWorkspaceAction(workspace, git.createBranch(workspace, payload));
+    },
     async gitMergeIntoCurrent(payload = {}) {
       const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId);
       return runGitWorkspaceAction(workspace, git.mergeIntoCurrent(workspace, payload));

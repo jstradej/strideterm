@@ -101,6 +101,38 @@
               <p class="git-card__hint">Stash saves uncommitted changes. Unstash restores the most recent stash entry.</p>
             </article>
 
+            <!-- Switch / Create branch (main worktree only) -->
+            <article v-if="!isLinkedWorktree && !isReviewWorkspace" class="git-card">
+              <div class="section-head">
+                <div>
+                  <p class="eyebrow">Switch Branch</p>
+                  <h3>{{ snapshot.branch }}</h3>
+                </div>
+              </div>
+              <div v-if="snapshot.dirty" class="git-card__hint git-card__hint--warning" style="margin-bottom:8px;">
+                Working tree is dirty. Commit or stash changes before switching branches.
+              </div>
+              <template v-else>
+                <div class="git-detail-list" style="margin-bottom:8px;">
+                  <span class="git-detail-list__row">
+                    <strong>Checkout:</strong>
+                    <select class="git-branch-select" v-model="switchBranchTarget">
+                      <option value="" disabled>-- select branch --</option>
+                      <option v-for="b in switchBranchOptions" :key="b" :value="b">{{ b }}</option>
+                    </select>
+                    <button type="button" class="button" :disabled="!switchBranchTarget || !!gitUi.busyAction" style="margin-left:6px" @click="onCheckoutBranch">{{ gitUi.busyAction === 'checkout' ? 'Switching…' : 'Switch' }}</button>
+                  </span>
+                </div>
+                <div class="git-detail-list">
+                  <span class="git-detail-list__row">
+                    <strong>New branch:</strong>
+                    <input class="git-pr-form__input" type="text" v-model="newBranchName" placeholder="feature/my-branch" style="flex:1;min-width:120px" />
+                    <button type="button" class="button button--ghost" :disabled="!newBranchName.trim() || !!gitUi.busyAction" style="margin-left:6px" @click="onCreateBranch">{{ gitUi.busyAction === 'create-branch' ? 'Creating…' : 'Create & switch' }}</button>
+                  </span>
+                </div>
+              </template>
+            </article>
+
             <GitMergeBackCard v-if="!isReviewWorkspace" :snapshot="snapshot" :workspace-id="workspaceId" :workspaces="workspaces" :git-ui="gitUi" :effective-base-branch="effectiveBaseBranch" :base-branch-options="baseBranchOptions" :is-linked-worktree="isLinkedWorktree" />
           </div>
         </template>
@@ -333,6 +365,15 @@ const activeConnectionLabel = computed(() => {
   return found?.label || activeConnectionId.value;
 });
 
+// Branch switch/create state
+const switchBranchTarget = ref("");
+const newBranchName = ref("");
+const switchBranchOptions = computed(() => {
+  const names = snapshot.value?.branchNames || [];
+  const current = snapshot.value?.branch || "";
+  return names.filter((n) => n !== current);
+});
+
 // PR form state
 const prTitle = ref("");
 const prDescription = ref("");
@@ -428,6 +469,21 @@ function onCreateWorktree() {
 
 function onBaseBranchChange(event) {
   gitUiStore.gitSetBaseBranch(props.workspaceId, event.target.value);
+}
+
+function onCheckoutBranch() {
+  if (switchBranchTarget.value) {
+    gitUiStore.gitCheckoutBranch(props.workspaceId, switchBranchTarget.value);
+    switchBranchTarget.value = "";
+  }
+}
+
+function onCreateBranch() {
+  const name = newBranchName.value.trim();
+  if (name) {
+    gitUiStore.gitCreateBranch(props.workspaceId, name);
+    newBranchName.value = "";
+  }
 }
 
 function onConnectionChange(event) {

@@ -1147,6 +1147,39 @@ export class GitManager extends EventEmitter {
     });
   }
 
+  async checkoutBranch(workspace, { branch } = {}) {
+    const targetBranch = String(branch || "").trim();
+    if (!targetBranch) {
+      return createStructuredResult({ ok: false, summary: "Branch name is required." });
+    }
+
+    return this.runWriteAction(workspace, {
+      type: "checkout",
+      label: "Checkout",
+      skipPreflight: true,
+      run: async (cwd) => this.execGit(cwd, ["checkout", targetBranch]),
+    });
+  }
+
+  async createBranch(workspace, { branch, startPoint = "" } = {}) {
+    const newBranch = String(branch || "").trim();
+    if (!newBranch) {
+      return createStructuredResult({ ok: false, summary: "Branch name is required." });
+    }
+
+    const args = ["checkout", "-b", newBranch];
+    if (startPoint) {
+      args.push(startPoint);
+    }
+
+    return this.runWriteAction(workspace, {
+      type: "create-branch",
+      label: "Create branch",
+      skipPreflight: true,
+      run: async (cwd) => this.execGit(cwd, args),
+    });
+  }
+
   async mergeIntoCurrent(workspace, { baseBranch, stashDirty = false } = {}) {
     return this.runWriteAction(workspace, {
       type: "merge",

@@ -120,6 +120,14 @@ export const useGitUiStore = defineStore("git-ui", () => {
     await runGitAction(workspaceId, "push", () => _api.gitPush({ workspaceId }));
   }
 
+  async function gitCheckoutBranch(workspaceId, branch) {
+    await runGitAction(workspaceId, "checkout", () => _api.gitCheckoutBranch({ workspaceId, branch }));
+  }
+
+  async function gitCreateBranch(workspaceId, branch, startPoint) {
+    await runGitAction(workspaceId, "create-branch", () => _api.gitCreateBranch({ workspaceId, branch, startPoint }));
+  }
+
   function setPendingGitAction(workspaceId, { type, baseBranch, snapshot }) {
     const ui = ensure(workspaceId);
     ui.pendingAction = {
@@ -343,7 +351,7 @@ export const useGitUiStore = defineStore("git-ui", () => {
     get, cleanup, init,
     // Git actions
     runGitAction,
-    refreshGit, gitFetch, gitPush,
+    refreshGit, gitFetch, gitPush, gitCheckoutBranch, gitCreateBranch,
     setPendingGitAction, clearPendingGitAction,
     gitConfirmAction, gitContinue, gitAbort,
     gitMergeBase, gitRebaseBase, gitMergeIntoBase,
