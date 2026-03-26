@@ -14,7 +14,7 @@ Stop losing terminals in a mess of scattered windows. strIDEterm puts all your s
 - **Split Layouts** - arrange terminals in columns, rows, or a grid — see everything at once without switching tabs
 - **Git Integration** - branch info, dirty count, commit log, worktree creation, and Lazygit support
 - **Azure DevOps PR Review** - pull request inbox grouped by repo, managed review workspaces, AI agent integration (review + fix code), push & publish workflow, and MCP bridge — see [docs](docs/azure-devops-review.md)
-- **GitHub PR Review** - pull request inbox, managed review workspaces with local checkout, comment and review submission (Approve / Request Changes / Comment), push & publish workflow, and MCP bridge for AI agents — same architecture as Azure DevOps, token-based auth with fine-grained or classic PAT, supports GitHub.com and GitHub Enterprise Server
+- **GitHub PR Review** - pull request inbox, managed review workspaces with local checkout, comment and review submission (Approve / Request Changes / Comment), push & publish workflow, and MCP bridge for AI agents — see [docs](docs/github-pr-review.md)
 - **Docker Manager** - list containers, run actions, open shells, and stream logs
 - **Remote Access** - access your workspace from any device via LAN or Cloudflare tunnel with QR code
 - **Plugins** - extend functionality with plugins (Docker Ops and System Monitor built-in)
