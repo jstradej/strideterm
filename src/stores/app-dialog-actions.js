@@ -222,6 +222,27 @@ export function createDialogActions(ctx) {
     });
   }
 
+  function openGitHubQuickFixWizard() {
+    const ghSettings = ctx.payload.value?.appState?.settings?.integrations?.github || {};
+    const connections = (ghSettings.connections || []).filter((c) => c.enabled !== false);
+    if (!connections.length) {
+      openGitHubConnectionDialog("");
+      return;
+    }
+    openDialog("GitHubQuickFixWizardDialog", {
+      connections,
+      onCancel: closeDialog,
+      onCreate: (result) => {
+        closeDialog();
+        if (result) {
+          ctx.payload.value = result;
+          ctx.activeViewId.value = null;
+          ctx.splitGroup.value = null;
+        }
+      },
+    });
+  }
+
   // --- Quick Fix wizard ---------------------------------------------------
 
   function openQuickFixWizard() {
@@ -277,6 +298,7 @@ export function createDialogActions(ctx) {
     openProfilesDialog,
     openAzureConnectionDialog,
     openGitHubConnectionDialog,
+    openGitHubQuickFixWizard,
     openQuickFixWizard,
     createWorktreeWithDialog,
   };

@@ -334,6 +334,18 @@ async function handleApiRequest(runtime, request, response) {
       json(response, 200, await runtime.pushGitHubReviewWorkspace(body.workspaceId, body));
       return;
     }
+    if (request.method === "POST" && url.pathname === "/api/github/quickfix/list-repos") {
+      json(response, 200, await runtime.githubQuickFixListRepos(body));
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/api/github/quickfix/list-branches") {
+      json(response, 200, await runtime.githubQuickFixListBranches(body));
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/api/github/quickfix/create") {
+      json(response, 200, await runtime.githubQuickFixCreate(body));
+      return;
+    }
 
     if (request.method === "POST" && url.pathname === "/api/remote/token/regenerate") {
       json(response, 200, await runtime.regenerateRemoteToken());

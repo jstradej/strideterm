@@ -15,7 +15,7 @@
       :workspace="ws"
       :data-workspace-id="ws.id"
       @activate="store.activateWorkspace(ws.id)"
-      @quick-fix="store.openQuickFixWizard()"
+      @quick-fix="ws.kind === 'github' ? store.openGitHubQuickFixWizard() : store.openQuickFixWizard()"
       @create-worktree="$emit('create-worktree', ws.id)"
       @edit="$emit('edit-workspace', ws.id)"
       @delete="$emit('delete-workspace', ws.id)"

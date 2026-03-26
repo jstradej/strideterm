@@ -47,6 +47,9 @@ import {
   githubReviewSchema,
   githubAuditLogQuerySchema,
   githubAuditLogStatsSchema,
+  githubQuickFixListReposSchema,
+  githubQuickFixListBranchesSchema,
+  githubQuickFixCreateSchema,
 } from "./ipc-schemas.js";
 
 export function registerIpc(runtime, emitToRenderer, { includeStateGet = true } = {}) {
@@ -123,6 +126,9 @@ export function registerIpc(runtime, emitToRenderer, { includeStateGet = true } 
   ipcMain.handle("github:workspace:fetch", async (_event, workspaceId) => runtime.fetchGitHubReviewWorkspace(workspaceId));
   ipcMain.handle("github:workspace:rebase", async (_event, workspaceId) => runtime.rebaseGitHubReviewWorkspace(workspaceId));
   ipcMain.handle("github:workspace:push", async (_event, workspaceId, options) => runtime.pushGitHubReviewWorkspace(workspaceId, options));
+  ipcMain.handle("github:quickfix:list-repos", async (_event, payload) => runtime.githubQuickFixListRepos(validateIpc(githubQuickFixListReposSchema, payload, "github:quickfix:list-repos")));
+  ipcMain.handle("github:quickfix:list-branches", async (_event, payload) => runtime.githubQuickFixListBranches(validateIpc(githubQuickFixListBranchesSchema, payload, "github:quickfix:list-branches")));
+  ipcMain.handle("github:quickfix:create", async (_event, payload) => runtime.githubQuickFixCreate(validateIpc(githubQuickFixCreateSchema, payload, "github:quickfix:create")));
 
   ipcMain.handle("session:activate", async (_event, sessionId) => runtime.activateSession(sessionId));
   ipcMain.handle("attention:sync", async (_event, payload) => runtime.syncAttentionContext(payload));
@@ -282,6 +288,9 @@ export function registerIpc(runtime, emitToRenderer, { includeStateGet = true } 
     ipcMain.removeHandler("github:workspace:fetch");
     ipcMain.removeHandler("github:workspace:rebase");
     ipcMain.removeHandler("github:workspace:push");
+    ipcMain.removeHandler("github:quickfix:list-repos");
+    ipcMain.removeHandler("github:quickfix:list-branches");
+    ipcMain.removeHandler("github:quickfix:create");
     ipcMain.removeHandler("session:activate");
     ipcMain.removeHandler("attention:sync");
     ipcMain.removeHandler("attention:clear-all");

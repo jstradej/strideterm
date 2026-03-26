@@ -65,7 +65,7 @@
               <td>
                 <span :class="['azure-audit-log__cat', `azure-audit-log__cat--${entry.category}`]">{{ entry.category }}</span>
               </td>
-              <td class="azure-audit-log__cell-project">{{ entry.project || '\u2014' }}</td>
+              <td class="azure-audit-log__cell-project">{{ isGitHub ? (entry.owner ? `${entry.owner}/${entry.repository}` : '\u2014') : (entry.project || '\u2014') }}</td>
               <td>
                 <span v-if="entry.success" class="azure-audit-log__status-ok">{{ entry.statusCode || 'OK' }}</span>
                 <span v-else class="azure-audit-log__status-err" :title="entry.errorMessage || ''">{{ entry.statusCode || 'ERR' }}</span>
@@ -87,8 +87,8 @@
                     <span><strong>{{ entry.method }}</strong> {{ entry.statusCode || '' }}</span>
                     <span class="azure-audit-log__detail-label">URL</span>
                     <span class="azure-audit-log__detail-url">{{ entry.url }}</span>
-                    <span class="azure-audit-log__detail-label">Organization</span>
-                    <span>{{ entry.organization || '\u2014' }}</span>
+                    <span class="azure-audit-log__detail-label">{{ isGitHub ? 'Repository' : 'Organization' }}</span>
+                    <span>{{ isGitHub ? (entry.owner ? `${entry.owner}/${entry.repository}` : '\u2014') : (entry.organization || '\u2014') }}</span>
                     <span class="azure-audit-log__detail-label">Connection</span>
                     <span>{{ entry.connectionId || '\u2014' }}</span>
                     <template v-if="entry.errorMessage">
@@ -121,10 +121,15 @@
 import { ref, computed, watch, onMounted, reactive } from "vue";
 import { useAppStore } from "../../../stores/app.js";
 
+const props = defineProps({
+  provider: { type: String, default: "azure" },
+});
+
 const appStore = useAppStore();
 function getApi() {
   return appStore.getApi();
 }
+const isGitHub = computed(() => props.provider === "github");
 
 const filterCategory = ref("");
 const filterSuccess = ref("");
@@ -260,7 +265,8 @@ function buildFilters() {
 async function loadEntries() {
   loading.value = true;
   try {
-    const result = await getApi().queryAzureAuditLog({
+    const queryFn = isGitHub.value ? getApi().queryGitHubAuditLog : getApi().queryAzureAuditLog;
+    const result = await queryFn({
       ...buildFilters(),
       limit: pageSize,
       offset: page.value * pageSize,
@@ -276,7 +282,8 @@ async function loadEntries() {
 
 async function loadStats() {
   try {
-    stats.value = await getApi().getAzureAuditStats(buildFilters());
+    const statsFn = isGitHub.value ? getApi().getGitHubAuditStats : getApi().getAzureAuditStats;
+    stats.value = await statsFn(buildFilters());
   } catch {}
 }
 

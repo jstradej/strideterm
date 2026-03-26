@@ -229,6 +229,25 @@ export const githubAuditLogStatsSchema = z.object({
   connectionId: z.string().optional(),
 });
 
+export const githubQuickFixListReposSchema = z.object({
+  connectionId: nonEmptyString,
+});
+
+export const githubQuickFixListBranchesSchema = z.object({
+  connectionId: nonEmptyString,
+  owner: nonEmptyString,
+  repo: nonEmptyString,
+});
+
+export const githubQuickFixCreateSchema = z.object({
+  connectionId: nonEmptyString,
+  owner: nonEmptyString,
+  repo: nonEmptyString,
+  remoteUrl: nonEmptyString,
+  baseBranch: nonEmptyString,
+  newBranchName: nonEmptyString,
+});
+
 // --- File manager schemas ---
 
 export const fileListSchema = z.object({

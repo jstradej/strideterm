@@ -848,6 +848,132 @@ export class GitHubManager extends EventEmitter {
       : ["push", "-u", "origin", `HEAD:refs/heads/${sourceBranch}`];
     await this.runGit(workspace.cwd, pushArgs, { token });
   }
+
+  // ---------------------------------------------------------------------------
+  // Quick Fix — new branch workflow
+  // ---------------------------------------------------------------------------
+
+  resolveConnectionAndToken(connectionId) {
+    const connection = this.findConnection(connectionId);
+    if (!connection) throw new Error("GitHub connection was not found.");
+    const token = this.credentialStore.getSecret(connection.tokenRef);
+    if (!token) throw new Error("PAT is missing.");
+    return { connection, token };
+  }
+
+  async listQuickFixRepositories(connectionId) {
+    this.setAuditContext({ connectionId, userInitiated: true });
+    const { connection, token } = this.resolveConnectionAndToken(connectionId);
+    const allRepos = await this.api.listUserRepos(connection, token);
+    let repos = allRepos;
+    if (connection.ownerFilters?.length) {
+      const owners = new Set(connection.ownerFilters.map((o) => o.toLowerCase()));
+      repos = repos.filter((r) => owners.has((r.owner?.login || "").toLowerCase()));
+    }
+    if (connection.repositoryFilters?.length) {
+      const filters = new Set(connection.repositoryFilters.map((f) => f.toLowerCase()));
+      repos = repos.filter((r) => filters.has((r.full_name || "").toLowerCase()));
+    }
+    return repos.map((r) => ({
+      id: r.id,
+      name: r.name,
+      fullName: r.full_name,
+      owner: r.owner?.login || "",
+      remoteUrl: r.clone_url || r.html_url,
+      defaultBranch: r.default_branch || "main",
+    }));
+  }
+
+  async listQuickFixBranches(connectionId, owner, repo) {
+    this.setAuditContext({ connectionId, userInitiated: true });
+    const { connection, token } = this.resolveConnectionAndToken(connectionId);
+    const branches = await this.api.listBranches(connection, token, owner, repo);
+    return branches.map((b) => b.name);
+  }
+
+  async openQuickFixWorkspace({ state, connectionId, owner, repo, remoteUrl, baseBranch, newBranchName }) {
+    const { connection, token } = this.resolveConnectionAndToken(connectionId);
+
+    const activeProfile = state.activeProfileId || "default";
+    const parentGitHubWorkspace = state.workspaces.find((ws) => (
+      ws.kind === "github" && (ws.profileId || "default") === activeProfile
+    )) || null;
+    const reviewRoot = parentGitHubWorkspace?.cwd || connection.reviewRoot || DEFAULT_REVIEW_ROOT;
+
+    const cacheRepoPath = await this.ensureCacheRepo({ connection, token, owner, repo, remoteUrl, reviewRoot });
+
+    await this.runGit(cacheRepoPath, [
+      "fetch", "origin",
+      `+refs/heads/${baseBranch}:refs/remotes/origin/${baseBranch}`,
+    ], { token });
+
+    const worktreePath = path.join(
+      normalizeReviewRoot(reviewRoot),
+      "quickfix",
+      shortPathKey(connection.id, "connection"),
+      sanitizePathSegment(`${owner}-${repo}`),
+      sanitizePathSegment(newBranchName),
+    );
+    await mkdir(path.dirname(worktreePath), { recursive: true });
+
+    const worktreeExists = await exists(path.join(worktreePath, ".git"));
+    if (!worktreeExists) {
+      try {
+        await this.runGit(cacheRepoPath, [
+          "worktree", "add", "--force", "-b", newBranchName,
+          worktreePath, `refs/remotes/origin/${baseBranch}`,
+        ]);
+      } catch (err) {
+        const msg = String(err?.stderr || err?.message || err);
+        if (msg.includes("already exists")) {
+          throw new Error(`Branch "${newBranchName}" already exists. Choose a different name.`);
+        }
+        throw err;
+      }
+    }
+
+    const panels = createReviewWorkspacePanels(parentGitHubWorkspace?.panels || [], state.tabTemplates || []);
+    const workspace = {
+      id: `workspace-${randomUUID()}`,
+      name: newBranchName,
+      icon: GITHUB_REVIEW_ICON,
+      color: GITHUB_REVIEW_COLOR,
+      kind: "terminal",
+      source: "manual",
+      pluginId: "",
+      cwd: worktreePath,
+      notes: "",
+      profileId: activeProfile,
+      connectionId,
+      activePanelId: panels[0]?.id || "",
+      panels,
+      review: {
+        provider: "github",
+        prKey: "",
+        connectionId,
+        hostUrl: connection.hostUrl || "",
+        parentWorkspaceId: parentGitHubWorkspace?.id || "",
+        repository: { owner, name: repo, fullName: `${owner}/${repo}`, remoteUrl },
+        pullRequest: null,
+        role: "author",
+        checkout: {
+          mode: "managed-worktree",
+          rootPath: worktreePath,
+          cacheRepoPath,
+        },
+      },
+      quickfix: {
+        connectionId,
+        owner,
+        repo,
+        remoteUrl,
+        baseBranch,
+        parentWorkspaceId: parentGitHubWorkspace?.id || "",
+      },
+    };
+
+    return { workspace, parentWorkspaceId: parentGitHubWorkspace?.id || "" };
+  }
 }
 
 export {

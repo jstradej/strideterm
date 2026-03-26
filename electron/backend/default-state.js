@@ -123,7 +123,7 @@ export function normalizeWorkspace(workspace, index = 0) {
     cwd: workspace.cwd || (isAzureWorkspace || isGitHubWorkspace ? "" : defaultCwd()),
     notes: repairVisibleText(workspace.notes || ""),
     profileId: workspace.profileId || "default",
-    connectionId: workspace.connectionId || "",
+    connectionId: workspace.connectionId || workspace.quickfix?.connectionId || workspace.review?.connectionId || "",
     activePanelId,
     panels,
     review: workspace.review

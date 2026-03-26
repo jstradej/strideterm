@@ -2095,6 +2095,33 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
       broadcastState();
       return getPayload();
     },
+    async githubQuickFixListRepos(payload) {
+      return { repositories: await github.listQuickFixRepositories(payload.connectionId) };
+    },
+    async githubQuickFixListBranches(payload) {
+      return { branches: await github.listQuickFixBranches(payload.connectionId, payload.owner, payload.repo) };
+    },
+    async githubQuickFixCreate(payload) {
+      const result = await github.openQuickFixWorkspace({
+        state: getState(),
+        connectionId: payload.connectionId,
+        owner: payload.owner,
+        repo: payload.repo,
+        remoteUrl: payload.remoteUrl,
+        baseBranch: payload.baseBranch,
+        newBranchName: payload.newBranchName,
+      });
+      await store.mutate((draft) => {
+        const normalized = normalizeWorkspace(result.workspace);
+        draft.workspaces.push(normalized);
+        draft.activeWorkspaceId = normalized.id;
+      });
+      await refreshGit(result.workspace.id);
+      sessions.syncWithState(getState());
+      ensureVisibleSession(result.workspace.id);
+      broadcastState();
+      return getPayload();
+    },
     async pushGitHubReviewWorkspace(workspaceId, { force = false } = {}) {
       const workspace = findWorkspace(getState(), workspaceId);
       if (!workspace?.review) throw new Error("GitHub review workspace not found.");

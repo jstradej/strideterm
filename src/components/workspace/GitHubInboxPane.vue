@@ -22,6 +22,7 @@
           </button>
         </div>
         <div class="azure-inbox__actions">
+          <button type="button" class="button" @click="appStore.openGitHubQuickFixWizard()">New Branch</button>
           <button type="button" :class="['button', 'button--ghost', busyAction === 'refresh' && 'button--busy']" :disabled="!!busyAction" @click="handleRefresh">{{ busyAction === 'refresh' ? 'Refreshing…' : 'Refresh' }}</button>
           <button type="button" class="button button--ghost" @click="appStore.openGitHubConnectionDialog('')">Add connection</button>
         </div>
@@ -69,7 +70,7 @@
           </template>
           <!-- Activity log tab -->
           <template v-else-if="tab.id === 'activity' && activeTab === 'activity'">
-            <div class="azure-empty"><p>GitHub audit log — coming soon.</p></div>
+            <AuditLog provider="github" />
           </template>
           <!-- PR list tabs -->
           <template v-else-if="activeTab === tab.id">
@@ -106,6 +107,7 @@ import { computed, ref } from "vue";
 import { useAppStore } from "../../stores/app.js";
 import PaneShell from "../layout/PaneShell.vue";
 import GitHubPrRow from "./github/GitHubPrRow.vue";
+import AuditLog from "./azure/AzureAuditLog.vue";
 
 const props = defineProps({
   workspaceId: { type: String, required: true },

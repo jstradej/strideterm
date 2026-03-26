@@ -251,6 +251,34 @@ export function createGitHubApi(fetchImpl, { auditLogger } = {}) {
     });
   }
 
+  async function listUserRepos(connection, token, { perPage = 100, sort = "pushed" } = {}) {
+    const repos = [];
+    let page = 1;
+    while (true) {
+      const url = `${buildApiBase(connection)}/user/repos?per_page=${perPage}&sort=${sort}&direction=desc&page=${page}`;
+      const batch = await requestJson(url, { token });
+      if (!Array.isArray(batch) || !batch.length) break;
+      repos.push(...batch);
+      if (batch.length < perPage) break;
+      page++;
+    }
+    return repos;
+  }
+
+  async function listBranches(connection, token, owner, repo, { perPage = 100 } = {}) {
+    const branches = [];
+    let page = 1;
+    while (true) {
+      const url = `${buildApiBase(connection)}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/branches?per_page=${perPage}&page=${page}`;
+      const batch = await requestJson(url, { token });
+      if (!Array.isArray(batch) || !batch.length) break;
+      branches.push(...batch);
+      if (batch.length < perPage) break;
+      page++;
+    }
+    return branches;
+  }
+
   async function submitReview(connection, token, owner, repo, pullNumber, { event, body = "" }) {
     return requestJson(buildSubmitReviewUrl(connection, owner, repo, pullNumber), {
       token,
@@ -288,5 +316,7 @@ export function createGitHubApi(fetchImpl, { auditLogger } = {}) {
     listRequestedReviewers,
     createIssueComment,
     submitReview,
+    listUserRepos,
+    listBranches,
   };
 }
