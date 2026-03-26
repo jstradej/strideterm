@@ -1,4 +1,5 @@
-import { ipcMain, dialog, BrowserWindow, shell } from "electron";
+import { ipcMain, dialog, BrowserWindow, shell, Notification, app } from "electron";
+import { join } from "node:path";
 import {
   validateIpc,
   workspaceSchema,
@@ -131,6 +132,23 @@ export function registerIpc(runtime, emitToRenderer, { includeStateGet = true } 
   ipcMain.handle("profile:delete", async (_event, profileId) => runtime.deleteProfile(profileId));
   ipcMain.handle("profile:activate", async (_event, profileId) => runtime.activateProfile(profileId));
 
+  ipcMain.handle("notification:show-system", async (_event, payload) => {
+    if (!Notification.isSupported()) return;
+    const notif = new Notification({
+      title: payload?.title || "strIDEterm",
+      body: payload?.body || "",
+      icon: join(app.getAppPath(), "assets", "icon.png"),
+    });
+    notif.on("click", () => {
+      const win = BrowserWindow.getAllWindows()[0];
+      if (win) {
+        if (win.isMinimized()) win.restore();
+        win.focus();
+      }
+    });
+    notif.show();
+  });
+
   ipcMain.handle("dialog:browse-directory", async (_event, defaultPath) => {
     const win = BrowserWindow.getFocusedWindow();
     const result = await dialog.showOpenDialog(win, {
@@ -243,6 +261,7 @@ export function registerIpc(runtime, emitToRenderer, { includeStateGet = true } 
     ipcMain.removeHandler("profile:save");
     ipcMain.removeHandler("profile:delete");
     ipcMain.removeHandler("profile:activate");
+    ipcMain.removeHandler("notification:show-system");
     ipcMain.removeHandler("dialog:browse-directory");
     ipcMain.removeHandler("dialog:browse-file");
     ipcMain.removeHandler("shell:open-external");

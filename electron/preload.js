@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer } from "electron";
 
 contextBridge.exposeInMainWorld("strideterm", {
   openExternal: (url) => ipcRenderer.invoke("shell:open-external", url),
+  showSystemNotification: (payload) => ipcRenderer.invoke("notification:show-system", payload),
   getState: () => ipcRenderer.invoke("state:get"),
   activateWorkspace: (workspaceId) => ipcRenderer.invoke("workspace:activate", workspaceId),
   activateProject: (projectId) => ipcRenderer.invoke("project:activate", projectId),

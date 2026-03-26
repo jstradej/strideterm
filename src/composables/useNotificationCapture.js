@@ -1,6 +1,7 @@
 import { watch, ref } from "vue";
 import { useAppStore } from "../stores/app.js";
 import { useNotificationStore } from "../stores/notifications.js";
+import { fireNotificationAlert } from "./useNotificationSound.js";
 
 /**
  * Watches the attention payload for new alerts and converts them into
@@ -108,6 +109,7 @@ export function useNotificationCapture() {
           });
 
           latestToast.value = entry;
+          fireNotificationAlert(entry.title, entry.body);
         }
       }
 
