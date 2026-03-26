@@ -2095,6 +2095,89 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
       broadcastState();
       return getPayload();
     },
+    async githubListRemoteBranches(payload) {
+      const workspace = resolveGitWorkspace(payload.workspaceId);
+      const connectionId = workspace.connectionId || workspace.review?.connectionId || workspace.quickfix?.connectionId || "";
+      if (!connectionId) throw new Error("No GitHub connection associated with this workspace.");
+      const snapshot = git.getSnapshot(workspace.id);
+      const remoteUrl = snapshot?.remotes?.origin || "";
+      // Extract owner/repo from remote URL
+      const match = remoteUrl.match(/github\.com[/:]([^/]+)\/([^/.]+)/);
+      if (!match) throw new Error("Cannot determine GitHub owner/repo from remote URL.");
+      const branches = await github.listRemoteBranches(connectionId, match[1], match[2]);
+      return { branches };
+    },
+    async githubCreatePullRequest(payload = {}) {
+      const workspace = resolveGitWorkspace(payload.workspaceId);
+      const connectionId = workspace.connectionId || workspace.review?.connectionId || workspace.quickfix?.connectionId || "";
+      if (!connectionId) throw new Error("No GitHub connection associated with this workspace.");
+      const snapshot = git.getSnapshot(workspace.id);
+      if (!snapshot?.available) throw new Error("Git workspace is unavailable.");
+      const remoteUrl = snapshot.remotes?.origin || "";
+      const match = remoteUrl.match(/github\.com[/:]([^/]+)\/([^/.]+)/);
+      if (!match) throw new Error("Cannot determine GitHub owner/repo from remote URL.");
+      const owner = match[1];
+      const repo = match[2];
+      const sourceBranch = payload.sourceBranch || snapshot.branch;
+      const result = await github.createPullRequestForWorkspace({
+        connectionId,
+        owner,
+        repo,
+        sourceBranch,
+        targetBranch: payload.targetBranch,
+        title: payload.title,
+        description: payload.description || "",
+        isDraft: payload.isDraft || false,
+      });
+
+      // Promote quickfix workspace → full review workspace after PR creation
+      if (workspace.quickfix && result.pullRequestNumber) {
+        const { createPullRequestKey: ghPrKey } = await import("./github-utils.js");
+        const prKey = ghPrKey(connectionId, owner, repo, result.pullRequestNumber);
+        await store.mutate((draft) => {
+          const ws = draft.workspaces.find((w) => w.id === workspace.id);
+          if (ws) {
+            ws.name = `${owner}/${repo} PR #${result.pullRequestNumber}`;
+            ws.review = {
+              ...(ws.review || {}),
+              provider: "github",
+              prKey,
+              connectionId,
+              hostUrl: ws.review?.hostUrl || "",
+              parentWorkspaceId: ws.review?.parentWorkspaceId || ws.quickfix?.parentWorkspaceId || "",
+              repository: { owner, name: repo, fullName: `${owner}/${repo}`, remoteUrl },
+              pullRequest: {
+                id: result.pullRequestNumber,
+                number: result.pullRequestNumber,
+                title: result.title || payload.title || "",
+                status: "open",
+                mergeStatus: "",
+                url: result.url || "",
+                webUrl: result.url || "",
+                sourceRefName: sourceBranch,
+                targetRefName: payload.targetBranch,
+              },
+              role: "author",
+              checkout: ws.review?.checkout || {
+                mode: "managed-worktree",
+                rootPath: workspace.cwd,
+                cacheRepoPath: "",
+              },
+            };
+            ws.quickfix = null;
+          }
+        });
+        await azureReviewStore.upsertTrackedPullRequest(prKey, {
+          reviewWorkspaceId: workspace.id,
+          lastSeenActivityAt: new Date().toISOString(),
+        });
+      }
+
+      await refreshGit(workspace.id);
+      await refreshGitHub();
+      broadcastState();
+      return { result, payload: getPayload() };
+    },
     async githubQuickFixListRepos(payload) {
       return { repositories: await github.listQuickFixRepositories(payload.connectionId) };
     },

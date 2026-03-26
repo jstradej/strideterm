@@ -481,7 +481,8 @@ function generatePrTitleAndDescription() {
 async function loadPrBranches() {
   prFormLoadingBranches.value = true;
   try {
-    const result = await api.azureListRemoteBranches({ workspaceId: props.workspaceId });
+    const listFn = isGitHub.value ? api.githubListRemoteBranches : api.azureListRemoteBranches;
+    const result = await listFn({ workspaceId: props.workspaceId });
     prFormBranches.value = result.branches || [];
     if (!prFormTarget.value) {
       prFormTarget.value = prFormBranches.value.find((b) => b === baseBranch.value)
@@ -525,19 +526,25 @@ async function handleCreatePr() {
         prFormResult.value = { ok: false, summary: "Push your commits to remote first, then try again." };
         return;
       }
-      await appStore.azurePushReviewWorkspace(props.workspaceId);
+      if (isGitHub.value) {
+        await appStore.githubPushReviewWorkspace(props.workspaceId);
+      } else {
+        await appStore.azurePushReviewWorkspace(props.workspaceId);
+      }
     }
 
-    const { result } = await api.azureCreatePullRequest({
+    const createFn = isGitHub.value ? api.githubCreatePullRequest : api.azureCreatePullRequest;
+    const { result } = await createFn({
       workspaceId: props.workspaceId,
       targetBranch: prFormTarget.value,
       title: prFormTitle.value.trim(),
       description: prFormDescription.value.trim(),
       isDraft: prFormDraft.value,
     });
+    const prId = result.pullRequestNumber || result.pullRequestId;
     prFormResult.value = {
       ok: true,
-      summary: `PR #${result.pullRequestId} created.`,
+      summary: `PR #${prId} created.`,
       url: result.url,
     };
   } catch (err) {

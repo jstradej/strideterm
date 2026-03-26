@@ -126,6 +126,8 @@ export function registerIpc(runtime, emitToRenderer, { includeStateGet = true } 
   ipcMain.handle("github:workspace:fetch", async (_event, workspaceId) => runtime.fetchGitHubReviewWorkspace(workspaceId));
   ipcMain.handle("github:workspace:rebase", async (_event, workspaceId) => runtime.rebaseGitHubReviewWorkspace(workspaceId));
   ipcMain.handle("github:workspace:push", async (_event, workspaceId, options) => runtime.pushGitHubReviewWorkspace(workspaceId, options));
+  ipcMain.handle("github:list-remote-branches", async (_event, payload) => runtime.githubListRemoteBranches(validateIpc(gitPayloadSchema, payload, "github:list-remote-branches")));
+  ipcMain.handle("github:create-pull-request", async (_event, payload) => runtime.githubCreatePullRequest(validateIpc(gitPayloadSchema, payload, "github:create-pull-request")));
   ipcMain.handle("github:quickfix:list-repos", async (_event, payload) => runtime.githubQuickFixListRepos(validateIpc(githubQuickFixListReposSchema, payload, "github:quickfix:list-repos")));
   ipcMain.handle("github:quickfix:list-branches", async (_event, payload) => runtime.githubQuickFixListBranches(validateIpc(githubQuickFixListBranchesSchema, payload, "github:quickfix:list-branches")));
   ipcMain.handle("github:quickfix:create", async (_event, payload) => runtime.githubQuickFixCreate(validateIpc(githubQuickFixCreateSchema, payload, "github:quickfix:create")));
@@ -288,6 +290,8 @@ export function registerIpc(runtime, emitToRenderer, { includeStateGet = true } 
     ipcMain.removeHandler("github:workspace:fetch");
     ipcMain.removeHandler("github:workspace:rebase");
     ipcMain.removeHandler("github:workspace:push");
+    ipcMain.removeHandler("github:list-remote-branches");
+    ipcMain.removeHandler("github:create-pull-request");
     ipcMain.removeHandler("github:quickfix:list-repos");
     ipcMain.removeHandler("github:quickfix:list-branches");
     ipcMain.removeHandler("github:quickfix:create");

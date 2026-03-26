@@ -224,6 +224,8 @@ function createRemoteTransport() {
     fetchGitHubReviewWorkspace: (workspaceId) => fetchJson("/api/github/workspace/fetch", { workspaceId }),
     rebaseGitHubReviewWorkspace: (workspaceId) => fetchJson("/api/github/workspace/rebase", { workspaceId }),
     pushGitHubReviewWorkspace: (workspaceId, options) => fetchJson("/api/github/workspace/push", { workspaceId, ...options }),
+    githubListRemoteBranches: (payload) => fetchJson("/api/github/list-remote-branches", payload),
+    githubCreatePullRequest: (payload) => fetchJson("/api/github/create-pull-request", payload),
     githubQuickFixListRepos: (payload) => fetchJson("/api/github/quickfix/list-repos", payload),
     githubQuickFixListBranches: (payload) => fetchJson("/api/github/quickfix/list-branches", payload),
     githubQuickFixCreate: (payload) => fetchJson("/api/github/quickfix/create", payload),

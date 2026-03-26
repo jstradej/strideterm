@@ -318,5 +318,12 @@ export function createGitHubApi(fetchImpl, { auditLogger } = {}) {
     submitReview,
     listUserRepos,
     listBranches,
+    createPullRequest: async (connection, token, owner, repo, { title, body = "", head, base, draft = false }) => {
+      return requestJson(`${buildApiBase(connection)}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/pulls`, {
+        token,
+        method: "POST",
+        body: { title, body: body || undefined, head, base, draft },
+      });
+    },
   };
 }

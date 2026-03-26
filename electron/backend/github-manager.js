@@ -849,6 +849,31 @@ export class GitHubManager extends EventEmitter {
     await this.runGit(workspace.cwd, pushArgs, { token });
   }
 
+  async listRemoteBranches(connectionId, owner, repo) {
+    this.setAuditContext({ connectionId, userInitiated: true });
+    const { connection, token } = this.resolveConnectionAndToken(connectionId);
+    // If owner/repo not provided, try to resolve from workspace git remote
+    const branches = await this.api.listBranches(connection, token, owner, repo);
+    return branches.map((b) => b.name);
+  }
+
+  async createPullRequestForWorkspace({ connectionId, owner, repo, sourceBranch, targetBranch, title, description, isDraft = false }) {
+    const { connection, token } = this.resolveConnectionAndToken(connectionId);
+    this.setAuditContext({ connectionId, userInitiated: true });
+    const result = await this.api.createPullRequest(connection, token, owner, repo, {
+      title,
+      body: description,
+      head: sourceBranch,
+      base: targetBranch,
+      draft: isDraft,
+    });
+    return {
+      pullRequestNumber: result.number,
+      url: result.html_url || "",
+      title: result.title,
+    };
+  }
+
   // ---------------------------------------------------------------------------
   // Quick Fix — new branch workflow
   // ---------------------------------------------------------------------------
