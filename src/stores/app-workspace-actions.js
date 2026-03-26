@@ -3,7 +3,9 @@ import {
   getWorkspacePanelByViewId,
 } from "../app/selectors.js";
 import { statusTone, cloneWorkspace } from "../workspace-state.js";
-import { isContainerRunning, isGitViewId, isDockerViewId, isAzureViewId, isReviewViewId } from "../app/helpers.js";
+import { isContainerRunning, isGitViewId, isDockerViewId, isAzureViewId, isGitHubViewId, isReviewViewId, isFilesViewId, isBrowserViewId } from "../app/helpers.js";
+
+const viewIdHelpers = { isGitViewId, isDockerViewId, isAzureViewId, isGitHubViewId, isReviewViewId, isFilesViewId, isBrowserViewId };
 import { APP_CONFIG } from "../../config/app-config.js";
 
 const LAYOUTS = {
@@ -57,7 +59,7 @@ export function createWorkspaceActions(ctx) {
 
   function closeTab(viewId) {
     if (!viewId) return;
-    if (isAzureViewId(viewId) || isReviewViewId(viewId)) return;
+    if (isAzureViewId(viewId) || isGitHubViewId(viewId) || isReviewViewId(viewId)) return;
 
     if (ctx.splitGroup.value) {
       const next = ctx.splitGroup.value.viewIds.filter((id) => id !== viewId);
@@ -105,7 +107,7 @@ export function createWorkspaceActions(ctx) {
   async function quickAddTab() {
     const workspace = ctx.payload.value?.workspace;
     const activeWs = workspace?.workspace || workspace?.project;
-    if (!activeWs || activeWs.kind === "docker" || activeWs.kind === "azure") return;
+    if (!activeWs || activeWs.kind === "docker" || activeWs.kind === "azure" || activeWs.kind === "github") return;
 
     const nextWorkspace = cloneWorkspace(activeWs);
     const panelId = `panel-${crypto.randomUUID()}`;
@@ -126,7 +128,7 @@ export function createWorkspaceActions(ctx) {
   async function quickAddTemplateTab(command, title) {
     const workspace = ctx.payload.value?.workspace;
     const activeWs = workspace?.workspace || workspace?.project;
-    if (!activeWs || activeWs.kind === "docker" || activeWs.kind === "azure") return;
+    if (!activeWs || activeWs.kind === "docker" || activeWs.kind === "azure" || activeWs.kind === "github") return;
 
     const nextWorkspace = cloneWorkspace(activeWs);
     const panelId = `panel-${crypto.randomUUID()}`;
@@ -188,8 +190,8 @@ export function createWorkspaceActions(ctx) {
 
   async function reorderPanels(draggedViewId, dropViewId, insertBefore) {
     const workspace = ctx.payload.value?.workspace;
-    const draggedTarget = getWorkspacePanelByViewId(draggedViewId, workspace);
-    const dropTarget = getWorkspacePanelByViewId(dropViewId, workspace);
+    const draggedTarget = getWorkspacePanelByViewId(draggedViewId, workspace, viewIdHelpers);
+    const dropTarget = getWorkspacePanelByViewId(dropViewId, workspace, viewIdHelpers);
     if (!draggedTarget || !dropTarget || draggedTarget.workspace.id !== dropTarget.workspace.id) return;
 
     const nextWorkspace = cloneWorkspace(draggedTarget.workspace);
@@ -207,7 +209,7 @@ export function createWorkspaceActions(ctx) {
 
   async function renameTab(viewId, title) {
     const workspace = ctx.payload.value?.workspace;
-    const target = getWorkspacePanelByViewId(viewId, workspace);
+    const target = getWorkspacePanelByViewId(viewId, workspace, viewIdHelpers);
     if (!target || !title?.trim() || title.trim() === target.panel.title) return;
 
     const nextWorkspace = cloneWorkspace(target.workspace);

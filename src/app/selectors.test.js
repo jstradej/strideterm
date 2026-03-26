@@ -87,6 +87,7 @@ describe("workspace selectors", () => {
       isGitViewId: () => false,
       isDockerViewId: () => false,
       isAzureViewId: (value) => String(value).startsWith("azure:"),
+      isGitHubViewId: (value) => String(value).startsWith("github:"),
       isReviewViewId: (value) => String(value).startsWith("review:"),
     });
 

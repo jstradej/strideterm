@@ -116,9 +116,11 @@ describe("review bridge store", () => {
       expect(entry.body).toContain("guard clause");
       return { remoteCommentId: 101 };
     });
-    expect(syncedContext?.drafts[0].status).toBe("synced");
-    expect(syncedContext?.comments[0].status).toBe("synced");
-    expect(syncedContext?.syncQueue[0].status).toBe("synced");
+    // After successful publish, the draft, local comment, and queue entry
+    // are removed so the DB stays 1:1 with remote state.
+    expect(syncedContext?.drafts.filter((d) => d.commentKey === queuedContext.drafts[0]?.commentKey)).toHaveLength(0);
+    expect(syncedContext?.comments.filter((c) => c.commentKey === queuedContext.comments[0]?.commentKey)).toHaveLength(0);
+    expect(syncedContext?.syncQueue.filter((q) => q.status === "synced")).toHaveLength(0);
 
     // createDraftComment — new standalone comment (no thread)
     const draftCommentContext = await store.createDraftComment({
@@ -209,7 +211,9 @@ describe("review bridge store", () => {
       expect(entry.body).toContain("added them already");
       return { remoteCommentId: 501 };
     });
-    expect(publishedContext?.syncQueue?.[0]?.status).toBe("synced");
+    // After successful publish, draft + comment + queue are cleaned up
+    expect(publishedContext?.drafts.filter((d) => d.body.includes("added them already"))).toHaveLength(0);
+    expect(publishedContext?.syncQueue.filter((q) => q.status === "synced")).toHaveLength(0);
 
     await store.close();
   });

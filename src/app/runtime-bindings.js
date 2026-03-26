@@ -60,7 +60,8 @@ function readActiveReviewBridge(payload, reviewPrKey) {
 function selectActiveWorkspaceRenderState(payload) {
   const activeWorkspaceId = payload?.appState?.activeWorkspaceId || "";
   const activeWorkspace = (payload?.appState?.workspaces || []).find((workspace) => workspace.id === activeWorkspaceId) || null;
-  const reviewPrKey = activeWorkspace?.review?.provider === "azure-devops"
+  const reviewProvider = activeWorkspace?.review?.provider || "";
+  const reviewPrKey = ["azure-devops", "github"].includes(reviewProvider)
     ? activeWorkspace.review.prKey
     : "";
 
@@ -72,7 +73,9 @@ function selectActiveWorkspaceRenderState(payload) {
     git: readActiveGitSnapshot(payload, activeWorkspaceId),
     docker: activeWorkspace?.kind === "docker" ? (payload?.docker || null) : null,
     azureInbox: activeWorkspace?.kind === "azure" ? (payload?.azureDevops || null) : null,
-    azureReview: reviewPrKey ? (payload?.azureDevops?.pullRequests?.[reviewPrKey] || null) : null,
+    githubInbox: activeWorkspace?.kind === "github" ? (payload?.github || null) : null,
+    azureReview: reviewProvider === "azure-devops" && reviewPrKey ? (payload?.azureDevops?.pullRequests?.[reviewPrKey] || null) : null,
+    githubReview: reviewProvider === "github" && reviewPrKey ? (payload?.github?.pullRequests?.[reviewPrKey] || null) : null,
     reviewBridge: readActiveReviewBridge(payload, reviewPrKey),
   };
 }

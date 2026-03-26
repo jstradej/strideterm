@@ -108,7 +108,7 @@ rawDraft.color = safeColor(rawDraft.color);
 const draft = reactive(rawDraft);
 
 const isDocker = computed(() => draft.kind === "docker");
-const isAzure = computed(() => draft.kind === "azure");
+const isAzure = computed(() => draft.kind === "azure" || draft.kind === "github");
 
 async function browseCwd() {
   if (!api?.browseDirectory) return;

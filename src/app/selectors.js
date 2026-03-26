@@ -56,6 +56,19 @@ export function getWorkspaceTabs({
     return hiddenViewIds.has(azureTab.id) ? [] : [azureTab];
   }
 
+  if (activeWorkspace.kind === "github") {
+    const githubTab = {
+      id: `github:${activeWorkspace.id}`,
+      type: "github",
+      title: "GitHub",
+      status: `${payload?.github?.inbox?.needsMyReview?.length || 0} reviews waiting`,
+      tone: (payload?.github?.inbox?.needsAttention?.length || 0) > 0 ? "error" : "running",
+      persistent: true,
+      closable: false,
+    };
+    return hiddenViewIds.has(githubTab.id) ? [] : [githubTab];
+  }
+
   // Identify browser panels (URL commands) and files panels — these get virtual tabs, not terminal sessions
   const browserPanelIds = new Set(panels.filter((p) => /^https?:\/\//i.test(p.command || "")).map((p) => p.id));
   const filesPanelIds = new Set(panels.filter((p) => p.command === "__files__").map((p) => p.id));
@@ -63,12 +76,12 @@ export function getWorkspaceTabs({
 
   // Terminal tabs from real sessions (exclude sessions for non-terminal panels)
   const tabs = [
-    ...(activeWorkspace.review?.provider === "azure-devops"
+    ...(["azure-devops", "github"].includes(activeWorkspace.review?.provider)
       ? [{
           id: `review:${activeWorkspace.id}`,
           type: "review",
           title: "Review",
-          status: activeWorkspace.review.pullRequest?.title || (activeWorkspace.quickfix ? "No PR yet" : "Azure review"),
+          status: activeWorkspace.review.pullRequest?.title || (activeWorkspace.quickfix ? "No PR yet" : `${activeWorkspace.review.provider === "github" ? "GitHub" : "Azure"} review`),
           tone: activeWorkspace.review.pullRequest ? "running" : "idle",
           persistent: true,
           closable: false,
@@ -192,8 +205,8 @@ export function getVisibleTabs({
   };
 }
 
-export function getWorkspacePanelByViewId(viewId, workspace, { isGitViewId, isDockerViewId, isAzureViewId, isReviewViewId }) {
-  if (!workspace || isGitViewId(viewId) || isDockerViewId(viewId) || isAzureViewId(viewId) || isReviewViewId(viewId)) {
+export function getWorkspacePanelByViewId(viewId, workspace, { isGitViewId, isDockerViewId, isAzureViewId, isGitHubViewId, isReviewViewId }) {
+  if (!workspace || isGitViewId(viewId) || isDockerViewId(viewId) || isAzureViewId(viewId) || isGitHubViewId?.(viewId) || isReviewViewId(viewId)) {
     return null;
   }
 

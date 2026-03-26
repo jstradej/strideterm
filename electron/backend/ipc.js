@@ -42,6 +42,11 @@ import {
   quickFixCreateSchema,
   azureAuditLogQuerySchema,
   azureAuditLogStatsSchema,
+  githubConnectionSchema,
+  githubCommentSchema,
+  githubReviewSchema,
+  githubAuditLogQuerySchema,
+  githubAuditLogStatsSchema,
 } from "./ipc-schemas.js";
 
 export function registerIpc(runtime, emitToRenderer, { includeStateGet = true } = {}) {
@@ -103,6 +108,22 @@ export function registerIpc(runtime, emitToRenderer, { includeStateGet = true } 
   ipcMain.handle("azure:quickfix:list-repositories", async (_event, payload) => runtime.azureQuickFixListRepositories(validateIpc(quickFixListRepositoriesSchema, payload, "azure:quickfix:list-repositories")));
   ipcMain.handle("azure:quickfix:list-branches", async (_event, payload) => runtime.azureQuickFixListBranches(validateIpc(quickFixListBranchesSchema, payload, "azure:quickfix:list-branches")));
   ipcMain.handle("azure:quickfix:create", async (_event, payload) => runtime.azureQuickFixCreate(validateIpc(quickFixCreateSchema, payload, "azure:quickfix:create")));
+
+  // --- GitHub ---
+  ipcMain.handle("github:verify-connection", async (_event, connection) => runtime.verifyGitHubConnection(validateIpc(githubConnectionSchema, connection, "github:verify-connection")));
+  ipcMain.handle("github:save-connection", async (_event, connection) => runtime.saveGitHubConnection(validateIpc(githubConnectionSchema, connection, "github:save-connection")));
+  ipcMain.handle("github:delete-connection", async (_event, connectionId) => runtime.deleteGitHubConnection(connectionId));
+  ipcMain.handle("github:refresh", async () => runtime.refreshGitHubState());
+  ipcMain.handle("github:audit-log:query", async (_event, payload) => runtime.queryGitHubAuditLog(validateIpc(githubAuditLogQuerySchema, payload, "github:audit-log:query")));
+  ipcMain.handle("github:audit-log:stats", async (_event, payload) => runtime.getGitHubAuditStats(validateIpc(githubAuditLogStatsSchema, payload, "github:audit-log:stats")));
+  ipcMain.handle("github:pull-request:seen", async (_event, prKey) => runtime.markGitHubPullRequestSeen(prKey));
+  ipcMain.handle("github:pull-request:open", async (_event, payload) => runtime.openGitHubPullRequest(validateIpc(openPrSchema, payload, "github:pull-request:open")));
+  ipcMain.handle("github:pull-request:comment", async (_event, payload) => runtime.commentGitHubPullRequest(validateIpc(githubCommentSchema, payload, "github:pull-request:comment")));
+  ipcMain.handle("github:pull-request:review", async (_event, payload) => runtime.submitGitHubPullRequestReview(validateIpc(githubReviewSchema, payload, "github:pull-request:review")));
+  ipcMain.handle("github:workspace:fetch", async (_event, workspaceId) => runtime.fetchGitHubReviewWorkspace(workspaceId));
+  ipcMain.handle("github:workspace:rebase", async (_event, workspaceId) => runtime.rebaseGitHubReviewWorkspace(workspaceId));
+  ipcMain.handle("github:workspace:push", async (_event, workspaceId, options) => runtime.pushGitHubReviewWorkspace(workspaceId, options));
+
   ipcMain.handle("session:activate", async (_event, sessionId) => runtime.activateSession(sessionId));
   ipcMain.handle("attention:sync", async (_event, payload) => runtime.syncAttentionContext(payload));
   ipcMain.handle("attention:clear-all", async () => runtime.clearAllAttention());
@@ -248,6 +269,19 @@ export function registerIpc(runtime, emitToRenderer, { includeStateGet = true } 
     ipcMain.removeHandler("azure:quickfix:list-repositories");
     ipcMain.removeHandler("azure:quickfix:list-branches");
     ipcMain.removeHandler("azure:quickfix:create");
+    ipcMain.removeHandler("github:verify-connection");
+    ipcMain.removeHandler("github:save-connection");
+    ipcMain.removeHandler("github:delete-connection");
+    ipcMain.removeHandler("github:refresh");
+    ipcMain.removeHandler("github:audit-log:query");
+    ipcMain.removeHandler("github:audit-log:stats");
+    ipcMain.removeHandler("github:pull-request:seen");
+    ipcMain.removeHandler("github:pull-request:open");
+    ipcMain.removeHandler("github:pull-request:comment");
+    ipcMain.removeHandler("github:pull-request:review");
+    ipcMain.removeHandler("github:workspace:fetch");
+    ipcMain.removeHandler("github:workspace:rebase");
+    ipcMain.removeHandler("github:workspace:push");
     ipcMain.removeHandler("session:activate");
     ipcMain.removeHandler("attention:sync");
     ipcMain.removeHandler("attention:clear-all");

@@ -681,7 +681,29 @@ export async function createReviewBridgeStore(rootPath) {
       }
       return enqueue(async () => {
         const now = new Date().toISOString();
-        const threads = (summary.threads || []).map((thread) => toThreadExport(thread));
+        // Merge review comment threads and issue comments (GitHub general conversation)
+        // into a unified thread list. Issue comments become virtual threads with a single comment.
+        const reviewThreads = (summary.threads || []).map((thread) => toThreadExport(thread));
+        const issueThreads = (summary.issueComments || []).map((comment) => toThreadExport({
+          id: comment.id,
+          status: "active",
+          filePath: "",
+          lineStart: null,
+          lineEnd: null,
+          publishedDate: comment.createdAt || null,
+          lastUpdatedDate: comment.updatedAt || comment.createdAt || null,
+          comments: [{
+            id: comment.id,
+            parentCommentId: 0,
+            content: comment.body || "",
+            body: comment.body || "",
+            publishedDate: comment.createdAt || null,
+            lastUpdatedDate: comment.updatedAt || null,
+            commentType: "text",
+            author: comment.author || {},
+          }],
+        }));
+        const threads = [...reviewThreads, ...issueThreads];
         const exportDir = buildPrExportDir(normalizedRoot, {
           provider: summary.provider || "azure-devops",
           connectionId: summary.connectionId,
@@ -801,6 +823,17 @@ export async function createReviewBridgeStore(rootPath) {
             db.prepare(buildDismissMissingCommentsSql(activeThreadIds)).run(now, summary.prKey, ...activeThreadIds);
           } else {
             statements.dismissAllCommentsForPr.run(now, summary.prKey);
+          }
+
+          // Clean up successfully published local comments and their drafts/queue entries.
+          // These are now represented as remote thread_comments — keeping them would cause duplicates.
+          const syncedComments = db.prepare(
+            `SELECT comment_key FROM review_comments WHERE pr_key = ? AND status = 'synced'`,
+          ).all(summary.prKey);
+          for (const row of syncedComments) {
+            db.prepare(`DELETE FROM draft_responses WHERE comment_key = ?`).run(row.comment_key);
+            db.prepare(`DELETE FROM sync_queue WHERE comment_key = ?`).run(row.comment_key);
+            db.prepare(`DELETE FROM review_comments WHERE comment_key = ?`).run(row.comment_key);
           }
 
           db.exec("COMMIT");
@@ -1293,9 +1326,12 @@ export async function createReviewBridgeStore(rootPath) {
             const syncedAt = new Date().toISOString();
             try {
               db.exec("BEGIN IMMEDIATE TRANSACTION");
-              statements.updateQueueState.run("synced", Number(queueEntry.attempts || 0) + 1, "", payloadJson, syncedAt, queueEntry.queue_id);
-              statements.updateDraftState.run("synced", syncedAt, payloadJson, draftRow.draft_id);
-              statements.updateCommentState.run("synced", syncedAt, commentRow.comment_key);
+              // Remove the draft, local comment, and queue entry so the DB
+              // stays 1:1 with remote state.  The next syncPullRequest will
+              // re-import the published comment as a normal thread comment.
+              statements.deleteDraftById.run(draftRow.draft_id);
+              statements.deleteCommentByKey.run(commentRow.comment_key);
+              statements.deleteQueueByDraft.run(`%${draftRow.draft_id}%`);
               db.exec("COMMIT");
             } catch (error) {
               try {

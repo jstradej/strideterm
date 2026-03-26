@@ -193,6 +193,42 @@ export const azureAuditLogStatsSchema = z.object({
   connectionId: z.string().optional(),
 });
 
+// --- GitHub schemas ---
+
+export const githubConnectionSchema = z.object({
+  hostUrl: z.string().optional(),
+  pat: z.string().optional(),
+}).passthrough();
+
+export const githubCommentSchema = z.object({
+  prKey: nonEmptyString,
+  body: z.string().min(1),
+});
+
+export const githubReviewSchema = z.object({
+  prKey: nonEmptyString,
+  event: z.enum(["APPROVE", "REQUEST_CHANGES", "COMMENT"]),
+  body: z.string().optional(),
+});
+
+export const githubAuditLogQuerySchema = z.object({
+  from: z.string().optional(),
+  to: z.string().optional(),
+  category: z.string().optional(),
+  connectionId: z.string().optional(),
+  success: z.boolean().optional(),
+  operation: z.string().optional(),
+  userInitiated: z.boolean().optional(),
+  search: z.string().optional(),
+  limit: z.number().int().positive().optional(),
+  offset: z.number().int().min(0).optional(),
+});
+
+export const githubAuditLogStatsSchema = z.object({
+  from: z.string().optional(),
+  connectionId: z.string().optional(),
+});
+
 // --- File manager schemas ---
 
 export const fileListSchema = z.object({

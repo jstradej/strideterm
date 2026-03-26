@@ -28,6 +28,7 @@ const DIALOGS = {
   SettingsDialog: defineAsyncComponent(() => import("./SettingsDialog.vue")),
   ProfilesDialog: defineAsyncComponent(() => import("./ProfilesDialog.vue")),
   AzureConnectionDialog: defineAsyncComponent(() => import("./AzureConnectionDialog.vue")),
+  GitHubConnectionDialog: defineAsyncComponent(() => import("./GitHubConnectionDialog.vue")),
   QuickFixWizardDialog: defineAsyncComponent(() => import("./QuickFixWizardDialog.vue")),
 };
 

@@ -9,7 +9,7 @@ import {
   getTabAttention,
 } from "../app/selectors.js";
 import { statusTone } from "../workspace-state.js";
-import { readSidebarCollapsed, isContainerRunning, isGitViewId, isDockerViewId, isAzureViewId, isReviewViewId } from "../app/helpers.js";
+import { readSidebarCollapsed, isContainerRunning, isGitViewId, isDockerViewId, isAzureViewId, isGitHubViewId, isReviewViewId } from "../app/helpers.js";
 import { createDialogActions } from "./app-dialog-actions.js";
 import { createWorkspaceActions } from "./app-workspace-actions.js";
 import { createApiActions } from "./app-api-actions.js";
@@ -396,7 +396,7 @@ export const useAppStore = defineStore("app", () => {
   }
 
   function getPanelByViewId(viewId, workspace = payload.value?.workspace) {
-    return getWorkspacePanelByViewId(viewId, workspace, { isGitViewId, isDockerViewId, isAzureViewId, isReviewViewId });
+    return getWorkspacePanelByViewId(viewId, workspace, { isGitViewId, isDockerViewId, isAzureViewId, isGitHubViewId, isReviewViewId });
   }
 
   // --- Delegated action groups ---

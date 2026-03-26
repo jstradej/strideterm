@@ -83,15 +83,23 @@ export function createDialogActions(ctx) {
       tabTemplates,
       onCancel: closeDialog,
       onSubmit: async (draft) => {
-        if (!workspace) draft.profileId = ctx.payload.value?.appState?.activeProfileId || "default";
+        const isNew = !workspace;
+        if (isNew) draft.profileId = ctx.payload.value?.appState?.activeProfileId || "default";
         const firstPanel = draft.panels?.[0];
-        if (firstPanel) {
+        if (draft.kind === "azure") {
+          ctx.activeViewId.value = `azure:${draft.id}`;
+        } else if (draft.kind === "github") {
+          ctx.activeViewId.value = `github:${draft.id}`;
+        } else if (firstPanel) {
           ctx.activeViewId.value = isBrowserPanel(firstPanel)
             ? `browser:${firstPanel.id}`
             : `${draft.id}:${firstPanel.id}`;
         }
         await ctx.withSuppressedBroadcast(async () => {
           ctx.payload.value = await ctx.getApi().saveWorkspace(draft);
+          if (isNew) {
+            ctx.payload.value = await ctx.getApi().activateWorkspace(draft.id);
+          }
         });
         closeDialog();
       },
@@ -198,6 +206,22 @@ export function createDialogActions(ctx) {
     });
   }
 
+  function openGitHubConnectionDialog(connectionId = "") {
+    const ghSettings = ctx.payload.value?.appState?.settings?.integrations?.github || {};
+    const connection = (ghSettings.connections || []).find((c) => c.id === connectionId) || null;
+    openDialog("GitHubConnectionDialog", {
+      connection,
+      defaultReviewRoot: ghSettings.reviewRoot || "",
+      onCancel: closeDialog,
+      onSave: async (draft) => {
+        draft.profileId = ctx.payload.value?.appState?.activeProfileId || "default";
+        const result = await ctx.getApi().saveGitHubConnection(draft);
+        ctx.payload.value = result.payload || result;
+        closeDialog();
+      },
+    });
+  }
+
   // --- Quick Fix wizard ---------------------------------------------------
 
   function openQuickFixWizard() {
@@ -252,6 +276,7 @@ export function createDialogActions(ctx) {
     openHelpDialog,
     openProfilesDialog,
     openAzureConnectionDialog,
+    openGitHubConnectionDialog,
     openQuickFixWizard,
     createWorktreeWithDialog,
   };

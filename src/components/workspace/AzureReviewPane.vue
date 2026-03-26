@@ -109,7 +109,7 @@
       <div class="git-view__toolbar">
         <div class="git-view__summary">
           <span class="workspace-chip"><strong>PR #{{ pullRequest.id }}</strong></span>
-          <span class="workspace-chip">{{ detail.project?.name }} / {{ detail.repository?.name }}</span>
+          <span class="workspace-chip">{{ isGitHub ? detail.repository?.fullName : `${detail.project?.name} / ${detail.repository?.name}` }}</span>
           <span class="workspace-chip">{{ detail.role }}</span>
           <span v-if="checks.failedCount" class="workspace-chip workspace-chip--alert">{{ checks.failedCount }} failed checks</span>
           <span v-if="checks.pendingCount" class="workspace-chip">{{ checks.pendingCount }} pending checks</span>
@@ -117,10 +117,10 @@
           <span v-if="pendingSyncCount" class="workspace-chip">{{ pendingSyncCount }} queued drafts</span>
         </div>
         <div class="git-view__actions" style="margin-left:auto;">
-          <button type="button" :class="['button', 'button--ghost', busyAction === 'refresh' && 'button--busy']" :disabled="!!busyAction" title="Fetch the latest PR data, threads, and comments from Azure DevOps" @click="handleRefresh">{{ busyAction === 'refresh' ? 'Refreshing…' : 'Refresh' }}<span v-if="newCommentsCount" class="azure-tab__count" style="margin-left:4px;">{{ newCommentsCount }}</span></button>
-          <button type="button" :class="['button', busyAction === 'pushPublish' && 'button--busy']" :disabled="!!busyAction || (!pendingSyncCount && !aheadCount)" :title="`Push ${aheadCount} commit${aheadCount !== 1 ? 's' : ''} and publish ${pendingSyncCount} comment${pendingSyncCount !== 1 ? 's' : ''} to Azure DevOps`" @click="handlePushAndPublish">{{ busyAction === 'pushPublish' ? 'Pushing & publishing…' : pushPublishLabel }}</button>
-          <button type="button" :class="['button', 'button--ghost', busyAction === 'publish' && 'button--busy']" :disabled="!!busyAction || !pendingSyncCount" title="Publish queued drafts to Azure DevOps without pushing" @click="handlePublish">{{ busyAction === 'publish' ? 'Publishing…' : 'Publish only' }}</button>
-          <button type="button" class="button button--ghost" title="Open this pull request in the browser on Azure DevOps" @click="openBrowser">Browser</button>
+          <button type="button" :class="['button', 'button--ghost', busyAction === 'refresh' && 'button--busy']" :disabled="!!busyAction" :title="`Fetch the latest PR data from ${isGitHub ? 'GitHub' : 'Azure DevOps'}`" @click="handleRefresh">{{ busyAction === 'refresh' ? 'Refreshing…' : 'Refresh' }}<span v-if="newCommentsCount" class="azure-tab__count" style="margin-left:4px;">{{ newCommentsCount }}</span></button>
+          <button type="button" :class="['button', busyAction === 'pushPublish' && 'button--busy']" :disabled="!!busyAction || (!pendingSyncCount && !aheadCount)" :title="`Push ${aheadCount} commit${aheadCount !== 1 ? 's' : ''} and publish ${pendingSyncCount} comment${pendingSyncCount !== 1 ? 's' : ''}`" @click="handlePushAndPublish">{{ busyAction === 'pushPublish' ? 'Pushing & publishing…' : pushPublishLabel }}</button>
+          <button type="button" :class="['button', 'button--ghost', busyAction === 'publish' && 'button--busy']" :disabled="!!busyAction || !pendingSyncCount" title="Publish queued drafts without pushing" @click="handlePublish">{{ busyAction === 'publish' ? 'Publishing…' : 'Publish only' }}</button>
+          <button type="button" class="button button--ghost" title="Open this pull request in the browser" @click="openBrowser">Browser</button>
         </div>
       </div>
 
@@ -368,8 +368,50 @@ const workspace = computed(() =>
   (appStore.payload?.appState?.workspaces || []).find((ws) => ws.id === props.workspaceId),
 );
 const prKey = computed(() => workspace.value?.review?.prKey || "");
-const detail = computed(() => appStore.payload?.azureDevops?.pullRequests?.[prKey.value] || null);
-const pullRequest = computed(() => detail.value?.pullRequest || {});
+const reviewProvider = computed(() => workspace.value?.review?.provider || "azure-devops");
+const isGitHub = computed(() => reviewProvider.value === "github");
+const detail = computed(() => {
+  const key = prKey.value;
+  if (!key) return null;
+  if (isGitHub.value) {
+    const raw = appStore.payload?.github?.pullRequests?.[key] || null;
+    if (!raw) return null;
+    // Merge issueComments into threads so useReviewComments sees them
+    const issueThreads = (raw.issueComments || []).map((c) => ({
+      id: c.id,
+      status: "active",
+      isDeleted: false,
+      filePath: "",
+      lineStart: null,
+      lineEnd: null,
+      publishedDate: c.createdAt || null,
+      lastUpdatedDate: c.updatedAt || c.createdAt || null,
+      comments: [{
+        id: c.id,
+        parentCommentId: 0,
+        content: c.body || "",
+        publishedDate: c.createdAt || null,
+        lastUpdatedDate: c.updatedAt || null,
+        commentType: "text",
+        author: c.author || {},
+      }],
+    }));
+    return { ...raw, threads: [...(raw.threads || []), ...issueThreads] };
+  }
+  return appStore.payload?.azureDevops?.pullRequests?.[key] || null;
+});
+const pullRequestRaw = computed(() => detail.value?.pullRequest || {});
+const pullRequest = computed(() => {
+  const pr = pullRequestRaw.value;
+  if (isGitHub.value) {
+    return {
+      ...pr,
+      id: pr.number || pr.id,
+      isDraft: pr.draft || pr.isDraft,
+    };
+  }
+  return pr;
+});
 const reviewBridgeRaw = computed(() => appStore.payload?.reviewBridge?.pullRequests?.[prKey.value] || {});
 const reviewBridge = computed(() => ({
   ...reviewBridgeRaw.value,
@@ -387,7 +429,7 @@ const gitSnapshot = computed(() => appStore.getGitSnapshot(props.workspaceId));
 const aheadCount = computed(() => gitSnapshot.value?.aheadCount || 0);
 
 // --- Pre-PR (new branch) state ---
-const isPrePrWorkspace = computed(() => !workspace.value?.review?.prKey && workspace.value?.review?.provider === "azure-devops");
+const isPrePrWorkspace = computed(() => !workspace.value?.review?.prKey && ["azure-devops", "github"].includes(workspace.value?.review?.provider));
 const baseBranch = computed(() => workspace.value?.quickfix?.baseBranch || "");
 const hasDirtyOrCommits = computed(() => !!(gitSnapshot.value?.dirty || (gitSnapshot.value?.aheadCount || 0) > 0));
 const hasCommits = computed(() => (gitSnapshot.value?.aheadCount || 0) > 0);
@@ -567,11 +609,12 @@ const mcpCommandLine = computed(() => {
 // Header
 const headerStatus = computed(() => prTitle.value);
 const headerActions = computed(() => [
-  { className: "workspace-pane__icon-btn", action: "refresh-azure", title: "Refresh", label: "↻" },
+  { className: "workspace-pane__icon-btn", action: isGitHub.value ? "refresh-github" : "refresh-azure", title: "Refresh", label: "↻" },
 ]);
 
 function onHeaderAction(action) {
   if (action.action === "refresh-azure") appStore.refreshAzure();
+  if (action.action === "refresh-github") appStore.refreshGitHub();
 }
 
 // Auto-refresh when the Review pane becomes the active view
@@ -579,8 +622,13 @@ watch(
   () => appStore.activeViewId,
   (viewId) => {
     if (viewId === `review:${props.workspaceId}`) {
-      appStore.refreshAzure();
-      if (prKey.value) appStore.markAzurePrSeen(prKey.value);
+      if (isGitHub.value) {
+        appStore.refreshGitHub();
+        if (prKey.value) appStore.markGitHubPrSeen(prKey.value);
+      } else {
+        appStore.refreshAzure();
+        if (prKey.value) appStore.markAzurePrSeen(prKey.value);
+      }
     }
   },
   { immediate: true },
@@ -592,9 +640,13 @@ const busyAction = ref("");
 async function handleRefresh() {
   busyAction.value = "refresh";
   try {
-    await appStore.refreshAzure();
-    // Auto-mark as seen — user actively opened the review, so comments are "seen"
-    if (prKey.value) await appStore.markAzurePrSeen(prKey.value);
+    if (isGitHub.value) {
+      await appStore.refreshGitHub();
+      if (prKey.value) await appStore.markGitHubPrSeen(prKey.value);
+    } else {
+      await appStore.refreshAzure();
+      if (prKey.value) await appStore.markAzurePrSeen(prKey.value);
+    }
   } finally { busyAction.value = ""; }
 }
 

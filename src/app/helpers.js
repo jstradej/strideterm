@@ -147,6 +147,10 @@ export function isAzureViewId(value) {
   return String(value || "").startsWith("azure:");
 }
 
+export function isGitHubViewId(value) {
+  return String(value || "").startsWith("github:");
+}
+
 export function isReviewViewId(value) {
   return String(value || "").startsWith("review:");
 }

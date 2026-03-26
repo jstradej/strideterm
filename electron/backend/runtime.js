@@ -21,6 +21,8 @@ import { createReviewBridgeStore } from "./review-bridge-store.js";
 import { createAzureAuditLogStore } from "./azure-audit-log-store.js";
 import { buildReviewAgentLaunch, buildMcpServerSpec } from "./review-bridge-agent-launch.js";
 import { AzureDevOpsManager, normalizeConnectionInput, normalizeReviewRoot, shortPathKey } from "./azure-devops-manager.js";
+import { GitHubManager } from "./github-manager.js";
+import { createGitHubAuditLogStore } from "./github-audit-log-store.js";
 import { APP_CONFIG } from "../../config/app-config.js";
 
 const require = createRequire(import.meta.url);
@@ -206,6 +208,7 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
   const GitManagerImpl = dependencies.GitManager || GitManager;
   const TunnelManagerImpl = dependencies.CloudflareTunnelManager || CloudflareTunnelManager;
   const AzureDevOpsManagerImpl = dependencies.AzureDevOpsManager || AzureDevOpsManager;
+  const GitHubManagerImpl = dependencies.GitHubManager || GitHubManager;
   const createPluginManagerImpl = dependencies.createPluginManager || createPluginManager;
   const execFileTextImpl = dependencies.execFileText || execFileText;
   const checkRemoteOriginImpl = dependencies.checkRemoteOrigin || checkRemoteOrigin;
@@ -230,7 +233,7 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
   ]);
   const sessions = new SessionManagerImpl({
     getSessionEnv: ({ workspace }) => {
-      if (workspace?.review?.provider !== "azure-devops" || !workspace.review?.prKey) {
+      if (!["azure-devops", "github"].includes(workspace?.review?.provider) || !workspace.review?.prKey) {
         return {};
       }
 
@@ -240,7 +243,7 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
       }
 
       return {
-        STRIDETERM_REVIEW_PROVIDER: context.provider || "azure-devops",
+        STRIDETERM_REVIEW_PROVIDER: context.provider || workspace.review.provider || "azure-devops",
         STRIDETERM_REVIEW_PR_KEY: context.prKey,
         STRIDETERM_REVIEW_ROOT: context.rootPath,
         STRIDETERM_REVIEW_DB: context.databasePath,
@@ -253,7 +256,7 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
       };
     },
     getSessionLaunch: ({ workspace, panel }) => {
-      if (workspace?.review?.provider !== "azure-devops") {
+      if (!["azure-devops", "github"].includes(workspace?.review?.provider)) {
         return null;
       }
 
@@ -291,6 +294,16 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
     fetchImpl: dependencies.fetchImpl || globalThis.fetch,
     execFileTextImpl,
   });
+  const githubAuditLogDbPath = path.join(reviewBridgeRoot, "github-audit-log.db");
+  const githubAuditLogStore = createGitHubAuditLogStore(githubAuditLogDbPath);
+  const github = new GitHubManagerImpl({
+    credentialStore,
+    reviewStore: azureReviewStore,
+    reviewBridgeStore,
+    auditLogStore: githubAuditLogStore,
+    fetchImpl: dependencies.fetchImpl || globalThis.fetch,
+    execFileTextImpl,
+  });
   const events = new EventEmitter();
   const terminalEnvironment = getTerminalEnvironmentImpl();
   let remoteInfo = null;
@@ -323,8 +336,23 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
     return all.filter((c) => (c.profileId || "default") === activeProfile);
   }
 
+  function getGitHubSettings(state = getState()) {
+    return state.settings?.integrations?.github || {
+      enabled: true,
+      reviewRoot: path.join(os.homedir(), ".strideterm", "github-pr"),
+      defaultPollSeconds: 120,
+      connections: [],
+    };
+  }
+
+  function getGitHubConnections(state = getState()) {
+    const all = getGitHubSettings(state).connections || [];
+    const activeProfile = state.activeProfileId || "default";
+    return all.filter((c) => (c.profileId || "default") === activeProfile);
+  }
+
   /**
-   * Return all provider connections (Azure DevOps, and future GitHub/GitLab)
+   * Return all provider connections (Azure DevOps, GitHub, and future GitLab)
    * visible to the active profile.  Each provider stores connections under
    * its own settings key; this helper merges them into a single list so the
    * git tab can offer a unified dropdown.
@@ -333,9 +361,9 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
     const activeProfile = state.activeProfileId || "default";
     const matchProfile = (c) => (c.profileId || "default") === activeProfile;
 
-    const azure = (getAzureSettings(state).connections || []).filter(matchProfile);
-    // Future: const github = (getGithubSettings(state).connections || []).filter(matchProfile);
-    return [...azure];
+    const azureConns = (getAzureSettings(state).connections || []).filter(matchProfile);
+    const githubConns = (getGitHubSettings(state).connections || []).filter(matchProfile);
+    return [...azureConns, ...githubConns];
   }
 
   /**
@@ -377,8 +405,9 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
     try {
       const prKeys = new Set([
         ...Object.keys(azure.getSnapshot().pullRequests || {}),
+        ...Object.keys(github.getSnapshot().pullRequests || {}),
         ...(state.workspaces || [])
-          .map((workspace) => workspace.review?.provider === "azure-devops" ? workspace.review.prKey : "")
+          .map((workspace) => ["azure-devops", "github"].includes(workspace.review?.provider) ? workspace.review.prKey : "")
           .filter(Boolean),
       ]);
       const pullRequests = {};
@@ -637,6 +666,74 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
     azure.configurePolling(pollSeconds * 1000, refreshAzure);
   }
 
+  function getGitHubWorkspace(profileId = getState().activeProfileId || "default") {
+    return getState().workspaces.find((ws) => ws.kind === "github" && (ws.profileId || "default") === profileId) || null;
+  }
+
+  async function ensureGitHubWorkspace(profileId = getState().activeProfileId || "default") {
+    const existing = getGitHubWorkspace(profileId);
+    if (existing) return existing;
+    const panels = createAzureWorkspaceReviewPanels(getState().tabTemplates || []);
+    const workspace = normalizeWorkspace({
+      id: `workspace-${randomUUID()}`,
+      name: "GitHub",
+      icon: "GH",
+      color: "#238636",
+      kind: "github",
+      cwd: getGitHubSettings().reviewRoot || path.join(os.homedir(), ".strideterm", "github-pr"),
+      notes: "GitHub inbox",
+      profileId,
+      panels,
+      activePanelId: panels[0]?.id || "",
+    });
+    await store.mutate((draft) => {
+      draft.workspaces.push(workspace);
+      if (!draft.activeWorkspaceId) draft.activeWorkspaceId = workspace.id;
+    });
+    return workspace;
+  }
+
+  async function refreshGitHub() {
+    const state = getState();
+    await github.sync({
+      connections: getGitHubConnections(state),
+      workspaces: state.workspaces,
+      gitSnapshots: git.getProjectMap(),
+      activeProfileId: state.activeProfileId || "default",
+    });
+
+    const refreshedState = getState();
+    const activeWorkspace = findWorkspace(refreshedState, refreshedState.activeWorkspaceId);
+    if (
+      activeWorkspace?.review?.provider === "github"
+      && activeWorkspace.review.prKey
+      && typeof github.ensurePullRequestDetail === "function"
+    ) {
+      await github.ensurePullRequestDetail(activeWorkspace.review.prKey, {
+        workspaces: refreshedState.workspaces,
+        force: true,
+      }).catch(() => {});
+    }
+
+    return github.getSnapshot();
+  }
+
+  function scheduleGitHubPolling() {
+    const settings = getGitHubSettings();
+    const enabledConnections = getGitHubConnections().filter((c) => c.enabled !== false);
+    if (!settings.enabled || !enabledConnections.length) {
+      github.stopPolling();
+      return;
+    }
+    const pollSeconds = Math.max(
+      15,
+      Math.min(
+        ...enabledConnections.map((c) => Number(c.pollSeconds) || Number(settings.defaultPollSeconds) || 120),
+      ),
+    );
+    github.configurePolling(pollSeconds * 1000, refreshGitHub);
+  }
+
   tunnel.setBinaryPreference?.(getState().settings.remoteAccess.cloudflaredPath || "");
 
   function getPayload() {
@@ -648,9 +745,12 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
       },
       appState: (() => {
         const cloned = clone(state);
-        // Filter Azure connections to active profile only
+        // Filter connections to active profile only
         if (cloned.settings?.integrations?.azureDevops) {
           cloned.settings.integrations.azureDevops.connections = getAzureConnections(state);
+        }
+        if (cloned.settings?.integrations?.github) {
+          cloned.settings.integrations.github.connections = getGitHubConnections(state);
         }
         return cloned;
       })(),
@@ -670,6 +770,7 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
         connections: getAllProviderConnections(state).map((c) => ({ id: c.id, label: c.label || c.id, provider: c.provider || "azure-devops", enabled: c.enabled !== false })),
       },
       azureDevops: azure.getSnapshot(),
+      github: github.getSnapshot(),
       reviewBridge: getReviewBridgeSnapshot(state),
       plugins: pluginManager ? pluginManager.getPlugins() : [],
       environment: terminalEnvironment,
@@ -1062,6 +1163,10 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
     broadcastState();
   });
 
+  github.on("updated", () => {
+    broadcastState();
+  });
+
   tunnel.on("updated", () => {
     broadcastState();
   });
@@ -1286,6 +1391,8 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
     await refreshGit();
     await refreshAzure();
     scheduleAzurePolling();
+    await refreshGitHub();
+    scheduleGitHubPolling();
     await syncWorktrees();
     await tunnel.refreshAvailability();
   }
@@ -1294,6 +1401,7 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
   ensureGitPolling();
   if (deferInitialRefresh) {
     scheduleAzurePolling();
+    scheduleGitHubPolling();
     runInitialRefresh().then(() => {
       ensureVisibleSession();
       broadcastState();
@@ -1344,7 +1452,7 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
       // so terminal startup output doesn't trigger false alerts
       const workspace = findWorkspace(getState(), workspaceId);
       if (workspace) {
-        updateVisibleSessions(workspace.kind === "azure" ? [] : workspace.panels.map((panel) => createSessionId(workspaceId, panel.id)));
+        updateVisibleSessions((workspace.kind === "azure" || workspace.kind === "github") ? [] : workspace.panels.map((panel) => createSessionId(workspaceId, panel.id)));
       }
       if (workspace?.kind === "docker") {
         await refreshDocker();
@@ -1423,6 +1531,8 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
         }
       }
       clearProjectAlerts(workspaceId);
+      ensureVisibleSession();
+      broadcastState();
 
       // Delete worktree files from disk if requested
       let diskDeleteError = "";
@@ -1709,19 +1819,30 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
       if (!prKey) {
         throw new Error("Pull request key is required.");
       }
+      // Determine provider from prKey or current PR data
+      const prData = reviewBridgeStore.getPullRequestContext?.(prKey);
+      const isGitHub = prData?.provider === "github" || github.findSummary(prKey);
       await reviewBridgeStore.syncPendingDrafts(prKey, async (entry) => {
-        await azure.addPullRequestComment({
-          prKey,
-          content: entry.body,
-          threadId: entry.remoteThreadId,
-          parentCommentId: entry.parentCommentId || 0,
-        });
+        if (isGitHub) {
+          await github.addPullRequestComment({ prKey, body: entry.body });
+        } else {
+          await azure.addPullRequestComment({
+            prKey,
+            content: entry.body,
+            threadId: entry.remoteThreadId,
+            parentCommentId: entry.parentCommentId || 0,
+          });
+        }
         return {
           publishedAt: new Date().toISOString(),
           threadId: entry.remoteThreadId,
         };
       });
-      await refreshAzure();
+      if (isGitHub) {
+        await refreshGitHub();
+      } else {
+        await refreshAzure();
+      }
       broadcastState();
       return getPayload();
     },
@@ -1739,34 +1860,43 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
       if (!prKey) {
         throw new Error("This workspace is not associated with a pull request.");
       }
-      // Check for uncommitted changes before pushing
-      const dirtyState = await git.getCachedWorktreeDirtyState(workspace.cwd);
-      if (dirtyState.dirty) {
-        throw new Error(
-          `Cannot push: ${dirtyState.dirtyCount} uncommitted change${dirtyState.dirtyCount !== 1 ? "s" : ""} in the worktree. `
-          + "Commit your changes first, then try again.",
-        );
-      }
-      // Count commits ahead of remote before pushing
-      const sourceBranch = String(workspace.review?.pullRequest?.sourceRefName || "").replace(/^refs\/heads\//, "");
+      // Count commits ahead of remote
+      const sourceBranch = String(workspace.review?.pullRequest?.sourceRefName || workspace.review?.pullRequest?.sourceBranch || "").replace(/^refs\/heads\//, "");
       const aheadResult = await git.execGit(workspace.cwd, [
         "rev-list", "--count", `refs/remotes/origin/${sourceBranch}..HEAD`,
       ]).catch(() => ({ stdout: "0" }));
       const commitCount = Number(aheadResult.stdout.trim()) || 0;
-      // Step 1: push (with PAT via azure-devops-manager)
-      await azure.pushReviewWorkspace({ workspace });
+      // Only check for uncommitted changes when there are commits to push
+      const provider = workspace.review?.provider;
+      if (commitCount > 0) {
+        const dirtyState = await git.getCachedWorktreeDirtyState(workspace.cwd);
+        if (dirtyState.dirty) {
+          throw new Error(
+            "You have uncommitted changes. Please commit or stash them before pushing.",
+          );
+        }
+        if (provider === "github") {
+          await github.pushReviewWorkspace({ workspace });
+        } else {
+          await azure.pushReviewWorkspace({ workspace });
+        }
+      }
       const pushOk = true;
       // Step 2: publish queued drafts (only if push succeeded)
       let publishedCount = 0;
       let publishError = "";
       try {
         await reviewBridgeStore.syncPendingDrafts(prKey, async (entry) => {
-          await azure.addPullRequestComment({
-            prKey,
-            content: entry.body,
-            threadId: entry.remoteThreadId,
-            parentCommentId: entry.parentCommentId || 0,
-          });
+          if (provider === "github") {
+            await github.addPullRequestComment({ prKey, body: entry.body });
+          } else {
+            await azure.addPullRequestComment({
+              prKey,
+              content: entry.body,
+              threadId: entry.remoteThreadId,
+              parentCommentId: entry.parentCommentId || 0,
+            });
+          }
           publishedCount += 1;
           return {
             publishedAt: new Date().toISOString(),
@@ -1777,7 +1907,11 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
         publishError = error instanceof Error ? error.message : String(error || "Publish failed.");
       }
       await refreshGit(workspaceId);
-      await refreshAzure();
+      if (provider === "github") {
+        await refreshGitHub();
+      } else {
+        await refreshAzure();
+      }
       broadcastState();
       const result = getPayload();
       result.pushAndPublishResult = { commitCount, publishedCount, pushOk, publishError };
@@ -1826,6 +1960,158 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
       await refreshAzure();
       return getPayload();
     },
+
+    // --- GitHub ---
+
+    async verifyGitHubConnection(connection) {
+      return github.verifyConnection(connection);
+    },
+    async saveGitHubConnection(connection) {
+      const { normalizeConnectionInput: normalizeGH, deriveApiBaseUrl } = await import("./github-utils.js");
+      const normalizedInput = normalizeGH(connection);
+      const connectionId = normalizedInput.id || `gh-${randomUUID()}`;
+      const tokenRef = connection.tokenRef || `cred:${connectionId}`;
+      const pat = connection.pat || credentialStore.getSecret(tokenRef);
+      const verification = await github.verifyConnection({ ...normalizedInput, pat });
+      const resolvedProfileId = connection.profileId || getState().activeProfileId || "default";
+      const normalizedConnection = {
+        id: connectionId,
+        label: String(normalizedInput.label || connectionId).trim(),
+        hostUrl: String(normalizedInput.hostUrl || "https://github.com").trim().replace(/\/+$/, ""),
+        apiBaseUrl: normalizedInput.apiBaseUrl || deriveApiBaseUrl(normalizedInput.hostUrl),
+        currentUserLogin: verification.login || normalizedInput.currentUserLogin || "",
+        tokenRef,
+        enabled: normalizedInput.enabled !== false,
+        profileId: resolvedProfileId,
+        ownerFilters: Array.isArray(normalizedInput.ownerFilters) ? [...normalizedInput.ownerFilters] : [],
+        repositoryFilters: Array.isArray(normalizedInput.repositoryFilters) ? [...normalizedInput.repositoryFilters] : [],
+        pollSeconds: Number(normalizedInput.pollSeconds) || getGitHubSettings().defaultPollSeconds || 120,
+        reviewRoot: String(normalizedInput.reviewRoot || getGitHubSettings().reviewRoot || "").trim(),
+      };
+      if (pat) {
+        await credentialStore.setSecret(tokenRef, pat);
+      }
+      await store.mutate((draft) => {
+        const ghSettings = draft.settings.integrations.github;
+        ghSettings.reviewRoot = normalizedConnection.reviewRoot || ghSettings.reviewRoot;
+        const index = ghSettings.connections.findIndex((c) => c.id === connectionId);
+        if (index >= 0) {
+          ghSettings.connections[index] = normalizedConnection;
+        } else {
+          ghSettings.connections.push(normalizedConnection);
+        }
+      });
+      await ensureGitHubWorkspace();
+      await refreshGitHub();
+      scheduleGitHubPolling();
+      broadcastState();
+      return { payload: getPayload(), verification };
+    },
+    async deleteGitHubConnection(connectionId) {
+      const connection = getGitHubConnections().find((c) => c.id === connectionId);
+      if (connection?.tokenRef) {
+        await credentialStore.deleteSecret(connection.tokenRef);
+      }
+      await store.mutate((draft) => {
+        draft.settings.integrations.github.connections = draft.settings.integrations.github.connections
+          .filter((c) => c.id !== connectionId);
+      });
+      await refreshGitHub();
+      scheduleGitHubPolling();
+      broadcastState();
+      return getPayload();
+    },
+    async refreshGitHubState() {
+      const activeWsId = getState().activeWorkspaceId;
+      await refreshGit(activeWsId);
+      await refreshGitHub();
+      return getPayload();
+    },
+    queryGitHubAuditLog(filters = {}) {
+      return githubAuditLogStore.query(filters);
+    },
+    getGitHubAuditStats(filters = {}) {
+      return githubAuditLogStore.getStats(filters);
+    },
+    async markGitHubPullRequestSeen(prKey) {
+      await github.markPullRequestSeen(prKey);
+      return getPayload();
+    },
+    async openGitHubPullRequest(payload) {
+      let result;
+      try {
+        result = await github.openReviewWorkspace({
+          state: getState(),
+          prKey: payload.prKey,
+          workspaceId: payload.workspaceId || "",
+        });
+      } catch (err) {
+        const message = err instanceof Error
+          ? err.message
+          : (err?.stderr || err?.error?.message || String(err));
+        throw new Error(message);
+      }
+      await store.mutate((draft) => {
+        const normalized = normalizeWorkspace(result.workspace);
+        const index = draft.workspaces.findIndex((ws) => ws.id === normalized.id);
+        if (index >= 0) {
+          draft.workspaces[index] = normalized;
+        } else {
+          draft.workspaces.push(normalized);
+        }
+        draft.activeWorkspaceId = normalized.id;
+      });
+      await refreshGit(result.workspace.id);
+      await github.markPullRequestSeen(payload.prKey);
+      await refreshGitHub();
+      sessions.syncWithState(getState());
+      ensureVisibleSession(result.workspace.id);
+      broadcastState();
+      return getPayload();
+    },
+    async commentGitHubPullRequest(payload) {
+      await github.addPullRequestComment(payload);
+      await refreshGitHub();
+      return getPayload();
+    },
+    async submitGitHubPullRequestReview(payload) {
+      await github.submitPullRequestReview(payload);
+      await refreshGitHub();
+      return getPayload();
+    },
+    async fetchGitHubReviewWorkspace(workspaceId) {
+      const workspace = findWorkspace(getState(), workspaceId);
+      if (!workspace?.review) throw new Error("GitHub review workspace not found.");
+      await github.fetchReviewWorkspace({ workspace });
+      await refreshGit(workspaceId);
+      broadcastState();
+      return getPayload();
+    },
+    async rebaseGitHubReviewWorkspace(workspaceId) {
+      const workspace = findWorkspace(getState(), workspaceId);
+      if (!workspace?.review) throw new Error("GitHub review workspace not found.");
+      await github.rebaseReviewWorkspace({ workspace });
+      await refreshGit(workspaceId);
+      broadcastState();
+      return getPayload();
+    },
+    async pushGitHubReviewWorkspace(workspaceId, { force = false } = {}) {
+      const workspace = findWorkspace(getState(), workspaceId);
+      if (!workspace?.review) throw new Error("GitHub review workspace not found.");
+      const dirtyState = await git.getCachedWorktreeDirtyState(workspace.cwd);
+      if (dirtyState.dirty) {
+        throw new Error(
+          `Cannot push: ${dirtyState.dirtyCount} uncommitted change${dirtyState.dirtyCount !== 1 ? "s" : ""} in the worktree. `
+          + "Commit your changes first, then try again.",
+        );
+      }
+      const snapshot = git.getSnapshot(workspaceId);
+      await github.pushReviewWorkspace({ workspace, force, branch: snapshot?.branch });
+      await refreshGit(workspaceId);
+      await refreshGitHub();
+      return getPayload();
+    },
+
     async azureCreatePullRequest(payload = {}) {
       const workspace = resolveGitWorkspace(payload.workspaceId);
       const snapshot = git.getSnapshot(workspace.id);
@@ -2437,11 +2723,13 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
         reviewBridgePoll = null;
       }
       azure.stopPolling();
+      github.stopPolling();
       await tunnel.stop({ preserveAvailability: true, quiet: true });
       await pluginManager.stopAll();
       sessions.stopAll();
       await reviewBridgeStore.close?.();
       auditLogStore.close?.();
+      githubAuditLogStore.close?.();
       // State is already persisted on each mutate/replace operation.
       // Avoid rewriting the file on shutdown, which can overwrite newer
       // on-disk state if another instance touched it more recently.

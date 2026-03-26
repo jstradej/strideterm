@@ -140,6 +140,58 @@ export function createApiActions(ctx) {
     return summary;
   }
 
+  // --- GitHub ------------------------------------------------------------
+
+  async function refreshGitHub() {
+    ctx.payload.value = await ctx.getApi().refreshGitHub();
+  }
+
+  async function markGitHubPrSeen(prKey) {
+    if (!prKey) return;
+    ctx.payload.value = await ctx.getApi().markGitHubPullRequestSeen(prKey);
+  }
+
+  async function openGitHubPullRequest(prKey, workspaceId) {
+    if (!prKey) return;
+    ctx.payload.value = await ctx.getApi().openGitHubPullRequest({ prKey, workspaceId: workspaceId || "" });
+  }
+
+  async function githubComment(prKey, body) {
+    if (!prKey) return;
+    ctx.payload.value = await ctx.getApi().commentGitHubPullRequest({ prKey, body });
+  }
+
+  async function githubSubmitReview(prKey, event, body = "") {
+    if (!prKey) return;
+    ctx.payload.value = await ctx.getApi().submitGitHubPullRequestReview({ prKey, event, body });
+  }
+
+  async function githubFetchReviewWorkspace(workspaceId) {
+    if (!workspaceId) return;
+    ctx.payload.value = await ctx.getApi().fetchGitHubReviewWorkspace(workspaceId);
+  }
+
+  async function githubRebaseReviewWorkspace(workspaceId) {
+    if (!workspaceId) return;
+    ctx.payload.value = await ctx.getApi().rebaseGitHubReviewWorkspace(workspaceId);
+  }
+
+  async function githubPushReviewWorkspace(workspaceId, { force = false } = {}) {
+    if (!workspaceId) return;
+    ctx.payload.value = await ctx.getApi().pushGitHubReviewWorkspace(workspaceId, { force });
+  }
+
+  async function deleteGitHubConnection(connectionId) {
+    if (!connectionId) return;
+    if (!window.confirm("Delete this GitHub connection?")) return;
+    ctx.payload.value = await ctx.getApi().deleteGitHubConnection(connectionId);
+  }
+
+  async function saveGitHubConnection(draft) {
+    const result = await ctx.getApi().saveGitHubConnection(draft);
+    ctx.payload.value = result.payload || result;
+  }
+
   // --- Agent prompts ---------------------------------------------------
 
   async function saveAgentPrompt(params) {
@@ -280,6 +332,10 @@ export function createApiActions(ctx) {
     azureResolveThread, azureReactivateThread, azureComment,
     openAzurePullRequest, azureFetchReviewWorkspace, azureRebaseReviewWorkspace, azurePushReviewWorkspace,
     deleteAzureConnection, saveAzureConnection,
+    // GitHub
+    refreshGitHub, markGitHubPrSeen, openGitHubPullRequest, githubComment, githubSubmitReview,
+    githubFetchReviewWorkspace, githubRebaseReviewWorkspace, githubPushReviewWorkspace,
+    deleteGitHubConnection, saveGitHubConnection,
     // Review bridge
     saveReviewBridgeDraft, deleteReviewBridgeDraft, queueReviewBridgeDraft,
     deleteReviewBridgeComment, createReviewBridgeDraftComment, syncReviewBridgePullRequest,

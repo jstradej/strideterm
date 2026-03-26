@@ -1,0 +1,20 @@
+{
+  "id": "github",
+  "name": "GitHub",
+  "version": "1.0.0",
+  "description": "GitHub pull request inbox and code review integration.",
+  "author": "strIDEterm",
+  "license": "MIT",
+  "icon": "GH",
+  "color": "#238636",
+  "kind": "github",
+  "workspaceDefaults": {
+    "name": "GitHub",
+    "icon": "GH",
+    "color": "#238636",
+    "kind": "github",
+    "notes": "GitHub inbox",
+    "panels": []
+  },
+  "capabilities": []
+}

@@ -8,13 +8,13 @@
       <p class="workspace-empty-copy">Select or create a workspace to open it.</p>
     </template>
 
-    <template v-else-if="activeWorkspace?.kind === 'azure'">
+    <template v-else-if="activeWorkspace?.kind === 'azure' || activeWorkspace?.kind === 'github'">
       <div class="workspace-meta" :style="`--accent:${safeColor(activeWorkspace.color)}`">
         <div class="workspace-meta__main">
-          <span class="workspace-meta__path workspace-meta__path--copyable" :title="activeWorkspace.cwd ? 'Click to copy path' : ''" @click="copyPath">{{ pathCopied ? 'Copied!' : (activeWorkspace.cwd || 'Azure DevOps inbox') }}</span>
+          <span class="workspace-meta__path workspace-meta__path--copyable" :title="activeWorkspace.cwd ? 'Click to copy path' : ''" @click="copyPath">{{ pathCopied ? 'Copied!' : (activeWorkspace.cwd || (activeWorkspace.kind === 'github' ? 'GitHub inbox' : 'Azure DevOps inbox')) }}</span>
         </div>
         <div class="workspace-meta__stats">
-          <span class="workspace-chip"><strong>Azure</strong> inbox</span>
+          <span class="workspace-chip"><strong>{{ activeWorkspace.kind === 'github' ? 'GitHub' : 'Azure' }}</strong> inbox</span>
           <span class="workspace-chip"><strong>{{ reviewTabCount }}</strong> review tabs</span>
           <span
             v-if="attention?.count"

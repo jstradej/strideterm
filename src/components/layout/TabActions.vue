@@ -1,7 +1,7 @@
 <template>
   <div class="terminal-toolbar__actions" data-role="tab-actions">
     <button
-      v-if="workspaceKind !== 'docker' && workspaceKind !== 'azure'"
+      v-if="workspaceKind !== 'docker' && workspaceKind !== 'azure' && workspaceKind !== 'github'"
       type="button"
       class="button button--ghost"
       @click="$emit('toggle-tab-picker', $event)"

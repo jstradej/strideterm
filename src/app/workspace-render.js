@@ -43,15 +43,18 @@ export function buildWorkspaceCards({
     const gitSnapshot = getGitSnapshot(workspace.id);
     const attention = getWorkspaceAttention(workspace.id);
     const attentionTooltip = attentionTitle(attention);
-    const isReviewChild = workspace.review?.provider === "azure-devops"
+    const isReviewChild = ["azure-devops", "github"].includes(workspace.review?.provider)
       && workspace.review?.checkout?.mode === "managed-worktree";
     const isQuickFixChild = !!workspace.quickfix?.parentWorkspaceId;
+    const reviewProviderLabel = workspace.review?.provider === "github" ? "GitHub review" : "Azure review";
     const summary = workspace.kind === "docker"
       ? "Docker"
       : workspace.kind === "azure"
         ? `${workspace.cwd || "Azure inbox"}${workspace.panels?.length ? ` \u00B7 ${workspace.panels.length} review tabs` : ""}`
+      : workspace.kind === "github"
+        ? `${workspace.cwd || "GitHub inbox"}${workspace.panels?.length ? ` \u00B7 ${workspace.panels.length} review tabs` : ""}`
       : isReviewChild
-        ? `${workspace.review?.pullRequest ? "Azure review" : "New branch"} \u00B7 ${gitSnapshot?.branch || `${workspace.panels.length} tabs`}${gitSnapshot?.dirty ? ` \u00B7 ${gitSnapshot.dirtyCount} dirty` : ""}`
+        ? `${workspace.review?.pullRequest ? reviewProviderLabel : "New branch"} \u00B7 ${gitSnapshot?.branch || `${workspace.panels.length} tabs`}${gitSnapshot?.dirty ? ` \u00B7 ${gitSnapshot.dirtyCount} dirty` : ""}`
       : gitSnapshot?.available
         ? `${gitSnapshot.branch}${gitSnapshot.dirty ? ` \u00B7 ${gitSnapshot.dirtyCount} dirty` : ""}`
         : `${workspace.panels.length} tabs`;

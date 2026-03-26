@@ -62,13 +62,15 @@
 import { computed, watch, defineAsyncComponent } from "vue";
 import { useAppStore } from "../../stores/app.js";
 import { useTerminalStore } from "../../stores/terminal.js";
-import { isGitViewId, isDockerViewId, isAzureViewId, isReviewViewId, isBrowserViewId, isFilesViewId } from "../../app/helpers.js";
+import { isGitViewId, isDockerViewId, isAzureViewId, isGitHubViewId, isReviewViewId, isBrowserViewId, isFilesViewId } from "../../app/helpers.js";
 import PaneShell from "../layout/PaneShell.vue";
 import TerminalPane from "./TerminalPane.vue";
 const GitPane = defineAsyncComponent(() => import("./GitPane.vue"));
 const DockerPane = defineAsyncComponent(() => import("./DockerPane.vue"));
 const AzureInboxPane = defineAsyncComponent(() => import("./AzureInboxPane.vue"));
 const AzureReviewPane = defineAsyncComponent(() => import("./AzureReviewPane.vue"));
+const GitHubInboxPane = defineAsyncComponent(() => import("./GitHubInboxPane.vue"));
+// GitHubReviewPane removed — AzureReviewPane is provider-aware and handles both Azure and GitHub reviews
 const BrowserPane = defineAsyncComponent(() => import("./BrowserPane.vue"));
 const FileManagerPane = defineAsyncComponent(() => import("./FileManagerPane.vue"));
 
@@ -131,9 +133,21 @@ function nonTerminalPaneActions(tab) {
       { className: "workspace-pane__icon-btn workspace-pane__icon-btn--danger", action: "close-tab", viewId: tab.id, title: "Close tab", label: "×" },
     ];
   }
-  if (isAzureViewId(tab.id) || isReviewViewId(tab.id)) {
+  if (isAzureViewId(tab.id)) {
     return [
       { className: "workspace-pane__icon-btn", action: "refresh-azure", title: "Refresh Azure DevOps", label: "↻" },
+    ];
+  }
+  if (isGitHubViewId(tab.id)) {
+    return [
+      { className: "workspace-pane__icon-btn", action: "refresh-github", title: "Refresh GitHub", label: "↻" },
+    ];
+  }
+  if (isReviewViewId(tab.id)) {
+    const ws = store.payload?.appState?.workspaces?.find((w) => w.id === tab.id.replace(/^review:/, ""));
+    const provider = ws?.review?.provider || "azure-devops";
+    return [
+      { className: "workspace-pane__icon-btn", action: provider === "github" ? "refresh-github" : "refresh-azure", title: `Refresh ${provider === "github" ? "GitHub" : "Azure DevOps"}`, label: "↻" },
     ];
   }
   if (isFilesViewId(tab.id)) {
@@ -150,6 +164,7 @@ const PANE_COMPONENTS = {
   docker: DockerPane,
   azure: AzureInboxPane,
   review: AzureReviewPane,
+  github: GitHubInboxPane,
   browser: BrowserPane,
   files: FileManagerPane,
 };
@@ -162,9 +177,10 @@ function paneProps(tab) {
   if (tab.type === "git") return { workspaceId: tab.id.replace(/^git:/, "") };
   if (tab.type === "docker") return { workspaceId: tab.id.replace(/^docker:/, "") };
   if (tab.type === "azure") return { workspaceId: tab.id.replace(/^azure:/, "") };
+  if (tab.type === "github") return { workspaceId: tab.id.replace(/^github:/, "") };
   if (tab.type === "review") return { workspaceId: tab.id.replace(/^review:/, "") };
   if (tab.type === "files") return { workspaceId: tab.id.replace(/^files:/, "") };
-  return { tab };  // browser and others get the full tab object
+  return { tab };
 }
 
 function onStageMousedown(event) {
@@ -178,7 +194,7 @@ function onStageMousedown(event) {
   store.activeViewId = viewId;
   store.activeSessionId = (
     isGitViewId(viewId) || isDockerViewId(viewId) ||
-    isAzureViewId(viewId) || isReviewViewId(viewId) || isBrowserViewId(viewId) || isFilesViewId(viewId)
+    isAzureViewId(viewId) || isGitHubViewId(viewId) || isReviewViewId(viewId) || isBrowserViewId(viewId) || isFilesViewId(viewId)
   ) ? null : viewId;
   termStore.focusActiveTerminal();
 }

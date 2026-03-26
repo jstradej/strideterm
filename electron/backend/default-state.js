@@ -42,6 +42,10 @@ function defaultAzureReviewRoot() {
   return path.join(os.homedir(), ".strideterm", "azure-pr");
 }
 
+function defaultGitHubReviewRoot() {
+  return path.join(os.homedir(), ".strideterm", "github-pr");
+}
+
 export function createAccessToken() {
   return randomBytes(18).toString("base64url");
 }
@@ -98,6 +102,7 @@ function normalizePanel(panel, panelIndex = 0) {
 export function normalizeWorkspace(workspace, index = 0) {
   const isDockerWorkspace = (workspace.id || "") === "docker" || workspace.kind === "docker";
   const isAzureWorkspace = workspace.kind === "azure";
+  const isGitHubWorkspace = workspace.kind === "github";
   const rawPanels = isDockerWorkspace
     ? (workspace.panels || []).filter((panel) => !(panel.id === "lazydocker" && panel.command === "lazydocker" && !panel.launch))
     : (workspace.panels || []).filter((panel) => !(panel.id === "git" && !panel.command && !panel.launch));
@@ -112,10 +117,10 @@ export function normalizeWorkspace(workspace, index = 0) {
     name: repairVisibleText(workspace.name || `Workspace ${index + 1}`),
     icon: repairVisibleText(workspace.icon || APP_CONFIG.ui.defaultProjectIcon),
     color: workspace.color || APP_CONFIG.ui.defaultProjectColor,
-    kind: isDockerWorkspace ? "docker" : (isAzureWorkspace ? "azure" : (workspace.kind || APP_CONFIG.ui.defaultProjectKind)),
+    kind: isDockerWorkspace ? "docker" : (isAzureWorkspace ? "azure" : (isGitHubWorkspace ? "github" : (workspace.kind || APP_CONFIG.ui.defaultProjectKind))),
     source: workspace.source === "plugin" ? "plugin" : "manual",
     pluginId: workspace.pluginId || "",
-    cwd: workspace.cwd || (isAzureWorkspace ? "" : defaultCwd()),
+    cwd: workspace.cwd || (isAzureWorkspace || isGitHubWorkspace ? "" : defaultCwd()),
     notes: repairVisibleText(workspace.notes || ""),
     profileId: workspace.profileId || "default",
     connectionId: workspace.connectionId || "",
@@ -143,14 +148,15 @@ export function normalizeWorkspace(workspace, index = 0) {
             : null,
           pullRequest: workspace.review.pullRequest
             ? {
-                id: workspace.review.pullRequest.id || 0,
+                id: workspace.review.pullRequest.id || workspace.review.pullRequest.number || 0,
+                number: workspace.review.pullRequest.number || workspace.review.pullRequest.id || 0,
                 title: workspace.review.pullRequest.title || "",
-                status: workspace.review.pullRequest.status || "",
-                mergeStatus: workspace.review.pullRequest.mergeStatus || "",
+                status: workspace.review.pullRequest.status || workspace.review.pullRequest.state || "",
+                mergeStatus: workspace.review.pullRequest.mergeStatus || workspace.review.pullRequest.mergeableState || "",
                 url: workspace.review.pullRequest.url || "",
                 webUrl: workspace.review.pullRequest.webUrl || "",
-                sourceRefName: workspace.review.pullRequest.sourceRefName || "",
-                targetRefName: workspace.review.pullRequest.targetRefName || "",
+                sourceRefName: workspace.review.pullRequest.sourceRefName || workspace.review.pullRequest.sourceBranch || "",
+                targetRefName: workspace.review.pullRequest.targetRefName || workspace.review.pullRequest.targetBranch || "",
               }
             : null,
           role: workspace.review.role || "",
@@ -197,6 +203,12 @@ export function createDefaultState() {
         azureDevops: {
           enabled: true,
           reviewRoot: defaultAzureReviewRoot(),
+          defaultPollSeconds: 120,
+          connections: [],
+        },
+        github: {
+          enabled: true,
+          reviewRoot: defaultGitHubReviewRoot(),
           defaultPollSeconds: 120,
           connections: [],
         },
@@ -278,6 +290,21 @@ function groupChildWorkspaces(workspaces) {
       const fallbackParent = explicitParent
         || workspaces.find((candidate) => (
           candidate.kind === "azure"
+          && candidate.id !== workspace.id
+          && (candidate.profileId || "default") === (workspace.profileId || "default")
+        ))?.id
+        || "";
+      addChild(fallbackParent, workspace);
+      continue;
+    }
+
+    if (workspace.review?.provider === "github" && workspace.review?.checkout?.mode === "managed-worktree") {
+      const explicitParent = workspace.review.parentWorkspaceId && byId.has(workspace.review.parentWorkspaceId)
+        ? workspace.review.parentWorkspaceId
+        : "";
+      const fallbackParent = explicitParent
+        || workspaces.find((candidate) => (
+          candidate.kind === "github"
           && candidate.id !== workspace.id
           && (candidate.profileId || "default") === (workspace.profileId || "default")
         ))?.id
@@ -380,19 +407,40 @@ export function normalizeState(rawState = {}) {
             }))
           : [],
       },
+      github: {
+        ...defaults.settings.integrations.github,
+        ...(((rawState.settings || {}).integrations || {}).github || {}),
+        connections: Array.isArray((((rawState.settings || {}).integrations || {}).github || {}).connections)
+          ? (((rawState.settings || {}).integrations || {}).github || {}).connections.map((connection, index) => ({
+              id: connection.id || `gh-${index + 1}`,
+              label: connection.label || connection.id || `GitHub ${index + 1}`,
+              hostUrl: connection.hostUrl || "https://github.com",
+              apiBaseUrl: connection.apiBaseUrl || "",
+              currentUserLogin: connection.currentUserLogin || "",
+              tokenRef: connection.tokenRef || "",
+              enabled: connection.enabled !== false,
+              profileId: connection.profileId || "",
+              ownerFilters: Array.isArray(connection.ownerFilters) ? [...connection.ownerFilters] : [],
+              repositoryFilters: Array.isArray(connection.repositoryFilters) ? [...connection.repositoryFilters] : [],
+              pollSeconds: Number(connection.pollSeconds) || defaults.settings.integrations.github.defaultPollSeconds,
+              reviewRoot: connection.reviewRoot || defaults.settings.integrations.github.reviewRoot,
+            }))
+          : [],
+      },
     },
   };
   const workspaces = groupChildWorkspaces(
     rawWorkspaces
       .map((workspace, index) => normalizeWorkspace(workspace, index))
-      .map((workspace) => (
-        workspace.kind === "azure" && !String(workspace.cwd || "").trim()
-          ? {
-              ...workspace,
-              cwd: normalizedSettings.integrations.azureDevops.reviewRoot || defaults.settings.integrations.azureDevops.reviewRoot,
-            }
-          : workspace
-      )),
+      .map((workspace) => {
+        if (workspace.kind === "azure" && !String(workspace.cwd || "").trim()) {
+          return { ...workspace, cwd: normalizedSettings.integrations.azureDevops.reviewRoot || defaults.settings.integrations.azureDevops.reviewRoot };
+        }
+        if (workspace.kind === "github" && !String(workspace.cwd || "").trim()) {
+          return { ...workspace, cwd: normalizedSettings.integrations.github.reviewRoot || defaults.settings.integrations.github.reviewRoot };
+        }
+        return workspace;
+      }),
   );
 
   // Validate activeWorkspaceId against workspaces in the active profile

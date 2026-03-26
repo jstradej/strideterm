@@ -280,6 +280,61 @@ async function handleApiRequest(runtime, request, response) {
       return;
     }
 
+    // --- GitHub ---
+    if (request.method === "POST" && url.pathname === "/api/github/verify-connection") {
+      json(response, 200, await runtime.verifyGitHubConnection(body.connection || {}));
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/api/github/save-connection") {
+      const result = await runtime.saveGitHubConnection(body.connection || {});
+      json(response, 200, result.payload);
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/api/github/delete-connection") {
+      json(response, 200, await runtime.deleteGitHubConnection(body.connectionId));
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/api/github/refresh") {
+      json(response, 200, await runtime.refreshGitHubState());
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/api/github/audit-log/query") {
+      json(response, 200, runtime.queryGitHubAuditLog(body));
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/api/github/audit-log/stats") {
+      json(response, 200, runtime.getGitHubAuditStats(body));
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/api/github/pull-request/seen") {
+      json(response, 200, await runtime.markGitHubPullRequestSeen(body.prKey));
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/api/github/pull-request/open") {
+      json(response, 200, await runtime.openGitHubPullRequest(body));
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/api/github/pull-request/comment") {
+      json(response, 200, await runtime.commentGitHubPullRequest(body));
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/api/github/pull-request/review") {
+      json(response, 200, await runtime.submitGitHubPullRequestReview(body));
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/api/github/workspace/fetch") {
+      json(response, 200, await runtime.fetchGitHubReviewWorkspace(body.workspaceId));
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/api/github/workspace/rebase") {
+      json(response, 200, await runtime.rebaseGitHubReviewWorkspace(body.workspaceId));
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/api/github/workspace/push") {
+      json(response, 200, await runtime.pushGitHubReviewWorkspace(body.workspaceId, body));
+      return;
+    }
+
     if (request.method === "POST" && url.pathname === "/api/remote/token/regenerate") {
       json(response, 200, await runtime.regenerateRemoteToken());
       return;

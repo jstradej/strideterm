@@ -83,7 +83,7 @@
               <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px;">
                 <strong>Draft reply</strong>
                 <span class="workspace-chip workspace-chip--local" style="font-size:10px;">{{ draft.status === 'queued' || draft.status === 'ready-to-sync' ? 'queued' : 'draft' }}</span>
-                <span v-if="draft.authorAgent" class="review-comment__date">by {{ draft.authorAgent }}</span>
+                <span v-if="draft.authorAgent" class="review-comment__date">by {{ displayAuthor(draft.authorAgent) }}</span>
               </div>
               <div class="review-comment__body">
                 <MarkdownContent :text="draft.body || ''" />
@@ -118,11 +118,11 @@
             <div v-if="comment.summary && !draftsByComment(comment).length" class="review-comment" style="border-top:none;">
               <span
                 class="review-comment__avatar"
-                :style="{ background: avatarColor(comment.authorAgent || 'agent') }"
-              >{{ avatarInitials(comment.authorAgent || 'agent') }}</span>
+                :style="{ background: avatarColor(displayAuthor(comment.authorAgent)) }"
+              >{{ avatarInitials(displayAuthor(comment.authorAgent)) }}</span>
               <div>
                 <div class="review-comment__header">
-                  <strong>{{ comment.authorAgent || 'agent' }}</strong>
+                  <strong>{{ displayAuthor(comment.authorAgent) }}</strong>
                 </div>
                 <div class="review-comment__body">
                   <MarkdownContent :text="comment.summary" />
@@ -134,7 +134,7 @@
               <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px;">
                 <strong>Draft</strong>
                 <span class="workspace-chip workspace-chip--local" style="font-size:10px;">{{ draft.status === 'queued' || draft.status === 'ready-to-sync' ? 'queued' : 'draft' }}</span>
-                <span v-if="draft.authorAgent" class="review-comment__date">by {{ draft.authorAgent }}</span>
+                <span v-if="draft.authorAgent" class="review-comment__date">by {{ displayAuthor(draft.authorAgent) }}</span>
               </div>
               <div class="review-comment__body">
                 <MarkdownContent :text="draft.body || ''" />
@@ -190,7 +190,17 @@ const gitUiStore = useGitUiStore();
 const busyAction = ref("");
 
 /* ── Avatar helpers ── */
+function isHumanAuthor(agent) {
+  return !agent || agent === "human";
+}
+
+function displayAuthor(agent) {
+  if (isHumanAuthor(agent)) return "You";
+  return agent;
+}
+
 function avatarInitials(name) {
+  if (isHumanAuthor(name)) return "ME";
   const parts = (name || "?").split(/[\s,]+/).filter(Boolean);
   return parts.length >= 2
     ? (parts[0][0] + parts[1][0]).toUpperCase()
@@ -198,6 +208,7 @@ function avatarInitials(name) {
 }
 
 function avatarColor(name) {
+  if (isHumanAuthor(name)) return "hsl(210, 45%, 42%)";
   let hash = 0;
   for (const ch of name || "") hash = ((hash << 5) - hash + ch.charCodeAt(0)) | 0;
   const hue = ((hash % 360) + 360) % 360;
