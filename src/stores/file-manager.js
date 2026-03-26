@@ -14,6 +14,7 @@ export const useFileManagerStore = defineStore("fileManager", () => {
   const preview = ref(null);
   const loading = ref(false);
   const error = ref(null);
+  const clipboard = ref(null); // { entry, op: 'copy' } | null
 
   // Edit state
   const editMode = ref(false);
@@ -248,6 +249,32 @@ export const useFileManagerStore = defineStore("fileManager", () => {
     }
   }
 
+  function copyToClipboard(entry) {
+    clipboard.value = { entry, op: "copy" };
+  }
+
+  function clearClipboard() {
+    clipboard.value = null;
+  }
+
+  async function pasteEntry(targetDir) {
+    if (!_api || !clipboard.value) return;
+    const { entry, op } = clipboard.value;
+    const destDir = targetDir || currentPath.value;
+    const destPath = destDir ? `${destDir}/${entry.name}` : entry.name;
+    try {
+      if (op === "copy") {
+        await _api.fileCopy({ rootPath: rootPath.value, fromPath: entry.relativePath, toPath: destPath });
+      } else {
+        await _api.fileMove({ rootPath: rootPath.value, fromPath: entry.relativePath, toPath: destPath });
+        clipboard.value = null;
+      }
+      await refresh();
+    } catch (err) {
+      error.value = err.message || "Failed to paste";
+    }
+  }
+
   function toggleSort(column) {
     if (sortBy.value === column) {
       sortAsc.value = !sortAsc.value;
@@ -267,6 +294,7 @@ export const useFileManagerStore = defineStore("fileManager", () => {
     selectEntry, loadPreview,
     createFile, createDirectory, renameEntry, deleteEntry,
     startEdit, saveEdit, cancelEdit,
+    clipboard, copyToClipboard, clearClipboard, pasteEntry,
     refresh, openInExplorer, toggleSort,
   };
 });

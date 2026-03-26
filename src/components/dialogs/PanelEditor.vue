@@ -80,6 +80,7 @@ const DEFAULT_TAB_TEMPLATES = [
   { title: "Shell", command: "", icon: "\u{1F4BB}" },
   { title: "Claude Code", command: "claude", icon: "\u{1F916}" },
   { title: "Browser", command: "https://", icon: "\u{1F310}" },
+  { title: "Files", command: "__files__", icon: "\u{1F4C2}" },
 ];
 
 const props = defineProps({

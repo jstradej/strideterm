@@ -2187,7 +2187,6 @@ dt {
   background: rgba(255, 255, 255, 0.03);
   display: grid;
   gap: 10px;
-  min-height: 0;
 }
 
 .git-card--wide {

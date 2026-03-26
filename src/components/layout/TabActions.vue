@@ -4,7 +4,7 @@
       v-if="workspaceKind !== 'docker' && workspaceKind !== 'azure'"
       type="button"
       class="button button--ghost"
-      @click="$emit('toggle-tab-picker')"
+      @click="$emit('toggle-tab-picker', $event)"
     >+ Tab</button>
     <button
       v-if="store.splitGroup"

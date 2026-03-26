@@ -37,6 +37,8 @@ electron-builder-output/
 release/
 out/
 
+CLAUDE.md
+
 # strIDEterm local artifacts
 .strideterm/
 .private/

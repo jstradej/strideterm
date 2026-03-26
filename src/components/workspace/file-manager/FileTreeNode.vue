@@ -7,13 +7,13 @@
         'tree-node__label--selected': isSelected,
       }"
       :style="{ paddingLeft: depth * 14 + 6 + 'px' }"
-      @click="toggle"
+      @click="toggleAndNavigate"
       @contextmenu.prevent="showContextMenu"
     >
-      <span class="tree-node__chevron">{{ node.expanded ? '\u25be' : '\u25b8' }}</span>
+      <span class="tree-node__chevron">{{ isExpanded ? '\u25be' : '\u25b8' }}</span>
       <span class="tree-node__name">{{ node.entry.name }}</span>
     </div>
-    <div v-if="node.expanded && children" class="tree-node__children">
+    <div v-if="isExpanded && children.length" class="tree-node__children">
       <FileTreeNode
         v-for="child in children"
         :key="child.entry.relativePath"
@@ -34,11 +34,9 @@ const props = defineProps({
 });
 
 const store = useFileManagerStore();
-const fmRename = inject("fm-rename", null);
-const fmDelete = inject("fm-delete", null);
-const fmCreateFile = inject("fm-create-file", null);
-const fmCreateDir = inject("fm-create-dir", null);
+const fmContextMenu = inject("fm-context-menu", null);
 
+const isExpanded = computed(() => store.treeNodes.get(props.node.entry.relativePath)?.expanded || false);
 const isActive = computed(() => store.currentPath === props.node.entry.relativePath);
 const isSelected = computed(() => store.selectedEntry?.relativePath === props.node.entry.relativePath);
 
@@ -48,20 +46,18 @@ const children = computed(() => {
   return treeNode?.children || props.node.children || [];
 });
 
-async function toggle() {
+async function toggleAndNavigate() {
   const path = props.node.entry.relativePath;
-  const treeNode = store.treeNodes.get(path);
-  if (treeNode?.expanded) {
+  if (isExpanded.value) {
     store.collapseTreeNode(path);
   } else {
     await store.expandTreeNode(path);
   }
-  await store.navigate(path);
+  store.navigate(path);
 }
 
 function showContextMenu(event) {
-  // Context menu is handled via native right-click for now
-  // Could be extended with a custom context menu component
+  if (fmContextMenu) fmContextMenu(event, props.node.entry);
 }
 </script>
 

@@ -20,7 +20,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onBeforeUnmount } from "vue";
+import { ref, computed, watch, onBeforeUnmount } from "vue";
 import { useAppStore } from "../../stores/app.js";
 
 const FALLBACK_TEMPLATES = [
@@ -73,6 +73,12 @@ function onDocumentClick(e) {
   }
 }
 
-onMounted(() => setTimeout(() => document.addEventListener("click", onDocumentClick), 0));
+watch(visible, (isVisible) => {
+  document.removeEventListener("click", onDocumentClick);
+  if (isVisible) {
+    requestAnimationFrame(() => document.addEventListener("click", onDocumentClick));
+  }
+});
+
 onBeforeUnmount(() => document.removeEventListener("click", onDocumentClick));
 </script>

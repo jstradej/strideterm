@@ -212,6 +212,7 @@ export function createDefaultState() {
       { id: "docker", title: "Docker Compose", command: "docker compose up", icon: "\u{1F433}" },
       { id: "lazygit", title: "Lazygit", command: "lazygit", icon: "\u{1F500}" },
       { id: "browser", title: "Browser", command: "https://", icon: "\u{1F310}" },
+      { id: "files", title: "Files", command: "__files__", icon: "\u{1F4C2}" },
     ],
     profiles: [
       { id: "default", name: "Default", color: "#ffa424", workspaceIds: [] },
@@ -337,6 +338,10 @@ export function normalizeState(rawState = {}) {
         icon: repairVisibleText(tmpl.icon || "\u{1F4BB}"),
       }))
     : defaults.tabTemplates;
+  // Ensure the "files" template exists for existing users.
+  if (!tabTemplates.some((t) => t.id === "files" || t.command === "__files__")) {
+    tabTemplates.push({ id: "files", title: "Files", command: "__files__", icon: "\u{1F4C2}" });
+  }
   const profiles = normalizeProfiles(rawState.profiles, defaults);
   const activeProfileId = profiles.some((profile) => profile.id === rawState.activeProfileId)
     ? rawState.activeProfileId

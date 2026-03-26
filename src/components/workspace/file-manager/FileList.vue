@@ -59,8 +59,7 @@ import FileListItem from "./FileListItem.vue";
 const emit = defineEmits(["navigate", "select", "open-edit"]);
 const store = useFileManagerStore();
 
-const fmRename = inject("fm-rename", null);
-const fmDelete = inject("fm-delete", null);
+const fmContextMenu = inject("fm-context-menu", null);
 
 function sortIndicator(column) {
   if (store.sortBy !== column) return "";
@@ -88,7 +87,7 @@ function onEntryDblClick(entry) {
 }
 
 function onContextMenu(event, entry) {
-  // Could be extended with a custom context menu
+  if (fmContextMenu) fmContextMenu(event, entry);
 }
 </script>
 
@@ -97,6 +96,7 @@ function onContextMenu(event, entry) {
   display: flex;
   flex-direction: column;
   min-height: 0;
+  height: 100%;
   overflow: hidden;
   border-bottom: 1px solid var(--border);
 }
