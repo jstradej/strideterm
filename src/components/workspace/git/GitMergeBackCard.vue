@@ -27,7 +27,7 @@
       <template v-if="snapshot.dirty">
         <p class="git-card__hint">No commits ahead of {{ resolvedBaseBranch }} yet. Commit your changes first.</p>
         <div class="git-commit-form">
-          <input ref="commitInputRef" name="commit-message" type="text" :value="snapshot.branch.replace(/-/g, ' ')" placeholder="Commit message" />
+          <input ref="commitInputRef" name="commit-message" type="text" v-model="commitMessage" placeholder="Commit message" />
           <button type="button" class="button" :disabled="!!gitUi.busyAction" @click="onCommitAll">{{ gitUi.busyAction === 'commit' ? 'Committing…' : 'Commit all changes' }}</button>
         </div>
         <details v-if="dirtyConflicts.length" class="git-details">
@@ -122,6 +122,7 @@ const appStore = useAppStore();
 const gitUiStore = useGitUiStore();
 
 const commitInputRef = ref(null);
+const commitMessage = ref(props.snapshot.branch.replace(/-/g, " "));
 
 const compare = computed(() => props.snapshot.compareWithBase || {});
 const localOverride = ref("");
@@ -151,7 +152,7 @@ const dirtyConflicts = computed(() =>
 );
 
 function onCommitAll() {
-  const message = commitInputRef.value?.value;
+  const message = commitMessage.value.trim();
   if (!message) return;
   gitUiStore.gitCommitAll(props.workspaceId, message);
 }
