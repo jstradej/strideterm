@@ -151,6 +151,10 @@ export function isReviewViewId(value) {
   return String(value || "").startsWith("review:");
 }
 
+export function isFilesViewId(value) {
+  return String(value || "").startsWith("files:");
+}
+
 export function isUrlCommand(value) {
   const cmd = String(value || "").trim();
   return /^https?:\/\//i.test(cmd);

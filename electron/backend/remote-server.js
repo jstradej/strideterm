@@ -4,6 +4,7 @@ import http from "node:http";
 import fs from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { WebSocketServer } from "ws";
+import * as fm from "./file-manager.js";
 
 const CONTENT_TYPES = {
   ".css": "text/css; charset=utf-8",
@@ -441,6 +442,61 @@ async function handleApiRequest(runtime, request, response) {
 
     if (request.method === "POST" && url.pathname === "/api/profile/activate") {
       json(response, 200, await runtime.activateProfile(body.profileId));
+      return;
+    }
+
+    // --- File manager endpoints (read-only by default for remote) ---
+    if (request.method === "POST" && url.pathname === "/api/file/list") {
+      json(response, 200, await fm.listDirectory(body.rootPath, body.relativePath));
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/api/file/tree") {
+      json(response, 200, await fm.getDirectoryTree(body.rootPath, body.relativePath));
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/api/file/preview") {
+      json(response, 200, await fm.readFilePreview(body.rootPath, body.relativePath));
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/api/file/read") {
+      json(response, 200, await fm.readFileContent(body.rootPath, body.relativePath));
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/api/file/write") {
+      json(response, 200, await fm.writeFileContent(body.rootPath, body.relativePath, body.content));
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/api/file/create-file") {
+      json(response, 200, await fm.createFile(body.rootPath, body.parentPath, body.name));
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/api/file/create-dir") {
+      json(response, 200, await fm.createDirectory(body.rootPath, body.parentPath, body.name));
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/api/file/rename") {
+      json(response, 200, await fm.renameEntry(body.rootPath, body.relativePath, body.newName));
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/api/file/delete") {
+      json(response, 200, await fm.deleteEntry(body.rootPath, body.relativePath));
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/api/file/move") {
+      json(response, 200, await fm.moveEntry(body.rootPath, body.fromPath, body.toPath));
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/api/file/copy") {
+      json(response, 200, await fm.copyEntry(body.rootPath, body.fromPath, body.toPath));
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/api/file/open-in-explorer") {
+      // Open-in-explorer is an Electron-only feature; noop for remote.
+      json(response, 200, { ok: true });
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/api/file/info") {
+      json(response, 200, await fm.getFileInfo(body.rootPath, body.relativePath));
       return;
     }
 

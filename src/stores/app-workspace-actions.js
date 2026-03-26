@@ -131,15 +131,16 @@ export function createWorkspaceActions(ctx) {
     const nextWorkspace = cloneWorkspace(activeWs);
     const panelId = `panel-${crypto.randomUUID()}`;
     const isBrowser = /^https?:\/\//i.test(command || "");
+    const isFiles = command === "__files__";
     nextWorkspace.panels.push({
       id: panelId,
       title: title || "Shell",
       command: command || "",
-      shell: true,
-      startup: APP_CONFIG.ui.defaultPanelStartup,
+      shell: !isFiles,
+      startup: isFiles ? "none" : APP_CONFIG.ui.defaultPanelStartup,
     });
     nextWorkspace.activePanelId = panelId;
-    const nextViewId = isBrowser ? `browser:${panelId}` : `${nextWorkspace.id}:${panelId}`;
+    const nextViewId = isBrowser ? `browser:${panelId}` : isFiles ? `files:${panelId}` : `${nextWorkspace.id}:${panelId}`;
     await ctx.withSuppressedBroadcast(async () => {
       ctx.payload.value = await ctx.getApi().saveWorkspace(nextWorkspace);
     });

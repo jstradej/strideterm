@@ -56,10 +56,12 @@ export function getWorkspaceTabs({
     return hiddenViewIds.has(azureTab.id) ? [] : [azureTab];
   }
 
-  // Identify browser panels (URL commands) — these get virtual tabs, not terminal sessions
+  // Identify browser panels (URL commands) and files panels — these get virtual tabs, not terminal sessions
   const browserPanelIds = new Set(panels.filter((p) => /^https?:\/\//i.test(p.command || "")).map((p) => p.id));
+  const filesPanelIds = new Set(panels.filter((p) => p.command === "__files__").map((p) => p.id));
+  const nonTerminalPanelIds = new Set([...browserPanelIds, ...filesPanelIds]);
 
-  // Terminal tabs from real sessions (exclude sessions for browser panels)
+  // Terminal tabs from real sessions (exclude sessions for non-terminal panels)
   const tabs = [
     ...(activeWorkspace.review?.provider === "azure-devops"
       ? [{
@@ -73,7 +75,7 @@ export function getWorkspaceTabs({
         }]
       : []),
     ...workspace.sessions
-      .filter((session) => !browserPanelIds.has(session.panelId))
+      .filter((session) => !nonTerminalPanelIds.has(session.panelId))
       .map((session) => ({
         id: session.sessionId,
         type: "terminal",
@@ -103,6 +105,21 @@ export function getWorkspaceTabs({
         persistent: true,
         closable: true,
         url: panel.command,
+      });
+    }
+  }
+
+  // Files tabs from panels with __files__ command
+  for (const panel of panels) {
+    if (filesPanelIds.has(panel.id)) {
+      tabs.push({
+        id: `files:${panel.id}`,
+        type: "files",
+        title: panel.title || "Files",
+        status: "browse",
+        tone: "running",
+        persistent: true,
+        closable: true,
       });
     }
   }
