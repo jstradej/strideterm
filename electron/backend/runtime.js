@@ -45,10 +45,13 @@ function createAttentionContext() {
 }
 
 const ANSI_ESCAPE_RE = /\u001B\[[0-?]*[ -/]*[@-~]|\u001B\][^\u0007]*(?:\u0007|\u001B\\)|\u009B[0-?]*[ -/]*[@-~]/g;
+const OSC133_COMMAND_FINISHED_RE = /\u001B\]133;D/;
 const AGENT_NAME_RE = /\b(claude|codex|opencode|aider|gemini)\b/i;
 const AGENT_OUTPUT_RE = /\b(claude code|openai codex|codex|claude|gemini|aider|opencode)\b/i;
 const PROMPT_QUIET_MS = 900;
-const AGENT_PROMPT_QUIET_MS = 12_000;
+const AGENT_PROMPT_QUIET_MS = 20_000;
+const AGENT_PROMPT_QUIET_FAST_MS = 5_000;
+const AGENT_OUTPUT_BURST_THRESHOLD = 10;
 const ALERT_COOLDOWN_MS = 15_000;
 const ATTENTION_MIN_DISPLAY_MS = 3_000;
 const ATTENTION_VISIBILITY_GRACE_MS = 5_000;
@@ -101,6 +104,8 @@ function createSessionSignal(sessionId) {
     busy: false,
     waitingRaised: false,
     agentLike: false,
+    hasUserInput: false,
+    outputBursts: 0,
     promptTimer: null,
     // Start with cooldown active — when a session is first seen, its terminal
     // replays the buffer which includes prompts. The cooldown prevents false
@@ -900,6 +905,7 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
     cancelPromptTimer(signal);
     signal.busy = false;
     signal.waitingRaised = false;
+    signal.outputBursts = 0;
   }
 
   function deleteSessionSignal(sessionId) {
@@ -1030,18 +1036,40 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
         signal.agentLike = true;
       }
 
-      // --- Agent sessions: silence-based detection ---
-      // Claude Code shows its prompt `>` at all times (even while thinking),
-      // and sends periodic status updates (token count, thinking time).
-      // Instead of matching prompt patterns, we detect idle by watching for
-      // complete silence: no terminal data for AGENT_PROMPT_QUIET_MS.
-      // Any terminal data resets the timer.
-      if (signal.agentLike) {
+      // --- OSC 133;D: shell integration command-finished signal ---
+      // When a shell with integration (bash/zsh/PowerShell) emits OSC 133;D,
+      // the previous command has finished and the shell prompt has returned.
+      // This gives us instant, reliable detection for shell-hosted agents.
+      if (OSC133_COMMAND_FINISHED_RE.test(rawText) && signal.hasUserInput) {
+        const now = Date.now();
+        const inCooldown = signal.lastAlertAt > 0 && (now - signal.lastAlertAt) < ALERT_COOLDOWN_MS;
+        if (signal.busy && !inCooldown) {
+          cancelPromptTimer(signal);
+          if (isSessionVisible(payload.sessionId)) {
+            resetSessionSignal(payload.sessionId);
+          } else {
+            raiseWaitingAlert({
+              sessionId: payload.sessionId,
+              projectId: descriptor.workspaceId,
+              panelId: descriptor.panelId,
+              title: panel?.title || descriptor.panelId,
+              detail: "osc133-finished",
+            });
+          }
+        }
+        // Skip normal detection for this chunk — OSC 133;D is authoritative.
+      } else if (signal.agentLike) {
+        // --- Agent sessions: silence-based detection ---
+        // Claude Code shows its prompt `>` at all times (even while thinking),
+        // and sends periodic status updates (token count, thinking time).
+        // Instead of matching prompt patterns, we detect idle by watching for
+        // complete silence: no terminal data for AGENT_PROMPT_QUIET_MS.
+        // Any terminal data resets the timer.
         const now = Date.now();
         const inCooldown = signal.lastAlertAt > 0 && (now - signal.lastAlertAt) < ALERT_COOLDOWN_MS;
 
         // Bell character = explicit input request, always raise immediately
-        if (rawText.includes("\u0007") && !inCooldown) {
+        if (rawText.includes("\u0007") && !inCooldown && signal.hasUserInput) {
           cancelPromptTimer(signal);
           if (isSessionVisible(payload.sessionId)) {
             resetSessionSignal(payload.sessionId);
@@ -1058,9 +1086,16 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
           // Any terminal data = agent is active. Mark busy and restart the silence timer.
           if (cleanText.trim()) {
             signal.busy = true;
+            signal.outputBursts += 1;
           }
           cancelPromptTimer(signal);
-          if (signal.busy && !inCooldown) {
+          if (signal.busy && !inCooldown && signal.hasUserInput) {
+            // Adaptive timeout: if the agent produced a burst of output and then
+            // goes silent, use a shorter timeout (likely done). For sporadic
+            // output (long tool calls), use the full timeout.
+            const quietMs = signal.outputBursts >= AGENT_OUTPUT_BURST_THRESHOLD
+              ? AGENT_PROMPT_QUIET_FAST_MS
+              : AGENT_PROMPT_QUIET_MS;
             signal.promptTimer = setTimeout(() => {
               signal.promptTimer = null;
               if (isSessionVisible(payload.sessionId)) {
@@ -1074,7 +1109,7 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
                 title: panel?.title || descriptor.panelId,
                 detail: "prompt-returned",
               });
-            }, AGENT_PROMPT_QUIET_MS);
+            }, quietMs);
           }
         }
       } else {
@@ -1091,7 +1126,7 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
         const now = Date.now();
         const inCooldown = signal.lastAlertAt > 0 && (now - signal.lastAlertAt) < ALERT_COOLDOWN_MS;
 
-        if (explicitWaiting && !inCooldown) {
+        if (explicitWaiting && !inCooldown && signal.hasUserInput) {
           cancelPromptTimer(signal);
           if (isSessionVisible(payload.sessionId)) {
             resetSessionSignal(payload.sessionId);
@@ -1104,7 +1139,7 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
               detail: "explicit-input",
             });
           }
-        } else if (promptLike && signal.busy && !inCooldown) {
+        } else if (promptLike && signal.busy && !inCooldown && signal.hasUserInput) {
           cancelPromptTimer(signal);
           signal.promptTimer = setTimeout(() => {
             signal.promptTimer = null;
@@ -1132,9 +1167,11 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
     const state = getState();
     const project = descriptor ? findWorkspace(state, descriptor.workspaceId) : null;
     const panel = project?.panels.find((item) => item.id === descriptor?.panelId) || null;
+    const signal = descriptor ? sessionSignals.get(payload.sessionId) : null;
     const shouldRaiseAlert = !payload.intentional
       && descriptor
       && shouldTrackProjectAlert(project, panel)
+      && (!signal || signal.hasUserInput)
       && !isSessionVisible(payload.sessionId);
     if (shouldRaiseAlert) {
       addProjectAlert({
@@ -2380,6 +2417,8 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
     },
     writeToSession(sessionId, data) {
       resetSessionSignal(sessionId);
+      const signal = sessionSignals.get(sessionId);
+      if (signal) signal.hasUserInput = true;
       const descriptor = parseSessionId(sessionId);
       if (descriptor) {
         const current = projectAlerts.get(descriptor.workspaceId);
