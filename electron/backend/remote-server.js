@@ -499,6 +499,36 @@ async function handleApiRequest(runtime, request, response) {
       return;
     }
 
+    if (request.method === "POST" && url.pathname === "/api/git/list-tags") {
+      json(response, 200, await runtime.gitListTags(body));
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/git/create-tag") {
+      json(response, 200, await runtime.gitCreateTag(body));
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/git/delete-tag") {
+      json(response, 200, await runtime.gitDeleteTag(body));
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/git/push-tag") {
+      json(response, 200, await runtime.gitPushTag(body));
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/git/push-all-tags") {
+      json(response, 200, await runtime.gitPushAllTags(body));
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/git/delete-remote-tag") {
+      json(response, 200, await runtime.gitDeleteRemoteTag(body));
+      return;
+    }
+
     if (request.method === "POST" && url.pathname === "/api/docker/action") {
       json(response, 200, await runtime.dockerAction(body.action, body.containerId));
       return;

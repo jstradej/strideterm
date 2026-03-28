@@ -2637,6 +2637,34 @@ export async function createRuntime({
       const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId);
       return git.commitDiff(workspace, payload);
     },
+    async gitListTags(payload = {}) {
+      const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId);
+      const connection = resolveGitConnection(workspace);
+      return git.listTags(workspace, { connection });
+    },
+    async gitCreateTag(payload = {}) {
+      const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId);
+      return runGitWorkspaceAction(workspace, git.createTag(workspace, payload));
+    },
+    async gitDeleteTag(payload = {}) {
+      const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId);
+      return runGitWorkspaceAction(workspace, git.deleteTag(workspace, payload));
+    },
+    async gitPushTag(payload = {}) {
+      const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId);
+      const connection = resolveGitConnection(workspace);
+      return runGitWorkspaceAction(workspace, git.pushTag(workspace, { ...payload, connection }));
+    },
+    async gitPushAllTags(payload = {}) {
+      const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId);
+      const connection = resolveGitConnection(workspace);
+      return runGitWorkspaceAction(workspace, git.pushAllTags(workspace, { connection }));
+    },
+    async gitDeleteRemoteTag(payload = {}) {
+      const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId);
+      const connection = resolveGitConnection(workspace);
+      return runGitWorkspaceAction(workspace, git.deleteRemoteTag(workspace, { ...payload, connection }));
+    },
     async refreshTunnelState() {
       await tunnel.refreshAvailability();
       return getPayload();

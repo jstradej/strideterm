@@ -134,6 +134,13 @@ export const gitCommitSchema = z
   })
   .passthrough();
 
+export const gitTagSchema = z.object({
+  workspaceId: nonEmptyString,
+  tagName: nonEmptyString,
+  message: z.string().optional(),
+  commit: z.string().optional(),
+});
+
 export const dockerActionSchema = z.object({
   action: nonEmptyString,
   containerId: nonEmptyString,

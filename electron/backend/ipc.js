@@ -31,6 +31,7 @@ import {
   gitPayloadSchema,
   gitDiffPreviewSchema,
   gitCommitSchema,
+  gitTagSchema,
   dockerActionSchema,
   dockerSessionSchema,
   terminalResizeSchema,
@@ -312,6 +313,24 @@ export function registerIpc(runtime, emitToRenderer, { includeStateGet = true } 
   );
   ipcMain.handle("git:commit-diff", async (_event, payload) =>
     runtime.gitCommitDiff(validateIpc(gitPayloadSchema, payload, "git:commit-diff")),
+  );
+  ipcMain.handle("git:list-tags", async (_event, payload) =>
+    runtime.gitListTags(validateIpc(gitPayloadSchema, payload, "git:list-tags")),
+  );
+  ipcMain.handle("git:create-tag", async (_event, payload) =>
+    runtime.gitCreateTag(validateIpc(gitTagSchema, payload, "git:create-tag")),
+  );
+  ipcMain.handle("git:delete-tag", async (_event, payload) =>
+    runtime.gitDeleteTag(validateIpc(gitTagSchema, payload, "git:delete-tag")),
+  );
+  ipcMain.handle("git:push-tag", async (_event, payload) =>
+    runtime.gitPushTag(validateIpc(gitTagSchema, payload, "git:push-tag")),
+  );
+  ipcMain.handle("git:push-all-tags", async (_event, payload) =>
+    runtime.gitPushAllTags(validateIpc(gitPayloadSchema, payload, "git:push-all-tags")),
+  );
+  ipcMain.handle("git:delete-remote-tag", async (_event, payload) =>
+    runtime.gitDeleteRemoteTag(validateIpc(gitTagSchema, payload, "git:delete-remote-tag")),
   );
   ipcMain.handle("docker:action", async (_event, action, containerId) => {
     const validated = validateIpc(dockerActionSchema, { action, containerId }, "docker:action");

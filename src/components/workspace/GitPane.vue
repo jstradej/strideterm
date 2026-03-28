@@ -442,6 +442,21 @@
           </div>
         </template>
 
+        <!-- ===== Tags tab ===== -->
+        <template v-else-if="activeTab === 'tags'">
+          <div class="git-section">
+            <article class="git-card">
+              <div class="section-head">
+                <div>
+                  <p class="eyebrow">Tags</p>
+                  <h3>{{ snapshot.branch }} &mdash; {{ (gitUi.tags || []).length }} tag(s)</h3>
+                </div>
+              </div>
+              <GitTagList :workspace-id="workspaceId" :git-ui="gitUi" />
+            </article>
+          </div>
+        </template>
+
         <!-- ===== Worktrees tab ===== -->
         <template v-else-if="activeTab === 'worktrees'">
           <div class="git-section">
@@ -479,6 +494,7 @@ import GitChangeList from "./git/GitChangeList.vue";
 import GitOperationCard from "./git/GitOperationCard.vue";
 import GitMergeBackCard from "./git/GitMergeBackCard.vue";
 import GitWorktreeList from "./git/GitWorktreeList.vue";
+import GitTagList from "./git/GitTagList.vue";
 import GitCommitLog from "./git/GitCommitLog.vue";
 
 const props = defineProps({
@@ -609,6 +625,7 @@ const tabs = computed(() => {
   if (!isReviewWorkspace.value && !isLinkedWorktree.value) {
     list.push({ id: "pr", label: "Pull Request", badge: "" });
   }
+  list.push({ id: "tags", label: "Tags", badge: "" });
   list.push({ id: "worktrees", label: "Worktrees", badge: "" });
   return list;
 });

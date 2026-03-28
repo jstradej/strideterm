@@ -699,7 +699,8 @@ export class GitManager extends EventEmitter {
     if (process.platform === "win32") {
       extraArgs.push("-c", "core.longpaths=true");
     }
-    extraArgs.push("-c", `http.extraheader=${encodeAuthHeader(connection.login, token)}`);
+    const login = connection.login || connection.currentUserLogin || "x-access-token";
+    extraArgs.push("-c", `http.extraheader=${encodeAuthHeader(login, token)}`);
 
     if (this.execGitImpl) {
       return this.execGitImpl(cwd, [...extraArgs, ...args]);
@@ -1483,7 +1484,7 @@ export class GitManager extends EventEmitter {
         organization,
         project: "",
         operation: `git${type.charAt(0).toUpperCase()}${type.slice(1)}`,
-        category: ["push"].includes(type) ? "write" : "read",
+        category: ["push", "push-tag", "push-all-tags", "delete-remote-tag"].includes(type) ? "write" : "read",
         method: "GIT",
         url: "",
         statusCode: null,
@@ -1721,6 +1722,178 @@ export class GitManager extends EventEmitter {
         rawOutput: joinRawOutput(error.stdout, error.stderr),
       });
     }
+  }
+
+  // ─── Tag operations ───────────────────────────────────────────────
+
+  async listTags(workspace, { connection = null } = {}) {
+    if (!workspace?.cwd) {
+      return { ok: false, tags: [], summary: "Workspace has no working directory." };
+    }
+    try {
+      // Format: refname, objecttype, creatordate, taggername/authorname, subject, objectname
+      const fmt = [
+        "%(refname:short)",
+        "%(objecttype)",
+        "%(creatordate:iso8601)",
+        "%(if)%(taggername)%(then)%(taggername)%(else)%(authorname)%(end)",
+        "%(subject)",
+        "%(objectname:short)",
+      ].join("%09");
+      const result = await this.execGit(workspace.cwd, [
+        "for-each-ref",
+        `--format=${fmt}`,
+        "--sort=-creatordate",
+        "refs/tags",
+      ]);
+      const lines = String(result.stdout || "")
+        .split(/\r?\n/)
+        .filter(Boolean);
+      const tags = lines.map((line) => {
+        const [name, type, date, author, message, hash] = line.split("\t");
+        return {
+          name: name || "",
+          annotated: type === "tag",
+          date: date || "",
+          author: author || "",
+          message: message || "",
+          hash: hash || "",
+        };
+      });
+
+      // Check which tags exist on remote
+      const remoteTags = new Set();
+      try {
+        const remoteResult = await this.execAuthGit(workspace.cwd, ["ls-remote", "--tags", "origin"], { connection });
+        const remoteLines = String(remoteResult.stdout || "")
+          .split(/\r?\n/)
+          .filter(Boolean);
+        for (const rl of remoteLines) {
+          const ref = rl.split("\t")[1] || "";
+          const tagName = ref.replace(/^refs\/tags\//, "").replace(/\^\{\}$/, "");
+          if (tagName) remoteTags.add(tagName);
+        }
+      } catch {
+        // remote lookup failed — not fatal
+      }
+
+      const localTagNames = new Set(tags.map((t) => t.name));
+      for (const tag of tags) {
+        tag.pushed = remoteTags.has(tag.name);
+        tag.local = true;
+      }
+
+      // Add remote-only tags (exist on remote but not locally)
+      for (const remoteTagName of remoteTags) {
+        if (!localTagNames.has(remoteTagName)) {
+          tags.push({
+            name: remoteTagName,
+            annotated: false,
+            date: "",
+            author: "",
+            message: "",
+            hash: "",
+            pushed: true,
+            local: false,
+          });
+        }
+      }
+
+      return { ok: true, tags, summary: `${tags.length} tag(s) found.` };
+    } catch (error) {
+      return { ok: false, tags: [], summary: joinRawOutput(error.stdout, error.stderr) || "Failed to list tags." };
+    }
+  }
+
+  async createTag(workspace, { tagName, message = "", commit = "" } = {}) {
+    const name = String(tagName || "").trim();
+    if (!name) {
+      return createStructuredResult({ ok: false, summary: "Tag name is required." });
+    }
+    if (!workspace?.cwd) {
+      return createStructuredResult({ ok: false, summary: "Workspace has no working directory." });
+    }
+    try {
+      const args = message ? ["tag", "-a", name, "-m", message] : ["tag", name];
+      if (commit) args.push(commit);
+      const result = await this.execGit(workspace.cwd, args);
+      return createStructuredResult({
+        ok: true,
+        summary: `Tag '${name}' created.`,
+        rawOutput: joinRawOutput(result.stdout, result.stderr),
+      });
+    } catch (error) {
+      return createStructuredResult({
+        ok: false,
+        summary: `Failed to create tag '${name}'.`,
+        rawOutput: joinRawOutput(error.stdout, error.stderr),
+      });
+    }
+  }
+
+  async deleteTag(workspace, { tagName } = {}) {
+    const name = String(tagName || "").trim();
+    if (!name) {
+      return createStructuredResult({ ok: false, summary: "Tag name is required." });
+    }
+    if (!workspace?.cwd) {
+      return createStructuredResult({ ok: false, summary: "Workspace has no working directory." });
+    }
+    try {
+      const result = await this.execGit(workspace.cwd, ["tag", "-d", name]);
+      return createStructuredResult({
+        ok: true,
+        summary: `Tag '${name}' deleted.`,
+        rawOutput: joinRawOutput(result.stdout, result.stderr),
+      });
+    } catch (error) {
+      return createStructuredResult({
+        ok: false,
+        summary: `Failed to delete tag '${name}'.`,
+        rawOutput: joinRawOutput(error.stdout, error.stderr),
+      });
+    }
+  }
+
+  async pushTag(workspace, { tagName, connection = null } = {}) {
+    const name = String(tagName || "").trim();
+    if (!name) {
+      return createStructuredResult({ ok: false, summary: "Tag name is required." });
+    }
+    return this.runWriteAction(workspace, {
+      type: "push-tag",
+      label: `Push tag ${name}`,
+      allowDirty: true,
+      skipPreflight: true,
+      run: async (cwd) => this.execAuthGit(cwd, ["push", "origin", `refs/tags/${name}`], { connection }),
+      connection,
+    });
+  }
+
+  async pushAllTags(workspace, { connection = null } = {}) {
+    return this.runWriteAction(workspace, {
+      type: "push-all-tags",
+      label: "Push all tags",
+      allowDirty: true,
+      skipPreflight: true,
+      run: async (cwd) => this.execAuthGit(cwd, ["push", "origin", "--tags"], { connection }),
+      connection,
+    });
+  }
+
+  async deleteRemoteTag(workspace, { tagName, connection = null } = {}) {
+    const name = String(tagName || "").trim();
+    if (!name) {
+      return createStructuredResult({ ok: false, summary: "Tag name is required." });
+    }
+    return this.runWriteAction(workspace, {
+      type: "delete-remote-tag",
+      label: `Delete remote tag ${name}`,
+      allowDirty: true,
+      skipPreflight: true,
+      run: async (cwd) => this.execAuthGit(cwd, ["push", "origin", `:refs/tags/${name}`], { connection }),
+      connection,
+    });
   }
 
   async restoreStridetermStash(cwd) {

@@ -427,4 +427,276 @@ describe("GitManager", () => {
     });
     expect(result.diff).toContain("new file mode");
   });
+
+  // ─── Tag operations ──────────────────────────────────────────────
+
+  test("listTags parses tags with remote push state", async () => {
+    const { root } = await createGitFixture();
+    const tagFmt = [
+      "%(refname:short)",
+      "%(objecttype)",
+      "%(creatordate:iso8601)",
+      "%(if)%(taggername)%(then)%(taggername)%(else)%(authorname)%(end)",
+      "%(subject)",
+      "%(objectname:short)",
+    ].join("%09");
+    const execGitImpl = createExecMock({
+      [`${root}::for-each-ref --format=${tagFmt} --sort=-creatordate refs/tags`]: {
+        stdout: [
+          "v1.0.0\ttag\t2026-03-15 10:00:00 +0000\tJaromir\tFirst release\tabc1234",
+          "v0.9.0\tcommit\t2026-03-10 09:00:00 +0000\tJaromir\t\tdef5678",
+        ].join("\n"),
+        stderr: "",
+      },
+      [`${root}::ls-remote --tags origin`]: {
+        stdout: "abc123\trefs/tags/v1.0.0\nabc123\trefs/tags/v1.0.0^{}\n",
+        stderr: "",
+      },
+    });
+    const manager = new GitManager({ execGitImpl });
+
+    const result = await manager.listTags({ id: "ws-1", cwd: root });
+
+    expect(result.ok).toBe(true);
+    expect(result.tags).toHaveLength(2);
+    expect(result.tags[0]).toMatchObject({
+      name: "v1.0.0",
+      annotated: true,
+      author: "Jaromir",
+      message: "First release",
+      pushed: true,
+      local: true,
+    });
+    expect(result.tags[1]).toMatchObject({
+      name: "v0.9.0",
+      annotated: false,
+      pushed: false,
+      local: true,
+    });
+  });
+
+  test("listTags includes remote-only tags not present locally", async () => {
+    const { root } = await createGitFixture();
+    const tagFmt = [
+      "%(refname:short)",
+      "%(objecttype)",
+      "%(creatordate:iso8601)",
+      "%(if)%(taggername)%(then)%(taggername)%(else)%(authorname)%(end)",
+      "%(subject)",
+      "%(objectname:short)",
+    ].join("%09");
+    const execGitImpl = createExecMock({
+      [`${root}::for-each-ref --format=${tagFmt} --sort=-creatordate refs/tags`]: {
+        stdout: "v1.0.0\ttag\t2026-03-15\tJaromir\tRelease\tabc1234",
+        stderr: "",
+      },
+      [`${root}::ls-remote --tags origin`]: {
+        stdout:
+          "abc123\trefs/tags/v1.0.0\nabc123\trefs/tags/v1.0.0^{}\ndef456\trefs/tags/v2.0.0\ndef456\trefs/tags/v2.0.0^{}\n",
+        stderr: "",
+      },
+    });
+    const manager = new GitManager({ execGitImpl });
+
+    const result = await manager.listTags({ id: "ws-1", cwd: root });
+
+    expect(result.tags).toHaveLength(2);
+    expect(result.tags[0]).toMatchObject({ name: "v1.0.0", local: true, pushed: true });
+    expect(result.tags[1]).toMatchObject({ name: "v2.0.0", local: false, pushed: true });
+  });
+
+  test("listTags returns empty array when no tags exist", async () => {
+    const { root } = await createGitFixture();
+    const tagFmt = [
+      "%(refname:short)",
+      "%(objecttype)",
+      "%(creatordate:iso8601)",
+      "%(if)%(taggername)%(then)%(taggername)%(else)%(authorname)%(end)",
+      "%(subject)",
+      "%(objectname:short)",
+    ].join("%09");
+    const execGitImpl = createExecMock({
+      [`${root}::for-each-ref --format=${tagFmt} --sort=-creatordate refs/tags`]: { stdout: "", stderr: "" },
+      [`${root}::ls-remote --tags origin`]: { stdout: "", stderr: "" },
+    });
+    const manager = new GitManager({ execGitImpl });
+
+    const result = await manager.listTags({ id: "ws-1", cwd: root });
+
+    expect(result.ok).toBe(true);
+    expect(result.tags).toEqual([]);
+  });
+
+  test("createTag creates annotated tag with message", async () => {
+    const { root } = await createGitFixture();
+    const execGitImpl = vi.fn().mockResolvedValue({ stdout: "", stderr: "" });
+    const manager = new GitManager({ execGitImpl });
+
+    const result = await manager.createTag({ id: "ws-1", cwd: root }, { tagName: "v2.0.0", message: "Release 2.0" });
+
+    expect(result.ok).toBe(true);
+    expect(result.summary).toContain("v2.0.0");
+    expect(execGitImpl).toHaveBeenCalledWith(root, ["tag", "-a", "v2.0.0", "-m", "Release 2.0"]);
+  });
+
+  test("createTag creates lightweight tag without message", async () => {
+    const { root } = await createGitFixture();
+    const execGitImpl = vi.fn().mockResolvedValue({ stdout: "", stderr: "" });
+    const manager = new GitManager({ execGitImpl });
+
+    const result = await manager.createTag({ id: "ws-1", cwd: root }, { tagName: "v2.0.0" });
+
+    expect(result.ok).toBe(true);
+    expect(execGitImpl).toHaveBeenCalledWith(root, ["tag", "v2.0.0"]);
+  });
+
+  test("createTag rejects empty tag name", async () => {
+    const manager = new GitManager({ execGitImpl: vi.fn() });
+    const result = await manager.createTag({ id: "ws-1", cwd: "/tmp" }, { tagName: "" });
+    expect(result.ok).toBe(false);
+    expect(result.summary).toContain("required");
+  });
+
+  test("deleteTag deletes local tag", async () => {
+    const { root } = await createGitFixture();
+    const execGitImpl = vi.fn().mockResolvedValue({ stdout: "Deleted tag 'v1.0.0'\n", stderr: "" });
+    const manager = new GitManager({ execGitImpl });
+
+    const result = await manager.deleteTag({ id: "ws-1", cwd: root }, { tagName: "v1.0.0" });
+
+    expect(result.ok).toBe(true);
+    expect(execGitImpl).toHaveBeenCalledWith(root, ["tag", "-d", "v1.0.0"]);
+  });
+
+  test("pushTag pushes tag to origin with auth and audit", async () => {
+    const { root } = await createGitFixture();
+    const execGitImpl = vi.fn().mockResolvedValue({ stdout: "", stderr: "To origin\n * [new tag] v1.0.0\n" });
+    const auditLogStore = { logEntry: vi.fn() };
+    const manager = new GitManager({ execGitImpl, auditLogStore });
+    manager.inspectWorkspace = vi.fn().mockResolvedValue({
+      available: true,
+      branch: "main",
+      dirty: false,
+      operationState: { kind: "idle", inProgress: false, conflicts: [] },
+    });
+
+    const connection = { id: "gh-1", login: "", currentUserLogin: "user", provider: "github" };
+    const result = await manager.pushTag({ id: "ws-1", cwd: root }, { tagName: "v1.0.0", connection });
+
+    expect(result.ok).toBe(true);
+    expect(result.summary).toContain("Push tag v1.0.0");
+    expect(auditLogStore.logEntry).toHaveBeenCalledWith(
+      expect.objectContaining({ operation: "gitPush-tag", category: "write" }),
+    );
+  });
+
+  test("pushAllTags pushes all tags to origin", async () => {
+    const { root } = await createGitFixture();
+    const execGitImpl = vi.fn().mockResolvedValue({ stdout: "", stderr: "" });
+    const manager = new GitManager({ execGitImpl });
+    manager.inspectWorkspace = vi.fn().mockResolvedValue({
+      available: true,
+      branch: "main",
+      dirty: false,
+      operationState: { kind: "idle", inProgress: false, conflicts: [] },
+    });
+
+    const result = await manager.pushAllTags({ id: "ws-1", cwd: root }, {});
+
+    expect(result.ok).toBe(true);
+  });
+
+  test("deleteRemoteTag deletes tag from remote with audit", async () => {
+    const { root } = await createGitFixture();
+    const execGitImpl = vi.fn().mockResolvedValue({ stdout: "", stderr: "" });
+    const auditLogStore = { logEntry: vi.fn() };
+    const manager = new GitManager({ execGitImpl, auditLogStore });
+    manager.inspectWorkspace = vi.fn().mockResolvedValue({
+      available: true,
+      branch: "main",
+      dirty: false,
+      operationState: { kind: "idle", inProgress: false, conflicts: [] },
+    });
+
+    const connection = { id: "gh-1", provider: "github" };
+    const result = await manager.deleteRemoteTag({ id: "ws-1", cwd: root }, { tagName: "v1.0.0", connection });
+
+    expect(result.ok).toBe(true);
+    expect(result.summary).toContain("Delete remote tag v1.0.0");
+    expect(auditLogStore.logEntry).toHaveBeenCalledWith(
+      expect.objectContaining({ operation: "gitDelete-remote-tag", category: "write" }),
+    );
+  });
+
+  test("deleteTag fails gracefully on git error", async () => {
+    const { root } = await createGitFixture();
+    const execGitImpl = vi.fn().mockRejectedValue({ stdout: "", stderr: "error: tag 'v1.0.0' not found." });
+    const manager = new GitManager({ execGitImpl });
+
+    const result = await manager.deleteTag({ id: "ws-1", cwd: root }, { tagName: "v1.0.0" });
+
+    expect(result.ok).toBe(false);
+    expect(result.summary).toContain("Failed");
+  });
+
+  // ─── execAuthGit login resolution ────────────────────────────────
+
+  function extractAuthCredentials(execMock) {
+    const args = execMock.mock.calls[0][1];
+    const headerArg = args.find((a) => typeof a === "string" && a.includes("http.extraheader="));
+    if (!headerArg) return null;
+    const base64 = headerArg.split("Basic ")[1];
+    return Buffer.from(base64, "base64").toString("utf8");
+  }
+
+  test("execAuthGit uses connection.login for Azure DevOps connections", async () => {
+    const { root } = await createGitFixture();
+    const execGitImpl = vi.fn().mockResolvedValue({ stdout: "", stderr: "" });
+    const credentialStore = { getSecret: () => "azure-pat-123" };
+    const manager = new GitManager({ execGitImpl, credentialStore });
+
+    await manager.execAuthGit(root, ["push"], {
+      connection: { login: "azure-user", tokenRef: "secret:azure" },
+    });
+
+    expect(extractAuthCredentials(execGitImpl)).toBe("azure-user:azure-pat-123");
+  });
+
+  test("execAuthGit falls back to currentUserLogin for GitHub connections", async () => {
+    const { root } = await createGitFixture();
+    const execGitImpl = vi.fn().mockResolvedValue({ stdout: "", stderr: "" });
+    const credentialStore = { getSecret: () => "ghp_token123" };
+    const manager = new GitManager({ execGitImpl, credentialStore });
+
+    await manager.execAuthGit(root, ["push", "origin", "refs/tags/v1.0.0"], {
+      connection: { currentUserLogin: "jstradej", tokenRef: "secret:gh" },
+    });
+
+    expect(extractAuthCredentials(execGitImpl)).toBe("jstradej:ghp_token123");
+  });
+
+  test("execAuthGit falls back to x-access-token when no login fields exist", async () => {
+    const { root } = await createGitFixture();
+    const execGitImpl = vi.fn().mockResolvedValue({ stdout: "", stderr: "" });
+    const credentialStore = { getSecret: () => "some-token" };
+    const manager = new GitManager({ execGitImpl, credentialStore });
+
+    await manager.execAuthGit(root, ["fetch"], {
+      connection: { tokenRef: "secret:ref" },
+    });
+
+    expect(extractAuthCredentials(execGitImpl)).toBe("x-access-token:some-token");
+  });
+
+  test("execAuthGit skips auth when no credentialStore", async () => {
+    const { root } = await createGitFixture();
+    const execGitImpl = vi.fn().mockResolvedValue({ stdout: "", stderr: "" });
+    const manager = new GitManager({ execGitImpl });
+
+    await manager.execAuthGit(root, ["push"], {
+      connection: { login: "user", tokenRef: "secret:ref" },
+    });
+
+    expect(execGitImpl).toHaveBeenCalledWith(root, ["push"]);
+  });
 });

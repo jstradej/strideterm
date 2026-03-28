@@ -263,6 +263,50 @@ export const useGitUiStore = defineStore("git-ui", () => {
     await runGitAction(workspaceId, "stash-pop", () => _api.gitStashPop({ workspaceId }));
   }
 
+  // --- Tag actions ---
+
+  async function gitListTags(workspaceId) {
+    const ui = ensure(workspaceId);
+    ui.tagsLoading = true;
+    try {
+      const result = await _api.gitListTags({ workspaceId });
+      ui.tags = result?.tags || [];
+      ui.tagsError = result?.ok === false ? result.summary : "";
+    } catch (error) {
+      ui.tags = [];
+      ui.tagsError = error?.message || "Failed to load tags.";
+    } finally {
+      ui.tagsLoading = false;
+    }
+  }
+
+  async function gitCreateTag(workspaceId, tagName, message) {
+    await runGitAction(workspaceId, "create-tag", () =>
+      _api.gitCreateTag({ workspaceId, tagName, message: message || "" }),
+    );
+    await gitListTags(workspaceId);
+  }
+
+  async function gitDeleteTag(workspaceId, tagName) {
+    await runGitAction(workspaceId, "delete-tag", () => _api.gitDeleteTag({ workspaceId, tagName }));
+    await gitListTags(workspaceId);
+  }
+
+  async function gitPushTag(workspaceId, tagName) {
+    await runGitAction(workspaceId, "push-tag", () => _api.gitPushTag({ workspaceId, tagName }));
+    await gitListTags(workspaceId);
+  }
+
+  async function gitPushAllTags(workspaceId) {
+    await runGitAction(workspaceId, "push-all-tags", () => _api.gitPushAllTags({ workspaceId }));
+    await gitListTags(workspaceId);
+  }
+
+  async function gitDeleteRemoteTag(workspaceId, tagName) {
+    await runGitAction(workspaceId, "delete-remote-tag", () => _api.gitDeleteRemoteTag({ workspaceId, tagName }));
+    await gitListTags(workspaceId);
+  }
+
   async function gitSetBaseBranch(workspaceId, baseBranch) {
     const ui = ensure(workspaceId);
     ui.overrideBaseBranch = baseBranch || "";
@@ -387,6 +431,12 @@ export const useGitUiStore = defineStore("git-ui", () => {
     gitStash,
     gitStashPop,
     gitSetBaseBranch,
+    gitListTags,
+    gitCreateTag,
+    gitDeleteTag,
+    gitPushTag,
+    gitPushAllTags,
+    gitDeleteRemoteTag,
     azureCreatePullRequest,
     azureListRemoteBranches,
     // Azure review UI actions
