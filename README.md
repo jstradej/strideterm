@@ -1,6 +1,6 @@
 # strIDEterm
 
-Stop losing terminals in a mess of scattered windows. strIDEterm puts all your shells, AI coding agents, Docker, Git, and browsers in one organized place — so you always know where everything is and can focus on the work, not the chaos.
+**strIDEterm** organizes your shells, AI coding agents, code reviews, Docker, and Git into workspaces you can access from anywhere — no more chaos across terminals, just focused work.
 
 ![Workspace](docs/images/screenshot-workspace.png)
 
