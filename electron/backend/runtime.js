@@ -1228,7 +1228,7 @@ export async function createRuntime({
       !payload.intentional &&
       descriptor &&
       shouldTrackProjectAlert(project, panel) &&
-      (!signal || signal.hasUserInput) &&
+      signal?.hasUserInput &&
       !isSessionVisible(payload.sessionId);
     if (shouldRaiseAlert) {
       addProjectAlert({

@@ -934,6 +934,10 @@ describe("runtime integration", () => {
 
     await fixture.runtime.syncAttentionContext({ visibleSessionIds: ["frontend:claude"] });
 
+    // Create signal and mark session as user-interactive
+    fixture.sessionManager.emit("terminal:data", { sessionId: "backend:tests", data: "$ " });
+    fixture.runtime.writeToSession("backend:tests", "npm test\r");
+
     fixture.sessionManager.emit("terminal:exit", {
       sessionId: "backend:tests",
       exitCode: 2,
@@ -968,6 +972,24 @@ describe("runtime integration", () => {
     } finally {
       Date.now = originalNow;
     }
+  });
+
+  test("does not raise exit alerts for sessions without user input", async () => {
+    const fixture = await createFixture();
+    fixtures.push(fixture);
+
+    await fixture.runtime.syncAttentionContext({ visibleSessionIds: ["frontend:claude"] });
+
+    // Shell produces output but user never types
+    fixture.sessionManager.emit("terminal:data", { sessionId: "backend:tests", data: "$ " });
+
+    fixture.sessionManager.emit("terminal:exit", {
+      sessionId: "backend:tests",
+      exitCode: 0,
+      intentional: false,
+    });
+
+    expect(fixture.runtime.getPayload().attention.byProject.backend).toBeUndefined();
   });
 
   test("does not raise alerts for terminals that are currently visible", async () => {
