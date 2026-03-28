@@ -1590,6 +1590,11 @@ export async function createRuntime({
       return getPayload();
     },
     async saveWorkspace(workspace) {
+      // Ensure the working directory exists (create if needed)
+      if (workspace.cwd && workspace.kind !== "docker") {
+        await mkdir(workspace.cwd, { recursive: true }).catch(() => {});
+      }
+
       await store.mutate((draft) => {
         const normalized = normalizeWorkspace(workspace);
         const index = draft.workspaces.findIndex((item) => item.id === normalized.id);

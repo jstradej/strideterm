@@ -83,25 +83,30 @@ export function createDialogActions(ctx) {
       tabTemplates,
       onCancel: closeDialog,
       onSubmit: async (draft) => {
-        const isNew = !workspace;
-        if (isNew) draft.profileId = ctx.payload.value?.appState?.activeProfileId || "default";
-        const firstPanel = draft.panels?.[0];
-        if (draft.kind === "azure") {
-          ctx.activeViewId.value = `azure:${draft.id}`;
-        } else if (draft.kind === "github") {
-          ctx.activeViewId.value = `github:${draft.id}`;
-        } else if (firstPanel) {
-          ctx.activeViewId.value = isBrowserPanel(firstPanel)
-            ? `browser:${firstPanel.id}`
-            : `${draft.id}:${firstPanel.id}`;
-        }
-        await ctx.withSuppressedBroadcast(async () => {
-          ctx.payload.value = await ctx.getApi().saveWorkspace(draft);
-          if (isNew) {
-            ctx.payload.value = await ctx.getApi().activateWorkspace(draft.id);
+        try {
+          const isNew = !workspace;
+          if (isNew) draft.profileId = ctx.payload.value?.appState?.activeProfileId || "default";
+          const firstPanel = draft.panels?.[0];
+          if (draft.kind === "azure") {
+            ctx.activeViewId.value = `azure:${draft.id}`;
+          } else if (draft.kind === "github") {
+            ctx.activeViewId.value = `github:${draft.id}`;
+          } else if (firstPanel) {
+            ctx.activeViewId.value = isBrowserPanel(firstPanel)
+              ? `browser:${firstPanel.id}`
+              : `${draft.id}:${firstPanel.id}`;
           }
-        });
-        closeDialog();
+          await ctx.withSuppressedBroadcast(async () => {
+            ctx.payload.value = await ctx.getApi().saveWorkspace(draft);
+            if (isNew) {
+              ctx.payload.value = await ctx.getApi().activateWorkspace(draft.id);
+            }
+          });
+        } catch (err) {
+          console.error("[workspace-dialog] save failed:", err);
+        } finally {
+          closeDialog();
+        }
       },
     });
   }
