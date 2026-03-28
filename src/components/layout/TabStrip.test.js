@@ -11,7 +11,11 @@ beforeEach(() => {
 function makePayload(sessions) {
   return {
     workspace: {
-      workspace: { id: "ws1", kind: "terminal", panels: sessions.map((s) => ({ id: s.panelId || s.id, title: s.title, command: "" })) },
+      workspace: {
+        id: "ws1",
+        kind: "terminal",
+        panels: sessions.map((s) => ({ id: s.panelId || s.id, title: s.title, command: "" })),
+      },
       sessions: sessions.map((s) => ({
         sessionId: s.id,
         panelId: s.panelId || s.id,
@@ -22,16 +26,17 @@ function makePayload(sessions) {
         closable: s.closable !== false,
       })),
     },
-    appState: { workspaces: [{ id: "ws1", kind: "terminal", panels: [], profileId: "default", activeProfileId: "default" }], activeProfileId: "default" },
+    appState: {
+      workspaces: [{ id: "ws1", kind: "terminal", panels: [], profileId: "default", activeProfileId: "default" }],
+      activeProfileId: "default",
+    },
   };
 }
 
 describe("TabStrip", () => {
   test("renders tab buttons with title and status", () => {
     const store = useAppStore();
-    store.payload = makePayload([
-      { id: "ws1:shell", title: "Shell", status: "running" },
-    ]);
+    store.payload = makePayload([{ id: "ws1:shell", title: "Shell", status: "running" }]);
     const wrapper = mount(TabStrip);
     const tab = wrapper.find(".tab");
     expect(tab.exists()).toBe(true);
@@ -41,9 +46,7 @@ describe("TabStrip", () => {
 
   test("renders stable rename (✎) and close (×) icons without mojibake", () => {
     const store = useAppStore();
-    store.payload = makePayload([
-      { id: "ws1:shell", title: "Shell", status: "", persistent: true, closable: true },
-    ]);
+    store.payload = makePayload([{ id: "ws1:shell", title: "Shell", status: "", persistent: true, closable: true }]);
     const wrapper = mount(TabStrip);
     expect(wrapper.find(".tab__rename").text()).toBe("✎");
     expect(wrapper.find(".tab__close").text()).toBe("×");
@@ -65,9 +68,7 @@ describe("TabStrip", () => {
   test("shows attention bell for tabs with tabAttention", () => {
     const store = useAppStore();
     const now = new Date().toISOString();
-    store.payload = makePayload([
-      { id: "ws1:shell", title: "Shell" },
-    ]);
+    store.payload = makePayload([{ id: "ws1:shell", title: "Shell" }]);
     // Override getTabAttentionForView to return attention for ws1:shell
     store.getTabAttentionForView = () => ({ count: 1, alerts: [{ title: "Build" }], latestAt: now });
     const wrapper = mount(TabStrip);

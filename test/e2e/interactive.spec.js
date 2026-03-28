@@ -15,8 +15,12 @@ import { openApp, assertNoErrors } from "./helpers.js";
 // ---------------------------------------------------------------------------
 test.describe("Workspace switching", () => {
   let mock;
-  test.beforeAll(async () => { mock = await startMockServer({ fixture: "multi-workspace" }); });
-  test.afterAll(async () => { await mock?.close(); });
+  test.beforeAll(async () => {
+    mock = await startMockServer({ fixture: "multi-workspace" });
+  });
+  test.afterAll(async () => {
+    await mock?.close();
+  });
 
   test("switching workspace shows new tabs and hides old ones", async ({ page }) => {
     await openApp(page, mock);
@@ -70,8 +74,12 @@ test.describe("Workspace switching", () => {
 // ---------------------------------------------------------------------------
 test.describe("Tab picker", () => {
   let mock;
-  test.beforeAll(async () => { mock = await startMockServer({ fixture: "multi-workspace" }); });
-  test.afterAll(async () => { await mock?.close(); });
+  test.beforeAll(async () => {
+    mock = await startMockServer({ fixture: "multi-workspace" });
+  });
+  test.afterAll(async () => {
+    await mock?.close();
+  });
 
   test("opens dropdown and shows all templates from fixture", async ({ page }) => {
     await openApp(page, mock);
@@ -103,8 +111,12 @@ test.describe("Tab picker", () => {
 // ---------------------------------------------------------------------------
 test.describe("Layout picker", () => {
   let mock;
-  test.beforeAll(async () => { mock = await startMockServer({ fixture: "multi-workspace" }); });
-  test.afterAll(async () => { await mock?.close(); });
+  test.beforeAll(async () => {
+    mock = await startMockServer({ fixture: "multi-workspace" });
+  });
+  test.afterAll(async () => {
+    await mock?.close();
+  });
 
   test("opens layout picker with layout options", async ({ page }) => {
     await openApp(page, mock);
@@ -119,8 +131,12 @@ test.describe("Layout picker", () => {
 // ---------------------------------------------------------------------------
 test.describe("Settings dialog", () => {
   let mock;
-  test.beforeAll(async () => { mock = await startMockServer({ fixture: "multi-workspace" }); });
-  test.afterAll(async () => { await mock?.close(); });
+  test.beforeAll(async () => {
+    mock = await startMockServer({ fixture: "multi-workspace" });
+  });
+  test.afterAll(async () => {
+    await mock?.close();
+  });
 
   test("opens on General tab with theme options", async ({ page }) => {
     await openApp(page, mock);
@@ -183,8 +199,12 @@ test.describe("Settings dialog", () => {
 // ---------------------------------------------------------------------------
 test.describe("Profile selector", () => {
   let mock;
-  test.beforeAll(async () => { mock = await startMockServer({ fixture: "multi-workspace" }); });
-  test.afterAll(async () => { await mock?.close(); });
+  test.beforeAll(async () => {
+    mock = await startMockServer({ fixture: "multi-workspace" });
+  });
+  test.afterAll(async () => {
+    await mock?.close();
+  });
 
   test("opens profile management overlay", async ({ page }) => {
     await openApp(page, mock);
@@ -199,8 +219,12 @@ test.describe("Profile selector", () => {
 // ---------------------------------------------------------------------------
 test.describe("Add workspace", () => {
   let mock;
-  test.beforeAll(async () => { mock = await startMockServer({ fixture: "multi-workspace" }); });
-  test.afterAll(async () => { await mock?.close(); });
+  test.beforeAll(async () => {
+    mock = await startMockServer({ fixture: "multi-workspace" });
+  });
+  test.afterAll(async () => {
+    await mock?.close();
+  });
 
   test("opens workspace creation dialog", async ({ page }) => {
     await openApp(page, mock);
@@ -215,8 +239,12 @@ test.describe("Add workspace", () => {
 // ---------------------------------------------------------------------------
 test.describe("Help dialog", () => {
   let mock;
-  test.beforeAll(async () => { mock = await startMockServer({ fixture: "multi-workspace" }); });
-  test.afterAll(async () => { await mock?.close(); });
+  test.beforeAll(async () => {
+    mock = await startMockServer({ fixture: "multi-workspace" });
+  });
+  test.afterAll(async () => {
+    await mock?.close();
+  });
 
   test("opens and shows help content", async ({ page }) => {
     await openApp(page, mock);
@@ -231,8 +259,12 @@ test.describe("Help dialog", () => {
 // ---------------------------------------------------------------------------
 test.describe("Sidebar collapse", () => {
   let mock;
-  test.beforeAll(async () => { mock = await startMockServer({ fixture: "multi-workspace" }); });
-  test.afterAll(async () => { await mock?.close(); });
+  test.beforeAll(async () => {
+    mock = await startMockServer({ fixture: "multi-workspace" });
+  });
+  test.afterAll(async () => {
+    await mock?.close();
+  });
 
   test("collapse button hides workspace names", async ({ page }) => {
     await openApp(page, mock);
@@ -250,8 +282,12 @@ test.describe("Sidebar collapse", () => {
 // ---------------------------------------------------------------------------
 test.describe("Keyboard shortcuts", () => {
   let mock;
-  test.beforeAll(async () => { mock = await startMockServer({ fixture: "multi-workspace" }); });
-  test.afterAll(async () => { await mock?.close(); });
+  test.beforeAll(async () => {
+    mock = await startMockServer({ fixture: "multi-workspace" });
+  });
+  test.afterAll(async () => {
+    await mock?.close();
+  });
 
   test("Ctrl+N opens new workspace dialog", async ({ page }) => {
     await openApp(page, mock);
@@ -266,8 +302,12 @@ test.describe("Keyboard shortcuts", () => {
 // ---------------------------------------------------------------------------
 test.describe("Visual regression @visual", () => {
   let mock;
-  test.beforeAll(async () => { mock = await startMockServer({ fixture: "multi-workspace" }); });
-  test.afterAll(async () => { await mock?.close(); });
+  test.beforeAll(async () => {
+    mock = await startMockServer({ fixture: "multi-workspace" });
+  });
+  test.afterAll(async () => {
+    await mock?.close();
+  });
 
   test("multi-workspace default view", async ({ page }) => {
     await openApp(page, mock);
@@ -305,14 +345,17 @@ test.describe("Visual regression @visual", () => {
     await page.waitForTimeout(300);
     await expect(page).toHaveScreenshot("add-workspace-dialog.png");
   });
-
 });
 
 // Empty state screenshot — separate describe to avoid mock server conflicts
 test.describe("Visual regression — empty state @visual", () => {
   let mock;
-  test.beforeAll(async () => { mock = await startMockServer({ fixture: "empty-state" }); });
-  test.afterAll(async () => { await mock?.close(); });
+  test.beforeAll(async () => {
+    mock = await startMockServer({ fixture: "empty-state" });
+  });
+  test.afterAll(async () => {
+    await mock?.close();
+  });
 
   test("welcome screen", async ({ page }) => {
     await page.goto(`${mock.url}/?token=${mock.token}`);

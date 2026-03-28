@@ -7,7 +7,7 @@
       :actions="headerActions"
       @action="onHeaderAction"
     />
-    <div v-if="!summary" class="terminal-empty" style="padding:24px;">
+    <div v-if="!summary" class="terminal-empty" style="padding: 24px">
       <p>No pull request context available</p>
       <small>Open a GitHub PR from the inbox to see review details.</small>
     </div>
@@ -19,7 +19,7 @@
           <span class="azure-pr-card__id">#{{ summary.pullRequest?.number }}</span>
           <span v-if="summary.pullRequest?.draft" class="azure-pr-card__draft">Draft</span>
         </div>
-        <h3 style="margin:4px 0 0;">{{ summary.pullRequest?.title }}</h3>
+        <h3 style="margin: 4px 0 0">{{ summary.pullRequest?.title }}</h3>
         <div class="azure-pr-card__meta">
           <span>{{ summary.pullRequest?.sourceBranch }} &rarr; {{ summary.pullRequest?.targetBranch }}</span>
           <span>{{ summary.role }}</span>
@@ -64,19 +64,26 @@
       <!-- Review actions -->
       <div v-if="summary.role === 'reviewer'" class="azure-review__section">
         <h4>Submit review</h4>
-        <textarea v-model="reviewBody" placeholder="Leave a comment (optional)" rows="3" style="width:100%;"></textarea>
-        <div class="azure-review__actions" style="margin-top:8px;">
+        <textarea v-model="reviewBody" placeholder="Leave a comment (optional)" rows="3" style="width: 100%"></textarea>
+        <div class="azure-review__actions" style="margin-top: 8px">
           <button type="button" class="button button--ghost" @click="submitReview('COMMENT')">Comment</button>
           <button type="button" class="button" @click="submitReview('APPROVE')">Approve</button>
-          <button type="button" class="button button--ghost" style="color:var(--danger);" @click="submitReview('REQUEST_CHANGES')">Request changes</button>
+          <button
+            type="button"
+            class="button button--ghost"
+            style="color: var(--danger)"
+            @click="submitReview('REQUEST_CHANGES')"
+          >
+            Request changes
+          </button>
         </div>
       </div>
 
       <!-- General comment -->
       <div class="azure-review__section">
         <h4>Add comment</h4>
-        <textarea v-model="commentBody" placeholder="Write a comment..." rows="3" style="width:100%;"></textarea>
-        <div class="azure-review__actions" style="margin-top:8px;">
+        <textarea v-model="commentBody" placeholder="Write a comment..." rows="3" style="width: 100%"></textarea>
+        <div class="azure-review__actions" style="margin-top: 8px">
           <button type="button" class="button" :disabled="!commentBody.trim()" @click="addComment">Post comment</button>
         </div>
       </div>
@@ -98,7 +105,9 @@ const appStore = useAppStore();
 const reviewBody = ref("");
 const commentBody = ref("");
 
-const workspace = computed(() => (appStore.payload?.appState?.workspaces || []).find((w) => w.id === props.workspaceId));
+const workspace = computed(() =>
+  (appStore.payload?.appState?.workspaces || []).find((w) => w.id === props.workspaceId),
+);
 const prKey = computed(() => workspace.value?.review?.prKey || "");
 const summary = computed(() => appStore.payload?.github?.pullRequests?.[prKey.value] || null);
 
@@ -123,15 +132,21 @@ function openInBrowser() {
 }
 
 async function handleFetch() {
-  try { await appStore.githubFetchReviewWorkspace(props.workspaceId); } catch {}
+  try {
+    await appStore.githubFetchReviewWorkspace(props.workspaceId);
+  } catch {}
 }
 
 async function handleRebase() {
-  try { await appStore.githubRebaseReviewWorkspace(props.workspaceId); } catch {}
+  try {
+    await appStore.githubRebaseReviewWorkspace(props.workspaceId);
+  } catch {}
 }
 
 async function handlePush() {
-  try { await appStore.githubPushReviewWorkspace(props.workspaceId); } catch {}
+  try {
+    await appStore.githubPushReviewWorkspace(props.workspaceId);
+  } catch {}
 }
 
 async function submitReview(event) {

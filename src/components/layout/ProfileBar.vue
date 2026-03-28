@@ -4,7 +4,9 @@
     class="profile-bar"
     :style="`--profile-color:${profile.color || '#ffa424'}`"
     @click="$emit('click')"
-  >{{ profile.name }}</button>
+  >
+    {{ profile.name }}
+  </button>
 </template>
 
 <script setup>

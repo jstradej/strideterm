@@ -13,7 +13,9 @@
         type="button"
         class="button button--ghost template-btn"
         @click="addPanelFromTemplate(tmpl)"
-      >{{ tmpl.icon }} {{ tmpl.title }}</button>
+      >
+        {{ tmpl.icon }} {{ tmpl.title }}
+      </button>
       <button type="button" class="button button--ghost template-btn" @click="addPanel">+ Custom</button>
     </div>
     <div class="panel-list">
@@ -25,29 +27,21 @@
         <label>
           <span>Title</span>
           <div class="panel-title-row">
-            <button
-              type="button"
-              class="panel-icon-btn"
-              title="Pick icon"
-              @click="togglePanelIconPicker(panel.id)"
-            >{{ panelIconValue(panel.title) || '💻' }}</button>
-            <input
-              v-model="panel.title"
-              maxlength="60"
-              class="panel-title-input"
-            />
+            <button type="button" class="panel-icon-btn" title="Pick icon" @click="togglePanelIconPicker(panel.id)">
+              {{ panelIconValue(panel.title) || "💻" }}
+            </button>
+            <input v-model="panel.title" maxlength="60" class="panel-title-input" />
           </div>
-          <div
-            v-if="panelIconPickerOpen.has(panel.id)"
-            class="panel-icon-picker"
-          >
+          <div v-if="panelIconPickerOpen.has(panel.id)" class="panel-icon-picker">
             <button
               v-for="icon in BADGE_ICONS"
               :key="icon"
               type="button"
               class="panel-icon-picker__btn"
               @click="pickPanelIcon(panel, icon)"
-            >{{ icon }}</button>
+            >
+              {{ icon }}
+            </button>
           </div>
         </label>
         <label>
@@ -64,16 +58,54 @@ import { ref, computed } from "vue";
 import { APP_CONFIG } from "../../../config/app-config.js";
 
 const BADGE_ICONS = [
-  "\u{1F4BB}", "\u{2328}", "\u{1F527}", "\u2699", "\u{1F6E0}", "\u{1F4E6}", "\u{1F528}",
-  "\u{1F5A5}", "\u{1F4C4}", "\u{1F4DD}", "\u{270F}", "\u{2702}",
-  "\u{1F33F}", "\u{1F500}", "\u{1F4CB}",
-  "\u{1F433}", "\u{1F3D7}", "\u{2601}",
-  "\u{1F310}", "\u{1F50C}", "\u{1F4E1}", "\u{1F680}",
-  "\u{1F5C4}", "\u{1F4BE}", "\u{1F4CA}", "\u{1F4C8}",
-  "\u{1F9EA}", "\u2705", "\u{1F50D}", "\u{1F41B}",
-  "\u{1F916}", "\u{1F9E0}", "\u2728",
-  "\u26A1", "\u{1F3AF}", "\u{1F512}", "\u{1F511}", "\u{1F4C1}", "\u{1F4A1}", "\u2B50", "\u{1F3A8}", "\u{1F525}", "\u{1F48E}",
-  "\u{2764}", "\u{1F4AC}", "\u{1F514}", "\u{1F6A9}", "\u{1F5D1}",
+  "\u{1F4BB}",
+  "\u{2328}",
+  "\u{1F527}",
+  "\u2699",
+  "\u{1F6E0}",
+  "\u{1F4E6}",
+  "\u{1F528}",
+  "\u{1F5A5}",
+  "\u{1F4C4}",
+  "\u{1F4DD}",
+  "\u{270F}",
+  "\u{2702}",
+  "\u{1F33F}",
+  "\u{1F500}",
+  "\u{1F4CB}",
+  "\u{1F433}",
+  "\u{1F3D7}",
+  "\u{2601}",
+  "\u{1F310}",
+  "\u{1F50C}",
+  "\u{1F4E1}",
+  "\u{1F680}",
+  "\u{1F5C4}",
+  "\u{1F4BE}",
+  "\u{1F4CA}",
+  "\u{1F4C8}",
+  "\u{1F9EA}",
+  "\u2705",
+  "\u{1F50D}",
+  "\u{1F41B}",
+  "\u{1F916}",
+  "\u{1F9E0}",
+  "\u2728",
+  "\u26A1",
+  "\u{1F3AF}",
+  "\u{1F512}",
+  "\u{1F511}",
+  "\u{1F4C1}",
+  "\u{1F4A1}",
+  "\u2B50",
+  "\u{1F3A8}",
+  "\u{1F525}",
+  "\u{1F48E}",
+  "\u{2764}",
+  "\u{1F4AC}",
+  "\u{1F514}",
+  "\u{1F6A9}",
+  "\u{1F5D1}",
 ];
 
 const DEFAULT_TAB_TEMPLATES = [
@@ -94,9 +126,7 @@ const emit = defineEmits(["update:panels"]);
 const panelIconPickerOpen = ref(new Set());
 
 const resolvedTemplates = computed(() =>
-  Array.isArray(props.tabTemplates) && props.tabTemplates.length
-    ? props.tabTemplates
-    : DEFAULT_TAB_TEMPLATES,
+  Array.isArray(props.tabTemplates) && props.tabTemplates.length ? props.tabTemplates : DEFAULT_TAB_TEMPLATES,
 );
 
 function panelIconValue(title) {

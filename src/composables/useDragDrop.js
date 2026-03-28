@@ -2,7 +2,8 @@ import { useAppStore } from "../stores/app.js";
 
 function getParentWorkspaceId(ws) {
   // Azure review or quickfix children reference their parent explicitly
-  if (ws.review?.checkout?.mode === "managed-worktree" && ws.review?.parentWorkspaceId) return ws.review.parentWorkspaceId;
+  if (ws.review?.checkout?.mode === "managed-worktree" && ws.review?.parentWorkspaceId)
+    return ws.review.parentWorkspaceId;
   if (ws.quickfix?.parentWorkspaceId) return ws.quickfix.parentWorkspaceId;
   // Legacy worktree children use notes convention
   if ((ws.notes || "").startsWith("Worktree of ")) {
@@ -30,9 +31,7 @@ function getWorktreeGroup(workspaceId, workspaces) {
   // Legacy worktree child — find parent by name
   if ((ws.notes || "").startsWith("Worktree of ")) {
     const parentName = ws.name.split(" / ")[0];
-    const parent = workspaces.find(
-      (w) => w.name === parentName && !(w.notes || "").startsWith("Worktree of "),
-    );
+    const parent = workspaces.find((w) => w.name === parentName && !(w.notes || "").startsWith("Worktree of "));
     if (parent) return getWorktreeGroup(parent.id, workspaces);
   }
 
@@ -61,11 +60,11 @@ export function useWorkspaceDragDrop(workspaceListRef) {
   const store = useAppStore();
 
   function clearDragIndicators() {
-    workspaceListRef.value?.querySelectorAll(
-      ".workspace-card--drag-before, .workspace-card--drag-after, .workspace-card--dragging",
-    ).forEach((el) => {
-      el.classList.remove("workspace-card--drag-before", "workspace-card--drag-after", "workspace-card--dragging");
-    });
+    workspaceListRef.value
+      ?.querySelectorAll(".workspace-card--drag-before, .workspace-card--drag-after, .workspace-card--dragging")
+      .forEach((el) => {
+        el.classList.remove("workspace-card--drag-before", "workspace-card--drag-after", "workspace-card--dragging");
+      });
   }
 
   function onDragstart(event) {

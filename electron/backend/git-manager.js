@@ -140,13 +140,16 @@ function parseDiffStatLine(line) {
 }
 
 function mergeDiffStats(...stats) {
-  return stats.reduce((merged, current) => ({
-    files: merged.files + (current?.files || 0),
-    insertions: merged.insertions + (current?.insertions || 0),
-    deletions: merged.deletions + (current?.deletions || 0),
-    renames: merged.renames + (current?.renames || 0),
-    deletes: merged.deletes + (current?.deletes || 0),
-  }), { ...DEFAULT_DIFF_STAT });
+  return stats.reduce(
+    (merged, current) => ({
+      files: merged.files + (current?.files || 0),
+      insertions: merged.insertions + (current?.insertions || 0),
+      deletions: merged.deletions + (current?.deletions || 0),
+      renames: merged.renames + (current?.renames || 0),
+      deletes: merged.deletes + (current?.deletes || 0),
+    }),
+    { ...DEFAULT_DIFF_STAT },
+  );
 }
 
 function summarizeNameStatusEntries(entries = []) {
@@ -219,7 +222,9 @@ function parseGitRemotes(rawText) {
 }
 
 function parseRevListCount(rawText) {
-  const [left = "0", right = "0"] = String(rawText || "").trim().split(/\s+/);
+  const [left = "0", right = "0"] = String(rawText || "")
+    .trim()
+    .split(/\s+/);
   return {
     left: parseIntSafe(left),
     right: parseIntSafe(right),
@@ -649,7 +654,13 @@ async function renderUntrackedDiffPreview(execGit, cwd, targetPath) {
 }
 
 export class GitManager extends EventEmitter {
-  constructor({ execGitImpl = null, now = null, snapshotCacheTtlMs = SNAPSHOT_CACHE_TTL_MS, credentialStore = null, auditLogStore = null } = {}) {
+  constructor({
+    execGitImpl = null,
+    now = null,
+    snapshotCacheTtlMs = SNAPSHOT_CACHE_TTL_MS,
+    credentialStore = null,
+    auditLogStore = null,
+  } = {}) {
     super();
     this.snapshots = new Map();
     this.execGitImpl = execGitImpl;
@@ -713,7 +724,7 @@ export class GitManager extends EventEmitter {
     const cached = this.worktreeDirtyCache.get(cacheKey);
     const now = this.now().getTime();
 
-    if (cached && (now - cached.at) < WORKTREE_DIRTY_CACHE_TTL_MS) {
+    if (cached && now - cached.at < WORKTREE_DIRTY_CACHE_TTL_MS) {
       return cached.value;
     }
 
@@ -773,8 +784,9 @@ export class GitManager extends EventEmitter {
   resolveLazygitBinary() {
     const wingetRoot = path.join(process.env.LOCALAPPDATA || "", "Microsoft", "WinGet", "Packages");
     if (wingetRoot && existsSync(wingetRoot)) {
-      const packageDir = readdirSync(wingetRoot, { withFileTypes: true })
-        .find((entry) => entry.isDirectory() && entry.name.startsWith(APP_CONFIG.git.lazygitWingetPackagePrefix));
+      const packageDir = readdirSync(wingetRoot, { withFileTypes: true }).find(
+        (entry) => entry.isDirectory() && entry.name.startsWith(APP_CONFIG.git.lazygitWingetPackagePrefix),
+      );
       if (packageDir) {
         const binaryPath = path.join(wingetRoot, packageDir.name, "lazygit.exe");
         if (existsSync(binaryPath)) {
@@ -810,7 +822,10 @@ export class GitManager extends EventEmitter {
         worktreeListResult,
         branchListResult,
       ] = await Promise.all([
-        this.execGit(workspace.cwd, ["rev-parse", "--abbrev-ref", "HEAD"]).catch(() => ({ stdout: "HEAD", stderr: "" })),
+        this.execGit(workspace.cwd, ["rev-parse", "--abbrev-ref", "HEAD"]).catch(() => ({
+          stdout: "HEAD",
+          stderr: "",
+        })),
         this.execGit(workspace.cwd, ["remote", "-v"]).catch(() => ({ stdout: "", stderr: "" })),
         this.execGit(workspace.cwd, ["rev-list", "--count", "HEAD"]).catch(() => ({ stdout: "0", stderr: "" })),
         this.execGit(workspace.cwd, ["status", "--porcelain=v2", "--branch"]).catch(() => ({ stdout: "", stderr: "" })),
@@ -826,7 +841,9 @@ export class GitManager extends EventEmitter {
         this.execGit(workspace.cwd, ["rev-parse", "--git-dir"]).catch(() => ({ stdout: ".git", stderr: "" })),
         this.execGit(workspace.cwd, ["rev-parse", "--git-common-dir"]).catch(() => ({ stdout: ".git", stderr: "" })),
         this.execGit(workspace.cwd, ["worktree", "list", "--porcelain"]).catch(() => ({ stdout: "", stderr: "" })),
-        this.execGit(workspace.cwd, ["for-each-ref", "--format=%(refname:short)", "refs/heads", "refs/remotes"]).catch(() => ({ stdout: "", stderr: "" })),
+        this.execGit(workspace.cwd, ["for-each-ref", "--format=%(refname:short)", "refs/heads", "refs/remotes"]).catch(
+          () => ({ stdout: "", stderr: "" }),
+        ),
       ]);
 
       const gitDir = resolveGitPath(workspace.cwd, gitDirResult.stdout);
@@ -841,13 +858,16 @@ export class GitManager extends EventEmitter {
       const worktrees = parseWorktreeList(worktreeListResult.stdout);
       const mainWorktree = worktrees[0] || null;
       const branchNames = readBranchList(branchListResult.stdout);
-      const branch = parsedStatus.branch && parsedStatus.branch !== "(detached)"
-        ? parsedStatus.branch
-        : (branchResult.stdout.trim() || "HEAD");
-      const upstream = parsedStatus.upstream || await this.readUpstream(workspace.cwd);
+      const branch =
+        parsedStatus.branch && parsedStatus.branch !== "(detached)"
+          ? parsedStatus.branch
+          : branchResult.stdout.trim() || "HEAD";
+      const upstream = parsedStatus.upstream || (await this.readUpstream(workspace.cwd));
       // For review workspaces, compare against the remote source branch (where we push to).
       // The target branch (where the PR merges into) is handled by the Summary tab's "Rebase on target".
-      const reviewSourceRef = String(workspace.review?.pullRequest?.sourceRefName || "").replace(/^refs\/heads\//, "").trim();
+      const reviewSourceRef = String(workspace.review?.pullRequest?.sourceRefName || "")
+        .replace(/^refs\/heads\//, "")
+        .trim();
       const baseBranch = reviewSourceRef
         ? `origin/${reviewSourceRef}`
         : await this.detectBestBaseBranch(workspace.cwd, branch, upstream, branchNames);
@@ -859,25 +879,27 @@ export class GitManager extends EventEmitter {
       const stagedDiffStat = await this.readDiffStat(workspace.cwd, ["diff", "--cached", "--shortstat"]);
       const unstagedDiffStat = await this.readDiffStat(workspace.cwd, ["diff", "--shortstat"]);
       const untrackedDiffStat = summarizeNameStatusEntries(untracked.map((entry) => ({ code: "?", path: entry.path })));
-      const siblingWorktrees = await Promise.all(worktrees.map(async (entry, index) => {
-        const isCurrent = path.resolve(entry.path) === path.resolve(root);
-        const dirtyState = isCurrent
-          ? { dirty: dirtyCount > 0, dirtyCount }
-          : await this.getCachedWorktreeDirtyState(entry.path);
-        return {
-          path: entry.path,
-          branch: entry.branch || (entry.detached ? "detached" : ""),
-          head: entry.head || "",
-          isCurrent,
-          isMainWorktree: index === 0,
-          dirty: dirtyState.dirty,
-          dirtyCount: dirtyState.dirtyCount,
-          detached: entry.detached,
-          bare: entry.bare,
-          locked: entry.locked,
-          prunable: entry.prunable,
-        };
-      }));
+      const siblingWorktrees = await Promise.all(
+        worktrees.map(async (entry, index) => {
+          const isCurrent = path.resolve(entry.path) === path.resolve(root);
+          const dirtyState = isCurrent
+            ? { dirty: dirtyCount > 0, dirtyCount }
+            : await this.getCachedWorktreeDirtyState(entry.path);
+          return {
+            path: entry.path,
+            branch: entry.branch || (entry.detached ? "detached" : ""),
+            head: entry.head || "",
+            isCurrent,
+            isMainWorktree: index === 0,
+            dirty: dirtyState.dirty,
+            dirtyCount: dirtyState.dirtyCount,
+            detached: entry.detached,
+            bare: entry.bare,
+            locked: entry.locked,
+            prunable: entry.prunable,
+          };
+        }),
+      );
 
       return {
         workspaceId: workspace.id,
@@ -980,7 +1002,10 @@ export class GitManager extends EventEmitter {
 
     const compareTarget = baseBranch;
     const [countResult, logResult, filesResult, diffStatResult] = await Promise.all([
-      this.execGit(cwd, ["rev-list", "--left-right", "--count", `HEAD...${compareTarget}`]).catch(() => ({ stdout: "0\t0", stderr: "" })),
+      this.execGit(cwd, ["rev-list", "--left-right", "--count", `HEAD...${compareTarget}`]).catch(() => ({
+        stdout: "0\t0",
+        stderr: "",
+      })),
       this.execGit(cwd, [
         "log",
         "--date=relative",
@@ -1079,7 +1104,7 @@ export class GitManager extends EventEmitter {
     const results = await Promise.all(
       workspaces.map(async (workspace) => {
         const cached = this.snapshotCache.get(workspace.id);
-        if (cached && (now - cached.at) < this.snapshotCacheTtlMs) {
+        if (cached && now - cached.at < this.snapshotCacheTtlMs) {
           return [workspace.id, cached.snapshot];
         }
         const snapshot = await this.inspectWorkspace(workspace);
@@ -1133,9 +1158,7 @@ export class GitManager extends EventEmitter {
     }
 
     const upstream = snapshot.upstream;
-    const pushArgs = upstream
-      ? ["push"]
-      : ["push", "--set-upstream", "origin", branch];
+    const pushArgs = upstream ? ["push"] : ["push", "--set-upstream", "origin", branch];
 
     return this.runWriteAction(workspace, {
       type: "push",
@@ -1273,7 +1296,9 @@ export class GitManager extends EventEmitter {
       };
     }
 
-    const normalizedScope = ["staged", "unstaged", "branch", "conflict", "untracked"].includes(scope) ? scope : "unstaged";
+    const normalizedScope = ["staged", "unstaged", "branch", "conflict", "untracked"].includes(scope)
+      ? scope
+      : "unstaged";
     if (normalizedScope === "untracked") {
       const preview = await renderUntrackedDiffPreview(this.execGit.bind(this), workspace.cwd, targetPath);
       return {
@@ -1285,11 +1310,12 @@ export class GitManager extends EventEmitter {
       };
     }
 
-    const args = normalizedScope === "staged"
-      ? ["diff", "--cached", "--", targetPath]
-      : normalizedScope === "branch"
-        ? ["diff", `${baseBranch || "HEAD"}...HEAD`, "--", targetPath]
-        : ["diff", "--", targetPath];
+    const args =
+      normalizedScope === "staged"
+        ? ["diff", "--cached", "--", targetPath]
+        : normalizedScope === "branch"
+          ? ["diff", `${baseBranch || "HEAD"}...HEAD`, "--", targetPath]
+          : ["diff", "--", targetPath];
 
     try {
       const result = await this.execGit(workspace.cwd, args);
@@ -1335,16 +1361,19 @@ export class GitManager extends EventEmitter {
     }
   }
 
-  async runWriteAction(workspace, {
-    type,
-    label,
-    baseBranch = "",
-    stashDirty = false,
-    allowDirty = false,
-    skipPreflight = false,
-    run,
-    connection = null,
-  }) {
+  async runWriteAction(
+    workspace,
+    {
+      type,
+      label,
+      baseBranch = "",
+      stashDirty = false,
+      allowDirty = false,
+      skipPreflight = false,
+      run,
+      connection = null,
+    },
+  ) {
     this.invalidateSnapshotCache(workspace.id);
     const snapshot = await this.inspectWorkspace(workspace);
     if (!snapshot.available) {
@@ -1391,7 +1420,13 @@ export class GitManager extends EventEmitter {
     try {
       if (stashDirty && snapshot.dirty) {
         stashLabel = `strideterm-${type}-${this.now().toISOString()}`;
-        const stashResult = await this.execGit(workspace.cwd, ["stash", "push", "--include-untracked", "-m", stashLabel]);
+        const stashResult = await this.execGit(workspace.cwd, [
+          "stash",
+          "push",
+          "--include-untracked",
+          "-m",
+          stashLabel,
+        ]);
         stashOutput = stashResult.stdout || stashResult.stderr || "";
       }
 
@@ -1420,7 +1455,8 @@ export class GitManager extends EventEmitter {
         warnings.push("Stashed local changes were kept because the Git operation needs manual resolution.");
       }
 
-      const hasConflictState = operationSnapshot.operationState.inProgress || operationSnapshot.operationState.conflicts.length > 0;
+      const hasConflictState =
+        operationSnapshot.operationState.inProgress || operationSnapshot.operationState.conflicts.length > 0;
       return createStructuredResult({
         ok: false,
         summary: hasConflictState
@@ -1493,7 +1529,10 @@ export class GitManager extends EventEmitter {
     );
     const targetCwd = mainWorktree?.path || snapshot.mainWorktreePath;
     if (!targetCwd) {
-      return createStructuredResult({ ok: false, summary: `No worktree found for ${resolvedBase}. Switch to it manually.` });
+      return createStructuredResult({
+        ok: false,
+        summary: `No worktree found for ${resolvedBase}. Switch to it manually.`,
+      });
     }
 
     const dirtyState = await inspectWorktreeDirtyState(this.execGit.bind(this), targetCwd);
@@ -1611,18 +1650,20 @@ export class GitManager extends EventEmitter {
       return preferBaseBranch(currentBranch, upstream, branchNames);
     }
 
-    const distances = await Promise.all(candidates.map(async (candidate) => {
-      try {
-        const result = await this.execGit(cwd, ["merge-base", "HEAD", candidate]);
-        const mergeBase = result.stdout.trim();
-        if (!mergeBase) return { candidate, distance: Infinity };
+    const distances = await Promise.all(
+      candidates.map(async (candidate) => {
+        try {
+          const result = await this.execGit(cwd, ["merge-base", "HEAD", candidate]);
+          const mergeBase = result.stdout.trim();
+          if (!mergeBase) return { candidate, distance: Infinity };
 
-        const countResult = await this.execGit(cwd, ["rev-list", "--count", `${mergeBase}..HEAD`]);
-        return { candidate, distance: parseInt(countResult.stdout.trim(), 10) || Infinity };
-      } catch {
-        return { candidate, distance: Infinity };
-      }
-    }));
+          const countResult = await this.execGit(cwd, ["rev-list", "--count", `${mergeBase}..HEAD`]);
+          return { candidate, distance: parseInt(countResult.stdout.trim(), 10) || Infinity };
+        } catch {
+          return { candidate, distance: Infinity };
+        }
+      }),
+    );
 
     const best = distances.reduce((a, b) => (a.distance <= b.distance ? a : b));
     return best.distance < Infinity ? best.candidate : preferBaseBranch(currentBranch, upstream, branchNames);
@@ -1631,7 +1672,9 @@ export class GitManager extends EventEmitter {
   async getStashCount(cwd) {
     try {
       const result = await this.execGit(cwd, ["stash", "list"]);
-      const lines = String(result.stdout || "").split(/\r?\n/).filter(Boolean);
+      const lines = String(result.stdout || "")
+        .split(/\r?\n/)
+        .filter(Boolean);
       return lines.length;
     } catch {
       return 0;
@@ -1683,7 +1726,9 @@ export class GitManager extends EventEmitter {
   async restoreStridetermStash(cwd) {
     try {
       const result = await this.execGit(cwd, ["stash", "list"]);
-      const lines = String(result.stdout || "").split(/\r?\n/).filter(Boolean);
+      const lines = String(result.stdout || "")
+        .split(/\r?\n/)
+        .filter(Boolean);
       const index = lines.findIndex((line) => line.includes("strideterm-"));
       if (index < 0) {
         return "";

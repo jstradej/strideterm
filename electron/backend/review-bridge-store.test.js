@@ -34,12 +34,8 @@ describe("review bridge store", () => {
       role: "reviewer",
       lastRemoteActivityAt: "2026-03-18T08:30:00.000Z",
       lastSeenActivityAt: "2026-03-18T08:00:00.000Z",
-      changedFiles: [
-        { changeType: "edit", path: "/src/auth.js" },
-      ],
-      localChangedFiles: [
-        { changeType: "M", path: "src/auth.js" },
-      ],
+      changedFiles: [{ changeType: "edit", path: "/src/auth.js" }],
+      localChangedFiles: [{ changeType: "M", path: "src/auth.js" }],
       threads: [
         {
           id: 10,
@@ -119,7 +115,9 @@ describe("review bridge store", () => {
     // After successful publish, the draft, local comment, and queue entry
     // are removed so the DB stays 1:1 with remote state.
     expect(syncedContext?.drafts.filter((d) => d.commentKey === queuedContext.drafts[0]?.commentKey)).toHaveLength(0);
-    expect(syncedContext?.comments.filter((c) => c.commentKey === queuedContext.comments[0]?.commentKey)).toHaveLength(0);
+    expect(syncedContext?.comments.filter((c) => c.commentKey === queuedContext.comments[0]?.commentKey)).toHaveLength(
+      0,
+    );
     expect(syncedContext?.syncQueue.filter((q) => q.status === "synced")).toHaveLength(0);
 
     // createDraftComment — new standalone comment (no thread)
@@ -147,7 +145,9 @@ describe("review bridge store", () => {
       body: "Yes. I would add a short regression note and ask for a focused test.",
       authorAgent: "codex",
     });
-    const draftCommentDraft = draftCommentDraftContext?.drafts.find((draft) => draft.commentKey === draftComment?.commentKey);
+    const draftCommentDraft = draftCommentDraftContext?.drafts.find(
+      (draft) => draft.commentKey === draftComment?.commentKey,
+    );
     expect(draftCommentDraft?.status).toBe("draft");
     expect(draftCommentDraft?.body).toContain("regression note");
 
@@ -174,7 +174,13 @@ describe("review bridge store", () => {
           lineStart: 10,
           publishedDate: "2026-03-20T10:00:00.000Z",
           comments: [
-            { id: 500, parentCommentId: 0, content: "Missing test coverage.", publishedDate: "2026-03-20T10:00:00.000Z", author: { displayName: "Reviewer" } },
+            {
+              id: 500,
+              parentCommentId: 0,
+              content: "Missing test coverage.",
+              publishedDate: "2026-03-20T10:00:00.000Z",
+              author: { displayName: "Reviewer" },
+            },
           ],
         },
       ],

@@ -18,21 +18,25 @@ export function classifyAzureRequest(method, url) {
     }
     if (p.includes("/comments")) return { operation: "createComment", category: "write", resourceType: "comment" };
     if (p.includes("/reviewers/")) return { operation: "setVote", category: "write", resourceType: "vote" };
-    if (p.includes("/pullrequests") && m === "POST") return { operation: "createPullRequest", category: "write", resourceType: "pullRequest" };
+    if (p.includes("/pullrequests") && m === "POST")
+      return { operation: "createPullRequest", category: "write", resourceType: "pullRequest" };
     return { operation: `${m.toLowerCase()}Request`, category: "write", resourceType: "" };
   }
 
   // Read operations (GET)
   if (p.includes("/_apis/projects")) return { operation: "listProjects", category: "read", resourceType: "project" };
-  if (p.includes("/pullrequests?") || p.includes("/pullRequests?")) return { operation: "listPullRequests", category: "read", resourceType: "pullRequest" };
+  if (p.includes("/pullrequests?") || p.includes("/pullRequests?"))
+    return { operation: "listPullRequests", category: "read", resourceType: "pullRequest" };
   if (p.includes("/threads")) return { operation: "listThreads", category: "read", resourceType: "thread" };
-  if (p.includes("/iterations") && p.includes("/changes")) return { operation: "listIterationChanges", category: "read", resourceType: "file" };
+  if (p.includes("/iterations") && p.includes("/changes"))
+    return { operation: "listIterationChanges", category: "read", resourceType: "file" };
   if (p.includes("/iterations")) return { operation: "listIterations", category: "read", resourceType: "iteration" };
   if (p.includes("/statuses")) return { operation: "listStatuses", category: "read", resourceType: "status" };
   if (p.includes("/policy/evaluations")) return { operation: "listPolicies", category: "read", resourceType: "policy" };
   if (p.includes("/timeline")) return { operation: "fetchBuildTimeline", category: "read", resourceType: "build" };
   if (p.includes("/refs?")) return { operation: "listBranches", category: "read", resourceType: "branch" };
-  if (p.includes("/repositories?") || p.includes("/_apis/git/repositories")) return { operation: "listRepositories", category: "read", resourceType: "repository" };
+  if (p.includes("/repositories?") || p.includes("/_apis/git/repositories"))
+    return { operation: "listRepositories", category: "read", resourceType: "repository" };
   return { operation: "getRequest", category: "read", resourceType: "" };
 }
 
@@ -186,7 +190,9 @@ export function createAzureAuditLogStore(databasePath) {
     }
     if (filters.search) {
       const term = `%${filters.search}%`;
-      conditions.push("(operation LIKE ? OR project LIKE ? OR organization LIKE ? OR url LIKE ? OR error_message LIKE ?)");
+      conditions.push(
+        "(operation LIKE ? OR project LIKE ? OR organization LIKE ? OR url LIKE ? OR error_message LIKE ?)",
+      );
       params.push(term, term, term, term, term);
     }
 
@@ -224,7 +230,9 @@ export function createAzureAuditLogStore(databasePath) {
 
     const where = conditions.length ? "WHERE " + conditions.join(" AND ") : "";
 
-    const row = db.prepare(`
+    const row = db
+      .prepare(
+        `
       SELECT
         COUNT(*) as total,
         SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END) as successCount,
@@ -233,7 +241,9 @@ export function createAzureAuditLogStore(databasePath) {
         SUM(CASE WHEN category = 'write' THEN 1 ELSE 0 END) as writeCount,
         ROUND(AVG(duration_ms), 0) as avgDurationMs
       FROM azure_devops_audit_log ${where}
-    `).get(...params);
+    `,
+      )
+      .get(...params);
 
     return {
       total: row?.total || 0,
@@ -260,7 +270,9 @@ export function createAzureAuditLogStore(databasePath) {
   }
 
   function close() {
-    try { db.close(); } catch {}
+    try {
+      db.close();
+    } catch {}
   }
 
   function formatRow(row) {
@@ -286,7 +298,9 @@ export function createAzureAuditLogStore(databasePath) {
   }
 
   // Prune on startup — never let this crash the store initialization
-  try { prune(); } catch (err) {
+  try {
+    prune();
+  } catch (err) {
     console.warn("[audit-log] Prune on startup failed:", err?.message || err);
   }
 

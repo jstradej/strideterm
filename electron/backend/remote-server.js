@@ -118,7 +118,10 @@ async function handleApiRequest(runtime, request, response) {
 
     const body = await readRequestBody(request);
 
-    if (request.method === "POST" && (url.pathname === "/api/workspace/activate" || url.pathname === "/api/project/activate")) {
+    if (
+      request.method === "POST" &&
+      (url.pathname === "/api/workspace/activate" || url.pathname === "/api/project/activate")
+    ) {
       json(response, 200, await runtime.activateWorkspace(body.workspaceId || body.projectId));
       return;
     }
@@ -128,12 +131,18 @@ async function handleApiRequest(runtime, request, response) {
       return;
     }
 
-    if (request.method === "POST" && (url.pathname === "/api/workspace/delete" || url.pathname === "/api/project/delete")) {
+    if (
+      request.method === "POST" &&
+      (url.pathname === "/api/workspace/delete" || url.pathname === "/api/project/delete")
+    ) {
       json(response, 200, await runtime.deleteWorkspace(body.workspaceId || body.projectId, body));
       return;
     }
 
-    if (request.method === "POST" && (url.pathname === "/api/workspace/reorder" || url.pathname === "/api/project/reorder")) {
+    if (
+      request.method === "POST" &&
+      (url.pathname === "/api/workspace/reorder" || url.pathname === "/api/project/reorder")
+    ) {
       json(response, 200, await runtime.reorderWorkspaces(body.workspaceIds || body.projectIds || []));
       return;
     }

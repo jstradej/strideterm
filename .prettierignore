@@ -1,0 +1,11 @@
+dist/
+release/
+out/
+node_modules/
+playwright-report/
+test-results/
+blob-report/
+*.db
+*.db-wal
+*.db-shm
+package-lock.json

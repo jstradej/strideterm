@@ -5,40 +5,143 @@
     "activeProjectId": "ws-docker",
     "activeProfileId": "default",
     "settings": {
-      "theme": "dark", "sidebarWidth": 220, "sidebarCollapsed": false,
-      "remoteAccess": { "enabled": true, "host": "127.0.0.1", "port": 3999, "token": "test-token", "customPublicUrl": "", "cloudflaredPath": "" },
-      "integrations": { "azureDevops": { "enabled": false, "connections": [], "reviewRoot": "", "defaultPollSeconds": 60 }, "github": { "enabled": false, "connections": [], "reviewRoot": "", "defaultPollSeconds": 60 } },
+      "theme": "dark",
+      "sidebarWidth": 220,
+      "sidebarCollapsed": false,
+      "remoteAccess": {
+        "enabled": true,
+        "host": "127.0.0.1",
+        "port": 3999,
+        "token": "test-token",
+        "customPublicUrl": "",
+        "cloudflaredPath": ""
+      },
+      "integrations": {
+        "azureDevops": { "enabled": false, "connections": [], "reviewRoot": "", "defaultPollSeconds": 60 },
+        "github": { "enabled": false, "connections": [], "reviewRoot": "", "defaultPollSeconds": 60 }
+      },
       "tabTemplates": [{ "id": "shell", "title": "Shell", "command": "", "icon": "terminal" }]
     },
     "tabTemplates": [{ "id": "shell", "title": "Shell", "command": "", "icon": "terminal" }],
-    "profiles": [{ "id": "default", "name": "Default", "color": "", "workspaceIds": ["ws-docker"], "projectIds": ["ws-docker"] }],
-    "workspaces": [{
-      "id": "ws-docker", "name": "Docker Services", "icon": "🐳", "color": "#2ed573", "kind": "terminal", "source": "manual", "pluginId": "", "cwd": "/home/user/projects/infra", "notes": "", "profileId": "default", "connectionId": "", "activePanelId": "panel-shell",
-      "panels": [{ "id": "panel-shell", "title": "Shell", "command": "", "launch": null, "shell": true, "startup": "default" }],
-      "review": null, "quickfix": null
-    }],
+    "profiles": [
+      { "id": "default", "name": "Default", "color": "", "workspaceIds": ["ws-docker"], "projectIds": ["ws-docker"] }
+    ],
+    "workspaces": [
+      {
+        "id": "ws-docker",
+        "name": "Docker Services",
+        "icon": "🐳",
+        "color": "#2ed573",
+        "kind": "terminal",
+        "source": "manual",
+        "pluginId": "",
+        "cwd": "/home/user/projects/infra",
+        "notes": "",
+        "profileId": "default",
+        "connectionId": "",
+        "activePanelId": "panel-shell",
+        "panels": [
+          { "id": "panel-shell", "title": "Shell", "command": "", "launch": null, "shell": true, "startup": "default" }
+        ],
+        "review": null,
+        "quickfix": null
+      }
+    ],
     "projects": []
   },
   "workspace": {
-    "workspace": { "id": "ws-docker", "name": "Docker Services", "icon": "🐳", "color": "#2ed573", "kind": "terminal", "panels": [{ "id": "panel-shell", "title": "Shell", "command": "", "launch": null, "shell": true, "startup": "default" }] },
+    "workspace": {
+      "id": "ws-docker",
+      "name": "Docker Services",
+      "icon": "🐳",
+      "color": "#2ed573",
+      "kind": "terminal",
+      "panels": [
+        { "id": "panel-shell", "title": "Shell", "command": "", "launch": null, "shell": true, "startup": "default" }
+      ]
+    },
     "project": null,
-    "sessions": [{ "sessionId": "ws-docker:panel-shell", "panelId": "panel-shell", "title": "Shell", "command": "", "launch": null, "startup": "default", "status": "running" }]
+    "sessions": [
+      {
+        "sessionId": "ws-docker:panel-shell",
+        "panelId": "panel-shell",
+        "title": "Shell",
+        "command": "",
+        "launch": null,
+        "startup": "default",
+        "status": "running"
+      }
+    ]
   },
   "attention": { "byWorkspace": {}, "byProject": {}, "activeWorkspace": null, "activeProject": null },
   "docker": {
-    "available": true, "backend": "host", "error": "", "lastUpdatedAt": "2026-03-28T14:30:00.000Z",
+    "available": true,
+    "backend": "host",
+    "error": "",
+    "lastUpdatedAt": "2026-03-28T14:30:00.000Z",
     "contexts": [],
     "lazydocker": { "available": true, "backend": "host", "error": "" },
     "containers": [
-      { "ID": "c1a2b3", "Names": ["/postgres-db"], "Image": "postgres:16", "State": "running", "Status": "Up 4 hours", "Ports": [{"IP":"0.0.0.0","PrivatePort":5432,"PublicPort":5432,"Type":"tcp"}], "Labels": {"service":"database"}, "Created": 1711270800 },
-      { "ID": "d4e5f6", "Names": ["/redis-cache"], "Image": "redis:7-alpine", "State": "running", "Status": "Up 4 hours", "Ports": [{"IP":"0.0.0.0","PrivatePort":6379,"PublicPort":6379,"Type":"tcp"}], "Labels": {"service":"cache"}, "Created": 1711270800 },
-      { "ID": "g7h8i9", "Names": ["/nginx-proxy"], "Image": "nginx:latest", "State": "running", "Status": "Up 2 hours", "Ports": [{"IP":"0.0.0.0","PrivatePort":80,"PublicPort":8080,"Type":"tcp"},{"IP":"0.0.0.0","PrivatePort":443,"PublicPort":8443,"Type":"tcp"}], "Labels": {"service":"proxy"}, "Created": 1711278000 },
-      { "ID": "j0k1l2", "Names": ["/worker-queue"], "Image": "myapp/worker:v2.1", "State": "exited", "Status": "Exited (1) 30 minutes ago", "Ports": [], "Labels": {"service":"worker"}, "Created": 1711270800 }
+      {
+        "ID": "c1a2b3",
+        "Names": ["/postgres-db"],
+        "Image": "postgres:16",
+        "State": "running",
+        "Status": "Up 4 hours",
+        "Ports": [{ "IP": "0.0.0.0", "PrivatePort": 5432, "PublicPort": 5432, "Type": "tcp" }],
+        "Labels": { "service": "database" },
+        "Created": 1711270800
+      },
+      {
+        "ID": "d4e5f6",
+        "Names": ["/redis-cache"],
+        "Image": "redis:7-alpine",
+        "State": "running",
+        "Status": "Up 4 hours",
+        "Ports": [{ "IP": "0.0.0.0", "PrivatePort": 6379, "PublicPort": 6379, "Type": "tcp" }],
+        "Labels": { "service": "cache" },
+        "Created": 1711270800
+      },
+      {
+        "ID": "g7h8i9",
+        "Names": ["/nginx-proxy"],
+        "Image": "nginx:latest",
+        "State": "running",
+        "Status": "Up 2 hours",
+        "Ports": [
+          { "IP": "0.0.0.0", "PrivatePort": 80, "PublicPort": 8080, "Type": "tcp" },
+          { "IP": "0.0.0.0", "PrivatePort": 443, "PublicPort": 8443, "Type": "tcp" }
+        ],
+        "Labels": { "service": "proxy" },
+        "Created": 1711278000
+      },
+      {
+        "ID": "j0k1l2",
+        "Names": ["/worker-queue"],
+        "Image": "myapp/worker:v2.1",
+        "State": "exited",
+        "Status": "Exited (1) 30 minutes ago",
+        "Ports": [],
+        "Labels": { "service": "worker" },
+        "Created": 1711270800
+      }
     ]
   },
   "git": { "workspaces": {}, "projects": {}, "activeWorkspace": null, "activeProject": null },
-  "azureDevops": { "connections": [], "inbox": { "needsMyReview": [], "myPullRequests": [], "recentlyUpdated": [], "needsAttention": [] }, "trackedPullRequests": {}, "pullRequests": {}, "sync": { "running": false, "lastStartedAt": null, "lastCompletedAt": null } },
-  "github": { "connections": [], "inbox": { "needsMyReview": [], "myPullRequests": [], "recentlyUpdated": [], "needsAttention": [] }, "trackedPullRequests": {}, "pullRequests": {}, "sync": { "running": false, "lastStartedAt": null, "lastCompletedAt": null } },
+  "azureDevops": {
+    "connections": [],
+    "inbox": { "needsMyReview": [], "myPullRequests": [], "recentlyUpdated": [], "needsAttention": [] },
+    "trackedPullRequests": {},
+    "pullRequests": {},
+    "sync": { "running": false, "lastStartedAt": null, "lastCompletedAt": null }
+  },
+  "github": {
+    "connections": [],
+    "inbox": { "needsMyReview": [], "myPullRequests": [], "recentlyUpdated": [], "needsAttention": [] },
+    "trackedPullRequests": {},
+    "pullRequests": {},
+    "sync": { "running": false, "lastStartedAt": null, "lastCompletedAt": null }
+  },
   "reviewBridge": { "pullRequests": {}, "agentPrompts": [] },
   "plugins": [],
   "environment": { "platform": "win32", "shell": "bash" },

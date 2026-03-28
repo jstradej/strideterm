@@ -7,7 +7,9 @@ const DEFAULT_APP_ENTRY = path.resolve(fileURLToPath(new URL("../../", import.me
 const REVIEW_BRIDGE_STDIO_ENTRY = fileURLToPath(new URL("./review-bridge-mcp-stdio.js", import.meta.url));
 
 function normalizeText(value) {
-  return String(value || "").trim().toLowerCase();
+  return String(value || "")
+    .trim()
+    .toLowerCase();
 }
 
 function firstCommandToken(command) {
@@ -37,12 +39,7 @@ function tokenizeCommand(command) {
         continue;
       }
 
-      if (
-        char === "\\"
-        && quote === "\""
-        && index + 1 < input.length
-        && ["\\", "\"", "'"].includes(input[index + 1])
-      ) {
+      if (char === "\\" && quote === '"' && index + 1 < input.length && ["\\", '"', "'"].includes(input[index + 1])) {
         index += 1;
         current += input[index];
         continue;
@@ -52,7 +49,7 @@ function tokenizeCommand(command) {
       continue;
     }
 
-    if (char === "\"" || char === "'") {
+    if (char === '"' || char === "'") {
       quote = char;
       continue;
     }
@@ -65,11 +62,7 @@ function tokenizeCommand(command) {
       continue;
     }
 
-    if (
-      char === "\\"
-      && index + 1 < input.length
-      && ["\\", "\"", "'"].includes(input[index + 1])
-    ) {
+    if (char === "\\" && index + 1 < input.length && ["\\", '"', "'"].includes(input[index + 1])) {
       index += 1;
       current += input[index];
       continue;
@@ -209,11 +202,7 @@ function buildMcpServerSpec({ context, processInfo }) {
     throw new Error("Review bridge MCP launch is missing an executable path.");
   }
 
-  const args = [
-    "--review-bridge-mcp",
-    "--review-root",
-    String(context?.rootPath || ""),
-  ];
+  const args = ["--review-bridge-mcp", "--review-root", String(context?.rootPath || "")];
   const workspaceId = context?.reviewWorkspaceId || context?.workspaceId || "";
   if (workspaceId) {
     args.push("--review-workspace-id", String(workspaceId));
@@ -316,10 +305,7 @@ function buildCodexLaunch({ workspace, panel, context, processInfo }) {
     if (nodePath && codexShim) {
       return {
         file: nodePath,
-        args: [
-          path.join(path.dirname(codexShim), "node_modules", "@openai", "codex", "bin", "codex.js"),
-          ...args,
-        ],
+        args: [path.join(path.dirname(codexShim), "node_modules", "@openai", "codex", "bin", "codex.js"), ...args],
         cwd: workspace?.cwd || "",
         env: mcp.env || {},
         skipCommandInjection: true,

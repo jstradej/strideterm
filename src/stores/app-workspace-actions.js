@@ -1,11 +1,25 @@
-import {
-  getWorkspaceTabs,
-  getWorkspacePanelByViewId,
-} from "../app/selectors.js";
+import { getWorkspaceTabs, getWorkspacePanelByViewId } from "../app/selectors.js";
 import { statusTone, cloneWorkspace } from "../workspace-state.js";
-import { isContainerRunning, isGitViewId, isDockerViewId, isAzureViewId, isGitHubViewId, isReviewViewId, isFilesViewId, isBrowserViewId } from "../app/helpers.js";
+import {
+  isContainerRunning,
+  isGitViewId,
+  isDockerViewId,
+  isAzureViewId,
+  isGitHubViewId,
+  isReviewViewId,
+  isFilesViewId,
+  isBrowserViewId,
+} from "../app/helpers.js";
 
-const viewIdHelpers = { isGitViewId, isDockerViewId, isAzureViewId, isGitHubViewId, isReviewViewId, isFilesViewId, isBrowserViewId };
+const viewIdHelpers = {
+  isGitViewId,
+  isDockerViewId,
+  isAzureViewId,
+  isGitHubViewId,
+  isReviewViewId,
+  isFilesViewId,
+  isBrowserViewId,
+};
 import { APP_CONFIG } from "../../config/app-config.js";
 
 const LAYOUTS = {
@@ -36,9 +50,10 @@ export function createWorkspaceActions(ctx) {
     if (!ws) return;
     if (!window.confirm(`Delete workspace "${ws.name}"?`)) return;
 
-    const worktreePath = ws.review?.checkout?.mode === "managed-worktree" && ws.review?.checkout?.rootPath
-      ? ws.review.checkout.rootPath
-      : ws.quickfix?.rootPath || "";
+    const worktreePath =
+      ws.review?.checkout?.mode === "managed-worktree" && ws.review?.checkout?.rootPath
+        ? ws.review.checkout.rootPath
+        : ws.quickfix?.rootPath || "";
     const diskPath = worktreePath || (ws.cwd && ws.review ? ws.cwd : "");
 
     let deleteFromDisk = false;
@@ -50,7 +65,9 @@ export function createWorkspaceActions(ctx) {
 
     const result = await ctx.getApi().deleteWorkspace(workspaceId, { deleteFromDisk, diskPath });
     if (result?.deleteWorkspaceError) {
-      window.alert(`Workspace was deleted, but files could not be removed:\n\n${result.deleteWorkspaceError}\n\nYou can delete the directory manually.`);
+      window.alert(
+        `Workspace was deleted, but files could not be removed:\n\n${result.deleteWorkspaceError}\n\nYou can delete the directory manually.`,
+      );
     }
     ctx.payload.value = result;
   }
@@ -75,14 +92,25 @@ export function createWorkspaceActions(ctx) {
     if (isGitViewId(viewId) || isDockerViewId(viewId) || !isWorkspacePanel) {
       ctx.hiddenViewIds.value = new Set([...ctx.hiddenViewIds.value, viewId]);
       if (ctx.activeViewId.value === viewId) {
-        const tabs = getWorkspaceTabs({ workspace, payload: ctx.payload.value, hiddenViewIds: ctx.hiddenViewIds.value, statusTone, isContainerRunning });
+        const tabs = getWorkspaceTabs({
+          workspace,
+          payload: ctx.payload.value,
+          hiddenViewIds: ctx.hiddenViewIds.value,
+          statusTone,
+          isContainerRunning,
+        });
         ctx.activeViewId.value = tabs.find((t) => t.id !== viewId)?.id || null;
       }
       const _api = ctx.getApi();
       if (!isGitViewId(viewId) && !isDockerViewId(viewId) && _api.closeTerminal) {
-        _api.closeTerminal(viewId).then((p) => { ctx.payload.value = p; }).catch((err) => {
-          console.warn("[closeTab] failed to close terminal:", err?.message || err);
-        });
+        _api
+          .closeTerminal(viewId)
+          .then((p) => {
+            ctx.payload.value = p;
+          })
+          .catch((err) => {
+            console.warn("[closeTab] failed to close terminal:", err?.message || err);
+          });
       }
       return;
     }
@@ -96,12 +124,24 @@ export function createWorkspaceActions(ctx) {
       nextWorkspace.activePanelId = nextWorkspace.panels[0]?.id || "";
     }
     if (ctx.activeViewId.value === viewId) {
-      const tabs = getWorkspaceTabs({ workspace, payload: ctx.payload.value, hiddenViewIds: ctx.hiddenViewIds.value, statusTone, isContainerRunning });
+      const tabs = getWorkspaceTabs({
+        workspace,
+        payload: ctx.payload.value,
+        hiddenViewIds: ctx.hiddenViewIds.value,
+        statusTone,
+        isContainerRunning,
+      });
       ctx.activeViewId.value = ctx.splitGroup.value?.viewIds[0] || tabs[0]?.id || null;
     }
-    ctx.getApi().saveWorkspace(nextWorkspace).then((p) => { ctx.payload.value = p; }).catch((err) => {
-      console.warn("[closeTab] failed to save workspace after panel removal:", err?.message || err);
-    });
+    ctx
+      .getApi()
+      .saveWorkspace(nextWorkspace)
+      .then((p) => {
+        ctx.payload.value = p;
+      })
+      .catch((err) => {
+        console.warn("[closeTab] failed to save workspace after panel removal:", err?.message || err);
+      });
   }
 
   async function quickAddTab() {
@@ -142,7 +182,11 @@ export function createWorkspaceActions(ctx) {
       startup: isFiles ? "none" : APP_CONFIG.ui.defaultPanelStartup,
     });
     nextWorkspace.activePanelId = panelId;
-    const nextViewId = isBrowser ? `browser:${panelId}` : isFiles ? `files:${panelId}` : `${nextWorkspace.id}:${panelId}`;
+    const nextViewId = isBrowser
+      ? `browser:${panelId}`
+      : isFiles
+        ? `files:${panelId}`
+        : `${nextWorkspace.id}:${panelId}`;
     await ctx.withSuppressedBroadcast(async () => {
       ctx.payload.value = await ctx.getApi().saveWorkspace(nextWorkspace);
     });

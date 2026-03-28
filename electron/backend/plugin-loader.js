@@ -239,7 +239,9 @@ export async function createPluginManager({ pluginsDir, builtinPluginsDir, runti
      */
     getPlugins() {
       return allPlugins.map((p) => {
-        let workspaceDefaults = p.manifest.workspaceDefaults ? JSON.parse(JSON.stringify(p.manifest.workspaceDefaults)) : null;
+        const workspaceDefaults = p.manifest.workspaceDefaults
+          ? JSON.parse(JSON.stringify(p.manifest.workspaceDefaults))
+          : null;
         if (workspaceDefaults?.panels) {
           workspaceDefaults.panels = resolvePlatformPanels(workspaceDefaults.panels, p.directory);
         }

@@ -1,11 +1,6 @@
 import { computed } from "vue";
 import { useAppStore } from "../stores/app.js";
-import {
-  preferredRemoteUrl,
-  withRemoteToken,
-  normalizeAbsoluteUrl,
-  summarizeRemoteHost,
-} from "../app/helpers.js";
+import { preferredRemoteUrl, withRemoteToken, normalizeAbsoluteUrl, summarizeRemoteHost } from "../app/helpers.js";
 
 /**
  * Provides computed remote connection state derived from the app store.
@@ -24,15 +19,11 @@ export function useRemoteConnection() {
   const tunnelUrl = computed(() => tunnel.value.publicUrl || "");
   const customPublicUrl = computed(() => remoteConfig.value.customPublicUrl || "");
 
-  const allLanShareUrls = computed(() =>
-    urls.value.map((url) => withRemoteToken(url, token.value)),
-  );
+  const allLanShareUrls = computed(() => urls.value.map((url) => withRemoteToken(url, token.value)));
 
   const lanShareUrl = computed(() => {
     const sel = store.selectedLanUrl;
-    return sel && allLanShareUrls.value.includes(sel)
-      ? sel
-      : withRemoteToken(lanUrl.value, token.value);
+    return sel && allLanShareUrls.value.includes(sel) ? sel : withRemoteToken(lanUrl.value, token.value);
   });
 
   const tunnelShareUrl = computed(() => withRemoteToken(tunnelUrl.value, token.value));
@@ -41,8 +32,10 @@ export function useRemoteConnection() {
 
   const activeShareUrl = computed(() => {
     const mode = store.remoteAccessExpanded
-      ? (store.remoteAccessMode || "lan")
-      : (tunnelShareUrl.value || customShareUrl.value ? "cloudflare" : "lan");
+      ? store.remoteAccessMode || "lan"
+      : tunnelShareUrl.value || customShareUrl.value
+        ? "cloudflare"
+        : "lan";
     if (mode === "cloudflare" && tunnelShareUrl.value) return tunnelShareUrl.value;
     if (mode === "vps" && customShareUrl.value) return customShareUrl.value;
     return customShareUrl.value || tunnelShareUrl.value || lanShareUrl.value;
@@ -56,9 +49,7 @@ export function useRemoteConnection() {
   });
 
   const serverStatus = computed(() => (runtimeRemote.value.error ? "offline" : "live"));
-  const tunnelStatusLabel = computed(() =>
-    tunnel.value.publicUrl ? "connected" : (tunnel.value.status || "idle"),
-  );
+  const tunnelStatusLabel = computed(() => (tunnel.value.publicUrl ? "connected" : tunnel.value.status || "idle"));
 
   const lanUrlButtons = computed(() =>
     urls.value.length > 1
@@ -79,18 +70,33 @@ export function useRemoteConnection() {
 
   const hasPublicUrl = computed(() => Boolean(tunnelShareUrl.value || customShareUrl.value));
   const hasAnyUrl = computed(() => Boolean(lanShareUrl.value || tunnelShareUrl.value || customShareUrl.value));
-  const activeError = computed(() =>
-    runtimeRemote.value.error || (tunnel.value.publicUrl && tunnel.value.status !== "connected" && tunnel.value.error),
+  const activeError = computed(
+    () =>
+      runtimeRemote.value.error ||
+      (tunnel.value.publicUrl && tunnel.value.status !== "connected" && tunnel.value.error),
   );
 
   return {
-    remoteConfig, runtimeRemote, tunnel,
-    urls, token,
-    lanUrl, tunnelUrl, customPublicUrl,
-    lanShareUrl, tunnelShareUrl, customShareUrl, normalizedCustomUrl,
-    activeShareUrl, modeShareUrl,
-    serverStatus, tunnelStatusLabel,
-    lanUrlButtons, cloudflaredHint,
-    hasPublicUrl, hasAnyUrl, activeError,
+    remoteConfig,
+    runtimeRemote,
+    tunnel,
+    urls,
+    token,
+    lanUrl,
+    tunnelUrl,
+    customPublicUrl,
+    lanShareUrl,
+    tunnelShareUrl,
+    customShareUrl,
+    normalizedCustomUrl,
+    activeShareUrl,
+    modeShareUrl,
+    serverStatus,
+    tunnelStatusLabel,
+    lanUrlButtons,
+    cloudflaredHint,
+    hasPublicUrl,
+    hasAnyUrl,
+    activeError,
   };
 }

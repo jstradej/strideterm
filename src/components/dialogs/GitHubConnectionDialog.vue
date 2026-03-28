@@ -1,9 +1,9 @@
 <template>
-  <div class="dialog" style="width:min(680px,100%);">
+  <div class="dialog" style="width: min(680px, 100%)">
     <div class="dialog__header">
       <div>
         <p class="eyebrow">GitHub</p>
-        <h2>{{ connection ? 'Edit connection' : 'Add connection' }}</h2>
+        <h2>{{ connection ? "Edit connection" : "Add connection" }}</h2>
       </div>
       <button type="button" class="button button--ghost" @click="emit('cancel')">Close</button>
     </div>
@@ -21,45 +21,76 @@
       <label>
         <span>Host URL</span>
         <input v-model="draft.hostUrl" placeholder="https://github.com" required maxlength="300" />
-        <small style="color:var(--muted);font-size:12px;">Use https://github.com for GitHub.com or your GitHub Enterprise Server URL.</small>
+        <small style="color: var(--muted); font-size: 12px"
+          >Use https://github.com for GitHub.com or your GitHub Enterprise Server URL.</small
+        >
       </label>
       <label>
-        <span>PAT {{ connection ? '(leave empty to keep current token)' : '' }}</span>
+        <span>PAT {{ connection ? "(leave empty to keep current token)" : "" }}</span>
         <input v-model="draft.pat" type="password" placeholder="Personal Access Token" maxlength="300" />
-        <small style="color:var(--muted);font-size:12px;">Fine-grained or classic PAT with repo scope.</small>
+        <small style="color: var(--muted); font-size: 12px">Fine-grained or classic PAT with repo scope.</small>
       </label>
       <label>
         <span>Review checkout root</span>
         <div class="input-with-action">
           <input v-model="draft.reviewRoot" placeholder="C:/Users/me/.strideterm/github-pr" maxlength="500" />
-          <button v-if="api?.browseDirectory" type="button" class="button button--ghost input-with-action__btn" @click="browseReviewRoot">Browse</button>
+          <button
+            v-if="api?.browseDirectory"
+            type="button"
+            class="button button--ghost input-with-action__btn"
+            @click="browseReviewRoot"
+          >
+            Browse
+          </button>
         </div>
       </label>
       <div class="grid">
         <label>
           <span>Owner filters</span>
           <input v-model="draft.ownerFilters" placeholder="my-org, my-user" maxlength="500" />
-          <small style="color:var(--muted);font-size:12px;">Comma-separated GitHub org or user names.</small>
+          <small style="color: var(--muted); font-size: 12px">Comma-separated GitHub org or user names.</small>
         </label>
         <label>
           <span>Repository filters</span>
           <input v-model="draft.repositoryFilters" placeholder="owner/repo, owner/other-repo" maxlength="500" />
-          <small style="color:var(--muted);font-size:12px;">Optional owner/repo names.</small>
+          <small style="color: var(--muted); font-size: 12px">Optional owner/repo names.</small>
         </label>
       </div>
-      <label style="display:flex;align-items:center;gap:8px;">
+      <label style="display: flex; align-items: center; gap: 8px">
         <input v-model="draft.enabled" type="checkbox" />
         <span>Enable polling for this connection</span>
       </label>
-      <p v-if="errorMessage" style="margin:0;color:var(--danger);">{{ errorMessage }}</p>
-      <div v-if="verification" style="border:1px solid var(--border);border-radius:6px;padding:12px;background:rgba(255,255,255,0.03);display:grid;gap:6px;">
+      <p v-if="errorMessage" style="margin: 0; color: var(--danger)">{{ errorMessage }}</p>
+      <div
+        v-if="verification"
+        style="
+          border: 1px solid var(--border);
+          border-radius: 6px;
+          padding: 12px;
+          background: rgba(255, 255, 255, 0.03);
+          display: grid;
+          gap: 6px;
+        "
+      >
         <strong>Connection verified</strong>
-        <small style="color:var(--muted);">Authenticated as <strong>{{ verification.login }}</strong>{{ verification.name && verification.name !== verification.login ? ` (${verification.name})` : '' }}</small>
+        <small style="color: var(--muted)"
+          >Authenticated as <strong>{{ verification.login }}</strong
+          >{{ verification.name && verification.name !== verification.login ? ` (${verification.name})` : "" }}</small
+        >
       </div>
       <footer class="dialog__footer">
         <button type="button" class="button button--ghost" @click="emit('cancel')">Cancel</button>
-        <button type="button" :class="['button', 'button--ghost', busy && 'button--busy']" :disabled="busy" @click="testConnection">{{ busy ? 'Testing…' : 'Test connection' }}</button>
-        <button type="submit" :class="['button', busy && 'button--busy']" :disabled="busy">{{ busy ? 'Saving…' : 'Save connection' }}</button>
+        <button
+          type="button"
+          :class="['button', 'button--ghost', busy && 'button--busy']"
+          :disabled="busy"
+          @click="testConnection"
+        >
+          {{ busy ? "Testing…" : "Test connection" }}
+        </button>
+        <button type="submit" :class="['button', busy && 'button--busy']" :disabled="busy">
+          {{ busy ? "Saving…" : "Save connection" }}
+        </button>
       </footer>
     </form>
   </div>
@@ -114,8 +145,14 @@ function buildDraftPayload() {
     reviewRoot: draft.reviewRoot.trim(),
     enabled: draft.enabled,
     pollSeconds: Number(draft.pollSeconds) || 120,
-    ownerFilters: draft.ownerFilters.split(",").map((v) => v.trim()).filter(Boolean),
-    repositoryFilters: draft.repositoryFilters.split(",").map((v) => v.trim()).filter(Boolean),
+    ownerFilters: draft.ownerFilters
+      .split(",")
+      .map((v) => v.trim())
+      .filter(Boolean),
+    repositoryFilters: draft.repositoryFilters
+      .split(",")
+      .map((v) => v.trim())
+      .filter(Boolean),
   };
 }
 

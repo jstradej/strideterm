@@ -34,7 +34,9 @@
     "test": "npm run test:ui && npm run test:backend",
     "test:ui": "vitest run --config vite.config.js",
     "test:backend": "vitest run --config vitest.backend.config.js",
-    "test:e2e": "npx playwright test"
+    "test:e2e": "npx playwright test",
+    "lint": "eslint . && prettier --check .",
+    "lint:fix": "eslint --fix . && prettier --write ."
   },
   "build": {
     "appId": "com.strideterm.app",
@@ -134,13 +136,19 @@
     "zod": "^3.25.76"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
     "@playwright/test": "^1.58.2",
     "@vitejs/plugin-vue": "^6",
     "@vue/test-utils": "^2.4",
     "concurrently": "^9.2.1",
     "electron": "^41.0.2",
     "electron-builder": "^26.8.1",
+    "eslint": "^10.1.0",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-vue": "^10.8.0",
+    "globals": "^17.4.0",
     "jsdom": "^29.0.0",
+    "prettier": "^3.8.1",
     "vite": "^8.0.0",
     "vitest": "^4.1.0",
     "wait-on": "^9.0.4"

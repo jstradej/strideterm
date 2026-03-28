@@ -32,9 +32,7 @@
       { "id": "shell", "title": "Shell", "command": "", "icon": "terminal" },
       { "id": "claude", "title": "Claude Code", "command": "claude", "icon": "bot" }
     ],
-    "profiles": [
-      { "id": "default", "name": "Default", "color": "", "workspaceIds": [], "projectIds": [] }
-    ],
+    "profiles": [{ "id": "default", "name": "Default", "color": "", "workspaceIds": [], "projectIds": [] }],
     "workspaces": [],
     "projects": []
   },
@@ -52,11 +50,28 @@
     "activeWorkspace": null,
     "activeProject": null
   },
-  "azureDevops": { "connections": [], "inbox": { "needsMyReview": [], "myPullRequests": [], "recentlyUpdated": [], "needsAttention": [] }, "trackedPullRequests": {}, "pullRequests": {}, "sync": { "running": false, "lastStartedAt": null, "lastCompletedAt": null } },
-  "github": { "connections": [], "inbox": { "needsMyReview": [], "myPullRequests": [], "recentlyUpdated": [], "needsAttention": [] }, "trackedPullRequests": {}, "pullRequests": {}, "sync": { "running": false, "lastStartedAt": null, "lastCompletedAt": null } },
+  "azureDevops": {
+    "connections": [],
+    "inbox": { "needsMyReview": [], "myPullRequests": [], "recentlyUpdated": [], "needsAttention": [] },
+    "trackedPullRequests": {},
+    "pullRequests": {},
+    "sync": { "running": false, "lastStartedAt": null, "lastCompletedAt": null }
+  },
+  "github": {
+    "connections": [],
+    "inbox": { "needsMyReview": [], "myPullRequests": [], "recentlyUpdated": [], "needsAttention": [] },
+    "trackedPullRequests": {},
+    "pullRequests": {},
+    "sync": { "running": false, "lastStartedAt": null, "lastCompletedAt": null }
+  },
   "reviewBridge": { "pullRequests": {}, "agentPrompts": [] },
   "plugins": [],
   "environment": { "platform": "win32", "shell": "bash" },
   "themeSource": "dark",
-  "remoteAccess": { "enabled": true, "host": "127.0.0.1", "port": 3999, "urls": ["http://127.0.0.1:3999/?token=test-token"] }
+  "remoteAccess": {
+    "enabled": true,
+    "host": "127.0.0.1",
+    "port": 3999,
+    "urls": ["http://127.0.0.1:3999/?token=test-token"]
+  }
 }

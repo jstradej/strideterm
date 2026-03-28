@@ -3,26 +3,33 @@
     <div class="dialog__header">
       <div>
         <p class="eyebrow">Workspace</p>
-        <h2>{{ workspace ? 'Edit workspace' : 'Add workspace' }}</h2>
+        <h2>{{ workspace ? "Edit workspace" : "Add workspace" }}</h2>
       </div>
       <button type="button" class="button button--ghost" @click="emit('cancel')">Close</button>
     </div>
     <form class="form" @submit.prevent="handleSubmit">
       <label>
-        <span>{{ isAzure ? 'Review checkout root' : 'Working directory' }}</span>
+        <span>{{ isAzure ? "Review checkout root" : "Working directory" }}</span>
         <div class="input-with-action">
-          <input name="cwd" v-model="draft.cwd" :placeholder="cwdPlaceholder" maxlength="500" @change="onCwdChange" />
-          <button v-if="api?.browseDirectory" type="button" class="button button--ghost input-with-action__btn" @click="browseCwd">Browse</button>
+          <input v-model="draft.cwd" name="cwd" :placeholder="cwdPlaceholder" maxlength="500" @change="onCwdChange" />
+          <button
+            v-if="api?.browseDirectory"
+            type="button"
+            class="button button--ghost input-with-action__btn"
+            @click="browseCwd"
+          >
+            Browse
+          </button>
         </div>
       </label>
       <label>
         <span>Name</span>
-        <input name="name" v-model="draft.name" required maxlength="60" />
+        <input v-model="draft.name" name="name" required maxlength="60" />
       </label>
       <div class="grid">
         <label>
           <span>Badge</span>
-          <input name="icon" v-model="draft.icon" maxlength="4" />
+          <input v-model="draft.icon" name="icon" maxlength="4" />
           <div class="icon-picker">
             <button
               v-for="icon in BADGE_ICONS"
@@ -30,20 +37,28 @@
               type="button"
               class="button button--ghost icon-picker__btn"
               @click="draft.icon = icon"
-            >{{ icon }}</button>
+            >
+              {{ icon }}
+            </button>
           </div>
         </label>
         <label>
           <span>Accent</span>
           <div class="accent-row">
-            <input name="color" type="color" v-model="draft.color" class="color-input" />
+            <input v-model="draft.color" name="color" type="color" class="color-input" />
             <span class="color-preview" :style="{ background: draft.color }"></span>
           </div>
         </label>
       </div>
       <label>
         <span>Notes</span>
-        <textarea name="notes" v-model="draft.notes" rows="3" placeholder="What belongs in this workspace?" maxlength="500" />
+        <textarea
+          v-model="draft.notes"
+          name="notes"
+          rows="3"
+          placeholder="What belongs in this workspace?"
+          maxlength="500"
+        />
       </label>
 
       <!-- Docker workspace: no manual panels -->
@@ -54,7 +69,8 @@
       <!-- Terminal / Azure workspace: panel editor -->
       <template v-else>
         <p v-if="isAzure" class="info-box">
-          This workspace is the Azure DevOps parent. Its checkout root is used for managed review checkouts, and these tabs are copied into each new review subworkspace.
+          This workspace is the Azure DevOps parent. Its checkout root is used for managed review checkouts, and these
+          tabs are copied into each new review subworkspace.
         </p>
         <PanelEditor
           :panels="draft.panels"
@@ -79,16 +95,54 @@ import { safeColor } from "../../app/helpers.js";
 import PanelEditor from "./PanelEditor.vue";
 
 const BADGE_ICONS = [
-  "\u{1F4BB}", "\u{2328}", "\u{1F527}", "\u2699", "\u{1F6E0}", "\u{1F4E6}", "\u{1F528}",
-  "\u{1F5A5}", "\u{1F4C4}", "\u{1F4DD}", "\u{270F}", "\u{2702}",
-  "\u{1F33F}", "\u{1F500}", "\u{1F4CB}",
-  "\u{1F433}", "\u{1F3D7}", "\u{2601}",
-  "\u{1F310}", "\u{1F50C}", "\u{1F4E1}", "\u{1F680}",
-  "\u{1F5C4}", "\u{1F4BE}", "\u{1F4CA}", "\u{1F4C8}",
-  "\u{1F9EA}", "\u2705", "\u{1F50D}", "\u{1F41B}",
-  "\u{1F916}", "\u{1F9E0}", "\u2728",
-  "\u26A1", "\u{1F3AF}", "\u{1F512}", "\u{1F511}", "\u{1F4C1}", "\u{1F4A1}", "\u2B50", "\u{1F3A8}", "\u{1F525}", "\u{1F48E}",
-  "\u{2764}", "\u{1F4AC}", "\u{1F514}", "\u{1F6A9}", "\u{1F5D1}",
+  "\u{1F4BB}",
+  "\u{2328}",
+  "\u{1F527}",
+  "\u2699",
+  "\u{1F6E0}",
+  "\u{1F4E6}",
+  "\u{1F528}",
+  "\u{1F5A5}",
+  "\u{1F4C4}",
+  "\u{1F4DD}",
+  "\u{270F}",
+  "\u{2702}",
+  "\u{1F33F}",
+  "\u{1F500}",
+  "\u{1F4CB}",
+  "\u{1F433}",
+  "\u{1F3D7}",
+  "\u{2601}",
+  "\u{1F310}",
+  "\u{1F50C}",
+  "\u{1F4E1}",
+  "\u{1F680}",
+  "\u{1F5C4}",
+  "\u{1F4BE}",
+  "\u{1F4CA}",
+  "\u{1F4C8}",
+  "\u{1F9EA}",
+  "\u2705",
+  "\u{1F50D}",
+  "\u{1F41B}",
+  "\u{1F916}",
+  "\u{1F9E0}",
+  "\u2728",
+  "\u26A1",
+  "\u{1F3AF}",
+  "\u{1F512}",
+  "\u{1F511}",
+  "\u{1F4C1}",
+  "\u{1F4A1}",
+  "\u2B50",
+  "\u{1F3A8}",
+  "\u{1F525}",
+  "\u{1F48E}",
+  "\u{2764}",
+  "\u{1F4AC}",
+  "\u{1F514}",
+  "\u{1F6A9}",
+  "\u{1F5D1}",
 ];
 
 const props = defineProps({
@@ -116,7 +170,10 @@ async function browseCwd() {
   if (!selected) return;
   draft.cwd = selected;
   if (!draft.name.trim() || draft.name === APP_CONFIG.ui.defaultPanelTitle) {
-    const dirName = selected.replace(/[\\/]+$/, "").split(/[\\/]/).pop();
+    const dirName = selected
+      .replace(/[\\/]+$/, "")
+      .split(/[\\/]/)
+      .pop();
     if (dirName) draft.name = dirName;
   }
 }
@@ -124,7 +181,10 @@ async function browseCwd() {
 function onCwdChange() {
   const value = draft.cwd.trim();
   if (value && !draft.name.trim()) {
-    const dirName = value.replace(/[\\/]+$/, "").split(/[\\/]/).pop();
+    const dirName = value
+      .replace(/[\\/]+$/, "")
+      .split(/[\\/]/)
+      .pop();
     if (dirName) draft.name = dirName;
   }
 }
@@ -147,7 +207,15 @@ function handleSubmit() {
     }));
     if (result.panels.length === 0) {
       const panelId = `panel-${crypto.randomUUID()}`;
-      result.panels = [{ id: panelId, title: APP_CONFIG.ui.defaultPanelTitle, command: "", shell: true, startup: APP_CONFIG.ui.defaultPanelStartup }];
+      result.panels = [
+        {
+          id: panelId,
+          title: APP_CONFIG.ui.defaultPanelTitle,
+          command: "",
+          shell: true,
+          startup: APP_CONFIG.ui.defaultPanelStartup,
+        },
+      ];
     }
     if (!result.panels.some((p) => p.id === result.activePanelId)) {
       result.activePanelId = result.panels[0]?.id || null;

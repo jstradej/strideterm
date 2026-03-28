@@ -31,24 +31,24 @@ gitUiStore.init(api);
 
 // Pre-render noise texture to PNG once — replaces runtime SVG feTurbulence filter
 // which otherwise forces the GPU to re-composite the overlay on every paint.
-(window.requestIdleCallback || ((cb) => setTimeout(cb, 200)))(() => {
-  const size = 256;
-  const canvas = document.createElement("canvas");
-  canvas.width = size;
-  canvas.height = size;
-  const ctx = canvas.getContext("2d");
-  const imageData = ctx.createImageData(size, size);
-  const data = imageData.data;
-  for (let i = 0; i < data.length; i += 4) {
-    const v = (Math.random() * 255) | 0;
-    data[i] = v;
-    data[i + 1] = v;
-    data[i + 2] = v;
-    data[i + 3] = 255;
-  }
-  ctx.putImageData(imageData, 0, 0);
-  document.documentElement.style.setProperty(
-    "--noise-texture",
-    `url(${canvas.toDataURL("image/png")})`,
-  );
-}, { timeout: 2000 });
+(window.requestIdleCallback || ((cb) => setTimeout(cb, 200)))(
+  () => {
+    const size = 256;
+    const canvas = document.createElement("canvas");
+    canvas.width = size;
+    canvas.height = size;
+    const ctx = canvas.getContext("2d");
+    const imageData = ctx.createImageData(size, size);
+    const data = imageData.data;
+    for (let i = 0; i < data.length; i += 4) {
+      const v = (Math.random() * 255) | 0;
+      data[i] = v;
+      data[i + 1] = v;
+      data[i + 2] = v;
+      data[i + 3] = 255;
+    }
+    ctx.putImageData(imageData, 0, 0);
+    document.documentElement.style.setProperty("--noise-texture", `url(${canvas.toDataURL("image/png")})`);
+  },
+  { timeout: 2000 },
+);

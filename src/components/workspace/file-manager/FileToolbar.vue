@@ -10,9 +10,16 @@
       :class="{ 'file-toolbar__btn--active': showHidden }"
       title="Toggle hidden files"
       @click="$emit('toggle-hidden')"
-    >.*</button>
-    <button type="button" class="file-toolbar__btn" :title="viewMode === 'list' ? 'Grid view' : 'List view'" @click="$emit('toggle-view')">
-      {{ viewMode === 'list' ? '\u25a6' : '\u2630' }}
+    >
+      .*
+    </button>
+    <button
+      type="button"
+      class="file-toolbar__btn"
+      :title="viewMode === 'list' ? 'Grid view' : 'List view'"
+      @click="$emit('toggle-view')"
+    >
+      {{ viewMode === "list" ? "\u25a6" : "\u2630" }}
     </button>
   </div>
 </template>

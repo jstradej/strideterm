@@ -85,9 +85,7 @@ export function useNotificationCapture() {
 
           // Skip if there's already an unread notification for this tab
           const alertViewId = alert.sessionId || "";
-          const hasUnread = alertViewId && notifStore.items.some(
-            (n) => !n.read && n.viewId === alertViewId,
-          );
+          const hasUnread = alertViewId && notifStore.items.some((n) => !n.read && n.viewId === alertViewId);
           if (hasUnread) continue;
 
           let body;

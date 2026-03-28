@@ -45,9 +45,7 @@ describe("workspace selectors", () => {
               title: "Fix login redirect",
             },
           },
-          panels: [
-            { id: "shell", title: "Shell", command: "" },
-          ],
+          panels: [{ id: "shell", title: "Shell", command: "" }],
         },
         sessions: [
           {
@@ -77,19 +75,23 @@ describe("workspace selectors", () => {
   });
 
   test("ignores virtual review tabs when resolving workspace panels", () => {
-    const result = getWorkspacePanelByViewId("review:review-1", {
-      workspace: {
-        id: "review-1",
-        panels: [{ id: "shell", title: "Shell" }],
+    const result = getWorkspacePanelByViewId(
+      "review:review-1",
+      {
+        workspace: {
+          id: "review-1",
+          panels: [{ id: "shell", title: "Shell" }],
+        },
+        sessions: [],
       },
-      sessions: [],
-    }, {
-      isGitViewId: () => false,
-      isDockerViewId: () => false,
-      isAzureViewId: (value) => String(value).startsWith("azure:"),
-      isGitHubViewId: (value) => String(value).startsWith("github:"),
-      isReviewViewId: (value) => String(value).startsWith("review:"),
-    });
+      {
+        isGitViewId: () => false,
+        isDockerViewId: () => false,
+        isAzureViewId: (value) => String(value).startsWith("azure:"),
+        isGitHubViewId: (value) => String(value).startsWith("github:"),
+        isReviewViewId: (value) => String(value).startsWith("review:"),
+      },
+    );
 
     expect(result).toBeNull();
   });

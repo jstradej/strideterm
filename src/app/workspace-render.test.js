@@ -38,9 +38,7 @@ describe("buildWorkspaceCards", () => {
 
   test("builds docker workspace card with Docker summary", () => {
     const [card] = buildWorkspaceCards({
-      workspaces: [
-        { id: "d1", name: "Docker", kind: "docker", color: "#0db7ed", icon: "D", panels: [] },
-      ],
+      workspaces: [{ id: "d1", name: "Docker", kind: "docker", color: "#0db7ed", icon: "D", panels: [] }],
       activeWorkspaceId: "d1",
       getGitSnapshot: () => null,
       getWorkspaceAttention: () => null,

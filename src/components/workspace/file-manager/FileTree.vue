@@ -1,11 +1,6 @@
 <template>
   <div class="file-tree">
-    <FileTreeNode
-      v-for="child in rootChildren"
-      :key="child.entry.relativePath"
-      :node="child"
-      :depth="0"
-    />
+    <FileTreeNode v-for="child in rootChildren" :key="child.entry.relativePath" :node="child" :depth="0" />
     <div v-if="!rootChildren.length" class="file-tree__empty">No folders</div>
   </div>
 </template>

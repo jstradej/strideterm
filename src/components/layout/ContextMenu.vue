@@ -1,20 +1,18 @@
 <template>
   <Teleport to="body">
-    <div
-      v-if="store.contextMenu"
-      ref="menuRef"
-      class="context-menu"
-      :style="menuStyle"
-      @click.stop
-    >
+    <div v-if="store.contextMenu" ref="menuRef" class="context-menu" :style="menuStyle" @click.stop>
       <template v-if="isTerminal">
         <button type="button" class="context-menu__item" @click="onRestart">&#x21BB; Restart</button>
-        <button v-if="hasPersistentPanel" type="button" class="context-menu__item" @click="onRename">&#x270E; Rename tab</button>
+        <button v-if="hasPersistentPanel" type="button" class="context-menu__item" @click="onRename">
+          &#x270E; Rename tab
+        </button>
       </template>
       <template v-if="inGroup">
         <div v-if="isTerminal" class="context-menu__divider"></div>
         <button type="button" class="context-menu__item" @click="onRemoveFromGroup">&#x2715; Remove from split</button>
-        <button type="button" class="context-menu__item context-menu__item--danger" @click="onDisbandGroup">&#x2573; Disband split</button>
+        <button type="button" class="context-menu__item context-menu__item--danger" @click="onDisbandGroup">
+          &#x2573; Disband split
+        </button>
       </template>
       <template v-else-if="canAddToSplit">
         <div v-if="isTerminal" class="context-menu__divider"></div>
@@ -33,24 +31,27 @@ import { isGitViewId, isDockerViewId } from "../../app/helpers.js";
 const store = useAppStore();
 const termStore = useTerminalStore();
 const menuRef = ref(null);
-const LAYOUTS = { solo: { slots: 1 }, cols: { slots: 2 }, rows: { slots: 2 }, "top-split": { slots: 3 }, "left-split": { slots: 3 }, grid: { slots: 4 } };
+const LAYOUTS = {
+  solo: { slots: 1 },
+  cols: { slots: 2 },
+  rows: { slots: 2 },
+  "top-split": { slots: 3 },
+  "left-split": { slots: 3 },
+  grid: { slots: 4 },
+};
 
 const viewId = computed(() => store.contextMenu?.viewId || "");
 const rawX = computed(() => store.contextMenu?.x || 0);
 const rawY = computed(() => store.contextMenu?.y || 0);
 
-const isTerminal = computed(() =>
-  viewId.value && !isGitViewId(viewId.value) && !isDockerViewId(viewId.value),
-);
+const isTerminal = computed(() => viewId.value && !isGitViewId(viewId.value) && !isDockerViewId(viewId.value));
 
 const hasPersistentPanel = computed(() => {
   const target = store.getPanelByViewId(viewId.value);
   return Boolean(target);
 });
 
-const inGroup = computed(() =>
-  Boolean(store.splitGroup?.viewIds.includes(viewId.value)),
-);
+const inGroup = computed(() => Boolean(store.splitGroup?.viewIds.includes(viewId.value)));
 
 const canAddToSplit = computed(() => {
   if (inGroup.value || !store.splitGroup) return false;
@@ -71,16 +72,19 @@ const menuStyle = computed(() => ({
   zIndex: 9999,
 }));
 
-watch(() => store.contextMenu, async (menu) => {
-  if (!menu) return;
-  adjustedX.value = menu.x;
-  adjustedY.value = menu.y;
-  await nextTick();
-  if (!menuRef.value) return;
-  const rect = menuRef.value.getBoundingClientRect();
-  if (rect.right > window.innerWidth) adjustedX.value = window.innerWidth - rect.width - 4;
-  if (rect.bottom > window.innerHeight) adjustedY.value = window.innerHeight - rect.height - 4;
-});
+watch(
+  () => store.contextMenu,
+  async (menu) => {
+    if (!menu) return;
+    adjustedX.value = menu.x;
+    adjustedY.value = menu.y;
+    await nextTick();
+    if (!menuRef.value) return;
+    const rect = menuRef.value.getBoundingClientRect();
+    if (rect.right > window.innerWidth) adjustedX.value = window.innerWidth - rect.width - 4;
+    if (rect.bottom > window.innerHeight) adjustedY.value = window.innerHeight - rect.height - 4;
+  },
+);
 
 function onRestart() {
   termStore.restartSession(viewId.value);

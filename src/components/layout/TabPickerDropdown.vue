@@ -1,19 +1,15 @@
 <template>
   <Teleport to="body">
-    <div
-      v-if="visible"
-      ref="dropdownRef"
-      class="tab-picker-dropdown"
-      :style="dropdownStyle"
-      @click.stop
-    >
+    <div v-if="visible" ref="dropdownRef" class="tab-picker-dropdown" :style="dropdownStyle" @click.stop>
       <button
         v-for="tmpl in templates"
         :key="tmpl.title"
         type="button"
         class="tab-picker-dropdown__item"
         @click="addTemplateTab(tmpl)"
-      >{{ tmpl.icon || '' }} {{ tmpl.title || 'Shell' }}</button>
+      >
+        {{ tmpl.icon || "" }} {{ tmpl.title || "Shell" }}
+      </button>
       <button type="button" class="tab-picker-dropdown__item" @click="addCustomTab">+ Custom</button>
     </div>
   </Teleport>

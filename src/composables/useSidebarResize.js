@@ -49,7 +49,8 @@ export function useSidebarResize(frameRef, sidebarRef) {
     const frame = frameRef.value;
     const sidebar = sidebarRef.value;
     frame?.classList.remove("frame--resizing");
-    frame?.querySelectorAll('[data-role="sidebar-resize-handle"]')
+    frame
+      ?.querySelectorAll('[data-role="sidebar-resize-handle"]')
       .forEach((h) => h.classList.remove("sidebar-resize-handle--active"));
     if (!store.sidebarCollapsed && sidebar) {
       writeSidebarWidth(Math.round(sidebar.getBoundingClientRect().width));

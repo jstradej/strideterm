@@ -5,20 +5,72 @@ const TEXT_PREVIEW_MAX = 256 * 1024; // 256 KB
 const BINARY_SNIFF_SIZE = 8192;
 const MAX_ENTRIES = 1000;
 
-const IMAGE_EXTENSIONS = new Set([
-  ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".ico", ".svg", ".webp", ".avif",
-]);
+const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".gif", ".bmp", ".ico", ".svg", ".webp", ".avif"]);
 
 const TEXT_EXTENSIONS = new Set([
-  ".txt", ".md", ".json", ".js", ".mjs", ".cjs", ".ts", ".mts", ".cts",
-  ".jsx", ".tsx", ".vue", ".svelte", ".html", ".htm", ".css", ".scss",
-  ".less", ".xml", ".yaml", ".yml", ".toml", ".ini", ".cfg", ".conf",
-  ".env", ".sh", ".bash", ".zsh", ".fish", ".bat", ".cmd", ".ps1",
-  ".py", ".rb", ".go", ".rs", ".java", ".kt", ".c", ".cpp", ".h", ".hpp",
-  ".cs", ".fs", ".swift", ".r", ".sql", ".graphql", ".gql", ".proto",
-  ".dockerfile", ".gitignore", ".gitattributes", ".editorconfig",
-  ".prettierrc", ".eslintrc", ".babelrc", ".npmrc",
-  ".log", ".csv", ".tsv", ".lock",
+  ".txt",
+  ".md",
+  ".json",
+  ".js",
+  ".mjs",
+  ".cjs",
+  ".ts",
+  ".mts",
+  ".cts",
+  ".jsx",
+  ".tsx",
+  ".vue",
+  ".svelte",
+  ".html",
+  ".htm",
+  ".css",
+  ".scss",
+  ".less",
+  ".xml",
+  ".yaml",
+  ".yml",
+  ".toml",
+  ".ini",
+  ".cfg",
+  ".conf",
+  ".env",
+  ".sh",
+  ".bash",
+  ".zsh",
+  ".fish",
+  ".bat",
+  ".cmd",
+  ".ps1",
+  ".py",
+  ".rb",
+  ".go",
+  ".rs",
+  ".java",
+  ".kt",
+  ".c",
+  ".cpp",
+  ".h",
+  ".hpp",
+  ".cs",
+  ".fs",
+  ".swift",
+  ".r",
+  ".sql",
+  ".graphql",
+  ".gql",
+  ".proto",
+  ".dockerfile",
+  ".gitignore",
+  ".gitattributes",
+  ".editorconfig",
+  ".prettierrc",
+  ".eslintrc",
+  ".babelrc",
+  ".npmrc",
+  ".log",
+  ".csv",
+  ".tsv",
+  ".lock",
 ]);
 
 /**
@@ -83,16 +135,19 @@ function looksLikeBinary(buffer) {
 
 function guessMimeType(ext) {
   const map = {
-    ".html": "text/html", ".htm": "text/html",
+    ".html": "text/html",
+    ".htm": "text/html",
     ".css": "text/css",
-    ".js": "application/javascript", ".mjs": "application/javascript",
+    ".js": "application/javascript",
+    ".mjs": "application/javascript",
     ".json": "application/json",
     ".xml": "text/xml",
     ".md": "text/markdown",
     ".txt": "text/plain",
     ".svg": "image/svg+xml",
     ".png": "image/png",
-    ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
     ".gif": "image/gif",
     ".webp": "image/webp",
     ".avif": "image/avif",
@@ -148,7 +203,15 @@ export async function readFilePreview(rootPath, relativePath) {
   const stat = await fs.stat(absFile);
 
   if (stat.isDirectory()) {
-    return { kind: "directory", mimeType: null, content: null, truncated: false, size: 0, encoding: null, imageSrc: null };
+    return {
+      kind: "directory",
+      mimeType: null,
+      content: null,
+      truncated: false,
+      size: 0,
+      encoding: null,
+      imageSrc: null,
+    };
   }
 
   if (stat.size === 0) {

@@ -104,7 +104,9 @@ export function normalizeWorkspace(workspace, index = 0) {
   const isAzureWorkspace = workspace.kind === "azure";
   const isGitHubWorkspace = workspace.kind === "github";
   const rawPanels = isDockerWorkspace
-    ? (workspace.panels || []).filter((panel) => !(panel.id === "lazydocker" && panel.command === "lazydocker" && !panel.launch))
+    ? (workspace.panels || []).filter(
+        (panel) => !(panel.id === "lazydocker" && panel.command === "lazydocker" && !panel.launch),
+      )
     : (workspace.panels || []).filter((panel) => !(panel.id === "git" && !panel.command && !panel.launch));
   const panels = rawPanels.map((panel, panelIndex) => normalizePanel(panel, panelIndex));
   const fallbackPanelId = panels[0]?.id || null;
@@ -117,7 +119,13 @@ export function normalizeWorkspace(workspace, index = 0) {
     name: repairVisibleText(workspace.name || `Workspace ${index + 1}`),
     icon: repairVisibleText(workspace.icon || APP_CONFIG.ui.defaultProjectIcon),
     color: workspace.color || APP_CONFIG.ui.defaultProjectColor,
-    kind: isDockerWorkspace ? "docker" : (isAzureWorkspace ? "azure" : (isGitHubWorkspace ? "github" : (workspace.kind || APP_CONFIG.ui.defaultProjectKind))),
+    kind: isDockerWorkspace
+      ? "docker"
+      : isAzureWorkspace
+        ? "azure"
+        : isGitHubWorkspace
+          ? "github"
+          : workspace.kind || APP_CONFIG.ui.defaultProjectKind,
     source: workspace.source === "plugin" ? "plugin" : "manual",
     pluginId: workspace.pluginId || "",
     cwd: workspace.cwd || (isAzureWorkspace || isGitHubWorkspace ? "" : defaultCwd()),
@@ -152,11 +160,14 @@ export function normalizeWorkspace(workspace, index = 0) {
                 number: workspace.review.pullRequest.number || workspace.review.pullRequest.id || 0,
                 title: workspace.review.pullRequest.title || "",
                 status: workspace.review.pullRequest.status || workspace.review.pullRequest.state || "",
-                mergeStatus: workspace.review.pullRequest.mergeStatus || workspace.review.pullRequest.mergeableState || "",
+                mergeStatus:
+                  workspace.review.pullRequest.mergeStatus || workspace.review.pullRequest.mergeableState || "",
                 url: workspace.review.pullRequest.url || "",
                 webUrl: workspace.review.pullRequest.webUrl || "",
-                sourceRefName: workspace.review.pullRequest.sourceRefName || workspace.review.pullRequest.sourceBranch || "",
-                targetRefName: workspace.review.pullRequest.targetRefName || workspace.review.pullRequest.targetBranch || "",
+                sourceRefName:
+                  workspace.review.pullRequest.sourceRefName || workspace.review.pullRequest.sourceBranch || "",
+                targetRefName:
+                  workspace.review.pullRequest.targetRefName || workspace.review.pullRequest.targetBranch || "",
               }
             : null,
           role: workspace.review.role || "",
@@ -226,9 +237,7 @@ export function createDefaultState() {
       { id: "browser", title: "Browser", command: "https://", icon: "\u{1F310}" },
       { id: "files", title: "Files", command: "__files__", icon: "\u{1F4C2}" },
     ],
-    profiles: [
-      { id: "default", name: "Default", color: "#ffa424", workspaceIds: [] },
-    ],
+    profiles: [{ id: "default", name: "Default", color: "#ffa424", workspaceIds: [] }],
     workspaces: [],
   };
 
@@ -251,7 +260,9 @@ function normalizeProfiles(rawProfiles, defaults) {
         color: profile.color || "#ffa424",
         workspaceIds: Array.isArray(profile.workspaceIds)
           ? profile.workspaceIds
-          : (Array.isArray(profile.projectIds) ? profile.projectIds : []),
+          : Array.isArray(profile.projectIds)
+            ? profile.projectIds
+            : [],
       }))
     : defaults.profiles;
 }
@@ -278,37 +289,44 @@ function groupChildWorkspaces(workspaces) {
   for (const workspace of workspaces) {
     if ((workspace.notes || "").startsWith("Worktree of ")) {
       const parentName = workspace.name.split(" / ")[0];
-      const parent = workspaces.find((candidate) => candidate.name === parentName && candidate.id !== workspace.id) || null;
+      const parent =
+        workspaces.find((candidate) => candidate.name === parentName && candidate.id !== workspace.id) || null;
       addChild(parent?.id || "", workspace);
       continue;
     }
 
     if (workspace.review?.provider === "azure-devops" && workspace.review?.checkout?.mode === "managed-worktree") {
-      const explicitParent = workspace.review.parentWorkspaceId && byId.has(workspace.review.parentWorkspaceId)
-        ? workspace.review.parentWorkspaceId
-        : "";
-      const fallbackParent = explicitParent
-        || workspaces.find((candidate) => (
-          candidate.kind === "azure"
-          && candidate.id !== workspace.id
-          && (candidate.profileId || "default") === (workspace.profileId || "default")
-        ))?.id
-        || "";
+      const explicitParent =
+        workspace.review.parentWorkspaceId && byId.has(workspace.review.parentWorkspaceId)
+          ? workspace.review.parentWorkspaceId
+          : "";
+      const fallbackParent =
+        explicitParent ||
+        workspaces.find(
+          (candidate) =>
+            candidate.kind === "azure" &&
+            candidate.id !== workspace.id &&
+            (candidate.profileId || "default") === (workspace.profileId || "default"),
+        )?.id ||
+        "";
       addChild(fallbackParent, workspace);
       continue;
     }
 
     if (workspace.review?.provider === "github" && workspace.review?.checkout?.mode === "managed-worktree") {
-      const explicitParent = workspace.review.parentWorkspaceId && byId.has(workspace.review.parentWorkspaceId)
-        ? workspace.review.parentWorkspaceId
-        : "";
-      const fallbackParent = explicitParent
-        || workspaces.find((candidate) => (
-          candidate.kind === "github"
-          && candidate.id !== workspace.id
-          && (candidate.profileId || "default") === (workspace.profileId || "default")
-        ))?.id
-        || "";
+      const explicitParent =
+        workspace.review.parentWorkspaceId && byId.has(workspace.review.parentWorkspaceId)
+          ? workspace.review.parentWorkspaceId
+          : "";
+      const fallbackParent =
+        explicitParent ||
+        workspaces.find(
+          (candidate) =>
+            candidate.kind === "github" &&
+            candidate.id !== workspace.id &&
+            (candidate.profileId || "default") === (workspace.profileId || "default"),
+        )?.id ||
+        "";
       addChild(fallbackParent, workspace);
       continue;
     }
@@ -316,12 +334,12 @@ function groupChildWorkspaces(workspaces) {
     if (workspace.quickfix?.parentWorkspaceId) {
       const parentId = byId.has(workspace.quickfix.parentWorkspaceId)
         ? workspace.quickfix.parentWorkspaceId
-        : workspaces.find((candidate) => (
-          candidate.kind === "azure"
-          && candidate.id !== workspace.id
-          && (candidate.profileId || "default") === (workspace.profileId || "default")
-        ))?.id
-        || "";
+        : workspaces.find(
+            (candidate) =>
+              candidate.kind === "azure" &&
+              candidate.id !== workspace.id &&
+              (candidate.profileId || "default") === (workspace.profileId || "default"),
+          )?.id || "";
       addChild(parentId, workspace);
       continue;
     }
@@ -357,14 +375,15 @@ export function normalizeState(rawState = {}) {
   const defaults = createDefaultState();
   const rawWorkspaces = rawState.workspaces || rawState.projects || defaults.workspaces;
   const rawTemplates = rawState.tabTemplates;
-  const tabTemplates = Array.isArray(rawTemplates) && rawTemplates.length
-    ? rawTemplates.map((tmpl) => ({
-        id: tmpl.id || `tmpl-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-        title: repairVisibleText(tmpl.title || "Untitled"),
-        command: tmpl.command ?? "",
-        icon: repairVisibleText(tmpl.icon || "\u{1F4BB}"),
-      }))
-    : defaults.tabTemplates;
+  const tabTemplates =
+    Array.isArray(rawTemplates) && rawTemplates.length
+      ? rawTemplates.map((tmpl) => ({
+          id: tmpl.id || `tmpl-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          title: repairVisibleText(tmpl.title || "Untitled"),
+          command: tmpl.command ?? "",
+          icon: repairVisibleText(tmpl.icon || "\u{1F4BB}"),
+        }))
+      : defaults.tabTemplates;
   // Ensure the "files" template exists for existing users.
   if (!tabTemplates.some((t) => t.id === "files" || t.command === "__files__")) {
     tabTemplates.push({ id: "files", title: "Files", command: "__files__", icon: "\u{1F4C2}" });
@@ -380,9 +399,10 @@ export function normalizeState(rawState = {}) {
     remoteAccess: {
       ...defaults.settings.remoteAccess,
       ...((rawState.settings || {}).remoteAccess || {}),
-      host: ((rawState.settings || {}).remoteAccess || {}).host === "127.0.0.1"
-        ? "0.0.0.0"
-        : (((rawState.settings || {}).remoteAccess || {}).host || defaults.settings.remoteAccess.host),
+      host:
+        ((rawState.settings || {}).remoteAccess || {}).host === "127.0.0.1"
+          ? "0.0.0.0"
+          : ((rawState.settings || {}).remoteAccess || {}).host || defaults.settings.remoteAccess.host,
       token: ((rawState.settings || {}).remoteAccess || {}).token || defaults.settings.remoteAccess.token,
     },
     integrations: {
@@ -402,7 +422,8 @@ export function normalizeState(rawState = {}) {
               profileId: connection.profileId || "",
               projectFilters: Array.isArray(connection.projectFilters) ? [...connection.projectFilters] : [],
               repositoryFilters: Array.isArray(connection.repositoryFilters) ? [...connection.repositoryFilters] : [],
-              pollSeconds: Number(connection.pollSeconds) || defaults.settings.integrations.azureDevops.defaultPollSeconds,
+              pollSeconds:
+                Number(connection.pollSeconds) || defaults.settings.integrations.azureDevops.defaultPollSeconds,
               reviewRoot: connection.reviewRoot || defaults.settings.integrations.azureDevops.reviewRoot,
             }))
           : [],
@@ -434,10 +455,18 @@ export function normalizeState(rawState = {}) {
       .map((workspace, index) => normalizeWorkspace(workspace, index))
       .map((workspace) => {
         if (workspace.kind === "azure" && !String(workspace.cwd || "").trim()) {
-          return { ...workspace, cwd: normalizedSettings.integrations.azureDevops.reviewRoot || defaults.settings.integrations.azureDevops.reviewRoot };
+          return {
+            ...workspace,
+            cwd:
+              normalizedSettings.integrations.azureDevops.reviewRoot ||
+              defaults.settings.integrations.azureDevops.reviewRoot,
+          };
         }
         if (workspace.kind === "github" && !String(workspace.cwd || "").trim()) {
-          return { ...workspace, cwd: normalizedSettings.integrations.github.reviewRoot || defaults.settings.integrations.github.reviewRoot };
+          return {
+            ...workspace,
+            cwd: normalizedSettings.integrations.github.reviewRoot || defaults.settings.integrations.github.reviewRoot,
+          };
         }
         return workspace;
       }),

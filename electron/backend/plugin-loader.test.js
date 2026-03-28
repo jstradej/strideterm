@@ -21,13 +21,16 @@ describe("plugin-loader", () => {
     const pluginsDir = await createTempDir("strideterm-plugins-");
     const pluginDir = path.join(pluginsDir, "test-plugin");
     await fs.mkdir(pluginDir);
-    await fs.writeFile(path.join(pluginDir, "plugin.json"), JSON.stringify({
-      id: "test-plugin",
-      name: "Test Plugin",
-      version: "1.0.0",
-      capabilities: ["terminal:create-panel"],
-      workspaceDefaults: { name: "Test", icon: "TP", kind: "terminal", panels: [] },
-    }));
+    await fs.writeFile(
+      path.join(pluginDir, "plugin.json"),
+      JSON.stringify({
+        id: "test-plugin",
+        name: "Test Plugin",
+        version: "1.0.0",
+        capabilities: ["terminal:create-panel"],
+        workspaceDefaults: { name: "Test", icon: "TP", kind: "terminal", panels: [] },
+      }),
+    );
 
     const manager = await createPluginManager({ pluginsDir, runtime: null });
     const plugins = manager.getPlugins();
@@ -42,12 +45,15 @@ describe("plugin-loader", () => {
     const pluginsDir = await createTempDir("strideterm-plugins-");
     const pluginDir = path.join(pluginsDir, "bad-plugin");
     await fs.mkdir(pluginDir);
-    await fs.writeFile(path.join(pluginDir, "plugin.json"), JSON.stringify({
-      id: "bad-plugin",
-      name: "Bad Plugin",
-      version: "1.0.0",
-      capabilities: ["system:execute-arbitrary-code"],
-    }));
+    await fs.writeFile(
+      path.join(pluginDir, "plugin.json"),
+      JSON.stringify({
+        id: "bad-plugin",
+        name: "Bad Plugin",
+        version: "1.0.0",
+        capabilities: ["system:execute-arbitrary-code"],
+      }),
+    );
 
     const manager = await createPluginManager({ pluginsDir, runtime: null });
     const plugins = manager.getPlugins();
@@ -60,12 +66,15 @@ describe("plugin-loader", () => {
     const pluginsDir = await createTempDir("strideterm-plugins-");
     const pluginDir = path.join(pluginsDir, "tmpl-plugin");
     await fs.mkdir(pluginDir);
-    await fs.writeFile(path.join(pluginDir, "plugin.json"), JSON.stringify({
-      id: "tmpl-plugin",
-      name: "Template Plugin",
-      version: "1.0.0",
-      workspaceDefaults: { name: "My Workspace", icon: "MP", color: "#ff0000", kind: "terminal", panels: [] },
-    }));
+    await fs.writeFile(
+      path.join(pluginDir, "plugin.json"),
+      JSON.stringify({
+        id: "tmpl-plugin",
+        name: "Template Plugin",
+        version: "1.0.0",
+        workspaceDefaults: { name: "My Workspace", icon: "MP", color: "#ff0000", kind: "terminal", panels: [] },
+      }),
+    );
 
     const manager = await createPluginManager({ pluginsDir, runtime: null });
     const template = manager.getWorkspaceTemplate("tmpl-plugin");
@@ -80,25 +89,30 @@ describe("plugin-loader", () => {
     const pluginDir = path.join(pluginsDir, "script-plugin");
     await fs.mkdir(pluginDir);
     await fs.writeFile(path.join(pluginDir, "monitor.sh"), "#!/bin/bash\necho ok");
-    await fs.writeFile(path.join(pluginDir, "plugin.json"), JSON.stringify({
-      id: "script-plugin",
-      name: "Script Plugin",
-      version: "1.0.0",
-      workspaceDefaults: {
-        name: "Script WS",
-        icon: "SC",
-        kind: "terminal",
-        panels: [{
-          id: "p1",
-          title: "Monitor",
-          platforms: {
-            linux: { script: "monitor.sh" },
-            win32: { script: "monitor.sh" },
-            darwin: { script: "monitor.sh" },
-          },
-        }],
-      },
-    }));
+    await fs.writeFile(
+      path.join(pluginDir, "plugin.json"),
+      JSON.stringify({
+        id: "script-plugin",
+        name: "Script Plugin",
+        version: "1.0.0",
+        workspaceDefaults: {
+          name: "Script WS",
+          icon: "SC",
+          kind: "terminal",
+          panels: [
+            {
+              id: "p1",
+              title: "Monitor",
+              platforms: {
+                linux: { script: "monitor.sh" },
+                win32: { script: "monitor.sh" },
+                darwin: { script: "monitor.sh" },
+              },
+            },
+          ],
+        },
+      }),
+    );
 
     const manager = await createPluginManager({ pluginsDir, runtime: null });
     const plugins = manager.getPlugins();
@@ -115,11 +129,14 @@ describe("plugin-loader", () => {
     const pluginsDir = await createTempDir("strideterm-user-");
     const pluginDir = path.join(builtinDir, "builtin-one");
     await fs.mkdir(pluginDir);
-    await fs.writeFile(path.join(pluginDir, "plugin.json"), JSON.stringify({
-      id: "builtin-one",
-      name: "Builtin One",
-      version: "1.0.0",
-    }));
+    await fs.writeFile(
+      path.join(pluginDir, "plugin.json"),
+      JSON.stringify({
+        id: "builtin-one",
+        name: "Builtin One",
+        version: "1.0.0",
+      }),
+    );
 
     const manager = await createPluginManager({ pluginsDir, builtinPluginsDir: builtinDir, runtime: null });
     const plugins = manager.getPlugins();

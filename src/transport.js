@@ -55,7 +55,8 @@ function createRemoteTransport() {
     if (statusCode === 401) {
       message = "Remote token is missing or invalid.";
     } else if (statusCode === 530 || /origin has been unregistered from argo tunnel/i.test(normalizedMessage)) {
-      message = "Cloudflare tunnel is no longer connected to the desktop app. Recreate the tunnel from the desktop app.";
+      message =
+        "Cloudflare tunnel is no longer connected to the desktop app. Recreate the tunnel from the desktop app.";
     } else if ([502, 503, 504].includes(statusCode)) {
       message = "Remote workspace is temporarily unavailable. The desktop app or its local server may be restarting.";
     } else if (kind === "ws-closed" || kind === "ws-error") {
@@ -204,7 +205,8 @@ function createRemoteTransport() {
     voteAzurePullRequest: (payload) => fetchJson("/api/azure/pull-request/vote", payload),
     fetchAzureReviewWorkspace: (workspaceId) => fetchJson("/api/azure/workspace/fetch", { workspaceId }),
     rebaseAzureReviewWorkspace: (workspaceId) => fetchJson("/api/azure/workspace/rebase", { workspaceId }),
-    pushAzureReviewWorkspace: (workspaceId, options) => fetchJson("/api/azure/workspace/push", { workspaceId, ...options }),
+    pushAzureReviewWorkspace: (workspaceId, options) =>
+      fetchJson("/api/azure/workspace/push", { workspaceId, ...options }),
     azureCreatePullRequest: (payload) => fetchJson("/api/azure/create-pull-request", payload),
     azureListRemoteBranches: (payload) => fetchJson("/api/azure/list-remote-branches", payload),
     azureQuickFixListProjects: (payload) => fetchJson("/api/azure/quickfix/list-projects", payload),
@@ -223,7 +225,8 @@ function createRemoteTransport() {
     submitGitHubPullRequestReview: (payload) => fetchJson("/api/github/pull-request/review", payload),
     fetchGitHubReviewWorkspace: (workspaceId) => fetchJson("/api/github/workspace/fetch", { workspaceId }),
     rebaseGitHubReviewWorkspace: (workspaceId) => fetchJson("/api/github/workspace/rebase", { workspaceId }),
-    pushGitHubReviewWorkspace: (workspaceId, options) => fetchJson("/api/github/workspace/push", { workspaceId, ...options }),
+    pushGitHubReviewWorkspace: (workspaceId, options) =>
+      fetchJson("/api/github/workspace/push", { workspaceId, ...options }),
     githubListRemoteBranches: (payload) => fetchJson("/api/github/list-remote-branches", payload),
     githubCreatePullRequest: (payload) => fetchJson("/api/github/create-pull-request", payload),
     githubQuickFixListRepos: (payload) => fetchJson("/api/github/quickfix/list-repos", payload),

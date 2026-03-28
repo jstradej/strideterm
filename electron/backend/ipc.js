@@ -74,71 +74,191 @@ export function registerIpc(runtime, emitToRenderer, { includeStateGet = true } 
   });
   ipcMain.handle("workspace:activate", async (_event, workspaceId) => runtime.activateWorkspace(workspaceId));
   ipcMain.handle("project:activate", async (_event, projectId) => runtime.activateProject(projectId));
-  ipcMain.handle("workspace:save", async (_event, workspace) => runtime.saveWorkspace(validateIpc(workspaceSchema, workspace, "workspace:save")));
-  ipcMain.handle("project:save", async (_event, project) => runtime.saveProject(validateIpc(projectSchema, project, "project:save")));
-  ipcMain.handle("workspace:delete", async (_event, workspaceId, options) => runtime.deleteWorkspace(workspaceId, options || {}));
+  ipcMain.handle("workspace:save", async (_event, workspace) =>
+    runtime.saveWorkspace(validateIpc(workspaceSchema, workspace, "workspace:save")),
+  );
+  ipcMain.handle("project:save", async (_event, project) =>
+    runtime.saveProject(validateIpc(projectSchema, project, "project:save")),
+  );
+  ipcMain.handle("workspace:delete", async (_event, workspaceId, options) =>
+    runtime.deleteWorkspace(workspaceId, options || {}),
+  );
   ipcMain.handle("project:delete", async (_event, projectId) => runtime.deleteProject(projectId));
-  ipcMain.handle("workspace:reorder", async (_event, workspaceIds) => runtime.reorderWorkspaces(validateIpc(workspaceReorderSchema, workspaceIds, "workspace:reorder")));
-  ipcMain.handle("project:reorder", async (_event, projectIds) => runtime.reorderProjects(validateIpc(workspaceReorderSchema, projectIds, "project:reorder")));
+  ipcMain.handle("workspace:reorder", async (_event, workspaceIds) =>
+    runtime.reorderWorkspaces(validateIpc(workspaceReorderSchema, workspaceIds, "workspace:reorder")),
+  );
+  ipcMain.handle("project:reorder", async (_event, projectIds) =>
+    runtime.reorderProjects(validateIpc(workspaceReorderSchema, projectIds, "project:reorder")),
+  );
   ipcMain.handle("settings:update", async (_event, settings) => {
     const validated = validateIpc(settingsSchema, settings, "settings:update");
     const { payload, remoteAccessChanged } = await runtime.updateSettings(validated);
     return { payload, remoteAccessChanged };
   });
-  ipcMain.handle("azure:verify-connection", async (_event, connection) => runtime.verifyAzureConnection(validateIpc(azureConnectionSchema, connection, "azure:verify-connection")));
-  ipcMain.handle("azure:save-connection", async (_event, connection) => runtime.saveAzureConnection(validateIpc(azureConnectionSchema, connection, "azure:save-connection")));
-  ipcMain.handle("azure:delete-connection", async (_event, connectionId) => runtime.deleteAzureConnection(connectionId));
+  ipcMain.handle("azure:verify-connection", async (_event, connection) =>
+    runtime.verifyAzureConnection(validateIpc(azureConnectionSchema, connection, "azure:verify-connection")),
+  );
+  ipcMain.handle("azure:save-connection", async (_event, connection) =>
+    runtime.saveAzureConnection(validateIpc(azureConnectionSchema, connection, "azure:save-connection")),
+  );
+  ipcMain.handle("azure:delete-connection", async (_event, connectionId) =>
+    runtime.deleteAzureConnection(connectionId),
+  );
   ipcMain.handle("azure:refresh", async () => runtime.refreshAzureState());
-  ipcMain.handle("azure:audit-log:query", async (_event, payload) => runtime.queryAzureAuditLog(validateIpc(azureAuditLogQuerySchema, payload, "azure:audit-log:query")));
-  ipcMain.handle("azure:audit-log:stats", async (_event, payload) => runtime.getAzureAuditStats(validateIpc(azureAuditLogStatsSchema, payload, "azure:audit-log:stats")));
+  ipcMain.handle("azure:audit-log:query", async (_event, payload) =>
+    runtime.queryAzureAuditLog(validateIpc(azureAuditLogQuerySchema, payload, "azure:audit-log:query")),
+  );
+  ipcMain.handle("azure:audit-log:stats", async (_event, payload) =>
+    runtime.getAzureAuditStats(validateIpc(azureAuditLogStatsSchema, payload, "azure:audit-log:stats")),
+  );
   ipcMain.handle("azure:pull-request:seen", async (_event, prKey) => runtime.markAzurePullRequestSeen(prKey));
-  ipcMain.handle("azure:pull-request:open", async (_event, payload) => runtime.openAzurePullRequest(validateIpc(openPrSchema, payload, "azure:pull-request:open")));
-  ipcMain.handle("azure:pull-request:comment", async (_event, payload) => runtime.commentAzurePullRequest(validateIpc(azureCommentSchema, payload, "azure:pull-request:comment")));
-  ipcMain.handle("azure:pull-request:thread-status", async (_event, payload) => runtime.updateAzureThreadStatus(validateIpc(azureThreadStatusSchema, payload, "azure:pull-request:thread-status")));
-  ipcMain.handle("review-bridge:draft-comment:create", async (_event, payload) => runtime.createReviewBridgeDraftComment(validateIpc(reviewBridgeDraftCommentSchema, payload, "review-bridge:draft-comment:create")));
-  ipcMain.handle("review-bridge:draft:save", async (_event, payload) => runtime.saveReviewBridgeDraft(validateIpc(reviewBridgeDraftSchema, payload, "review-bridge:draft:save")));
-  ipcMain.handle("review-bridge:draft:queue", async (_event, payload) => runtime.queueReviewBridgeDraft(validateIpc(reviewBridgeQueueSchema, payload, "review-bridge:draft:queue")));
-  ipcMain.handle("review-bridge:draft:delete", async (_event, payload) => runtime.deleteReviewBridgeDraft(validateIpc(reviewBridgeDeleteDraftSchema, payload, "review-bridge:draft:delete")));
-  ipcMain.handle("review-bridge:comment:delete", async (_event, payload) => runtime.deleteReviewBridgeComment(validateIpc(reviewBridgeDeleteCommentSchema, payload, "review-bridge:comment:delete")));
-  ipcMain.handle("review-bridge:comment:reply-with-changes", async (_event, payload) => runtime.replyWithCodeChanges(validateIpc(reviewBridgeReplyWithChangesSchema, payload, "review-bridge:comment:reply-with-changes")));
-  ipcMain.handle("review-bridge:agent-prompt:save", async (_event, payload) => runtime.saveAgentPrompt(validateIpc(agentPromptSaveSchema, payload, "review-bridge:agent-prompt:save")));
-  ipcMain.handle("review-bridge:agent-prompt:delete", async (_event, payload) => runtime.deleteAgentPrompt(validateIpc(agentPromptDeleteSchema, payload, "review-bridge:agent-prompt:delete")));
+  ipcMain.handle("azure:pull-request:open", async (_event, payload) =>
+    runtime.openAzurePullRequest(validateIpc(openPrSchema, payload, "azure:pull-request:open")),
+  );
+  ipcMain.handle("azure:pull-request:comment", async (_event, payload) =>
+    runtime.commentAzurePullRequest(validateIpc(azureCommentSchema, payload, "azure:pull-request:comment")),
+  );
+  ipcMain.handle("azure:pull-request:thread-status", async (_event, payload) =>
+    runtime.updateAzureThreadStatus(validateIpc(azureThreadStatusSchema, payload, "azure:pull-request:thread-status")),
+  );
+  ipcMain.handle("review-bridge:draft-comment:create", async (_event, payload) =>
+    runtime.createReviewBridgeDraftComment(
+      validateIpc(reviewBridgeDraftCommentSchema, payload, "review-bridge:draft-comment:create"),
+    ),
+  );
+  ipcMain.handle("review-bridge:draft:save", async (_event, payload) =>
+    runtime.saveReviewBridgeDraft(validateIpc(reviewBridgeDraftSchema, payload, "review-bridge:draft:save")),
+  );
+  ipcMain.handle("review-bridge:draft:queue", async (_event, payload) =>
+    runtime.queueReviewBridgeDraft(validateIpc(reviewBridgeQueueSchema, payload, "review-bridge:draft:queue")),
+  );
+  ipcMain.handle("review-bridge:draft:delete", async (_event, payload) =>
+    runtime.deleteReviewBridgeDraft(validateIpc(reviewBridgeDeleteDraftSchema, payload, "review-bridge:draft:delete")),
+  );
+  ipcMain.handle("review-bridge:comment:delete", async (_event, payload) =>
+    runtime.deleteReviewBridgeComment(
+      validateIpc(reviewBridgeDeleteCommentSchema, payload, "review-bridge:comment:delete"),
+    ),
+  );
+  ipcMain.handle("review-bridge:comment:reply-with-changes", async (_event, payload) =>
+    runtime.replyWithCodeChanges(
+      validateIpc(reviewBridgeReplyWithChangesSchema, payload, "review-bridge:comment:reply-with-changes"),
+    ),
+  );
+  ipcMain.handle("review-bridge:agent-prompt:save", async (_event, payload) =>
+    runtime.saveAgentPrompt(validateIpc(agentPromptSaveSchema, payload, "review-bridge:agent-prompt:save")),
+  );
+  ipcMain.handle("review-bridge:agent-prompt:delete", async (_event, payload) =>
+    runtime.deleteAgentPrompt(validateIpc(agentPromptDeleteSchema, payload, "review-bridge:agent-prompt:delete")),
+  );
   ipcMain.handle("review-bridge:agent-prompt:reset", async () => runtime.resetAgentPrompts());
-  ipcMain.handle("review-bridge:pull-request:sync", async (_event, payload) => runtime.syncReviewBridgePullRequest(validateIpc(reviewBridgeSyncSchema, payload, "review-bridge:pull-request:sync")));
-  ipcMain.handle("review-bridge:pull-request:push-and-publish", async (_event, payload) => runtime.pushAndPublishReview(validateIpc(reviewBridgePushAndPublishSchema, payload, "review-bridge:pull-request:push-and-publish")));
-  ipcMain.handle("azure:pull-request:vote", async (_event, payload) => runtime.voteAzurePullRequest(validateIpc(azureVoteSchema, payload, "azure:pull-request:vote")));
-  ipcMain.handle("azure:workspace:fetch", async (_event, workspaceId) => runtime.fetchAzureReviewWorkspace(workspaceId));
-  ipcMain.handle("azure:workspace:rebase", async (_event, workspaceId) => runtime.rebaseAzureReviewWorkspace(workspaceId));
-  ipcMain.handle("azure:workspace:push", async (_event, workspaceId, options) => runtime.pushAzureReviewWorkspace(workspaceId, validateIpc(workspacePushOptionsSchema, options || {}, "azure:workspace:push")));
-  ipcMain.handle("azure:create-pull-request", async (_event, payload) => runtime.azureCreatePullRequest(validateIpc(gitPayloadSchema, payload, "azure:create-pull-request")));
-  ipcMain.handle("azure:list-remote-branches", async (_event, payload) => runtime.azureListRemoteBranches(validateIpc(gitPayloadSchema, payload, "azure:list-remote-branches")));
-  ipcMain.handle("azure:quickfix:list-projects", async (_event, payload) => runtime.azureQuickFixListProjects(validateIpc(quickFixListProjectsSchema, payload, "azure:quickfix:list-projects")));
-  ipcMain.handle("azure:quickfix:list-repositories", async (_event, payload) => runtime.azureQuickFixListRepositories(validateIpc(quickFixListRepositoriesSchema, payload, "azure:quickfix:list-repositories")));
-  ipcMain.handle("azure:quickfix:list-branches", async (_event, payload) => runtime.azureQuickFixListBranches(validateIpc(quickFixListBranchesSchema, payload, "azure:quickfix:list-branches")));
-  ipcMain.handle("azure:quickfix:create", async (_event, payload) => runtime.azureQuickFixCreate(validateIpc(quickFixCreateSchema, payload, "azure:quickfix:create")));
+  ipcMain.handle("review-bridge:pull-request:sync", async (_event, payload) =>
+    runtime.syncReviewBridgePullRequest(
+      validateIpc(reviewBridgeSyncSchema, payload, "review-bridge:pull-request:sync"),
+    ),
+  );
+  ipcMain.handle("review-bridge:pull-request:push-and-publish", async (_event, payload) =>
+    runtime.pushAndPublishReview(
+      validateIpc(reviewBridgePushAndPublishSchema, payload, "review-bridge:pull-request:push-and-publish"),
+    ),
+  );
+  ipcMain.handle("azure:pull-request:vote", async (_event, payload) =>
+    runtime.voteAzurePullRequest(validateIpc(azureVoteSchema, payload, "azure:pull-request:vote")),
+  );
+  ipcMain.handle("azure:workspace:fetch", async (_event, workspaceId) =>
+    runtime.fetchAzureReviewWorkspace(workspaceId),
+  );
+  ipcMain.handle("azure:workspace:rebase", async (_event, workspaceId) =>
+    runtime.rebaseAzureReviewWorkspace(workspaceId),
+  );
+  ipcMain.handle("azure:workspace:push", async (_event, workspaceId, options) =>
+    runtime.pushAzureReviewWorkspace(
+      workspaceId,
+      validateIpc(workspacePushOptionsSchema, options || {}, "azure:workspace:push"),
+    ),
+  );
+  ipcMain.handle("azure:create-pull-request", async (_event, payload) =>
+    runtime.azureCreatePullRequest(validateIpc(gitPayloadSchema, payload, "azure:create-pull-request")),
+  );
+  ipcMain.handle("azure:list-remote-branches", async (_event, payload) =>
+    runtime.azureListRemoteBranches(validateIpc(gitPayloadSchema, payload, "azure:list-remote-branches")),
+  );
+  ipcMain.handle("azure:quickfix:list-projects", async (_event, payload) =>
+    runtime.azureQuickFixListProjects(validateIpc(quickFixListProjectsSchema, payload, "azure:quickfix:list-projects")),
+  );
+  ipcMain.handle("azure:quickfix:list-repositories", async (_event, payload) =>
+    runtime.azureQuickFixListRepositories(
+      validateIpc(quickFixListRepositoriesSchema, payload, "azure:quickfix:list-repositories"),
+    ),
+  );
+  ipcMain.handle("azure:quickfix:list-branches", async (_event, payload) =>
+    runtime.azureQuickFixListBranches(validateIpc(quickFixListBranchesSchema, payload, "azure:quickfix:list-branches")),
+  );
+  ipcMain.handle("azure:quickfix:create", async (_event, payload) =>
+    runtime.azureQuickFixCreate(validateIpc(quickFixCreateSchema, payload, "azure:quickfix:create")),
+  );
 
   // --- GitHub ---
-  ipcMain.handle("github:verify-connection", async (_event, connection) => runtime.verifyGitHubConnection(validateIpc(githubConnectionSchema, connection, "github:verify-connection")));
-  ipcMain.handle("github:save-connection", async (_event, connection) => runtime.saveGitHubConnection(validateIpc(githubConnectionSchema, connection, "github:save-connection")));
-  ipcMain.handle("github:delete-connection", async (_event, connectionId) => runtime.deleteGitHubConnection(connectionId));
+  ipcMain.handle("github:verify-connection", async (_event, connection) =>
+    runtime.verifyGitHubConnection(validateIpc(githubConnectionSchema, connection, "github:verify-connection")),
+  );
+  ipcMain.handle("github:save-connection", async (_event, connection) =>
+    runtime.saveGitHubConnection(validateIpc(githubConnectionSchema, connection, "github:save-connection")),
+  );
+  ipcMain.handle("github:delete-connection", async (_event, connectionId) =>
+    runtime.deleteGitHubConnection(connectionId),
+  );
   ipcMain.handle("github:refresh", async () => runtime.refreshGitHubState());
-  ipcMain.handle("github:audit-log:query", async (_event, payload) => runtime.queryGitHubAuditLog(validateIpc(githubAuditLogQuerySchema, payload, "github:audit-log:query")));
-  ipcMain.handle("github:audit-log:stats", async (_event, payload) => runtime.getGitHubAuditStats(validateIpc(githubAuditLogStatsSchema, payload, "github:audit-log:stats")));
+  ipcMain.handle("github:audit-log:query", async (_event, payload) =>
+    runtime.queryGitHubAuditLog(validateIpc(githubAuditLogQuerySchema, payload, "github:audit-log:query")),
+  );
+  ipcMain.handle("github:audit-log:stats", async (_event, payload) =>
+    runtime.getGitHubAuditStats(validateIpc(githubAuditLogStatsSchema, payload, "github:audit-log:stats")),
+  );
   ipcMain.handle("github:pull-request:seen", async (_event, prKey) => runtime.markGitHubPullRequestSeen(prKey));
-  ipcMain.handle("github:pull-request:open", async (_event, payload) => runtime.openGitHubPullRequest(validateIpc(openPrSchema, payload, "github:pull-request:open")));
-  ipcMain.handle("github:pull-request:comment", async (_event, payload) => runtime.commentGitHubPullRequest(validateIpc(githubCommentSchema, payload, "github:pull-request:comment")));
-  ipcMain.handle("github:pull-request:review", async (_event, payload) => runtime.submitGitHubPullRequestReview(validateIpc(githubReviewSchema, payload, "github:pull-request:review")));
-  ipcMain.handle("github:workspace:fetch", async (_event, workspaceId) => runtime.fetchGitHubReviewWorkspace(workspaceId));
-  ipcMain.handle("github:workspace:rebase", async (_event, workspaceId) => runtime.rebaseGitHubReviewWorkspace(workspaceId));
-  ipcMain.handle("github:workspace:push", async (_event, workspaceId, options) => runtime.pushGitHubReviewWorkspace(workspaceId, validateIpc(workspacePushOptionsSchema, options || {}, "github:workspace:push")));
-  ipcMain.handle("github:list-remote-branches", async (_event, payload) => runtime.githubListRemoteBranches(validateIpc(gitPayloadSchema, payload, "github:list-remote-branches")));
-  ipcMain.handle("github:create-pull-request", async (_event, payload) => runtime.githubCreatePullRequest(validateIpc(gitPayloadSchema, payload, "github:create-pull-request")));
-  ipcMain.handle("github:quickfix:list-repos", async (_event, payload) => runtime.githubQuickFixListRepos(validateIpc(githubQuickFixListReposSchema, payload, "github:quickfix:list-repos")));
-  ipcMain.handle("github:quickfix:list-branches", async (_event, payload) => runtime.githubQuickFixListBranches(validateIpc(githubQuickFixListBranchesSchema, payload, "github:quickfix:list-branches")));
-  ipcMain.handle("github:quickfix:create", async (_event, payload) => runtime.githubQuickFixCreate(validateIpc(githubQuickFixCreateSchema, payload, "github:quickfix:create")));
+  ipcMain.handle("github:pull-request:open", async (_event, payload) =>
+    runtime.openGitHubPullRequest(validateIpc(openPrSchema, payload, "github:pull-request:open")),
+  );
+  ipcMain.handle("github:pull-request:comment", async (_event, payload) =>
+    runtime.commentGitHubPullRequest(validateIpc(githubCommentSchema, payload, "github:pull-request:comment")),
+  );
+  ipcMain.handle("github:pull-request:review", async (_event, payload) =>
+    runtime.submitGitHubPullRequestReview(validateIpc(githubReviewSchema, payload, "github:pull-request:review")),
+  );
+  ipcMain.handle("github:workspace:fetch", async (_event, workspaceId) =>
+    runtime.fetchGitHubReviewWorkspace(workspaceId),
+  );
+  ipcMain.handle("github:workspace:rebase", async (_event, workspaceId) =>
+    runtime.rebaseGitHubReviewWorkspace(workspaceId),
+  );
+  ipcMain.handle("github:workspace:push", async (_event, workspaceId, options) =>
+    runtime.pushGitHubReviewWorkspace(
+      workspaceId,
+      validateIpc(workspacePushOptionsSchema, options || {}, "github:workspace:push"),
+    ),
+  );
+  ipcMain.handle("github:list-remote-branches", async (_event, payload) =>
+    runtime.githubListRemoteBranches(validateIpc(gitPayloadSchema, payload, "github:list-remote-branches")),
+  );
+  ipcMain.handle("github:create-pull-request", async (_event, payload) =>
+    runtime.githubCreatePullRequest(validateIpc(gitPayloadSchema, payload, "github:create-pull-request")),
+  );
+  ipcMain.handle("github:quickfix:list-repos", async (_event, payload) =>
+    runtime.githubQuickFixListRepos(validateIpc(githubQuickFixListReposSchema, payload, "github:quickfix:list-repos")),
+  );
+  ipcMain.handle("github:quickfix:list-branches", async (_event, payload) =>
+    runtime.githubQuickFixListBranches(
+      validateIpc(githubQuickFixListBranchesSchema, payload, "github:quickfix:list-branches"),
+    ),
+  );
+  ipcMain.handle("github:quickfix:create", async (_event, payload) =>
+    runtime.githubQuickFixCreate(validateIpc(githubQuickFixCreateSchema, payload, "github:quickfix:create")),
+  );
 
   ipcMain.handle("session:activate", async (_event, sessionId) => runtime.activateSession(sessionId));
-  ipcMain.handle("attention:sync", async (_event, payload) => runtime.syncAttentionContext(validateIpc(attentionSyncSchema, payload || {}, "attention:sync")));
+  ipcMain.handle("attention:sync", async (_event, payload) =>
+    runtime.syncAttentionContext(validateIpc(attentionSyncSchema, payload || {}, "attention:sync")),
+  );
   ipcMain.handle("attention:clear-all", async () => runtime.clearAllAttention());
   ipcMain.handle("terminal:restart", async (_event, sessionId) => runtime.restartSession(sessionId));
   ipcMain.handle("terminal:close", async (_event, sessionId) => runtime.closeSession(sessionId));
@@ -148,32 +268,74 @@ export function registerIpc(runtime, emitToRenderer, { includeStateGet = true } 
   ipcMain.handle("tunnel:stop", async () => runtime.stopCloudflareTunnel());
   ipcMain.handle("docker:refresh", async () => runtime.refreshDockerState());
   ipcMain.handle("git:refresh", async (_event, projectId) => runtime.refreshGitState(projectId));
-  ipcMain.handle("git:fetch", async (_event, payload) => runtime.gitFetch(validateIpc(gitPayloadSchema, payload, "git:fetch")));
-  ipcMain.handle("git:push", async (_event, payload) => runtime.gitPush(validateIpc(gitPayloadSchema, payload, "git:push")));
-  ipcMain.handle("git:checkout-branch", async (_event, payload) => runtime.gitCheckoutBranch(validateIpc(gitPayloadSchema, payload, "git:checkout-branch")));
-  ipcMain.handle("git:create-branch", async (_event, payload) => runtime.gitCreateBranch(validateIpc(gitPayloadSchema, payload, "git:create-branch")));
-  ipcMain.handle("git:merge-into-current", async (_event, payload) => runtime.gitMergeIntoCurrent(validateIpc(gitPayloadSchema, payload, "git:merge-into-current")));
-  ipcMain.handle("git:rebase-onto", async (_event, payload) => runtime.gitRebaseOnto(validateIpc(gitPayloadSchema, payload, "git:rebase-onto")));
-  ipcMain.handle("git:continue", async (_event, payload) => runtime.gitContinueOperation(validateIpc(gitPayloadSchema, payload, "git:continue")));
-  ipcMain.handle("git:abort", async (_event, payload) => runtime.gitAbortOperation(validateIpc(gitPayloadSchema, payload, "git:abort")));
-  ipcMain.handle("git:diff-preview", async (_event, payload) => runtime.gitDiffPreview(validateIpc(gitDiffPreviewSchema, payload, "git:diff-preview")));
-  ipcMain.handle("git:merge-into-base", async (_event, payload) => runtime.gitMergeCurrentIntoBase(validateIpc(gitPayloadSchema, payload, "git:merge-into-base")));
-  ipcMain.handle("git:remove-worktree", async (_event, payload) => runtime.gitRemoveWorktree(validateIpc(removeWorktreeSchema, payload, "git:remove-worktree")));
-  ipcMain.handle("git:commit-all", async (_event, payload) => runtime.gitCommitAll(validateIpc(gitCommitSchema, payload, "git:commit-all")));
-  ipcMain.handle("git:stash", async (_event, payload) => runtime.gitStash(validateIpc(gitPayloadSchema, payload, "git:stash")));
-  ipcMain.handle("git:stash-pop", async (_event, payload) => runtime.gitStashPop(validateIpc(gitPayloadSchema, payload, "git:stash-pop")));
-  ipcMain.handle("git:commit-diff", async (_event, payload) => runtime.gitCommitDiff(validateIpc(gitPayloadSchema, payload, "git:commit-diff")));
+  ipcMain.handle("git:fetch", async (_event, payload) =>
+    runtime.gitFetch(validateIpc(gitPayloadSchema, payload, "git:fetch")),
+  );
+  ipcMain.handle("git:push", async (_event, payload) =>
+    runtime.gitPush(validateIpc(gitPayloadSchema, payload, "git:push")),
+  );
+  ipcMain.handle("git:checkout-branch", async (_event, payload) =>
+    runtime.gitCheckoutBranch(validateIpc(gitPayloadSchema, payload, "git:checkout-branch")),
+  );
+  ipcMain.handle("git:create-branch", async (_event, payload) =>
+    runtime.gitCreateBranch(validateIpc(gitPayloadSchema, payload, "git:create-branch")),
+  );
+  ipcMain.handle("git:merge-into-current", async (_event, payload) =>
+    runtime.gitMergeIntoCurrent(validateIpc(gitPayloadSchema, payload, "git:merge-into-current")),
+  );
+  ipcMain.handle("git:rebase-onto", async (_event, payload) =>
+    runtime.gitRebaseOnto(validateIpc(gitPayloadSchema, payload, "git:rebase-onto")),
+  );
+  ipcMain.handle("git:continue", async (_event, payload) =>
+    runtime.gitContinueOperation(validateIpc(gitPayloadSchema, payload, "git:continue")),
+  );
+  ipcMain.handle("git:abort", async (_event, payload) =>
+    runtime.gitAbortOperation(validateIpc(gitPayloadSchema, payload, "git:abort")),
+  );
+  ipcMain.handle("git:diff-preview", async (_event, payload) =>
+    runtime.gitDiffPreview(validateIpc(gitDiffPreviewSchema, payload, "git:diff-preview")),
+  );
+  ipcMain.handle("git:merge-into-base", async (_event, payload) =>
+    runtime.gitMergeCurrentIntoBase(validateIpc(gitPayloadSchema, payload, "git:merge-into-base")),
+  );
+  ipcMain.handle("git:remove-worktree", async (_event, payload) =>
+    runtime.gitRemoveWorktree(validateIpc(removeWorktreeSchema, payload, "git:remove-worktree")),
+  );
+  ipcMain.handle("git:commit-all", async (_event, payload) =>
+    runtime.gitCommitAll(validateIpc(gitCommitSchema, payload, "git:commit-all")),
+  );
+  ipcMain.handle("git:stash", async (_event, payload) =>
+    runtime.gitStash(validateIpc(gitPayloadSchema, payload, "git:stash")),
+  );
+  ipcMain.handle("git:stash-pop", async (_event, payload) =>
+    runtime.gitStashPop(validateIpc(gitPayloadSchema, payload, "git:stash-pop")),
+  );
+  ipcMain.handle("git:commit-diff", async (_event, payload) =>
+    runtime.gitCommitDiff(validateIpc(gitPayloadSchema, payload, "git:commit-diff")),
+  );
   ipcMain.handle("docker:action", async (_event, action, containerId) => {
     const validated = validateIpc(dockerActionSchema, { action, containerId }, "docker:action");
     return runtime.dockerAction(validated.action, validated.containerId);
   });
-  ipcMain.handle("docker:open-session", async (_event, payload) => runtime.openDockerSession(validateIpc(dockerSessionSchema, payload, "docker:open-session")));
-  ipcMain.handle("docker:open-lazydocker", async (_event, payload) => runtime.openLazydockerSession(validateIpc(gitPayloadSchema, payload, "docker:open-lazydocker")));
-  ipcMain.handle("git:open-lazygit", async (_event, payload) => runtime.openLazygitSession(validateIpc(gitPayloadSchema, payload, "git:open-lazygit")));
-  ipcMain.handle("git:create-worktree", async (_event, payload) => runtime.createWorktree(validateIpc(worktreeSchema, payload, "git:create-worktree")));
+  ipcMain.handle("docker:open-session", async (_event, payload) =>
+    runtime.openDockerSession(validateIpc(dockerSessionSchema, payload, "docker:open-session")),
+  );
+  ipcMain.handle("docker:open-lazydocker", async (_event, payload) =>
+    runtime.openLazydockerSession(validateIpc(gitPayloadSchema, payload, "docker:open-lazydocker")),
+  );
+  ipcMain.handle("git:open-lazygit", async (_event, payload) =>
+    runtime.openLazygitSession(validateIpc(gitPayloadSchema, payload, "git:open-lazygit")),
+  );
+  ipcMain.handle("git:create-worktree", async (_event, payload) =>
+    runtime.createWorktree(validateIpc(worktreeSchema, payload, "git:create-worktree")),
+  );
   ipcMain.handle("plugins:list", async () => runtime.getPlugins());
-  ipcMain.handle("plugins:workspace-template", async (_event, pluginId) => runtime.getPluginWorkspaceTemplate(pluginId));
-  ipcMain.handle("profile:save", async (_event, profile) => runtime.saveProfile(validateIpc(profileSchema, profile, "profile:save")));
+  ipcMain.handle("plugins:workspace-template", async (_event, pluginId) =>
+    runtime.getPluginWorkspaceTemplate(pluginId),
+  );
+  ipcMain.handle("profile:save", async (_event, profile) =>
+    runtime.saveProfile(validateIpc(profileSchema, profile, "profile:save")),
+  );
   ipcMain.handle("profile:delete", async (_event, profileId) => runtime.deleteProfile(profileId));
   ipcMain.handle("profile:activate", async (_event, profileId) => runtime.activateProfile(profileId));
 
@@ -196,19 +358,57 @@ export function registerIpc(runtime, emitToRenderer, { includeStateGet = true } 
   });
 
   // --- File manager ---
-  ipcMain.handle("file:list", async (_event, payload) => { const p = validateIpc(fileListSchema, payload, "file:list"); return fm.listDirectory(p.rootPath, p.relativePath); });
-  ipcMain.handle("file:tree", async (_event, payload) => { const p = validateIpc(fileListSchema, payload, "file:tree"); return fm.getDirectoryTree(p.rootPath, p.relativePath); });
-  ipcMain.handle("file:preview", async (_event, payload) => { const p = validateIpc(fileReadSchema, payload, "file:preview"); return fm.readFilePreview(p.rootPath, p.relativePath); });
-  ipcMain.handle("file:read", async (_event, payload) => { const p = validateIpc(fileReadSchema, payload, "file:read"); return fm.readFileContent(p.rootPath, p.relativePath); });
-  ipcMain.handle("file:write", async (_event, payload) => { const p = validateIpc(fileWriteSchema, payload, "file:write"); return fm.writeFileContent(p.rootPath, p.relativePath, p.content); });
-  ipcMain.handle("file:create-file", async (_event, payload) => { const p = validateIpc(fileCreateSchema, payload, "file:create-file"); return fm.createFile(p.rootPath, p.parentPath, p.name); });
-  ipcMain.handle("file:create-dir", async (_event, payload) => { const p = validateIpc(fileCreateSchema, payload, "file:create-dir"); return fm.createDirectory(p.rootPath, p.parentPath, p.name); });
-  ipcMain.handle("file:rename", async (_event, payload) => { const p = validateIpc(fileRenameSchema, payload, "file:rename"); return fm.renameEntry(p.rootPath, p.relativePath, p.newName); });
-  ipcMain.handle("file:delete", async (_event, payload) => { const p = validateIpc(fileDeleteSchema, payload, "file:delete"); return fm.deleteEntry(p.rootPath, p.relativePath); });
-  ipcMain.handle("file:move", async (_event, payload) => { const p = validateIpc(fileMoveSchema, payload, "file:move"); return fm.moveEntry(p.rootPath, p.fromPath, p.toPath); });
-  ipcMain.handle("file:copy", async (_event, payload) => { const p = validateIpc(fileMoveSchema, payload, "file:copy"); return fm.copyEntry(p.rootPath, p.fromPath, p.toPath); });
-  ipcMain.handle("file:open-in-explorer", async (_event, absPath) => { if (typeof absPath === "string") shell.showItemInFolder(absPath); });
-  ipcMain.handle("file:info", async (_event, payload) => { const p = validateIpc(fileReadSchema, payload, "file:info"); return fm.getFileInfo(p.rootPath, p.relativePath); });
+  ipcMain.handle("file:list", async (_event, payload) => {
+    const p = validateIpc(fileListSchema, payload, "file:list");
+    return fm.listDirectory(p.rootPath, p.relativePath);
+  });
+  ipcMain.handle("file:tree", async (_event, payload) => {
+    const p = validateIpc(fileListSchema, payload, "file:tree");
+    return fm.getDirectoryTree(p.rootPath, p.relativePath);
+  });
+  ipcMain.handle("file:preview", async (_event, payload) => {
+    const p = validateIpc(fileReadSchema, payload, "file:preview");
+    return fm.readFilePreview(p.rootPath, p.relativePath);
+  });
+  ipcMain.handle("file:read", async (_event, payload) => {
+    const p = validateIpc(fileReadSchema, payload, "file:read");
+    return fm.readFileContent(p.rootPath, p.relativePath);
+  });
+  ipcMain.handle("file:write", async (_event, payload) => {
+    const p = validateIpc(fileWriteSchema, payload, "file:write");
+    return fm.writeFileContent(p.rootPath, p.relativePath, p.content);
+  });
+  ipcMain.handle("file:create-file", async (_event, payload) => {
+    const p = validateIpc(fileCreateSchema, payload, "file:create-file");
+    return fm.createFile(p.rootPath, p.parentPath, p.name);
+  });
+  ipcMain.handle("file:create-dir", async (_event, payload) => {
+    const p = validateIpc(fileCreateSchema, payload, "file:create-dir");
+    return fm.createDirectory(p.rootPath, p.parentPath, p.name);
+  });
+  ipcMain.handle("file:rename", async (_event, payload) => {
+    const p = validateIpc(fileRenameSchema, payload, "file:rename");
+    return fm.renameEntry(p.rootPath, p.relativePath, p.newName);
+  });
+  ipcMain.handle("file:delete", async (_event, payload) => {
+    const p = validateIpc(fileDeleteSchema, payload, "file:delete");
+    return fm.deleteEntry(p.rootPath, p.relativePath);
+  });
+  ipcMain.handle("file:move", async (_event, payload) => {
+    const p = validateIpc(fileMoveSchema, payload, "file:move");
+    return fm.moveEntry(p.rootPath, p.fromPath, p.toPath);
+  });
+  ipcMain.handle("file:copy", async (_event, payload) => {
+    const p = validateIpc(fileMoveSchema, payload, "file:copy");
+    return fm.copyEntry(p.rootPath, p.fromPath, p.toPath);
+  });
+  ipcMain.handle("file:open-in-explorer", async (_event, absPath) => {
+    if (typeof absPath === "string") shell.showItemInFolder(absPath);
+  });
+  ipcMain.handle("file:info", async (_event, payload) => {
+    const p = validateIpc(fileReadSchema, payload, "file:info");
+    return fm.getFileInfo(p.rootPath, p.relativePath);
+  });
 
   ipcMain.handle("dialog:browse-directory", async (_event, defaultPath) => {
     const win = BrowserWindow.getFocusedWindow();

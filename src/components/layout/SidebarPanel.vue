@@ -31,7 +31,11 @@
         :title="`Add ${plugin.name}`"
         @click="$emit('add-plugin-workspace', plugin.id)"
       >
-        <span class="workspace-card__badge" :style="`background:color-mix(in srgb, ${plugin.color}, transparent 76%);`">{{ plugin.icon }}</span>
+        <span
+          class="workspace-card__badge"
+          :style="`background:color-mix(in srgb, ${plugin.color}, transparent 76%);`"
+          >{{ plugin.icon }}</span
+        >
         <span class="workspace-suggestion__meta">
           <strong>{{ plugin.name }}</strong>
           <small>Click to add</small>

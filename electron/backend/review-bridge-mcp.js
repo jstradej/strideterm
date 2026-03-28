@@ -58,8 +58,7 @@ function getActiveComments(context) {
 
 function formatCommentList(context) {
   const draftsMap = new Map((context.drafts || []).map((d) => [d.commentKey, d]));
-  const activeComments = getActiveComments(context)
-    .map((comment) => serializeComment(comment));
+  const activeComments = getActiveComments(context).map((comment) => serializeComment(comment));
 
   if (!activeComments.length) {
     return {
@@ -85,7 +84,9 @@ function formatCommentList(context) {
       }
       const draft = draftsMap.get(comment.commentKey);
       if (draft) {
-        const preview = String(draft.body || "").replace(/\s+/gu, " ").trim();
+        const preview = String(draft.body || "")
+          .replace(/\s+/gu, " ")
+          .trim();
         parts.push(`| DRAFT (${draft.status}): ${preview.length > 120 ? preview.slice(0, 120) + "..." : preview}`);
       }
       return parts.join(" ");
@@ -115,9 +116,10 @@ function resolveComment(context, { index = null, commentKey = "" } = {}) {
 
 function formatCommentDetail(context, selection) {
   const comment = serializeComment(selection.comment);
-  const thread = comment.remoteThreadId != null
-    ? context.threads.find((entry) => entry.id === comment.remoteThreadId) || null
-    : null;
+  const thread =
+    comment.remoteThreadId != null
+      ? context.threads.find((entry) => entry.id === comment.remoteThreadId) || null
+      : null;
   const latestDraft = context.drafts.find((entry) => entry.commentKey === comment.commentKey) || null;
 
   const lines = [
@@ -144,7 +146,13 @@ function formatCommentDetail(context, selection) {
       lines.push("- Replies:");
       for (const reply of thread.comments) {
         const author = reply.author?.displayName || reply.author?.uniqueName || "Unknown author";
-        lines.push(`  - ${author}: ${String(reply.content || "").replace(/\s+/gu, " ").trim() || "(empty)"}`);
+        lines.push(
+          `  - ${author}: ${
+            String(reply.content || "")
+              .replace(/\s+/gu, " ")
+              .trim() || "(empty)"
+          }`,
+        );
       }
     }
   }
@@ -192,7 +200,14 @@ export function createReviewBridgeMcpHandlers({ store, prKey, workspaceId }) {
         ...detail,
       });
     },
-    async createDraftComment({ body, title = "", filePath = "", lineNumber = null, priority = "medium", authorAgent = "" }) {
+    async createDraftComment({
+      body,
+      title = "",
+      filePath = "",
+      lineNumber = null,
+      priority = "medium",
+      authorAgent = "",
+    }) {
       const resolvedPrKey = resolvePrKey(store, keySpec);
       if (!resolvedPrKey) throw new Error("No pull request found for this workspace yet. Create a PR first.");
       const context = await store.createDraftComment({
@@ -205,15 +220,23 @@ export function createReviewBridgeMcpHandlers({ store, prKey, workspaceId }) {
         authorAgent,
         autoQueue: true,
       });
-      const latestComment = [...(context?.comments || [])]
-        .filter((comment) => (comment.commentKind === "draft" || comment.commentKind === "local-comment") && comment.payload?.questionBody === body)
-        .sort((left, right) => Date.parse(right.updatedAt || right.createdAt || 0) - Date.parse(left.updatedAt || left.createdAt || 0))[0] || null;
+      const latestComment =
+        [...(context?.comments || [])]
+          .filter(
+            (comment) =>
+              (comment.commentKind === "draft" || comment.commentKind === "local-comment") &&
+              comment.payload?.questionBody === body,
+          )
+          .sort(
+            (left, right) =>
+              Date.parse(right.updatedAt || right.createdAt || 0) - Date.parse(left.updatedAt || left.createdAt || 0),
+          )[0] || null;
       const comment = latestComment && latestComment.displayIndex ? serializeComment(latestComment) : null;
-      const latestDraft = comment ? (context?.drafts || []).find((d) => d.commentKey === latestComment.commentKey) || null : null;
+      const latestDraft = comment
+        ? (context?.drafts || []).find((d) => d.commentKey === latestComment.commentKey) || null
+        : null;
       return toolResult(
-        comment
-          ? `Created draft comment ${comment.index}. ${comment.title}`
-          : "Created draft comment.",
+        comment ? `Created draft comment ${comment.index}. ${comment.title}` : "Created draft comment.",
         {
           prKey: resolvedPrKey,
           comment,
@@ -245,14 +268,11 @@ export function createReviewBridgeMcpHandlers({ store, prKey, workspaceId }) {
         commentKey: selection.comment.commentKey,
       });
       const latestDraft = context?.drafts.find((entry) => entry.commentKey === selection.comment.commentKey) || null;
-      return toolResult(
-        `Saved and queued draft for comment ${selection.comment.displayIndex}.`,
-        {
-          prKey: baseContext.prKey,
-          comment: serializeComment(selection.comment),
-          draft: latestDraft ? serializeDraft(latestDraft) : null,
-        },
-      );
+      return toolResult(`Saved and queued draft for comment ${selection.comment.displayIndex}.`, {
+        prKey: baseContext.prKey,
+        comment: serializeComment(selection.comment),
+        draft: latestDraft ? serializeDraft(latestDraft) : null,
+      });
     },
     async queueReviewDraft({ index = null, commentKey = "" }) {
       const contextBefore = readContextOrThrow(store, keySpec);
@@ -262,14 +282,11 @@ export function createReviewBridgeMcpHandlers({ store, prKey, workspaceId }) {
         commentKey: selection.comment.commentKey,
       });
       const latestDraft = context?.drafts.find((entry) => entry.commentKey === selection.comment.commentKey) || null;
-      return toolResult(
-        `Queued draft for comment ${selection.comment.displayIndex}.`,
-        {
-          prKey: contextBefore.prKey,
-          comment: serializeComment(selection.comment),
-          draft: latestDraft ? serializeDraft(latestDraft) : null,
-        },
-      );
+      return toolResult(`Queued draft for comment ${selection.comment.displayIndex}.`, {
+        prKey: contextBefore.prKey,
+        comment: serializeComment(selection.comment),
+        draft: latestDraft ? serializeDraft(latestDraft) : null,
+      });
     },
     async replyWithCodeChanges({ index = null, commentKey = "", body = "", authorAgent = "" }) {
       const baseContext = readContextOrThrow(store, keySpec);
@@ -282,15 +299,12 @@ export function createReviewBridgeMcpHandlers({ store, prKey, workspaceId }) {
         autoQueue: true,
       });
       const latestDraft = context?.drafts.find((entry) => entry.commentKey === selection.comment.commentKey) || null;
-      return toolResult(
-        `Queued reply for comment #${selection.comment.displayIndex}: ${body}`,
-        {
-          prKey: baseContext.prKey,
-          comment: serializeComment(selection.comment),
-          draft: latestDraft ? serializeDraft(latestDraft) : null,
-          hasCodeChanges: true,
-        },
-      );
+      return toolResult(`Queued reply for comment #${selection.comment.displayIndex}: ${body}`, {
+        prKey: baseContext.prKey,
+        comment: serializeComment(selection.comment),
+        draft: latestDraft ? serializeDraft(latestDraft) : null,
+        hasCodeChanges: true,
+      });
     },
   };
 }
@@ -332,114 +346,164 @@ export async function runReviewBridgeMcpServer({ rootPath, prKey, workspaceId })
     version: "1.0.0",
   });
 
-  server.registerResource("review-brief", "review://brief", {
-    title: "Review Brief",
-    description: "Current PR review brief exported by strIDEterm.",
-    mimeType: "text/markdown",
-  }, async () => {
-    const context = readContextOrThrow(store, keySpec);
-    const text = await fs.readFile(context.briefMarkdownPath, "utf8").catch(() => "");
-    return {
-      contents: [
+  server.registerResource(
+    "review-brief",
+    "review://brief",
+    {
+      title: "Review Brief",
+      description: "Current PR review brief exported by strIDEterm.",
+      mimeType: "text/markdown",
+    },
+    async () => {
+      const context = readContextOrThrow(store, keySpec);
+      const text = await fs.readFile(context.briefMarkdownPath, "utf8").catch(() => "");
+      return {
+        contents: [
+          {
+            uri: "review://brief",
+            text,
+          },
+        ],
+      };
+    },
+  );
+
+  server.registerPrompt(
+    "process-review-comments",
+    {
+      title: "Process Review Comments",
+      description: "Guide the agent to process review comments in order with the review bridge tools.",
+    },
+    async () => ({
+      messages: [
         {
-          uri: "review://brief",
-          text,
+          role: "user",
+          content: {
+            type: "text",
+            text: [
+              `Review the PR comments for ${prKey || workspaceId || "this workspace"}.`,
+              "1. Start with list_review_comments to see all comment threads and their current status.",
+              "2. For each comment that needs attention (status: ready-for-agent), use get_review_comment to read the full thread with code context.",
+              "3. Write thoughtful draft replies with save_review_draft. Focus on actionable, specific feedback.",
+              "4. If you discover issues not covered by existing comments, create new ones with create_review_comment.",
+              "5. When your drafts are ready for the user to review, queue them with queue_review_draft.",
+              "Do not publish to Azure DevOps directly — the user controls when drafts are published.",
+            ].join("\n"),
+          },
         },
       ],
-    };
-  });
+    }),
+  );
 
-  server.registerPrompt("process-review-comments", {
-    title: "Process Review Comments",
-    description: "Guide the agent to process review comments in order with the review bridge tools.",
-  }, async () => ({
-    messages: [
-      {
-        role: "user",
-        content: {
-          type: "text",
-          text: [
-            `Review the PR comments for ${prKey || workspaceId || "this workspace"}.`,
-            "1. Start with list_review_comments to see all comment threads and their current status.",
-            "2. For each comment that needs attention (status: ready-for-agent), use get_review_comment to read the full thread with code context.",
-            "3. Write thoughtful draft replies with save_review_draft. Focus on actionable, specific feedback.",
-            "4. If you discover issues not covered by existing comments, create new ones with create_review_comment.",
-            "5. When your drafts are ready for the user to review, queue them with queue_review_draft.",
-            "Do not publish to Azure DevOps directly — the user controls when drafts are published.",
-          ].join("\n"),
-        },
+  server.registerTool(
+    "list_review_comments",
+    {
+      title: "List Review Comments",
+      description:
+        "List all review comment threads for the current PR with their status, priority, and draft previews. Each comment has a stable #N index you can reference in other tools. Start here to see what needs your attention.",
+    },
+    async () => handlers.listReviewComments(),
+  );
+
+  server.registerTool(
+    "get_review_comment",
+    {
+      title: "Get Review Comment",
+      description:
+        "Get full details for a specific review comment by its #N index or key. Returns the comment thread with all replies, file context, code snippet, and your current draft if one exists. Use the index number shown in list_review_comments.",
+      inputSchema: {
+        index: z.number().int().positive().optional().describe("1-based comment index from list_review_comments."),
+        commentKey: z.string().optional().describe("Exact comment key when you already know it."),
       },
-    ],
-  }));
-
-  server.registerTool("list_review_comments", {
-    title: "List Review Comments",
-    description: "List all review comment threads for the current PR with their status, priority, and draft previews. Each comment has a stable #N index you can reference in other tools. Start here to see what needs your attention.",
-  }, async () => handlers.listReviewComments());
-
-  server.registerTool("get_review_comment", {
-    title: "Get Review Comment",
-    description: "Get full details for a specific review comment by its #N index or key. Returns the comment thread with all replies, file context, code snippet, and your current draft if one exists. Use the index number shown in list_review_comments.",
-    inputSchema: {
-      index: z.number().int().positive().optional().describe("1-based comment index from list_review_comments."),
-      commentKey: z.string().optional().describe("Exact comment key when you already know it."),
     },
-  }, async (input) => handlers.getReviewComment(input));
+    async (input) => handlers.getReviewComment(input),
+  );
 
-  server.registerTool("create_review_comment", {
-    title: "Create Draft Comment",
-    description: "Create a new draft comment for follow-up questions or observations. The draft is auto-queued for publishing to Azure DevOps and can be edited before publish. Use this when you discover something worth noting that isn't covered by existing threads. IMPORTANT: Create one comment per finding — do not combine multiple findings into a single comment. Always provide filePath and lineNumber so the comment is anchored to the right location in the code.",
-    inputSchema: {
-      body: z.string().min(1).describe("Body of the draft comment."),
-      title: z.string().optional().describe("Optional short title for the comment."),
-      filePath: z.string().optional().describe("Relative file path the comment refers to, e.g. 'src/app/service.cs'. Always provide this for file-specific comments."),
-      lineNumber: z.number().int().positive().optional().describe("Line number in the file the comment refers to."),
-      priority: z.enum(["low", "medium", "high"]).optional().describe("Priority for the draft comment."),
-      authorAgent: z.string().optional().describe("Agent label such as claude or codex."),
+  server.registerTool(
+    "create_review_comment",
+    {
+      title: "Create Draft Comment",
+      description:
+        "Create a new draft comment for follow-up questions or observations. The draft is auto-queued for publishing to Azure DevOps and can be edited before publish. Use this when you discover something worth noting that isn't covered by existing threads. IMPORTANT: Create one comment per finding — do not combine multiple findings into a single comment. Always provide filePath and lineNumber so the comment is anchored to the right location in the code.",
+      inputSchema: {
+        body: z.string().min(1).describe("Body of the draft comment."),
+        title: z.string().optional().describe("Optional short title for the comment."),
+        filePath: z
+          .string()
+          .optional()
+          .describe(
+            "Relative file path the comment refers to, e.g. 'src/app/service.cs'. Always provide this for file-specific comments.",
+          ),
+        lineNumber: z.number().int().positive().optional().describe("Line number in the file the comment refers to."),
+        priority: z.enum(["low", "medium", "high"]).optional().describe("Priority for the draft comment."),
+        authorAgent: z.string().optional().describe("Agent label such as claude or codex."),
+      },
     },
-  }, async (input) => handlers.createDraftComment(input));
+    async (input) => handlers.createDraftComment(input),
+  );
 
-  server.registerTool("save_review_draft", {
-    title: "Save Review Draft",
-    description: "Save a draft reply for a review comment and queue it for publishing. The draft is automatically queued — the user can publish it with 'Push & publish' or delete it if not needed. Use the #N index from list_review_comments to specify which comment to reply to.",
-    inputSchema: {
-      index: z.number().int().positive().optional().describe("1-based comment index from list_review_comments."),
-      commentKey: z.string().optional().describe("Exact comment key when you already know it."),
-      body: z.string().min(1).describe("Draft reply body to store locally."),
-      authorAgent: z.string().optional().describe("Agent label such as claude or codex."),
-      confidence: z.number().min(0).max(1).optional().describe("Optional confidence score from 0 to 1."),
-      needsHumanApproval: z.boolean().optional().describe("Whether the draft still needs a human review before sync."),
+  server.registerTool(
+    "save_review_draft",
+    {
+      title: "Save Review Draft",
+      description:
+        "Save a draft reply for a review comment and queue it for publishing. The draft is automatically queued — the user can publish it with 'Push & publish' or delete it if not needed. Use the #N index from list_review_comments to specify which comment to reply to.",
+      inputSchema: {
+        index: z.number().int().positive().optional().describe("1-based comment index from list_review_comments."),
+        commentKey: z.string().optional().describe("Exact comment key when you already know it."),
+        body: z.string().min(1).describe("Draft reply body to store locally."),
+        authorAgent: z.string().optional().describe("Agent label such as claude or codex."),
+        confidence: z.number().min(0).max(1).optional().describe("Optional confidence score from 0 to 1."),
+        needsHumanApproval: z
+          .boolean()
+          .optional()
+          .describe("Whether the draft still needs a human review before sync."),
+      },
     },
-  }, async (input) => handlers.saveReviewDraft(input));
+    async (input) => handlers.saveReviewDraft(input),
+  );
 
-  server.registerTool("queue_review_draft", {
-    title: "Queue Review Draft",
-    description: "Queue a saved draft for publishing to Azure DevOps. Once queued, the user can publish it with the 'Publish queued drafts' button in the UI. Only queue drafts that are ready — the user can also queue them manually.",
-    inputSchema: {
-      index: z.number().int().positive().optional().describe("1-based comment index from list_review_comments."),
-      commentKey: z.string().optional().describe("Exact comment key when you already know it."),
+  server.registerTool(
+    "queue_review_draft",
+    {
+      title: "Queue Review Draft",
+      description:
+        "Queue a saved draft for publishing to Azure DevOps. Once queued, the user can publish it with the 'Publish queued drafts' button in the UI. Only queue drafts that are ready — the user can also queue them manually.",
+      inputSchema: {
+        index: z.number().int().positive().optional().describe("1-based comment index from list_review_comments."),
+        commentKey: z.string().optional().describe("Exact comment key when you already know it."),
+      },
     },
-  }, async (input) => handlers.queueReviewDraft(input));
+    async (input) => handlers.queueReviewDraft(input),
+  );
 
-  server.registerTool("reply_with_code_changes", {
-    title: "Reply to Review Comment After Code Changes",
-    description: "Reply to a review comment after you have made code changes that address it. "
-      + "Write your reply as you would respond to the reviewer — e.g. "
-      + "'Good catch. Added a null guard in parseInput() and a test case for null input.' "
-      + "This creates a queued reply that will be published to Azure DevOps when the user pushes. "
-      + "You do NOT need to call save_review_draft or queue_review_draft separately — this tool handles both. "
-      + "Only call this when you actually changed code for this comment. "
-      + "For text-only replies without code changes, use save_review_draft instead.",
-    inputSchema: {
-      index: z.number().int().positive().optional().describe("1-based comment index from list_review_comments."),
-      commentKey: z.string().optional().describe("Exact comment key when you already know it."),
-      body: z.string().min(1).describe(
-        "Your reply to the reviewer. This is the full text that will appear on the Azure DevOps thread. "
-        + "Describe what you changed and why. Write naturally as a response to the reviewer's comment.",
-      ),
-      authorAgent: z.string().optional().describe("Agent label such as claude or codex."),
+  server.registerTool(
+    "reply_with_code_changes",
+    {
+      title: "Reply to Review Comment After Code Changes",
+      description:
+        "Reply to a review comment after you have made code changes that address it. " +
+        "Write your reply as you would respond to the reviewer — e.g. " +
+        "'Good catch. Added a null guard in parseInput() and a test case for null input.' " +
+        "This creates a queued reply that will be published to Azure DevOps when the user pushes. " +
+        "You do NOT need to call save_review_draft or queue_review_draft separately — this tool handles both. " +
+        "Only call this when you actually changed code for this comment. " +
+        "For text-only replies without code changes, use save_review_draft instead.",
+      inputSchema: {
+        index: z.number().int().positive().optional().describe("1-based comment index from list_review_comments."),
+        commentKey: z.string().optional().describe("Exact comment key when you already know it."),
+        body: z
+          .string()
+          .min(1)
+          .describe(
+            "Your reply to the reviewer. This is the full text that will appear on the Azure DevOps thread. " +
+              "Describe what you changed and why. Write naturally as a response to the reviewer's comment.",
+          ),
+        authorAgent: z.string().optional().describe("Agent label such as claude or codex."),
+      },
     },
-  }, async (input) => handlers.replyWithCodeChanges(input));
+    async (input) => handlers.replyWithCodeChanges(input),
+  );
 
   const transport = new StdioServerTransport();
   try {

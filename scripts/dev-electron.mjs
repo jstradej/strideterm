@@ -30,7 +30,9 @@ async function waitForRenderer() {
     await wait(APP_CONFIG.renderer.waitPollMs);
   }
 
-  throw new Error(`Renderer did not become reachable on ${APP_CONFIG.renderer.devHost}:${APP_CONFIG.renderer.devPort}.`);
+  throw new Error(
+    `Renderer did not become reachable on ${APP_CONFIG.renderer.devHost}:${APP_CONFIG.renderer.devPort}.`,
+  );
 }
 
 await waitForRenderer();

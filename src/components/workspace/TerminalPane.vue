@@ -1,5 +1,5 @@
 <template>
-  <div class="workspace-pane__body" ref="paneBodyRef"></div>
+  <div ref="paneBodyRef" class="workspace-pane__body"></div>
 </template>
 
 <script setup>

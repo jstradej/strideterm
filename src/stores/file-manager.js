@@ -3,7 +3,9 @@ import { ref, computed, shallowRef } from "vue";
 
 export const useFileManagerStore = defineStore("fileManager", () => {
   let _api = null;
-  function setApi(api) { _api = api; }
+  function setApi(api) {
+    _api = api;
+  }
 
   // State
   const rootPath = ref("");
@@ -49,7 +51,7 @@ export const useFileManagerStore = defineStore("fileManager", () => {
         if (a.kind === "directory" && b.kind !== "directory") return -1;
         if (a.kind !== "directory" && b.kind === "directory") return 1;
       }
-      let cmp = 0;
+      let cmp;
       switch (sortBy.value) {
         case "size":
           cmp = (a.size || 0) - (b.size || 0);
@@ -108,7 +110,11 @@ export const useFileManagerStore = defineStore("fileManager", () => {
       const next = new Map(treeNodes.value);
       const existing = next.get(relativePath);
       next.set(relativePath, {
-        entry: existing?.entry || { name: rootPath.value.split(/[/\\]/).pop() || "Root", relativePath: "", kind: "directory" },
+        entry: existing?.entry || {
+          name: rootPath.value.split(/[/\\]/).pop() || "Root",
+          relativePath: "",
+          kind: "directory",
+        },
         children: dirs.map((e) => {
           const prev = next.get(e.relativePath);
           return prev || { entry: e, children: null, expanded: false };
@@ -208,7 +214,11 @@ export const useFileManagerStore = defineStore("fileManager", () => {
   async function saveEdit() {
     if (!_api || !selectedEntry.value) return;
     try {
-      await _api.fileWrite({ rootPath: rootPath.value, relativePath: selectedEntry.value.relativePath, content: editContent.value });
+      await _api.fileWrite({
+        rootPath: rootPath.value,
+        relativePath: selectedEntry.value.relativePath,
+        content: editContent.value,
+      });
       editDirty.value = false;
       // Reload preview with new content
       await loadPreview(selectedEntry.value);
@@ -285,16 +295,43 @@ export const useFileManagerStore = defineStore("fileManager", () => {
   }
 
   return {
-    rootPath, currentPath, entries, treeNodes,
-    selectedEntry, preview, loading, error,
-    editMode, editContent, editDirty,
-    viewMode, showHidden, sortBy, sortAsc,
-    breadcrumbs, sortedEntries,
-    setApi, init, navigate, expandTreeNode, collapseTreeNode,
-    selectEntry, loadPreview,
-    createFile, createDirectory, renameEntry, deleteEntry,
-    startEdit, saveEdit, cancelEdit,
-    clipboard, copyToClipboard, clearClipboard, pasteEntry,
-    refresh, openInExplorer, toggleSort,
+    rootPath,
+    currentPath,
+    entries,
+    treeNodes,
+    selectedEntry,
+    preview,
+    loading,
+    error,
+    editMode,
+    editContent,
+    editDirty,
+    viewMode,
+    showHidden,
+    sortBy,
+    sortAsc,
+    breadcrumbs,
+    sortedEntries,
+    setApi,
+    init,
+    navigate,
+    expandTreeNode,
+    collapseTreeNode,
+    selectEntry,
+    loadPreview,
+    createFile,
+    createDirectory,
+    renameEntry,
+    deleteEntry,
+    startEdit,
+    saveEdit,
+    cancelEdit,
+    clipboard,
+    copyToClipboard,
+    clearClipboard,
+    pasteEntry,
+    refresh,
+    openInExplorer,
+    toggleSort,
   };
 });

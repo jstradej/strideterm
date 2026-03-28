@@ -67,18 +67,20 @@ export class SessionManager extends EventEmitter {
     return {
       workspace,
       project: workspace,
-      sessions: workspace.panels.filter((panel) => !isBrowserPanel(panel)).map((panel) => {
-        const runtimeSession = this.sessions.get(createSessionId(workspace.id, panel.id));
-        return {
-          sessionId: createSessionId(workspace.id, panel.id),
-          panelId: panel.id,
-          title: panel.title,
-          command: panel.command,
-          launch: panel.launch,
-          startup: panel.startup,
-          status: runtimeSession?.status || "idle",
-        };
-      }),
+      sessions: workspace.panels
+        .filter((panel) => !isBrowserPanel(panel))
+        .map((panel) => {
+          const runtimeSession = this.sessions.get(createSessionId(workspace.id, panel.id));
+          return {
+            sessionId: createSessionId(workspace.id, panel.id),
+            panelId: panel.id,
+            title: panel.title,
+            command: panel.command,
+            launch: panel.launch,
+            startup: panel.startup,
+            status: runtimeSession?.status || "idle",
+          };
+        }),
     };
   }
 
@@ -88,9 +90,10 @@ export class SessionManager extends EventEmitter {
       return null;
     }
 
-    const activePanelId = workspace.activePanelId
-      || workspace.panels.find((panel) => panel.startup !== APP_CONFIG.ui.manualPanelStartup)?.id
-      || workspace.panels[0]?.id;
+    const activePanelId =
+      workspace.activePanelId ||
+      workspace.panels.find((panel) => panel.startup !== APP_CONFIG.ui.manualPanelStartup)?.id ||
+      workspace.panels[0]?.id;
     return activePanelId ? createSessionId(workspace.id, activePanelId) : null;
   }
 
@@ -112,12 +115,13 @@ export class SessionManager extends EventEmitter {
       return existing;
     }
 
-    const launchOverride = this.getSessionLaunch?.({
-      state,
-      workspace,
-      panel,
-      sessionId: key,
-    }) || null;
+    const launchOverride =
+      this.getSessionLaunch?.({
+        state,
+        workspace,
+        panel,
+        sessionId: key,
+      }) || null;
 
     const launcher = launchOverride?.file
       ? {
@@ -125,11 +129,11 @@ export class SessionManager extends EventEmitter {
           args: [...(launchOverride.args || [])],
         }
       : panel.launch?.file
-      ? {
-          file: panel.launch.file,
-          args: [...(panel.launch.args || [])],
-        }
-      : shellConfig();
+        ? {
+            file: panel.launch.file,
+            args: [...(panel.launch.args || [])],
+          }
+        : shellConfig();
 
     const processHandle = pty.spawn(launcher.file, launcher.args, {
       name: APP_CONFIG.session.termName,
@@ -169,14 +173,21 @@ export class SessionManager extends EventEmitter {
     processHandle.onExit(({ exitCode }) => {
       session.status = "exited";
       session.processHandle = null;
-      this.emit("terminal:exit", { sessionId: session.id, exitCode, intentional: this.consumeSuppressedExit(session.id) });
+      this.emit("terminal:exit", {
+        sessionId: session.id,
+        exitCode,
+        intentional: this.consumeSuppressedExit(session.id),
+      });
     });
 
     this.sessions.set(key, session);
 
-    const injectedCommand = typeof launchOverride?.command === "string" && launchOverride.command.trim()
-      ? launchOverride.command
-      : ((!panel.launch?.file && !launchOverride?.file) ? panel.command : "");
+    const injectedCommand =
+      typeof launchOverride?.command === "string" && launchOverride.command.trim()
+        ? launchOverride.command
+        : !panel.launch?.file && !launchOverride?.file
+          ? panel.command
+          : "";
 
     if (!launchOverride?.skipCommandInjection && injectedCommand) {
       setTimeout(() => {
@@ -251,10 +262,15 @@ export class SessionManager extends EventEmitter {
       if (session.processHandle) {
         this.suppressNextExit(sessionId);
         const handle = session.processHandle;
-        exitPromises.push(new Promise((resolve) => {
-          const timeout = setTimeout(resolve, 5000);
-          handle.onExit(() => { clearTimeout(timeout); resolve(); });
-        }));
+        exitPromises.push(
+          new Promise((resolve) => {
+            const timeout = setTimeout(resolve, 5000);
+            handle.onExit(() => {
+              clearTimeout(timeout);
+              resolve();
+            });
+          }),
+        );
         handle.kill();
       }
       this.sessions.delete(sessionId);
@@ -264,7 +280,7 @@ export class SessionManager extends EventEmitter {
 
   syncWithState(state) {
     const validSessionIds = new Set();
-    for (const workspace of (state.workspaces || state.projects || [])) {
+    for (const workspace of state.workspaces || state.projects || []) {
       for (const panel of workspace.panels) {
         validSessionIds.add(createSessionId(workspace.id, panel.id));
       }

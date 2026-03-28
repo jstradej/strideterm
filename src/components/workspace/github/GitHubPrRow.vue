@@ -3,23 +3,27 @@
     <div class="azure-pr-row__main">
       <div class="azure-pr-row__title">
         <span class="azure-pr-row__id">#{{ pullRequest.number || pullRequest.id }}</span>
-        <strong>{{ pullRequest.title || 'Untitled pull request' }}</strong>
-        <span v-if="pullRequest.draft || pullRequest.isDraft" class="workspace-chip" style="font-size:10px;">Draft</span>
-        <span v-if="item.hasAttention" class="workspace-chip workspace-chip--alert" style="font-size:10px;">{{ item.attentionReason || 'attention' }}</span>
+        <strong>{{ pullRequest.title || "Untitled pull request" }}</strong>
+        <span v-if="pullRequest.draft || pullRequest.isDraft" class="workspace-chip" style="font-size: 10px"
+          >Draft</span
+        >
+        <span v-if="item.hasAttention" class="workspace-chip workspace-chip--alert" style="font-size: 10px">{{
+          item.attentionReason || "attention"
+        }}</span>
       </div>
       <div class="azure-pr-row__meta">
-        <span>{{ item.repository?.fullName || '' }}</span>
+        <span>{{ item.repository?.fullName || "" }}</span>
         <span>&middot;</span>
         <span>{{ authorName }}</span>
         <span>&middot;</span>
-        <span class="workspace-chip" style="font-size:10px;padding:0 4px;">{{ item.role || 'reviewer' }}</span>
+        <span class="workspace-chip" style="font-size: 10px; padding: 0 4px">{{ item.role || "reviewer" }}</span>
         <template v-if="item.reviewerSummary?.approvedCount">
           <span>&middot;</span>
-          <span style="color:#6edfb6;">{{ item.reviewerSummary.approvedCount }} approved</span>
+          <span style="color: #6edfb6">{{ item.reviewerSummary.approvedCount }} approved</span>
         </template>
         <template v-if="item.reviewerSummary?.changesRequestedCount">
           <span>&middot;</span>
-          <span style="color:#ff6f8d;">{{ item.reviewerSummary.changesRequestedCount }} changes requested</span>
+          <span style="color: #ff6f8d">{{ item.reviewerSummary.changesRequestedCount }} changes requested</span>
         </template>
       </div>
       <div class="azure-pr-row__branch">
@@ -27,9 +31,13 @@
       </div>
     </div>
     <div class="azure-pr-row__actions">
-      <button type="button" :class="['button', busy && 'button--busy']" :disabled="busy" @click="handleOpen">{{ busy ? 'Opening…' : actionLabel }}</button>
+      <button type="button" :class="['button', busy && 'button--busy']" :disabled="busy" @click="handleOpen">
+        {{ busy ? "Opening…" : actionLabel }}
+      </button>
       <button type="button" class="button button--ghost" @click="$emit('browser', pullRequest.webUrl)">Browser</button>
-      <button v-if="item.hasAttention" type="button" class="button button--ghost" @click="$emit('seen', item.prKey)">Seen</button>
+      <button v-if="item.hasAttention" type="button" class="button button--ghost" @click="$emit('seen', item.prKey)">
+        Seen
+      </button>
     </div>
   </article>
 </template>

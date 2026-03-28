@@ -61,7 +61,8 @@ contextBridge.exposeInMainWorld("strideterm", {
   submitGitHubPullRequestReview: (payload) => ipcRenderer.invoke("github:pull-request:review", payload),
   fetchGitHubReviewWorkspace: (workspaceId) => ipcRenderer.invoke("github:workspace:fetch", workspaceId),
   rebaseGitHubReviewWorkspace: (workspaceId) => ipcRenderer.invoke("github:workspace:rebase", workspaceId),
-  pushGitHubReviewWorkspace: (workspaceId, options) => ipcRenderer.invoke("github:workspace:push", workspaceId, options),
+  pushGitHubReviewWorkspace: (workspaceId, options) =>
+    ipcRenderer.invoke("github:workspace:push", workspaceId, options),
   githubListRemoteBranches: (payload) => ipcRenderer.invoke("github:list-remote-branches", payload),
   githubCreatePullRequest: (payload) => ipcRenderer.invoke("github:create-pull-request", payload),
   githubQuickFixListRepos: (payload) => ipcRenderer.invoke("github:quickfix:list-repos", payload),

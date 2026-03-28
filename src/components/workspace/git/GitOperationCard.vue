@@ -10,11 +10,13 @@
     <!-- Pending confirm banner -->
     <template v-if="pending">
       <div class="git-operation-banner git-operation-banner--confirm">
-        <strong>{{ pendingLines[0] || '' }}</strong>
+        <strong>{{ pendingLines[0] || "" }}</strong>
         <p v-for="(line, i) in pendingLines.slice(1)" :key="i">{{ line }}</p>
         <div class="git-operation-actions">
           <button type="button" class="button" @click="gitUiStore.gitConfirmAction(workspaceId)">Confirm</button>
-          <button type="button" class="button button--ghost" @click="gitUiStore.clearPendingGitAction(workspaceId)">Cancel</button>
+          <button type="button" class="button button--ghost" @click="gitUiStore.clearPendingGitAction(workspaceId)">
+            Cancel
+          </button>
         </div>
       </div>
     </template>
@@ -22,13 +24,29 @@
     <!-- Active operation banner -->
     <template v-if="operation.inProgress">
       <div class="git-operation-banner git-operation-banner--warning">
-        <strong>{{ operation.label || 'Git operation in progress' }}</strong>
+        <strong>{{ operation.label || "Git operation in progress" }}</strong>
         <p v-if="operation.details">{{ operation.details }}</p>
-        <small v-if="operation.conflicts?.length">{{ operation.conflicts.join(', ') }}</small>
+        <small v-if="operation.conflicts?.length">{{ operation.conflicts.join(", ") }}</small>
         <div class="git-operation-actions">
-          <button v-if="operation.canContinue" type="button" class="button" @click="gitUiStore.gitContinue(workspaceId)">Continue</button>
-          <button v-if="operation.canAbort" type="button" class="button button--ghost danger" @click="gitUiStore.gitAbort(workspaceId)">Abort</button>
-          <button type="button" class="button button--ghost" @click="gitUiStore.openLazygit(workspaceId)">Open Lazygit</button>
+          <button
+            v-if="operation.canContinue"
+            type="button"
+            class="button"
+            @click="gitUiStore.gitContinue(workspaceId)"
+          >
+            Continue
+          </button>
+          <button
+            v-if="operation.canAbort"
+            type="button"
+            class="button button--ghost danger"
+            @click="gitUiStore.gitAbort(workspaceId)"
+          >
+            Abort
+          </button>
+          <button type="button" class="button button--ghost" @click="gitUiStore.openLazygit(workspaceId)">
+            Open Lazygit
+          </button>
         </div>
       </div>
     </template>
@@ -37,13 +55,15 @@
     <template v-if="result">
       <div :class="['git-operation-banner', `git-operation-banner--${result.ok ? 'ok' : 'error'}`]">
         <div class="section-head">
-          <strong>{{ result.summary || (result.ok ? 'Git action completed.' : 'Git action failed.') }}</strong>
-          <button type="button" class="button button--ghost" @click="gitUiStore.gitClearResult(workspaceId)">Clear</button>
+          <strong>{{ result.summary || (result.ok ? "Git action completed." : "Git action failed.") }}</strong>
+          <button type="button" class="button button--ghost" @click="gitUiStore.gitClearResult(workspaceId)">
+            Clear
+          </button>
         </div>
         <ul v-if="result.warnings?.length" class="git-inline-list">
           <li v-for="(w, i) in result.warnings" :key="i">{{ w }}</li>
         </ul>
-        <p v-if="result.conflicts?.length" class="git-card__hint">Conflicts: {{ result.conflicts.join(', ') }}</p>
+        <p v-if="result.conflicts?.length" class="git-card__hint">Conflicts: {{ result.conflicts.join(", ") }}</p>
         <pre v-if="result.rawOutput" class="git-output">{{ result.rawOutput }}</pre>
       </div>
     </template>

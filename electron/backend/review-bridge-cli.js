@@ -85,9 +85,8 @@ function selectComment(context, options) {
 
 function buildCommentDetail(context, comment) {
   const threadId = comment.remoteThreadId ?? comment.payload?.threadId ?? null;
-  const thread = threadId == null
-    ? null
-    : (context.threads || []).find((entry) => Number(entry.id) === Number(threadId)) || null;
+  const thread =
+    threadId == null ? null : (context.threads || []).find((entry) => Number(entry.id) === Number(threadId)) || null;
   const drafts = (context.drafts || []).filter((entry) => entry.commentKey === comment.commentKey);
 
   return {
@@ -132,7 +131,9 @@ function printComments(context, asJson = false) {
   }
 
   for (const comment of comments) {
-    console.log(`${comment.index}. ${comment.title} [${comment.status}] (${comment.priority}) {${comment.commentKind}}`);
+    console.log(
+      `${comment.index}. ${comment.title} [${comment.status}] (${comment.priority}) {${comment.commentKind}}`,
+    );
     console.log(`   ${comment.commentKey}`);
     if (comment.summary) {
       console.log(`   ${comment.summary}`);
@@ -217,14 +218,20 @@ async function main() {
         authorAgent: String(options["author-agent"] || process.env.USER || process.env.USERNAME || "agent"),
       });
       const draft = (nextContext?.drafts || []).find((entry) => entry.commentKey === comment.commentKey);
-      console.log(JSON.stringify({
-        ok: true,
-        prKey,
-        index,
-        commentKey: comment.commentKey,
-        draftId: draft?.draftId || null,
-        status: draft?.status || "draft",
-      }, null, 2));
+      console.log(
+        JSON.stringify(
+          {
+            ok: true,
+            prKey,
+            index,
+            commentKey: comment.commentKey,
+            draftId: draft?.draftId || null,
+            status: draft?.status || "draft",
+          },
+          null,
+          2,
+        ),
+      );
       return;
     }
 
@@ -240,13 +247,19 @@ async function main() {
       const createdComment = [...(nextContext?.comments || [])]
         .filter((entry) => entry.commentKind === "draft" || entry.commentKind === "local-comment")
         .sort((left, right) => Date.parse(right.updatedAt || 0) - Date.parse(left.updatedAt || 0))[0];
-      console.log(JSON.stringify({
-        ok: true,
-        prKey,
-        commentKey: createdComment?.commentKey || null,
-        title: createdComment?.title || null,
-        status: createdComment?.status || "ready-for-agent",
-      }, null, 2));
+      console.log(
+        JSON.stringify(
+          {
+            ok: true,
+            prKey,
+            commentKey: createdComment?.commentKey || null,
+            title: createdComment?.title || null,
+            status: createdComment?.status || "ready-for-agent",
+          },
+          null,
+          2,
+        ),
+      );
       return;
     }
 
@@ -257,14 +270,20 @@ async function main() {
         commentKey: comment.commentKey,
       });
       const queueItem = (nextContext?.syncQueue || []).find((entry) => entry.commentKey === comment.commentKey) || null;
-      console.log(JSON.stringify({
-        ok: true,
-        prKey,
-        index,
-        commentKey: comment.commentKey,
-        queueId: queueItem?.queueId || null,
-        status: queueItem?.status || "pending",
-      }, null, 2));
+      console.log(
+        JSON.stringify(
+          {
+            ok: true,
+            prKey,
+            index,
+            commentKey: comment.commentKey,
+            queueId: queueItem?.queueId || null,
+            status: queueItem?.status || "pending",
+          },
+          null,
+          2,
+        ),
+      );
       return;
     }
 

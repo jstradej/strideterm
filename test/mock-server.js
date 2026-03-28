@@ -41,7 +41,7 @@ export function loadFixture(name) {
 }
 
 export async function startMockServer({ fixture = "empty-state", port = 0 } = {}) {
-  let payload = JSON.parse(JSON.stringify(loadFixture(fixture)));
+  const payload = JSON.parse(JSON.stringify(loadFixture(fixture)));
   const TOKEN = "test-token";
   const sockets = new Set();
 
@@ -68,8 +68,12 @@ export async function startMockServer({ fixture = "empty-state", port = 0 } = {}
     // Stateful POST handler — apply basic mutations and broadcast via WS
     if (req.method === "POST" && url.pathname.startsWith("/api/")) {
       let raw = "";
-      req.on("data", (chunk) => { raw += chunk; });
-      req.on("error", () => { res.destroy(); });
+      req.on("data", (chunk) => {
+        raw += chunk;
+      });
+      req.on("error", () => {
+        res.destroy();
+      });
       req.on("end", () => {
         const body = raw ? JSON.parse(raw) : {};
 
@@ -82,10 +86,16 @@ export async function startMockServer({ fixture = "empty-state", port = 0 } = {}
             const ws = payload.appState.workspaces.find((w) => w.id === wsId);
             if (ws) {
               payload.workspace = {
-                workspace: ws, project: ws,
+                workspace: ws,
+                project: ws,
                 sessions: (ws.panels || []).map((p) => ({
-                  sessionId: `${ws.id}:${p.id}`, panelId: p.id, title: p.title,
-                  command: p.command, launch: p.launch, startup: p.startup, status: "running",
+                  sessionId: `${ws.id}:${p.id}`,
+                  panelId: p.id,
+                  title: p.title,
+                  command: p.command,
+                  launch: p.launch,
+                  startup: p.startup,
+                  status: "running",
                 })),
               };
             }
@@ -106,13 +116,17 @@ export async function startMockServer({ fixture = "empty-state", port = 0 } = {}
     }
 
     // Proxy everything else to Vite dev server
-    const proxyReq = http.request(`${VITE_ORIGIN}${req.url}`, {
-      method: req.method,
-      headers: { ...req.headers, host: new URL(VITE_ORIGIN).host },
-    }, (proxyRes) => {
-      res.writeHead(proxyRes.statusCode, proxyRes.headers);
-      proxyRes.pipe(res);
-    });
+    const proxyReq = http.request(
+      `${VITE_ORIGIN}${req.url}`,
+      {
+        method: req.method,
+        headers: { ...req.headers, host: new URL(VITE_ORIGIN).host },
+      },
+      (proxyRes) => {
+        res.writeHead(proxyRes.statusCode, proxyRes.headers);
+        proxyRes.pipe(res);
+      },
+    );
     proxyReq.on("error", () => {
       res.writeHead(502, { "Content-Type": "text/plain" });
       res.end("Vite dev server unavailable. Start it with: npm run dev:web");
@@ -152,8 +166,10 @@ export async function startMockServer({ fixture = "empty-state", port = 0 } = {}
     proxyReq.on("upgrade", (proxyRes, proxySocket, proxyHead) => {
       socket.write(
         `HTTP/1.1 101 Switching Protocols\r\n` +
-        Object.entries(proxyRes.headers).map(([k, v]) => `${k}: ${v}`).join("\r\n") +
-        "\r\n\r\n",
+          Object.entries(proxyRes.headers)
+            .map(([k, v]) => `${k}: ${v}`)
+            .join("\r\n") +
+          "\r\n\r\n",
       );
       if (proxyHead.length) socket.write(proxyHead);
       proxySocket.pipe(socket);
@@ -168,7 +184,10 @@ export async function startMockServer({ fixture = "empty-state", port = 0 } = {}
 
   await new Promise((resolve, reject) => {
     server.once("error", reject);
-    server.listen(port, "127.0.0.1", () => { server.removeListener("error", reject); resolve(); });
+    server.listen(port, "127.0.0.1", () => {
+      server.removeListener("error", reject);
+      resolve();
+    });
   });
 
   const actualPort = server.address().port;
@@ -193,5 +212,8 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.a
   const srv = await startMockServer({ fixture, port });
   console.log(`Mock server ready: ${srv.url} (fixture: ${fixture})`);
   console.log(`Browser URL: ${srv.browserUrl}`);
-  process.on("SIGINT", async () => { await srv.close(); process.exit(0); });
+  process.on("SIGINT", async () => {
+    await srv.close();
+    process.exit(0);
+  });
 }

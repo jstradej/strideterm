@@ -1,4 +1,4 @@
-name: E2E Tests
+name: CI
 
 on:
   push:
@@ -7,26 +7,35 @@ on:
     branches: [master]
 
 jobs:
-  e2e:
+  lint:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
-
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
-
       - run: npm ci
+      - name: ESLint
+        run: npx eslint .
+      - name: Prettier
+        run: npx prettier --check .
 
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
       - name: Install Playwright browsers
         run: npx playwright install --with-deps chromium
-
       - name: Run E2E tests
         run: npx playwright test
-
       - name: Upload HTML report
         if: always()
         uses: actions/upload-artifact@v4
@@ -34,7 +43,6 @@ jobs:
           name: playwright-report
           path: playwright-report/
           retention-days: 14
-
       - name: Upload failure screenshots
         if: failure()
         uses: actions/upload-artifact@v4

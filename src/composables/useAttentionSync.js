@@ -16,9 +16,7 @@ export function useAttentionSync(api) {
     const base = documentTitleBase + profileLabel;
     document.title = count > 0 ? `(${count}) ${base}` : base;
 
-    const visibleSessionIds = appStore.visibleTabs
-      .filter((tab) => tab.type === "terminal")
-      .map((tab) => tab.id);
+    const visibleSessionIds = appStore.visibleTabs.filter((tab) => tab.type === "terminal").map((tab) => tab.id);
 
     // Deduplicate: skip API call if nothing changed
     const syncKey = `${count}:${waitingCount}:${profile.id}:${visibleSessionIds.join(",")}`;
@@ -30,9 +28,7 @@ export function useAttentionSync(api) {
     if (browserBadgeKey !== nextBadgeKey) {
       browserBadgeKey = nextBadgeKey;
       if (typeof navigator.setAppBadge === "function") {
-        const action = count > 0
-          ? navigator.setAppBadge(count)
-          : navigator.clearAppBadge?.();
+        const action = count > 0 ? navigator.setAppBadge(count) : navigator.clearAppBadge?.();
         action?.catch?.(() => {});
       }
     }

@@ -1,18 +1,18 @@
 <template>
   <div class="file-editor">
-    <div class="file-editor__gutter" ref="gutter">
+    <div ref="gutter" class="file-editor__gutter">
       <div v-for="n in lineCount" :key="n" class="file-editor__line-number">{{ n }}</div>
     </div>
     <textarea
       ref="textarea"
       class="file-editor__input"
       :value="store.editContent"
+      spellcheck="false"
+      wrap="off"
       @input="onInput"
       @keydown.ctrl.s.prevent="store.saveEdit()"
       @keydown.escape="store.cancelEdit()"
       @scroll="syncGutterScroll"
-      spellcheck="false"
-      wrap="off"
     />
   </div>
 </template>

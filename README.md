@@ -25,12 +25,12 @@ Stop losing terminals in a mess of scattered windows. strIDEterm puts all your s
 
 ## Screenshots
 
-| Welcome Screen | Add Workspace | Create Workspace |
-|---|---|---|
+| Welcome Screen                                 | Add Workspace                                    | Create Workspace                                       |
+| ---------------------------------------------- | ------------------------------------------------ | ------------------------------------------------------ |
 | ![Welcome](docs/images/screenshot-welcome.png) | ![Add](docs/images/screenshot-add-workspace.png) | ![Create](docs/images/screenshot-create-workspace.gif) |
 
-| Notifications | Remote Access | Lazydocker |
-|---|---|---|
+| Notifications                                              | Remote Access                                       | Lazydocker                                           |
+| ---------------------------------------------------------- | --------------------------------------------------- | ---------------------------------------------------- |
 | ![Notifications](docs/images/screenshot-notifications.png) | ![Remote](docs/images/screenshot-remote-access.png) | ![Lazydocker](docs/images/screenshot-lazydocker.png) |
 
 ## Platform Support
@@ -43,10 +43,10 @@ Stop losing terminals in a mess of scattered windows. strIDEterm puts all your s
 
 **[Download the latest release](https://github.com/jstradej/strideterm/releases/latest)** — pre-built installers are available for all platforms:
 
-| Platform | Format |
-|----------|--------|
-| Windows  | NSIS installer (`.exe`) + portable |
-| macOS    | DMG (`.dmg`) — x64 and arm64 |
+| Platform | Format                                           |
+| -------- | ------------------------------------------------ |
+| Windows  | NSIS installer (`.exe`) + portable               |
+| macOS    | DMG (`.dmg`) — x64 and arm64                     |
 | Linux    | AppImage (`.AppImage`) + Debian package (`.deb`) |
 
 Nightly builds from the latest `master` are available on the [Releases page](https://github.com/jstradej/strideterm/releases) for bleeding-edge users.
@@ -58,10 +58,12 @@ Most users should use the [pre-built releases](https://github.com/jstradej/strid
 ### Requirements
 
 **Required:**
+
 - Node.js 22+
 - npm
 
 **Optional:**
+
 - `git` - for Git integration
 - Docker CLI - for Docker workspaces
 - `lazygit` - for Git TUI
@@ -123,6 +125,7 @@ From another device: `http://<your-lan-ip>:43123/?token=<token>`
 ## Plugins
 
 Built-in plugins:
+
 - **GitHub** - GitHub PR review integration
 - **Docker Ops** - container management workspace
 - **System Monitor** - system dashboard
@@ -142,6 +145,7 @@ npm run smoke       # Startup smoke test
 ## Architecture
 
 The app is split into:
+
 - **Electron backend** (`electron/`) - runtime, session manager, store, Docker/Git/tunnel managers
 - **Renderer** (`src/`) - Vue 3 + Pinia single-page application with Composition API
 - **Shared config** (`config/`) - app-wide configuration

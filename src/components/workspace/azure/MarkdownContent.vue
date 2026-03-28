@@ -10,11 +10,7 @@ const props = defineProps({
 });
 
 function escapeHtml(str) {
-  return str
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
+  return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 
 function renderMarkdownToHtml(text = "") {
@@ -33,8 +29,9 @@ function renderMarkdownToHtml(text = "") {
   // Line breaks (but not inside pre blocks)
   out = out.replace(/\n/g, "<br>");
   // Clean up extra <br> inside pre
-  out = out.replace(/<pre><code>([\s\S]*?)<\/code><\/pre>/g, (_, code) =>
-    `<pre><code>${code.replace(/<br>/g, "\n")}</code></pre>`
+  out = out.replace(
+    /<pre><code>([\s\S]*?)<\/code><\/pre>/g,
+    (_, code) => `<pre><code>${code.replace(/<br>/g, "\n")}</code></pre>`,
   );
   return out;
 }

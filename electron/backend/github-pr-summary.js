@@ -18,16 +18,18 @@ export function findWorkspaceForPullRequest(workspaces, prKey) {
 export function findMatchingWorkspace(summary, workspaces = [], gitSnapshots = {}) {
   const targetRemote = normalizeRemoteUrl(summary.repository?.remoteUrl || "");
   const sourceBranch = summary.pullRequest?.sourceRefName || "";
-  return workspaces.find((ws) => {
-    if (ws.kind === "docker" || !ws.cwd) return false;
-    const snapshot = gitSnapshots?.[ws.id];
-    const origin = normalizeRemoteUrl(snapshot?.remotes?.origin || "");
-    if (targetRemote && origin && origin !== targetRemote) return false;
-    if (summary.role === "author" && snapshot?.branch && sourceBranch) {
-      return snapshot.branch === sourceBranch;
-    }
-    return origin && origin === targetRemote;
-  }) || null;
+  return (
+    workspaces.find((ws) => {
+      if (ws.kind === "docker" || !ws.cwd) return false;
+      const snapshot = gitSnapshots?.[ws.id];
+      const origin = normalizeRemoteUrl(snapshot?.remotes?.origin || "");
+      if (targetRemote && origin && origin !== targetRemote) return false;
+      if (summary.role === "author" && snapshot?.branch && sourceBranch) {
+        return snapshot.branch === sourceBranch;
+      }
+      return origin && origin === targetRemote;
+    }) || null
+  );
 }
 
 /**
@@ -52,7 +54,7 @@ function summarizeReviewers(reviews = [], requestedReviewers = [], currentUserLo
 
   // Requested reviewers (pending)
   const users = requestedReviewers?.users || requestedReviewers || [];
-  for (const user of (Array.isArray(users) ? users : [])) {
+  for (const user of Array.isArray(users) ? users : []) {
     const login = user.login || "";
     if (!login) continue;
     reviewerMap.set(login, {
@@ -66,7 +68,7 @@ function summarizeReviewers(reviews = [], requestedReviewers = [], currentUserLo
 
   // Requested teams
   const teams = requestedReviewers?.teams || [];
-  for (const team of (Array.isArray(teams) ? teams : [])) {
+  for (const team of Array.isArray(teams) ? teams : []) {
     const key = `team:${team.slug || team.name}`;
     reviewerMap.set(key, {
       login: key,
@@ -118,7 +120,8 @@ function buildCheckSummary(checkRuns = [], combinedStatus = null) {
       name: run.name || "Check",
       description: run.output?.title || "",
       state,
-      stateLabel: state === "failed" ? "failed" : (state === "pending" ? "pending" : (state === "succeeded" ? "passed" : "unknown")),
+      stateLabel:
+        state === "failed" ? "failed" : state === "pending" ? "pending" : state === "succeeded" ? "passed" : "unknown",
       url: run.html_url || run.details_url || "",
     });
   }
@@ -132,7 +135,14 @@ function buildCheckSummary(checkRuns = [], combinedStatus = null) {
         name: status.context || "Status",
         description: status.description || "",
         state,
-        stateLabel: state === "failed" ? "failed" : (state === "pending" ? "pending" : (state === "succeeded" ? "passed" : "unknown")),
+        stateLabel:
+          state === "failed"
+            ? "failed"
+            : state === "pending"
+              ? "pending"
+              : state === "succeeded"
+                ? "passed"
+                : "unknown",
         url: status.target_url || "",
       });
     }
@@ -180,9 +190,7 @@ function groupReviewCommentThreads(reviewComments = []) {
       }
     }
 
-    const allComments = [rootComment, ...replies].sort(
-      (a, b) => parseDate(a.created_at) - parseDate(b.created_at),
-    );
+    const allComments = [rootComment, ...replies].sort((a, b) => parseDate(a.created_at) - parseDate(b.created_at));
 
     threads.push({
       id: rootId,
@@ -233,7 +241,7 @@ export function buildPullRequestSummary({
   const isAuthor = (pr.user?.login || "").toLowerCase() === currentUserLogin.toLowerCase();
   const reviewerInfo = summarizeReviewers(reviews, requestedReviewers, currentUserLogin);
   const isReviewer = !isAuthor && (reviewerInfo.myIsRequested || reviewerInfo.myState !== "");
-  const role = isAuthor ? "author" : (isReviewer ? "reviewer" : "observer");
+  const role = isAuthor ? "author" : isReviewer ? "reviewer" : "observer";
 
   const threads = groupReviewCommentThreads(reviewComments);
 
@@ -250,8 +258,12 @@ export function buildPullRequestSummary({
 
   // New comments since last seen
   const lastSeenAt = parseDate(tracked.lastSeenActivityAt);
-  const otherIssueComments = issueComments.filter((c) => (c.user?.login || "").toLowerCase() !== currentUserLogin.toLowerCase());
-  const otherReviewComments = reviewComments.filter((c) => (c.user?.login || "").toLowerCase() !== currentUserLogin.toLowerCase());
+  const otherIssueComments = issueComments.filter(
+    (c) => (c.user?.login || "").toLowerCase() !== currentUserLogin.toLowerCase(),
+  );
+  const otherReviewComments = reviewComments.filter(
+    (c) => (c.user?.login || "").toLowerCase() !== currentUserLogin.toLowerCase(),
+  );
   const newCommentsCount = [
     ...otherIssueComments.filter((c) => parseDate(c.updated_at || c.created_at) > lastSeenAt),
     ...otherReviewComments.filter((c) => parseDate(c.updated_at || c.created_at) > lastSeenAt),
@@ -262,7 +274,9 @@ export function buildPullRequestSummary({
     .map((r) => `${r.login}:${r.state}:${r.isRequested ? 1 : 0}`)
     .sort()
     .join("|");
-  const reviewStateChanged = Boolean(tracked.lastReviewStateSignature && tracked.lastReviewStateSignature !== reviewStateSignature);
+  const reviewStateChanged = Boolean(
+    tracked.lastReviewStateSignature && tracked.lastReviewStateSignature !== reviewStateSignature,
+  );
 
   // Source branch updated
   const headSha = pr.head?.sha || "";
@@ -311,7 +325,9 @@ export function buildPullRequestSummary({
       owner,
       name: repo,
       fullName: `${owner}/${repo}`,
-      remoteUrl: pr.base?.repo?.clone_url || buildPullRequestWebUrl(hostUrl, owner, repo, pullNumber).replace(`/pull/${pullNumber}`, ""),
+      remoteUrl:
+        pr.base?.repo?.clone_url ||
+        buildPullRequestWebUrl(hostUrl, owner, repo, pullNumber).replace(`/pull/${pullNumber}`, ""),
     },
     pullRequest: {
       id: pullNumber,

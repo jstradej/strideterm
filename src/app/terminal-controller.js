@@ -75,11 +75,13 @@ export function createTerminalController({
       view?.term?.refresh?.(0, Math.max(0, view.term.rows - 1));
     }, 120);
 
-    document.fonts?.ready?.then(() => {
-      scheduleSessionResize(sessionId, { force: true });
-      const view = views.value.get(sessionId);
-      view?.term?.refresh?.(0, Math.max(0, view.term.rows - 1));
-    }).catch(() => {});
+    document.fonts?.ready
+      ?.then(() => {
+        scheduleSessionResize(sessionId, { force: true });
+        const view = views.value.get(sessionId);
+        view?.term?.refresh?.(0, Math.max(0, view.term.rows - 1));
+      })
+      .catch(() => {});
   }
 
   function scheduleActiveResize(options) {
@@ -247,7 +249,10 @@ export function createTerminalController({
 
     const timestamp = new Date().toISOString().replaceAll(":", "-");
     const filename = `${safeFilenamePart(title, "terminal")}-${timestamp}.log`;
-    downloadTextFile(filename, `# ${title}\n# Exported ${new Date().toISOString()}\n# Last ${lineCount} lines\n\n${transcript}\n`);
+    downloadTextFile(
+      filename,
+      `# ${title}\n# Exported ${new Date().toISOString()}\n# Last ${lineCount} lines\n\n${transcript}\n`,
+    );
     return true;
   }
 
@@ -289,7 +294,12 @@ export function createTerminalController({
       const isLight = document.documentElement.dataset.theme === "light";
       const theme = isLight
         ? { background: "#f7f7f9", foreground: "#18181b", cursor: "#18181b", selectionBackground: "rgba(0,0,0,0.15)" }
-        : { background: "#141416", foreground: "#d8e4f5", cursor: "#d8e4f5", selectionBackground: "rgba(255,255,255,0.15)" };
+        : {
+            background: "#141416",
+            foreground: "#d8e4f5",
+            cursor: "#d8e4f5",
+            selectionBackground: "rgba(255,255,255,0.15)",
+          };
       for (const view of views.value.values()) {
         view.term.options.theme = theme;
       }

@@ -1,5 +1,5 @@
 <template>
-  <div class="dialog" style="width:min(420px,100%);">
+  <div class="dialog" style="width: min(420px, 100%)">
     <div class="dialog__header">
       <div>
         <p class="eyebrow">{{ eyebrow }}</p>
@@ -10,7 +10,7 @@
     <form class="form" @submit.prevent="handleSubmit">
       <label>
         <span>{{ label }}</span>
-        <input ref="inputRef" name="value" v-model="inputValue" :placeholder="placeholder" required />
+        <input ref="inputRef" v-model="inputValue" name="value" :placeholder="placeholder" required />
       </label>
       <footer class="dialog__footer">
         <button type="button" class="button button--ghost" @click="emit('cancel')">Cancel</button>
@@ -37,10 +37,12 @@ const emit = defineEmits(["cancel", "submit"]);
 const inputRef = ref(null);
 const inputValue = ref(props.value);
 
-onMounted(() => requestAnimationFrame(() => {
-  inputRef.value?.focus();
-  inputRef.value?.select();
-}));
+onMounted(() =>
+  requestAnimationFrame(() => {
+    inputRef.value?.focus();
+    inputRef.value?.select();
+  }),
+);
 
 function handleSubmit() {
   const val = inputValue.value.trim();

@@ -22,7 +22,9 @@ function safeSegment(value, fallback = "unknown") {
 }
 
 export function collapseText(value) {
-  return String(value || "").replaceAll(/\s+/g, " ").trim();
+  return String(value || "")
+    .replaceAll(/\s+/g, " ")
+    .trim();
 }
 
 export function firstNonEmpty(...values) {
@@ -51,7 +53,11 @@ export function buildCommentTitle(thread) {
 export function buildCommentSummary(thread) {
   const latestComment = [...(thread?.comments || [])]
     .filter((comment) => String(comment?.content || "").trim())
-    .sort((left, right) => Date.parse(right?.lastUpdatedDate || right?.publishedDate || 0) - Date.parse(left?.lastUpdatedDate || left?.publishedDate || 0))[0];
+    .sort(
+      (left, right) =>
+        Date.parse(right?.lastUpdatedDate || right?.publishedDate || 0) -
+        Date.parse(left?.lastUpdatedDate || left?.publishedDate || 0),
+    )[0];
   return collapseText(latestComment?.content || "") || "Reviewer feedback imported from Azure DevOps.";
 }
 
@@ -160,7 +166,10 @@ export function buildBriefMarkdown(context) {
         `  Title: ${comment.title}`,
         `  Summary: ${comment.summary || ""}`,
       );
-      if ((comment.commentKind === "draft" || comment.commentKind === "local-comment") && comment.payload?.questionBody) {
+      if (
+        (comment.commentKind === "draft" || comment.commentKind === "local-comment") &&
+        comment.payload?.questionBody
+      ) {
         lines.push(`  Body: ${collapseText(comment.payload.questionBody)}`);
       }
     }
@@ -193,7 +202,10 @@ export function buildBriefMarkdown(context) {
     }
   }
 
-  return `${lines.join("\n").replaceAll(/\n{3,}/g, "\n\n").trim()}\n`;
+  return `${lines
+    .join("\n")
+    .replaceAll(/\n{3,}/g, "\n\n")
+    .trim()}\n`;
 }
 
 export function buildThreadsMarkdown(context) {
@@ -204,10 +216,7 @@ export function buildThreadsMarkdown(context) {
 }
 
 export function buildDraftsMarkdown(context) {
-  const lines = [
-    "# Draft Responses",
-    "",
-  ];
+  const lines = ["# Draft Responses", ""];
   if (!context.drafts.length) {
     lines.push("No draft responses yet.");
   } else {
@@ -247,7 +256,8 @@ export function buildSyncStatusMarkdown(context) {
 
 export function buildAgentInstructions(context) {
   return {
-    purpose: "Read review comments, prepare draft answers, create follow-up draft comments when needed, and never call Azure DevOps directly.",
+    purpose:
+      "Read review comments, prepare draft answers, create follow-up draft comments when needed, and never call Azure DevOps directly.",
     mcp: {
       mode: "embedded-review-tab",
       tools: [

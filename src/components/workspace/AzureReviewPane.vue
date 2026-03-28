@@ -7,94 +7,131 @@
       :actions="headerActions"
       @action="onHeaderAction"
     />
-    <div v-if="!detail && isPrePrWorkspace" class="git-view review-shell" style="overflow-y:auto;">
-      <div style="padding:16px 20px;max-width:720px;">
+    <div v-if="!detail && isPrePrWorkspace" class="git-view review-shell" style="overflow-y: auto">
+      <div style="padding: 16px 20px; max-width: 720px">
         <div class="section-head">
           <div>
             <p class="eyebrow">New Branch</p>
-            <h3>{{ gitSnapshot?.branch || 'Working branch' }}</h3>
+            <h3>{{ gitSnapshot?.branch || "Working branch" }}</h3>
           </div>
-          <button type="button" class="button button--ghost button--small" :disabled="busyAction === 'refresh'" @click="handleRefresh">{{ busyAction === 'refresh' ? 'Refreshing…' : '↻ Refresh' }}</button>
+          <button
+            type="button"
+            class="button button--ghost button--small"
+            :disabled="busyAction === 'refresh'"
+            @click="handleRefresh"
+          >
+            {{ busyAction === "refresh" ? "Refreshing…" : "↻ Refresh" }}
+          </button>
         </div>
 
         <!-- Workflow steps -->
-        <div style="margin-top:16px;display:grid;gap:8px;">
+        <div style="margin-top: 16px; display: grid; gap: 8px">
           <div :class="['nb-step', hasDirtyOrCommits && 'nb-step--done', !hasDirtyOrCommits && 'nb-step--active']">
-            <span class="nb-step__check">{{ hasDirtyOrCommits ? '\u2705' : '\u2B1C' }}</span>
+            <span class="nb-step__check">{{ hasDirtyOrCommits ? "\u2705" : "\u2B1C" }}</span>
             <div>
               <strong>1. Implement your changes</strong>
               <p>Use the terminal tabs to write code, run tests, and verify your work.</p>
             </div>
           </div>
-          <div :class="['nb-step', hasCommits && 'nb-step--done', hasDirtyOrCommits && !hasCommits && 'nb-step--active']">
-            <span class="nb-step__check">{{ hasCommits ? '\u2705' : '\u2B1C' }}</span>
+          <div
+            :class="['nb-step', hasCommits && 'nb-step--done', hasDirtyOrCommits && !hasCommits && 'nb-step--active']"
+          >
+            <span class="nb-step__check">{{ hasCommits ? "\u2705" : "\u2B1C" }}</span>
             <div>
               <strong>2. Commit your changes</strong>
-              <p>{{ gitSnapshot?.dirty ? `You have ${gitSnapshot.dirtyCount} uncommitted file(s).` : hasCommits ? `${gitSnapshot?.aheadCount || 0} commit(s) ready to push.` : 'Working tree is clean. Make some changes first.' }}</p>
+              <p>
+                {{
+                  gitSnapshot?.dirty
+                    ? `You have ${gitSnapshot.dirtyCount} uncommitted file(s).`
+                    : hasCommits
+                      ? `${gitSnapshot?.aheadCount || 0} commit(s) ready to push.`
+                      : "Working tree is clean. Make some changes first."
+                }}
+              </p>
             </div>
           </div>
           <div :class="['nb-step', hasCommits && 'nb-step--active']">
-            <span class="nb-step__check">{{ '\u2B1C' }}</span>
+            <span class="nb-step__check">{{ "\u2B1C" }}</span>
             <div>
               <strong>3. Create a pull request</strong>
-              <p>{{ hasCommits ? 'Fill in the form below and create your PR.' : 'Commit your changes first, then create a PR.' }}</p>
+              <p>
+                {{
+                  hasCommits
+                    ? "Fill in the form below and create your PR."
+                    : "Commit your changes first, then create a PR."
+                }}
+              </p>
             </div>
           </div>
         </div>
 
         <!-- Commits -->
-        <div v-if="hasCommits" style="margin-top:20px;">
+        <div v-if="hasCommits" style="margin-top: 20px">
           <p class="eyebrow">Commits ({{ gitSnapshot?.aheadCount || 0 }} ahead of base)</p>
-          <div style="margin-top:6px;">
-            <GitCommitLog
-              :commits="recentCommits"
-              :ahead-count="gitSnapshot?.aheadCount || 0"
-              selected-commit=""
-            />
+          <div style="margin-top: 6px">
+            <GitCommitLog :commits="recentCommits" :ahead-count="gitSnapshot?.aheadCount || 0" selected-commit="" />
           </div>
         </div>
 
         <!-- PR creation form -->
-        <div style="margin-top:20px;border-top:1px solid var(--border);padding-top:16px;">
+        <div style="margin-top: 20px; border-top: 1px solid var(--border); padding-top: 16px">
           <p class="eyebrow">Create Pull Request</p>
-          <h3 style="margin-top:4px;">{{ gitSnapshot?.branch || '?' }} &rarr; {{ prFormTarget || baseBranch || '?' }}</h3>
-          <div class="git-pr-form" style="margin-top:12px;">
+          <h3 style="margin-top: 4px">
+            {{ gitSnapshot?.branch || "?" }} &rarr; {{ prFormTarget || baseBranch || "?" }}
+          </h3>
+          <div class="git-pr-form" style="margin-top: 12px">
             <label class="git-pr-form__field">
               <span class="git-pr-form__label">Source branch</span>
               <input class="git-pr-form__input" type="text" :value="gitSnapshot?.branch || ''" disabled />
             </label>
             <label class="git-pr-form__field">
               <span class="git-pr-form__label">Target branch</span>
-              <select class="git-branch-select" v-model="prFormTarget">
+              <select v-model="prFormTarget" class="git-branch-select">
                 <option value="" disabled>-- select target --</option>
                 <option v-for="b in prFormBranches" :key="b" :value="b">{{ b }}</option>
               </select>
-              <button v-if="!prFormLoadingBranches" type="button" class="button button--ghost button--small" style="margin-left:6px" @click="loadPrBranches">Load remote branches</button>
-              <span v-else style="font-size:12px;color:var(--muted);margin-left:6px;">Loading...</span>
+              <button
+                v-if="!prFormLoadingBranches"
+                type="button"
+                class="button button--ghost button--small"
+                style="margin-left: 6px"
+                @click="loadPrBranches"
+              >
+                Load remote branches
+              </button>
+              <span v-else style="font-size: 12px; color: var(--muted); margin-left: 6px">Loading...</span>
             </label>
             <label class="git-pr-form__field">
               <span class="git-pr-form__label">Title</span>
-              <input class="git-pr-form__input" type="text" v-model="prFormTitle" placeholder="Pull request title" />
+              <input v-model="prFormTitle" class="git-pr-form__input" type="text" placeholder="Pull request title" />
             </label>
             <label class="git-pr-form__field">
               <span class="git-pr-form__label">Description</span>
-              <textarea class="git-pr-form__input git-pr-form__textarea" v-model="prFormDescription" placeholder="Optional description" rows="4"></textarea>
+              <textarea
+                v-model="prFormDescription"
+                class="git-pr-form__input git-pr-form__textarea"
+                placeholder="Optional description"
+                rows="4"
+              ></textarea>
             </label>
-            <label class="git-pr-form__field" style="flex-direction:row;align-items:center;gap:8px;">
-              <input type="checkbox" v-model="prFormDraft" />
+            <label class="git-pr-form__field" style="flex-direction: row; align-items: center; gap: 8px">
+              <input v-model="prFormDraft" type="checkbox" />
               <span>Create as draft</span>
             </label>
             <div class="git-operation-actions">
-              <button
-                type="button"
-                class="button"
-                :disabled="!prFormCanSubmit || prFormBusy"
-                @click="handleCreatePr"
-              >{{ prFormBusy ? 'Creating…' : (prFormDraft ? 'Create Draft Pull Request' : 'Create Pull Request') }}</button>
+              <button type="button" class="button" :disabled="!prFormCanSubmit || prFormBusy" @click="handleCreatePr">
+                {{ prFormBusy ? "Creating…" : prFormDraft ? "Create Draft Pull Request" : "Create Pull Request" }}
+              </button>
             </div>
             <p v-if="prFormResult" :class="['git-card__hint', prFormResult.ok ? '' : 'git-card__hint--warning']">
               {{ prFormResult.summary }}
-              <a v-if="prFormResult.url" :href="prFormResult.url" @click.prevent="openExternal(prFormResult.url)" style="color:var(--accent);text-decoration:underline;">Open in browser</a>
+              <a
+                v-if="prFormResult.url"
+                :href="prFormResult.url"
+                style="color: var(--accent); text-decoration: underline"
+                @click.prevent="openExternal(prFormResult.url)"
+                >Open in browser</a
+              >
             </p>
           </div>
         </div>
@@ -108,43 +145,160 @@
       <!-- Toolbar -->
       <div class="git-view__toolbar">
         <div class="git-view__summary">
-          <span class="workspace-chip"><strong>PR #{{ pullRequest.id }}</strong></span>
-          <span class="workspace-chip">{{ isGitHub ? detail.repository?.fullName : `${detail.project?.name} / ${detail.repository?.name}` }}</span>
+          <span class="workspace-chip"
+            ><strong>PR #{{ pullRequest.id }}</strong></span
+          >
+          <span class="workspace-chip">{{
+            isGitHub ? detail.repository?.fullName : `${detail.project?.name} / ${detail.repository?.name}`
+          }}</span>
           <span class="workspace-chip">{{ detail.role }}</span>
-          <span v-if="checks.failedCount" class="workspace-chip workspace-chip--alert">{{ checks.failedCount }} failed checks</span>
+          <span v-if="checks.failedCount" class="workspace-chip workspace-chip--alert"
+            >{{ checks.failedCount }} failed checks</span
+          >
           <span v-if="checks.pendingCount" class="workspace-chip">{{ checks.pendingCount }} pending checks</span>
-          <span v-if="detail.hasAttention" class="workspace-chip workspace-chip--alert">{{ detail.attentionReason || 'attention' }}</span>
+          <span v-if="detail.hasAttention" class="workspace-chip workspace-chip--alert">{{
+            detail.attentionReason || "attention"
+          }}</span>
           <span v-if="pendingSyncCount" class="workspace-chip">{{ pendingSyncCount }} queued drafts</span>
         </div>
-        <div class="git-view__actions" style="margin-left:auto;">
-          <button type="button" :class="['button', 'button--ghost', busyAction === 'refresh' && 'button--busy']" :disabled="!!busyAction" :title="`Fetch the latest PR data from ${isGitHub ? 'GitHub' : 'Azure DevOps'}`" @click="handleRefresh">{{ busyAction === 'refresh' ? 'Refreshing…' : 'Refresh' }}<span v-if="newCommentsCount" class="azure-tab__count" style="margin-left:4px;">{{ newCommentsCount }}</span></button>
-          <button type="button" :class="['button', busyAction === 'pushPublish' && 'button--busy']" :disabled="!!busyAction || (!pendingSyncCount && !aheadCount)" :title="`Push ${aheadCount} commit${aheadCount !== 1 ? 's' : ''} and publish ${pendingSyncCount} comment${pendingSyncCount !== 1 ? 's' : ''}`" @click="handlePushAndPublish">{{ busyAction === 'pushPublish' ? 'Pushing & publishing…' : pushPublishLabel }}</button>
-          <button type="button" :class="['button', 'button--ghost', busyAction === 'publish' && 'button--busy']" :disabled="!!busyAction || !pendingSyncCount" title="Publish queued drafts without pushing" @click="handlePublish">{{ busyAction === 'publish' ? 'Publishing…' : 'Publish only' }}</button>
-          <button type="button" class="button button--ghost" title="Open this pull request in the browser" @click="openBrowser">Browser</button>
+        <div class="git-view__actions" style="margin-left: auto">
+          <button
+            type="button"
+            :class="['button', 'button--ghost', busyAction === 'refresh' && 'button--busy']"
+            :disabled="!!busyAction"
+            :title="`Fetch the latest PR data from ${isGitHub ? 'GitHub' : 'Azure DevOps'}`"
+            @click="handleRefresh"
+          >
+            {{ busyAction === "refresh" ? "Refreshing…" : "Refresh"
+            }}<span v-if="newCommentsCount" class="azure-tab__count" style="margin-left: 4px">{{
+              newCommentsCount
+            }}</span>
+          </button>
+          <button
+            type="button"
+            :class="['button', busyAction === 'pushPublish' && 'button--busy']"
+            :disabled="!!busyAction || (!pendingSyncCount && !aheadCount)"
+            :title="`Push ${aheadCount} commit${aheadCount !== 1 ? 's' : ''} and publish ${pendingSyncCount} comment${pendingSyncCount !== 1 ? 's' : ''}`"
+            @click="handlePushAndPublish"
+          >
+            {{ busyAction === "pushPublish" ? "Pushing & publishing…" : pushPublishLabel }}
+          </button>
+          <button
+            type="button"
+            :class="['button', 'button--ghost', busyAction === 'publish' && 'button--busy']"
+            :disabled="!!busyAction || !pendingSyncCount"
+            title="Publish queued drafts without pushing"
+            @click="handlePublish"
+          >
+            {{ busyAction === "publish" ? "Publishing…" : "Publish only" }}
+          </button>
+          <button
+            type="button"
+            class="button button--ghost"
+            title="Open this pull request in the browser"
+            @click="openBrowser"
+          >
+            Browser
+          </button>
         </div>
       </div>
 
       <!-- Toolbar success -->
-      <div v-if="pushPublishSuccess" style="padding:6px 12px;font-size:12px;background:rgba(76,175,80,0.08);border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px;">
-        <span style="color:var(--success,#4caf50);font-weight:600;">{{ pushPublishSuccess }}</span>
-        <button type="button" class="button button--ghost" style="font-size:10px;padding:1px 8px;margin-left:auto;" @click="pushPublishSuccess = ''">Dismiss</button>
+      <div
+        v-if="pushPublishSuccess"
+        style="
+          padding: 6px 12px;
+          font-size: 12px;
+          background: rgba(76, 175, 80, 0.08);
+          border-bottom: 1px solid var(--border);
+          display: flex;
+          align-items: center;
+          gap: 8px;
+        "
+      >
+        <span style="color: var(--success, #4caf50); font-weight: 600">{{ pushPublishSuccess }}</span>
+        <button
+          type="button"
+          class="button button--ghost"
+          style="font-size: 10px; padding: 1px 8px; margin-left: auto"
+          @click="pushPublishSuccess = ''"
+        >
+          Dismiss
+        </button>
       </div>
       <!-- Toolbar error -->
-      <div v-if="toolbarError" style="padding:6px 12px;font-size:12px;background:rgba(255,80,80,0.08);border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px;">
-        <span style="color:var(--danger,#e53935);">{{ toolbarError }}</span>
-        <button type="button" class="button button--ghost" style="font-size:10px;padding:1px 8px;margin-left:auto;" @click="toolbarError = ''">Dismiss</button>
+      <div
+        v-if="toolbarError"
+        style="
+          padding: 6px 12px;
+          font-size: 12px;
+          background: rgba(255, 80, 80, 0.08);
+          border-bottom: 1px solid var(--border);
+          display: flex;
+          align-items: center;
+          gap: 8px;
+        "
+      >
+        <span style="color: var(--danger, #e53935)">{{ toolbarError }}</span>
+        <button
+          type="button"
+          class="button button--ghost"
+          style="font-size: 10px; padding: 1px 8px; margin-left: auto"
+          @click="toolbarError = ''"
+        >
+          Dismiss
+        </button>
       </div>
 
       <!-- Failed sync banner -->
-      <div v-if="failedSyncItems.length" style="padding:4px 12px;font-size:11px;background:rgba(255,80,80,0.08);border-bottom:1px solid var(--border);display:flex;flex-wrap:wrap;gap:6px;align-items:center;">
-        <span class="workspace-chip workspace-chip--alert" style="font-size:10px;">Sync failed</span>
-        <span v-for="entry in failedSyncItems" :key="entry.queueId" style="color:var(--muted);" :title="entry.lastError || ''">{{ entry.operation || 'publish' }} · {{ entry.attempts || 0 }} attempt(s){{ entry.lastError ? ` — ${entry.lastError.slice(0, 80)}` : '' }}</span>
-        <button type="button" :class="['button', 'button--ghost', busyAction === 'publish' && 'button--busy']" style="font-size:10px;padding:1px 8px;margin-left:auto;" :disabled="!!busyAction" title="Retry publishing the failed drafts to Azure DevOps" @click="handlePublish">{{ busyAction === 'publish' ? 'Retrying…' : 'Retry' }}</button>
+      <div
+        v-if="failedSyncItems.length"
+        style="
+          padding: 4px 12px;
+          font-size: 11px;
+          background: rgba(255, 80, 80, 0.08);
+          border-bottom: 1px solid var(--border);
+          display: flex;
+          flex-wrap: wrap;
+          gap: 6px;
+          align-items: center;
+        "
+      >
+        <span class="workspace-chip workspace-chip--alert" style="font-size: 10px">Sync failed</span>
+        <span
+          v-for="entry in failedSyncItems"
+          :key="entry.queueId"
+          style="color: var(--muted)"
+          :title="entry.lastError || ''"
+          >{{ entry.operation || "publish" }} · {{ entry.attempts || 0 }} attempt(s){{
+            entry.lastError ? ` — ${entry.lastError.slice(0, 80)}` : ""
+          }}</span
+        >
+        <button
+          type="button"
+          :class="['button', 'button--ghost', busyAction === 'publish' && 'button--busy']"
+          style="font-size: 10px; padding: 1px 8px; margin-left: auto"
+          :disabled="!!busyAction"
+          title="Retry publishing the failed drafts to Azure DevOps"
+          @click="handlePublish"
+        >
+          {{ busyAction === "publish" ? "Retrying…" : "Retry" }}
+        </button>
       </div>
 
       <!-- Sub-tabs -->
       <div class="review-subtabs">
-        <button v-for="tab in reviewTabs" :key="tab.id" type="button" :class="['azure-tab', reviewUi.activeReviewTab === tab.id && 'azure-tab--active', tab.alert && 'azure-tab--alert']" @click="gitUiStore.reviewSwitchTab(workspaceId, tab.id)">
+        <button
+          v-for="tab in reviewTabs"
+          :key="tab.id"
+          type="button"
+          :class="[
+            'azure-tab',
+            reviewUi.activeReviewTab === tab.id && 'azure-tab--active',
+            tab.alert && 'azure-tab--alert',
+          ]"
+          @click="gitUiStore.reviewSwitchTab(workspaceId, tab.id)"
+        >
           {{ tab.label }}<span v-if="tab.count !== null" class="azure-tab__count">{{ tab.count }}</span>
         </button>
       </div>
@@ -167,20 +321,32 @@
         <template v-else-if="activeTab === 'files'">
           <div class="review-files-split">
             <div class="review-files-split__left">
-              <div class="section-head" style="padding:0 6px;"><div><p class="eyebrow">Changed files</p><h3>{{ changedFiles.length }} files</h3></div></div>
-              <div v-if="changedFiles.length" class="review-file-tree" style="margin-top:8px;">
+              <div class="section-head" style="padding: 0 6px">
+                <div>
+                  <p class="eyebrow">Changed files</p>
+                  <h3>{{ changedFiles.length }} files</h3>
+                </div>
+              </div>
+              <div v-if="changedFiles.length" class="review-file-tree" style="margin-top: 8px">
                 <template v-for="node in fileTree" :key="node.key">
                   <details v-if="node.children" class="review-tree-dir" open>
-                    <summary class="review-tree-dir__label"><span class="review-tree-dir__icon"></span><span>{{ node.name }}</span></summary>
+                    <summary class="review-tree-dir__label">
+                      <span class="review-tree-dir__icon"></span><span>{{ node.name }}</span>
+                    </summary>
                     <template v-for="child in node.children" :key="child.key">
-                      <details v-if="child.children" class="review-tree-dir" open style="padding-left:14px;">
-                        <summary class="review-tree-dir__label"><span class="review-tree-dir__icon"></span><span>{{ child.name }}</span></summary>
+                      <details v-if="child.children" class="review-tree-dir" open style="padding-left: 14px">
+                        <summary class="review-tree-dir__label">
+                          <span class="review-tree-dir__icon"></span><span>{{ child.name }}</span>
+                        </summary>
                         <button
                           v-for="leaf in child.children"
                           :key="leaf.key"
                           type="button"
-                          :class="['review-tree-file', reviewUi.reviewSelectedFile === leaf.path && 'review-tree-file--active']"
-                          style="padding-left:28px;"
+                          :class="[
+                            'review-tree-file',
+                            reviewUi.reviewSelectedFile === leaf.path && 'review-tree-file--active',
+                          ]"
+                          style="padding-left: 28px"
                           :title="leaf.path"
                           @click="onSelectFile(leaf.path)"
                         >
@@ -191,8 +357,11 @@
                       <button
                         v-else
                         type="button"
-                        :class="['review-tree-file', reviewUi.reviewSelectedFile === child.path && 'review-tree-file--active']"
-                        style="padding-left:14px;"
+                        :class="[
+                          'review-tree-file',
+                          reviewUi.reviewSelectedFile === child.path && 'review-tree-file--active',
+                        ]"
+                        style="padding-left: 14px"
                         :title="child.path"
                         @click="onSelectFile(child.path)"
                       >
@@ -204,7 +373,10 @@
                   <button
                     v-else
                     type="button"
-                    :class="['review-tree-file', reviewUi.reviewSelectedFile === node.path && 'review-tree-file--active']"
+                    :class="[
+                      'review-tree-file',
+                      reviewUi.reviewSelectedFile === node.path && 'review-tree-file--active',
+                    ]"
                     :title="node.path"
                     @click="onSelectFile(node.path)"
                   >
@@ -213,13 +385,20 @@
                   </button>
                 </template>
               </div>
-              <p v-else class="git-card__hint" style="padding:6px;">No changed files found.</p>
+              <p v-else class="git-card__hint" style="padding: 6px">No changed files found.</p>
             </div>
             <div class="review-files-split__right">
               <template v-if="reviewUi.reviewFileDiffPreview">
-                <div class="section-head" style="padding:0 6px;"><div><p class="eyebrow">Diff preview</p><h3>{{ reviewUi.reviewFileDiffPreview.path }}</h3></div></div>
+                <div class="section-head" style="padding: 0 6px">
+                  <div>
+                    <p class="eyebrow">Diff preview</p>
+                    <h3>{{ reviewUi.reviewFileDiffPreview.path }}</h3>
+                  </div>
+                </div>
                 <DiffViewer v-if="reviewUi.reviewFileDiffPreview.diff" :diff="reviewUi.reviewFileDiffPreview.diff" />
-                <p v-else class="git-card__hint" style="padding:6px;">{{ reviewUi.reviewFileDiffPreview.summary || 'No diff available.' }}</p>
+                <p v-else class="git-card__hint" style="padding: 6px">
+                  {{ reviewUi.reviewFileDiffPreview.summary || "No diff available." }}
+                </p>
               </template>
               <div v-else class="review-files-empty">
                 <p class="eyebrow">Diff preview</p>
@@ -258,14 +437,28 @@
           <div v-if="!conflictInfo.hasConflicts" class="review-panel">
             <article class="git-card review-card">
               <div class="section-head">
-                <div><p class="eyebrow">Merge Status</p><h3>{{ conflictInfo.label }}</h3></div>
+                <div>
+                  <p class="eyebrow">Merge Status</p>
+                  <h3>{{ conflictInfo.label }}</h3>
+                </div>
                 <div class="docker-card__actions">
-                  <button type="button" :class="['button', 'button--ghost', busyAction === 'refresh' && 'button--busy']" :disabled="!!busyAction" @click="handleRefresh">{{ busyAction === 'refresh' ? 'Refreshing…' : 'Refresh' }}</button>
+                  <button
+                    type="button"
+                    :class="['button', 'button--ghost', busyAction === 'refresh' && 'button--busy']"
+                    :disabled="!!busyAction"
+                    @click="handleRefresh"
+                  >
+                    {{ busyAction === "refresh" ? "Refreshing…" : "Refresh" }}
+                  </button>
                 </div>
               </div>
-              <div style="display:flex;align-items:center;gap:10px;padding:8px 0;">
-                <span style="font-size:1.2em;color:#6edfb6;">✓</span>
-                <p style="margin:0;"><strong>{{ stripRef(pullRequest.sourceRefName) }}</strong> can be merged without conflicts into <strong>{{ stripRef(pullRequest.targetRefName) }}</strong>.</p>
+              <div style="display: flex; align-items: center; gap: 10px; padding: 8px 0">
+                <span style="font-size: 1.2em; color: #6edfb6">✓</span>
+                <p style="margin: 0">
+                  <strong>{{ stripRef(pullRequest.sourceRefName) }}</strong> can be merged without conflicts into
+                  <strong>{{ stripRef(pullRequest.targetRefName) }}</strong
+                  >.
+                </p>
               </div>
             </article>
           </div>
@@ -273,27 +466,42 @@
           <!-- Has conflicts — split layout like Files tab -->
           <div v-else class="review-files-split">
             <div class="review-files-split__left">
-              <div class="review-conflict-banner review-conflict-banner--danger" style="margin:0 0 8px;">
+              <div class="review-conflict-banner review-conflict-banner--danger" style="margin: 0 0 8px">
                 <span class="review-conflict-banner__icon">✗</span>
                 <div>
                   <strong>{{ conflictInfo.label }}</strong>
-                  <p class="review-conflict-banner__hint"><code>{{ stripRef(pullRequest.sourceRefName) }}</code> &rarr; <code>{{ stripRef(pullRequest.targetRefName) }}</code></p>
+                  <p class="review-conflict-banner__hint">
+                    <code>{{ stripRef(pullRequest.sourceRefName) }}</code> &rarr;
+                    <code>{{ stripRef(pullRequest.targetRefName) }}</code>
+                  </p>
                 </div>
               </div>
-              <div class="section-head" style="padding:0 6px;"><div><p class="eyebrow">Affected files</p><h3>{{ changedFiles.length }} files</h3></div></div>
-              <div v-if="changedFiles.length" class="review-file-tree" style="margin-top:6px;">
+              <div class="section-head" style="padding: 0 6px">
+                <div>
+                  <p class="eyebrow">Affected files</p>
+                  <h3>{{ changedFiles.length }} files</h3>
+                </div>
+              </div>
+              <div v-if="changedFiles.length" class="review-file-tree" style="margin-top: 6px">
                 <template v-for="node in fileTree" :key="node.key">
                   <details v-if="node.children" class="review-tree-dir" open>
-                    <summary class="review-tree-dir__label"><span class="review-tree-dir__icon"></span><span>{{ node.name }}</span></summary>
+                    <summary class="review-tree-dir__label">
+                      <span class="review-tree-dir__icon"></span><span>{{ node.name }}</span>
+                    </summary>
                     <template v-for="child in node.children" :key="child.key">
-                      <details v-if="child.children" class="review-tree-dir" open style="padding-left:14px;">
-                        <summary class="review-tree-dir__label"><span class="review-tree-dir__icon"></span><span>{{ child.name }}</span></summary>
+                      <details v-if="child.children" class="review-tree-dir" open style="padding-left: 14px">
+                        <summary class="review-tree-dir__label">
+                          <span class="review-tree-dir__icon"></span><span>{{ child.name }}</span>
+                        </summary>
                         <button
                           v-for="leaf in child.children"
                           :key="leaf.key"
                           type="button"
-                          :class="['review-tree-file', reviewUi.reviewSelectedFile === leaf.path && 'review-tree-file--active']"
-                          style="padding-left:28px;"
+                          :class="[
+                            'review-tree-file',
+                            reviewUi.reviewSelectedFile === leaf.path && 'review-tree-file--active',
+                          ]"
+                          style="padding-left: 28px"
                           :title="leaf.path"
                           @click="onSelectFile(leaf.path)"
                         >
@@ -301,13 +509,32 @@
                           <span class="review-tree-file__name">{{ leaf.name }}</span>
                         </button>
                       </details>
-                      <button v-else type="button" :class="['review-tree-file', reviewUi.reviewSelectedFile === child.path && 'review-tree-file--active']" style="padding-left:14px;" :title="child.path" @click="onSelectFile(child.path)">
+                      <button
+                        v-else
+                        type="button"
+                        :class="[
+                          'review-tree-file',
+                          reviewUi.reviewSelectedFile === child.path && 'review-tree-file--active',
+                        ]"
+                        style="padding-left: 14px"
+                        :title="child.path"
+                        @click="onSelectFile(child.path)"
+                      >
                         <span :class="changeTypeClass(child.changeType)">{{ changeTypeLabel(child.changeType) }}</span>
                         <span class="review-tree-file__name">{{ child.name }}</span>
                       </button>
                     </template>
                   </details>
-                  <button v-else type="button" :class="['review-tree-file', reviewUi.reviewSelectedFile === node.path && 'review-tree-file--active']" :title="node.path" @click="onSelectFile(node.path)">
+                  <button
+                    v-else
+                    type="button"
+                    :class="[
+                      'review-tree-file',
+                      reviewUi.reviewSelectedFile === node.path && 'review-tree-file--active',
+                    ]"
+                    :title="node.path"
+                    @click="onSelectFile(node.path)"
+                  >
                     <span :class="changeTypeClass(node.changeType)">{{ changeTypeLabel(node.changeType) }}</span>
                     <span class="review-tree-file__name">{{ node.name }}</span>
                   </button>
@@ -316,9 +543,16 @@
             </div>
             <div class="review-files-split__right">
               <template v-if="reviewUi.reviewFileDiffPreview">
-                <div class="section-head" style="padding:0 6px;"><div><p class="eyebrow">Diff preview</p><h3>{{ reviewUi.reviewFileDiffPreview.path }}</h3></div></div>
+                <div class="section-head" style="padding: 0 6px">
+                  <div>
+                    <p class="eyebrow">Diff preview</p>
+                    <h3>{{ reviewUi.reviewFileDiffPreview.path }}</h3>
+                  </div>
+                </div>
                 <DiffViewer v-if="reviewUi.reviewFileDiffPreview.diff" :diff="reviewUi.reviewFileDiffPreview.diff" />
-                <p v-else class="git-card__hint" style="padding:6px;">{{ reviewUi.reviewFileDiffPreview.summary || 'No diff available.' }}</p>
+                <p v-else class="git-card__hint" style="padding: 6px">
+                  {{ reviewUi.reviewFileDiffPreview.summary || "No diff available." }}
+                </p>
               </template>
               <div v-else class="review-files-empty">
                 <p class="eyebrow">Diff preview</p>
@@ -386,15 +620,17 @@ const detail = computed(() => {
       lineEnd: null,
       publishedDate: c.createdAt || null,
       lastUpdatedDate: c.updatedAt || c.createdAt || null,
-      comments: [{
-        id: c.id,
-        parentCommentId: 0,
-        content: c.body || "",
-        publishedDate: c.createdAt || null,
-        lastUpdatedDate: c.updatedAt || null,
-        commentType: "text",
-        author: c.author || {},
-      }],
+      comments: [
+        {
+          id: c.id,
+          parentCommentId: 0,
+          content: c.body || "",
+          publishedDate: c.createdAt || null,
+          lastUpdatedDate: c.updatedAt || null,
+          commentType: "text",
+          author: c.author || {},
+        },
+      ],
     }));
     return { ...raw, threads: [...(raw.threads || []), ...issueThreads] };
   }
@@ -422,14 +658,16 @@ const checks = computed(() => detail.value?.checks || {});
 const reviewers = computed(() => detail.value?.reviewerSummary?.reviewers || []);
 const changedFiles = computed(() => {
   const files = detail.value?.changedFiles || [];
-  return files.length ? files : (detail.value?.localChangedFiles || []);
+  return files.length ? files : detail.value?.localChangedFiles || [];
 });
 const agentPrompts = computed(() => reviewBridge.value.agentPrompts || []);
 const gitSnapshot = computed(() => appStore.getGitSnapshot(props.workspaceId));
 const aheadCount = computed(() => gitSnapshot.value?.aheadCount || 0);
 
 // --- Pre-PR (new branch) state ---
-const isPrePrWorkspace = computed(() => !workspace.value?.review?.prKey && ["azure-devops", "github"].includes(workspace.value?.review?.provider));
+const isPrePrWorkspace = computed(
+  () => !workspace.value?.review?.prKey && ["azure-devops", "github"].includes(workspace.value?.review?.provider),
+);
 const baseBranch = computed(() => workspace.value?.quickfix?.baseBranch || "");
 const hasDirtyOrCommits = computed(() => !!(gitSnapshot.value?.dirty || (gitSnapshot.value?.aheadCount || 0) > 0));
 const hasCommits = computed(() => (gitSnapshot.value?.aheadCount || 0) > 0);
@@ -471,9 +709,7 @@ function generatePrTitleAndDescription() {
     // Try to extract meaningful name from branch (e.g., "fix/MSP-12345-some-description" → "MSP-12345 some description")
     const branchSuffix = branch.includes("/") ? branch.split("/").slice(1).join("/") : branch;
     prFormTitle.value = branchSuffix.replace(/[-_]/g, " ").replace(/\s+/g, " ").trim();
-    prFormDescription.value = commits
-      .map((c) => `- ${c.subject}`)
-      .join("\n");
+    prFormDescription.value = commits.map((c) => `- ${c.subject}`).join("\n");
   }
   prFormAutoFilled = true;
 }
@@ -485,10 +721,12 @@ async function loadPrBranches() {
     const result = await listFn({ workspaceId: props.workspaceId });
     prFormBranches.value = result.branches || [];
     if (!prFormTarget.value) {
-      prFormTarget.value = prFormBranches.value.find((b) => b === baseBranch.value)
-        || prFormBranches.value.find((b) => b === "develop")
-        || prFormBranches.value.find((b) => b === "main")
-        || prFormBranches.value[0] || "";
+      prFormTarget.value =
+        prFormBranches.value.find((b) => b === baseBranch.value) ||
+        prFormBranches.value.find((b) => b === "develop") ||
+        prFormBranches.value.find((b) => b === "main") ||
+        prFormBranches.value[0] ||
+        "";
     }
     generatePrTitleAndDescription();
   } catch {
@@ -499,11 +737,15 @@ async function loadPrBranches() {
 }
 
 // Auto-load branches when pre-PR view is active
-watch(isPrePrWorkspace, (active) => {
-  if (active && !prFormBranches.value.length) {
-    loadPrBranches();
-  }
-}, { immediate: true });
+watch(
+  isPrePrWorkspace,
+  (active) => {
+    if (active && !prFormBranches.value.length) {
+      loadPrBranches();
+    }
+  },
+  { immediate: true },
+);
 
 // Auto-generate title when commits change
 watch(aheadCommits, () => {
@@ -569,22 +811,36 @@ const pushPublishLabel = computed(() => {
 });
 
 // PR info
-const prTitle = computed(() => pullRequest.value.title || `#${pullRequest.value.id || '?'}`);
+const prTitle = computed(() => pullRequest.value.title || `#${pullRequest.value.id || "?"}`);
 const activeTab = computed(() => reviewUi.value.activeReviewTab || "summary");
 
 // Sync state
 const syncQueue = computed(() => reviewBridge.value.syncQueue || []);
-const pendingSyncCount = computed(() =>
-  syncQueue.value.filter((item) => item.status === "pending" || item.status === "failed").length,
+const pendingSyncCount = computed(
+  () => syncQueue.value.filter((item) => item.status === "pending" || item.status === "failed").length,
 );
 const failedSyncItems = computed(() => syncQueue.value.filter((item) => item.status === "failed"));
 const newCommentsCount = computed(() => detail.value?.newCommentsCount || 0);
 
 // Comments (extracted to composable)
 const {
-  filteredThreads, filteredDraftComments, draftsByThread, draftsByComment,
-  threadIndex, threadToCommentKey, threadFixStatus, filter, sort, sortDir, searchTerm,
-  isFiltered, totalCommentCount, activeCommentCount, allDrafts, hasClearable, sortOptions,
+  filteredThreads,
+  filteredDraftComments,
+  draftsByThread,
+  draftsByComment,
+  threadIndex,
+  threadToCommentKey,
+  threadFixStatus,
+  filter,
+  sort,
+  sortDir,
+  searchTerm,
+  isFiltered,
+  totalCommentCount,
+  activeCommentCount,
+  allDrafts,
+  hasClearable,
+  sortOptions,
 } = useReviewComments(detail, reviewBridge, reviewUi, pullRequest);
 
 // Conflict info
@@ -592,7 +848,14 @@ const conflictInfo = computed(() => {
   const status = pullRequest.value.mergeStatus || "";
   const conflictStatuses = ["conflicts", "rejectedByPolicy", "renamedSourceBranch", "manualMergeRequired"];
   const hasConflicts = conflictStatuses.includes(status);
-  return { hasConflicts, label: hasConflicts ? "Conflicts detected" : (status === "succeeded" ? "No conflicts" : `Status: ${status || "unknown"}`) };
+  return {
+    hasConflicts,
+    label: hasConflicts
+      ? "Conflicts detected"
+      : status === "succeeded"
+        ? "No conflicts"
+        : `Status: ${status || "unknown"}`,
+  };
 });
 
 // Tabs
@@ -600,7 +863,12 @@ const reviewTabs = computed(() => [
   { id: "summary", label: "Summary", count: null, alert: false },
   { id: "files", label: "Files", count: changedFiles.value.length, alert: false },
   { id: "comments", label: "Comments", count: activeCommentCount.value || null, alert: false },
-  { id: "conflicts", label: "Conflicts", count: conflictInfo.value.hasConflicts ? changedFiles.value.length : 0, alert: conflictInfo.value.hasConflicts },
+  {
+    id: "conflicts",
+    label: "Conflicts",
+    count: conflictInfo.value.hasConflicts ? changedFiles.value.length : 0,
+    alert: conflictInfo.value.hasConflicts,
+  },
   { id: "agent", label: "Agent", count: null, alert: false },
 ]);
 
@@ -609,14 +877,21 @@ const mcpCommandLine = computed(() => {
   const spec = reviewBridge.value.mcpServerSpec || {};
   const cmd = spec.command || "strideterm";
   const args = (spec.args || []).join(" ");
-  const env = Object.entries(spec.env || {}).map(([k, v]) => `${k}=${v}`).join(" ");
+  const env = Object.entries(spec.env || {})
+    .map(([k, v]) => `${k}=${v}`)
+    .join(" ");
   return [env, cmd, args].filter(Boolean).join(" ");
 });
 
 // Header
 const headerStatus = computed(() => prTitle.value);
 const headerActions = computed(() => [
-  { className: "workspace-pane__icon-btn", action: isGitHub.value ? "refresh-github" : "refresh-azure", title: "Refresh", label: "↻" },
+  {
+    className: "workspace-pane__icon-btn",
+    action: isGitHub.value ? "refresh-github" : "refresh-azure",
+    title: "Refresh",
+    label: "↻",
+  },
 ]);
 
 function onHeaderAction(action) {
@@ -654,9 +929,10 @@ async function handleRefresh() {
       await appStore.refreshAzure();
       if (prKey.value) await appStore.markAzurePrSeen(prKey.value);
     }
-  } finally { busyAction.value = ""; }
+  } finally {
+    busyAction.value = "";
+  }
 }
-
 
 const toolbarError = ref("");
 
@@ -692,9 +968,13 @@ async function handlePublish() {
   busyAction.value = "publish";
   toolbarError.value = "";
   pushPublishSuccess.value = "";
-  try { await appStore.syncReviewBridgePullRequest(prKey.value); }
-  catch (error) { toolbarError.value = error?.message || String(error || "Publish failed."); }
-  finally { busyAction.value = ""; }
+  try {
+    await appStore.syncReviewBridgePullRequest(prKey.value);
+  } catch (error) {
+    toolbarError.value = error?.message || String(error || "Publish failed.");
+  } finally {
+    busyAction.value = "";
+  }
 }
 
 // File tree builder — groups files by directory segments
@@ -703,7 +983,11 @@ const fileTree = computed(() => {
   if (!files.length) return [];
 
   // Find common prefix to strip
-  const paths = files.map((f) => String(f.path || "").replace(/^\//, "").split("/"));
+  const paths = files.map((f) =>
+    String(f.path || "")
+      .replace(/^\//, "")
+      .split("/"),
+  );
   let prefix = 0;
   if (paths.length > 1) {
     outer: for (let i = 0; i < (paths[0]?.length || 0) - 1; i++) {
@@ -718,7 +1002,10 @@ const fileTree = computed(() => {
   // Build nested map
   const root = new Map();
   for (const file of files) {
-    const segs = String(file.path || "").replace(/^\//, "").split("/").slice(prefix);
+    const segs = String(file.path || "")
+      .replace(/^\//, "")
+      .split("/")
+      .slice(prefix);
     let node = root;
     for (let i = 0; i < segs.length - 1; i++) {
       if (!node.has(segs[i])) node.set(segs[i], new Map());
@@ -758,9 +1045,15 @@ function onSelectFile(filePath) {
 }
 
 // Helpers
-function stripRef(ref) { return String(ref || "").replace(/^refs\/heads\//, ""); }
-function changeTypeClass(t) { return t === "add" ? "diff-add" : t === "delete" ? "diff-del" : "diff-meta"; }
-function changeTypeLabel(t) { return t === "add" ? "A" : t === "delete" ? "D" : "M"; }
+function stripRef(ref) {
+  return String(ref || "").replace(/^refs\/heads\//, "");
+}
+function changeTypeClass(t) {
+  return t === "add" ? "diff-add" : t === "delete" ? "diff-del" : "diff-meta";
+}
+function changeTypeLabel(t) {
+  return t === "add" ? "A" : t === "delete" ? "D" : "M";
+}
 
 function openBrowser() {
   const url = pullRequest.value.webUrl || pullRequest.value.url || "";
@@ -774,7 +1067,15 @@ function openAzureComment() {
     label: "Comment",
     placeholder: "Write your review comment...",
     submitLabel: "Create & queue",
-    onSubmit: (content) => { appStore.createReviewBridgeDraftComment({ prKey: prKey.value, body: content, authorAgent: "human", autoQueue: true }); appStore.closeDialog(); },
+    onSubmit: (content) => {
+      appStore.createReviewBridgeDraftComment({
+        prKey: prKey.value,
+        body: content,
+        authorAgent: "human",
+        autoQueue: true,
+      });
+      appStore.closeDialog();
+    },
   });
 }
 </script>

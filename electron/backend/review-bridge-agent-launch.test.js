@@ -34,7 +34,7 @@ describe("review bridge agent launch", () => {
   test("detects built-in review agent panels", () => {
     expect(detectReviewAgentPanel({ command: "claude" })).toBe("claude");
     expect(detectReviewAgentPanel({ command: "codex" })).toBe("codex");
-    expect(detectReviewAgentPanel({ command: "\"C:/Tools/Claude/claude.exe\" --model haiku" })).toBe("claude");
+    expect(detectReviewAgentPanel({ command: '"C:/Tools/Claude/claude.exe" --model haiku' })).toBe("claude");
     expect(detectReviewAgentPanel({ command: "npm test" })).toBeNull();
   });
 
@@ -79,7 +79,7 @@ describe("review bridge agent launch", () => {
   test("builds a codex launch with inline session-local MCP config", () => {
     const launch = buildReviewAgentLaunch({
       workspace: createWorkspace(),
-      panel: { id: "codex", title: "Codex", command: "codex -s danger-full-access -c model_reasoning_effort=\"high\"" },
+      panel: { id: "codex", title: "Codex", command: 'codex -s danger-full-access -c model_reasoning_effort="high"' },
       context: createContext(),
       processInfo: {
         execPath: "C:/Program Files/strIDEterm/strIDEterm.exe",
@@ -102,7 +102,7 @@ describe("review bridge agent launch", () => {
       .filter(Boolean);
     const commandConfig = configValues.find((value) => value.startsWith("mcp_servers.review.command="));
     const argsConfig = configValues.find((value) => value.startsWith("mcp_servers.review.args="));
-    expect(commandConfig).toBe("mcp_servers.review.command=\"C:/Program Files/strIDEterm/strIDEterm.exe\"");
+    expect(commandConfig).toBe('mcp_servers.review.command="C:/Program Files/strIDEterm/strIDEterm.exe"');
     expect(argsConfig).toContain("mcp_servers.review.args=");
     expect(argsConfig).toContain("--review-bridge-mcp");
     expect(launch.args.at(-1)).toContain("list_review_comments");
@@ -174,7 +174,9 @@ describe("review bridge agent launch", () => {
     });
     const configArg = launch.args[launch.args.indexOf("--mcp-config") + 1];
     const parsed = JSON.parse(configArg);
-    expect(parsed.mcpServers.review.args[0].replaceAll("\\", "/")).toContain("/electron/backend/review-bridge-mcp-stdio.js");
+    expect(parsed.mcpServers.review.args[0].replaceAll("\\", "/")).toContain(
+      "/electron/backend/review-bridge-mcp-stdio.js",
+    );
     expect(parsed.mcpServers.review.env).toMatchObject({
       ELECTRON_RUN_AS_NODE: "1",
     });
@@ -199,7 +201,9 @@ describe("review bridge agent launch", () => {
     });
 
     expect(launch.file).toBe("C:/Program Files/nodejs/node.exe");
-    expect(launch.args[0].replaceAll("\\", "/")).toBe("C:/Users/test/AppData/Roaming/npm/node_modules/@openai/codex/bin/codex.js");
+    expect(launch.args[0].replaceAll("\\", "/")).toBe(
+      "C:/Users/test/AppData/Roaming/npm/node_modules/@openai/codex/bin/codex.js",
+    );
     expect(launch.args).toContain("-s");
     expect(launch.args).toContain("danger-full-access");
     expect(launch.env).toMatchObject({

@@ -107,10 +107,17 @@ export function createApiActions(ctx) {
     if (!prKey) return;
     const bridge = ctx.payload.value?.reviewBridge?.pullRequests?.[prKey] || {};
     const drafts = (bridge.drafts || []).filter((d) => d.status === "draft");
-    const draftComments = (bridge.comments || []).filter((c) => c.commentKind === "draft" || c.commentKind === "local-comment");
+    const draftComments = (bridge.comments || []).filter(
+      (c) => c.commentKind === "draft" || c.commentKind === "local-comment",
+    );
     const totalCount = drafts.length + draftComments.length;
     if (!totalCount) return;
-    if (!window.confirm(`Delete ${drafts.length} draft${drafts.length !== 1 ? "s" : ""} and ${draftComments.length} draft comment${draftComments.length !== 1 ? "s" : ""}? This cannot be undone.`)) return;
+    if (
+      !window.confirm(
+        `Delete ${drafts.length} draft${drafts.length !== 1 ? "s" : ""} and ${draftComments.length} draft comment${draftComments.length !== 1 ? "s" : ""}? This cannot be undone.`,
+      )
+    )
+      return;
     const api = ctx.getApi();
     for (const comment of draftComments) {
       ctx.payload.value = await api.deleteReviewBridgeComment({ prKey, commentKey: comment.commentKey });
@@ -124,7 +131,9 @@ export function createApiActions(ctx) {
 
   async function reviewBridgeQueueAllDrafts(prKey) {
     if (!prKey) return;
-    const drafts = (ctx.payload.value?.reviewBridge?.pullRequests?.[prKey]?.drafts || []).filter((d) => d.status === "draft");
+    const drafts = (ctx.payload.value?.reviewBridge?.pullRequests?.[prKey]?.drafts || []).filter(
+      (d) => d.status === "draft",
+    );
     if (!drafts.length) return;
     const api = ctx.getApi();
     for (const draft of drafts) {
@@ -221,7 +230,7 @@ export function createApiActions(ctx) {
   }
 
   async function toggleRemoteAccess() {
-    const enabled = !(ctx.payload.value?.appState?.settings?.remoteAccess?.enabled);
+    const enabled = !ctx.payload.value?.appState?.settings?.remoteAccess?.enabled;
     ctx.payload.value = await ctx.getApi().updateSettings({ remoteAccess: { enabled } });
   }
 
@@ -328,28 +337,66 @@ export function createApiActions(ctx) {
 
   return {
     // Azure
-    refreshAzure, markAzurePrSeen, azureVote,
-    azureResolveThread, azureReactivateThread, azureComment,
-    openAzurePullRequest, azureFetchReviewWorkspace, azureRebaseReviewWorkspace, azurePushReviewWorkspace,
-    deleteAzureConnection, saveAzureConnection,
+    refreshAzure,
+    markAzurePrSeen,
+    azureVote,
+    azureResolveThread,
+    azureReactivateThread,
+    azureComment,
+    openAzurePullRequest,
+    azureFetchReviewWorkspace,
+    azureRebaseReviewWorkspace,
+    azurePushReviewWorkspace,
+    deleteAzureConnection,
+    saveAzureConnection,
     // GitHub
-    refreshGitHub, markGitHubPrSeen, openGitHubPullRequest, githubComment, githubSubmitReview,
-    githubFetchReviewWorkspace, githubRebaseReviewWorkspace, githubPushReviewWorkspace,
-    deleteGitHubConnection, saveGitHubConnection,
+    refreshGitHub,
+    markGitHubPrSeen,
+    openGitHubPullRequest,
+    githubComment,
+    githubSubmitReview,
+    githubFetchReviewWorkspace,
+    githubRebaseReviewWorkspace,
+    githubPushReviewWorkspace,
+    deleteGitHubConnection,
+    saveGitHubConnection,
     // Review bridge
-    saveReviewBridgeDraft, deleteReviewBridgeDraft, queueReviewBridgeDraft,
-    deleteReviewBridgeComment, createReviewBridgeDraftComment, syncReviewBridgePullRequest,
-    reviewBridgeDeleteAllDrafts, reviewBridgeQueueAllDrafts, pushAndPublishReview,
+    saveReviewBridgeDraft,
+    deleteReviewBridgeDraft,
+    queueReviewBridgeDraft,
+    deleteReviewBridgeComment,
+    createReviewBridgeDraftComment,
+    syncReviewBridgePullRequest,
+    reviewBridgeDeleteAllDrafts,
+    reviewBridgeQueueAllDrafts,
+    pushAndPublishReview,
     // Agent prompts
-    saveAgentPrompt, deleteAgentPrompt, resetAgentPrompts,
+    saveAgentPrompt,
+    deleteAgentPrompt,
+    resetAgentPrompts,
     // Remote access
-    setRemoteMode, toggleRemotePanel, toggleRemoteAccess,
-    regenerateRemoteToken, saveCustomPublicUrl, clearCustomPublicUrl,
-    createCloudflareTunnel, stopCloudflareTunnel, refreshTunnel,
-    pickLanUrl, getRemoteShareUrl, copyText,
+    setRemoteMode,
+    toggleRemotePanel,
+    toggleRemoteAccess,
+    regenerateRemoteToken,
+    saveCustomPublicUrl,
+    clearCustomPublicUrl,
+    createCloudflareTunnel,
+    stopCloudflareTunnel,
+    refreshTunnel,
+    pickLanUrl,
+    getRemoteShareUrl,
+    copyText,
     // Docker
-    refreshDocker, dockerShell, dockerLogs, dockerAction, openLazydocker,
+    refreshDocker,
+    dockerShell,
+    dockerLogs,
+    dockerAction,
+    openLazydocker,
     // Profile / settings
-    saveProfile, deleteProfile, activateProfile, updateSettings,
+    saveProfile,
+    deleteProfile,
+    activateProfile,
+    updateSettings,
   };
 }

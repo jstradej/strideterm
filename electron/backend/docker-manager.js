@@ -84,7 +84,12 @@ export class DockerManager extends EventEmitter {
         return this.lazydockerBackend;
       }
 
-      await execFileText("wsl.exe", ["-e", "sh", "-lc", "command -v lazydocker >/dev/null 2>&1 && lazydocker --version"]);
+      await execFileText("wsl.exe", [
+        "-e",
+        "sh",
+        "-lc",
+        "command -v lazydocker >/dev/null 2>&1 && lazydocker --version",
+      ]);
       this.lazydockerBackend = { type: "wsl", file: "wsl.exe", argsPrefix: ["-e", "sh", "-lc"] };
       return this.lazydockerBackend;
     } catch {

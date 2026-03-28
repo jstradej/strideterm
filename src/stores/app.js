@@ -9,7 +9,15 @@ import {
   getTabAttention,
 } from "../app/selectors.js";
 import { statusTone } from "../workspace-state.js";
-import { readSidebarCollapsed, isContainerRunning, isGitViewId, isDockerViewId, isAzureViewId, isGitHubViewId, isReviewViewId } from "../app/helpers.js";
+import {
+  readSidebarCollapsed,
+  isContainerRunning,
+  isGitViewId,
+  isDockerViewId,
+  isAzureViewId,
+  isGitHubViewId,
+  isReviewViewId,
+} from "../app/helpers.js";
 import { createDialogActions } from "./app-dialog-actions.js";
 import { createWorkspaceActions } from "./app-workspace-actions.js";
 import { createApiActions } from "./app-api-actions.js";
@@ -24,14 +32,14 @@ export const useAppStore = defineStore("app", () => {
   const splitGroup = ref(null); // { layout, viewIds } | null
   const hiddenViewIds = ref(new Set());
   const sidebarCollapsed = ref(readSidebarCollapsed());
-  const overlay = ref(null);       // Vue component name string | null
+  const overlay = ref(null); // Vue component name string | null
   const overlayProps = ref({});
   const bootstrapError = ref("");
   const remoteConnectionIssue = ref("");
   const remoteAccessExpanded = ref(false);
   const remoteAccessMode = ref("lan"); // "lan" | "cloudflare" | "vps"
   const selectedLanUrl = ref("");
-  const contextMenu = ref(null);    // { x, y, viewId } | null
+  const contextMenu = ref(null); // { x, y, viewId } | null
   const layoutPickerAnchor = ref(null); // DOMRect | null (for positioning)
 
   // --- Race condition prevention ---
@@ -86,7 +94,9 @@ export const useAppStore = defineStore("app", () => {
     const activeProfileId = payload.value?.appState?.activeProfileId || "default";
     const result = workspaces.filter((ws) => (ws.profileId || "default") === activeProfileId);
     // Include names and panel counts — these change on rename/add-tab/remove-tab
-    const key = result.map((ws) => `${ws.id}:${ws.name}:${(ws.panels || []).length}:${ws.connectionId || ""}`).join(",");
+    const key = result
+      .map((ws) => `${ws.id}:${ws.name}:${(ws.panels || []).length}:${ws.connectionId || ""}`)
+      .join(",");
     if (key === _prevFilteredWsKey) return _prevFilteredWs;
     _prevFilteredWsKey = key;
     _prevFilteredWs = result;
@@ -251,15 +261,17 @@ export const useAppStore = defineStore("app", () => {
       appState: { ...appState, activeWorkspaceId: workspaceId, activeProjectId: workspaceId },
       workspace: buildWorkspacePayloadSnapshot(workspaceId),
       // Restore cached workspace-specific data (docker, attention, active git)
-      ...(cached ? {
-        docker: cached.docker ?? payload.value.docker,
-        attention: cached.attention ?? payload.value.attention,
-        git: {
-          ...prevGit,
-          activeWorkspace: cached.activeWorkspaceGit ?? prevGit?.activeWorkspace,
-          activeProject: cached.activeProjectGit ?? prevGit?.activeProject,
-        },
-      } : {}),
+      ...(cached
+        ? {
+            docker: cached.docker ?? payload.value.docker,
+            attention: cached.attention ?? payload.value.attention,
+            git: {
+              ...prevGit,
+              activeWorkspace: cached.activeWorkspaceGit ?? prevGit?.activeWorkspace,
+              activeProject: cached.activeProjectGit ?? prevGit?.activeProject,
+            },
+          }
+        : {}),
     };
     return true;
   }
@@ -290,7 +302,13 @@ export const useAppStore = defineStore("app", () => {
     if (pendingViewActivationId.value) {
       const nextWorkspace = nextPayload?.workspace;
       const nextTabs = nextWorkspace
-        ? getWorkspaceTabs({ workspace: nextWorkspace, payload: nextPayload, hiddenViewIds: hiddenViewIds.value, statusTone, isContainerRunning })
+        ? getWorkspaceTabs({
+            workspace: nextWorkspace,
+            payload: nextPayload,
+            hiddenViewIds: hiddenViewIds.value,
+            statusTone,
+            isContainerRunning,
+          })
         : [];
       if (!nextTabs.some((tab) => tab.id === pendingViewActivationId.value)) return;
       activeViewId.value = pendingViewActivationId.value;
@@ -310,7 +328,9 @@ export const useAppStore = defineStore("app", () => {
     try {
       return await fn();
     } finally {
-      setTimeout(() => { suppressBroadcast.value = false; }, 200);
+      setTimeout(() => {
+        suppressBroadcast.value = false;
+      }, 200);
     }
   }
 
@@ -325,7 +345,10 @@ export const useAppStore = defineStore("app", () => {
     activeSessionId.value = null;
     try {
       const nextPayload = await _api.activateWorkspace(workspaceId);
-      if (!pendingWorkspaceActivationId.value || nextPayload?.appState?.activeWorkspaceId === pendingWorkspaceActivationId.value) {
+      if (
+        !pendingWorkspaceActivationId.value ||
+        nextPayload?.appState?.activeWorkspaceId === pendingWorkspaceActivationId.value
+      ) {
         payload.value = nextPayload;
         // Update cache with fresh server data for the newly activated workspace
         _cacheCurrentWorkspace();
@@ -347,12 +370,15 @@ export const useAppStore = defineStore("app", () => {
       if (isGitViewId(viewId) && _api) {
         const wsId = payload.value?.appState?.activeWorkspaceId;
         if (wsId) {
-          _api.refreshGit(wsId).then((nextPayload) => {
-            if (nextPayload && !pendingWorkspaceActivationId.value) {
-              payload.value = nextPayload;
-              _cacheCurrentWorkspace();
-            }
-          }).catch(() => {});
+          _api
+            .refreshGit(wsId)
+            .then((nextPayload) => {
+              if (nextPayload && !pendingWorkspaceActivationId.value) {
+                payload.value = nextPayload;
+                _cacheCurrentWorkspace();
+              }
+            })
+            .catch(() => {});
         }
       }
       return;
@@ -396,19 +422,41 @@ export const useAppStore = defineStore("app", () => {
   }
 
   function getPanelByViewId(viewId, workspace = payload.value?.workspace) {
-    return getWorkspacePanelByViewId(viewId, workspace, { isGitViewId, isDockerViewId, isAzureViewId, isGitHubViewId, isReviewViewId });
+    return getWorkspacePanelByViewId(viewId, workspace, {
+      isGitViewId,
+      isDockerViewId,
+      isAzureViewId,
+      isGitHubViewId,
+      isReviewViewId,
+    });
   }
 
   // --- Delegated action groups ---
   const workspaceActions = createWorkspaceActions({
-    payload, activeViewId, activeSessionId, splitGroup, hiddenViewIds,
-    workspaceTabs, getApi, withSuppressedBroadcast,
+    payload,
+    activeViewId,
+    activeSessionId,
+    splitGroup,
+    hiddenViewIds,
+    workspaceTabs,
+    getApi,
+    withSuppressedBroadcast,
   });
 
   const dialogActions = createDialogActions({
-    overlay, overlayProps, contextMenu, layoutPickerAnchor,
-    payload, activeViewId, activeSessionId, splitGroup, suppressBroadcast,
-    hiddenViewIds, getApi, withSuppressedBroadcast, getPanelByViewId,
+    overlay,
+    overlayProps,
+    contextMenu,
+    layoutPickerAnchor,
+    payload,
+    activeViewId,
+    activeSessionId,
+    splitGroup,
+    suppressBroadcast,
+    hiddenViewIds,
+    getApi,
+    withSuppressedBroadcast,
+    getPanelByViewId,
     createWorktree: workspaceActions.createWorktree,
   });
 
@@ -433,7 +481,8 @@ export const useAppStore = defineStore("app", () => {
       event.preventDefault();
     });
 
-    api.getState()
+    api
+      .getState()
       .then((nextPayload) => {
         const pendingWsId = pendingWorkspaceActivationId.value;
         const incomingWsId = nextPayload?.appState?.activeWorkspaceId || "";
@@ -450,7 +499,13 @@ export const useAppStore = defineStore("app", () => {
         if (pendingViewActivationId.value) {
           const nextWorkspace = nextPayload?.workspace;
           const nextTabs = nextWorkspace
-            ? getWorkspaceTabs({ workspace: nextWorkspace, payload: nextPayload, hiddenViewIds: hiddenViewIds.value, statusTone, isContainerRunning })
+            ? getWorkspaceTabs({
+                workspace: nextWorkspace,
+                payload: nextPayload,
+                hiddenViewIds: hiddenViewIds.value,
+                statusTone,
+                isContainerRunning,
+              })
             : [];
           if (nextTabs.some((tab) => tab.id === pendingViewActivationId.value)) {
             activeViewId.value = pendingViewActivationId.value;
@@ -473,27 +528,55 @@ export const useAppStore = defineStore("app", () => {
 
   // --- Domain API actions (azure, review, docker, remote, profile) ---
   const apiActions = createApiActions({
-    payload, activeViewId, activeSessionId, splitGroup,
-    remoteAccessExpanded, remoteAccessMode, selectedLanUrl,
-    getApi, withSuppressedBroadcast,
+    payload,
+    activeViewId,
+    activeSessionId,
+    splitGroup,
+    remoteAccessExpanded,
+    remoteAccessMode,
+    selectedLanUrl,
+    getApi,
+    withSuppressedBroadcast,
   });
 
   return {
     // State
-    payload, activeViewId, activeSessionId, splitGroup, hiddenViewIds,
-    sidebarCollapsed, overlay, overlayProps, bootstrapError, remoteConnectionIssue,
-    remoteAccessExpanded, remoteAccessMode, selectedLanUrl,
-    contextMenu, layoutPickerAnchor,
-    pendingWorkspaceActivationId, pendingViewActivationId, suppressBroadcast,
+    payload,
+    activeViewId,
+    activeSessionId,
+    splitGroup,
+    hiddenViewIds,
+    sidebarCollapsed,
+    overlay,
+    overlayProps,
+    bootstrapError,
+    remoteConnectionIssue,
+    remoteAccessExpanded,
+    remoteAccessMode,
+    selectedLanUrl,
+    contextMenu,
+    layoutPickerAnchor,
+    pendingWorkspaceActivationId,
+    pendingViewActivationId,
+    suppressBroadcast,
     lastError,
     // Computed
-    activeWorkspace, filteredWorkspaces, activeProfile, attentionSummary,
-    workspaceTabs, visibleTabs,
+    activeWorkspace,
+    filteredWorkspaces,
+    activeProfile,
+    attentionSummary,
+    workspaceTabs,
+    visibleTabs,
     // Core actions
-    init, handleBroadcastPayload, withSuppressedBroadcast,
-    activateWorkspace, activateView,
-    setRemoteConnectionIssue, clearRemoteConnectionIssue,
-    dismissError, getApi,
+    init,
+    handleBroadcastPayload,
+    withSuppressedBroadcast,
+    activateWorkspace,
+    activateView,
+    setRemoteConnectionIssue,
+    clearRemoteConnectionIssue,
+    dismissError,
+    getApi,
     // Delegated dialog actions
     ...dialogActions,
     // Delegated workspace actions
@@ -501,6 +584,9 @@ export const useAppStore = defineStore("app", () => {
     // Delegated API actions (azure, review, docker, remote, profile)
     ...apiActions,
     // Selectors
-    getGitSnapshot, getWorkspaceAttentionForId, getTabAttentionForView, getPanelByViewId,
+    getGitSnapshot,
+    getWorkspaceAttentionForId,
+    getTabAttentionForView,
+    getPanelByViewId,
   };
 });

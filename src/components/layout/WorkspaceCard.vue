@@ -16,7 +16,8 @@
     @drop="$emit('drop', $event)"
   >
     <span class="workspace-card__badge">
-      <span class="workspace-card__index">{{ workspace.index }}</span>{{ workspace.icon }}
+      <span class="workspace-card__index">{{ workspace.index }}</span
+      >{{ workspace.icon }}
     </span>
     <span class="workspace-card__meta">
       <span class="workspace-card__title-row">
@@ -28,10 +29,33 @@
       <small>{{ workspace.summary }}</small>
     </span>
     <span v-if="workspace.active" class="workspace-card__actions">
-      <button v-if="workspace.kind === 'azure' || workspace.kind === 'github'" class="workspace-card__action" type="button" title="New Branch" @click.stop="$emit('quick-fix')">🪄</button>
-      <button v-if="workspace.gitAvailable" class="workspace-card__action" type="button" title="New worktree" @click.stop="$emit('create-worktree')">🌿</button>
+      <button
+        v-if="workspace.kind === 'azure' || workspace.kind === 'github'"
+        class="workspace-card__action"
+        type="button"
+        title="New Branch"
+        @click.stop="$emit('quick-fix')"
+      >
+        🪄
+      </button>
+      <button
+        v-if="workspace.gitAvailable"
+        class="workspace-card__action"
+        type="button"
+        title="New worktree"
+        @click.stop="$emit('create-worktree')"
+      >
+        🌿
+      </button>
       <button class="workspace-card__action" type="button" title="Edit" @click.stop="$emit('edit')">✎</button>
-      <button class="workspace-card__action workspace-card__action--danger" type="button" title="Delete" @click.stop="$emit('delete')">✕</button>
+      <button
+        class="workspace-card__action workspace-card__action--danger"
+        type="button"
+        title="Delete"
+        @click.stop="$emit('delete')"
+      >
+        ✕
+      </button>
     </span>
   </div>
 </template>

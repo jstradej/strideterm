@@ -8,7 +8,9 @@ function buildConfirmMessage({ type, snapshot, baseBranch }) {
   if (type === "merge") {
     lines.push(`Merge ${target} into ${snapshot.branch}?`);
   } else if (type === "rebase") {
-    lines.push(`Rebase ${snapshot.branch} onto ${target}? Your commits will be replayed on top of ${target} (commit hashes will change, content is preserved).`);
+    lines.push(
+      `Rebase ${snapshot.branch} onto ${target}? Your commits will be replayed on top of ${target} (commit hashes will change, content is preserved).`,
+    );
   } else if (type === "merge-into-base") {
     lines.push(`Merge ${snapshot?.branch || "current branch"} into ${target}?`);
     lines.push("This runs git merge in the base worktree.");
@@ -71,18 +73,18 @@ export const useGitUiStore = defineStore("git-ui", () => {
       if (response?.payload) {
         appStore.payload = response.payload;
       }
-      ui.lastResult = response?.result
-        ? { ...response.result, at: new Date().toISOString() }
-        : null;
+      ui.lastResult = response?.result ? { ...response.result, at: new Date().toISOString() } : null;
 
       if (ui.selectedDiff?.path) {
         const snapshot = appStore.getGitSnapshot(workspaceId);
-        const preview = await _api.gitDiffPreview({
-          workspaceId,
-          path: ui.selectedDiff.path,
-          scope: ui.selectedDiff.scope,
-          baseBranch: snapshot?.baseBranch || snapshot?.compareWithBase?.baseBranch || "",
-        }).catch(() => null);
+        const preview = await _api
+          .gitDiffPreview({
+            workspaceId,
+            path: ui.selectedDiff.path,
+            scope: ui.selectedDiff.scope,
+            baseBranch: snapshot?.baseBranch || snapshot?.compareWithBase?.baseBranch || "",
+          })
+          .catch(() => null);
         if (preview) ui.diffPreview = preview;
       }
 
@@ -156,14 +158,14 @@ export const useGitUiStore = defineStore("git-ui", () => {
       return;
     }
     if (pending.type === "merge-into-base") {
-      await runGitAction(workspaceId, "merge-into-base", () => _api.gitMergeCurrentIntoBase({ workspaceId, baseBranch: pending.baseBranch }));
+      await runGitAction(workspaceId, "merge-into-base", () =>
+        _api.gitMergeCurrentIntoBase({ workspaceId, baseBranch: pending.baseBranch }),
+      );
       return;
     }
     const payload = { workspaceId, baseBranch: pending.baseBranch, stashDirty: pending.stashDirty };
-    await runGitAction(
-      workspaceId,
-      pending.type,
-      () => (pending.type === "merge" ? _api.gitMergeIntoCurrent(payload) : _api.gitRebaseOnto(payload)),
+    await runGitAction(workspaceId, pending.type, () =>
+      pending.type === "merge" ? _api.gitMergeIntoCurrent(payload) : _api.gitRebaseOnto(payload),
     );
   }
 
@@ -203,7 +205,9 @@ export const useGitUiStore = defineStore("git-ui", () => {
   }
 
   async function gitRemoveWorktree(workspaceId, worktreePath, deleteBranch) {
-    await runGitAction(workspaceId, "remove-worktree", () => _api.gitRemoveWorktree({ workspaceId, worktreePath, deleteBranch }));
+    await runGitAction(workspaceId, "remove-worktree", () =>
+      _api.gitRemoveWorktree({ workspaceId, worktreePath, deleteBranch }),
+    );
   }
 
   async function gitCommitAll(workspaceId, message) {
@@ -265,14 +269,16 @@ export const useGitUiStore = defineStore("git-ui", () => {
   }
 
   async function azureCreatePullRequest(workspaceId, { title, description, sourceBranch, targetBranch, connectionId }) {
-    return runGitAction(workspaceId, "create-pr", () => _api.azureCreatePullRequest({
-      workspaceId,
-      title,
-      description,
-      sourceBranch,
-      targetBranch,
-      connectionId,
-    }));
+    return runGitAction(workspaceId, "create-pr", () =>
+      _api.azureCreatePullRequest({
+        workspaceId,
+        title,
+        description,
+        sourceBranch,
+        targetBranch,
+        connectionId,
+      }),
+    );
   }
 
   async function azureListRemoteBranches(workspaceId) {
@@ -339,28 +345,56 @@ export const useGitUiStore = defineStore("git-ui", () => {
         workspaceId,
         path: filePath,
         scope: "branch",
-        baseBranch: resolvedBase.startsWith("origin/") ? resolvedBase : (resolvedBase ? `origin/${resolvedBase}` : ""),
+        baseBranch: resolvedBase.startsWith("origin/") ? resolvedBase : resolvedBase ? `origin/${resolvedBase}` : "",
       });
     } catch (error) {
-      ui.reviewFileDiffPreview = { ok: false, path: filePath, diff: "", summary: error?.message || "Diff preview failed to load." };
+      ui.reviewFileDiffPreview = {
+        ok: false,
+        path: filePath,
+        diff: "",
+        summary: error?.message || "Diff preview failed to load.",
+      };
     }
   }
 
   return {
     // Read accessor
-    get, cleanup, init,
+    get,
+    cleanup,
+    init,
     // Git actions
     runGitAction,
-    refreshGit, gitFetch, gitPush, gitCheckoutBranch, gitCreateBranch,
-    setPendingGitAction, clearPendingGitAction,
-    gitConfirmAction, gitContinue, gitAbort,
-    gitMergeBase, gitRebaseBase, gitMergeIntoBase,
-    gitRemoveWorktree, gitCommitAll, gitSelectCommit,
-    gitSelectDiff, gitSwitchTab, gitClearResult, openLazygit,
-    gitStash, gitStashPop, gitSetBaseBranch,
-    azureCreatePullRequest, azureListRemoteBranches,
+    refreshGit,
+    gitFetch,
+    gitPush,
+    gitCheckoutBranch,
+    gitCreateBranch,
+    setPendingGitAction,
+    clearPendingGitAction,
+    gitConfirmAction,
+    gitContinue,
+    gitAbort,
+    gitMergeBase,
+    gitRebaseBase,
+    gitMergeIntoBase,
+    gitRemoveWorktree,
+    gitCommitAll,
+    gitSelectCommit,
+    gitSelectDiff,
+    gitSwitchTab,
+    gitClearResult,
+    openLazygit,
+    gitStash,
+    gitStashPop,
+    gitSetBaseBranch,
+    azureCreatePullRequest,
+    azureListRemoteBranches,
     // Azure review UI actions
-    reviewSwitchTab, reviewSetCommentFilter, reviewSetCommentSort,
-    reviewSetCommentSearch, reviewSetAgentSubtab, reviewSelectFileDiff,
+    reviewSwitchTab,
+    reviewSetCommentFilter,
+    reviewSetCommentSort,
+    reviewSetCommentSearch,
+    reviewSetAgentSubtab,
+    reviewSelectFileDiff,
   };
 });

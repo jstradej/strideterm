@@ -160,7 +160,10 @@ export async function createReviewBridgeStore(rootPath) {
     return db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(name) != null;
   }
   function columnExists(table, column) {
-    return db.prepare(`PRAGMA table_info('${table}')`).all().some((col) => col.name === column);
+    return db
+      .prepare(`PRAGMA table_info('${table}')`)
+      .all()
+      .some((col) => col.name === column);
   }
 
   const MIGRATIONS = [
@@ -544,12 +547,14 @@ export async function createReviewBridgeStore(rootPath) {
       updatedAt: row.updated_at || null,
       payload: fromJson(row.payload_json, {}),
     }));
-    const exportDir = prRow.export_dir || buildPrExportDir(normalizedRoot, {
-      provider: prRow.provider,
-      connectionId: prRow.connection_id,
-      repository: { id: prRow.repository_id, name: prRow.repository_name },
-      pullRequest: { id: prRow.pull_request_id },
-    });
+    const exportDir =
+      prRow.export_dir ||
+      buildPrExportDir(normalizedRoot, {
+        provider: prRow.provider,
+        connectionId: prRow.connection_id,
+        repository: { id: prRow.repository_id, name: prRow.repository_name },
+        pullRequest: { id: prRow.pull_request_id },
+      });
 
     const context = {
       provider: prRow.provider || "azure-devops",
@@ -608,14 +613,21 @@ export async function createReviewBridgeStore(rootPath) {
       agentInstructions: buildAgentInstructions(context),
     };
     await Promise.all([
-      fs.writeFile(path.join(context.exportDir, "meta.json"), JSON.stringify({
-        provider: context.provider,
-        prKey: context.prKey,
-        connectionId: context.connectionId,
-        repositoryId: context.repositoryId,
-        pullRequestId: context.pullRequestId,
-        lastImportedAt: context.lastImportedAt,
-      }, null, 2)),
+      fs.writeFile(
+        path.join(context.exportDir, "meta.json"),
+        JSON.stringify(
+          {
+            provider: context.provider,
+            prKey: context.prKey,
+            connectionId: context.connectionId,
+            repositoryId: context.repositoryId,
+            pullRequestId: context.pullRequestId,
+            lastImportedAt: context.lastImportedAt,
+          },
+          null,
+          2,
+        ),
+      ),
       fs.writeFile(context.briefJsonPath, JSON.stringify(enrichedContext, null, 2)),
       fs.writeFile(context.briefMarkdownPath, buildBriefMarkdown(context)),
       fs.writeFile(context.threadsMarkdownPath, buildThreadsMarkdown(context)),
@@ -666,25 +678,29 @@ export async function createReviewBridgeStore(rootPath) {
         // Merge review comment threads and issue comments (GitHub general conversation)
         // into a unified thread list. Issue comments become virtual threads with a single comment.
         const reviewThreads = (summary.threads || []).map((thread) => toThreadExport(thread));
-        const issueThreads = (summary.issueComments || []).map((comment) => toThreadExport({
-          id: comment.id,
-          status: "active",
-          filePath: "",
-          lineStart: null,
-          lineEnd: null,
-          publishedDate: comment.createdAt || null,
-          lastUpdatedDate: comment.updatedAt || comment.createdAt || null,
-          comments: [{
+        const issueThreads = (summary.issueComments || []).map((comment) =>
+          toThreadExport({
             id: comment.id,
-            parentCommentId: 0,
-            content: comment.body || "",
-            body: comment.body || "",
+            status: "active",
+            filePath: "",
+            lineStart: null,
+            lineEnd: null,
             publishedDate: comment.createdAt || null,
-            lastUpdatedDate: comment.updatedAt || null,
-            commentType: "text",
-            author: comment.author || {},
-          }],
-        }));
+            lastUpdatedDate: comment.updatedAt || comment.createdAt || null,
+            comments: [
+              {
+                id: comment.id,
+                parentCommentId: 0,
+                content: comment.body || "",
+                body: comment.body || "",
+                publishedDate: comment.createdAt || null,
+                lastUpdatedDate: comment.updatedAt || null,
+                commentType: "text",
+                author: comment.author || {},
+              },
+            ],
+          }),
+        );
         const threads = [...reviewThreads, ...issueThreads];
         const exportDir = buildPrExportDir(normalizedRoot, {
           provider: summary.provider || "azure-devops",
@@ -693,7 +709,9 @@ export async function createReviewBridgeStore(rootPath) {
           pullRequest: summary.pullRequest,
         });
         const existingCommentStatuses = new Map(
-          statements.selectCommentStatusesByPr.all(summary.prKey).map((row) => [String(row.remote_thread_id), row.status || ""]),
+          statements.selectCommentStatusesByPr
+            .all(summary.prKey)
+            .map((row) => [String(row.remote_thread_id), row.status || ""]),
         );
 
         try {
@@ -753,7 +771,7 @@ export async function createReviewBridgeStore(rootPath) {
               activeThreadIds.push(Number(thread.id));
             }
 
-            for (const comment of (thread.comments || [])) {
+            for (const comment of thread.comments || []) {
               statements.insertThreadComment.run(
                 summary.prKey,
                 Number(thread.id || 0),
@@ -781,7 +799,8 @@ export async function createReviewBridgeStore(rootPath) {
             };
             // Preserve existing display_index or assign next available
             const existingComment = statements.selectCommentByKey.get(commentKey);
-            const displayIndex = existingComment?.display_index ?? statements.nextDisplayIndex.get(summary.prKey).next_index;
+            const displayIndex =
+              existingComment?.display_index ?? statements.nextDisplayIndex.get(summary.prKey).next_index;
             statements.upsertComment.run(
               commentKey,
               summary.prKey,
@@ -809,9 +828,9 @@ export async function createReviewBridgeStore(rootPath) {
 
           // Clean up successfully published local comments and their drafts/queue entries.
           // These are now represented as remote thread_comments — keeping them would cause duplicates.
-          const syncedComments = db.prepare(
-            `SELECT comment_key FROM review_comments WHERE pr_key = ? AND status = 'synced'`,
-          ).all(summary.prKey);
+          const syncedComments = db
+            .prepare(`SELECT comment_key FROM review_comments WHERE pr_key = ? AND status = 'synced'`)
+            .all(summary.prKey);
           for (const row of syncedComments) {
             db.prepare(`DELETE FROM draft_responses WHERE comment_key = ?`).run(row.comment_key);
             db.prepare(`DELETE FROM sync_queue WHERE comment_key = ?`).run(row.comment_key);
@@ -905,14 +924,25 @@ export async function createReviewBridgeStore(rootPath) {
             if (autoQueue) {
               const queueId = `sync:${draftId}`;
               statements.upsertQueueItem.run(
-                queueId, prKey, resolvedCommentKey, "publish-comment", "pending", 0, "", toJson({ draftId }), now, now,
+                queueId,
+                prKey,
+                resolvedCommentKey,
+                "publish-comment",
+                "pending",
+                0,
+                "",
+                toJson({ draftId }),
+                now,
+                now,
               );
               statements.updateDraftState.run("ready-to-sync", now, toJson(draftPayload), draftId);
               statements.updateCommentState.run("ready-to-sync", now, resolvedCommentKey);
             }
             db.exec("COMMIT");
           } catch (error) {
-            try { db.exec("ROLLBACK"); } catch {}
+            try {
+              db.exec("ROLLBACK");
+            } catch {}
             throw error;
           }
 
@@ -936,8 +966,11 @@ export async function createReviewBridgeStore(rootPath) {
         const locationPrefix = normalizedFilePath
           ? `${normalizedFilePath}${normalizedLine ? `:${normalizedLine}` : ""}`
           : "";
-        const autoTitle = String(title || "").trim()
-          || (locationPrefix ? `${locationPrefix} — ${buildLocalCommentTitle(normalizedBody)}` : buildLocalCommentTitle(normalizedBody));
+        const autoTitle =
+          String(title || "").trim() ||
+          (locationPrefix
+            ? `${locationPrefix} — ${buildLocalCommentTitle(normalizedBody)}`
+            : buildLocalCommentTitle(normalizedBody));
 
         const draftId = `${commentKey}:draft`;
         const draftPayload = { threadId: null, source: "draft-comment" };
@@ -978,7 +1011,16 @@ export async function createReviewBridgeStore(rootPath) {
           if (autoQueue) {
             const queueId = `sync:${draftId}`;
             statements.upsertQueueItem.run(
-              queueId, prKey, commentKey, "publish-comment", "pending", 0, "", toJson({ draftId }), now, now,
+              queueId,
+              prKey,
+              commentKey,
+              "publish-comment",
+              "pending",
+              0,
+              "",
+              toJson({ draftId }),
+              now,
+              now,
             );
             statements.updateDraftState.run("ready-to-sync", now, toJson(draftPayload), draftId);
             statements.updateCommentState.run("ready-to-sync", now, commentKey);
@@ -1065,7 +1107,9 @@ export async function createReviewBridgeStore(rootPath) {
         const commentRow = resolveCommentRow({ prKey, commentKey, threadId });
         const resolvedDraft = draftId
           ? statements.selectDraftById.get(draftId)
-          : (commentRow ? statements.selectLatestDraftByComment.get(commentRow.comment_key) : null);
+          : commentRow
+            ? statements.selectLatestDraftByComment.get(commentRow.comment_key)
+            : null;
         if (!resolvedDraft) {
           throw new Error("Draft response was not found.");
         }
@@ -1086,7 +1130,12 @@ export async function createReviewBridgeStore(rootPath) {
             now,
             now,
           );
-          statements.updateDraftState.run("ready-to-sync", now, resolvedDraft.payload_json || "{}", resolvedDraft.draft_id);
+          statements.updateDraftState.run(
+            "ready-to-sync",
+            now,
+            resolvedDraft.payload_json || "{}",
+            resolvedDraft.draft_id,
+          );
           statements.updateCommentState.run("ready-to-sync", now, resolvedDraft.comment_key);
           db.exec("COMMIT");
         } catch (error) {
@@ -1149,7 +1198,16 @@ export async function createReviewBridgeStore(rootPath) {
           if (autoQueue) {
             const queueId = `sync:${draftId}`;
             statements.upsertQueueItem.run(
-              queueId, prKey, resolvedCommentKey, "publish-comment", "pending", 0, "", toJson({ draftId }), now, now,
+              queueId,
+              prKey,
+              resolvedCommentKey,
+              "publish-comment",
+              "pending",
+              0,
+              "",
+              toJson({ draftId }),
+              now,
+              now,
             );
             statements.updateDraftState.run("ready-to-sync", now, toJson(draftPayload), draftId);
             statements.updateCommentState.run("ready-to-sync", now, resolvedCommentKey);
@@ -1158,7 +1216,9 @@ export async function createReviewBridgeStore(rootPath) {
           }
           db.exec("COMMIT");
         } catch (error) {
-          try { db.exec("ROLLBACK"); } catch {}
+          try {
+            db.exec("ROLLBACK");
+          } catch {}
           throw error;
         }
 
@@ -1182,7 +1242,9 @@ export async function createReviewBridgeStore(rootPath) {
           statements.deleteCommentByKey.run(commentKey);
           db.exec("COMMIT");
         } catch (error) {
-          try { db.exec("ROLLBACK"); } catch {}
+          try {
+            db.exec("ROLLBACK");
+          } catch {}
           throw error;
         }
         const context = readContext(prKey);
@@ -1204,7 +1266,9 @@ export async function createReviewBridgeStore(rootPath) {
           statements.deleteQueueByDraft.run(`%${draftId.replace(/%/g, "").replace(/_/g, "")}%`);
           db.exec("COMMIT");
         } catch (error) {
-          try { db.exec("ROLLBACK"); } catch {}
+          try {
+            db.exec("ROLLBACK");
+          } catch {}
           throw error;
         }
         const context = readContext(prKey);
@@ -1220,13 +1284,21 @@ export async function createReviewBridgeStore(rootPath) {
       if (!rows.length) {
         this.seedDefaultAgentPrompts();
         return statements.selectAllAgentPrompts.all().map((r) => ({
-          promptId: r.prompt_id, title: r.title, description: r.description,
-          template: r.template, sortOrder: r.sort_order, isDefault: Boolean(r.is_default),
+          promptId: r.prompt_id,
+          title: r.title,
+          description: r.description,
+          template: r.template,
+          sortOrder: r.sort_order,
+          isDefault: Boolean(r.is_default),
         }));
       }
       return rows.map((r) => ({
-        promptId: r.prompt_id, title: r.title, description: r.description,
-        template: r.template, sortOrder: r.sort_order, isDefault: Boolean(r.is_default),
+        promptId: r.prompt_id,
+        title: r.title,
+        description: r.description,
+        template: r.template,
+        sortOrder: r.sort_order,
+        isDefault: Boolean(r.is_default),
       }));
     },
     saveAgentPrompt({ promptId, title, description, template, sortOrder = 0 }) {
@@ -1251,13 +1323,55 @@ export async function createReviewBridgeStore(rootPath) {
       ensureOpen();
       const now = new Date().toISOString();
       const defaults = [
-        { id: "full-review", title: "Full code review", description: "Review the PR changes (not the entire codebase)", sort: 0, template: `Review this PR as an experienced code reviewer.\n\n1. Read the review brief to understand the PR purpose and scope.\n2. Use list_review_comments to see existing threads — do not duplicate what is already flagged.\n3. Inspect ONLY the changed files and changed lines in this PR. Do NOT review unchanged code — focus on the diff.\n4. For each changed file, evaluate the CHANGES for:\n   - Correctness: bugs, logic errors, null/undefined issues, off-by-one, missing error handling\n   - Security: injection (SQL, XSS, command), auth bypass, sensitive data exposure, insecure deserialization\n   - Performance: N+1 queries, missing indexes, unnecessary allocations, resource leaks\n   - Design: does the change fit the existing architecture? any coupling or cohesion concerns?\n   - Completeness: are there missing edge cases, untested paths, or incomplete migrations?\n5. For existing comments that need a reply, use save_review_draft.\n6. For new findings, create a SEPARATE create_review_comment for EACH issue.\n\nRules:\n- ONE finding per comment. Never combine multiple issues.\n- Always provide filePath and lineNumber pointing to the specific changed line.\n- Start the body with severity: **CRITICAL:**, **MAJOR:**, or **MINOR:**\n- Explain WHY it is a problem, not just what. Show the impact.\n- Suggest a concrete fix with a code snippet when possible.\n- Use \`code\` for identifiers, \`\`\`lang for blocks.\n- Skip nitpicks and style-only issues unless they hurt readability significantly.\n\nDo NOT queue any drafts — let me review them first.` },
-        { id: "quick-summary", title: "Quick summary", description: "High-level overview of the PR changes", sort: 1, template: `Read the review brief and summarize the PR changes:\n1. What was changed, in which files, and roughly how many lines\n2. Why it was likely changed (infer from commit messages and code context)\n3. Key risks — what could break, what assumptions are made\n4. Is the change complete or are there missing pieces (e.g. no tests, partial migration)?\n5. Any existing review comments worth noting?\n\nUse list_review_comments to check what reviewers have already flagged.\nKeep it concise — 5-10 lines max. Focus on the diff, not the entire codebase.` },
-        { id: "write-comment", title: "Write a review comment", description: "Create a targeted comment about a specific concern", sort: 2, template: `Write a review comment about [DESCRIBE YOUR CONCERN].\n\nUse create_review_comment to create a new comment, or save_review_draft to reply to an existing one.\nAlways provide filePath and lineNumber so the comment is anchored to the exact code location.\n\nFormat for Azure DevOps:\n- Start with severity: **CRITICAL:**, **MAJOR:**, or **MINOR:**\n- Explain the issue clearly\n- Suggest a fix with a code snippet if applicable\n- Use \`backticks\` for code references\n\nSave it as a draft for my review.` },
-        { id: "process-comments", title: "Respond to review comments (as PR author)", description: "Read reviewer comments and draft replies — agree, push back, or propose alternatives", sort: 3, template: `You are the PR author responding to review feedback.\n\n1. Use list_review_comments to see all comment threads.\n2. For each comment with status "active" or "ready-for-agent":\n   a. Use get_review_comment to read the full thread, code context, and any existing replies.\n   b. Analyze the reviewer's concern against the actual changed code.\n   c. Decide one of:\n      - **Agree & fix**: "Good catch. I'll fix this." + explain briefly what you'll change.\n      - **Agree & defer**: "Valid point, but out of scope for this PR. I'll track it as a follow-up."\n      - **Push back**: Explain why the current implementation is correct or intentional. Cite specific code, design decisions, or constraints.\n      - **Propose alternative**: "I see the concern. Instead of X, how about Y?" + provide a concrete code suggestion.\n   d. Use save_review_draft to write the reply.\n3. Be respectful but direct. Don't blindly agree — if the reviewer is wrong, explain why with evidence from the code.\n4. Keep replies concise. Reviewers appreciate short, actionable responses.\n\nDo NOT queue any drafts — let me review them first.` },
-        { id: "security-scan", title: "Security & correctness scan", description: "Focused security and bug analysis of changed code", sort: 4, template: `Analyze ONLY the changed lines in this PR for:\n\n**Security (check every input path in the diff):**\n- SQL injection, XSS, command injection, SSRF\n- Authentication/authorization bypass or weakening\n- Sensitive data exposure (passwords, API keys, PII in logs or error messages)\n- Insecure deserialization, path traversal, open redirects\n- Hardcoded credentials or secrets\n\n**Correctness (check every logic change in the diff):**\n- Null/undefined handling, type mismatches\n- Race conditions, concurrency issues, deadlocks\n- Resource leaks (unclosed connections, streams, file handles)\n- Edge cases and boundary conditions\n- Error handling: are exceptions caught and handled, or silently swallowed?\n\nDo NOT review unchanged code. Only flag issues introduced or exposed by this PR's changes.\n\nCreate a SEPARATE create_review_comment for EACH finding. Always provide filePath and lineNumber.\nDo NOT queue any drafts — let me review them first.` },
-        { id: "suggest-improvements", title: "Suggest improvements", description: "Code quality and best practice suggestions", sort: 5, template: `Review this PR for improvement opportunities:\n- Better naming for variables, methods, classes\n- Cleaner abstractions or design patterns\n- Missing or inadequate tests\n- Documentation gaps\n- Simpler implementations\n\nCreate a SEPARATE create_review_comment for each suggestion — never combine multiple suggestions into one comment. Always provide filePath and lineNumber so the suggestion is anchored to the exact code location. Frame them constructively.\nDo NOT queue any drafts — let me review them first.` },
-        { id: "create-note", title: "Create a review comment", description: "Add a review comment with a draft", sort: 6, template: `Use create_review_comment to create a new review comment: "[YOUR QUESTION OR NOTE]"\n\nAlways provide filePath and lineNumber to anchor the comment to the code.\nA draft is auto-created so you can edit and queue it for publishing to Azure DevOps.` },
+        {
+          id: "full-review",
+          title: "Full code review",
+          description: "Review the PR changes (not the entire codebase)",
+          sort: 0,
+          template: `Review this PR as an experienced code reviewer.\n\n1. Read the review brief to understand the PR purpose and scope.\n2. Use list_review_comments to see existing threads — do not duplicate what is already flagged.\n3. Inspect ONLY the changed files and changed lines in this PR. Do NOT review unchanged code — focus on the diff.\n4. For each changed file, evaluate the CHANGES for:\n   - Correctness: bugs, logic errors, null/undefined issues, off-by-one, missing error handling\n   - Security: injection (SQL, XSS, command), auth bypass, sensitive data exposure, insecure deserialization\n   - Performance: N+1 queries, missing indexes, unnecessary allocations, resource leaks\n   - Design: does the change fit the existing architecture? any coupling or cohesion concerns?\n   - Completeness: are there missing edge cases, untested paths, or incomplete migrations?\n5. For existing comments that need a reply, use save_review_draft.\n6. For new findings, create a SEPARATE create_review_comment for EACH issue.\n\nRules:\n- ONE finding per comment. Never combine multiple issues.\n- Always provide filePath and lineNumber pointing to the specific changed line.\n- Start the body with severity: **CRITICAL:**, **MAJOR:**, or **MINOR:**\n- Explain WHY it is a problem, not just what. Show the impact.\n- Suggest a concrete fix with a code snippet when possible.\n- Use \`code\` for identifiers, \`\`\`lang for blocks.\n- Skip nitpicks and style-only issues unless they hurt readability significantly.\n\nDo NOT queue any drafts — let me review them first.`,
+        },
+        {
+          id: "quick-summary",
+          title: "Quick summary",
+          description: "High-level overview of the PR changes",
+          sort: 1,
+          template: `Read the review brief and summarize the PR changes:\n1. What was changed, in which files, and roughly how many lines\n2. Why it was likely changed (infer from commit messages and code context)\n3. Key risks — what could break, what assumptions are made\n4. Is the change complete or are there missing pieces (e.g. no tests, partial migration)?\n5. Any existing review comments worth noting?\n\nUse list_review_comments to check what reviewers have already flagged.\nKeep it concise — 5-10 lines max. Focus on the diff, not the entire codebase.`,
+        },
+        {
+          id: "write-comment",
+          title: "Write a review comment",
+          description: "Create a targeted comment about a specific concern",
+          sort: 2,
+          template: `Write a review comment about [DESCRIBE YOUR CONCERN].\n\nUse create_review_comment to create a new comment, or save_review_draft to reply to an existing one.\nAlways provide filePath and lineNumber so the comment is anchored to the exact code location.\n\nFormat for Azure DevOps:\n- Start with severity: **CRITICAL:**, **MAJOR:**, or **MINOR:**\n- Explain the issue clearly\n- Suggest a fix with a code snippet if applicable\n- Use \`backticks\` for code references\n\nSave it as a draft for my review.`,
+        },
+        {
+          id: "process-comments",
+          title: "Respond to review comments (as PR author)",
+          description: "Read reviewer comments and draft replies — agree, push back, or propose alternatives",
+          sort: 3,
+          template: `You are the PR author responding to review feedback.\n\n1. Use list_review_comments to see all comment threads.\n2. For each comment with status "active" or "ready-for-agent":\n   a. Use get_review_comment to read the full thread, code context, and any existing replies.\n   b. Analyze the reviewer's concern against the actual changed code.\n   c. Decide one of:\n      - **Agree & fix**: "Good catch. I'll fix this." + explain briefly what you'll change.\n      - **Agree & defer**: "Valid point, but out of scope for this PR. I'll track it as a follow-up."\n      - **Push back**: Explain why the current implementation is correct or intentional. Cite specific code, design decisions, or constraints.\n      - **Propose alternative**: "I see the concern. Instead of X, how about Y?" + provide a concrete code suggestion.\n   d. Use save_review_draft to write the reply.\n3. Be respectful but direct. Don't blindly agree — if the reviewer is wrong, explain why with evidence from the code.\n4. Keep replies concise. Reviewers appreciate short, actionable responses.\n\nDo NOT queue any drafts — let me review them first.`,
+        },
+        {
+          id: "security-scan",
+          title: "Security & correctness scan",
+          description: "Focused security and bug analysis of changed code",
+          sort: 4,
+          template: `Analyze ONLY the changed lines in this PR for:\n\n**Security (check every input path in the diff):**\n- SQL injection, XSS, command injection, SSRF\n- Authentication/authorization bypass or weakening\n- Sensitive data exposure (passwords, API keys, PII in logs or error messages)\n- Insecure deserialization, path traversal, open redirects\n- Hardcoded credentials or secrets\n\n**Correctness (check every logic change in the diff):**\n- Null/undefined handling, type mismatches\n- Race conditions, concurrency issues, deadlocks\n- Resource leaks (unclosed connections, streams, file handles)\n- Edge cases and boundary conditions\n- Error handling: are exceptions caught and handled, or silently swallowed?\n\nDo NOT review unchanged code. Only flag issues introduced or exposed by this PR's changes.\n\nCreate a SEPARATE create_review_comment for EACH finding. Always provide filePath and lineNumber.\nDo NOT queue any drafts — let me review them first.`,
+        },
+        {
+          id: "suggest-improvements",
+          title: "Suggest improvements",
+          description: "Code quality and best practice suggestions",
+          sort: 5,
+          template: `Review this PR for improvement opportunities:\n- Better naming for variables, methods, classes\n- Cleaner abstractions or design patterns\n- Missing or inadequate tests\n- Documentation gaps\n- Simpler implementations\n\nCreate a SEPARATE create_review_comment for each suggestion — never combine multiple suggestions into one comment. Always provide filePath and lineNumber so the suggestion is anchored to the exact code location. Frame them constructively.\nDo NOT queue any drafts — let me review them first.`,
+        },
+        {
+          id: "create-note",
+          title: "Create a review comment",
+          description: "Add a review comment with a draft",
+          sort: 6,
+          template: `Use create_review_comment to create a new review comment: "[YOUR QUESTION OR NOTE]"\n\nAlways provide filePath and lineNumber to anchor the comment to the code.\nA draft is auto-created so you can edit and queue it for publishing to Azure DevOps.`,
+        },
       ];
       for (const d of defaults) {
         statements.upsertAgentPrompt.run(d.id, d.title, d.description, d.template, d.sort, 1, now, now);
@@ -1282,7 +1396,14 @@ export async function createReviewBridgeStore(rootPath) {
           const thread = context?.threads.find((entry) => entry.id === commentRow?.remote_thread_id) || null;
           const parentCommentId = Number((thread?.comments || []).at(-1)?.id || 0);
           if (!draftRow || !commentRow) {
-            statements.updateQueueState.run("failed", Number(queueEntry.attempts || 0) + 1, "Draft or comment is missing.", queueEntry.payload_json || "{}", now, queueEntry.queue_id);
+            statements.updateQueueState.run(
+              "failed",
+              Number(queueEntry.attempts || 0) + 1,
+              "Draft or comment is missing.",
+              queueEntry.payload_json || "{}",
+              now,
+              queueEntry.queue_id,
+            );
             continue;
           }
 
@@ -1298,7 +1419,14 @@ export async function createReviewBridgeStore(rootPath) {
             draft: fromJson(draftRow.payload_json, {}),
           };
 
-          statements.updateQueueState.run("processing", Number(queueEntry.attempts || 0) + 1, "", queueEntry.payload_json || "{}", now, queueEntry.queue_id);
+          statements.updateQueueState.run(
+            "processing",
+            Number(queueEntry.attempts || 0) + 1,
+            "",
+            queueEntry.payload_json || "{}",
+            now,
+            queueEntry.queue_id,
+          );
           try {
             const publishResult = await publishDraft(publishInput);
             const payloadJson = toJson({
@@ -1326,7 +1454,14 @@ export async function createReviewBridgeStore(rootPath) {
             const message = error instanceof Error ? error.message : String(error || "Sync failed.");
             try {
               db.exec("BEGIN IMMEDIATE TRANSACTION");
-              statements.updateQueueState.run("failed", Number(queueEntry.attempts || 0) + 1, message, queueEntry.payload_json || "{}", failedAt, queueEntry.queue_id);
+              statements.updateQueueState.run(
+                "failed",
+                Number(queueEntry.attempts || 0) + 1,
+                message,
+                queueEntry.payload_json || "{}",
+                failedAt,
+                queueEntry.queue_id,
+              );
               statements.updateDraftState.run("failed", failedAt, draftRow.payload_json || "{}", draftRow.draft_id);
               statements.updateCommentState.run("conflict", failedAt, commentRow.comment_key);
               db.exec("COMMIT");

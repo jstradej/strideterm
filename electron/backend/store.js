@@ -54,7 +54,7 @@ async function loadState(statePath) {
   console.error(`[store] Last error: ${lastError?.message}`);
   throw new Error(
     `State file at ${statePath} could not be loaded after ${LOAD_RETRIES} attempts. ` +
-    "Existing file was left untouched to avoid overwriting user data.",
+      "Existing file was left untouched to avoid overwriting user data.",
   );
 }
 

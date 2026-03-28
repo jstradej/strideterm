@@ -1,5 +1,5 @@
 <template>
-  <div class="dialog" style="width:min(680px,100%);position:relative;z-index:10;">
+  <div class="dialog" style="width: min(680px, 100%); position: relative; z-index: 10">
     <div class="dialog__header">
       <div>
         <p class="eyebrow">Azure DevOps</p>
@@ -9,16 +9,17 @@
     </div>
 
     <!-- Step indicator -->
-    <div style="display:flex;gap:4px;margin-top:8px;">
+    <div style="display: flex; gap: 4px; margin-top: 8px">
       <span
         v-for="(s, i) in visibleSteps"
         :key="s.id"
         :class="['workspace-chip', currentVisibleIndex >= i && 'workspace-chip--active']"
-        style="font-size:12px;"
-      >{{ s.label }}</span>
+        style="font-size: 12px"
+        >{{ s.label }}</span
+      >
     </div>
 
-    <div style="margin-top:16px;min-height:220px;max-height:60vh;overflow-y:auto;">
+    <div style="margin-top: 16px; min-height: 220px; max-height: 60vh; overflow-y: auto">
       <!-- Step: Connection -->
       <div v-if="currentStep === 'connection'">
         <p class="eyebrow">Select connection</p>
@@ -38,7 +39,7 @@
       <!-- Step: Project -->
       <div v-if="currentStep === 'project'">
         <p class="eyebrow">Select project</p>
-        <p v-if="loading" style="color:var(--muted);">Loading projects…</p>
+        <p v-if="loading" style="color: var(--muted)">Loading projects…</p>
         <div v-else class="nb-list">
           <button
             v-for="proj in projects"
@@ -54,7 +55,7 @@
       <!-- Step: Repository -->
       <div v-if="currentStep === 'repo'">
         <p class="eyebrow">Select repository</p>
-        <p v-if="loading" style="color:var(--muted);">Loading repositories…</p>
+        <p v-if="loading" style="color: var(--muted)">Loading repositories…</p>
         <div v-else class="nb-list">
           <button
             v-for="repo in sortedRepositories"
@@ -70,8 +71,8 @@
       <!-- Step: Branch -->
       <div v-if="currentStep === 'branch'">
         <p class="eyebrow">Branch setup</p>
-        <p v-if="loading" style="color:var(--muted);">Loading branches…</p>
-        <div v-else class="form" style="margin-top:8px;">
+        <p v-if="loading" style="color: var(--muted)">Loading branches…</p>
+        <div v-else class="form" style="margin-top: 8px">
           <label>
             <span>Base branch</span>
             <div class="nb-combo" @keydown.escape="branchDropdownOpen = false">
@@ -83,7 +84,14 @@
                 @focus="branchDropdownOpen = true"
                 @input="branchDropdownOpen = true"
               />
-              <div v-if="selected.baseBranch && !branchDropdownOpen" class="nb-combo__selected" @click="branchDropdownOpen = true; $nextTick(() => baseBranchInputRef?.focus())">
+              <div
+                v-if="selected.baseBranch && !branchDropdownOpen"
+                class="nb-combo__selected"
+                @click="
+                  branchDropdownOpen = true;
+                  $nextTick(() => baseBranchInputRef?.focus());
+                "
+              >
                 {{ selected.baseBranch }}
               </div>
               <div v-if="branchDropdownOpen" class="nb-combo__dropdown">
@@ -92,41 +100,45 @@
                   :key="b"
                   :class="['nb-combo__option', selected.baseBranch === b && 'nb-combo__option--active']"
                   @mousedown.prevent="selectBaseBranch(b)"
-                >{{ b }}</button>
+                >
+                  {{ b }}
+                </button>
                 <div v-if="!filteredBranches.length" class="nb-combo__empty">No matching branches</div>
               </div>
             </div>
           </label>
           <label>
             <span>New branch name</span>
-            <div style="display:flex;gap:6px;align-items:stretch;">
+            <div style="display: flex; gap: 6px; align-items: stretch">
               <input
                 v-model="branchPrefix"
                 placeholder="fix/"
-                style="width:110px;flex-shrink:0;"
+                style="width: 110px; flex-shrink: 0"
                 @change="savePrefixPreference"
               />
               <input
                 ref="branchNameRef"
                 v-model="branchSuffix"
                 placeholder="my-branch-name"
-                style="flex:1;"
+                style="flex: 1"
                 @keydown.enter.prevent="canCreate && handleCreate()"
               />
             </div>
-            <small v-if="validationError" style="color:var(--danger);font-size:12px;">{{ validationError }}</small>
-            <small v-else style="color:var(--muted);font-size:12px;">{{ fullBranchName ? `Branch: ${fullBranchName}` : 'Type a branch name suffix' }}</small>
+            <small v-if="validationError" style="color: var(--danger); font-size: 12px">{{ validationError }}</small>
+            <small v-else style="color: var(--muted); font-size: 12px">{{
+              fullBranchName ? `Branch: ${fullBranchName}` : "Type a branch name suffix"
+            }}</small>
           </label>
         </div>
       </div>
 
       <!-- Error -->
-      <p v-if="errorMessage" style="margin-top:12px;color:var(--danger);">{{ errorMessage }}</p>
+      <p v-if="errorMessage" style="margin-top: 12px; color: var(--danger)">{{ errorMessage }}</p>
     </div>
 
     <footer class="dialog__footer">
       <button v-if="canGoBack" type="button" class="button button--ghost" @click="goBack">Back</button>
-      <span style="flex:1;"></span>
+      <span style="flex: 1"></span>
       <button type="button" class="button button--ghost" @click="emit('cancel')">Cancel</button>
       <button
         v-if="currentStep === 'branch'"
@@ -134,7 +146,9 @@
         :class="['button', busy && 'button--busy']"
         :disabled="!canCreate || busy"
         @click="handleCreate"
-      >{{ busy ? 'Creating…' : 'Create workspace' }}</button>
+      >
+        {{ busy ? "Creating…" : "Create workspace" }}
+      </button>
     </footer>
   </div>
 </template>
@@ -183,22 +197,31 @@ const selected = ref({
 });
 
 function loadPrefixPreference() {
-  try { return localStorage.getItem(PREFIX_STORAGE_KEY) || "fix/"; } catch { return "fix/"; }
+  try {
+    return localStorage.getItem(PREFIX_STORAGE_KEY) || "fix/";
+  } catch {
+    return "fix/";
+  }
 }
 
 function savePrefixPreference() {
-  try { localStorage.setItem(PREFIX_STORAGE_KEY, branchPrefix.value); } catch { /* ignore */ }
+  try {
+    localStorage.setItem(PREFIX_STORAGE_KEY, branchPrefix.value);
+  } catch {
+    /* ignore */
+  }
 }
 
 // --- Branch name validation ---
-const BRANCH_INVALID_CHARS = /[\x00-\x1f\x7f ~^:?*\[\]\\{}@]/;
+const BRANCH_INVALID_CHARS = /[\x00-\x1f\x7f ~^:?*[\]\\{}@]/;
 const BRANCH_INVALID_PATTERNS = /\.\.|\/\/|^[./]|[./]$|\.lock$/;
 
 const validationError = computed(() => {
   const name = fullBranchName.value;
   if (!name) return "";
   if (BRANCH_INVALID_CHARS.test(name)) return "Contains invalid characters for a git branch name.";
-  if (BRANCH_INVALID_PATTERNS.test(name)) return "Invalid branch name pattern (no .., //, leading/trailing dots or slashes).";
+  if (BRANCH_INVALID_PATTERNS.test(name))
+    return "Invalid branch name pattern (no .., //, leading/trailing dots or slashes).";
   if (/\s/.test(name)) return "Branch name cannot contain spaces.";
   return "";
 });
@@ -334,10 +357,12 @@ async function loadBranches() {
       repositoryId: selected.value.repositoryId,
     });
     branches.value = result.branches || [];
-    const preferred = branches.value.find((b) => b === "develop")
-      || branches.value.find((b) => b === "main")
-      || branches.value.find((b) => b === "master")
-      || branches.value[0] || "";
+    const preferred =
+      branches.value.find((b) => b === "develop") ||
+      branches.value.find((b) => b === "main") ||
+      branches.value.find((b) => b === "master") ||
+      branches.value[0] ||
+      "";
     selected.value.baseBranch = preferred;
   } catch (err) {
     errorMessage.value = err?.message || "Failed to load branches.";

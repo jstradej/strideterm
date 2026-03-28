@@ -1,6 +1,11 @@
 <template>
   <Transition name="toast">
-    <div v-if="visible" class="notification-toast" :class="`notification-toast--${toast?.kind || 'info'}`" @click="onClickToast">
+    <div
+      v-if="visible"
+      class="notification-toast"
+      :class="`notification-toast--${toast?.kind || 'info'}`"
+      @click="onClickToast"
+    >
       <div class="notification-toast__icon">{{ kindIcon }}</div>
       <div class="notification-toast__content">
         <strong class="notification-toast__title">{{ toast?.title }}</strong>

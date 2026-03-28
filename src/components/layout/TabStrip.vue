@@ -32,8 +32,12 @@
       <span>{{ tab.title }}</span>
       <small>{{ tab.status }}</small>
       <span v-if="tab.attention" class="tab__attention" :title="tab.attentionTooltip">🔔</span>
-      <span v-if="tab.persistent" class="tab__rename" :title="'Rename tab'" @click.stop="$emit('rename-tab', tab.id)">✎</span>
-      <span v-if="tab.closable" class="tab__close" :title="'Close tab'" @click.stop="$emit('close-tab', tab.id)">×</span>
+      <span v-if="tab.persistent" class="tab__rename" :title="'Rename tab'" @click.stop="$emit('rename-tab', tab.id)"
+        >✎</span
+      >
+      <span v-if="tab.closable" class="tab__close" :title="'Close tab'" @click.stop="$emit('close-tab', tab.id)"
+        >×</span
+      >
     </button>
   </div>
 </template>
@@ -54,10 +58,7 @@ const tabModels = computed(() => {
   const splitGroup = store.splitGroup;
 
   return tabs.map((tab) => {
-    const tabAttention = store.getTabAttentionForView(
-      store.activeWorkspace?.id || "",
-      tab.id,
-    );
+    const tabAttention = store.getTabAttentionForView(store.activeWorkspace?.id || "", tab.id);
     return {
       id: tab.id,
       title: tab.title,
@@ -70,7 +71,11 @@ const tabModels = computed(() => {
       attention: !!tabAttention,
       attentionFresh: isFreshAlert(tabAttention),
       attentionTooltip: tabAttentionTitle(tabAttention),
-      titleTooltip: tabAttentionTitle(tabAttention) || (tab.persistent ? "Double click to rename. Drag to reorder." : `${tab.title}${tab.status ? `\n${tab.status}` : ""}`),
+      titleTooltip:
+        tabAttentionTitle(tabAttention) ||
+        (tab.persistent
+          ? "Double click to rename. Drag to reorder."
+          : `${tab.title}${tab.status ? `\n${tab.status}` : ""}`),
     };
   });
 });

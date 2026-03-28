@@ -13,13 +13,10 @@ export function createGitHubApi(fetchImpl, { auditLogger } = {}) {
   const etagCache = new Map();
   const ETAG_CACHE_MAX_SIZE = 200;
 
-  async function requestJson(url, {
-    token,
-    method = "GET",
-    body = null,
-    headers = {},
-    accept = "application/vnd.github+json",
-  } = {}) {
+  async function requestJson(
+    url,
+    { token, method = "GET", body = null, headers = {}, accept = "application/vnd.github+json" } = {},
+  ) {
     const startTime = Date.now();
     let statusCode = 0;
 
@@ -51,7 +48,9 @@ export function createGitHubApi(fetchImpl, { auditLogger } = {}) {
         const cached = etagCache.get(url);
         if (cached?.data) {
           if (auditLogger) {
-            try { auditLogger({ method, url, statusCode: 304, success: true, durationMs: Date.now() - startTime }); } catch {}
+            try {
+              auditLogger({ method, url, statusCode: 304, success: true, durationMs: Date.now() - startTime });
+            } catch {}
           }
           return cached.data;
         }
@@ -70,7 +69,9 @@ export function createGitHubApi(fetchImpl, { auditLogger } = {}) {
       // Some endpoints return 204 No Content
       if (response.status === 204) {
         if (auditLogger) {
-          try { auditLogger({ method, url, statusCode, success: true, durationMs: Date.now() - startTime }); } catch {}
+          try {
+            auditLogger({ method, url, statusCode, success: true, durationMs: Date.now() - startTime });
+          } catch {}
         }
         return null;
       }
@@ -89,13 +90,24 @@ export function createGitHubApi(fetchImpl, { auditLogger } = {}) {
       }
 
       if (auditLogger) {
-        try { auditLogger({ method, url, statusCode, success: true, durationMs: Date.now() - startTime }); } catch {}
+        try {
+          auditLogger({ method, url, statusCode, success: true, durationMs: Date.now() - startTime });
+        } catch {}
       }
 
       return data;
     } catch (err) {
       if (auditLogger) {
-        try { auditLogger({ method, url, statusCode, success: false, errorMessage: err.message, durationMs: Date.now() - startTime }); } catch {}
+        try {
+          auditLogger({
+            method,
+            url,
+            statusCode,
+            success: false,
+            errorMessage: err.message,
+            durationMs: Date.now() - startTime,
+          });
+        } catch {}
       }
       throw err;
     }
@@ -319,11 +331,14 @@ export function createGitHubApi(fetchImpl, { auditLogger } = {}) {
     listUserRepos,
     listBranches,
     createPullRequest: async (connection, token, owner, repo, { title, body = "", head, base, draft = false }) => {
-      return requestJson(`${buildApiBase(connection)}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/pulls`, {
-        token,
-        method: "POST",
-        body: { title, body: body || undefined, head, base, draft },
-      });
+      return requestJson(
+        `${buildApiBase(connection)}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/pulls`,
+        {
+          token,
+          method: "POST",
+          body: { title, body: body || undefined, head, base, draft },
+        },
+      );
     },
   };
 }

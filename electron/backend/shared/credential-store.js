@@ -27,10 +27,10 @@ function decodeEncrypted(value, safeStorage) {
 
 function canEncrypt(safeStorage) {
   return Boolean(
-    safeStorage
-    && typeof safeStorage.encryptString === "function"
-    && typeof safeStorage.decryptString === "function"
-    && (typeof safeStorage.isEncryptionAvailable !== "function" || safeStorage.isEncryptionAvailable()),
+    safeStorage &&
+    typeof safeStorage.encryptString === "function" &&
+    typeof safeStorage.decryptString === "function" &&
+    (typeof safeStorage.isEncryptionAvailable !== "function" || safeStorage.isEncryptionAvailable()),
   );
 }
 
@@ -52,7 +52,7 @@ async function loadState(filePath) {
 }
 
 export async function createCredentialStore(filePath, { safeStorage = null } = {}) {
-  let state = await loadState(filePath);
+  const state = await loadState(filePath);
   let pending = Promise.resolve();
 
   async function persist() {
@@ -67,9 +67,7 @@ export async function createCredentialStore(filePath, { safeStorage = null } = {
   }
 
   function encode(value) {
-    return canEncrypt(safeStorage)
-      ? encodeEncrypted(value, safeStorage)
-      : encodePlaintext(value);
+    return canEncrypt(safeStorage) ? encodeEncrypted(value, safeStorage) : encodePlaintext(value);
   }
 
   function decode(value) {

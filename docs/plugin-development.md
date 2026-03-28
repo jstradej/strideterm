@@ -51,10 +51,10 @@ Your plugin will appear in the plugin list if the manifest validates successfull
 
 Plugins are discovered from:
 
-| Location | Type | Priority |
-| --- | --- | --- |
-| `plugins/` inside the app bundle | Built-in | Loaded first |
-| `~/.strideterm/plugins/` | User-installed | Loaded second |
+| Location                         | Type           | Priority      |
+| -------------------------------- | -------------- | ------------- |
+| `plugins/` inside the app bundle | Built-in       | Loaded first  |
+| `~/.strideterm/plugins/`         | User-installed | Loaded second |
 
 If a user plugin has the same `id` as a built-in plugin, the built-in plugin wins.
 
@@ -74,26 +74,26 @@ Only `plugin.json` is required. `index.js` is optional.
 
 ### Required Fields
 
-| Field | Type | Description |
-| --- | --- | --- |
-| `id` | `string` | Lowercase alphanumeric with `-` or `_`. Pattern: `^[a-z0-9_-]+$` |
-| `name` | `string` | Human-readable display name |
-| `version` | `string` | Semantic version string |
+| Field     | Type     | Description                                                      |
+| --------- | -------- | ---------------------------------------------------------------- |
+| `id`      | `string` | Lowercase alphanumeric with `-` or `_`. Pattern: `^[a-z0-9_-]+$` |
+| `name`    | `string` | Human-readable display name                                      |
+| `version` | `string` | Semantic version string                                          |
 
 ### Optional Fields
 
-| Field | Type | Default | Description |
-| --- | --- | --- | --- |
-| `description` | `string` | `""` | Short description shown in the UI |
-| `author` | `string` | `""` | Plugin author name |
-| `license` | `string` | `""` | License identifier such as `"MIT"` |
-| `icon` | `string` | `"PL"` | 1-4 character badge shown on the workspace card |
-| `color` | `string` | `"#888"` | Hex color for the workspace accent |
-| `kind` | `string` | `"terminal"` | Workspace type: `"terminal"` or `"docker"` |
-| `capabilities` | `string[]` | `[]` | Declared capabilities |
-| `workspaceDefaults` | `object` | `null` | Default workspace template |
-| `entryPoint` | `string` | `"index.js"` | Relative path to the JS entry point |
-| `recommendedPackages` | `object[]` | `[]` | Optional list of recommended npm/system packages |
+| Field                 | Type       | Default      | Description                                      |
+| --------------------- | ---------- | ------------ | ------------------------------------------------ |
+| `description`         | `string`   | `""`         | Short description shown in the UI                |
+| `author`              | `string`   | `""`         | Plugin author name                               |
+| `license`             | `string`   | `""`         | License identifier such as `"MIT"`               |
+| `icon`                | `string`   | `"PL"`       | 1-4 character badge shown on the workspace card  |
+| `color`               | `string`   | `"#888"`     | Hex color for the workspace accent               |
+| `kind`                | `string`   | `"terminal"` | Workspace type: `"terminal"` or `"docker"`       |
+| `capabilities`        | `string[]` | `[]`         | Declared capabilities                            |
+| `workspaceDefaults`   | `object`   | `null`       | Default workspace template                       |
+| `entryPoint`          | `string`   | `"index.js"` | Relative path to the JS entry point              |
+| `recommendedPackages` | `object[]` | `[]`         | Optional list of recommended npm/system packages |
 
 ## Workspace Template
 
@@ -129,14 +129,14 @@ Only `plugin.json` is required. `index.js` is optional.
 
 ### Panel Fields
 
-| Field | Type | Default | Description |
-| --- | --- | --- | --- |
-| `id` | `string` | auto-generated | Unique panel identifier within the workspace |
-| `title` | `string` | `"Shell"` | Tab title |
-| `command` | `string` | `""` | Startup command. Empty means interactive shell |
-| `shell` | `boolean` | `true` | Whether to run the command in a shell |
-| `startup` | `string` | `"default"` | `"default"` or `"manual"` |
-| `platforms` | `object` | `null` | Platform-specific overrides |
+| Field       | Type      | Default        | Description                                    |
+| ----------- | --------- | -------------- | ---------------------------------------------- |
+| `id`        | `string`  | auto-generated | Unique panel identifier within the workspace   |
+| `title`     | `string`  | `"Shell"`      | Tab title                                      |
+| `command`   | `string`  | `""`           | Startup command. Empty means interactive shell |
+| `shell`     | `boolean` | `true`         | Whether to run the command in a shell          |
+| `startup`   | `string`  | `"default"`    | `"default"` or `"manual"`                      |
+| `platforms` | `object`  | `null`         | Platform-specific overrides                    |
 
 ## Cross-Platform Panels
 
@@ -150,8 +150,8 @@ Panels can declare per-platform behavior:
   "shell": true,
   "startup": "default",
   "platforms": {
-    "win32":  { "script": "monitor.ps1" },
-    "linux":  { "command": "btop 2>/dev/null || htop" },
+    "win32": { "script": "monitor.ps1" },
+    "linux": { "command": "btop 2>/dev/null || htop" },
     "darwin": { "command": "btop 2>/dev/null || htop" }
   }
 }
@@ -159,10 +159,10 @@ Panels can declare per-platform behavior:
 
 Platform keys: `win32`, `linux`, `darwin`.
 
-| Field | Description |
-| --- | --- |
-| `script` | Filename inside the plugin directory. Allowed extensions are `.ps1`, `.sh`, `.bash`, `.py`, `.js`, `.mjs` |
-| `command` | Plain shell command for that platform |
+| Field     | Description                                                                                               |
+| --------- | --------------------------------------------------------------------------------------------------------- |
+| `script`  | Filename inside the plugin directory. Allowed extensions are `.ps1`, `.sh`, `.bash`, `.py`, `.js`, `.mjs` |
+| `command` | Plain shell command for that platform                                                                     |
 
 The loader chooses the runner for `script` automatically. For example, `.ps1` becomes `powershell -ExecutionPolicy Bypass -File ...`.
 
@@ -252,14 +252,14 @@ That means plugin authors should be treated as trusted code authors.
 
 ## Common Errors
 
-| Error | Cause | Fix |
-| --- | --- | --- |
-| `Plugin 'id' must be a lowercase alphanumeric string` | Invalid `id` format | Use only `a-z`, `0-9`, `-`, `_` |
-| `Plugin 'name' is required` | Missing `name` | Add `"name"` |
-| `Plugin 'version' is required` | Missing `version` | Add `"version"` |
-| `Unknown capability: 'xxx'` | Invalid capability | Remove or replace it |
-| `Failed to parse plugin.json` | Invalid JSON | Fix syntax |
-| `entryPoint must not escape the plugin directory` | `../` traversal | Keep it relative to the plugin directory |
+| Error                                                 | Cause               | Fix                                      |
+| ----------------------------------------------------- | ------------------- | ---------------------------------------- |
+| `Plugin 'id' must be a lowercase alphanumeric string` | Invalid `id` format | Use only `a-z`, `0-9`, `-`, `_`          |
+| `Plugin 'name' is required`                           | Missing `name`      | Add `"name"`                             |
+| `Plugin 'version' is required`                        | Missing `version`   | Add `"version"`                          |
+| `Unknown capability: 'xxx'`                           | Invalid capability  | Remove or replace it                     |
+| `Failed to parse plugin.json`                         | Invalid JSON        | Fix syntax                               |
+| `entryPoint must not escape the plugin directory`     | `../` traversal     | Keep it relative to the plugin directory |
 
 ## Future Ideas
 

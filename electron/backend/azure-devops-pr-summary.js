@@ -16,26 +16,32 @@ import {
 } from "./azure-devops-utils.js";
 
 export function findWorkspaceForPullRequest(workspaces, prKey) {
-  return (workspaces || []).find((workspace) => workspace.review?.provider === "azure-devops" && workspace.review?.prKey === prKey) || null;
+  return (
+    (workspaces || []).find(
+      (workspace) => workspace.review?.provider === "azure-devops" && workspace.review?.prKey === prKey,
+    ) || null
+  );
 }
 
 export function findMatchingWorkspace(summary, workspaces = [], gitSnapshots = {}) {
   const targetRemote = normalizeRemoteUrl(summary.repository.remoteUrl);
   const targetBranch = stripRefsPrefix(summary.pullRequest.sourceRefName);
-  return workspaces.find((workspace) => {
-    if (workspace.kind === "docker" || !workspace.cwd) {
-      return false;
-    }
-    const snapshot = gitSnapshots?.[workspace.id];
-    const origin = normalizeRemoteUrl(snapshot?.remotes?.origin || "");
-    if (targetRemote && origin && origin !== targetRemote) {
-      return false;
-    }
-    if (summary.role === "author" && snapshot?.branch && targetBranch) {
-      return snapshot.branch === targetBranch;
-    }
-    return origin && origin === targetRemote;
-  }) || null;
+  return (
+    workspaces.find((workspace) => {
+      if (workspace.kind === "docker" || !workspace.cwd) {
+        return false;
+      }
+      const snapshot = gitSnapshots?.[workspace.id];
+      const origin = normalizeRemoteUrl(snapshot?.remotes?.origin || "");
+      if (targetRemote && origin && origin !== targetRemote) {
+        return false;
+      }
+      if (summary.role === "author" && snapshot?.branch && targetBranch) {
+        return snapshot.branch === targetBranch;
+      }
+      return origin && origin === targetRemote;
+    }) || null
+  );
 }
 
 export function buildPullRequestSummary({
@@ -54,8 +60,9 @@ export function buildPullRequestSummary({
   const comments = extractComments(threads);
   const reviewerInfo = summarizeReviewers(pr.reviewers || [], connection.login);
   const isAuthor = identityMatches(connection.login, pr.createdBy);
-  const isReviewer = !isAuthor && reviewerInfo.reviewers.some((reviewer) => identityMatches(connection.login, reviewer));
-  const role = isAuthor ? "author" : (isReviewer ? "reviewer" : "observer");
+  const isReviewer =
+    !isAuthor && reviewerInfo.reviewers.some((reviewer) => identityMatches(connection.login, reviewer));
+  const role = isAuthor ? "author" : isReviewer ? "reviewer" : "observer";
   const latestCommentAt = Math.max(
     ...comments.map((comment) => parseDate(comment.lastUpdatedDate || comment.publishedDate)),
     0,
@@ -65,7 +72,9 @@ export function buildPullRequestSummary({
   const lastRemoteActivityAt = toIsoOrNull(Math.max(latestCommentAt, latestCommitAt, latestPrAt));
   const lastSeenAt = parseDate(tracked.lastSeenActivityAt);
   const commentsByOthers = comments.filter((comment) => !identityMatches(connection.login, comment.author));
-  const newCommentsCount = commentsByOthers.filter((comment) => parseDate(comment.lastUpdatedDate || comment.publishedDate) > lastSeenAt).length;
+  const newCommentsCount = commentsByOthers.filter(
+    (comment) => parseDate(comment.lastUpdatedDate || comment.publishedDate) > lastSeenAt,
+  ).length;
   const voteSignature = reviewerInfo.reviewers
     .map((reviewer) => `${reviewer.id}:${reviewer.vote}:${reviewer.hasDeclined ? 1 : 0}`)
     .sort()
@@ -74,7 +83,9 @@ export function buildPullRequestSummary({
   const voteChanged = Boolean(tracked.lastVoteSignature && tracked.lastVoteSignature !== voteSignature);
   const mergeStatus = pr.mergeStatus || pr.status || "";
   const mergeStatusChanged = Boolean(tracked.lastMergeStatus && tracked.lastMergeStatus !== mergeStatus);
-  const unresolvedThreadCount = threads.filter((thread) => String(thread.status || "").toLowerCase() === "active").length;
+  const unresolvedThreadCount = threads.filter(
+    (thread) => String(thread.status || "").toLowerCase() === "active",
+  ).length;
   const attentionReason = inferAttentionReason({
     role,
     newCommentsCount,
@@ -124,8 +135,9 @@ export function buildPullRequestSummary({
       mergeStatus,
       isDraft: Boolean(pr.isDraft),
       url: pr.url || "",
-      webUrl: pr._links?.web?.href
-        || `${connection.orgUrl}/${encodeURIComponent(projectName)}/_git/${encodeURIComponent(pr.repository?.name || repositoryId)}/pullrequest/${pr.pullRequestId}`,
+      webUrl:
+        pr._links?.web?.href ||
+        `${connection.orgUrl}/${encodeURIComponent(projectName)}/_git/${encodeURIComponent(pr.repository?.name || repositoryId)}/pullrequest/${pr.pullRequestId}`,
       sourceRefName: pr.sourceRefName || "",
       targetRefName: pr.targetRefName || "",
       sourceCommitId: pr.lastMergeSourceCommit?.commitId || "",
@@ -152,8 +164,12 @@ export function buildPullRequestSummary({
     unresolvedThreadCount,
     threadCounts: computeThreadStatusCounts(threads),
     commentCount: comments.length,
-    latestCommentPreview: commentsByOthers
-      .sort((left, right) => parseDate(right.lastUpdatedDate || right.publishedDate) - parseDate(left.lastUpdatedDate || left.publishedDate))[0]?.content || "",
+    latestCommentPreview:
+      commentsByOthers.sort(
+        (left, right) =>
+          parseDate(right.lastUpdatedDate || right.publishedDate) -
+          parseDate(left.lastUpdatedDate || left.publishedDate),
+      )[0]?.content || "",
     threads: threads
       .slice()
       .sort(compareThreads)
@@ -162,12 +178,8 @@ export function buildPullRequestSummary({
         status: thread.status || "unknown",
         isDeleted: Boolean(thread.isDeleted),
         filePath: thread.threadContext?.filePath || "",
-        lineStart: thread.threadContext?.rightFileStart?.line
-          ?? thread.threadContext?.leftFileStart?.line
-          ?? null,
-        lineEnd: thread.threadContext?.rightFileEnd?.line
-          ?? thread.threadContext?.leftFileEnd?.line
-          ?? null,
+        lineStart: thread.threadContext?.rightFileStart?.line ?? thread.threadContext?.leftFileStart?.line ?? null,
+        lineEnd: thread.threadContext?.rightFileEnd?.line ?? thread.threadContext?.leftFileEnd?.line ?? null,
         publishedDate: thread.publishedDate || null,
         lastUpdatedDate: thread.lastUpdatedDate || null,
         comments: (thread.comments || [])

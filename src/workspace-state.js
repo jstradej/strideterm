@@ -14,7 +14,13 @@ export function createEmptyWorkspace() {
     notes: "",
     activePanelId: panelId,
     panels: [
-      { id: panelId, title: APP_CONFIG.ui.defaultPanelTitle, command: "", shell: true, startup: APP_CONFIG.ui.defaultPanelStartup },
+      {
+        id: panelId,
+        title: APP_CONFIG.ui.defaultPanelTitle,
+        command: "",
+        shell: true,
+        startup: APP_CONFIG.ui.defaultPanelStartup,
+      },
     ],
   };
 }

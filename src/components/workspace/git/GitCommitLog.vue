@@ -16,7 +16,9 @@
             @click="toggleSort(col.key)"
           >
             {{ col.label }}
-            <span v-if="sortKey === col.key" class="git-log-table__sort-arrow">{{ sortDir === 'asc' ? '▲' : '▼' }}</span>
+            <span v-if="sortKey === col.key" class="git-log-table__sort-arrow">{{
+              sortDir === "asc" ? "▲" : "▼"
+            }}</span>
           </th>
         </tr>
       </thead>
@@ -24,17 +26,22 @@
         <tr
           v-for="entry in sortedCommits"
           :key="entry.shortHash"
-          :class="{ 'git-log-table--active': selectedCommit === entry.shortHash, 'git-log-table--unpushed': aheadCount > 0 && entry._originalIndex < aheadCount }"
+          :class="{
+            'git-log-table--active': selectedCommit === entry.shortHash,
+            'git-log-table--unpushed': aheadCount > 0 && entry._originalIndex < aheadCount,
+          }"
           :title="entry.subject"
           @click="$emit('select', entry.shortHash)"
         >
           <td class="git-log-table__hash">{{ entry.shortHash }}</td>
           <td class="git-log-table__msg">
-            <span v-if="aheadCount > 0 && entry._originalIndex < aheadCount" class="git-log-unpushed-badge">unpushed</span>
+            <span v-if="aheadCount > 0 && entry._originalIndex < aheadCount" class="git-log-unpushed-badge"
+              >unpushed</span
+            >
             {{ entry.subject }}
           </td>
           <td class="git-log-table__date">{{ entry.relativeDate }}</td>
-          <td class="git-log-table__author">{{ entry.author || '' }}</td>
+          <td class="git-log-table__author">{{ entry.author || "" }}</td>
         </tr>
       </tbody>
     </table>
@@ -74,9 +81,7 @@ function toggleSort(key) {
 }
 
 // Tag each commit with its original index so we can identify unpushed commits after sorting
-const indexedCommits = computed(() =>
-  props.commits.map((entry, i) => ({ ...entry, _originalIndex: i })),
-);
+const indexedCommits = computed(() => props.commits.map((entry, i) => ({ ...entry, _originalIndex: i })));
 
 const sortedCommits = computed(() => {
   if (!sortKey.value) return indexedCommits.value;
@@ -103,10 +108,18 @@ const sortedCommits = computed(() => {
 }
 
 /* Column widths via <col> — user can resize via native th resize handle */
-.git-log-col--hash { width: 72px; }
-.git-log-col--msg { width: auto; }
-.git-log-col--date { width: 110px; }
-.git-log-col--author { width: 120px; }
+.git-log-col--hash {
+  width: 72px;
+}
+.git-log-col--msg {
+  width: auto;
+}
+.git-log-col--date {
+  width: 110px;
+}
+.git-log-col--author {
+  width: 120px;
+}
 
 .git-log-table__head {
   cursor: pointer;

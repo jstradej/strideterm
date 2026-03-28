@@ -119,10 +119,16 @@ export function getWindowsPtyOptions(payload) {
 }
 
 export function currentDockerContext(contexts = []) {
-  return contexts.find((context) => {
-    const marker = String(context.Current || "").trim().toLowerCase();
-    return marker === "*" || marker === "true";
-  }) || contexts[0] || null;
+  return (
+    contexts.find((context) => {
+      const marker = String(context.Current || "")
+        .trim()
+        .toLowerCase();
+      return marker === "*" || marker === "true";
+    }) ||
+    contexts[0] ||
+    null
+  );
 }
 
 export function isContainerRunning(container) {
@@ -184,7 +190,7 @@ export function isFreshAttention(attention) {
   }
 
   const latestAt = new Date(attention.latestAt).getTime();
-  return Number.isFinite(latestAt) && (Date.now() - latestAt) < 12000;
+  return Number.isFinite(latestAt) && Date.now() - latestAt < 12000;
 }
 
 export function tabAttentionTitle(alert) {
@@ -206,7 +212,7 @@ export function isFreshAlert(alert) {
   }
 
   const at = new Date(alert.at).getTime();
-  return Number.isFinite(at) && (Date.now() - at) < 12000;
+  return Number.isFinite(at) && Date.now() - at < 12000;
 }
 
 export function readSidebarCollapsed() {

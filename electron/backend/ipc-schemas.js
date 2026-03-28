@@ -7,29 +7,37 @@ import { z } from "zod";
 
 const nonEmptyString = z.string().min(1);
 
-export const workspaceSchema = z.object({
-  id: nonEmptyString,
-  name: z.string(),
-  cwd: z.string().optional(),
-  kind: z.string().optional(),
-  panels: z.array(z.object({
+export const workspaceSchema = z
+  .object({
     id: nonEmptyString,
-    title: z.string(),
-    command: z.string().optional(),
-    shell: z.boolean().optional(),
-    startup: z.string().optional(),
-  })).optional(),
-}).passthrough();
+    name: z.string(),
+    cwd: z.string().optional(),
+    kind: z.string().optional(),
+    panels: z
+      .array(
+        z.object({
+          id: nonEmptyString,
+          title: z.string(),
+          command: z.string().optional(),
+          shell: z.boolean().optional(),
+          startup: z.string().optional(),
+        }),
+      )
+      .optional(),
+  })
+  .passthrough();
 
 export const projectSchema = workspaceSchema;
 
 export const settingsSchema = z.object({}).passthrough();
 
-export const azureConnectionSchema = z.object({
-  organization: z.string().optional(),
-  project: z.string().optional(),
-  pat: z.string().optional(),
-}).passthrough();
+export const azureConnectionSchema = z
+  .object({
+    organization: z.string().optional(),
+    project: z.string().optional(),
+    pat: z.string().optional(),
+  })
+  .passthrough();
 
 export const prKeySchema = nonEmptyString;
 
@@ -56,9 +64,11 @@ export const openPrSchema = z.object({
   workspaceId: z.string().optional(),
 });
 
-export const reviewBridgeDraftSchema = z.object({
-  prKey: nonEmptyString,
-}).passthrough();
+export const reviewBridgeDraftSchema = z
+  .object({
+    prKey: nonEmptyString,
+  })
+  .passthrough();
 
 export const reviewBridgeDraftCommentSchema = z.object({
   prKey: nonEmptyString,
@@ -84,9 +94,11 @@ export const reviewBridgeDeleteCommentSchema = z.object({
   commentKey: nonEmptyString,
 });
 
-export const reviewBridgeReplyWithChangesSchema = z.object({
-  prKey: nonEmptyString,
-}).passthrough();
+export const reviewBridgeReplyWithChangesSchema = z
+  .object({
+    prKey: nonEmptyString,
+  })
+  .passthrough();
 
 export const reviewBridgeSyncSchema = z.object({
   prKey: nonEmptyString,
@@ -102,9 +114,11 @@ export const agentPromptDeleteSchema = z.object({
   promptId: nonEmptyString,
 });
 
-export const gitPayloadSchema = z.object({
-  workspaceId: nonEmptyString,
-}).passthrough();
+export const gitPayloadSchema = z
+  .object({
+    workspaceId: nonEmptyString,
+  })
+  .passthrough();
 
 export const gitDiffPreviewSchema = z.object({
   workspaceId: nonEmptyString,
@@ -113,31 +127,37 @@ export const gitDiffPreviewSchema = z.object({
   baseBranch: z.string().optional(),
 });
 
-export const gitCommitSchema = z.object({
-  workspaceId: nonEmptyString,
-  message: z.string().optional(),
-}).passthrough();
+export const gitCommitSchema = z
+  .object({
+    workspaceId: nonEmptyString,
+    message: z.string().optional(),
+  })
+  .passthrough();
 
 export const dockerActionSchema = z.object({
   action: nonEmptyString,
   containerId: nonEmptyString,
 });
 
-export const dockerSessionSchema = z.object({
-  workspaceId: nonEmptyString,
-  containerId: z.string().optional(),
-  mode: z.string().optional(),
-}).passthrough();
+export const dockerSessionSchema = z
+  .object({
+    workspaceId: nonEmptyString,
+    containerId: z.string().optional(),
+    mode: z.string().optional(),
+  })
+  .passthrough();
 
 export const terminalResizeSchema = z.object({
   cols: z.number().int().positive(),
   rows: z.number().int().positive(),
 });
 
-export const profileSchema = z.object({
-  id: z.string().optional(),
-  name: z.string(),
-}).passthrough();
+export const profileSchema = z
+  .object({
+    id: z.string().optional(),
+    name: z.string(),
+  })
+  .passthrough();
 
 export const worktreeSchema = z.object({
   workspaceId: nonEmptyString,
@@ -195,10 +215,12 @@ export const azureAuditLogStatsSchema = z.object({
 
 // --- GitHub schemas ---
 
-export const githubConnectionSchema = z.object({
-  hostUrl: z.string().optional(),
-  pat: z.string().optional(),
-}).passthrough();
+export const githubConnectionSchema = z
+  .object({
+    hostUrl: z.string().optional(),
+    pat: z.string().optional(),
+  })
+  .passthrough();
 
 export const githubCommentSchema = z.object({
   prKey: nonEmptyString,

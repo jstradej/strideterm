@@ -139,7 +139,9 @@ class FakeSessionManager extends EventEmitter {
 
   syncWithState(state) {
     this.syncedStates.push(structuredClone(state));
-    const validIds = new Set(state.projects.flatMap((project) => project.panels.map((panel) => createSessionId(project.id, panel.id))));
+    const validIds = new Set(
+      state.projects.flatMap((project) => project.panels.map((panel) => createSessionId(project.id, panel.id))),
+    );
     for (const sessionId of [...this.sessions.keys()]) {
       if (!validIds.has(sessionId)) {
         this.sessions.delete(sessionId);
@@ -160,9 +162,7 @@ class FakeDockerManager extends EventEmitter {
       available: true,
       backend: "host",
       contexts: [],
-      containers: [
-        { ID: "abc123", Names: "api" },
-      ],
+      containers: [{ ID: "abc123", Names: "api" }],
       lazydocker: { available: true, backend: "host", error: "" },
       error: "",
       lastUpdatedAt: null,
@@ -222,66 +222,80 @@ class FakeGitManager extends EventEmitter {
 
   async refreshProjects(projects = []) {
     this.refreshArgs.push(projects.map((project) => project.id));
-    this.snapshots = new Map(projects.map((project) => [
-      project.id,
-      {
-        projectId: project.id,
-        cwd: project.cwd || "",
-        available: Boolean(project.cwd),
-        root: project.cwd || "",
-        repository: project.name || project.id,
-        branch: "main",
-        commitCount: 1,
-        dirty: false,
-        dirtyCount: 0,
-        status: [],
-        staged: [],
-        unstaged: [],
-        untracked: [],
-        changes: {
-          staged: { name: "Staged", files: [], diffStat: { files: 0, insertions: 0, deletions: 0, renames: 0, deletes: 0 } },
-          unstaged: { name: "Unstaged", files: [], diffStat: { files: 0, insertions: 0, deletions: 0, renames: 0, deletes: 0 } },
-          untracked: { name: "Untracked", files: [], diffStat: { files: 0, insertions: 0, deletions: 0, renames: 0, deletes: 0 } },
-        },
-        diffStat: { files: 0, insertions: 0, deletions: 0, renames: 0, deletes: 0 },
-        log: [],
-        isWorktree: false,
-        isMainWorktree: true,
-        worktreePath: project.cwd || "",
-        mainWorktreePath: project.cwd || "",
-        siblingWorktrees: [],
-        upstream: "origin/main",
-        baseBranch: "main",
-        aheadCount: 0,
-        behindCount: 0,
-        compareWithBase: {
+    this.snapshots = new Map(
+      projects.map((project) => [
+        project.id,
+        {
+          projectId: project.id,
+          cwd: project.cwd || "",
+          available: Boolean(project.cwd),
+          root: project.cwd || "",
+          repository: project.name || project.id,
+          branch: "main",
+          commitCount: 1,
+          dirty: false,
+          dirtyCount: 0,
+          status: [],
+          staged: [],
+          unstaged: [],
+          untracked: [],
+          changes: {
+            staged: {
+              name: "Staged",
+              files: [],
+              diffStat: { files: 0, insertions: 0, deletions: 0, renames: 0, deletes: 0 },
+            },
+            unstaged: {
+              name: "Unstaged",
+              files: [],
+              diffStat: { files: 0, insertions: 0, deletions: 0, renames: 0, deletes: 0 },
+            },
+            untracked: {
+              name: "Untracked",
+              files: [],
+              diffStat: { files: 0, insertions: 0, deletions: 0, renames: 0, deletes: 0 },
+            },
+          },
+          diffStat: { files: 0, insertions: 0, deletions: 0, renames: 0, deletes: 0 },
+          log: [],
+          isWorktree: false,
+          isMainWorktree: true,
+          worktreePath: project.cwd || "",
+          mainWorktreePath: project.cwd || "",
+          siblingWorktrees: [],
+          upstream: "origin/main",
           baseBranch: "main",
           aheadCount: 0,
           behindCount: 0,
-          commits: [],
-          files: [],
-          diffStat: { files: 0, insertions: 0, deletions: 0, renames: 0, deletes: 0 },
-        },
-        lastFetchAt: null,
-        operationState: {
-          kind: "idle",
-          inProgress: false,
-          label: "",
-          details: "",
-          conflicts: [],
-          canContinue: false,
-          canAbort: false,
-        },
-        lazygit: {
-          available: project.kind !== "docker",
-          backend: project.kind !== "docker" ? "host" : null,
+          compareWithBase: {
+            baseBranch: "main",
+            aheadCount: 0,
+            behindCount: 0,
+            commits: [],
+            files: [],
+            diffStat: { files: 0, insertions: 0, deletions: 0, renames: 0, deletes: 0 },
+          },
+          lastFetchAt: null,
+          operationState: {
+            kind: "idle",
+            inProgress: false,
+            label: "",
+            details: "",
+            conflicts: [],
+            canContinue: false,
+            canAbort: false,
+          },
+          lazygit: {
+            available: project.kind !== "docker",
+            backend: project.kind !== "docker" ? "host" : null,
+            error: "",
+            launch: project.kind !== "docker" ? { file: "lazygit", args: [] } : null,
+          },
           error: "",
-          launch: project.kind !== "docker" ? { file: "lazygit", args: [] } : null,
+          lastUpdatedAt: new Date().toISOString(),
         },
-        error: "",
-        lastUpdatedAt: new Date().toISOString(),
-      },
-    ]));
+      ]),
+    );
     this.emit("updated", this.getProjectMap());
     return this.getProjectMap();
   }
@@ -474,9 +488,7 @@ function createPluginManagerStub() {
             name: "System Monitor",
             icon: "SM",
             kind: "terminal",
-            panels: [
-              { id: "monitor", title: "Monitor", command: "" },
-            ],
+            panels: [{ id: "monitor", title: "Monitor", command: "" }],
           },
         },
       ];
@@ -557,10 +569,12 @@ const fixtures = [];
 const tempPaths = [];
 
 afterEach(async () => {
-  await Promise.all(fixtures.splice(0).map(async (fixture) => {
-    await fixture.runtime.stop();
-    await fs.rm(fixture.userDataPath, { recursive: true, force: true });
-  }));
+  await Promise.all(
+    fixtures.splice(0).map(async (fixture) => {
+      await fixture.runtime.stop();
+      await fs.rm(fixture.userDataPath, { recursive: true, force: true });
+    }),
+  );
   await Promise.all(tempPaths.splice(0).map((targetPath) => fs.rm(targetPath, { recursive: true, force: true })));
 });
 
@@ -623,9 +637,7 @@ describe("runtime integration", () => {
               provider: "azure-devops",
               prKey: "ado-main:repo-1:123",
             },
-            panels: [
-              { id: "shell", title: "Shell", command: "", startup: "default" },
-            ],
+            panels: [{ id: "shell", title: "Shell", command: "", startup: "default" }],
           },
         ],
       },
@@ -667,7 +679,11 @@ describe("runtime integration", () => {
               connectionId: "ado-main",
               orgUrl: "https://dev.azure.com/acme",
               project: { id: "project-1", name: "Platform" },
-              repository: { id: "repo-1", name: "web-app", remoteUrl: "https://dev.azure.com/acme/Platform/_git/web-app" },
+              repository: {
+                id: "repo-1",
+                name: "web-app",
+                remoteUrl: "https://dev.azure.com/acme/Platform/_git/web-app",
+              },
               pullRequest: {
                 id: 123,
                 title: "Fix login redirect",
@@ -754,9 +770,7 @@ describe("runtime integration", () => {
             notes: "Azure DevOps review workspace for web-app PR #123",
             profileId: "default",
             activePanelId: "shell",
-            panels: [
-              { id: "shell", title: "Shell", command: "", startup: "default" },
-            ],
+            panels: [{ id: "shell", title: "Shell", command: "", startup: "default" }],
           },
         ],
       },
@@ -767,7 +781,9 @@ describe("runtime integration", () => {
     });
     fixtures.push(fixture);
 
-    const repairedWorkspace = fixture.runtime.getPayload().appState.workspaces.find((workspace) => workspace.id === "workspace-review");
+    const repairedWorkspace = fixture.runtime
+      .getPayload()
+      .appState.workspaces.find((workspace) => workspace.id === "workspace-review");
     expect(repairedWorkspace?.review).toMatchObject({
       provider: "azure-devops",
       parentWorkspaceId: "azure-root",
@@ -866,9 +882,7 @@ describe("runtime integration", () => {
             notes: "Azure DevOps review workspace for web-app PR #123",
             profileId: "default",
             activePanelId: "shell",
-            panels: [
-              { id: "shell", title: "Shell", command: "", startup: "default" },
-            ],
+            panels: [{ id: "shell", title: "Shell", command: "", startup: "default" }],
           },
         ],
       },
@@ -879,7 +893,9 @@ describe("runtime integration", () => {
     });
     fixtures.push(fixture);
 
-    const repairedWorkspace = fixture.runtime.getPayload().appState.workspaces.find((workspace) => workspace.id === "workspace-review");
+    const repairedWorkspace = fixture.runtime
+      .getPayload()
+      .appState.workspaces.find((workspace) => workspace.id === "workspace-review");
     expect(repairedWorkspace?.review).toMatchObject({
       provider: "azure-devops",
       prKey: "ado-main:repo-1:123",
@@ -898,9 +914,7 @@ describe("runtime integration", () => {
             kind: "terminal",
             cwd: "/tmp/frontend",
             activePanelId: "claude",
-            panels: [
-              { id: "claude", title: "Claude Code", command: "claude", shell: true, startup: "default" },
-            ],
+            panels: [{ id: "claude", title: "Claude Code", command: "claude", shell: true, startup: "default" }],
           },
           {
             id: "backend",
@@ -985,9 +999,7 @@ describe("runtime integration", () => {
             pluginId: "",
             cwd: "/tmp/frontend",
             activePanelId: "dev",
-            panels: [
-              { id: "dev", title: "Dev", command: "npm run dev", shell: true, startup: "default" },
-            ],
+            panels: [{ id: "dev", title: "Dev", command: "npm run dev", shell: true, startup: "default" }],
           },
           {
             id: "system-monitor",
@@ -999,9 +1011,7 @@ describe("runtime integration", () => {
             pluginId: "system-monitor",
             cwd: "/tmp/system-monitor",
             activePanelId: "monitor",
-            panels: [
-              { id: "monitor", title: "Monitor", command: "btm", shell: true, startup: "default" },
-            ],
+            panels: [{ id: "monitor", title: "Monitor", command: "btm", shell: true, startup: "default" }],
           },
         ],
       },
@@ -1034,9 +1044,7 @@ describe("runtime integration", () => {
               pluginId: "",
               cwd: "/tmp/frontend",
               activePanelId: "codex",
-              panels: [
-                { id: "codex", title: "Codex", command: "codex", shell: true, startup: "default" },
-              ],
+              panels: [{ id: "codex", title: "Codex", command: "codex", shell: true, startup: "default" }],
             },
           ],
         },
@@ -1091,9 +1099,7 @@ describe("runtime integration", () => {
               pluginId: "system-monitor",
               cwd: "/tmp/system-monitor",
               activePanelId: "monitor",
-              panels: [
-                { id: "monitor", title: "Monitor", command: "codex", shell: true, startup: "default" },
-              ],
+              panels: [{ id: "monitor", title: "Monitor", command: "codex", shell: true, startup: "default" }],
             },
           ],
         },
@@ -1253,9 +1259,7 @@ describe("runtime integration", () => {
             kind: "terminal",
             cwd: "/tmp/backend",
             activePanelId: "shell",
-            panels: [
-              { id: "shell", title: "Shell", command: "", shell: true, startup: "default" },
-            ],
+            panels: [{ id: "shell", title: "Shell", command: "", shell: true, startup: "default" }],
           },
         ],
       },

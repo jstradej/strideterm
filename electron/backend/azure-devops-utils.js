@@ -39,7 +39,9 @@ export function sanitizePathSegment(value, fallback = "unknown") {
 }
 
 export function trimTrailingSlash(value) {
-  return String(value || "").trim().replace(/\/+$/, "");
+  return String(value || "")
+    .trim()
+    .replace(/\/+$/, "");
 }
 
 export function normalizeReviewRoot(value) {
@@ -82,7 +84,9 @@ export function firstNonEmpty(...values) {
 }
 
 export function normalizeIdentityValue(value) {
-  return String(value || "").trim().toLowerCase();
+  return String(value || "")
+    .trim()
+    .toLowerCase();
 }
 
 export function identityMatches(login, identity) {
@@ -91,22 +95,19 @@ export function identityMatches(login, identity) {
     return false;
   }
 
-  return [
-    identity.uniqueName,
-    identity.mailAddress,
-    identity.displayName,
-    identity.id,
-  ].some((value) => normalizeIdentityValue(value) === normalizedLogin);
+  return [identity.uniqueName, identity.mailAddress, identity.displayName, identity.id].some(
+    (value) => normalizeIdentityValue(value) === normalizedLogin,
+  );
 }
 
 export function extractComments(threads = []) {
-  return threads.flatMap((thread) => (
+  return threads.flatMap((thread) =>
     Array.isArray(thread?.comments)
       ? thread.comments
           .filter((comment) => String(comment?.commentType || "").toLowerCase() !== "system")
           .map((comment) => ({ ...comment, threadId: thread.id, threadStatus: thread.status }))
-      : []
-  ));
+      : [],
+  );
 }
 
 export function summarizeReviewers(reviewers = [], login = "") {
@@ -130,7 +131,11 @@ export function summarizeReviewers(reviewers = [], login = "") {
 }
 
 export function normalizeRemoteUrl(value) {
-  return trimTrailingSlash(String(value || "").trim().replace(/\.git$/i, "")).toLowerCase();
+  return trimTrailingSlash(
+    String(value || "")
+      .trim()
+      .replace(/\.git$/i, ""),
+  ).toLowerCase();
 }
 
 export function buildRepositoryRemoteUrl(connection, projectName, repositoryName) {
@@ -145,19 +150,16 @@ export function buildRepositoryRemoteUrl(connection, projectName, repositoryName
 
 export function shortPathKey(value, fallback = "item") {
   const normalized = sanitizePathSegment(value, fallback).toLowerCase();
-  const digest = createHash("sha1").update(String(value || fallback)).digest("hex").slice(0, 10);
+  const digest = createHash("sha1")
+    .update(String(value || fallback))
+    .digest("hex")
+    .slice(0, 10);
   const prefix = normalized.slice(0, 8).replace(/^-|-$/g, "") || fallback;
   return `${prefix}-${digest}`;
 }
 
 export function extractErrorText(error) {
-  return firstNonEmpty(
-    error?.stderr,
-    error?.stdout,
-    error?.error?.message,
-    error?.message,
-    String(error || ""),
-  );
+  return firstNonEmpty(error?.stderr, error?.stdout, error?.error?.message, error?.message, String(error || ""));
 }
 
 export function formatReviewWorkspaceError(error, reviewRoot) {
@@ -194,7 +196,9 @@ export function computeThreadStatusCounts(threads = []) {
 }
 
 export function normalizeCheckState(value) {
-  const normalized = String(value || "").trim().toLowerCase();
+  const normalized = String(value || "")
+    .trim()
+    .toLowerCase();
   if (!normalized) {
     return "unknown";
   }
@@ -261,15 +265,14 @@ export function buildCheckSummary({ policyEvaluations = [], statuses = [] } = {}
         description: firstNonEmpty(context.statusDescription, context.message, ""),
         state,
         stateLabel: checkStateLabel(state),
-        optional: evaluation?.configuration?.isBlocking === false
-          ? true
-          : (evaluation?.configuration?.isBlocking === true ? false : null),
+        optional:
+          evaluation?.configuration?.isBlocking === false
+            ? true
+            : evaluation?.configuration?.isBlocking === true
+              ? false
+              : null,
         source: firstNonEmpty(evaluation?.configuration?.type?.displayName, "policy"),
-        url: firstNonEmpty(
-          context.url,
-          context.targetUrl,
-          evaluation?._links?.web?.href,
-        ),
+        url: firstNonEmpty(context.url, context.targetUrl, evaluation?._links?.web?.href),
         errorMessage: context.errorMessage || "",
         buildId: context.buildId || null,
         buildInfo: context.buildDefinitionName
@@ -282,12 +285,7 @@ export function buildCheckSummary({ policyEvaluations = [], statuses = [] } = {}
       return {
         id: `status:${status?.id || index}:${status?.context?.genre || ""}:${status?.context?.name || ""}`,
         kind: "status",
-        name: firstNonEmpty(
-          status?.context?.name,
-          status?.description,
-          status?.context?.genre,
-          "Status",
-        ),
+        name: firstNonEmpty(status?.context?.name, status?.description, status?.context?.genre, "Status"),
         description: firstNonEmpty(status?.description, ""),
         state,
         stateLabel: checkStateLabel(state),
@@ -329,7 +327,9 @@ export function compareThreads(left, right) {
   if (leftPriority !== rightPriority) {
     return rightPriority - leftPriority;
   }
-  return parseDate(right?.lastUpdatedDate || right?.publishedDate) - parseDate(left?.lastUpdatedDate || left?.publishedDate);
+  return (
+    parseDate(right?.lastUpdatedDate || right?.publishedDate) - parseDate(left?.lastUpdatedDate || left?.publishedDate)
+  );
 }
 
 export function createConnectionSnapshot(connection, persistedState = {}) {
@@ -387,7 +387,12 @@ export function inferAttentionReason({
   if (sourceUpdated) {
     return role === "reviewer" ? "updated after review" : "branch updated";
   }
-  if (mergeStatusChanged || String(mergeStatus || "").toLowerCase().includes("failed")) {
+  if (
+    mergeStatusChanged ||
+    String(mergeStatus || "")
+      .toLowerCase()
+      .includes("failed")
+  ) {
     return "policy failed";
   }
   return "";
@@ -404,7 +409,9 @@ export async function exists(targetPath) {
 
 export function normalizeConnectionInput(connectionInput = {}) {
   const initialProjectFilters = Array.isArray(connectionInput.projectFilters) ? connectionInput.projectFilters : [];
-  const initialRepositoryFilters = Array.isArray(connectionInput.repositoryFilters) ? connectionInput.repositoryFilters : [];
+  const initialRepositoryFilters = Array.isArray(connectionInput.repositoryFilters)
+    ? connectionInput.repositoryFilters
+    : [];
   const normalized = {
     ...connectionInput,
     orgUrl: trimTrailingSlash(connectionInput.orgUrl),
@@ -423,7 +430,8 @@ export function normalizeConnectionInput(connectionInput = {}) {
     let baseSegments = segments;
     let projectHint = "";
     let repositoryHint = "";
-    const isAzureDevOpsServicesHost = /(^|\.)dev\.azure\.com$/i.test(url.hostname) || /(^|\.)visualstudio\.com$/i.test(url.hostname);
+    const isAzureDevOpsServicesHost =
+      /(^|\.)dev\.azure\.com$/i.test(url.hostname) || /(^|\.)visualstudio\.com$/i.test(url.hostname);
 
     const projectsIndex = segments.findIndex((segment) => segment.toLowerCase() === "projects");
     const gitIndex = segments.findIndex((segment) => segment.toLowerCase() === "_git");
@@ -438,10 +446,7 @@ export function normalizeConnectionInput(connectionInput = {}) {
         const collectionHint = segments[projectsIndex + 1] || "";
         projectHint = segments[projectsIndex + 2] || "";
         repositoryHint = segments[projectsIndex + 3] || "";
-        baseSegments = [
-          ...segments.slice(0, projectsIndex + 1),
-          ...(collectionHint ? [collectionHint] : []),
-        ];
+        baseSegments = [...segments.slice(0, projectsIndex + 1), ...(collectionHint ? [collectionHint] : [])];
       }
     } else if (gitIndex >= 1) {
       baseSegments = segments.slice(0, gitIndex - 1);

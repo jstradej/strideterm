@@ -17,7 +17,9 @@
         class="settings-tab-btn"
         :class="{ 'settings-tab-btn--active': activeTab === tab.id }"
         @click="switchTab(tab.id)"
-      >{{ tab.label }}</button>
+      >
+        {{ tab.label }}
+      </button>
     </div>
 
     <!-- General tab -->
@@ -31,14 +33,23 @@
             type="button"
             :class="['button', 'button-row__item', selectedTheme === theme ? 'button--active' : 'button--ghost']"
             @click="selectedTheme = theme"
-          >{{ theme }}</button>
+          >
+            {{ theme }}
+          </button>
         </div>
       </div>
       <div>
         <span class="section-label">Cloudflared binary</span>
         <div class="input-with-action">
           <input v-model="cloudflaredPath" placeholder="Leave empty to use PATH" class="settings-input" />
-          <button v-if="api?.browseFile" type="button" class="button button--ghost input-with-action__btn" @click="browseCloudflared">Browse</button>
+          <button
+            v-if="api?.browseFile"
+            type="button"
+            class="button button--ghost input-with-action__btn"
+            @click="browseCloudflared"
+          >
+            Browse
+          </button>
         </div>
         <small class="help-text">Used for Cloudflare Quick Tunnel detection and launch.</small>
       </div>
@@ -46,21 +57,15 @@
 
     <!-- Templates tab -->
     <div v-else-if="activeTab === 'templates'" class="form settings-tab-content">
-      <p class="templates-description">These templates appear when adding tabs to workspaces and in the quick-add (+) dropdown.</p>
+      <p class="templates-description">
+        These templates appear when adding tabs to workspaces and in the quick-add (+) dropdown.
+      </p>
       <div class="template-list">
-        <div
-          v-for="(tmpl, i) in templates"
-          :key="tmpl.id || i"
-          class="template-row"
-        >
+        <div v-for="(tmpl, i) in templates" :key="tmpl.id || i" class="template-row">
           <span class="template-icon">{{ tmpl.icon }}</span>
           <input v-model="tmpl.title" placeholder="Title" maxlength="40" class="template-input" />
           <input v-model="tmpl.command" placeholder="Command" maxlength="500" class="template-input" />
-          <button
-            type="button"
-            class="template-remove-btn"
-            @click="templates.splice(i, 1)"
-          >&times;</button>
+          <button type="button" class="template-remove-btn" @click="templates.splice(i, 1)">&times;</button>
         </div>
         <button type="button" class="button button--ghost add-template-btn" @click="addTemplate">+ Add template</button>
       </div>
@@ -108,9 +113,7 @@ const api = inject("api");
 const activeTab = ref("general");
 const selectedTheme = ref(props.settings.theme || "dark");
 const cloudflaredPath = ref(props.settings.remoteAccess?.cloudflaredPath || "");
-const templates = reactive(
-  (Array.isArray(props.tabTemplates) ? props.tabTemplates : []).map((t) => ({ ...t })),
-);
+const templates = reactive((Array.isArray(props.tabTemplates) ? props.tabTemplates : []).map((t) => ({ ...t })));
 
 function switchTab(tabId) {
   activeTab.value = tabId;
@@ -159,7 +162,9 @@ function handleSave() {
   font-size: 13px;
   font-weight: 600;
   cursor: pointer;
-  transition: background 0.12s, color 0.12s;
+  transition:
+    background 0.12s,
+    color 0.12s;
   background: transparent;
   color: var(--muted);
 }

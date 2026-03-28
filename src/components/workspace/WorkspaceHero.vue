@@ -11,11 +11,24 @@
     <template v-else-if="activeWorkspace?.kind === 'azure' || activeWorkspace?.kind === 'github'">
       <div class="workspace-meta" :style="`--accent:${safeColor(activeWorkspace.color)}`">
         <div class="workspace-meta__main">
-          <span class="workspace-meta__path workspace-meta__path--copyable" :title="activeWorkspace.cwd ? 'Click to copy path' : ''" @click="copyPath">{{ pathCopied ? 'Copied!' : (activeWorkspace.cwd || (activeWorkspace.kind === 'github' ? 'GitHub inbox' : 'Azure DevOps inbox')) }}</span>
+          <span
+            class="workspace-meta__path workspace-meta__path--copyable"
+            :title="activeWorkspace.cwd ? 'Click to copy path' : ''"
+            @click="copyPath"
+            >{{
+              pathCopied
+                ? "Copied!"
+                : activeWorkspace.cwd || (activeWorkspace.kind === "github" ? "GitHub inbox" : "Azure DevOps inbox")
+            }}</span
+          >
         </div>
         <div class="workspace-meta__stats">
-          <span class="workspace-chip"><strong>{{ activeWorkspace.kind === 'github' ? 'GitHub' : 'Azure' }}</strong> inbox</span>
-          <span class="workspace-chip"><strong>{{ reviewTabCount }}</strong> review tabs</span>
+          <span class="workspace-chip"
+            ><strong>{{ activeWorkspace.kind === "github" ? "GitHub" : "Azure" }}</strong> inbox</span
+          >
+          <span class="workspace-chip"
+            ><strong>{{ reviewTabCount }}</strong> review tabs</span
+          >
           <span
             v-if="attention?.count"
             class="workspace-chip workspace-chip--alert"
@@ -31,24 +44,35 @@
     <template v-else>
       <div class="workspace-meta" :style="`--accent:${safeColor(activeWorkspace.color)}`">
         <div class="workspace-meta__main">
-          <span class="workspace-meta__path workspace-meta__path--copyable" :title="activeWorkspace.cwd ? 'Click to copy path' : ''" @click="copyPath">{{ pathCopied ? 'Copied!' : (activeWorkspace.cwd || 'Not set') }}</span>
+          <span
+            class="workspace-meta__path workspace-meta__path--copyable"
+            :title="activeWorkspace.cwd ? 'Click to copy path' : ''"
+            @click="copyPath"
+            >{{ pathCopied ? "Copied!" : activeWorkspace.cwd || "Not set" }}</span
+          >
         </div>
         <div class="workspace-meta__stats">
-          <span class="workspace-chip"><strong>{{ sessionCount }}</strong> tabs</span>
-          <span class="workspace-chip"><strong>{{ runningCount }}</strong> running</span>
+          <span class="workspace-chip"
+            ><strong>{{ sessionCount }}</strong> tabs</span
+          >
+          <span class="workspace-chip"
+            ><strong>{{ runningCount }}</strong> running</span
+          >
           <span
             v-if="gitSnapshot?.available"
             class="workspace-chip"
             :style="gitSnapshot.dirty ? 'border-color:rgba(255,111,141,0.4)' : 'border-color:rgba(110,223,182,0.4)'"
           >
             <strong :style="gitSnapshot.dirty ? 'color:#ff6f8d' : 'color:#6edfb6'">{{ gitSnapshot.branch }}</strong>
-            <span v-if="gitSnapshot.dirty" style="color:#ff6f8d;margin-left:4px;">{{ gitSnapshot.dirtyCount }} uncommitted</span>
-            <span v-else style="color:#6edfb6;margin-left:4px;">clean</span>
+            <span v-if="gitSnapshot.dirty" style="color: #ff6f8d; margin-left: 4px"
+              >{{ gitSnapshot.dirtyCount }} uncommitted</span
+            >
+            <span v-else style="color: #6edfb6; margin-left: 4px">clean</span>
           </span>
-          <span
-            v-if="activeWorkspace.kind === 'docker' && dockerAvailable"
-            class="workspace-chip"
-          ><strong>{{ dockerRunning }}</strong>/{{ dockerTotal }} containers up</span>
+          <span v-if="activeWorkspace.kind === 'docker' && dockerAvailable" class="workspace-chip"
+            ><strong>{{ dockerRunning }}</strong
+            >/{{ dockerTotal }} containers up</span
+          >
           <span
             v-if="attention?.count"
             class="workspace-chip workspace-chip--alert"
@@ -79,19 +103,23 @@ function copyPath() {
   navigator.clipboard.writeText(cwd).then(() => {
     pathCopied.value = true;
     clearTimeout(pathCopiedTimer);
-    pathCopiedTimer = setTimeout(() => { pathCopied.value = false; }, 1200);
+    pathCopiedTimer = setTimeout(() => {
+      pathCopied.value = false;
+    }, 1200);
   });
 }
 
 const isRemote = computed(() => api?.isRemote || false);
 const workspace = computed(() => store.payload?.workspace || null);
 const activeWorkspace = computed(() => store.activeWorkspace);
-const gitSnapshot = computed(() => activeWorkspace.value ? store.getGitSnapshot(activeWorkspace.value.id) : null);
-const attention = computed(() => activeWorkspace.value ? store.getWorkspaceAttentionForId(activeWorkspace.value.id) : null);
+const gitSnapshot = computed(() => (activeWorkspace.value ? store.getGitSnapshot(activeWorkspace.value.id) : null));
+const attention = computed(() =>
+  activeWorkspace.value ? store.getWorkspaceAttentionForId(activeWorkspace.value.id) : null,
+);
 const reviewTabCount = computed(() => activeWorkspace.value?.panels?.length || 0);
 const sessionCount = computed(() => workspace.value?.sessions?.length || 0);
 const runningCount = computed(() => (workspace.value?.sessions || []).filter((s) => s.status === "running").length);
-const dockerState = computed(() => activeWorkspace.value?.kind === "docker" ? (store.payload?.docker || {}) : {});
+const dockerState = computed(() => (activeWorkspace.value?.kind === "docker" ? store.payload?.docker || {} : {}));
 const dockerAvailable = computed(() => dockerState.value?.available);
 const dockerRunning = computed(() => (dockerState.value?.containers || []).filter(isContainerRunning).length);
 const dockerTotal = computed(() => (dockerState.value?.containers || []).length);

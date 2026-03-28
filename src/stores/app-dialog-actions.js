@@ -113,11 +113,17 @@ export function createDialogActions(ctx) {
       openDialog("NewWorkspacePicker", {
         plugins,
         onCancel: closeDialog,
-        onPickEmpty: () => { closeDialog(); openWorkspaceDialog(); },
+        onPickEmpty: () => {
+          closeDialog();
+          openWorkspaceDialog();
+        },
         onPickPlugin: (pluginId) => {
           closeDialog();
           const plugin = plugins.find((p) => p.id === pluginId);
-          if (!plugin?.workspaceDefaults) { openWorkspaceDialog(); return; }
+          if (!plugin?.workspaceDefaults) {
+            openWorkspaceDialog();
+            return;
+          }
           const tpl = plugin.workspaceDefaults;
           const draft = {
             id: `workspace-${crypto.randomUUID()}`,
@@ -182,7 +188,9 @@ export function createDialogActions(ctx) {
         ctx.activeSessionId.value = null;
         ctx.splitGroup.value = null;
         closeDialog();
-        setTimeout(() => { ctx.suppressBroadcast.value = false; }, 200);
+        setTimeout(() => {
+          ctx.suppressBroadcast.value = false;
+        }, 200);
       },
       onDelete: async (profileId) => {
         ctx.payload.value = await ctx.getApi().deleteProfile(profileId);

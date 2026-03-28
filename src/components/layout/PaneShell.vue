@@ -13,7 +13,9 @@
         :disabled="!!action.disabled"
         :title="action.title"
         @click="$emit('action', action)"
-      >{{ action.label }}</button>
+      >
+        {{ action.label }}
+      </button>
     </div>
   </header>
 </template>

@@ -205,18 +205,14 @@ export class AzureDevOpsManager extends EventEmitter {
     return this.snapshot.connections.find((connection) => connection.id === connectionId) || null;
   }
 
-  async sync({
-    connections = [],
-    workspaces = [],
-    gitSnapshots = {},
-    activeProfileId = "default",
-  } = {}) {
+  async sync({ connections = [], workspaces = [], gitSnapshots = {}, activeProfileId = "default" } = {}) {
     const reviewState = this.reviewStore.getState();
     const startedAt = new Date(this.now()).toISOString();
     // Immediately apply the new connections list so any intermediate broadcastState
     // (triggered by emitUpdated) reflects the correct profile-filtered connections.
-    const connectionsChanged = JSON.stringify(connections.map((c) => c.id).sort())
-      !== JSON.stringify((this.snapshot.connections || []).map((c) => c.id).sort());
+    const connectionsChanged =
+      JSON.stringify(connections.map((c) => c.id).sort()) !==
+      JSON.stringify((this.snapshot.connections || []).map((c) => c.id).sort());
     this.snapshot = {
       ...(connectionsChanged ? createEmptySnapshot() : this.snapshot),
       connections,
@@ -247,21 +243,31 @@ export class AzureDevOpsManager extends EventEmitter {
 
         const projects = await this.api.listProjects(connection, token);
         const filteredProjects = connection.projectFilters?.length
-          ? projects.filter((project) => connection.projectFilters.includes(project.name) || connection.projectFilters.includes(project.id))
+          ? projects.filter(
+              (project) =>
+                connection.projectFilters.includes(project.name) || connection.projectFilters.includes(project.id),
+            )
           : projects;
 
         for (const project of filteredProjects) {
           const pullRequests = await this.api.listPullRequestsByProject(connection, token, project.name);
           for (const pr of pullRequests) {
             if (connection.repositoryFilters?.length) {
-              const matchesRepository = connection.repositoryFilters.includes(pr.repository?.id)
-                || connection.repositoryFilters.includes(pr.repository?.name);
+              const matchesRepository =
+                connection.repositoryFilters.includes(pr.repository?.id) ||
+                connection.repositoryFilters.includes(pr.repository?.name);
               if (!matchesRepository) {
                 continue;
               }
             }
 
-            const threads = await this.api.listThreads(connection, token, project.name, pr.repository.id, pr.pullRequestId);
+            const threads = await this.api.listThreads(
+              connection,
+              token,
+              project.name,
+              pr.repository.id,
+              pr.pullRequestId,
+            );
             const prKey = createPullRequestKey(connection.id, pr.repository.id, pr.pullRequestId);
             const tracked = this.reviewStore.getTrackedPullRequest(prKey) || {};
             const summary = buildPullRequestSummary({
@@ -400,17 +406,18 @@ export class AzureDevOpsManager extends EventEmitter {
       newCommentsCount: 0,
     };
 
-    const updateSummaryList = (items) => items.map((item) => (
-      item.prKey === prKey
-        ? {
-            ...item,
-            lastSeenActivityAt,
-            hasAttention: false,
-            attentionReason: "",
-            newCommentsCount: 0,
-          }
-        : item
-    ));
+    const updateSummaryList = (items) =>
+      items.map((item) =>
+        item.prKey === prKey
+          ? {
+              ...item,
+              lastSeenActivityAt,
+              hasAttention: false,
+              attentionReason: "",
+              newCommentsCount: 0,
+            }
+          : item,
+      );
 
     this.setSnapshot({
       ...this.snapshot,
@@ -455,36 +462,29 @@ export class AzureDevOpsManager extends EventEmitter {
     }
 
     const [changes, pullRequestStatuses, policyEvaluations] = await Promise.all([
-      this.api.listIterationChanges(
-        connection,
-        token,
-        current.project.name,
-        current.repository.id,
-        current.pullRequest.id,
-      ).catch(() => []),
-      this.api.listPullRequestStatuses(
-        connection,
-        token,
-        current.project.name,
-        current.repository.id,
-        current.pullRequest.id,
-      ).catch(() => []),
-      this.api.listPolicyEvaluations(
-        connection,
-        token,
-        current.project.name,
-        current.project.id,
-        current.pullRequest.id,
-      ).catch(() => []),
+      this.api
+        .listIterationChanges(connection, token, current.project.name, current.repository.id, current.pullRequest.id)
+        .catch(() => []),
+      this.api
+        .listPullRequestStatuses(connection, token, current.project.name, current.repository.id, current.pullRequest.id)
+        .catch(() => []),
+      this.api
+        .listPolicyEvaluations(connection, token, current.project.name, current.project.id, current.pullRequest.id)
+        .catch(() => []),
     ]);
-    const workspace = findWorkspaceForPullRequest(workspaces, prKey)
-      || (current.existingWorkspaceId ? workspaces.find((entry) => entry.id === current.existingWorkspaceId) : null);
+    const workspace =
+      findWorkspaceForPullRequest(workspaces, prKey) ||
+      (current.existingWorkspaceId ? workspaces.find((entry) => entry.id === current.existingWorkspaceId) : null);
     const localChanges = workspace?.cwd
       ? await this.listLocalChangedFiles(workspace.cwd, current.pullRequest.targetRefName).catch(() => [])
       : [];
 
     const enrichedThreads = workspace?.cwd
-      ? await this.readThreadCodeSnippets(workspace.cwd, current.threads || [], current.pullRequest.targetRefName).catch(() => current.threads || [])
+      ? await this.readThreadCodeSnippets(
+          workspace.cwd,
+          current.threads || [],
+          current.pullRequest.targetRefName,
+        ).catch(() => current.threads || [])
       : current.threads || [];
 
     const checksResult = buildCheckSummary({
@@ -493,12 +493,15 @@ export class AzureDevOpsManager extends EventEmitter {
     });
 
     // Fetch build timeline errors for failed checks that have a buildId
-    const failedWithBuild = (checksResult.items || []).filter((item) => item.state === "failed" && item.buildId && !item.errorMessage);
+    const failedWithBuild = (checksResult.items || []).filter(
+      (item) => item.state === "failed" && item.buildId && !item.errorMessage,
+    );
     if (failedWithBuild.length) {
       const errorResults = await Promise.all(
         failedWithBuild.map((item) =>
-          this.api.fetchBuildErrors(connection, token, current.project.name, item.buildId)
-            .then((msg) => ({ id: item.id, errorMessage: msg }))
+          this.api
+            .fetchBuildErrors(connection, token, current.project.name, item.buildId)
+            .then((msg) => ({ id: item.id, errorMessage: msg })),
         ),
       );
       const errorMap = new Map(errorResults.filter((e) => e.errorMessage).map((e) => [e.id, e.errorMessage]));
@@ -516,7 +519,8 @@ export class AzureDevOpsManager extends EventEmitter {
       threads: enrichedThreads,
       checks: checksResult,
       existingWorkspaceId: workspace?.id || current.existingWorkspaceId || "",
-      reviewWorkspaceId: workspace?.review?.provider === "azure-devops" ? workspace.id : current.reviewWorkspaceId || "",
+      reviewWorkspaceId:
+        workspace?.review?.provider === "azure-devops" ? workspace.id : current.reviewWorkspaceId || "",
     };
 
     this.setSnapshot({
@@ -571,13 +575,11 @@ export class AzureDevOpsManager extends EventEmitter {
     for (const [filePath] of filesNeeded) {
       try {
         const normalizedPath = filePath.startsWith("/") ? filePath.slice(1) : filePath;
-        const result = await this.execFileText("git", [
-          "diff",
-          `origin/${targetBranch}...HEAD`,
-          "--unified=4",
-          "--",
-          normalizedPath,
-        ], { cwd, env: sanitizeGitEnvironment() });
+        const result = await this.execFileText(
+          "git",
+          ["diff", `origin/${targetBranch}...HEAD`, "--unified=4", "--", normalizedPath],
+          { cwd, env: sanitizeGitEnvironment() },
+        );
         if (result.stdout) {
           snippetMap.set(filePath, result.stdout);
         }
@@ -653,11 +655,13 @@ export class AzureDevOpsManager extends EventEmitter {
       });
     } catch (error) {
       // Strip credentials from error messages to prevent PAT leaks in UI/logs
-      const sanitize = (text) => String(text || "").replace(/AUTHORIZATION:\s*Basic\s+\S+/gi, "AUTHORIZATION: [REDACTED]");
+      const sanitize = (text) =>
+        String(text || "").replace(/AUTHORIZATION:\s*Basic\s+\S+/gi, "AUTHORIZATION: [REDACTED]");
       // execFileText rejects with { error, stdout, stderr } plain object — extract the real message
-      const rawMessage = error instanceof Error
-        ? error.message
-        : (error?.stderr || error?.error?.message || error?.stdout || "Git command failed.");
+      const rawMessage =
+        error instanceof Error
+          ? error.message
+          : error?.stderr || error?.error?.message || error?.stdout || "Git command failed.";
       const message = sanitize(rawMessage);
       const sanitized = new Error(message);
       if (error?.stderr) sanitized.stderr = sanitize(error.stderr);
@@ -717,15 +721,19 @@ export class AzureDevOpsManager extends EventEmitter {
         `pr-${summary.pullRequest.id}`,
       );
 
-      await this.runGit(cacheRepoPath, [
-        "fetch",
-        "origin",
-        `+${summary.pullRequest.sourceRefName}:refs/remotes/origin/${sourceBranch}`,
-        `+${summary.pullRequest.targetRefName}:refs/remotes/origin/${targetBranch}`,
-      ], {
-        login: connection.login,
-        token,
-      });
+      await this.runGit(
+        cacheRepoPath,
+        [
+          "fetch",
+          "origin",
+          `+${summary.pullRequest.sourceRefName}:refs/remotes/origin/${sourceBranch}`,
+          `+${summary.pullRequest.targetRefName}:refs/remotes/origin/${targetBranch}`,
+        ],
+        {
+          login: connection.login,
+          token,
+        },
+      );
 
       await mkdir(path.dirname(worktreePath), { recursive: true });
       const worktreeExists = await exists(path.join(worktreePath, ".git"));
@@ -750,7 +758,9 @@ export class AzureDevOpsManager extends EventEmitter {
           // Only reset if local branch has no commits ahead of remote,
           // to avoid discarding unpushed work from a previous session.
           const ahead = await this.runGit(worktreePath, [
-            "rev-list", "--count", `refs/remotes/origin/${sourceBranch}..HEAD`,
+            "rev-list",
+            "--count",
+            `refs/remotes/origin/${sourceBranch}..HEAD`,
           ]).catch(() => ({ stdout: "0" }));
           if (Number(ahead.stdout.trim()) === 0) {
             await this.runGit(worktreePath, ["reset", "--hard", `refs/remotes/origin/${sourceBranch}`]);
@@ -799,9 +809,10 @@ export class AzureDevOpsManager extends EventEmitter {
       return null;
     }
 
-    const parentAzureWorkspace = (workspaces || []).find((workspace) => (
-      workspace.kind === "azure" && (workspace.profileId || "default") === (profileId || "default")
-    )) || null;
+    const parentAzureWorkspace =
+      (workspaces || []).find(
+        (workspace) => workspace.kind === "azure" && (workspace.profileId || "default") === (profileId || "default"),
+      ) || null;
     const reviewRoot = parentAzureWorkspace?.cwd || connection.reviewRoot || DEFAULT_REVIEW_ROOT;
 
     return {
@@ -822,11 +833,7 @@ export class AzureDevOpsManager extends EventEmitter {
     };
   }
 
-  async openReviewWorkspace({
-    state,
-    prKey,
-    workspaceId = "",
-  }) {
+  async openReviewWorkspace({ state, prKey, workspaceId = "" }) {
     const summary = await this.ensurePullRequestDetail(prKey, {
       workspaces: state.workspaces,
     });
@@ -844,24 +851,23 @@ export class AzureDevOpsManager extends EventEmitter {
     const profileWorkspaces = state.workspaces.filter((ws) => (ws.profileId || "default") === activeProfile);
     const existingWorkspace = workspaceId
       ? profileWorkspaces.find((workspace) => workspace.id === workspaceId)
-      : (
-          findWorkspaceForPullRequest(profileWorkspaces, prKey)
-          || (
-            summary.role === "author" && summary.existingWorkspaceId
-              ? profileWorkspaces.find((workspace) => workspace.id === summary.existingWorkspaceId)
-              : null
-          )
-        );
+      : findWorkspaceForPullRequest(profileWorkspaces, prKey) ||
+        (summary.role === "author" && summary.existingWorkspaceId
+          ? profileWorkspaces.find((workspace) => workspace.id === summary.existingWorkspaceId)
+          : null);
 
     const reviewProfileId = existingWorkspace?.profileId || state.activeProfileId || "default";
-    const parentAzureWorkspace = state.workspaces.find((workspace) => (
-      workspace.kind === "azure" && (workspace.profileId || "default") === reviewProfileId
-    )) || null;
+    const parentAzureWorkspace =
+      state.workspaces.find(
+        (workspace) => workspace.kind === "azure" && (workspace.profileId || "default") === reviewProfileId,
+      ) || null;
     const parentWorkspaceId = parentAzureWorkspace?.id || existingWorkspace?.review?.parentWorkspaceId || "";
 
     if (existingWorkspace) {
       if (!String(existingWorkspace.cwd || "").trim()) {
-        throw new Error(`Matched workspace "${existingWorkspace.name || existingWorkspace.id}" does not have a working directory.`);
+        throw new Error(
+          `Matched workspace "${existingWorkspace.name || existingWorkspace.id}" does not have a working directory.`,
+        );
       }
       const checkout = existingWorkspace.review?.checkout || {
         mode: existingWorkspace.review?.provider === "azure-devops" ? "managed-worktree" : "linked-existing-workspace",
@@ -948,7 +954,13 @@ export class AzureDevOpsManager extends EventEmitter {
           status: "active",
         };
     const url = threadId
-      ? this.api.buildCreateCommentUrl(connection, summary.project.name, summary.repository.id, summary.pullRequest.id, threadId)
+      ? this.api.buildCreateCommentUrl(
+          connection,
+          summary.project.name,
+          summary.repository.id,
+          summary.pullRequest.id,
+          threadId,
+        )
       : this.api.buildCreateThreadUrl(connection, summary.project.name, summary.repository.id, summary.pullRequest.id);
     await this.api.requestJson(url, {
       login: connection.login,
@@ -970,7 +982,13 @@ export class AzureDevOpsManager extends EventEmitter {
       throw new Error("PAT is missing.");
     }
     await this.api.requestJson(
-      this.api.buildUpdateThreadUrl(connection, summary.project.name, summary.repository.id, summary.pullRequest.id, threadId),
+      this.api.buildUpdateThreadUrl(
+        connection,
+        summary.project.name,
+        summary.repository.id,
+        summary.pullRequest.id,
+        threadId,
+      ),
       {
         login: connection.login,
         token,
@@ -994,15 +1012,24 @@ export class AzureDevOpsManager extends EventEmitter {
     if (!token) {
       throw new Error("PAT is missing.");
     }
-    await this.api.requestJson(this.api.buildReviewerUrl(connection, summary.project.name, summary.repository.id, summary.pullRequest.id, summary.myReviewerId), {
-      login: connection.login,
-      token,
-      method: "PUT",
-      body: {
-        id: summary.myReviewerId,
-        vote,
+    await this.api.requestJson(
+      this.api.buildReviewerUrl(
+        connection,
+        summary.project.name,
+        summary.repository.id,
+        summary.pullRequest.id,
+        summary.myReviewerId,
+      ),
+      {
+        login: connection.login,
+        token,
+        method: "PUT",
+        body: {
+          id: summary.myReviewerId,
+          vote,
+        },
       },
-    });
+    );
   }
 
   async fetchReviewWorkspace({ workspace }) {
@@ -1069,7 +1096,15 @@ export class AzureDevOpsManager extends EventEmitter {
     return refs.map((ref) => stripRefsPrefix(ref.name));
   }
 
-  async createPullRequestForWorkspace({ remoteUrl, sourceBranch, targetBranch, title, description, isDraft = false, connectionId = "" }) {
+  async createPullRequestForWorkspace({
+    remoteUrl,
+    sourceBranch,
+    targetBranch,
+    title,
+    description,
+    isDraft = false,
+    connectionId = "",
+  }) {
     const connection = (connectionId && this.findConnection(connectionId)) || this.findConnectionForRemote(remoteUrl);
     if (!connection) throw new Error("No Azure DevOps connection found for this repository.");
     this.setAuditContext({ connectionId: connection.id, userInitiated: true });
@@ -1142,7 +1177,9 @@ export class AzureDevOpsManager extends EventEmitter {
     const { connection, token } = this.resolveConnectionAndToken(connectionId);
     const repos = await this.api.listRepositories(connection, token, projectName);
     const filtered = connection.repositoryFilters?.length
-      ? repos.filter((r) => connection.repositoryFilters.includes(r.id) || connection.repositoryFilters.includes(r.name))
+      ? repos.filter(
+          (r) => connection.repositoryFilters.includes(r.id) || connection.repositoryFilters.includes(r.name),
+        )
       : repos;
     return filtered.map((r) => ({ id: r.id, name: r.name, remoteUrl: r.remoteUrl }));
   }
@@ -1157,10 +1194,11 @@ export class AzureDevOpsManager extends EventEmitter {
   async prepareQuickFixCheckout({ connection, token, repository, baseBranch, newBranchName, reviewRoot }) {
     const cacheRepoPath = await this.ensureCacheRepo({ connection, token, repository, reviewRoot });
 
-    await this.runGit(cacheRepoPath, [
-      "fetch", "origin",
-      `+refs/heads/${baseBranch}:refs/remotes/origin/${baseBranch}`,
-    ], { login: connection.login, token });
+    await this.runGit(
+      cacheRepoPath,
+      ["fetch", "origin", `+refs/heads/${baseBranch}:refs/remotes/origin/${baseBranch}`],
+      { login: connection.login, token },
+    );
 
     const worktreePath = path.join(
       normalizeReviewRoot(reviewRoot),
@@ -1175,8 +1213,13 @@ export class AzureDevOpsManager extends EventEmitter {
     if (!worktreeExists) {
       try {
         await this.runGit(cacheRepoPath, [
-          "worktree", "add", "--force", "-b", newBranchName,
-          worktreePath, `refs/remotes/origin/${baseBranch}`,
+          "worktree",
+          "add",
+          "--force",
+          "-b",
+          newBranchName,
+          worktreePath,
+          `refs/remotes/origin/${baseBranch}`,
         ]);
       } catch (err) {
         const msg = String(err?.stderr || err?.message || err);
@@ -1190,18 +1233,31 @@ export class AzureDevOpsManager extends EventEmitter {
     return { rootPath: worktreePath, cacheRepoPath, baseBranch, newBranchName };
   }
 
-  async openQuickFixWorkspace({ state, connectionId, projectName, repositoryId, repositoryName, remoteUrl, baseBranch, newBranchName }) {
+  async openQuickFixWorkspace({
+    state,
+    connectionId,
+    projectName,
+    repositoryId,
+    repositoryName,
+    remoteUrl,
+    baseBranch,
+    newBranchName,
+  }) {
     const { connection, token } = this.resolveConnectionAndToken(connectionId);
 
     const activeProfile = state.activeProfileId || "default";
-    const parentAzureWorkspace = state.workspaces.find((ws) => (
-      ws.kind === "azure" && (ws.profileId || "default") === activeProfile
-    )) || null;
+    const parentAzureWorkspace =
+      state.workspaces.find((ws) => ws.kind === "azure" && (ws.profileId || "default") === activeProfile) || null;
     const reviewRoot = parentAzureWorkspace?.cwd || connection.reviewRoot || DEFAULT_REVIEW_ROOT;
 
     const repository = { id: repositoryId, name: repositoryName, remoteUrl };
     const checkout = await this.prepareQuickFixCheckout({
-      connection, token, repository, baseBranch, newBranchName, reviewRoot,
+      connection,
+      token,
+      repository,
+      baseBranch,
+      newBranchName,
+      reviewRoot,
     });
 
     const panels = createReviewWorkspacePanels(parentAzureWorkspace?.panels || [], state.tabTemplates || []);

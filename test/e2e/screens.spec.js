@@ -9,8 +9,12 @@ import { openApp, assertNoErrors } from "./helpers.js";
 
 test.describe("Docker workspace", () => {
   let mock;
-  test.beforeAll(async () => { mock = await startMockServer({ fixture: "docker-containers" }); });
-  test.afterAll(async () => { await mock?.close(); });
+  test.beforeAll(async () => {
+    mock = await startMockServer({ fixture: "docker-containers" });
+  });
+  test.afterAll(async () => {
+    await mock?.close();
+  });
 
   test("loads workspace and shows expected UI elements", async ({ page }) => {
     await openApp(page, mock);
@@ -24,8 +28,12 @@ test.describe("Docker workspace", () => {
 
 test.describe("Git merge conflict workspace", () => {
   let mock;
-  test.beforeAll(async () => { mock = await startMockServer({ fixture: "git-merge-conflict" }); });
-  test.afterAll(async () => { await mock?.close(); });
+  test.beforeAll(async () => {
+    mock = await startMockServer({ fixture: "git-merge-conflict" });
+  });
+  test.afterAll(async () => {
+    await mock?.close();
+  });
 
   test("loads workspace with conflict data without errors", async ({ page }) => {
     await openApp(page, mock);
@@ -38,8 +46,12 @@ test.describe("Git merge conflict workspace", () => {
 
 test.describe("GitHub PR inbox workspace", () => {
   let mock;
-  test.beforeAll(async () => { mock = await startMockServer({ fixture: "github-pr-inbox" }); });
-  test.afterAll(async () => { await mock?.close(); });
+  test.beforeAll(async () => {
+    mock = await startMockServer({ fixture: "github-pr-inbox" });
+  });
+  test.afterAll(async () => {
+    await mock?.close();
+  });
 
   test("loads workspace with PR data and shows GitHub section", async ({ page }) => {
     await openApp(page, mock);

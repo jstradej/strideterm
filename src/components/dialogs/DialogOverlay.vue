@@ -6,11 +6,7 @@
       @click.self="handleBackdropClick"
       @keydown.esc.window="handleBackdropClick"
     >
-      <component
-        v-if="dialogComponent"
-        :is="dialogComponent"
-        v-bind="store.overlayProps"
-      />
+      <component :is="dialogComponent" v-if="dialogComponent" v-bind="store.overlayProps" />
     </div>
   </Teleport>
 </template>

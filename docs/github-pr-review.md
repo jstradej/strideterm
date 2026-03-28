@@ -78,6 +78,7 @@ Split view: changed files tree on the left, diff preview on the right. Click a f
 ### Comments
 
 All conversations — both general issue comments and code review threads. Each thread shows:
+
 - Thread number (`#N`), status chip, file path (for code comments), relative time
 - All published replies with author avatars
 - Draft replies (queued for publishing) with edit/delete actions
@@ -103,6 +104,7 @@ The **Push & publish** button in the toolbar sends your work to GitHub. It shows
 > **Push (3) & publish (2)**
 
 What it does:
+
 1. **Skips push** if there are no commits ahead of remote (only publishes comments)
 2. **Pushes commits** to the remote PR branch (with PAT authentication, using `HEAD:refs/heads/{branch}` refspec)
 3. **Publishes all queued draft comments** as GitHub issue comments
@@ -144,6 +146,7 @@ MCP agents interact only with the local SQLite database. They cannot call the Gi
 ### GitHub Enterprise Server
 
 Connections support custom host URLs. The API base URL is derived automatically:
+
 - `github.com` -> `https://api.github.com`
 - Custom host -> `https://{host}/api/v3`
 
@@ -152,6 +155,7 @@ Connections support custom host URLs. The API base URL is derived automatically:
 ## Activity Log
 
 The **Activity Log** tab shows every GitHub API call strIDEterm made — fetching PRs, loading comments, posting your replies. Useful for:
+
 - Confirming a comment was published
 - Investigating sync failures
 - Checking polling frequency and response times
@@ -177,13 +181,13 @@ Default: 120 seconds per connection. Configurable per connection (minimum 15 sec
 
 ### Differences from Azure DevOps Integration
 
-| Feature | Azure DevOps | GitHub |
-|---------|-------------|--------|
-| Auth | Basic (login:PAT) | Bearer (PAT) |
-| Login | User provides login | Auto-detected from token |
-| Projects | Yes (project → repo) | No (repos directly) |
-| Review actions | Vote (10/5/0/-5/-10) | APPROVE / REQUEST_CHANGES / COMMENT |
-| Thread status | Active/Fixed/Closed/etc. | No thread resolution (GitHub limitation) |
-| Inline comments | Via Azure threads | Via review comments (code-level) |
-| General comments | Via Azure threads | Via issue comments (separate API) |
-| Checks | Policy evaluations + statuses | Check runs + combined status |
+| Feature          | Azure DevOps                  | GitHub                                   |
+| ---------------- | ----------------------------- | ---------------------------------------- |
+| Auth             | Basic (login:PAT)             | Bearer (PAT)                             |
+| Login            | User provides login           | Auto-detected from token                 |
+| Projects         | Yes (project → repo)          | No (repos directly)                      |
+| Review actions   | Vote (10/5/0/-5/-10)          | APPROVE / REQUEST_CHANGES / COMMENT      |
+| Thread status    | Active/Fixed/Closed/etc.      | No thread resolution (GitHub limitation) |
+| Inline comments  | Via Azure threads             | Via review comments (code-level)         |
+| General comments | Via Azure threads             | Via issue comments (separate API)        |
+| Checks           | Policy evaluations + statuses | Check runs + combined status             |

@@ -8,13 +8,13 @@
       @action="onHeaderAction"
     />
     <FileToolbar
+      :show-hidden="store.showHidden"
+      :view-mode="store.viewMode"
       @create-file="onCreateFile"
       @create-dir="onCreateDir"
       @refresh="store.refresh()"
       @toggle-hidden="store.showHidden = !store.showHidden"
       @toggle-view="store.viewMode = store.viewMode === 'list' ? 'grid' : 'list'"
-      :show-hidden="store.showHidden"
-      :view-mode="store.viewMode"
     />
     <FileBreadcrumb :items="store.breadcrumbs" @navigate="store.navigate" />
     <div class="file-manager__body">
@@ -47,20 +47,31 @@
         :style="{ position: 'fixed', left: fileContextMenu.x + 'px', top: fileContextMenu.y + 'px', zIndex: 9999 }"
         @click.stop
       >
-        <button v-if="fileContextMenu.entry.kind === 'file'" type="button" class="context-menu__item" @click="onCtxEdit">&#x270E; Edit</button>
+        <button
+          v-if="fileContextMenu.entry.kind === 'file'"
+          type="button"
+          class="context-menu__item"
+          @click="onCtxEdit"
+        >
+          &#x270E; Edit
+        </button>
         <button type="button" class="context-menu__item" @click="onCtxCopy">&#x2398; Copy</button>
-        <button v-if="store.clipboard" type="button" class="context-menu__item" @click="onCtxPaste">&#x2399; Paste here</button>
+        <button v-if="store.clipboard" type="button" class="context-menu__item" @click="onCtxPaste">
+          &#x2399; Paste here
+        </button>
         <button type="button" class="context-menu__item" @click="onCtxRename">&#x270E; Rename</button>
         <button type="button" class="context-menu__item" @click="onCtxReveal">&#x1F4C2; Open in Explorer</button>
         <div class="context-menu__divider"></div>
-        <button type="button" class="context-menu__item context-menu__item--danger" @click="onCtxDelete">&#x2715; Delete</button>
+        <button type="button" class="context-menu__item context-menu__item--danger" @click="onCtxDelete">
+          &#x2715; Delete
+        </button>
       </div>
     </Teleport>
 
     <!-- Create dialog -->
     <div v-if="createDialog" class="fm-dialog-backdrop" @mousedown.self="createDialog = null">
       <div class="fm-dialog">
-        <h3>{{ createDialog.type === 'file' ? 'New File' : 'New Folder' }}</h3>
+        <h3>{{ createDialog.type === "file" ? "New File" : "New Folder" }}</h3>
         <input
           ref="createInput"
           v-model="createDialog.name"
@@ -71,7 +82,9 @@
         />
         <div class="fm-dialog__actions">
           <button type="button" class="button button--ghost" @click="createDialog = null">Cancel</button>
-          <button type="button" class="button" @click="confirmCreate" :disabled="!createDialog.name.trim()">Create</button>
+          <button type="button" class="button" :disabled="!createDialog.name.trim()" @click="confirmCreate">
+            Create
+          </button>
         </div>
       </div>
     </div>
@@ -89,7 +102,9 @@
         />
         <div class="fm-dialog__actions">
           <button type="button" class="button button--ghost" @click="renameDialog = null">Cancel</button>
-          <button type="button" class="button" @click="confirmRename" :disabled="!renameDialog.newName.trim()">Rename</button>
+          <button type="button" class="button" :disabled="!renameDialog.newName.trim()" @click="confirmRename">
+            Rename
+          </button>
         </div>
       </div>
     </div>
@@ -97,11 +112,14 @@
     <!-- Delete confirm -->
     <div v-if="deleteDialog" class="fm-dialog-backdrop" @mousedown.self="deleteDialog = null">
       <div class="fm-dialog">
-        <h3>Delete {{ deleteDialog.entry.kind === 'directory' ? 'folder' : 'file' }}?</h3>
-        <p class="fm-dialog__text">Are you sure you want to delete <strong>{{ deleteDialog.entry.name }}</strong>?</p>
+        <h3>Delete {{ deleteDialog.entry.kind === "directory" ? "folder" : "file" }}?</h3>
+        <p class="fm-dialog__text">
+          Are you sure you want to delete <strong>{{ deleteDialog.entry.name }}</strong
+          >?
+        </p>
         <div class="fm-dialog__actions">
           <button type="button" class="button button--ghost" @click="deleteDialog = null">Cancel</button>
-          <button type="button" class="button" style="background:var(--danger)" @click="confirmDelete">Delete</button>
+          <button type="button" class="button" style="background: var(--danger)" @click="confirmDelete">Delete</button>
         </div>
       </div>
     </div>
@@ -142,8 +160,20 @@ const fileMenuRef = ref(null);
 
 const headerActions = [
   { className: "workspace-pane__icon-btn", action: "refresh", title: "Refresh", label: "\u21bb" },
-  { className: "workspace-pane__icon-btn", action: "select-tab", viewId: `files:${props.workspaceId}`, title: "Focus tab", label: "\u25c9" },
-  { className: "workspace-pane__icon-btn workspace-pane__icon-btn--danger", action: "close-tab", viewId: `files:${props.workspaceId}`, title: "Close tab", label: "\u00d7" },
+  {
+    className: "workspace-pane__icon-btn",
+    action: "select-tab",
+    viewId: `files:${props.workspaceId}`,
+    title: "Focus tab",
+    label: "\u25c9",
+  },
+  {
+    className: "workspace-pane__icon-btn workspace-pane__icon-btn--danger",
+    action: "close-tab",
+    viewId: `files:${props.workspaceId}`,
+    title: "Close tab",
+    label: "\u00d7",
+  },
 ];
 
 // Provide context menu opener to children
@@ -164,17 +194,27 @@ provide("fm-create-file", () => onCreateFile());
 provide("fm-create-dir", () => onCreateDir());
 
 // Viewport-clamp the context menu
-watch(fileContextMenu, async (menu) => {
-  if (!menu) return;
-  await nextTick();
-  if (!fileMenuRef.value) return;
-  const rect = fileMenuRef.value.getBoundingClientRect();
-  let { x, y } = menu;
-  let changed = false;
-  if (rect.right > window.innerWidth) { x = window.innerWidth - rect.width - 4; changed = true; }
-  if (rect.bottom > window.innerHeight) { y = window.innerHeight - rect.height - 4; changed = true; }
-  if (changed) fileContextMenu.value = { ...menu, x, y };
-}, { flush: "post" });
+watch(
+  fileContextMenu,
+  async (menu) => {
+    if (!menu) return;
+    await nextTick();
+    if (!fileMenuRef.value) return;
+    const rect = fileMenuRef.value.getBoundingClientRect();
+    let { x, y } = menu;
+    let changed = false;
+    if (rect.right > window.innerWidth) {
+      x = window.innerWidth - rect.width - 4;
+      changed = true;
+    }
+    if (rect.bottom > window.innerHeight) {
+      y = window.innerHeight - rect.height - 4;
+      changed = true;
+    }
+    if (changed) fileContextMenu.value = { ...menu, x, y };
+  },
+  { flush: "post" },
+);
 
 // Close context menu on outside click / Escape
 function onDocClick(e) {
@@ -187,7 +227,9 @@ function onKeydown(e) {
 }
 
 // Context menu actions
-function dismissMenu() { fileContextMenu.value = null; }
+function dismissMenu() {
+  fileContextMenu.value = null;
+}
 
 function onCtxEdit() {
   const entry = fileContextMenu.value?.entry;

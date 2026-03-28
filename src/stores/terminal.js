@@ -1,12 +1,7 @@
 import { defineStore } from "pinia";
 import { shallowRef } from "vue";
 import { createTerminalController } from "../app/terminal-controller.js";
-import {
-  openTerminalLink,
-  getWindowsPtyOptions,
-  downloadTextFile,
-  safeFilenamePart,
-} from "../app/helpers.js";
+import { openTerminalLink, getWindowsPtyOptions, downloadTextFile, safeFilenamePart } from "../app/helpers.js";
 
 function shortcutTabDirection(event) {
   const key = String(event?.key || "");
@@ -19,7 +14,7 @@ function shortcutTabDirection(event) {
 export const useTerminalStore = defineStore("terminal", () => {
   // These Maps are imperative caches, not reactive state.
   // shallowRef makes them accessible via .value without deep tracking.
-  const views = shallowRef(new Map());   // sessionId → { mount, term, fitAddon, ... }
+  const views = shallowRef(new Map()); // sessionId → { mount, term, fitAddon, ... }
   const buffers = shallowRef(new Map()); // sessionId → queued data string
 
   let controller = null;
@@ -86,11 +81,17 @@ export const useTerminalStore = defineStore("terminal", () => {
   }
 
   return {
-    views, buffers, init,
-    attachTerminalPane, focusActiveTerminal,
-    scheduleActiveResize, scheduleAllVisibleResize,
-    pruneTerminalViews, exportTerminalTranscript,
-    clearTerminalViewport, disconnectHiddenPaneObservers,
+    views,
+    buffers,
+    init,
+    attachTerminalPane,
+    focusActiveTerminal,
+    scheduleActiveResize,
+    scheduleAllVisibleResize,
+    pruneTerminalViews,
+    exportTerminalTranscript,
+    clearTerminalViewport,
+    disconnectHiddenPaneObservers,
     syncTheme,
   };
 });

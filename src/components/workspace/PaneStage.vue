@@ -1,10 +1,5 @@
 <template>
-  <div
-    class="terminal-stage"
-    :class="stageClasses"
-    data-role="terminal-stage"
-    @mousedown="onStageMousedown"
-  >
+  <div class="terminal-stage" :class="stageClasses" data-role="terminal-stage" @mousedown="onStageMousedown">
     <!-- Empty state: no tabs visible -->
     <div v-if="!visibleTabs.length" class="terminal-empty">
       <p>No active terminal</p>
@@ -34,11 +29,7 @@
 
       <!-- Non-terminal pane (dynamic component) -->
       <template v-else-if="paneComponent(tab.type)">
-        <component
-          :is="paneComponent(tab.type)"
-          v-bind="paneProps(tab)"
-          :show-header="isSplit"
-        />
+        <component :is="paneComponent(tab.type)" v-bind="paneProps(tab)" :show-header="isSplit" />
       </template>
 
       <!-- Placeholder for unknown pane types -->
@@ -62,7 +53,15 @@
 import { computed, watch, defineAsyncComponent } from "vue";
 import { useAppStore } from "../../stores/app.js";
 import { useTerminalStore } from "../../stores/terminal.js";
-import { isGitViewId, isDockerViewId, isAzureViewId, isGitHubViewId, isReviewViewId, isBrowserViewId, isFilesViewId } from "../../app/helpers.js";
+import {
+  isGitViewId,
+  isDockerViewId,
+  isAzureViewId,
+  isGitHubViewId,
+  isReviewViewId,
+  isBrowserViewId,
+  isFilesViewId,
+} from "../../app/helpers.js";
 import PaneShell from "../layout/PaneShell.vue";
 import TerminalPane from "./TerminalPane.vue";
 const GitPane = defineAsyncComponent(() => import("./GitPane.vue"));
@@ -111,11 +110,45 @@ function gridAreaStyle(index) {
 function terminalPaneActions(tab) {
   return [
     { className: "workspace-pane__icon-btn", action: "select-tab", viewId: tab.id, title: "Focus tab", label: "◉" },
-    ...(tab.persistent ? [{ className: "workspace-pane__icon-btn", action: "rename-tab", viewId: tab.id, title: "Rename tab", label: "✎" }] : []),
-    { className: "workspace-pane__icon-btn", action: "export-terminal-transcript", sessionId: tab.id, title: "Save last 500 lines", label: "⇩" },
-    { className: "workspace-pane__icon-btn", action: "clear-terminal", sessionId: tab.id, title: "Clear output", label: "⌫" },
-    { className: "workspace-pane__icon-btn", action: "restart-session", sessionId: tab.id, title: "Restart", label: "↻" },
-    { className: "workspace-pane__icon-btn workspace-pane__icon-btn--danger", action: "close-tab", viewId: tab.id, title: "Close tab", label: "×" },
+    ...(tab.persistent
+      ? [
+          {
+            className: "workspace-pane__icon-btn",
+            action: "rename-tab",
+            viewId: tab.id,
+            title: "Rename tab",
+            label: "✎",
+          },
+        ]
+      : []),
+    {
+      className: "workspace-pane__icon-btn",
+      action: "export-terminal-transcript",
+      sessionId: tab.id,
+      title: "Save last 500 lines",
+      label: "⇩",
+    },
+    {
+      className: "workspace-pane__icon-btn",
+      action: "clear-terminal",
+      sessionId: tab.id,
+      title: "Clear output",
+      label: "⌫",
+    },
+    {
+      className: "workspace-pane__icon-btn",
+      action: "restart-session",
+      sessionId: tab.id,
+      title: "Restart",
+      label: "↻",
+    },
+    {
+      className: "workspace-pane__icon-btn workspace-pane__icon-btn--danger",
+      action: "close-tab",
+      viewId: tab.id,
+      title: "Close tab",
+      label: "×",
+    },
   ];
 }
 
@@ -123,14 +156,26 @@ function nonTerminalPaneActions(tab) {
   if (isGitViewId(tab.id)) {
     return [
       { className: "workspace-pane__icon-btn", action: "select-tab", viewId: tab.id, title: "Focus tab", label: "◉" },
-      { className: "workspace-pane__icon-btn workspace-pane__icon-btn--danger", action: "close-tab", viewId: tab.id, title: "Close tab", label: "×" },
+      {
+        className: "workspace-pane__icon-btn workspace-pane__icon-btn--danger",
+        action: "close-tab",
+        viewId: tab.id,
+        title: "Close tab",
+        label: "×",
+      },
     ];
   }
   if (isDockerViewId(tab.id)) {
     return [
       { className: "workspace-pane__icon-btn", action: "refresh-docker", title: "Refresh Docker", label: "↻" },
       { className: "workspace-pane__icon-btn", action: "select-tab", viewId: tab.id, title: "Focus tab", label: "◉" },
-      { className: "workspace-pane__icon-btn workspace-pane__icon-btn--danger", action: "close-tab", viewId: tab.id, title: "Close tab", label: "×" },
+      {
+        className: "workspace-pane__icon-btn workspace-pane__icon-btn--danger",
+        action: "close-tab",
+        viewId: tab.id,
+        title: "Close tab",
+        label: "×",
+      },
     ];
   }
   if (isAzureViewId(tab.id)) {
@@ -139,21 +184,30 @@ function nonTerminalPaneActions(tab) {
     ];
   }
   if (isGitHubViewId(tab.id)) {
-    return [
-      { className: "workspace-pane__icon-btn", action: "refresh-github", title: "Refresh GitHub", label: "↻" },
-    ];
+    return [{ className: "workspace-pane__icon-btn", action: "refresh-github", title: "Refresh GitHub", label: "↻" }];
   }
   if (isReviewViewId(tab.id)) {
     const ws = store.payload?.appState?.workspaces?.find((w) => w.id === tab.id.replace(/^review:/, ""));
     const provider = ws?.review?.provider || "azure-devops";
     return [
-      { className: "workspace-pane__icon-btn", action: provider === "github" ? "refresh-github" : "refresh-azure", title: `Refresh ${provider === "github" ? "GitHub" : "Azure DevOps"}`, label: "↻" },
+      {
+        className: "workspace-pane__icon-btn",
+        action: provider === "github" ? "refresh-github" : "refresh-azure",
+        title: `Refresh ${provider === "github" ? "GitHub" : "Azure DevOps"}`,
+        label: "↻",
+      },
     ];
   }
   if (isFilesViewId(tab.id)) {
     return [
       { className: "workspace-pane__icon-btn", action: "select-tab", viewId: tab.id, title: "Focus tab", label: "◉" },
-      { className: "workspace-pane__icon-btn workspace-pane__icon-btn--danger", action: "close-tab", viewId: tab.id, title: "Close tab", label: "×" },
+      {
+        className: "workspace-pane__icon-btn workspace-pane__icon-btn--danger",
+        action: "close-tab",
+        viewId: tab.id,
+        title: "Close tab",
+        label: "×",
+      },
     ];
   }
   return [];
@@ -192,10 +246,16 @@ function onStageMousedown(event) {
   const viewId = pane.dataset.viewId;
   if (!viewId) return;
   store.activeViewId = viewId;
-  store.activeSessionId = (
-    isGitViewId(viewId) || isDockerViewId(viewId) ||
-    isAzureViewId(viewId) || isGitHubViewId(viewId) || isReviewViewId(viewId) || isBrowserViewId(viewId) || isFilesViewId(viewId)
-  ) ? null : viewId;
+  store.activeSessionId =
+    isGitViewId(viewId) ||
+    isDockerViewId(viewId) ||
+    isAzureViewId(viewId) ||
+    isGitHubViewId(viewId) ||
+    isReviewViewId(viewId) ||
+    isBrowserViewId(viewId) ||
+    isFilesViewId(viewId)
+      ? null
+      : viewId;
   termStore.focusActiveTerminal();
 }
 
@@ -218,9 +278,7 @@ function onPaneAction(action, tab) {
 watch(
   () => store.workspaceTabs,
   (tabs) => {
-    const validSessionIds = new Set(
-      tabs.filter((t) => t.type === "terminal").map((t) => t.id),
-    );
+    const validSessionIds = new Set(tabs.filter((t) => t.type === "terminal").map((t) => t.id));
     termStore.pruneTerminalViews(validSessionIds);
   },
 );

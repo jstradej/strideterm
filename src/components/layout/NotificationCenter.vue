@@ -10,27 +10,26 @@
             class="notification-center__action"
             title="Mark all as read"
             @click="notifStore.markAllRead()"
-          >Mark read</button>
+          >
+            Mark read
+          </button>
           <button
             v-if="notifStore.items.length > 0"
             type="button"
             class="notification-center__action notification-center__action--danger"
             title="Clear all notifications"
             @click="notifStore.clearAll()"
-          >Clear all</button>
-          <button
-            type="button"
-            class="notification-center__close"
-            title="Close"
-            @click="notifStore.closePanel()"
-          >&times;</button>
+          >
+            Clear all
+          </button>
+          <button type="button" class="notification-center__close" title="Close" @click="notifStore.closePanel()">
+            &times;
+          </button>
         </div>
       </header>
 
-      <div class="notification-center__body" ref="bodyRef">
-        <div v-if="notifStore.items.length === 0" class="notification-center__empty">
-          No notifications yet.
-        </div>
+      <div ref="bodyRef" class="notification-center__body">
+        <div v-if="notifStore.items.length === 0" class="notification-center__empty">No notifications yet.</div>
 
         <TransitionGroup name="notif-item" tag="div" class="notification-center__list">
           <div
@@ -56,7 +55,9 @@
               class="notification-item__remove"
               title="Remove"
               @click.stop="notifStore.remove(item.id)"
-            >&times;</button>
+            >
+              &times;
+            </button>
           </div>
         </TransitionGroup>
       </div>
@@ -77,7 +78,9 @@ let tickTimer = null;
 const tick = ref(0);
 
 onMounted(() => {
-  tickTimer = setInterval(() => { tick.value++; }, 30_000);
+  tickTimer = setInterval(() => {
+    tick.value++;
+  }, 30_000);
 });
 
 onUnmounted(() => clearInterval(tickTimer));
@@ -123,7 +126,11 @@ async function onClickItem(item) {
 }
 
 function onClickOutside(event) {
-  if (notifStore.panelOpen && !event.target.closest(".notification-center") && !event.target.closest("[data-role='notification-bell']")) {
+  if (
+    notifStore.panelOpen &&
+    !event.target.closest(".notification-center") &&
+    !event.target.closest("[data-role='notification-bell']")
+  ) {
     notifStore.closePanel();
   }
 }

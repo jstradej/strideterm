@@ -8,8 +8,12 @@ import { openApp, assertNoErrors } from "./helpers.js";
 
 test.describe("Empty state", () => {
   let mock;
-  test.beforeAll(async () => { mock = await startMockServer({ fixture: "empty-state" }); });
-  test.afterAll(async () => { await mock?.close(); });
+  test.beforeAll(async () => {
+    mock = await startMockServer({ fixture: "empty-state" });
+  });
+  test.afterAll(async () => {
+    await mock?.close();
+  });
 
   test("shows sidebar with app title and core buttons", async ({ page }) => {
     await openApp(page, mock);
@@ -46,8 +50,12 @@ test.describe("Empty state", () => {
 
 test.describe("Multi-workspace state", () => {
   let mock;
-  test.beforeAll(async () => { mock = await startMockServer({ fixture: "multi-workspace" }); });
-  test.afterAll(async () => { await mock?.close(); });
+  test.beforeAll(async () => {
+    mock = await startMockServer({ fixture: "multi-workspace" });
+  });
+  test.afterAll(async () => {
+    await mock?.close();
+  });
 
   test("renders all workspaces in sidebar", async ({ page }) => {
     await openApp(page, mock);

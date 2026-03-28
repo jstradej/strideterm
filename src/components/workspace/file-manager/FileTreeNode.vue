@@ -10,16 +10,11 @@
       @click="toggleAndNavigate"
       @contextmenu.prevent="showContextMenu"
     >
-      <span class="tree-node__chevron">{{ isExpanded ? '\u25be' : '\u25b8' }}</span>
+      <span class="tree-node__chevron">{{ isExpanded ? "\u25be" : "\u25b8" }}</span>
       <span class="tree-node__name">{{ node.entry.name }}</span>
     </div>
     <div v-if="isExpanded && children.length" class="tree-node__children">
-      <FileTreeNode
-        v-for="child in children"
-        :key="child.entry.relativePath"
-        :node="child"
-        :depth="depth + 1"
-      />
+      <FileTreeNode v-for="child in children" :key="child.entry.relativePath" :node="child" :depth="depth + 1" />
     </div>
   </div>
 </template>

@@ -25,7 +25,7 @@
               maxlength="40"
               @click.stop
               @blur="onRenameProfile(profile)"
-              @keydown.enter="e => e.target.blur()"
+              @keydown.enter="(e) => e.target.blur()"
             />
             <span v-if="profile.id === activeProfileId" class="profile-active-badge">(active)</span>
             <div class="profile-card__actions">
@@ -33,23 +33,29 @@
                 v-if="profile.id !== activeProfileId"
                 class="button button--ghost"
                 @click="handleActivate(profile.id)"
-              >Activate</button>
+              >
+                Activate
+              </button>
               <button
                 v-if="localProfiles.length > 1"
                 class="button button--ghost button--danger-text"
                 @click="handleDelete(profile.id)"
-              >Delete</button>
+              >
+                Delete
+              </button>
             </div>
           </div>
           <div class="profile-card__footer">
-            <small class="text-muted">{{ workspaceCount(profile.id) }} workspace{{ workspaceCount(profile.id) !== 1 ? 's' : '' }}</small>
+            <small class="text-muted"
+              >{{ workspaceCount(profile.id) }} workspace{{ workspaceCount(profile.id) !== 1 ? "s" : "" }}</small
+            >
             <input
               v-if="profile.id === activeProfileId"
               type="color"
               :value="profile.color || '#ffa424'"
-              @input="e => onProfileColorChange(profile, e.target.value)"
               class="profile-color-input"
               title="Profile color"
+              @input="(e) => onProfileColorChange(profile, e.target.value)"
             />
           </div>
         </article>

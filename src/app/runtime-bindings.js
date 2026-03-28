@@ -1,17 +1,13 @@
 function readActiveAttention(payload, workspaceId) {
-  return payload?.attention?.byWorkspace?.[workspaceId]
-    || payload?.attention?.byProject?.[workspaceId]
-    || null;
+  return payload?.attention?.byWorkspace?.[workspaceId] || payload?.attention?.byProject?.[workspaceId] || null;
 }
 
 function readActiveGitSnapshot(payload, workspaceId) {
-  return payload?.git?.workspaces?.[workspaceId]
-    || payload?.git?.projects?.[workspaceId]
-    || null;
+  return payload?.git?.workspaces?.[workspaceId] || payload?.git?.projects?.[workspaceId] || null;
 }
 
 function readActiveReviewBridge(payload, reviewPrKey) {
-  const context = reviewPrKey ? (payload?.reviewBridge?.pullRequests?.[reviewPrKey] || null) : null;
+  const context = reviewPrKey ? payload?.reviewBridge?.pullRequests?.[reviewPrKey] || null : null;
   if (!context) {
     return null;
   }
@@ -59,11 +55,10 @@ function readActiveReviewBridge(payload, reviewPrKey) {
 
 function selectActiveWorkspaceRenderState(payload) {
   const activeWorkspaceId = payload?.appState?.activeWorkspaceId || "";
-  const activeWorkspace = (payload?.appState?.workspaces || []).find((workspace) => workspace.id === activeWorkspaceId) || null;
+  const activeWorkspace =
+    (payload?.appState?.workspaces || []).find((workspace) => workspace.id === activeWorkspaceId) || null;
   const reviewProvider = activeWorkspace?.review?.provider || "";
-  const reviewPrKey = ["azure-devops", "github"].includes(reviewProvider)
-    ? activeWorkspace.review.prKey
-    : "";
+  const reviewPrKey = ["azure-devops", "github"].includes(reviewProvider) ? activeWorkspace.review.prKey : "";
 
   return {
     activeWorkspaceId,
@@ -71,11 +66,15 @@ function selectActiveWorkspaceRenderState(payload) {
     workspacePayload: payload?.workspace || null,
     attention: readActiveAttention(payload, activeWorkspaceId),
     git: readActiveGitSnapshot(payload, activeWorkspaceId),
-    docker: activeWorkspace?.kind === "docker" ? (payload?.docker || null) : null,
-    azureInbox: activeWorkspace?.kind === "azure" ? (payload?.azureDevops || null) : null,
-    githubInbox: activeWorkspace?.kind === "github" ? (payload?.github || null) : null,
-    azureReview: reviewProvider === "azure-devops" && reviewPrKey ? (payload?.azureDevops?.pullRequests?.[reviewPrKey] || null) : null,
-    githubReview: reviewProvider === "github" && reviewPrKey ? (payload?.github?.pullRequests?.[reviewPrKey] || null) : null,
+    docker: activeWorkspace?.kind === "docker" ? payload?.docker || null : null,
+    azureInbox: activeWorkspace?.kind === "azure" ? payload?.azureDevops || null : null,
+    githubInbox: activeWorkspace?.kind === "github" ? payload?.github || null : null,
+    azureReview:
+      reviewProvider === "azure-devops" && reviewPrKey
+        ? payload?.azureDevops?.pullRequests?.[reviewPrKey] || null
+        : null,
+    githubReview:
+      reviewProvider === "github" && reviewPrKey ? payload?.github?.pullRequests?.[reviewPrKey] || null : null,
     reviewBridge: readActiveReviewBridge(payload, reviewPrKey),
   };
 }
@@ -84,8 +83,10 @@ export function shouldRenderActiveWorkspace(nextPayload, previousPayload) {
   if (!previousPayload) {
     return true;
   }
-  return JSON.stringify(selectActiveWorkspaceRenderState(nextPayload))
-    !== JSON.stringify(selectActiveWorkspaceRenderState(previousPayload));
+  return (
+    JSON.stringify(selectActiveWorkspaceRenderState(nextPayload)) !==
+    JSON.stringify(selectActiveWorkspaceRenderState(previousPayload))
+  );
 }
 
 const _splitGroupCache = new Map();
@@ -136,9 +137,7 @@ export function wireRuntimeBindings({
     }
     if (state.pendingViewActivationId) {
       const nextWorkspace = payload?.workspace;
-      const nextTabs = nextWorkspace
-        ? getWorkspaceTabs(nextWorkspace)
-        : [];
+      const nextTabs = nextWorkspace ? getWorkspaceTabs(nextWorkspace) : [];
       if (!nextTabs.some((tab) => tab.id === state.pendingViewActivationId)) {
         return;
       }
@@ -194,51 +193,55 @@ export function wireRuntimeBindings({
     event.preventDefault();
   });
 
-  window.addEventListener("keydown", async (event) => {
-    if ((event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey) {
-      const digitMatch = event.code?.match(/^Digit([1-9])$/);
-      if (digitMatch) {
-        event.preventDefault();
-        event.stopImmediatePropagation();
-        const workspaces = getFilteredWorkspaces();
-        const index = parseInt(digitMatch[1], 10) - 1;
-        if (index < workspaces.length) {
-          const prevId = state.payload?.appState?.activeWorkspaceId;
-          if (prevId && state.splitGroup) _splitGroupCache.set(prevId, state.splitGroup);
-          state.payload = await api.activateWorkspace(workspaces[index].id);
-          state.splitGroup = _splitGroupCache.get(workspaces[index].id) || null;
-          render();
-          focusActiveTerminal();
+  window.addEventListener(
+    "keydown",
+    async (event) => {
+      if ((event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey) {
+        const digitMatch = event.code?.match(/^Digit([1-9])$/);
+        if (digitMatch) {
+          event.preventDefault();
+          event.stopImmediatePropagation();
+          const workspaces = getFilteredWorkspaces();
+          const index = parseInt(digitMatch[1], 10) - 1;
+          if (index < workspaces.length) {
+            const prevId = state.payload?.appState?.activeWorkspaceId;
+            if (prevId && state.splitGroup) _splitGroupCache.set(prevId, state.splitGroup);
+            state.payload = await api.activateWorkspace(workspaces[index].id);
+            state.splitGroup = _splitGroupCache.get(workspaces[index].id) || null;
+            render();
+            focusActiveTerminal();
+          }
+          return;
         }
+      }
+      if (!(event.ctrlKey || event.metaKey)) return;
+      if (event.key.toLowerCase() === "n") {
+        event.preventDefault();
+        await openNewWorkspaceFlow();
         return;
       }
-    }
-    if (!(event.ctrlKey || event.metaKey)) return;
-    if (event.key.toLowerCase() === "n") {
-      event.preventDefault();
-      await openNewWorkspaceFlow();
-      return;
-    }
-    if (event.key.toLowerCase() === "r" && state.activeSessionId) {
-      event.preventDefault();
-      state.payload = await api.restartTerminal(state.activeSessionId);
-      render();
-      focusActiveTerminal();
-      return;
-    }
-    const direction = shortcutTabDirection(event);
-    if (direction !== 0) {
-      event.preventDefault();
-      event.stopImmediatePropagation();
-      const workspace = getWorkspace();
-      if (!workspace) return;
-      const tabs = getWorkspaceTabs(workspace);
-      if (tabs.length < 2) return;
-      const currentIndex = tabs.findIndex((tab) => tab.id === state.activeViewId);
-      const nextIndex = (currentIndex + direction + tabs.length) % tabs.length;
-      await activateView(tabs[nextIndex].id);
-    }
-  }, true);
+      if (event.key.toLowerCase() === "r" && state.activeSessionId) {
+        event.preventDefault();
+        state.payload = await api.restartTerminal(state.activeSessionId);
+        render();
+        focusActiveTerminal();
+        return;
+      }
+      const direction = shortcutTabDirection(event);
+      if (direction !== 0) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        const workspace = getWorkspace();
+        if (!workspace) return;
+        const tabs = getWorkspaceTabs(workspace);
+        if (tabs.length < 2) return;
+        const currentIndex = tabs.findIndex((tab) => tab.id === state.activeViewId);
+        const nextIndex = (currentIndex + direction + tabs.length) % tabs.length;
+        await activateView(tabs[nextIndex].id);
+      }
+    },
+    true,
+  );
 
   terminalStage.addEventListener("mousedown", (event) => {
     const pane = event.target.closest(".workspace-pane");
@@ -248,7 +251,14 @@ export function wireRuntimeBindings({
     }
 
     state.activeViewId = pane.dataset.viewId || state.activeViewId;
-    state.activeSessionId = (isGitViewId(state.activeViewId) || isDockerViewId(state.activeViewId) || isAzureViewId(state.activeViewId) || isReviewViewId(state.activeViewId) || isBrowserViewId(state.activeViewId)) ? null : state.activeViewId;
+    state.activeSessionId =
+      isGitViewId(state.activeViewId) ||
+      isDockerViewId(state.activeViewId) ||
+      isAzureViewId(state.activeViewId) ||
+      isReviewViewId(state.activeViewId) ||
+      isBrowserViewId(state.activeViewId)
+        ? null
+        : state.activeViewId;
     focusActiveTerminal();
   });
 
@@ -267,38 +277,39 @@ export function wireRuntimeBindings({
     });
   }
 
-  api.getState().then((payload) => {
-    const pendingWorkspaceId = state.pendingWorkspaceActivationId || "";
-    const incomingWorkspaceId = payload?.appState?.activeWorkspaceId || "";
-    const isBootstrapPayload = Boolean(payload?.meta?.bootstrap);
-    if (pendingWorkspaceId && incomingWorkspaceId && incomingWorkspaceId !== pendingWorkspaceId) {
-      return;
-    }
-    if (pendingWorkspaceId && incomingWorkspaceId === pendingWorkspaceId && !isBootstrapPayload) {
-      state.pendingWorkspaceActivationId = "";
-    }
-    state.bootstrapError = "";
-    clearRemoteConnectionIssue();
-    if (state.pendingViewActivationId) {
-      const nextWorkspace = payload?.workspace;
-      const nextTabs = nextWorkspace
-        ? getWorkspaceTabs(nextWorkspace)
-        : [];
-      if (nextTabs.some((tab) => tab.id === state.pendingViewActivationId)) {
-        state.activeViewId = state.pendingViewActivationId;
-        state.activeSessionId = state.pendingViewActivationId;
-        if (!isBootstrapPayload) {
-          state.pendingViewActivationId = "";
+  api
+    .getState()
+    .then((payload) => {
+      const pendingWorkspaceId = state.pendingWorkspaceActivationId || "";
+      const incomingWorkspaceId = payload?.appState?.activeWorkspaceId || "";
+      const isBootstrapPayload = Boolean(payload?.meta?.bootstrap);
+      if (pendingWorkspaceId && incomingWorkspaceId && incomingWorkspaceId !== pendingWorkspaceId) {
+        return;
+      }
+      if (pendingWorkspaceId && incomingWorkspaceId === pendingWorkspaceId && !isBootstrapPayload) {
+        state.pendingWorkspaceActivationId = "";
+      }
+      state.bootstrapError = "";
+      clearRemoteConnectionIssue();
+      if (state.pendingViewActivationId) {
+        const nextWorkspace = payload?.workspace;
+        const nextTabs = nextWorkspace ? getWorkspaceTabs(nextWorkspace) : [];
+        if (nextTabs.some((tab) => tab.id === state.pendingViewActivationId)) {
+          state.activeViewId = state.pendingViewActivationId;
+          state.activeSessionId = state.pendingViewActivationId;
+          if (!isBootstrapPayload) {
+            state.pendingViewActivationId = "";
+          }
         }
       }
-    }
-    state.payload = payload;
-    render();
-    focusActiveTerminal();
-  }).catch((error) => {
-    const message = error?.message?.includes("401")
-      ? "Remote token is missing or invalid. Use the token from the desktop strIDEterm state file."
-      : error?.message || "Unknown startup error.";
-    renderBootstrapError(message);
-  });
+      state.payload = payload;
+      render();
+      focusActiveTerminal();
+    })
+    .catch((error) => {
+      const message = error?.message?.includes("401")
+        ? "Remote token is missing or invalid. Use the token from the desktop strIDEterm state file."
+        : error?.message || "Unknown startup error.";
+      renderBootstrapError(message);
+    });
 }

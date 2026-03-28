@@ -41,9 +41,7 @@ describe("default state", () => {
       kind: "terminal",
       source: "plugin",
       pluginId: "system-monitor",
-      panels: [
-        { id: "monitor", title: "Monitor", command: "btm" },
-      ],
+      panels: [{ id: "monitor", title: "Monitor", command: "btm" }],
     });
 
     expect(workspace.source).toBe("plugin");
@@ -86,7 +84,12 @@ describe("default state", () => {
         parentWorkspaceId: "azure-root",
         project: { id: "project-1", name: "Platform" },
         repository: { id: "repo-1", name: "web-app", remoteUrl: "https://dev.azure.com/acme/Platform/_git/web-app" },
-        pullRequest: { id: 123, title: "Fix login redirect", sourceRefName: "refs/heads/feature", targetRefName: "refs/heads/main" },
+        pullRequest: {
+          id: 123,
+          title: "Fix login redirect",
+          sourceRefName: "refs/heads/feature",
+          targetRefName: "refs/heads/main",
+        },
         checkout: { mode: "managed-worktree", rootPath: "C:/work/review", cacheRepoPath: "C:/cache/repo" },
       },
     });
@@ -135,9 +138,7 @@ describe("default state", () => {
           name: "Docker Ops",
           kind: "terminal",
           activePanelId: "lazydocker",
-          panels: [
-            { id: "lazydocker", title: "Lazydocker", command: "lazydocker" },
-          ],
+          panels: [{ id: "lazydocker", title: "Lazydocker", command: "lazydocker" }],
         },
       ],
     });

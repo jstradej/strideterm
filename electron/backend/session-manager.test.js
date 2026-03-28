@@ -122,7 +122,7 @@ describe("SessionManager", () => {
     const manager = new SessionManager({
       getSessionLaunch: () => ({
         file: "claude",
-        args: ["--mcp-config", "{\"mcpServers\":{}}"],
+        args: ["--mcp-config", '{"mcpServers":{}}'],
         cwd: "/tmp/review-worktree",
         env: {
           STRIDETERM_REVIEW_MCP: "1",
@@ -135,7 +135,7 @@ describe("SessionManager", () => {
 
     expect(spawnCalls).toHaveLength(1);
     expect(spawnCalls[0].file).toBe("claude");
-    expect(spawnCalls[0].args).toEqual(["--mcp-config", "{\"mcpServers\":{}}"]);
+    expect(spawnCalls[0].args).toEqual(["--mcp-config", '{"mcpServers":{}}']);
     expect(spawnCalls[0].options.cwd).toBe("/tmp/review-worktree");
     expect(spawnCalls[0].options.env.STRIDETERM_REVIEW_MCP).toBe("1");
   });

@@ -46,8 +46,7 @@ const mcpMode = parseReviewBridgeMcpArgs(process.argv.slice(1));
 const gotSingleInstanceLock = !mcpMode && app.requestSingleInstanceLock();
 
 function summarizeAttention(payload) {
-  const alerts = Object.values(payload?.attention?.byProject || {})
-    .flatMap((entry) => entry?.alerts || []);
+  const alerts = Object.values(payload?.attention?.byProject || {}).flatMap((entry) => entry?.alerts || []);
   const count = alerts.length;
   const waitingCount = alerts.filter((alert) => alert.kind === "waiting").length;
   return { count, waitingCount };
@@ -122,9 +121,10 @@ function syncTitleBarTheme() {
 }
 
 function createWindow() {
-  const windowIconPath = process.platform === "win32"
-    ? path.join(app.getAppPath(), "assets", "icon.ico")
-    : path.join(app.getAppPath(), "assets", "icon.png");
+  const windowIconPath =
+    process.platform === "win32"
+      ? path.join(app.getAppPath(), "assets", "icon.ico")
+      : path.join(app.getAppPath(), "assets", "icon.png");
   runtimeState.window = new BrowserWindow({
     width: APP_CONFIG.electron.windowWidth,
     height: APP_CONFIG.electron.windowHeight,
@@ -168,14 +168,13 @@ function createWindow() {
 
     // Ctrl+1-9 — switch workspace
     if (input.control && !input.alt && !input.shift) {
-      const digit = input.code?.match(/^Digit([1-9])$/)?.[1] || (input.key >= "1" && input.key <= "9" ? input.key : null);
+      const digit =
+        input.code?.match(/^Digit([1-9])$/)?.[1] || (input.key >= "1" && input.key <= "9" ? input.key : null);
       if (digit) {
         event.preventDefault();
         const appState = runtimeState.runtime?.getPayload()?.appState;
         const activeProfileId = appState?.activeProfileId || "default";
-        const workspaces = (appState?.workspaces || []).filter(
-          (w) => (w.profileId || "default") === activeProfileId,
-        );
+        const workspaces = (appState?.workspaces || []).filter((w) => (w.profileId || "default") === activeProfileId);
         const workspace = workspaces[parseInt(digit, 10) - 1];
         if (workspace) {
           runtimeState.runtime.activateWorkspace(workspace.id).catch(() => {});
@@ -183,8 +182,6 @@ function createWindow() {
         return;
       }
     }
-
-
   });
 
   updateNativeAttention(runtimeState.runtime?.getPayload?.());
@@ -200,15 +197,18 @@ function createWindow() {
 
   if (isDev && !forceDist) {
     let fellBackToDist = false;
-    runtimeState.window.webContents.on("did-fail-load", (_event, errorCode, errorDescription, validatedUrl, isMainFrame) => {
-      if (!isMainFrame || fellBackToDist || validatedUrl !== rendererUrl) {
-        return;
-      }
+    runtimeState.window.webContents.on(
+      "did-fail-load",
+      (_event, errorCode, errorDescription, validatedUrl, isMainFrame) => {
+        if (!isMainFrame || fellBackToDist || validatedUrl !== rendererUrl) {
+          return;
+        }
 
-      fellBackToDist = true;
-      console.warn(`Renderer URL failed (${errorCode}: ${errorDescription}). Falling back to dist build.`);
-      runtimeState.window.loadFile(distIndexPath);
-    });
+        fellBackToDist = true;
+        console.warn(`Renderer URL failed (${errorCode}: ${errorDescription}). Falling back to dist build.`);
+        runtimeState.window.loadFile(distIndexPath);
+      },
+    );
 
     runtimeState.window.loadURL(rendererUrl);
     runtimeState.window.webContents.openDevTools({ mode: "detach" });
@@ -347,7 +347,7 @@ function registerBootstrapIpcHandlers() {
     if (runtimeState.runtimeInteractive && runtimeState.runtime) {
       return invokeRuntimeMethod("syncAttentionContext", payload);
     }
-    return runtimeState.bootstrapPayload || await loadBootstrapPayload();
+    return runtimeState.bootstrapPayload || (await loadBootstrapPayload());
   });
 }
 
@@ -475,9 +475,8 @@ async function startServices() {
   });
   nativeTheme.on("updated", () => syncTitleBarTheme());
   await restartRemoteServer();
-  const desiredWorkspaceId = runtimeState.desiredWorkspaceId
-    || runtimeState.bootstrapPayload?.appState?.activeWorkspaceId
-    || "";
+  const desiredWorkspaceId =
+    runtimeState.desiredWorkspaceId || runtimeState.bootstrapPayload?.appState?.activeWorkspaceId || "";
   const runtimeWorkspaceId = runtimeState.runtime.getPayload()?.appState?.activeWorkspaceId || "";
   if (desiredWorkspaceId && desiredWorkspaceId !== runtimeWorkspaceId) {
     await runtimeState.runtime.activateWorkspace(desiredWorkspaceId).catch(() => {});

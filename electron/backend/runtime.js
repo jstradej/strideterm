@@ -20,7 +20,12 @@ import { createAzureReviewStore } from "./azure-review-store.js";
 import { createReviewBridgeStore } from "./review-bridge-store.js";
 import { createAzureAuditLogStore } from "./azure-audit-log-store.js";
 import { buildReviewAgentLaunch, buildMcpServerSpec } from "./review-bridge-agent-launch.js";
-import { AzureDevOpsManager, normalizeConnectionInput, normalizeReviewRoot, shortPathKey } from "./azure-devops-manager.js";
+import {
+  AzureDevOpsManager,
+  normalizeConnectionInput,
+  normalizeReviewRoot,
+  shortPathKey,
+} from "./azure-devops-manager.js";
 import { GitHubManager } from "./github-manager.js";
 import { createGitHubAuditLogStore } from "./github-audit-log-store.js";
 import { APP_CONFIG } from "../../config/app-config.js";
@@ -82,7 +87,9 @@ function stripAnsi(value) {
 }
 
 function lastNonEmptyLine(value) {
-  const lines = String(value || "").replaceAll("\r", "\n").split("\n");
+  const lines = String(value || "")
+    .replaceAll("\r", "\n")
+    .split("\n");
   for (let index = lines.length - 1; index >= 0; index -= 1) {
     if (lines[index].trim()) {
       return lines[index].trimEnd();
@@ -123,9 +130,8 @@ const PROMPT_PATTERNS_SAFE = [
 
 function createTunnelOriginUrl(remoteConfig = {}) {
   const rawHost = String(remoteConfig.host || "").trim();
-  const host = !rawHost || rawHost === "0.0.0.0"
-    ? "127.0.0.1"
-    : (rawHost === "::" || rawHost === "[::]" ? "::1" : rawHost);
+  const host =
+    !rawHost || rawHost === "0.0.0.0" ? "127.0.0.1" : rawHost === "::" || rawHost === "[::]" ? "::1" : rawHost;
   const formattedHost = host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
   return `http://${formattedHost}:${remoteConfig.port}`;
 }
@@ -164,16 +170,19 @@ export function detectTerminalEnvironment({ platform = process.platform, release
 function probeRemoteOrigin(originUrl, timeoutMs = 1200) {
   const target = new URL(originUrl);
   return new Promise((resolve, reject) => {
-    const request = http.request({
-      hostname: target.hostname,
-      port: target.port,
-      path: "/",
-      method: "GET",
-      timeout: timeoutMs,
-    }, (response) => {
-      response.resume();
-      response.once("end", () => resolve(response.statusCode || 0));
-    });
+    const request = http.request(
+      {
+        hostname: target.hostname,
+        port: target.port,
+        path: "/",
+        method: "GET",
+        timeout: timeoutMs,
+      },
+      (response) => {
+        response.resume();
+        response.once("end", () => resolve(response.statusCode || 0));
+      },
+    );
 
     request.once("timeout", () => {
       request.destroy(new Error("timed out"));
@@ -203,7 +212,13 @@ async function checkRemoteOrigin(originUrl, { attempts = 16, delayMs = 250, time
   );
 }
 
-export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeSource, deferInitialRefresh = false, dependencies = {} }) {
+export async function createRuntime({
+  userDataPath,
+  builtinPluginsDir,
+  getThemeSource,
+  deferInitialRefresh = false,
+  dependencies = {},
+}) {
   const createStoreImpl = dependencies.createStore || createStore;
   const createCredentialStoreImpl = dependencies.createCredentialStore || createCredentialStore;
   const createAzureReviewStoreImpl = dependencies.createAzureReviewStore || createAzureReviewStore;
@@ -266,9 +281,7 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
       }
 
       // Build context from PR data if available, or minimal context for pre-PR workspaces
-      let context = workspace.review.prKey
-        ? reviewBridgeStore.getPullRequestContext?.(workspace.review.prKey)
-        : null;
+      let context = workspace.review.prKey ? reviewBridgeStore.getPullRequestContext?.(workspace.review.prKey) : null;
 
       if (!context) {
         // Pre-PR workspace: provide minimal context with workspaceId for dynamic prKey resolution
@@ -320,19 +333,21 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
 
   // --- Broadcast coalescing ---
   let broadcastScheduled = false;
-  let lastPayloadJson = "";
+  const lastPayloadJson = "";
 
   function getState() {
     return store.getState();
   }
 
   function getAzureSettings(state = getState()) {
-    return state.settings?.integrations?.azureDevops || {
-      enabled: true,
-      reviewRoot: path.join(os.homedir(), ".strideterm", "azure-pr"),
-      defaultPollSeconds: 120,
-      connections: [],
-    };
+    return (
+      state.settings?.integrations?.azureDevops || {
+        enabled: true,
+        reviewRoot: path.join(os.homedir(), ".strideterm", "azure-pr"),
+        defaultPollSeconds: 120,
+        connections: [],
+      }
+    );
   }
 
   function getAzureConnections(state = getState()) {
@@ -342,12 +357,14 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
   }
 
   function getGitHubSettings(state = getState()) {
-    return state.settings?.integrations?.github || {
-      enabled: true,
-      reviewRoot: path.join(os.homedir(), ".strideterm", "github-pr"),
-      defaultPollSeconds: 120,
-      connections: [],
-    };
+    return (
+      state.settings?.integrations?.github || {
+        enabled: true,
+        reviewRoot: path.join(os.homedir(), ".strideterm", "github-pr"),
+        defaultPollSeconds: 120,
+        connections: [],
+      }
+    );
   }
 
   function getGitHubConnections(state = getState()) {
@@ -398,12 +415,18 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
     const connectionPathKey = cwdMatch ? path.basename(path.dirname(cwd)) : "";
     return {
       prId: Number.isInteger(prId) ? prId : null,
-      connectionPathKey: String(connectionPathKey || "").trim().toLowerCase(),
+      connectionPathKey: String(connectionPathKey || "")
+        .trim()
+        .toLowerCase(),
     };
   }
 
   function getAzureWorkspace(profileId = getState().activeProfileId || "default") {
-    return getState().workspaces.find((workspace) => workspace.kind === "azure" && (workspace.profileId || "default") === profileId) || null;
+    return (
+      getState().workspaces.find(
+        (workspace) => workspace.kind === "azure" && (workspace.profileId || "default") === profileId,
+      ) || null
+    );
   }
 
   function getReviewBridgeSnapshot(state = getState()) {
@@ -412,16 +435,24 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
         ...Object.keys(azure.getSnapshot().pullRequests || {}),
         ...Object.keys(github.getSnapshot().pullRequests || {}),
         ...(state.workspaces || [])
-          .map((workspace) => ["azure-devops", "github"].includes(workspace.review?.provider) ? workspace.review.prKey : "")
+          .map((workspace) =>
+            ["azure-devops", "github"].includes(workspace.review?.provider) ? workspace.review.prKey : "",
+          )
           .filter(Boolean),
       ]);
       const pullRequests = {};
-      const processInfo = { execPath: process.execPath, platform: process.platform, defaultApp: Boolean(process.defaultApp) };
+      const processInfo = {
+        execPath: process.execPath,
+        platform: process.platform,
+        defaultApp: Boolean(process.defaultApp),
+      };
       for (const prKey of prKeys) {
         const context = reviewBridgeStore.getPullRequestContext?.(prKey);
         if (context) {
           let mcpSpec = null;
-          try { mcpSpec = buildMcpServerSpec({ context, processInfo }); } catch {}
+          try {
+            mcpSpec = buildMcpServerSpec({ context, processInfo });
+          } catch {}
           pullRequests[prKey] = {
             ...context,
             cliPath: reviewBridgeCliPath,
@@ -513,14 +544,16 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
     const refreshedState = getState();
     const activeWorkspace = findWorkspace(refreshedState, refreshedState.activeWorkspaceId);
     if (
-      activeWorkspace?.review?.provider === "azure-devops"
-      && activeWorkspace.review.prKey
-      && typeof azure.ensurePullRequestDetail === "function"
+      activeWorkspace?.review?.provider === "azure-devops" &&
+      activeWorkspace.review.prKey &&
+      typeof azure.ensurePullRequestDetail === "function"
     ) {
-      await azure.ensurePullRequestDetail(activeWorkspace.review.prKey, {
-        workspaces: refreshedState.workspaces,
-        force: true,
-      }).catch(() => {});
+      await azure
+        .ensurePullRequestDetail(activeWorkspace.review.prKey, {
+          workspaces: refreshedState.workspaces,
+          force: true,
+        })
+        .catch(() => {});
     }
 
     return azure.getSnapshot();
@@ -539,7 +572,11 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
         continue;
       }
 
-      if (hasAzureReview && workspace.review?.checkout?.mode === "managed-worktree" && workspace.review?.parentWorkspaceId) {
+      if (
+        hasAzureReview &&
+        workspace.review?.checkout?.mode === "managed-worktree" &&
+        workspace.review?.parentWorkspaceId
+      ) {
         continue;
       }
 
@@ -562,13 +599,18 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
         repairs.push({
           workspaceId: workspace.id,
           prKey: match.prKey,
-          review: azure.buildReviewMetadata(match, {
-            mode: "managed-worktree",
-            rootPath: paths.rootPath,
-            cacheRepoPath: paths.cacheRepoPath,
-          }, "managed-worktree", {
-            parentWorkspaceId: paths.parentWorkspaceId || "",
-          }),
+          review: azure.buildReviewMetadata(
+            match,
+            {
+              mode: "managed-worktree",
+              rootPath: paths.rootPath,
+              cacheRepoPath: paths.cacheRepoPath,
+            },
+            "managed-worktree",
+            {
+              parentWorkspaceId: paths.parentWorkspaceId || "",
+            },
+          ),
         });
         continue;
       }
@@ -577,19 +619,22 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
       if (!hint.prId || !hint.connectionPathKey) {
         continue;
       }
-      const connection = getAzureConnections(state).find((entry) => shortPathKey(entry.id, "connection") === hint.connectionPathKey);
+      const connection = getAzureConnections(state).find(
+        (entry) => shortPathKey(entry.id, "connection") === hint.connectionPathKey,
+      );
       if (!connection) {
         continue;
       }
-      const tracked = trackedPullRequests.find((entry) => (
-        entry.connectionId === connection.id && Number(entry.pullRequestId) === hint.prId
-      ));
+      const tracked = trackedPullRequests.find(
+        (entry) => entry.connectionId === connection.id && Number(entry.pullRequestId) === hint.prId,
+      );
       if (!tracked) {
         continue;
       }
-      const parentAzureWorkspace = state.workspaces.find((entry) => (
-        entry.kind === "azure" && (entry.profileId || "default") === (workspace.profileId || "default")
-      )) || null;
+      const parentAzureWorkspace =
+        state.workspaces.find(
+          (entry) => entry.kind === "azure" && (entry.profileId || "default") === (workspace.profileId || "default"),
+        ) || null;
       const reviewRoot = parentAzureWorkspace?.cwd || connection.reviewRoot || getAzureSettings(state).reviewRoot;
       repairs.push({
         workspaceId: workspace.id,
@@ -665,14 +710,18 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
     const pollSeconds = Math.max(
       15,
       Math.min(
-        ...enabledConnections.map((connection) => Number(connection.pollSeconds) || Number(settings.defaultPollSeconds) || 120),
+        ...enabledConnections.map(
+          (connection) => Number(connection.pollSeconds) || Number(settings.defaultPollSeconds) || 120,
+        ),
       ),
     );
     azure.configurePolling(pollSeconds * 1000, refreshAzure);
   }
 
   function getGitHubWorkspace(profileId = getState().activeProfileId || "default") {
-    return getState().workspaces.find((ws) => ws.kind === "github" && (ws.profileId || "default") === profileId) || null;
+    return (
+      getState().workspaces.find((ws) => ws.kind === "github" && (ws.profileId || "default") === profileId) || null
+    );
   }
 
   async function ensureGitHubWorkspace(profileId = getState().activeProfileId || "default") {
@@ -710,14 +759,16 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
     const refreshedState = getState();
     const activeWorkspace = findWorkspace(refreshedState, refreshedState.activeWorkspaceId);
     if (
-      activeWorkspace?.review?.provider === "github"
-      && activeWorkspace.review.prKey
-      && typeof github.ensurePullRequestDetail === "function"
+      activeWorkspace?.review?.provider === "github" &&
+      activeWorkspace.review.prKey &&
+      typeof github.ensurePullRequestDetail === "function"
     ) {
-      await github.ensurePullRequestDetail(activeWorkspace.review.prKey, {
-        workspaces: refreshedState.workspaces,
-        force: true,
-      }).catch(() => {});
+      await github
+        .ensurePullRequestDetail(activeWorkspace.review.prKey, {
+          workspaces: refreshedState.workspaces,
+          force: true,
+        })
+        .catch(() => {});
     }
 
     return github.getSnapshot();
@@ -732,9 +783,7 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
     }
     const pollSeconds = Math.max(
       15,
-      Math.min(
-        ...enabledConnections.map((c) => Number(c.pollSeconds) || Number(settings.defaultPollSeconds) || 120),
-      ),
+      Math.min(...enabledConnections.map((c) => Number(c.pollSeconds) || Number(settings.defaultPollSeconds) || 120)),
     );
     github.configurePolling(pollSeconds * 1000, refreshGitHub);
   }
@@ -772,7 +821,12 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
         projects: git.getProjectMap(),
         activeWorkspace: git.getSnapshot(state.activeWorkspaceId),
         activeProject: git.getSnapshot(state.activeProjectId),
-        connections: getAllProviderConnections(state).map((c) => ({ id: c.id, label: c.label || c.id, provider: c.provider || "azure-devops", enabled: c.enabled !== false })),
+        connections: getAllProviderConnections(state).map((c) => ({
+          id: c.id,
+          label: c.label || c.id,
+          provider: c.provider || "azure-devops",
+          enabled: c.enabled !== false,
+        })),
       },
       azureDevops: azure.getSnapshot(),
       github: github.getSnapshot(),
@@ -955,7 +1009,9 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
 
   function syncSessionSignalsWithState() {
     const validSessionIds = new Set(
-      getState().workspaces.flatMap((workspace) => workspace.panels.map((panel) => createSessionId(workspace.id, panel.id))),
+      getState().workspaces.flatMap((workspace) =>
+        workspace.panels.map((panel) => createSessionId(workspace.id, panel.id)),
+      ),
     );
     for (const sessionId of [...sessionSignals.keys()]) {
       if (!validSessionIds.has(sessionId)) {
@@ -986,12 +1042,12 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
 
   function shouldTrackProjectAlert(project, panel) {
     return Boolean(
-      project
-      && panel
-      && project.kind === "terminal"
-      && !isKnownPluginProject(project)
-      && !panel.launch?.file
-      && panel.shell !== false
+      project &&
+      panel &&
+      project.kind === "terminal" &&
+      !isKnownPluginProject(project) &&
+      !panel.launch?.file &&
+      panel.shell !== false,
     );
   }
 
@@ -1042,7 +1098,7 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
       // This gives us instant, reliable detection for shell-hosted agents.
       if (OSC133_COMMAND_FINISHED_RE.test(rawText) && signal.hasUserInput) {
         const now = Date.now();
-        const inCooldown = signal.lastAlertAt > 0 && (now - signal.lastAlertAt) < ALERT_COOLDOWN_MS;
+        const inCooldown = signal.lastAlertAt > 0 && now - signal.lastAlertAt < ALERT_COOLDOWN_MS;
         if (signal.busy && !inCooldown) {
           cancelPromptTimer(signal);
           if (isSessionVisible(payload.sessionId)) {
@@ -1066,7 +1122,7 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
         // complete silence: no terminal data for AGENT_PROMPT_QUIET_MS.
         // Any terminal data resets the timer.
         const now = Date.now();
-        const inCooldown = signal.lastAlertAt > 0 && (now - signal.lastAlertAt) < ALERT_COOLDOWN_MS;
+        const inCooldown = signal.lastAlertAt > 0 && now - signal.lastAlertAt < ALERT_COOLDOWN_MS;
 
         // Bell character = explicit input request, always raise immediately
         if (rawText.includes("\u0007") && !inCooldown && signal.hasUserInput) {
@@ -1093,9 +1149,8 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
             // Adaptive timeout: if the agent produced a burst of output and then
             // goes silent, use a shorter timeout (likely done). For sporadic
             // output (long tool calls), use the full timeout.
-            const quietMs = signal.outputBursts >= AGENT_OUTPUT_BURST_THRESHOLD
-              ? AGENT_PROMPT_QUIET_FAST_MS
-              : AGENT_PROMPT_QUIET_MS;
+            const quietMs =
+              signal.outputBursts >= AGENT_OUTPUT_BURST_THRESHOLD ? AGENT_PROMPT_QUIET_FAST_MS : AGENT_PROMPT_QUIET_MS;
             signal.promptTimer = setTimeout(() => {
               signal.promptTimer = null;
               if (isSessionVisible(payload.sessionId)) {
@@ -1114,7 +1169,8 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
         }
       } else {
         // --- Non-agent sessions: prompt-pattern detection ---
-        const explicitWaiting = rawText.includes("\u0007") || WAITING_PATTERNS.some((pattern) => pattern.test(lastLineLower));
+        const explicitWaiting =
+          rawText.includes("\u0007") || WAITING_PATTERNS.some((pattern) => pattern.test(lastLineLower));
         const promptLike = matchesPrompt(lastLine);
         const onlyPrompt = promptLike && cleanText.trim() === lastLine.trim();
 
@@ -1124,7 +1180,7 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
         }
 
         const now = Date.now();
-        const inCooldown = signal.lastAlertAt > 0 && (now - signal.lastAlertAt) < ALERT_COOLDOWN_MS;
+        const inCooldown = signal.lastAlertAt > 0 && now - signal.lastAlertAt < ALERT_COOLDOWN_MS;
 
         if (explicitWaiting && !inCooldown && signal.hasUserInput) {
           cancelPromptTimer(signal);
@@ -1168,11 +1224,12 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
     const project = descriptor ? findWorkspace(state, descriptor.workspaceId) : null;
     const panel = project?.panels.find((item) => item.id === descriptor?.panelId) || null;
     const signal = descriptor ? sessionSignals.get(payload.sessionId) : null;
-    const shouldRaiseAlert = !payload.intentional
-      && descriptor
-      && shouldTrackProjectAlert(project, panel)
-      && (!signal || signal.hasUserInput)
-      && !isSessionVisible(payload.sessionId);
+    const shouldRaiseAlert =
+      !payload.intentional &&
+      descriptor &&
+      shouldTrackProjectAlert(project, panel) &&
+      (!signal || signal.hasUserInput) &&
+      !isSessionVisible(payload.sessionId);
     if (shouldRaiseAlert) {
       addProjectAlert({
         projectId: descriptor.workspaceId,
@@ -1250,10 +1307,9 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
   async function refreshGit(projectId = null) {
     git.invalidateSnapshotCache?.(projectId || null);
     const state = getState();
-    const workspaces = state.workspaces.filter((workspace) => (
-      (!projectId || workspace.id === projectId)
-      && workspace.kind !== "azure"
-    ));
+    const workspaces = state.workspaces.filter(
+      (workspace) => (!projectId || workspace.id === projectId) && workspace.kind !== "azure",
+    );
     return git.refreshWorkspaces ? git.refreshWorkspaces(workspaces) : git.refreshProjects(workspaces);
   }
 
@@ -1288,11 +1344,12 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
 
   async function syncWorktreesImpl() {
     const state = getState();
-    const parents = state.workspaces.filter((workspace) => (
-      !(workspace.notes || "").startsWith("Worktree of ")
-      && workspace.kind !== "azure"
-      && workspace.review?.provider !== "azure-devops"
-    ));
+    const parents = state.workspaces.filter(
+      (workspace) =>
+        !(workspace.notes || "").startsWith("Worktree of ") &&
+        workspace.kind !== "azure" &&
+        workspace.review?.provider !== "azure-devops",
+    );
     const worktrees = state.workspaces.filter((w) => (w.notes || "").startsWith("Worktree of "));
 
     // Build parent lookup: treeDir → parent workspace
@@ -1334,23 +1391,25 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
           continue;
         }
         if (toAdd.some((w) => w.cwd === treePath)) continue;
-        toAdd.push(normalizeWorkspace({
-          id: `workspace-${randomUUID()}`,
-          name: `${parent.name} / ${entry.name}`,
-          icon: parent.icon,
-          color: parent.color,
-          kind: parent.kind,
-          source: parent.source,
-          pluginId: parent.pluginId,
-          profileId: parent.profileId,
-          cwd: treePath,
-          notes: `Worktree of ${parent.name}`,
-          activePanelId: "",
-          panels: parent.panels.map((p) => ({
-            ...p,
-            id: `panel-${randomUUID()}`,
-          })),
-        }));
+        toAdd.push(
+          normalizeWorkspace({
+            id: `workspace-${randomUUID()}`,
+            name: `${parent.name} / ${entry.name}`,
+            icon: parent.icon,
+            color: parent.color,
+            kind: parent.kind,
+            source: parent.source,
+            pluginId: parent.pluginId,
+            profileId: parent.profileId,
+            cwd: treePath,
+            notes: `Worktree of ${parent.name}`,
+            activePanelId: "",
+            panels: parent.panels.map((p) => ({
+              ...p,
+              id: `panel-${randomUUID()}`,
+            })),
+          }),
+        );
       }
     }
 
@@ -1439,13 +1498,15 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
   if (deferInitialRefresh) {
     scheduleAzurePolling();
     scheduleGitHubPolling();
-    runInitialRefresh().then(() => {
-      ensureVisibleSession();
-      broadcastState();
-    }).catch((error) => {
-      console.warn(`[runtime] Initial refresh error: ${error.message}`);
-      broadcastState();
-    });
+    runInitialRefresh()
+      .then(() => {
+        ensureVisibleSession();
+        broadcastState();
+      })
+      .catch((error) => {
+        console.warn(`[runtime] Initial refresh error: ${error.message}`);
+        broadcastState();
+      });
   } else {
     await runInitialRefresh();
   }
@@ -1489,7 +1550,11 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
       // so terminal startup output doesn't trigger false alerts
       const workspace = findWorkspace(getState(), workspaceId);
       if (workspace) {
-        updateVisibleSessions((workspace.kind === "azure" || workspace.kind === "github") ? [] : workspace.panels.map((panel) => createSessionId(workspaceId, panel.id)));
+        updateVisibleSessions(
+          workspace.kind === "azure" || workspace.kind === "github"
+            ? []
+            : workspace.panels.map((panel) => createSessionId(workspaceId, panel.id)),
+        );
       }
       if (workspace?.kind === "docker") {
         await refreshDocker();
@@ -1575,10 +1640,9 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
       let diskDeleteError = "";
       if (options.deleteFromDisk && workspace) {
         // Only allow deletion of the workspace's own worktree path — never trust diskPath from the client
-        const allowedPaths = [
-          workspace.review?.checkout?.rootPath,
-          workspace.cwd,
-        ].map((p) => (p ? path.resolve(String(p).trim()) : "")).filter(Boolean);
+        const allowedPaths = [workspace.review?.checkout?.rootPath, workspace.cwd]
+          .map((p) => (p ? path.resolve(String(p).trim()) : ""))
+          .filter(Boolean);
         const requestedPath = path.resolve(String(options.diskPath || allowedPaths[0] || "").trim());
         const diskPath = allowedPaths.includes(requestedPath) ? requestedPath : "";
         if (diskPath && path.isAbsolute(diskPath)) {
@@ -1596,7 +1660,9 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
               gitRemoved = true;
             } catch {}
             // Prune any other dangling worktree references
-            try { await execFileTextImpl("git", ["worktree", "prune"], { cwd: cacheRepoPath }); } catch {}
+            try {
+              await execFileTextImpl("git", ["worktree", "prune"], { cwd: cacheRepoPath });
+            } catch {}
           }
 
           // Fallback: direct rm if git worktree remove didn't handle it
@@ -1671,13 +1737,13 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
       }
       if (!nextConfig.enabled) {
         await tunnel.stop({ preserveAvailability: true, quiet: true });
-      } else if (
-        tunnel.getSnapshot().status === "connected"
-        && tunnelTargetChanged
-      ) {
+      } else if (tunnel.getSnapshot().status === "connected" && tunnelTargetChanged) {
         await tunnel.startQuickTunnel(await ensureRemoteOriginReady(nextConfig));
       }
-      if (previousConfig.cloudflaredPath !== nextConfig.cloudflaredPath && tunnel.getSnapshot().status !== "connected") {
+      if (
+        previousConfig.cloudflaredPath !== nextConfig.cloudflaredPath &&
+        tunnel.getSnapshot().status !== "connected"
+      ) {
         await tunnel.refreshAvailability();
       }
       broadcastState();
@@ -1699,13 +1765,17 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
       const normalizedConnection = {
         id: connectionId,
         label: String(normalizedInput.label || connectionId).trim(),
-        orgUrl: String(normalizedInput.orgUrl || "").trim().replace(/\/+$/, ""),
+        orgUrl: String(normalizedInput.orgUrl || "")
+          .trim()
+          .replace(/\/+$/, ""),
         login: String(normalizedInput.login || "").trim(),
         tokenRef,
         enabled: normalizedInput.enabled !== false,
         profileId: resolvedProfileId,
         projectFilters: Array.isArray(normalizedInput.projectFilters) ? [...normalizedInput.projectFilters] : [],
-        repositoryFilters: Array.isArray(normalizedInput.repositoryFilters) ? [...normalizedInput.repositoryFilters] : [],
+        repositoryFilters: Array.isArray(normalizedInput.repositoryFilters)
+          ? [...normalizedInput.repositoryFilters]
+          : [],
         pollSeconds: Number(normalizedInput.pollSeconds) || getAzureSettings().defaultPollSeconds || 120,
         reviewRoot: String(normalizedInput.reviewRoot || getAzureSettings().reviewRoot || "").trim(),
       };
@@ -1740,8 +1810,8 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
         await credentialStore.deleteSecret(connection.tokenRef);
       }
       await store.mutate((draft) => {
-        draft.settings.integrations.azureDevops.connections = draft.settings.integrations.azureDevops.connections
-          .filter((entry) => entry.id !== connectionId);
+        draft.settings.integrations.azureDevops.connections =
+          draft.settings.integrations.azureDevops.connections.filter((entry) => entry.id !== connectionId);
       });
       await refreshAzure();
       scheduleAzurePolling();
@@ -1773,9 +1843,7 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
           workspaceId: payload.workspaceId || "",
         });
       } catch (err) {
-        const message = err instanceof Error
-          ? err.message
-          : (err?.stderr || err?.error?.message || String(err));
+        const message = err instanceof Error ? err.message : err?.stderr || err?.error?.message || String(err);
         throw new Error(message);
       }
       await store.mutate((draft) => {
@@ -1898,19 +1966,19 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
         throw new Error("This workspace is not associated with a pull request.");
       }
       // Count commits ahead of remote
-      const sourceBranch = String(workspace.review?.pullRequest?.sourceRefName || workspace.review?.pullRequest?.sourceBranch || "").replace(/^refs\/heads\//, "");
-      const aheadResult = await git.execGit(workspace.cwd, [
-        "rev-list", "--count", `refs/remotes/origin/${sourceBranch}..HEAD`,
-      ]).catch(() => ({ stdout: "0" }));
+      const sourceBranch = String(
+        workspace.review?.pullRequest?.sourceRefName || workspace.review?.pullRequest?.sourceBranch || "",
+      ).replace(/^refs\/heads\//, "");
+      const aheadResult = await git
+        .execGit(workspace.cwd, ["rev-list", "--count", `refs/remotes/origin/${sourceBranch}..HEAD`])
+        .catch(() => ({ stdout: "0" }));
       const commitCount = Number(aheadResult.stdout.trim()) || 0;
       // Only check for uncommitted changes when there are commits to push
       const provider = workspace.review?.provider;
       if (commitCount > 0) {
         const dirtyState = await git.getCachedWorktreeDirtyState(workspace.cwd);
         if (dirtyState.dirty) {
-          throw new Error(
-            "You have uncommitted changes. Please commit or stash them before pushing.",
-          );
+          throw new Error("You have uncommitted changes. Please commit or stash them before pushing.");
         }
         if (provider === "github") {
           await github.pushReviewWorkspace({ workspace });
@@ -1987,8 +2055,8 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
       const dirtyState = await git.getCachedWorktreeDirtyState(workspace.cwd);
       if (dirtyState.dirty) {
         throw new Error(
-          `Cannot push: ${dirtyState.dirtyCount} uncommitted change${dirtyState.dirtyCount !== 1 ? "s" : ""} in the worktree. `
-          + "Commit your changes first, then try again.",
+          `Cannot push: ${dirtyState.dirtyCount} uncommitted change${dirtyState.dirtyCount !== 1 ? "s" : ""} in the worktree. ` +
+            "Commit your changes first, then try again.",
         );
       }
       const snapshot = git.getSnapshot(workspaceId);
@@ -2014,14 +2082,18 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
       const normalizedConnection = {
         id: connectionId,
         label: String(normalizedInput.label || connectionId).trim(),
-        hostUrl: String(normalizedInput.hostUrl || "https://github.com").trim().replace(/\/+$/, ""),
+        hostUrl: String(normalizedInput.hostUrl || "https://github.com")
+          .trim()
+          .replace(/\/+$/, ""),
         apiBaseUrl: normalizedInput.apiBaseUrl || deriveApiBaseUrl(normalizedInput.hostUrl),
         currentUserLogin: verification.login || normalizedInput.currentUserLogin || "",
         tokenRef,
         enabled: normalizedInput.enabled !== false,
         profileId: resolvedProfileId,
         ownerFilters: Array.isArray(normalizedInput.ownerFilters) ? [...normalizedInput.ownerFilters] : [],
-        repositoryFilters: Array.isArray(normalizedInput.repositoryFilters) ? [...normalizedInput.repositoryFilters] : [],
+        repositoryFilters: Array.isArray(normalizedInput.repositoryFilters)
+          ? [...normalizedInput.repositoryFilters]
+          : [],
         pollSeconds: Number(normalizedInput.pollSeconds) || getGitHubSettings().defaultPollSeconds || 120,
         reviewRoot: String(normalizedInput.reviewRoot || getGitHubSettings().reviewRoot || "").trim(),
       };
@@ -2050,8 +2122,9 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
         await credentialStore.deleteSecret(connection.tokenRef);
       }
       await store.mutate((draft) => {
-        draft.settings.integrations.github.connections = draft.settings.integrations.github.connections
-          .filter((c) => c.id !== connectionId);
+        draft.settings.integrations.github.connections = draft.settings.integrations.github.connections.filter(
+          (c) => c.id !== connectionId,
+        );
       });
       await refreshGitHub();
       scheduleGitHubPolling();
@@ -2083,9 +2156,7 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
           workspaceId: payload.workspaceId || "",
         });
       } catch (err) {
-        const message = err instanceof Error
-          ? err.message
-          : (err?.stderr || err?.error?.message || String(err));
+        const message = err instanceof Error ? err.message : err?.stderr || err?.error?.message || String(err);
         throw new Error(message);
       }
       await store.mutate((draft) => {
@@ -2134,7 +2205,8 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
     },
     async githubListRemoteBranches(payload) {
       const workspace = resolveGitWorkspace(payload.workspaceId);
-      const connectionId = workspace.connectionId || workspace.review?.connectionId || workspace.quickfix?.connectionId || "";
+      const connectionId =
+        workspace.connectionId || workspace.review?.connectionId || workspace.quickfix?.connectionId || "";
       if (!connectionId) throw new Error("No GitHub connection associated with this workspace.");
       const snapshot = git.getSnapshot(workspace.id);
       const remoteUrl = snapshot?.remotes?.origin || "";
@@ -2146,7 +2218,8 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
     },
     async githubCreatePullRequest(payload = {}) {
       const workspace = resolveGitWorkspace(payload.workspaceId);
-      const connectionId = workspace.connectionId || workspace.review?.connectionId || workspace.quickfix?.connectionId || "";
+      const connectionId =
+        workspace.connectionId || workspace.review?.connectionId || workspace.quickfix?.connectionId || "";
       if (!connectionId) throw new Error("No GitHub connection associated with this workspace.");
       const snapshot = git.getSnapshot(workspace.id);
       if (!snapshot?.available) throw new Error("Git workspace is unavailable.");
@@ -2248,8 +2321,8 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
       const dirtyState = await git.getCachedWorktreeDirtyState(workspace.cwd);
       if (dirtyState.dirty) {
         throw new Error(
-          `Cannot push: ${dirtyState.dirtyCount} uncommitted change${dirtyState.dirtyCount !== 1 ? "s" : ""} in the worktree. `
-          + "Commit your changes first, then try again.",
+          `Cannot push: ${dirtyState.dirtyCount} uncommitted change${dirtyState.dirtyCount !== 1 ? "s" : ""} in the worktree. ` +
+            "Commit your changes first, then try again.",
         );
       }
       const snapshot = git.getSnapshot(workspaceId);
@@ -2343,7 +2416,9 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
       return { repositories: await azure.listQuickFixRepositories(payload.connectionId, payload.projectName) };
     },
     async azureQuickFixListBranches(payload = {}) {
-      return { branches: await azure.listQuickFixBranches(payload.connectionId, payload.projectName, payload.repositoryId) };
+      return {
+        branches: await azure.listQuickFixBranches(payload.connectionId, payload.projectName, payload.repositoryId),
+      };
     },
     async azureQuickFixCreate(payload = {}) {
       let result;
@@ -2359,9 +2434,7 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
           newBranchName: payload.newBranchName,
         });
       } catch (err) {
-        const message = err instanceof Error
-          ? err.message
-          : (err?.stderr || err?.error?.message || String(err));
+        const message = err instanceof Error ? err.message : err?.stderr || err?.error?.message || String(err);
         throw new Error(message);
       }
       await store.mutate((draft) => {
@@ -2374,9 +2447,10 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
             insertIdx++;
             while (insertIdx < draft.workspaces.length) {
               const ws = draft.workspaces[insertIdx];
-              const isChild = ws.review?.checkout?.mode === "managed-worktree"
-                || ws.quickfix?.parentWorkspaceId === parentId
-                || ((ws.notes || "").startsWith("Worktree of ") && ws.review?.parentWorkspaceId === parentId);
+              const isChild =
+                ws.review?.checkout?.mode === "managed-worktree" ||
+                ws.quickfix?.parentWorkspaceId === parentId ||
+                ((ws.notes || "").startsWith("Worktree of ") && ws.review?.parentWorkspaceId === parentId);
               if (!isChild) break;
               insertIdx++;
             }
@@ -2423,7 +2497,7 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
       if (descriptor) {
         const current = projectAlerts.get(descriptor.workspaceId);
         const alert = current?.alerts?.find((a) => a.panelId === descriptor.panelId);
-        if (alert && (Date.now() - new Date(alert.at).getTime()) >= ATTENTION_MIN_DISPLAY_MS) {
+        if (alert && Date.now() - new Date(alert.at).getTime() >= ATTENTION_MIN_DISPLAY_MS) {
           clearProjectAlerts(descriptor.workspaceId, descriptor.panelId);
           broadcastState();
         }
@@ -2456,7 +2530,7 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
         if (!descriptor) continue;
         const current = projectAlerts.get(descriptor.workspaceId);
         const alert = current?.alerts?.find((a) => a.panelId === descriptor.panelId);
-        if (alert && (now - new Date(alert.at).getTime()) >= ATTENTION_MIN_DISPLAY_MS) {
+        if (alert && now - new Date(alert.at).getTime() >= ATTENTION_MIN_DISPLAY_MS) {
           clearProjectAlerts(descriptor.workspaceId, descriptor.panelId);
           resetSessionSignal(sessionId);
           changed = true;
@@ -2603,7 +2677,8 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
 
       const panelId = `${mode}-${containerId}`;
       const title = mode === "logs" ? `${container.Names} logs` : `${container.Names} shell`;
-      const description = mode === "logs" ? `docker logs -f ${container.Names}` : `docker exec -it ${container.Names} sh`;
+      const description =
+        mode === "logs" ? `docker logs -f ${container.Names}` : `docker exec -it ${container.Names} sh`;
 
       await store.mutate((draft) => {
         const workspace = findWorkspace(draft, targetWorkspaceId);
@@ -2801,7 +2876,9 @@ export async function createRuntime({ userDataPath, builtinPluginsDir, getThemeS
           color: profile.color || "#ffa424",
           workspaceIds: Array.isArray(profile.workspaceIds)
             ? profile.workspaceIds
-            : (Array.isArray(profile.projectIds) ? profile.projectIds : []),
+            : Array.isArray(profile.projectIds)
+              ? profile.projectIds
+              : [],
         };
         if (index >= 0) {
           draft.profiles[index] = normalized;

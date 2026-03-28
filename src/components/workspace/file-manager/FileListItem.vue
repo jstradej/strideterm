@@ -1,10 +1,6 @@
 <template>
   <div
-    :class="[
-      'fli',
-      selected && 'fli--selected',
-      viewMode === 'grid' ? 'fli--grid' : 'fli--list',
-    ]"
+    :class="['fli', selected && 'fli--selected', viewMode === 'grid' ? 'fli--grid' : 'fli--list']"
     @click="$emit('click', $event)"
     @dblclick="$emit('dblclick', $event)"
     @contextmenu="$emit('contextmenu', $event)"
@@ -14,9 +10,11 @@
         <span class="fli__icon">{{ icon }}</span>
         <span class="fli__fname">{{ entry.name }}</span>
       </span>
-      <span class="fli__col fli__col--size">{{ entry.kind === 'directory' ? '' : formatSize(entry.size) }}</span>
+      <span class="fli__col fli__col--size">{{ entry.kind === "directory" ? "" : formatSize(entry.size) }}</span>
       <span class="fli__col fli__col--modified">{{ formatDate(entry.modifiedAt) }}</span>
-      <span class="fli__col fli__col--type">{{ entry.kind === 'directory' ? 'folder' : entry.extension || 'file' }}</span>
+      <span class="fli__col fli__col--type">{{
+        entry.kind === "directory" ? "folder" : entry.extension || "file"
+      }}</span>
     </template>
     <template v-else>
       <span class="fli__grid-icon">{{ icon }}</span>
@@ -36,12 +34,34 @@ const props = defineProps({
 
 defineEmits(["click", "dblclick", "contextmenu"]);
 
-const FOLDER_ICONS = { "node_modules": "\ud83d\udce6", ".git": "\ud83d\udd12", "src": "\ud83d\udcc1", "dist": "\ud83d\udce4", "build": "\ud83d\udce4" };
+const FOLDER_ICONS = {
+  node_modules: "\ud83d\udce6",
+  ".git": "\ud83d\udd12",
+  src: "\ud83d\udcc1",
+  dist: "\ud83d\udce4",
+  build: "\ud83d\udce4",
+};
 const EXT_ICONS = {
-  ".js": "\u2b22", ".mjs": "\u2b22", ".ts": "\u25c7", ".vue": "\u25c8", ".json": "{ }",
-  ".md": "\u2756", ".css": "\u25ce", ".html": "\u25c6", ".py": "\u25c9", ".go": "\u25c8",
-  ".rs": "\u2b23", ".java": "\u25c6", ".sh": "$_", ".yml": "\u2699", ".yaml": "\u2699",
-  ".png": "\u25a3", ".jpg": "\u25a3", ".jpeg": "\u25a3", ".gif": "\u25a3", ".svg": "\u25a3",
+  ".js": "\u2b22",
+  ".mjs": "\u2b22",
+  ".ts": "\u25c7",
+  ".vue": "\u25c8",
+  ".json": "{ }",
+  ".md": "\u2756",
+  ".css": "\u25ce",
+  ".html": "\u25c6",
+  ".py": "\u25c9",
+  ".go": "\u25c8",
+  ".rs": "\u2b23",
+  ".java": "\u25c6",
+  ".sh": "$_",
+  ".yml": "\u2699",
+  ".yaml": "\u2699",
+  ".png": "\u25a3",
+  ".jpg": "\u25a3",
+  ".jpeg": "\u25a3",
+  ".gif": "\u25a3",
+  ".svg": "\u25a3",
   ".lock": "\ud83d\udd12",
 };
 

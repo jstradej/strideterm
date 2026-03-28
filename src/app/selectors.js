@@ -23,18 +23,10 @@ export function getTabAttention(payload, workspaceId, viewId, { isGitViewId, isD
   }
 
   const panelId = String(viewId).split(":").slice(1).join(":");
-  return workspaceAttention.alerts.find((alert) => (
-    alert.sessionId === viewId || alert.panelId === panelId
-  )) || null;
+  return workspaceAttention.alerts.find((alert) => alert.sessionId === viewId || alert.panelId === panelId) || null;
 }
 
-export function getWorkspaceTabs({
-  workspace,
-  payload,
-  hiddenViewIds,
-  statusTone,
-  isContainerRunning,
-}) {
+export function getWorkspaceTabs({ workspace, payload, hiddenViewIds, statusTone, isContainerRunning }) {
   if (!workspace) {
     return [];
   }
@@ -77,15 +69,21 @@ export function getWorkspaceTabs({
   // Terminal tabs from real sessions (exclude sessions for non-terminal panels)
   const tabs = [
     ...(["azure-devops", "github"].includes(activeWorkspace.review?.provider)
-      ? [{
-          id: `review:${activeWorkspace.id}`,
-          type: "review",
-          title: "Review",
-          status: activeWorkspace.review.pullRequest?.title || (activeWorkspace.quickfix ? "No PR yet" : `${activeWorkspace.review.provider === "github" ? "GitHub" : "Azure"} review`),
-          tone: activeWorkspace.review.pullRequest ? "running" : "idle",
-          persistent: true,
-          closable: false,
-        }]
+      ? [
+          {
+            id: `review:${activeWorkspace.id}`,
+            type: "review",
+            title: "Review",
+            status:
+              activeWorkspace.review.pullRequest?.title ||
+              (activeWorkspace.quickfix
+                ? "No PR yet"
+                : `${activeWorkspace.review.provider === "github" ? "GitHub" : "Azure"} review`),
+            tone: activeWorkspace.review.pullRequest ? "running" : "idle",
+            persistent: true,
+            closable: false,
+          },
+        ]
       : []),
     ...workspace.sessions
       .filter((session) => !nonTerminalPanelIds.has(session.panelId))
@@ -107,7 +105,12 @@ export function getWorkspaceTabs({
       try {
         const h = new URL(panel.command).hostname;
         const p = h.split(".");
-        domain = p.length <= 2 ? h : (p[p.length - 2].length <= 3 && p.length >= 3 ? p.slice(-3).join(".") : p.slice(-2).join("."));
+        domain =
+          p.length <= 2
+            ? h
+            : p[p.length - 2].length <= 3 && p.length >= 3
+              ? p.slice(-3).join(".")
+              : p.slice(-2).join(".");
       } catch {}
       tabs.push({
         id: `browser:${panel.id}`,
@@ -151,7 +154,8 @@ export function getWorkspaceTabs({
     });
   }
 
-  const gitSnapshot = payload?.git?.workspaces?.[activeWorkspace.id] || payload?.git?.projects?.[activeWorkspace.id] || null;
+  const gitSnapshot =
+    payload?.git?.workspaces?.[activeWorkspace.id] || payload?.git?.projects?.[activeWorkspace.id] || null;
   if (gitSnapshot?.available) {
     tabs.push({
       id: `git:${activeWorkspace.id}`,
@@ -166,12 +170,7 @@ export function getWorkspaceTabs({
   return tabs.filter((tab) => !hiddenViewIds.has(tab.id));
 }
 
-export function getVisibleTabs({
-  tabs,
-  activeViewId,
-  splitGroup,
-  isInSplitGroup,
-}) {
+export function getVisibleTabs({ tabs, activeViewId, splitGroup, isInSplitGroup }) {
   const validIds = new Set(tabs.map((tab) => tab.id));
   const next = {
     activeViewId,
@@ -199,19 +198,31 @@ export function getVisibleTabs({
   return {
     activeViewId: next.activeViewId,
     splitGroup: next.splitGroup,
-    visibleTabs: visibleIds
-      .map((viewId) => tabs.find((tab) => tab.id === viewId))
-      .filter(Boolean),
+    visibleTabs: visibleIds.map((viewId) => tabs.find((tab) => tab.id === viewId)).filter(Boolean),
   };
 }
 
-export function getWorkspacePanelByViewId(viewId, workspace, { isGitViewId, isDockerViewId, isAzureViewId, isGitHubViewId, isReviewViewId }) {
-  if (!workspace || isGitViewId(viewId) || isDockerViewId(viewId) || isAzureViewId(viewId) || isGitHubViewId?.(viewId) || isReviewViewId(viewId)) {
+export function getWorkspacePanelByViewId(
+  viewId,
+  workspace,
+  { isGitViewId, isDockerViewId, isAzureViewId, isGitHubViewId, isReviewViewId },
+) {
+  if (
+    !workspace ||
+    isGitViewId(viewId) ||
+    isDockerViewId(viewId) ||
+    isAzureViewId(viewId) ||
+    isGitHubViewId?.(viewId) ||
+    isReviewViewId(viewId)
+  ) {
     return null;
   }
 
   const activeWorkspace = workspace.workspace || workspace.project;
-  const panelId = String(viewId || "").split(":").slice(1).join(":");
+  const panelId = String(viewId || "")
+    .split(":")
+    .slice(1)
+    .join(":");
   if (!panelId) {
     return null;
   }

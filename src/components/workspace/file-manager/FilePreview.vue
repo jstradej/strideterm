@@ -4,12 +4,30 @@
       <span class="file-preview__name">{{ entry.name }}</span>
       <span class="file-preview__meta">{{ formatSize(entry.size) }} &middot; {{ formatDate(entry.modifiedAt) }}</span>
       <div class="file-preview__actions">
-        <button v-if="isEditable && !store.editMode" type="button" class="button button--ghost file-preview__btn" @click="store.startEdit()">Edit</button>
+        <button
+          v-if="isEditable && !store.editMode"
+          type="button"
+          class="button button--ghost file-preview__btn"
+          @click="store.startEdit()"
+        >
+          Edit
+        </button>
         <template v-if="store.editMode">
-          <button type="button" class="button file-preview__btn" @click="store.saveEdit()" :disabled="!store.editDirty">Save</button>
-          <button type="button" class="button button--ghost file-preview__btn" @click="store.cancelEdit()">Cancel</button>
+          <button type="button" class="button file-preview__btn" :disabled="!store.editDirty" @click="store.saveEdit()">
+            Save
+          </button>
+          <button type="button" class="button button--ghost file-preview__btn" @click="store.cancelEdit()">
+            Cancel
+          </button>
         </template>
-        <button type="button" class="button button--ghost file-preview__btn" @click="$emit('open-in-explorer')" title="Open in explorer">Reveal</button>
+        <button
+          type="button"
+          class="button button--ghost file-preview__btn"
+          title="Open in explorer"
+          @click="$emit('open-in-explorer')"
+        >
+          Reveal
+        </button>
       </div>
     </div>
 

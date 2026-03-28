@@ -1,7 +1,7 @@
 <template>
   <section class="boot-shell">
     <div class="boot-card">
-      <p class="eyebrow">{{ isRemote ? 'Remote Access' : 'Startup Error' }}</p>
+      <p class="eyebrow">{{ isRemote ? "Remote Access" : "Startup Error" }}</p>
       <h1>strIDEterm could not load the workspace</h1>
       <p class="boot-copy">{{ message }}</p>
       <form v-if="isRemote" class="boot-form" @submit.prevent="handleTokenSubmit">

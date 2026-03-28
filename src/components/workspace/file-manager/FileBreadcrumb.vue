@@ -1,17 +1,15 @@
 <template>
   <nav class="file-breadcrumb">
-    <span
-      v-for="(item, i) in items"
-      :key="item.path"
-      class="file-breadcrumb__item"
-    >
+    <span v-for="(item, i) in items" :key="item.path" class="file-breadcrumb__item">
       <span v-if="i > 0" class="file-breadcrumb__sep">/</span>
       <button
         type="button"
         class="file-breadcrumb__link"
         :class="{ 'file-breadcrumb__link--active': i === items.length - 1 }"
         @click="$emit('navigate', item.path)"
-      >{{ item.name }}</button>
+      >
+        {{ item.name }}
+      </button>
     </span>
   </nav>
 </template>

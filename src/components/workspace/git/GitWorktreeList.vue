@@ -2,19 +2,26 @@
   <ul v-if="siblings.length" class="git-sibling-list">
     <li v-for="entry in siblings" :key="entry.path" :class="{ 'git-sibling--current': entry.isCurrent }">
       <div class="git-sibling__meta">
-        <strong>{{ entry.branch || 'detached' }}</strong>
+        <strong>{{ entry.branch || "detached" }}</strong>
         <small>{{ entry.path }}</small>
       </div>
       <div class="git-sibling__badges">
-        <span class="workspace-chip"><strong>{{ entry.isMainWorktree ? 'main' : 'linked' }}</strong> worktree</span>
-        <span class="workspace-chip"><strong>{{ entry.dirty ? String(entry.dirtyCount || 0) : '0' }}</strong> {{ entry.dirty ? 'dirty' : 'clean' }}</span>
+        <span class="workspace-chip"
+          ><strong>{{ entry.isMainWorktree ? "main" : "linked" }}</strong> worktree</span
+        >
+        <span class="workspace-chip"
+          ><strong>{{ entry.dirty ? String(entry.dirtyCount || 0) : "0" }}</strong>
+          {{ entry.dirty ? "dirty" : "clean" }}</span
+        >
         <span v-if="entry.isCurrent" class="workspace-chip workspace-chip--alert"><strong>active</strong></span>
         <button
           v-else-if="getWorkspaceId(entry)"
           type="button"
           class="button button--ghost"
           @click="appStore.activateWorkspace(getWorkspaceId(entry))"
-        >Open</button>
+        >
+          Open
+        </button>
       </div>
     </li>
   </ul>
@@ -33,8 +40,8 @@ const props = defineProps({
 const appStore = useAppStore();
 
 const siblings = computed(() => props.snapshot.siblingWorktrees || []);
-const workspaceIdsByPath = computed(() =>
-  new Map(props.workspaces.map((ws) => [String(ws.cwd || "").toLowerCase(), ws.id])),
+const workspaceIdsByPath = computed(
+  () => new Map(props.workspaces.map((ws) => [String(ws.cwd || "").toLowerCase(), ws.id])),
 );
 
 function getWorkspaceId(entry) {

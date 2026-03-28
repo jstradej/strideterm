@@ -155,14 +155,16 @@ describe("review bridge mcp handlers", () => {
 
 describe("parseReviewBridgeMcpArgs", () => {
   test("parses embedded review bridge mcp flags", () => {
-    expect(parseReviewBridgeMcpArgs([
-      ".",
-      "--review-bridge-mcp",
-      "--review-root",
-      "C:/bridge",
-      "--review-pr-key",
-      "ado-main:repo-1:123",
-    ])).toEqual({
+    expect(
+      parseReviewBridgeMcpArgs([
+        ".",
+        "--review-bridge-mcp",
+        "--review-root",
+        "C:/bridge",
+        "--review-pr-key",
+        "ado-main:repo-1:123",
+      ]),
+    ).toEqual({
       rootPath: "C:/bridge",
       prKey: "ado-main:repo-1:123",
       workspaceId: "",

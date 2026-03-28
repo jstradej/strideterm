@@ -1,7 +1,13 @@
 import path from "node:path";
 import os from "node:os";
 import { describe, expect, test, vi } from "vitest";
-import { AzureDevOpsManager, createPullRequestKey, normalizeConnectionInput, normalizeRemoteUrl, stripRefsPrefix } from "./azure-devops-manager.js";
+import {
+  AzureDevOpsManager,
+  createPullRequestKey,
+  normalizeConnectionInput,
+  normalizeRemoteUrl,
+  stripRefsPrefix,
+} from "./azure-devops-manager.js";
 import { buildPullRequestSummary } from "./azure-devops-pr-summary.js";
 
 function createCredentialStore(secrets = {}) {
@@ -46,9 +52,7 @@ function createFetchStub() {
       return {
         ok: true,
         json: async () => ({
-          value: [
-            { id: "project-1", name: "Platform", description: "Platform", state: "wellFormed" },
-          ],
+          value: [{ id: "project-1", name: "Platform", description: "Platform", state: "wellFormed" }],
         }),
       };
     }
@@ -311,8 +315,7 @@ describe("AzureDevOpsManager", () => {
   });
 
   test("loads changed files and local diff details", async () => {
-    const execFileTextImpl = vi.fn()
-      .mockResolvedValueOnce({ stdout: "M src/auth.js\n", stderr: "" });
+    const execFileTextImpl = vi.fn().mockResolvedValueOnce({ stdout: "M src/auth.js\n", stderr: "" });
     const { manager, reviewBridgeStore } = createManager({ execFileTextImpl });
     await manager.sync({
       connections: [connection],
@@ -358,12 +361,8 @@ describe("AzureDevOpsManager", () => {
     expect(reviewBridgeStore.syncPullRequest).toHaveBeenLastCalledWith(
       expect.objectContaining({
         prKey: createPullRequestKey("ado-main", "repo-1", 123),
-        changedFiles: [
-          expect.objectContaining({ path: "/src/auth.js" }),
-        ],
-        localChangedFiles: [
-          expect.objectContaining({ path: "src/auth.js" }),
-        ],
+        changedFiles: [expect.objectContaining({ path: "/src/auth.js" })],
+        localChangedFiles: [expect.objectContaining({ path: "src/auth.js" })],
         checks: expect.objectContaining({
           failedCount: 2,
         }),
@@ -372,8 +371,7 @@ describe("AzureDevOpsManager", () => {
   });
 
   test("creates a managed review workspace when none exists", async () => {
-    const execFileTextImpl = vi.fn()
-      .mockResolvedValue({ stdout: "", stderr: "" });
+    const execFileTextImpl = vi.fn().mockResolvedValue({ stdout: "", stderr: "" });
     const { manager } = createManager({ execFileTextImpl });
     await manager.sync({
       connections: [connection],
@@ -438,7 +436,11 @@ describe("AzureDevOpsManager", () => {
             panels: [
               { id: "shell-template", title: "Shell", command: "" },
               { id: "claude-template", title: "Claude Code", command: "claude --model haiku --verbose" },
-              { id: "codex-template", title: "Codex", command: "codex -s danger-full-access -c model_reasoning_effort=\"high\"" },
+              {
+                id: "codex-template",
+                title: "Codex",
+                command: 'codex -s danger-full-access -c model_reasoning_effort="high"',
+              },
             ],
           },
         ],
@@ -453,7 +455,7 @@ describe("AzureDevOpsManager", () => {
     });
     expect(result.workspace.panels[2]).toMatchObject({
       title: "Codex",
-      command: "codex -s danger-full-access -c model_reasoning_effort=\"high\"",
+      command: 'codex -s danger-full-access -c model_reasoning_effort="high"',
     });
   });
 
@@ -617,7 +619,8 @@ describe("AzureDevOpsManager", () => {
   });
 
   test("turns Windows long-path git failures into a readable message", async () => {
-    const execFileTextImpl = vi.fn()
+    const execFileTextImpl = vi
+      .fn()
       .mockResolvedValueOnce({ stdout: "", stderr: "" })
       .mockResolvedValueOnce({ stdout: "", stderr: "" })
       .mockRejectedValueOnce({
@@ -635,14 +638,16 @@ describe("AzureDevOpsManager", () => {
       gitSnapshots: {},
     });
 
-    await expect(manager.openReviewWorkspace({
-      state: {
-        activeProfileId: "default",
-        tabTemplates: [],
-        workspaces: [],
-      },
-      prKey: createPullRequestKey("ado-main", "repo-1", 123),
-    })).rejects.toThrow("Review workspace could not be created because some checkout paths are too long.");
+    await expect(
+      manager.openReviewWorkspace({
+        state: {
+          activeProfileId: "default",
+          tabTemplates: [],
+          workspaces: [],
+        },
+        prKey: createPullRequestKey("ado-main", "repo-1", 123),
+      }),
+    ).rejects.toThrow("Review workspace could not be created because some checkout paths are too long.");
   });
 
   test("attaches author PRs to an existing matching workspace", async () => {
@@ -684,9 +689,7 @@ describe("AzureDevOpsManager", () => {
       projectName: "Platform",
       threads: [],
       tracked: {},
-      workspaces: [
-        { id: "workspace-main", cwd: "/repo" },
-      ],
+      workspaces: [{ id: "workspace-main", cwd: "/repo" }],
       gitSnapshots: {
         "workspace-main": {
           branch: "feature/login-fix",
@@ -736,20 +739,22 @@ describe("AzureDevOpsManager", () => {
       },
     });
 
-    await expect(manager.openReviewWorkspace({
-      state: {
-        activeProfileId: "default",
-        tabTemplates: [],
-        workspaces: [
-          {
-            id: "workspace-bad",
-            name: "Broken workspace",
-            cwd: "",
-          },
-        ],
-      },
-      prKey: createPullRequestKey("ado-main", "repo-1", 123),
-    })).rejects.toThrow('Matched workspace "Broken workspace" does not have a working directory.');
+    await expect(
+      manager.openReviewWorkspace({
+        state: {
+          activeProfileId: "default",
+          tabTemplates: [],
+          workspaces: [
+            {
+              id: "workspace-bad",
+              name: "Broken workspace",
+              cwd: "",
+            },
+          ],
+        },
+        prKey: createPullRequestKey("ado-main", "repo-1", 123),
+      }),
+    ).rejects.toThrow('Matched workspace "Broken workspace" does not have a working directory.');
   });
 
   test("sends comment and vote requests", async () => {
@@ -764,8 +769,16 @@ describe("AzureDevOpsManager", () => {
     await manager.addPullRequestComment({ prKey, content: "LGTM" });
     await manager.setPullRequestVote({ prKey, vote: 10 });
 
-    expect(fetchImpl.mock.calls.some(([url, options]) => String(url).includes("/threads?api-version=7.1") && options.method === "POST")).toBe(true);
-    expect(fetchImpl.mock.calls.some(([url, options]) => String(url).includes("/reviewers/reviewer-1") && options.method === "PUT")).toBe(true);
+    expect(
+      fetchImpl.mock.calls.some(
+        ([url, options]) => String(url).includes("/threads?api-version=7.1") && options.method === "POST",
+      ),
+    ).toBe(true);
+    expect(
+      fetchImpl.mock.calls.some(
+        ([url, options]) => String(url).includes("/reviewers/reviewer-1") && options.method === "PUT",
+      ),
+    ).toBe(true);
   });
 });
 

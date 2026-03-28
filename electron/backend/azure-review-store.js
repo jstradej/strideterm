@@ -20,12 +20,9 @@ async function loadState(filePath) {
     const parsed = JSON.parse(raw);
     return {
       version: 1,
-      trackedPullRequests: typeof parsed?.trackedPullRequests === "object" && parsed.trackedPullRequests
-        ? parsed.trackedPullRequests
-        : {},
-      connections: typeof parsed?.connections === "object" && parsed.connections
-        ? parsed.connections
-        : {},
+      trackedPullRequests:
+        typeof parsed?.trackedPullRequests === "object" && parsed.trackedPullRequests ? parsed.trackedPullRequests : {},
+      connections: typeof parsed?.connections === "object" && parsed.connections ? parsed.connections : {},
     };
   } catch {
     return createDefaultState();
@@ -33,7 +30,7 @@ async function loadState(filePath) {
 }
 
 export async function createAzureReviewStore(filePath) {
-  let state = await loadState(filePath);
+  const state = await loadState(filePath);
   let pending = Promise.resolve();
 
   async function persist() {

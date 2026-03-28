@@ -77,15 +77,20 @@ export const useNotificationStore = defineStore("notifications", () => {
     items.value = [];
     saveToStorage(items.value);
     // Also clear backend attention alerts (bells on tabs/workspaces)
-    import("./app.js").then(({ useAppStore }) => {
-      const appStore = useAppStore();
-      const api = appStore.getApi();
-      if (api?.clearAllAttention) {
-        api.clearAllAttention().then((nextPayload) => {
-          if (nextPayload) appStore.payload = nextPayload;
-        }).catch(() => {});
-      }
-    }).catch(() => {});
+    import("./app.js")
+      .then(({ useAppStore }) => {
+        const appStore = useAppStore();
+        const api = appStore.getApi();
+        if (api?.clearAllAttention) {
+          api
+            .clearAllAttention()
+            .then((nextPayload) => {
+              if (nextPayload) appStore.payload = nextPayload;
+            })
+            .catch(() => {});
+        }
+      })
+      .catch(() => {});
   }
 
   function togglePanel() {

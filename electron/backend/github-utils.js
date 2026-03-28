@@ -24,7 +24,9 @@ export function sanitizePathSegment(value, fallback = "unknown") {
 }
 
 export function trimTrailingSlash(value) {
-  return String(value || "").trim().replace(/\/+$/, "");
+  return String(value || "")
+    .trim()
+    .replace(/\/+$/, "");
 }
 
 export function normalizeReviewRoot(value) {
@@ -49,12 +51,19 @@ export function toIsoOrNull(timestamp) {
 }
 
 export function normalizeRemoteUrl(value) {
-  return trimTrailingSlash(String(value || "").trim().replace(/\.git$/i, "")).toLowerCase();
+  return trimTrailingSlash(
+    String(value || "")
+      .trim()
+      .replace(/\.git$/i, ""),
+  ).toLowerCase();
 }
 
 export function shortPathKey(value, fallback = "item") {
   const normalized = sanitizePathSegment(value, fallback).toLowerCase();
-  const digest = createHash("sha1").update(String(value || fallback)).digest("hex").slice(0, 10);
+  const digest = createHash("sha1")
+    .update(String(value || fallback))
+    .digest("hex")
+    .slice(0, 10);
   const prefix = normalized.slice(0, 8).replace(/^-|-$/g, "") || fallback;
   return `${prefix}-${digest}`;
 }
@@ -118,13 +127,7 @@ export async function exists(targetPath) {
 }
 
 export function formatReviewWorkspaceError(error, reviewRoot) {
-  const text = firstNonEmpty(
-    error?.stderr,
-    error?.stdout,
-    error?.error?.message,
-    error?.message,
-    String(error || ""),
-  );
+  const text = firstNonEmpty(error?.stderr, error?.stdout, error?.error?.message, error?.message, String(error || ""));
   if (!text) return "";
 
   if (/filename too long|unable to create file|could not reset index file/i.test(text)) {

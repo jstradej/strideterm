@@ -11,22 +11,34 @@ export function classifyGitHubRequest(method, url) {
   const p = url || "";
 
   if (m !== "GET") {
-    if (p.includes("/pulls/") && p.includes("/reviews") && m === "POST") return { operation: "submitReview", category: "write", resourceType: "review" };
-    if (p.includes("/issues/") && p.includes("/comments") && m === "POST") return { operation: "createIssueComment", category: "write", resourceType: "comment" };
-    if (p.includes("/pulls/") && p.includes("/comments") && m === "POST") return { operation: "createReviewComment", category: "write", resourceType: "reviewComment" };
-    if (p.includes("/pulls") && m === "POST") return { operation: "createPullRequest", category: "write", resourceType: "pullRequest" };
-    if (p.includes("/pulls/") && (m === "PATCH" || m === "PUT")) return { operation: "updatePullRequest", category: "write", resourceType: "pullRequest" };
+    if (p.includes("/pulls/") && p.includes("/reviews") && m === "POST")
+      return { operation: "submitReview", category: "write", resourceType: "review" };
+    if (p.includes("/issues/") && p.includes("/comments") && m === "POST")
+      return { operation: "createIssueComment", category: "write", resourceType: "comment" };
+    if (p.includes("/pulls/") && p.includes("/comments") && m === "POST")
+      return { operation: "createReviewComment", category: "write", resourceType: "reviewComment" };
+    if (p.includes("/pulls") && m === "POST")
+      return { operation: "createPullRequest", category: "write", resourceType: "pullRequest" };
+    if (p.includes("/pulls/") && (m === "PATCH" || m === "PUT"))
+      return { operation: "updatePullRequest", category: "write", resourceType: "pullRequest" };
     return { operation: `${m.toLowerCase()}Request`, category: "write", resourceType: "" };
   }
 
   // Read operations (GET)
-  if (p.includes("/search/issues")) return { operation: "searchPullRequests", category: "read", resourceType: "pullRequest" };
-  if (p.includes("/user") && !p.includes("/users/")) return { operation: "getAuthenticatedUser", category: "read", resourceType: "user" };
-  if (p.includes("/pulls/") && p.includes("/files")) return { operation: "listPullRequestFiles", category: "read", resourceType: "file" };
-  if (p.includes("/pulls/") && p.includes("/reviews")) return { operation: "listReviews", category: "read", resourceType: "review" };
-  if (p.includes("/pulls/") && p.includes("/comments")) return { operation: "listReviewComments", category: "read", resourceType: "reviewComment" };
-  if (p.includes("/pulls/") && p.includes("/requested_reviewers")) return { operation: "listRequestedReviewers", category: "read", resourceType: "reviewer" };
-  if (p.includes("/issues/") && p.includes("/comments")) return { operation: "listIssueComments", category: "read", resourceType: "comment" };
+  if (p.includes("/search/issues"))
+    return { operation: "searchPullRequests", category: "read", resourceType: "pullRequest" };
+  if (p.includes("/user") && !p.includes("/users/"))
+    return { operation: "getAuthenticatedUser", category: "read", resourceType: "user" };
+  if (p.includes("/pulls/") && p.includes("/files"))
+    return { operation: "listPullRequestFiles", category: "read", resourceType: "file" };
+  if (p.includes("/pulls/") && p.includes("/reviews"))
+    return { operation: "listReviews", category: "read", resourceType: "review" };
+  if (p.includes("/pulls/") && p.includes("/comments"))
+    return { operation: "listReviewComments", category: "read", resourceType: "reviewComment" };
+  if (p.includes("/pulls/") && p.includes("/requested_reviewers"))
+    return { operation: "listRequestedReviewers", category: "read", resourceType: "reviewer" };
+  if (p.includes("/issues/") && p.includes("/comments"))
+    return { operation: "listIssueComments", category: "read", resourceType: "comment" };
   if (p.includes("/pulls/")) return { operation: "getPullRequest", category: "read", resourceType: "pullRequest" };
   if (p.includes("/check-runs")) return { operation: "listCheckRuns", category: "read", resourceType: "check" };
   if (p.includes("/status")) return { operation: "getCombinedStatus", category: "read", resourceType: "status" };
@@ -204,7 +216,9 @@ export function createGitHubAuditLogStore(databasePath) {
 
     const where = conditions.length ? "WHERE " + conditions.join(" AND ") : "";
 
-    const row = db.prepare(`
+    const row = db
+      .prepare(
+        `
       SELECT
         COUNT(*) as total,
         SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END) as successCount,
@@ -213,7 +227,9 @@ export function createGitHubAuditLogStore(databasePath) {
         SUM(CASE WHEN category = 'write' THEN 1 ELSE 0 END) as writeCount,
         ROUND(AVG(duration_ms), 0) as avgDurationMs
       FROM github_audit_log ${where}
-    `).get(...params);
+    `,
+      )
+      .get(...params);
 
     return {
       total: row?.total || 0,
@@ -236,7 +252,9 @@ export function createGitHubAuditLogStore(databasePath) {
   }
 
   function close() {
-    try { db.close(); } catch {}
+    try {
+      db.close();
+    } catch {}
   }
 
   function formatRow(row) {
@@ -261,7 +279,9 @@ export function createGitHubAuditLogStore(databasePath) {
     };
   }
 
-  try { prune(); } catch (err) {
+  try {
+    prune();
+  } catch (err) {
     console.warn("[github-audit-log] Prune on startup failed:", err?.message || err);
   }
 

@@ -5,11 +5,7 @@ import { mkdir } from "node:fs/promises";
 import { execFileText } from "./process-utils.js";
 import { createGitHubApi } from "./github-api.js";
 import { classifyGitHubRequest, parseGitHubUrl } from "./github-audit-log-store.js";
-import {
-  buildPullRequestSummary,
-  findWorkspaceForPullRequest,
-  findMatchingWorkspace,
-} from "./github-pr-summary.js";
+import { buildPullRequestSummary, findWorkspaceForPullRequest, findMatchingWorkspace } from "./github-pr-summary.js";
 import {
   GITHUB_REVIEW_ICON,
   GITHUB_REVIEW_COLOR,
@@ -61,9 +57,7 @@ function createReviewWorkspacePanels(panelTemplates = [], tabTemplates = []) {
     id: `panel-${randomUUID()}`,
     title: template.title || (index === 0 ? "Shell" : `Panel ${index + 1}`),
     command: template.command || "",
-    launch: template.launch
-      ? { file: template.launch.file || "", args: [...(template.launch.args || [])] }
-      : null,
+    launch: template.launch ? { file: template.launch.file || "", args: [...(template.launch.args || [])] } : null,
     shell: template.shell !== false,
     startup: template.startup || (index === 0 ? "default" : "manual"),
   }));
@@ -196,16 +190,12 @@ export class GitHubManager extends EventEmitter {
   // Sync (inbox polling)
   // ---------------------------------------------------------------------------
 
-  async sync({
-    connections = [],
-    workspaces = [],
-    gitSnapshots = {},
-    activeProfileId = "default",
-  } = {}) {
+  async sync({ connections = [], workspaces = [], gitSnapshots = {}, activeProfileId = "default" } = {}) {
     const reviewState = this.reviewStore.getState();
     const startedAt = new Date(this.now()).toISOString();
-    const connectionsChanged = JSON.stringify(connections.map((c) => c.id).sort())
-      !== JSON.stringify((this.snapshot.connections || []).map((c) => c.id).sort());
+    const connectionsChanged =
+      JSON.stringify(connections.map((c) => c.id).sort()) !==
+      JSON.stringify((this.snapshot.connections || []).map((c) => c.id).sort());
     this.snapshot = {
       ...(connectionsChanged ? createEmptySnapshot() : this.snapshot),
       connections,
@@ -418,11 +408,12 @@ export class GitHubManager extends EventEmitter {
       newCommentsCount: 0,
     };
 
-    const updateList = (items) => items.map((item) => (
-      item.prKey === prKey
-        ? { ...item, lastSeenActivityAt, hasAttention: false, attentionReason: "", newCommentsCount: 0 }
-        : item
-    ));
+    const updateList = (items) =>
+      items.map((item) =>
+        item.prKey === prKey
+          ? { ...item, lastSeenActivityAt, hasAttention: false, attentionReason: "", newCommentsCount: 0 }
+          : item,
+      );
 
     this.setSnapshot({
       ...this.snapshot,
@@ -516,10 +507,13 @@ export class GitHubManager extends EventEmitter {
       }
     }
 
-    const workspace = findWorkspaceForPullRequest(workspaces, prKey)
-      || (current.existingWorkspaceId ? workspaces.find((ws) => ws.id === current.existingWorkspaceId) : null);
+    const workspace =
+      findWorkspaceForPullRequest(workspaces, prKey) ||
+      (current.existingWorkspaceId ? workspaces.find((ws) => ws.id === current.existingWorkspaceId) : null);
     const localChanges = workspace?.cwd
-      ? await this.listLocalChangedFiles(workspace.cwd, stripRefsPrefix(current.pullRequest.targetRefName)).catch(() => [])
+      ? await this.listLocalChangedFiles(workspace.cwd, stripRefsPrefix(current.pullRequest.targetRefName)).catch(
+          () => [],
+        )
       : [];
 
     const next = {
@@ -577,10 +571,12 @@ export class GitHubManager extends EventEmitter {
         env: sanitizeGitEnvironment(),
       });
     } catch (error) {
-      const sanitize = (text) => String(text || "").replace(/AUTHORIZATION:\s*Basic\s+\S+/gi, "AUTHORIZATION: [REDACTED]");
-      const rawMessage = error instanceof Error
-        ? error.message
-        : (error?.stderr || error?.error?.message || error?.stdout || "Git command failed.");
+      const sanitize = (text) =>
+        String(text || "").replace(/AUTHORIZATION:\s*Basic\s+\S+/gi, "AUTHORIZATION: [REDACTED]");
+      const rawMessage =
+        error instanceof Error
+          ? error.message
+          : error?.stderr || error?.error?.message || error?.stdout || "Git command failed.";
       const sanitized = new Error(sanitize(rawMessage));
       if (error?.stderr) sanitized.stderr = sanitize(error.stderr);
       if (error?.stdout) sanitized.stdout = sanitize(error.stdout);
@@ -627,11 +623,16 @@ export class GitHubManager extends EventEmitter {
         `pr-${summary.pullRequest.number}`,
       );
 
-      await this.runGit(cacheRepoPath, [
-        "fetch", "origin",
-        `+refs/heads/${sourceBranch}:refs/remotes/origin/${sourceBranch}`,
-        `+refs/heads/${targetBranch}:refs/remotes/origin/${targetBranch}`,
-      ], { token });
+      await this.runGit(
+        cacheRepoPath,
+        [
+          "fetch",
+          "origin",
+          `+refs/heads/${sourceBranch}:refs/remotes/origin/${sourceBranch}`,
+          `+refs/heads/${targetBranch}:refs/remotes/origin/${targetBranch}`,
+        ],
+        { token },
+      );
 
       await mkdir(path.dirname(worktreePath), { recursive: true });
       const worktreeExists = await exists(path.join(worktreePath, ".git"));
@@ -640,15 +641,25 @@ export class GitHubManager extends EventEmitter {
       if (!worktreeExists) {
         try {
           await this.runGit(cacheRepoPath, [
-            "worktree", "add", "--force", "-b", localBranch,
-            worktreePath, `refs/remotes/origin/${sourceBranch}`,
+            "worktree",
+            "add",
+            "--force",
+            "-b",
+            localBranch,
+            worktreePath,
+            `refs/remotes/origin/${sourceBranch}`,
           ]);
         } catch {
           // Branch may already exist from a previous (deleted) worktree — force-recreate
           await this.runGit(cacheRepoPath, ["worktree", "prune"]);
           await this.runGit(cacheRepoPath, [
-            "worktree", "add", "--force", "-B", localBranch,
-            worktreePath, `refs/remotes/origin/${sourceBranch}`,
+            "worktree",
+            "add",
+            "--force",
+            "-B",
+            localBranch,
+            worktreePath,
+            `refs/remotes/origin/${sourceBranch}`,
           ]);
         }
       } else {
@@ -658,7 +669,9 @@ export class GitHubManager extends EventEmitter {
         const status = await this.runGit(worktreePath, ["status", "--porcelain"]);
         if (!status.stdout.trim()) {
           const ahead = await this.runGit(worktreePath, [
-            "rev-list", "--count", `refs/remotes/origin/${sourceBranch}..HEAD`,
+            "rev-list",
+            "--count",
+            `refs/remotes/origin/${sourceBranch}..HEAD`,
           ]).catch(() => ({ stdout: "0" }));
           if (Number(ahead.stdout.trim()) === 0) {
             await this.runGit(worktreePath, ["reset", "--hard", `refs/remotes/origin/${sourceBranch}`]);
@@ -713,22 +726,21 @@ export class GitHubManager extends EventEmitter {
     const profileWorkspaces = state.workspaces.filter((ws) => (ws.profileId || "default") === activeProfile);
     const existingWorkspace = workspaceId
       ? profileWorkspaces.find((ws) => ws.id === workspaceId)
-      : (
-          findWorkspaceForPullRequest(profileWorkspaces, prKey)
-          || (summary.role === "author" && summary.existingWorkspaceId
-            ? profileWorkspaces.find((ws) => ws.id === summary.existingWorkspaceId)
-            : null)
-        );
+      : findWorkspaceForPullRequest(profileWorkspaces, prKey) ||
+        (summary.role === "author" && summary.existingWorkspaceId
+          ? profileWorkspaces.find((ws) => ws.id === summary.existingWorkspaceId)
+          : null);
 
     const reviewProfileId = existingWorkspace?.profileId || state.activeProfileId || "default";
-    const parentGitHubWorkspace = state.workspaces.find((ws) => (
-      ws.kind === "github" && (ws.profileId || "default") === reviewProfileId
-    )) || null;
+    const parentGitHubWorkspace =
+      state.workspaces.find((ws) => ws.kind === "github" && (ws.profileId || "default") === reviewProfileId) || null;
     const parentWorkspaceId = parentGitHubWorkspace?.id || existingWorkspace?.review?.parentWorkspaceId || "";
 
     if (existingWorkspace) {
       if (!String(existingWorkspace.cwd || "").trim()) {
-        throw new Error(`Matched workspace "${existingWorkspace.name || existingWorkspace.id}" does not have a working directory.`);
+        throw new Error(
+          `Matched workspace "${existingWorkspace.name || existingWorkspace.id}" does not have a working directory.`,
+        );
       }
       const checkout = existingWorkspace.review?.checkout || {
         mode: existingWorkspace.review?.provider === "github" ? "managed-worktree" : "linked-existing-workspace",
@@ -792,9 +804,12 @@ export class GitHubManager extends EventEmitter {
     if (!token) throw new Error("PAT is missing.");
 
     await this.api.createIssueComment(
-      connection, token,
-      summary.repository.owner, summary.repository.name,
-      summary.pullRequest.number, body,
+      connection,
+      token,
+      summary.repository.owner,
+      summary.repository.name,
+      summary.pullRequest.number,
+      body,
     );
   }
 
@@ -808,8 +823,10 @@ export class GitHubManager extends EventEmitter {
 
     // event: APPROVE, REQUEST_CHANGES, COMMENT
     await this.api.submitReview(
-      connection, token,
-      summary.repository.owner, summary.repository.name,
+      connection,
+      token,
+      summary.repository.owner,
+      summary.repository.name,
       summary.pullRequest.number,
       { event, body },
     );
@@ -857,7 +874,16 @@ export class GitHubManager extends EventEmitter {
     return branches.map((b) => b.name);
   }
 
-  async createPullRequestForWorkspace({ connectionId, owner, repo, sourceBranch, targetBranch, title, description, isDraft = false }) {
+  async createPullRequestForWorkspace({
+    connectionId,
+    owner,
+    repo,
+    sourceBranch,
+    targetBranch,
+    title,
+    description,
+    isDraft = false,
+  }) {
     const { connection, token } = this.resolveConnectionAndToken(connectionId);
     this.setAuditContext({ connectionId, userInitiated: true });
     const result = await this.api.createPullRequest(connection, token, owner, repo, {
@@ -920,17 +946,17 @@ export class GitHubManager extends EventEmitter {
     const { connection, token } = this.resolveConnectionAndToken(connectionId);
 
     const activeProfile = state.activeProfileId || "default";
-    const parentGitHubWorkspace = state.workspaces.find((ws) => (
-      ws.kind === "github" && (ws.profileId || "default") === activeProfile
-    )) || null;
+    const parentGitHubWorkspace =
+      state.workspaces.find((ws) => ws.kind === "github" && (ws.profileId || "default") === activeProfile) || null;
     const reviewRoot = parentGitHubWorkspace?.cwd || connection.reviewRoot || DEFAULT_REVIEW_ROOT;
 
     const cacheRepoPath = await this.ensureCacheRepo({ connection, token, owner, repo, remoteUrl, reviewRoot });
 
-    await this.runGit(cacheRepoPath, [
-      "fetch", "origin",
-      `+refs/heads/${baseBranch}:refs/remotes/origin/${baseBranch}`,
-    ], { token });
+    await this.runGit(
+      cacheRepoPath,
+      ["fetch", "origin", `+refs/heads/${baseBranch}:refs/remotes/origin/${baseBranch}`],
+      { token },
+    );
 
     const worktreePath = path.join(
       normalizeReviewRoot(reviewRoot),
@@ -945,8 +971,13 @@ export class GitHubManager extends EventEmitter {
     if (!worktreeExists) {
       try {
         await this.runGit(cacheRepoPath, [
-          "worktree", "add", "--force", "-b", newBranchName,
-          worktreePath, `refs/remotes/origin/${baseBranch}`,
+          "worktree",
+          "add",
+          "--force",
+          "-b",
+          newBranchName,
+          worktreePath,
+          `refs/remotes/origin/${baseBranch}`,
         ]);
       } catch (err) {
         const msg = String(err?.stderr || err?.message || err);

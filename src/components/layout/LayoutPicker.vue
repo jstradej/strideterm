@@ -1,12 +1,6 @@
 <template>
   <Teleport to="body">
-    <div
-      v-if="store.layoutPickerAnchor"
-      ref="pickerRef"
-      class="layout-picker"
-      :style="pickerStyle"
-      @click.stop
-    >
+    <div v-if="store.layoutPickerAnchor" ref="pickerRef" class="layout-picker" :style="pickerStyle" @click.stop>
       <div class="layout-picker__grid">
         <button
           v-for="[key, layout] in nonSoloLayouts"
@@ -68,31 +62,32 @@ const LAYOUTS = {
 const store = useAppStore();
 const pickerRef = ref(null);
 
-const nonSoloLayouts = computed(() =>
-  Object.entries(LAYOUTS).filter(([key]) => key !== "solo"),
-);
+const nonSoloLayouts = computed(() => Object.entries(LAYOUTS).filter(([key]) => key !== "solo"));
 
 const currentLayout = computed(() => store.splitGroup?.layout || "solo");
 
 const pickerStyle = ref({ position: "fixed", top: "0px", right: "0px", zIndex: 9999 });
 
-watch(() => store.layoutPickerAnchor, async (anchor) => {
-  if (!anchor) return;
-  // anchorRect is a serialized DOMRect { top, bottom, left, right, width, height }
-  await nextTick();
-  if (!pickerRef.value) return;
-  const pickerRect = pickerRef.value.getBoundingClientRect();
-  let top = anchor.bottom + 4;
-  let right = window.innerWidth - anchor.right;
-  if (pickerRect.left < 0) {
-    pickerStyle.value = { position: "fixed", top: `${top}px`, left: "4px", zIndex: 9999 };
-  } else if (pickerRect.bottom > window.innerHeight) {
-    top = anchor.top - pickerRect.height - 4;
-    pickerStyle.value = { position: "fixed", top: `${top}px`, right: `${right}px`, zIndex: 9999 };
-  } else {
-    pickerStyle.value = { position: "fixed", top: `${top}px`, right: `${right}px`, zIndex: 9999 };
-  }
-});
+watch(
+  () => store.layoutPickerAnchor,
+  async (anchor) => {
+    if (!anchor) return;
+    // anchorRect is a serialized DOMRect { top, bottom, left, right, width, height }
+    await nextTick();
+    if (!pickerRef.value) return;
+    const pickerRect = pickerRef.value.getBoundingClientRect();
+    let top = anchor.bottom + 4;
+    const right = window.innerWidth - anchor.right;
+    if (pickerRect.left < 0) {
+      pickerStyle.value = { position: "fixed", top: `${top}px`, left: "4px", zIndex: 9999 };
+    } else if (pickerRect.bottom > window.innerHeight) {
+      top = anchor.top - pickerRect.height - 4;
+      pickerStyle.value = { position: "fixed", top: `${top}px`, right: `${right}px`, zIndex: 9999 };
+    } else {
+      pickerStyle.value = { position: "fixed", top: `${top}px`, right: `${right}px`, zIndex: 9999 };
+    }
+  },
+);
 
 function pickLayout(key) {
   store.pickLayout(key);

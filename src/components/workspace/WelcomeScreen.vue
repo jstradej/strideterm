@@ -26,7 +26,12 @@
           </div>
         </div>
       </div>
-      <button type="button" class="button" style="margin-top:16px;padding:10px 24px;font-size:14px;" @click="$emit('new-workspace')">
+      <button
+        type="button"
+        class="button"
+        style="margin-top: 16px; padding: 10px 24px; font-size: 14px"
+        @click="$emit('new-workspace')"
+      >
         + Create your first workspace
       </button>
     </div>

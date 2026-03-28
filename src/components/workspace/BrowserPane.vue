@@ -1,20 +1,63 @@
 <template>
   <div class="workspace-pane__body workspace-pane__body--browser">
     <form class="browser-url-bar" @submit.prevent="navigateTo(urlValue.trim())">
-      <button v-if="isElectron" type="button" data-browser-action="back" class="button button--ghost browser-url-bar__btn" @click="goBack">&#8592;</button>
-      <button v-if="isElectron" type="button" data-browser-action="forward" class="button button--ghost browser-url-bar__btn" @click="goForward">&#8594;</button>
-      <button type="button" data-browser-action="reload" class="button button--ghost browser-url-bar__btn" @click="reload">&#x21BB;</button>
+      <button
+        v-if="isElectron"
+        type="button"
+        data-browser-action="back"
+        class="button button--ghost browser-url-bar__btn"
+        @click="goBack"
+      >
+        &#8592;
+      </button>
+      <button
+        v-if="isElectron"
+        type="button"
+        data-browser-action="forward"
+        class="button button--ghost browser-url-bar__btn"
+        @click="goForward"
+      >
+        &#8594;
+      </button>
+      <button
+        type="button"
+        data-browser-action="reload"
+        class="button button--ghost browser-url-bar__btn"
+        @click="reload"
+      >
+        &#x21BB;
+      </button>
       <input
         v-model="urlValue"
         type="text"
         class="browser-url-bar__input"
         :placeholder="homeUrl"
-        @focus="e => e.target.select()"
+        @focus="(e) => e.target.select()"
       />
-      <button type="button" data-browser-action="home" class="button button--ghost browser-url-bar__btn" @click="goHome" title="Home">&#x2302;</button>
-      <button type="button" data-browser-action="external" class="button button--ghost browser-url-bar__btn" @click="openExternal" title="Open in browser">&#x2197;</button>
+      <button
+        type="button"
+        data-browser-action="home"
+        class="button button--ghost browser-url-bar__btn"
+        title="Home"
+        @click="goHome"
+      >
+        &#x2302;
+      </button>
+      <button
+        type="button"
+        data-browser-action="external"
+        class="button button--ghost browser-url-bar__btn"
+        title="Open in browser"
+        @click="openExternal"
+      >
+        &#x2197;
+      </button>
     </form>
-    <div ref="embedContainerRef" class="browser-embed-container" style="flex:1;min-height:0;display:flex;flex-direction:column;"></div>
+    <div
+      ref="embedContainerRef"
+      class="browser-embed-container"
+      style="flex: 1; min-height: 0; display: flex; flex-direction: column"
+    ></div>
   </div>
 </template>
 
@@ -45,7 +88,11 @@ function navigateTo(target) {
   if (!/^https?:\/\//i.test(target)) target = "https://" + target;
   urlValue.value = target;
   if (isElectron && embed) {
-    try { embed.loadURL(target); } catch { embed.setAttribute("src", target); }
+    try {
+      embed.loadURL(target);
+    } catch {
+      embed.setAttribute("src", target);
+    }
   } else if (embed) {
     embed.src = target;
   }
@@ -69,7 +116,7 @@ function goHome() {
 }
 
 function openExternal() {
-  const url = (isElectron && embed?.getURL) ? embed.getURL() : embed?.src;
+  const url = isElectron && embed?.getURL ? embed.getURL() : embed?.src;
   if (url && url !== "about:blank") {
     if (window.strideterm?.openExternal) window.strideterm.openExternal(url);
     else window.open(url, "_blank");
@@ -102,7 +149,10 @@ onMounted(() => {
   } else {
     embed = document.createElement("iframe");
     embed.src = isValidUrl.value ? homeUrl.value : "about:blank";
-    embed.setAttribute("sandbox", "allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox");
+    embed.setAttribute(
+      "sandbox",
+      "allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox",
+    );
   }
 
   embed.style.cssText = `flex:1;min-height:0;border:none;background:${embedBg};border-radius:0 0 3px 3px;width:100%;`;

@@ -75,7 +75,9 @@ export const APP_CONFIG = {
     connectTimeoutMs: envNumber("STRIDETERM_TUNNEL_CONNECT_TIMEOUT_MS", 20000),
     binaries: Object.freeze(
       envString("STRIDETERM_TUNNEL_BINARIES", "").split(",").filter(Boolean).length > 0
-        ? envString("STRIDETERM_TUNNEL_BINARIES", "").split(",").map((s) => s.trim())
+        ? envString("STRIDETERM_TUNNEL_BINARIES", "")
+            .split(",")
+            .map((s) => s.trim())
         : ["cloudflared"],
     ),
   },

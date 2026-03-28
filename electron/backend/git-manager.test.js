@@ -44,7 +44,8 @@ describe("GitManager", () => {
       [`${root}::rev-parse --show-toplevel`]: { stdout: `${root}\n`, stderr: "" },
       [`${root}::rev-parse --abbrev-ref HEAD`]: { stdout: "feature-x\n", stderr: "" },
       [`${root}::remote -v`]: {
-        stdout: "origin\thttps://dev.azure.com/acme/Platform/_git/web-app (fetch)\norigin\thttps://dev.azure.com/acme/Platform/_git/web-app (push)\n",
+        stdout:
+          "origin\thttps://dev.azure.com/acme/Platform/_git/web-app (fetch)\norigin\thttps://dev.azure.com/acme/Platform/_git/web-app (push)\n",
         stderr: "",
       },
       [`${root}::rev-list --count HEAD`]: { stdout: "42\n", stderr: "" },
@@ -90,7 +91,10 @@ describe("GitManager", () => {
         stderr: "",
       },
       [`${root}::diff --name-status main...HEAD`]: { stdout: "M\tsrc/app.js\nA\tdocs/notes.md\n", stderr: "" },
-      [`${root}::diff --shortstat main...HEAD`]: { stdout: " 2 files changed, 7 insertions(+), 1 deletion(-)\n", stderr: "" },
+      [`${root}::diff --shortstat main...HEAD`]: {
+        stdout: " 2 files changed, 7 insertions(+), 1 deletion(-)\n",
+        stderr: "",
+      },
       [`${root}::diff --cached --shortstat`]: { stdout: " 1 file changed, 5 insertions(+)\n", stderr: "" },
       [`${root}::diff --shortstat`]: { stdout: " 1 file changed, 2 deletions(-)\n", stderr: "" },
       [`${root}::diff --name-only --diff-filter=U`]: { stdout: "", stderr: "" },
@@ -146,8 +150,14 @@ describe("GitManager", () => {
       [`${root}::log --date=relative --pretty=format:%h%x09%ad%x09%an%x09%d%x09%s -n 18`]: { stdout: "", stderr: "" },
       [`${root}::rev-parse --git-dir`]: { stdout: ".git\n", stderr: "" },
       [`${root}::rev-parse --git-common-dir`]: { stdout: ".git\n", stderr: "" },
-      [`${root}::worktree list --porcelain`]: { stdout: `worktree ${root}\nHEAD abc\nbranch refs/heads/feature-x\n`, stderr: "" },
-      [`${root}::for-each-ref --format=%(refname:short) refs/heads refs/remotes`]: { stdout: "feature-x\nmain\n", stderr: "" },
+      [`${root}::worktree list --porcelain`]: {
+        stdout: `worktree ${root}\nHEAD abc\nbranch refs/heads/feature-x\n`,
+        stderr: "",
+      },
+      [`${root}::for-each-ref --format=%(refname:short) refs/heads refs/remotes`]: {
+        stdout: "feature-x\nmain\n",
+        stderr: "",
+      },
       [`${root}::diff --cached --shortstat`]: { stdout: "", stderr: "" },
       [`${root}::diff --shortstat`]: { stdout: "", stderr: "" },
       [`${root}::diff --name-only --diff-filter=U`]: { stdout: "src/app.js\n", stderr: "" },
@@ -173,15 +183,27 @@ describe("GitManager", () => {
       [`${root}::rev-parse --abbrev-ref HEAD`]: { stdout: "feature-x\n", stderr: "" },
       [`${root}::remote -v`]: { stdout: "", stderr: "" },
       [`${root}::rev-list --count HEAD`]: { stdout: "1\n", stderr: "" },
-      [`${root}::status --porcelain=v2 --branch`]: { stdout: "# branch.head feature-x\n# branch.upstream origin/feature-x\n", stderr: "" },
+      [`${root}::status --porcelain=v2 --branch`]: {
+        stdout: "# branch.head feature-x\n# branch.upstream origin/feature-x\n",
+        stderr: "",
+      },
       [`${root}::status --short`]: { stdout: "", stderr: "" },
       [`${root}::log --date=relative --pretty=format:%h%x09%ad%x09%an%x09%d%x09%s -n 18`]: { stdout: "", stderr: "" },
       [`${root}::rev-parse --git-dir`]: { stdout: ".git\n", stderr: "" },
       [`${root}::rev-parse --git-common-dir`]: { stdout: ".git\n", stderr: "" },
-      [`${root}::worktree list --porcelain`]: { stdout: `worktree ${root}\nHEAD abc\nbranch refs/heads/feature-x\n`, stderr: "" },
-      [`${root}::for-each-ref --format=%(refname:short) refs/heads refs/remotes`]: { stdout: "feature-x\norigin/main\norigin/feature-x\n", stderr: "" },
+      [`${root}::worktree list --porcelain`]: {
+        stdout: `worktree ${root}\nHEAD abc\nbranch refs/heads/feature-x\n`,
+        stderr: "",
+      },
+      [`${root}::for-each-ref --format=%(refname:short) refs/heads refs/remotes`]: {
+        stdout: "feature-x\norigin/main\norigin/feature-x\n",
+        stderr: "",
+      },
       [`${root}::rev-list --left-right --count HEAD...origin/main`]: { stdout: "1\t0\n", stderr: "" },
-      [`${root}::log --date=relative --pretty=format:%h%x09%ad%x09%an%x09%d%x09%s -n 18 origin/main..HEAD`]: { stdout: "", stderr: "" },
+      [`${root}::log --date=relative --pretty=format:%h%x09%ad%x09%an%x09%d%x09%s -n 18 origin/main..HEAD`]: {
+        stdout: "",
+        stderr: "",
+      },
       [`${root}::diff --name-status origin/main...HEAD`]: { stdout: "", stderr: "" },
       [`${root}::diff --shortstat origin/main...HEAD`]: { stdout: "", stderr: "" },
       [`${root}::diff --cached --shortstat`]: { stdout: "", stderr: "" },
@@ -220,27 +242,31 @@ describe("GitManager", () => {
 
   test("rebaseOnto stashes dirty changes, runs rebase, and restores stash", async () => {
     const { root } = await createGitFixture();
-    const execGitImpl = vi.fn()
+    const execGitImpl = vi
+      .fn()
       .mockResolvedValueOnce({ stdout: "Saved working directory and index state\n", stderr: "" })
       .mockResolvedValueOnce({ stdout: "Successfully rebased\n", stderr: "" })
       .mockResolvedValueOnce({ stdout: "Dropped refs/stash@{0}\n", stderr: "" });
     const manager = new GitManager({ execGitImpl, now: () => new Date("2026-03-17T12:00:00.000Z") });
-    manager.inspectWorkspace = vi.fn()
-      .mockResolvedValueOnce({
-        available: true,
-        branch: "feature-x",
-        baseBranch: "main",
-        upstream: "origin/feature-x",
-        aheadCount: 1,
-        behindCount: 0,
-        dirty: true,
-        operationState: { kind: "idle", inProgress: false, conflicts: [] },
-      });
+    manager.inspectWorkspace = vi.fn().mockResolvedValueOnce({
+      available: true,
+      branch: "feature-x",
+      baseBranch: "main",
+      upstream: "origin/feature-x",
+      aheadCount: 1,
+      behindCount: 0,
+      dirty: true,
+      operationState: { kind: "idle", inProgress: false, conflicts: [] },
+    });
 
     const result = await manager.rebaseOnto({ id: "frontend", cwd: root }, { baseBranch: "main", stashDirty: true });
 
     expect(result.ok).toBe(true);
-    expect(execGitImpl).toHaveBeenNthCalledWith(1, root, expect.arrayContaining(["stash", "push", "--include-untracked"]));
+    expect(execGitImpl).toHaveBeenNthCalledWith(
+      1,
+      root,
+      expect.arrayContaining(["stash", "push", "--include-untracked"]),
+    );
     expect(execGitImpl).toHaveBeenNthCalledWith(2, root, ["rebase", "main"]);
     expect(execGitImpl).toHaveBeenNthCalledWith(3, root, ["stash", "pop"]);
     expect(result.rawOutput).toContain("Successfully rebased");
@@ -272,9 +298,15 @@ describe("GitManager", () => {
         ].join("\n"),
         stderr: "",
       },
-      [`${root}::for-each-ref --format=%(refname:short) refs/heads refs/remotes`]: { stdout: "feature-x\nmain\n", stderr: "" },
+      [`${root}::for-each-ref --format=%(refname:short) refs/heads refs/remotes`]: {
+        stdout: "feature-x\nmain\n",
+        stderr: "",
+      },
       [`${root}::rev-list --left-right --count HEAD...main`]: { stdout: "0\t0\n", stderr: "" },
-      [`${root}::log --date=relative --pretty=format:%h%x09%ad%x09%an%x09%d%x09%s -n 18 main..HEAD`]: { stdout: "", stderr: "" },
+      [`${root}::log --date=relative --pretty=format:%h%x09%ad%x09%an%x09%d%x09%s -n 18 main..HEAD`]: {
+        stdout: "",
+        stderr: "",
+      },
       [`${root}::diff --name-status main...HEAD`]: { stdout: "", stderr: "" },
       [`${root}::diff --shortstat main...HEAD`]: { stdout: "", stderr: "" },
       [`${root}::diff --cached --shortstat`]: { stdout: "", stderr: "" },
@@ -289,7 +321,9 @@ describe("GitManager", () => {
     nowValue = new Date(nowValue.getTime() + 1000);
     await manager.inspectWorkspace({ id: "frontend", cwd: root, kind: "terminal" });
 
-    expect(execGitImpl.mock.calls.filter(([cwd, args]) => cwd === sibling && args.join(" ") === "status --short")).toHaveLength(1);
+    expect(
+      execGitImpl.mock.calls.filter(([cwd, args]) => cwd === sibling && args.join(" ") === "status --short"),
+    ).toHaveLength(1);
   });
 
   test("refreshWorkspaces uses snapshot cache within TTL", async () => {

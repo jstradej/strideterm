@@ -1,5 +1,5 @@
 <template>
-  <div class="dialog" style="width:min(560px,100%);">
+  <div class="dialog" style="width: min(560px, 100%)">
     <div class="dialog__header">
       <div>
         <p class="eyebrow">{{ eyebrow }}</p>
@@ -10,16 +10,13 @@
     <form class="form" @submit.prevent="handleSubmit">
       <label>
         <span>{{ label }}</span>
-        <textarea ref="textareaRef" name="value" v-model="textValue" rows="8" :placeholder="placeholder" />
+        <textarea ref="textareaRef" v-model="textValue" name="value" rows="8" :placeholder="placeholder" />
       </label>
       <footer class="dialog__footer">
         <button type="button" class="button button--ghost" @click="emit('cancel')">Cancel</button>
-        <button
-          v-if="secondarySubmitLabel"
-          type="button"
-          class="button button--ghost"
-          @click="handleSecondarySubmit"
-        >{{ secondarySubmitLabel }}</button>
+        <button v-if="secondarySubmitLabel" type="button" class="button button--ghost" @click="handleSecondarySubmit">
+          {{ secondarySubmitLabel }}
+        </button>
         <button type="submit" class="button">{{ submitLabel }}</button>
       </footer>
     </form>

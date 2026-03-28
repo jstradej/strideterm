@@ -5,20 +5,21 @@
       type="button"
       class="button button--ghost"
       @click="$emit('toggle-tab-picker', $event)"
-    >+ Tab</button>
-    <button
-      v-if="store.splitGroup"
-      type="button"
-      class="button button--ghost"
-      @click="$emit('disband-split')"
-    >Unsplit</button>
+    >
+      + Tab
+    </button>
+    <button v-if="store.splitGroup" type="button" class="button button--ghost" @click="$emit('disband-split')">
+      Unsplit
+    </button>
     <button
       type="button"
       class="button button--ghost"
       :class="{ 'button--active': currentLayout !== 'solo' }"
       :title="'Layout'"
       @click="$emit('open-layout-picker', $event)"
-    >{{ currentLayout !== 'solo' ? (layouts[currentLayout]?.label || 'Split') : 'Split' }}</button>
+    >
+      {{ currentLayout !== "solo" ? layouts[currentLayout]?.label || "Split" : "Split" }}
+    </button>
   </div>
 </template>
 

@@ -3,27 +3,22 @@
     <!-- Column headers (list mode) -->
     <div v-if="store.viewMode === 'list'" class="file-list__header">
       <span class="file-list__col file-list__col--name" @click="store.toggleSort('name')">
-        Name {{ sortIndicator('name') }}
+        Name {{ sortIndicator("name") }}
       </span>
       <span class="file-list__col file-list__col--size" @click="store.toggleSort('size')">
-        Size {{ sortIndicator('size') }}
+        Size {{ sortIndicator("size") }}
       </span>
       <span class="file-list__col file-list__col--modified" @click="store.toggleSort('modified')">
-        Modified {{ sortIndicator('modified') }}
+        Modified {{ sortIndicator("modified") }}
       </span>
       <span class="file-list__col file-list__col--type" @click="store.toggleSort('type')">
-        Type {{ sortIndicator('type') }}
+        Type {{ sortIndicator("type") }}
       </span>
     </div>
 
-    <div class="file-list__body" ref="listBody">
+    <div ref="listBody" class="file-list__body">
       <!-- Parent directory -->
-      <div
-        v-if="store.currentPath"
-        class="file-list__row file-list__row--parent"
-        @dblclick="goUp"
-        @click="goUp"
-      >
+      <div v-if="store.currentPath" class="file-list__row file-list__row--parent" @dblclick="goUp" @click="goUp">
         <span class="file-list__col file-list__col--name">
           <span class="file-list__icon">..</span>
           <span class="file-list__fname">(parent)</span>

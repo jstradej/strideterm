@@ -35,7 +35,9 @@ describe("credential store", () => {
         return Buffer.from(`encrypted:${value}`, "utf8");
       },
       decryptString(value) {
-        return Buffer.from(value).toString("utf8").replace(/^encrypted:/, "");
+        return Buffer.from(value)
+          .toString("utf8")
+          .replace(/^encrypted:/, "");
       },
     };
     const filePath = await createTempPath();

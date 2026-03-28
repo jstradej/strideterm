@@ -2,47 +2,120 @@
   <div class="review-panel">
     <article class="git-card review-card review-card--stack">
       <div class="section-head">
-        <div><p class="eyebrow">Comments</p><h3>{{ filteredThreads.length + filteredDraftComments.length }} conversation{{ (filteredThreads.length + filteredDraftComments.length) !== 1 ? 's' : '' }}{{ isFiltered ? ` (${totalCommentCount} total)` : '' }}</h3></div>
+        <div>
+          <p class="eyebrow">Comments</p>
+          <h3>
+            {{ filteredThreads.length + filteredDraftComments.length }} conversation{{
+              filteredThreads.length + filteredDraftComments.length !== 1 ? "s" : ""
+            }}{{ isFiltered ? ` (${totalCommentCount} total)` : "" }}
+          </h3>
+        </div>
         <div class="docker-card__actions">
-          <button type="button" :class="['button', 'button--ghost', 'danger', busyAction === 'deleteAll' && 'button--busy']" :disabled="!!busyAction || !hasClearable" title="Delete all draft replies and draft comments permanently" @click="handleDeleteAllDrafts">{{ busyAction === 'deleteAll' ? 'Deleting\u2026' : 'Delete all drafts' }}</button>
-          <button type="button" class="button" title="Create a new draft comment — you can edit and publish to Azure later" @click="openNewDraftComment">New comment</button>
+          <button
+            type="button"
+            :class="['button', 'button--ghost', 'danger', busyAction === 'deleteAll' && 'button--busy']"
+            :disabled="!!busyAction || !hasClearable"
+            title="Delete all draft replies and draft comments permanently"
+            @click="handleDeleteAllDrafts"
+          >
+            {{ busyAction === "deleteAll" ? "Deleting\u2026" : "Delete all drafts" }}
+          </button>
+          <button
+            type="button"
+            class="button"
+            title="Create a new draft comment — you can edit and publish to Azure later"
+            @click="openNewDraftComment"
+          >
+            New comment
+          </button>
         </div>
       </div>
 
       <!-- Filter/sort bar -->
-      <div style="display:flex;gap:4px;padding:0 10px 6px;flex-wrap:wrap;align-items:center;">
-        <button v-for="f in ['all', 'active', 'fixed', 'has-draft', 'mine']" :key="f" type="button" :class="['button', 'button--ghost', filter === f && 'button--active']" :style="filter === f ? 'font-size:11px;padding:2px 8px;background:var(--accent);color:var(--bg);' : 'font-size:11px;padding:2px 8px;'" :title="{ all: 'Show all threads and comments', active: 'Show only threads with Active status', fixed: 'Show only threads marked as fixed by the agent', 'has-draft': 'Show only threads that have a draft reply', mine: 'Show threads where you are an author or have a draft' }[f]" @click="gitUiStore.reviewSetCommentFilter(workspaceId, f)">{{ { all: 'All', active: 'Active', fixed: 'Fixed', 'has-draft': 'Has draft', mine: 'Mine' }[f] }}</button>
-        <span style="width:1px;height:16px;background:var(--border);margin:0 2px;"></span>
-        <button v-for="s in sortOptions" :key="s.id" type="button" :class="['button', 'button--ghost', sort === s.id && 'button--active']" :style="sort === s.id ? 'font-size:11px;padding:2px 8px;background:var(--accent);color:var(--bg);' : 'font-size:11px;padding:2px 8px;'" :title="`Sort comments by ${s.label.toLowerCase()}${sort === s.id ? ' (click to reverse)' : ''}`" @click="gitUiStore.reviewSetCommentSort(workspaceId, s.id)">{{ sort === s.id ? (sortDir === 'asc' ? '↑' : '↓') : '↕' }} {{ s.label }}</button>
-        <span style="flex:1;"></span>
-        <input type="text" class="input" style="font-size:11px;padding:2px 8px;width:140px;min-width:80px;" placeholder="Search..." title="Filter comments by text in file paths or comment body" :value="searchTerm" @input="gitUiStore.reviewSetCommentSearch(workspaceId, $event.target.value)" />
+      <div style="display: flex; gap: 4px; padding: 0 10px 6px; flex-wrap: wrap; align-items: center">
+        <button
+          v-for="f in ['all', 'active', 'fixed', 'has-draft', 'mine']"
+          :key="f"
+          type="button"
+          :class="['button', 'button--ghost', filter === f && 'button--active']"
+          :style="
+            filter === f
+              ? 'font-size:11px;padding:2px 8px;background:var(--accent);color:var(--bg);'
+              : 'font-size:11px;padding:2px 8px;'
+          "
+          :title="
+            {
+              all: 'Show all threads and comments',
+              active: 'Show only threads with Active status',
+              fixed: 'Show only threads marked as fixed by the agent',
+              'has-draft': 'Show only threads that have a draft reply',
+              mine: 'Show threads where you are an author or have a draft',
+            }[f]
+          "
+          @click="gitUiStore.reviewSetCommentFilter(workspaceId, f)"
+        >
+          {{ { all: "All", active: "Active", fixed: "Fixed", "has-draft": "Has draft", mine: "Mine" }[f] }}
+        </button>
+        <span style="width: 1px; height: 16px; background: var(--border); margin: 0 2px"></span>
+        <button
+          v-for="s in sortOptions"
+          :key="s.id"
+          type="button"
+          :class="['button', 'button--ghost', sort === s.id && 'button--active']"
+          :style="
+            sort === s.id
+              ? 'font-size:11px;padding:2px 8px;background:var(--accent);color:var(--bg);'
+              : 'font-size:11px;padding:2px 8px;'
+          "
+          :title="`Sort comments by ${s.label.toLowerCase()}${sort === s.id ? ' (click to reverse)' : ''}`"
+          @click="gitUiStore.reviewSetCommentSort(workspaceId, s.id)"
+        >
+          {{ sort === s.id ? (sortDir === "asc" ? "↑" : "↓") : "↕" }} {{ s.label }}
+        </button>
+        <span style="flex: 1"></span>
+        <input
+          type="text"
+          class="input"
+          style="font-size: 11px; padding: 2px 8px; width: 140px; min-width: 80px"
+          placeholder="Search..."
+          title="Filter comments by text in file paths or comment body"
+          :value="searchTerm"
+          @input="gitUiStore.reviewSetCommentSearch(workspaceId, $event.target.value)"
+        />
       </div>
 
       <div class="docker-list review-card__list review-card__list--dense">
         <template v-if="filteredThreads.length || filteredDraftComments.length">
-
           <!-- ═══ Azure threads ═══ -->
-          <article
-            v-for="thread in filteredThreads"
-            :key="thread.id"
-            class="docker-card review-comment-card"
-          >
+          <article v-for="thread in filteredThreads" :key="thread.id" class="docker-card review-comment-card">
             <!-- Thread header: index badge, status chip, file path, relative time -->
             <div class="docker-card__head">
-              <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
-                <h4 style="margin:0;">{{ threadIndex(thread) ? `#${threadIndex(thread)}` : `Thread #${thread.id}` }}</h4>
-                <span :class="['workspace-chip', statusChipClass(thread.status)]" style="font-size:10px;">{{ threadStatusLabel(thread.status) }}</span>
-                <span v-if="threadFixStatus.get(String(thread.id))" class="workspace-chip workspace-chip--fixed" style="font-size:10px;">Fixed</span>
+              <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap">
+                <h4 style="margin: 0">
+                  {{ threadIndex(thread) ? `#${threadIndex(thread)}` : `Thread #${thread.id}` }}
+                </h4>
+                <span :class="['workspace-chip', statusChipClass(thread.status)]" style="font-size: 10px">{{
+                  threadStatusLabel(thread.status)
+                }}</span>
+                <span
+                  v-if="threadFixStatus.get(String(thread.id))"
+                  class="workspace-chip workspace-chip--fixed"
+                  style="font-size: 10px"
+                  >Fixed</span
+                >
                 <span v-if="thread.filePath" class="review-comment-file">
-                  {{ shortFilePath(thread.filePath) }}<span v-if="thread.lineStart" class="review-comment-line">:{{ thread.lineStart }}</span>
+                  {{ shortFilePath(thread.filePath)
+                  }}<span v-if="thread.lineStart" class="review-comment-line">:{{ thread.lineStart }}</span>
                 </span>
                 <span class="review-comment__date">{{ formatRelativeTime(threadDate(thread)) }}</span>
               </div>
             </div>
 
             <!-- Code snippet context -->
-            <div v-if="thread.filePath" class="review-comment-context" style="margin:0 10px 4px;">
-              <code class="review-comment-context__path">{{ thread.filePath }}{{ thread.lineStart ? `:${thread.lineStart}` : '' }}</code>
+            <div v-if="thread.filePath" class="review-comment-context" style="margin: 0 10px 4px">
+              <code class="review-comment-context__path"
+                >{{ thread.filePath }}{{ thread.lineStart ? `:${thread.lineStart}` : "" }}</code
+              >
               <pre v-if="thread.codeSnippet" class="review-code-snippet">{{ thread.codeSnippet }}</pre>
             </div>
 
@@ -56,10 +129,11 @@
                 <span
                   class="review-comment__avatar"
                   :style="{ background: avatarColor(comment.author?.displayName) }"
-                >{{ avatarInitials(comment.author?.displayName) }}</span>
+                  >{{ avatarInitials(comment.author?.displayName) }}</span
+                >
                 <div>
                   <div class="review-comment__header">
-                    <strong>{{ comment.author?.displayName || 'Unknown author' }}</strong>
+                    <strong>{{ comment.author?.displayName || "Unknown author" }}</strong>
                     <span class="review-comment__date">{{ formatRelativeTime(comment.publishedDate) }}</span>
                   </div>
                   <div class="review-comment__body">
@@ -70,35 +144,100 @@
             </div>
 
             <!-- Code changes reply banner -->
-            <div v-if="threadFixStatus.get(String(thread.id))?.fixSummary" class="review-comment review-comment--fix-summary">
-              <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;">
-                <strong style="color:var(--success,#4caf50);">Reply with code changes</strong>
-                <span class="workspace-chip workspace-chip--fixed" style="font-size:10px;">queued</span>
+            <div
+              v-if="threadFixStatus.get(String(thread.id))?.fixSummary"
+              class="review-comment review-comment--fix-summary"
+            >
+              <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 4px">
+                <strong style="color: var(--success, #4caf50)">Reply with code changes</strong>
+                <span class="workspace-chip workspace-chip--fixed" style="font-size: 10px">queued</span>
               </div>
-              <div class="review-comment__body" style="opacity:0.85;">{{ threadFixStatus.get(String(thread.id)).fixSummary }}</div>
+              <div class="review-comment__body" style="opacity: 0.85">
+                {{ threadFixStatus.get(String(thread.id)).fixSummary }}
+              </div>
             </div>
 
             <!-- Draft replies for this thread -->
-            <div v-for="draft in draftsByThread(thread)" :key="draft.draftId" class="review-comment review-comment--draft">
-              <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px;">
+            <div
+              v-for="draft in draftsByThread(thread)"
+              :key="draft.draftId"
+              class="review-comment review-comment--draft"
+            >
+              <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 6px">
                 <strong>Draft reply</strong>
-                <span class="workspace-chip workspace-chip--local" style="font-size:10px;">{{ draft.status === 'queued' || draft.status === 'ready-to-sync' ? 'queued' : 'draft' }}</span>
-                <span v-if="draft.authorAgent" class="review-comment__date">by {{ displayAuthor(draft.authorAgent) }}</span>
+                <span class="workspace-chip workspace-chip--local" style="font-size: 10px">{{
+                  draft.status === "queued" || draft.status === "ready-to-sync" ? "queued" : "draft"
+                }}</span>
+                <span v-if="draft.authorAgent" class="review-comment__date"
+                  >by {{ displayAuthor(draft.authorAgent) }}</span
+                >
               </div>
               <div class="review-comment__body">
                 <MarkdownContent :text="draft.body || ''" />
               </div>
-              <div class="docker-card__actions" style="margin-top:6px;">
-                <button v-if="draft.status !== 'synced'" type="button" class="button button--ghost" style="font-size:11px;padding:2px 8px;" :disabled="!!busyAction" title="Edit the text of this draft reply" @click="editDraft(thread)">Edit</button>
-                <button type="button" :class="['button', 'button--ghost', 'danger', busyAction === `delete-${draft.draftId}` && 'button--busy']" style="font-size:11px;padding:2px 8px;" :disabled="!!busyAction" title="Permanently delete this draft reply" @click="handleDeleteDraft(draft.draftId)">Delete</button>
+              <div class="docker-card__actions" style="margin-top: 6px">
+                <button
+                  v-if="draft.status !== 'synced'"
+                  type="button"
+                  class="button button--ghost"
+                  style="font-size: 11px; padding: 2px 8px"
+                  :disabled="!!busyAction"
+                  title="Edit the text of this draft reply"
+                  @click="editDraft(thread)"
+                >
+                  Edit
+                </button>
+                <button
+                  type="button"
+                  :class="[
+                    'button',
+                    'button--ghost',
+                    'danger',
+                    busyAction === `delete-${draft.draftId}` && 'button--busy',
+                  ]"
+                  style="font-size: 11px; padding: 2px 8px"
+                  :disabled="!!busyAction"
+                  title="Permanently delete this draft reply"
+                  @click="handleDeleteDraft(draft.draftId)"
+                >
+                  Delete
+                </button>
               </div>
             </div>
 
             <!-- Thread actions -->
-            <div class="docker-card__actions" style="padding:6px 10px;">
-              <button type="button" class="button button--ghost" style="font-size:11px;" :disabled="!!busyAction" title="Write a reply to this thread — saved as draft, published with Push & publish" @click="replyToThread(thread)">Reply</button>
-              <button type="button" :class="['button', 'button--ghost', busyAction === `resolve-${thread.id}` && 'button--busy']" style="font-size:11px;" :disabled="!!busyAction" title="Mark this thread as resolved on Azure DevOps (immediate)" @click="handleResolveThread(thread.id)">Resolve</button>
-              <button v-if="thread.status !== 'active'" type="button" :class="['button', 'button--ghost', busyAction === `reactivate-${thread.id}` && 'button--busy']" style="font-size:11px;" :disabled="!!busyAction" title="Reopen this thread on Azure DevOps (immediate)" @click="handleReactivateThread(thread.id)">Reactivate</button>
+            <div class="docker-card__actions" style="padding: 6px 10px">
+              <button
+                type="button"
+                class="button button--ghost"
+                style="font-size: 11px"
+                :disabled="!!busyAction"
+                title="Write a reply to this thread — saved as draft, published with Push & publish"
+                @click="replyToThread(thread)"
+              >
+                Reply
+              </button>
+              <button
+                type="button"
+                :class="['button', 'button--ghost', busyAction === `resolve-${thread.id}` && 'button--busy']"
+                style="font-size: 11px"
+                :disabled="!!busyAction"
+                title="Mark this thread as resolved on Azure DevOps (immediate)"
+                @click="handleResolveThread(thread.id)"
+              >
+                Resolve
+              </button>
+              <button
+                v-if="thread.status !== 'active'"
+                type="button"
+                :class="['button', 'button--ghost', busyAction === `reactivate-${thread.id}` && 'button--busy']"
+                style="font-size: 11px"
+                :disabled="!!busyAction"
+                title="Reopen this thread on Azure DevOps (immediate)"
+                @click="handleReactivateThread(thread.id)"
+              >
+                Reactivate
+              </button>
             </div>
           </article>
 
@@ -109,17 +248,26 @@
             class="docker-card review-comment-card"
           >
             <div class="docker-card__head">
-              <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
-                <h4 style="margin:0;">{{ comment.displayIndex ? `#${comment.displayIndex}` : comment.title || 'Draft comment' }}</h4>
-                <span class="workspace-chip workspace-chip--local" style="font-size:10px;">{{ comment.status || 'draft' }}</span>
+              <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap">
+                <h4 style="margin: 0">
+                  {{ comment.displayIndex ? `#${comment.displayIndex}` : comment.title || "Draft comment" }}
+                </h4>
+                <span class="workspace-chip workspace-chip--local" style="font-size: 10px">{{
+                  comment.status || "draft"
+                }}</span>
               </div>
             </div>
 
-            <div v-if="comment.summary && !draftsByComment(comment).length" class="review-comment" style="border-top:none;">
+            <div
+              v-if="comment.summary && !draftsByComment(comment).length"
+              class="review-comment"
+              style="border-top: none"
+            >
               <span
                 class="review-comment__avatar"
                 :style="{ background: avatarColor(displayAuthor(comment.authorAgent)) }"
-              >{{ avatarInitials(displayAuthor(comment.authorAgent)) }}</span>
+                >{{ avatarInitials(displayAuthor(comment.authorAgent)) }}</span
+              >
               <div>
                 <div class="review-comment__header">
                   <strong>{{ displayAuthor(comment.authorAgent) }}</strong>
@@ -130,28 +278,83 @@
               </div>
             </div>
 
-            <div v-for="draft in draftsByComment(comment)" :key="draft.draftId" class="review-comment review-comment--draft">
-              <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px;">
+            <div
+              v-for="draft in draftsByComment(comment)"
+              :key="draft.draftId"
+              class="review-comment review-comment--draft"
+            >
+              <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 6px">
                 <strong>Draft</strong>
-                <span class="workspace-chip workspace-chip--local" style="font-size:10px;">{{ draft.status === 'queued' || draft.status === 'ready-to-sync' ? 'queued' : 'draft' }}</span>
-                <span v-if="draft.authorAgent" class="review-comment__date">by {{ displayAuthor(draft.authorAgent) }}</span>
+                <span class="workspace-chip workspace-chip--local" style="font-size: 10px">{{
+                  draft.status === "queued" || draft.status === "ready-to-sync" ? "queued" : "draft"
+                }}</span>
+                <span v-if="draft.authorAgent" class="review-comment__date"
+                  >by {{ displayAuthor(draft.authorAgent) }}</span
+                >
               </div>
               <div class="review-comment__body">
                 <MarkdownContent :text="draft.body || ''" />
               </div>
-              <div class="docker-card__actions" style="margin-top:6px;">
-                <button v-if="draft.status !== 'synced'" type="button" class="button button--ghost" style="font-size:11px;padding:2px 8px;" :disabled="!!busyAction" title="Edit the text of this draft" @click="editLocalDraft(comment)">Edit</button>
-                <button type="button" :class="['button', 'button--ghost', 'danger', busyAction === `deleteComment-${comment.commentKey}` && 'button--busy']" style="font-size:11px;padding:2px 8px;" :disabled="!!busyAction" title="Permanently delete this comment and its draft" @click="handleDeleteComment(comment.commentKey)">Delete</button>
+              <div class="docker-card__actions" style="margin-top: 6px">
+                <button
+                  v-if="draft.status !== 'synced'"
+                  type="button"
+                  class="button button--ghost"
+                  style="font-size: 11px; padding: 2px 8px"
+                  :disabled="!!busyAction"
+                  title="Edit the text of this draft"
+                  @click="editLocalDraft(comment)"
+                >
+                  Edit
+                </button>
+                <button
+                  type="button"
+                  :class="[
+                    'button',
+                    'button--ghost',
+                    'danger',
+                    busyAction === `deleteComment-${comment.commentKey}` && 'button--busy',
+                  ]"
+                  style="font-size: 11px; padding: 2px 8px"
+                  :disabled="!!busyAction"
+                  title="Permanently delete this comment and its draft"
+                  @click="handleDeleteComment(comment.commentKey)"
+                >
+                  Delete
+                </button>
               </div>
             </div>
-            <div v-if="!draftsByComment(comment).length" class="docker-card__actions" style="padding:6px 10px;">
-              <button type="button" class="button button--ghost" style="font-size:11px;" title="Write a draft for this comment — saved locally until you queue and publish it" @click="editLocalDraft(comment)">Add draft</button>
-              <button type="button" :class="['button', 'button--ghost', 'danger', busyAction === `deleteComment-${comment.commentKey}` && 'button--busy']" style="font-size:11px;" :disabled="!!busyAction" title="Permanently delete this draft comment" @click="handleDeleteComment(comment.commentKey)">Delete</button>
+            <div v-if="!draftsByComment(comment).length" class="docker-card__actions" style="padding: 6px 10px">
+              <button
+                type="button"
+                class="button button--ghost"
+                style="font-size: 11px"
+                title="Write a draft for this comment — saved locally until you queue and publish it"
+                @click="editLocalDraft(comment)"
+              >
+                Add draft
+              </button>
+              <button
+                type="button"
+                :class="[
+                  'button',
+                  'button--ghost',
+                  'danger',
+                  busyAction === `deleteComment-${comment.commentKey}` && 'button--busy',
+                ]"
+                style="font-size: 11px"
+                :disabled="!!busyAction"
+                title="Permanently delete this draft comment"
+                @click="handleDeleteComment(comment.commentKey)"
+              >
+                Delete
+              </button>
             </div>
           </article>
-
         </template>
-        <div v-else class="empty-card"><p>{{ isFiltered ? 'No comments match this filter.' : 'No comments or threads yet.' }}</p></div>
+        <div v-else class="empty-card">
+          <p>{{ isFiltered ? "No comments match this filter." : "No comments or threads yet." }}</p>
+        </div>
       </div>
     </article>
   </div>
@@ -202,9 +405,7 @@ function displayAuthor(agent) {
 function avatarInitials(name) {
   if (isHumanAuthor(name)) return "ME";
   const parts = (name || "?").split(/[\s,]+/).filter(Boolean);
-  return parts.length >= 2
-    ? (parts[0][0] + parts[1][0]).toUpperCase()
-    : (name || "?").slice(0, 2).toUpperCase();
+  return parts.length >= 2 ? (parts[0][0] + parts[1][0]).toUpperCase() : (name || "?").slice(0, 2).toUpperCase();
 }
 
 function avatarColor(name) {
@@ -257,40 +458,56 @@ function statusChipClass(status) {
 
 async function handleDeleteAllDrafts() {
   busyAction.value = "deleteAll";
-  try { await appStore.reviewBridgeDeleteAllDrafts(props.prKey); }
-  finally { busyAction.value = ""; }
+  try {
+    await appStore.reviewBridgeDeleteAllDrafts(props.prKey);
+  } finally {
+    busyAction.value = "";
+  }
 }
-
-
 
 async function handleQueueDraft(draftId) {
   busyAction.value = `queue-${draftId}`;
-  try { await appStore.queueReviewBridgeDraft(props.prKey, draftId); }
-  finally { busyAction.value = ""; }
+  try {
+    await appStore.queueReviewBridgeDraft(props.prKey, draftId);
+  } finally {
+    busyAction.value = "";
+  }
 }
 
 async function handleDeleteDraft(draftId) {
   busyAction.value = `delete-${draftId}`;
-  try { await appStore.deleteReviewBridgeDraft(props.prKey, draftId); }
-  finally { busyAction.value = ""; }
+  try {
+    await appStore.deleteReviewBridgeDraft(props.prKey, draftId);
+  } finally {
+    busyAction.value = "";
+  }
 }
 
 async function handleResolveThread(threadId) {
   busyAction.value = `resolve-${threadId}`;
-  try { await appStore.azureResolveThread(props.prKey, threadId); }
-  finally { busyAction.value = ""; }
+  try {
+    await appStore.azureResolveThread(props.prKey, threadId);
+  } finally {
+    busyAction.value = "";
+  }
 }
 
 async function handleReactivateThread(threadId) {
   busyAction.value = `reactivate-${threadId}`;
-  try { await appStore.azureReactivateThread(props.prKey, threadId); }
-  finally { busyAction.value = ""; }
+  try {
+    await appStore.azureReactivateThread(props.prKey, threadId);
+  } finally {
+    busyAction.value = "";
+  }
 }
 
 async function handleDeleteComment(commentKey) {
   busyAction.value = `deleteComment-${commentKey}`;
-  try { await appStore.deleteReviewBridgeComment(props.prKey, commentKey); }
-  finally { busyAction.value = ""; }
+  try {
+    await appStore.deleteReviewBridgeComment(props.prKey, commentKey);
+  } finally {
+    busyAction.value = "";
+  }
 }
 
 function openNewDraftComment() {
@@ -301,7 +518,15 @@ function openNewDraftComment() {
     placeholder: "Write your review comment...",
     submitLabel: "Create & queue",
     onCancel: () => appStore.closeDialog(),
-    onSubmit: (content) => { appStore.createReviewBridgeDraftComment({ prKey: props.prKey, body: content, authorAgent: "human", autoQueue: true }); appStore.closeDialog(); },
+    onSubmit: (content) => {
+      appStore.createReviewBridgeDraftComment({
+        prKey: props.prKey,
+        body: content,
+        authorAgent: "human",
+        autoQueue: true,
+      });
+      appStore.closeDialog();
+    },
   });
 }
 
@@ -313,7 +538,16 @@ function replyToThread(thread) {
     placeholder: "Write your reply...",
     submitLabel: "Create & queue",
     onCancel: () => appStore.closeDialog(),
-    onSubmit: (content) => { appStore.createReviewBridgeDraftComment({ prKey: props.prKey, body: content, threadId: thread.id, authorAgent: "human", autoQueue: true }); appStore.closeDialog(); },
+    onSubmit: (content) => {
+      appStore.createReviewBridgeDraftComment({
+        prKey: props.prKey,
+        body: content,
+        threadId: thread.id,
+        authorAgent: "human",
+        autoQueue: true,
+      });
+      appStore.closeDialog();
+    },
   });
 }
 
@@ -329,7 +563,11 @@ function editDraft(thread) {
     placeholder: "Write the draft reply...",
     submitLabel: draft ? "Save draft" : "Create draft",
     onCancel: () => appStore.closeDialog(),
-    onSubmit: async (content) => { await appStore.saveReviewBridgeDraft({ prKey: props.prKey, commentKey, body: content, authorAgent: "human" }); await appStore.queueReviewBridgeDraft(props.prKey, null, commentKey); appStore.closeDialog(); },
+    onSubmit: async (content) => {
+      await appStore.saveReviewBridgeDraft({ prKey: props.prKey, commentKey, body: content, authorAgent: "human" });
+      await appStore.queueReviewBridgeDraft(props.prKey, null, commentKey);
+      appStore.closeDialog();
+    },
   });
 }
 
@@ -344,7 +582,16 @@ function editLocalDraft(comment) {
     placeholder: "Write the draft...",
     submitLabel: draft ? "Save draft" : "Create draft",
     onCancel: () => appStore.closeDialog(),
-    onSubmit: async (content) => { await appStore.saveReviewBridgeDraft({ prKey: props.prKey, commentKey: comment.commentKey, body: content, authorAgent: "human" }); await appStore.queueReviewBridgeDraft(props.prKey, null, comment.commentKey); appStore.closeDialog(); },
+    onSubmit: async (content) => {
+      await appStore.saveReviewBridgeDraft({
+        prKey: props.prKey,
+        commentKey: comment.commentKey,
+        body: content,
+        authorAgent: "human",
+      });
+      await appStore.queueReviewBridgeDraft(props.prKey, null, comment.commentKey);
+      appStore.closeDialog();
+    },
   });
 }
 </script>

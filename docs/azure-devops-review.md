@@ -66,17 +66,20 @@ Split view: changed files tree on the left, diff preview on the right. Click a f
 ### Comments
 
 All review threads with inline code context. Each thread shows:
+
 - Thread number (`#N`), status chip (Active/Fixed/etc.), file path, relative time
 - All published replies with author avatars
 - Draft replies (queued for publishing) with edit/delete actions
 - **"Reply with code changes"** banner (green) when an agent marked code changes for this thread
 
 **Actions per thread:**
+
 - **Reply** — create a draft reply (auto-queued for publishing)
 - **Resolve** — immediately resolve on Azure DevOps
 - **Reactivate** — reopen a resolved thread
 
 **Toolbar:**
+
 - **Filters**: All, Active, Fixed, Has draft, Mine
 - **Sort**: by #N, Newest, Status, File — click again to toggle ascending/descending
 - **Search**: filter by file path or comment text
@@ -105,6 +108,7 @@ The **Push & publish** button in the toolbar is the main action for sending your
 This means: 3 commits to push, 2 draft comments to publish.
 
 What it does (in order):
+
 1. **Checks for uncommitted changes** — if the worktree is dirty, shows an error asking you to commit first
 2. **Pushes commits** to the remote PR branch (with PAT authentication)
 3. **Publishes all queued draft comments** to Azure DevOps threads
@@ -146,16 +150,17 @@ Agents cannot publish directly to Azure DevOps. All publishing goes through the 
 
 The review bridge exposes these tools to agents:
 
-| Tool | Purpose |
-|------|---------|
-| `list_review_comments` | List all threads with status, priority, and draft previews |
-| `get_review_comment` | Full thread detail by `#N` index (replies, file context, code snippet) |
-| `create_review_comment` | Create a new draft comment, auto-queued for publishing |
-| `save_review_draft` | Save a draft reply and auto-queue it for publishing |
-| `queue_review_draft` | Explicitly queue a draft (rarely needed — drafts auto-queue) |
+| Tool                      | Purpose                                                                              |
+| ------------------------- | ------------------------------------------------------------------------------------ |
+| `list_review_comments`    | List all threads with status, priority, and draft previews                           |
+| `get_review_comment`      | Full thread detail by `#N` index (replies, file context, code snippet)               |
+| `create_review_comment`   | Create a new draft comment, auto-queued for publishing                               |
+| `save_review_draft`       | Save a draft reply and auto-queue it for publishing                                  |
+| `queue_review_draft`      | Explicitly queue a draft (rarely needed — drafts auto-queue)                         |
 | `reply_with_code_changes` | Reply to a comment after making code changes — marks the thread and queues the reply |
 
 Additionally:
+
 - **Resource** `review://brief` — current PR review brief in markdown
 - **Prompt** `process-review-comments` — step-by-step review workflow guide
 
@@ -209,6 +214,7 @@ MCP agents interact only with the local SQLite database. They cannot publish to 
 strIDEterm regularly communicates with Azure DevOps in the background — fetching pull requests, loading review threads, posting your comments, and creating branches. The **Activity Log** tab gives you a complete record of everything strIDEterm did on your behalf, so you can always verify what happened and when.
 
 This is useful when you want to:
+
 - confirm that a comment was actually published
 - investigate why a sync failed or a connection timed out
 - see how often the app polls Azure DevOps and how fast it responds

@@ -1,19 +1,21 @@
 <template>
   <div
+    ref="frameRef"
     class="frame"
     :class="{
       'frame--remote': api?.isRemote,
       'frame--sidebar-collapsed': store.sidebarCollapsed,
     }"
-    ref="frameRef"
   >
     <div class="sidebar-backdrop" data-role="sidebar-backdrop" @click="closeSidebar"></div>
 
-    <aside class="sidebar" ref="sidebarRef">
+    <aside ref="sidebarRef" class="sidebar">
       <div class="sidebar__head">
         <h1 class="brand">str<em>IDE</em>term</h1>
         <div class="sidebar__tools">
-          <button type="button" class="sidebar__icon-btn" title="Add workspace" @click="store.openNewWorkspaceFlow()">+</button>
+          <button type="button" class="sidebar__icon-btn" title="Add workspace" @click="store.openNewWorkspaceFlow()">
+            +
+          </button>
           <button
             type="button"
             class="sidebar__icon-btn sidebar__collapse-btn"
@@ -21,9 +23,15 @@
             :title="sidebarCollapseLabel"
             :aria-label="sidebarCollapseLabel"
             @click="toggleSidebarCollapse"
-          >{{ store.sidebarCollapsed ? '▶' : '◀' }}</button>
-          <button type="button" class="sidebar__icon-btn" title="Profiles" @click="store.openProfilesDialog()">☰</button>
-          <button type="button" class="sidebar__icon-btn" title="Settings" @click="store.openSettingsDialog()">⚙</button>
+          >
+            {{ store.sidebarCollapsed ? "▶" : "◀" }}
+          </button>
+          <button type="button" class="sidebar__icon-btn" title="Profiles" @click="store.openProfilesDialog()">
+            ☰
+          </button>
+          <button type="button" class="sidebar__icon-btn" title="Settings" @click="store.openSettingsDialog()">
+            ⚙
+          </button>
           <button type="button" class="sidebar__icon-btn" title="Help" @click="store.openHelpDialog()">?</button>
         </div>
       </div>
@@ -51,7 +59,9 @@
             class="sidebar-footer__repo"
             :title="repositoryUrl"
             @click="api?.openExternal?.(repositoryUrl)"
-          >GitHub repo</button>
+          >
+            GitHub repo
+          </button>
         </div>
       </footer>
 
@@ -68,7 +78,8 @@
             <span
               class="mobile-hamburger__badge"
               :class="{ 'mobile-hamburger__badge--visible': store.attentionSummary.count > 0 }"
-            >{{ store.attentionSummary.count > 0 ? store.attentionSummary.count : '' }}</span>
+              >{{ store.attentionSummary.count > 0 ? store.attentionSummary.count : "" }}</span
+            >
           </button>
 
           <TabStrip
@@ -89,7 +100,10 @@
             <span
               class="notification-bell__badge"
               :class="{ 'notification-bell__badge--visible': notifStore.unreadCount > 0 }"
-            >{{ notifStore.unreadCount > 0 ? (notifStore.unreadCount > 9 ? '9+' : notifStore.unreadCount) : '' }}</span>
+              >{{
+                notifStore.unreadCount > 0 ? (notifStore.unreadCount > 9 ? "9+" : notifStore.unreadCount) : ""
+              }}</span
+            >
           </button>
 
           <TabActions
@@ -165,13 +179,9 @@ const frameRef = ref(null);
 const sidebarRef = ref(null);
 const tabPickerAnchor = ref(null);
 
-const sidebarCollapseLabel = computed(() =>
-  store.sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar",
-);
+const sidebarCollapseLabel = computed(() => (store.sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"));
 
-const showWelcome = computed(() =>
-  store.payload && store.filteredWorkspaces.length === 0,
-);
+const showWelcome = computed(() => store.payload && store.filteredWorkspaces.length === 0);
 
 const versionLabel = computed(() => {
   const v = store.payload?.meta?.appVersion;

@@ -73,12 +73,16 @@ export function useReviewComments(detail, reviewBridge, reviewUi, pullRequest) {
     return map;
   });
 
-  function threadIndex(thread) { return threadToIndex.value.get(String(thread.id)) || 0; }
+  function threadIndex(thread) {
+    return threadToIndex.value.get(String(thread.id)) || 0;
+  }
   function draftsByThread(thread) {
     const commentKey = threadToCommentKey.value.get(String(thread.id));
-    return commentKey ? (draftMap.value.get(commentKey) || []) : [];
+    return commentKey ? draftMap.value.get(commentKey) || [] : [];
   }
-  function draftsByComment(comment) { return draftMap.value.get(comment.commentKey) || []; }
+  function draftsByComment(comment) {
+    return draftMap.value.get(comment.commentKey) || [];
+  }
 
   // Filtering/sorting
   const filter = computed(() => reviewUi.value.commentFilter || "all");
@@ -124,7 +128,12 @@ export function useReviewComments(detail, reviewBridge, reviewUi, pullRequest) {
         return dir * (lastB || "").localeCompare(lastA || "");
       });
     } else if (sort.value === "status") {
-      return [...threads].sort((a, b) => dir * ((statusOrder[String(a.status || "").toLowerCase()] ?? 2) - (statusOrder[String(b.status || "").toLowerCase()] ?? 2)));
+      return [...threads].sort(
+        (a, b) =>
+          dir *
+          ((statusOrder[String(a.status || "").toLowerCase()] ?? 2) -
+            (statusOrder[String(b.status || "").toLowerCase()] ?? 2)),
+      );
     } else if (sort.value === "file") {
       return [...threads].sort((a, b) => dir * (a.filePath || "").localeCompare(b.filePath || ""));
     }
@@ -150,8 +159,10 @@ export function useReviewComments(detail, reviewBridge, reviewUi, pullRequest) {
 
   const isFiltered = computed(() => filter.value !== "all" || !!searchTerm.value);
   const totalCommentCount = computed(() => allThreads.value.length + draftComments.value.length);
-  const activeCommentCount = computed(() =>
-    allThreads.value.filter((t) => String(t.status || "").toLowerCase() === "active").length + draftComments.value.length,
+  const activeCommentCount = computed(
+    () =>
+      allThreads.value.filter((t) => String(t.status || "").toLowerCase() === "active").length +
+      draftComments.value.length,
   );
   const allDrafts = computed(() => (reviewBridge.value.drafts || []).filter((d) => d.status === "draft"));
   const hasClearable = computed(() => allDrafts.value.length > 0 || draftComments.value.length > 0);

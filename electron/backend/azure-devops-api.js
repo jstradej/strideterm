@@ -1,21 +1,10 @@
-import {
-  API_VERSION,
-  POLICY_API_VERSION,
-  trimTrailingSlash,
-  firstNonEmpty,
-} from "./azure-devops-utils.js";
+import { API_VERSION, POLICY_API_VERSION, trimTrailingSlash, firstNonEmpty } from "./azure-devops-utils.js";
 
 export function createAzureApi(fetchImpl, { auditLogger } = {}) {
   const etagCache = new Map();
   const ETAG_CACHE_MAX_SIZE = 200;
 
-  async function requestJson(url, {
-    login,
-    token,
-    method = "GET",
-    body = null,
-    headers = {},
-  } = {}) {
+  async function requestJson(url, { login, token, method = "GET", body = null, headers = {} } = {}) {
     const startTime = Date.now();
     let statusCode = 0;
 
@@ -48,7 +37,9 @@ export function createAzureApi(fetchImpl, { auditLogger } = {}) {
         const cached = etagCache.get(url);
         if (cached?.data) {
           if (auditLogger) {
-            try { auditLogger({ method, url, statusCode: 304, success: true, durationMs: Date.now() - startTime }); } catch {}
+            try {
+              auditLogger({ method, url, statusCode: 304, success: true, durationMs: Date.now() - startTime });
+            } catch {}
           }
           return cached.data;
         }
@@ -80,13 +71,24 @@ export function createAzureApi(fetchImpl, { auditLogger } = {}) {
       }
 
       if (auditLogger) {
-        try { auditLogger({ method, url, statusCode, success: true, durationMs: Date.now() - startTime }); } catch {}
+        try {
+          auditLogger({ method, url, statusCode, success: true, durationMs: Date.now() - startTime });
+        } catch {}
       }
 
       return data;
     } catch (err) {
       if (auditLogger) {
-        try { auditLogger({ method, url, statusCode, success: false, errorMessage: err.message, durationMs: Date.now() - startTime }); } catch {}
+        try {
+          auditLogger({
+            method,
+            url,
+            statusCode,
+            success: false,
+            errorMessage: err.message,
+            durationMs: Date.now() - startTime,
+          });
+        } catch {}
       }
       throw err;
     }
@@ -144,10 +146,10 @@ export function createAzureApi(fetchImpl, { auditLogger } = {}) {
   async function fetchBuildErrors(connection, token, projectName, buildId) {
     if (!buildId) return "";
     try {
-      const timeline = await requestJson(
-        buildBuildTimelineUrl(connection, projectName, buildId),
-        { login: connection.login, token },
-      );
+      const timeline = await requestJson(buildBuildTimelineUrl(connection, projectName, buildId), {
+        login: connection.login,
+        token,
+      });
       const records = timeline.records || [];
       const errors = [];
       for (const record of records) {
@@ -191,10 +193,13 @@ export function createAzureApi(fetchImpl, { auditLogger } = {}) {
   }
 
   async function listPullRequestStatuses(connection, token, projectName, repositoryId, pullRequestId) {
-    const result = await requestJson(buildPullRequestStatusesUrl(connection, projectName, repositoryId, pullRequestId), {
-      login: connection.login,
-      token,
-    });
+    const result = await requestJson(
+      buildPullRequestStatusesUrl(connection, projectName, repositoryId, pullRequestId),
+      {
+        login: connection.login,
+        token,
+      },
+    );
     return result.value || [];
   }
 
@@ -210,10 +215,13 @@ export function createAzureApi(fetchImpl, { auditLogger } = {}) {
   }
 
   async function listIterationChanges(connection, token, projectName, repositoryId, pullRequestId) {
-    const iterationsResult = await requestJson(buildIterationsUrl(connection, projectName, repositoryId, pullRequestId), {
-      login: connection.login,
-      token,
-    });
+    const iterationsResult = await requestJson(
+      buildIterationsUrl(connection, projectName, repositoryId, pullRequestId),
+      {
+        login: connection.login,
+        token,
+      },
+    );
     const iterations = iterationsResult.value || [];
     const latestIteration = iterations.at(-1);
     if (!latestIteration?.id) {
@@ -274,7 +282,13 @@ export function createAzureApi(fetchImpl, { auditLogger } = {}) {
     return result.value || [];
   }
 
-  async function createPullRequest(connection, token, projectName, repositoryId, { title, description, sourceBranch, targetBranch, isDraft = false }) {
+  async function createPullRequest(
+    connection,
+    token,
+    projectName,
+    repositoryId,
+    { title, description, sourceBranch, targetBranch, isDraft = false },
+  ) {
     return requestJson(buildCreatePullRequestUrl(connection, projectName, repositoryId), {
       login: connection.login,
       token,

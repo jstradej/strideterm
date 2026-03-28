@@ -16,7 +16,10 @@ describe("TabActions", () => {
 
   test("hides + Tab button for azure workspaces", () => {
     const store = useAppStore();
-    store.payload = { workspace: { workspace: { id: "az1", kind: "azure", panels: [] } }, appState: { workspaces: [] }, };
+    store.payload = {
+      workspace: { workspace: { id: "az1", kind: "azure", panels: [] } },
+      appState: { workspaces: [] },
+    };
     const wrapper = mount(TabActions);
     expect(wrapper.find('[class*="button"]').text()).not.toContain("+ Tab");
   });

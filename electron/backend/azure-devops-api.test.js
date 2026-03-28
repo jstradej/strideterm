@@ -36,18 +36,12 @@ describe("Azure DevOps API - ETag caching", () => {
     const authOpts = { login: "user", token: "pat" };
 
     // First call — no etag
-    const result1 = await api.requestJson(
-      api.buildProjectsUrl(connection),
-      authOpts,
-    );
+    const result1 = await api.requestJson(api.buildProjectsUrl(connection), authOpts);
     expect(result1.value).toHaveLength(1);
     expect(fetchImpl.mock.calls[0][1].headers["If-None-Match"]).toBeUndefined();
 
     // Second call — should send If-None-Match and return cached data on 304
-    const result2 = await api.requestJson(
-      api.buildProjectsUrl(connection),
-      authOpts,
-    );
+    const result2 = await api.requestJson(api.buildProjectsUrl(connection), authOpts);
     expect(fetchImpl.mock.calls[1][1].headers["If-None-Match"]).toBe('"abc123"');
     expect(result2.value).toHaveLength(1);
   });
