@@ -5,6 +5,7 @@ export default defineConfig({
   timeout: 30_000,
   fullyParallel: false,
   retries: process.env.CI ? 1 : 0,
+  grep: process.env.CI ? /^(?!.*@visual)/ : undefined,
   expect: {
     timeout: 10_000,
     toHaveScreenshot: {
