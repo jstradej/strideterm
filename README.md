@@ -137,6 +137,7 @@ See [Plugin Development Guide](docs/plugin-development.md) for details.
 ## Testing
 
 ```bash
+npm run lint        # ESLint + Prettier check
 npm test            # Unit tests (UI + backend)
 npm run test:e2e    # E2E tests (Playwright + mock server fixtures)
 npm run smoke       # Startup smoke test
