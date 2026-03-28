@@ -155,98 +155,80 @@ export async function createReviewBridgeStore(rootPath) {
     );
   `);
 
-  // Migration: detect old schema (review_tasks exists) and rename tables accordingly
-  // If review_tasks exists, the old review_comments table holds thread comments and
-  // must be renamed to thread_comments before review_tasks becomes review_comments.
-  try {
-    db.prepare("SELECT 1 FROM review_tasks LIMIT 0").get();
-    // Old schema detected — rename thread-level review_comments → thread_comments
-    try {
-      db.exec("ALTER TABLE review_comments RENAME TO thread_comments");
-    } catch {
-      // Table already renamed or doesn't exist
-    }
-    // Rename review_tasks → review_comments
-    try {
-      db.exec("ALTER TABLE review_tasks RENAME TO review_comments");
-    } catch {
-      // Table already renamed or doesn't exist
-    }
-  } catch {
-    // review_tasks doesn't exist — either fresh DB or already migrated
+  // --- Deterministic migrations using PRAGMA user_version ---
+  function tableExists(name) {
+    return db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(name) != null;
+  }
+  function columnExists(table, column) {
+    return db.prepare(`PRAGMA table_info('${table}')`).all().some((col) => col.name === column);
   }
 
-  // Ensure thread_comments table exists (for fresh DBs where there was nothing to rename)
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS thread_comments (
-      pr_key TEXT NOT NULL,
-      remote_thread_id INTEGER NOT NULL,
-      remote_comment_id INTEGER NOT NULL,
-      parent_remote_comment_id INTEGER DEFAULT 0,
-      author_kind TEXT DEFAULT '',
-      author_label TEXT DEFAULT '',
-      body_markdown TEXT DEFAULT '',
-      body_plain TEXT DEFAULT '',
-      direction TEXT DEFAULT 'inbound',
-      created_at TEXT DEFAULT NULL,
-      updated_at TEXT DEFAULT NULL,
-      payload_json TEXT DEFAULT '{}',
-      PRIMARY KEY (pr_key, remote_thread_id, remote_comment_id)
-    )
-  `);
+  const MIGRATIONS = [
+    // v0 → v1: rename old review_tasks schema to review_comments
+    () => {
+      if (tableExists("review_tasks")) {
+        if (tableExists("review_comments")) {
+          db.exec("ALTER TABLE review_comments RENAME TO thread_comments");
+        }
+        db.exec("ALTER TABLE review_tasks RENAME TO review_comments");
+      }
+    },
+    // v1 → v2: ensure thread_comments table exists
+    () => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS thread_comments (
+          pr_key TEXT NOT NULL,
+          remote_thread_id INTEGER NOT NULL,
+          remote_comment_id INTEGER NOT NULL,
+          parent_remote_comment_id INTEGER DEFAULT 0,
+          author_kind TEXT DEFAULT '',
+          author_label TEXT DEFAULT '',
+          body_markdown TEXT DEFAULT '',
+          body_plain TEXT DEFAULT '',
+          direction TEXT DEFAULT 'inbound',
+          created_at TEXT DEFAULT NULL,
+          updated_at TEXT DEFAULT NULL,
+          payload_json TEXT DEFAULT '{}',
+          PRIMARY KEY (pr_key, remote_thread_id, remote_comment_id)
+        )
+      `);
+    },
+    // v2 → v3: rename task_key/task_kind columns across tables
+    () => {
+      if (columnExists("review_comments", "task_key")) {
+        db.exec("ALTER TABLE review_comments RENAME COLUMN task_key TO comment_key");
+      }
+      if (columnExists("review_comments", "task_kind")) {
+        db.exec("ALTER TABLE review_comments RENAME COLUMN task_kind TO comment_kind");
+      }
+      if (columnExists("draft_responses", "task_key")) {
+        db.exec("ALTER TABLE draft_responses RENAME COLUMN task_key TO comment_key");
+      }
+      if (columnExists("sync_queue", "task_key")) {
+        db.exec("ALTER TABLE sync_queue RENAME COLUMN task_key TO comment_key");
+      }
+      if (columnExists("agent_notes", "task_key")) {
+        db.exec("ALTER TABLE agent_notes RENAME COLUMN task_key TO comment_key");
+      }
+    },
+    // v3 → v4: add display_index, fix_status, fix_summary columns
+    () => {
+      if (!columnExists("review_comments", "display_index")) {
+        db.exec("ALTER TABLE review_comments ADD COLUMN display_index INTEGER DEFAULT NULL");
+      }
+      if (!columnExists("review_comments", "fix_status")) {
+        db.exec("ALTER TABLE review_comments ADD COLUMN fix_status TEXT DEFAULT NULL");
+      }
+      if (!columnExists("review_comments", "fix_summary")) {
+        db.exec("ALTER TABLE review_comments ADD COLUMN fix_summary TEXT DEFAULT NULL");
+      }
+    },
+  ];
 
-  // Migration: rename task_key → comment_key in review_comments
-  try {
-    db.exec("ALTER TABLE review_comments RENAME COLUMN task_key TO comment_key");
-  } catch {
-    // Column already renamed or doesn't exist
-  }
-
-  // Migration: rename task_kind → comment_kind in review_comments
-  try {
-    db.exec("ALTER TABLE review_comments RENAME COLUMN task_kind TO comment_kind");
-  } catch {
-    // Column already renamed or doesn't exist
-  }
-
-  // Migration: rename task_key → comment_key in draft_responses
-  try {
-    db.exec("ALTER TABLE draft_responses RENAME COLUMN task_key TO comment_key");
-  } catch {
-    // Column already renamed or doesn't exist
-  }
-
-  // Migration: rename task_key → comment_key in sync_queue
-  try {
-    db.exec("ALTER TABLE sync_queue RENAME COLUMN task_key TO comment_key");
-  } catch {
-    // Column already renamed or doesn't exist
-  }
-
-  // Migration: rename task_key → comment_key in agent_notes
-  try {
-    db.exec("ALTER TABLE agent_notes RENAME COLUMN task_key TO comment_key");
-  } catch {
-    // Column already renamed or doesn't exist
-  }
-
-  // Migration: add display_index column if missing (existing DBs)
-  try {
-    db.exec("ALTER TABLE review_comments ADD COLUMN display_index INTEGER DEFAULT NULL");
-  } catch {
-    // Column already exists
-  }
-
-  // Migration: add fix_status and fix_summary columns if missing
-  try {
-    db.exec("ALTER TABLE review_comments ADD COLUMN fix_status TEXT DEFAULT NULL");
-  } catch {
-    // Column already exists
-  }
-  try {
-    db.exec("ALTER TABLE review_comments ADD COLUMN fix_summary TEXT DEFAULT NULL");
-  } catch {
-    // Column already exists
+  const currentVersion = db.prepare("PRAGMA user_version").get().user_version;
+  for (let i = currentVersion; i < MIGRATIONS.length; i++) {
+    MIGRATIONS[i]();
+    db.exec(`PRAGMA user_version = ${i + 1}`);
   }
 
   // Backfill display_index for existing rows that don't have one
