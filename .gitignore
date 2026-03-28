@@ -37,6 +37,10 @@ electron-builder-output/
 release/
 out/
 
+# Playwright
+test-results/
+playwright-report/
+
 CLAUDE.md
 
 # strIDEterm local artifacts

@@ -33,7 +33,8 @@
     "perf": "node --expose-gc scripts/perf-test.mjs",
     "test": "npm run test:ui && npm run test:backend",
     "test:ui": "vitest run --config vite.config.js",
-    "test:backend": "vitest run --config vitest.backend.config.js"
+    "test:backend": "vitest run --config vitest.backend.config.js",
+    "test:e2e": "npx playwright test"
   },
   "build": {
     "appId": "com.strideterm.app",
@@ -133,6 +134,7 @@
     "zod": "^3.25.76"
   },
   "devDependencies": {
+    "@playwright/test": "^1.58.2",
     "@vitejs/plugin-vue": "^6",
     "@vue/test-utils": "^2.4",
     "concurrently": "^9.2.1",
