@@ -5,6 +5,7 @@ import fs from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { WebSocketServer } from "ws";
 import * as fm from "./file-manager.js";
+import { wsTerminalInputSchema, wsTerminalResizeSchema } from "./ipc-schemas.js";
 
 const CONTENT_TYPES = {
   ".css": "text/css; charset=utf-8",
@@ -19,10 +20,19 @@ function json(response, statusCode, body) {
   response.end(JSON.stringify(body));
 }
 
+const MAX_BODY_SIZE = 5 * 1024 * 1024; // 5 MB
+
 function readRequestBody(request) {
   return new Promise((resolve, reject) => {
     let raw = "";
+    let size = 0;
     request.on("data", (chunk) => {
+      size += chunk.length;
+      if (size > MAX_BODY_SIZE) {
+        request.destroy();
+        reject(new Error("Request body too large"));
+        return;
+      }
       raw += chunk.toString();
     });
     request.on("end", () => {
@@ -642,10 +652,15 @@ export async function startRemoteServer({ runtime, staticRoot, logger = console 
         try {
           const message = JSON.parse(raw.toString());
           if (message.type === "terminal:input") {
-            runtime.writeToSession(message.sessionId, message.data || "");
-          }
-          if (message.type === "terminal:resize") {
-            runtime.resizeSession(message.sessionId, { cols: message.cols, rows: message.rows });
+            const parsed = wsTerminalInputSchema.safeParse(message);
+            if (parsed.success) {
+              runtime.writeToSession(parsed.data.sessionId, parsed.data.data);
+            }
+          } else if (message.type === "terminal:resize") {
+            const parsed = wsTerminalResizeSchema.safeParse(message);
+            if (parsed.success) {
+              runtime.resizeSession(parsed.data.sessionId, { cols: parsed.data.cols, rows: parsed.data.rows });
+            }
           }
         } catch {
           // Ignore malformed remote messages.

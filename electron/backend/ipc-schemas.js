@@ -248,6 +248,36 @@ export const githubQuickFixCreateSchema = z.object({
   newBranchName: nonEmptyString,
 });
 
+// --- Misc schemas ---
+
+export const workspaceReorderSchema = z.array(nonEmptyString);
+
+export const attentionSyncSchema = z.object({
+  visibleSessionIds: z.array(z.string()).optional(),
+});
+
+export const notificationShowSchema = z.object({
+  title: z.string().optional(),
+  body: z.string().optional(),
+});
+
+export const workspacePushOptionsSchema = z.object({
+  force: z.boolean().optional(),
+});
+
+export const wsTerminalInputSchema = z.object({
+  type: z.literal("terminal:input"),
+  sessionId: nonEmptyString,
+  data: z.string(),
+});
+
+export const wsTerminalResizeSchema = z.object({
+  type: z.literal("terminal:resize"),
+  sessionId: nonEmptyString,
+  cols: z.number().int().positive(),
+  rows: z.number().int().positive(),
+});
+
 // --- File manager schemas ---
 
 export const fileListSchema = z.object({

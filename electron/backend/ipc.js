@@ -31,9 +31,14 @@ import {
   gitPayloadSchema,
   gitDiffPreviewSchema,
   gitCommitSchema,
+  dockerActionSchema,
   dockerSessionSchema,
   terminalResizeSchema,
   profileSchema,
+  workspaceReorderSchema,
+  attentionSyncSchema,
+  notificationShowSchema,
+  workspacePushOptionsSchema,
   worktreeSchema,
   removeWorktreeSchema,
   quickFixListProjectsSchema,
@@ -71,10 +76,10 @@ export function registerIpc(runtime, emitToRenderer, { includeStateGet = true } 
   ipcMain.handle("project:activate", async (_event, projectId) => runtime.activateProject(projectId));
   ipcMain.handle("workspace:save", async (_event, workspace) => runtime.saveWorkspace(validateIpc(workspaceSchema, workspace, "workspace:save")));
   ipcMain.handle("project:save", async (_event, project) => runtime.saveProject(validateIpc(projectSchema, project, "project:save")));
-  ipcMain.handle("workspace:delete", async (_event, workspaceId, options) => runtime.deleteWorkspace(workspaceId, options));
+  ipcMain.handle("workspace:delete", async (_event, workspaceId, options) => runtime.deleteWorkspace(workspaceId, options || {}));
   ipcMain.handle("project:delete", async (_event, projectId) => runtime.deleteProject(projectId));
-  ipcMain.handle("workspace:reorder", async (_event, workspaceIds) => runtime.reorderWorkspaces(workspaceIds));
-  ipcMain.handle("project:reorder", async (_event, projectIds) => runtime.reorderProjects(projectIds));
+  ipcMain.handle("workspace:reorder", async (_event, workspaceIds) => runtime.reorderWorkspaces(validateIpc(workspaceReorderSchema, workspaceIds, "workspace:reorder")));
+  ipcMain.handle("project:reorder", async (_event, projectIds) => runtime.reorderProjects(validateIpc(workspaceReorderSchema, projectIds, "project:reorder")));
   ipcMain.handle("settings:update", async (_event, settings) => {
     const validated = validateIpc(settingsSchema, settings, "settings:update");
     const { payload, remoteAccessChanged } = await runtime.updateSettings(validated);
@@ -104,7 +109,7 @@ export function registerIpc(runtime, emitToRenderer, { includeStateGet = true } 
   ipcMain.handle("azure:pull-request:vote", async (_event, payload) => runtime.voteAzurePullRequest(validateIpc(azureVoteSchema, payload, "azure:pull-request:vote")));
   ipcMain.handle("azure:workspace:fetch", async (_event, workspaceId) => runtime.fetchAzureReviewWorkspace(workspaceId));
   ipcMain.handle("azure:workspace:rebase", async (_event, workspaceId) => runtime.rebaseAzureReviewWorkspace(workspaceId));
-  ipcMain.handle("azure:workspace:push", async (_event, workspaceId, options) => runtime.pushAzureReviewWorkspace(workspaceId, options));
+  ipcMain.handle("azure:workspace:push", async (_event, workspaceId, options) => runtime.pushAzureReviewWorkspace(workspaceId, validateIpc(workspacePushOptionsSchema, options || {}, "azure:workspace:push")));
   ipcMain.handle("azure:create-pull-request", async (_event, payload) => runtime.azureCreatePullRequest(validateIpc(gitPayloadSchema, payload, "azure:create-pull-request")));
   ipcMain.handle("azure:list-remote-branches", async (_event, payload) => runtime.azureListRemoteBranches(validateIpc(gitPayloadSchema, payload, "azure:list-remote-branches")));
   ipcMain.handle("azure:quickfix:list-projects", async (_event, payload) => runtime.azureQuickFixListProjects(validateIpc(quickFixListProjectsSchema, payload, "azure:quickfix:list-projects")));
@@ -125,7 +130,7 @@ export function registerIpc(runtime, emitToRenderer, { includeStateGet = true } 
   ipcMain.handle("github:pull-request:review", async (_event, payload) => runtime.submitGitHubPullRequestReview(validateIpc(githubReviewSchema, payload, "github:pull-request:review")));
   ipcMain.handle("github:workspace:fetch", async (_event, workspaceId) => runtime.fetchGitHubReviewWorkspace(workspaceId));
   ipcMain.handle("github:workspace:rebase", async (_event, workspaceId) => runtime.rebaseGitHubReviewWorkspace(workspaceId));
-  ipcMain.handle("github:workspace:push", async (_event, workspaceId, options) => runtime.pushGitHubReviewWorkspace(workspaceId, options));
+  ipcMain.handle("github:workspace:push", async (_event, workspaceId, options) => runtime.pushGitHubReviewWorkspace(workspaceId, validateIpc(workspacePushOptionsSchema, options || {}, "github:workspace:push")));
   ipcMain.handle("github:list-remote-branches", async (_event, payload) => runtime.githubListRemoteBranches(validateIpc(gitPayloadSchema, payload, "github:list-remote-branches")));
   ipcMain.handle("github:create-pull-request", async (_event, payload) => runtime.githubCreatePullRequest(validateIpc(gitPayloadSchema, payload, "github:create-pull-request")));
   ipcMain.handle("github:quickfix:list-repos", async (_event, payload) => runtime.githubQuickFixListRepos(validateIpc(githubQuickFixListReposSchema, payload, "github:quickfix:list-repos")));
@@ -133,7 +138,7 @@ export function registerIpc(runtime, emitToRenderer, { includeStateGet = true } 
   ipcMain.handle("github:quickfix:create", async (_event, payload) => runtime.githubQuickFixCreate(validateIpc(githubQuickFixCreateSchema, payload, "github:quickfix:create")));
 
   ipcMain.handle("session:activate", async (_event, sessionId) => runtime.activateSession(sessionId));
-  ipcMain.handle("attention:sync", async (_event, payload) => runtime.syncAttentionContext(payload));
+  ipcMain.handle("attention:sync", async (_event, payload) => runtime.syncAttentionContext(validateIpc(attentionSyncSchema, payload || {}, "attention:sync")));
   ipcMain.handle("attention:clear-all", async () => runtime.clearAllAttention());
   ipcMain.handle("terminal:restart", async (_event, sessionId) => runtime.restartSession(sessionId));
   ipcMain.handle("terminal:close", async (_event, sessionId) => runtime.closeSession(sessionId));
@@ -158,7 +163,10 @@ export function registerIpc(runtime, emitToRenderer, { includeStateGet = true } 
   ipcMain.handle("git:stash", async (_event, payload) => runtime.gitStash(validateIpc(gitPayloadSchema, payload, "git:stash")));
   ipcMain.handle("git:stash-pop", async (_event, payload) => runtime.gitStashPop(validateIpc(gitPayloadSchema, payload, "git:stash-pop")));
   ipcMain.handle("git:commit-diff", async (_event, payload) => runtime.gitCommitDiff(validateIpc(gitPayloadSchema, payload, "git:commit-diff")));
-  ipcMain.handle("docker:action", async (_event, action, containerId) => runtime.dockerAction(action, containerId));
+  ipcMain.handle("docker:action", async (_event, action, containerId) => {
+    const validated = validateIpc(dockerActionSchema, { action, containerId }, "docker:action");
+    return runtime.dockerAction(validated.action, validated.containerId);
+  });
   ipcMain.handle("docker:open-session", async (_event, payload) => runtime.openDockerSession(validateIpc(dockerSessionSchema, payload, "docker:open-session")));
   ipcMain.handle("docker:open-lazydocker", async (_event, payload) => runtime.openLazydockerSession(validateIpc(gitPayloadSchema, payload, "docker:open-lazydocker")));
   ipcMain.handle("git:open-lazygit", async (_event, payload) => runtime.openLazygitSession(validateIpc(gitPayloadSchema, payload, "git:open-lazygit")));
@@ -171,9 +179,10 @@ export function registerIpc(runtime, emitToRenderer, { includeStateGet = true } 
 
   ipcMain.handle("notification:show-system", async (_event, payload) => {
     if (!Notification.isSupported()) return;
+    const validated = validateIpc(notificationShowSchema, payload || {}, "notification:show-system");
     const notif = new Notification({
-      title: payload?.title || "strIDEterm",
-      body: payload?.body || "",
+      title: validated.title || "strIDEterm",
+      body: validated.body || "",
       icon: join(app.getAppPath(), "assets", "icon.png"),
     });
     notif.on("click", () => {
@@ -230,7 +239,9 @@ export function registerIpc(runtime, emitToRenderer, { includeStateGet = true } 
   });
 
   ipcMain.on("terminal:input", (_event, sessionId, data) => {
-    runtime.writeToSession(sessionId, data);
+    if (typeof sessionId === "string" && typeof data === "string") {
+      runtime.writeToSession(sessionId, data);
+    }
   });
 
   return () => {
