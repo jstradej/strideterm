@@ -40,9 +40,12 @@ export function loadFixture(name) {
   return JSON.parse(fs.readFileSync(filePath, "utf-8"));
 }
 
+function deepClone(obj) { return JSON.parse(JSON.stringify(obj)); }
+
 export async function startMockServer({ fixture = "empty-state", port = 3999 } = {}) {
-  const payload = loadFixture(fixture);
+  let payload = loadFixture(fixture);
   const TOKEN = "test-token";
+  const sockets = new Set();
 
   const server = http.createServer((req, res) => {
     const url = new URL(req.url || "/", "http://localhost");
@@ -64,21 +67,42 @@ export async function startMockServer({ fixture = "empty-state", port = 3999 } =
       return;
     }
 
-    // Generic POST handler — return current payload for mutation endpoints
+    // Stateful POST handler — apply basic mutations and broadcast via WS
     if (req.method === "POST" && url.pathname.startsWith("/api/")) {
-      let body = "";
-      req.on("data", (chunk) => { body += chunk; });
+      let raw = "";
+      req.on("data", (chunk) => { raw += chunk; });
       req.on("error", () => { res.destroy(); });
       req.on("end", () => {
-        res.writeHead(200, { "Content-Type": "application/json" });
-        // Most mutation endpoints return the full payload
-        if (url.pathname.includes("/activate") || url.pathname.includes("/save") ||
-            url.pathname.includes("/delete") || url.pathname.includes("/reorder") ||
-            url.pathname.includes("/settings")) {
-          res.end(JSON.stringify(payload));
-        } else {
-          res.end(JSON.stringify({ ok: true }));
+        const body = raw ? JSON.parse(raw) : {};
+
+        // Workspace activation — switch active workspace and rebuild workspace view
+        if (url.pathname.endsWith("/workspace/activate") || url.pathname.endsWith("/project/activate")) {
+          const wsId = body.workspaceId || body.projectId;
+          if (wsId) {
+            payload.appState.activeWorkspaceId = wsId;
+            payload.appState.activeProjectId = wsId;
+            const ws = payload.appState.workspaces.find((w) => w.id === wsId);
+            if (ws) {
+              payload.workspace = {
+                workspace: ws, project: ws,
+                sessions: (ws.panels || []).map((p) => ({
+                  sessionId: `${ws.id}:${p.id}`, panelId: p.id, title: p.title,
+                  command: p.command, launch: p.launch, startup: p.startup, status: "running",
+                })),
+              };
+            }
+          }
+          broadcast({ type: "state:updated", payload });
         }
+
+        // Settings update — merge into settings
+        if (url.pathname.endsWith("/settings/update") && body.settings) {
+          Object.assign(payload.appState.settings, body.settings);
+          broadcast({ type: "state:updated", payload });
+        }
+
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(payload));
       });
       return;
     }
@@ -101,11 +125,19 @@ export async function startMockServer({ fixture = "empty-state", port = 3999 } =
   // WebSocket — send initial state on connection
   const wss = new WebSocketServer({ noServer: true });
 
+  function broadcast(message) {
+    const data = JSON.stringify(message);
+    for (const ws of sockets) {
+      if (ws.readyState === ws.OPEN) ws.send(data);
+    }
+  }
+
   server.on("upgrade", (req, socket, head) => {
     const url = new URL(req.url || "/", "http://localhost");
     if (url.pathname === "/ws") {
-      // strIDEterm app WebSocket — serve fixture state
       wss.handleUpgrade(req, socket, head, (ws) => {
+        sockets.add(ws);
+        ws.on("close", () => sockets.delete(ws));
         ws.send(JSON.stringify({ type: "state:updated", payload }));
       });
       return;
