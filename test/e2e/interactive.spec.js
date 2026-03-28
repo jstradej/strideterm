@@ -248,8 +248,9 @@ test.describe("Help dialog", () => {
 
   test("opens and shows help content", async ({ page }) => {
     await openApp(page, mock);
-    // Help button may be partially covered by sidebar resize handle on narrow viewports
-    await page.locator("button[title='Help']").click({ force: true });
+    // Help button sits near the sidebar resize handle and may be obscured on narrow
+    // viewports — dispatch click via JS to avoid pointer-events interception.
+    await page.locator("button[title='Help']").dispatchEvent("click");
     await expect(page.locator(".overlay")).toBeVisible({ timeout: 3_000 });
     assertNoErrors(page);
   });
