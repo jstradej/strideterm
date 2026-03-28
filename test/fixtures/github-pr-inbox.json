@@ -1,0 +1,71 @@
+{
+  "meta": { "appVersion": "1.3.1-test", "repositoryUrl": "https://github.com/example/strideterm" },
+  "appState": {
+    "activeWorkspaceId": "ws-main",
+    "activeProjectId": "ws-main",
+    "activeProfileId": "default",
+    "settings": {
+      "theme": "dark", "sidebarWidth": 220, "sidebarCollapsed": false,
+      "remoteAccess": { "enabled": true, "host": "127.0.0.1", "port": 3999, "token": "test-token", "customPublicUrl": "", "cloudflaredPath": "" },
+      "integrations": { "azureDevops": { "enabled": false, "connections": [], "reviewRoot": "", "defaultPollSeconds": 60 }, "github": { "enabled": true, "connections": [{ "id": "gh-1", "label": "GitHub", "hostUrl": "https://github.com", "apiBaseUrl": "https://api.github.com", "currentUserLogin": "alice", "tokenRef": "cred:gh", "enabled": true, "profileId": "default", "ownerFilters": [], "repositoryFilters": [], "pollSeconds": 60, "reviewRoot": "" }], "reviewRoot": "", "defaultPollSeconds": 60 } },
+      "tabTemplates": [{ "id": "shell", "title": "Shell", "command": "", "icon": "terminal" }]
+    },
+    "tabTemplates": [{ "id": "shell", "title": "Shell", "command": "", "icon": "terminal" }],
+    "profiles": [{ "id": "default", "name": "Default", "color": "", "workspaceIds": ["ws-main"], "projectIds": ["ws-main"] }],
+    "workspaces": [{
+      "id": "ws-main", "name": "Main Project", "icon": "📦", "color": "#4a9eff", "kind": "terminal", "source": "manual", "pluginId": "", "cwd": "/home/user/projects/main", "notes": "", "profileId": "default", "connectionId": "", "activePanelId": "panel-shell",
+      "panels": [{ "id": "panel-shell", "title": "Shell", "command": "", "launch": null, "shell": true, "startup": "default" }],
+      "review": null, "quickfix": null
+    }],
+    "projects": []
+  },
+  "workspace": {
+    "workspace": { "id": "ws-main", "name": "Main Project", "icon": "📦", "color": "#4a9eff", "kind": "terminal", "panels": [{ "id": "panel-shell", "title": "Shell", "command": "", "launch": null, "shell": true, "startup": "default" }] },
+    "project": null,
+    "sessions": [{ "sessionId": "ws-main:panel-shell", "panelId": "panel-shell", "title": "Shell", "command": "", "launch": null, "startup": "default", "status": "running" }]
+  },
+  "attention": { "byWorkspace": {}, "byProject": {}, "activeWorkspace": null, "activeProject": null },
+  "docker": { "containers": [], "available": false, "error": null },
+  "git": { "workspaces": {}, "projects": {}, "activeWorkspace": null, "activeProject": null },
+  "azureDevops": { "connections": [], "inbox": { "needsMyReview": [], "myPullRequests": [], "recentlyUpdated": [], "needsAttention": [] }, "trackedPullRequests": {}, "pullRequests": {}, "sync": { "running": false, "lastStartedAt": null, "lastCompletedAt": null } },
+  "github": {
+    "connections": [{ "id": "gh-1", "label": "GitHub", "hostUrl": "https://github.com", "status": "ok", "lastSyncAt": "2026-03-28T14:30:00.000Z" }],
+    "inbox": {
+      "needsMyReview": [{
+        "provider": "github", "prKey": "gh-1:myorg/web-app:42", "connectionId": "gh-1", "connectionLabel": "GitHub", "hostUrl": "https://github.com",
+        "repository": { "owner": "myorg", "name": "web-app", "fullName": "myorg/web-app", "remoteUrl": "https://github.com/myorg/web-app.git" },
+        "pullRequest": { "id": 42, "number": 42, "title": "Add real-time notifications feature", "state": "open", "draft": false, "webUrl": "https://github.com/myorg/web-app/pull/42", "sourceRefName": "feature/notifications", "targetRefName": "main", "createdAt": "2026-03-25T10:00:00Z", "updatedAt": "2026-03-28T14:15:00Z" },
+        "author": { "login": "bob", "displayName": "Bob Smith" },
+        "role": "reviewer", "hasAttention": true, "attentionReason": "new comment", "newCommentsCount": 2, "commentCount": 5,
+        "reviewerSummary": { "myState": "pending", "myIsRequested": true, "approvedCount": 1, "changesRequestedCount": 0, "pendingCount": 2, "totalCount": 3 },
+        "checks": { "failedCount": 0, "pendingCount": 1, "passedCount": 8 }
+      }],
+      "myPullRequests": [{
+        "provider": "github", "prKey": "gh-1:myorg/web-app:39", "connectionId": "gh-1", "connectionLabel": "GitHub", "hostUrl": "https://github.com",
+        "repository": { "owner": "myorg", "name": "web-app", "fullName": "myorg/web-app", "remoteUrl": "https://github.com/myorg/web-app.git" },
+        "pullRequest": { "id": 39, "number": 39, "title": "Fix null values in API responses", "state": "open", "draft": false, "webUrl": "https://github.com/myorg/web-app/pull/39", "sourceRefName": "bugfix/null-safety", "targetRefName": "main", "createdAt": "2026-03-24T08:00:00Z", "updatedAt": "2026-03-28T11:00:00Z" },
+        "author": { "login": "alice", "displayName": "Alice Johnson" },
+        "role": "author", "hasAttention": false, "attentionReason": "", "newCommentsCount": 0, "commentCount": 0,
+        "reviewerSummary": { "myState": "", "myIsRequested": false, "approvedCount": 2, "changesRequestedCount": 0, "pendingCount": 0, "totalCount": 2 },
+        "checks": { "failedCount": 0, "pendingCount": 0, "passedCount": 9 }
+      }, {
+        "provider": "github", "prKey": "gh-1:myorg/backend:15", "connectionId": "gh-1", "connectionLabel": "GitHub", "hostUrl": "https://github.com",
+        "repository": { "owner": "myorg", "name": "backend", "fullName": "myorg/backend", "remoteUrl": "https://github.com/myorg/backend.git" },
+        "pullRequest": { "id": 15, "number": 15, "title": "Migrate to PostgreSQL 17", "state": "open", "draft": true, "webUrl": "https://github.com/myorg/backend/pull/15", "sourceRefName": "feature/pg17", "targetRefName": "main", "createdAt": "2026-03-27T16:00:00Z", "updatedAt": "2026-03-28T09:00:00Z" },
+        "author": { "login": "alice", "displayName": "Alice Johnson" },
+        "role": "author", "hasAttention": false, "attentionReason": "", "newCommentsCount": 0, "commentCount": 1,
+        "reviewerSummary": { "myState": "", "myIsRequested": false, "approvedCount": 0, "changesRequestedCount": 1, "pendingCount": 0, "totalCount": 1 },
+        "checks": { "failedCount": 2, "pendingCount": 0, "passedCount": 5 }
+      }],
+      "recentlyUpdated": [],
+      "needsAttention": []
+    },
+    "trackedPullRequests": {}, "pullRequests": {},
+    "sync": { "running": false, "lastStartedAt": "2026-03-28T14:29:00.000Z", "lastCompletedAt": "2026-03-28T14:30:00.000Z" }
+  },
+  "reviewBridge": { "pullRequests": {}, "agentPrompts": [] },
+  "plugins": [],
+  "environment": { "platform": "win32", "shell": "bash" },
+  "themeSource": "dark",
+  "remoteAccess": { "enabled": true, "host": "127.0.0.1", "port": 3999, "urls": [] }
+}
