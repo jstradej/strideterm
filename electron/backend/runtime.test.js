@@ -1057,17 +1057,21 @@ describe("runtime integration", () => {
       fixture.sessionManager.emit("terminal:data", { sessionId: "frontend:codex", data: "" });
       await vi.advanceTimersByTimeAsync(16_000);
 
+      // Simulate user input so hasUserInput gate is satisfied
+      fixture.runtime.writeToSession("frontend:codex", "fix the bug\r");
+
+      // Agent output must contain a keyword from AGENT_OUTPUT_RE to set agentLike=true
       fixture.sessionManager.emit("terminal:data", {
         sessionId: "frontend:codex",
-        data: "Planning changes\r\nApplying patch\r\n",
+        data: "Codex is planning changes\r\nApplying patch\r\n",
       });
       fixture.sessionManager.emit("terminal:data", {
         sessionId: "frontend:codex",
         data: "PS C:\\repo> ",
       });
 
-      // Agent sessions use a longer quiet period (12s) before raising prompt-returned alerts
-      await vi.advanceTimersByTimeAsync(12100);
+      // Agent sessions use a longer quiet period before raising prompt-returned alerts
+      await vi.advanceTimersByTimeAsync(21_000);
 
       expect(fixture.runtime.getPayload().attention.byProject.frontend).toMatchObject({
         count: 1,
