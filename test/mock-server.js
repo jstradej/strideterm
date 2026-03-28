@@ -40,10 +40,8 @@ export function loadFixture(name) {
   return JSON.parse(fs.readFileSync(filePath, "utf-8"));
 }
 
-function deepClone(obj) { return JSON.parse(JSON.stringify(obj)); }
-
-export async function startMockServer({ fixture = "empty-state", port = 3999 } = {}) {
-  let payload = loadFixture(fixture);
+export async function startMockServer({ fixture = "empty-state", port = 0 } = {}) {
+  let payload = JSON.parse(JSON.stringify(loadFixture(fixture)));
   const TOKEN = "test-token";
   const sockets = new Set();
 
@@ -173,12 +171,13 @@ export async function startMockServer({ fixture = "empty-state", port = 3999 } =
     server.listen(port, "127.0.0.1", () => { server.removeListener("error", reject); resolve(); });
   });
 
+  const actualPort = server.address().port;
   return {
-    port,
+    port: actualPort,
     token: TOKEN,
-    url: `http://127.0.0.1:${port}`,
-    wsUrl: `ws://127.0.0.1:${port}/ws?token=${TOKEN}`,
-    browserUrl: `http://127.0.0.1:${port}/?token=${TOKEN}`,
+    url: `http://127.0.0.1:${actualPort}`,
+    wsUrl: `ws://127.0.0.1:${actualPort}/ws?token=${TOKEN}`,
+    browserUrl: `http://127.0.0.1:${actualPort}/?token=${TOKEN}`,
     async close() {
       for (const ws of wss.clients) ws.terminate();
       await new Promise((resolve) => wss.close(resolve));

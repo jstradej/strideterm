@@ -1,62 +1,52 @@
 import { test, expect } from "@playwright/test";
 import { startMockServer } from "../mock-server.js";
+import { openApp, assertNoErrors } from "./helpers.js";
 
 /**
- * E2E tests for strIDEterm using mock server fixtures.
- *
- * The mock server proxies Vite for static content and serves fixture
- * data for /api and /ws, so the frontend loads and connects from a
- * single origin — exactly like the real remote-server.js works.
+ * Core UI E2E tests — empty state and multi-workspace baseline.
  */
-
-let portCounter = 4100;
-function nextPort() { return portCounter++; }
-
-/** Navigate to the mock server and wait for the app to render. */
-async function openApp(page, mock) {
-  await page.goto(`${mock.url}/?token=${mock.token}`);
-  await expect(page.getByRole("heading", { name: "strIDEterm", exact: true })).toBeVisible();
-}
 
 test.describe("Empty state", () => {
   let mock;
-  test.beforeAll(async () => { mock = await startMockServer({ fixture: "empty-state", port: nextPort() }); });
+  test.beforeAll(async () => { mock = await startMockServer({ fixture: "empty-state" }); });
   test.afterAll(async () => { await mock?.close(); });
 
-  test("shows sidebar with app title", async ({ page }) => {
+  test("shows sidebar with app title and core buttons", async ({ page }) => {
     await openApp(page, mock);
     await expect(page.getByRole("heading", { name: "strIDEterm", exact: true })).toBeVisible();
-  });
-
-  test("shows add-workspace button in sidebar", async ({ page }) => {
-    await openApp(page, mock);
     await expect(page.locator("button[title='Add workspace']")).toBeVisible();
+    await expect(page.locator("button[title='Settings']")).toBeVisible();
+    await expect(page.locator("button[title='Help']")).toBeVisible();
+    await expect(page.locator("button[title='Notifications']")).toBeVisible();
+    assertNoErrors(page);
   });
 
-  test("shows empty workspace placeholder", async ({ page }) => {
+  test("shows empty workspace placeholder and welcome screen", async ({ page }) => {
     await openApp(page, mock);
     await expect(page.getByText("Select or create a workspace")).toBeVisible();
-  });
-
-  test("shows welcome create-workspace button", async ({ page }) => {
-    await openApp(page, mock);
+    await expect(page.getByText("Welcome to strIDEterm")).toBeVisible();
     await expect(page.getByText("Create your first workspace")).toBeVisible();
-  });
-
-  test("notification bell is present", async ({ page }) => {
-    await openApp(page, mock);
-    await expect(page.locator("button[title='Notifications']")).toBeVisible();
+    assertNoErrors(page);
   });
 
   test("version from fixture is displayed", async ({ page }) => {
     await openApp(page, mock);
     await expect(page.getByText("1.3.1-test")).toBeVisible();
+    assertNoErrors(page);
+  });
+
+  test("no workspaces listed in sidebar", async ({ page }) => {
+    await openApp(page, mock);
+    // Sidebar should NOT show any workspace entries — only the profile selector
+    await expect(page.getByText("Frontend App")).not.toBeVisible();
+    await expect(page.getByText("Backend API")).not.toBeVisible();
+    assertNoErrors(page);
   });
 });
 
 test.describe("Multi-workspace state", () => {
   let mock;
-  test.beforeAll(async () => { mock = await startMockServer({ fixture: "multi-workspace", port: nextPort() }); });
+  test.beforeAll(async () => { mock = await startMockServer({ fixture: "multi-workspace" }); });
   test.afterAll(async () => { await mock?.close(); });
 
   test("renders all workspaces in sidebar", async ({ page }) => {
@@ -64,22 +54,34 @@ test.describe("Multi-workspace state", () => {
     await expect(page.getByText("Frontend App")).toBeVisible();
     await expect(page.getByText("Backend API")).toBeVisible();
     await expect(page.getByText("Infrastructure")).toBeVisible();
+    assertNoErrors(page);
   });
 
-  test("active workspace shows panel tabs", async ({ page }) => {
+  test("active workspace shows its panel tabs and not other workspace tabs", async ({ page }) => {
     await openApp(page, mock);
+    // Frontend App (active) has Shell, Claude Code, Dev Server panels
     await expect(page.getByText("Shell")).toBeVisible();
     await expect(page.getByText("Claude Code")).toBeVisible();
+    // Backend API's "Tests" panel should NOT be visible when Frontend is active
+    await expect(page.getByText("Tests")).not.toBeVisible();
+    assertNoErrors(page);
   });
 
-  test("settings button opens dialog", async ({ page }) => {
+  test("settings dialog opens and closes cleanly", async ({ page }) => {
     await openApp(page, mock);
     await page.locator("button[title='Settings']").click();
-    await expect(page.locator(".overlay h2")).toBeVisible({ timeout: 3_000 });
+    await expect(page.locator(".overlay")).toBeVisible({ timeout: 3_000 });
+    await expect(page.locator(".overlay h2")).toHaveText("Settings");
+    // Close it
+    await page.locator(".overlay").getByText("Close").click();
+    await expect(page.locator(".overlay")).not.toBeVisible({ timeout: 3_000 });
+    assertNoErrors(page);
   });
 
-  test("sidebar shows profile selector", async ({ page }) => {
+  test("sidebar shows active profile name", async ({ page }) => {
     await openApp(page, mock);
+    await expect(page.locator("button[title='Profiles']")).toBeVisible();
     await expect(page.getByText("Default")).toBeVisible();
+    assertNoErrors(page);
   });
 });
