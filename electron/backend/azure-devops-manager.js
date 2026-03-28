@@ -778,7 +778,7 @@ export class AzureDevOpsManager extends EventEmitter {
     } catch (error) {
       const friendlyMessage = formatReviewWorkspaceError(error, reviewRoot);
       if (friendlyMessage) {
-        throw new Error(friendlyMessage);
+        throw new Error(friendlyMessage, { cause: error });
       }
       throw error;
     }
@@ -1224,7 +1224,7 @@ export class AzureDevOpsManager extends EventEmitter {
       } catch (err) {
         const msg = String(err?.stderr || err?.message || err);
         if (msg.includes("already exists")) {
-          throw new Error(`Branch "${newBranchName}" already exists. Choose a different name.`);
+          throw new Error(`Branch "${newBranchName}" already exists. Choose a different name.`, { cause: err });
         }
         throw err;
       }

@@ -1844,7 +1844,7 @@ export async function createRuntime({
         });
       } catch (err) {
         const message = err instanceof Error ? err.message : err?.stderr || err?.error?.message || String(err);
-        throw new Error(message);
+        throw new Error(message, { cause: err });
       }
       await store.mutate((draft) => {
         const normalized = normalizeWorkspace(result.workspace);
@@ -2157,7 +2157,7 @@ export async function createRuntime({
         });
       } catch (err) {
         const message = err instanceof Error ? err.message : err?.stderr || err?.error?.message || String(err);
-        throw new Error(message);
+        throw new Error(message, { cause: err });
       }
       await store.mutate((draft) => {
         const normalized = normalizeWorkspace(result.workspace);
@@ -2435,7 +2435,7 @@ export async function createRuntime({
         });
       } catch (err) {
         const message = err instanceof Error ? err.message : err?.stderr || err?.error?.message || String(err);
-        throw new Error(message);
+        throw new Error(message, { cause: err });
       }
       await store.mutate((draft) => {
         const normalized = normalizeWorkspace(result.workspace);

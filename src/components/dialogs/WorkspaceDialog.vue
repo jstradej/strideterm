@@ -73,7 +73,7 @@
           tabs are copied into each new review subworkspace.
         </p>
         <PanelEditor
-          :panels="draft.panels"
+          v-model:panels="draft.panels"
           :tab-templates="tabTemplates"
           :heading="isAzure ? 'Review workspace tabs' : 'Terminal tabs'"
         />

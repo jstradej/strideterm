@@ -108,7 +108,7 @@ function goForward() {
 
 function reload() {
   if (isElectron && embed?.reload) embed.reload();
-  else if (embed) embed.src = embed.src;
+  else if (embed) embed.src = embed.src; // eslint-disable-line no-self-assign -- iframe reload trick
 }
 
 function goHome() {

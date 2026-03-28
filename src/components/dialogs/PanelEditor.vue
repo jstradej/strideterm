@@ -149,28 +149,36 @@ function pickPanelIcon(panel, icon) {
 }
 
 function addPanel() {
-  props.panels.push({
-    id: `panel-${crypto.randomUUID()}`,
-    title: APP_CONFIG.ui.newPanelTitle,
-    command: "",
-    shell: true,
-    startup: APP_CONFIG.ui.manualPanelStartup,
-  });
+  emit("update:panels", [
+    ...props.panels,
+    {
+      id: `panel-${crypto.randomUUID()}`,
+      title: APP_CONFIG.ui.newPanelTitle,
+      command: "",
+      shell: true,
+      startup: APP_CONFIG.ui.manualPanelStartup,
+    },
+  ]);
 }
 
 function addPanelFromTemplate(tmpl) {
-  props.panels.push({
-    id: `panel-${crypto.randomUUID()}`,
-    title: tmpl.icon ? `${tmpl.icon} ${tmpl.title}` : tmpl.title,
-    command: tmpl.command || "",
-    shell: true,
-    startup: APP_CONFIG.ui.manualPanelStartup,
-  });
+  emit("update:panels", [
+    ...props.panels,
+    {
+      id: `panel-${crypto.randomUUID()}`,
+      title: tmpl.icon ? `${tmpl.icon} ${tmpl.title}` : tmpl.title,
+      command: tmpl.command || "",
+      shell: true,
+      startup: APP_CONFIG.ui.manualPanelStartup,
+    },
+  ]);
 }
 
 function removePanel(panelId) {
-  const index = props.panels.findIndex((p) => p.id === panelId);
-  if (index !== -1) props.panels.splice(index, 1);
+  emit(
+    "update:panels",
+    props.panels.filter((p) => p.id !== panelId),
+  );
 }
 </script>
 
