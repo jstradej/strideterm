@@ -36,7 +36,8 @@
     "test:backend": "vitest run --config vitest.backend.config.js",
     "test:e2e": "npx playwright test",
     "lint": "eslint . && prettier --check .",
-    "lint:fix": "eslint --fix . && prettier --write ."
+    "lint:fix": "eslint --fix . && prettier --write .",
+    "prepare": "husky"
   },
   "build": {
     "appId": "com.strideterm.app",
@@ -147,10 +148,21 @@
     "eslint-config-prettier": "^10.1.8",
     "eslint-plugin-vue": "^10.8.0",
     "globals": "^17.4.0",
+    "husky": "^9.1.7",
     "jsdom": "^29.0.0",
+    "lint-staged": "^16.4.0",
     "prettier": "^3.8.1",
     "vite": "^8.0.0",
     "vitest": "^4.1.0",
     "wait-on": "^9.0.4"
+  },
+  "lint-staged": {
+    "*.{js,vue}": [
+      "eslint --fix",
+      "prettier --write"
+    ],
+    "*.{json,md,yml,yaml,css}": [
+      "prettier --write"
+    ]
   }
 }
