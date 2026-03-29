@@ -188,6 +188,42 @@ describe("default state", () => {
     expect(names).toEqual(["mhub", "IDE", "IDE / metaterm", "ALE"]);
   });
 
+  test("normalizeState groups worktrees under same-profile parent when duplicates exist", () => {
+    const state = normalizeState({
+      workspaces: [
+        { id: "st-other", name: "strideterm", profileId: "profile-a", cwd: "C:/work/strideterm" },
+        {
+          id: "st-child1",
+          name: "strideterm / filemanager",
+          notes: "Worktree of strideterm",
+          profileId: "profile-b",
+          cwd: "C:/work/strideterm/.strideterm/tree/filemanager",
+        },
+        { id: "ide-other", name: "IDE", profileId: "profile-a", cwd: "C:/work/strideterm" },
+        {
+          id: "ide-child1",
+          name: "IDE / metaterm",
+          notes: "Worktree of IDE",
+          profileId: "profile-b",
+          cwd: "C:/work/strideterm/.strideterm/tree/metaterm",
+        },
+        { id: "admin", name: "Admin FE", profileId: "profile-b", cwd: "C:/work/admin" },
+        { id: "st-parent", name: "strideterm", profileId: "profile-b", cwd: "C:/work/strideterm" },
+      ],
+    });
+
+    const names = state.workspaces.map((w) => w.name);
+    // Children must follow their same-profile parent via cwd matching, not the other-profile duplicate
+    expect(names).toEqual([
+      "strideterm", // st-other (profile-a)
+      "IDE", // ide-other (profile-a)
+      "Admin FE", // admin (profile-b)
+      "strideterm", // st-parent (profile-b)
+      "strideterm / filemanager", // cwd-matched to st-parent (same profile)
+      "IDE / metaterm", // cwd-matched to st-parent (same profile, no IDE in profile-b)
+    ]);
+  });
+
   test("normalizeState groups managed Azure review workspaces under the Azure parent", () => {
     const state = normalizeState({
       settings: {

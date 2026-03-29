@@ -275,6 +275,33 @@ function groupChildWorkspaces(workspaces) {
   const children = new Map(); // parentId -> [child workspaces]
   const roots = [];
 
+  // Index workspaces by cwd for fast parent lookup via directory path.
+  // When multiple workspaces share the same cwd, prefer a same-profile match,
+  // so build a Map<cwd, workspace[]> and resolve per-child below.
+  const byCwd = new Map();
+  for (const workspace of workspaces) {
+    if (!workspace.cwd) continue;
+    const norm = workspace.cwd.replace(/\\/g, "/").replace(/\/+$/, "");
+    if (!byCwd.has(norm)) byCwd.set(norm, []);
+    byCwd.get(norm).push(workspace);
+  }
+
+  function findParentByCwd(workspace) {
+    const cwd = (workspace.cwd || "").replace(/\\/g, "/").replace(/\/+$/, "");
+    const marker = "/.strideterm/tree/";
+    const idx = cwd.lastIndexOf(marker);
+    if (idx < 0) return null;
+    const parentCwd = cwd.slice(0, idx);
+    const candidates = byCwd.get(parentCwd);
+    if (!candidates) return null;
+    const childProfile = workspace.profileId || "default";
+    return (
+      candidates.find((c) => c.id !== workspace.id && (c.profileId || "default") === childProfile) ||
+      candidates.find((c) => c.id !== workspace.id) ||
+      null
+    );
+  }
+
   function addChild(parentId, workspace) {
     if (!parentId) {
       roots.push(workspace);
@@ -289,8 +316,17 @@ function groupChildWorkspaces(workspaces) {
   for (const workspace of workspaces) {
     if ((workspace.notes || "").startsWith("Worktree of ")) {
       const parentName = workspace.name.split(" / ")[0];
+      const childProfile = workspace.profileId || "default";
       const parent =
-        workspaces.find((candidate) => candidate.name === parentName && candidate.id !== workspace.id) || null;
+        findParentByCwd(workspace) ||
+        workspaces.find(
+          (candidate) =>
+            candidate.name === parentName &&
+            candidate.id !== workspace.id &&
+            (candidate.profileId || "default") === childProfile,
+        ) ||
+        workspaces.find((candidate) => candidate.name === parentName && candidate.id !== workspace.id) ||
+        null;
       addChild(parent?.id || "", workspace);
       continue;
     }
