@@ -2032,6 +2032,11 @@ export async function createRuntime({
       await refreshAzure();
       return getPayload();
     },
+    async rerunAzureCheck(prKey, checkItem) {
+      await azure.rerunCheck(prKey, checkItem);
+      broadcastState();
+      return getPayload();
+    },
     async fetchAzureReviewWorkspace(workspaceId) {
       const workspace = findWorkspace(getState(), workspaceId);
       if (!workspace?.review) {
@@ -2190,6 +2195,11 @@ export async function createRuntime({
     async submitGitHubPullRequestReview(payload) {
       await github.submitPullRequestReview(payload);
       await refreshGitHub();
+      return getPayload();
+    },
+    async rerunGitHubCheck(prKey, checkItem) {
+      await github.rerunCheck(prKey, checkItem);
+      broadcastState();
       return getPayload();
     },
     async fetchGitHubReviewWorkspace(workspaceId) {

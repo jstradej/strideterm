@@ -383,7 +383,8 @@ export class AzureDevOpsManager extends EventEmitter {
   async markPullRequestSeen(prKey) {
     const summary = this.findSummary(prKey) || this.snapshot.pullRequests[prKey];
     if (!summary) {
-      throw new Error("Pull request is not available in the current Azure snapshot.");
+      console.warn(`[azure-devops] markPullRequestSeen: PR ${prKey} not in snapshot, skipping`);
+      return;
     }
     const lastSeenActivityAt = summary.lastRemoteActivityAt || new Date(this.now()).toISOString();
     await this.reviewStore.upsertTrackedPullRequest(prKey, {
@@ -495,9 +496,22 @@ export class AzureDevOpsManager extends EventEmitter {
         ).catch(() => current.threads || [])
       : current.threads || [];
 
+    // Fetch build details for timestamps (for all checks with buildId)
+    const buildIds = [...new Set(policyEvaluations.map((e) => e?.context?.buildId).filter(Boolean))];
+    const buildDetails = {};
+    if (buildIds.length) {
+      const details = await Promise.all(
+        buildIds.map((id) => this.api.fetchBuildDetail(connection, token, current.project.name, id).catch(() => null)),
+      );
+      for (const detail of details) {
+        if (detail?.id) buildDetails[detail.id] = detail;
+      }
+    }
+
     const checksResult = buildCheckSummary({
       policyEvaluations,
       statuses: pullRequestStatuses,
+      buildDetails,
     });
 
     // Fetch build timeline errors for failed checks that have a buildId
@@ -546,6 +560,34 @@ export class AzureDevOpsManager extends EventEmitter {
       }
     }
     return next;
+  }
+
+  async rerunCheck(prKey, checkItem) {
+    const current = this.snapshot.pullRequests?.[prKey];
+    if (!current) throw new Error(`PR ${prKey} not found in snapshot`);
+    const connection = this.findConnection(current.connectionId);
+    if (!connection) throw new Error(`Connection not found for PR ${prKey}`);
+    const token = this.credentialStore.getSecret(connection.tokenRef);
+    if (!token) throw new Error(`No credentials found for connection "${connection.label || connection.id}"`);
+    this.setAuditContext({ connectionId: connection.id, userInitiated: true });
+
+    if (checkItem.kind === "policy" && checkItem.evaluationId) {
+      console.log(`[azure-devops] Re-evaluating policy ${checkItem.evaluationId} for ${prKey}`);
+      await this.api.reEvaluatePolicy(
+        connection,
+        token,
+        current.project.name,
+        current.project.id,
+        checkItem.evaluationId,
+      );
+    } else {
+      throw new Error(
+        `Cannot re-run check "${checkItem.name || checkItem.id}": kind=${checkItem.kind}, evaluationId=${checkItem.evaluationId || "missing"}`,
+      );
+    }
+
+    // Refresh checks after re-run
+    return this.ensurePullRequestDetail(prKey, { force: true });
   }
 
   async listLocalChangedFiles(cwd, targetRefName) {

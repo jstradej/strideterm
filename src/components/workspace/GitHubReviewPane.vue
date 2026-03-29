@@ -34,58 +34,90 @@
         <button type="button" class="button button--ghost" @click="handlePush">Push branch</button>
       </div>
 
-      <!-- Reviewer summary -->
-      <div v-if="summary.reviewerSummary" class="azure-review__section">
-        <h4>Reviewers</h4>
-        <div v-for="reviewer in summary.reviewerSummary.reviewers" :key="reviewer.login" class="azure-review__reviewer">
-          <span>{{ reviewer.displayName || reviewer.login }}</span>
-          <span :class="['azure-review__state', `azure-review__state--${reviewer.state}`]">{{ reviewer.state }}</span>
-        </div>
+      <!-- Sub-tabs -->
+      <div class="review-subtabs">
+        <button
+          v-for="tab in reviewTabs"
+          :key="tab.id"
+          type="button"
+          :class="['azure-tab', activeTab === tab.id && 'azure-tab--active', tab.alert && 'azure-tab--alert']"
+          @click="activeTab = tab.id"
+        >
+          {{ tab.label }}<span v-if="tab.count" class="azure-tab__count">{{ tab.count }}</span>
+        </button>
       </div>
 
-      <!-- Checks -->
-      <div v-if="summary.checks?.items?.length" class="azure-review__section">
-        <h4>Checks</h4>
-        <div v-for="check in summary.checks.items" :key="check.id" class="azure-review__check">
-          <span :class="['azure-review__check-dot', `azure-review__check-dot--${check.state}`]"></span>
-          <span>{{ check.name }}</span>
-        </div>
-      </div>
+      <div class="review-content">
+        <!-- Summary panel -->
+        <div v-if="activeTab === 'summary'" class="review-body">
+          <!-- Reviewer summary -->
+          <div v-if="summary.reviewerSummary" class="azure-review__section">
+            <h4>Reviewers</h4>
+            <div
+              v-for="reviewer in summary.reviewerSummary.reviewers"
+              :key="reviewer.login"
+              class="azure-review__reviewer"
+            >
+              <span>{{ reviewer.displayName || reviewer.login }}</span>
+              <span :class="['azure-review__state', `azure-review__state--${reviewer.state}`]">{{
+                reviewer.state
+              }}</span>
+            </div>
+          </div>
 
-      <!-- Changed files -->
-      <div v-if="summary.changedFiles?.length" class="azure-review__section">
-        <h4>Changed files ({{ summary.changedFiles.length }})</h4>
-        <div v-for="file in summary.changedFiles" :key="file.path" class="azure-review__file">
-          <span class="azure-review__file-status">{{ file.changeType }}</span>
-          <span>{{ file.path }}</span>
-        </div>
-      </div>
+          <!-- Changed files -->
+          <div v-if="summary.changedFiles?.length" class="azure-review__section">
+            <h4>Changed files ({{ summary.changedFiles.length }})</h4>
+            <div v-for="file in summary.changedFiles" :key="file.path" class="azure-review__file">
+              <span class="azure-review__file-status">{{ file.changeType }}</span>
+              <span>{{ file.path }}</span>
+            </div>
+          </div>
 
-      <!-- Review actions -->
-      <div v-if="summary.role === 'reviewer'" class="azure-review__section">
-        <h4>Submit review</h4>
-        <textarea v-model="reviewBody" placeholder="Leave a comment (optional)" rows="3" style="width: 100%"></textarea>
-        <div class="azure-review__actions" style="margin-top: 8px">
-          <button type="button" class="button button--ghost" @click="submitReview('COMMENT')">Comment</button>
-          <button type="button" class="button" @click="submitReview('APPROVE')">Approve</button>
-          <button
-            type="button"
-            class="button button--ghost"
-            style="color: var(--danger)"
-            @click="submitReview('REQUEST_CHANGES')"
-          >
-            Request changes
-          </button>
-        </div>
-      </div>
+          <!-- Review actions -->
+          <div v-if="summary.role === 'reviewer'" class="azure-review__section">
+            <h4>Submit review</h4>
+            <textarea
+              v-model="reviewBody"
+              placeholder="Leave a comment (optional)"
+              rows="3"
+              style="width: 100%"
+            ></textarea>
+            <div class="azure-review__actions" style="margin-top: 8px">
+              <button type="button" class="button button--ghost" @click="submitReview('COMMENT')">Comment</button>
+              <button type="button" class="button" @click="submitReview('APPROVE')">Approve</button>
+              <button
+                type="button"
+                class="button button--ghost"
+                style="color: var(--danger)"
+                @click="submitReview('REQUEST_CHANGES')"
+              >
+                Request changes
+              </button>
+            </div>
+          </div>
 
-      <!-- General comment -->
-      <div class="azure-review__section">
-        <h4>Add comment</h4>
-        <textarea v-model="commentBody" placeholder="Write a comment..." rows="3" style="width: 100%"></textarea>
-        <div class="azure-review__actions" style="margin-top: 8px">
-          <button type="button" class="button" :disabled="!commentBody.trim()" @click="addComment">Post comment</button>
+          <!-- General comment -->
+          <div class="azure-review__section">
+            <h4>Add comment</h4>
+            <textarea v-model="commentBody" placeholder="Write a comment..." rows="3" style="width: 100%"></textarea>
+            <div class="azure-review__actions" style="margin-top: 8px">
+              <button type="button" class="button" :disabled="!commentBody.trim()" @click="addComment">
+                Post comment
+              </button>
+            </div>
+          </div>
         </div>
+
+        <!-- Pipelines panel -->
+        <ReviewPipelinesTab
+          v-else-if="activeTab === 'pipelines'"
+          :checks="checks"
+          :refreshing="refreshingChecks"
+          :pr-key="prKey"
+          provider="github"
+          @refresh="handleRefreshChecks"
+        />
       </div>
     </div>
   </div>
@@ -95,6 +127,7 @@
 import { ref, computed } from "vue";
 import { useAppStore } from "../../stores/app.js";
 import PaneShell from "../layout/PaneShell.vue";
+import ReviewPipelinesTab from "./shared/ReviewPipelinesTab.vue";
 
 const props = defineProps({
   workspaceId: { type: String, default: "" },
@@ -104,12 +137,25 @@ const props = defineProps({
 const appStore = useAppStore();
 const reviewBody = ref("");
 const commentBody = ref("");
+const activeTab = ref("summary");
+const refreshingChecks = ref(false);
 
 const workspace = computed(() =>
   (appStore.payload?.appState?.workspaces || []).find((w) => w.id === props.workspaceId),
 );
 const prKey = computed(() => workspace.value?.review?.prKey || "");
 const summary = computed(() => appStore.payload?.github?.pullRequests?.[prKey.value] || null);
+const checks = computed(() => summary.value?.checks || {});
+
+const reviewTabs = computed(() => [
+  { id: "summary", label: "Summary", count: null, alert: false },
+  {
+    id: "pipelines",
+    label: "Pipelines",
+    count: (checks.value.failedCount || 0) + (checks.value.pendingCount || 0) || null,
+    alert: (checks.value.failedCount || 0) > 0,
+  },
+]);
 
 const paneTitle = computed(() => {
   if (!summary.value) return "GitHub Review";
@@ -158,11 +204,19 @@ async function submitReview(event) {
 }
 
 async function addComment() {
-  const body = commentBody.value.trim();
-  if (!body || !prKey.value) return;
+  if (!prKey.value || !commentBody.value.trim()) return;
   try {
-    await appStore.githubComment(prKey.value, body);
+    await appStore.githubAddComment(prKey.value, commentBody.value.trim());
     commentBody.value = "";
   } catch {}
+}
+
+async function handleRefreshChecks() {
+  refreshingChecks.value = true;
+  try {
+    await appStore.refreshGitHub();
+  } finally {
+    refreshingChecks.value = false;
+  }
 }
 </script>

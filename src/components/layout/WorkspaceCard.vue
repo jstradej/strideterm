@@ -22,6 +22,17 @@
     <span class="workspace-card__meta">
       <span class="workspace-card__title-row">
         <strong>{{ workspace.name }}</strong>
+        <span
+          v-if="workspace.checksState"
+          :class="['workspace-card__checks-dot', `workspace-card__checks-dot--${workspace.checksState}`]"
+          :title="
+            workspace.checksState === 'failed'
+              ? 'Checks failed'
+              : workspace.checksState === 'pending'
+                ? 'Checks pending'
+                : 'Checks passed'
+          "
+        ></span>
         <span v-if="workspace.attentionCount" class="workspace-card__attention" :title="workspace.attentionTooltip">
           🔔<span class="workspace-card__attention-count">{{ workspace.attentionCount }}</span>
         </span>

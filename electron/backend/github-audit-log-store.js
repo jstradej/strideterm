@@ -17,6 +17,8 @@ export function classifyGitHubRequest(method, url) {
       return { operation: "createIssueComment", category: "write", resourceType: "comment" };
     if (p.includes("/pulls/") && p.includes("/comments") && m === "POST")
       return { operation: "createReviewComment", category: "write", resourceType: "reviewComment" };
+    if (p.includes("/check-suites/") && p.includes("/rerequest"))
+      return { operation: "rerunCheckSuite", category: "write", resourceType: "checkSuite" };
     if (p.includes("/pulls") && m === "POST")
       return { operation: "createPullRequest", category: "write", resourceType: "pullRequest" };
     if (p.includes("/pulls/") && (m === "PATCH" || m === "PUT"))

@@ -571,6 +571,16 @@
           </div>
         </template>
 
+        <!-- Pipelines panel -->
+        <ReviewPipelinesTab
+          v-else-if="activeTab === 'pipelines'"
+          :checks="checks"
+          :refreshing="refreshingChecks"
+          :pr-key="prKey"
+          :provider="reviewProvider"
+          @refresh="handleRefreshChecks"
+        />
+
         <!-- Agent panel -->
         <ReviewAgentTab
           v-else-if="activeTab === 'agent'"
@@ -597,6 +607,7 @@ import GitCommitLog from "./git/GitCommitLog.vue";
 import ReviewSummaryTab from "./azure/ReviewSummaryTab.vue";
 import ReviewCommentsTab from "./azure/ReviewCommentsTab.vue";
 import ReviewAgentTab from "./azure/ReviewAgentTab.vue";
+import ReviewPipelinesTab from "./shared/ReviewPipelinesTab.vue";
 
 const props = defineProps({
   workspaceId: { type: String, required: true },
@@ -664,6 +675,19 @@ const reviewBridge = computed(() => ({
 }));
 const reviewUi = computed(() => gitUiStore.get(props.workspaceId));
 const checks = computed(() => detail.value?.checks || {});
+const refreshingChecks = ref(false);
+async function handleRefreshChecks() {
+  refreshingChecks.value = true;
+  try {
+    if (isGitHub.value) {
+      await appStore.refreshGitHub();
+    } else {
+      await appStore.refreshAzure();
+    }
+  } finally {
+    refreshingChecks.value = false;
+  }
+}
 const reviewers = computed(() => detail.value?.reviewerSummary?.reviewers || []);
 const changedFiles = computed(() => {
   const files = detail.value?.changedFiles || [];
@@ -877,6 +901,12 @@ const reviewTabs = computed(() => [
     label: "Conflicts",
     count: conflictInfo.value.hasConflicts ? changedFiles.value.length : 0,
     alert: conflictInfo.value.hasConflicts,
+  },
+  {
+    id: "pipelines",
+    label: "Pipelines",
+    count: (checks.value.failedCount || 0) + (checks.value.pendingCount || 0) || null,
+    alert: (checks.value.failedCount || 0) > 0,
   },
   { id: "agent", label: "Agent", count: null, alert: false },
 ]);

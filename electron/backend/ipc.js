@@ -198,6 +198,7 @@ export function registerIpc(runtime, emitToRenderer, { includeStateGet = true } 
   ipcMain.handle("azure:quickfix:create", async (_event, payload) =>
     runtime.azureQuickFixCreate(validateIpc(quickFixCreateSchema, payload, "azure:quickfix:create")),
   );
+  ipcMain.handle("azure:rerun-check", async (_event, prKey, checkItem) => runtime.rerunAzureCheck(prKey, checkItem));
 
   // --- GitHub ---
   ipcMain.handle("github:verify-connection", async (_event, connection) =>
@@ -226,6 +227,7 @@ export function registerIpc(runtime, emitToRenderer, { includeStateGet = true } 
   ipcMain.handle("github:pull-request:review", async (_event, payload) =>
     runtime.submitGitHubPullRequestReview(validateIpc(githubReviewSchema, payload, "github:pull-request:review")),
   );
+  ipcMain.handle("github:rerun-check", async (_event, prKey, checkItem) => runtime.rerunGitHubCheck(prKey, checkItem));
   ipcMain.handle("github:workspace:fetch", async (_event, workspaceId) =>
     runtime.fetchGitHubReviewWorkspace(workspaceId),
   );
@@ -507,6 +509,7 @@ export function registerIpc(runtime, emitToRenderer, { includeStateGet = true } 
     ipcMain.removeHandler("azure:quickfix:list-repositories");
     ipcMain.removeHandler("azure:quickfix:list-branches");
     ipcMain.removeHandler("azure:quickfix:create");
+    ipcMain.removeHandler("azure:rerun-check");
     ipcMain.removeHandler("github:verify-connection");
     ipcMain.removeHandler("github:save-connection");
     ipcMain.removeHandler("github:delete-connection");
@@ -517,6 +520,7 @@ export function registerIpc(runtime, emitToRenderer, { includeStateGet = true } 
     ipcMain.removeHandler("github:pull-request:open");
     ipcMain.removeHandler("github:pull-request:comment");
     ipcMain.removeHandler("github:pull-request:review");
+    ipcMain.removeHandler("github:rerun-check");
     ipcMain.removeHandler("github:workspace:fetch");
     ipcMain.removeHandler("github:workspace:rebase");
     ipcMain.removeHandler("github:workspace:push");

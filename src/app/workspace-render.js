@@ -25,7 +25,13 @@ export function buildTabStripModel({ tabs, activeViewId, isInSplitGroup, getTabA
   });
 }
 
-export function buildWorkspaceCards({ workspaces, activeWorkspaceId, getGitSnapshot, getWorkspaceAttention }) {
+export function buildWorkspaceCards({
+  workspaces,
+  activeWorkspaceId,
+  getGitSnapshot,
+  getWorkspaceAttention,
+  getChecks,
+}) {
   return workspaces.map((workspace, index) => {
     const active = workspace.id === activeWorkspaceId;
     const gitSnapshot = getGitSnapshot(workspace.id);
@@ -35,6 +41,14 @@ export function buildWorkspaceCards({ workspaces, activeWorkspaceId, getGitSnaps
       ["azure-devops", "github"].includes(workspace.review?.provider) &&
       workspace.review?.checkout?.mode === "managed-worktree";
     const isQuickFixChild = !!workspace.quickfix?.parentWorkspaceId;
+    const checks = typeof getChecks === "function" ? getChecks(workspace) : null;
+    const checksState = checks?.failedCount
+      ? "failed"
+      : checks?.pendingCount
+        ? "pending"
+        : checks?.passedCount
+          ? "passed"
+          : null;
     const reviewProviderLabel = workspace.review?.provider === "github" ? "GitHub review" : "Azure review";
     const summary =
       workspace.kind === "docker"
@@ -64,6 +78,7 @@ export function buildWorkspaceCards({ workspaces, activeWorkspaceId, getGitSnaps
       kind: workspace.kind || "terminal",
       gitAvailable: !!gitSnapshot?.available,
       isWorktree: (workspace.notes || "").startsWith("Worktree of ") || isReviewChild || isQuickFixChild,
+      checksState,
     };
   });
 }

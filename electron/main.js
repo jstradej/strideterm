@@ -461,7 +461,7 @@ async function startServices() {
   });
 
   unregisterBootstrapIpcHandlers();
-  runtimeState.disposeIpc = registerIpc(runtimeState.runtime, emitToRenderer, { includeStateGet: false });
+  runtimeState.disposeIpc = registerIpc(runtimeState.runtime, emitToRenderer, { includeStateGet: true });
   runtimeState.unsubscribeRemoteConfig = runtimeState.runtime.on("remote:config-changed", async () => {
     await restartRemoteServer().catch((error) => {
       console.warn(`Remote access server restart failed: ${error.message}`);

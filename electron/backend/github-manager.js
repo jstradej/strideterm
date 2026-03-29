@@ -384,7 +384,10 @@ export class GitHubManager extends EventEmitter {
 
   async markPullRequestSeen(prKey) {
     const summary = this.findSummary(prKey) || this.snapshot.pullRequests[prKey];
-    if (!summary) throw new Error("Pull request is not available in the current GitHub snapshot.");
+    if (!summary) {
+      console.warn(`[github] markPullRequestSeen: PR ${prKey} not in snapshot, skipping`);
+      return;
+    }
 
     const lastSeenActivityAt = summary.lastRemoteActivityAt || new Date(this.now()).toISOString();
     await this.reviewStore.upsertTrackedPullRequest(prKey, {
@@ -550,6 +553,26 @@ export class GitHubManager extends EventEmitter {
       }
     }
     return next;
+  }
+
+  async rerunCheck(prKey, checkItem) {
+    const current = this.snapshot.pullRequests?.[prKey];
+    if (!current) throw new Error(`PR ${prKey} not found in snapshot`);
+    const connection = this.findConnection(current.connectionId);
+    if (!connection) throw new Error(`Connection not found for PR ${prKey}`);
+    const token = this.credentialStore.getSecret(connection.tokenRef);
+    if (!token) throw new Error(`No credentials found for connection "${connection.label || connection.id}"`);
+    this.setAuditContext({ connectionId: connection.id, userInitiated: true });
+
+    if (checkItem.kind === "check" && checkItem.checkSuiteId) {
+      const owner = current.repository?.owner;
+      const repo = current.repository?.name;
+      await this.api.rerunCheckSuite(connection, token, owner, repo, checkItem.checkSuiteId);
+    } else {
+      throw new Error("Cannot re-run this check type");
+    }
+
+    return this.ensurePullRequestDetail(prKey, { force: true });
   }
 
   async listLocalChangedFiles(cwd, targetRefName) {

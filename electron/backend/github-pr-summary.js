@@ -117,12 +117,15 @@ function buildCheckSummary(checkRuns = [], combinedStatus = null) {
     items.push({
       id: `check:${run.id}`,
       kind: "check",
+      checkSuiteId: run.check_suite?.id || null,
       name: run.name || "Check",
       description: run.output?.title || "",
       state,
       stateLabel:
         state === "failed" ? "failed" : state === "pending" ? "pending" : state === "succeeded" ? "passed" : "unknown",
       url: run.html_url || run.details_url || "",
+      startTime: run.started_at || null,
+      finishTime: run.completed_at || null,
     });
   }
 
@@ -132,6 +135,7 @@ function buildCheckSummary(checkRuns = [], combinedStatus = null) {
       items.push({
         id: `status:${status.id || status.context}`,
         kind: "status",
+        checkSuiteId: null,
         name: status.context || "Status",
         description: status.description || "",
         state,
@@ -144,6 +148,8 @@ function buildCheckSummary(checkRuns = [], combinedStatus = null) {
                 ? "passed"
                 : "unknown",
         url: status.target_url || "",
+        startTime: status.created_at || null,
+        finishTime: status.updated_at || null,
       });
     }
   }

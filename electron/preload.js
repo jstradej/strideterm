@@ -49,6 +49,7 @@ contextBridge.exposeInMainWorld("strideterm", {
   azureQuickFixListRepositories: (payload) => ipcRenderer.invoke("azure:quickfix:list-repositories", payload),
   azureQuickFixListBranches: (payload) => ipcRenderer.invoke("azure:quickfix:list-branches", payload),
   azureQuickFixCreate: (payload) => ipcRenderer.invoke("azure:quickfix:create", payload),
+  rerunAzureCheck: (prKey, checkItem) => ipcRenderer.invoke("azure:rerun-check", prKey, checkItem),
   verifyGitHubConnection: (connection) => ipcRenderer.invoke("github:verify-connection", connection),
   saveGitHubConnection: (connection) => ipcRenderer.invoke("github:save-connection", connection),
   deleteGitHubConnection: (connectionId) => ipcRenderer.invoke("github:delete-connection", connectionId),
@@ -59,6 +60,7 @@ contextBridge.exposeInMainWorld("strideterm", {
   openGitHubPullRequest: (payload) => ipcRenderer.invoke("github:pull-request:open", payload),
   commentGitHubPullRequest: (payload) => ipcRenderer.invoke("github:pull-request:comment", payload),
   submitGitHubPullRequestReview: (payload) => ipcRenderer.invoke("github:pull-request:review", payload),
+  rerunGitHubCheck: (prKey, checkItem) => ipcRenderer.invoke("github:rerun-check", prKey, checkItem),
   fetchGitHubReviewWorkspace: (workspaceId) => ipcRenderer.invoke("github:workspace:fetch", workspaceId),
   rebaseGitHubReviewWorkspace: (workspaceId) => ipcRenderer.invoke("github:workspace:rebase", workspaceId),
   pushGitHubReviewWorkspace: (workspaceId, options) =>

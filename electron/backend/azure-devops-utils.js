@@ -247,15 +247,18 @@ export function summarizePolicyContext(context = {}) {
   );
 }
 
-export function buildCheckSummary({ policyEvaluations = [], statuses = [] } = {}) {
+export function buildCheckSummary({ policyEvaluations = [], statuses = [], buildDetails = {} } = {}) {
   const items = [
     ...policyEvaluations.map((evaluation, index) => {
       const state = normalizeCheckState(evaluation?.status);
       const settings = evaluation?.configuration?.settings || {};
       const context = evaluation?.context || {};
+      const buildId = context.buildId || null;
+      const build = buildId ? buildDetails[buildId] : null;
       return {
         id: `policy:${evaluation?.evaluationId || evaluation?.configuration?.id || index}`,
         kind: "policy",
+        evaluationId: evaluation?.evaluationId || null,
         name: firstNonEmpty(
           settings.displayName,
           evaluation?.configuration?.type?.displayName,
@@ -274,10 +277,13 @@ export function buildCheckSummary({ policyEvaluations = [], statuses = [] } = {}
         source: firstNonEmpty(evaluation?.configuration?.type?.displayName, "policy"),
         url: firstNonEmpty(context.url, context.targetUrl, evaluation?._links?.web?.href),
         errorMessage: context.errorMessage || "",
-        buildId: context.buildId || null,
+        buildId,
         buildInfo: context.buildDefinitionName
           ? `${context.buildDefinitionName}${context.buildNumber ? ` \u00B7 ${context.buildNumber}` : ""}`
           : "",
+        startTime: build?.startTime || null,
+        finishTime: build?.finishTime || null,
+        queueTime: build?.queueTime || null,
       };
     }),
     ...statuses.map((status, index) => {
@@ -285,6 +291,7 @@ export function buildCheckSummary({ policyEvaluations = [], statuses = [] } = {}
       return {
         id: `status:${status?.id || index}:${status?.context?.genre || ""}:${status?.context?.name || ""}`,
         kind: "status",
+        evaluationId: null,
         name: firstNonEmpty(status?.context?.name, status?.description, status?.context?.genre, "Status"),
         description: firstNonEmpty(status?.description, ""),
         state,
@@ -295,6 +302,9 @@ export function buildCheckSummary({ policyEvaluations = [], statuses = [] } = {}
         errorMessage: "",
         buildId: null,
         buildInfo: "",
+        startTime: status?.createdDate || null,
+        finishTime: status?.updatedDate || null,
+        queueTime: null,
       };
     }),
   ]

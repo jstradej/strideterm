@@ -251,6 +251,11 @@ export function createGitHubApi(fetchImpl, { auditLogger } = {}) {
     return requestJson(buildCombinedStatusUrl(connection, owner, repo, ref), { token });
   }
 
+  async function rerunCheckSuite(connection, token, owner, repo, checkSuiteId) {
+    const url = `${buildApiBase(connection)}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/check-suites/${checkSuiteId}/rerequest`;
+    return requestJson(url, { token, method: "POST" });
+  }
+
   async function listRequestedReviewers(connection, token, owner, repo, pullNumber) {
     return requestJson(buildRequestedReviewersUrl(connection, owner, repo, pullNumber), { token });
   }
@@ -325,6 +330,7 @@ export function createGitHubApi(fetchImpl, { auditLogger } = {}) {
     listIssueComments,
     listCheckRuns,
     getCombinedStatus,
+    rerunCheckSuite,
     listRequestedReviewers,
     createIssueComment,
     submitReview,

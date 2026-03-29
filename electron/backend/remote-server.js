@@ -298,6 +298,10 @@ async function handleApiRequest(runtime, request, response) {
       json(response, 200, await runtime.azureQuickFixCreate(body));
       return;
     }
+    if (request.method === "POST" && url.pathname === "/api/azure/rerun-check") {
+      json(response, 200, await runtime.rerunAzureCheck(body.prKey, body.checkItem));
+      return;
+    }
 
     // --- GitHub ---
     if (request.method === "POST" && url.pathname === "/api/github/verify-connection") {
@@ -339,6 +343,10 @@ async function handleApiRequest(runtime, request, response) {
     }
     if (request.method === "POST" && url.pathname === "/api/github/pull-request/review") {
       json(response, 200, await runtime.submitGitHubPullRequestReview(body));
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/api/github/rerun-check") {
+      json(response, 200, await runtime.rerunGitHubCheck(body.prKey, body.checkItem));
       return;
     }
     if (request.method === "POST" && url.pathname === "/api/github/workspace/fetch") {

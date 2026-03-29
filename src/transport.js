@@ -213,6 +213,7 @@ function createRemoteTransport() {
     azureQuickFixListRepositories: (payload) => fetchJson("/api/azure/quickfix/list-repositories", payload),
     azureQuickFixListBranches: (payload) => fetchJson("/api/azure/quickfix/list-branches", payload),
     azureQuickFixCreate: (payload) => fetchJson("/api/azure/quickfix/create", payload),
+    rerunAzureCheck: (prKey, checkItem) => fetchJson("/api/azure/rerun-check", { prKey, checkItem }),
     verifyGitHubConnection: (connection) => fetchJson("/api/github/verify-connection", { connection }),
     saveGitHubConnection: (connection) => fetchJson("/api/github/save-connection", { connection }),
     deleteGitHubConnection: (connectionId) => fetchJson("/api/github/delete-connection", { connectionId }),
@@ -223,6 +224,7 @@ function createRemoteTransport() {
     openGitHubPullRequest: (payload) => fetchJson("/api/github/pull-request/open", payload),
     commentGitHubPullRequest: (payload) => fetchJson("/api/github/pull-request/comment", payload),
     submitGitHubPullRequestReview: (payload) => fetchJson("/api/github/pull-request/review", payload),
+    rerunGitHubCheck: (prKey, checkItem) => fetchJson("/api/github/rerun-check", { prKey, checkItem }),
     fetchGitHubReviewWorkspace: (workspaceId) => fetchJson("/api/github/workspace/fetch", { workspaceId }),
     rebaseGitHubReviewWorkspace: (workspaceId) => fetchJson("/api/github/workspace/rebase", { workspaceId }),
     pushGitHubReviewWorkspace: (workspaceId, options) =>

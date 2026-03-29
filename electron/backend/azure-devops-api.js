@@ -214,6 +214,35 @@ export function createAzureApi(fetchImpl, { auditLogger } = {}) {
     return result.value || [];
   }
 
+  function buildReEvaluatePolicyUrl(connection, projectName, projectId, evaluationId) {
+    return `${trimTrailingSlash(connection.orgUrl)}/${encodeURIComponent(projectName)}/_apis/policy/evaluations/${encodeURIComponent(evaluationId)}?api-version=${POLICY_API_VERSION}`;
+  }
+
+  async function reEvaluatePolicy(connection, token, projectName, projectId, evaluationId) {
+    return requestJson(buildReEvaluatePolicyUrl(connection, projectName, projectId, evaluationId), {
+      login: connection.login,
+      token,
+      method: "PATCH",
+      body: {},
+    });
+  }
+
+  function buildBuildDetailUrl(connection, projectName, buildId) {
+    return `${trimTrailingSlash(connection.orgUrl)}/${encodeURIComponent(projectName)}/_apis/build/builds/${buildId}?api-version=${API_VERSION}`;
+  }
+
+  async function fetchBuildDetail(connection, token, projectName, buildId) {
+    if (!buildId) return null;
+    try {
+      return await requestJson(buildBuildDetailUrl(connection, projectName, buildId), {
+        login: connection.login,
+        token,
+      });
+    } catch {
+      return null;
+    }
+  }
+
   async function listIterationChanges(connection, token, projectName, repositoryId, pullRequestId) {
     const iterationsResult = await requestJson(
       buildIterationsUrl(connection, projectName, repositoryId, pullRequestId),
@@ -321,6 +350,8 @@ export function createAzureApi(fetchImpl, { auditLogger } = {}) {
     buildListRefsUrl,
     buildCreatePullRequestUrl,
     fetchBuildErrors,
+    fetchBuildDetail,
+    reEvaluatePolicy,
     listProjects,
     listPullRequestsByProject,
     listThreads,

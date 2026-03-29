@@ -64,6 +64,14 @@ const workspaceCards = computed(() => {
     activeWorkspaceId: payload.appState?.activeWorkspaceId || "",
     getGitSnapshot: (id) => store.getGitSnapshot(id),
     getWorkspaceAttention: (id) => store.getWorkspaceAttentionForId(id),
+    getChecks: (workspace) => {
+      const prKey = workspace.review?.prKey;
+      if (!prKey) return null;
+      const provider = workspace.review?.provider;
+      if (provider === "azure-devops") return payload.azureDevops?.pullRequests?.[prKey]?.checks || null;
+      if (provider === "github") return payload.github?.pullRequests?.[prKey]?.checks || null;
+      return null;
+    },
   });
 });
 
