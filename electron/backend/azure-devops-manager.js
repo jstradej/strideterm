@@ -442,6 +442,14 @@ export class AzureDevOpsManager extends EventEmitter {
     return this.getSnapshot();
   }
 
+  seedPullRequestSummary(prKey, summary) {
+    if (this.snapshot.pullRequests[prKey] || this.findSummary(prKey)) return;
+    this.setSnapshot({
+      ...this.snapshot,
+      pullRequests: { ...this.snapshot.pullRequests, [prKey]: summary },
+    });
+  }
+
   async ensurePullRequestDetail(prKey, { workspaces = [], force = false } = {}) {
     const current = this.snapshot.pullRequests[prKey] || this.findSummary(prKey);
     if (!current) {
@@ -1137,9 +1145,10 @@ export class AzureDevOpsManager extends EventEmitter {
     if (!sourceBranch) {
       throw new Error("Cannot determine branch name for push.");
     }
+    // Local branch may be named differently (e.g. pr-123-feature) so push HEAD to the remote branch name
     const pushArgs = force
-      ? ["push", "--force-with-lease", "-u", "origin", sourceBranch]
-      : ["push", "-u", "origin", sourceBranch];
+      ? ["push", "--force-with-lease", "-u", "origin", `HEAD:refs/heads/${sourceBranch}`]
+      : ["push", "-u", "origin", `HEAD:refs/heads/${sourceBranch}`];
     await this.runGit(workspace.cwd, pushArgs, {
       login: connection.login,
       token,

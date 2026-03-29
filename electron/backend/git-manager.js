@@ -1158,12 +1158,24 @@ export class GitManager extends EventEmitter {
       return createStructuredResult({ ok: false, summary: "Cannot push: no branch is checked out (detached HEAD)." });
     }
 
-    const upstream = snapshot.upstream;
-    const pushArgs = upstream ? ["push"] : ["push", "--set-upstream", "origin", branch];
+    const upstream = snapshot.upstream || "";
+    // Extract remote name from upstream (e.g. "origin/feature-1" → "origin")
+    // For worktrees or repos with non-"origin" remotes, this picks the right one.
+    const remoteNames = Object.keys(snapshot.remotes || {}).filter((k) => !k.includes(":"));
+    const remote = remoteNames.find((r) => upstream.startsWith(`${r}/`)) || remoteNames[0] || "origin";
+    const upstreamBranch = upstream.startsWith(`${remote}/`) ? upstream.slice(remote.length + 1) : "";
+    const upstreamMatchesBranch = upstreamBranch === branch;
+
+    // Decide push strategy:
+    // - upstream tracks same branch name on remote: simple push
+    // - upstream missing or tracks different branch: set-upstream to fix tracking
+    const pushArgs = upstreamMatchesBranch ? ["push", remote, "HEAD"] : ["push", "--set-upstream", remote, branch];
+    const target = `${remote}/${branch}`;
 
     return this.runWriteAction(workspace, {
       type: "push",
-      label: "Push",
+      label: `Push to ${target}`,
+      baseBranch: " ",
       allowDirty: true,
       skipPreflight: true,
       run: async (cwd) => this.execAuthGit(cwd, pushArgs, { connection }),

@@ -140,6 +140,15 @@
     <div v-else-if="!detail" class="terminal-empty">
       <p>Review workspace</p>
       <small>PR data is loading or not available.</small>
+      <button
+        type="button"
+        class="button"
+        style="margin-top: 12px"
+        :disabled="busyAction === 'refresh'"
+        @click="handleRefresh"
+      >
+        {{ busyAction === "refresh" ? "Refreshing…" : "Refresh" }}
+      </button>
     </div>
     <div v-else class="git-view review-shell">
       <!-- Toolbar -->

@@ -39,6 +39,7 @@
             type="button"
             :class="['button', 'button--ghost', gitUi.busyAction === 'refresh' && 'button--busy']"
             :disabled="!!gitUi.busyAction"
+            title="Re-read git status from disk"
             @click="gitUiStore.refreshGit(workspaceId)"
           >
             {{ gitUi.busyAction === "refresh" ? "Refreshing…" : "Refresh" }}
@@ -47,20 +48,29 @@
             type="button"
             :class="['button', 'button--ghost', gitUi.busyAction === 'fetch' && 'button--busy']"
             :disabled="!!gitUi.busyAction"
+            title="Fetch latest changes from remote"
             @click="gitUiStore.gitFetch(workspaceId)"
           >
             {{ gitUi.busyAction === "fetch" ? "Fetching…" : "Fetch" }}
           </button>
           <button
-            v-if="!isLinkedWorktree"
+            v-if="!isReviewWorkspace"
             type="button"
             :class="['button', gitUi.busyAction === 'push' && 'button--busy']"
-            :disabled="!!gitUi.busyAction"
+            :disabled="!!gitUi.busyAction || !canPush"
+            :title="pushTooltip"
             @click="gitUiStore.gitPush(workspaceId)"
           >
             {{ gitUi.busyAction === "push" ? "Pushing…" : "Push" }}
           </button>
-          <button type="button" class="button button--ghost" @click="onCreateWorktree">New worktree</button>
+          <button
+            type="button"
+            class="button button--ghost"
+            title="Create a new git worktree with its own branch"
+            @click="onCreateWorktree"
+          >
+            New worktree
+          </button>
           <button
             v-if="snapshot.lazygit?.available"
             type="button"
@@ -81,7 +91,7 @@
             Install Lazygit
           </button>
           <select
-            v-if="availableConnections.length && !isLinkedWorktree"
+            v-if="availableConnections.length && !isReviewWorkspace"
             class="git-branch-select"
             :value="activeConnectionId"
             title="Git credentials source"
@@ -145,6 +155,7 @@
                     type="button"
                     class="button"
                     :disabled="!!(gitUi.busyAction || operation.inProgress)"
+                    :title="`Rebase current branch onto local ${effectiveBaseBranch}`"
                     @click="gitUiStore.gitRebaseBase(workspaceId, effectiveBaseBranch)"
                   >
                     {{ gitUi.busyAction === "rebase" ? "Rebasing…" : `Rebase onto ${effectiveBaseBranch}` }}
@@ -154,6 +165,7 @@
                     type="button"
                     class="button button--ghost"
                     :disabled="!!(gitUi.busyAction || operation.inProgress)"
+                    :title="`Merge local ${effectiveBaseBranch} into current branch`"
                     @click="gitUiStore.gitMergeBase(workspaceId, effectiveBaseBranch)"
                   >
                     {{ gitUi.busyAction === "merge" ? "Merging…" : `Merge ${effectiveBaseBranch} in` }}
@@ -179,6 +191,7 @@
                   type="button"
                   class="button"
                   :disabled="!!(gitUi.busyAction || !snapshot.dirty)"
+                  title="Save uncommitted changes to the stash"
                   @click="gitUiStore.gitStash(workspaceId)"
                 >
                   {{ gitUi.busyAction === "stash" ? "Stashing…" : "Stash" }}
@@ -187,6 +200,7 @@
                   type="button"
                   class="button button--ghost"
                   :disabled="!!(gitUi.busyAction || !(snapshot.stashCount > 0))"
+                  title="Restore the most recent stash entry"
                   @click="gitUiStore.gitStashPop(workspaceId)"
                 >
                   {{ gitUi.busyAction === "stash-pop" ? "Popping…" : "Unstash (pop)" }}
@@ -220,6 +234,7 @@
                       type="button"
                       class="button"
                       :disabled="!switchBranchTarget || !!gitUi.busyAction"
+                      title="Checkout the selected branch"
                       style="margin-left: 6px"
                       @click="onCheckoutBranch"
                     >
@@ -241,6 +256,7 @@
                       type="button"
                       class="button button--ghost"
                       :disabled="!newBranchName.trim() || !!gitUi.busyAction"
+                      title="Create a new branch from the current one and switch to it"
                       style="margin-left: 6px"
                       @click="onCreateBranch"
                     >
@@ -300,6 +316,24 @@
                   :workspace-id="workspaceId"
                   @select="(p, s) => gitUiStore.gitSelectDiff(workspaceId, p, s)"
                 />
+                <div v-if="snapshot.dirty" class="git-commit-form" style="margin-top: 12px">
+                  <input
+                    v-model="commitMessage"
+                    name="commit-message"
+                    type="text"
+                    placeholder="Commit message"
+                    @keydown.enter="onCommitAll"
+                  />
+                  <button
+                    type="button"
+                    class="button"
+                    :disabled="!!gitUi.busyAction || !commitMessage.trim()"
+                    title="Stage all changes and commit"
+                    @click="onCommitAll"
+                  >
+                    {{ gitUi.busyAction === "commit" ? "Committing\u2026" : "Commit all" }}
+                  </button>
+                </div>
               </article>
             </div>
             <div class="git-section__preview">
@@ -520,6 +554,46 @@ const activeTab = computed(() => gitUi.value.activeTab || "branch");
 // Effective base branch: override from UI, or auto-detected
 const effectiveBaseBranch = computed(() => gitUi.value.overrideBaseBranch || baseBranch.value);
 
+// Push button state — detect remote name from upstream or remotes list
+const pushRemote = computed(() => {
+  const s = snapshot.value;
+  if (!s) return "origin";
+  const remoteNames = Object.keys(s.remotes || {}).filter((k) => !k.includes(":"));
+  if (s.upstream) {
+    return remoteNames.find((r) => s.upstream.startsWith(`${r}/`)) || remoteNames[0] || "origin";
+  }
+  return remoteNames[0] || "origin";
+});
+const upstreamMatchesBranch = computed(() => {
+  const s = snapshot.value;
+  return s?.upstream === `${pushRemote.value}/${s?.branch}`;
+});
+const canPush = computed(() => {
+  const s = snapshot.value;
+  if (!s) return false;
+  // Can push when: commits ahead, no upstream (new branch), or upstream tracks wrong branch
+  return s.aheadCount > 0 || !s.upstream || !upstreamMatchesBranch.value;
+});
+const pushTooltip = computed(() => {
+  const s = snapshot.value;
+  if (!s) return "Push";
+  const target = `${pushRemote.value}/${s.branch}`;
+  if (!s.upstream || !upstreamMatchesBranch.value) {
+    return `Push ${s.branch} and set upstream to ${target}`;
+  }
+  if (s.aheadCount > 0) return `Push ${s.aheadCount} commit${s.aheadCount !== 1 ? "s" : ""} to ${target}`;
+  return "Nothing to push";
+});
+
+// Commit form (Changes tab)
+const commitMessage = ref("");
+function onCommitAll() {
+  const msg = commitMessage.value.trim();
+  if (!msg) return;
+  gitUiStore.gitCommitAll(props.workspaceId, msg);
+  commitMessage.value = "";
+}
+
 // Branch options for combo box
 const baseBranchOptions = computed(() => {
   const names = snapshot.value?.branchNames || [];
@@ -622,7 +696,7 @@ const tabs = computed(() => {
     },
     { id: "history", label: "History", badge: "" },
   ];
-  if (!isReviewWorkspace.value && !isLinkedWorktree.value) {
+  if (!isReviewWorkspace.value) {
     list.push({ id: "pr", label: "Pull Request", badge: "" });
   }
   list.push({ id: "tags", label: "Tags", badge: "" });

@@ -2286,6 +2286,29 @@ export async function createRuntime({
           reviewWorkspaceId: workspace.id,
           lastSeenActivityAt: new Date().toISOString(),
         });
+
+        // Seed PR summary into GitHub snapshot so ensurePullRequestDetail can find it
+        // (GitHub API may not return the new PR in inbox queries immediately)
+        github.seedPullRequestSummary(prKey, {
+          connectionId,
+          prKey,
+          repository: { owner, name: repo, fullName: `${owner}/${repo}`, remoteUrl },
+          pullRequest: {
+            id: result.pullRequestNumber,
+            number: result.pullRequestNumber,
+            title: result.title || payload.title || "",
+            status: "open",
+            mergeStatus: "",
+            url: result.url || "",
+            webUrl: result.url || "",
+            headSha: "",
+            sourceRefName: sourceBranch,
+            targetRefName: payload.targetBranch,
+          },
+          role: "author",
+          reviewWorkspaceId: workspace.id,
+          lastRemoteActivityAt: new Date().toISOString(),
+        });
       }
 
       await refreshGit(workspace.id);
@@ -2393,6 +2416,27 @@ export async function createRuntime({
         await azure.reviewStore?.upsertTrackedPullRequest(prKey, {
           reviewWorkspaceId: workspace.id,
           lastSeenActivityAt: new Date().toISOString(),
+        });
+
+        // Seed PR summary into Azure snapshot so ensurePullRequestDetail can find it
+        azure.seedPullRequestSummary(prKey, {
+          connectionId: qf.connectionId,
+          prKey,
+          project: { id: "", name: qf.projectName },
+          repository: { id: qf.repositoryId, name: qf.repositoryName, remoteUrl: qf.remoteUrl },
+          pullRequest: {
+            id: result.pullRequestId,
+            title: result.title || payload.title || "",
+            status: "active",
+            mergeStatus: "",
+            url: result.url || "",
+            webUrl: result.url || "",
+            sourceRefName: `refs/heads/${payload.sourceBranch || snapshot.branch}`,
+            targetRefName: `refs/heads/${payload.targetBranch}`,
+          },
+          role: "author",
+          reviewWorkspaceId: workspace.id,
+          lastRemoteActivityAt: new Date().toISOString(),
         });
       }
 
@@ -2864,6 +2908,7 @@ export async function createRuntime({
         source: project.source,
         pluginId: project.pluginId,
         profileId: project.profileId,
+        connectionId: project.connectionId || "",
         cwd: treePath,
         notes: `Worktree of ${project.name}`,
         activePanelId: "",

@@ -25,19 +25,9 @@
     <template v-else-if="!compare.aheadCount">
       <!-- Nothing to merge back yet -->
       <template v-if="snapshot.dirty">
-        <p class="git-card__hint">No commits ahead of {{ resolvedBaseBranch }} yet. Commit your changes first.</p>
-        <div class="git-commit-form">
-          <input
-            ref="commitInputRef"
-            v-model="commitMessage"
-            name="commit-message"
-            type="text"
-            placeholder="Commit message"
-          />
-          <button type="button" class="button" :disabled="!!gitUi.busyAction" @click="onCommitAll">
-            {{ gitUi.busyAction === "commit" ? "Committing…" : "Commit all changes" }}
-          </button>
-        </div>
+        <p class="git-card__hint">
+          No commits ahead of {{ resolvedBaseBranch }} yet. Use the <strong>Changes</strong> tab to commit your changes.
+        </p>
         <details v-if="dirtyConflicts.length" class="git-details">
           <summary class="git-card__hint git-card__hint--warning">
             Conflict risk: {{ dirtyConflicts.length }} overlapping dirty file{{
@@ -187,9 +177,6 @@ const props = defineProps({
 const appStore = useAppStore();
 const gitUiStore = useGitUiStore();
 
-const commitInputRef = ref(null);
-const commitMessage = ref(props.snapshot.branch.replace(/-/g, " "));
-
 const compare = computed(() => props.snapshot.compareWithBase || {});
 const localOverride = ref("");
 const resolvedBaseBranch = computed(
@@ -218,10 +205,4 @@ const baseChangedFiles = computed(() => new Set(compare.value.baseChangedFiles |
 const dirtyConflicts = computed(() =>
   baseChangedFiles.value.size > 0 ? dirtyFiles.value.filter((p) => baseChangedFiles.value.has(p)) : [],
 );
-
-function onCommitAll() {
-  const message = commitMessage.value.trim();
-  if (!message) return;
-  gitUiStore.gitCommitAll(props.workspaceId, message);
-}
 </script>

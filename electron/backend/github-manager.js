@@ -433,6 +433,18 @@ export class GitHubManager extends EventEmitter {
   }
 
   // ---------------------------------------------------------------------------
+  // Seed a PR summary (e.g. right after creation, before GitHub API returns it)
+  // ---------------------------------------------------------------------------
+
+  seedPullRequestSummary(prKey, summary) {
+    if (this.snapshot.pullRequests[prKey] || this.findSummary(prKey)) return;
+    this.setSnapshot({
+      ...this.snapshot,
+      pullRequests: { ...this.snapshot.pullRequests, [prKey]: summary },
+    });
+  }
+
+  // ---------------------------------------------------------------------------
   // PR detail enrichment (checks, files)
   // ---------------------------------------------------------------------------
 

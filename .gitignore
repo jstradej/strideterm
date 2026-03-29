@@ -61,3 +61,6 @@ strideterm-session*.log
 .termhub/
 termhub-state.json
 termhub-state.*.json
+
+# Local dev helper
+dev.ps1
