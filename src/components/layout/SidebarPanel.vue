@@ -14,7 +14,7 @@
       :key="ws.id"
       :workspace="ws"
       :data-workspace-id="ws.id"
-      @activate="store.activateWorkspace(ws.id)"
+      @activate="onActivate(ws.id)"
       @quick-fix="ws.kind === 'github' ? store.openGitHubQuickFixWizard() : store.openQuickFixWizard()"
       @create-worktree="$emit('create-worktree', ws.id)"
       @edit="$emit('edit-workspace', ws.id)"
@@ -77,5 +77,10 @@ const suggestions = computed(() => {
     .map((p) => ({ id: p.id, color: p.color, icon: p.icon, name: p.workspaceDefaults.name || p.name }));
 });
 
-defineEmits(["create-worktree", "edit-workspace", "delete-workspace", "add-plugin-workspace"]);
+const emit = defineEmits(["create-worktree", "edit-workspace", "delete-workspace", "add-plugin-workspace", "activate"]);
+
+function onActivate(workspaceId) {
+  store.activateWorkspace(workspaceId);
+  emit("activate", workspaceId);
+}
 </script>

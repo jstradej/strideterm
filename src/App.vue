@@ -38,6 +38,7 @@
 
       <ProfileBar @click="store.openProfilesDialog()" />
       <SidebarPanel
+        @activate="closeSidebar"
         @create-worktree="store.createWorktreeWithDialog($event)"
         @edit-workspace="onEditWorkspace($event)"
         @delete-workspace="store.deleteWorkspace($event)"
@@ -87,6 +88,29 @@
             @close-tab="store.closeTab($event)"
             @contextmenu-tab="onTabContextMenu"
           />
+
+          <!-- Mobile tab picker (replaces cramped tab strip) -->
+          <div class="mobile-tab-picker">
+            <button type="button" class="mobile-tab-picker__trigger" @click="mobileTabOpen = !mobileTabOpen">
+              ▤ Tabs
+            </button>
+            <div v-if="mobileTabOpen" class="mobile-tab-picker__dropdown">
+              <button
+                v-for="tab in store.workspaceTabs"
+                :key="tab.id"
+                type="button"
+                :class="['mobile-tab-picker__item', tab.id === store.activeViewId && 'mobile-tab-picker__item--active']"
+                @click="
+                  store.activateView(tab.id);
+                  mobileTabOpen = false;
+                "
+              >
+                <span class="mobile-tab-picker__name">{{ tab.title }}</span>
+                <small class="mobile-tab-picker__status">{{ tab.status }}</small>
+              </button>
+            </div>
+          </div>
+          <div v-if="mobileTabOpen" class="mobile-tab-picker__backdrop" @click="mobileTabOpen = false"></div>
 
           <button
             type="button"
@@ -177,6 +201,7 @@ const { latestToast } = useNotificationCapture();
 
 const frameRef = ref(null);
 const sidebarRef = ref(null);
+const mobileTabOpen = ref(false);
 const tabPickerAnchor = ref(null);
 
 const sidebarCollapseLabel = computed(() => (store.sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"));

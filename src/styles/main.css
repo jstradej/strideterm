@@ -3892,6 +3892,14 @@ textarea {
   display: none;
 }
 
+/* ── Mobile tab picker (hidden on desktop) ── */
+.mobile-tab-picker {
+  display: none;
+}
+.mobile-tab-picker__backdrop {
+  display: none;
+}
+
 .sidebar-backdrop {
   display: none;
 }
@@ -4014,18 +4022,85 @@ textarea {
   }
 
   .tab-strip {
-    overflow-x: auto;
-    -webkit-overflow-scrolling: touch;
-  }
-
-  .tab {
-    min-width: 70px;
-    padding: 5px 8px;
-    font-size: 12px;
-  }
-
-  .tab small {
     display: none;
+  }
+
+  .mobile-tab-picker {
+    display: block;
+    position: relative;
+    flex-shrink: 0;
+    margin-left: auto;
+  }
+
+  .mobile-tab-picker__trigger {
+    display: grid;
+    place-items: center;
+    height: 34px;
+    padding: 0 10px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: var(--panel);
+    color: var(--text);
+    font-size: 13px;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+
+  .mobile-tab-picker__trigger:hover {
+    background: rgba(255, 255, 255, 0.08);
+  }
+
+  .mobile-tab-picker__dropdown {
+    position: absolute;
+    top: 100%;
+    right: 0;
+    z-index: 120;
+    min-width: 200px;
+    max-width: 80vw;
+    margin-top: 4px;
+    padding: 4px 0;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--panel);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  }
+
+  .mobile-tab-picker__item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    padding: 10px 14px;
+    border: none;
+    background: none;
+    color: var(--text);
+    font-size: 14px;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .mobile-tab-picker__item:hover {
+    background: rgba(255, 255, 255, 0.06);
+  }
+
+  .mobile-tab-picker__item--active {
+    background: rgba(255, 255, 255, 0.1);
+    font-weight: 600;
+    border-left: 3px solid var(--accent);
+  }
+
+  .mobile-tab-picker__status {
+    color: var(--muted);
+    font-size: 11px;
+    font-weight: 400;
+    margin-left: auto;
+  }
+
+  .mobile-tab-picker__backdrop {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 110;
   }
 
   .terminal-toolbar__actions {
