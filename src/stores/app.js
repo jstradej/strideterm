@@ -199,6 +199,30 @@ export const useAppStore = defineStore("app", () => {
     }
   });
 
+  // Sync document theme attribute when settings change
+  let _lastAppliedTheme = "";
+  watch(
+    () => payload.value?.appState?.settings?.theme,
+    (theme) => {
+      const resolved =
+        theme === "system"
+          ? window.matchMedia?.("(prefers-color-scheme: light)").matches
+            ? "light"
+            : "dark"
+          : theme || "dark";
+      if (resolved === _lastAppliedTheme) return;
+      _lastAppliedTheme = resolved;
+      if (resolved === "light") {
+        document.documentElement.setAttribute("data-theme", "light");
+      } else {
+        document.documentElement.removeAttribute("data-theme");
+      }
+      // Let terminal panes know the theme changed
+      window.dispatchEvent(new CustomEvent("strideterm:theme-changed"));
+    },
+    { immediate: true },
+  );
+
   // --- Helpers ---
 
   /** Save workspace-specific payload parts for the current workspace. */

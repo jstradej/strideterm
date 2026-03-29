@@ -42,6 +42,8 @@ export const useTerminalStore = defineStore("terminal", () => {
     api.onTerminalExit(({ sessionId, exitCode, intentional }) => {
       controller.handleTerminalExit({ sessionId, exitCode, intentional });
     });
+
+    window.addEventListener("strideterm:theme-changed", () => controller?.syncTheme());
   }
 
   function attachTerminalPane(sessionId, paneBody) {
