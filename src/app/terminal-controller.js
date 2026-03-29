@@ -123,12 +123,20 @@ export function createTerminalController({
         activate: openTerminalLink,
         allowNonHttpProtocols: false,
       },
-      theme: {
-        background: "#071019",
-        foreground: appConfig.ui.terminalForegroundColor,
-        selectionBackground: "#264b6e",
-        cursor: "#ffa424",
-      },
+      theme:
+        document.documentElement.dataset.theme === "light"
+          ? {
+              background: "#f7f7f9",
+              foreground: "#18181b",
+              cursor: "#18181b",
+              selectionBackground: "rgba(0,0,0,0.15)",
+            }
+          : {
+              background: "#071019",
+              foreground: appConfig.ui.terminalForegroundColor,
+              selectionBackground: "#264b6e",
+              cursor: "#ffa424",
+            },
     });
     const fitAddon = new FitAddon();
     const webLinksAddon = new WebLinksAddon(openTerminalLink);

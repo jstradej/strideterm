@@ -7,7 +7,9 @@
   --border: rgba(var(--tint), 0.07);
   --accent: #ffa424;
   --success: #4caf50;
+  --success-fg: #6edfb6;
   --danger: #ff6f8d;
+  --danger-fg: #ff6f8d;
   --shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
   --tint: 255, 255, 255;
   --sidebar-width: 248px;
@@ -25,7 +27,9 @@
   --border: rgba(0, 0, 0, 0.08);
   --accent: #cc8520;
   --success: #2e7d32;
+  --success-fg: #1b6e2e;
   --danger: #b7284c;
+  --danger-fg: #a1213f;
   --shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
   --tint: 0, 0, 0;
   color-scheme: light;
@@ -38,11 +42,11 @@
 
 :root[data-theme="light"] .review-check-icon--passed,
 :root[data-theme="light"] .review-check-icon--approved {
-  color: var(--success);
+  color: var(--success-fg);
 }
 
 :root[data-theme="light"] .pipeline-item__icon--succeeded {
-  color: var(--success);
+  color: var(--success-fg);
 }
 
 :root[data-theme="light"] .pipelines-summary__badge--passed {
@@ -70,6 +74,34 @@
 :root[data-theme="light"] .review-vote-badge--rejected,
 :root[data-theme="light"] .review-vote-badge--waitForAuthor {
   color: var(--danger);
+}
+
+:root[data-theme="light"] .workspace-card,
+:root[data-theme="light"] .project {
+  border-color: color-mix(in srgb, var(--accent), transparent 55%);
+}
+
+:root[data-theme="light"] .remote-access__qr,
+:root[data-theme="light"] .remote-compact__qr {
+  filter: invert(1);
+}
+
+:root[data-theme="light"] .workspace-pane--active {
+  border-color: color-mix(in srgb, var(--accent), transparent 20%);
+}
+
+:root[data-theme="light"] .noise-overlay,
+:root[data-theme="light"] body::after {
+  opacity: 0;
+}
+
+:root[data-theme="light"] .button--ghost {
+  background: rgba(0, 0, 0, 0.06);
+  border: 1px solid rgba(0, 0, 0, 0.1);
+}
+
+:root[data-theme="light"] .button--ghost:hover {
+  background: rgba(0, 0, 0, 0.1);
 }
 
 html,
@@ -528,7 +560,7 @@ dt {
 
 .remote-pill--ok {
   border-color: rgba(110, 223, 182, 0.35);
-  color: #6edfb6;
+  color: var(--success-fg);
 }
 
 .remote-summary {
@@ -924,7 +956,7 @@ dt {
 }
 
 .docker-state--running {
-  color: #6edfb6;
+  color: var(--success-fg);
   border-color: rgba(110, 223, 182, 0.36);
 }
 
@@ -1680,7 +1712,7 @@ dt {
 }
 
 .tab--running small {
-  color: #6edfb6;
+  color: var(--success-fg);
 }
 
 .tab--error small {
@@ -2485,7 +2517,7 @@ dt {
 }
 
 .diff-add {
-  color: #6edfb6;
+  color: var(--success-fg);
   background: rgba(110, 223, 182, 0.08);
 }
 
@@ -2992,7 +3024,7 @@ dt {
 
 .pipelines-summary__badge--passed {
   background: rgba(110, 223, 182, 0.15);
-  color: #6edfb6;
+  color: var(--success-fg);
 }
 
 .pipelines-list {
@@ -3030,7 +3062,7 @@ dt {
 }
 
 .pipeline-item__icon--succeeded {
-  color: #6edfb6;
+  color: var(--success-fg);
 }
 
 .pipeline-item__icon--failed {
@@ -3598,7 +3630,7 @@ details[open] > .review-tree-dir__label .review-tree-dir__icon::before {
 }
 
 .review-conflict-banner--ok .review-conflict-banner__icon {
-  color: #6edfb6;
+  color: var(--success-fg);
 }
 
 .review-conflict-banner strong {
@@ -3653,7 +3685,7 @@ details[open] > .review-tree-dir__label .review-tree-dir__icon::before {
 
 .review-check-icon--passed,
 .review-check-icon--approved {
-  color: #6edfb6;
+  color: var(--success-fg);
 }
 
 .review-check-icon--failed,
@@ -3680,7 +3712,7 @@ details[open] > .review-tree-dir__label .review-tree-dir__icon::before {
 
 .review-vote-badge--approved {
   background: rgba(110, 223, 182, 0.15);
-  color: #6edfb6;
+  color: var(--success-fg);
 }
 
 .review-vote-badge--rejected {
