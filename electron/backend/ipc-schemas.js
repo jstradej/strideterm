@@ -294,6 +294,17 @@ export const workspacePushOptionsSchema = z.object({
   force: z.boolean().optional(),
 });
 
+export const rerunCheckSchema = z.object({
+  prKey: nonEmptyString,
+  checkItem: z.object({
+    id: z.string(),
+    kind: z.string(),
+    evaluationId: z.string().nullable().optional(),
+    checkSuiteId: z.union([z.string(), z.number()]).nullable().optional(),
+    name: z.string().optional(),
+  }),
+});
+
 export const wsTerminalInputSchema = z.object({
   type: z.literal("terminal:input"),
   sessionId: nonEmptyString,

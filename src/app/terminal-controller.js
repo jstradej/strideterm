@@ -2,6 +2,18 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 
+function resolveTerminalTheme(appConfig) {
+  const isLight = document.documentElement.dataset.theme === "light";
+  return isLight
+    ? { background: "#f7f7f9", foreground: "#18181b", cursor: "#18181b", selectionBackground: "rgba(0,0,0,0.15)" }
+    : {
+        background: "#141416",
+        foreground: appConfig?.ui?.terminalForegroundColor || "#d8e4f5",
+        cursor: "#ffa424",
+        selectionBackground: "rgba(255,255,255,0.15)",
+      };
+}
+
 export function createTerminalController({
   views,
   buffers,
@@ -123,20 +135,7 @@ export function createTerminalController({
         activate: openTerminalLink,
         allowNonHttpProtocols: false,
       },
-      theme:
-        document.documentElement.dataset.theme === "light"
-          ? {
-              background: "#f7f7f9",
-              foreground: "#18181b",
-              cursor: "#18181b",
-              selectionBackground: "rgba(0,0,0,0.15)",
-            }
-          : {
-              background: "#071019",
-              foreground: appConfig.ui.terminalForegroundColor,
-              selectionBackground: "#264b6e",
-              cursor: "#ffa424",
-            },
+      theme: resolveTerminalTheme(appConfig),
     });
     const fitAddon = new FitAddon();
     const webLinksAddon = new WebLinksAddon(openTerminalLink);
@@ -299,15 +298,7 @@ export function createTerminalController({
     scheduleActiveResize,
     scheduleAllVisibleResize,
     syncTheme() {
-      const isLight = document.documentElement.dataset.theme === "light";
-      const theme = isLight
-        ? { background: "#f7f7f9", foreground: "#18181b", cursor: "#18181b", selectionBackground: "rgba(0,0,0,0.15)" }
-        : {
-            background: "#141416",
-            foreground: "#d8e4f5",
-            cursor: "#d8e4f5",
-            selectionBackground: "rgba(255,255,255,0.15)",
-          };
+      const theme = resolveTerminalTheme(appConfig);
       for (const view of views.value.values()) {
         view.term.options.theme = theme;
       }

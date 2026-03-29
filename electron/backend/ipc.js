@@ -56,6 +56,7 @@ import {
   githubQuickFixListReposSchema,
   githubQuickFixListBranchesSchema,
   githubQuickFixCreateSchema,
+  rerunCheckSchema,
 } from "./ipc-schemas.js";
 
 export function registerIpc(runtime, emitToRenderer, { includeStateGet = true } = {}) {
@@ -198,7 +199,10 @@ export function registerIpc(runtime, emitToRenderer, { includeStateGet = true } 
   ipcMain.handle("azure:quickfix:create", async (_event, payload) =>
     runtime.azureQuickFixCreate(validateIpc(quickFixCreateSchema, payload, "azure:quickfix:create")),
   );
-  ipcMain.handle("azure:rerun-check", async (_event, prKey, checkItem) => runtime.rerunAzureCheck(prKey, checkItem));
+  ipcMain.handle("azure:rerun-check", async (_event, prKey, checkItem) => {
+    const validated = validateIpc(rerunCheckSchema, { prKey, checkItem }, "azure:rerun-check");
+    return runtime.rerunAzureCheck(validated.prKey, validated.checkItem);
+  });
 
   // --- GitHub ---
   ipcMain.handle("github:verify-connection", async (_event, connection) =>
@@ -227,7 +231,10 @@ export function registerIpc(runtime, emitToRenderer, { includeStateGet = true } 
   ipcMain.handle("github:pull-request:review", async (_event, payload) =>
     runtime.submitGitHubPullRequestReview(validateIpc(githubReviewSchema, payload, "github:pull-request:review")),
   );
-  ipcMain.handle("github:rerun-check", async (_event, prKey, checkItem) => runtime.rerunGitHubCheck(prKey, checkItem));
+  ipcMain.handle("github:rerun-check", async (_event, prKey, checkItem) => {
+    const validated = validateIpc(rerunCheckSchema, { prKey, checkItem }, "github:rerun-check");
+    return runtime.rerunGitHubCheck(validated.prKey, validated.checkItem);
+  });
   ipcMain.handle("github:workspace:fetch", async (_event, workspaceId) =>
     runtime.fetchGitHubReviewWorkspace(workspaceId),
   );
