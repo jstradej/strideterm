@@ -1,9 +1,9 @@
 import path from "node:path";
-import { EventEmitter } from "node:events";
 import { randomUUID } from "node:crypto";
 import { mkdir } from "node:fs/promises";
 import { execFileText } from "./process-utils.js";
 import { createGitHubApi } from "./github-api.js";
+import { BaseProviderManager, createReviewWorkspacePanels } from "./shared/base-manager.js";
 import { classifyGitHubRequest, parseGitHubUrl } from "./github-audit-log-store.js";
 import { buildPullRequestSummary, findWorkspaceForPullRequest, findMatchingWorkspace } from "./github-pr-summary.js";
 import {
@@ -32,38 +32,7 @@ import {
   buildRepositoryRemoteUrl,
 } from "./github-utils.js";
 
-function createReviewWorkspacePanels(panelTemplates = [], tabTemplates = []) {
-  const selected = [];
-
-  if (Array.isArray(panelTemplates) && panelTemplates.length) {
-    selected.push(...panelTemplates);
-  } else {
-    const preferredTemplates = ["shell", "claude", "codex"];
-    for (const templateId of preferredTemplates) {
-      const template = tabTemplates.find((entry) => entry.id === templateId);
-      if (template) selected.push(template);
-    }
-    if (!selected.length) selected.push(...tabTemplates.slice(0, 3));
-    if (!selected.length) {
-      selected.push(
-        { title: "Shell", command: "" },
-        { title: "Claude Code", command: "claude" },
-        { title: "Codex", command: "codex" },
-      );
-    }
-  }
-
-  return selected.map((template, index) => ({
-    id: `panel-${randomUUID()}`,
-    title: template.title || (index === 0 ? "Shell" : `Panel ${index + 1}`),
-    command: template.command || "",
-    launch: template.launch ? { file: template.launch.file || "", args: [...(template.launch.args || [])] } : null,
-    shell: template.shell !== false,
-    startup: template.startup || (index === 0 ? "default" : "manual"),
-  }));
-}
-
-export class GitHubManager extends EventEmitter {
+export class GitHubManager extends BaseProviderManager {
   constructor({
     credentialStore,
     reviewStore,
@@ -73,23 +42,18 @@ export class GitHubManager extends EventEmitter {
     execFileTextImpl = execFileText,
     now = () => Date.now(),
   } = {}) {
-    super();
-    this.credentialStore = credentialStore;
-    this.reviewStore = reviewStore;
-    this.reviewBridgeStore = reviewBridgeStore;
-    this.auditLogStore = auditLogStore;
-    this.fetchImpl = fetchImpl;
-    this.execFileText = execFileTextImpl;
-    this.now = now;
-
-    this._auditConnectionId = "";
-    this._auditUserInitiated = false;
-
-    this.api = createGitHubApi(fetchImpl, {
-      auditLogger: (raw) => this._logAudit(raw),
+    super({
+      credentialStore,
+      reviewStore,
+      reviewBridgeStore,
+      auditLogStore,
+      fetchImpl,
+      execFileTextImpl,
+      now,
+      createApi: createGitHubApi,
     });
-    this.snapshot = createEmptySnapshot();
-    this.syncTimer = null;
+    this.providerLabel = "github";
+    this.defaultGitLogin = "x-access-token";
   }
 
   _logAudit(raw) {
@@ -110,40 +74,6 @@ export class GitHubManager extends EventEmitter {
       durationMs: raw.durationMs ?? null,
       userInitiated: this._auditUserInitiated,
     });
-  }
-
-  setAuditContext({ connectionId = "", userInitiated = false } = {}) {
-    this._auditConnectionId = connectionId;
-    this._auditUserInitiated = userInitiated;
-  }
-
-  getSnapshot() {
-    return clone(this.snapshot);
-  }
-
-  emitUpdated() {
-    this.emit("updated", this.getSnapshot());
-  }
-
-  setSnapshot(snapshot) {
-    this.snapshot = clone(snapshot);
-    this.emitUpdated();
-  }
-
-  stopPolling() {
-    if (this.syncTimer) {
-      clearInterval(this.syncTimer);
-      this.syncTimer = null;
-    }
-  }
-
-  configurePolling(intervalMs, callback) {
-    this.stopPolling();
-    if (intervalMs > 0 && typeof callback === "function") {
-      this.syncTimer = setInterval(() => {
-        callback().catch(() => {});
-      }, intervalMs);
-    }
   }
 
   // ---------------------------------------------------------------------------
@@ -171,20 +101,6 @@ export class GitHubManager extends EventEmitter {
   // ---------------------------------------------------------------------------
   // Helpers
   // ---------------------------------------------------------------------------
-
-  findSummary(prKey) {
-    const all = [
-      ...this.snapshot.inbox.needsMyReview,
-      ...this.snapshot.inbox.myPullRequests,
-      ...this.snapshot.inbox.recentlyUpdated,
-      ...this.snapshot.inbox.needsAttention,
-    ];
-    return all.find((item) => item.prKey === prKey) || null;
-  }
-
-  findConnection(connectionId) {
-    return this.snapshot.connections.find((c) => c.id === connectionId) || null;
-  }
 
   // ---------------------------------------------------------------------------
   // Sync (inbox polling)
@@ -382,71 +298,6 @@ export class GitHubManager extends EventEmitter {
   // Mark PR as seen
   // ---------------------------------------------------------------------------
 
-  async markPullRequestSeen(prKey) {
-    const summary = this.findSummary(prKey) || this.snapshot.pullRequests[prKey];
-    if (!summary) {
-      console.warn(`[github] markPullRequestSeen: PR ${prKey} not in snapshot, skipping`);
-      return;
-    }
-
-    const lastSeenActivityAt = summary.lastRemoteActivityAt || new Date(this.now()).toISOString();
-    await this.reviewStore.upsertTrackedPullRequest(prKey, {
-      lastSeenActivityAt,
-      reviewWorkspaceId: summary.reviewWorkspaceId || "",
-    });
-
-    if (this.reviewBridgeStore?.markPullRequestSeen) {
-      try {
-        await this.reviewBridgeStore.markPullRequestSeen(prKey, lastSeenActivityAt);
-      } catch (error) {
-        console.warn(`[github] review bridge mark-seen failed for ${prKey}: ${error.message || error}`);
-      }
-    }
-
-    const nextPullRequest = {
-      ...(this.snapshot.pullRequests[prKey] || summary),
-      lastSeenActivityAt,
-      hasAttention: false,
-      attentionReason: "",
-      newCommentsCount: 0,
-    };
-
-    const updateList = (items) =>
-      items.map((item) =>
-        item.prKey === prKey
-          ? { ...item, lastSeenActivityAt, hasAttention: false, attentionReason: "", newCommentsCount: 0 }
-          : item,
-      );
-
-    this.setSnapshot({
-      ...this.snapshot,
-      pullRequests: { ...this.snapshot.pullRequests, [prKey]: nextPullRequest },
-      inbox: {
-        needsMyReview: updateList(this.snapshot.inbox.needsMyReview),
-        myPullRequests: updateList(this.snapshot.inbox.myPullRequests),
-        recentlyUpdated: updateList(this.snapshot.inbox.recentlyUpdated),
-        needsAttention: this.snapshot.inbox.needsAttention.filter((item) => item.prKey !== prKey),
-      },
-      trackedPullRequests: {
-        ...this.snapshot.trackedPullRequests,
-        [prKey]: { ...(this.snapshot.trackedPullRequests[prKey] || {}), lastSeenActivityAt },
-      },
-    });
-    return this.getSnapshot();
-  }
-
-  // ---------------------------------------------------------------------------
-  // Seed a PR summary (e.g. right after creation, before GitHub API returns it)
-  // ---------------------------------------------------------------------------
-
-  seedPullRequestSummary(prKey, summary) {
-    if (this.snapshot.pullRequests[prKey] || this.findSummary(prKey)) return;
-    this.setSnapshot({
-      ...this.snapshot,
-      pullRequests: { ...this.snapshot.pullRequests, [prKey]: summary },
-    });
-  }
-
   // ---------------------------------------------------------------------------
   // PR detail enrichment (checks, files)
   // ---------------------------------------------------------------------------
@@ -573,50 +424,6 @@ export class GitHubManager extends EventEmitter {
     }
 
     return this.ensurePullRequestDetail(prKey, { force: true });
-  }
-
-  async listLocalChangedFiles(cwd, targetRefName) {
-    const targetBranch = stripRefsPrefix(targetRefName);
-    const result = await this.execFileText("git", ["diff", "--name-status", `origin/${targetBranch}...HEAD`], { cwd });
-    return result.stdout
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .filter(Boolean)
-      .map((line) => {
-        const [changeType = "", ...rest] = line.split(/\s+/);
-        return { changeType, path: rest.join(" ") };
-      });
-  }
-
-  // ---------------------------------------------------------------------------
-  // Git helpers
-  // ---------------------------------------------------------------------------
-
-  async runGit(cwd, args, { token, login = "x-access-token" } = {}) {
-    const extraArgs = [];
-    if (process.platform === "win32") {
-      extraArgs.push("-c", "core.longpaths=true");
-    }
-    if (token) {
-      extraArgs.push("-c", `http.extraheader=${encodeAuthHeader(login, token)}`);
-    }
-    try {
-      return await this.execFileText("git", [...extraArgs, ...args], {
-        cwd,
-        env: sanitizeGitEnvironment(),
-      });
-    } catch (error) {
-      const sanitize = (text) =>
-        String(text || "").replace(/AUTHORIZATION:\s*Basic\s+\S+/gi, "AUTHORIZATION: [REDACTED]");
-      const rawMessage =
-        error instanceof Error
-          ? error.message
-          : error?.stderr || error?.error?.message || error?.stdout || "Git command failed.";
-      const sanitized = new Error(sanitize(rawMessage));
-      if (error?.stderr) sanitized.stderr = sanitize(error.stderr);
-      if (error?.stdout) sanitized.stdout = sanitize(error.stdout);
-      throw sanitized;
-    }
   }
 
   // ---------------------------------------------------------------------------
@@ -938,14 +745,6 @@ export class GitHubManager extends EventEmitter {
   // ---------------------------------------------------------------------------
   // Quick Fix — new branch workflow
   // ---------------------------------------------------------------------------
-
-  resolveConnectionAndToken(connectionId) {
-    const connection = this.findConnection(connectionId);
-    if (!connection) throw new Error("GitHub connection was not found.");
-    const token = this.credentialStore.getSecret(connection.tokenRef);
-    if (!token) throw new Error("PAT is missing.");
-    return { connection, token };
-  }
 
   async listQuickFixRepositories(connectionId) {
     this.setAuditContext({ connectionId, userInitiated: true });

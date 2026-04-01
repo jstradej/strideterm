@@ -15,34 +15,16 @@ import {
   inferAttentionReason,
 } from "./azure-devops-utils.js";
 
+import {
+  findWorkspaceForPullRequest as baseFindWorkspace,
+  findMatchingWorkspace,
+} from "./shared/pr-summary-helpers.js";
+
 export function findWorkspaceForPullRequest(workspaces, prKey) {
-  return (
-    (workspaces || []).find(
-      (workspace) => workspace.review?.provider === "azure-devops" && workspace.review?.prKey === prKey,
-    ) || null
-  );
+  return baseFindWorkspace(workspaces, prKey, "azure-devops");
 }
 
-export function findMatchingWorkspace(summary, workspaces = [], gitSnapshots = {}) {
-  const targetRemote = normalizeRemoteUrl(summary.repository.remoteUrl);
-  const targetBranch = stripRefsPrefix(summary.pullRequest.sourceRefName);
-  return (
-    workspaces.find((workspace) => {
-      if (workspace.kind === "docker" || !workspace.cwd) {
-        return false;
-      }
-      const snapshot = gitSnapshots?.[workspace.id];
-      const origin = normalizeRemoteUrl(snapshot?.remotes?.origin || "");
-      if (targetRemote && origin && origin !== targetRemote) {
-        return false;
-      }
-      if (summary.role === "author" && snapshot?.branch && targetBranch) {
-        return snapshot.branch === targetBranch;
-      }
-      return origin && origin === targetRemote;
-    }) || null
-  );
-}
+export { findMatchingWorkspace };
 
 export function buildPullRequestSummary({
   connection,

@@ -1,9 +1,9 @@
 import path from "node:path";
-import { EventEmitter } from "node:events";
 import { randomUUID } from "node:crypto";
 import { mkdir } from "node:fs/promises";
 import { execFileText } from "./process-utils.js";
 import { createAzureApi } from "./azure-devops-api.js";
+import { BaseProviderManager, createReviewWorkspacePanels } from "./shared/base-manager.js";
 import { classifyAzureRequest, parseAzureUrl } from "./azure-audit-log-store.js";
 import {
   buildPullRequestSummary,
@@ -36,49 +36,7 @@ import {
   exists,
 } from "./azure-devops-utils.js";
 
-function createReviewWorkspacePanels(panelTemplates = [], tabTemplates = []) {
-  const selected = [];
-
-  if (Array.isArray(panelTemplates) && panelTemplates.length) {
-    selected.push(...panelTemplates);
-  } else {
-    const preferredTemplates = ["shell", "claude", "codex"];
-    for (const templateId of preferredTemplates) {
-      const template = tabTemplates.find((entry) => entry.id === templateId);
-      if (template) {
-        selected.push(template);
-      }
-    }
-
-    if (!selected.length) {
-      selected.push(...tabTemplates.slice(0, 3));
-    }
-
-    if (!selected.length) {
-      selected.push(
-        { title: "Shell", command: "" },
-        { title: "Claude Code", command: "claude" },
-        { title: "Codex", command: "codex" },
-      );
-    }
-  }
-
-  return selected.map((template, index) => ({
-    id: `panel-${randomUUID()}`,
-    title: template.title || (index === 0 ? "Shell" : `Panel ${index + 1}`),
-    command: template.command || "",
-    launch: template.launch
-      ? {
-          file: template.launch.file || "",
-          args: [...(template.launch.args || [])],
-        }
-      : null,
-    shell: template.shell !== false,
-    startup: template.startup || (index === 0 ? "default" : "manual"),
-  }));
-}
-
-export class AzureDevOpsManager extends EventEmitter {
+export class AzureDevOpsManager extends BaseProviderManager {
   constructor({
     credentialStore,
     reviewStore,
@@ -88,24 +46,18 @@ export class AzureDevOpsManager extends EventEmitter {
     execFileTextImpl = execFileText,
     now = () => Date.now(),
   } = {}) {
-    super();
-    this.credentialStore = credentialStore;
-    this.reviewStore = reviewStore;
-    this.reviewBridgeStore = reviewBridgeStore;
-    this.auditLogStore = auditLogStore;
-    this.fetchImpl = fetchImpl;
-    this.execFileText = execFileTextImpl;
-    this.now = now;
-
-    // Audit context — set by the manager before API calls so the logger can enrich entries
-    this._auditConnectionId = "";
-    this._auditUserInitiated = false;
-
-    this.api = createAzureApi(fetchImpl, {
-      auditLogger: (raw) => this._logAudit(raw),
+    super({
+      credentialStore,
+      reviewStore,
+      reviewBridgeStore,
+      auditLogStore,
+      fetchImpl,
+      execFileTextImpl,
+      now,
+      createApi: createAzureApi,
     });
-    this.snapshot = createEmptySnapshot();
-    this.syncTimer = null;
+    this.providerLabel = "azure-devops";
+    this.defaultGitLogin = "";
   }
 
   /**
@@ -132,43 +84,6 @@ export class AzureDevOpsManager extends EventEmitter {
     });
   }
 
-  /**
-   * Set audit context for the next batch of API calls.
-   */
-  setAuditContext({ connectionId = "", userInitiated = false } = {}) {
-    this._auditConnectionId = connectionId;
-    this._auditUserInitiated = userInitiated;
-  }
-
-  getSnapshot() {
-    return clone(this.snapshot);
-  }
-
-  emitUpdated() {
-    this.emit("updated", this.getSnapshot());
-  }
-
-  setSnapshot(snapshot) {
-    this.snapshot = clone(snapshot);
-    this.emitUpdated();
-  }
-
-  stopPolling() {
-    if (this.syncTimer) {
-      clearInterval(this.syncTimer);
-      this.syncTimer = null;
-    }
-  }
-
-  configurePolling(intervalMs, callback) {
-    this.stopPolling();
-    if (intervalMs > 0 && typeof callback === "function") {
-      this.syncTimer = setInterval(() => {
-        callback().catch(() => {});
-      }, intervalMs);
-    }
-  }
-
   async verifyConnection(connectionInput) {
     this.setAuditContext({ connectionId: connectionInput.id || "", userInitiated: true });
     const connection = normalizeConnectionInput(connectionInput);
@@ -189,20 +104,6 @@ export class AzureDevOpsManager extends EventEmitter {
         state: project.state || "",
       })),
     };
-  }
-
-  findSummary(prKey) {
-    const all = [
-      ...this.snapshot.inbox.needsMyReview,
-      ...this.snapshot.inbox.myPullRequests,
-      ...this.snapshot.inbox.recentlyUpdated,
-      ...this.snapshot.inbox.needsAttention,
-    ];
-    return all.find((item) => item.prKey === prKey) || null;
-  }
-
-  findConnection(connectionId) {
-    return this.snapshot.connections.find((connection) => connection.id === connectionId) || null;
   }
 
   async sync({ connections = [], workspaces = [], gitSnapshots = {}, activeProfileId = "default" } = {}) {
@@ -380,77 +281,6 @@ export class AzureDevOpsManager extends EventEmitter {
     return this.getSnapshot();
   }
 
-  async markPullRequestSeen(prKey) {
-    const summary = this.findSummary(prKey) || this.snapshot.pullRequests[prKey];
-    if (!summary) {
-      console.warn(`[azure-devops] markPullRequestSeen: PR ${prKey} not in snapshot, skipping`);
-      return;
-    }
-    const lastSeenActivityAt = summary.lastRemoteActivityAt || new Date(this.now()).toISOString();
-    await this.reviewStore.upsertTrackedPullRequest(prKey, {
-      lastSeenActivityAt,
-      reviewWorkspaceId: summary.reviewWorkspaceId || "",
-    });
-    if (this.reviewBridgeStore?.markPullRequestSeen) {
-      try {
-        await this.reviewBridgeStore.markPullRequestSeen(prKey, lastSeenActivityAt);
-      } catch (error) {
-        console.warn(`[azure-devops] review bridge mark-seen failed for ${prKey}: ${error.message || error}`);
-      }
-    }
-
-    const nextPullRequest = {
-      ...(this.snapshot.pullRequests[prKey] || summary),
-      lastSeenActivityAt,
-      hasAttention: false,
-      attentionReason: "",
-      newCommentsCount: 0,
-    };
-
-    const updateSummaryList = (items) =>
-      items.map((item) =>
-        item.prKey === prKey
-          ? {
-              ...item,
-              lastSeenActivityAt,
-              hasAttention: false,
-              attentionReason: "",
-              newCommentsCount: 0,
-            }
-          : item,
-      );
-
-    this.setSnapshot({
-      ...this.snapshot,
-      pullRequests: {
-        ...this.snapshot.pullRequests,
-        [prKey]: nextPullRequest,
-      },
-      inbox: {
-        needsMyReview: updateSummaryList(this.snapshot.inbox.needsMyReview),
-        myPullRequests: updateSummaryList(this.snapshot.inbox.myPullRequests),
-        recentlyUpdated: updateSummaryList(this.snapshot.inbox.recentlyUpdated),
-        needsAttention: this.snapshot.inbox.needsAttention.filter((item) => item.prKey !== prKey),
-      },
-      trackedPullRequests: {
-        ...this.snapshot.trackedPullRequests,
-        [prKey]: {
-          ...(this.snapshot.trackedPullRequests[prKey] || {}),
-          lastSeenActivityAt,
-        },
-      },
-    });
-    return this.getSnapshot();
-  }
-
-  seedPullRequestSummary(prKey, summary) {
-    if (this.snapshot.pullRequests[prKey] || this.findSummary(prKey)) return;
-    this.setSnapshot({
-      ...this.snapshot,
-      pullRequests: { ...this.snapshot.pullRequests, [prKey]: summary },
-    });
-  }
-
   async ensurePullRequestDetail(prKey, { workspaces = [], force = false } = {}) {
     const current = this.snapshot.pullRequests[prKey] || this.findSummary(prKey);
     if (!current) {
@@ -590,22 +420,6 @@ export class AzureDevOpsManager extends EventEmitter {
     return this.ensurePullRequestDetail(prKey, { force: true });
   }
 
-  async listLocalChangedFiles(cwd, targetRefName) {
-    const targetBranch = stripRefsPrefix(targetRefName);
-    const result = await this.execFileText("git", ["diff", "--name-status", `origin/${targetBranch}...HEAD`], { cwd });
-    return result.stdout
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .filter(Boolean)
-      .map((line) => {
-        const [changeType = "", ...rest] = line.split(/\s+/);
-        return {
-          changeType,
-          path: rest.join(" "),
-        };
-      });
-  }
-
   async readThreadCodeSnippets(cwd, threads = [], targetRefName = "") {
     if (!cwd || !threads.length) return threads;
     const targetBranch = stripRefsPrefix(targetRefName);
@@ -688,36 +502,6 @@ export class AzureDevOpsManager extends EventEmitter {
         codeSnippet: contextLines.length > 0 ? contextLines.join("\n") : "",
       };
     });
-  }
-
-  async runGit(cwd, args, { login, token } = {}) {
-    const extraArgs = [];
-    if (process.platform === "win32") {
-      extraArgs.push("-c", "core.longpaths=true");
-    }
-    if (token) {
-      extraArgs.push("-c", `http.extraheader=${encodeAuthHeader(login, token)}`);
-    }
-    try {
-      return await this.execFileText("git", [...extraArgs, ...args], {
-        cwd,
-        env: sanitizeGitEnvironment(),
-      });
-    } catch (error) {
-      // Strip credentials from error messages to prevent PAT leaks in UI/logs
-      const sanitize = (text) =>
-        String(text || "").replace(/AUTHORIZATION:\s*Basic\s+\S+/gi, "AUTHORIZATION: [REDACTED]");
-      // execFileText rejects with { error, stdout, stderr } plain object — extract the real message
-      const rawMessage =
-        error instanceof Error
-          ? error.message
-          : error?.stderr || error?.error?.message || error?.stdout || "Git command failed.";
-      const message = sanitize(rawMessage);
-      const sanitized = new Error(message);
-      if (error?.stderr) sanitized.stderr = sanitize(error.stderr);
-      if (error?.stdout) sanitized.stdout = sanitize(error.stdout);
-      throw sanitized;
-    }
   }
 
   async ensureCacheRepo({ connection, token, repository, reviewRoot }) {
@@ -1203,14 +987,6 @@ export class AzureDevOpsManager extends EventEmitter {
 
   buildPrKey(connectionId, repositoryId, pullRequestId) {
     return createPullRequestKey(connectionId, repositoryId, pullRequestId);
-  }
-
-  resolveConnectionAndToken(connectionId) {
-    const connection = this.findConnection(connectionId);
-    if (!connection) throw new Error("Azure DevOps connection was not found.");
-    const token = this.credentialStore.getSecret(connection.tokenRef);
-    if (!token) throw new Error("PAT is missing.");
-    return { connection, token };
   }
 
   async listQuickFixProjects(connectionId) {

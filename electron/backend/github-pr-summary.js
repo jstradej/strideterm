@@ -11,26 +11,16 @@ import {
   trimTrailingSlash,
 } from "./github-utils.js";
 
+import {
+  findWorkspaceForPullRequest as baseFindWorkspace,
+  findMatchingWorkspace,
+} from "./shared/pr-summary-helpers.js";
+
 export function findWorkspaceForPullRequest(workspaces, prKey) {
-  return (workspaces || []).find((ws) => ws.review?.provider === "github" && ws.review?.prKey === prKey) || null;
+  return baseFindWorkspace(workspaces, prKey, "github");
 }
 
-export function findMatchingWorkspace(summary, workspaces = [], gitSnapshots = {}) {
-  const targetRemote = normalizeRemoteUrl(summary.repository?.remoteUrl || "");
-  const sourceBranch = summary.pullRequest?.sourceRefName || "";
-  return (
-    workspaces.find((ws) => {
-      if (ws.kind === "docker" || !ws.cwd) return false;
-      const snapshot = gitSnapshots?.[ws.id];
-      const origin = normalizeRemoteUrl(snapshot?.remotes?.origin || "");
-      if (targetRemote && origin && origin !== targetRemote) return false;
-      if (summary.role === "author" && snapshot?.branch && sourceBranch) {
-        return snapshot.branch === sourceBranch;
-      }
-      return origin && origin === targetRemote;
-    }) || null
-  );
-}
+export { findMatchingWorkspace };
 
 /**
  * Summarize reviewers from reviews list and requested_reviewers.
