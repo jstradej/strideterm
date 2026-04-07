@@ -77,7 +77,12 @@ export function openTerminalLink(event, uri) {
       return;
     }
 
-    window.open(url.toString(), "_blank", "noopener,noreferrer");
+    const href = url.toString();
+    if (window.strideterm?.openExternal) {
+      window.strideterm.openExternal(href);
+    } else {
+      window.open(href, "_blank", "noopener,noreferrer");
+    }
   } catch {
     // Ignore malformed links from terminal output.
   }
