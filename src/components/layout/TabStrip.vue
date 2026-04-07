@@ -24,7 +24,7 @@
       :data-persistent="tab.persistent ? 'true' : 'false'"
       :title="tab.titleTooltip"
       :draggable="tab.persistent"
-      @click="store.activateView(tab.id)"
+      @click="store.activateView(tab.id).then(() => nextTick(() => termStore.focusActiveTerminal()))"
       @dblclick="tab.persistent && $emit('rename-tab', tab.id)"
       @dragstart="dragDrop.onDragstart"
       @contextmenu.prevent="$emit('contextmenu-tab', { x: $event.clientX, y: $event.clientY, viewId: tab.id })"
@@ -43,12 +43,14 @@
 </template>
 
 <script setup>
-import { computed, ref } from "vue";
+import { computed, ref, nextTick } from "vue";
 import { useAppStore } from "../../stores/app.js";
+import { useTerminalStore } from "../../stores/terminal.js";
 import { useTabDragDrop } from "../../composables/useDragDrop.js";
 import { isFreshAlert, tabAttentionTitle } from "../../app/helpers.js";
 
 const store = useAppStore();
+const termStore = useTerminalStore();
 const stripRef = ref(null);
 const dragDrop = useTabDragDrop(stripRef);
 

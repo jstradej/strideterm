@@ -55,6 +55,7 @@ export function useKeyboardShortcuts(api, { onNewWorkspace } = {}) {
       const currentIndex = tabs.findIndex((tab) => tab.id === appStore.activeViewId);
       const nextIndex = (currentIndex + direction + tabs.length) % tabs.length;
       await appStore.activateView(tabs[nextIndex].id);
+      termStore.focusActiveTerminal();
     }
   }
 
