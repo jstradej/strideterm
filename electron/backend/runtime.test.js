@@ -1149,6 +1149,113 @@ describe("runtime integration", () => {
     }
   });
 
+  test("respects custom agentQuietMs from notification settings", async () => {
+    vi.useFakeTimers();
+    try {
+      const fixture = await createFixture({
+        initialState: {
+          activeProjectId: "frontend",
+          projects: [
+            {
+              id: "frontend",
+              name: "Frontend",
+              kind: "terminal",
+              cwd: "/tmp/frontend",
+              activePanelId: "claude",
+              panels: [{ id: "claude", title: "Claude Code", command: "claude", shell: true, startup: "default" }],
+            },
+          ],
+          settings: {
+            notifications: {
+              agentQuietMs: 30_000,
+              agentQuietFastMs: 15_000,
+              alertCooldownMs: 15_000,
+            },
+          },
+        },
+      });
+      fixtures.push(fixture);
+
+      fixture.sessionManager.emit("terminal:data", { sessionId: "frontend:claude", data: "" });
+      await vi.advanceTimersByTimeAsync(16_000);
+
+      fixture.runtime.writeToSession("frontend:claude", "fix the bug\r");
+      fixture.sessionManager.emit("terminal:data", {
+        sessionId: "frontend:claude",
+        data: "Claude is working\r\n",
+      });
+      fixture.sessionManager.emit("terminal:data", {
+        sessionId: "frontend:claude",
+        data: "> ",
+      });
+
+      // Default 20s would have fired — but custom setting is 30s
+      await vi.advanceTimersByTimeAsync(21_000);
+      expect(fixture.runtime.getPayload().attention.byProject.frontend).toBeUndefined();
+
+      // After 30s total silence, alert should fire
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(fixture.runtime.getPayload().attention.byProject.frontend).toMatchObject({ count: 1 });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("agent silence timeout requires idle-looking last line to raise alert", async () => {
+    vi.useFakeTimers();
+    try {
+      const fixture = await createFixture({
+        initialState: {
+          activeProjectId: "frontend",
+          projects: [
+            {
+              id: "frontend",
+              name: "Frontend",
+              kind: "terminal",
+              cwd: "/tmp/frontend",
+              activePanelId: "claude",
+              panels: [{ id: "claude", title: "Claude Code", command: "claude", shell: true, startup: "default" }],
+            },
+          ],
+        },
+      });
+      fixtures.push(fixture);
+
+      fixture.sessionManager.emit("terminal:data", { sessionId: "frontend:claude", data: "" });
+      await vi.advanceTimersByTimeAsync(16_000);
+
+      fixture.runtime.writeToSession("frontend:claude", "fix the bug\r");
+      fixture.sessionManager.emit("terminal:data", {
+        sessionId: "frontend:claude",
+        data: "Claude is working on something complex\r\n",
+      });
+      // Last line looks like mid-stream output, not an idle prompt
+      fixture.sessionManager.emit("terminal:data", {
+        sessionId: "frontend:claude",
+        data: "Processing file src/app.js...\r\n",
+      });
+
+      await vi.advanceTimersByTimeAsync(21_000);
+      // Should NOT raise alert because last line doesn't look like idle prompt
+      expect(fixture.runtime.getPayload().attention.byProject.frontend).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("notification settings are included in default state", async () => {
+    const fixture = await createFixture();
+    fixtures.push(fixture);
+
+    const state = fixture.store.getState();
+    expect(state.settings.notifications).toBeDefined();
+    expect(state.settings.notifications.promptQuietMs).toBe(900);
+    expect(state.settings.notifications.agentQuietMs).toBe(20_000);
+    expect(state.settings.notifications.agentQuietFastMs).toBe(12_000);
+    expect(state.settings.notifications.alertCooldownMs).toBe(15_000);
+    expect(state.settings.notifications.shellIntegration).toBe(true);
+  });
+
   test("restarts cloudflare tunnel and emits remote config changes when settings change", async () => {
     const fixture = await createFixture();
     fixtures.push(fixture);

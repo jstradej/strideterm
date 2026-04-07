@@ -46,6 +46,13 @@ export const APP_CONFIG = {
     gitPollMs: envNumber("STRIDETERM_GIT_POLL_MS", 20000),
     projectAlertLimit: envNumber("STRIDETERM_PROJECT_ALERT_LIMIT", 6),
   },
+  notifications: {
+    promptQuietMs: envNumber("STRIDETERM_PROMPT_QUIET_MS", 900),
+    agentQuietMs: envNumber("STRIDETERM_AGENT_QUIET_MS", 20_000),
+    agentQuietFastMs: envNumber("STRIDETERM_AGENT_QUIET_FAST_MS", 12_000),
+    alertCooldownMs: envNumber("STRIDETERM_ALERT_COOLDOWN_MS", 15_000),
+    shellIntegration: envBoolean("STRIDETERM_SHELL_INTEGRATION", true),
+  },
   remoteAccess: {
     enabled: envBoolean("STRIDETERM_REMOTE_ENABLED", true),
     host: envString("STRIDETERM_REMOTE_HOST", "0.0.0.0"),

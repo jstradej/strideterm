@@ -1,7 +1,14 @@
 import { EventEmitter, once } from "node:events";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import pty from "node-pty";
 import { createSessionId, parseSessionId } from "./default-state.js";
 import { APP_CONFIG } from "../../config/app-config.js";
+
+const SHELL_INTEGRATION_DIR = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "../../config/shell-integration",
+);
 
 function shellConfig() {
   if (process.platform === "win32") {
@@ -15,6 +22,54 @@ function shellConfig() {
     file: process.env.SHELL || APP_CONFIG.session.posixShellFile,
     args: [...APP_CONFIG.session.posixShellArgs],
   };
+}
+
+function shellBasename(filePath) {
+  return path
+    .basename(filePath || "")
+    .toLowerCase()
+    .replace(/\.exe$/, "");
+}
+
+/**
+ * Build environment variables that auto-source shell integration scripts.
+ * Returns an object of env vars to merge, or {} if integration is disabled
+ * or the shell type is not recognized.
+ */
+export function shellIntegrationEnv(launcherFile, enabled = true, currentEnv = process.env) {
+  if (!enabled) {
+    return {};
+  }
+  const base = shellBasename(launcherFile);
+
+  if (base === "bash" || base === "sh") {
+    const scriptPath = path.join(SHELL_INTEGRATION_DIR, "bash.sh");
+    return {
+      STRIDETERM_SHELL_INTEGRATION: "1",
+      BASH_ENV: scriptPath,
+      // Preserve existing PROMPT_COMMAND while injecting our integration source.
+      PROMPT_COMMAND: `source "${scriptPath}"` + (currentEnv.PROMPT_COMMAND ? `; ${currentEnv.PROMPT_COMMAND}` : ""),
+    };
+  }
+
+  if (base === "zsh") {
+    const scriptPath = path.join(SHELL_INTEGRATION_DIR, "zsh.sh");
+    return {
+      STRIDETERM_SHELL_INTEGRATION: "1",
+      STRIDETERM_SHELL_INTEGRATION_SCRIPT: scriptPath,
+      ...(currentEnv.ZDOTDIR ? { __STRIDETERM_ORIGINAL_ZDOTDIR: currentEnv.ZDOTDIR } : {}),
+    };
+  }
+
+  if (base === "pwsh" || base === "powershell") {
+    const scriptPath = path.join(SHELL_INTEGRATION_DIR, "pwsh.ps1");
+    return {
+      STRIDETERM_SHELL_INTEGRATION: "1",
+      STRIDETERM_SHELL_INTEGRATION_SCRIPT: scriptPath,
+    };
+  }
+
+  return {};
 }
 
 function findWorkspace(state, workspaceId) {
@@ -135,6 +190,9 @@ export class SessionManager extends EventEmitter {
           }
         : shellConfig();
 
+    const shellIntEnabled = state.settings?.notifications?.shellIntegration !== false;
+    const integrationEnv = shellIntegrationEnv(launcher.file, shellIntEnabled);
+
     const processHandle = pty.spawn(launcher.file, launcher.args, {
       name: APP_CONFIG.session.termName,
       cols: APP_CONFIG.session.defaultCols,
@@ -142,6 +200,7 @@ export class SessionManager extends EventEmitter {
       cwd: launchOverride?.cwd || workspace.cwd,
       env: {
         ...process.env,
+        ...integrationEnv,
         TERM_PROGRAM: APP_CONFIG.session.termProgram,
         FORCE_COLOR: APP_CONFIG.session.forceColor,
         ...(this.getSessionEnv?.({
@@ -188,6 +247,29 @@ export class SessionManager extends EventEmitter {
         : !panel.launch?.file && !launchOverride?.file
           ? panel.command
           : "";
+
+    // Auto-source shell integration for zsh and PowerShell.
+    // Bash is handled via PROMPT_COMMAND env var; these shells need explicit sourcing.
+    const integrationScript = integrationEnv.STRIDETERM_SHELL_INTEGRATION_SCRIPT;
+    if (integrationScript && session.status === "running" && session.processHandle) {
+      const base = shellBasename(launcher.file);
+      let sourceCmd = "";
+      if (base === "zsh") {
+        sourceCmd = `source "${integrationScript}"`;
+      } else if (base === "pwsh" || base === "powershell") {
+        sourceCmd = `. "${integrationScript}"`;
+      }
+      if (sourceCmd) {
+        setTimeout(
+          () => {
+            if (session.status === "running" && session.processHandle) {
+              session.processHandle.write(`${sourceCmd}\r`);
+            }
+          },
+          Math.max(APP_CONFIG.session.shellLaunchDelayMs - 10, 10),
+        );
+      }
+    }
 
     if (!launchOverride?.skipCommandInjection && injectedCommand) {
       setTimeout(() => {

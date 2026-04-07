@@ -39,7 +39,7 @@ vi.mock("node-pty", () => ({
   },
 }));
 
-import { SessionManager } from "./session-manager.js";
+import { SessionManager, shellIntegrationEnv } from "./session-manager.js";
 
 function createState() {
   return {
@@ -153,5 +153,62 @@ describe("SessionManager", () => {
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("Ignoring resize failure"));
 
     warnSpy.mockRestore();
+  });
+
+  test("injects shell integration env vars when enabled", () => {
+    const manager = new SessionManager();
+    const state = createState();
+    state.settings = { notifications: { shellIntegration: true } };
+    // Use an explicit launch config with a recognized shell
+    state.workspaces[0].panels[0].launch = { file: "pwsh.exe", args: ["-NoLogo"] };
+
+    manager.ensureSession(state, "workspace-a:shell");
+
+    const env = spawnCalls[0].options.env;
+    expect(env.STRIDETERM_SHELL_INTEGRATION).toBe("1");
+    expect(env.STRIDETERM_SHELL_INTEGRATION_SCRIPT).toMatch(/pwsh\.ps1$/);
+  });
+
+  test("skips shell integration env when disabled in settings", () => {
+    const manager = new SessionManager();
+    const state = createState();
+    state.settings = { notifications: { shellIntegration: false } };
+    state.workspaces[0].panels[0].launch = { file: "pwsh.exe", args: ["-NoLogo"] };
+
+    manager.ensureSession(state, "workspace-a:shell");
+
+    const env = spawnCalls[0].options.env;
+    expect(env.STRIDETERM_SHELL_INTEGRATION).toBeUndefined();
+  });
+});
+
+describe("shellIntegrationEnv", () => {
+  test("returns PROMPT_COMMAND for bash", () => {
+    const env = shellIntegrationEnv("/bin/bash", true);
+    expect(env.STRIDETERM_SHELL_INTEGRATION).toBe("1");
+    expect(env.BASH_ENV).toMatch(/bash\.sh$/);
+    expect(env.PROMPT_COMMAND).toMatch(/source/);
+  });
+
+  test("returns integration script path for zsh", () => {
+    const env = shellIntegrationEnv("/usr/bin/zsh", true);
+    expect(env.STRIDETERM_SHELL_INTEGRATION).toBe("1");
+    expect(env.STRIDETERM_SHELL_INTEGRATION_SCRIPT).toMatch(/zsh\.sh$/);
+  });
+
+  test("returns integration script path for pwsh", () => {
+    const env = shellIntegrationEnv("pwsh.exe", true);
+    expect(env.STRIDETERM_SHELL_INTEGRATION).toBe("1");
+    expect(env.STRIDETERM_SHELL_INTEGRATION_SCRIPT).toMatch(/pwsh\.ps1$/);
+  });
+
+  test("returns empty object when disabled", () => {
+    const env = shellIntegrationEnv("/bin/bash", false);
+    expect(env).toEqual({});
+  });
+
+  test("returns empty object for unrecognized shells", () => {
+    const env = shellIntegrationEnv("/usr/bin/fish", true);
+    expect(env).toEqual({});
   });
 });

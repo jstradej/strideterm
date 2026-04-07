@@ -202,6 +202,13 @@ export function createDefaultState() {
       theme: APP_CONFIG.ui.defaultTheme,
       sidebarWidth: APP_CONFIG.ui.sidebarWidth,
       sidebarCollapsed: APP_CONFIG.ui.sidebarCollapsed,
+      notifications: {
+        promptQuietMs: APP_CONFIG.notifications.promptQuietMs,
+        agentQuietMs: APP_CONFIG.notifications.agentQuietMs,
+        agentQuietFastMs: APP_CONFIG.notifications.agentQuietFastMs,
+        alertCooldownMs: APP_CONFIG.notifications.alertCooldownMs,
+        shellIntegration: APP_CONFIG.notifications.shellIntegration,
+      },
       remoteAccess: {
         enabled: APP_CONFIG.remoteAccess.enabled,
         host: APP_CONFIG.remoteAccess.host,
@@ -429,9 +436,32 @@ export function normalizeState(rawState = {}) {
     ? rawState.activeProfileId
     : profiles[0]?.id || "default";
 
+  const rawNotifications = (rawState.settings || {}).notifications || {};
   const normalizedSettings = {
     ...defaults.settings,
     ...(rawState.settings || {}),
+    notifications: {
+      promptQuietMs:
+        Number(rawNotifications.promptQuietMs) > 0
+          ? Number(rawNotifications.promptQuietMs)
+          : defaults.settings.notifications.promptQuietMs,
+      agentQuietMs:
+        Number(rawNotifications.agentQuietMs) > 0
+          ? Number(rawNotifications.agentQuietMs)
+          : defaults.settings.notifications.agentQuietMs,
+      agentQuietFastMs:
+        Number(rawNotifications.agentQuietFastMs) > 0
+          ? Number(rawNotifications.agentQuietFastMs)
+          : defaults.settings.notifications.agentQuietFastMs,
+      alertCooldownMs:
+        Number(rawNotifications.alertCooldownMs) >= 0
+          ? Number(rawNotifications.alertCooldownMs)
+          : defaults.settings.notifications.alertCooldownMs,
+      shellIntegration:
+        typeof rawNotifications.shellIntegration === "boolean"
+          ? rawNotifications.shellIntegration
+          : defaults.settings.notifications.shellIntegration,
+    },
     remoteAccess: {
       ...defaults.settings.remoteAccess,
       ...((rawState.settings || {}).remoteAccess || {}),

@@ -53,11 +53,7 @@ const ANSI_ESCAPE_RE = /\u001B\[[0-?]*[ -/]*[@-~]|\u001B\][^\u0007]*(?:\u0007|\u
 const OSC133_COMMAND_FINISHED_RE = /\u001B\]133;D/;
 const AGENT_NAME_RE = /\b(claude|codex|opencode|aider|gemini)\b/i;
 const AGENT_OUTPUT_RE = /\b(claude code|openai codex|codex|claude|gemini|aider|opencode)\b/i;
-const PROMPT_QUIET_MS = 900;
-const AGENT_PROMPT_QUIET_MS = 20_000;
-const AGENT_PROMPT_QUIET_FAST_MS = 5_000;
 const AGENT_OUTPUT_BURST_THRESHOLD = 10;
-const ALERT_COOLDOWN_MS = 15_000;
 const ATTENTION_MIN_DISPLAY_MS = 3_000;
 const ATTENTION_VISIBILITY_GRACE_MS = 5_000;
 const WAITING_PATTERNS = [
@@ -98,11 +94,35 @@ function lastNonEmptyLine(value) {
   return "";
 }
 
+const PROMPT_PATTERNS_SAFE = [
+  /^PS [^\n>]{0,200}>\s*$/,
+  /^[A-Za-z]:[^\n]{0,180}>\s*$/,
+  /^(?:\([^)\n]{1,80}\)\s*)?[^$\n]{1,180}[$#]\s*$/,
+  /^(?:\([^)\n]{1,80}\)\s*)?.{0,180}[›❯➜]\s*$/,
+];
+
 function matchesPrompt(line) {
   if (!line) {
     return false;
   }
   return PROMPT_PATTERNS_SAFE.some((pattern) => pattern.test(line));
+}
+
+// Patterns that indicate an agent CLI is idle and waiting for user input.
+// Used as a secondary check after silence timeout to reduce false positives.
+const AGENT_IDLE_PATTERNS = [
+  /^\s*>\s*$/, // Claude Code idle prompt
+  /^\s*[$#>❯›➜]\s*$/, // Generic single-char prompts
+  /^\s*╭─/, // Claude Code boxed prompt start
+  /^\s*\$\s*$/, // Plain dollar prompt
+  ...PROMPT_PATTERNS_SAFE, // Also accept regular shell prompts (agent exited back to shell)
+];
+
+function matchesAgentIdle(line) {
+  if (!line) {
+    return true; // Empty line after silence = likely idle
+  }
+  return AGENT_IDLE_PATTERNS.some((pattern) => pattern.test(line.trimEnd()));
 }
 
 function createSessionSignal(sessionId) {
@@ -114,19 +134,13 @@ function createSessionSignal(sessionId) {
     hasUserInput: false,
     outputBursts: 0,
     promptTimer: null,
+    lastOutputLine: "",
     // Start with cooldown active — when a session is first seen, its terminal
     // replays the buffer which includes prompts. The cooldown prevents false
     // alerts from this initial replay.
     lastAlertAt: Date.now(),
   };
 }
-
-const PROMPT_PATTERNS_SAFE = [
-  /^PS [^\n>]{0,200}>\s*$/,
-  /^[A-Za-z]:[^\n]{0,180}>\s*$/,
-  /^(?:\([^)\n]{1,80}\)\s*)?[^$\n]{1,180}[$#]\s*$/,
-  /^(?:\([^)\n]{1,80}\)\s*)?.{0,180}[›❯➜]\s*$/,
-];
 
 function createTunnelOriginUrl(remoteConfig = {}) {
   const rawHost = String(remoteConfig.host || "").trim();
@@ -337,6 +351,10 @@ export async function createRuntime({
 
   function getState() {
     return store.getState();
+  }
+
+  function getNotificationConfig(state = getState()) {
+    return state.settings?.notifications || APP_CONFIG.notifications;
   }
 
   function getAzureSettings(state = getState()) {
@@ -1083,6 +1101,7 @@ export async function createRuntime({
     const panel = project?.panels.find((item) => item.id === descriptor?.panelId) || null;
     if (descriptor && shouldTrackProjectAlert(project, panel)) {
       const signal = getSessionSignal(payload.sessionId, project, panel);
+      const notifConfig = getNotificationConfig(state);
       const rawText = String(payload.data || "");
       const cleanText = stripAnsi(rawText);
       const lastLine = lastNonEmptyLine(cleanText);
@@ -1098,7 +1117,7 @@ export async function createRuntime({
       // This gives us instant, reliable detection for shell-hosted agents.
       if (OSC133_COMMAND_FINISHED_RE.test(rawText) && signal.hasUserInput) {
         const now = Date.now();
-        const inCooldown = signal.lastAlertAt > 0 && now - signal.lastAlertAt < ALERT_COOLDOWN_MS;
+        const inCooldown = signal.lastAlertAt > 0 && now - signal.lastAlertAt < notifConfig.alertCooldownMs;
         if (signal.busy && !inCooldown) {
           cancelPromptTimer(signal);
           if (isSessionVisible(payload.sessionId)) {
@@ -1119,10 +1138,10 @@ export async function createRuntime({
         // Claude Code shows its prompt `>` at all times (even while thinking),
         // and sends periodic status updates (token count, thinking time).
         // Instead of matching prompt patterns, we detect idle by watching for
-        // complete silence: no terminal data for AGENT_PROMPT_QUIET_MS.
+        // complete silence: no terminal data for agentQuietMs.
         // Any terminal data resets the timer.
         const now = Date.now();
-        const inCooldown = signal.lastAlertAt > 0 && now - signal.lastAlertAt < ALERT_COOLDOWN_MS;
+        const inCooldown = signal.lastAlertAt > 0 && now - signal.lastAlertAt < notifConfig.alertCooldownMs;
 
         // Bell character = explicit input request, always raise immediately
         if (rawText.includes("\u0007") && !inCooldown && signal.hasUserInput) {
@@ -1144,15 +1163,27 @@ export async function createRuntime({
             signal.busy = true;
             signal.outputBursts += 1;
           }
+          if (lastLine) {
+            signal.lastOutputLine = lastLine;
+          }
           cancelPromptTimer(signal);
           if (signal.busy && !inCooldown && signal.hasUserInput) {
             // Adaptive timeout: if the agent produced a burst of output and then
             // goes silent, use a shorter timeout (likely done). For sporadic
             // output (long tool calls), use the full timeout.
             const quietMs =
-              signal.outputBursts >= AGENT_OUTPUT_BURST_THRESHOLD ? AGENT_PROMPT_QUIET_FAST_MS : AGENT_PROMPT_QUIET_MS;
+              signal.outputBursts >= AGENT_OUTPUT_BURST_THRESHOLD
+                ? notifConfig.agentQuietFastMs
+                : notifConfig.agentQuietMs;
             signal.promptTimer = setTimeout(() => {
               signal.promptTimer = null;
+              // Secondary check: verify the last output looks like an idle prompt
+              // rather than mid-stream output (e.g. Claude Code thinking indicator).
+              // This reduces false positives from pauses during long operations.
+              if (signal.lastOutputLine && !matchesAgentIdle(signal.lastOutputLine)) {
+                // Doesn't look idle — reset and wait for more output.
+                return;
+              }
               if (isSessionVisible(payload.sessionId)) {
                 resetSessionSignal(payload.sessionId);
                 return;
@@ -1180,7 +1211,7 @@ export async function createRuntime({
         }
 
         const now = Date.now();
-        const inCooldown = signal.lastAlertAt > 0 && now - signal.lastAlertAt < ALERT_COOLDOWN_MS;
+        const inCooldown = signal.lastAlertAt > 0 && now - signal.lastAlertAt < notifConfig.alertCooldownMs;
 
         if (explicitWaiting && !inCooldown && signal.hasUserInput) {
           cancelPromptTimer(signal);
@@ -1210,7 +1241,7 @@ export async function createRuntime({
               title: panel?.title || descriptor.panelId,
               detail: "prompt-returned",
             });
-          }, PROMPT_QUIET_MS);
+          }, notifConfig.promptQuietMs);
         }
       }
     }
