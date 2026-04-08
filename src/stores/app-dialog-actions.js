@@ -161,8 +161,15 @@ export function createDialogActions(ctx) {
       repositoryUrl: ctx.payload.value?.meta?.repositoryUrl || "",
       onCancel: closeDialog,
       onSave: async (patch) => {
-        ctx.payload.value = await ctx.getApi().updateSettings(patch);
-        closeDialog();
+        try {
+          ctx.payload.value = await ctx.getApi().updateSettings(patch);
+          closeDialog();
+        } catch (err) {
+          ctx.overlayProps.value = {
+            ...ctx.overlayProps.value,
+            saveError: err.message || "Failed to save settings",
+          };
+        }
       },
     });
   }

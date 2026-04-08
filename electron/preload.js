@@ -79,6 +79,7 @@ contextBridge.exposeInMainWorld("strideterm", {
   refreshDocker: () => ipcRenderer.invoke("docker:refresh"),
   refreshGit: (projectId) => ipcRenderer.invoke("git:refresh", projectId),
   gitFetch: (payload) => ipcRenderer.invoke("git:fetch", payload),
+  gitPull: (payload) => ipcRenderer.invoke("git:pull", payload),
   gitPush: (payload) => ipcRenderer.invoke("git:push", payload),
   gitCheckoutBranch: (payload) => ipcRenderer.invoke("git:checkout-branch", payload),
   gitCreateBranch: (payload) => ipcRenderer.invoke("git:create-branch", payload),

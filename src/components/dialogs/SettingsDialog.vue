@@ -129,8 +129,11 @@
     </div>
 
     <footer class="dialog__footer settings-footer">
-      <button type="button" class="button button--ghost" @click="emit('cancel')">Cancel</button>
-      <button type="button" class="button" @click="handleSave">Save</button>
+      <p v-if="saveError" class="save-error">{{ saveError }}</p>
+      <span class="footer-actions">
+        <button type="button" class="button button--ghost" @click="emit('cancel')">Cancel</button>
+        <button type="button" class="button" @click="handleSave">Save</button>
+      </span>
     </footer>
   </div>
 </template>
@@ -151,6 +154,7 @@ const props = defineProps({
   tabTemplates: { type: Array, default: () => [] },
   appVersion: { type: String, default: "" },
   repositoryUrl: { type: String, default: "" },
+  saveError: { type: String, default: "" },
 });
 
 const emit = defineEmits(["cancel", "save"]);
@@ -208,7 +212,7 @@ function handleSave() {
 <style scoped>
 .settings-dialog {
   width: min(540px, 100%);
-  height: min(600px, 80vh);
+  height: min(680px, 85vh);
   display: flex;
   flex-direction: column;
 }
@@ -243,8 +247,9 @@ function handleSave() {
   flex: 1;
   overflow-y: auto;
   display: grid;
-  gap: 16px;
+  gap: 20px;
   align-content: start;
+  padding-bottom: 4px;
 }
 .section-label {
   font-size: 11px;
@@ -374,5 +379,17 @@ function handleSave() {
   padding-top: 12px;
   border-top: 1px solid var(--border);
   margin-top: auto;
+  flex-wrap: wrap;
+}
+.footer-actions {
+  display: flex;
+  gap: 6px;
+  margin-left: auto;
+}
+.save-error {
+  color: var(--danger);
+  font-size: 13px;
+  width: 100%;
+  margin-bottom: 4px;
 }
 </style>

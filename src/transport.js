@@ -242,6 +242,7 @@ function createRemoteTransport() {
     refreshDocker: () => fetchJson("/api/docker/refresh", {}),
     refreshGit: (projectId) => fetchJson("/api/git/refresh", { projectId }),
     gitFetch: (payload) => fetchJson("/api/git/fetch", payload),
+    gitPull: (payload) => fetchJson("/api/git/pull", payload),
     gitPush: (payload) => fetchJson("/api/git/push", payload),
     gitCheckoutBranch: (payload) => fetchJson("/api/git/checkout-branch", payload),
     gitCreateBranch: (payload) => fetchJson("/api/git/create-branch", payload),

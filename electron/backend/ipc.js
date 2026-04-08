@@ -281,6 +281,9 @@ export function registerIpc(runtime, emitToRenderer, { includeStateGet = true } 
   ipcMain.handle("git:fetch", async (_event, payload) =>
     runtime.gitFetch(validateIpc(gitPayloadSchema, payload, "git:fetch")),
   );
+  ipcMain.handle("git:pull", async (_event, payload) =>
+    runtime.gitPull(validateIpc(gitPayloadSchema, payload, "git:pull")),
+  );
   ipcMain.handle("git:push", async (_event, payload) =>
     runtime.gitPush(validateIpc(gitPayloadSchema, payload, "git:push")),
   );
@@ -565,6 +568,7 @@ export function registerIpc(runtime, emitToRenderer, { includeStateGet = true } 
     ipcMain.removeHandler("docker:refresh");
     ipcMain.removeHandler("git:refresh");
     ipcMain.removeHandler("git:fetch");
+    ipcMain.removeHandler("git:pull");
     ipcMain.removeHandler("git:push");
     ipcMain.removeHandler("git:checkout-branch");
     ipcMain.removeHandler("git:create-branch");

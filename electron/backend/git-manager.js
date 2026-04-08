@@ -1147,6 +1147,16 @@ export class GitManager extends EventEmitter {
     });
   }
 
+  async pull(workspace, { connection = null } = {}) {
+    return this.runWriteAction(workspace, {
+      type: "pull",
+      label: "Pull",
+      run: async (cwd) => this.execAuthGit(cwd, ["pull", "--ff-only"], { connection }),
+      allowDirty: true,
+      connection,
+    });
+  }
+
   async push(workspace, { connection = null } = {}) {
     const snapshot = await this.inspectWorkspace(workspace);
     if (!snapshot.available) {

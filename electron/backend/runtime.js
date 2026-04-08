@@ -2678,6 +2678,11 @@ export async function createRuntime({
       const connection = resolveGitConnection(workspace);
       return runGitWorkspaceAction(workspace, git.fetch(workspace, { connection }));
     },
+    async gitPull(payload = {}) {
+      const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId);
+      const connection = resolveGitConnection(workspace);
+      return runGitWorkspaceAction(workspace, git.pull(workspace, { connection }));
+    },
     async gitPush(payload = {}) {
       const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId);
       const connection = resolveGitConnection(workspace);

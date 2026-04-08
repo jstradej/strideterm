@@ -48,10 +48,19 @@
             type="button"
             :class="['button', 'button--ghost', gitUi.busyAction === 'fetch' && 'button--busy']"
             :disabled="!!gitUi.busyAction"
-            title="Fetch latest changes from remote"
+            title="Download remote refs without changing your working tree"
             @click="gitUiStore.gitFetch(workspaceId)"
           >
             {{ gitUi.busyAction === "fetch" ? "Fetching…" : "Fetch" }}
+          </button>
+          <button
+            type="button"
+            :class="['button', 'button--ghost', gitUi.busyAction === 'pull' && 'button--busy']"
+            :disabled="!!gitUi.busyAction"
+            title="Fetch and fast-forward merge remote changes into your branch"
+            @click="gitUiStore.gitPull(workspaceId)"
+          >
+            {{ gitUi.busyAction === "pull" ? "Pulling…" : "Pull" }}
           </button>
           <button
             v-if="!isReviewWorkspace"

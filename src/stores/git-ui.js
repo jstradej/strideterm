@@ -118,6 +118,10 @@ export const useGitUiStore = defineStore("git-ui", () => {
     await runGitAction(workspaceId, "fetch", () => _api.gitFetch({ workspaceId }));
   }
 
+  async function gitPull(workspaceId) {
+    await runGitAction(workspaceId, "pull", () => _api.gitPull({ workspaceId }));
+  }
+
   async function gitPush(workspaceId) {
     await runGitAction(workspaceId, "push", () => _api.gitPush({ workspaceId }));
   }
@@ -410,6 +414,7 @@ export const useGitUiStore = defineStore("git-ui", () => {
     runGitAction,
     refreshGit,
     gitFetch,
+    gitPull,
     gitPush,
     gitCheckoutBranch,
     gitCreateBranch,
