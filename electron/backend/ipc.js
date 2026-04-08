@@ -433,6 +433,23 @@ export function registerIpc(runtime, emitToRenderer, { includeStateGet = true } 
   ipcMain.handle("file:open-in-explorer", async (_event, absPath) => {
     if (typeof absPath === "string") shell.showItemInFolder(absPath);
   });
+  ipcMain.handle("file:open-in-editor", async (_event, payload) => {
+    const { absPath, editor } = payload || {};
+    if (typeof absPath !== "string" || !absPath) return { ok: false, error: "Missing absPath" };
+    const editorCmd = (typeof editor === "string" && editor.trim()) || "";
+    const { spawn } = await import("node:child_process");
+    try {
+      if (editorCmd) {
+        spawn(editorCmd, [absPath], { detached: true, stdio: "ignore" }).unref();
+      } else {
+        // Fallback: open with OS default application
+        await shell.openPath(absPath);
+      }
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+  });
   ipcMain.handle("file:info", async (_event, payload) => {
     const p = validateIpc(fileReadSchema, payload, "file:info");
     return fm.getFileInfo(p.rootPath, p.relativePath);
@@ -585,6 +602,7 @@ export function registerIpc(runtime, emitToRenderer, { includeStateGet = true } 
     ipcMain.removeHandler("file:move");
     ipcMain.removeHandler("file:copy");
     ipcMain.removeHandler("file:open-in-explorer");
+    ipcMain.removeHandler("file:open-in-editor");
     ipcMain.removeHandler("file:info");
     ipcMain.removeHandler("dialog:browse-directory");
     ipcMain.removeHandler("dialog:browse-file");

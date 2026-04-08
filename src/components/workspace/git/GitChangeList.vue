@@ -5,22 +5,33 @@
     </p>
     <ul v-if="files.length" class="git-file-list">
       <li v-for="entry in visibleFiles" :key="entry.path">
-        <button
-          type="button"
-          :class="['git-file', isSelected(entry) && 'git-file--active']"
-          :title="`${statusTooltip(entry.code || entry.stagedStatus || entry.unstagedStatus)}: ${entry.path}`"
-          @click="$emit('select', entry.path, scope)"
-        >
-          <span
-            class="git-status-code"
-            :title="statusTooltip(entry.code || entry.stagedStatus || entry.unstagedStatus)"
-            >{{ entry.code || entry.stagedStatus || entry.unstagedStatus || "??" }}</span
+        <div class="git-file-row">
+          <button
+            type="button"
+            :class="['git-file', isSelected(entry) && 'git-file--active']"
+            :title="`${statusTooltip(entry.code || entry.stagedStatus || entry.unstagedStatus)}: ${entry.path}`"
+            @click="$emit('select', entry.path, scope)"
           >
-          <span class="git-file__name">
-            <span v-if="dirOf(entry.path)" class="git-file__dir">{{ dirOf(entry.path) }}</span
-            >{{ nameOf(entry.path) }}
-          </span>
-        </button>
+            <span
+              class="git-status-code"
+              :title="statusTooltip(entry.code || entry.stagedStatus || entry.unstagedStatus)"
+              >{{ entry.code || entry.stagedStatus || entry.unstagedStatus || "??" }}</span
+            >
+            <span class="git-file__name">
+              <span v-if="dirOf(entry.path)" class="git-file__dir">{{ dirOf(entry.path) }}</span
+              >{{ nameOf(entry.path) }}
+            </span>
+          </button>
+          <button
+            v-if="entry.code !== 'D' && entry.unstagedStatus !== 'D' && entry.stagedStatus !== 'D'"
+            type="button"
+            class="git-file__edit-btn"
+            title="Open in external editor"
+            @click.stop="$emit('open-editor', entry.path)"
+          >
+            &#x270E;
+          </button>
+        </div>
       </li>
     </ul>
     <p v-else class="git-card__hint">No files.</p>
@@ -52,7 +63,7 @@ const props = defineProps({
   workspaceId: { type: String, required: true },
 });
 
-defineEmits(["select"]);
+defineEmits(["select", "open-editor"]);
 
 const visibleFiles = computed(() => props.files.slice(0, APP_CONFIG.ui.recentGitEntriesVisible));
 

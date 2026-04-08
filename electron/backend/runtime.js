@@ -1760,6 +1760,10 @@ export async function createRuntime({
             ...draft.settings.remoteAccess,
             ...(settings.remoteAccess || {}),
           },
+          notifications: {
+            ...draft.settings.notifications,
+            ...(settings.notifications || {}),
+          },
         };
         // Keep tabTemplates out of the settings object
         delete draft.settings.tabTemplates;

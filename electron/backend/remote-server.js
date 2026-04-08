@@ -627,6 +627,11 @@ async function handleApiRequest(runtime, request, response) {
       json(response, 200, { ok: true });
       return;
     }
+    if (request.method === "POST" && url.pathname === "/api/file/open-in-editor") {
+      // Open-in-editor is an Electron-only feature; noop for remote.
+      json(response, 200, { ok: true });
+      return;
+    }
     if (request.method === "POST" && url.pathname === "/api/file/info") {
       json(response, 200, await fm.getFileInfo(body.rootPath, body.relativePath));
       return;

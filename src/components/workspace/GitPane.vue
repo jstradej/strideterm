@@ -299,6 +299,7 @@
                   :selected-diff="gitUi.selectedDiff"
                   :workspace-id="workspaceId"
                   @select="(p, s) => gitUiStore.gitSelectDiff(workspaceId, p, s)"
+                  @open-editor="onOpenInEditor"
                 />
                 <GitChangeList
                   title="Unstaged"
@@ -307,6 +308,7 @@
                   :selected-diff="gitUi.selectedDiff"
                   :workspace-id="workspaceId"
                   @select="(p, s) => gitUiStore.gitSelectDiff(workspaceId, p, s)"
+                  @open-editor="onOpenInEditor"
                 />
                 <GitChangeList
                   title="Untracked"
@@ -315,6 +317,7 @@
                   :selected-diff="gitUi.selectedDiff"
                   :workspace-id="workspaceId"
                   @select="(p, s) => gitUiStore.gitSelectDiff(workspaceId, p, s)"
+                  @open-editor="onOpenInEditor"
                 />
                 <div v-if="snapshot.dirty" class="git-commit-form" style="margin-top: 12px">
                   <input
@@ -804,6 +807,17 @@ async function onCreatePr() {
     prResult.value = { ok: true, summary: `PR #${result.pullRequestId || ""} created.`, url: result.url || "" };
   } else {
     prResult.value = { ok: false, summary: result?.summary || "Failed to create pull request." };
+  }
+}
+
+function onOpenInEditor(filePath) {
+  const root = (snapshot.value?.worktreePath || snapshot.value?.root || "").replace(/\\/g, "/");
+  if (!root) return;
+  const absPath = root.endsWith("/") ? root + filePath : root + "/" + filePath;
+  const editor = appStore.payload?.appState?.settings?.externalEditor || "";
+  const api = appStore.getApi();
+  if (api?.fileOpenInEditor) {
+    api.fileOpenInEditor({ absPath, editor });
   }
 }
 

@@ -39,6 +39,23 @@
         </div>
       </div>
       <div>
+        <span class="section-label">External editor</span>
+        <div class="input-with-action">
+          <input v-model="externalEditor" placeholder="e.g. code, notepad++, vim" class="settings-input" />
+          <button
+            v-if="api?.browseFile"
+            type="button"
+            class="button button--ghost input-with-action__btn"
+            @click="browseEditor"
+          >
+            Browse
+          </button>
+        </div>
+        <small class="help-text"
+          >Command or path used to open files from Git changes. Leave empty to use OS default.</small
+        >
+      </div>
+      <div>
         <span class="section-label">Cloudflared binary</span>
         <div class="input-with-action">
           <input v-model="cloudflaredPath" placeholder="Leave empty to use PATH" class="settings-input" />
@@ -52,6 +69,36 @@
           </button>
         </div>
         <small class="help-text">Used for Cloudflare Quick Tunnel detection and launch.</small>
+      </div>
+      <div>
+        <span class="section-label">Notification Timing</span>
+        <div class="settings-grid">
+          <label class="settings-grid__field">
+            <span class="settings-grid__label">Prompt quiet (ms)</span>
+            <input v-model.number="notifPromptQuietMs" type="number" min="0" step="100" class="settings-input" />
+          </label>
+          <label class="settings-grid__field">
+            <span class="settings-grid__label">Agent idle (ms)</span>
+            <input v-model.number="notifAgentQuietMs" type="number" min="0" step="1000" class="settings-input" />
+          </label>
+          <label class="settings-grid__field">
+            <span class="settings-grid__label">Agent idle fast (ms)</span>
+            <input v-model.number="notifAgentQuietFastMs" type="number" min="0" step="1000" class="settings-input" />
+          </label>
+          <label class="settings-grid__field">
+            <span class="settings-grid__label">Alert cooldown (ms)</span>
+            <input v-model.number="notifAlertCooldownMs" type="number" min="0" step="1000" class="settings-input" />
+          </label>
+        </div>
+        <small class="help-text">
+          How long to wait before raising alerts. Prompt quiet = silence before shell prompt alert. Agent idle = silence
+          before agent idle alert. Cooldown = minimum gap between alerts.
+        </small>
+        <label class="settings-checkbox">
+          <input v-model="notifShellIntegration" type="checkbox" />
+          <span>Shell integration (OSC 133)</span>
+        </label>
+        <small class="help-text">Auto-inject shell integration for instant command-completion detection.</small>
       </div>
     </div>
 
@@ -112,7 +159,13 @@ const api = inject("api");
 
 const activeTab = ref("general");
 const selectedTheme = ref(props.settings.theme || "dark");
+const externalEditor = ref(props.settings.externalEditor || "");
 const cloudflaredPath = ref(props.settings.remoteAccess?.cloudflaredPath || "");
+const notifPromptQuietMs = ref(props.settings.notifications?.promptQuietMs ?? 900);
+const notifAgentQuietMs = ref(props.settings.notifications?.agentQuietMs ?? 20000);
+const notifAgentQuietFastMs = ref(props.settings.notifications?.agentQuietFastMs ?? 12000);
+const notifAlertCooldownMs = ref(props.settings.notifications?.alertCooldownMs ?? 15000);
+const notifShellIntegration = ref(props.settings.notifications?.shellIntegration ?? true);
 const templates = reactive((Array.isArray(props.tabTemplates) ? props.tabTemplates : []).map((t) => ({ ...t })));
 
 function switchTab(tabId) {
@@ -121,6 +174,12 @@ function switchTab(tabId) {
 
 function addTemplate() {
   templates.push({ id: `tmpl-${Date.now()}`, title: "", command: "", icon: "\u{1F4BB}" });
+}
+
+async function browseEditor() {
+  if (!api?.browseFile) return;
+  const selected = await api.browseFile({ defaultPath: externalEditor.value });
+  if (selected) externalEditor.value = selected;
 }
 
 async function browseCloudflared() {
@@ -132,7 +191,15 @@ async function browseCloudflared() {
 function handleSave() {
   emit("save", {
     theme: selectedTheme.value,
+    externalEditor: externalEditor.value,
     remoteAccess: { cloudflaredPath: cloudflaredPath.value },
+    notifications: {
+      promptQuietMs: notifPromptQuietMs.value,
+      agentQuietMs: notifAgentQuietMs.value,
+      agentQuietFastMs: notifAgentQuietFastMs.value,
+      alertCooldownMs: notifAlertCooldownMs.value,
+      shellIntegration: notifShellIntegration.value,
+    },
     tabTemplates: templates.filter((t) => t.title || t.command),
   });
 }
@@ -276,6 +343,31 @@ function handleSave() {
 }
 .link-accent {
   color: var(--accent);
+}
+.settings-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+.settings-grid__field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.settings-grid__label {
+  font-size: 12px;
+  color: var(--muted);
+}
+.settings-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.settings-checkbox input {
+  accent-color: var(--accent);
 }
 .settings-footer {
   flex-shrink: 0;

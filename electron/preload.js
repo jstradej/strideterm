@@ -121,6 +121,7 @@ contextBridge.exposeInMainWorld("strideterm", {
   fileMove: (p) => ipcRenderer.invoke("file:move", p),
   fileCopy: (p) => ipcRenderer.invoke("file:copy", p),
   fileOpenInExplorer: (p) => ipcRenderer.invoke("file:open-in-explorer", p),
+  fileOpenInEditor: (p) => ipcRenderer.invoke("file:open-in-editor", p),
   fileInfo: (p) => ipcRenderer.invoke("file:info", p),
   browseDirectory: (defaultPath) => ipcRenderer.invoke("dialog:browse-directory", defaultPath),
   browseFile: (options) => ipcRenderer.invoke("dialog:browse-file", options),

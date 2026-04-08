@@ -282,6 +282,7 @@ function createRemoteTransport() {
     fileMove: (p) => fetchJson("/api/file/move", p),
     fileCopy: (p) => fetchJson("/api/file/copy", p),
     fileOpenInExplorer: (absPath) => fetchJson("/api/file/open-in-explorer", { absPath }),
+    fileOpenInEditor: (p) => fetchJson("/api/file/open-in-editor", p),
     fileInfo: (p) => fetchJson("/api/file/info", p),
     resizeTerminal: (sessionId, size) => send({ type: "terminal:resize", sessionId, cols: size.cols, rows: size.rows }),
     writeTerminal: (sessionId, data) => send({ type: "terminal:input", sessionId, data }),

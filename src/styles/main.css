@@ -2394,6 +2394,46 @@ dt {
   background: color-mix(in srgb, var(--panel-elevated), var(--accent) 10%);
 }
 
+.git-file-row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.git-file-row .git-file {
+  flex: 1;
+  min-width: 0;
+}
+
+.git-file__edit-btn {
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 11px;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  opacity: 0;
+  transition:
+    opacity 0.1s,
+    background 0.1s,
+    color 0.1s;
+}
+
+.git-file-row:hover .git-file__edit-btn {
+  opacity: 1;
+}
+
+.git-file__edit-btn:hover {
+  background: var(--accent);
+  color: #000;
+}
+
 .git-file__name {
   overflow: hidden;
   text-overflow: ellipsis;
