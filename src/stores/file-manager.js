@@ -72,6 +72,8 @@ export const useFileManagerStore = defineStore("fileManager", () => {
 
   // Actions
   async function init(root) {
+    // If already initialized for the same root, skip — preserves navigation state across tab switches
+    if (rootPath.value === root && entries.value.length > 0) return;
     rootPath.value = root;
     currentPath.value = "";
     treeNodes.value = new Map();
