@@ -412,7 +412,8 @@ export async function createRuntime({
    * connection cannot be found (falls back to system git credentials).
    */
   function resolveGitConnection(workspace) {
-    const connectionId = workspace?.connectionId;
+    const connectionId =
+      workspace?.connectionId || workspace?.review?.connectionId || workspace?.quickfix?.connectionId;
     if (!connectionId) {
       return null;
     }
@@ -2414,7 +2415,12 @@ export async function createRuntime({
         title: payload.title,
         description: payload.description || "",
         isDraft: payload.isDraft || false,
-        connectionId: payload.connectionId || workspace.connectionId || "",
+        connectionId:
+          payload.connectionId ||
+          workspace.connectionId ||
+          workspace.review?.connectionId ||
+          workspace.quickfix?.connectionId ||
+          "",
       });
 
       // Promote quickfix workspace → full review workspace after PR creation
