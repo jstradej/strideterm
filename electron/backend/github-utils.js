@@ -19,7 +19,7 @@ export {
   extractErrorText,
 } from "./shared/provider-utils.js";
 
-import { trimTrailingSlash, firstNonEmpty } from "./shared/provider-utils.js";
+import { trimTrailingSlash } from "./shared/provider-utils.js";
 import {
   normalizeReviewRoot as baseNormalizeReviewRoot,
   formatReviewWorkspaceError as baseFormatReviewWorkspaceError,

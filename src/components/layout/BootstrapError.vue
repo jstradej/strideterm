@@ -19,7 +19,7 @@
 <script setup>
 import { ref, inject } from "vue";
 
-const props = defineProps({
+defineProps({
   message: { type: String, required: true },
 });
 

@@ -2,8 +2,6 @@ import {
   createPullRequestKey,
   parseDate,
   toIsoOrNull,
-  firstNonEmpty,
-  normalizeRemoteUrl,
   normalizeReviewState,
   normalizeCheckState,
   inferAttentionReason,
@@ -227,7 +225,7 @@ export function buildPullRequestSummary({
   workspaces = [],
   gitSnapshots = {},
   activeProfileId = "default",
-  now = () => Date.now(),
+  now: _now = () => Date.now(),
 }) {
   const owner = pr.base?.repo?.owner?.login || "";
   const repo = pr.base?.repo?.name || "";

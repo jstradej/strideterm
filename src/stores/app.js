@@ -383,7 +383,7 @@ export const useAppStore = defineStore("app", () => {
     }
   }
 
-  async function activateView(viewId, { focus = true } = {}) {
+  async function activateView(viewId, { focus: _focus = true } = {}) {
     if (!viewId || viewId === activeViewId.value) return;
 
     activeViewId.value = viewId;

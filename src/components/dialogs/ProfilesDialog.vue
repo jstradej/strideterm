@@ -76,7 +76,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, computed, useAttrs } from "vue";
+import { ref, reactive, useAttrs } from "vue";
 
 defineOptions({ inheritAttrs: false });
 

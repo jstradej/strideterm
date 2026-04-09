@@ -63,14 +63,11 @@
 
 <script setup>
 import { ref, onMounted, computed } from "vue";
-import { useAppStore } from "../../stores/app.js";
-
 const props = defineProps({
   tab: { type: Object, required: true },
   showHeader: { type: Boolean, default: false },
 });
 
-const store = useAppStore();
 const embedContainerRef = ref(null);
 
 const homeUrl = computed(() => props.tab.url || "about:blank");
@@ -121,14 +118,6 @@ function openExternal() {
     if (window.strideterm?.openExternal) window.strideterm.openExternal(url);
     else window.open(url, "_blank");
   }
-}
-
-function shortDomain(hostname) {
-  const parts = hostname.split(".");
-  if (parts.length <= 2) return hostname;
-  const sld = parts[parts.length - 2];
-  if (sld.length <= 3 && parts.length >= 3) return parts.slice(-3).join(".");
-  return parts.slice(-2).join(".");
 }
 
 onMounted(() => {

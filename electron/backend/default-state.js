@@ -34,10 +34,6 @@ function defaultCwd() {
   return os.homedir();
 }
 
-function defaultRootCwd() {
-  return os.homedir();
-}
-
 function defaultAzureReviewRoot() {
   return path.join(os.homedir(), ".strideterm", "azure-pr");
 }

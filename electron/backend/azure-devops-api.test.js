@@ -3,7 +3,7 @@ import { createAzureApi } from "./azure-devops-api.js";
 
 function createMockFetch(responses = []) {
   let callIndex = 0;
-  return vi.fn(async (url, options) => {
+  return vi.fn(async (_url, _options) => {
     const response = responses[callIndex++] || { status: 200, body: {} };
     return {
       ok: response.status >= 200 && response.status < 300,

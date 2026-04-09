@@ -1,15 +1,13 @@
 import {
   createPullRequestKey,
-  stripRefsPrefix,
+  trimTrailingSlash,
+  firstNonEmpty,
   parseDate,
   toIsoOrNull,
-  firstNonEmpty,
   identityMatches,
   extractComments,
   summarizeReviewers,
-  normalizeRemoteUrl,
   buildRepositoryRemoteUrl,
-  trimTrailingSlash,
   computeThreadStatusCounts,
   compareThreads,
   inferAttentionReason,
@@ -35,7 +33,7 @@ export function buildPullRequestSummary({
   workspaces = [],
   gitSnapshots = {},
   activeProfileId = "default",
-  now = () => Date.now(),
+  now: _now = () => Date.now(),
 }) {
   const repositoryId = pr.repository?.id || "";
   const prKey = createPullRequestKey(connection.id, repositoryId, pr.pullRequestId);

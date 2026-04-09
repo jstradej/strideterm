@@ -282,7 +282,7 @@ function formatDate(iso) {
   return d.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
 }
 
-async function handleVote(prKey, vote, label) {
+async function handleVote(prKey, vote, _label) {
   busyAction.value = `vote-${vote}`;
   try {
     await appStore.azureVote(prKey, vote);

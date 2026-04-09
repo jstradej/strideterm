@@ -532,7 +532,6 @@
 import { computed, ref, watch } from "vue";
 import { useAppStore } from "../../stores/app.js";
 import { useGitUiStore } from "../../stores/git-ui.js";
-import { APP_CONFIG } from "../../../config/app-config.js";
 import PaneShell from "../layout/PaneShell.vue";
 import DiffViewer from "./DiffViewer.vue";
 import GitDiffStat from "./git/GitDiffStat.vue";
@@ -804,7 +803,7 @@ function onConnectionChange(event) {
 
 async function onCreatePr() {
   prResult.value = null;
-  const payload = await gitUiStore.azureCreatePullRequest(props.workspaceId, {
+  await gitUiStore.azureCreatePullRequest(props.workspaceId, {
     title: prTitle.value.trim(),
     description: prDescription.value.trim(),
     sourceBranch: snapshot.value?.branch || "",

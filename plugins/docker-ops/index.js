@@ -16,7 +16,7 @@
 
 export const id = "docker-ops";
 
-export function activate({ runtime }) {
+export function activate({ runtime: _runtime }) {
   // Plugin activation hook — called when the plugin is loaded.
   // The Docker manager is already built into the core runtime,
   // so this plugin primarily serves as a workspace template provider.

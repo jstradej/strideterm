@@ -79,11 +79,6 @@ const WAITING_PATTERNS = [
   /\bdo you want to\b/i,
   /\[[ yYnN/]+\]/,
 ];
-const PROMPT_PATTERNS = [
-  /^PS [^\n>]{0,200}>\s*$/,
-  /^(?:\([^)\n]{1,80}\)\s*)?[^$\n]{1,180}[$#]\s*$/,
-  /^(?:\([^)\n]{1,80}\)\s*)?.{0,180}[›❯➜]\s*$/,
-];
 
 function stripAnsi(value) {
   return String(value || "").replaceAll(ANSI_ESCAPE_RE, "");
@@ -370,7 +365,6 @@ export async function createRuntime({
 
   // --- Broadcast coalescing ---
   let broadcastScheduled = false;
-  const lastPayloadJson = "";
 
   function getState() {
     return store.getState();
@@ -969,11 +963,6 @@ export async function createRuntime({
       const payload = getPayload();
       events.emit("state:updated", payload);
     });
-  }
-
-  function broadcastStateImmediate() {
-    broadcastScheduled = false;
-    events.emit("state:updated", getPayload());
   }
 
   async function ensureRemoteOriginReady(remoteConfig) {

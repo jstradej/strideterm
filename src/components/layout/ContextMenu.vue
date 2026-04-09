@@ -59,8 +59,6 @@ const canAddToSplit = computed(() => {
   return store.splitGroup.viewIds.length < slots;
 });
 
-const hasItems = computed(() => isTerminal.value || inGroup.value || canAddToSplit.value);
-
 // Adjusted position (set after mount to clamp to viewport)
 const adjustedX = ref(rawX.value);
 const adjustedY = ref(rawY.value);

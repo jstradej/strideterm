@@ -1,4 +1,4 @@
-import { API_VERSION, POLICY_API_VERSION, trimTrailingSlash, firstNonEmpty } from "./azure-devops-utils.js";
+import { API_VERSION, POLICY_API_VERSION, trimTrailingSlash } from "./azure-devops-utils.js";
 
 export function createAzureApi(fetchImpl, { auditLogger } = {}) {
   const etagCache = new Map();

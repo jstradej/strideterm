@@ -301,7 +301,6 @@ function parsePorcelainV2(rawText) {
     const xy = pieces[1] || "..";
     const stagedStatus = xy[0] || ".";
     const unstagedStatus = xy[1] || ".";
-    const isRename = prefix === "2";
     const pathOffset = prefix === "2" ? 9 : prefix === "u" ? 10 : 8;
     const rest = pieces.slice(pathOffset).join(" ");
     const [pathPart = "", previousPath = ""] = rest.split("\t");

@@ -15,7 +15,7 @@
 
 export const id = "system-monitor";
 
-export function activate({ runtime }) {
+export function activate({ runtime: _runtime }) {
   return {
     deactivate() {},
   };

@@ -2,14 +2,13 @@ import os from "node:os";
 import path from "node:path";
 import fs from "node:fs/promises";
 import { existsSync } from "node:fs";
-import { afterEach, describe, expect, test, vi, beforeEach } from "vitest";
+import { afterEach, describe, expect, test, beforeEach } from "vitest";
 import {
   ensureNotifyScript,
   configureClaudeHook,
   removeClaudeHook,
   detectClaudeHookStatus,
   NOTIFY_SCRIPT_CONTENT,
-  HOOK_MARKERS,
   findExistingHook,
 } from "./claude-hook-config.js";
 

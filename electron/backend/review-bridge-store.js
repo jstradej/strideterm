@@ -1428,12 +1428,7 @@ export async function createReviewBridgeStore(rootPath) {
             queueEntry.queue_id,
           );
           try {
-            const publishResult = await publishDraft(publishInput);
-            const payloadJson = toJson({
-              ...(queuePayload || {}),
-              publishResult: publishResult || {},
-            });
-            const syncedAt = new Date().toISOString();
+            await publishDraft(publishInput);
             try {
               db.exec("BEGIN IMMEDIATE TRANSACTION");
               // Remove the draft, local comment, and queue entry so the DB

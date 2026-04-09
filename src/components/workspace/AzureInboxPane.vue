@@ -182,7 +182,7 @@ import PaneShell from "../layout/PaneShell.vue";
 import AzurePrRow from "./azure/AzurePrRow.vue";
 import AzureAuditLog from "./azure/AzureAuditLog.vue";
 
-const props = defineProps({
+defineProps({
   workspaceId: { type: String, required: true },
   showHeader: { type: Boolean, default: false },
 });

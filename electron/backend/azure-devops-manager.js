@@ -5,24 +5,17 @@ import { execFileText } from "./process-utils.js";
 import { createAzureApi } from "./azure-devops-api.js";
 import { BaseProviderManager, createReviewWorkspacePanels } from "./shared/base-manager.js";
 import { classifyAzureRequest, parseAzureUrl } from "./azure-audit-log-store.js";
-import {
-  buildPullRequestSummary,
-  findWorkspaceForPullRequest,
-  findMatchingWorkspace,
-} from "./azure-devops-pr-summary.js";
+import { buildPullRequestSummary, findWorkspaceForPullRequest } from "./azure-devops-pr-summary.js";
 import {
   AZURE_REVIEW_ICON,
   AZURE_REVIEW_COLOR,
   DEFAULT_REVIEW_ROOT,
   clone,
   sanitizePathSegment,
-  trimTrailingSlash,
   normalizeReviewRoot,
-  encodeAuthHeader,
   createPullRequestKey,
   stripRefsPrefix,
   parseDate,
-  toIsoOrNull,
   firstNonEmpty,
   normalizeRemoteUrl,
   buildRepositoryRemoteUrl,

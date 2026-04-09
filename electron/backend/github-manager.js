@@ -5,30 +5,23 @@ import { execFileText } from "./process-utils.js";
 import { createGitHubApi } from "./github-api.js";
 import { BaseProviderManager, createReviewWorkspacePanels } from "./shared/base-manager.js";
 import { classifyGitHubRequest, parseGitHubUrl } from "./github-audit-log-store.js";
-import { buildPullRequestSummary, findWorkspaceForPullRequest, findMatchingWorkspace } from "./github-pr-summary.js";
+import { buildPullRequestSummary, findWorkspaceForPullRequest } from "./github-pr-summary.js";
 import {
   GITHUB_REVIEW_ICON,
   GITHUB_REVIEW_COLOR,
   DEFAULT_REVIEW_ROOT,
   clone,
   sanitizePathSegment,
-  trimTrailingSlash,
   normalizeReviewRoot,
-  encodeAuthHeader,
   createPullRequestKey,
   stripRefsPrefix,
   parseDate,
-  toIsoOrNull,
-  firstNonEmpty,
-  normalizeRemoteUrl,
-  sanitizeGitEnvironment,
   shortPathKey,
   formatReviewWorkspaceError,
   normalizeConnectionInput,
   createConnectionSnapshot,
   createEmptySnapshot,
   exists,
-  buildPullRequestWebUrl,
   buildRepositoryRemoteUrl,
 } from "./github-utils.js";
 

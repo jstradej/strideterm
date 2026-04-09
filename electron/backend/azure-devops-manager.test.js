@@ -46,7 +46,7 @@ function createReviewStore(initial = {}) {
 }
 
 function createFetchStub() {
-  return vi.fn(async (url, options = {}) => {
+  return vi.fn(async (url, _options = {}) => {
     const href = String(url);
     if (href.includes("/_apis/projects")) {
       return {
@@ -651,7 +651,7 @@ describe("AzureDevOpsManager", () => {
   });
 
   test("attaches author PRs to an existing matching workspace", async () => {
-    const { manager } = createManager({
+    createManager({
       secrets: { "cred:ado-main": "pat-123" },
     });
     const summary = buildPullRequestSummary({

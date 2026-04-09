@@ -212,7 +212,7 @@ async function discoverPlugins(pluginsDir) {
 /**
  * Creates a plugin manager that discovers, validates, and loads plugins.
  */
-export async function createPluginManager({ pluginsDir, builtinPluginsDir, runtime }) {
+export async function createPluginManager({ pluginsDir, builtinPluginsDir, runtime: _runtime }) {
   const allPlugins = [];
 
   // Discover built-in plugins first

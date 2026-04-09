@@ -57,8 +57,9 @@ export const useGitUiStore = defineStore("git-ui", () => {
   }
 
   function cleanup(workspaceId) {
-    const { [workspaceId]: _, ...rest } = state.value;
-    state.value = rest;
+    const next = { ...state.value };
+    delete next[workspaceId];
+    state.value = next;
   }
 
   async function runGitAction(workspaceId, busyAction, runner) {
@@ -150,8 +151,6 @@ export const useGitUiStore = defineStore("git-ui", () => {
   }
 
   async function gitConfirmAction(workspaceId) {
-    const { useAppStore } = await import("./app.js");
-    const appStore = useAppStore();
     const ui = ensure(workspaceId);
     const pending = ui.pendingAction;
     if (!pending) return;
