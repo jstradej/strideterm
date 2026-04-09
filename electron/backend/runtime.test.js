@@ -48,7 +48,7 @@ function createMemoryStore(initialState) {
 }
 
 class FakeSessionManager extends EventEmitter {
-  constructor() {
+  constructor({ getSessionEnv } = {}) {
     super();
     this.sessions = new Map();
     this.syncedStates = [];
@@ -57,6 +57,7 @@ class FakeSessionManager extends EventEmitter {
     this.resizeCalls = [];
     this.writeCalls = [];
     this.stopped = false;
+    this.getSessionEnv = typeof getSessionEnv === "function" ? getSessionEnv : null;
   }
 
   getWorkspace(state, projectId = state.activeProjectId) {
@@ -524,7 +525,8 @@ async function createFixture({ initialState, execFileTextImpl, dependencies = {}
     dependencies: {
       createStore: async () => store,
       SessionManager: class extends FakeSessionManager {
-        constructor() {
+        constructor(opts) {
+          sessionManager.getSessionEnv = typeof opts?.getSessionEnv === "function" ? opts.getSessionEnv : null;
           return sessionManager;
         }
       },
@@ -1254,6 +1256,395 @@ describe("runtime integration", () => {
     expect(state.settings.notifications.agentQuietFastMs).toBe(12_000);
     expect(state.settings.notifications.alertCooldownMs).toBe(15_000);
     expect(state.settings.notifications.shellIntegration).toBe(true);
+    expect(state.settings.notifications.agentHook).toBe(true);
+  });
+
+  test("agentNotifyHook info is included in payload", async () => {
+    const fixture = await createFixture();
+    fixtures.push(fixture);
+
+    const payload = fixture.runtime.getPayload();
+    expect(payload.agentNotifyHook).toBeDefined();
+    expect(payload.agentNotifyHook.enabled).toBe(true);
+    expect(payload.agentNotifyHook.port).toBeGreaterThan(0);
+  });
+
+  test("notify server is not started when agentHook is disabled", async () => {
+    const fixture = await createFixture({
+      initialState: {
+        settings: {
+          notifications: { agentHook: false },
+        },
+      },
+    });
+    fixtures.push(fixture);
+
+    const payload = fixture.runtime.getPayload();
+    expect(payload.agentNotifyHook.enabled).toBe(false);
+    expect(payload.agentNotifyHook.port).toBeNull();
+  });
+
+  test("notifyAgentHook raises instant alert for idle_prompt", async () => {
+    vi.useFakeTimers();
+    try {
+      const fixture = await createFixture({
+        initialState: {
+          activeProjectId: "frontend",
+          projects: [
+            {
+              id: "frontend",
+              name: "Frontend",
+              kind: "terminal",
+              cwd: "/tmp/frontend",
+              activePanelId: "claude",
+              panels: [{ id: "claude", title: "Claude Code", command: "claude", shell: true, startup: "default" }],
+            },
+            {
+              id: "backend",
+              name: "Backend",
+              kind: "terminal",
+              cwd: "/tmp/backend",
+              activePanelId: "shell",
+              panels: [{ id: "shell", title: "Shell", command: "", shell: true, startup: "default" }],
+            },
+          ],
+        },
+      });
+      fixtures.push(fixture);
+
+      // Make the backend tab NOT visible, frontend IS visible
+      await fixture.runtime.syncAttentionContext({ visibleSessionIds: ["frontend:claude"] });
+
+      // Create signal for backend:shell, advance past initial cooldown
+      fixture.sessionManager.emit("terminal:data", { sessionId: "backend:shell", data: "$ " });
+      await vi.advanceTimersByTimeAsync(16_000);
+
+      // User input arms the alert system
+      fixture.runtime.writeToSession("backend:shell", "claude\r");
+
+      // Simulate Claude Code finishing — calls the hook
+      fixture.runtime.notifyAgentHook("backend:shell", "idle_prompt");
+
+      const payload = fixture.runtime.getPayload();
+      expect(payload.attention.byProject.backend).toMatchObject({ count: 1 });
+      expect(payload.attention.byProject.backend.alerts[0]).toMatchObject({
+        panelId: "shell",
+        kind: "waiting",
+        detail: "agent-hook-idle",
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("notifyAgentHook raises alert with permission detail for permission_prompt", async () => {
+    vi.useFakeTimers();
+    try {
+      const fixture = await createFixture({
+        initialState: {
+          activeProjectId: "frontend",
+          projects: [
+            {
+              id: "frontend",
+              name: "Frontend",
+              kind: "terminal",
+              cwd: "/tmp/frontend",
+              activePanelId: "claude",
+              panels: [{ id: "claude", title: "Claude Code", command: "claude", shell: true, startup: "default" }],
+            },
+            {
+              id: "backend",
+              name: "Backend",
+              kind: "terminal",
+              cwd: "/tmp/backend",
+              activePanelId: "shell",
+              panels: [{ id: "shell", title: "Shell", command: "", shell: true, startup: "default" }],
+            },
+          ],
+        },
+      });
+      fixtures.push(fixture);
+
+      await fixture.runtime.syncAttentionContext({ visibleSessionIds: ["frontend:claude"] });
+      fixture.sessionManager.emit("terminal:data", { sessionId: "backend:shell", data: "$ " });
+      await vi.advanceTimersByTimeAsync(16_000);
+      fixture.runtime.writeToSession("backend:shell", "claude\r");
+
+      fixture.runtime.notifyAgentHook("backend:shell", "permission_prompt");
+
+      expect(fixture.runtime.getPayload().attention.byProject.backend.alerts[0]).toMatchObject({
+        detail: "agent-hook-permission",
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("notifyAgentHook does not alert without user input", async () => {
+    vi.useFakeTimers();
+    try {
+      const fixture = await createFixture({
+        initialState: {
+          activeProjectId: "frontend",
+          projects: [
+            {
+              id: "frontend",
+              name: "Frontend",
+              kind: "terminal",
+              cwd: "/tmp/frontend",
+              activePanelId: "claude",
+              panels: [{ id: "claude", title: "Claude Code", command: "claude", shell: true, startup: "default" }],
+            },
+            {
+              id: "backend",
+              name: "Backend",
+              kind: "terminal",
+              cwd: "/tmp/backend",
+              activePanelId: "shell",
+              panels: [{ id: "shell", title: "Shell", command: "", shell: true, startup: "default" }],
+            },
+          ],
+        },
+      });
+      fixtures.push(fixture);
+
+      await fixture.runtime.syncAttentionContext({ visibleSessionIds: ["frontend:claude"] });
+      // Create signal but NO user input
+      fixture.sessionManager.emit("terminal:data", { sessionId: "backend:shell", data: "$ " });
+      await vi.advanceTimersByTimeAsync(16_000);
+
+      fixture.runtime.notifyAgentHook("backend:shell", "idle_prompt");
+
+      expect(fixture.runtime.getPayload().attention.byProject.backend).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("notifyAgentHook does not alert for visible sessions", async () => {
+    vi.useFakeTimers();
+    try {
+      const fixture = await createFixture({
+        initialState: {
+          activeProjectId: "frontend",
+          projects: [
+            {
+              id: "frontend",
+              name: "Frontend",
+              kind: "terminal",
+              cwd: "/tmp/frontend",
+              activePanelId: "claude",
+              panels: [{ id: "claude", title: "Claude Code", command: "claude", shell: true, startup: "default" }],
+            },
+          ],
+        },
+      });
+      fixtures.push(fixture);
+
+      // Session IS visible
+      await fixture.runtime.syncAttentionContext({ visibleSessionIds: ["frontend:claude"] });
+      fixture.sessionManager.emit("terminal:data", { sessionId: "frontend:claude", data: "" });
+      await vi.advanceTimersByTimeAsync(16_000);
+      fixture.runtime.writeToSession("frontend:claude", "fix bug\r");
+
+      fixture.runtime.notifyAgentHook("frontend:claude", "idle_prompt");
+
+      expect(fixture.runtime.getPayload().attention.byProject.frontend).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("notifyAgentHook respects alert cooldown", async () => {
+    vi.useFakeTimers();
+    try {
+      const fixture = await createFixture({
+        initialState: {
+          activeProjectId: "frontend",
+          projects: [
+            {
+              id: "frontend",
+              name: "Frontend",
+              kind: "terminal",
+              cwd: "/tmp/frontend",
+              activePanelId: "claude",
+              panels: [{ id: "claude", title: "Claude Code", command: "claude", shell: true, startup: "default" }],
+            },
+            {
+              id: "backend",
+              name: "Backend",
+              kind: "terminal",
+              cwd: "/tmp/backend",
+              activePanelId: "shell",
+              panels: [{ id: "shell", title: "Shell", command: "", shell: true, startup: "default" }],
+            },
+          ],
+        },
+      });
+      fixtures.push(fixture);
+
+      await fixture.runtime.syncAttentionContext({ visibleSessionIds: ["frontend:claude"] });
+      fixture.sessionManager.emit("terminal:data", { sessionId: "backend:shell", data: "$ " });
+      // Signal starts with lastAlertAt = Date.now() (initial cooldown), so advance past it
+      await vi.advanceTimersByTimeAsync(16_000);
+      fixture.runtime.writeToSession("backend:shell", "claude\r");
+
+      // First alert succeeds
+      fixture.runtime.notifyAgentHook("backend:shell", "idle_prompt");
+      expect(fixture.runtime.getPayload().attention.byProject.backend).toMatchObject({ count: 1 });
+
+      // Clear the alert, simulate user responding
+      fixture.runtime.clearAllAttention();
+      fixture.runtime.writeToSession("backend:shell", "yes\r");
+
+      // Second alert within cooldown — should be suppressed
+      fixture.runtime.notifyAgentHook("backend:shell", "idle_prompt");
+      expect(fixture.runtime.getPayload().attention.byProject.backend).toBeUndefined();
+
+      // After cooldown passes, alert should work again
+      await vi.advanceTimersByTimeAsync(16_000);
+      fixture.runtime.notifyAgentHook("backend:shell", "idle_prompt");
+      expect(fixture.runtime.getPayload().attention.byProject.backend).toMatchObject({ count: 1 });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("notifyAgentHook ignores irrelevant notification types", async () => {
+    vi.useFakeTimers();
+    try {
+      const fixture = await createFixture({
+        initialState: {
+          activeProjectId: "frontend",
+          projects: [
+            {
+              id: "frontend",
+              name: "Frontend",
+              kind: "terminal",
+              cwd: "/tmp/frontend",
+              activePanelId: "claude",
+              panels: [{ id: "claude", title: "Claude Code", command: "claude", shell: true, startup: "default" }],
+            },
+            {
+              id: "backend",
+              name: "Backend",
+              kind: "terminal",
+              cwd: "/tmp/backend",
+              activePanelId: "shell",
+              panels: [{ id: "shell", title: "Shell", command: "", shell: true, startup: "default" }],
+            },
+          ],
+        },
+      });
+      fixtures.push(fixture);
+
+      await fixture.runtime.syncAttentionContext({ visibleSessionIds: ["frontend:claude"] });
+      fixture.sessionManager.emit("terminal:data", { sessionId: "backend:shell", data: "$ " });
+      await vi.advanceTimersByTimeAsync(16_000);
+      fixture.runtime.writeToSession("backend:shell", "claude\r");
+
+      fixture.runtime.notifyAgentHook("backend:shell", "auth_success");
+      expect(fixture.runtime.getPayload().attention.byProject.backend).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("notifyAgentHook ignores unknown session IDs", async () => {
+    const fixture = await createFixture();
+    fixtures.push(fixture);
+
+    // Should not throw
+    fixture.runtime.notifyAgentHook("nonexistent:panel", "idle_prompt");
+    expect(fixture.runtime.getPayload().attention.byProject.nonexistent).toBeUndefined();
+  });
+
+  test("updateSettings toggles notify server on and off", async () => {
+    const fixture = await createFixture();
+    fixtures.push(fixture);
+
+    // Initially enabled
+    expect(fixture.runtime.getPayload().agentNotifyHook.enabled).toBe(true);
+    const initialPort = fixture.runtime.getPayload().agentNotifyHook.port;
+    expect(initialPort).toBeGreaterThan(0);
+
+    // Disable
+    await fixture.runtime.updateSettings({
+      notifications: { agentHook: false },
+    });
+    expect(fixture.runtime.getPayload().agentNotifyHook.enabled).toBe(false);
+    expect(fixture.runtime.getPayload().agentNotifyHook.port).toBeNull();
+
+    // Re-enable
+    await fixture.runtime.updateSettings({
+      notifications: { agentHook: true },
+    });
+    expect(fixture.runtime.getPayload().agentNotifyHook.enabled).toBe(true);
+    expect(fixture.runtime.getPayload().agentNotifyHook.port).toBeGreaterThan(0);
+  });
+
+  test("STRIDETERM_NOTIFY_URL is injected into session env when notify server is running", async () => {
+    const fixture = await createFixture({
+      initialState: {
+        activeProjectId: "proj",
+        projects: [
+          {
+            id: "proj",
+            name: "Proj",
+            kind: "terminal",
+            cwd: "/tmp/proj",
+            activePanelId: "shell",
+            panels: [{ id: "shell", title: "Shell", command: "", shell: true, startup: "default" }],
+          },
+        ],
+      },
+    });
+    fixtures.push(fixture);
+
+    // Notify server should be running
+    const payload = fixture.runtime.getPayload();
+    expect(payload.agentNotifyHook.enabled).toBe(true);
+
+    // getSessionEnv callback should be captured by FakeSessionManager
+    expect(fixture.sessionManager.getSessionEnv).toBeTypeOf("function");
+
+    const env = fixture.sessionManager.getSessionEnv({
+      workspace: { id: "proj", cwd: "/tmp/proj" },
+      sessionId: "proj:shell",
+    });
+    expect(env.STRIDETERM_NOTIFY_URL).toBeDefined();
+    expect(env.STRIDETERM_NOTIFY_URL).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/notify\?sid=proj%3Ashell&secret=.+$/);
+  });
+
+  test("STRIDETERM_NOTIFY_URL is not injected when notify server is disabled", async () => {
+    const fixture = await createFixture({
+      initialState: {
+        settings: {
+          notifications: { agentHook: false },
+        },
+        activeProjectId: "proj",
+        projects: [
+          {
+            id: "proj",
+            name: "Proj",
+            kind: "terminal",
+            cwd: "/tmp/proj",
+            activePanelId: "shell",
+            panels: [{ id: "shell", title: "Shell", command: "", shell: true, startup: "default" }],
+          },
+        ],
+      },
+    });
+    fixtures.push(fixture);
+
+    expect(fixture.runtime.getPayload().agentNotifyHook.enabled).toBe(false);
+    expect(fixture.sessionManager.getSessionEnv).toBeTypeOf("function");
+
+    const env = fixture.sessionManager.getSessionEnv({
+      workspace: { id: "proj", cwd: "/tmp/proj" },
+      sessionId: "proj:shell",
+    });
+    expect(env.STRIDETERM_NOTIFY_URL).toBeUndefined();
   });
 
   test("restarts cloudflare tunnel and emits remote config changes when settings change", async () => {

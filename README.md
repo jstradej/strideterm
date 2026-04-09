@@ -18,7 +18,7 @@
 - **Docker Manager** - list containers, run actions, open shells, and stream logs
 - **Remote Access** - access your workspace from any device via LAN or Cloudflare tunnel with QR code
 - **Plugins** - extend functionality with plugins (Docker Ops and System Monitor built-in)
-- **Finish Notifications** - audio ding when focused, system notification when in background — so you know when a command finishes without watching the screen. Uses OSC 133 shell integration (auto-injected for bash/zsh/PowerShell) for instant detection, with configurable silence-based heuristics for AI agents. Timing is tunable per user via settings or environment variables
+- **Finish Notifications** - audio ding when focused, system notification when in background — so you know when a command finishes without watching the screen. Uses OSC 133 shell integration (auto-injected for bash/zsh/PowerShell) for instant detection, with configurable silence-based heuristics for AI agents. For Claude Code, strIDEterm can auto-configure a [notification hook](https://docs.anthropic.com/en/docs/claude-code/hooks) that delivers instant alerts when the agent is idle or waiting for input — no silence guessing needed. Timing is tunable per user via settings or environment variables
 - **Keyboard Shortcuts** - navigate workspaces, tabs, and layouts entirely from the keyboard for a fast, mouse-free workflow
 - **Light/Dark Theme** - full theme support including terminal colors and title bar
 - **Drag & Drop** - reorder workspaces and tabs by dragging

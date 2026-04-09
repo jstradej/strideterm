@@ -52,6 +52,7 @@ export const APP_CONFIG = {
     agentQuietFastMs: envNumber("STRIDETERM_AGENT_QUIET_FAST_MS", 12_000),
     alertCooldownMs: envNumber("STRIDETERM_ALERT_COOLDOWN_MS", 15_000),
     shellIntegration: envBoolean("STRIDETERM_SHELL_INTEGRATION", true),
+    agentHook: envBoolean("STRIDETERM_AGENT_HOOK", true),
   },
   remoteAccess: {
     enabled: envBoolean("STRIDETERM_REMOTE_ENABLED", true),

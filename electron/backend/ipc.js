@@ -276,6 +276,9 @@ export function registerIpc(runtime, emitToRenderer, { includeStateGet = true } 
   ipcMain.handle("tunnel:refresh", async () => runtime.refreshTunnelState());
   ipcMain.handle("tunnel:create", async () => runtime.createCloudflareTunnel());
   ipcMain.handle("tunnel:stop", async () => runtime.stopCloudflareTunnel());
+  ipcMain.handle("agent-hook:configure", async () => runtime.configureClaudeHook());
+  ipcMain.handle("agent-hook:remove", async () => runtime.removeClaudeHook());
+  ipcMain.handle("agent-hook:status", async () => runtime.getClaudeHookStatus());
   ipcMain.handle("docker:refresh", async () => runtime.refreshDockerState());
   ipcMain.handle("git:refresh", async (_event, projectId) => runtime.refreshGitState(projectId));
   ipcMain.handle("git:fetch", async (_event, payload) =>
@@ -565,6 +568,9 @@ export function registerIpc(runtime, emitToRenderer, { includeStateGet = true } 
     ipcMain.removeHandler("tunnel:refresh");
     ipcMain.removeHandler("tunnel:create");
     ipcMain.removeHandler("tunnel:stop");
+    ipcMain.removeHandler("agent-hook:configure");
+    ipcMain.removeHandler("agent-hook:remove");
+    ipcMain.removeHandler("agent-hook:status");
     ipcMain.removeHandler("docker:refresh");
     ipcMain.removeHandler("git:refresh");
     ipcMain.removeHandler("git:fetch");

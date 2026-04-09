@@ -402,6 +402,19 @@ async function handleApiRequest(runtime, request, response) {
       return;
     }
 
+    if (request.method === "POST" && url.pathname === "/api/agent-hook/configure") {
+      json(response, 200, await runtime.configureClaudeHook());
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/api/agent-hook/remove") {
+      json(response, 200, await runtime.removeClaudeHook());
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/api/agent-hook/status") {
+      json(response, 200, await runtime.getClaudeHookStatus());
+      return;
+    }
+
     if (request.method === "POST" && url.pathname === "/api/session/activate") {
       json(response, 200, await runtime.activateSession(body.sessionId));
       return;

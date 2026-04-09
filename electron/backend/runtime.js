@@ -28,6 +28,13 @@ import {
 } from "./azure-devops-manager.js";
 import { GitHubManager } from "./github-manager.js";
 import { createGitHubAuditLogStore } from "./github-audit-log-store.js";
+import { startNotifyServer, generateNotifySecret, buildNotifyUrl } from "./notify-server.js";
+import {
+  ensureNotifyScript,
+  configureClaudeHook,
+  removeClaudeHook,
+  detectClaudeHookStatus,
+} from "./claude-hook-config.js";
 import { APP_CONFIG } from "../../config/app-config.js";
 
 const require = createRequire(import.meta.url);
@@ -139,6 +146,9 @@ function createSessionSignal(sessionId) {
     // replays the buffer which includes prompts. The cooldown prevents false
     // alerts from this initial replay.
     lastAlertAt: Date.now(),
+    // Timestamp of last alert received via agent notification hook.
+    // When > 0, silence-based detection is suppressed in favour of the hook.
+    lastHookAlertAt: 0,
   };
 }
 
@@ -266,17 +276,25 @@ export async function createRuntime({
     createReviewBridgeStoreImpl(reviewBridgeRoot),
   ]);
   const sessions = new SessionManagerImpl({
-    getSessionEnv: ({ workspace }) => {
+    getSessionEnv: ({ workspace, sessionId }) => {
+      const env = {};
+
+      // Agent notification hook URL
+      if (notifyServerHandle?.port && sessionId) {
+        env.STRIDETERM_NOTIFY_URL = buildNotifyUrl(notifyServerHandle.port, sessionId, notifySecret);
+      }
+
       if (!["azure-devops", "github"].includes(workspace?.review?.provider) || !workspace.review?.prKey) {
-        return {};
+        return env;
       }
 
       const context = reviewBridgeStore.getPullRequestContext?.(workspace.review.prKey);
       if (!context) {
-        return {};
+        return env;
       }
 
       return {
+        ...env,
         STRIDETERM_REVIEW_PROVIDER: context.provider || workspace.review.provider || "azure-devops",
         STRIDETERM_REVIEW_PR_KEY: context.prKey,
         STRIDETERM_REVIEW_ROOT: context.rootPath,
@@ -345,6 +363,11 @@ export async function createRuntime({
   const attentionContext = createAttentionContext();
   const sessionSignals = new Map();
 
+  // --- Agent notification hook server ---
+  const notifySecret = generateNotifySecret();
+  let notifyServerHandle = null;
+  let notifyServerStarting = false;
+
   // --- Broadcast coalescing ---
   let broadcastScheduled = false;
   const lastPayloadJson = "";
@@ -355,6 +378,75 @@ export async function createRuntime({
 
   function getNotificationConfig(state = getState()) {
     return state.settings?.notifications || APP_CONFIG.notifications;
+  }
+
+  function handleAgentHookNotification({ sessionId, notificationType }) {
+    if (!sessionId) return;
+    const signal = sessionSignals.get(sessionId);
+    if (!signal) return;
+    if (!signal.hasUserInput) return;
+    if (signal.waitingRaised) return;
+
+    const relevantTypes = new Set(["idle_prompt", "permission_prompt"]);
+    if (!relevantTypes.has(notificationType)) return;
+
+    const descriptor = parseSessionId(sessionId);
+    if (!descriptor) return;
+
+    const state = getState();
+    const notifConfig = getNotificationConfig(state);
+    const now = Date.now();
+    const inCooldown = signal.lastAlertAt > 0 && now - signal.lastAlertAt < notifConfig.alertCooldownMs;
+    if (inCooldown) return;
+
+    signal.lastHookAlertAt = now;
+    cancelPromptTimer(signal);
+
+    if (isSessionVisible(sessionId)) {
+      resetSessionSignal(sessionId);
+      return;
+    }
+
+    const project = findWorkspace(state, descriptor.workspaceId);
+    const panel = project?.panels.find((p) => p.id === descriptor.panelId) || null;
+
+    raiseWaitingAlert({
+      sessionId,
+      projectId: descriptor.workspaceId,
+      panelId: descriptor.panelId,
+      title: panel?.title || descriptor.panelId,
+      detail: notificationType === "permission_prompt" ? "agent-hook-permission" : "agent-hook-idle",
+    });
+  }
+
+  async function startAgentNotifyServer() {
+    const state = getState();
+    const enabled = state.settings?.notifications?.agentHook !== false;
+    if (!enabled) return;
+    if (notifyServerHandle || notifyServerStarting) return; // already running or starting
+    notifyServerStarting = true;
+    try {
+      notifyServerHandle = await startNotifyServer({
+        secret: notifySecret,
+        onNotification: handleAgentHookNotification,
+      });
+    } catch {
+      // Port binding failure is non-fatal — silence detection still works
+      notifyServerHandle = null;
+    } finally {
+      notifyServerStarting = false;
+    }
+  }
+
+  async function stopAgentNotifyServer() {
+    if (notifyServerHandle) {
+      try {
+        await notifyServerHandle.close();
+      } catch {
+        // Shutdown errors are non-fatal
+      }
+      notifyServerHandle = null;
+    }
   }
 
   function getAzureSettings(state = getState()) {
@@ -862,6 +954,10 @@ export async function createRuntime({
         }),
         tunnel: tunnel.getSnapshot(),
       },
+      agentNotifyHook: {
+        enabled: notifyServerHandle != null,
+        port: notifyServerHandle?.port || null,
+      },
     };
   }
 
@@ -979,6 +1075,7 @@ export async function createRuntime({
     signal.busy = false;
     signal.waitingRaised = false;
     signal.outputBursts = 0;
+    signal.lastHookAlertAt = 0;
   }
 
   function deleteSessionSignal(sessionId) {
@@ -1159,7 +1256,7 @@ export async function createRuntime({
             });
           }
         } else {
-          // Any terminal data = agent is active. Mark busy and restart the silence timer.
+          // Any terminal data = agent is active. Mark busy and track output.
           if (cleanText.trim()) {
             signal.busy = true;
             signal.outputBursts += 1;
@@ -1168,7 +1265,14 @@ export async function createRuntime({
             signal.lastOutputLine = lastLine;
           }
           cancelPromptTimer(signal);
-          if (signal.busy && !inCooldown && signal.hasUserInput) {
+
+          // When the notification hook has delivered an alert recently,
+          // skip silence-based detection — the hook is more reliable and instant.
+          // 60s window: long enough to cover typical agent task cycles, short
+          // enough that silence detection kicks back in if the hook stops working.
+          const hookActive = signal.lastHookAlertAt > 0 && Date.now() - signal.lastHookAlertAt < 60_000;
+
+          if (signal.busy && !inCooldown && signal.hasUserInput && !hookActive) {
             // Adaptive timeout: if the agent produced a burst of output and then
             // goes silent, use a shorter timeout (likely done). For sporadic
             // output (long tool calls), use the full timeout.
@@ -1525,6 +1629,8 @@ export async function createRuntime({
     await tunnel.refreshAvailability();
   }
 
+  await ensureNotifyScript(userDataPath).catch(() => {});
+  await startAgentNotifyServer();
   ensureDockerPolling();
   ensureGitPolling();
   if (deferInitialRefresh) {
@@ -1787,6 +1893,15 @@ export async function createRuntime({
       ) {
         await tunnel.refreshAvailability();
       }
+
+      // Start/stop notify server based on agentHook setting
+      const agentHookEnabled = getState().settings?.notifications?.agentHook !== false;
+      if (agentHookEnabled && !notifyServerHandle) {
+        await startAgentNotifyServer();
+      } else if (!agentHookEnabled && notifyServerHandle) {
+        await stopAgentNotifyServer();
+      }
+
       broadcastState();
       return { payload: getPayload(), remoteAccessChanged };
     },
@@ -2604,6 +2719,18 @@ export async function createRuntime({
       }
       sessions.writeToSession(sessionId, data);
     },
+    notifyAgentHook(sessionId, notificationType = "idle_prompt") {
+      handleAgentHookNotification({ sessionId, notificationType, message: "", title: "" });
+    },
+    async configureClaudeHook() {
+      return configureClaudeHook(userDataPath);
+    },
+    async removeClaudeHook() {
+      return removeClaudeHook();
+    },
+    async getClaudeHookStatus() {
+      return detectClaudeHookStatus(userDataPath);
+    },
     clearAllAttention() {
       projectAlerts.clear();
       const now = Date.now();
@@ -3062,6 +3189,9 @@ export async function createRuntime({
       return pluginManager.getWorkspaceTemplate(pluginId);
     },
     async stop() {
+      // Stop the notify server first so no new callbacks arrive
+      // while we clear session signals below.
+      await stopAgentNotifyServer();
       for (const signal of sessionSignals.values()) {
         cancelPromptTimer(signal);
       }

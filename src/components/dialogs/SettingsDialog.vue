@@ -99,6 +99,58 @@
           <span>Shell integration (OSC 133)</span>
         </label>
         <small class="help-text">Auto-inject shell integration for instant command-completion detection.</small>
+        <label class="settings-checkbox">
+          <input v-model="notifAgentHook" type="checkbox" />
+          <span>Agent notification hook</span>
+        </label>
+        <small class="help-text">
+          Start a local listener for instant agent idle detection via Claude Code notification hooks.
+        </small>
+        <div v-if="notifAgentHook" class="hook-setup-section">
+          <div class="hook-status-row">
+            <span class="hook-status-badge" :class="'hook-status--' + hookStatus">
+              {{ HOOK_STATUS_LABELS[hookStatus] || hookStatus }}
+            </span>
+            <button
+              v-if="hookStatus !== 'configured'"
+              type="button"
+              class="button button--small"
+              :disabled="hookBusy"
+              @click="handleConfigureHook"
+            >
+              {{ hookBusy ? "Configuring..." : "Configure Claude Code" }}
+            </button>
+            <button
+              v-else
+              type="button"
+              class="button button--ghost button--small"
+              :disabled="hookBusy"
+              @click="handleRemoveHook"
+            >
+              Remove hook
+            </button>
+          </div>
+          <p v-if="hookError" class="hook-error">{{ hookError }}</p>
+          <details class="hook-setup-details">
+            <summary class="hook-setup-summary">Manual setup (advanced)</summary>
+            <div class="hook-setup-content">
+              <p>
+                If auto-configure fails, add this to <code>~/.claude/settings.json</code> and place the
+                <a
+                  href="#"
+                  class="link-accent"
+                  @click.prevent="api?.openExternal?.('https://github.com/jstradej/strideterm#agent-hook')"
+                  >notify script</a
+                >
+                at the referenced path:
+              </p>
+              <pre class="hook-setup-code">{{ hookConfigJson }}</pre>
+              <button type="button" class="button button--ghost hook-copy-btn" @click="copyHookConfig">
+                {{ hookCopied ? "Copied!" : "Copy to clipboard" }}
+              </button>
+            </div>
+          </details>
+        </div>
       </div>
     </div>
 
@@ -139,7 +191,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, inject } from "vue";
+import { ref, reactive, inject, toRaw, onMounted } from "vue";
 
 const TABS = [
   { id: "general", label: "General" },
@@ -170,6 +222,11 @@ const notifAgentQuietMs = ref(props.settings.notifications?.agentQuietMs ?? 2000
 const notifAgentQuietFastMs = ref(props.settings.notifications?.agentQuietFastMs ?? 12000);
 const notifAlertCooldownMs = ref(props.settings.notifications?.alertCooldownMs ?? 15000);
 const notifShellIntegration = ref(props.settings.notifications?.shellIntegration ?? true);
+const notifAgentHook = ref(props.settings.notifications?.agentHook ?? true);
+const hookCopied = ref(false);
+const hookStatus = ref("unknown"); // "configured" | "not-configured" | "script-missing" | "error" | "unknown"
+const hookError = ref("");
+const hookBusy = ref(false);
 const templates = reactive((Array.isArray(props.tabTemplates) ? props.tabTemplates : []).map((t) => ({ ...t })));
 
 function switchTab(tabId) {
@@ -192,6 +249,98 @@ async function browseCloudflared() {
   if (selected) cloudflaredPath.value = selected;
 }
 
+const HOOK_STATUS_LABELS = {
+  configured: "Configured",
+  "not-configured": "Not configured",
+  "script-missing": "Script missing",
+  error: "Error",
+  unknown: "Checking...",
+};
+
+const hookConfigJson = `{
+  "hooks": {
+    "Notification": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \\"~/.strideterm/hooks/notify.mjs\\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}`;
+
+async function refreshHookStatus() {
+  if (!api?.getAgentHookStatus) {
+    hookStatus.value = "unknown";
+    return;
+  }
+  try {
+    const result = await api.getAgentHookStatus();
+    hookStatus.value = result.status || "unknown";
+  } catch {
+    hookStatus.value = "error";
+  }
+}
+
+async function handleConfigureHook() {
+  if (!api?.configureAgentHook) return;
+  hookBusy.value = true;
+  hookError.value = "";
+  try {
+    const result = await api.configureAgentHook();
+    if (result.ok) {
+      hookStatus.value = "configured";
+    } else {
+      hookError.value = result.error || "Configuration failed.";
+      hookStatus.value = "error";
+    }
+  } catch (error) {
+    hookError.value = error.message || "Unexpected error during configuration.";
+    hookStatus.value = "error";
+  } finally {
+    hookBusy.value = false;
+  }
+}
+
+async function handleRemoveHook() {
+  if (!api?.removeAgentHook) return;
+  hookBusy.value = true;
+  hookError.value = "";
+  try {
+    const result = await api.removeAgentHook();
+    if (result.ok) {
+      hookStatus.value = "not-configured";
+    } else {
+      hookError.value = result.error || "Removal failed.";
+    }
+  } catch (error) {
+    hookError.value = error.message || "Unexpected error during removal.";
+  } finally {
+    hookBusy.value = false;
+  }
+}
+
+async function copyHookConfig() {
+  try {
+    await navigator.clipboard.writeText(hookConfigJson);
+    hookCopied.value = true;
+    setTimeout(() => {
+      hookCopied.value = false;
+    }, 2000);
+  } catch {
+    // Clipboard API not available
+  }
+}
+
+onMounted(() => {
+  refreshHookStatus();
+});
+
 function handleSave() {
   emit("save", {
     theme: selectedTheme.value,
@@ -203,8 +352,9 @@ function handleSave() {
       agentQuietFastMs: notifAgentQuietFastMs.value,
       alertCooldownMs: notifAlertCooldownMs.value,
       shellIntegration: notifShellIntegration.value,
+      agentHook: notifAgentHook.value,
     },
-    tabTemplates: templates.filter((t) => t.title || t.command),
+    tabTemplates: templates.filter((t) => t.title || t.command).map((t) => ({ ...toRaw(t) })),
   });
 }
 </script>
@@ -246,10 +396,12 @@ function handleSave() {
 .settings-tab-content {
   flex: 1;
   overflow-y: auto;
+  scrollbar-gutter: stable;
   display: grid;
   gap: 20px;
   align-content: start;
   padding-bottom: 4px;
+  padding-right: 4px;
 }
 .section-label {
   font-size: 11px;
@@ -391,5 +543,75 @@ function handleSave() {
   font-size: 13px;
   width: 100%;
   margin-bottom: 4px;
+}
+.hook-setup-section {
+  margin-top: 8px;
+  display: grid;
+  gap: 8px;
+}
+.hook-status-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.hook-status-badge {
+  font-size: 12px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 4px;
+}
+.hook-status--configured {
+  color: var(--success, #4caf50);
+  background: rgba(76, 175, 80, 0.12);
+}
+.hook-status--not-configured,
+.hook-status--unknown {
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.06);
+}
+.hook-status--error,
+.hook-status--script-missing {
+  color: var(--danger);
+  background: rgba(255, 80, 80, 0.12);
+}
+.hook-error {
+  color: var(--danger);
+  font-size: 12px;
+  margin: 0;
+}
+.button--small {
+  padding: 4px 10px;
+  font-size: 12px;
+}
+.hook-setup-details {
+  margin-top: 2px;
+}
+.hook-setup-summary {
+  font-size: 12px;
+  color: var(--muted);
+  cursor: pointer;
+  user-select: none;
+}
+.hook-setup-content {
+  margin-top: 8px;
+}
+.hook-setup-content p {
+  font-size: 12px;
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+.hook-setup-code {
+  font-size: 11px;
+  line-height: 1.4;
+  padding: 8px 10px;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid var(--border);
+  overflow-x: auto;
+  white-space: pre;
+}
+.hook-copy-btn {
+  margin-top: 6px;
+  font-size: 12px;
 }
 </style>
