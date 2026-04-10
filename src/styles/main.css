@@ -1195,6 +1195,42 @@ dt {
   font-size: 0.95em;
 }
 
+/* PR status: corner triangle on badge */
+.workspace-card__pr-corner {
+  position: absolute;
+  bottom: -1px;
+  right: -1px;
+  width: 0;
+  height: 0;
+  border-style: solid;
+  border-width: 0 0 10px 10px;
+  border-color: transparent;
+  border-radius: 0 0 2px 0;
+}
+.workspace-card__pr-corner--active {
+  border-bottom-color: #e8a838;
+}
+.workspace-card__pr-corner--completed {
+  border-bottom-color: #6edfb6;
+}
+.workspace-card__pr-corner--abandoned {
+  border-bottom-color: var(--danger);
+}
+
+/* PR completed: subtle dim */
+.workspace-card--pr-completed {
+  opacity: 0.7;
+}
+
+/* PR abandoned: strikethrough name + dim */
+.workspace-card--pr-abandoned {
+  opacity: 0.55;
+}
+.workspace-card--pr-abandoned .workspace-card__meta strong {
+  text-decoration: line-through;
+  text-decoration-color: var(--danger);
+}
+
 .project__action--danger,
 .workspace-card__action--danger {
   color: var(--danger);

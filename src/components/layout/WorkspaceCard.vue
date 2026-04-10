@@ -6,6 +6,8 @@
       'workspace-card--attention': workspace.attentionCount > 0,
       'workspace-card--attention-fresh': workspace.attentionFresh,
       'workspace-card--worktree': workspace.isWorktree,
+      'workspace-card--pr-completed': workspace.prStatus === 'completed',
+      'workspace-card--pr-abandoned': workspace.prStatus === 'abandoned',
     }"
     :style="`--accent:${workspace.color}`"
     :title="workspace.title"
@@ -18,6 +20,10 @@
     <span class="workspace-card__badge">
       <span class="workspace-card__index">{{ workspace.index }}</span
       >{{ workspace.icon }}
+      <span
+        v-if="workspace.prStatus"
+        :class="['workspace-card__pr-corner', `workspace-card__pr-corner--${workspace.prStatus}`]"
+      ></span>
     </span>
     <span class="workspace-card__meta">
       <span class="workspace-card__title-row">

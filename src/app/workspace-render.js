@@ -31,6 +31,7 @@ export function buildWorkspaceCards({
   getGitSnapshot,
   getWorkspaceAttention,
   getChecks,
+  getPrStatus,
 }) {
   return workspaces.map((workspace, index) => {
     const active = workspace.id === activeWorkspaceId;
@@ -49,6 +50,8 @@ export function buildWorkspaceCards({
         : checks?.passedCount
           ? "passed"
           : null;
+    const prStatusInfo = isReviewChild && typeof getPrStatus === "function" ? getPrStatus(workspace) : null;
+    const prStatus = prStatusInfo?.status || null;
     const reviewProviderLabel = workspace.review?.provider === "github" ? "GitHub review" : "Azure review";
     const summary =
       workspace.kind === "docker"
@@ -71,7 +74,7 @@ export function buildWorkspaceCards({
       active,
       color: safeColor(workspace.color),
       summary,
-      title: `${attention?.count ? attentionTooltip : workspace.name}${index < 9 ? ` (Ctrl+${index + 1})` : ""}`,
+      title: `${attention?.count ? attentionTooltip : workspace.name}${prStatus && prStatus !== "active" ? `\nPR ${prStatus}${prStatusInfo?.closedDate ? ` · ${new Date(prStatusInfo.closedDate).toLocaleDateString()}` : ""}` : ""}${index < 9 ? ` (Ctrl+${index + 1})` : ""}`,
       attentionCount: attention?.count || 0,
       attentionFresh: isFreshAttention(attention),
       attentionTooltip,
@@ -79,6 +82,7 @@ export function buildWorkspaceCards({
       gitAvailable: !!gitSnapshot?.available,
       isWorktree: (workspace.notes || "").startsWith("Worktree of ") || isReviewChild || isQuickFixChild,
       checksState,
+      prStatus,
     };
   });
 }

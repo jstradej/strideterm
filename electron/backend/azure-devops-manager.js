@@ -231,6 +231,52 @@ export class AzureDevOpsManager extends BaseProviderManager {
       }
     }
 
+    // Resolve actual status for PRs with open workspaces that are no longer in the active poll.
+    // Only fetches once — resolved status is persisted in detailMap so subsequent polls skip them.
+    for (const ws of workspaces) {
+      if (ws.review?.provider !== "azure-devops" || !ws.review?.prKey) continue;
+      const key = ws.review.prKey;
+      if (trackedPullRequests[key]) continue; // still active
+      const existing = detailMap[key];
+      if (existing && existing.pullRequest?.status !== "active") continue; // already resolved
+      const conn = connections.find((c) => c.id === ws.review.connectionId);
+      const token = conn && this.credentialStore.getSecret(conn.tokenRef);
+      if (!conn || !token) continue;
+      try {
+        const pr = await this.api.getPullRequestById(
+          conn,
+          token,
+          ws.review.project?.name || "",
+          ws.review.repository?.id || "",
+          ws.review.pullRequest?.id || "",
+        );
+        const resolved = {
+          ...(existing || {}),
+          connectionId: ws.review.connectionId,
+          project: ws.review.project,
+          repository: ws.review.repository,
+          pullRequest: {
+            ...(existing?.pullRequest || ws.review.pullRequest || {}),
+            status: pr.status || "completed",
+            closedDate: pr.closedDate || null,
+          },
+        };
+        detailMap[key] = resolved;
+      } catch {
+        // API failed — mark as completed so we don't retry every poll
+        detailMap[key] = {
+          ...(existing || {}),
+          connectionId: ws.review.connectionId,
+          project: ws.review.project,
+          repository: ws.review.repository,
+          pullRequest: {
+            ...(existing?.pullRequest || ws.review.pullRequest || {}),
+            status: "completed",
+          },
+        };
+      }
+    }
+
     for (const [key, tracked] of Object.entries(trackedPullRequests)) {
       await this.reviewStore.upsertTrackedPullRequest(key, tracked);
     }

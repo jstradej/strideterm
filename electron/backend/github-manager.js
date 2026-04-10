@@ -247,6 +247,47 @@ export class GitHubManager extends BaseProviderManager {
       }
     }
 
+    // Resolve actual status for PRs with open workspaces that are no longer in the active poll.
+    // Only fetches once — resolved status is persisted in detailMap so subsequent polls skip them.
+    for (const ws of workspaces) {
+      if (ws.review?.provider !== "github" || !ws.review?.prKey) continue;
+      const key = ws.review.prKey;
+      if (trackedPullRequests[key]) continue; // still active
+      const existing = detailMap[key];
+      if (existing && existing.pullRequest?.state !== "open") continue; // already resolved
+      const conn = connections.find((c) => c.id === ws.review.connectionId);
+      const token = conn && this.credentialStore.getSecret(conn.tokenRef);
+      if (!conn || !token) continue;
+      const [owner, repo] = (ws.review.repository?.fullName || "").split("/");
+      const pullNumber = ws.review.pullRequest?.number || ws.review.pullRequest?.id;
+      if (!owner || !repo || !pullNumber) continue;
+      try {
+        const pr = await this.api.getPullRequest(conn, token, owner, repo, pullNumber);
+        detailMap[key] = {
+          ...(existing || {}),
+          connectionId: ws.review.connectionId,
+          repository: ws.review.repository,
+          pullRequest: {
+            ...(existing?.pullRequest || ws.review.pullRequest || {}),
+            state: pr.state || "closed",
+            mergedAt: pr.merged_at || null,
+            closedAt: pr.closed_at || null,
+          },
+        };
+      } catch {
+        detailMap[key] = {
+          ...(existing || {}),
+          connectionId: ws.review.connectionId,
+          repository: ws.review.repository,
+          pullRequest: {
+            ...(existing?.pullRequest || ws.review.pullRequest || {}),
+            state: "closed",
+            mergedAt: null,
+          },
+        };
+      }
+    }
+
     for (const [key, tracked] of Object.entries(trackedPullRequests)) {
       await this.reviewStore.upsertTrackedPullRequest(key, tracked);
     }

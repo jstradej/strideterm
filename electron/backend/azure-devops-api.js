@@ -102,6 +102,10 @@ export function createAzureApi(fetchImpl, { auditLogger } = {}) {
     return `${trimTrailingSlash(connection.orgUrl)}/${encodeURIComponent(projectName)}/_apis/git/pullrequests?searchCriteria.status=active&api-version=${API_VERSION}&$top=200`;
   }
 
+  function buildPullRequestUrl(connection, projectName, repositoryId, pullRequestId) {
+    return `${trimTrailingSlash(connection.orgUrl)}/${encodeURIComponent(projectName)}/_apis/git/repositories/${repositoryId}/pullRequests/${pullRequestId}?api-version=${API_VERSION}`;
+  }
+
   function buildThreadsUrl(connection, projectName, repositoryId, pullRequestId) {
     return `${trimTrailingSlash(connection.orgUrl)}/${encodeURIComponent(projectName)}/_apis/git/repositories/${repositoryId}/pullRequests/${pullRequestId}/threads?api-version=${API_VERSION}&$top=200`;
   }
@@ -182,6 +186,13 @@ export function createAzureApi(fetchImpl, { auditLogger } = {}) {
       token,
     });
     return result.value || [];
+  }
+
+  async function getPullRequestById(connection, token, projectName, repositoryId, pullRequestId) {
+    return requestJson(buildPullRequestUrl(connection, projectName, repositoryId, pullRequestId), {
+      login: connection.login,
+      token,
+    });
   }
 
   async function listThreads(connection, token, projectName, repositoryId, pullRequestId) {
@@ -349,11 +360,13 @@ export function createAzureApi(fetchImpl, { auditLogger } = {}) {
     buildListRepositoriesUrl,
     buildListRefsUrl,
     buildCreatePullRequestUrl,
+    buildPullRequestUrl,
     fetchBuildErrors,
     fetchBuildDetail,
     reEvaluatePolicy,
     listProjects,
     listPullRequestsByProject,
+    getPullRequestById,
     listThreads,
     listPullRequestStatuses,
     listPolicyEvaluations,

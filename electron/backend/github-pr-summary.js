@@ -338,6 +338,7 @@ export function buildPullRequestSummary({
       createdAt: pr.created_at || null,
       updatedAt: pr.updated_at || null,
       mergedAt: pr.merged_at || null,
+      closedAt: pr.closed_at || null,
       mergeable: pr.mergeable ?? null,
       mergeableState: pr.mergeable_state || "",
     },

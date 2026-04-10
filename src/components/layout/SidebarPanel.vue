@@ -72,6 +72,25 @@ const workspaceCards = computed(() => {
       if (provider === "github") return payload.github?.pullRequests?.[prKey]?.checks || null;
       return null;
     },
+    getPrStatus: (workspace) => {
+      const prKey = workspace.review?.prKey;
+      if (!prKey) return null;
+      const provider = workspace.review?.provider;
+      if (provider === "azure-devops") {
+        const prData = payload.azureDevops?.pullRequests?.[prKey]?.pullRequest;
+        const status = prData?.status;
+        if (status === "completed") return { status: "completed", closedDate: prData.closedDate || null };
+        if (status === "abandoned") return { status: "abandoned", closedDate: prData.closedDate || null };
+        return { status: "active" };
+      }
+      if (provider === "github") {
+        const pr = payload.github?.pullRequests?.[prKey]?.pullRequest;
+        if (pr?.mergedAt) return { status: "completed", closedDate: pr.mergedAt };
+        if (pr && pr.state !== "open") return { status: "abandoned", closedDate: pr.closedAt || pr.updatedAt || null };
+        return { status: "active" };
+      }
+      return null;
+    },
   });
 });
 

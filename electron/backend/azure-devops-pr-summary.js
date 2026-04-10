@@ -123,6 +123,7 @@ export function buildPullRequestSummary({
       sourceCommitId: pr.lastMergeSourceCommit?.commitId || "",
       lastSourceCommitAt: toIsoOrNull(latestCommitAt),
       creationDate: toIsoOrNull(latestPrAt),
+      closedDate: toIsoOrNull(pr.closedDate) || null,
     },
     author: {
       id: pr.createdBy?.id || "",
