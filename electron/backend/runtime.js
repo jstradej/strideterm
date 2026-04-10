@@ -1456,6 +1456,7 @@ export async function createRuntime({
     };
   }
 
+  const pendingWorktreeDeletions = new Set(); // paths being deleted — skip in syncWorktrees
   let syncWorktreesRunning = false;
   async function syncWorktrees() {
     if (syncWorktreesRunning) return false;
@@ -1507,6 +1508,7 @@ export async function createRuntime({
       for (const entry of entries) {
         if (!entry.isDirectory()) continue;
         const treePath = path.join(treeDir, entry.name);
+        if (pendingWorktreeDeletions.has(path.resolve(treePath))) continue;
         const existing = worktrees.find((w) => w.cwd === treePath);
         if (existing) {
           // Repair profileId if it drifted from parent
@@ -1771,48 +1773,49 @@ export async function createRuntime({
       // Delete worktree files from disk if requested
       let diskDeleteError = "";
       if (options.deleteFromDisk && workspace) {
-        // Only allow deletion of the workspace's own worktree path — never trust diskPath from the client
-        const allowedPaths = [workspace.review?.checkout?.rootPath, workspace.cwd]
+        const allowedPaths = [workspace.review?.checkout?.rootPath, workspace.cwd, workspace.quickfix?.rootPath]
           .map((p) => (p ? path.resolve(String(p).trim()) : ""))
           .filter(Boolean);
         const requestedPath = path.resolve(String(options.diskPath || allowedPaths[0] || "").trim());
         const diskPath = allowedPaths.includes(requestedPath) ? requestedPath : "";
         if (diskPath && path.isAbsolute(diskPath)) {
-          // Wait for killed PTY processes to fully exit, then give Windows
-          // extra time to release file handles (they lag behind process exit)
-          await sessionsExited;
-          await new Promise((resolve) => setTimeout(resolve, 1000));
+          pendingWorktreeDeletions.add(diskPath);
+          try {
+            await sessionsExited;
+            await new Promise((resolve) => setTimeout(resolve, 1000));
 
-          // Try git worktree remove first — cleans both directory and cache repo reference
-          const cacheRepoPath = workspace.review?.checkout?.cacheRepoPath || "";
-          let gitRemoved = false;
-          if (cacheRepoPath) {
-            try {
-              await execFileTextImpl("git", ["worktree", "remove", "--force", diskPath], { cwd: cacheRepoPath });
-              gitRemoved = true;
-            } catch {}
-            // Prune any other dangling worktree references
-            try {
-              await execFileTextImpl("git", ["worktree", "prune"], { cwd: cacheRepoPath });
-            } catch {}
-          }
-
-          // Fallback: direct rm if git worktree remove didn't handle it
-          if (!gitRemoved) {
-            // Retry on Windows where file locks may linger after process exit
-            for (let attempt = 0; attempt < 5; attempt++) {
+            const cacheRepoPath = workspace.review?.checkout?.cacheRepoPath || "";
+            // workspace.cwd is like /repo/.strideterm/tree/branch-name — 3 levels up to repo root
+            const mainWorktreePath = workspace.cwd ? path.resolve(workspace.cwd, "..", "..", "..") : "";
+            const gitCwd = cacheRepoPath || mainWorktreePath;
+            let gitRemoved = false;
+            if (gitCwd) {
               try {
-                await rm(diskPath, { recursive: true, force: true });
-                break;
-              } catch (err) {
-                if (attempt < 4 && (err.code === "EBUSY" || err.code === "EPERM")) {
-                  await new Promise((resolve) => setTimeout(resolve, 1500));
-                  continue;
+                await execFileTextImpl("git", ["worktree", "remove", "--force", diskPath], { cwd: gitCwd });
+                gitRemoved = true;
+              } catch {}
+              try {
+                await execFileTextImpl("git", ["worktree", "prune"], { cwd: gitCwd });
+              } catch {}
+            }
+
+            if (!gitRemoved) {
+              for (let attempt = 0; attempt < 5; attempt++) {
+                try {
+                  await rm(diskPath, { recursive: true, force: true });
+                  break;
+                } catch (err) {
+                  if (attempt < 4 && (err.code === "EBUSY" || err.code === "EPERM")) {
+                    await new Promise((resolve) => setTimeout(resolve, 1500));
+                    continue;
+                  }
+                  diskDeleteError = `Could not delete ${diskPath}: ${err?.message || err}`;
+                  console.warn(`[workspace] ${diskDeleteError}`);
                 }
-                diskDeleteError = `Could not delete ${diskPath}: ${err?.message || err}`;
-                console.warn(`[workspace] ${diskDeleteError}`);
               }
             }
+          } finally {
+            pendingWorktreeDeletions.delete(diskPath);
           }
         }
       }

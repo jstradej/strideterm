@@ -879,6 +879,25 @@ export class GitManager extends EventEmitter {
       const stagedDiffStat = await this.readDiffStat(workspace.cwd, ["diff", "--cached", "--shortstat"]);
       const unstagedDiffStat = await this.readDiffStat(workspace.cwd, ["diff", "--shortstat"]);
       const untrackedDiffStat = summarizeNameStatusEntries(untracked.map((entry) => ({ code: "?", path: entry.path })));
+      // Check if this worktree's branch has been merged into the base branch.
+      // Only mark as merged if: not the main worktree, not dirty, HEAD is ancestor of baseBranch,
+      // and the branch actually had commits (behindCount > 0 means baseBranch moved ahead, e.g. via merge).
+      const isMainWorktree =
+        worktrees.length > 1 && worktrees[0]?.path && path.resolve(worktrees[0].path) === path.resolve(root);
+      let branchMerged = false;
+      if (worktrees.length > 1 && !isMainWorktree && baseBranch && branch !== baseBranch && dirtyCount === 0) {
+        try {
+          await this.execGit(root, ["merge-base", "--is-ancestor", "HEAD", baseBranch]);
+          // HEAD is in baseBranch — but only mark merged if baseBranch is actually ahead
+          // (avoids false positive on fresh branches with no commits yet)
+          const countResult = await this.execGit(root, ["rev-list", "--count", `HEAD..${baseBranch}`]);
+          const behindCount = parseInt(countResult.stdout.trim(), 10) || 0;
+          branchMerged = behindCount > 0;
+        } catch {
+          // exit code 1 = not merged, or command failed
+        }
+      }
+
       const siblingWorktrees = await Promise.all(
         worktrees.map(async (entry, index) => {
           const isCurrent = path.resolve(entry.path) === path.resolve(root);
@@ -929,6 +948,7 @@ export class GitManager extends EventEmitter {
         gitCommonDir,
         isWorktree: worktrees.length > 1,
         isMainWorktree: siblingWorktrees.find((entry) => entry.isCurrent)?.isMainWorktree || false,
+        branchMerged,
         worktreePath: root,
         mainWorktreePath: mainWorktree?.path || root,
         siblingWorktrees,
@@ -1117,7 +1137,10 @@ export class GitManager extends EventEmitter {
       nextSnapshots.set(workspaceId, snapshot);
     }
 
-    this.snapshots = nextSnapshots;
+    // Merge into existing snapshots — don't discard snapshots for workspaces not in this refresh
+    for (const [workspaceId, snapshot] of nextSnapshots) {
+      this.snapshots.set(workspaceId, snapshot);
+    }
     this.emit("updated", this.getWorkspaceMap());
     return this.getWorkspaceMap();
   }

@@ -27,6 +27,7 @@ const DIALOGS = {
   GitHubConnectionDialog: defineAsyncComponent(() => import("./GitHubConnectionDialog.vue")),
   GitHubQuickFixWizardDialog: defineAsyncComponent(() => import("./GitHubQuickFixWizardDialog.vue")),
   QuickFixWizardDialog: defineAsyncComponent(() => import("./QuickFixWizardDialog.vue")),
+  BusyOverlay: defineAsyncComponent(() => import("./BusyOverlay.vue")),
 };
 
 const store = useAppStore();
@@ -34,6 +35,7 @@ const store = useAppStore();
 const dialogComponent = computed(() => DIALOGS[store.overlay] || null);
 
 function handleBackdropClick() {
+  if (store.overlay === "BusyOverlay") return; // busy overlay cannot be dismissed
   const cb = store.overlayProps?.onCancel || store.overlayProps?.onClose;
   if (cb) cb();
   else store.closeDialog();

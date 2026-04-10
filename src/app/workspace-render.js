@@ -51,7 +51,8 @@ export function buildWorkspaceCards({
           ? "passed"
           : null;
     const prStatusInfo = isReviewChild && typeof getPrStatus === "function" ? getPrStatus(workspace) : null;
-    const prStatus = prStatusInfo?.status || null;
+    const worktreeMerged = !isReviewChild && gitSnapshot?.branchMerged;
+    const prStatus = prStatusInfo?.status || (worktreeMerged ? "completed" : null);
     const reviewProviderLabel = workspace.review?.provider === "github" ? "GitHub review" : "Azure review";
     const summary =
       workspace.kind === "docker"
@@ -74,7 +75,7 @@ export function buildWorkspaceCards({
       active,
       color: safeColor(workspace.color),
       summary,
-      title: `${attention?.count ? attentionTooltip : workspace.name}${prStatus && prStatus !== "active" ? `\nPR ${prStatus}${prStatusInfo?.closedDate ? ` · ${new Date(prStatusInfo.closedDate).toLocaleDateString()}` : ""}` : ""}${index < 9 ? ` (Ctrl+${index + 1})` : ""}`,
+      title: `${attention?.count ? attentionTooltip : workspace.name}${worktreeMerged ? "\nBranch merged" : prStatus && prStatus !== "active" ? `\nPR ${prStatus}${prStatusInfo?.closedDate ? ` · ${new Date(prStatusInfo.closedDate).toLocaleDateString()}` : ""}` : ""}${index < 9 ? ` (Ctrl+${index + 1})` : ""}`,
       attentionCount: attention?.count || 0,
       attentionFresh: isFreshAttention(attention),
       attentionTooltip,

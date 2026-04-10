@@ -50,11 +50,15 @@ export function createWorkspaceActions(ctx) {
     if (!ws) return;
     if (!window.confirm(`Delete workspace "${ws.name}"?`)) return;
 
+    const isWorktreeChild =
+      (ws.notes || "").startsWith("Worktree of ") ||
+      ws.review?.checkout?.mode === "managed-worktree" ||
+      !!ws.quickfix?.parentWorkspaceId;
     const worktreePath =
       ws.review?.checkout?.mode === "managed-worktree" && ws.review?.checkout?.rootPath
         ? ws.review.checkout.rootPath
         : ws.quickfix?.rootPath || "";
-    const diskPath = worktreePath || (ws.cwd && ws.review ? ws.cwd : "");
+    const diskPath = worktreePath || (isWorktreeChild && ws.cwd ? ws.cwd : "");
 
     let deleteFromDisk = false;
     if (diskPath) {
@@ -63,13 +67,24 @@ export function createWorkspaceActions(ctx) {
       );
     }
 
-    const result = await ctx.getApi().deleteWorkspace(workspaceId, { deleteFromDisk, diskPath });
-    if (result?.deleteWorkspaceError) {
-      window.alert(
-        `Workspace was deleted, but files could not be removed:\n\n${result.deleteWorkspaceError}\n\nYou can delete the directory manually.`,
-      );
+    if (deleteFromDisk) {
+      ctx.overlay.value = "BusyOverlay";
+      ctx.overlayProps.value = { message: `Deleting workspace "${ws.name}"…`, detail: diskPath };
     }
-    ctx.payload.value = result;
+    try {
+      const result = await ctx.getApi().deleteWorkspace(workspaceId, { deleteFromDisk, diskPath });
+      if (result?.deleteWorkspaceError) {
+        window.alert(
+          `Workspace was deleted, but files could not be removed:\n\n${result.deleteWorkspaceError}\n\nYou can delete the directory manually.`,
+        );
+      }
+      ctx.payload.value = result;
+    } finally {
+      if (deleteFromDisk) {
+        ctx.overlay.value = null;
+        ctx.overlayProps.value = {};
+      }
+    }
   }
 
   // --- Tab management ----------------------------------------------------

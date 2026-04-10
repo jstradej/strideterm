@@ -463,6 +463,8 @@ export const useAppStore = defineStore("app", () => {
     splitGroup,
     hiddenViewIds,
     workspaceTabs,
+    overlay,
+    overlayProps,
     getApi,
     withSuppressedBroadcast,
   });
