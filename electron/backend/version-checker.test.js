@@ -211,7 +211,7 @@ describe("createVersionChecker", () => {
 
   test("304 Not Modified returns cached data with updated timestamp", async () => {
     const dir = await createTempDir();
-    // Seed cache
+    // Seed cache with a stale timestamp so the 304 handler clearly writes a newer one
     const checker = createVersionChecker({
       currentVersion: "1.4.1",
       repositoryUrl: "https://github.com/test/repo",
@@ -219,7 +219,12 @@ describe("createVersionChecker", () => {
       fetchImpl: createMockFetch([mockRelease("v1.5.0")]),
     });
     const first = await checker.checkForUpdates();
-    const firstTimestamp = first.lastCheckAt;
+
+    // Backdate the cached timestamp so the 304 path produces a detectably newer one
+    const cachePath = path.join(dir, "version-check.json");
+    const cached = JSON.parse(await fs.readFile(cachePath, "utf8"));
+    cached.lastCheckAt = "2020-01-01T00:00:00.000Z";
+    await fs.writeFile(cachePath, JSON.stringify(cached));
 
     // Create new instance that gets 304
     const checker2 = createVersionChecker({
@@ -231,7 +236,7 @@ describe("createVersionChecker", () => {
     const second = await checker2.checkForUpdates(true);
 
     expect(second.versionsBehind).toBe(1);
-    expect(second.lastCheckAt).not.toBe(firstTimestamp);
+    expect(second.lastCheckAt).not.toBe("2020-01-01T00:00:00.000Z");
   });
 
   test("throttle: second call within 24h returns cache without fetching", async () => {
