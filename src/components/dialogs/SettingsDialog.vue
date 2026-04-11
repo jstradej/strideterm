@@ -175,6 +175,25 @@
       <h1 class="about-title">str<em class="about-accent">IDE</em>term</h1>
       <p class="about-subtitle">Multi-workspace terminal hub for developers</p>
       <p class="about-version">Version {{ appVersion }}</p>
+
+      <div v-if="updateInfo" class="update-banner" :class="updateInfo.kind">
+        <p class="update-banner__text">{{ updateInfo.message }}</p>
+        <a
+          v-if="updateInfo.url"
+          :href="updateInfo.url"
+          class="link-accent"
+          @click.prevent="api?.openExternal?.(updateInfo.url)"
+        >View release</a>
+      </div>
+      <p v-else-if="checkingUpdate" class="about-version">Checking for updates...</p>
+
+      <button
+        type="button"
+        class="button button--ghost check-update-btn"
+        :disabled="checkingUpdate"
+        @click="handleCheckForUpdates"
+      >{{ checkingUpdate ? "Checking..." : "Check for updates" }}</button>
+
       <p v-if="repositoryUrl" class="about-link">
         <a :href="repositoryUrl" target="_blank" rel="noopener noreferrer" class="link-accent">GitHub Repository</a>
       </p>
@@ -191,7 +210,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, inject, toRaw, onMounted } from "vue";
+import { ref, reactive, computed, inject, toRaw, onMounted } from "vue";
 
 const TABS = [
   { id: "general", label: "General" },
@@ -206,6 +225,7 @@ const props = defineProps({
   tabTemplates: { type: Array, default: () => [] },
   appVersion: { type: String, default: "" },
   repositoryUrl: { type: String, default: "" },
+  versionCheck: { type: Object, default: null },
   saveError: { type: String, default: "" },
 });
 
@@ -226,6 +246,36 @@ const notifAgentHook = ref(props.settings.notifications?.agentHook ?? true);
 const hookCopied = ref(false);
 const hookStatus = ref("unknown"); // "configured" | "not-configured" | "script-missing" | "error" | "unknown"
 const hookError = ref("");
+
+// -- Version check --
+const checkingUpdate = ref(false);
+const manualCheckResult = ref(null);
+
+const updateInfo = computed(() => {
+  const check = manualCheckResult.value || props.versionCheck;
+  if (!check) return null;
+  if (check.versionsBehind === 0) {
+    return { kind: "update-banner--current", message: "You are on the latest version.", url: "" };
+  }
+  const label = check.versionsBehind === 1 ? "1 version" : `${check.versionsBehind} versions`;
+  return {
+    kind: "update-banner--behind",
+    message: `You are ${label} behind. Latest: v${check.latestVersion}`,
+    url: check.latestUrl,
+  };
+});
+
+async function handleCheckForUpdates() {
+  if (!api?.checkForUpdates) return;
+  checkingUpdate.value = true;
+  try {
+    manualCheckResult.value = await api.checkForUpdates();
+  } catch {
+    manualCheckResult.value = null;
+  } finally {
+    checkingUpdate.value = false;
+  }
+}
 const hookBusy = ref(false);
 const templates = reactive((Array.isArray(props.tabTemplates) ? props.tabTemplates : []).map((t) => ({ ...t })));
 
@@ -497,6 +547,26 @@ function handleSave() {
 }
 .about-link {
   margin-top: 16px;
+}
+.update-banner {
+  margin: 12px 0;
+  padding: 10px 14px;
+  border-radius: 6px;
+  font-size: 13px;
+}
+.update-banner--current {
+  background: rgba(76, 175, 80, 0.1);
+  color: #81c784;
+}
+.update-banner--behind {
+  background: rgba(255, 163, 71, 0.1);
+  color: #ffb347;
+}
+.update-banner__text {
+  margin: 0 0 4px;
+}
+.check-update-btn {
+  margin-top: 12px;
 }
 .link-accent {
   color: var(--accent);

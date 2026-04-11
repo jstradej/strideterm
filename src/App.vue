@@ -53,6 +53,13 @@
           <div class="sidebar-footer__meta">
             <span class="eyebrow">App</span>
             <strong class="sidebar-footer__version">{{ versionLabel }}</strong>
+            <button
+              v-if="versionsBehind > 0"
+              type="button"
+              class="sidebar-footer__update-hint"
+              :title="`Open latest release (v${latestVersionLabel})`"
+              @click="api?.openExternal?.(latestReleaseUrl)"
+            >{{ versionsBehind }} {{ versionsBehind === 1 ? 'update' : 'updates' }} behind</button>
           </div>
           <button
             v-if="repositoryUrl"
@@ -169,7 +176,7 @@
 </template>
 
 <script setup>
-import { computed, inject, onErrorCaptured, onMounted, ref } from "vue";
+import { computed, inject, onErrorCaptured, onMounted, ref, watch } from "vue";
 import { useAppStore } from "./stores/app.js";
 import { useGlobalEvents } from "./composables/useGlobalEvents.js";
 import { useAttentionSync } from "./composables/useAttentionSync.js";
@@ -214,6 +221,29 @@ const versionLabel = computed(() => {
 });
 
 const repositoryUrl = computed(() => store.payload?.meta?.repositoryUrl || "");
+
+// -- Version check --
+const versionCheck = computed(() => store.payload?.meta?.versionCheck);
+const versionsBehind = computed(() => versionCheck.value?.versionsBehind || 0);
+const latestVersionLabel = computed(() => versionCheck.value?.latestVersion || "");
+const latestReleaseUrl = computed(() => versionCheck.value?.latestUrl || "");
+
+const versionToastShown = ref(false);
+watch(versionCheck, (check) => {
+  if (!check || versionToastShown.value) return;
+  versionToastShown.value = true;
+  if (check.versionsBehind > 0) {
+    const label = check.versionsBehind === 1 ? "1 version" : `${check.versionsBehind} versions`;
+    latestToast.value = {
+      id: crypto.randomUUID(),
+      title: "Update available",
+      body: `You are ${label} behind (latest: v${check.latestVersion}).`,
+      kind: "info",
+      at: new Date().toISOString(),
+      read: false,
+    };
+  }
+});
 
 function toggleSidebarCollapse() {
   store.sidebarCollapsed = !store.sidebarCollapsed;

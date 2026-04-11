@@ -491,6 +491,19 @@ dt {
   border-color: color-mix(in srgb, var(--accent), var(--border) 45%);
 }
 
+.sidebar-footer__update-hint {
+  font-size: 0.7rem;
+  color: #ffb347;
+  cursor: pointer;
+  background: none;
+  border: none;
+  padding: 0;
+  text-decoration: underline dotted;
+}
+.sidebar-footer__update-hint:hover {
+  color: #ffc877;
+}
+
 .remote-access--expanded {
   position: fixed;
   top: 14px;
@@ -1355,6 +1368,10 @@ dt {
 .frame--sidebar-collapsed .sidebar-footer__version {
   font-size: 11px;
   text-align: center;
+}
+
+.frame--sidebar-collapsed .sidebar-footer__update-hint {
+  display: none;
 }
 
 .frame--sidebar-collapsed .sidebar-footer__repo {

@@ -391,6 +391,8 @@ export function registerIpc(runtime, emitToRenderer, { includeStateGet = true } 
     notif.show();
   });
 
+  ipcMain.handle("app:check-for-updates", async () => runtime.checkForUpdates());
+
   // --- File manager ---
   ipcMain.handle("file:list", async (_event, payload) => {
     const p = validateIpc(fileListSchema, payload, "file:list");
@@ -600,6 +602,7 @@ export function registerIpc(runtime, emitToRenderer, { includeStateGet = true } 
     ipcMain.removeHandler("profile:delete");
     ipcMain.removeHandler("profile:activate");
     ipcMain.removeHandler("notification:show-system");
+    ipcMain.removeHandler("app:check-for-updates");
     ipcMain.removeHandler("file:list");
     ipcMain.removeHandler("file:tree");
     ipcMain.removeHandler("file:preview");

@@ -159,6 +159,7 @@ export function createDialogActions(ctx) {
       tabTemplates: ctx.payload.value?.appState?.tabTemplates || [],
       appVersion: ctx.payload.value?.meta?.appVersion || "",
       repositoryUrl: ctx.payload.value?.meta?.repositoryUrl || "",
+      versionCheck: ctx.payload.value?.meta?.versionCheck || null,
       onCancel: closeDialog,
       onSave: async (patch) => {
         try {

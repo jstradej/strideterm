@@ -36,6 +36,7 @@ import {
   detectClaudeHookStatus,
 } from "./claude-hook-config.js";
 import { APP_CONFIG } from "../../config/app-config.js";
+import { createVersionChecker } from "./version-checker.js";
 
 const require = createRequire(import.meta.url);
 const { version: packageVersion = "0.0.0" } = require("../../package.json");
@@ -895,12 +896,19 @@ export async function createRuntime({
 
   tunnel.setBinaryPreference?.(getState().settings.remoteAccess.cloudflaredPath || "");
 
+  const versionChecker = createVersionChecker({
+    currentVersion: packageVersion,
+    repositoryUrl: APP_CONFIG.app.repositoryUrl,
+    userDataPath,
+  });
+
   function getPayload() {
     const state = getState();
     return {
       meta: {
         appVersion: packageVersion,
         repositoryUrl: APP_CONFIG.app.repositoryUrl,
+        versionCheck: versionChecker.getCachedResult(),
       },
       appState: (() => {
         const cloned = clone(state);
@@ -1639,6 +1647,11 @@ export async function createRuntime({
   } else {
     await runInitialRefresh();
   }
+
+  // Deferred version check — runs 10s after startup, non-blocking.
+  setTimeout(() => {
+    versionChecker.checkForUpdates().then(() => broadcastState()).catch(() => {});
+  }, 10_000);
 
   return {
     on(channel, handler) {
@@ -3222,6 +3235,11 @@ export async function createRuntime({
     },
     getSessionId(workspaceId, panelId) {
       return createSessionId(workspaceId, panelId);
+    },
+    async checkForUpdates() {
+      const result = await versionChecker.checkForUpdates(true);
+      broadcastState();
+      return result;
     },
   };
 }
