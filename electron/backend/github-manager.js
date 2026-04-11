@@ -200,7 +200,7 @@ export class GitHubManager extends BaseProviderManager {
               try {
                 await this.reviewBridgeStore.syncPullRequest(summary);
               } catch (error) {
-                console.warn(`[github] review bridge sync failed for ${prKey}: ${error.message || error}`);
+                this.log.warn("review bridge sync failed", { prKey, err: error.message || String(error) });
               }
             }
 
@@ -434,7 +434,7 @@ export class GitHubManager extends BaseProviderManager {
       try {
         await this.reviewBridgeStore.syncPullRequest(next);
       } catch (error) {
-        console.warn(`[github] review bridge detail sync failed for ${prKey}: ${error.message || error}`);
+        this.log.warn("review bridge detail sync failed", { prKey, err: error.message || String(error) });
       }
     }
     return next;

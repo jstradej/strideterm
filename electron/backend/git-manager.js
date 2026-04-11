@@ -6,6 +6,9 @@ import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import { execFileText, quotePosixArg } from "./process-utils.js";
 import { encodeAuthHeader, sanitizeGitEnvironment } from "./shared/git-auth-utils.js";
 import { APP_CONFIG } from "../../config/app-config.js";
+import { getLogger } from "./logger.js";
+
+const log = getLogger("git");
 
 const DEFAULT_DIFF_STAT = Object.freeze({
   files: 0,
@@ -895,7 +898,7 @@ export class GitManager extends EventEmitter {
           const behindCount = parseInt(countResult.stdout.trim(), 10) || 0;
           branchMerged = behindCount > 0 || !!workspace.branchMerged;
         } catch {
-          // exit code 1 = not merged, or command failed
+          // exit code 1 = not merged, or command failed — also clears any stale workspace flag
         }
       }
 
@@ -1476,13 +1479,16 @@ export class GitManager extends EventEmitter {
         stashOutput = stashResult.stdout || stashResult.stderr || "";
       }
 
+      log.debug("git action starting", { type, label, cwd: workspace.cwd, baseBranch: resolvedBaseBranch });
       const startTime = Date.now();
       const actionResult = await run(workspace.cwd, resolvedBaseBranch);
       let restoreOutput = "";
       if (stashLabel) {
         restoreOutput = await this.restoreStash(workspace.cwd);
       }
-      this._logGitAudit({ type, connection, success: true, durationMs: Date.now() - startTime });
+      const durationMs = Date.now() - startTime;
+      log.info("git action completed", { type, label, durationMs });
+      this._logGitAudit({ type, connection, success: true, durationMs });
       return createStructuredResult({
         ok: true,
         summary: resolvedBaseBranch
@@ -1492,6 +1498,7 @@ export class GitManager extends EventEmitter {
         rawOutput: joinRawOutput(stashOutput, actionResult.stdout, actionResult.stderr, restoreOutput),
       });
     } catch (error) {
+      log.warn("git action failed", { type, label, err: extractErrorMessage(error) });
       this._logGitAudit({ type, connection, success: false, errorMessage: extractErrorMessage(error) });
       const operationSnapshot = await this.inspectWorkspace(workspace);
       let restoreOutput = "";

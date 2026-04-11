@@ -59,7 +59,9 @@
               class="sidebar-footer__update-hint"
               :title="`Open latest release (v${latestVersionLabel})`"
               @click="api?.openExternal?.(latestReleaseUrl)"
-            >{{ versionsBehind }} {{ versionsBehind === 1 ? 'update' : 'updates' }} behind</button>
+            >
+              {{ versionsBehind }} {{ versionsBehind === 1 ? "update" : "updates" }} behind
+            </button>
           </div>
           <button
             v-if="repositoryUrl"

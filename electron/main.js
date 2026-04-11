@@ -9,7 +9,9 @@ import { startRemoteServer } from "./backend/remote-server.js";
 import { parseReviewBridgeMcpArgs, runReviewBridgeMcpServer } from "./backend/review-bridge-mcp.js";
 import { createDefaultState, normalizeState } from "./backend/default-state.js";
 import { APP_CONFIG, getRendererDevUrl } from "../config/app-config.js";
+import { getLogger, shutdownLogger } from "./backend/logger.js";
 
+const log = getLogger("main");
 const require = createRequire(import.meta.url);
 const { version: packageVersion = "0.0.0" } = require("../package.json");
 
@@ -103,11 +105,15 @@ function updateNativeAttention(payload) {
 
   const shouldFlash = count > runtimeState.lastAttentionCount && !runtimeState.window.isFocused();
   if (shouldFlash) {
+    log.debug("flashing taskbar", { count, waitingCount, prevCount: runtimeState.lastAttentionCount });
     runtimeState.window.flashFrame(true);
   } else if (count === 0 || runtimeState.window.isFocused()) {
     runtimeState.window.flashFrame(false);
   }
 
+  if (count !== runtimeState.lastAttentionCount) {
+    log.trace("attention count changed", { prevCount: runtimeState.lastAttentionCount, newCount: count, waitingCount });
+  }
   runtimeState.lastAttentionCount = count;
 }
 
@@ -532,9 +538,11 @@ app.on("window-all-closed", () => {
 });
 
 app.on("before-quit", async () => {
+  log.info("app quitting");
   runtimeState.unsubscribeStateUpdated?.();
   runtimeState.unsubscribeRemoteConfig?.();
   runtimeState.disposeIpc?.();
   await runtimeState.remoteServer?.close?.();
   await runtimeState.runtime?.stop?.();
+  await shutdownLogger();
 });

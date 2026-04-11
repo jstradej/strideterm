@@ -198,6 +198,7 @@ export function createDefaultState() {
       theme: APP_CONFIG.ui.defaultTheme,
       sidebarWidth: APP_CONFIG.ui.sidebarWidth,
       sidebarCollapsed: APP_CONFIG.ui.sidebarCollapsed,
+      logLevel: APP_CONFIG.logging.level,
       notifications: {
         promptQuietMs: APP_CONFIG.notifications.promptQuietMs,
         agentQuietMs: APP_CONFIG.notifications.agentQuietMs,
@@ -433,10 +434,13 @@ export function normalizeState(rawState = {}) {
     ? rawState.activeProfileId
     : profiles[0]?.id || "default";
 
+  const VALID_LOG_LEVELS = ["error", "warn", "info", "debug", "trace"];
+  const rawLogLevel = (rawState.settings || {}).logLevel;
   const rawNotifications = (rawState.settings || {}).notifications || {};
   const normalizedSettings = {
     ...defaults.settings,
     ...(rawState.settings || {}),
+    logLevel: VALID_LOG_LEVELS.includes(rawLogLevel) ? rawLogLevel : defaults.settings.logLevel,
     notifications: {
       promptQuietMs:
         Number(rawNotifications.promptQuietMs) > 0

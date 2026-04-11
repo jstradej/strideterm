@@ -142,7 +142,6 @@ describe("SessionManager", () => {
 
   test("ignores resize errors after a pty has already exited", () => {
     const manager = new SessionManager();
-    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
 
     manager.ensureSession(createState(), "workspace-a:shell");
     handles[0].resize = vi.fn(() => {
@@ -150,9 +149,6 @@ describe("SessionManager", () => {
     });
 
     expect(() => manager.resizeSession("workspace-a:shell", 120, 40)).not.toThrow();
-    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("Ignoring resize failure"));
-
-    warnSpy.mockRestore();
   });
 
   test("injects shell integration env vars when enabled", () => {

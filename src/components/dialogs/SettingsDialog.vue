@@ -71,6 +71,15 @@
         <small class="help-text">Used for Cloudflare Quick Tunnel detection and launch.</small>
       </div>
       <div>
+        <span class="section-label">Log Level</span>
+        <select v-model="logLevel" class="settings-input settings-select">
+          <option v-for="lvl in LOG_LEVELS" :key="lvl" :value="lvl">{{ lvl }}</option>
+        </select>
+        <small class="help-text"
+          >Controls verbosity of application logging. Logs are written to ~/.strideterm/logs/.</small
+        >
+      </div>
+      <div>
         <span class="section-label">Notification Timing</span>
         <div class="settings-grid">
           <label class="settings-grid__field">
@@ -183,7 +192,8 @@
           :href="updateInfo.url"
           class="link-accent"
           @click.prevent="api?.openExternal?.(updateInfo.url)"
-        >View release</a>
+          >View release</a
+        >
       </div>
       <p v-else-if="checkingUpdate" class="about-version">Checking for updates...</p>
 
@@ -192,7 +202,9 @@
         class="button button--ghost check-update-btn"
         :disabled="checkingUpdate"
         @click="handleCheckForUpdates"
-      >{{ checkingUpdate ? "Checking..." : "Check for updates" }}</button>
+      >
+        {{ checkingUpdate ? "Checking..." : "Check for updates" }}
+      </button>
 
       <p v-if="repositoryUrl" class="about-link">
         <a :href="repositoryUrl" target="_blank" rel="noopener noreferrer" class="link-accent">GitHub Repository</a>
@@ -219,6 +231,7 @@ const TABS = [
 ];
 
 const THEMES = ["dark", "light", "system"];
+const LOG_LEVELS = ["error", "warn", "info", "debug", "trace"];
 
 const props = defineProps({
   settings: { type: Object, default: () => ({}) },
@@ -235,6 +248,7 @@ const api = inject("api");
 
 const activeTab = ref("general");
 const selectedTheme = ref(props.settings.theme || "dark");
+const logLevel = ref(props.settings.logLevel || "warn");
 const externalEditor = ref(props.settings.externalEditor || "");
 const cloudflaredPath = ref(props.settings.remoteAccess?.cloudflaredPath || "");
 const notifPromptQuietMs = ref(props.settings.notifications?.promptQuietMs ?? 900);
@@ -394,6 +408,7 @@ onMounted(() => {
 function handleSave() {
   emit("save", {
     theme: selectedTheme.value,
+    logLevel: logLevel.value,
     externalEditor: externalEditor.value,
     remoteAccess: { cloudflaredPath: cloudflaredPath.value },
     notifications: {
@@ -471,6 +486,11 @@ function handleSave() {
 }
 .settings-input {
   padding: 6px 10px;
+}
+.settings-select {
+  appearance: auto;
+  max-width: 180px;
+  cursor: pointer;
 }
 .help-text {
   color: var(--muted);

@@ -2,6 +2,9 @@ import path from "node:path";
 import fs from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { createDefaultState, normalizeState } from "./default-state.js";
+import { getLogger } from "./logger.js";
+
+const log = getLogger("store");
 
 const LOAD_RETRIES = 3;
 const RETRY_DELAY_MS = 200;
@@ -22,7 +25,7 @@ async function atomicWriteFile(filePath, data) {
 
 async function loadState(statePath) {
   if (!existsSync(statePath)) {
-    console.log(`[store] No state file at ${statePath}, creating defaults`);
+    log.info("no state file found, creating defaults", { statePath });
     const defaults = createDefaultState();
     await fs.mkdir(path.dirname(statePath), { recursive: true });
     await atomicWriteFile(statePath, JSON.stringify(defaults, null, 2));
@@ -38,20 +41,19 @@ async function loadState(statePath) {
       }
       const parsed = JSON.parse(raw);
       if (attempt > 1) {
-        console.log(`[store] State loaded on retry ${attempt}`);
+        log.info("state loaded on retry", { attempt });
       }
       return { state: normalizeState(parsed), isDefaults: false };
     } catch (error) {
       lastError = error;
-      console.warn(`[store] Load attempt ${attempt}/${LOAD_RETRIES} failed: ${error.message}`);
+      log.warn("load attempt failed", { attempt, totalRetries: LOAD_RETRIES, err: error.message });
       if (attempt < LOAD_RETRIES) {
         await sleep(RETRY_DELAY_MS * attempt);
       }
     }
   }
 
-  console.error(`[store] All ${LOAD_RETRIES} load attempts failed for ${statePath}`);
-  console.error(`[store] Last error: ${lastError?.message}`);
+  log.error("all load attempts failed", { statePath, retries: LOAD_RETRIES, err: lastError?.message });
   throw new Error(
     `State file at ${statePath} could not be loaded after ${LOAD_RETRIES} attempts. ` +
       "Existing file was left untouched to avoid overwriting user data.",
@@ -71,7 +73,7 @@ export async function createStore(statePath) {
   function enqueue(operation) {
     const next = pending.then(operation, operation);
     pending = next.catch((error) => {
-      console.error(`[store] Persist queue error: ${error.message}`);
+      log.error("persist queue error", { err: error.message });
     });
     return next;
   }

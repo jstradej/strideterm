@@ -54,6 +54,11 @@ export const APP_CONFIG = {
     shellIntegration: envBoolean("STRIDETERM_SHELL_INTEGRATION", true),
     agentHook: envBoolean("STRIDETERM_AGENT_HOOK", true),
   },
+  logging: {
+    level: envString("STRIDETERM_LOG_LEVEL", "warn"),
+    maxSizeMb: envNumber("STRIDETERM_LOG_MAX_SIZE_MB", 5),
+    maxFiles: envNumber("STRIDETERM_LOG_MAX_FILES", 3),
+  },
   remoteAccess: {
     enabled: envBoolean("STRIDETERM_REMOTE_ENABLED", true),
     host: envString("STRIDETERM_REMOTE_HOST", "0.0.0.0"),

@@ -37,6 +37,9 @@ import {
 } from "./claude-hook-config.js";
 import { APP_CONFIG } from "../../config/app-config.js";
 import { createVersionChecker } from "./version-checker.js";
+import { initLogger, getLogger, setLogLevel, reconfigureLogger } from "./logger.js";
+
+const log = getLogger("runtime");
 
 const require = createRequire(import.meta.url);
 const { version: packageVersion = "0.0.0" } = require("../../package.json");
@@ -239,6 +242,10 @@ export async function createRuntime({
   deferInitialRefresh = false,
   dependencies = {},
 }) {
+  // Logger must init before anything else logs
+  initLogger();
+  log.info("createRuntime starting", { userDataPath, deferInitialRefresh });
+
   const createStoreImpl = dependencies.createStore || createStore;
   const createCredentialStoreImpl = dependencies.createCredentialStore || createCredentialStore;
   const createAzureReviewStoreImpl = dependencies.createAzureReviewStore || createAzureReviewStore;
@@ -271,6 +278,14 @@ export async function createRuntime({
     createAzureReviewStoreImpl(azureReviewPath),
     createReviewBridgeStoreImpl(reviewBridgeRoot),
   ]);
+
+  // Apply persisted log level from stored user config (user setting > ENV var > default "warn")
+  const storedLogLevel = store.getState().settings?.logLevel;
+  if (storedLogLevel) {
+    reconfigureLogger({ level: storedLogLevel });
+    log.info("logger reconfigured from stored settings", { level: storedLogLevel });
+  }
+
   const sessions = new SessionManagerImpl({
     getSessionEnv: ({ workspace, sessionId }) => {
       const env = {};
@@ -278,6 +293,9 @@ export async function createRuntime({
       // Agent notification hook URL
       if (notifyServerHandle?.port && sessionId) {
         env.STRIDETERM_NOTIFY_URL = buildNotifyUrl(notifyServerHandle.port, sessionId, notifySecret);
+        log.debug("injected STRIDETERM_NOTIFY_URL", { sessionId, port: notifyServerHandle.port });
+      } else if (sessionId) {
+        log.debug("STRIDETERM_NOTIFY_URL not injected (notify server not running)", { sessionId });
       }
 
       if (!["azure-devops", "github"].includes(workspace?.review?.provider) || !workspace.review?.prKey) {
@@ -376,14 +394,30 @@ export async function createRuntime({
   }
 
   function handleAgentHookNotification({ sessionId, notificationType }) {
-    if (!sessionId) return;
+    log.debug("agent hook notification received", { sessionId, notificationType });
+    if (!sessionId) {
+      log.debug("hook ignored: no sessionId");
+      return;
+    }
     const signal = sessionSignals.get(sessionId);
-    if (!signal) return;
-    if (!signal.hasUserInput) return;
-    if (signal.waitingRaised) return;
+    if (!signal) {
+      log.debug("hook ignored: no signal for session", { sessionId });
+      return;
+    }
+    if (!signal.hasUserInput) {
+      log.debug("hook ignored: no user input yet", { sessionId });
+      return;
+    }
+    if (signal.waitingRaised) {
+      log.debug("hook ignored: waiting already raised", { sessionId });
+      return;
+    }
 
     const relevantTypes = new Set(["idle_prompt", "permission_prompt"]);
-    if (!relevantTypes.has(notificationType)) return;
+    if (!relevantTypes.has(notificationType)) {
+      log.debug("hook ignored: irrelevant type", { sessionId, notificationType });
+      return;
+    }
 
     const descriptor = parseSessionId(sessionId);
     if (!descriptor) return;
@@ -392,41 +426,62 @@ export async function createRuntime({
     const notifConfig = getNotificationConfig(state);
     const now = Date.now();
     const inCooldown = signal.lastAlertAt > 0 && now - signal.lastAlertAt < notifConfig.alertCooldownMs;
-    if (inCooldown) return;
+    if (inCooldown) {
+      log.debug("hook ignored: cooldown active", {
+        sessionId,
+        cooldownMs: notifConfig.alertCooldownMs,
+        remainingMs: notifConfig.alertCooldownMs - (now - signal.lastAlertAt),
+      });
+      return;
+    }
 
     signal.lastHookAlertAt = now;
     cancelPromptTimer(signal);
 
     if (isSessionVisible(sessionId)) {
+      log.trace("hook: session visible, resetting signal", { sessionId });
       resetSessionSignal(sessionId);
       return;
     }
 
     const project = findWorkspace(state, descriptor.workspaceId);
     const panel = project?.panels.find((p) => p.id === descriptor.panelId) || null;
+    const detail = notificationType === "permission_prompt" ? "agent-hook-permission" : "agent-hook-idle";
 
+    log.info("agent hook raising alert", { sessionId, notificationType, detail, title: panel?.title });
     raiseWaitingAlert({
       sessionId,
       projectId: descriptor.workspaceId,
       panelId: descriptor.panelId,
       title: panel?.title || descriptor.panelId,
-      detail: notificationType === "permission_prompt" ? "agent-hook-permission" : "agent-hook-idle",
+      detail,
     });
   }
 
   async function startAgentNotifyServer() {
     const state = getState();
     const enabled = state.settings?.notifications?.agentHook !== false;
-    if (!enabled) return;
-    if (notifyServerHandle || notifyServerStarting) return; // already running or starting
+    if (!enabled) {
+      log.debug("notify server disabled by settings");
+      return;
+    }
+    if (notifyServerHandle || notifyServerStarting) {
+      log.trace("notify server already running/starting");
+      return;
+    }
     notifyServerStarting = true;
     try {
       notifyServerHandle = await startNotifyServer({
         secret: notifySecret,
         onNotification: handleAgentHookNotification,
+        logger: log,
       });
-    } catch {
-      // Port binding failure is non-fatal — silence detection still works
+      log.info("notify server started", { port: notifyServerHandle.port });
+    } catch (error) {
+      log.warn("notify server failed to start (silence detection still active)", {
+        err: error.message,
+        stack: error.stack,
+      });
       notifyServerHandle = null;
     } finally {
       notifyServerStarting = false;
@@ -435,10 +490,11 @@ export async function createRuntime({
 
   async function stopAgentNotifyServer() {
     if (notifyServerHandle) {
+      log.info("stopping notify server");
       try {
         await notifyServerHandle.close();
-      } catch {
-        // Shutdown errors are non-fatal
+      } catch (error) {
+        log.warn("notify server close error", { err: error.message });
       }
       notifyServerHandle = null;
     }
@@ -1001,9 +1057,11 @@ export async function createRuntime({
     }
 
     if (!panelId) {
+      log.trace("clearing all alerts for project", { projectId });
       projectAlerts.delete(projectId);
       return;
     }
+    log.trace("clearing alert", { projectId, panelId });
 
     const current = projectAlerts.get(projectId);
     const nextAlerts = current.alerts.filter((alert) => alert.panelId !== panelId);
@@ -1020,6 +1078,7 @@ export async function createRuntime({
   }
 
   function addProjectAlert({ projectId, panelId, sessionId, title, exitCode = null, kind = "completed", detail = "" }) {
+    log.debug("addProjectAlert", { projectId, panelId, sessionId, title, kind, detail, exitCode });
     const current = projectAlerts.get(projectId) || {
       count: 0,
       latestAt: null,
@@ -1047,9 +1106,17 @@ export async function createRuntime({
   }
 
   function getSessionSignal(sessionId, project, panel) {
+    const isNew = !sessionSignals.has(sessionId);
     const current = sessionSignals.get(sessionId) || createSessionSignal(sessionId);
     if (!current.agentLike) {
+      const wasAgent = current.agentLike;
       current.agentLike = AGENT_NAME_RE.test(panel?.command || "") || AGENT_NAME_RE.test(panel?.title || "");
+      if (!wasAgent && current.agentLike) {
+        log.debug("session classified as agent-like", { sessionId, command: panel?.command, title: panel?.title });
+      }
+    }
+    if (isNew) {
+      log.trace("session signal created", { sessionId, agentLike: current.agentLike });
     }
     sessionSignals.set(sessionId, current);
     return current;
@@ -1068,11 +1135,16 @@ export async function createRuntime({
     if (!signal) {
       return;
     }
+    const wasBusy = signal.busy;
+    const wasWaiting = signal.waitingRaised;
     cancelPromptTimer(signal);
     signal.busy = false;
     signal.waitingRaised = false;
     signal.outputBursts = 0;
     signal.lastHookAlertAt = 0;
+    if (wasBusy || wasWaiting) {
+      log.trace("session signal reset", { sessionId, wasBusy, wasWaiting });
+    }
   }
 
   function deleteSessionSignal(sessionId) {
@@ -1084,9 +1156,11 @@ export async function createRuntime({
   function raiseWaitingAlert({ sessionId, projectId, panelId, title, detail }) {
     const signal = sessionSignals.get(sessionId);
     if (signal?.waitingRaised) {
+      log.trace("raiseWaitingAlert skipped: already raised", { sessionId, detail });
       return false;
     }
 
+    log.info("ALERT raised", { sessionId, projectId, panelId, title, detail, kind: "waiting" });
     addProjectAlert({
       projectId,
       panelId,
@@ -1167,6 +1241,7 @@ export async function createRuntime({
   function updateVisibleSessions(nextIds) {
     const prev = attentionContext.visibleSessionIds;
     const next = new Set(nextIds);
+    log.trace("updateVisibleSessions", { prev: [...prev], next: [...next] });
     const now = Date.now();
     for (const sessionId of prev) {
       if (!next.has(sessionId)) {
@@ -1211,13 +1286,16 @@ export async function createRuntime({
       // the previous command has finished and the shell prompt has returned.
       // This gives us instant, reliable detection for shell-hosted agents.
       if (OSC133_COMMAND_FINISHED_RE.test(rawText) && signal.hasUserInput) {
+        log.trace("OSC 133;D detected", { sessionId: payload.sessionId, busy: signal.busy });
         const now = Date.now();
         const inCooldown = signal.lastAlertAt > 0 && now - signal.lastAlertAt < notifConfig.alertCooldownMs;
         if (signal.busy && !inCooldown) {
           cancelPromptTimer(signal);
           if (isSessionVisible(payload.sessionId)) {
+            log.trace("OSC 133;D: session visible, resetting", { sessionId: payload.sessionId });
             resetSessionSignal(payload.sessionId);
           } else {
+            log.debug("OSC 133;D triggering alert", { sessionId: payload.sessionId });
             raiseWaitingAlert({
               sessionId: payload.sessionId,
               projectId: descriptor.workspaceId,
@@ -1226,22 +1304,25 @@ export async function createRuntime({
               detail: "osc133-finished",
             });
           }
+        } else if (inCooldown) {
+          log.trace("OSC 133;D: cooldown active, skipping", {
+            sessionId: payload.sessionId,
+            remainingMs: notifConfig.alertCooldownMs - (now - signal.lastAlertAt),
+          });
         }
         // Skip normal detection for this chunk — OSC 133;D is authoritative.
       } else if (signal.agentLike) {
         // --- Agent sessions: silence-based detection ---
-        // Claude Code shows its prompt `>` at all times (even while thinking),
-        // and sends periodic status updates (token count, thinking time).
-        // Instead of matching prompt patterns, we detect idle by watching for
-        // complete silence: no terminal data for agentQuietMs.
-        // Any terminal data resets the timer.
         const now = Date.now();
         const inCooldown = signal.lastAlertAt > 0 && now - signal.lastAlertAt < notifConfig.alertCooldownMs;
+        const hasBell = rawText.includes("\u0007");
 
         // Bell character = explicit input request, always raise immediately
-        if (rawText.includes("\u0007") && !inCooldown && signal.hasUserInput) {
+        if (hasBell && !inCooldown && signal.hasUserInput) {
+          log.debug("bell character detected in agent session", { sessionId: payload.sessionId });
           cancelPromptTimer(signal);
           if (isSessionVisible(payload.sessionId)) {
+            log.trace("bell: session visible, resetting", { sessionId: payload.sessionId });
             resetSessionSignal(payload.sessionId);
           } else {
             raiseWaitingAlert({
@@ -1263,33 +1344,37 @@ export async function createRuntime({
           }
           cancelPromptTimer(signal);
 
-          // When the notification hook has delivered an alert recently,
-          // skip silence-based detection — the hook is more reliable and instant.
-          // 60s window: long enough to cover typical agent task cycles, short
-          // enough that silence detection kicks back in if the hook stops working.
           const hookActive = signal.lastHookAlertAt > 0 && Date.now() - signal.lastHookAlertAt < 60_000;
 
           if (signal.busy && !inCooldown && signal.hasUserInput && !hookActive) {
-            // Adaptive timeout: if the agent produced a burst of output and then
-            // goes silent, use a shorter timeout (likely done). For sporadic
-            // output (long tool calls), use the full timeout.
             const quietMs =
               signal.outputBursts >= AGENT_OUTPUT_BURST_THRESHOLD
                 ? notifConfig.agentQuietFastMs
                 : notifConfig.agentQuietMs;
+            log.trace("agent silence timer started", {
+              sessionId: payload.sessionId,
+              quietMs,
+              outputBursts: signal.outputBursts,
+            });
             signal.promptTimer = setTimeout(() => {
               signal.promptTimer = null;
-              // Secondary check: verify the last output looks like an idle prompt
-              // rather than mid-stream output (e.g. Claude Code thinking indicator).
-              // This reduces false positives from pauses during long operations.
               if (signal.lastOutputLine && !matchesAgentIdle(signal.lastOutputLine)) {
-                // Doesn't look idle — reset and wait for more output.
+                log.trace("agent silence expired but last line not idle", {
+                  sessionId: payload.sessionId,
+                  lastOutputLine: signal.lastOutputLine,
+                });
                 return;
               }
               if (isSessionVisible(payload.sessionId)) {
+                log.trace("agent silence: session visible, resetting", { sessionId: payload.sessionId });
                 resetSessionSignal(payload.sessionId);
                 return;
               }
+              log.debug("agent silence timer triggering alert", {
+                sessionId: payload.sessionId,
+                quietMs,
+                lastOutputLine: signal.lastOutputLine,
+              });
               raiseWaitingAlert({
                 sessionId: payload.sessionId,
                 projectId: descriptor.workspaceId,
@@ -1298,6 +1383,13 @@ export async function createRuntime({
                 detail: "prompt-returned",
               });
             }, quietMs);
+          } else if (hookActive) {
+            log.trace("agent silence: hook active, skipping timer", {
+              sessionId: payload.sessionId,
+              lastHookAlertAt: signal.lastHookAlertAt,
+            });
+          } else if (inCooldown) {
+            log.trace("agent silence: cooldown active", { sessionId: payload.sessionId });
           }
         }
       } else {
@@ -1316,6 +1408,7 @@ export async function createRuntime({
         const inCooldown = signal.lastAlertAt > 0 && now - signal.lastAlertAt < notifConfig.alertCooldownMs;
 
         if (explicitWaiting && !inCooldown && signal.hasUserInput) {
+          log.debug("explicit waiting pattern detected", { sessionId: payload.sessionId, lastLine });
           cancelPromptTimer(signal);
           if (isSessionVisible(payload.sessionId)) {
             resetSessionSignal(payload.sessionId);
@@ -1329,13 +1422,20 @@ export async function createRuntime({
             });
           }
         } else if (promptLike && signal.busy && !inCooldown && signal.hasUserInput) {
+          log.trace("prompt-like pattern detected, starting quiet timer", {
+            sessionId: payload.sessionId,
+            promptQuietMs: notifConfig.promptQuietMs,
+            lastLine,
+          });
           cancelPromptTimer(signal);
           signal.promptTimer = setTimeout(() => {
             signal.promptTimer = null;
             if (isSessionVisible(payload.sessionId)) {
+              log.trace("prompt quiet expired: session visible, resetting", { sessionId: payload.sessionId });
               resetSessionSignal(payload.sessionId);
               return;
             }
+            log.debug("prompt quiet timer triggering alert", { sessionId: payload.sessionId });
             raiseWaitingAlert({
               sessionId: payload.sessionId,
               projectId: descriptor.workspaceId,
@@ -1352,6 +1452,11 @@ export async function createRuntime({
   });
 
   sessions.on("terminal:exit", (payload) => {
+    log.debug("terminal:exit", {
+      sessionId: payload.sessionId,
+      exitCode: payload.exitCode,
+      intentional: payload.intentional,
+    });
     const descriptor = parseSessionId(payload.sessionId);
     const state = getState();
     const project = descriptor ? findWorkspace(state, descriptor.workspaceId) : null;
@@ -1589,7 +1694,7 @@ export async function createRuntime({
 
     dockerPoll = setInterval(() => {
       refreshDocker().catch((error) => {
-        console.warn(`[runtime] Docker poll error: ${error.message}`);
+        log.warn("docker poll error", { err: error.message });
       });
     }, APP_CONFIG.runtime.dockerPollMs);
   }
@@ -1606,7 +1711,7 @@ export async function createRuntime({
           broadcastState();
         }
       } catch (error) {
-        console.warn(`[runtime] Worktree sync error: ${error.message}`);
+        log.warn("worktree sync error", { err: error.message });
       }
     }, APP_CONFIG.runtime.gitPollMs);
   }
@@ -1641,7 +1746,7 @@ export async function createRuntime({
         broadcastState();
       })
       .catch((error) => {
-        console.warn(`[runtime] Initial refresh error: ${error.message}`);
+        log.warn("initial refresh error", { err: error.message });
         broadcastState();
       });
   } else {
@@ -1678,10 +1783,10 @@ export async function createRuntime({
         await syncWorktrees();
         ensureVisibleSession();
         const payload = getPayload();
-        console.log(`[runtime] Initial state ready: ${payload.appState?.workspaces?.length ?? 0} workspaces`);
+        log.info("initial state ready", { workspaceCount: payload.appState?.workspaces?.length ?? 0 });
         return payload;
       } catch (error) {
-        console.error(`[runtime] getInitialState failed: ${error.message}`);
+        log.error("getInitialState failed", { err: error.message });
         throw error;
       }
     },
@@ -1826,7 +1931,7 @@ export async function createRuntime({
                     continue;
                   }
                   diskDeleteError = `Could not delete ${diskPath}: ${err?.message || err}`;
-                  console.warn(`[workspace] ${diskDeleteError}`);
+                  log.warn("workspace disk delete failed", { diskPath, err: diskDeleteError });
                 }
               }
             }
@@ -1900,6 +2005,12 @@ export async function createRuntime({
         tunnel.getSnapshot().status !== "connected"
       ) {
         await tunnel.refreshAvailability();
+      }
+
+      // Apply log level change at runtime
+      const newLogLevel = getState().settings?.logLevel;
+      if (newLogLevel) {
+        setLogLevel(newLogLevel);
       }
 
       // Start/stop notify server based on agentHook setting
@@ -2715,6 +2826,9 @@ export async function createRuntime({
     writeToSession(sessionId, data) {
       resetSessionSignal(sessionId);
       const signal = sessionSignals.get(sessionId);
+      if (signal && !signal.hasUserInput) {
+        log.debug("first user input recorded", { sessionId });
+      }
       if (signal) signal.hasUserInput = true;
       const descriptor = parseSessionId(sessionId);
       if (descriptor) {
@@ -2728,6 +2842,7 @@ export async function createRuntime({
       sessions.writeToSession(sessionId, data);
     },
     notifyAgentHook(sessionId, notificationType = "idle_prompt") {
+      log.debug("notifyAgentHook called", { sessionId, notificationType });
       handleAgentHookNotification({ sessionId, notificationType, message: "", title: "" });
     },
     async configureClaudeHook() {
@@ -2740,6 +2855,7 @@ export async function createRuntime({
       return detectClaudeHookStatus(userDataPath);
     },
     clearAllAttention() {
+      log.debug("clearing all attention alerts");
       projectAlerts.clear();
       const now = Date.now();
       for (const [, signal] of sessionSignals) {
@@ -3205,6 +3321,7 @@ export async function createRuntime({
       return pluginManager.getWorkspaceTemplate(pluginId);
     },
     async stop() {
+      log.info("runtime shutting down");
       // Stop the notify server first so no new callbacks arrive
       // while we clear session signals below.
       await stopAgentNotifyServer();

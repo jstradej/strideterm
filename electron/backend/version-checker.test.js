@@ -116,12 +116,7 @@ describe("compareVersions", () => {
 describe("createVersionChecker", () => {
   test("returns newer releases and version count", async () => {
     const dir = await createTempDir();
-    const releases = [
-      mockRelease("v1.6.0"),
-      mockRelease("v1.5.0"),
-      mockRelease("v1.4.1"),
-      mockRelease("v1.4.0"),
-    ];
+    const releases = [mockRelease("v1.6.0"), mockRelease("v1.5.0"), mockRelease("v1.4.1"), mockRelease("v1.4.0")];
     const checker = createVersionChecker({
       currentVersion: "1.4.1",
       repositoryUrl: "https://github.com/test/repo",

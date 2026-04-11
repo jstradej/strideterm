@@ -6,6 +6,9 @@ import { existsSync } from "node:fs";
 import { WebSocketServer } from "ws";
 import * as fm from "./file-manager.js";
 import { wsTerminalInputSchema, wsTerminalResizeSchema } from "./ipc-schemas.js";
+import { getLogger } from "./logger.js";
+
+const log = getLogger("remote-server");
 
 const CONTENT_TYPES = {
   ".css": "text/css; charset=utf-8",
@@ -661,7 +664,7 @@ async function handleApiRequest(runtime, request, response) {
   }
 }
 
-export async function startRemoteServer({ runtime, staticRoot, logger = console }) {
+export async function startRemoteServer({ runtime, staticRoot, logger: _logger = console }) {
   const { enabled, host, port, token } = runtime.getPayload().appState.settings.remoteAccess;
   if (!enabled) {
     runtime.setRemoteInfo({ enabled: false, urls: [], port, host });
@@ -715,6 +718,7 @@ export async function startRemoteServer({ runtime, staticRoot, logger = console 
     }
 
     wss.handleUpgrade(request, socket, head, async (ws) => {
+      log.debug("WebSocket client connected", { remoteAddress: request.socket?.remoteAddress });
       sockets.add(ws);
       ws.send(JSON.stringify({ type: "state:updated", payload: await runtime.getInitialState() }));
 
@@ -738,6 +742,7 @@ export async function startRemoteServer({ runtime, staticRoot, logger = console 
       });
 
       ws.on("close", () => {
+        log.debug("WebSocket client disconnected", { remaining: sockets.size - 1 });
         sockets.delete(ws);
       });
     });
@@ -745,7 +750,7 @@ export async function startRemoteServer({ runtime, staticRoot, logger = console 
 
   const listenResult = await new Promise((resolve) => {
     server.once("error", (error) => {
-      logger.warn(`Remote access server failed: ${error.message}`);
+      log.warn("remote access server failed", { err: error.message });
       resolve({ ok: false, error });
     });
     server.listen(port, host, () => resolve({ ok: true }));
@@ -767,7 +772,7 @@ export async function startRemoteServer({ runtime, staticRoot, logger = console 
   });
   const urls = runtime.listRemoteUrls();
   if (urls.length > 0) {
-    logger.log(`strIDEterm remote access ready: ${urls[0]}`);
+    log.info("remote access ready", { url: urls[0] });
   }
 
   return {

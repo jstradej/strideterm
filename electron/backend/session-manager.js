@@ -4,6 +4,9 @@ import { fileURLToPath } from "node:url";
 import pty from "node-pty";
 import { createSessionId, parseSessionId } from "./default-state.js";
 import { APP_CONFIG } from "../../config/app-config.js";
+import { getLogger } from "./logger.js";
+
+const log = getLogger("session-mgr");
 
 const SHELL_INTEGRATION_DIR = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -193,6 +196,14 @@ export class SessionManager extends EventEmitter {
     const shellIntEnabled = state.settings?.notifications?.shellIntegration !== false;
     const integrationEnv = shellIntegrationEnv(launcher.file, shellIntEnabled);
 
+    log.debug("spawning session", {
+      sessionId: key,
+      file: launcher.file,
+      args: launcher.args,
+      cwd: launchOverride?.cwd || workspace.cwd,
+      shellIntegration: shellIntEnabled,
+    });
+
     const processHandle = pty.spawn(launcher.file, launcher.args, {
       name: APP_CONFIG.session.termName,
       cols: APP_CONFIG.session.defaultCols,
@@ -232,10 +243,12 @@ export class SessionManager extends EventEmitter {
     processHandle.onExit(({ exitCode }) => {
       session.status = "exited";
       session.processHandle = null;
+      const intentional = this.consumeSuppressedExit(session.id);
+      log.debug("session exited", { sessionId: session.id, exitCode, intentional });
       this.emit("terminal:exit", {
         sessionId: session.id,
         exitCode,
-        intentional: this.consumeSuppressedExit(session.id),
+        intentional,
       });
     });
 
@@ -296,7 +309,7 @@ export class SessionManager extends EventEmitter {
         Math.max(rows, APP_CONFIG.session.minRows),
       );
     } catch (error) {
-      console.warn(`[session-manager] Ignoring resize failure for ${sessionId}: ${error?.message || error}`);
+      log.warn("resize failure", { sessionId, err: error?.message || String(error) });
     }
   }
 

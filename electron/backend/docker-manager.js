@@ -1,5 +1,8 @@
 import { EventEmitter } from "node:events";
 import { execFileText, parseJsonLines, quotePosixArg } from "./process-utils.js";
+import { getLogger } from "./logger.js";
+
+const log = getLogger("docker");
 
 function createUnavailableState(message = "Docker is unavailable.") {
   return {
@@ -158,6 +161,7 @@ export class DockerManager extends EventEmitter {
         lastUpdatedAt: new Date().toISOString(),
       };
     } catch (error) {
+      log.debug("docker refresh failed", { err: error.stderr || error.error?.message || "Docker refresh failed." });
       this.snapshot = {
         ...createUnavailableState(error.stderr || error.error?.message || "Docker refresh failed."),
         backend: this.backend?.type || null,

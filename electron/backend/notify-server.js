@@ -1,5 +1,8 @@
 import http from "node:http";
 import crypto from "node:crypto";
+import { getLogger } from "./logger.js";
+
+const log = getLogger("notify-server");
 
 /**
  * Lightweight HTTP server for receiving agent notification hooks.
@@ -24,7 +27,7 @@ export function buildNotifyUrl(port, sessionId, secret) {
   return `http://127.0.0.1:${port}/notify?sid=${encodeURIComponent(sessionId)}&secret=${encodeURIComponent(secret)}`;
 }
 
-export function startNotifyServer({ onNotification, secret, logger = null }) {
+export function startNotifyServer({ onNotification, secret, logger: _logger = null }) {
   return new Promise((resolve, reject) => {
     const server = http.createServer((request, response) => {
       if (request.method === "OPTIONS") {
@@ -56,6 +59,7 @@ export function startNotifyServer({ onNotification, secret, logger = null }) {
         // Length mismatch throws — treat as non-match
       }
       if (!secretMatch) {
+        log.warn("rejected request: invalid secret");
         response.writeHead(403, { "Content-Type": "text/plain" });
         response.end("Forbidden");
         return;
@@ -97,12 +101,17 @@ export function startNotifyServer({ onNotification, secret, logger = null }) {
 
         const notificationType = String(payload.notification_type || "").trim();
         if (notificationType && !VALID_NOTIFICATION_TYPES.has(notificationType)) {
-          // Unknown type — accept but ignore
+          log.trace("unknown notification type ignored", { notificationType, sessionId });
           response.writeHead(200, { "Content-Type": "application/json" });
           response.end("{}");
           return;
         }
 
+        log.debug("notification received", {
+          sessionId,
+          notificationType: notificationType || "idle_prompt",
+          message: String(payload.message || "").slice(0, 100),
+        });
         try {
           onNotification({
             sessionId,
@@ -111,7 +120,7 @@ export function startNotifyServer({ onNotification, secret, logger = null }) {
             title: String(payload.title || ""),
           });
         } catch (error) {
-          logger?.warn?.("notify-server: onNotification error:", error);
+          log.warn("onNotification error", { err: error.message });
         }
 
         response.writeHead(200, { "Content-Type": "application/json" });
@@ -133,7 +142,7 @@ export function startNotifyServer({ onNotification, secret, logger = null }) {
     server.listen(0, "127.0.0.1", () => {
       const address = server.address();
       const port = address.port;
-      logger?.info?.(`notify-server: listening on 127.0.0.1:${port}`);
+      log.info("listening", { host: "127.0.0.1", port });
 
       resolve({
         port,

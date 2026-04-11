@@ -1,6 +1,9 @@
 import { DatabaseSync } from "node:sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
+import { getLogger } from "./logger.js";
+
+const log = getLogger("gh-audit-log");
 
 /**
  * Classify a GitHub API request by URL pattern and HTTP method.
@@ -145,7 +148,7 @@ export function createGitHubAuditLogStore(databasePath) {
         entry.userInitiated ? 1 : 0,
       );
     } catch (err) {
-      console.warn("[github-audit-log] Failed to write entry:", err?.message || err);
+      log.warn("failed to write entry", { err: err?.message || String(err) });
     }
   }
 
@@ -284,7 +287,7 @@ export function createGitHubAuditLogStore(databasePath) {
   try {
     prune();
   } catch (err) {
-    console.warn("[github-audit-log] Prune on startup failed:", err?.message || err);
+    log.warn("prune on startup failed", { err: err?.message || String(err) });
   }
 
   return { logEntry, query, getStats, prune, getEntryCount, close };

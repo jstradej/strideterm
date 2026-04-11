@@ -180,7 +180,7 @@ export class AzureDevOpsManager extends BaseProviderManager {
               try {
                 await this.reviewBridgeStore.syncPullRequest(summary);
               } catch (error) {
-                console.warn(`[azure-devops] review bridge sync failed for ${prKey}: ${error.message || error}`);
+                this.log.warn("review bridge sync failed", { prKey, err: error.message || String(error) });
               }
             }
             trackedPullRequests[prKey] = {
@@ -425,7 +425,7 @@ export class AzureDevOpsManager extends BaseProviderManager {
       try {
         await this.reviewBridgeStore.syncPullRequest(next);
       } catch (error) {
-        console.warn(`[azure-devops] review bridge detail sync failed for ${prKey}: ${error.message || error}`);
+        this.log.warn("review bridge detail sync failed", { prKey, err: error.message || String(error) });
       }
     }
     return next;
@@ -441,7 +441,7 @@ export class AzureDevOpsManager extends BaseProviderManager {
     this.setAuditContext({ connectionId: connection.id, userInitiated: true });
 
     if (checkItem.kind === "policy" && checkItem.evaluationId) {
-      console.log(`[azure-devops] Re-evaluating policy ${checkItem.evaluationId} for ${prKey}`);
+      this.log.info("re-evaluating policy", { evaluationId: checkItem.evaluationId, prKey });
       await this.api.reEvaluatePolicy(
         connection,
         token,

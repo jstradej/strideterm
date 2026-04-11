@@ -1,5 +1,8 @@
 import path from "node:path";
 import fs from "node:fs/promises";
+import { getLogger } from "./logger.js";
+
+const log = getLogger("version-check");
 
 const THROTTLE_MS = 24 * 60 * 60 * 1000; // 24 hours
 const MAX_NEWER_RELEASES = 20;
@@ -77,7 +80,7 @@ async function saveCache(cachePath, data) {
 export function createVersionChecker({ currentVersion, repositoryUrl, userDataPath, fetchImpl }) {
   const github = parseGitHubUrl(repositoryUrl);
   if (!github) {
-    console.warn("[version-checker] Cannot parse GitHub URL:", repositoryUrl);
+    log.warn("cannot parse GitHub URL", { repositoryUrl });
     return { checkForUpdates: async () => null, getCachedResult: () => null };
   }
 
@@ -151,9 +154,7 @@ export function createVersionChecker({ currentVersion, repositoryUrl, userDataPa
     stable.sort((a, b) => compareVersions(b.tag_name, a.tag_name));
 
     // Find releases newer than currentVersion.
-    const newer = stable
-      .filter((r) => compareVersions(r.tag_name, currentVersion) > 0)
-      .slice(0, MAX_NEWER_RELEASES);
+    const newer = stable.filter((r) => compareVersions(r.tag_name, currentVersion) > 0).slice(0, MAX_NEWER_RELEASES);
 
     const latestRelease = stable[0] || null;
     const latestTag = latestRelease?.tag_name || "";

@@ -2,6 +2,9 @@ import os from "node:os";
 import path from "node:path";
 import fs from "node:fs/promises";
 import { existsSync, mkdirSync } from "node:fs";
+import { getLogger } from "./logger.js";
+
+const log = getLogger("claude-hook");
 
 /**
  * Manages the Claude Code notification hook in ~/.claude/settings.json.
@@ -26,7 +29,7 @@ process.stdin.setEncoding("utf8");
 process.stdin.on("data", (chunk) => { body += chunk; });
 process.stdin.on("end", () => {
   let parsed;
-  try { parsed = new URL(url); } catch { process.exit(0); }
+  try { parsed = new URL(url); } catch (e) { process.stderr.write("strideterm-hook: invalid URL: " + url + "\\n"); process.exit(0); }
   const options = {
     hostname: parsed.hostname,
     port: parsed.port,
@@ -35,9 +38,12 @@ process.stdin.on("end", () => {
     headers: { "Content-Type": "application/json" },
     timeout: 4000,
   };
-  const req = http.request(options, () => process.exit(0));
-  req.on("error", () => process.exit(0));
-  req.on("timeout", () => { req.destroy(); process.exit(0); });
+  const req = http.request(options, (res) => {
+    if (res.statusCode !== 200) process.stderr.write("strideterm-hook: POST " + url + " returned " + res.statusCode + "\\n");
+    process.exit(0);
+  });
+  req.on("error", (e) => { process.stderr.write("strideterm-hook: POST failed: " + e.message + "\\n"); process.exit(0); });
+  req.on("timeout", () => { process.stderr.write("strideterm-hook: POST timeout\\n"); req.destroy(); process.exit(0); });
   req.end(body);
 });
 process.stdin.resume();
@@ -196,6 +202,7 @@ export async function configureClaudeHook(userDataPath) {
     };
   }
 
+  log.info("claude hook configured", { scriptPath: scriptResult.path, settingsPath: readResult.path });
   return { ok: true, scriptPath: scriptResult.path, settingsPath: readResult.path };
 }
 
@@ -208,18 +215,21 @@ export async function configureClaudeHook(userDataPath) {
 export async function removeClaudeHook() {
   const readResult = await readClaudeSettings();
   if (!readResult.ok) {
+    log.warn("removeClaudeHook: cannot read settings", { path: readResult.path, err: readResult.error });
     return { ok: false, error: `Cannot read ${readResult.path}: ${readResult.error}` };
   }
 
   if (!readResult.data) {
-    return { ok: true, removed: false }; // file doesn't exist, nothing to remove
+    log.debug("removeClaudeHook: settings file not found, nothing to remove");
+    return { ok: true, removed: false };
   }
 
   const settings = readResult.data;
   const existingIndex = findExistingHook(settings);
 
   if (existingIndex < 0) {
-    return { ok: true, removed: false }; // hook not found
+    log.debug("removeClaudeHook: hook not found in settings");
+    return { ok: true, removed: false };
   }
 
   settings.hooks.Notification.splice(existingIndex, 1);
@@ -234,9 +244,11 @@ export async function removeClaudeHook() {
 
   const writeResult = await writeClaudeSettings(settings);
   if (!writeResult.ok) {
+    log.warn("removeClaudeHook: failed to write settings", { path: readResult.path, err: writeResult.error });
     return { ok: false, error: `Failed to write ${readResult.path}: ${writeResult.error}` };
   }
 
+  log.info("claude hook removed", { settingsPath: readResult.path });
   return { ok: true, removed: true };
 }
 
@@ -256,6 +268,7 @@ export async function detectClaudeHookStatus(userDataPath) {
   // Check Claude settings
   const readResult = await readClaudeSettings();
   if (!readResult.ok) {
+    log.debug("detectClaudeHookStatus: cannot read settings", { err: readResult.error });
     return {
       status: "error",
       error: readResult.error,
@@ -265,18 +278,22 @@ export async function detectClaudeHookStatus(userDataPath) {
   }
 
   if (!readResult.data) {
+    log.debug("detectClaudeHookStatus: settings file not found", { settingsPath });
     return { status: "not-configured", settingsPath, scriptPath };
   }
 
   const hookIndex = findExistingHook(readResult.data);
   if (hookIndex < 0) {
+    log.debug("detectClaudeHookStatus: hook not found in settings");
     return { status: "not-configured", settingsPath, scriptPath };
   }
 
   if (!scriptExists) {
+    log.warn("detectClaudeHookStatus: hook configured but script missing", { scriptPath });
     return { status: "script-missing", settingsPath, scriptPath };
   }
 
+  log.debug("detectClaudeHookStatus: hook configured", { settingsPath, scriptPath });
   return { status: "configured", settingsPath, scriptPath };
 }
 

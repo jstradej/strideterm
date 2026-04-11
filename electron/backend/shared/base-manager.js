@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { execFileText as defaultExecFileText } from "../process-utils.js";
 import { clone, createEmptySnapshot, stripRefsPrefix } from "./provider-utils.js";
 import { encodeAuthHeader, sanitizeGitEnvironment } from "./git-auth-utils.js";
+import { getLogger } from "../logger.js";
 
 /**
  * Shared base class for Azure DevOps and GitHub provider managers.
@@ -45,10 +46,16 @@ export class BaseProviderManager extends EventEmitter {
 
     this.providerLabel = "provider";
     this.defaultGitLogin = "";
+    this._log = null;
   }
 
   // Subclasses must override this
   _logAudit(_raw) {}
+
+  get log() {
+    if (!this._log) this._log = getLogger(this.providerLabel);
+    return this._log;
+  }
 
   setAuditContext({ connectionId = "", userInitiated = false } = {}) {
     this._auditConnectionId = connectionId;
@@ -109,7 +116,7 @@ export class BaseProviderManager extends EventEmitter {
   async markPullRequestSeen(prKey) {
     const summary = this.findSummary(prKey) || this.snapshot.pullRequests[prKey];
     if (!summary) {
-      console.warn(`[${this.providerLabel}] markPullRequestSeen: PR ${prKey} not in snapshot, skipping`);
+      this.log.warn("markPullRequestSeen: PR not in snapshot, skipping", { prKey });
       return;
     }
     const lastSeenActivityAt = summary.lastRemoteActivityAt || new Date(this.now()).toISOString();
@@ -121,7 +128,7 @@ export class BaseProviderManager extends EventEmitter {
       try {
         await this.reviewBridgeStore.markPullRequestSeen(prKey, lastSeenActivityAt);
       } catch (error) {
-        console.warn(`[${this.providerLabel}] review bridge mark-seen failed for ${prKey}: ${error.message || error}`);
+        this.log.warn("review bridge mark-seen failed", { prKey, err: error.message || String(error) });
       }
     }
 
