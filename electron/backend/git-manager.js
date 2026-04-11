@@ -888,11 +888,12 @@ export class GitManager extends EventEmitter {
       if (worktrees.length > 1 && !isMainWorktree && baseBranch && branch !== baseBranch && dirtyCount === 0) {
         try {
           await this.execGit(root, ["merge-base", "--is-ancestor", "HEAD", baseBranch]);
-          // HEAD is in baseBranch — but only mark merged if baseBranch is actually ahead
-          // (avoids false positive on fresh branches with no commits yet)
+          // HEAD is in baseBranch — mark merged if baseBranch is ahead (non-fast-forward merge)
+          // or if the workspace was explicitly marked as merged (fast-forward merge case where
+          // HEAD and baseBranch point to the same commit, making behindCount === 0)
           const countResult = await this.execGit(root, ["rev-list", "--count", `HEAD..${baseBranch}`]);
           const behindCount = parseInt(countResult.stdout.trim(), 10) || 0;
-          branchMerged = behindCount > 0;
+          branchMerged = behindCount > 0 || !!workspace.branchMerged;
         } catch {
           // exit code 1 = not merged, or command failed
         }

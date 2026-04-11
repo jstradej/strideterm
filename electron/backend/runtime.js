@@ -1650,7 +1650,10 @@ export async function createRuntime({
 
   // Deferred version check — runs 10s after startup, non-blocking.
   setTimeout(() => {
-    versionChecker.checkForUpdates().then(() => broadcastState()).catch(() => {});
+    versionChecker
+      .checkForUpdates()
+      .then(() => broadcastState())
+      .catch(() => {});
   }, 10_000);
 
   return {
@@ -2850,7 +2853,15 @@ export async function createRuntime({
     },
     async gitMergeCurrentIntoBase(payload = {}) {
       const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId);
-      return runGitWorkspaceAction(workspace, git.mergeCurrentIntoBase(workspace, payload));
+      const actionResult = await runGitWorkspaceAction(workspace, git.mergeCurrentIntoBase(workspace, payload));
+      if (actionResult.result?.ok) {
+        await store.mutate((draft) => {
+          const ws = draft.workspaces.find((w) => w.id === workspace.id);
+          if (ws) ws.branchMerged = true;
+        });
+        actionResult.payload = getPayload();
+      }
+      return actionResult;
     },
     async gitRemoveWorktree(payload = {}) {
       const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId);
