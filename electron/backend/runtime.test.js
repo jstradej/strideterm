@@ -1071,6 +1071,9 @@ describe("runtime integration", () => {
               panels: [{ id: "codex", title: "Codex", command: "codex", shell: true, startup: "default" }],
             },
           ],
+          settings: {
+            notifications: { agentHook: false },
+          },
         },
       });
       fixtures.push(fixture);
@@ -1169,6 +1172,7 @@ describe("runtime integration", () => {
           ],
           settings: {
             notifications: {
+              agentHook: false,
               agentQuietMs: 30_000,
               agentQuietFastMs: 15_000,
               alertCooldownMs: 15_000,

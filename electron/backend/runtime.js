@@ -65,6 +65,9 @@ const OSC133_COMMAND_FINISHED_RE = /\u001B\]133;D/;
 const AGENT_NAME_RE = /\b(claude|codex|opencode|aider|gemini)\b/i;
 const AGENT_OUTPUT_RE = /\b(claude code|openai codex|codex|claude|gemini|aider|opencode)\b/i;
 const AGENT_OUTPUT_BURST_THRESHOLD = 10;
+// When hooks are active, bell/silence detection is suppressed. If no hook
+// arrives and the terminal is silent for this long, raise an alert anyway.
+const HOOK_FALLBACK_SILENCE_MS = 120_000; // 2 minutes
 const ATTENTION_MIN_DISPLAY_MS = 3_000;
 const ATTENTION_VISIBILITY_GRACE_MS = 5_000;
 const WAITING_PATTERNS = [
@@ -1312,84 +1315,134 @@ export async function createRuntime({
         }
         // Skip normal detection for this chunk — OSC 133;D is authoritative.
       } else if (signal.agentLike) {
-        // --- Agent sessions: silence-based detection ---
+        // --- Agent sessions: hook-preferred detection ---
+        // When the notify server is running (hooks enabled), we trust hooks
+        // as the primary signal and only use a long fallback silence timer.
+        // When hooks are NOT available, we fall back to bell + silence detection.
         const now = Date.now();
         const inCooldown = signal.lastAlertAt > 0 && now - signal.lastAlertAt < notifConfig.alertCooldownMs;
         const hasBell = rawText.includes("\u0007");
+        const hooksEnabled = notifyServerHandle != null;
 
-        // Bell character = explicit input request, always raise immediately
-        if (hasBell && !inCooldown && signal.hasUserInput) {
-          log.debug("bell character detected in agent session", { sessionId: payload.sessionId });
-          cancelPromptTimer(signal);
-          if (isSessionVisible(payload.sessionId)) {
-            log.trace("bell: session visible, resetting", { sessionId: payload.sessionId });
-            resetSessionSignal(payload.sessionId);
-          } else {
-            raiseWaitingAlert({
-              sessionId: payload.sessionId,
-              projectId: descriptor.workspaceId,
-              panelId: descriptor.panelId,
-              title: panel?.title || descriptor.panelId,
-              detail: "explicit-input",
-            });
-          }
-        } else {
-          // Any terminal data = agent is active. Mark busy and track output.
-          if (cleanText.trim()) {
-            signal.busy = true;
-            signal.outputBursts += 1;
-          }
-          if (lastLine) {
-            signal.lastOutputLine = lastLine;
-          }
+        if (hasBell) {
+          log.debug("bell character detected in agent session", { sessionId: payload.sessionId, hooksEnabled });
+        }
+
+        // Track output activity regardless of detection mode.
+        if (cleanText.trim()) {
+          signal.busy = true;
+          signal.outputBursts += 1;
+        }
+        if (lastLine) {
+          signal.lastOutputLine = lastLine;
+        }
+
+        if (hooksEnabled) {
+          // --- Hook-primary mode: suppress bell/silence, use 2min fallback ---
           cancelPromptTimer(signal);
 
-          const hookActive = signal.lastHookAlertAt > 0 && Date.now() - signal.lastHookAlertAt < 60_000;
-
-          if (signal.busy && !inCooldown && signal.hasUserInput && !hookActive) {
-            const quietMs =
-              signal.outputBursts >= AGENT_OUTPUT_BURST_THRESHOLD
-                ? notifConfig.agentQuietFastMs
-                : notifConfig.agentQuietMs;
-            log.trace("agent silence timer started", {
+          if (signal.busy && !inCooldown && signal.hasUserInput) {
+            log.trace("agent hook-primary: fallback timer started", {
               sessionId: payload.sessionId,
-              quietMs,
-              outputBursts: signal.outputBursts,
+              fallbackMs: HOOK_FALLBACK_SILENCE_MS,
             });
             signal.promptTimer = setTimeout(() => {
               signal.promptTimer = null;
+              if (isSessionVisible(payload.sessionId)) {
+                log.trace("agent hook-primary fallback: session visible, resetting", {
+                  sessionId: payload.sessionId,
+                });
+                resetSessionSignal(payload.sessionId);
+                return;
+              }
               if (signal.lastOutputLine && !matchesAgentIdle(signal.lastOutputLine)) {
-                log.trace("agent silence expired but last line not idle", {
+                log.trace("agent hook-primary fallback: last line not idle", {
                   sessionId: payload.sessionId,
                   lastOutputLine: signal.lastOutputLine,
                 });
                 return;
               }
-              if (isSessionVisible(payload.sessionId)) {
-                log.trace("agent silence: session visible, resetting", { sessionId: payload.sessionId });
-                resetSessionSignal(payload.sessionId);
-                return;
-              }
-              log.debug("agent silence timer triggering alert", {
+              log.info("agent hook-primary fallback: no hook arrived, raising alert", {
                 sessionId: payload.sessionId,
-                quietMs,
-                lastOutputLine: signal.lastOutputLine,
+                fallbackMs: HOOK_FALLBACK_SILENCE_MS,
               });
               raiseWaitingAlert({
                 sessionId: payload.sessionId,
                 projectId: descriptor.workspaceId,
                 panelId: descriptor.panelId,
                 title: panel?.title || descriptor.panelId,
-                detail: "prompt-returned",
+                detail: "hook-fallback",
               });
-            }, quietMs);
-          } else if (hookActive) {
-            log.trace("agent silence: hook active, skipping timer", {
-              sessionId: payload.sessionId,
-              lastHookAlertAt: signal.lastHookAlertAt,
-            });
+            }, HOOK_FALLBACK_SILENCE_MS);
           } else if (inCooldown) {
-            log.trace("agent silence: cooldown active", { sessionId: payload.sessionId });
+            log.trace("agent hook-primary: cooldown active", { sessionId: payload.sessionId });
+          }
+        } else {
+          // --- No-hook fallback: bell + silence detection (original behavior) ---
+          if (hasBell && !inCooldown && signal.hasUserInput) {
+            cancelPromptTimer(signal);
+            if (isSessionVisible(payload.sessionId)) {
+              log.trace("bell: session visible, resetting", { sessionId: payload.sessionId });
+              resetSessionSignal(payload.sessionId);
+            } else {
+              raiseWaitingAlert({
+                sessionId: payload.sessionId,
+                projectId: descriptor.workspaceId,
+                panelId: descriptor.panelId,
+                title: panel?.title || descriptor.panelId,
+                detail: "explicit-input",
+              });
+            }
+          } else {
+            cancelPromptTimer(signal);
+
+            const hookActive = signal.lastHookAlertAt > 0 && Date.now() - signal.lastHookAlertAt < 60_000;
+
+            if (signal.busy && !inCooldown && signal.hasUserInput && !hookActive) {
+              const quietMs =
+                signal.outputBursts >= AGENT_OUTPUT_BURST_THRESHOLD
+                  ? notifConfig.agentQuietFastMs
+                  : notifConfig.agentQuietMs;
+              log.trace("agent silence timer started", {
+                sessionId: payload.sessionId,
+                quietMs,
+                outputBursts: signal.outputBursts,
+              });
+              signal.promptTimer = setTimeout(() => {
+                signal.promptTimer = null;
+                if (signal.lastOutputLine && !matchesAgentIdle(signal.lastOutputLine)) {
+                  log.trace("agent silence expired but last line not idle", {
+                    sessionId: payload.sessionId,
+                    lastOutputLine: signal.lastOutputLine,
+                  });
+                  return;
+                }
+                if (isSessionVisible(payload.sessionId)) {
+                  log.trace("agent silence: session visible, resetting", { sessionId: payload.sessionId });
+                  resetSessionSignal(payload.sessionId);
+                  return;
+                }
+                log.debug("agent silence timer triggering alert", {
+                  sessionId: payload.sessionId,
+                  quietMs,
+                  lastOutputLine: signal.lastOutputLine,
+                });
+                raiseWaitingAlert({
+                  sessionId: payload.sessionId,
+                  projectId: descriptor.workspaceId,
+                  panelId: descriptor.panelId,
+                  title: panel?.title || descriptor.panelId,
+                  detail: "prompt-returned",
+                });
+              }, quietMs);
+            } else if (hookActive) {
+              log.trace("agent silence: hook active, skipping timer", {
+                sessionId: payload.sessionId,
+                lastHookAlertAt: signal.lastHookAlertAt,
+              });
+            } else if (inCooldown) {
+              log.trace("agent silence: cooldown active", { sessionId: payload.sessionId });
+            }
           }
         }
       } else {
