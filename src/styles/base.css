@@ -1,0 +1,167 @@
+:root {
+  --bg: #141416;
+  --panel: #1c1c20;
+  --panel-elevated: rgba(28, 28, 32, 0.95);
+  --text: #dcdce0;
+  --muted: #76767e;
+  --border: rgba(var(--tint), 0.07);
+  --accent: #ffa424;
+  --success: #4caf50;
+  --success-fg: #6edfb6;
+  --danger: #ff6f8d;
+  --danger-fg: #ff6f8d;
+  --shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+  --tint: 255, 255, 255;
+  --sidebar-width: 248px;
+  --sidebar-collapsed-width: 84px;
+  color-scheme: dark;
+  font-family: Inter, "Segoe UI", system-ui, sans-serif;
+}
+
+:root[data-theme="light"] {
+  --bg: #ededf0;
+  --panel: #f7f7f9;
+  --panel-elevated: rgba(255, 255, 255, 0.95);
+  --text: #18181b;
+  --muted: #6e6e76;
+  --border: rgba(0, 0, 0, 0.08);
+  --accent: #cc8520;
+  --success: #2e7d32;
+  --success-fg: #1b6e2e;
+  --danger: #b7284c;
+  --danger-fg: #a1213f;
+  --shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+  --tint: 0, 0, 0;
+  color-scheme: light;
+}
+
+/* ── Light mode overrides for hardcoded dark-theme colors ─────────── */
+:root[data-theme="light"] .workspace-chip--alert {
+  color: var(--danger);
+}
+
+:root[data-theme="light"] .review-check-icon--passed,
+:root[data-theme="light"] .review-check-icon--approved {
+  color: var(--success-fg);
+}
+
+:root[data-theme="light"] .pipeline-item__icon--succeeded {
+  color: var(--success-fg);
+}
+
+:root[data-theme="light"] .pipelines-summary__badge--passed {
+  background: rgba(46, 125, 50, 0.12);
+  color: var(--success);
+}
+
+:root[data-theme="light"] .pipelines-summary__badge--failed {
+  background: rgba(183, 40, 76, 0.12);
+  color: var(--danger);
+}
+
+:root[data-theme="light"] .pipeline-item__error,
+:root[data-theme="light"] .review-check__error {
+  background: rgba(183, 40, 76, 0.08);
+  border-color: rgba(183, 40, 76, 0.2);
+  color: var(--danger);
+}
+
+:root[data-theme="light"] .workspace-card__attention-count {
+  background: rgba(183, 40, 76, 0.15);
+  color: var(--danger);
+}
+
+:root[data-theme="light"] .review-vote-badge--rejected,
+:root[data-theme="light"] .review-vote-badge--waitForAuthor {
+  color: var(--danger);
+}
+
+:root[data-theme="light"] .workspace-card,
+:root[data-theme="light"] .project {
+  border-color: color-mix(in srgb, var(--accent), transparent 55%);
+}
+
+:root[data-theme="light"] .remote-access__qr,
+:root[data-theme="light"] .remote-compact__qr {
+  filter: invert(1);
+}
+
+:root[data-theme="light"] .workspace-pane--active {
+  border-color: color-mix(in srgb, var(--accent), transparent 20%);
+}
+
+:root[data-theme="light"] .noise-overlay,
+:root[data-theme="light"] body::after {
+  opacity: 0;
+}
+
+:root[data-theme="light"] .button--ghost {
+  background: rgba(0, 0, 0, 0.06);
+  border: 1px solid rgba(0, 0, 0, 0.1);
+}
+
+:root[data-theme="light"] .button--ghost:hover {
+  background: rgba(0, 0, 0, 0.1);
+}
+
+html,
+body,
+#app {
+  height: 100dvh;
+  height: 100%;
+  overflow: hidden;
+}
+
+@supports (height: 100dvh) {
+  html,
+  body,
+  #app {
+    height: 100dvh;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 0;
+  background: var(--bg);
+  color: var(--text);
+}
+
+body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 10000;
+  opacity: 0.028;
+  background-image: var(
+    --noise-texture,
+    url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.7' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E")
+  );
+  background-repeat: repeat;
+  background-size: 256px 256px;
+  contain: strict;
+  will-change: transform;
+}
+
+button,
+input,
+textarea {
+  font: inherit;
+}
+
+.frame {
+  height: 100%;
+  display: grid;
+  grid-template-columns: var(--sidebar-width) 1fr;
+  overflow: hidden;
+  position: relative;
+}
+
+.frame--sidebar-collapsed {
+  grid-template-columns: var(--sidebar-collapsed-width) 1fr;
+}

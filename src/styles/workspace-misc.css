@@ -1,0 +1,81 @@
+.workspace-chip--muted {
+  opacity: 0.6;
+}
+
+.workspace-chip--fixed {
+  border-color: color-mix(in srgb, var(--success, #4caf50), transparent 40%);
+  background: rgba(76, 175, 80, 0.12);
+  color: var(--success, #4caf50);
+}
+
+.workspace-chip--local {
+  border-color: color-mix(in srgb, var(--accent), transparent 50%);
+  background: rgba(255, 164, 36, 0.1);
+  color: var(--accent);
+}
+
+.git-list,
+.git-log {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  gap: 6px;
+}
+
+.git-list li,
+.git-log li {
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 6px 8px;
+  background: rgba(var(--tint), 0.025);
+}
+
+.git-list li {
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+}
+
+.git-list__text {
+  min-width: 0;
+  line-height: 1.4;
+}
+
+.git-list__text--path {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.git-status-code {
+  display: inline-block;
+  min-width: 22px;
+  padding: 0 3px;
+  border-radius: 3px;
+  background: rgba(var(--tint), 0.06);
+  font-size: 11px;
+  font-weight: 700;
+  text-align: center;
+  line-height: 18px;
+  flex-shrink: 0;
+}
+
+.git-status-code--failed {
+  background: rgba(255, 111, 141, 0.16);
+  color: #ffd7df;
+}
+
+.git-status-code--pending {
+  background: rgba(255, 164, 36, 0.16);
+  color: #ffd28c;
+}
+
+.git-status-code--success {
+  background: rgba(110, 223, 182, 0.16);
+  color: #9aecc9;
+}
+
+.git-status-code--neutral {
+  color: var(--muted);
+}

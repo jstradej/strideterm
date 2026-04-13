@@ -1,0 +1,281 @@
+/* ── Mobile: hamburger sidebar + fullscreen terminal ── */
+
+.mobile-hamburger {
+  display: none;
+  position: relative;
+}
+
+.mobile-hamburger__badge {
+  display: none;
+}
+
+/* ── Mobile tab picker (hidden on desktop) ── */
+.mobile-tab-picker {
+  display: none;
+}
+.mobile-tab-picker__backdrop {
+  display: none;
+}
+
+.sidebar-backdrop {
+  display: none;
+}
+
+@media (max-width: 768px) {
+  .frame {
+    grid-template-columns: 1fr;
+    grid-template-rows: 1fr;
+  }
+
+  .sidebar__collapse-btn {
+    display: none;
+  }
+
+  /* ── Hamburger button ── */
+  .mobile-hamburger {
+    display: grid;
+    place-items: center;
+    position: relative;
+    width: 34px;
+    height: 34px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: var(--panel);
+    color: var(--text);
+    font-size: 18px;
+    line-height: 1;
+    cursor: pointer;
+    flex-shrink: 0;
+    z-index: 60;
+  }
+
+  .mobile-hamburger:hover {
+    background: rgba(var(--tint), 0.08);
+  }
+
+  .mobile-hamburger__badge--visible {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    position: absolute;
+    top: -6px;
+    right: -6px;
+    min-width: 18px;
+    height: 18px;
+    padding: 0 4px;
+    border-radius: 9px;
+    background: var(--accent);
+    color: #000;
+    font-size: 10px;
+    font-weight: 700;
+    line-height: 1;
+    pointer-events: none;
+    animation: hamburger-badge-pop 0.3s ease-out;
+  }
+
+  @keyframes hamburger-badge-pop {
+    0% {
+      transform: scale(0);
+    }
+    70% {
+      transform: scale(1.2);
+    }
+    100% {
+      transform: scale(1);
+    }
+  }
+
+  /* ── Sidebar as slide-out overlay ── */
+  .sidebar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    width: min(300px, 85vw);
+    height: 100dvh;
+    height: 100%;
+    min-height: 0;
+    z-index: 100;
+    background: var(--panel);
+    border-right: 1px solid var(--border);
+    border-bottom: none;
+    transform: translateX(-100%);
+    transition: transform 0.22s ease;
+    grid-template-rows: auto minmax(0, 1fr) auto;
+    overflow: hidden;
+  }
+
+  .sidebar--open {
+    transform: translateX(0);
+  }
+
+  .sidebar-backdrop {
+    display: none;
+    position: fixed;
+    inset: 0;
+    z-index: 90;
+    background: rgba(0, 0, 0, 0.5);
+  }
+
+  .sidebar-backdrop--visible {
+    display: block;
+  }
+
+  /* ── Workspace takes full space ── */
+  .workspace {
+    padding: 0;
+    height: 100%;
+  }
+
+  .workspace-main {
+    grid-template-rows: auto auto minmax(0, 1fr);
+  }
+
+  /* ── Compact toolbar: hamburger + tabs in one row ── */
+  .terminal-toolbar {
+    flex-wrap: nowrap;
+    gap: 0;
+    align-items: stretch;
+  }
+
+  .tab-strip {
+    display: none;
+  }
+
+  .mobile-tab-picker {
+    display: block;
+    position: relative;
+    flex-shrink: 0;
+    margin-left: auto;
+  }
+
+  .mobile-tab-picker__trigger {
+    display: grid;
+    place-items: center;
+    height: 34px;
+    padding: 0 10px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: var(--panel);
+    color: var(--text);
+    font-size: 13px;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+
+  .mobile-tab-picker__trigger:hover {
+    background: rgba(var(--tint), 0.08);
+  }
+
+  .mobile-tab-picker__dropdown {
+    position: absolute;
+    top: 100%;
+    right: 0;
+    z-index: 120;
+    min-width: 200px;
+    max-width: 80vw;
+    margin-top: 4px;
+    padding: 4px 0;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--panel);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  }
+
+  .mobile-tab-picker__item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    padding: 10px 14px;
+    border: none;
+    background: none;
+    color: var(--text);
+    font-size: 14px;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .mobile-tab-picker__item:hover {
+    background: rgba(var(--tint), 0.06);
+  }
+
+  .mobile-tab-picker__item--active {
+    background: rgba(var(--tint), 0.1);
+    font-weight: 600;
+    border-left: 3px solid var(--accent);
+  }
+
+  .mobile-tab-picker__status {
+    color: var(--muted);
+    font-size: 11px;
+    font-weight: 400;
+    margin-left: auto;
+  }
+
+  .mobile-tab-picker__backdrop {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 110;
+  }
+
+  .terminal-toolbar__actions {
+    padding: 0 4px;
+    flex-shrink: 0;
+    flex-direction: row;
+    gap: 2px;
+  }
+
+  .tab-actions__separator,
+  .tab-actions__icon {
+    display: none;
+  }
+
+  /* ── Workspace meta compact ── */
+  .workspace-meta {
+    padding: 3px 8px;
+    font-size: 12px;
+    gap: 6px;
+  }
+
+  .workspace-meta__path {
+    font-size: 11px;
+  }
+
+  .workspace-meta__stats {
+    display: none;
+  }
+
+  /* ── Terminal stage zero padding ── */
+  .terminal-stage {
+    padding: 1px;
+    gap: 1px;
+  }
+
+  /* ── Pane headers compact ── */
+  .workspace-pane__header {
+    padding: 2px 6px;
+    font-size: 12px;
+  }
+
+  .workspace-pane__actions {
+    flex-direction: row;
+    gap: 2px;
+  }
+
+  .terminal-host {
+    padding: 2px 2px 0;
+  }
+
+  /* ── Dialog mobile ── */
+  .dialog {
+    width: 100%;
+    max-height: calc(100dvh - 20px);
+    max-height: calc(100% - 20px);
+  }
+
+  .overlay {
+    padding: 10px;
+  }
+}
