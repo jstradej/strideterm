@@ -117,6 +117,8 @@ export class AgentTaskRunner {
         taskId: randomUUID(),
         description,
         parentWorkspaceId: parentWorkspaceId || "",
+        worktreeBase: "",
+        worktreeBranch: "",
         workerPanelId,
         judgePanelId,
         // Finish criteria are read from FINISH_CRITERIA.md at evaluation time (not stored here)

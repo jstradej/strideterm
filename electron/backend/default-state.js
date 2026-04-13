@@ -195,6 +195,8 @@ export function normalizeWorkspace(workspace, index = 0) {
           taskId: workspace.task.taskId || "",
           description: workspace.task.description || "",
           parentWorkspaceId: workspace.task.parentWorkspaceId || "",
+          worktreeBase: workspace.task.worktreeBase || "",
+          worktreeBranch: workspace.task.worktreeBranch || "",
           workerPanelId: workspace.task.workerPanelId || "",
           judgePanelId: workspace.task.judgePanelId || "",
           finishCriteria: {

@@ -329,7 +329,8 @@ export function createDialogActions(ctx) {
       onCancel: closeDialog,
       onSubmit: async (config) => {
         try {
-          // Auto-detect parent workspace by matching cwd within the active profile
+          // Auto-detect parent workspace by matching cwd within the active profile.
+          // For worktree mode, match against the base repo cwd (not the worktree path).
           if (!config.parentWorkspaceId) {
             const normCwd = (config.cwd || "")
               .replace(/[\\/]+$/, "")

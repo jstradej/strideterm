@@ -1755,9 +1755,11 @@ export async function createRuntime({
             await new Promise((resolve) => setTimeout(resolve, 1000));
 
             const cacheRepoPath = workspace.review?.checkout?.cacheRepoPath || "";
+            // Task worktrees store the base repo path explicitly
+            const taskWorktreeBase = workspace.task?.worktreeBase || "";
             // workspace.cwd is like /repo/.strideterm/tree/branch-name — 3 levels up to repo root
             const mainWorktreePath = workspace.cwd ? path.resolve(workspace.cwd, "..", "..", "..") : "";
-            const gitCwd = cacheRepoPath || mainWorktreePath;
+            const gitCwd = cacheRepoPath || taskWorktreeBase || mainWorktreePath;
             let gitRemoved = false;
             if (gitCwd) {
               try {
@@ -2352,11 +2354,63 @@ export async function createRuntime({
       return { available, payload: getPayload() };
     },
     async createTaskWorkspace(config) {
-      log.info("createTaskWorkspace", { cwd: config.cwd, hasDescription: !!config.description });
+      log.info("createTaskWorkspace", {
+        cwd: config.cwd,
+        hasDescription: !!config.description,
+        useWorktree: !!config.useWorktree,
+      });
       const state = getState();
 
-      // Check for other task workspaces with the same cwd that are currently active
-      const normalizedCwd = String(config.cwd || "")
+      let effectiveCwd = config.cwd;
+      let worktreeBase = "";
+      let worktreeBranch = "";
+
+      // --- Git worktree mode ---
+      if (config.useWorktree) {
+        const branch = (config.worktreeBranch || "").trim();
+        if (!branch || !/^[a-zA-Z0-9._/-]+$/.test(branch)) {
+          throw new Error(
+            "Worktree branch name must contain only alphanumeric characters, dots, hyphens, slashes, or underscores.",
+          );
+        }
+        // The flat segment used for the directory name (replace / with -)
+        const dirName = branch.replace(/\//g, "-");
+        const treePath = path.join(config.cwd, ".strideterm", "tree", dirName);
+
+        // Ensure .strideterm/ in .gitignore
+        const gitignorePath = path.join(config.cwd, ".gitignore");
+        let gitignoreContent = "";
+        try {
+          gitignoreContent = await readFile(gitignorePath, "utf-8");
+        } catch {}
+        if (!gitignoreContent.split(/\r?\n/).some((line) => line.trim() === ".strideterm/")) {
+          const separator = gitignoreContent.length && !gitignoreContent.endsWith("\n") ? "\n" : "";
+          await writeFile(gitignorePath, gitignoreContent + separator + ".strideterm/\n", "utf-8");
+        }
+
+        // Ensure parent directory exists
+        await mkdir(path.dirname(treePath), { recursive: true });
+
+        // Create the git worktree with a new branch
+        try {
+          await execFileTextImpl("git", ["worktree", "add", treePath, "-b", branch], { cwd: config.cwd });
+        } catch (err) {
+          // If branch already exists, try without -b (attach to existing branch)
+          if (err.message?.includes("already exists") || err.stderr?.includes("already exists")) {
+            await execFileTextImpl("git", ["worktree", "add", treePath, branch], { cwd: config.cwd });
+          } else {
+            throw new Error(`Failed to create git worktree: ${err.message}`, { cause: err });
+          }
+        }
+
+        worktreeBase = config.cwd;
+        worktreeBranch = branch;
+        effectiveCwd = treePath;
+        log.info("createTaskWorkspace: worktree created", { treePath, branch, base: config.cwd });
+      }
+
+      // Check for other task workspaces with the same effective cwd that are currently active
+      const normalizedCwd = String(effectiveCwd || "")
         .replace(/[\\/]+$/, "")
         .toLowerCase();
       const conflicting = state.workspaces.filter(
@@ -2372,7 +2426,7 @@ export async function createRuntime({
       if (conflicting.length > 0) {
         cwdWarning = `Another task workspace ("${conflicting[0].name}") is active on the same directory. Running both may cause conflicts with tests and file operations.`;
         log.warn("createTaskWorkspace: duplicate cwd detected", {
-          cwd: config.cwd,
+          cwd: effectiveCwd,
           conflictingWorkspaces: conflicting.map((ws) => ws.id),
         });
       }
@@ -2380,10 +2434,17 @@ export async function createRuntime({
       const workspace = taskRunner.createTaskWorkspace({
         state,
         description: config.description,
-        cwd: config.cwd,
+        cwd: effectiveCwd,
         parentWorkspaceId: config.parentWorkspaceId,
         maxRounds: config.maxRounds,
       });
+
+      // Store worktree metadata in task object
+      if (worktreeBase) {
+        workspace.task.worktreeBase = worktreeBase;
+        workspace.task.worktreeBranch = worktreeBranch;
+      }
+
       // Write task files immediately so they're available in the Dashboard.
       // If this fails (disk full, permissions), don't persist a broken workspace.
       try {

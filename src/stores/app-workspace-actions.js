@@ -55,7 +55,8 @@ export function createWorkspaceActions(ctx) {
     const isWorktreeChild =
       (ws.notes || "").startsWith("Worktree of ") ||
       ws.review?.checkout?.mode === "managed-worktree" ||
-      !!ws.quickfix?.parentWorkspaceId;
+      !!ws.quickfix?.parentWorkspaceId ||
+      !!ws.task?.worktreeBase;
     const worktreePath =
       ws.review?.checkout?.mode === "managed-worktree" && ws.review?.checkout?.rootPath
         ? ws.review.checkout.rootPath

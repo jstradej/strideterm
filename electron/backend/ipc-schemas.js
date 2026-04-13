@@ -284,6 +284,8 @@ export const taskWorkspaceCreateSchema = z.object({
   description: z.string().optional().default(""),
   parentWorkspaceId: z.string().optional(),
   maxRounds: z.number().int().min(1).max(100).optional(),
+  useWorktree: z.boolean().optional(),
+  worktreeBranch: z.string().optional(),
 });
 
 export const taskWorkspaceActionSchema = z.object({
