@@ -315,6 +315,8 @@ export function createDialogActions(ctx) {
   function openTaskWorkspaceDialog() {
     const ws = ctx.payload.value?.workspace;
     const activeWorkspace = ws?.workspace || ws?.project || null;
+    const initialCwd = activeWorkspace?.cwd || "";
+
     // Re-check Claude CLI availability in the background so the dialog
     // shows up-to-date status (user may have installed claude mid-session)
     ctx
@@ -324,31 +326,98 @@ export function createDialogActions(ctx) {
         if (result?.payload) ctx.payload.value = result.payload;
       })
       .catch(() => {});
-    openDialog("TaskWorkspaceDialog", {
-      initialCwd: activeWorkspace?.cwd || "",
+
+    // Build a task workspace draft with panel stubs so the full dialog
+    // can bind to workerPanel/judgePanel commands.
+    const workerPanelId = `panel-${crypto.randomUUID()}`;
+    const judgePanelId = `panel-${crypto.randomUUID()}`;
+    const dashboardPanelId = `panel-${crypto.randomUUID()}`;
+    const taskDraft = {
+      id: `workspace-${crypto.randomUUID()}`,
+      name: "",
+      icon: "\u{1F916}",
+      color: "#7C4DFF",
+      kind: "task",
+      source: "manual",
+      pluginId: "",
+      cwd: initialCwd,
+      notes: "",
+      activePanelId: dashboardPanelId,
+      panels: [
+        { id: dashboardPanelId, title: "Dashboard", command: "__task-dashboard__", shell: false, startup: "none" },
+        {
+          id: workerPanelId,
+          title: "Worker",
+          command: "claude --dangerously-skip-permissions --model sonnet",
+          shell: true,
+          startup: "default",
+        },
+        {
+          id: judgePanelId,
+          title: "Judge",
+          command: "claude --dangerously-skip-permissions --model opus",
+          shell: true,
+          startup: "default",
+        },
+      ],
+      task: {
+        description: "",
+        workerPanelId,
+        judgePanelId,
+        maxRounds: 10,
+      },
+      // Extra fields consumed by the creation flow only
+      useWorktree: false,
+      worktreeBranch: "",
+    };
+
+    openDialog("WorkspaceDialog", {
+      workspace: taskDraft,
+      creating: true,
+      tabTemplates: [],
       onCancel: closeDialog,
-      onSubmit: async (config) => {
+      onSubmit: async (draft) => {
         try {
-          // Auto-detect parent workspace by matching cwd within the active profile.
-          // For worktree mode, match against the base repo cwd (not the worktree path).
-          if (!config.parentWorkspaceId) {
-            const normCwd = (config.cwd || "")
-              .replace(/[\\/]+$/, "")
-              .replace(/\\/g, "/")
-              .toLowerCase();
-            const activeProfileId = ctx.payload.value?.appState?.activeProfileId || "default";
-            const workspaces = ctx.payload.value?.appState?.workspaces || [];
-            const parent = workspaces.find(
-              (ws) =>
-                ws.kind !== "task" &&
-                (ws.profileId || "default") === activeProfileId &&
-                (ws.cwd || "")
-                  .replace(/[\\/]+$/, "")
-                  .replace(/\\/g, "/")
-                  .toLowerCase() === normCwd,
-            );
-            if (parent) config.parentWorkspaceId = parent.id;
+          const config = {
+            cwd: draft.cwd,
+            description: draft.task?.description || "",
+            maxRounds: draft.task?.maxRounds || 10,
+            name: draft.name || "",
+            icon: draft.icon || "",
+            color: draft.color || "",
+            notes: draft.notes || "",
+          };
+
+          // Extract worker/judge commands from panel stubs
+          const wp = draft.panels?.find((p) => p.id === workerPanelId);
+          const jp = draft.panels?.find((p) => p.id === judgePanelId);
+          if (wp?.command) config.workerCommand = wp.command;
+          if (jp?.command) config.judgeCommand = jp.command;
+
+          // Worktree config
+          if (draft.useWorktree) {
+            config.useWorktree = true;
+            config.worktreeBranch = draft.worktreeBranch || "";
           }
+
+          // Auto-detect parent workspace by matching cwd within the active profile.
+          const normCwd = (config.cwd || "")
+            .replace(/[\\/]+$/, "")
+            .replace(/\\/g, "/")
+            .toLowerCase();
+          const activeProfileId = ctx.payload.value?.appState?.activeProfileId || "default";
+          const workspaces = ctx.payload.value?.appState?.workspaces || [];
+          const parent = workspaces.find(
+            (ws) =>
+              ws.kind !== "task" &&
+              (ws.profileId || "default") === activeProfileId &&
+              (ws.cwd || "")
+                .replace(/[\\/]+$/, "")
+                .replace(/\\/g, "/")
+                .toLowerCase() === normCwd,
+          );
+          if (parent) config.parentWorkspaceId = parent.id;
+
           const result = await ctx.getApi().createTaskWorkspace(config);
           if (result?.payload) {
             ctx.payload.value = result.payload;
@@ -357,7 +426,6 @@ export function createDialogActions(ctx) {
           // Show warning if another task workspace uses the same directory
           if (result?.cwdWarning) {
             console.warn("[task-workspace] cwd conflict:", result.cwdWarning);
-            // Surface the warning via a notification so the user sees it
             const notifStore = (await import("./notifications.js")).useNotificationStore();
             notifStore.add({
               title: "Task workspace warning",

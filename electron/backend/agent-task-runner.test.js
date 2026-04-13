@@ -71,6 +71,93 @@ describe("AgentTaskRunner", () => {
       expect(workspace.task.worktreeBase).toBe("");
       expect(workspace.task.worktreeBranch).toBe("");
     });
+
+    test("uses custom name when provided", () => {
+      const ws = runner.createTaskWorkspace({
+        state: { activeProfileId: "default" },
+        description: "Some task",
+        cwd: "/tmp/test",
+        parentWorkspaceId: "",
+        maxRounds: 5,
+        name: "My Custom Name",
+      });
+      expect(ws.name).toBe("My Custom Name");
+    });
+
+    test("falls back to description-based name when name is empty", () => {
+      const ws = runner.createTaskWorkspace({
+        state: { activeProfileId: "default" },
+        description: "Build pagination",
+        cwd: "/tmp/test",
+        parentWorkspaceId: "",
+        name: "",
+      });
+      expect(ws.name).toBe("Build pagination");
+    });
+
+    test("uses custom icon when provided", () => {
+      const ws = runner.createTaskWorkspace({
+        state: { activeProfileId: "default" },
+        description: "Test",
+        cwd: "/tmp/test",
+        parentWorkspaceId: "",
+        icon: "\u{1F680}",
+      });
+      expect(ws.icon).toBe("\u{1F680}");
+    });
+
+    test("uses default icon when not provided", () => {
+      expect(workspace.icon).toBe("\u{1F916}");
+    });
+
+    test("uses custom color when provided", () => {
+      const ws = runner.createTaskWorkspace({
+        state: { activeProfileId: "default" },
+        description: "Test",
+        cwd: "/tmp/test",
+        parentWorkspaceId: "",
+        color: "#FF0000",
+      });
+      expect(ws.color).toBe("#FF0000");
+    });
+
+    test("uses custom notes when provided", () => {
+      const ws = runner.createTaskWorkspace({
+        state: { activeProfileId: "default" },
+        description: "Test",
+        cwd: "/tmp/test",
+        parentWorkspaceId: "",
+        notes: "Important context",
+      });
+      expect(ws.notes).toBe("Important context");
+    });
+
+    test("uses custom worker command when provided", () => {
+      const ws = runner.createTaskWorkspace({
+        state: { activeProfileId: "default" },
+        description: "Test",
+        cwd: "/tmp/test",
+        parentWorkspaceId: "",
+        workerCommand: "claude --model haiku",
+      });
+      expect(ws.panels[1].command).toBe("claude --model haiku");
+    });
+
+    test("uses custom judge command when provided", () => {
+      const ws = runner.createTaskWorkspace({
+        state: { activeProfileId: "default" },
+        description: "Test",
+        cwd: "/tmp/test",
+        parentWorkspaceId: "",
+        judgeCommand: "claude --model opus --verbose",
+      });
+      expect(ws.panels[2].command).toBe("claude --model opus --verbose");
+    });
+
+    test("uses default commands when custom commands are not provided", () => {
+      expect(workspace.panels[1].command).toBe("claude --dangerously-skip-permissions --model sonnet");
+      expect(workspace.panels[2].command).toContain("claude");
+    });
   });
 
   describe("task lifecycle", () => {

@@ -286,6 +286,12 @@ export const taskWorkspaceCreateSchema = z.object({
   maxRounds: z.number().int().min(1).max(100).optional(),
   useWorktree: z.boolean().optional(),
   worktreeBranch: z.string().optional(),
+  name: z.string().max(60).optional(),
+  icon: z.string().max(4).optional(),
+  color: z.string().max(20).optional(),
+  notes: z.string().max(500).optional(),
+  workerCommand: z.string().max(500).optional(),
+  judgeCommand: z.string().max(500).optional(),
 });
 
 export const taskWorkspaceActionSchema = z.object({

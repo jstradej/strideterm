@@ -77,22 +77,40 @@ export class AgentTaskRunner {
   /**
    * Build a task workspace object (not yet persisted — caller saves via runtime.saveWorkspace).
    */
-  createTaskWorkspace({ state, description, cwd, parentWorkspaceId, maxRounds }) {
+  createTaskWorkspace({
+    state,
+    description,
+    cwd,
+    parentWorkspaceId,
+    maxRounds,
+    name,
+    icon,
+    color,
+    notes,
+    workerCommand,
+    judgeCommand,
+  }) {
     const workspaceId = `workspace-${randomUUID()}`;
     const dashboardPanelId = `panel-${randomUUID()}`;
     const workerPanelId = `panel-${randomUUID()}`;
     const judgePanelId = `panel-${randomUUID()}`;
 
+    const autoName = description
+      ? description.length > 50
+        ? description.slice(0, 47) + "..."
+        : description
+      : "Task workspace";
+
     return {
       id: workspaceId,
-      name: description ? (description.length > 50 ? description.slice(0, 47) + "..." : description) : "Task workspace",
-      icon: "\u{1F916}", // 🤖
-      color: "#7C4DFF",
+      name: name?.trim() || autoName,
+      icon: icon?.trim() || "\u{1F916}", // 🤖
+      color: color || "#7C4DFF",
       kind: "task",
       source: "manual",
       pluginId: "",
       cwd,
-      notes: "",
+      notes: notes?.trim() || "",
       profileId: state.activeProfileId || "default",
       connectionId: "",
       activePanelId: dashboardPanelId,
@@ -101,14 +119,14 @@ export class AgentTaskRunner {
         {
           id: workerPanelId,
           title: "Worker",
-          command: "claude --dangerously-skip-permissions --model sonnet",
+          command: workerCommand?.trim() || "claude --dangerously-skip-permissions --model sonnet",
           shell: true,
           startup: "default",
         },
         {
           id: judgePanelId,
           title: "Judge",
-          command: "claude --dangerously-skip-permissions --model opus",
+          command: judgeCommand?.trim() || "claude --dangerously-skip-permissions --model opus",
           shell: true,
           startup: "default",
         },

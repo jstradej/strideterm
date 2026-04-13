@@ -2437,6 +2437,12 @@ export async function createRuntime({
         cwd: effectiveCwd,
         parentWorkspaceId: config.parentWorkspaceId,
         maxRounds: config.maxRounds,
+        name: config.name,
+        icon: config.icon,
+        color: config.color,
+        notes: config.notes,
+        workerCommand: config.workerCommand,
+        judgeCommand: config.judgeCommand,
       });
 
       // Store worktree metadata in task object
