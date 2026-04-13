@@ -37,6 +37,8 @@
     "test:e2e": "npx playwright test",
     "lint": "eslint . && prettier --check .",
     "lint:fix": "eslint --fix . && prettier --write .",
+    "audit:security": "npm audit --audit-level=high",
+    "audit:package-age": "node scripts/check-package-age.mjs",
     "prepare": "husky"
   },
   "build": {
@@ -156,7 +158,10 @@
     "prettier": "^3.8.1",
     "vite": "^8.0.8",
     "vitest": "^4.1.4",
-    "wait-on": "^9.0.4"
+    "wait-on": "^9.0.5"
+  },
+  "overrides": {
+    "dompurify": "3.3.3"
   },
   "lint-staged": {
     "*.{js,vue}": [
