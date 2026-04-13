@@ -1,60 +1,41 @@
 import { randomUUID } from "node:crypto";
 import { exec } from "node:child_process";
-import { access, readFile, readdir, writeFile, mkdir, rm } from "node:fs/promises";
+import { access, readFile, writeFile, mkdir, rm } from "node:fs/promises";
 import path from "node:path";
-import { z } from "zod";
 import { getLogger } from "./logger.js";
+import {
+  VERDICT_FILE,
+  TASK_FILE,
+  TODO_FILE,
+  CRITERIA_FILE,
+  JUDGE_TODO_FILE,
+  JUDGE_PROMPT_FILE,
+  WORK_LOCK_FILE,
+  TASK_LOG_FILE,
+  PROMPT_FILE,
+  HANDOFF_FILE,
+  MAX_OUTPUT_TAIL,
+  FILE_PROMPT_THRESHOLD,
+  DEFAULT_SHOWER_INTERVAL,
+  verdictSchema,
+  taskDir,
+  taskDirRel,
+  fenceUserInput,
+  tailLines,
+  parseTodoSections,
+  activeItems,
+  parseFinishCriteriaMd,
+  checkCommandSafety,
+} from "./agent-task-utils.js";
+import { detectProjectVerifyCommands, detectStackReviewHints } from "./agent-task-detection.js";
+import {
+  buildInitialWorkerPrompt,
+  buildRePrompt,
+  buildJudgePrompt,
+  buildJudgeFeedbackPrompt,
+} from "./agent-task-prompts.js";
 
 const log = getLogger("task-runner");
-
-const TASK_ROOT = ".strideterm/tasks";
-const VERDICT_FILE = "verdict.json";
-const TASK_FILE = "TASK.md";
-const TODO_FILE = "TODO.md";
-const CRITERIA_FILE = "FINISH_CRITERIA.md";
-const JUDGE_TODO_FILE = "JUDGE_TODO.md";
-const JUDGE_PROMPT_FILE = "JUDGE_PROMPT.md";
-const WORK_LOCK_FILE = "WORK_LOCK";
-const TASK_LOG_FILE = "TASK_LOG.jsonl";
-// GITIGNORE_CONTENT removed — we now append ".strideterm/" to project .gitignore instead
-
-const MAX_OUTPUT_TAIL = 30; // Lines of command output to include in re-prompt
-const FILE_PROMPT_THRESHOLD = 400; // Characters — above this, write prompt to file instead of pasting
-const PROMPT_FILE = "PROMPT.md"; // Ephemeral prompt file for file-based injection
-const HANDOFF_FILE = "HANDOFF.md"; // Worker handoff summary for shower mode
-const DEFAULT_SHOWER_INTERVAL = 5; // Rounds between context refreshes (shower mode)
-
-const verdictSchema = z.object({
-  verdict: z.enum(["complete", "continue"]),
-  reason: z.string().optional().default(""),
-});
-
-/**
- * Returns the per-task directory path: .strideterm/tasks/{taskId}
- * Each task gets its own subdirectory so multiple task workspaces
- * pointing at the same cwd don't collide on verdict/TODO files.
- */
-function taskDir(cwd, taskId) {
-  return path.join(cwd, TASK_ROOT, taskId);
-}
-
-/**
- * Returns the relative path from cwd for use in prompts shown to agents.
- */
-function taskDirRel(taskId) {
-  return `${TASK_ROOT}/${taskId}`;
-}
-
-/**
- * Wrap user-provided text in XML fence for prompt injection mitigation.
- * This prevents task descriptions from being interpreted as prompt instructions.
- */
-function fenceUserInput(text, tag = "user-task-description") {
-  if (!text) return "";
-  // Strip any closing tags that match our fence to prevent escape
-  const sanitized = text.replace(new RegExp(`</${tag}>`, "gi"), `</${tag} >`);
-  return `<${tag}>\n${sanitized}\n</${tag}>`;
-}
 
 /**
  * Agent Task Runner — orchestrates a worker + judge evaluation loop.
@@ -204,7 +185,7 @@ export class AgentTaskRunner {
     // Send the task prompt now — agent is ready and waiting for input.
     if (task.description) {
       const workerSessionId = `${workspaceId}:${task.workerPanelId}`;
-      const prompt = this.#buildInitialWorkerPrompt(task);
+      const prompt = buildInitialWorkerPrompt(task);
       await this.#injectPrompt(workerSessionId, prompt, workspace);
       task.promptSent = true;
       log.info("task started, prompt sent to worker", { workspaceId, taskId: task.taskId });
@@ -356,7 +337,7 @@ export class AgentTaskRunner {
       if (!task.promptSent) {
         // After a shower, use the resume prompt (with handoff context); otherwise initial prompt
         const isResume = !!task.showerResumePrompt;
-        const prompt = task.showerResumePrompt || this.#buildInitialWorkerPrompt(task);
+        const prompt = task.showerResumePrompt || buildInitialWorkerPrompt(task);
         log.info("worker ready, injecting prompt", { workspaceId, sessionId, isResume });
         this.#injectPrompt(`${workspaceId}:${task.workerPanelId}`, prompt, workspace).catch((err) => {
           log.error("failed to inject prompt", { workspaceId, err: err.message });
@@ -718,13 +699,13 @@ export class AgentTaskRunner {
             } else {
               log.warn("shower failed, falling back to normal re-prompt", { workspaceId });
               this.#logTaskEvent(workspace, "shower-failed", "Handoff not written in time, falling back to re-prompt");
-              const prompt = this.#buildRePrompt(task, round);
+              const prompt = buildRePrompt(task, round);
               const workerSessionId = `${workspaceId}:${task.workerPanelId}`;
               await this.#injectPrompt(workerSessionId, prompt, workspace);
               this.#setTaskState(task, "running");
             }
           } else {
-            const prompt = this.#buildRePrompt(task, round);
+            const prompt = buildRePrompt(task, round);
             const workerSessionId = `${workspaceId}:${task.workerPanelId}`;
             await this.#injectPrompt(workerSessionId, prompt, workspace);
             this.#setTaskState(task, "running");
@@ -749,7 +730,7 @@ export class AgentTaskRunner {
 
         // Inject judge evaluation prompt
         const judgeSessionId = `${workspaceId}:${task.judgePanelId}`;
-        const judgePrompt = await this.#buildJudgePrompt(task, round, gitContext, workspace.cwd);
+        const judgePrompt = await buildJudgePrompt(task, round, gitContext, workspace.cwd);
         await this.#injectPrompt(judgeSessionId, judgePrompt, workspace);
         this.#setTaskState(task, "judge-evaluating");
         log.info("judge evaluation requested", { workspaceId, round: task.currentRound });
@@ -828,7 +809,7 @@ export class AgentTaskRunner {
           this.#raiseTaskAlert(workspace, "failed", `Max rounds reached. Judge: ${verdict.reason || "incomplete"}`);
           this.#notifyWorkerTaskEnded(workspace, "failed");
         } else {
-          const prompt = this.#buildJudgeFeedbackPrompt(task, verdict);
+          const prompt = buildJudgeFeedbackPrompt(task, verdict);
           const workerSessionId = `${workspaceId}:${task.workerPanelId}`;
           await this.#injectPrompt(workerSessionId, prompt, workspace);
           this.#setTaskState(task, "running");
@@ -1097,8 +1078,8 @@ export class AgentTaskRunner {
     await mkdir(dir, { recursive: true });
 
     // Auto-detect verification commands and technology stack from project files
-    const detected = await this.#detectProjectVerifyCommands(cwd);
-    const stackHints = await this.#detectStackReviewHints(cwd);
+    const detected = await detectProjectVerifyCommands(cwd);
+    const stackHints = await detectStackReviewHints(cwd);
     const now = new Date().toISOString().replace("T", " ").slice(0, 19);
 
     const descriptionBlock = task.description
@@ -1218,474 +1199,6 @@ ${stackSection}
     ]);
 
     log.info("task files written", { dir, detectedCommands: detected.length });
-  }
-
-  /**
-   * Auto-detect verification commands from project configuration files.
-   * Scans for all known stacks (not mutually exclusive — a project can have
-   * both package.json and a Makefile). The order within each stack is:
-   * formatting → lint → compile/build → tests (fast-to-slow).
-   */
-  async #detectProjectVerifyCommands(cwd) {
-    const commands = [];
-    const has = (f) =>
-      access(path.join(cwd, f)).then(
-        () => true,
-        () => false,
-      );
-    const tryRead = (f) => readFile(path.join(cwd, f), "utf8").catch(() => null);
-
-    // --- Node.js: package.json ---
-    try {
-      const raw = await tryRead("package.json");
-      if (raw) {
-        const pkg = JSON.parse(raw);
-        const scripts = pkg.scripts || {};
-        const devDeps = { ...pkg.devDependencies, ...pkg.dependencies };
-        // TypeScript type-check
-        if (scripts.typecheck || scripts["type-check"]) {
-          const cmd = scripts.typecheck ? "npm run typecheck" : "npm run type-check";
-          commands.push({ label: "Type-check", command: cmd, timeoutMs: 120_000 });
-        } else if (devDeps.typescript && (await has("tsconfig.json"))) {
-          commands.push({ label: "Type-check", command: "npx tsc --noEmit", timeoutMs: 120_000 });
-        }
-        // Lint
-        if (scripts.lint) {
-          commands.push({ label: "Lint", command: "npm run lint", timeoutMs: 60_000 });
-        }
-        // Tests
-        if (scripts.test && scripts.test !== 'echo "Error: no test specified" && exit 1') {
-          commands.push({ label: "Tests", command: "npm test", timeoutMs: 300_000 });
-        }
-        // Build
-        if (scripts.build) {
-          commands.push({ label: "Build", command: "npm run build", timeoutMs: 120_000 });
-        }
-        // Audit (only when lock file exists)
-        if ((await has("package-lock.json")) || (await has("yarn.lock"))) {
-          commands.push({ label: "Audit", command: "npm audit --audit-level=high", timeoutMs: 30_000 });
-        }
-      }
-    } catch {
-      // package.json parse error
-    }
-
-    // --- Java: Maven (pom.xml) ---
-    if (await has("pom.xml")) {
-      const pom = (await tryRead("pom.xml")) || "";
-      // mvn verify covers compile + test + integration-test phases
-      commands.push({ label: "Maven verify", command: "mvn verify -B -q", timeoutMs: 600_000 });
-      if (pom.includes("maven-checkstyle-plugin") || (await has("checkstyle.xml"))) {
-        commands.push({ label: "Checkstyle", command: "mvn checkstyle:check -B -q", timeoutMs: 60_000 });
-      }
-      if (pom.includes("spotbugs-maven-plugin")) {
-        commands.push({ label: "SpotBugs", command: "mvn spotbugs:check -B -q", timeoutMs: 120_000 });
-      }
-      if (pom.includes("maven-pmd-plugin")) {
-        commands.push({ label: "PMD", command: "mvn pmd:check -B -q", timeoutMs: 60_000 });
-      }
-    }
-
-    // --- Java: Gradle (build.gradle / build.gradle.kts) ---
-    if (!commands.some((c) => c.command.startsWith("mvn"))) {
-      const hasGradle = (await has("build.gradle")) || (await has("build.gradle.kts"));
-      if (hasGradle) {
-        // Prefer wrapper when available
-        const gradleCmd = (await has("gradlew")) || (await has("gradlew.bat")) ? "./gradlew" : "gradle";
-        // 'check' aggregates test + all verification tasks (checkstyle, spotbugs, etc.)
-        commands.push({ label: "Gradle check", command: `${gradleCmd} check --no-daemon -q`, timeoutMs: 300_000 });
-        commands.push({ label: "Gradle build", command: `${gradleCmd} build --no-daemon -q`, timeoutMs: 300_000 });
-      }
-    }
-
-    // --- Python ---
-    if (!commands.some((c) => c.label.startsWith("Maven") || c.label.startsWith("Gradle"))) {
-      const pyproject = await tryRead("pyproject.toml");
-      const hasPytest =
-        pyproject?.includes("[tool.pytest") ||
-        (await has("pytest.ini")) ||
-        (await has("conftest.py")) ||
-        (await has("setup.cfg"));
-      // Formatting
-      if (pyproject?.includes("[tool.ruff")) {
-        commands.push({ label: "Ruff format", command: "ruff format --check .", timeoutMs: 30_000 });
-        commands.push({ label: "Ruff lint", command: "ruff check .", timeoutMs: 30_000 });
-      } else {
-        if (pyproject?.includes("[tool.black") || (await has(".black.toml"))) {
-          commands.push({ label: "Black format", command: "black --check .", timeoutMs: 30_000 });
-        }
-        if (await has(".flake8")) {
-          commands.push({ label: "Flake8", command: "flake8", timeoutMs: 60_000 });
-        }
-      }
-      // Type checking
-      if (pyproject?.includes("[tool.mypy") || (await has("mypy.ini")) || (await has(".mypy.ini"))) {
-        commands.push({ label: "Mypy", command: "mypy .", timeoutMs: 120_000 });
-      } else if (await has("pyrightconfig.json")) {
-        commands.push({ label: "Pyright", command: "pyright", timeoutMs: 120_000 });
-      }
-      // Tests
-      if (hasPytest) {
-        commands.push({ label: "Tests", command: "pytest", timeoutMs: 300_000 });
-      }
-      // Tox (all-in-one)
-      if (pyproject?.includes("[tool.tox") || (await has("tox.ini"))) {
-        // Tox runs its own test/lint matrix — don't duplicate
-        if (!hasPytest) {
-          commands.push({ label: "Tox", command: "tox", timeoutMs: 600_000 });
-        }
-      }
-    }
-
-    // --- Rust: Cargo.toml ---
-    if (await has("Cargo.toml")) {
-      commands.push({ label: "Cargo fmt", command: "cargo fmt --check", timeoutMs: 15_000 });
-      commands.push({ label: "Cargo clippy", command: "cargo clippy -- -D warnings", timeoutMs: 120_000 });
-      commands.push({ label: "Cargo test", command: "cargo test", timeoutMs: 300_000 });
-      if (await has("deny.toml")) {
-        commands.push({ label: "Cargo deny", command: "cargo deny check", timeoutMs: 30_000 });
-      }
-    }
-
-    // --- Go: go.mod ---
-    if (await has("go.mod")) {
-      commands.push({ label: "Go vet", command: "go vet ./...", timeoutMs: 60_000 });
-      if ((await has(".golangci.yml")) || (await has(".golangci.yaml")) || (await has(".golangci.toml"))) {
-        commands.push({ label: "GolangCI-Lint", command: "golangci-lint run", timeoutMs: 120_000 });
-      }
-      commands.push({ label: "Go test", command: "go test ./...", timeoutMs: 300_000 });
-      commands.push({ label: "Go mod verify", command: "go mod verify", timeoutMs: 30_000 });
-    }
-
-    // --- .NET: *.sln or *.csproj ---
-    {
-      let hasDotnet = false;
-      try {
-        const entries = await readdir(cwd);
-        hasDotnet = entries.some((e) => e.endsWith(".sln") || e.endsWith(".csproj"));
-      } catch {
-        // readdir failed
-      }
-      if (hasDotnet) {
-        commands.push({ label: "Dotnet build", command: "dotnet build --no-restore", timeoutMs: 120_000 });
-        commands.push({ label: "Dotnet test", command: "dotnet test --no-build", timeoutMs: 300_000 });
-        if (await has(".editorconfig")) {
-          commands.push({ label: "Dotnet format", command: "dotnet format --verify-no-changes", timeoutMs: 30_000 });
-        }
-      }
-    }
-
-    // --- Ruby: Gemfile ---
-    if (await has("Gemfile")) {
-      const gemfile = (await tryRead("Gemfile")) || "";
-      if (gemfile.includes("rubocop") || (await has(".rubocop.yml"))) {
-        commands.push({ label: "RuboCop", command: "bundle exec rubocop", timeoutMs: 60_000 });
-      }
-      if (gemfile.includes("rspec") || (await has(".rspec"))) {
-        commands.push({ label: "RSpec", command: "bundle exec rspec", timeoutMs: 300_000 });
-      } else if (await has("Rakefile")) {
-        commands.push({ label: "Rake test", command: "bundle exec rake test", timeoutMs: 300_000 });
-      }
-      if (gemfile.includes("brakeman")) {
-        commands.push({ label: "Brakeman", command: "bundle exec brakeman --no-pager -q", timeoutMs: 60_000 });
-      }
-    }
-
-    // --- Makefile (fallback for any stack) ---
-    if (!commands.length) {
-      try {
-        const makefile = await readFile(path.join(cwd, "Makefile"), "utf8");
-        if (/^check\s*:/m.test(makefile)) {
-          commands.push({ label: "Make check", command: "make check", timeoutMs: 120_000 });
-        }
-        if (/^test\s*:/m.test(makefile)) {
-          commands.push({ label: "Make test", command: "make test", timeoutMs: 120_000 });
-        }
-        if (/^lint\s*:/m.test(makefile)) {
-          commands.push({ label: "Make lint", command: "make lint", timeoutMs: 60_000 });
-        }
-      } catch {
-        // No Makefile
-      }
-    }
-
-    return commands;
-  }
-
-  /**
-   * Detect project technology stack and return review hints for the Judge.
-   * These are included in JUDGE_PROMPT.md so the Judge knows what to look for
-   * based on the specific technologies used.
-   */
-  async #detectStackReviewHints(cwd) {
-    const hints = [];
-    const has = (f) =>
-      access(path.join(cwd, f)).then(
-        () => true,
-        () => false,
-      );
-    const tryRead = (f) => readFile(path.join(cwd, f), "utf8").catch(() => null);
-
-    // --- Node.js / JavaScript / TypeScript ---
-    const pkgRaw = await tryRead("package.json");
-    if (pkgRaw) {
-      try {
-        const pkg = JSON.parse(pkgRaw);
-        const allDeps = { ...pkg.dependencies, ...pkg.devDependencies };
-
-        if (allDeps.typescript || (await has("tsconfig.json"))) {
-          hints.push(
-            "**TypeScript**: Check for proper typing — no untyped `any` escape hatches, correct use of generics, interfaces over type assertions where possible",
-          );
-        }
-        if (allDeps.react || allDeps["react-dom"]) {
-          hints.push(
-            "**React**: Verify hooks rules (no conditional hooks), proper dependency arrays in useEffect/useMemo, no unnecessary re-renders, keys on list items",
-          );
-        }
-        if (allDeps.vue) {
-          hints.push(
-            "**Vue**: Check reactivity patterns (ref/reactive usage), proper prop validation, no direct prop mutation, correct use of computed vs methods",
-          );
-        }
-        if (allDeps.next) {
-          hints.push(
-            "**Next.js**: Verify correct use of server/client components, proper data fetching patterns, no sensitive data leaked to client bundles",
-          );
-        }
-        if (allDeps.express || allDeps.fastify || allDeps.koa) {
-          hints.push(
-            "**Node.js API**: Check for proper async error handling (no unhandled promise rejections), input validation on endpoints, no secrets in responses",
-          );
-        }
-        if (allDeps.prisma || allDeps.sequelize || allDeps.typeorm || allDeps.knex) {
-          hints.push(
-            "**Database/ORM**: Verify parameterized queries (no SQL injection via string concatenation), proper transaction usage, N+1 query patterns",
-          );
-        }
-        if (allDeps.zod || allDeps.joi || allDeps.yup) {
-          hints.push(
-            "**Validation**: Ensure new endpoints/inputs use the existing validation library, schemas match expected data shapes",
-          );
-        }
-      } catch {
-        // package.json parse error
-      }
-    }
-
-    // --- Python ---
-    const pyproject = await tryRead("pyproject.toml");
-    if (pyproject || (await has("requirements.txt")) || (await has("setup.py"))) {
-      hints.push(
-        "**Python**: Check for proper type hints on new functions, correct use of context managers for resources, no bare `except:` clauses",
-      );
-      if (pyproject?.includes("django") || (await has("manage.py"))) {
-        hints.push(
-          "**Django**: Verify ORM queries are efficient (select_related/prefetch_related), no raw SQL without parameterization, proper permission checks on views",
-        );
-      }
-      if (pyproject?.includes("fastapi")) {
-        hints.push(
-          "**FastAPI**: Check Pydantic models match API contracts, proper dependency injection, async endpoints where appropriate",
-        );
-      }
-      if (pyproject?.includes("asyncio") || pyproject?.includes("aiohttp") || pyproject?.includes("httpx")) {
-        hints.push(
-          "**Async Python**: Verify proper await usage, no blocking calls in async functions, correct task/gather patterns",
-        );
-      }
-    }
-
-    // --- Rust ---
-    if (await has("Cargo.toml")) {
-      hints.push(
-        "**Rust**: Check for proper error handling (no unwrap() in production paths), correct ownership/borrowing, appropriate use of Clone vs references",
-      );
-    }
-
-    // --- Go ---
-    if (await has("go.mod")) {
-      hints.push(
-        "**Go**: Verify proper error handling (no ignored errors), correct goroutine lifecycle (no leaks), defer usage for cleanup, context propagation",
-      );
-    }
-
-    // --- Java ---
-    if ((await has("pom.xml")) || (await has("build.gradle")) || (await has("build.gradle.kts"))) {
-      hints.push(
-        "**Java**: Check for proper null handling, resource management (try-with-resources), correct exception hierarchy, thread safety where applicable",
-      );
-    }
-
-    // --- .NET ---
-    {
-      try {
-        const entries = await readdir(cwd);
-        if (entries.some((e) => e.endsWith(".csproj") || e.endsWith(".sln"))) {
-          hints.push(
-            "**C#/.NET**: Verify proper async/await patterns (no sync-over-async), IDisposable implementation, null checks or nullable reference types",
-          );
-        }
-      } catch {
-        // readdir failed
-      }
-    }
-
-    // --- Ruby ---
-    if (await has("Gemfile")) {
-      hints.push(
-        "**Ruby**: Check for proper exception handling, no mass assignment vulnerabilities, correct use of ActiveRecord scopes and validations",
-      );
-    }
-
-    log.debug("stack review hints detected", { cwd, hintCount: hints.length });
-    return hints;
-  }
-
-  // ---------------------------------------------------------------------------
-  // Prompt builders
-  // ---------------------------------------------------------------------------
-
-  #buildInitialWorkerPrompt(task) {
-    const dir = taskDirRel(task.taskId);
-    return `You are the worker in a supervised coding loop.
-
-Task:
-${task.description ? fenceUserInput(task.description) : "(Read the task from " + dir + "/" + TASK_FILE + ")"}
-
-Rules:
-- Work directly in the repository.
-- **Commit your changes** regularly with clear, descriptive commit messages. The judge reviews git diffs to verify your work. Do NOT push to any remote.
-- Read and obey \`${dir}/${TODO_FILE}\`, \`${dir}/${CRITERIA_FILE}\`, and \`${dir}/${WORK_LOCK_FILE}\`.
-- Ignore \`${dir}/${JUDGE_TODO_FILE}\` — that file belongs to the judge.
-- Do not ask the human whether you should continue. The judge decides that.
-- Do not say "would you like me to continue", "should I proceed", "if you want, I can", or similar optional-next-step language.
-- If you think the task is done, verify it against the finish criteria before stopping.
-- Do not claim done just because you finished one slice. Return done only when the whole task is complete.
-- Remove \`${dir}/${WORK_LOCK_FILE}\` only when the finish criteria genuinely pass.
-- Update \`${dir}/${TODO_FILE}\` as you make progress (move items between sections).
-- Prefer continuing work over asking for more instructions.
-- When you are done, simply stop. Automated checks and a judge will verify your work.`;
-  }
-
-  #buildRePrompt(task, round) {
-    const dir = taskDirRel(task.taskId);
-    const lines = [
-      `The task is not yet complete. Round ${task.currentRound}/${task.maxRounds}.`,
-      "",
-      "Verification results:",
-    ];
-
-    for (const check of round.checks) {
-      const icon = check.passed ? "\u2713" : "\u2717";
-      lines.push(`${icon} ${check.label}: ${check.passed ? "PASSED" : "FAILED"}`);
-      if (!check.passed && check.outputTail) {
-        for (const line of check.outputTail.split("\n")) {
-          lines.push(`  ${line}`);
-        }
-      }
-    }
-
-    lines.push(
-      "",
-      "Continue working. Do not stop while real work remains.",
-      `Check ${dir}/${TODO_FILE} for remaining items.`,
-      `Remove ${dir}/${WORK_LOCK_FILE} only when genuinely done.`,
-    );
-
-    return lines.join("\n");
-  }
-
-  async #buildJudgePrompt(task, round, gitContext, cwd) {
-    const dir = taskDirRel(task.taskId);
-    const checkSummary = round.checks.map((c) => `- ${c.label}: ${c.passed ? "PASSED" : "FAILED"}`).join("\n");
-    const git = gitContext || { status: "(unavailable)", diffStat: "", diffNames: "" };
-
-    // Context block — always included (task, checks, git)
-    const context = `You are the independent judge evaluating whether a coding task is complete.
-
-Task:
-${task.description ? fenceUserInput(task.description) : "(See " + dir + "/" + TASK_FILE + ")"}
-
-The worker has stopped. Automated check results:
-${checkSummary}
-
-Git status:
-${git.status}
-
-Git diff --stat:
-${git.diffStat || "(no changes)"}
-
-Git diff --name-only:
-${git.diffNames || "(no changed files)"}`;
-
-    // Check for user-customized judge instructions
-    let customInstructions = "";
-    if (cwd && task.taskId) {
-      const customPath = path.join(taskDir(cwd, task.taskId), JUDGE_PROMPT_FILE);
-      try {
-        customInstructions = (await readFile(customPath, "utf8")).trim();
-        log.info("using custom judge prompt from JUDGE_PROMPT.md", {
-          taskId: task.taskId,
-          length: customInstructions.length,
-        });
-      } catch {
-        // No custom prompt — use default
-      }
-    }
-
-    if (customInstructions) {
-      // User-provided instructions replace the default rules + instructions block.
-      // Context (task, checks, git) is always prepended so the judge has data to work with.
-      return `${context}
-
-Task files directory: ${dir}/
-Verdict file: ${dir}/${VERDICT_FILE}
-Judge scratchpad: ${dir}/${JUDGE_TODO_FILE}
-
-${customInstructions}
-
-Write your verdict to ${dir}/${VERDICT_FILE} as JSON: {"verdict": "complete"|"continue", "reason": "..."}`;
-    }
-
-    // Default judge instructions (requirements check + code review)
-    return `${context}
-
-Hard rules:
-- Do not trust the worker's completion claim by default.
-- Prefer "continue" over "complete" when uncertain.
-- If any deterministic check failed, reject completion.
-- Treat these worker phrases as red flags: "would you like me to continue", "should I proceed", "all set", "task complete", "done".
-- Reject any stop that leaves active TODO items, WORK_LOCK present, or failing verify commands.
-- You are not a second worker — do not expand scope or plan features.
-
-Instructions:
-1. Read ${dir}/${TASK_FILE} for the full task description and requirements
-2. **Requirements check**: Go through every requirement/acceptance criterion in the task description point by point — verify each one is actually implemented, not just claimed
-3. **Code review**: Read the changed files. Check for:
-   - Correctness: does the code actually do what the task asks?
-   - Obvious bugs, edge cases, or error handling gaps
-   - Code quality: no dead code, no debug leftovers, reasonable naming
-   - Consistency with the existing codebase style
-   Do NOT nitpick style preferences or demand perfection — focus on real issues that would matter in a code review
-4. Run any relevant checks yourself if needed (read files, run commands)
-5. Keep notes in ${dir}/${JUDGE_TODO_FILE} (tiny scratchpad — for each requirement, note whether it's verified or missing; note any code quality issues found)
-6. Write your verdict to ${dir}/${VERDICT_FILE}:
-   - If ALL requirements are met and code quality is acceptable: {"verdict": "complete", "reason": "..."}
-   - If ANY requirement is missing, or there are real code quality issues: {"verdict": "continue", "reason": "..."}
-   Your "reason" must list specific issues — file paths, line descriptions, what's wrong and what to fix`;
-  }
-
-  #buildJudgeFeedbackPrompt(task, verdict) {
-    const dir = taskDirRel(task.taskId);
-    return `The judge evaluated your work and found it incomplete.
-
-Judge feedback: ${verdict.reason || "No specific feedback provided."}
-
-Round ${task.currentRound}/${task.maxRounds}. Continue working.
-Do not stop while real work remains. Do not ask "should I proceed".
-Check ${dir}/${TODO_FILE} for remaining items.
-Remove ${dir}/${WORK_LOCK_FILE} only when genuinely done.`;
   }
 
   // ---------------------------------------------------------------------------
@@ -2213,125 +1726,5 @@ Do NOT continue working on the task — only write the handoff summary.`;
   }
 }
 
-// ---------------------------------------------------------------------------
-// Utilities
-// ---------------------------------------------------------------------------
-
-function tailLines(text, maxLines) {
-  if (!text) return "";
-  const lines = text.split("\n");
-  if (lines.length <= maxLines) return text;
-  return lines.slice(-maxLines).join("\n");
-}
-
-/**
- * Parse TODO.md into sections (like codex-runner's parse_todo_sections).
- * Returns { "In Progress": ["- [ ] item", ...], "Done": [...], ... }
- */
-function parseTodoSections(text) {
-  const sections = {};
-  let current = "";
-  for (const rawLine of String(text || "").split("\n")) {
-    const line = rawLine.trimEnd();
-    if (line.startsWith("## ")) {
-      current = line.slice(3).trim();
-      if (!sections[current]) sections[current] = [];
-      continue;
-    }
-    if (current && line.trimStart().startsWith("- [")) {
-      sections[current].push(line.trim());
-    }
-  }
-  return sections;
-}
-
-/**
- * Filter active (unchecked) items — anything NOT starting with "- [x]".
- */
-function activeItems(lines) {
-  return lines.filter((line) => !line.toLowerCase().startsWith("- [x]"));
-}
-
-/**
- * Parse FINISH_CRITERIA.md in simple markdown format.
- *
- * Expected sections:
- *   ## Verify Commands
- *   - Label: `command`              → { label, command, timeoutMs: 60000 }
- *   - Label: `command` (timeout: 30s)  → { label, command, timeoutMs: 30000 }
- *
- *   ## Required Files
- *   - path/to/file
- *
- *   ## Forbidden Files
- *   - path/to/file
- */
-// Exported for testing
-export function parseFinishCriteriaMd(text) {
-  const sections = {};
-  let current = "";
-  for (const rawLine of String(text || "").split("\n")) {
-    const line = rawLine.trim();
-    if (line.startsWith("## ")) {
-      current = line.slice(3).trim().toLowerCase();
-      sections[current] = [];
-      continue;
-    }
-    if (current && line.startsWith("- ") && !line.startsWith("<!--")) {
-      sections[current].push(line.slice(2).trim());
-    }
-  }
-
-  // Parse verify commands: "Label: `command`" or "Label: `command` (timeout: 30s)"
-  const verifyCommands = (sections["verify commands"] || []).map((entry) => {
-    const cmdMatch = entry.match(/^(.+?):\s*`([^`]+)`(?:\s*\(timeout:\s*(\d+)s?\))?$/);
-    if (cmdMatch) {
-      return {
-        label: cmdMatch[1].trim(),
-        command: cmdMatch[2].trim(),
-        timeoutMs: cmdMatch[3] ? Number(cmdMatch[3]) * 1000 : 60_000,
-      };
-    }
-    // Fallback: bare command without label
-    const bareMatch = entry.match(/^`([^`]+)`/);
-    if (bareMatch) {
-      return { label: bareMatch[1], command: bareMatch[1], timeoutMs: 60_000 };
-    }
-    // Last resort: treat entire line as command
-    return { label: entry, command: entry, timeoutMs: 60_000 };
-  });
-
-  const requiredPaths = (sections["required files"] || []).filter(Boolean);
-  const forbiddenPaths = (sections["forbidden files"] || []).filter(Boolean);
-
-  return { verifyCommands, requiredPaths, forbiddenPaths };
-}
-
-/**
- * Dangerous command patterns that should trigger a warning before execution.
- * These are heuristic — not a security sandbox, just a safety net.
- */
-const DANGEROUS_PATTERNS = [
-  { pattern: /\brm\s+(-[a-z]*r|-[a-z]*f|--recursive|--force)/i, reason: "recursive/forced delete" },
-  { pattern: /\bformat\b/i, reason: "disk format command" },
-  { pattern: /\bmkfs\b/i, reason: "filesystem format" },
-  { pattern: /\bdd\s+/i, reason: "low-level disk write" },
-  { pattern: />\s*\/dev\/sd/i, reason: "writing to block device" },
-  { pattern: /\bgit\s+push\b/i, reason: "git push" },
-  { pattern: /\bgit\s+reset\s+--hard\b/i, reason: "destructive git reset" },
-  { pattern: /\$\(.*\)|`[^`]+`/, reason: "command substitution (potential injection)" },
-];
-
-/**
- * Check a command string for dangerous patterns.
- * Returns an array of warning strings (empty if safe).
- */
-export function checkCommandSafety(command) {
-  const warnings = [];
-  for (const { pattern, reason } of DANGEROUS_PATTERNS) {
-    if (pattern.test(command)) {
-      warnings.push(reason);
-    }
-  }
-  return warnings;
-}
+// Re-export for external consumers
+export { parseFinishCriteriaMd, checkCommandSafety } from "./agent-task-utils.js";
