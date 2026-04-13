@@ -1,0 +1,22 @@
+version: 2
+updates:
+  # npm dependencies — security updates only (no version bumps)
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: daily
+    open-pull-requests-limit: 10
+    # Only create PRs for security advisories, not routine version bumps.
+    # This prevents noise while catching CVEs within hours of disclosure.
+    groups:
+      security-patches:
+        applies-to: security-updates
+        patterns:
+          - "*"
+
+  # GitHub Actions — keep CI actions up to date (monthly is fine)
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 5

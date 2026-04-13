@@ -20,5 +20,12 @@ jobs:
           node-version: ${{ matrix.node }}
           cache: npm
       - run: npm ci
+      - name: Security audit
+        run: npm audit --audit-level=high
+      - name: Check package publish age
+        run: node scripts/check-package-age.mjs --allow=follow-redirects@1.16.0
+      - name: Verify package signatures
+        run: npm audit signatures
+        continue-on-error: true
       - run: npm test
       - run: npm run build
