@@ -8,7 +8,6 @@ import { getLogger } from "./logger.js";
 import {
   DEFAULT_DIFF_STAT,
   DEFAULT_OPERATION_STATE,
-  createGitChangeBucket,
   createUnavailableSnapshot,
   toWslPath,
   normalizeBranchName,
