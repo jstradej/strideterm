@@ -128,6 +128,31 @@ and `currentPage` in the response. Add integration tests.
       The workspace is fully reusable: create once, then reset and re-run as many times as you need.
     </p>
 
+    <h4>Git Worktree Mode</h4>
+    <p class="td__help-intro">
+      When creating a task workspace, check <strong>Create in git worktree</strong> to run the agent on an isolated
+      branch. The base repository directory is used to create a new git worktree, and the agent works entirely within
+      that worktree.
+    </p>
+    <ul class="td__help-list">
+      <li>
+        <strong>Parallel tasks</strong> &mdash; run multiple task agents on the same repo simultaneously, each in its
+        own worktree with its own branch. No file conflicts between agents.
+      </li>
+      <li>
+        <strong>Isolation</strong> &mdash; all commits, control files, and changes stay in the worktree. Your main
+        working directory is untouched.
+      </li>
+      <li>
+        <strong>Branch name</strong> &mdash; auto-generated from the task description (e.g.
+        <code>task/add-pagination</code>), or type your own. A new branch is created from the current HEAD.
+      </li>
+      <li>
+        <strong>Cleanup</strong> &mdash; when you delete a worktree task workspace, you'll be asked whether to also
+        remove the worktree files from disk.
+      </li>
+    </ul>
+
     <h4>Tips</h4>
     <ul class="td__help-list">
       <li>
@@ -142,6 +167,9 @@ and `currentPage` in the response. Add integration tests.
       <li>
         Edit <strong>TASK.md</strong> in the Files tab before pressing Start to refine the task description, or leave it
         empty and instruct the Worker directly in the terminal.
+      </li>
+      <li>
+        Use <strong>worktree mode</strong> when you want to run tasks in parallel or keep your main checkout clean.
       </li>
     </ul>
   </div>

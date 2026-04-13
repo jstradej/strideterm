@@ -6,9 +6,10 @@ The Agent Task Runner is a supervised coding loop that coordinates two AI agents
 
 1. Click the **+** button in the sidebar and select **Create task workspace**
 2. Choose your **project directory** (must contain the code you want to modify)
-3. Write a **task assignment** describing what needs to be done
-4. Click **Create workspace** — control files are generated automatically
-5. Press **Start** in the Dashboard to begin
+3. _(Optional)_ Check **Create in git worktree** to isolate the task on its own branch
+4. Write a **task assignment** describing what needs to be done
+5. Click **Create workspace** — control files are generated automatically
+6. Press **Start** in the Dashboard to begin
 
 The Worker (Claude Code) will start executing the task. When it goes idle, the Task Runner automatically runs verification checks and, if they pass, asks the Judge to independently evaluate the work.
 
@@ -197,6 +198,48 @@ The Task Runner integrates with git to give the Judge visibility into actual cod
 - **Worker should commit**: The task rules instruct the Worker to commit regularly with clear messages — this is how the Judge verifies what code actually changed
 - **Never pushes**: The Task Runner never pushes to any remote. All work stays local
 
+## Git Worktree Mode
+
+When creating a task workspace, you can check **Create in git worktree** to run the task agent in an isolated git worktree instead of the main working directory.
+
+### How it works
+
+1. You provide the **base repository** path (the project root with a `.git` directory)
+2. A **branch name** is auto-generated from the task description (e.g. `task/add-pagination`) or you can type your own
+3. The Task Runner creates a git worktree at `<repo>/.strideterm/tree/<branch-name>` using `git worktree add`
+4. The task workspace's working directory points to the worktree, not the base repo
+5. All control files, commits, and changes happen inside the worktree
+
+### When to use worktree mode
+
+- **Parallel tasks**: Run multiple task agents on the same repository simultaneously. Each agent gets its own worktree with its own branch — no file conflicts, no merge headaches during execution.
+- **Keep your checkout clean**: Your main working directory stays untouched while the agent works. You can continue editing files in the base repo without affecting the task.
+- **Easy review**: When the task completes, the work is on a separate branch. Review the diff, merge it, or discard it.
+
+### Example workflow
+
+```
+1. Create task workspace with worktree mode:
+   - Base repository: /home/user/my-project
+   - Branch name: task/add-pagination  (auto-generated)
+   → Agent works in /home/user/my-project/.strideterm/tree/task-add-pagination
+
+2. While the first task is running, create another:
+   - Base repository: /home/user/my-project
+   - Branch name: task/fix-auth-bug
+   → Agent works in /home/user/my-project/.strideterm/tree/task-fix-auth-bug
+
+3. Both agents run in parallel on separate branches.
+
+4. When done, merge the branches into your main branch.
+```
+
+### Cleanup
+
+When you delete a worktree task workspace, you'll be prompted whether to also delete the worktree files from disk. If you choose yes, the Task Runner runs `git worktree remove` to cleanly detach the worktree.
+
+The `.strideterm/` directory is auto-added to `.gitignore`, so worktree directories won't appear in git status of the base repo.
+
 ## Dashboard
 
 The Dashboard is the first tab in a task workspace. It has four sections:
@@ -273,6 +316,7 @@ This makes the task workspace reusable: create it once, then reset and re-run as
 TaskWorkspaceDialog (UI)
   --> transport.js: createTaskWorkspace()
     --> runtime.js: createTaskWorkspace()
+      --> [if useWorktree] git worktree add     // create isolated branch
       --> AgentTaskRunner.createTaskWorkspace()  // builds workspace object
       --> AgentTaskRunner.writeInitialFiles()    // writes TASK.md, TODO.md, etc.
       --> runtime.saveWorkspace()                // persists to state
