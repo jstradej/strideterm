@@ -2,7 +2,7 @@
   <div class="dialog" style="width: min(680px, 100%); position: relative; z-index: 10">
     <div class="dialog__header">
       <div>
-        <p class="eyebrow">Azure DevOps</p>
+        <p class="eyebrow">{{ providerLabel }}</p>
         <h2>New Branch</h2>
       </div>
       <button type="button" class="button button--ghost" @click="emit('cancel')">Close</button>
@@ -30,13 +30,15 @@
             :class="['nb-item', selected.connectionId === conn.id && 'nb-item--active']"
             @click="selectConnection(conn)"
           >
-            <span class="nb-item__name">{{ conn.label || conn.orgUrl }}</span>
-            <small class="nb-item__hint">{{ conn.orgUrl }}</small>
+            <span class="nb-item__name">{{ conn.label || conn.orgUrl || conn.hostUrl }}</span>
+            <small class="nb-item__hint">{{
+              provider === "github" ? `${conn.currentUserLogin} · ${conn.hostUrl}` : conn.orgUrl
+            }}</small>
           </button>
         </div>
       </div>
 
-      <!-- Step: Project -->
+      <!-- Step: Project (Azure only) -->
       <div v-if="currentStep === 'project'">
         <p class="eyebrow">Select project</p>
         <p v-if="loading" style="color: var(--muted)">Loading projects…</p>
@@ -56,15 +58,28 @@
       <div v-if="currentStep === 'repo'">
         <p class="eyebrow">Select repository</p>
         <p v-if="loading" style="color: var(--muted)">Loading repositories…</p>
-        <div v-else class="nb-list">
-          <button
-            v-for="repo in sortedRepositories"
-            :key="repo.id"
-            :class="['nb-item', selected.repositoryId === repo.id && 'nb-item--active']"
-            @click="selectRepository(repo)"
-          >
-            <span class="nb-item__name">{{ repo.name }}</span>
-          </button>
+        <div v-else>
+          <input
+            v-if="provider === 'github'"
+            v-model="repoSearch"
+            placeholder="Filter repositories…"
+            style="width: 100%; margin-bottom: 8px"
+          />
+          <div class="nb-list">
+            <button
+              v-for="repo in sortedRepositories"
+              :key="repo.id || repo.fullName"
+              :class="[
+                'nb-item',
+                (provider === 'github' ? selected.fullName === repo.fullName : selected.repositoryId === repo.id) &&
+                  'nb-item--active',
+              ]"
+              @click="selectRepository(repo)"
+            >
+              <span class="nb-item__name">{{ repo.fullName || repo.name }}</span>
+              <small v-if="repo.defaultBranch" class="nb-item__hint">default: {{ repo.defaultBranch }}</small>
+            </button>
+          </div>
         </div>
       </div>
 
@@ -160,6 +175,7 @@ defineOptions({ inheritAttrs: false });
 
 const props = defineProps({
   connections: { type: Array, default: () => [] },
+  provider: { type: String, default: "azure" }, // "azure" | "github"
 });
 
 const emit = defineEmits(["cancel"]);
@@ -167,13 +183,19 @@ const attrs = useAttrs();
 
 const api = inject("api");
 
-const STEPS = ["connection", "project", "repo", "branch"];
+const isAzure = computed(() => props.provider === "azure");
+const providerLabel = computed(() => (isAzure.value ? "Azure DevOps" : "GitHub"));
+const STEPS = computed(() =>
+  isAzure.value ? ["connection", "project", "repo", "branch"] : ["connection", "repo", "branch"],
+);
+
 const PREFIX_STORAGE_KEY = "strideterm:newbranch:prefix";
 
 const currentStep = ref("connection");
 const loading = ref(false);
 const busy = ref(false);
 const errorMessage = ref("");
+const repoSearch = ref("");
 
 const projects = ref([]);
 const repositories = ref([]);
@@ -189,9 +211,15 @@ const branchDropdownOpen = ref(false);
 const selected = ref({
   connectionId: "",
   connectionLabel: "",
+  // Azure fields
   projectName: "",
   repositoryId: "",
   repositoryName: "",
+  // GitHub fields
+  owner: "",
+  repo: "",
+  fullName: "",
+  // Shared
   remoteUrl: "",
   baseBranch: "",
 });
@@ -207,9 +235,7 @@ function loadPrefixPreference() {
 function savePrefixPreference() {
   try {
     localStorage.setItem(PREFIX_STORAGE_KEY, branchPrefix.value);
-  } catch {
-    /* ignore */
-  }
+  } catch {}
 }
 
 // --- Branch name validation ---
@@ -232,15 +258,12 @@ const fullBranchName = computed(() => {
   return `${branchPrefix.value}${suffix}`;
 });
 
-const canCreate = computed(() => {
-  return selected.value.baseBranch && fullBranchName.value && !validationError.value;
-});
+const canCreate = computed(() => selected.value.baseBranch && fullBranchName.value && !validationError.value);
 
 // --- Branch filtering ---
 const filteredBranches = computed(() => {
   const query = baseBranchSearch.value.toLowerCase().trim();
   const sorted = [...branches.value].sort((a, b) => {
-    // Prioritize main branches at top
     const mainBranches = ["develop", "main", "master"];
     const aMain = mainBranches.indexOf(a);
     const bMain = mainBranches.indexOf(b);
@@ -260,42 +283,46 @@ function selectBaseBranch(name) {
 }
 
 const sortedRepositories = computed(() => {
-  return [...repositories.value].sort((a, b) => a.name.localeCompare(b.name));
+  const sorted = [...repositories.value].sort((a, b) => (a.fullName || a.name).localeCompare(b.fullName || b.name));
+  if (!isAzure.value && repoSearch.value.trim()) {
+    const q = repoSearch.value.toLowerCase().trim();
+    return sorted.filter((r) => (r.fullName || r.name).toLowerCase().includes(q));
+  }
+  return sorted;
 });
 
 const visibleSteps = computed(() => {
   const steps = [];
   if (props.connections.length > 1) steps.push({ id: "connection", label: "Connection" });
-  steps.push({ id: "project", label: "Project" });
+  if (isAzure.value) steps.push({ id: "project", label: "Project" });
   steps.push({ id: "repo", label: "Repository" });
   steps.push({ id: "branch", label: "Branch" });
   return steps;
 });
 
-const currentVisibleIndex = computed(() => {
-  return visibleSteps.value.findIndex((s) => s.id === currentStep.value);
-});
-
-const canGoBack = computed(() => {
-  const idx = STEPS.indexOf(currentStep.value);
-  return idx > 0;
-});
+const currentVisibleIndex = computed(() => visibleSteps.value.findIndex((s) => s.id === currentStep.value));
+const canGoBack = computed(() => STEPS.value.indexOf(currentStep.value) > 0);
 
 function goBack() {
-  const idx = STEPS.indexOf(currentStep.value);
+  const idx = STEPS.value.indexOf(currentStep.value);
   if (idx > 0) {
-    currentStep.value = STEPS[idx - 1];
+    currentStep.value = STEPS.value[idx - 1];
     errorMessage.value = "";
   }
 }
 
 async function selectConnection(conn) {
   selected.value.connectionId = conn.id;
-  selected.value.connectionLabel = conn.label || conn.orgUrl;
+  selected.value.connectionLabel = conn.label || conn.orgUrl || conn.hostUrl;
   errorMessage.value = "";
-  await loadProjects();
+  if (isAzure.value) {
+    await loadProjects();
+  } else {
+    await loadRepositories();
+  }
 }
 
+// --- Azure: project step ---
 async function loadProjects() {
   loading.value = true;
   currentStep.value = "project";
@@ -319,14 +346,20 @@ async function selectProject(proj) {
   await loadRepositories();
 }
 
+// --- Repository step ---
 async function loadRepositories() {
   loading.value = true;
   currentStep.value = "repo";
   try {
-    const result = await api.azureQuickFixListRepositories({
-      connectionId: selected.value.connectionId,
-      projectName: selected.value.projectName,
-    });
+    let result;
+    if (isAzure.value) {
+      result = await api.azureQuickFixListRepositories({
+        connectionId: selected.value.connectionId,
+        projectName: selected.value.projectName,
+      });
+    } else {
+      result = await api.githubQuickFixListRepos({ connectionId: selected.value.connectionId });
+    }
     repositories.value = result.repositories || [];
     if (repositories.value.length === 1) {
       await selectRepository(repositories.value[0]);
@@ -340,24 +373,42 @@ async function loadRepositories() {
 }
 
 async function selectRepository(repo) {
-  selected.value.repositoryId = repo.id;
-  selected.value.repositoryName = repo.name;
-  selected.value.remoteUrl = repo.remoteUrl;
+  if (isAzure.value) {
+    selected.value.repositoryId = repo.id;
+    selected.value.repositoryName = repo.name;
+    selected.value.remoteUrl = repo.remoteUrl;
+  } else {
+    selected.value.owner = repo.owner;
+    selected.value.repo = repo.name;
+    selected.value.fullName = repo.fullName;
+    selected.value.remoteUrl = repo.remoteUrl;
+  }
   errorMessage.value = "";
-  await loadBranches();
+  await loadBranches(repo.defaultBranch);
 }
 
-async function loadBranches() {
+// --- Branch step ---
+async function loadBranches(defaultBranch = "") {
   loading.value = true;
   currentStep.value = "branch";
   try {
-    const result = await api.azureQuickFixListBranches({
-      connectionId: selected.value.connectionId,
-      projectName: selected.value.projectName,
-      repositoryId: selected.value.repositoryId,
-    });
+    let result;
+    if (isAzure.value) {
+      result = await api.azureQuickFixListBranches({
+        connectionId: selected.value.connectionId,
+        projectName: selected.value.projectName,
+        repositoryId: selected.value.repositoryId,
+      });
+    } else {
+      result = await api.githubQuickFixListBranches({
+        connectionId: selected.value.connectionId,
+        owner: selected.value.owner,
+        repo: selected.value.repo,
+      });
+    }
     branches.value = result.branches || [];
     const preferred =
+      (defaultBranch && branches.value.find((b) => b === defaultBranch)) ||
       branches.value.find((b) => b === "develop") ||
       branches.value.find((b) => b === "main") ||
       branches.value.find((b) => b === "master") ||
@@ -373,20 +424,33 @@ async function loadBranches() {
   }
 }
 
+// --- Create ---
 async function handleCreate() {
   if (!canCreate.value || busy.value) return;
   busy.value = true;
   errorMessage.value = "";
   try {
-    const result = await api.azureQuickFixCreate({
-      connectionId: selected.value.connectionId,
-      projectName: selected.value.projectName,
-      repositoryId: selected.value.repositoryId,
-      repositoryName: selected.value.repositoryName,
-      remoteUrl: selected.value.remoteUrl,
-      baseBranch: selected.value.baseBranch,
-      newBranchName: fullBranchName.value,
-    });
+    let result;
+    if (isAzure.value) {
+      result = await api.azureQuickFixCreate({
+        connectionId: selected.value.connectionId,
+        projectName: selected.value.projectName,
+        repositoryId: selected.value.repositoryId,
+        repositoryName: selected.value.repositoryName,
+        remoteUrl: selected.value.remoteUrl,
+        baseBranch: selected.value.baseBranch,
+        newBranchName: fullBranchName.value,
+      });
+    } else {
+      result = await api.githubQuickFixCreate({
+        connectionId: selected.value.connectionId,
+        owner: selected.value.owner,
+        repo: selected.value.repo,
+        remoteUrl: selected.value.remoteUrl,
+        baseBranch: selected.value.baseBranch,
+        newBranchName: fullBranchName.value,
+      });
+    }
     attrs.onCreate?.(result);
   } catch (err) {
     errorMessage.value = err?.message || "Failed to create workspace.";

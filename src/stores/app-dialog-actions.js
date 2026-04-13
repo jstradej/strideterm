@@ -257,7 +257,8 @@ export function createDialogActions(ctx) {
       openGitHubConnectionDialog("");
       return;
     }
-    openDialog("GitHubQuickFixWizardDialog", {
+    openDialog("QuickFixWizardDialog", {
+      provider: "github",
       connections,
       onCancel: closeDialog,
       onCreate: (result) => {

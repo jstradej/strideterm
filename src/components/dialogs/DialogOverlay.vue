@@ -25,7 +25,6 @@ const DIALOGS = {
   ProfilesDialog: defineAsyncComponent(() => import("./ProfilesDialog.vue")),
   AzureConnectionDialog: defineAsyncComponent(() => import("./AzureConnectionDialog.vue")),
   GitHubConnectionDialog: defineAsyncComponent(() => import("./GitHubConnectionDialog.vue")),
-  GitHubQuickFixWizardDialog: defineAsyncComponent(() => import("./GitHubQuickFixWizardDialog.vue")),
   QuickFixWizardDialog: defineAsyncComponent(() => import("./QuickFixWizardDialog.vue")),
   BusyOverlay: defineAsyncComponent(() => import("./BusyOverlay.vue")),
   TaskWorkspaceDialog: defineAsyncComponent(() => import("./TaskWorkspaceDialog.vue")),
