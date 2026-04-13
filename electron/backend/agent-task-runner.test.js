@@ -66,6 +66,11 @@ describe("AgentTaskRunner", () => {
       expect(ws.name.length).toBeLessThanOrEqual(50);
       expect(ws.name).toContain("...");
     });
+
+    test("initializes worktree fields as empty strings", () => {
+      expect(workspace.task.worktreeBase).toBe("");
+      expect(workspace.task.worktreeBranch).toBe("");
+    });
   });
 
   describe("task lifecycle", () => {
@@ -289,6 +294,39 @@ describe("parseFinishCriteriaMd", () => {
 - \`cargo test\`
 `);
     expect(result.verifyCommands[0]).toEqual({ label: "cargo test", command: "cargo test", timeoutMs: 60_000 });
+  });
+});
+
+describe("createTaskWorkspace - worktree fields", () => {
+  test("worktree fields can be set after creation (as runtime does)", () => {
+    const runner = new AgentTaskRunner();
+    const ws = runner.createTaskWorkspace({
+      state: { activeProfileId: "default" },
+      description: "Test task",
+      cwd: "/tmp/worktree-path",
+      parentWorkspaceId: "",
+      maxRounds: 5,
+    });
+    // Runtime sets these after createTaskWorkspace returns
+    ws.task.worktreeBase = "/tmp/base-repo";
+    ws.task.worktreeBranch = "task/test-branch";
+
+    expect(ws.task.worktreeBase).toBe("/tmp/base-repo");
+    expect(ws.task.worktreeBranch).toBe("task/test-branch");
+    expect(ws.cwd).toBe("/tmp/worktree-path");
+  });
+
+  test("worktree fields default to empty strings", () => {
+    const runner = new AgentTaskRunner();
+    const ws = runner.createTaskWorkspace({
+      state: { activeProfileId: "default" },
+      description: "Regular task",
+      cwd: "/tmp/project",
+      parentWorkspaceId: "",
+      maxRounds: 10,
+    });
+    expect(ws.task.worktreeBase).toBe("");
+    expect(ws.task.worktreeBranch).toBe("");
   });
 });
 
