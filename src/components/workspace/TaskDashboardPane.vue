@@ -107,6 +107,13 @@
             <span>Max rounds</span>
             <div class="td__value">{{ taskState?.maxRounds || 10 }}</div>
           </label>
+          <label v-if="taskState?.worktreeBase" class="td__field">
+            <span>Git worktree</span>
+            <div class="td__value">
+              Branch <code>{{ taskState.worktreeBranch }}</code> from
+              <code>{{ taskState.worktreeBase }}</code>
+            </div>
+          </label>
           <label class="td__field">
             <span>Finish criteria</span>
             <div class="td__value">
