@@ -32,6 +32,7 @@ export function buildWorkspaceCards({
   getWorkspaceAttention,
   getChecks,
   getPrStatus,
+  taskRunnerSnapshot,
 }) {
   return workspaces.map((workspace, index) => {
     const active = workspace.id === activeWorkspaceId;
@@ -42,6 +43,7 @@ export function buildWorkspaceCards({
       ["azure-devops", "github"].includes(workspace.review?.provider) &&
       workspace.review?.checkout?.mode === "managed-worktree";
     const isQuickFixChild = !!workspace.quickfix?.parentWorkspaceId;
+    const isTaskChild = !!workspace.task?.parentWorkspaceId;
     const checks = typeof getChecks === "function" ? getChecks(workspace) : null;
     const checksState = checks?.failedCount
       ? "failed"
@@ -54,9 +56,12 @@ export function buildWorkspaceCards({
     const worktreeMerged = !isReviewChild && gitSnapshot?.branchMerged;
     const prStatus = prStatusInfo?.status || (worktreeMerged ? "completed" : null);
     const reviewProviderLabel = workspace.review?.provider === "github" ? "GitHub review" : "Azure review";
-    const taskState = workspace.task?.state;
+    const liveTask = taskRunnerSnapshot?.[workspace.id];
+    const taskState = liveTask?.state || workspace.task?.state;
+    const taskCurrentRound = liveTask?.currentRound ?? workspace.task?.currentRound ?? 0;
+    const taskMaxRounds = liveTask?.maxRounds ?? workspace.task?.maxRounds ?? 10;
     const taskSummary = taskState
-      ? `${taskState === "running" ? "Running" : taskState === "evaluating" ? "Evaluating" : taskState === "judge-evaluating" ? "Judge evaluating" : taskState === "refreshing" ? "Refreshing" : taskState === "completed" ? "Completed" : taskState === "failed" ? "Failed" : taskState === "paused" ? "Paused" : "Idle"} \u00B7 R${workspace.task.currentRound || 0}/${workspace.task.maxRounds || 10}`
+      ? `${taskState === "running" ? "Running" : taskState === "evaluating" ? "Evaluating" : taskState === "judge-evaluating" ? "Judge evaluating" : taskState === "refreshing" ? "Refreshing" : taskState === "completed" ? "Completed" : taskState === "failed" ? "Failed" : taskState === "paused" ? "Paused" : "Idle"} \u00B7 R${taskCurrentRound}/${taskMaxRounds}`
       : null;
     const summary =
       workspace.kind === "task" && taskSummary
@@ -87,10 +92,10 @@ export function buildWorkspaceCards({
       attentionTooltip,
       kind: workspace.kind || "terminal",
       gitAvailable: !!gitSnapshot?.available,
-      isWorktree: (workspace.notes || "").startsWith("Worktree of ") || isReviewChild || isQuickFixChild,
+      isWorktree: (workspace.notes || "").startsWith("Worktree of ") || isReviewChild || isQuickFixChild || isTaskChild,
       checksState,
       prStatus,
-      taskState: workspace.task?.state || null,
+      taskState: taskState || null,
     };
   });
 }

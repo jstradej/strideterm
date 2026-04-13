@@ -15,10 +15,7 @@
       :workspace="ws"
       :data-workspace-id="ws.id"
       @activate="onActivate(ws.id)"
-      @quick-fix="ws.kind === 'github' ? store.openGitHubQuickFixWizard() : store.openQuickFixWizard()"
-      @create-worktree="$emit('create-worktree', ws.id)"
-      @edit="$emit('edit-workspace', ws.id)"
-      @delete="$emit('delete-workspace', ws.id)"
+      @open-menu="onOpenMenu($event, ws)"
       @task-toggle="handleTaskToggle(ws)"
       @task-stop="handleTaskStop(ws)"
     />
@@ -45,10 +42,51 @@
       </button>
     </div>
   </div>
+
+  <!-- Workspace actions menu -->
+  <Teleport to="body">
+    <div
+      v-if="wsMenu"
+      ref="wsMenuRef"
+      class="context-menu"
+      :style="{ position: 'fixed', left: wsMenu.x + 'px', top: wsMenu.y + 'px', zIndex: 9999 }"
+      @click.stop
+    >
+      <button
+        v-if="wsMenu.ws.kind === 'azure' || wsMenu.ws.kind === 'github'"
+        type="button"
+        class="context-menu__item"
+        @click="onMenuAction('quick-fix')"
+      >
+        &#x1FA84; New branch
+      </button>
+      <button
+        v-if="wsMenu.ws.gitAvailable"
+        type="button"
+        class="context-menu__item"
+        @click="onMenuAction('create-worktree')"
+      >
+        &#x1F33F; New worktree
+      </button>
+      <button
+        v-if="wsMenu.ws.kind !== 'task'"
+        type="button"
+        class="context-menu__item"
+        @click="onMenuAction('create-task')"
+      >
+        &#x1F916; Create task agent
+      </button>
+      <div class="context-menu__divider"></div>
+      <button type="button" class="context-menu__item" @click="onMenuAction('edit')">&#x270E; Edit</button>
+      <button type="button" class="context-menu__item context-menu__item--danger" @click="onMenuAction('delete')">
+        &#x2715; Delete
+      </button>
+    </div>
+  </Teleport>
 </template>
 
 <script setup>
-import { computed, ref, inject } from "vue";
+import { computed, ref, inject, watch, nextTick, onMounted, onBeforeUnmount } from "vue";
 import { useAppStore } from "../../stores/app.js";
 import { useWorkspaceDragDrop } from "../../composables/useDragDrop.js";
 import { buildWorkspaceCards } from "../../app/workspace-render.js";
@@ -66,6 +104,7 @@ const workspaceCards = computed(() => {
     activeWorkspaceId: payload.appState?.activeWorkspaceId || "",
     getGitSnapshot: (id) => store.getGitSnapshot(id),
     getWorkspaceAttention: (id) => store.getWorkspaceAttentionForId(id),
+    taskRunnerSnapshot: payload.taskRunner || null,
     getChecks: (workspace) => {
       const prKey = workspace.review?.prKey;
       if (!prKey) return null;
@@ -106,7 +145,14 @@ const suggestions = computed(() => {
     .map((p) => ({ id: p.id, color: p.color, icon: p.icon, name: p.workspaceDefaults.name || p.name }));
 });
 
-const emit = defineEmits(["create-worktree", "edit-workspace", "delete-workspace", "add-plugin-workspace", "activate"]);
+const emit = defineEmits([
+  "create-worktree",
+  "edit-workspace",
+  "delete-workspace",
+  "add-plugin-workspace",
+  "activate",
+  "create-task",
+]);
 
 function onActivate(workspaceId) {
   store.activateWorkspace(workspaceId);
@@ -131,8 +177,7 @@ async function handleTaskToggle(ws) {
       const result = await api.resumeTask({ workspaceId: ws.id });
       if (result?.payload) store.handleBroadcastPayload(result.payload);
     } else {
-      const result = await api.startTask({ workspaceId: ws.id });
-      if (result?.payload) store.handleBroadcastPayload(result.payload);
+      await store.startTaskWithHookCheck(ws.id);
     }
   } catch (err) {
     console.error("[sidebar] task toggle failed:", err);
@@ -148,4 +193,80 @@ async function handleTaskStop(ws) {
     console.error("[sidebar] task stop failed:", err);
   }
 }
+
+// --- Workspace actions menu ---
+
+const wsMenu = ref(null); // { x, y, ws }
+const wsMenuRef = ref(null);
+
+function onOpenMenu(event, ws) {
+  const btn = event.target.closest("button");
+  if (btn) {
+    const rect = btn.getBoundingClientRect();
+    wsMenu.value = { x: rect.right + 4, y: rect.top, ws };
+  } else {
+    wsMenu.value = { x: event.clientX, y: event.clientY, ws };
+  }
+}
+
+function dismissMenu() {
+  wsMenu.value = null;
+}
+
+function onMenuAction(action) {
+  const ws = wsMenu.value?.ws;
+  dismissMenu();
+  if (!ws) return;
+  if (action === "quick-fix") {
+    if (ws.kind === "github") store.openGitHubQuickFixWizard();
+    else store.openQuickFixWizard();
+  } else if (action === "create-worktree") {
+    emit("create-worktree", ws.id);
+  } else if (action === "create-task") {
+    emit("create-task");
+  } else if (action === "edit") {
+    emit("edit-workspace", ws.id);
+  } else if (action === "delete") {
+    emit("delete-workspace", ws.id);
+  }
+}
+
+// Viewport-clamp the menu
+watch(
+  wsMenu,
+  async (menu) => {
+    if (!menu) return;
+    await nextTick();
+    if (!wsMenuRef.value) return;
+    const rect = wsMenuRef.value.getBoundingClientRect();
+    let { x, y } = menu;
+    let changed = false;
+    if (rect.right > window.innerWidth) {
+      x = window.innerWidth - rect.width - 4;
+      changed = true;
+    }
+    if (rect.bottom > window.innerHeight) {
+      y = window.innerHeight - rect.height - 4;
+      changed = true;
+    }
+    if (changed) wsMenu.value = { ...menu, x, y };
+  },
+  { flush: "post" },
+);
+
+function onDocClick(e) {
+  if (wsMenuRef.value && !wsMenuRef.value.contains(e.target)) dismissMenu();
+}
+function onKeydown(e) {
+  if (e.key === "Escape") dismissMenu();
+}
+
+onMounted(() => {
+  document.addEventListener("click", onDocClick);
+  document.addEventListener("keydown", onKeydown);
+});
+onBeforeUnmount(() => {
+  document.removeEventListener("click", onDocClick);
+  document.removeEventListener("keydown", onKeydown);
+});
 </script>

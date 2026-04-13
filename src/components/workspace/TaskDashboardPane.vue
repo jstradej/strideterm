@@ -17,35 +17,38 @@
         </div>
         <div class="td__controls">
           <button
-            v-if="
-              taskState?.state === 'idle' ||
-              taskState?.state === 'paused' ||
-              taskState?.state === 'completed' ||
-              taskState?.state === 'failed'
-            "
+            v-if="taskState?.state === 'idle'"
             class="button button--sm"
+            title="Begin the task — sends prompt to Worker and starts the automation loop"
             @click="onStart"
           >
-            {{ taskState?.state === "idle" ? "Start" : "Continue" }}
+            Start
+          </button>
+          <button
+            v-if="taskState?.state === 'paused' || taskState?.state === 'completed' || taskState?.state === 'failed'"
+            class="button button--sm"
+            title="Resume the task from where it left off — keeps round history and progress"
+            @click="onStart"
+          >
+            Continue
           </button>
           <button
             v-if="
               taskState?.state === 'running' ||
               taskState?.state === 'evaluating' ||
-              taskState?.state === 'judge-evaluating'
+              taskState?.state === 'judge-evaluating' ||
+              taskState?.state === 'refreshing'
             "
             class="button button--ghost button--sm"
-            @click="onPause"
+            title="Pause the task — you can Continue or Reset afterwards"
+            @click="onStop"
           >
             Pause
           </button>
-          <button v-if="taskState?.state !== 'idle'" class="button button--ghost button--sm" @click="onStop">
-            Stop
-          </button>
           <button
-            v-if="taskState?.state === 'failed' || taskState?.state === 'completed'"
+            v-if="taskState?.state === 'paused' || taskState?.state === 'completed' || taskState?.state === 'failed'"
             class="button button--ghost button--sm"
-            title="Reset rounds and start fresh"
+            title="Clear all rounds and return to idle — edit TASK.md or other files, then press Start"
             @click="onReset"
           >
             Reset
@@ -275,17 +278,6 @@ async function onStart() {
     activeTab.value = "status";
   } catch (err) {
     console.error("[task-dashboard] start/resume failed:", err);
-  }
-}
-
-async function onPause() {
-  const id = wsId();
-  if (!api || !id) return;
-  try {
-    const r = await api.pauseTask({ workspaceId: id });
-    if (r?.payload) store.handleBroadcastPayload(r.payload);
-  } catch (err) {
-    console.error("[task-dashboard] pause failed:", err);
   }
 }
 

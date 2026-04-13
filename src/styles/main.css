@@ -1256,24 +1256,49 @@ dt {
   color: var(--danger);
 }
 
-.workspace-card__task-running {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: #4caf50;
-  animation: task-pulse 1.5s ease-in-out infinite;
-  flex-shrink: 0;
+.workspace-card__action--pause {
+  transform: translateY(-1px);
 }
 
-@keyframes task-pulse {
+.workspace-card__action--menu {
+  font-size: 16px;
+  font-weight: bold;
+  letter-spacing: 1px;
+}
+
+/* Task status: corner triangle on badge (mirrors PR corner) */
+.workspace-card__task-corner {
+  position: absolute;
+  bottom: -1px;
+  right: -1px;
+  width: 0;
+  height: 0;
+  border-style: solid;
+  border-width: 0 0 10px 10px;
+  border-color: transparent;
+  border-radius: 0 0 2px 0;
+}
+.workspace-card__task-corner--running {
+  border-bottom-color: #42a5f5;
+  animation: task-corner-blink 1.4s ease-in-out infinite;
+}
+.workspace-card__task-corner--completed {
+  border-bottom-color: #6edfb6;
+}
+.workspace-card__task-corner--failed {
+  border-bottom-color: var(--danger);
+}
+.workspace-card__task-corner--idle {
+  border-bottom-color: #888;
+}
+
+@keyframes task-corner-blink {
   0%,
   100% {
     opacity: 1;
-    box-shadow: 0 0 0 0 rgba(76, 175, 80, 0.5);
   }
   50% {
-    opacity: 0.6;
-    box-shadow: 0 0 0 4px rgba(76, 175, 80, 0);
+    opacity: 0.25;
   }
 }
 
@@ -1718,6 +1743,38 @@ dt {
   flex-shrink: 0;
 }
 
+.tab-actions__separator {
+  width: 1px;
+  height: 18px;
+  background: var(--border);
+  margin: 0 2px;
+  flex-shrink: 0;
+}
+
+.tab-actions__icon {
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 14px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.tab-actions__icon:hover {
+  background: rgba(var(--tint), 0.1);
+  color: var(--text);
+}
+
+.tab-actions__icon--danger:hover {
+  background: rgba(255, 111, 141, 0.14);
+  color: var(--danger);
+}
+
 .tab-strip {
   display: flex;
   gap: 0;
@@ -1865,20 +1922,14 @@ dt {
 }
 
 .tab__task-badge {
-  background: var(--accent, #7c4dff);
-  color: #fff;
+  background: rgba(var(--tint), 0.12);
+  color: var(--text-secondary, #aaa);
   font-size: 9px;
   font-weight: 700;
   padding: 1px 4px;
   border-radius: 3px;
   letter-spacing: 0.02em;
   white-space: nowrap;
-}
-
-/* Keep badge text white regardless of tab tone (e.g. .tab--running small turns green) */
-.tab--running .tab__task-badge,
-.tab--error .tab__task-badge {
-  color: #fff;
 }
 
 .tab:hover .tab__close,
@@ -4587,6 +4638,11 @@ textarea {
     flex-shrink: 0;
     flex-direction: row;
     gap: 2px;
+  }
+
+  .tab-actions__separator,
+  .tab-actions__icon {
+    display: none;
   }
 
   /* ── Workspace meta compact ── */

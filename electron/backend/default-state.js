@@ -423,6 +423,12 @@ function groupChildWorkspaces(workspaces) {
       continue;
     }
 
+    if (workspace.task?.parentWorkspaceId) {
+      const parentId = byId.has(workspace.task.parentWorkspaceId) ? workspace.task.parentWorkspaceId : "";
+      addChild(parentId, workspace);
+      continue;
+    }
+
     roots.push(workspace);
   }
 

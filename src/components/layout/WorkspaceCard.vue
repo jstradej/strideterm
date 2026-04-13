@@ -24,6 +24,22 @@
         v-if="workspace.prStatus"
         :class="['workspace-card__pr-corner', `workspace-card__pr-corner--${workspace.prStatus}`]"
       ></span>
+      <span
+        v-if="workspace.kind === 'task' && workspace.taskState"
+        :class="[
+          'workspace-card__task-corner',
+          workspace.taskState === 'completed'
+            ? 'workspace-card__task-corner--completed'
+            : workspace.taskState === 'failed'
+              ? 'workspace-card__task-corner--failed'
+              : workspace.taskState === 'running' ||
+                  workspace.taskState === 'evaluating' ||
+                  workspace.taskState === 'judge-evaluating' ||
+                  workspace.taskState === 'refreshing'
+                ? 'workspace-card__task-corner--running'
+                : 'workspace-card__task-corner--idle',
+        ]"
+      ></span>
     </span>
     <span class="workspace-card__meta">
       <span class="workspace-card__title-row">
@@ -47,26 +63,6 @@
     </span>
     <span v-if="workspace.active" class="workspace-card__actions">
       <button
-        v-if="workspace.kind === 'azure' || workspace.kind === 'github'"
-        class="workspace-card__action"
-        type="button"
-        title="New Branch"
-        @click.stop="$emit('quick-fix')"
-      >
-        🪄
-      </button>
-      <span
-        v-if="
-          workspace.kind === 'task' &&
-          (workspace.taskState === 'running' ||
-            workspace.taskState === 'evaluating' ||
-            workspace.taskState === 'judge-evaluating' ||
-            workspace.taskState === 'refreshing')
-        "
-        class="workspace-card__task-running"
-        title="Task running"
-      ></span>
-      <button
         v-if="
           workspace.kind === 'task' &&
           (workspace.taskState === 'running' ||
@@ -76,8 +72,8 @@
         "
         class="workspace-card__action"
         type="button"
-        title="Pause task"
-        @click.stop="$emit('task-toggle')"
+        title="Pause the task — Continue or Reset afterwards"
+        @click.stop="$emit('task-stop')"
       >
         ⏸
       </button>
@@ -87,41 +83,23 @@
           workspace.taskState !== 'running' &&
           workspace.taskState !== 'evaluating' &&
           workspace.taskState !== 'judge-evaluating' &&
-          workspace.taskState !== 'refreshing'
+          workspace.taskState !== 'refreshing' &&
+          workspace.taskState !== 'idle'
         "
         class="workspace-card__action"
         type="button"
-        :title="workspace.taskState === 'paused' ? 'Resume task' : 'Start task'"
+        title="Resume the task from where it left off"
         @click.stop="$emit('task-toggle')"
       >
         ▶
       </button>
       <button
-        v-if="workspace.kind === 'task' && workspace.taskState !== 'idle'"
-        class="workspace-card__action"
+        class="workspace-card__action workspace-card__action--menu"
         type="button"
-        title="Stop task"
-        @click.stop="$emit('task-stop')"
+        title="Workspace actions"
+        @click.stop="$emit('open-menu', $event)"
       >
-        ⏹
-      </button>
-      <button
-        v-if="workspace.gitAvailable"
-        class="workspace-card__action"
-        type="button"
-        title="New worktree"
-        @click.stop="$emit('create-worktree')"
-      >
-        🌿
-      </button>
-      <button class="workspace-card__action" type="button" title="Edit" @click.stop="$emit('edit')">✎</button>
-      <button
-        class="workspace-card__action workspace-card__action--danger"
-        type="button"
-        title="Delete"
-        @click.stop="$emit('delete')"
-      >
-        ✕
+        &#x2026;
       </button>
     </span>
   </div>
@@ -131,16 +109,5 @@
 defineProps({
   workspace: { type: Object, required: true },
 });
-defineEmits([
-  "activate",
-  "quick-fix",
-  "create-worktree",
-  "edit",
-  "delete",
-  "dragstart",
-  "dragover",
-  "drop",
-  "task-toggle",
-  "task-stop",
-]);
+defineEmits(["activate", "open-menu", "dragstart", "dragover", "drop", "task-toggle", "task-stop"]);
 </script>

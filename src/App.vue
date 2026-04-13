@@ -43,6 +43,7 @@
         @edit-workspace="onEditWorkspace($event)"
         @delete-workspace="store.deleteWorkspace($event)"
         @add-plugin-workspace="store.openNewWorkspaceFlow()"
+        @create-task="store.openTaskWorkspaceDialog()"
       />
 
       <!-- Remote access panel (above footer so version info stays at very bottom) -->
@@ -143,6 +144,11 @@
             @toggle-tab-picker="onToggleTabPicker"
             @disband-split="store.disbandSplit()"
             @open-layout-picker="onOpenLayoutPicker"
+            @quick-fix="onToolbarQuickFix"
+            @create-worktree="onToolbarCreateWorktree"
+            @create-task="store.openTaskWorkspaceDialog()"
+            @edit-workspace="onToolbarEditWorkspace"
+            @delete-workspace="onToolbarDeleteWorkspace"
           />
         </div>
 
@@ -263,6 +269,27 @@ function closeSidebar() {
 function onEditWorkspace(workspaceId) {
   const ws = (store.payload?.appState?.workspaces || []).find((w) => w.id === workspaceId);
   if (ws) store.openWorkspaceDialog(ws);
+}
+
+function onToolbarQuickFix() {
+  const ws = store.activeWorkspace;
+  if (ws?.kind === "github") store.openGitHubQuickFixWizard();
+  else store.openQuickFixWizard();
+}
+
+function onToolbarCreateWorktree() {
+  const wsId = store.payload?.appState?.activeWorkspaceId;
+  if (wsId) store.createWorktreeWithDialog(wsId);
+}
+
+function onToolbarEditWorkspace() {
+  const wsId = store.payload?.appState?.activeWorkspaceId;
+  if (wsId) onEditWorkspace(wsId);
+}
+
+function onToolbarDeleteWorkspace() {
+  const wsId = store.payload?.appState?.activeWorkspaceId;
+  if (wsId) store.deleteWorkspace(wsId);
 }
 
 function onTabContextMenu(event) {

@@ -204,9 +204,9 @@ export class AgentTaskRunner {
     const workspace = this.#findTaskWorkspace(workspaceId);
     if (!workspace) return false;
 
-    this.#setTaskState(workspace.task, "idle");
+    this.#setTaskState(workspace.task, "paused");
     this.#evaluating.delete(workspaceId);
-    log.info("task stopped", { workspaceId });
+    log.info("task stopped (paused)", { workspaceId });
     this.#logTaskEvent(workspace, "task-stopped");
     this.#broadcastState();
     return true;

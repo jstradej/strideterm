@@ -109,6 +109,25 @@ and `currentPage` in the response. Add integration tests.
 ```</pre
     >
 
+    <h4>Reset &amp; Retry</h4>
+    <p class="td__help-intro">
+      After stopping, completing, or failing a task you'll see <strong>Continue</strong> and <strong>Reset</strong>.
+      Continue picks up where you left off. Reset clears all round history and returns to idle &mdash; but preserves
+      every control file on disk:
+    </p>
+    <ol class="td__help-list">
+      <li>Press <strong>Pause</strong> to pause the task (or wait for it to complete/fail).</li>
+      <li>Press <strong>Reset</strong> &mdash; clears rounds, returns to idle.</li>
+      <li>
+        Switch to <strong>Files</strong> and edit what you need &mdash; change <strong>TASK.md</strong> for a different
+        assignment, adjust <strong>FINISH_CRITERIA.md</strong>, or rewrite <strong>TODO.md</strong>.
+      </li>
+      <li>Press <strong>Start</strong> to run the task again with your updated files.</li>
+    </ol>
+    <p class="td__help-intro">
+      The workspace is fully reusable: create once, then reset and re-run as many times as you need.
+    </p>
+
     <h4>Tips</h4>
     <ul class="td__help-list">
       <li>

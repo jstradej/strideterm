@@ -5,6 +5,8 @@ function getParentWorkspaceId(ws) {
   if (ws.review?.checkout?.mode === "managed-worktree" && ws.review?.parentWorkspaceId)
     return ws.review.parentWorkspaceId;
   if (ws.quickfix?.parentWorkspaceId) return ws.quickfix.parentWorkspaceId;
+  // Task children reference their parent workspace
+  if (ws.task?.parentWorkspaceId) return ws.task.parentWorkspaceId;
   // Legacy worktree children use notes convention
   if ((ws.notes || "").startsWith("Worktree of ")) {
     return null; // handled by name-based lookup below

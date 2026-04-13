@@ -29,6 +29,7 @@ const DIALOGS = {
   QuickFixWizardDialog: defineAsyncComponent(() => import("./QuickFixWizardDialog.vue")),
   BusyOverlay: defineAsyncComponent(() => import("./BusyOverlay.vue")),
   TaskWorkspaceDialog: defineAsyncComponent(() => import("./TaskWorkspaceDialog.vue")),
+  TaskHookCheckDialog: defineAsyncComponent(() => import("./TaskHookCheckDialog.vue")),
 };
 
 const store = useAppStore();

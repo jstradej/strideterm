@@ -219,12 +219,12 @@ Quick reference with examples and tips.
 
 ## Controls
 
-| Button       | When visible                    | Action                                 |
-| ------------ | ------------------------------- | -------------------------------------- |
-| **Start**    | Task is idle                    | Begin execution, send prompt to Worker |
-| **Continue** | Task is paused/completed/failed | Resume from current state              |
-| **Pause**    | Task is running/evaluating      | Pause the automation loop              |
-| **Stop**     | Task is not idle                | Reset to idle state                    |
+| Button       | When visible                    | Action                                                    |
+| ------------ | ------------------------------- | --------------------------------------------------------- |
+| **Start**    | Task is idle                    | Begin execution, send prompt to Worker                    |
+| **Pause**    | Task is running/evaluating      | Pause the task                                            |
+| **Continue** | Task is paused/completed/failed | Resume from current state                                 |
+| **Reset**    | Task is paused/completed/failed | Clear round history, keep files, return to idle for retry |
 
 You can type into the Worker or Judge terminal at any time. If you type during an evaluation cycle, the Task Runner automatically pauses to avoid conflicts.
 
@@ -238,6 +238,22 @@ Long-running tasks can degrade the Worker's context quality. Shower mode automat
 4. Work continues from where it left off
 
 This is transparent — you'll see a "shower" action in the round history. The Judge's feedback survives the refresh.
+
+## Reset & Retry
+
+After stopping, completing, or failing a task, you'll see **Continue** and **Reset** buttons. Continue picks up where you left off. Reset clears all round history and returns the task to idle — but preserves every control file on disk. This lets you iterate on the same workspace:
+
+1. Press **Pause** to pause the task (or wait for it to complete/fail)
+2. Press **Reset** — clears rounds, returns to idle
+3. Switch to the **Files** tab and edit what you need:
+   - **TASK.md** — change the assignment entirely, or refine the description
+   - **FINISH_CRITERIA.md** — add/remove verification commands, adjust timeouts
+   - **TODO.md** — rewrite the to-do list for the next run
+4. Press **Start** to run the task again with your updated files
+
+The Worker and Judge terminals stay open — only the round state is cleared. The Judge's last feedback (`lastJudgeInstructions`) is also preserved, so if you resume without editing files the next run benefits from prior context.
+
+This makes the task workspace reusable: create it once, then reset and re-run as many times as you need with different task descriptions or criteria.
 
 ## Tips
 

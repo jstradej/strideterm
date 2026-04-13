@@ -20,6 +20,47 @@
     >
       {{ currentLayout !== "solo" ? layouts[currentLayout]?.label || "Split" : "Split" }}
     </button>
+
+    <span class="tab-actions__separator"></span>
+
+    <button
+      v-if="workspaceKind === 'azure' || workspaceKind === 'github'"
+      type="button"
+      class="tab-actions__icon"
+      title="New branch"
+      @click="$emit('quick-fix')"
+    >
+      &#x1FA84;
+    </button>
+    <button
+      v-if="gitAvailable"
+      type="button"
+      class="tab-actions__icon"
+      title="New worktree"
+      @click="$emit('create-worktree')"
+    >
+      &#x1F33F;
+    </button>
+    <button
+      v-if="workspaceKind !== 'task'"
+      type="button"
+      class="tab-actions__icon"
+      title="Create task agent"
+      @click="$emit('create-task')"
+    >
+      &#x1F916;
+    </button>
+    <button type="button" class="tab-actions__icon" title="Edit workspace" @click="$emit('edit-workspace')">
+      &#x270E;
+    </button>
+    <button
+      type="button"
+      class="tab-actions__icon tab-actions__icon--danger"
+      title="Delete workspace"
+      @click="$emit('delete-workspace')"
+    >
+      &#x2715;
+    </button>
   </div>
 </template>
 
@@ -39,6 +80,11 @@ const LAYOUTS = {
 const store = useAppStore();
 
 const workspaceKind = computed(() => store.activeWorkspace?.kind || "terminal");
+const gitAvailable = computed(() => {
+  const wsId = store.payload?.appState?.activeWorkspaceId;
+  if (!wsId) return false;
+  return !!store.getGitSnapshot(wsId)?.available;
+});
 const layouts = LAYOUTS;
 
 const currentLayout = computed(() => {
@@ -47,5 +93,14 @@ const currentLayout = computed(() => {
   return sg.viewIds.includes(store.activeViewId) ? sg.layout : "solo";
 });
 
-defineEmits(["toggle-tab-picker", "disband-split", "open-layout-picker"]);
+defineEmits([
+  "toggle-tab-picker",
+  "disband-split",
+  "open-layout-picker",
+  "quick-fix",
+  "create-worktree",
+  "create-task",
+  "edit-workspace",
+  "delete-workspace",
+]);
 </script>

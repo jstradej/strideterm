@@ -311,6 +311,23 @@ export function createDialogActions(ctx) {
       onCancel: closeDialog,
       onSubmit: async (config) => {
         try {
+          // Auto-detect parent workspace by matching cwd
+          if (!config.parentWorkspaceId) {
+            const normCwd = (config.cwd || "")
+              .replace(/[\\/]+$/, "")
+              .replace(/\\/g, "/")
+              .toLowerCase();
+            const workspaces = ctx.payload.value?.appState?.workspaces || [];
+            const parent = workspaces.find(
+              (ws) =>
+                ws.kind !== "task" &&
+                (ws.cwd || "")
+                  .replace(/[\\/]+$/, "")
+                  .replace(/\\/g, "/")
+                  .toLowerCase() === normCwd,
+            );
+            if (parent) config.parentWorkspaceId = parent.id;
+          }
           const result = await ctx.getApi().createTaskWorkspace(config);
           if (result?.payload) {
             ctx.payload.value = result.payload;
@@ -338,6 +355,84 @@ export function createDialogActions(ctx) {
     });
   }
 
+  async function doStartTask(workspaceId) {
+    const api = ctx.getApi();
+    try {
+      const result = await api.startTask({ workspaceId });
+      if (result?.payload) ctx.payload.value = result.payload;
+    } catch (err) {
+      console.error("[task] start failed:", err);
+    }
+  }
+
+  async function startTaskWithHookCheck(workspaceId) {
+    const api = ctx.getApi();
+    // Check if agent hook setting is enabled
+    const settings = ctx.payload.value?.appState?.settings?.notifications;
+    const hookSettingEnabled = settings?.agentHook !== false;
+
+    // If setting is off, hooks can't work — show dialog immediately
+    if (!hookSettingEnabled) {
+      openDialog("TaskHookCheckDialog", {
+        needsSettingEnable: true,
+        onCancel: closeDialog,
+        onSkip: () => {
+          closeDialog();
+          doStartTask(workspaceId);
+        },
+        onConfigure: async () => {
+          closeDialog();
+          try {
+            // Enable the setting first
+            const settingsResult = await api.updateSettings({
+              notifications: { ...settings, agentHook: true },
+            });
+            if (settingsResult?.payload) ctx.payload.value = settingsResult.payload;
+            // Then configure the hook in Claude Code
+            await api.configureAgentHook();
+          } catch (err) {
+            console.error("[task] hook configure failed:", err);
+          }
+          await doStartTask(workspaceId);
+        },
+      });
+      return;
+    }
+
+    // Setting is on — check if hook is actually configured in Claude Code
+    try {
+      const hookResult = await api.getAgentHookStatus();
+      if (hookResult?.status === "configured") {
+        // All good — start immediately
+        await doStartTask(workspaceId);
+        return;
+      }
+    } catch {
+      // Can't check — start anyway, don't block
+      await doStartTask(workspaceId);
+      return;
+    }
+
+    // Hook not configured — show dialog
+    openDialog("TaskHookCheckDialog", {
+      needsSettingEnable: false,
+      onCancel: closeDialog,
+      onSkip: () => {
+        closeDialog();
+        doStartTask(workspaceId);
+      },
+      onConfigure: async () => {
+        closeDialog();
+        try {
+          await api.configureAgentHook();
+        } catch (err) {
+          console.error("[task] hook configure failed:", err);
+        }
+        await doStartTask(workspaceId);
+      },
+    });
+  }
+
   return {
     openDialog,
     closeDialog,
@@ -357,5 +452,6 @@ export function createDialogActions(ctx) {
     openQuickFixWizard,
     createWorktreeWithDialog,
     openTaskWorkspaceDialog,
+    startTaskWithHookCheck,
   };
 }
