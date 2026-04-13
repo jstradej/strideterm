@@ -613,7 +613,7 @@ describe("runtime integration", () => {
     const fixture = await createFixture();
     fixtures.push(fixture);
 
-    expect(fixture.runtime.getPayload().environment).toEqual(detectTerminalEnvironment());
+    expect(fixture.runtime.getPayload().environment).toMatchObject(detectTerminalEnvironment());
   });
 
   test("closes the review bridge store on shutdown", async () => {

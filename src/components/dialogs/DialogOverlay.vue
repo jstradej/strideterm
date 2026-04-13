@@ -12,7 +12,7 @@
 </template>
 
 <script setup>
-import { computed, defineAsyncComponent } from "vue";
+import { computed, defineAsyncComponent, watch, nextTick } from "vue";
 import { useAppStore } from "../../stores/app.js";
 
 const DIALOGS = {
@@ -35,6 +35,27 @@ const DIALOGS = {
 const store = useAppStore();
 
 const dialogComponent = computed(() => DIALOGS[store.overlay] || null);
+
+// When a dialog opens, blur the active terminal so xterm.js releases keyboard capture
+watch(
+  () => store.overlay,
+  (overlay) => {
+    if (overlay) {
+      // Blur xterm's hidden textarea to release keyboard events
+      const xtermTextarea = document.querySelector(".xterm-helper-textarea");
+      if (xtermTextarea) xtermTextarea.blur();
+      // After the dialog component mounts, focus the first visible input/textarea
+      nextTick(() => {
+        setTimeout(() => {
+          const dialog = document.querySelector(".overlay .dialog");
+          if (!dialog) return;
+          const focusable = dialog.querySelector("input:not([type=hidden]), textarea, select, [autofocus]");
+          if (focusable) focusable.focus();
+        }, 50);
+      });
+    }
+  },
+);
 
 function handleBackdropClick() {
   if (store.overlay === "BusyOverlay") return; // busy overlay cannot be dismissed

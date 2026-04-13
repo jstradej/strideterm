@@ -86,6 +86,11 @@ export function createDialogActions(ctx) {
         try {
           const isNew = !workspace;
           if (isNew) draft.profileId = ctx.payload.value?.appState?.activeProfileId || "default";
+          // Guard: preserve task workspace identity on edit (kind + task object must survive)
+          if (!isNew && workspace.kind === "task" && workspace.task) {
+            draft.kind = "task";
+            draft.task = { ...workspace.task, description: draft.task?.description ?? workspace.task.description };
+          }
           const firstPanel = draft.panels?.[0];
           if (draft.kind === "azure") {
             ctx.activeViewId.value = `azure:${draft.id}`;
@@ -96,10 +101,12 @@ export function createDialogActions(ctx) {
               ? `browser:${firstPanel.id}`
               : `${draft.id}:${firstPanel.id}`;
           }
+          // Strip reactive proxies — IPC structuredClone cannot handle Vue Proxy objects
+          const plain = JSON.parse(JSON.stringify(draft));
           await ctx.withSuppressedBroadcast(async () => {
-            ctx.payload.value = await ctx.getApi().saveWorkspace(draft);
+            ctx.payload.value = await ctx.getApi().saveWorkspace(plain);
             if (isNew) {
-              ctx.payload.value = await ctx.getApi().activateWorkspace(draft.id);
+              ctx.payload.value = await ctx.getApi().activateWorkspace(plain.id);
             }
           });
         } catch (err) {
@@ -305,22 +312,25 @@ export function createDialogActions(ctx) {
   }
 
   function openTaskWorkspaceDialog() {
-    const activeWorkspace = ctx.payload.value?.workspace;
+    const ws = ctx.payload.value?.workspace;
+    const activeWorkspace = ws?.workspace || ws?.project || null;
     openDialog("TaskWorkspaceDialog", {
       initialCwd: activeWorkspace?.cwd || "",
       onCancel: closeDialog,
       onSubmit: async (config) => {
         try {
-          // Auto-detect parent workspace by matching cwd
+          // Auto-detect parent workspace by matching cwd within the active profile
           if (!config.parentWorkspaceId) {
             const normCwd = (config.cwd || "")
               .replace(/[\\/]+$/, "")
               .replace(/\\/g, "/")
               .toLowerCase();
+            const activeProfileId = ctx.payload.value?.appState?.activeProfileId || "default";
             const workspaces = ctx.payload.value?.appState?.workspaces || [];
             const parent = workspaces.find(
               (ws) =>
                 ws.kind !== "task" &&
+                (ws.profileId || "default") === activeProfileId &&
                 (ws.cwd || "")
                   .replace(/[\\/]+$/, "")
                   .replace(/\\/g, "/")

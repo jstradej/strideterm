@@ -69,11 +69,11 @@ describe("AgentTaskRunner", () => {
   });
 
   describe("task lifecycle", () => {
-    test("stopTask sets state to idle", () => {
+    test("stopTask sets state to paused", () => {
       workspace.task.state = "running";
       const result = runner.stopTask(workspace.id);
       expect(result).toBe(true);
-      expect(workspace.task.state).toBe("idle");
+      expect(workspace.task.state).toBe("paused");
     });
 
     test("stopTask returns false for non-task workspace", () => {

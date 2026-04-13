@@ -415,6 +415,7 @@ export function registerIpc(runtime, emitToRenderer, { includeStateGet = true } 
   });
 
   ipcMain.handle("app:check-for-updates", async () => runtime.checkForUpdates());
+  ipcMain.handle("app:check-command", async (_event, command) => runtime.checkCommand(command));
 
   // --- File manager ---
   ipcMain.handle("file:list", async (_event, payload) => {

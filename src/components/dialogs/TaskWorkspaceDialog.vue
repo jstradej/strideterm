@@ -36,6 +36,10 @@
         />
       </label>
 
+      <p v-if="!claudeAvailable" class="warning-box">
+        Claude Code CLI (claude) was not found on your PATH. The Worker and Judge panels require it to run.
+      </p>
+
       <p class="info-box">
         Control files (TASK.md, TODO.md, FINISH_CRITERIA.md, WORK_LOCK) are created automatically. Verification commands
         are auto-detected from your project. You can edit everything in the Dashboard after creation.
@@ -49,15 +53,20 @@
       </div>
 
       <footer class="dialog__footer">
-        <button type="button" class="button button--ghost" @click="emit('cancel')">Cancel</button>
-        <button type="submit" class="button" :disabled="!canSubmit">Create workspace</button>
+        <button type="button" class="button button--ghost" :disabled="submitting" @click="emit('cancel')">
+          Cancel
+        </button>
+        <button type="submit" class="button" :disabled="!canSubmit || submitting">
+          {{ submitting ? "Creating\u2026" : "Create workspace" }}
+        </button>
       </footer>
     </form>
   </div>
 </template>
 
 <script setup>
-import { reactive, computed, inject } from "vue";
+import { reactive, computed, inject, ref } from "vue";
+import { useAppStore } from "../../stores/app.js";
 
 const props = defineProps({
   initialCwd: { type: String, default: "" },
@@ -66,12 +75,18 @@ const props = defineProps({
 const emit = defineEmits(["cancel", "submit"]);
 
 const api = inject("api");
+const store = useAppStore();
 
 const draft = reactive({
   cwd: props.initialCwd || "",
   description: "",
   maxRounds: 10,
 });
+
+const submitting = ref(false);
+
+// Claude availability is checked once at runtime startup and cached in payload
+const claudeAvailable = computed(() => store.payload?.environment?.claudeAvailable !== false);
 
 const canSubmit = computed(() => draft.cwd.trim());
 
@@ -82,6 +97,7 @@ async function browseCwd() {
 }
 
 function handleSubmit() {
+  submitting.value = true;
   emit("submit", {
     cwd: draft.cwd.trim(),
     description: draft.description.trim() || "",
@@ -94,5 +110,14 @@ function handleSubmit() {
 .required {
   color: #e57373;
   font-style: normal;
+}
+.warning-box {
+  background: rgba(255, 152, 0, 0.12);
+  border: 1px solid rgba(255, 152, 0, 0.3);
+  color: #ffcc80;
+  padding: 8px 12px;
+  border-radius: 4px;
+  font-size: 12px;
+  line-height: 1.5;
 }
 </style>

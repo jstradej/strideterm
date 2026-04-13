@@ -338,9 +338,12 @@ function groupChildWorkspaces(workspaces) {
     const candidates = byCwd.get(parentCwd);
     if (!candidates) return null;
     const childProfile = workspace.profileId || "default";
+    // Exclude task workspaces and other worktree children — only real root workspaces can be parents.
+    const isEligibleParent = (c) =>
+      c.id !== workspace.id && c.kind !== "task" && !(c.notes || "").startsWith("Worktree of ");
     return (
-      candidates.find((c) => c.id !== workspace.id && (c.profileId || "default") === childProfile) ||
-      candidates.find((c) => c.id !== workspace.id) ||
+      candidates.find((c) => isEligibleParent(c) && (c.profileId || "default") === childProfile) ||
+      candidates.find((c) => isEligibleParent(c)) ||
       null
     );
   }

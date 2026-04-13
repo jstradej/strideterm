@@ -418,6 +418,11 @@ async function handleApiRequest(runtime, request, response) {
       return;
     }
 
+    if (request.method === "POST" && url.pathname === "/api/check-command") {
+      json(response, 200, await runtime.checkCommand(body.command));
+      return;
+    }
+
     // --- Task runner ---
     if (request.method === "POST" && url.pathname === "/api/task/create") {
       json(response, 200, await runtime.createTaskWorkspace(body));

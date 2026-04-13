@@ -268,6 +268,34 @@ export async function createRuntime({
   const attentionContext = createAttentionContext();
   const sessionSignals = new Map();
 
+  // --- Claude CLI availability (persisted; only re-checked when not yet found) ---
+  let claudeAvailableCache = getState().settings?.claudeAvailable === true;
+  if (!claudeAvailableCache) {
+    (async () => {
+      try {
+        await execFileTextImpl("claude", ["--version"], { timeout: 5000 });
+        claudeAvailableCache = true;
+        await store.mutate((draft) => {
+          draft.settings = draft.settings || {};
+          draft.settings.claudeAvailable = true;
+        });
+      } catch {
+        try {
+          const which = process.platform === "win32" ? "where" : "which";
+          await execFileTextImpl(which, ["claude"], { timeout: 5000 });
+          claudeAvailableCache = true;
+          await store.mutate((draft) => {
+            draft.settings = draft.settings || {};
+            draft.settings.claudeAvailable = true;
+          });
+        } catch {
+          claudeAvailableCache = false;
+          log.info("Claude Code CLI not found on PATH");
+        }
+      }
+    })();
+  }
+
   // --- Agent notification hook server ---
   const notifySecret = generateNotifySecret();
   let notifyServerHandle = null;
@@ -906,7 +934,7 @@ export async function createRuntime({
       github: github.getSnapshot(),
       reviewBridge: getReviewBridgeSnapshot(state),
       plugins: pluginManager ? pluginManager.getPlugins() : [],
-      environment: terminalEnvironment,
+      environment: { ...terminalEnvironment, claudeAvailable: claudeAvailableCache },
       themeSource: getThemeSource?.() || "dark",
       remoteAccess: {
         ...(remoteInfo || {
@@ -1889,7 +1917,27 @@ export async function createRuntime({
         if (index >= 0) {
           draft.workspaces[index] = normalized;
         } else {
-          draft.workspaces.push(normalized);
+          // Insert child workspaces right after their parent instead of at the end
+          const parentId =
+            normalized.task?.parentWorkspaceId ||
+            normalized.review?.parentWorkspaceId ||
+            normalized.quickfix?.parentWorkspaceId ||
+            "";
+          const parentIdx = parentId ? draft.workspaces.findIndex((item) => item.id === parentId) : -1;
+          if (parentIdx >= 0) {
+            // Find last consecutive child of this parent to insert after the group
+            let insertAt = parentIdx + 1;
+            while (insertAt < draft.workspaces.length) {
+              const ws = draft.workspaces[insertAt];
+              const wsParent =
+                ws.task?.parentWorkspaceId || ws.review?.parentWorkspaceId || ws.quickfix?.parentWorkspaceId || "";
+              if (wsParent !== parentId) break;
+              insertAt++;
+            }
+            draft.workspaces.splice(insertAt, 0, normalized);
+          } else {
+            draft.workspaces.push(normalized);
+          }
         }
 
         if (!draft.activeWorkspaceId) {
@@ -2529,6 +2577,16 @@ export async function createRuntime({
       const result = await versionChecker.checkForUpdates(true);
       broadcastState();
       return result;
+    },
+    async checkCommand(command) {
+      try {
+        const cmd = process.platform === "win32" ? "where" : "which";
+        await execFileText(cmd, [command], { timeout: 5000 });
+        return true;
+      } catch (err) {
+        log.debug("checkCommand: not found", { command, err: err.error?.message || err.message || "unknown" });
+        return false;
+      }
     },
 
     // --- Task runner API ---
