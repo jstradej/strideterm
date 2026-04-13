@@ -70,9 +70,10 @@ import { useAppStore } from "../../stores/app.js";
 
 const props = defineProps({
   initialCwd: { type: String, default: "" },
+  onSubmit: { type: Function, default: null },
 });
 
-const emit = defineEmits(["cancel", "submit"]);
+const emit = defineEmits(["cancel"]);
 
 const api = inject("api");
 const store = useAppStore();
@@ -96,13 +97,18 @@ async function browseCwd() {
   if (selected) draft.cwd = selected;
 }
 
-function handleSubmit() {
+async function handleSubmit() {
+  if (!props.onSubmit) return;
   submitting.value = true;
-  emit("submit", {
-    cwd: draft.cwd.trim(),
-    description: draft.description.trim() || "",
-    maxRounds: draft.maxRounds,
-  });
+  try {
+    await props.onSubmit({
+      cwd: draft.cwd.trim(),
+      description: draft.description.trim() || "",
+      maxRounds: draft.maxRounds,
+    });
+  } finally {
+    submitting.value = false;
+  }
 }
 </script>
 

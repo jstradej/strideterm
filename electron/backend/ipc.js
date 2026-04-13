@@ -283,6 +283,7 @@ export function registerIpc(runtime, emitToRenderer, { includeStateGet = true } 
   ipcMain.handle("agent-hook:status", async () => runtime.getClaudeHookStatus());
 
   // --- Task runner ---
+  ipcMain.handle("task:recheck-claude", async () => runtime.recheckClaude());
   ipcMain.handle("task:create-workspace", async (_event, payload) =>
     runtime.createTaskWorkspace(validateIpc(taskWorkspaceCreateSchema, payload, "task:create-workspace")),
   );

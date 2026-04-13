@@ -188,6 +188,7 @@ function createRemoteTransport() {
     getAgentHookStatus: () => fetchJson("/api/agent-hook/status", {}),
     checkCommand: (command) => fetchJson("/api/check-command", { command }),
     // Task runner
+    recheckClaude: () => fetchJson("/api/task/recheck-claude", {}),
     createTaskWorkspace: (payload) => fetchJson("/api/task/create", payload),
     startTask: (payload) => fetchJson("/api/task/start", payload),
     stopTask: (payload) => fetchJson("/api/task/stop", payload),

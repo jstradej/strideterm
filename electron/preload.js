@@ -77,6 +77,7 @@ contextBridge.exposeInMainWorld("strideterm", {
   removeAgentHook: () => ipcRenderer.invoke("agent-hook:remove"),
   getAgentHookStatus: () => ipcRenderer.invoke("agent-hook:status"),
   // Task runner
+  recheckClaude: () => ipcRenderer.invoke("task:recheck-claude"),
   createTaskWorkspace: (payload) => ipcRenderer.invoke("task:create-workspace", payload),
   startTask: (payload) => ipcRenderer.invoke("task:start", payload),
   stopTask: (payload) => ipcRenderer.invoke("task:stop", payload),

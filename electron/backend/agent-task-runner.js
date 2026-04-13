@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { exec } from "node:child_process";
 import { access, readFile, readdir, writeFile, mkdir, rm } from "node:fs/promises";
 import path from "node:path";
+import { z } from "zod";
 import { getLogger } from "./logger.js";
 
 const log = getLogger("task-runner");
@@ -23,6 +24,11 @@ const PROMPT_FILE = "PROMPT.md"; // Ephemeral prompt file for file-based injecti
 const HANDOFF_FILE = "HANDOFF.md"; // Worker handoff summary for shower mode
 const DEFAULT_SHOWER_INTERVAL = 5; // Rounds between context refreshes (shower mode)
 
+const verdictSchema = z.object({
+  verdict: z.enum(["complete", "continue"]),
+  reason: z.string().optional().default(""),
+});
+
 /**
  * Returns the per-task directory path: .strideterm/tasks/{taskId}
  * Each task gets its own subdirectory so multiple task workspaces
@@ -40,6 +46,17 @@ function taskDirRel(taskId) {
 }
 
 /**
+ * Wrap user-provided text in XML fence for prompt injection mitigation.
+ * This prevents task descriptions from being interpreted as prompt instructions.
+ */
+function fenceUserInput(text, tag = "user-task-description") {
+  if (!text) return "";
+  // Strip any closing tags that match our fence to prevent escape
+  const sanitized = text.replace(new RegExp(`</${tag}>`, "gi"), `</${tag} >`);
+  return `<${tag}>\n${sanitized}\n</${tag}>`;
+}
+
+/**
  * Agent Task Runner — orchestrates a worker + judge evaluation loop.
  *
  * Integrates with strideterm's hook-based idle detection: when a worker or
@@ -50,6 +67,8 @@ function taskDirRel(taskId) {
 export class AgentTaskRunner {
   /** @type {Set<string>} workspaceIds currently being evaluated (re-entrance guard) */
   #evaluating = new Set();
+  /** @type {Map<string, Promise>} per-cwd git init locks to prevent concurrent init */
+  #gitInitLocks = new Map();
 
   // Injected dependencies (set via init())
   #writeToSession = null;
@@ -384,10 +403,13 @@ export class AgentTaskRunner {
 
     log.trace("onSessionExit: task session exited", { sessionId, panelId, taskState: workspace.task.state });
 
-    if (panelId === workspace.task.workerPanelId && workspace.task.state === "running") {
+    const ACTIVE = new Set(["running", "evaluating", "judge-evaluating", "refreshing"]);
+    if (panelId === workspace.task.workerPanelId && ACTIVE.has(workspace.task.state)) {
       this.#setTaskState(workspace.task, "paused");
       this.#evaluating.delete(workspaceId);
       log.warn("worker session exited, task paused", { workspaceId, sessionId });
+      this.#logTaskEvent(workspace, "worker-crashed", "Worker session exited unexpectedly, task paused");
+      this.#raiseTaskAlert(workspace, "failed", "Worker session exited — task paused");
       this.#broadcastState();
     }
   }
@@ -500,6 +522,18 @@ export class AgentTaskRunner {
   }
 
   // ---------------------------------------------------------------------------
+  // Interruption check — used by evaluation loops to bail out early when
+  // the user pauses, resets, or the session exits mid-evaluation.
+  // ---------------------------------------------------------------------------
+
+  #wasInterrupted(workspaceId, expectedStates) {
+    if (!this.#evaluating.has(workspaceId)) return true;
+    const workspace = this.#findTaskWorkspace(workspaceId);
+    if (!workspace) return true;
+    return !expectedStates.has(workspace.task.state);
+  }
+
+  // ---------------------------------------------------------------------------
   // Worker evaluation
   // ---------------------------------------------------------------------------
 
@@ -536,6 +570,12 @@ export class AgentTaskRunner {
       this.#broadcastState(); // Stream built-in results to UI
       for (const c of builtInChecks) {
         log.debug("built-in check", { workspaceId, check: c.label, passed: c.passed });
+      }
+
+      // Bail out if user paused/reset during built-in checks
+      if (this.#wasInterrupted(workspaceId, new Set(["evaluating"]))) {
+        log.info("evaluation interrupted after built-in checks", { workspaceId });
+        return;
       }
 
       // Short-circuit: if built-in checks already fail (WORK_LOCK present,
@@ -596,6 +636,12 @@ export class AgentTaskRunner {
             exitCode: check.exitCode,
           });
           this.#broadcastState(); // Stream each verify result to UI
+
+          // Bail out if user paused/reset while command was running
+          if (this.#wasInterrupted(workspaceId, new Set(["evaluating"]))) {
+            log.info("evaluation interrupted during verify commands", { workspaceId });
+            return;
+          }
         }
 
         allPassed = round.checks.every((c) => c.passed);
@@ -616,6 +662,12 @@ export class AgentTaskRunner {
         "evaluation-complete",
         `${passedCount}/${round.checks.length} passed. ${checkSummary}`,
       );
+
+      // Final interruption check before acting on results
+      if (this.#wasInterrupted(workspaceId, new Set(["evaluating"]))) {
+        log.info("evaluation interrupted before acting on results", { workspaceId });
+        return;
+      }
 
       if (!allPassed) {
         // Re-prompt worker with failure details
@@ -737,6 +789,12 @@ export class AgentTaskRunner {
       log.info("judge verdict", { workspaceId, verdict: verdict.verdict, reason: verdict.reason });
       this.#logTaskEvent(workspace, "judge-verdict", `Verdict: ${verdict.verdict}. ${verdict.reason || ""}`);
 
+      // Bail out if user paused/reset while reading verdict
+      if (this.#wasInterrupted(workspaceId, new Set(["judge-evaluating"]))) {
+        log.info("judge verdict handling interrupted", { workspaceId });
+        return;
+      }
+
       const lastRound = task.rounds[task.rounds.length - 1];
       if (lastRound) {
         lastRound.judgeVerdict = verdict.verdict;
@@ -844,7 +902,45 @@ export class AgentTaskRunner {
       });
     }
 
+    // If package-lock.json was modified, run npm audit to catch known CVEs.
+    // This is cheap (local DB check, no registry queries) and catches agents
+    // that install dependencies with known vulnerabilities.
+    const auditCheck = await this.#checkLockfileAudit(cwd);
+    if (auditCheck) results.push(auditCheck);
+
     return results;
+  }
+
+  /**
+   * If package-lock.json was modified, run `npm audit --audit-level=high`.
+   * Returns null if lockfile is unchanged or project doesn't use npm.
+   */
+  async #checkLockfileAudit(cwd) {
+    try {
+      await access(path.join(cwd, "package-lock.json"));
+    } catch {
+      return null;
+    }
+
+    // Check if lockfile was modified (working tree or staged)
+    const checks = await Promise.all([
+      this.#execCommand("git diff --name-only HEAD -- package-lock.json", cwd, 10_000),
+      this.#execCommand("git diff --name-only --cached -- package-lock.json", cwd, 10_000),
+    ]);
+    const dirty = checks.some((r) => r.stdout.trim().includes("package-lock.json"));
+    if (!dirty) return null;
+
+    log.info("lockfile modified by agent, running npm audit", { cwd });
+    const result = await this.#execCommand("npm audit --audit-level=high", cwd, 60_000);
+    return {
+      label: "Lockfile security audit",
+      passed: result.exitCode === 0,
+      exitCode: result.exitCode,
+      outputTail:
+        result.exitCode === 0
+          ? "package-lock.json changed — npm audit passed."
+          : tailLines(result.stderr || result.stdout, MAX_OUTPUT_TAIL),
+    };
   }
 
   // ---------------------------------------------------------------------------
@@ -887,7 +983,7 @@ export class AgentTaskRunner {
   }
 
   #execCommand(command, cwd, timeoutMs) {
-    return new Promise((resolve) => {
+    const childPromise = new Promise((resolve) => {
       const child = exec(command, {
         cwd,
         timeout: timeoutMs,
@@ -912,6 +1008,15 @@ export class AgentTaskRunner {
         resolve({ exitCode: 1, stdout, stderr: err.message });
       });
     });
+
+    // Hard timeout safety net — resolves even if child process events don't fire
+    const hardTimeout = new Promise((resolve) => {
+      setTimeout(() => {
+        resolve({ exitCode: 1, stdout: "", stderr: `Command timed out after ${timeoutMs}ms` });
+      }, timeoutMs + 5000);
+    });
+
+    return Promise.race([childPromise, hardTimeout]);
   }
 
   // ---------------------------------------------------------------------------
@@ -923,11 +1028,19 @@ export class AgentTaskRunner {
     try {
       const raw = await readFile(verdictPath, "utf8");
       const data = JSON.parse(raw);
-      log.debug("verdict file parsed", { verdictPath, verdict: data.verdict });
-      return {
-        verdict: data.verdict === "complete" ? "complete" : "continue",
-        reason: String(data.reason || ""),
-      };
+      const parsed = verdictSchema.safeParse(data);
+      if (!parsed.success) {
+        log.warn("verdict file failed schema validation", {
+          verdictPath,
+          errors: parsed.error.issues.map((i) => i.message),
+        });
+        return {
+          verdict: "continue",
+          reason: `Verdict file has invalid format: ${parsed.error.issues.map((i) => i.message).join(", ")}`,
+        };
+      }
+      log.debug("verdict file parsed", { verdictPath, verdict: parsed.data.verdict });
+      return { verdict: parsed.data.verdict, reason: parsed.data.reason };
     } catch (err) {
       if (err.code === "ENOENT") {
         log.warn("verdict file missing — judge did not write it", { verdictPath });
@@ -1007,6 +1120,7 @@ ${descriptionBlock}
 - The judge will independently verify your work after automated checks pass
 - Focus on completing the task fully — partial completions will be sent back
 - Do not push to any remote — the task runner works locally only
+- **Do not install new dependencies** unless the task explicitly requires it. If you must add a package, prefer an established version (not the latest release) and pin the exact version (no ^ or ~ prefix)
 `;
 
     const todoMd = `# TODO
@@ -1437,7 +1551,7 @@ ${stackSection}
     return `You are the worker in a supervised coding loop.
 
 Task:
-${task.description || "(Read the task from " + dir + "/" + TASK_FILE + ")"}
+${task.description ? fenceUserInput(task.description) : "(Read the task from " + dir + "/" + TASK_FILE + ")"}
 
 Rules:
 - Work directly in the repository.
@@ -1490,7 +1604,8 @@ Rules:
     // Context block — always included (task, checks, git)
     const context = `You are the independent judge evaluating whether a coding task is complete.
 
-Task: ${task.description || "(See " + dir + "/" + TASK_FILE + ")"}
+Task:
+${task.description ? fenceUserInput(task.description) : "(See " + dir + "/" + TASK_FILE + ")"}
 
 The worker has stopped. Automated check results:
 ${checkSummary}
@@ -1780,7 +1895,7 @@ Do NOT continue working on the task — only write the handoff summary.`;
     const parts = [
       `You are the worker in a supervised coding loop (session refreshed for context clarity).`,
       "",
-      `Task: ${task.description || "(See " + dir + "/" + TASK_FILE + ")"}`,
+      `Task:\n${task.description ? fenceUserInput(task.description) : "(See " + dir + "/" + TASK_FILE + ")"}`,
       "",
       "## Handoff from previous session",
       "",
@@ -1808,19 +1923,21 @@ Do NOT continue working on the task — only write the handoff summary.`;
   }
 
   /**
-   * Poll for a file to appear, with timeout.
-   * Returns true if file was found, false if timeout.
+   * Poll for a file to appear with meaningful content, with timeout.
+   * Returns true if file was found and has content, false if timeout.
    */
-  async #waitForFile(filePath, timeoutMs) {
+  async #waitForFile(filePath, timeoutMs = 120_000) {
     const start = Date.now();
     const pollInterval = 3000; // Check every 3 seconds
 
     while (Date.now() - start < timeoutMs) {
       try {
         await access(filePath);
-        // File exists — check it has content (not just created empty)
         const content = await readFile(filePath, "utf8");
-        if (content.trim().length > 10) {
+        const trimmed = content.trim();
+        // Require meaningful content: at least 10 chars and contains
+        // word characters (not just whitespace/punctuation/partial writes)
+        if (trimmed.length > 10 && /\w/.test(trimmed)) {
           return true;
         }
       } catch {
@@ -1847,28 +1964,52 @@ Do NOT continue working on the task — only write the handoff summary.`;
       log.trace("git repo exists", { cwd });
       return true; // Already a git repo
     } catch {
-      // No .git directory — initialize one
-      log.info("no git repo found, running git init", { cwd });
-      try {
-        const result = await this.#execCommand("git init", cwd, 10_000);
-        if (result.exitCode === 0) {
-          log.info("git repo initialized", { cwd });
-          // Create an initial commit so `git diff` has a baseline
-          await this.#execCommand("git add -A", cwd, 10_000);
-          await this.#execCommand(
-            'git commit -m "Initial commit (auto-created by strideterm task runner)" --allow-empty',
-            cwd,
-            10_000,
-          );
-          log.info("initial commit created", { cwd });
-          return true;
-        }
-        log.warn("git init failed", { cwd, exitCode: result.exitCode, stderr: result.stderr });
-        return false;
-      } catch (err) {
-        log.warn("git init error", { cwd, err: err.message });
-        return false;
+      // No .git directory — serialize concurrent init attempts per cwd
+      if (this.#gitInitLocks.has(cwd)) {
+        log.debug("git init already in progress, waiting", { cwd });
+        return this.#gitInitLocks.get(cwd);
       }
+
+      const initPromise = this.#doGitInit(cwd);
+      this.#gitInitLocks.set(cwd, initPromise);
+      try {
+        return await initPromise;
+      } finally {
+        this.#gitInitLocks.delete(cwd);
+      }
+    }
+  }
+
+  async #doGitInit(cwd) {
+    log.info("no git repo found, running git init", { cwd });
+    try {
+      // Re-check after acquiring lock — another caller may have finished first
+      try {
+        await access(path.join(cwd, ".git"));
+        log.trace("git repo appeared while waiting for lock", { cwd });
+        return true;
+      } catch {
+        // Still no .git — proceed
+      }
+
+      const result = await this.#execCommand("git init", cwd, 10_000);
+      if (result.exitCode === 0) {
+        log.info("git repo initialized", { cwd });
+        // Create an initial commit so `git diff` has a baseline
+        await this.#execCommand("git add -A", cwd, 10_000);
+        await this.#execCommand(
+          'git commit -m "Initial commit (auto-created by strideterm task runner)" --allow-empty',
+          cwd,
+          10_000,
+        );
+        log.info("initial commit created", { cwd });
+        return true;
+      }
+      log.warn("git init failed", { cwd, exitCode: result.exitCode, stderr: result.stderr });
+      return false;
+    } catch (err) {
+      log.warn("git init error", { cwd, err: err.message });
+      return false;
     }
   }
 
@@ -1889,18 +2030,20 @@ Do NOT continue working on the task — only write the handoff summary.`;
       return empty;
     }
 
-    const MAX_LINES = 40;
-    const MAX_CHARS = 2500;
+    const MAX_LINES = 80;
+    const MAX_CHARS = 5000;
 
-    function clip(text) {
+    function clip(text, label = "output") {
       if (!text) return "(clean)";
       const lines = text.split("\n");
+      const totalLines = lines.length;
       let clipped =
-        lines.length > MAX_LINES
-          ? lines.slice(0, MAX_LINES).join("\n") + `\n... (${lines.length - MAX_LINES} more lines)`
+        totalLines > MAX_LINES
+          ? lines.slice(0, MAX_LINES).join("\n") +
+            `\n... (${totalLines - MAX_LINES} more lines hidden out of ${totalLines} total ${label} lines)`
           : text;
       if (clipped.length > MAX_CHARS) {
-        clipped = clipped.slice(0, MAX_CHARS) + "\n... (output truncated)";
+        clipped = clipped.slice(0, MAX_CHARS) + `\n... (${label} truncated at ${MAX_CHARS} chars)`;
       }
       return clipped;
     }
@@ -1913,9 +2056,9 @@ Do NOT continue working on the task — only write the handoff summary.`;
       ]);
 
       const context = {
-        status: clip(statusResult.stdout.trim()),
-        diffStat: clip(diffStatResult.stdout.trim()),
-        diffNames: clip(diffNamesResult.stdout.trim()),
+        status: clip(statusResult.stdout.trim(), "git status"),
+        diffStat: clip(diffStatResult.stdout.trim(), "diff stat"),
+        diffNames: clip(diffNamesResult.stdout.trim(), "changed files"),
       };
 
       log.debug("git context gathered", {

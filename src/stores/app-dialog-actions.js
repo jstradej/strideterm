@@ -314,6 +314,15 @@ export function createDialogActions(ctx) {
   function openTaskWorkspaceDialog() {
     const ws = ctx.payload.value?.workspace;
     const activeWorkspace = ws?.workspace || ws?.project || null;
+    // Re-check Claude CLI availability in the background so the dialog
+    // shows up-to-date status (user may have installed claude mid-session)
+    ctx
+      .getApi()
+      .recheckClaude?.()
+      .then((result) => {
+        if (result?.payload) ctx.payload.value = result.payload;
+      })
+      .catch(() => {});
     openDialog("TaskWorkspaceDialog", {
       initialCwd: activeWorkspace?.cwd || "",
       onCancel: closeDialog,

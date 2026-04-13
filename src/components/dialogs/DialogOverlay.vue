@@ -44,14 +44,23 @@ watch(
       // Blur xterm's hidden textarea to release keyboard events
       const xtermTextarea = document.querySelector(".xterm-helper-textarea");
       if (xtermTextarea) xtermTextarea.blur();
-      // After the dialog component mounts, focus the first visible input/textarea
+      // After the dialog component mounts, focus the first visible input/textarea.
+      // Use a rAF retry loop instead of a fixed timeout — works reliably on slow machines
+      // where async dialog components take variable time to mount.
       nextTick(() => {
-        setTimeout(() => {
+        let attempts = 0;
+        const tryFocus = () => {
           const dialog = document.querySelector(".overlay .dialog");
-          if (!dialog) return;
-          const focusable = dialog.querySelector("input:not([type=hidden]), textarea, select, [autofocus]");
-          if (focusable) focusable.focus();
-        }, 50);
+          if (dialog) {
+            const focusable = dialog.querySelector("input:not([type=hidden]), textarea, select, [autofocus]");
+            if (focusable) {
+              focusable.focus();
+              return;
+            }
+          }
+          if (++attempts < 10) requestAnimationFrame(tryFocus);
+        };
+        requestAnimationFrame(tryFocus);
       });
     }
   },

@@ -296,6 +296,29 @@ export async function createRuntime({
     })();
   }
 
+  async function recheckClaudeAvailability() {
+    try {
+      await execFileTextImpl("claude", ["--version"], { timeout: 5000 });
+      claudeAvailableCache = true;
+    } catch {
+      try {
+        const which = process.platform === "win32" ? "where" : "which";
+        await execFileTextImpl(which, ["claude"], { timeout: 5000 });
+        claudeAvailableCache = true;
+      } catch {
+        claudeAvailableCache = false;
+      }
+    }
+    if (claudeAvailableCache) {
+      await store.mutate((draft) => {
+        draft.settings = draft.settings || {};
+        draft.settings.claudeAvailable = true;
+      });
+    }
+    log.info("recheckClaudeAvailability", { available: claudeAvailableCache });
+    return claudeAvailableCache;
+  }
+
   // --- Agent notification hook server ---
   const notifySecret = generateNotifySecret();
   let notifyServerHandle = null;
@@ -2590,6 +2613,10 @@ export async function createRuntime({
     },
 
     // --- Task runner API ---
+    async recheckClaude() {
+      const available = await recheckClaudeAvailability();
+      return { available, payload: getPayload() };
+    },
     async createTaskWorkspace(config) {
       log.info("createTaskWorkspace", { cwd: config.cwd, hasDescription: !!config.description });
       const state = getState();
@@ -2623,8 +2650,18 @@ export async function createRuntime({
         parentWorkspaceId: config.parentWorkspaceId,
         maxRounds: config.maxRounds,
       });
-      // Write task files immediately so they're available in the Dashboard
-      await taskRunner.writeInitialFiles(workspace.cwd, workspace.task);
+      // Write task files immediately so they're available in the Dashboard.
+      // If this fails (disk full, permissions), don't persist a broken workspace.
+      try {
+        await taskRunner.writeInitialFiles(workspace.cwd, workspace.task);
+      } catch (err) {
+        log.error("createTaskWorkspace: failed to write initial task files", {
+          workspaceId: workspace.id,
+          cwd: workspace.cwd,
+          err: err.message,
+        });
+        throw new Error(`Failed to create task files: ${err.message}`, { cause: err });
+      }
       // saveWorkspace normalizes and persists
       await this.saveWorkspace(workspace);
       // Activate the new workspace
