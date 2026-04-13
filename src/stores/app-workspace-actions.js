@@ -9,6 +9,7 @@ import {
   isReviewViewId,
   isFilesViewId,
   isBrowserViewId,
+  isTaskDashboardViewId,
 } from "../app/helpers.js";
 
 const viewIdHelpers = {
@@ -19,6 +20,7 @@ const viewIdHelpers = {
   isReviewViewId,
   isFilesViewId,
   isBrowserViewId,
+  isTaskDashboardViewId,
 };
 import { APP_CONFIG } from "../../config/app-config.js";
 
@@ -189,19 +191,23 @@ export function createWorkspaceActions(ctx) {
     const panelId = `panel-${crypto.randomUUID()}`;
     const isBrowser = /^https?:\/\//i.test(command || "");
     const isFiles = command === "__files__";
+    const isTaskDashboard = command === "__task-dashboard__";
+    const isVirtual = isFiles || isTaskDashboard;
     nextWorkspace.panels.push({
       id: panelId,
       title: title || "Shell",
       command: command || "",
-      shell: !isFiles,
-      startup: isFiles ? "none" : APP_CONFIG.ui.defaultPanelStartup,
+      shell: !isVirtual,
+      startup: isVirtual ? "none" : APP_CONFIG.ui.defaultPanelStartup,
     });
     nextWorkspace.activePanelId = panelId;
     const nextViewId = isBrowser
       ? `browser:${panelId}`
       : isFiles
         ? `files:${panelId}`
-        : `${nextWorkspace.id}:${panelId}`;
+        : isTaskDashboard
+          ? `task-dashboard:${panelId}`
+          : `${nextWorkspace.id}:${panelId}`;
     await ctx.withSuppressedBroadcast(async () => {
       ctx.payload.value = await ctx.getApi().saveWorkspace(nextWorkspace);
     });

@@ -170,6 +170,10 @@ export function isFilesViewId(value) {
   return String(value || "").startsWith("files:");
 }
 
+export function isTaskDashboardViewId(value) {
+  return String(value || "").startsWith("task-dashboard:");
+}
+
 export function isUrlCommand(value) {
   const cmd = String(value || "").trim();
   return /^https?:\/\//i.test(cmd);

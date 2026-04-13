@@ -277,6 +277,19 @@ export const githubQuickFixCreateSchema = z.object({
   newBranchName: nonEmptyString,
 });
 
+// --- Task runner schemas ---
+
+export const taskWorkspaceCreateSchema = z.object({
+  cwd: nonEmptyString,
+  description: z.string().optional().default(""),
+  parentWorkspaceId: z.string().optional(),
+  maxRounds: z.number().int().min(1).max(100).optional(),
+});
+
+export const taskWorkspaceActionSchema = z.object({
+  workspaceId: nonEmptyString,
+});
+
 // --- Misc schemas ---
 
 export const workspaceReorderSchema = z.array(nonEmptyString);

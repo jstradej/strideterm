@@ -61,10 +61,11 @@ export function getWorkspaceTabs({ workspace, payload, hiddenViewIds, statusTone
     return hiddenViewIds.has(githubTab.id) ? [] : [githubTab];
   }
 
-  // Identify browser panels (URL commands) and files panels — these get virtual tabs, not terminal sessions
+  // Identify browser panels (URL commands), files panels, and task-dashboard panels — these get virtual tabs, not terminal sessions
   const browserPanelIds = new Set(panels.filter((p) => /^https?:\/\//i.test(p.command || "")).map((p) => p.id));
   const filesPanelIds = new Set(panels.filter((p) => p.command === "__files__").map((p) => p.id));
-  const nonTerminalPanelIds = new Set([...browserPanelIds, ...filesPanelIds]);
+  const taskDashboardPanelIds = new Set(panels.filter((p) => p.command === "__task-dashboard__").map((p) => p.id));
+  const nonTerminalPanelIds = new Set([...browserPanelIds, ...filesPanelIds, ...taskDashboardPanelIds]);
 
   // Terminal tabs from real sessions (exclude sessions for non-terminal panels)
   const tabs = [
@@ -136,6 +137,21 @@ export function getWorkspaceTabs({ workspace, payload, hiddenViewIds, statusTone
         tone: "running",
         persistent: true,
         closable: true,
+      });
+    }
+  }
+
+  // Task dashboard tabs from panels with __task-dashboard__ command
+  for (const panel of panels) {
+    if (taskDashboardPanelIds.has(panel.id)) {
+      tabs.push({
+        id: `task-dashboard:${panel.id}`,
+        type: "task-dashboard",
+        title: panel.title || "Dashboard",
+        status: "dashboard",
+        tone: "running",
+        persistent: true,
+        closable: false,
       });
     }
   }

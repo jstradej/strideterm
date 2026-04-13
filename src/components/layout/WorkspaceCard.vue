@@ -55,6 +55,56 @@
       >
         🪄
       </button>
+      <span
+        v-if="
+          workspace.kind === 'task' &&
+          (workspace.taskState === 'running' ||
+            workspace.taskState === 'evaluating' ||
+            workspace.taskState === 'judge-evaluating' ||
+            workspace.taskState === 'refreshing')
+        "
+        class="workspace-card__task-running"
+        title="Task running"
+      ></span>
+      <button
+        v-if="
+          workspace.kind === 'task' &&
+          (workspace.taskState === 'running' ||
+            workspace.taskState === 'evaluating' ||
+            workspace.taskState === 'judge-evaluating' ||
+            workspace.taskState === 'refreshing')
+        "
+        class="workspace-card__action"
+        type="button"
+        title="Pause task"
+        @click.stop="$emit('task-toggle')"
+      >
+        ⏸
+      </button>
+      <button
+        v-if="
+          workspace.kind === 'task' &&
+          workspace.taskState !== 'running' &&
+          workspace.taskState !== 'evaluating' &&
+          workspace.taskState !== 'judge-evaluating' &&
+          workspace.taskState !== 'refreshing'
+        "
+        class="workspace-card__action"
+        type="button"
+        :title="workspace.taskState === 'paused' ? 'Resume task' : 'Start task'"
+        @click.stop="$emit('task-toggle')"
+      >
+        ▶
+      </button>
+      <button
+        v-if="workspace.kind === 'task' && workspace.taskState !== 'idle'"
+        class="workspace-card__action"
+        type="button"
+        title="Stop task"
+        @click.stop="$emit('task-stop')"
+      >
+        ⏹
+      </button>
       <button
         v-if="workspace.gitAvailable"
         class="workspace-card__action"
@@ -81,5 +131,16 @@
 defineProps({
   workspace: { type: Object, required: true },
 });
-defineEmits(["activate", "quick-fix", "create-worktree", "edit", "delete", "dragstart", "dragover", "drop"]);
+defineEmits([
+  "activate",
+  "quick-fix",
+  "create-worktree",
+  "edit",
+  "delete",
+  "dragstart",
+  "dragover",
+  "drop",
+  "task-toggle",
+  "task-stop",
+]);
 </script>

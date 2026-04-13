@@ -99,6 +99,7 @@ export function normalizeWorkspace(workspace, index = 0) {
   const isDockerWorkspace = (workspace.id || "") === "docker" || workspace.kind === "docker";
   const isAzureWorkspace = workspace.kind === "azure";
   const isGitHubWorkspace = workspace.kind === "github";
+  const isTaskWorkspace = workspace.kind === "task";
   const rawPanels = isDockerWorkspace
     ? (workspace.panels || []).filter(
         (panel) => !(panel.id === "lazydocker" && panel.command === "lazydocker" && !panel.launch),
@@ -121,7 +122,9 @@ export function normalizeWorkspace(workspace, index = 0) {
         ? "azure"
         : isGitHubWorkspace
           ? "github"
-          : workspace.kind || APP_CONFIG.ui.defaultProjectKind,
+          : isTaskWorkspace
+            ? "task"
+            : workspace.kind || APP_CONFIG.ui.defaultProjectKind,
     source: workspace.source === "plugin" ? "plugin" : "manual",
     pluginId: workspace.pluginId || "",
     cwd: workspace.cwd || (isAzureWorkspace || isGitHubWorkspace ? "" : defaultCwd()),
@@ -185,6 +188,41 @@ export function normalizeWorkspace(workspace, index = 0) {
           remoteUrl: workspace.quickfix.remoteUrl || "",
           baseBranch: workspace.quickfix.baseBranch || "",
           parentWorkspaceId: workspace.quickfix.parentWorkspaceId || "",
+        }
+      : null,
+    task: workspace.task
+      ? {
+          taskId: workspace.task.taskId || "",
+          description: workspace.task.description || "",
+          parentWorkspaceId: workspace.task.parentWorkspaceId || "",
+          workerPanelId: workspace.task.workerPanelId || "",
+          judgePanelId: workspace.task.judgePanelId || "",
+          finishCriteria: {
+            verifyCommands: Array.isArray(workspace.task.finishCriteria?.verifyCommands)
+              ? workspace.task.finishCriteria.verifyCommands.map((cmd) => ({
+                  label: cmd.label || "",
+                  command: cmd.command || "",
+                  timeoutMs: cmd.timeoutMs || 60000,
+                }))
+              : [],
+            requiredPaths: Array.isArray(workspace.task.finishCriteria?.requiredPaths)
+              ? workspace.task.finishCriteria.requiredPaths
+              : [],
+            forbiddenPaths: Array.isArray(workspace.task.finishCriteria?.forbiddenPaths)
+              ? workspace.task.finishCriteria.forbiddenPaths
+              : [],
+          },
+          maxRounds: workspace.task.maxRounds || 10,
+          showerInterval: workspace.task.showerInterval ?? 5,
+          state: workspace.task.state || "idle",
+          currentRound: workspace.task.currentRound || 0,
+          rounds: Array.isArray(workspace.task.rounds) ? workspace.task.rounds : [],
+          lastShowerRound: workspace.task.lastShowerRound || 0,
+          lastJudgeInstructions: workspace.task.lastJudgeInstructions || "",
+          startedAt: workspace.task.startedAt || null,
+          totalPausedMs: workspace.task.totalPausedMs || 0,
+          pausedAt: workspace.task.pausedAt || null,
+          finishedAt: workspace.task.finishedAt || null,
         }
       : null,
   };

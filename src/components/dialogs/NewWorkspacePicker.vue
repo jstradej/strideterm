@@ -20,6 +20,19 @@
         </span>
       </button>
       <button
+        class="project"
+        style="--accent: #7c4dff; border: 1px solid var(--border); cursor: pointer"
+        @click="emit('pick-task')"
+      >
+        <span class="project__badge" style="background: rgba(124, 77, 255, 0.24); font-size: 16px">&#x1F916;</span>
+        <span class="project__meta">
+          <span class="project__title-row"><strong>Agent Task Runner</strong></span>
+          <small style="color: var(--muted)"
+            >Worker + Judge dual-agent workspace with automated verification loop.</small
+          >
+        </span>
+      </button>
+      <button
         v-for="plugin in pluginsWithTemplates"
         :key="plugin.id"
         class="project"
@@ -45,7 +58,7 @@ const props = defineProps({
   plugins: { type: Array, default: () => [] },
 });
 
-const emit = defineEmits(["pick-empty", "pick-plugin", "cancel"]);
+const emit = defineEmits(["pick-empty", "pick-plugin", "pick-task", "cancel"]);
 
 const pluginsWithTemplates = computed(() => props.plugins.filter((p) => p.workspaceDefaults && !p.error));
 </script>

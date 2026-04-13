@@ -57,6 +57,8 @@ import {
   githubQuickFixListBranchesSchema,
   githubQuickFixCreateSchema,
   rerunCheckSchema,
+  taskWorkspaceCreateSchema,
+  taskWorkspaceActionSchema,
 } from "./ipc-schemas.js";
 
 export function registerIpc(runtime, emitToRenderer, { includeStateGet = true } = {}) {
@@ -279,6 +281,27 @@ export function registerIpc(runtime, emitToRenderer, { includeStateGet = true } 
   ipcMain.handle("agent-hook:configure", async () => runtime.configureClaudeHook());
   ipcMain.handle("agent-hook:remove", async () => runtime.removeClaudeHook());
   ipcMain.handle("agent-hook:status", async () => runtime.getClaudeHookStatus());
+
+  // --- Task runner ---
+  ipcMain.handle("task:create-workspace", async (_event, payload) =>
+    runtime.createTaskWorkspace(validateIpc(taskWorkspaceCreateSchema, payload, "task:create-workspace")),
+  );
+  ipcMain.handle("task:start", async (_event, payload) =>
+    runtime.startTask(validateIpc(taskWorkspaceActionSchema, payload, "task:start").workspaceId),
+  );
+  ipcMain.handle("task:stop", async (_event, payload) =>
+    runtime.stopTask(validateIpc(taskWorkspaceActionSchema, payload, "task:stop").workspaceId),
+  );
+  ipcMain.handle("task:pause", async (_event, payload) =>
+    runtime.pauseTask(validateIpc(taskWorkspaceActionSchema, payload, "task:pause").workspaceId),
+  );
+  ipcMain.handle("task:resume", async (_event, payload) =>
+    runtime.resumeTask(validateIpc(taskWorkspaceActionSchema, payload, "task:resume").workspaceId),
+  );
+  ipcMain.handle("task:reset", async (_event, payload) =>
+    runtime.resetTask(validateIpc(taskWorkspaceActionSchema, payload, "task:reset").workspaceId),
+  );
+  ipcMain.handle("task:status", async (_event, workspaceId) => runtime.getTaskStatus(workspaceId));
   ipcMain.handle("docker:refresh", async () => runtime.refreshDockerState());
   ipcMain.handle("git:refresh", async (_event, projectId) => runtime.refreshGitState(projectId));
   ipcMain.handle("git:fetch", async (_event, payload) =>
@@ -573,6 +596,13 @@ export function registerIpc(runtime, emitToRenderer, { includeStateGet = true } 
     ipcMain.removeHandler("agent-hook:configure");
     ipcMain.removeHandler("agent-hook:remove");
     ipcMain.removeHandler("agent-hook:status");
+    ipcMain.removeHandler("task:create-workspace");
+    ipcMain.removeHandler("task:start");
+    ipcMain.removeHandler("task:stop");
+    ipcMain.removeHandler("task:pause");
+    ipcMain.removeHandler("task:resume");
+    ipcMain.removeHandler("task:reset");
+    ipcMain.removeHandler("task:status");
     ipcMain.removeHandler("docker:refresh");
     ipcMain.removeHandler("git:refresh");
     ipcMain.removeHandler("git:fetch");

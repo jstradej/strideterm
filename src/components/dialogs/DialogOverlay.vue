@@ -28,6 +28,7 @@ const DIALOGS = {
   GitHubQuickFixWizardDialog: defineAsyncComponent(() => import("./GitHubQuickFixWizardDialog.vue")),
   QuickFixWizardDialog: defineAsyncComponent(() => import("./QuickFixWizardDialog.vue")),
   BusyOverlay: defineAsyncComponent(() => import("./BusyOverlay.vue")),
+  TaskWorkspaceDialog: defineAsyncComponent(() => import("./TaskWorkspaceDialog.vue")),
 };
 
 const store = useAppStore();

@@ -59,13 +59,18 @@ export function startNotifyServer({ onNotification, secret, logger: _logger = nu
         // Length mismatch throws — treat as non-match
       }
       if (!secretMatch) {
-        log.warn("rejected request: invalid secret");
+        log.warn("rejected request: invalid secret", {
+          providedSecretPrefix: providedSecret.slice(0, 8) + "...",
+          expectedSecretPrefix: secret.slice(0, 8) + "...",
+          sid: url.searchParams.get("sid") || "",
+        });
         response.writeHead(403, { "Content-Type": "text/plain" });
         response.end("Forbidden");
         return;
       }
 
       const sessionId = url.searchParams.get("sid") || "";
+      log.trace("request authenticated", { sessionId });
 
       // Read JSON body
       let body = "";
@@ -107,7 +112,7 @@ export function startNotifyServer({ onNotification, secret, logger: _logger = nu
           return;
         }
 
-        log.debug("notification received", {
+        log.trace("notification received", {
           sessionId,
           notificationType: notificationType || "idle_prompt",
           message: String(payload.message || "").slice(0, 100),

@@ -1256,6 +1256,27 @@ dt {
   color: var(--danger);
 }
 
+.workspace-card__task-running {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #4caf50;
+  animation: task-pulse 1.5s ease-in-out infinite;
+  flex-shrink: 0;
+}
+
+@keyframes task-pulse {
+  0%,
+  100% {
+    opacity: 1;
+    box-shadow: 0 0 0 0 rgba(76, 175, 80, 0.5);
+  }
+  50% {
+    opacity: 0.6;
+    box-shadow: 0 0 0 4px rgba(76, 175, 80, 0);
+  }
+}
+
 .frame--sidebar-collapsed .sidebar {
   padding: 10px 8px;
 }
@@ -1841,6 +1862,23 @@ dt {
 .tab--attention-fresh .tab__attention {
   animation: project-bell-ring 0.5s ease-out 6;
   transform-origin: 68% 12%;
+}
+
+.tab__task-badge {
+  background: var(--accent, #7c4dff);
+  color: #fff;
+  font-size: 9px;
+  font-weight: 700;
+  padding: 1px 4px;
+  border-radius: 3px;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+
+/* Keep badge text white regardless of tab tone (e.g. .tab--running small turns green) */
+.tab--running .tab__task-badge,
+.tab--error .tab__task-badge {
+  color: #fff;
 }
 
 .tab:hover .tab__close,

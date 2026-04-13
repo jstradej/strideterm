@@ -418,6 +418,36 @@ async function handleApiRequest(runtime, request, response) {
       return;
     }
 
+    // --- Task runner ---
+    if (request.method === "POST" && url.pathname === "/api/task/create") {
+      json(response, 200, await runtime.createTaskWorkspace(body));
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/api/task/start") {
+      json(response, 200, await runtime.startTask(body.workspaceId));
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/api/task/stop") {
+      json(response, 200, runtime.stopTask(body.workspaceId));
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/api/task/pause") {
+      json(response, 200, runtime.pauseTask(body.workspaceId));
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/api/task/resume") {
+      json(response, 200, runtime.resumeTask(body.workspaceId));
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/api/task/reset") {
+      json(response, 200, await runtime.resetTask(body.workspaceId));
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/api/task/status") {
+      json(response, 200, runtime.getTaskStatus(body.workspaceId));
+      return;
+    }
+
     if (request.method === "POST" && url.pathname === "/api/session/activate") {
       json(response, 200, await runtime.activateSession(body.sessionId));
       return;

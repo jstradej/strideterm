@@ -61,6 +61,7 @@ import {
   isReviewViewId,
   isBrowserViewId,
   isFilesViewId,
+  isTaskDashboardViewId,
 } from "../../app/helpers.js";
 import PaneShell from "../layout/PaneShell.vue";
 import TerminalPane from "./TerminalPane.vue";
@@ -72,6 +73,7 @@ const GitHubInboxPane = defineAsyncComponent(() => import("./GitHubInboxPane.vue
 // GitHubReviewPane removed — AzureReviewPane is provider-aware and handles both Azure and GitHub reviews
 const BrowserPane = defineAsyncComponent(() => import("./BrowserPane.vue"));
 const FileManagerPane = defineAsyncComponent(() => import("./FileManagerPane.vue"));
+const TaskDashboardPane = defineAsyncComponent(() => import("./TaskDashboardPane.vue"));
 
 const AREA_NAMES = ["a", "b", "c", "d"];
 const AREA_LAYOUTS = new Set(["top-split", "left-split"]);
@@ -221,6 +223,7 @@ const PANE_COMPONENTS = {
   github: GitHubInboxPane,
   browser: BrowserPane,
   files: FileManagerPane,
+  "task-dashboard": TaskDashboardPane,
 };
 
 function paneComponent(type) {
@@ -234,6 +237,7 @@ function paneProps(tab) {
   if (tab.type === "github") return { workspaceId: tab.id.replace(/^github:/, "") };
   if (tab.type === "review") return { workspaceId: tab.id.replace(/^review:/, "") };
   if (tab.type === "files") return { workspaceId: tab.id.replace(/^files:/, "") };
+  if (tab.type === "task-dashboard") return { workspaceId: tab.id.replace(/^task-dashboard:/, "") };
   return { tab };
 }
 
@@ -253,7 +257,8 @@ function onStageMousedown(event) {
     isGitHubViewId(viewId) ||
     isReviewViewId(viewId) ||
     isBrowserViewId(viewId) ||
-    isFilesViewId(viewId)
+    isFilesViewId(viewId) ||
+    isTaskDashboardViewId(viewId)
       ? null
       : viewId;
   termStore.focusActiveTerminal();

@@ -320,7 +320,28 @@ export const useAppStore = defineStore("app", () => {
         _splitGroupCache.set(prevWsId, splitGroup.value);
       }
       const nextWsId = nextPayload?.appState?.activeWorkspaceId;
-      splitGroup.value = (nextWsId && _splitGroupCache.get(nextWsId)) || null;
+      const cachedSplit = nextWsId && _splitGroupCache.get(nextWsId);
+      if (cachedSplit) {
+        splitGroup.value = cachedSplit;
+      } else {
+        // Auto-split task workspaces: Dashboard on top, Worker + Judge on bottom
+        const nextWs = nextPayload?.workspace?.workspace || nextPayload?.workspace?.project;
+        if (nextWs?.kind === "task" && nextWs.panels?.length >= 3) {
+          const viewIds = nextWs.panels.slice(0, 3).map((p) => {
+            if (p.command === "__task-dashboard__") return `task-dashboard:${p.id}`;
+            return `${nextWsId}:${p.id}`;
+          });
+          splitGroup.value = { layout: "top-split", viewIds };
+        } else if (nextWs?.kind === "task" && nextWs.panels?.length >= 2) {
+          const viewIds = nextWs.panels.slice(0, 2).map((p) => {
+            if (p.command === "__task-dashboard__") return `task-dashboard:${p.id}`;
+            return `${nextWsId}:${p.id}`;
+          });
+          splitGroup.value = { layout: "cols", viewIds };
+        } else {
+          splitGroup.value = null;
+        }
+      }
     }
 
     if (pendingViewActivationId.value) {
@@ -364,7 +385,22 @@ export const useAppStore = defineStore("app", () => {
       _splitGroupCache.set(prevWsId, splitGroup.value);
     }
     applyOptimisticWorkspaceActivation(workspaceId);
-    splitGroup.value = _splitGroupCache.get(workspaceId) || null;
+    const cachedSplit = _splitGroupCache.get(workspaceId);
+    if (cachedSplit) {
+      splitGroup.value = cachedSplit;
+    } else {
+      // Auto-split task workspaces when no cached layout exists
+      const ws = (payload.value?.appState?.workspaces || []).find((w) => w.id === workspaceId);
+      if (ws?.kind === "task" && ws.panels?.length >= 3) {
+        const viewIds = ws.panels.slice(0, 3).map((p) => {
+          if (p.command === "__task-dashboard__") return `task-dashboard:${p.id}`;
+          return `${workspaceId}:${p.id}`;
+        });
+        splitGroup.value = { layout: "top-split", viewIds };
+      } else {
+        splitGroup.value = null;
+      }
+    }
     activeViewId.value = null;
     activeSessionId.value = null;
     try {

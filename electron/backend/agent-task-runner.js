@@ -1,0 +1,2194 @@
+import { randomUUID } from "node:crypto";
+import { exec } from "node:child_process";
+import { access, readFile, readdir, writeFile, mkdir, rm } from "node:fs/promises";
+import path from "node:path";
+import { getLogger } from "./logger.js";
+
+const log = getLogger("task-runner");
+
+const TASK_ROOT = ".strideterm/tasks";
+const VERDICT_FILE = "verdict.json";
+const TASK_FILE = "TASK.md";
+const TODO_FILE = "TODO.md";
+const CRITERIA_FILE = "FINISH_CRITERIA.md";
+const JUDGE_TODO_FILE = "JUDGE_TODO.md";
+const JUDGE_PROMPT_FILE = "JUDGE_PROMPT.md";
+const WORK_LOCK_FILE = "WORK_LOCK";
+const TASK_LOG_FILE = "TASK_LOG.jsonl";
+// GITIGNORE_CONTENT removed — we now append ".strideterm/" to project .gitignore instead
+
+const MAX_OUTPUT_TAIL = 30; // Lines of command output to include in re-prompt
+const FILE_PROMPT_THRESHOLD = 400; // Characters — above this, write prompt to file instead of pasting
+const PROMPT_FILE = "PROMPT.md"; // Ephemeral prompt file for file-based injection
+const HANDOFF_FILE = "HANDOFF.md"; // Worker handoff summary for shower mode
+const DEFAULT_SHOWER_INTERVAL = 5; // Rounds between context refreshes (shower mode)
+
+/**
+ * Returns the per-task directory path: .strideterm/tasks/{taskId}
+ * Each task gets its own subdirectory so multiple task workspaces
+ * pointing at the same cwd don't collide on verdict/TODO files.
+ */
+function taskDir(cwd, taskId) {
+  return path.join(cwd, TASK_ROOT, taskId);
+}
+
+/**
+ * Returns the relative path from cwd for use in prompts shown to agents.
+ */
+function taskDirRel(taskId) {
+  return `${TASK_ROOT}/${taskId}`;
+}
+
+/**
+ * Agent Task Runner — orchestrates a worker + judge evaluation loop.
+ *
+ * Integrates with strideterm's hook-based idle detection: when a worker or
+ * judge agent goes idle, runtime calls `onAgentIdle(sessionId)` instead of
+ * raising a normal user alert. The task runner then runs verification checks
+ * and coordinates the worker–judge cycle.
+ */
+export class AgentTaskRunner {
+  /** @type {Set<string>} workspaceIds currently being evaluated (re-entrance guard) */
+  #evaluating = new Set();
+
+  // Injected dependencies (set via init())
+  #writeToSession = null;
+  #getState = null;
+  #broadcastState = null;
+  #raiseAlert = null;
+  #restartSession = null;
+
+  /**
+   * Late-init with runtime dependencies (avoids circular refs).
+   * Called once from runtime.js after all closures are available.
+   */
+  init({ writeToSession, getState, broadcastState, raiseAlert, restartSession }) {
+    this.#writeToSession = writeToSession;
+    this.#getState = getState;
+    this.#broadcastState = broadcastState;
+    this.#raiseAlert = raiseAlert;
+    this.#restartSession = restartSession;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Task workspace creation
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Build a task workspace object (not yet persisted — caller saves via runtime.saveWorkspace).
+   */
+  createTaskWorkspace({ state, description, cwd, parentWorkspaceId, maxRounds }) {
+    const workspaceId = `workspace-${randomUUID()}`;
+    const dashboardPanelId = `panel-${randomUUID()}`;
+    const workerPanelId = `panel-${randomUUID()}`;
+    const judgePanelId = `panel-${randomUUID()}`;
+
+    return {
+      id: workspaceId,
+      name: description ? (description.length > 50 ? description.slice(0, 47) + "..." : description) : "Task workspace",
+      icon: "\u{1F916}", // 🤖
+      color: "#7C4DFF",
+      kind: "task",
+      source: "manual",
+      pluginId: "",
+      cwd,
+      notes: "",
+      profileId: state.activeProfileId || "default",
+      connectionId: "",
+      activePanelId: dashboardPanelId,
+      panels: [
+        { id: dashboardPanelId, title: "Dashboard", command: "__task-dashboard__", shell: false, startup: "none" },
+        {
+          id: workerPanelId,
+          title: "Worker",
+          command: "claude --dangerously-skip-permissions --model sonnet",
+          shell: true,
+          startup: "default",
+        },
+        {
+          id: judgePanelId,
+          title: "Judge",
+          command: "claude --dangerously-skip-permissions --model opus",
+          shell: true,
+          startup: "default",
+        },
+      ],
+      task: {
+        taskId: randomUUID(),
+        description,
+        parentWorkspaceId: parentWorkspaceId || "",
+        workerPanelId,
+        judgePanelId,
+        // Finish criteria are read from FINISH_CRITERIA.md at evaluation time (not stored here)
+        finishCriteria: { verifyCommands: [], requiredPaths: [], forbiddenPaths: [] },
+        maxRounds: maxRounds || 10,
+        showerInterval: DEFAULT_SHOWER_INTERVAL,
+        state: "idle",
+        currentRound: 0,
+        rounds: [],
+        lastShowerRound: 0, // Track when the last shower happened
+        lastJudgeInstructions: "", // Carry judge feedback through showers
+        startedAt: null, // Date.now() when task started
+        totalPausedMs: 0, // Accumulated pause duration
+        pausedAt: null, // Date.now() when current pause began
+        finishedAt: null, // Date.now() when completed/failed
+      },
+    };
+  }
+
+  /**
+   * Write task control files to disk. Called at workspace creation time
+   * so files are immediately available in the Dashboard/Files tab.
+   */
+  async writeInitialFiles(cwd, task) {
+    log.info("writing initial task files", {
+      cwd,
+      taskId: task.taskId,
+      hasDescription: !!task.description,
+      descriptionLength: (task.description || "").length,
+    });
+    await this.#writeTaskFiles(cwd, task);
+    await this.#ensureGitIgnore(cwd);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Task lifecycle
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Start (or resume) the task — inject initial prompt into worker.
+   */
+  async startTask(workspaceId) {
+    const state = this.#getState();
+    const workspace = state.workspaces.find((w) => w.id === workspaceId);
+    if (!workspace?.task) {
+      log.warn("startTask: workspace not found or not a task workspace", { workspaceId });
+      return false;
+    }
+
+    const task = workspace.task;
+    if (task.state === "running" || task.state === "evaluating" || task.state === "judge-evaluating") {
+      log.debug("startTask: already running", { workspaceId, state: task.state });
+      return false;
+    }
+
+    // Ensure a git repo exists so the judge can see diffs/status.
+    // If the directory has no .git, we run `git init` + initial commit.
+    // This is read-only from the perspective of the user's work — we never push.
+    await this.#ensureGitRepo(workspace.cwd);
+
+    this.#setTaskState(task, "running");
+    task.currentRound = 0;
+    task.rounds = [];
+
+    // Claude Code is already running (started with the workspace).
+    // Send the task prompt now — agent is ready and waiting for input.
+    if (task.description) {
+      const workerSessionId = `${workspaceId}:${task.workerPanelId}`;
+      const prompt = this.#buildInitialWorkerPrompt(task);
+      await this.#injectPrompt(workerSessionId, prompt, workspace);
+      task.promptSent = true;
+      log.info("task started, prompt sent to worker", { workspaceId, taskId: task.taskId });
+      this.#logTaskEvent(workspace, "task-started", "Prompt sent to Worker");
+    } else {
+      task.promptSent = false;
+      log.info("task started, no description — waiting for user input", { workspaceId, taskId: task.taskId });
+      this.#logTaskEvent(workspace, "task-started", "No description — waiting for user input");
+    }
+
+    this.#broadcastState();
+    return true;
+  }
+
+  stopTask(workspaceId) {
+    const workspace = this.#findTaskWorkspace(workspaceId);
+    if (!workspace) return false;
+
+    this.#setTaskState(workspace.task, "idle");
+    this.#evaluating.delete(workspaceId);
+    log.info("task stopped", { workspaceId });
+    this.#logTaskEvent(workspace, "task-stopped");
+    this.#broadcastState();
+    return true;
+  }
+
+  pauseTask(workspaceId) {
+    const workspace = this.#findTaskWorkspace(workspaceId);
+    if (!workspace) return false;
+    if (
+      workspace.task.state !== "running" &&
+      workspace.task.state !== "evaluating" &&
+      workspace.task.state !== "judge-evaluating" &&
+      workspace.task.state !== "refreshing"
+    )
+      return false;
+
+    this.#setTaskState(workspace.task, "paused");
+    this.#evaluating.delete(workspaceId);
+    log.info("task paused", { workspaceId });
+    this.#logTaskEvent(workspace, "task-paused");
+    this.#broadcastState();
+    return true;
+  }
+
+  resumeTask(workspaceId) {
+    const workspace = this.#findTaskWorkspace(workspaceId);
+    if (!workspace) return false;
+    const resumable = new Set(["paused", "completed", "failed"]);
+    if (!resumable.has(workspace.task.state)) return false;
+
+    this.#setTaskState(workspace.task, "running");
+    // Don't re-send the prompt — the user is already interacting with the worker
+    log.info("task resumed", { workspaceId, previousState: workspace.task.state });
+    this.#logTaskEvent(workspace, "task-resumed");
+    this.#broadcastState();
+    return true;
+  }
+
+  /**
+   * Reset a task to idle state — clears round history, recreates WORK_LOCK,
+   * and returns to a clean starting point. Used for "Reset & Retry".
+   */
+  async resetTask(workspaceId) {
+    const workspace = this.#findTaskWorkspace(workspaceId);
+    if (!workspace) return false;
+    const resettable = new Set(["paused", "completed", "failed"]);
+    if (!resettable.has(workspace.task.state)) return false;
+
+    const task = workspace.task;
+    const previousState = task.state;
+
+    this.#setTaskState(task, "idle");
+    task.currentRound = 0;
+    task.rounds = [];
+    task.promptSent = false;
+    task.showerResumePrompt = "";
+    task.lastShowerRound = 0;
+    // Preserve lastJudgeInstructions — might be useful for next run
+    this.#evaluating.delete(workspaceId);
+
+    // Recreate WORK_LOCK so the next run starts clean
+    try {
+      const dir = taskDir(workspace.cwd, task.taskId);
+      await writeFile(
+        path.join(dir, WORK_LOCK_FILE),
+        "Work remains. Remove this file only when the finish criteria genuinely pass.\n",
+        "utf8",
+      );
+      log.debug("WORK_LOCK recreated for reset", { workspaceId });
+    } catch (err) {
+      log.warn("failed to recreate WORK_LOCK during reset", { workspaceId, err: err.message });
+    }
+
+    log.info("task reset", { workspaceId, previousState });
+    this.#logTaskEvent(workspace, "task-reset", `Previous state: ${previousState}`);
+    this.#broadcastState();
+    return true;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Idle detection entry point — called from runtime.js
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Called when an agent session goes idle (hook, OSC 133, or silence fallback).
+   * Returns true if this session belongs to a task workspace and was handled.
+   */
+  onAgentIdle(sessionId) {
+    const parts = sessionId.split(":");
+    if (parts.length < 2) return false;
+
+    const workspaceId = parts.slice(0, -1).join(":");
+    const panelId = parts[parts.length - 1];
+    const workspace = this.#findTaskWorkspace(workspaceId);
+    if (!workspace) {
+      log.trace("onAgentIdle: not a task workspace", { sessionId, workspaceId });
+      return false;
+    }
+
+    const task = workspace.task;
+    log.trace("onAgentIdle: task workspace found", {
+      sessionId,
+      workspaceId,
+      panelId,
+      taskState: task.state,
+      workerPanelId: task.workerPanelId,
+      judgePanelId: task.judgePanelId,
+      promptSent: task.promptSent,
+      currentRound: task.currentRound,
+    });
+
+    if (task.state !== "running" && task.state !== "judge-evaluating") {
+      log.trace("onAgentIdle: task not in actionable state, ignoring", { sessionId, taskState: task.state });
+      return false;
+    }
+
+    const isWorker = panelId === task.workerPanelId;
+    const isJudge = panelId === task.judgePanelId;
+
+    if (!isWorker && !isJudge) {
+      log.trace("onAgentIdle: panel is neither worker nor judge", { sessionId, panelId });
+      return false;
+    }
+
+    if (isWorker && task.state === "running") {
+      // First idle after start: agent is ready — send the task prompt
+      // (like codex-runner's send_keys after detecting idle)
+      if (!task.promptSent) {
+        // After a shower, use the resume prompt (with handoff context); otherwise initial prompt
+        const isResume = !!task.showerResumePrompt;
+        const prompt = task.showerResumePrompt || this.#buildInitialWorkerPrompt(task);
+        log.info("worker ready, injecting prompt", { workspaceId, sessionId, isResume });
+        this.#injectPrompt(`${workspaceId}:${task.workerPanelId}`, prompt, workspace).catch((err) => {
+          log.error("failed to inject prompt", { workspaceId, err: err.message });
+        });
+        task.promptSent = true;
+        task.showerResumePrompt = ""; // Clear after use
+        this.#broadcastState();
+        return true;
+      }
+
+      log.info("worker idle detected, starting evaluation", {
+        workspaceId,
+        sessionId,
+        round: task.currentRound,
+      });
+      this.#evaluateWorker(workspace).catch((err) => {
+        log.error("evaluateWorker error", { workspaceId, err: err.message });
+      });
+      return true;
+    }
+
+    if (isJudge && task.state === "judge-evaluating") {
+      log.info("judge idle detected, reading verdict", { workspaceId, sessionId });
+      this.#handleJudgeVerdict(workspace).catch((err) => {
+        log.error("handleJudgeVerdict error", { workspaceId, err: err.message });
+      });
+      return true;
+    }
+
+    return false;
+  }
+
+  /**
+   * Called when a session exits — if it's a worker session, pause the task.
+   */
+  onSessionExit(sessionId) {
+    const parts = sessionId.split(":");
+    if (parts.length < 2) return;
+
+    const workspaceId = parts.slice(0, -1).join(":");
+    const panelId = parts[parts.length - 1];
+    const workspace = this.#findTaskWorkspace(workspaceId);
+    if (!workspace) return;
+
+    log.trace("onSessionExit: task session exited", { sessionId, panelId, taskState: workspace.task.state });
+
+    if (panelId === workspace.task.workerPanelId && workspace.task.state === "running") {
+      this.#setTaskState(workspace.task, "paused");
+      this.#evaluating.delete(workspaceId);
+      log.warn("worker session exited, task paused", { workspaceId, sessionId });
+      this.#broadcastState();
+    }
+  }
+
+  /**
+   * Called from runtime.writeToSession when user types into a task workspace panel.
+   * Auto-pauses the task runner to avoid conflicts with user input.
+   */
+  onUserInput(sessionId) {
+    const parts = sessionId.split(":");
+    if (parts.length < 2) return;
+
+    const workspaceId = parts.slice(0, -1).join(":");
+    const workspace = this.#findTaskWorkspace(workspaceId);
+    if (!workspace) return;
+
+    const task = workspace.task;
+    // Only pause if the task runner is actively driving the session
+    if (task.state === "evaluating" || task.state === "judge-evaluating" || task.state === "refreshing") {
+      this.#setTaskState(task, "paused");
+      this.#evaluating.delete(workspaceId);
+      log.info("user input detected during evaluation, task paused", { workspaceId, sessionId });
+      this.#broadcastState();
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // State management — timing-aware
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Set task state with automatic timing tracking.
+   * Tracks startedAt, pausedAt, totalPausedMs, finishedAt across all transitions.
+   */
+  #setTaskState(task, newState) {
+    const ACTIVE = new Set(["running", "evaluating", "judge-evaluating", "refreshing"]);
+    const prev = task.state;
+    const now = Date.now();
+
+    // Fresh start from idle
+    if (prev === "idle" && ACTIVE.has(newState)) {
+      task.startedAt = now;
+      task.totalPausedMs = 0;
+      task.pausedAt = null;
+      task.finishedAt = null;
+    }
+
+    // Active → non-active (paused/completed/failed): record pause start
+    if (ACTIVE.has(prev) && !ACTIVE.has(newState) && newState !== "idle") {
+      task.pausedAt = now;
+      if (newState === "completed" || newState === "failed") {
+        task.finishedAt = now;
+      }
+    }
+
+    // Non-active → active (resume): accumulate paused time
+    if (!ACTIVE.has(prev) && prev !== "idle" && ACTIVE.has(newState) && task.pausedAt) {
+      task.totalPausedMs = (task.totalPausedMs || 0) + (now - task.pausedAt);
+      task.pausedAt = null;
+      task.finishedAt = null;
+    }
+
+    // Reset to idle: clear timing
+    if (newState === "idle") {
+      task.startedAt = null;
+      task.totalPausedMs = 0;
+      task.pausedAt = null;
+      task.finishedAt = null;
+    }
+
+    task.state = newState;
+  }
+
+  // ---------------------------------------------------------------------------
+  // State queries
+  // ---------------------------------------------------------------------------
+
+  getTaskState(workspaceId) {
+    const workspace = this.#findTaskWorkspace(workspaceId);
+    return workspace?.task || null;
+  }
+
+  /**
+   * Returns serializable snapshot of all task workspaces for payload broadcast.
+   */
+  getTaskSnapshot() {
+    const state = this.#getState();
+    const result = {};
+    for (const workspace of state.workspaces) {
+      if (workspace.kind === "task" && workspace.task) {
+        result[workspace.id] = {
+          taskId: workspace.task.taskId,
+          description: workspace.task.description,
+          state: workspace.task.state,
+          currentRound: workspace.task.currentRound,
+          maxRounds: workspace.task.maxRounds,
+          showerInterval: workspace.task.showerInterval,
+          workerPanelId: workspace.task.workerPanelId,
+          judgePanelId: workspace.task.judgePanelId,
+          rounds: workspace.task.rounds,
+          lastShowerRound: workspace.task.lastShowerRound || 0,
+          startedAt: workspace.task.startedAt || null,
+          totalPausedMs: workspace.task.totalPausedMs || 0,
+          pausedAt: workspace.task.pausedAt || null,
+          finishedAt: workspace.task.finishedAt || null,
+        };
+      }
+    }
+    return result;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Worker evaluation
+  // ---------------------------------------------------------------------------
+
+  async #evaluateWorker(workspace) {
+    const task = workspace.task;
+    const workspaceId = workspace.id;
+
+    // Re-entrance guard
+    if (this.#evaluating.has(workspaceId)) {
+      log.debug("evaluation already in progress", { workspaceId });
+      return;
+    }
+    this.#evaluating.add(workspaceId);
+
+    try {
+      this.#setTaskState(task, "evaluating");
+      this.#broadcastState();
+
+      const round = {
+        round: task.currentRound + 1,
+        startedAt: new Date().toISOString(),
+        checks: [],
+        judgeVerdict: null,
+        judgeReason: "",
+        action: "evaluating",
+      };
+
+      // Push round early so UI can show streaming check results
+      task.rounds.push(round);
+
+      // Built-in checks: WORK_LOCK + TODO.md sections (always run, cheap)
+      const builtInChecks = await this.#runBuiltInChecks(workspace.cwd, task.taskId);
+      round.checks.push(...builtInChecks);
+      this.#broadcastState(); // Stream built-in results to UI
+      for (const c of builtInChecks) {
+        log.debug("built-in check", { workspaceId, check: c.label, passed: c.passed });
+      }
+
+      // Short-circuit: if built-in checks already fail (WORK_LOCK present,
+      // active TODO items), skip expensive verify commands and file checks.
+      // Inspired by codex-runner's "completion claim heuristic" — only run
+      // the full test/lint suite when the worker signals it thinks it's done.
+      const builtInsPassed = builtInChecks.every((c) => c.passed);
+      if (!builtInsPassed) {
+        log.info("built-in checks failed, skipping verify commands (short-circuit)", {
+          workspaceId,
+          round: round.round,
+          failedChecks: builtInChecks.filter((c) => !c.passed).map((c) => c.label),
+        });
+      }
+
+      let allPassed = false;
+
+      if (builtInsPassed) {
+        // Worker claims completion — run the full verification suite.
+        const criteria = await this.#readFinishCriteria(workspace.cwd, task.taskId);
+        log.debug("finish criteria loaded", {
+          workspaceId,
+          verifyCommands: criteria.verifyCommands.length,
+          requiredPaths: criteria.requiredPaths.length,
+        });
+
+        // Run file existence checks from criteria
+        const fileChecks = await this.#runFileChecks(workspace.cwd, criteria);
+        round.checks.push(...fileChecks);
+        this.#broadcastState(); // Stream file check results to UI
+
+        // Run verify commands one at a time, broadcasting after each
+        for (const cmd of criteria.verifyCommands || []) {
+          // Safety check: warn about dangerous commands but still run them
+          // (user explicitly defined these in FINISH_CRITERIA.md)
+          const warnings = checkCommandSafety(cmd.command);
+          if (warnings.length > 0) {
+            log.warn("verify command flagged as potentially dangerous", {
+              workspaceId,
+              command: cmd.command,
+              warnings,
+            });
+          }
+
+          const result = await this.#execCommand(cmd.command, workspace.cwd, cmd.timeoutMs || 60_000);
+          const check = {
+            label: cmd.label || cmd.command,
+            passed: result.exitCode === 0,
+            exitCode: result.exitCode,
+            warning: warnings.length > 0 ? warnings.join(", ") : "",
+            outputTail: tailLines(result.stderr || result.stdout, MAX_OUTPUT_TAIL),
+          };
+          round.checks.push(check);
+          log.debug("verify command", {
+            workspaceId,
+            check: check.label,
+            passed: check.passed,
+            exitCode: check.exitCode,
+          });
+          this.#broadcastState(); // Stream each verify result to UI
+        }
+
+        allPassed = round.checks.every((c) => c.passed);
+      }
+      const passedCount = round.checks.filter((c) => c.passed).length;
+      const failedCount = round.checks.filter((c) => !c.passed).length;
+      log.info("evaluation round complete", {
+        workspaceId,
+        round: round.round,
+        totalChecks: round.checks.length,
+        passed: passedCount,
+        failed: failedCount,
+        allPassed,
+      });
+      const checkSummary = round.checks.map((c) => `${c.passed ? "PASS" : "FAIL"} ${c.label}`).join(", ");
+      this.#logTaskEvent(
+        workspace,
+        "evaluation-complete",
+        `${passedCount}/${round.checks.length} passed. ${checkSummary}`,
+      );
+
+      if (!allPassed) {
+        // Re-prompt worker with failure details
+        round.action = "re-prompted";
+        task.currentRound += 1;
+
+        if (task.currentRound >= task.maxRounds) {
+          this.#setTaskState(task, "failed");
+          round.action = "failed";
+          const failedNames = round.checks.filter((c) => !c.passed).map((c) => c.label);
+          log.info("task failed: max rounds reached", {
+            workspaceId,
+            rounds: task.currentRound,
+            failedChecks: failedNames,
+          });
+          this.#logTaskEvent(
+            workspace,
+            "task-failed",
+            `Max rounds (${task.maxRounds}) reached. Failed: ${failedNames.join(", ")}`,
+          );
+          this.#raiseTaskAlert(
+            workspace,
+            "failed",
+            `Max rounds reached. Failed: ${failedNames.join(", ") || "checks"}`,
+          );
+          this.#notifyWorkerTaskEnded(workspace, "failed");
+        } else {
+          // Check if worker is due for a shower (context refresh)
+          if (this.#shouldShower(task)) {
+            log.info("shower mode triggered before re-prompt", {
+              workspaceId,
+              round: task.currentRound,
+              lastShower: task.lastShowerRound || 0,
+            });
+            round.action = "shower";
+            this.#setTaskState(task, "refreshing");
+            this.#logTaskEvent(
+              workspace,
+              "shower-started",
+              "Refreshing Worker context (killing session, writing handoff)",
+            );
+            this.#broadcastState();
+            const showerOk = await this.#performShower(workspace);
+            if (showerOk) {
+              this.#setTaskState(task, "running");
+              log.info("shower completed, waiting for refreshed worker", { workspaceId });
+              this.#logTaskEvent(workspace, "shower-completed", "Worker session restarted with fresh context");
+            } else {
+              log.warn("shower failed, falling back to normal re-prompt", { workspaceId });
+              this.#logTaskEvent(workspace, "shower-failed", "Handoff not written in time, falling back to re-prompt");
+              const prompt = this.#buildRePrompt(task, round);
+              const workerSessionId = `${workspaceId}:${task.workerPanelId}`;
+              await this.#injectPrompt(workerSessionId, prompt, workspace);
+              this.#setTaskState(task, "running");
+            }
+          } else {
+            const prompt = this.#buildRePrompt(task, round);
+            const workerSessionId = `${workspaceId}:${task.workerPanelId}`;
+            await this.#injectPrompt(workerSessionId, prompt, workspace);
+            this.#setTaskState(task, "running");
+            log.info("worker re-prompted", { workspaceId, round: task.currentRound });
+            this.#logTaskEvent(
+              workspace,
+              "worker-reprompted",
+              "Checks failed, Worker re-prompted with failure details",
+            );
+          }
+        }
+      } else {
+        // All checks passed — invoke judge
+        round.action = "judge-requested";
+        task.currentRound += 1;
+
+        // Clear old verdict
+        await this.#clearVerdict(workspace.cwd, task.taskId);
+
+        // Gather git context so the judge can see actual repo changes
+        const gitContext = await this.#getGitContext(workspace.cwd);
+
+        // Inject judge evaluation prompt
+        const judgeSessionId = `${workspaceId}:${task.judgePanelId}`;
+        const judgePrompt = await this.#buildJudgePrompt(task, round, gitContext, workspace.cwd);
+        await this.#injectPrompt(judgeSessionId, judgePrompt, workspace);
+        this.#setTaskState(task, "judge-evaluating");
+        log.info("judge evaluation requested", { workspaceId, round: task.currentRound });
+        this.#logTaskEvent(workspace, "judge-requested", "All checks passed, Judge evaluation started");
+      }
+
+      this.#broadcastState();
+    } catch (err) {
+      log.error("evaluateWorker failed", { workspaceId, err: err.message });
+      this.#setTaskState(task, "paused");
+      this.#broadcastState();
+    } finally {
+      this.#evaluating.delete(workspaceId);
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Judge verdict handling
+  // ---------------------------------------------------------------------------
+
+  async #handleJudgeVerdict(workspace) {
+    const task = workspace.task;
+    const workspaceId = workspace.id;
+
+    try {
+      const verdict = await this.#readVerdict(workspace.cwd, task.taskId);
+
+      // If verdict file is missing, judge didn't produce one — warn and pause after repeated failures
+      if (verdict.reason === "Judge did not produce a verdict file.") {
+        log.warn("judge verdict file missing", { workspaceId, round: task.currentRound });
+        this.#setTaskState(task, "paused");
+        this.#broadcastState();
+        this.#raiseTaskAlert(workspace, "failed", "Judge did not produce a verdict file");
+        return;
+      }
+
+      log.info("judge verdict", { workspaceId, verdict: verdict.verdict, reason: verdict.reason });
+      this.#logTaskEvent(workspace, "judge-verdict", `Verdict: ${verdict.verdict}. ${verdict.reason || ""}`);
+
+      const lastRound = task.rounds[task.rounds.length - 1];
+      if (lastRound) {
+        lastRound.judgeVerdict = verdict.verdict;
+        lastRound.judgeReason = verdict.reason || "";
+      }
+
+      if (verdict.verdict === "complete") {
+        this.#setTaskState(task, "completed");
+        if (lastRound) lastRound.action = "completed";
+        log.info("task completed by judge verdict", { workspaceId, rounds: task.currentRound });
+        this.#logTaskEvent(workspace, "task-completed", verdict.reason || "Judge approved");
+        this.#raiseTaskAlert(workspace, "completed", verdict.reason ? `Judge: ${verdict.reason}` : undefined);
+        // Tell the Worker to stop — otherwise Claude Code continues autonomously
+        this.#notifyWorkerTaskEnded(workspace, "completed");
+      } else {
+        // "continue" — re-prompt worker with judge feedback
+        // Preserve judge instructions for shower mode (survives session restart)
+        if (verdict.reason) {
+          task.lastJudgeInstructions = verdict.reason;
+          log.debug("stored judge instructions for potential shower", {
+            workspaceId,
+            reasonLength: verdict.reason.length,
+          });
+        }
+
+        if (task.currentRound >= task.maxRounds) {
+          this.#setTaskState(task, "failed");
+          if (lastRound) lastRound.action = "failed";
+          log.info("task failed: max rounds after judge", { workspaceId, rounds: task.currentRound });
+          this.#logTaskEvent(workspace, "task-failed", `Max rounds after judge. ${verdict.reason || ""}`);
+          this.#raiseTaskAlert(workspace, "failed", `Max rounds reached. Judge: ${verdict.reason || "incomplete"}`);
+          this.#notifyWorkerTaskEnded(workspace, "failed");
+        } else {
+          const prompt = this.#buildJudgeFeedbackPrompt(task, verdict);
+          const workerSessionId = `${workspaceId}:${task.workerPanelId}`;
+          await this.#injectPrompt(workerSessionId, prompt, workspace);
+          this.#setTaskState(task, "running");
+          if (lastRound) lastRound.action = "re-prompted";
+          log.info("worker re-prompted with judge feedback", { workspaceId, round: task.currentRound });
+          this.#logTaskEvent(workspace, "worker-reprompted", `Judge feedback: ${verdict.reason || "continue working"}`);
+        }
+      }
+
+      this.#broadcastState();
+    } catch (err) {
+      log.error("handleJudgeVerdict failed", { workspaceId, err: err.message });
+      this.#setTaskState(task, "paused");
+      this.#broadcastState();
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Built-in checks (WORK_LOCK + TODO.md parsing — inspired by codex-runner)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Check WORK_LOCK absence and TODO.md section state.
+   * These run on every idle, before verify commands.
+   */
+  async #runBuiltInChecks(cwd, taskId) {
+    const dir = taskDir(cwd, taskId);
+    const results = [];
+
+    // WORK_LOCK must be absent for completion
+    let lockExists = false;
+    try {
+      await access(path.join(dir, WORK_LOCK_FILE));
+      lockExists = true;
+    } catch {
+      // Good — no lock
+    }
+    results.push({
+      label: "WORK_LOCK absent",
+      passed: !lockExists,
+      exitCode: lockExists ? 1 : 0,
+      outputTail: lockExists ? "WORK_LOCK exists — worker has not signaled completion. Remove it when done." : "",
+    });
+
+    // Parse TODO.md sections
+    try {
+      const todoContent = await readFile(path.join(dir, TODO_FILE), "utf8");
+      const sections = parseTodoSections(todoContent);
+
+      const inProgress = activeItems(sections["In Progress"] || []);
+      results.push({
+        label: "TODO: In Progress empty",
+        passed: inProgress.length === 0,
+        exitCode: inProgress.length > 0 ? 1 : 0,
+        outputTail: inProgress.length > 0 ? `Active items:\n${inProgress.join("\n")}` : "",
+      });
+
+      const blocked = activeItems(sections["Blocked"] || []);
+      results.push({
+        label: "TODO: Blocked empty",
+        passed: blocked.length === 0,
+        exitCode: blocked.length > 0 ? 1 : 0,
+        outputTail: blocked.length > 0 ? `Blocked items:\n${blocked.join("\n")}` : "",
+      });
+    } catch {
+      results.push({
+        label: "TODO.md exists",
+        passed: false,
+        exitCode: 1,
+        outputTail: "TODO.md not found — worker should create and maintain it.",
+      });
+    }
+
+    return results;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Verification checks (from FINISH_CRITERIA.md)
+  // ---------------------------------------------------------------------------
+
+  async #runFileChecks(cwd, criteria) {
+    const results = [];
+
+    for (const filePath of criteria.requiredPaths || []) {
+      const fullPath = path.resolve(cwd, filePath);
+      let passed = false;
+      try {
+        await access(fullPath);
+        passed = true;
+      } catch {
+        // File doesn't exist
+      }
+      results.push({ label: `Required: ${filePath}`, passed, exitCode: passed ? 0 : 1, outputTail: "" });
+    }
+
+    for (const filePath of criteria.forbiddenPaths || []) {
+      const fullPath = path.resolve(cwd, filePath);
+      let exists = false;
+      try {
+        await access(fullPath);
+        exists = true;
+      } catch {
+        // Good — file doesn't exist
+      }
+      results.push({
+        label: `Forbidden: ${filePath}`,
+        passed: !exists,
+        exitCode: exists ? 1 : 0,
+        outputTail: exists ? "File exists but should not" : "",
+      });
+    }
+
+    return results;
+  }
+
+  #execCommand(command, cwd, timeoutMs) {
+    return new Promise((resolve) => {
+      const child = exec(command, {
+        cwd,
+        timeout: timeoutMs,
+        windowsHide: true,
+        maxBuffer: 2 * 1024 * 1024,
+        env: { ...process.env, FORCE_COLOR: "0" },
+      });
+
+      let stdout = "";
+      let stderr = "";
+
+      child.stdout?.on("data", (chunk) => {
+        stdout += chunk;
+      });
+      child.stderr?.on("data", (chunk) => {
+        stderr += chunk;
+      });
+      child.on("close", (code) => {
+        resolve({ exitCode: code ?? 1, stdout, stderr });
+      });
+      child.on("error", (err) => {
+        resolve({ exitCode: 1, stdout, stderr: err.message });
+      });
+    });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Verdict file I/O
+  // ---------------------------------------------------------------------------
+
+  async #readVerdict(cwd, taskId) {
+    const verdictPath = path.join(taskDir(cwd, taskId), VERDICT_FILE);
+    try {
+      const raw = await readFile(verdictPath, "utf8");
+      const data = JSON.parse(raw);
+      log.debug("verdict file parsed", { verdictPath, verdict: data.verdict });
+      return {
+        verdict: data.verdict === "complete" ? "complete" : "continue",
+        reason: String(data.reason || ""),
+      };
+    } catch (err) {
+      if (err.code === "ENOENT") {
+        log.warn("verdict file missing — judge did not write it", { verdictPath });
+        return { verdict: "continue", reason: "Judge did not produce a verdict file." };
+      }
+      // JSON parse error or other FS error — verdict file exists but is corrupt
+      log.error("verdict file malformed or unreadable", { verdictPath, err: err.message });
+      return { verdict: "continue", reason: `Verdict file could not be parsed: ${err.message}` };
+    }
+  }
+
+  async #clearVerdict(cwd, taskId) {
+    const verdictPath = path.join(taskDir(cwd, taskId), VERDICT_FILE);
+    try {
+      await rm(verdictPath, { force: true });
+    } catch {
+      // Ignore
+    }
+  }
+
+  /**
+   * Read finish criteria from FINISH_CRITERIA.md at evaluation time.
+   *
+   * Parses a simple human-friendly markdown format:
+   *   ## Verify Commands
+   *   - Tests: `npm test`
+   *   - Lint: `npm run lint`    (optional timeout: 30s)
+   *
+   *   ## Required Files
+   *   - src/hello.js
+   *
+   *   ## Forbidden Files
+   *   - tmp/debug.log
+   */
+  async #readFinishCriteria(cwd, taskId) {
+    const empty = { verifyCommands: [], requiredPaths: [], forbiddenPaths: [] };
+    const filePath = path.join(taskDir(cwd, taskId), CRITERIA_FILE);
+    try {
+      const raw = await readFile(filePath, "utf8");
+      return parseFinishCriteriaMd(raw);
+    } catch {
+      log.debug("FINISH_CRITERIA.md not found or unreadable", { filePath });
+      return empty;
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Task file setup
+  // ---------------------------------------------------------------------------
+
+  async #writeTaskFiles(cwd, task) {
+    const dir = taskDir(cwd, task.taskId);
+    const relDir = taskDirRel(task.taskId);
+    await mkdir(dir, { recursive: true });
+
+    // Auto-detect verification commands and technology stack from project files
+    const detected = await this.#detectProjectVerifyCommands(cwd);
+    const stackHints = await this.#detectStackReviewHints(cwd);
+    const now = new Date().toISOString().replace("T", " ").slice(0, 19);
+
+    const descriptionBlock = task.description
+      ? task.description
+      : `> No task description provided. Instruct the Worker directly in the terminal,
+> or write your task here and press Start.`;
+
+    const taskMd = `# Task
+
+> Created: ${now} | Project: ${cwd}
+
+${descriptionBlock}
+
+## Rules
+
+- **Commit your work** regularly with clear, descriptive messages (the judge reviews git diffs)
+- Update ${relDir}/${TODO_FILE} as you work (move items between sections)
+- Finish criteria and verification commands are in ${relDir}/${CRITERIA_FILE}
+- The judge will independently verify your work after automated checks pass
+- Focus on completing the task fully — partial completions will be sent back
+- Do not push to any remote — the task runner works locally only
+`;
+
+    const todoMd = `# TODO
+
+> Created: ${now}
+>
+> The Worker updates this file as it progresses. You can pre-fill items before starting.
+> The Task Runner checks that "In Progress" and "Blocked" sections are empty before completion.
+
+## To Do
+
+- [ ] Complete the task described in ${relDir}/${TASK_FILE}
+
+## In Progress
+
+## Done
+`;
+
+    const verifyCmds = detected.length
+      ? detected.map((cmd) => `- ${cmd.label}: \`${cmd.command}\``).join("\n")
+      : `> No commands detected. Add your own below, for example:
+>
+> \`- Tests: \\\`npm test\\\`\`
+> \`- Lint: \\\`npm run lint\\\` (timeout: 30s)\``;
+
+    const criteriaMd = `# Finish Criteria
+
+> Created: ${now} | Project: ${cwd}
+>
+> The Task Runner reads this file before each evaluation round.
+> ${detected.length ? "Commands below were auto-detected from your project." : "Add verification commands that must pass for the task to be considered done."}
+
+## Verify Commands
+
+${verifyCmds}
+
+## Required Files
+
+> List files that must exist when done, one per line: \`- path/to/file\`
+
+## Forbidden Files
+
+> List files that must NOT exist, one per line: \`- path/to/file\`
+`;
+
+    // JUDGE_TODO_FILE is intentionally NOT pre-created — the Judge creates it.
+    // JUDGE_PROMPT_FILE IS pre-created so users can customize it before starting.
+
+    const workLock = "Work remains. Remove this file only when the finish criteria genuinely pass.\n";
+
+    const stackSection = stackHints.length
+      ? `\n## Technology-specific checks\n\n${stackHints.map((h) => `- ${h}`).join("\n")}\n`
+      : "";
+
+    const judgePromptMd = `# Judge Instructions
+
+> Edit this file to customize how the Judge evaluates the Worker's output.
+> If this file exists, its content replaces the default judge instructions.
+> The Judge always receives the task description, check results, and git context
+> regardless of what you write here.
+
+## Evaluation steps
+
+1. Read the task description in ${relDir}/${TASK_FILE}
+2. **Requirements check**: Go through every requirement point by point — verify each one is actually implemented, not just claimed
+3. **Code review**: Read the changed files and check for:
+   - Correctness: does the code do what the task asks?
+   - Obvious bugs, edge cases, or error handling gaps
+   - Code quality: no dead code, no debug leftovers, reasonable naming
+   - Consistency with the existing codebase style
+   Do NOT nitpick style preferences — focus on real issues
+4. Run any checks yourself if needed (read files, run commands)
+5. Keep notes in ${relDir}/${JUDGE_TODO_FILE}
+6. Write your verdict to ${relDir}/${VERDICT_FILE}:
+   - Complete: \`{"verdict": "complete", "reason": "..."}\`
+   - Continue: \`{"verdict": "continue", "reason": "..."}\`
+   List specific issues with file paths and descriptions
+${stackSection}
+## Severity guide
+
+- **Blocker** (must fix): broken functionality, security vulnerability, data loss risk, failing tests
+- **Major** (should fix): missing error handling, logic bugs, missing edge cases, API contract violations
+- **Minor** (nice to fix): naming inconsistencies, dead code, missing types — only flag if egregious
+`;
+
+    await Promise.all([
+      writeFile(path.join(dir, TASK_FILE), taskMd, "utf8"),
+      writeFile(path.join(dir, TODO_FILE), todoMd, "utf8"),
+      writeFile(path.join(dir, CRITERIA_FILE), criteriaMd, "utf8"),
+      writeFile(path.join(dir, JUDGE_PROMPT_FILE), judgePromptMd, "utf8"),
+      // JUDGE_TODO_FILE is intentionally NOT pre-created — Claude Code's
+      // Write tool rejects overwrites of existing files unless Read was
+      // called first.  Letting the judge create it fresh avoids this.
+      writeFile(path.join(dir, WORK_LOCK_FILE), workLock, "utf8"),
+    ]);
+
+    log.info("task files written", { dir, detectedCommands: detected.length });
+  }
+
+  /**
+   * Auto-detect verification commands from project configuration files.
+   * Scans for all known stacks (not mutually exclusive — a project can have
+   * both package.json and a Makefile). The order within each stack is:
+   * formatting → lint → compile/build → tests (fast-to-slow).
+   */
+  async #detectProjectVerifyCommands(cwd) {
+    const commands = [];
+    const has = (f) =>
+      access(path.join(cwd, f)).then(
+        () => true,
+        () => false,
+      );
+    const tryRead = (f) => readFile(path.join(cwd, f), "utf8").catch(() => null);
+
+    // --- Node.js: package.json ---
+    try {
+      const raw = await tryRead("package.json");
+      if (raw) {
+        const pkg = JSON.parse(raw);
+        const scripts = pkg.scripts || {};
+        const devDeps = { ...pkg.devDependencies, ...pkg.dependencies };
+        // TypeScript type-check
+        if (scripts.typecheck || scripts["type-check"]) {
+          const cmd = scripts.typecheck ? "npm run typecheck" : "npm run type-check";
+          commands.push({ label: "Type-check", command: cmd, timeoutMs: 120_000 });
+        } else if (devDeps.typescript && (await has("tsconfig.json"))) {
+          commands.push({ label: "Type-check", command: "npx tsc --noEmit", timeoutMs: 120_000 });
+        }
+        // Lint
+        if (scripts.lint) {
+          commands.push({ label: "Lint", command: "npm run lint", timeoutMs: 60_000 });
+        }
+        // Tests
+        if (scripts.test && scripts.test !== 'echo "Error: no test specified" && exit 1') {
+          commands.push({ label: "Tests", command: "npm test", timeoutMs: 300_000 });
+        }
+        // Build
+        if (scripts.build) {
+          commands.push({ label: "Build", command: "npm run build", timeoutMs: 120_000 });
+        }
+        // Audit (only when lock file exists)
+        if ((await has("package-lock.json")) || (await has("yarn.lock"))) {
+          commands.push({ label: "Audit", command: "npm audit --audit-level=high", timeoutMs: 30_000 });
+        }
+      }
+    } catch {
+      // package.json parse error
+    }
+
+    // --- Java: Maven (pom.xml) ---
+    if (await has("pom.xml")) {
+      const pom = (await tryRead("pom.xml")) || "";
+      // mvn verify covers compile + test + integration-test phases
+      commands.push({ label: "Maven verify", command: "mvn verify -B -q", timeoutMs: 600_000 });
+      if (pom.includes("maven-checkstyle-plugin") || (await has("checkstyle.xml"))) {
+        commands.push({ label: "Checkstyle", command: "mvn checkstyle:check -B -q", timeoutMs: 60_000 });
+      }
+      if (pom.includes("spotbugs-maven-plugin")) {
+        commands.push({ label: "SpotBugs", command: "mvn spotbugs:check -B -q", timeoutMs: 120_000 });
+      }
+      if (pom.includes("maven-pmd-plugin")) {
+        commands.push({ label: "PMD", command: "mvn pmd:check -B -q", timeoutMs: 60_000 });
+      }
+    }
+
+    // --- Java: Gradle (build.gradle / build.gradle.kts) ---
+    if (!commands.some((c) => c.command.startsWith("mvn"))) {
+      const hasGradle = (await has("build.gradle")) || (await has("build.gradle.kts"));
+      if (hasGradle) {
+        // Prefer wrapper when available
+        const gradleCmd = (await has("gradlew")) || (await has("gradlew.bat")) ? "./gradlew" : "gradle";
+        // 'check' aggregates test + all verification tasks (checkstyle, spotbugs, etc.)
+        commands.push({ label: "Gradle check", command: `${gradleCmd} check --no-daemon -q`, timeoutMs: 300_000 });
+        commands.push({ label: "Gradle build", command: `${gradleCmd} build --no-daemon -q`, timeoutMs: 300_000 });
+      }
+    }
+
+    // --- Python ---
+    if (!commands.some((c) => c.label.startsWith("Maven") || c.label.startsWith("Gradle"))) {
+      const pyproject = await tryRead("pyproject.toml");
+      const hasPytest =
+        pyproject?.includes("[tool.pytest") ||
+        (await has("pytest.ini")) ||
+        (await has("conftest.py")) ||
+        (await has("setup.cfg"));
+      // Formatting
+      if (pyproject?.includes("[tool.ruff")) {
+        commands.push({ label: "Ruff format", command: "ruff format --check .", timeoutMs: 30_000 });
+        commands.push({ label: "Ruff lint", command: "ruff check .", timeoutMs: 30_000 });
+      } else {
+        if (pyproject?.includes("[tool.black") || (await has(".black.toml"))) {
+          commands.push({ label: "Black format", command: "black --check .", timeoutMs: 30_000 });
+        }
+        if (await has(".flake8")) {
+          commands.push({ label: "Flake8", command: "flake8", timeoutMs: 60_000 });
+        }
+      }
+      // Type checking
+      if (pyproject?.includes("[tool.mypy") || (await has("mypy.ini")) || (await has(".mypy.ini"))) {
+        commands.push({ label: "Mypy", command: "mypy .", timeoutMs: 120_000 });
+      } else if (await has("pyrightconfig.json")) {
+        commands.push({ label: "Pyright", command: "pyright", timeoutMs: 120_000 });
+      }
+      // Tests
+      if (hasPytest) {
+        commands.push({ label: "Tests", command: "pytest", timeoutMs: 300_000 });
+      }
+      // Tox (all-in-one)
+      if (pyproject?.includes("[tool.tox") || (await has("tox.ini"))) {
+        // Tox runs its own test/lint matrix — don't duplicate
+        if (!hasPytest) {
+          commands.push({ label: "Tox", command: "tox", timeoutMs: 600_000 });
+        }
+      }
+    }
+
+    // --- Rust: Cargo.toml ---
+    if (await has("Cargo.toml")) {
+      commands.push({ label: "Cargo fmt", command: "cargo fmt --check", timeoutMs: 15_000 });
+      commands.push({ label: "Cargo clippy", command: "cargo clippy -- -D warnings", timeoutMs: 120_000 });
+      commands.push({ label: "Cargo test", command: "cargo test", timeoutMs: 300_000 });
+      if (await has("deny.toml")) {
+        commands.push({ label: "Cargo deny", command: "cargo deny check", timeoutMs: 30_000 });
+      }
+    }
+
+    // --- Go: go.mod ---
+    if (await has("go.mod")) {
+      commands.push({ label: "Go vet", command: "go vet ./...", timeoutMs: 60_000 });
+      if ((await has(".golangci.yml")) || (await has(".golangci.yaml")) || (await has(".golangci.toml"))) {
+        commands.push({ label: "GolangCI-Lint", command: "golangci-lint run", timeoutMs: 120_000 });
+      }
+      commands.push({ label: "Go test", command: "go test ./...", timeoutMs: 300_000 });
+      commands.push({ label: "Go mod verify", command: "go mod verify", timeoutMs: 30_000 });
+    }
+
+    // --- .NET: *.sln or *.csproj ---
+    {
+      let hasDotnet = false;
+      try {
+        const entries = await readdir(cwd);
+        hasDotnet = entries.some((e) => e.endsWith(".sln") || e.endsWith(".csproj"));
+      } catch {
+        // readdir failed
+      }
+      if (hasDotnet) {
+        commands.push({ label: "Dotnet build", command: "dotnet build --no-restore", timeoutMs: 120_000 });
+        commands.push({ label: "Dotnet test", command: "dotnet test --no-build", timeoutMs: 300_000 });
+        if (await has(".editorconfig")) {
+          commands.push({ label: "Dotnet format", command: "dotnet format --verify-no-changes", timeoutMs: 30_000 });
+        }
+      }
+    }
+
+    // --- Ruby: Gemfile ---
+    if (await has("Gemfile")) {
+      const gemfile = (await tryRead("Gemfile")) || "";
+      if (gemfile.includes("rubocop") || (await has(".rubocop.yml"))) {
+        commands.push({ label: "RuboCop", command: "bundle exec rubocop", timeoutMs: 60_000 });
+      }
+      if (gemfile.includes("rspec") || (await has(".rspec"))) {
+        commands.push({ label: "RSpec", command: "bundle exec rspec", timeoutMs: 300_000 });
+      } else if (await has("Rakefile")) {
+        commands.push({ label: "Rake test", command: "bundle exec rake test", timeoutMs: 300_000 });
+      }
+      if (gemfile.includes("brakeman")) {
+        commands.push({ label: "Brakeman", command: "bundle exec brakeman --no-pager -q", timeoutMs: 60_000 });
+      }
+    }
+
+    // --- Makefile (fallback for any stack) ---
+    if (!commands.length) {
+      try {
+        const makefile = await readFile(path.join(cwd, "Makefile"), "utf8");
+        if (/^check\s*:/m.test(makefile)) {
+          commands.push({ label: "Make check", command: "make check", timeoutMs: 120_000 });
+        }
+        if (/^test\s*:/m.test(makefile)) {
+          commands.push({ label: "Make test", command: "make test", timeoutMs: 120_000 });
+        }
+        if (/^lint\s*:/m.test(makefile)) {
+          commands.push({ label: "Make lint", command: "make lint", timeoutMs: 60_000 });
+        }
+      } catch {
+        // No Makefile
+      }
+    }
+
+    return commands;
+  }
+
+  /**
+   * Detect project technology stack and return review hints for the Judge.
+   * These are included in JUDGE_PROMPT.md so the Judge knows what to look for
+   * based on the specific technologies used.
+   */
+  async #detectStackReviewHints(cwd) {
+    const hints = [];
+    const has = (f) =>
+      access(path.join(cwd, f)).then(
+        () => true,
+        () => false,
+      );
+    const tryRead = (f) => readFile(path.join(cwd, f), "utf8").catch(() => null);
+
+    // --- Node.js / JavaScript / TypeScript ---
+    const pkgRaw = await tryRead("package.json");
+    if (pkgRaw) {
+      try {
+        const pkg = JSON.parse(pkgRaw);
+        const allDeps = { ...pkg.dependencies, ...pkg.devDependencies };
+
+        if (allDeps.typescript || (await has("tsconfig.json"))) {
+          hints.push(
+            "**TypeScript**: Check for proper typing — no untyped `any` escape hatches, correct use of generics, interfaces over type assertions where possible",
+          );
+        }
+        if (allDeps.react || allDeps["react-dom"]) {
+          hints.push(
+            "**React**: Verify hooks rules (no conditional hooks), proper dependency arrays in useEffect/useMemo, no unnecessary re-renders, keys on list items",
+          );
+        }
+        if (allDeps.vue) {
+          hints.push(
+            "**Vue**: Check reactivity patterns (ref/reactive usage), proper prop validation, no direct prop mutation, correct use of computed vs methods",
+          );
+        }
+        if (allDeps.next) {
+          hints.push(
+            "**Next.js**: Verify correct use of server/client components, proper data fetching patterns, no sensitive data leaked to client bundles",
+          );
+        }
+        if (allDeps.express || allDeps.fastify || allDeps.koa) {
+          hints.push(
+            "**Node.js API**: Check for proper async error handling (no unhandled promise rejections), input validation on endpoints, no secrets in responses",
+          );
+        }
+        if (allDeps.prisma || allDeps.sequelize || allDeps.typeorm || allDeps.knex) {
+          hints.push(
+            "**Database/ORM**: Verify parameterized queries (no SQL injection via string concatenation), proper transaction usage, N+1 query patterns",
+          );
+        }
+        if (allDeps.zod || allDeps.joi || allDeps.yup) {
+          hints.push(
+            "**Validation**: Ensure new endpoints/inputs use the existing validation library, schemas match expected data shapes",
+          );
+        }
+      } catch {
+        // package.json parse error
+      }
+    }
+
+    // --- Python ---
+    const pyproject = await tryRead("pyproject.toml");
+    if (pyproject || (await has("requirements.txt")) || (await has("setup.py"))) {
+      hints.push(
+        "**Python**: Check for proper type hints on new functions, correct use of context managers for resources, no bare `except:` clauses",
+      );
+      if (pyproject?.includes("django") || (await has("manage.py"))) {
+        hints.push(
+          "**Django**: Verify ORM queries are efficient (select_related/prefetch_related), no raw SQL without parameterization, proper permission checks on views",
+        );
+      }
+      if (pyproject?.includes("fastapi")) {
+        hints.push(
+          "**FastAPI**: Check Pydantic models match API contracts, proper dependency injection, async endpoints where appropriate",
+        );
+      }
+      if (pyproject?.includes("asyncio") || pyproject?.includes("aiohttp") || pyproject?.includes("httpx")) {
+        hints.push(
+          "**Async Python**: Verify proper await usage, no blocking calls in async functions, correct task/gather patterns",
+        );
+      }
+    }
+
+    // --- Rust ---
+    if (await has("Cargo.toml")) {
+      hints.push(
+        "**Rust**: Check for proper error handling (no unwrap() in production paths), correct ownership/borrowing, appropriate use of Clone vs references",
+      );
+    }
+
+    // --- Go ---
+    if (await has("go.mod")) {
+      hints.push(
+        "**Go**: Verify proper error handling (no ignored errors), correct goroutine lifecycle (no leaks), defer usage for cleanup, context propagation",
+      );
+    }
+
+    // --- Java ---
+    if ((await has("pom.xml")) || (await has("build.gradle")) || (await has("build.gradle.kts"))) {
+      hints.push(
+        "**Java**: Check for proper null handling, resource management (try-with-resources), correct exception hierarchy, thread safety where applicable",
+      );
+    }
+
+    // --- .NET ---
+    {
+      try {
+        const entries = await readdir(cwd);
+        if (entries.some((e) => e.endsWith(".csproj") || e.endsWith(".sln"))) {
+          hints.push(
+            "**C#/.NET**: Verify proper async/await patterns (no sync-over-async), IDisposable implementation, null checks or nullable reference types",
+          );
+        }
+      } catch {
+        // readdir failed
+      }
+    }
+
+    // --- Ruby ---
+    if (await has("Gemfile")) {
+      hints.push(
+        "**Ruby**: Check for proper exception handling, no mass assignment vulnerabilities, correct use of ActiveRecord scopes and validations",
+      );
+    }
+
+    log.debug("stack review hints detected", { cwd, hintCount: hints.length });
+    return hints;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Prompt builders
+  // ---------------------------------------------------------------------------
+
+  #buildInitialWorkerPrompt(task) {
+    const dir = taskDirRel(task.taskId);
+    return `You are the worker in a supervised coding loop.
+
+Task:
+${task.description || "(Read the task from " + dir + "/" + TASK_FILE + ")"}
+
+Rules:
+- Work directly in the repository.
+- **Commit your changes** regularly with clear, descriptive commit messages. The judge reviews git diffs to verify your work. Do NOT push to any remote.
+- Read and obey \`${dir}/${TODO_FILE}\`, \`${dir}/${CRITERIA_FILE}\`, and \`${dir}/${WORK_LOCK_FILE}\`.
+- Ignore \`${dir}/${JUDGE_TODO_FILE}\` — that file belongs to the judge.
+- Do not ask the human whether you should continue. The judge decides that.
+- Do not say "would you like me to continue", "should I proceed", "if you want, I can", or similar optional-next-step language.
+- If you think the task is done, verify it against the finish criteria before stopping.
+- Do not claim done just because you finished one slice. Return done only when the whole task is complete.
+- Remove \`${dir}/${WORK_LOCK_FILE}\` only when the finish criteria genuinely pass.
+- Update \`${dir}/${TODO_FILE}\` as you make progress (move items between sections).
+- Prefer continuing work over asking for more instructions.
+- When you are done, simply stop. Automated checks and a judge will verify your work.`;
+  }
+
+  #buildRePrompt(task, round) {
+    const dir = taskDirRel(task.taskId);
+    const lines = [
+      `The task is not yet complete. Round ${task.currentRound}/${task.maxRounds}.`,
+      "",
+      "Verification results:",
+    ];
+
+    for (const check of round.checks) {
+      const icon = check.passed ? "\u2713" : "\u2717";
+      lines.push(`${icon} ${check.label}: ${check.passed ? "PASSED" : "FAILED"}`);
+      if (!check.passed && check.outputTail) {
+        for (const line of check.outputTail.split("\n")) {
+          lines.push(`  ${line}`);
+        }
+      }
+    }
+
+    lines.push(
+      "",
+      "Continue working. Do not stop while real work remains.",
+      `Check ${dir}/${TODO_FILE} for remaining items.`,
+      `Remove ${dir}/${WORK_LOCK_FILE} only when genuinely done.`,
+    );
+
+    return lines.join("\n");
+  }
+
+  async #buildJudgePrompt(task, round, gitContext, cwd) {
+    const dir = taskDirRel(task.taskId);
+    const checkSummary = round.checks.map((c) => `- ${c.label}: ${c.passed ? "PASSED" : "FAILED"}`).join("\n");
+    const git = gitContext || { status: "(unavailable)", diffStat: "", diffNames: "" };
+
+    // Context block — always included (task, checks, git)
+    const context = `You are the independent judge evaluating whether a coding task is complete.
+
+Task: ${task.description || "(See " + dir + "/" + TASK_FILE + ")"}
+
+The worker has stopped. Automated check results:
+${checkSummary}
+
+Git status:
+${git.status}
+
+Git diff --stat:
+${git.diffStat || "(no changes)"}
+
+Git diff --name-only:
+${git.diffNames || "(no changed files)"}`;
+
+    // Check for user-customized judge instructions
+    let customInstructions = "";
+    if (cwd && task.taskId) {
+      const customPath = path.join(taskDir(cwd, task.taskId), JUDGE_PROMPT_FILE);
+      try {
+        customInstructions = (await readFile(customPath, "utf8")).trim();
+        log.info("using custom judge prompt from JUDGE_PROMPT.md", {
+          taskId: task.taskId,
+          length: customInstructions.length,
+        });
+      } catch {
+        // No custom prompt — use default
+      }
+    }
+
+    if (customInstructions) {
+      // User-provided instructions replace the default rules + instructions block.
+      // Context (task, checks, git) is always prepended so the judge has data to work with.
+      return `${context}
+
+Task files directory: ${dir}/
+Verdict file: ${dir}/${VERDICT_FILE}
+Judge scratchpad: ${dir}/${JUDGE_TODO_FILE}
+
+${customInstructions}
+
+Write your verdict to ${dir}/${VERDICT_FILE} as JSON: {"verdict": "complete"|"continue", "reason": "..."}`;
+    }
+
+    // Default judge instructions (requirements check + code review)
+    return `${context}
+
+Hard rules:
+- Do not trust the worker's completion claim by default.
+- Prefer "continue" over "complete" when uncertain.
+- If any deterministic check failed, reject completion.
+- Treat these worker phrases as red flags: "would you like me to continue", "should I proceed", "all set", "task complete", "done".
+- Reject any stop that leaves active TODO items, WORK_LOCK present, or failing verify commands.
+- You are not a second worker — do not expand scope or plan features.
+
+Instructions:
+1. Read ${dir}/${TASK_FILE} for the full task description and requirements
+2. **Requirements check**: Go through every requirement/acceptance criterion in the task description point by point — verify each one is actually implemented, not just claimed
+3. **Code review**: Read the changed files. Check for:
+   - Correctness: does the code actually do what the task asks?
+   - Obvious bugs, edge cases, or error handling gaps
+   - Code quality: no dead code, no debug leftovers, reasonable naming
+   - Consistency with the existing codebase style
+   Do NOT nitpick style preferences or demand perfection — focus on real issues that would matter in a code review
+4. Run any relevant checks yourself if needed (read files, run commands)
+5. Keep notes in ${dir}/${JUDGE_TODO_FILE} (tiny scratchpad — for each requirement, note whether it's verified or missing; note any code quality issues found)
+6. Write your verdict to ${dir}/${VERDICT_FILE}:
+   - If ALL requirements are met and code quality is acceptable: {"verdict": "complete", "reason": "..."}
+   - If ANY requirement is missing, or there are real code quality issues: {"verdict": "continue", "reason": "..."}
+   Your "reason" must list specific issues — file paths, line descriptions, what's wrong and what to fix`;
+  }
+
+  #buildJudgeFeedbackPrompt(task, verdict) {
+    const dir = taskDirRel(task.taskId);
+    return `The judge evaluated your work and found it incomplete.
+
+Judge feedback: ${verdict.reason || "No specific feedback provided."}
+
+Round ${task.currentRound}/${task.maxRounds}. Continue working.
+Do not stop while real work remains. Do not ask "should I proceed".
+Check ${dir}/${TODO_FILE} for remaining items.
+Remove ${dir}/${WORK_LOCK_FILE} only when genuinely done.`;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Helpers
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Ensure .strideterm/ is in the project's .gitignore so task files
+   * (and other strideterm data like worktrees) don't get committed.
+   */
+  async #ensureGitIgnore(cwd) {
+    const gitignorePath = path.join(cwd, ".gitignore");
+    const entry = ".strideterm/";
+    try {
+      const content = await readFile(gitignorePath, "utf8");
+      if (content.includes(entry)) {
+        log.trace(".strideterm/ already in .gitignore", { cwd });
+        return;
+      }
+      // Append to existing .gitignore
+      const separator = content.endsWith("\n") ? "" : "\n";
+      await writeFile(gitignorePath, content + separator + entry + "\n", "utf8");
+      log.debug("appended .strideterm/ to .gitignore", { cwd });
+    } catch (err) {
+      if (err.code === "ENOENT") {
+        // No .gitignore — create one
+        try {
+          await writeFile(gitignorePath, entry + "\n", "utf8");
+          log.debug("created .gitignore with .strideterm/ entry", { cwd });
+        } catch (writeErr) {
+          log.warn("failed to create .gitignore", { cwd, err: writeErr.message });
+        }
+      } else {
+        log.warn("failed to read .gitignore", { cwd, err: err.message });
+      }
+    }
+  }
+
+  /**
+   * Remove task files for a workspace. Called when a task workspace is deleted.
+   */
+  async cleanupTaskFiles(cwd, taskId) {
+    if (!cwd || !taskId) {
+      log.warn("cleanupTaskFiles: missing cwd or taskId, skipping cleanup", {
+        cwd: cwd || "(empty)",
+        taskId: taskId || "(empty)",
+      });
+      return;
+    }
+    const dir = taskDir(cwd, taskId);
+    try {
+      await rm(dir, { recursive: true, force: true });
+      log.info("task files cleaned up", { dir });
+    } catch (err) {
+      log.warn("failed to clean up task files", { dir, err: err.message });
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Shower mode — periodic worker context refresh
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Check if the worker is due for a shower (context refresh).
+   * Returns true when enough rounds have elapsed since last shower.
+   */
+  #shouldShower(task) {
+    const interval = task.showerInterval || DEFAULT_SHOWER_INTERVAL;
+    if (interval <= 0) return false; // Disabled
+    const roundsSinceShower = task.currentRound - (task.lastShowerRound || 0);
+    return roundsSinceShower >= interval;
+  }
+
+  /**
+   * Perform a shower: ask worker to write handoff summary, restart session
+   * with fresh context seeded from the handoff file.
+   *
+   * Inspired by codex-runner's shower mode — prevents context degradation
+   * in long-running agent sessions.
+   *
+   * Flow:
+   *  1. Write handoff request to file
+   *  2. Inject short directive: "write handoff summary"
+   *  3. Wait for handoff file (with timeout)
+   *  4. Kill worker session, restart fresh
+   *  5. Inject resume prompt with handoff context + last judge instructions
+   */
+  async #performShower(workspace) {
+    const task = workspace.task;
+    const workspaceId = workspace.id;
+    const workerSessionId = `${workspaceId}:${task.workerPanelId}`;
+    const dir = taskDir(workspace.cwd, task.taskId);
+    const relDir = taskDirRel(task.taskId);
+
+    log.info("shower mode: starting worker context refresh", {
+      workspaceId,
+      round: task.currentRound,
+      lastShower: task.lastShowerRound || 0,
+    });
+
+    // Step 1: Write handoff request instructions to file
+    const handoffRequestPath = path.join(dir, "SHOWER_REQUEST.md");
+    const handoffPath = path.join(dir, HANDOFF_FILE);
+    const handoffRequest = `# Handoff Request
+
+Write a concise handoff summary to \`${relDir}/${HANDOFF_FILE}\` now.
+
+Include:
+1. What you have accomplished so far
+2. What remains to be done (reference ${relDir}/TODO.md)
+3. Key decisions or context a fresh session would need
+4. Any blockers or issues encountered
+
+Use \`cat > ${relDir}/${HANDOFF_FILE} <<'HANDOFF_EOF'\` to write the file.
+After writing the file, stop and wait.
+
+Do NOT continue working on the task — only write the handoff summary.`;
+
+    try {
+      await writeFile(handoffRequestPath, handoffRequest, "utf8");
+    } catch (err) {
+      log.error("shower mode: failed to write handoff request", { workspaceId, err: err.message });
+      return false;
+    }
+
+    // Step 2: Inject short directive to worker
+    const directive = `Read ${relDir}/SHOWER_REQUEST.md and follow it now. Write the handoff summary to ${relDir}/${HANDOFF_FILE}. After the file is written, stop and wait.`;
+    this.#writeToSession(workerSessionId, directive);
+    setTimeout(() => {
+      this.#writeToSession(workerSessionId, "\r");
+    }, 200);
+
+    log.debug("shower mode: handoff directive sent, waiting for handoff file", { workspaceId });
+
+    // Step 3: Wait for handoff file (poll with timeout)
+    const handoffWritten = await this.#waitForFile(handoffPath, 120_000); // 2 min timeout
+
+    if (!handoffWritten) {
+      log.warn("shower mode: handoff file not written within timeout, skipping shower", { workspaceId });
+      // Clean up request file
+      await rm(handoffRequestPath, { force: true }).catch(() => {});
+      return false;
+    }
+
+    log.info("shower mode: handoff file detected, restarting worker session", { workspaceId });
+
+    // Step 4: Restart worker session
+    if (!this.#restartSession) {
+      log.warn("shower mode: restartSession not available, skipping", { workspaceId });
+      return false;
+    }
+
+    try {
+      await this.#restartSession(workerSessionId);
+      log.info("shower mode: worker session restarted", { workspaceId });
+    } catch (err) {
+      log.error("shower mode: failed to restart worker session", { workspaceId, err: err.message });
+      return false;
+    }
+
+    // Step 5: Build and inject resume prompt with handoff context
+    let handoffContent = "";
+    try {
+      handoffContent = await readFile(handoffPath, "utf8");
+    } catch (err) {
+      log.warn("shower mode: could not read handoff file after restart", { workspaceId, err: err.message });
+    }
+
+    const resumePrompt = this.#buildShowerResumePrompt(task, handoffContent);
+
+    // Write the resume prompt to PROMPT.md — it will be injected via file-based
+    // prompt when the new session goes idle (promptSent is reset below).
+    const promptFilePath = path.join(dir, PROMPT_FILE);
+    try {
+      await writeFile(promptFilePath, resumePrompt, "utf8");
+      log.debug("shower mode: resume prompt written to file", { workspaceId, promptLength: resumePrompt.length });
+    } catch (err) {
+      log.warn("shower mode: failed to write resume prompt file", { workspaceId, err: err.message });
+    }
+
+    // Wait briefly for the new session to be ready before injecting
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+
+    // Store the resume prompt so the next onAgentIdle sends it instead of the initial prompt
+    task.showerResumePrompt = resumePrompt;
+    task.lastShowerRound = task.currentRound;
+    task.promptSent = false; // Reset — triggers prompt injection on next idle
+
+    // Clean up ephemeral shower files
+    await rm(handoffRequestPath, { force: true }).catch(() => {});
+
+    log.info("shower mode: context refresh complete", {
+      workspaceId,
+      round: task.currentRound,
+      handoffLength: handoffContent.length,
+    });
+
+    return true;
+  }
+
+  /**
+   * Build the prompt for a worker session that was just restarted via shower mode.
+   * Includes task description, handoff context, and last judge instructions.
+   */
+  #buildShowerResumePrompt(task, handoffContent) {
+    const dir = taskDirRel(task.taskId);
+    const parts = [
+      `You are the worker in a supervised coding loop (session refreshed for context clarity).`,
+      "",
+      `Task: ${task.description || "(See " + dir + "/" + TASK_FILE + ")"}`,
+      "",
+      "## Handoff from previous session",
+      "",
+      handoffContent || "(No handoff summary available — read the task files to catch up.)",
+      "",
+    ];
+
+    if (task.lastJudgeInstructions) {
+      parts.push("## Last judge feedback", "", task.lastJudgeInstructions, "");
+    }
+
+    parts.push(
+      "## Rules",
+      `- **Commit your changes** regularly with clear commit messages. The judge reviews git diffs. Do NOT push.`,
+      `- Read and obey \`${dir}/${TODO_FILE}\`, \`${dir}/${CRITERIA_FILE}\`, and \`${dir}/${WORK_LOCK_FILE}\`.`,
+      `- Ignore \`${dir}/${JUDGE_TODO_FILE}\` — that file belongs to the judge.`,
+      `- Continue working from where the previous session left off.`,
+      `- Update \`${dir}/${TODO_FILE}\` as you make progress.`,
+      `- Remove \`${dir}/${WORK_LOCK_FILE}\` only when the finish criteria genuinely pass.`,
+      `- Do not ask the human whether you should continue. The judge decides that.`,
+      `- When you are done, simply stop. Automated checks and a judge will verify your work.`,
+    );
+
+    return parts.join("\n");
+  }
+
+  /**
+   * Poll for a file to appear, with timeout.
+   * Returns true if file was found, false if timeout.
+   */
+  async #waitForFile(filePath, timeoutMs) {
+    const start = Date.now();
+    const pollInterval = 3000; // Check every 3 seconds
+
+    while (Date.now() - start < timeoutMs) {
+      try {
+        await access(filePath);
+        // File exists — check it has content (not just created empty)
+        const content = await readFile(filePath, "utf8");
+        if (content.trim().length > 10) {
+          return true;
+        }
+      } catch {
+        // File doesn't exist yet
+      }
+      await new Promise((resolve) => setTimeout(resolve, pollInterval));
+    }
+
+    return false;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Git context — read-only repo state for judge evaluation
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Ensure the project directory has a git repo. If not, run `git init`
+   * so that git diff/status work for the judge. Never touches remotes.
+   */
+  async #ensureGitRepo(cwd) {
+    const gitDir = path.join(cwd, ".git");
+    try {
+      await access(gitDir);
+      log.trace("git repo exists", { cwd });
+      return true; // Already a git repo
+    } catch {
+      // No .git directory — initialize one
+      log.info("no git repo found, running git init", { cwd });
+      try {
+        const result = await this.#execCommand("git init", cwd, 10_000);
+        if (result.exitCode === 0) {
+          log.info("git repo initialized", { cwd });
+          // Create an initial commit so `git diff` has a baseline
+          await this.#execCommand("git add -A", cwd, 10_000);
+          await this.#execCommand(
+            'git commit -m "Initial commit (auto-created by strideterm task runner)" --allow-empty',
+            cwd,
+            10_000,
+          );
+          log.info("initial commit created", { cwd });
+          return true;
+        }
+        log.warn("git init failed", { cwd, exitCode: result.exitCode, stderr: result.stderr });
+        return false;
+      } catch (err) {
+        log.warn("git init error", { cwd, err: err.message });
+        return false;
+      }
+    }
+  }
+
+  /**
+   * Gather read-only git context for the judge prompt.
+   * Returns { status, diffStat, diffNames } — all clipped for prompt size.
+   *
+   * Inspired by codex-runner's _repo_context() which runs the same three commands.
+   * Clips output to prevent huge diffs from bloating the prompt.
+   */
+  async #getGitContext(cwd) {
+    const empty = { status: "Not a git repository.", diffStat: "", diffNames: "" };
+    const gitDir = path.join(cwd, ".git");
+    try {
+      await access(gitDir);
+    } catch {
+      log.debug("getGitContext: no .git directory", { cwd });
+      return empty;
+    }
+
+    const MAX_LINES = 40;
+    const MAX_CHARS = 2500;
+
+    function clip(text) {
+      if (!text) return "(clean)";
+      const lines = text.split("\n");
+      let clipped =
+        lines.length > MAX_LINES
+          ? lines.slice(0, MAX_LINES).join("\n") + `\n... (${lines.length - MAX_LINES} more lines)`
+          : text;
+      if (clipped.length > MAX_CHARS) {
+        clipped = clipped.slice(0, MAX_CHARS) + "\n... (output truncated)";
+      }
+      return clipped;
+    }
+
+    try {
+      const [statusResult, diffStatResult, diffNamesResult] = await Promise.all([
+        this.#execCommand("git status --short", cwd, 10_000),
+        this.#execCommand("git diff --stat", cwd, 10_000),
+        this.#execCommand("git diff --name-only", cwd, 10_000),
+      ]);
+
+      const context = {
+        status: clip(statusResult.stdout.trim()),
+        diffStat: clip(diffStatResult.stdout.trim()),
+        diffNames: clip(diffNamesResult.stdout.trim()),
+      };
+
+      log.debug("git context gathered", {
+        cwd,
+        statusLines: statusResult.stdout.split("\n").length,
+        diffFiles: diffNamesResult.stdout.split("\n").filter(Boolean).length,
+      });
+
+      return context;
+    } catch (err) {
+      log.warn("failed to gather git context", { cwd, err: err.message });
+      return empty;
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Helpers
+  // ---------------------------------------------------------------------------
+
+  #findTaskWorkspace(workspaceId) {
+    const state = this.#getState();
+    const workspace = state.workspaces.find((w) => w.id === workspaceId);
+    if (!workspace || workspace.kind !== "task" || !workspace.task) return null;
+    return workspace;
+  }
+
+  /**
+   * Inject a prompt into a PTY session. For short prompts (< FILE_PROMPT_THRESHOLD
+   * chars) paste directly. For longer prompts, write to a file and send a short
+   * directive — more reliable and avoids PTY paste issues with large text.
+   *
+   * Inspired by codex-runner's pattern of writing prompts to files and injecting
+   * "Read {file} and follow it now" directives via tmux send_keys.
+   */
+  async #injectPrompt(sessionId, text, workspace) {
+    if (!this.#writeToSession) {
+      log.warn("injectPrompt: writeToSession not available", { sessionId });
+      return;
+    }
+
+    let injection = text;
+
+    // File-based injection for long prompts
+    if (text.length > FILE_PROMPT_THRESHOLD && workspace?.cwd && workspace?.task?.taskId) {
+      const promptPath = path.join(taskDir(workspace.cwd, workspace.task.taskId), PROMPT_FILE);
+      const relPromptPath = `${taskDirRel(workspace.task.taskId)}/${PROMPT_FILE}`;
+      try {
+        await writeFile(promptPath, text, "utf8");
+        injection = `Read ${relPromptPath} and follow the instructions in it now.`;
+        log.info("prompt written to file for injection", {
+          sessionId,
+          promptPath: relPromptPath,
+          originalLength: text.length,
+        });
+      } catch (err) {
+        // Fall back to direct paste if file write fails
+        log.warn("failed to write prompt file, falling back to direct paste", {
+          sessionId,
+          promptPath,
+          err: err.message,
+        });
+      }
+    }
+
+    log.trace("injectPrompt: writing to PTY", { sessionId, length: injection.length, fileBased: injection !== text });
+    this.#writeToSession(sessionId, injection);
+    setTimeout(() => {
+      log.trace("injectPrompt: sending Enter after 200ms delay", { sessionId });
+      this.#writeToSession(sessionId, "\r");
+    }, 200);
+    log.debug("prompt injected", { sessionId, length: injection.length, originalLength: text.length });
+  }
+
+  /**
+   * Stop the Worker's current activity when the task ends (completed or failed).
+   *
+   * Sends Ctrl+C to interrupt, then a clear stop message. The conversation
+   * context is preserved so the user can still ask the Worker questions
+   * about what it did. Background/scheduled tasks are prevented by
+   * CLAUDE_CODE_DISABLE_BACKGROUND_TASKS env var set at session startup.
+   */
+  #notifyWorkerTaskEnded(workspace, kind) {
+    if (!this.#writeToSession) return;
+    const task = workspace.task;
+    const workerSessionId = `${workspace.id}:${task.workerPanelId}`;
+
+    log.info("sending stop signal to Worker", { workspaceId: workspace.id, kind });
+
+    // 1. Ctrl+C to interrupt any running tool/command
+    this.#writeToSession(workerSessionId, "\x03");
+
+    // 2. After brief pause, tell Claude Code to stop — but keep context intact
+    const reason =
+      kind === "completed"
+        ? "The Judge has approved your work. The task is complete."
+        : "The task runner has stopped (max rounds or error).";
+    setTimeout(() => {
+      this.#writeToSession(
+        workerSessionId,
+        `\nThe task has ended: ${reason} Do not start new work or continue the previous task. Wait for the user.\r`,
+      );
+      log.debug("stop message sent to Worker", { workspaceId: workspace.id });
+    }, 800);
+  }
+
+  /**
+   * Raise a user-visible alert for a task event.
+   * @param {object} workspace
+   * @param {"completed"|"failed"} kind
+   * @param {string} [reason] — human-readable context for the notification
+   */
+  #raiseTaskAlert(workspace, kind, reason) {
+    if (!this.#raiseAlert) return;
+    const task = workspace.task;
+    const roundInfo = task.currentRound ? ` after ${task.currentRound} round${task.currentRound !== 1 ? "s" : ""}` : "";
+    const detail = reason ? `task-${kind}: ${reason}` : `task-${kind}${roundInfo}`;
+    log.info("raising task alert", { workspaceId: workspace.id, kind, detail });
+    this.#raiseAlert({
+      projectId: workspace.id,
+      panelId: workspace.task.workerPanelId,
+      sessionId: `${workspace.id}:${workspace.task.workerPanelId}`,
+      title: workspace.name,
+      kind: kind === "completed" ? "completed" : "waiting",
+      detail,
+    });
+  }
+
+  /**
+   * Append a user-facing event to TASK_LOG.jsonl in the task directory.
+   * This is NOT the system log (winston) — it's a human-readable audit trail
+   * that the user can review in the Dashboard Files tab.
+   *
+   * Each line is a JSON object: { ts, event, round?, detail? }
+   */
+  async #logTaskEvent(workspace, event, detail) {
+    const task = workspace?.task;
+    if (!workspace?.cwd || !task?.taskId) return;
+
+    const entry = {
+      ts: new Date().toISOString(),
+      event,
+      round: task.currentRound || 0,
+      ...(detail ? { detail } : {}),
+    };
+
+    const logPath = path.join(taskDir(workspace.cwd, task.taskId), TASK_LOG_FILE);
+    try {
+      await writeFile(logPath, JSON.stringify(entry) + "\n", { encoding: "utf8", flag: "a" });
+    } catch (err) {
+      log.debug("failed to write task event log", { logPath, err: err.message });
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Utilities
+// ---------------------------------------------------------------------------
+
+function tailLines(text, maxLines) {
+  if (!text) return "";
+  const lines = text.split("\n");
+  if (lines.length <= maxLines) return text;
+  return lines.slice(-maxLines).join("\n");
+}
+
+/**
+ * Parse TODO.md into sections (like codex-runner's parse_todo_sections).
+ * Returns { "In Progress": ["- [ ] item", ...], "Done": [...], ... }
+ */
+function parseTodoSections(text) {
+  const sections = {};
+  let current = "";
+  for (const rawLine of String(text || "").split("\n")) {
+    const line = rawLine.trimEnd();
+    if (line.startsWith("## ")) {
+      current = line.slice(3).trim();
+      if (!sections[current]) sections[current] = [];
+      continue;
+    }
+    if (current && line.trimStart().startsWith("- [")) {
+      sections[current].push(line.trim());
+    }
+  }
+  return sections;
+}
+
+/**
+ * Filter active (unchecked) items — anything NOT starting with "- [x]".
+ */
+function activeItems(lines) {
+  return lines.filter((line) => !line.toLowerCase().startsWith("- [x]"));
+}
+
+/**
+ * Parse FINISH_CRITERIA.md in simple markdown format.
+ *
+ * Expected sections:
+ *   ## Verify Commands
+ *   - Label: `command`              → { label, command, timeoutMs: 60000 }
+ *   - Label: `command` (timeout: 30s)  → { label, command, timeoutMs: 30000 }
+ *
+ *   ## Required Files
+ *   - path/to/file
+ *
+ *   ## Forbidden Files
+ *   - path/to/file
+ */
+// Exported for testing
+export function parseFinishCriteriaMd(text) {
+  const sections = {};
+  let current = "";
+  for (const rawLine of String(text || "").split("\n")) {
+    const line = rawLine.trim();
+    if (line.startsWith("## ")) {
+      current = line.slice(3).trim().toLowerCase();
+      sections[current] = [];
+      continue;
+    }
+    if (current && line.startsWith("- ") && !line.startsWith("<!--")) {
+      sections[current].push(line.slice(2).trim());
+    }
+  }
+
+  // Parse verify commands: "Label: `command`" or "Label: `command` (timeout: 30s)"
+  const verifyCommands = (sections["verify commands"] || []).map((entry) => {
+    const cmdMatch = entry.match(/^(.+?):\s*`([^`]+)`(?:\s*\(timeout:\s*(\d+)s?\))?$/);
+    if (cmdMatch) {
+      return {
+        label: cmdMatch[1].trim(),
+        command: cmdMatch[2].trim(),
+        timeoutMs: cmdMatch[3] ? Number(cmdMatch[3]) * 1000 : 60_000,
+      };
+    }
+    // Fallback: bare command without label
+    const bareMatch = entry.match(/^`([^`]+)`/);
+    if (bareMatch) {
+      return { label: bareMatch[1], command: bareMatch[1], timeoutMs: 60_000 };
+    }
+    // Last resort: treat entire line as command
+    return { label: entry, command: entry, timeoutMs: 60_000 };
+  });
+
+  const requiredPaths = (sections["required files"] || []).filter(Boolean);
+  const forbiddenPaths = (sections["forbidden files"] || []).filter(Boolean);
+
+  return { verifyCommands, requiredPaths, forbiddenPaths };
+}
+
+/**
+ * Dangerous command patterns that should trigger a warning before execution.
+ * These are heuristic — not a security sandbox, just a safety net.
+ */
+const DANGEROUS_PATTERNS = [
+  { pattern: /\brm\s+(-[a-z]*r|-[a-z]*f|--recursive|--force)/i, reason: "recursive/forced delete" },
+  { pattern: /\bformat\b/i, reason: "disk format command" },
+  { pattern: /\bmkfs\b/i, reason: "filesystem format" },
+  { pattern: /\bdd\s+/i, reason: "low-level disk write" },
+  { pattern: />\s*\/dev\/sd/i, reason: "writing to block device" },
+  { pattern: /\bgit\s+push\b/i, reason: "git push" },
+  { pattern: /\bgit\s+reset\s+--hard\b/i, reason: "destructive git reset" },
+  { pattern: /\$\(.*\)|`[^`]+`/, reason: "command substitution (potential injection)" },
+];
+
+/**
+ * Check a command string for dangerous patterns.
+ * Returns an array of warning strings (empty if safe).
+ */
+export function checkCommandSafety(command) {
+  const warnings = [];
+  for (const { pattern, reason } of DANGEROUS_PATTERNS) {
+    if (pattern.test(command)) {
+      warnings.push(reason);
+    }
+  }
+  return warnings;
+}

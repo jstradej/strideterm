@@ -66,6 +66,41 @@
         Docker tabs (shells, logs) are created from the Docker manager inside the workspace. No manual tab setup needed.
       </p>
 
+      <!-- Task workspace: task-specific fields -->
+      <template v-else-if="isTask">
+        <label title="This text is written to TASK.md and sent as the initial prompt to the Worker agent.">
+          <span>Task assignment</span>
+          <textarea
+            v-model="draft.task.description"
+            rows="4"
+            placeholder="Describe the task for the Worker agent"
+            maxlength="5000"
+          />
+        </label>
+        <div class="grid">
+          <label>
+            <span>Max rounds</span>
+            <input v-model.number="draft.task.maxRounds" type="number" min="1" max="100" />
+          </label>
+        </div>
+        <label
+          title="Command used to launch the Worker agent. Add flags like --dangerously-skip-permissions or --mcp-config as needed."
+        >
+          <span>Worker command</span>
+          <input v-model="workerPanel.command" placeholder="claude" maxlength="500" />
+        </label>
+        <label
+          title="Command used to launch the Judge agent. Usually the same as Worker but can use a different model or configuration."
+        >
+          <span>Judge command</span>
+          <input v-model="judgePanel.command" placeholder="claude" maxlength="500" />
+        </label>
+        <p class="info-box">
+          Control files (TASK.md, TODO.md, FINISH_CRITERIA.md, WORK_LOCK) are managed automatically. Edit them in the
+          Dashboard.
+        </p>
+      </template>
+
       <!-- Terminal / Azure workspace: panel editor -->
       <template v-else>
         <p v-if="isAzure" class="info-box">
@@ -163,6 +198,15 @@ const draft = reactive(rawDraft);
 
 const isDocker = computed(() => draft.kind === "docker");
 const isAzure = computed(() => draft.kind === "azure" || draft.kind === "github");
+const isTask = computed(() => draft.kind === "task");
+
+// For task workspaces: direct references to worker/judge panels for editing
+const workerPanel = computed(
+  () => draft.panels?.find((p) => p.id === draft.task?.workerPanelId) || { command: "claude" },
+);
+const judgePanel = computed(
+  () => draft.panels?.find((p) => p.id === draft.task?.judgePanelId) || { command: "claude" },
+);
 
 async function browseCwd() {
   if (!api?.browseDirectory) return;
@@ -198,7 +242,7 @@ function handleSubmit() {
     notes: draft.notes.trim(),
   };
 
-  if (!isDocker.value) {
+  if (!isDocker.value && !isTask.value) {
     result.panels = draft.panels.map((panel) => ({
       ...panel,
       title: panel.title.trim() || APP_CONFIG.ui.defaultPanelTitle,

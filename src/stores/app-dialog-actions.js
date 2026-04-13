@@ -113,42 +113,42 @@ export function createDialogActions(ctx) {
 
   function openNewWorkspaceFlow() {
     const plugins = ctx.payload.value?.plugins || [];
-    const hasPluginTemplates = plugins.some((p) => p.workspaceDefaults && !p.error);
-    if (hasPluginTemplates) {
-      openDialog("NewWorkspacePicker", {
-        plugins,
-        onCancel: closeDialog,
-        onPickEmpty: () => {
-          closeDialog();
+    // Always show picker — it includes the Task Runner option alongside plugins and empty workspace
+    openDialog("NewWorkspacePicker", {
+      plugins,
+      onCancel: closeDialog,
+      onPickEmpty: () => {
+        closeDialog();
+        openWorkspaceDialog();
+      },
+      onPickTask: () => {
+        closeDialog();
+        openTaskWorkspaceDialog();
+      },
+      onPickPlugin: (pluginId) => {
+        closeDialog();
+        const plugin = plugins.find((p) => p.id === pluginId);
+        if (!plugin?.workspaceDefaults) {
           openWorkspaceDialog();
-        },
-        onPickPlugin: (pluginId) => {
-          closeDialog();
-          const plugin = plugins.find((p) => p.id === pluginId);
-          if (!plugin?.workspaceDefaults) {
-            openWorkspaceDialog();
-            return;
-          }
-          const tpl = plugin.workspaceDefaults;
-          const draft = {
-            id: `workspace-${crypto.randomUUID()}`,
-            name: tpl.name || plugin.name,
-            icon: tpl.icon || plugin.icon || "PL",
-            color: tpl.color || plugin.color || "#ffa424",
-            kind: tpl.kind || "terminal",
-            source: "plugin",
-            pluginId,
-            cwd: "",
-            notes: tpl.notes || "",
-            activePanelId: tpl.panels?.[0]?.id || "",
-            panels: (tpl.panels || []).map((panel) => ({ ...panel })),
-          };
-          openWorkspaceDialog(draft);
-        },
-      });
-      return;
-    }
-    openWorkspaceDialog();
+          return;
+        }
+        const tpl = plugin.workspaceDefaults;
+        const draft = {
+          id: `workspace-${crypto.randomUUID()}`,
+          name: tpl.name || plugin.name,
+          icon: tpl.icon || plugin.icon || "PL",
+          color: tpl.color || plugin.color || "#ffa424",
+          kind: tpl.kind || "terminal",
+          source: "plugin",
+          pluginId,
+          cwd: "",
+          notes: tpl.notes || "",
+          activePanelId: tpl.panels?.[0]?.id || "",
+          panels: (tpl.panels || []).map((panel) => ({ ...panel })),
+        };
+        openWorkspaceDialog(draft);
+      },
+    });
   }
 
   // --- Settings / help / profiles / azure connection dialogs -------------
@@ -304,6 +304,40 @@ export function createDialogActions(ctx) {
     });
   }
 
+  function openTaskWorkspaceDialog() {
+    const activeWorkspace = ctx.payload.value?.workspace;
+    openDialog("TaskWorkspaceDialog", {
+      initialCwd: activeWorkspace?.cwd || "",
+      onCancel: closeDialog,
+      onSubmit: async (config) => {
+        try {
+          const result = await ctx.getApi().createTaskWorkspace(config);
+          if (result?.payload) {
+            ctx.payload.value = result.payload;
+          }
+          closeDialog();
+          // Show warning if another task workspace uses the same directory
+          if (result?.cwdWarning) {
+            console.warn("[task-workspace] cwd conflict:", result.cwdWarning);
+            // Surface the warning via a notification so the user sees it
+            const notifStore = (await import("./notifications.js")).useNotificationStore();
+            notifStore.add({
+              title: "Task workspace warning",
+              body: result.cwdWarning,
+              kind: "warning",
+              workspaceId: result.workspaceId || "",
+              workspaceName: config.description || "Task workspace",
+              tabName: "",
+              viewId: "",
+            });
+          }
+        } catch (err) {
+          console.error("[task-workspace] create failed:", err);
+        }
+      },
+    });
+  }
+
   return {
     openDialog,
     closeDialog,
@@ -322,5 +356,6 @@ export function createDialogActions(ctx) {
     openGitHubQuickFixWizard,
     openQuickFixWizard,
     createWorktreeWithDialog,
+    openTaskWorkspaceDialog,
   };
 }

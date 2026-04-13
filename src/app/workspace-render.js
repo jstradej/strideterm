@@ -54,18 +54,24 @@ export function buildWorkspaceCards({
     const worktreeMerged = !isReviewChild && gitSnapshot?.branchMerged;
     const prStatus = prStatusInfo?.status || (worktreeMerged ? "completed" : null);
     const reviewProviderLabel = workspace.review?.provider === "github" ? "GitHub review" : "Azure review";
+    const taskState = workspace.task?.state;
+    const taskSummary = taskState
+      ? `${taskState === "running" ? "Running" : taskState === "evaluating" ? "Evaluating" : taskState === "judge-evaluating" ? "Judge evaluating" : taskState === "refreshing" ? "Refreshing" : taskState === "completed" ? "Completed" : taskState === "failed" ? "Failed" : taskState === "paused" ? "Paused" : "Idle"} \u00B7 R${workspace.task.currentRound || 0}/${workspace.task.maxRounds || 10}`
+      : null;
     const summary =
-      workspace.kind === "docker"
-        ? "Docker"
-        : workspace.kind === "azure"
-          ? `${workspace.cwd || "Azure inbox"}${workspace.panels?.length ? ` \u00B7 ${workspace.panels.length} review tabs` : ""}`
-          : workspace.kind === "github"
-            ? `${workspace.cwd || "GitHub inbox"}${workspace.panels?.length ? ` \u00B7 ${workspace.panels.length} review tabs` : ""}`
-            : isReviewChild
-              ? `${workspace.review?.pullRequest ? reviewProviderLabel : "New branch"} \u00B7 ${gitSnapshot?.branch || `${workspace.panels.length} tabs`}${gitSnapshot?.dirty ? ` \u00B7 ${gitSnapshot.dirtyCount} dirty` : ""}`
-              : gitSnapshot?.available
-                ? `${gitSnapshot.branch}${gitSnapshot.dirty ? ` \u00B7 ${gitSnapshot.dirtyCount} dirty` : ""}`
-                : `${workspace.panels.length} tabs`;
+      workspace.kind === "task" && taskSummary
+        ? taskSummary
+        : workspace.kind === "docker"
+          ? "Docker"
+          : workspace.kind === "azure"
+            ? `${workspace.cwd || "Azure inbox"}${workspace.panels?.length ? ` \u00B7 ${workspace.panels.length} review tabs` : ""}`
+            : workspace.kind === "github"
+              ? `${workspace.cwd || "GitHub inbox"}${workspace.panels?.length ? ` \u00B7 ${workspace.panels.length} review tabs` : ""}`
+              : isReviewChild
+                ? `${workspace.review?.pullRequest ? reviewProviderLabel : "New branch"} \u00B7 ${gitSnapshot?.branch || `${workspace.panels.length} tabs`}${gitSnapshot?.dirty ? ` \u00B7 ${gitSnapshot.dirtyCount} dirty` : ""}`
+                : gitSnapshot?.available
+                  ? `${gitSnapshot.branch}${gitSnapshot.dirty ? ` \u00B7 ${gitSnapshot.dirtyCount} dirty` : ""}`
+                  : `${workspace.panels.length} tabs`;
 
     return {
       id: workspace.id,
@@ -84,6 +90,7 @@ export function buildWorkspaceCards({
       isWorktree: (workspace.notes || "").startsWith("Worktree of ") || isReviewChild || isQuickFixChild,
       checksState,
       prStatus,
+      taskState: workspace.task?.state || null,
     };
   });
 }

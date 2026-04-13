@@ -15,6 +15,7 @@
 - **Git Integration** - branch info, dirty count, commit log, worktree creation, and Lazygit support
 - **Azure DevOps PR Review** - pull request inbox grouped by repo, managed review workspaces, AI agent integration (review + fix code), push & publish workflow, and MCP bridge — see [docs](docs/azure-devops-review.md)
 - **GitHub PR Review** - pull request inbox, managed review workspaces with local checkout, comment and review submission (Approve / Request Changes / Comment), push & publish workflow, and MCP bridge for AI agents — see [docs](docs/github-pr-review.md)
+- **Agent Task Runner** - supervised coding loop with Worker + Judge agents: auto-detects project verification commands, runs deterministic checks between rounds, git-aware judge evaluation, periodic context refresh (shower mode), and a Dashboard UI for monitoring progress — see [docs](docs/agent-task-runner.md)
 - **Docker Manager** - list containers, run actions, open shells, and stream logs
 - **Remote Access** - access your workspace from any device via LAN or Cloudflare tunnel with QR code
 - **Plugins** - extend functionality with plugins (Docker Ops and System Monitor built-in)

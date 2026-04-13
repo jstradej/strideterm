@@ -20,12 +20,7 @@ import { createAzureReviewStore } from "./azure-review-store.js";
 import { createReviewBridgeStore } from "./review-bridge-store.js";
 import { createAzureAuditLogStore } from "./azure-audit-log-store.js";
 import { buildReviewAgentLaunch, buildMcpServerSpec } from "./review-bridge-agent-launch.js";
-import {
-  AzureDevOpsManager,
-  normalizeConnectionInput,
-  normalizeReviewRoot,
-  shortPathKey,
-} from "./azure-devops-manager.js";
+import { AzureDevOpsManager, normalizeReviewRoot, shortPathKey } from "./azure-devops-manager.js";
 import { GitHubManager } from "./github-manager.js";
 import { createGitHubAuditLogStore } from "./github-audit-log-store.js";
 import { startNotifyServer, generateNotifySecret, buildNotifyUrl } from "./notify-server.js";
@@ -35,6 +30,28 @@ import {
   removeClaudeHook,
   detectClaudeHookStatus,
 } from "./claude-hook-config.js";
+import { AgentTaskRunner } from "./agent-task-runner.js";
+import { createProviderHandlers } from "./runtime-provider-handlers.js";
+import { createGitHandlers } from "./runtime-git-handlers.js";
+import {
+  clone,
+  findWorkspace,
+  createAttentionContext,
+  stripAnsi,
+  lastNonEmptyLine,
+  matchesPrompt,
+  matchesAgentIdle,
+  createSessionSignal,
+  detectTerminalEnvironment as detectTerminalEnvironmentImpl,
+  OSC133_COMMAND_FINISHED_RE,
+  AGENT_NAME_RE,
+  AGENT_OUTPUT_RE,
+  AGENT_OUTPUT_BURST_THRESHOLD,
+  HOOK_FALLBACK_SILENCE_MS,
+  ATTENTION_MIN_DISPLAY_MS,
+  ATTENTION_VISIBILITY_GRACE_MS,
+  WAITING_PATTERNS,
+} from "./runtime-utils.js";
 import { APP_CONFIG } from "../../config/app-config.js";
 import { createVersionChecker } from "./version-checker.js";
 import { initLogger, getLogger, setLogLevel, reconfigureLogger } from "./logger.js";
@@ -45,114 +62,7 @@ const require = createRequire(import.meta.url);
 const { version: packageVersion = "0.0.0" } = require("../../package.json");
 const reviewBridgeCliPath = fileURLToPath(new URL("./review-bridge-cli.js", import.meta.url));
 
-function clone(value) {
-  return structuredClone(value);
-}
-
-function findWorkspace(state, workspaceId) {
-  return state.workspaces.find((workspace) => workspace.id === workspaceId) || null;
-}
-
-function createAttentionContext() {
-  return {
-    visibleSessionIds: new Set(),
-    recentlyVisibleUntil: new Map(),
-  };
-}
-
-const ANSI_ESCAPE_RE = /\u001B\[[0-?]*[ -/]*[@-~]|\u001B\][^\u0007]*(?:\u0007|\u001B\\)|\u009B[0-?]*[ -/]*[@-~]/g;
-const OSC133_COMMAND_FINISHED_RE = /\u001B\]133;D/;
-const AGENT_NAME_RE = /\b(claude|codex|opencode|aider|gemini)\b/i;
-const AGENT_OUTPUT_RE = /\b(claude code|openai codex|codex|claude|gemini|aider|opencode)\b/i;
-const AGENT_OUTPUT_BURST_THRESHOLD = 10;
-// When hooks are active, bell/silence detection is suppressed. If no hook
-// arrives and the terminal is silent for this long, raise an alert anyway.
-const HOOK_FALLBACK_SILENCE_MS = 120_000; // 2 minutes
-const ATTENTION_MIN_DISPLAY_MS = 3_000;
-const ATTENTION_VISIBILITY_GRACE_MS = 5_000;
-const WAITING_PATTERNS = [
-  /\bwaiting for input\b/i,
-  /\bneeds your input\b/i,
-  /\brequires your input\b/i,
-  /\bpermission required\b/i,
-  /\bapproval required\b/i,
-  /\bapprove\b/i,
-  /\bpress enter\b/i,
-  /\bpress any key\b/i,
-  /\bcontinue\?\s*$/i,
-  /\bselect an option\b/i,
-  /\bchoose an option\b/i,
-  /\bwould you like to\b/i,
-  /\bdo you want to\b/i,
-  /\[[ yYnN/]+\]/,
-];
-
-function stripAnsi(value) {
-  return String(value || "").replaceAll(ANSI_ESCAPE_RE, "");
-}
-
-function lastNonEmptyLine(value) {
-  const lines = String(value || "")
-    .replaceAll("\r", "\n")
-    .split("\n");
-  for (let index = lines.length - 1; index >= 0; index -= 1) {
-    if (lines[index].trim()) {
-      return lines[index].trimEnd();
-    }
-  }
-  return "";
-}
-
-const PROMPT_PATTERNS_SAFE = [
-  /^PS [^\n>]{0,200}>\s*$/,
-  /^[A-Za-z]:[^\n]{0,180}>\s*$/,
-  /^(?:\([^)\n]{1,80}\)\s*)?[^$\n]{1,180}[$#]\s*$/,
-  /^(?:\([^)\n]{1,80}\)\s*)?.{0,180}[›❯➜]\s*$/,
-];
-
-function matchesPrompt(line) {
-  if (!line) {
-    return false;
-  }
-  return PROMPT_PATTERNS_SAFE.some((pattern) => pattern.test(line));
-}
-
-// Patterns that indicate an agent CLI is idle and waiting for user input.
-// Used as a secondary check after silence timeout to reduce false positives.
-const AGENT_IDLE_PATTERNS = [
-  /^\s*>\s*$/, // Claude Code idle prompt
-  /^\s*[$#>❯›➜]\s*$/, // Generic single-char prompts
-  /^\s*╭─/, // Claude Code boxed prompt start
-  /^\s*\$\s*$/, // Plain dollar prompt
-  ...PROMPT_PATTERNS_SAFE, // Also accept regular shell prompts (agent exited back to shell)
-];
-
-function matchesAgentIdle(line) {
-  if (!line) {
-    return true; // Empty line after silence = likely idle
-  }
-  return AGENT_IDLE_PATTERNS.some((pattern) => pattern.test(line.trimEnd()));
-}
-
-function createSessionSignal(sessionId) {
-  return {
-    sessionId,
-    busy: false,
-    waitingRaised: false,
-    agentLike: false,
-    hasUserInput: false,
-    outputBursts: 0,
-    promptTimer: null,
-    lastOutputLine: "",
-    // Start with cooldown active — when a session is first seen, its terminal
-    // replays the buffer which includes prompts. The cooldown prevents false
-    // alerts from this initial replay.
-    lastAlertAt: Date.now(),
-    // Timestamp of last alert received via agent notification hook.
-    // When > 0, silence-based detection is suppressed in favour of the hook.
-    lastHookAlertAt: 0,
-  };
-}
+// Utilities imported from runtime-utils.js
 
 function createTunnelOriginUrl(remoteConfig = {}) {
   const rawHost = String(remoteConfig.host || "").trim();
@@ -162,36 +72,8 @@ function createTunnelOriginUrl(remoteConfig = {}) {
   return `http://${formattedHost}:${remoteConfig.port}`;
 }
 
-function parseWindowsBuildNumber(release) {
-  const normalized = String(release || "").trim();
-  if (!normalized) {
-    return null;
-  }
-
-  const parts = normalized.split(".");
-  const buildNumber = Number.parseInt(parts[parts.length - 1], 10);
-  return Number.isInteger(buildNumber) ? buildNumber : null;
-}
-
-export function detectTerminalEnvironment({ platform = process.platform, release = os.release() } = {}) {
-  const environment = { platform };
-  if (platform !== "win32") {
-    return environment;
-  }
-
-  const buildNumber = parseWindowsBuildNumber(release);
-  if (!Number.isInteger(buildNumber)) {
-    return environment;
-  }
-
-  return {
-    ...environment,
-    windowsPty: {
-      backend: buildNumber >= 18309 ? "conpty" : "winpty",
-      buildNumber,
-    },
-  };
-}
+// Re-export for consumers that import from runtime.js
+export { detectTerminalEnvironmentImpl as detectTerminalEnvironment };
 
 function probeRemoteOrigin(originUrl, timeoutMs = 1200) {
   const target = new URL(originUrl);
@@ -262,7 +144,7 @@ export async function createRuntime({
   const createPluginManagerImpl = dependencies.createPluginManager || createPluginManager;
   const execFileTextImpl = dependencies.execFileText || execFileText;
   const checkRemoteOriginImpl = dependencies.checkRemoteOrigin || checkRemoteOrigin;
-  const getTerminalEnvironmentImpl = dependencies.getTerminalEnvironment || detectTerminalEnvironment;
+  const getTerminalEnvironmentImpl = dependencies.getTerminalEnvironment || detectTerminalEnvironmentImpl;
   const statePath = path.join(userDataPath, "strideterm-state.json");
   const credentialsPath = path.join(userDataPath, "credentials.json");
   const azureReviewPath = path.join(userDataPath, "azure-review.json");
@@ -292,6 +174,13 @@ export async function createRuntime({
   const sessions = new SessionManagerImpl({
     getSessionEnv: ({ workspace, sessionId }) => {
       const env = {};
+
+      // Disable Claude Code background/scheduled tasks in task workspaces.
+      // The task runner controls the lifecycle — autonomous background work
+      // would interfere with the worker/judge evaluation cycle.
+      if (workspace?.kind === "task") {
+        env.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS = "1";
+      }
 
       // Agent notification hook URL
       if (notifyServerHandle?.port && sessionId) {
@@ -325,15 +214,14 @@ export async function createRuntime({
       };
     },
     getSessionLaunch: ({ workspace, panel }) => {
+      // --- Review workspace: inject MCP bridge ---
       if (!["azure-devops", "github"].includes(workspace?.review?.provider)) {
         return null;
       }
 
-      // Build context from PR data if available, or minimal context for pre-PR workspaces
       let context = workspace.review.prKey ? reviewBridgeStore.getPullRequestContext?.(workspace.review.prKey) : null;
 
       if (!context) {
-        // Pre-PR workspace: provide minimal context with workspaceId for dynamic prKey resolution
         const rootPath = reviewBridgeStore.getRootPath?.() || "";
         if (!rootPath) return null;
         context = { rootPath, workspaceId: workspace.id, prKey: "" };
@@ -385,6 +273,9 @@ export async function createRuntime({
   let notifyServerHandle = null;
   let notifyServerStarting = false;
 
+  // --- Agent Task Runner ---
+  const taskRunner = new AgentTaskRunner();
+
   // --- Broadcast coalescing ---
   let broadcastScheduled = false;
 
@@ -397,22 +288,27 @@ export async function createRuntime({
   }
 
   function handleAgentHookNotification({ sessionId, notificationType }) {
-    log.debug("agent hook notification received", { sessionId, notificationType });
+    log.trace("agent hook notification received", { sessionId, notificationType });
     if (!sessionId) {
-      log.debug("hook ignored: no sessionId");
+      log.trace("hook ignored: no sessionId");
       return;
     }
     const signal = sessionSignals.get(sessionId);
     if (!signal) {
-      log.debug("hook ignored: no signal for session", { sessionId });
+      log.trace("hook ignored: no signal for session", { sessionId });
       return;
     }
     if (!signal.hasUserInput) {
-      log.debug("hook ignored: no user input yet", { sessionId });
+      log.trace("hook ignored: no user input yet", {
+        sessionId,
+        hasUserInput: signal.hasUserInput,
+        busy: signal.busy,
+        agentLike: signal.agentLike,
+      });
       return;
     }
     if (signal.waitingRaised) {
-      log.debug("hook ignored: waiting already raised", { sessionId });
+      log.trace("hook ignored: waiting already raised", { sessionId });
       return;
     }
 
@@ -440,6 +336,12 @@ export async function createRuntime({
 
     signal.lastHookAlertAt = now;
     cancelPromptTimer(signal);
+
+    // Task runner intercept: if session belongs to a running task, let task runner handle it
+    if (taskRunner.onAgentIdle(sessionId)) {
+      log.debug("hook handled by task runner", { sessionId });
+      return;
+    }
 
     if (isSessionVisible(sessionId)) {
       log.trace("hook: session visible, resetting signal", { sessionId });
@@ -1019,6 +921,7 @@ export async function createRuntime({
         enabled: notifyServerHandle != null,
         port: notifyServerHandle?.port || null,
       },
+      taskRunner: taskRunner.getTaskSnapshot(),
     };
   }
 
@@ -1031,6 +934,30 @@ export async function createRuntime({
       events.emit("state:updated", payload);
     });
   }
+
+  // --- Task runner init (needs broadcastState and sessions) ---
+  taskRunner.init({
+    writeToSession(sessionId, data) {
+      sessions.writeToSession(sessionId, data);
+      // Set signal so idle detection tracks the injected prompt correctly
+      const signal = sessionSignals.get(sessionId);
+      if (signal) {
+        signal.busy = true;
+        signal.hasUserInput = true;
+        signal.waitingRaised = false;
+      }
+    },
+    getState,
+    broadcastState,
+    raiseAlert({ projectId, panelId, sessionId, title, kind, detail }) {
+      addProjectAlert({ projectId, panelId, sessionId, title, kind, detail });
+      broadcastState();
+    },
+    async restartSession(sessionId) {
+      await sessions.restartSession(getState(), sessionId);
+      resetSessionSignal(sessionId);
+    },
+  });
 
   async function ensureRemoteOriginReady(remoteConfig) {
     const originUrl = createTunnelOriginUrl(remoteConfig);
@@ -1144,6 +1071,7 @@ export async function createRuntime({
     signal.busy = false;
     signal.waitingRaised = false;
     signal.outputBursts = 0;
+    signal.lastOutputAt = 0;
     signal.lastHookAlertAt = 0;
     if (wasBusy || wasWaiting) {
       log.trace("session signal reset", { sessionId, wasBusy, wasWaiting });
@@ -1234,7 +1162,7 @@ export async function createRuntime({
     return Boolean(
       project &&
       panel &&
-      project.kind === "terminal" &&
+      (project.kind === "terminal" || project.kind === "task") &&
       !isKnownPluginProject(project) &&
       !panel.launch?.file &&
       panel.shell !== false,
@@ -1294,7 +1222,9 @@ export async function createRuntime({
         const inCooldown = signal.lastAlertAt > 0 && now - signal.lastAlertAt < notifConfig.alertCooldownMs;
         if (signal.busy && !inCooldown) {
           cancelPromptTimer(signal);
-          if (isSessionVisible(payload.sessionId)) {
+          if (taskRunner.onAgentIdle(payload.sessionId)) {
+            log.trace("OSC 133;D: task runner handled idle", { sessionId: payload.sessionId });
+          } else if (isSessionVisible(payload.sessionId)) {
             log.trace("OSC 133;D: session visible, resetting", { sessionId: payload.sessionId });
             resetSessionSignal(payload.sessionId);
           } else {
@@ -1339,43 +1269,50 @@ export async function createRuntime({
 
         if (hooksEnabled) {
           // --- Hook-primary mode: suppress bell/silence, use 2min fallback ---
-          cancelPromptTimer(signal);
+          // Record output time; the self-rescheduling timer checks this lazily
+          // instead of cancel+restart on every PTY chunk.
+          signal.lastOutputAt = Date.now();
 
-          if (signal.busy && !inCooldown && signal.hasUserInput) {
-            log.trace("agent hook-primary: fallback timer started", {
-              sessionId: payload.sessionId,
-              fallbackMs: HOOK_FALLBACK_SILENCE_MS,
-            });
-            signal.promptTimer = setTimeout(() => {
-              signal.promptTimer = null;
-              if (isSessionVisible(payload.sessionId)) {
-                log.trace("agent hook-primary fallback: session visible, resetting", {
-                  sessionId: payload.sessionId,
-                });
-                resetSessionSignal(payload.sessionId);
+          if (signal.busy && !inCooldown && signal.hasUserInput && !signal.promptTimer) {
+            const sid = payload.sessionId;
+            signal.promptTimer = setTimeout(function hookFallbackCheck() {
+              const silentFor = Date.now() - (signal.lastOutputAt || 0);
+              if (silentFor < HOOK_FALLBACK_SILENCE_MS) {
+                // Output arrived recently — reschedule for the remaining silence window
+                signal.promptTimer = setTimeout(hookFallbackCheck, HOOK_FALLBACK_SILENCE_MS - silentFor);
                 return;
               }
+              signal.promptTimer = null;
               if (signal.lastOutputLine && !matchesAgentIdle(signal.lastOutputLine)) {
                 log.trace("agent hook-primary fallback: last line not idle", {
-                  sessionId: payload.sessionId,
+                  sessionId: sid,
                   lastOutputLine: signal.lastOutputLine,
                 });
                 return;
               }
+              // Task runner intercept BEFORE visibility check — task workspaces
+              // may be visible while the runner is actively waiting for idle.
+              if (taskRunner.onAgentIdle(sid)) {
+                log.trace("hook-fallback silence: task runner handled idle", { sessionId: sid });
+                return;
+              }
+              if (isSessionVisible(sid)) {
+                log.trace("agent hook-primary fallback: session visible, resetting", { sessionId: sid });
+                resetSessionSignal(sid);
+                return;
+              }
               log.info("agent hook-primary fallback: no hook arrived, raising alert", {
-                sessionId: payload.sessionId,
+                sessionId: sid,
                 fallbackMs: HOOK_FALLBACK_SILENCE_MS,
               });
               raiseWaitingAlert({
-                sessionId: payload.sessionId,
+                sessionId: sid,
                 projectId: descriptor.workspaceId,
                 panelId: descriptor.panelId,
                 title: panel?.title || descriptor.panelId,
                 detail: "hook-fallback",
               });
             }, HOOK_FALLBACK_SILENCE_MS);
-          } else if (inCooldown) {
-            log.trace("agent hook-primary: cooldown active", { sessionId: payload.sessionId });
           }
         } else {
           // --- No-hook fallback: bell + silence detection (original behavior) ---
@@ -1394,54 +1331,56 @@ export async function createRuntime({
               });
             }
           } else {
-            cancelPromptTimer(signal);
+            // Record output time; the self-rescheduling timer checks this lazily
+            // instead of cancel+restart on every PTY chunk.
+            signal.lastOutputAt = Date.now();
 
             const hookActive = signal.lastHookAlertAt > 0 && Date.now() - signal.lastHookAlertAt < 60_000;
 
-            if (signal.busy && !inCooldown && signal.hasUserInput && !hookActive) {
+            if (signal.busy && !inCooldown && signal.hasUserInput && !hookActive && !signal.promptTimer) {
               const quietMs =
                 signal.outputBursts >= AGENT_OUTPUT_BURST_THRESHOLD
                   ? notifConfig.agentQuietFastMs
                   : notifConfig.agentQuietMs;
-              log.trace("agent silence timer started", {
-                sessionId: payload.sessionId,
-                quietMs,
-                outputBursts: signal.outputBursts,
-              });
-              signal.promptTimer = setTimeout(() => {
+              const sid = payload.sessionId;
+              signal.promptTimer = setTimeout(function silenceCheck() {
+                const silentFor = Date.now() - (signal.lastOutputAt || 0);
+                if (silentFor < quietMs) {
+                  // Output arrived recently — reschedule for the remaining silence window
+                  signal.promptTimer = setTimeout(silenceCheck, quietMs - silentFor);
+                  return;
+                }
                 signal.promptTimer = null;
                 if (signal.lastOutputLine && !matchesAgentIdle(signal.lastOutputLine)) {
                   log.trace("agent silence expired but last line not idle", {
-                    sessionId: payload.sessionId,
+                    sessionId: sid,
                     lastOutputLine: signal.lastOutputLine,
                   });
                   return;
                 }
-                if (isSessionVisible(payload.sessionId)) {
-                  log.trace("agent silence: session visible, resetting", { sessionId: payload.sessionId });
-                  resetSessionSignal(payload.sessionId);
+                // Task runner intercept BEFORE visibility check
+                if (taskRunner.onAgentIdle(sid)) {
+                  log.trace("agent silence: task runner handled idle", { sessionId: sid });
+                  return;
+                }
+                if (isSessionVisible(sid)) {
+                  log.trace("agent silence: session visible, resetting", { sessionId: sid });
+                  resetSessionSignal(sid);
                   return;
                 }
                 log.debug("agent silence timer triggering alert", {
-                  sessionId: payload.sessionId,
+                  sessionId: sid,
                   quietMs,
                   lastOutputLine: signal.lastOutputLine,
                 });
                 raiseWaitingAlert({
-                  sessionId: payload.sessionId,
+                  sessionId: sid,
                   projectId: descriptor.workspaceId,
                   panelId: descriptor.panelId,
                   title: panel?.title || descriptor.panelId,
                   detail: "prompt-returned",
                 });
               }, quietMs);
-            } else if (hookActive) {
-              log.trace("agent silence: hook active, skipping timer", {
-                sessionId: payload.sessionId,
-                lastHookAlertAt: signal.lastHookAlertAt,
-              });
-            } else if (inCooldown) {
-              log.trace("agent silence: cooldown active", { sessionId: payload.sessionId });
             }
           }
         }
@@ -1510,6 +1449,8 @@ export async function createRuntime({
       exitCode: payload.exitCode,
       intentional: payload.intentional,
     });
+    // Notify task runner of session exit
+    taskRunner.onSessionExit(payload.sessionId);
     const descriptor = parseSessionId(payload.sessionId);
     const state = getState();
     const project = descriptor ? findWorkspace(state, descriptor.workspaceId) : null;
@@ -1814,7 +1755,51 @@ export async function createRuntime({
       .catch(() => {});
   }, 10_000);
 
+  // --- Extracted handler groups ---
+  const gitHandlers = createGitHandlers({
+    git,
+    store,
+    getPayload,
+    broadcastState,
+    refreshGit,
+    resolveGitWorkspace,
+    resolveGitConnection,
+    runGitWorkspaceAction,
+    syncWorktrees,
+  });
+
+  const providerHandlers = createProviderHandlers({
+    getState,
+    store,
+    azure,
+    github,
+    git,
+    sessions,
+    credentialStore,
+    auditLogStore,
+    githubAuditLogStore,
+    azureReviewStore,
+    reviewBridgeStore,
+    getPayload,
+    broadcastState,
+    refreshAzure,
+    refreshGitHub,
+    refreshGit,
+    ensureAzureWorkspace,
+    ensureGitHubWorkspace,
+    ensureVisibleSession,
+    scheduleAzurePolling,
+    scheduleGitHubPolling,
+    resolveGitWorkspace,
+    getAzureSettings,
+    getAzureConnections,
+    getGitHubSettings,
+    getGitHubConnections,
+  });
+
   return {
+    ...providerHandlers,
+    ...gitHandlers,
     on(channel, handler) {
       events.on(channel, handler);
       return () => events.off(channel, handler);
@@ -1926,6 +1911,12 @@ export async function createRuntime({
     async deleteWorkspace(workspaceId, options = {}) {
       const state = getState();
       const workspace = findWorkspace(state, workspaceId);
+
+      // Clean up task runner files for task workspaces
+      if (workspace?.kind === "task" && workspace.task?.taskId && workspace.cwd) {
+        taskRunner.stopTask(workspaceId);
+        await taskRunner.cleanupTaskFiles(workspace.cwd, workspace.task.taskId);
+      }
 
       await store.mutate((draft) => {
         draft.workspaces = draft.workspaces.filter((item) => item.id !== workspaceId);
@@ -2077,785 +2068,7 @@ export async function createRuntime({
       broadcastState();
       return { payload: getPayload(), remoteAccessChanged };
     },
-    async verifyAzureConnection(connection) {
-      return azure.verifyConnection(connection);
-    },
-    async saveAzureConnection(connection) {
-      const normalizedInput = normalizeConnectionInput(connection);
-      const connectionId = normalizedInput.id || `ado-${randomUUID()}`;
-      const tokenRef = connection.tokenRef || `cred:${connectionId}`;
-      const pat = connection.pat || credentialStore.getSecret(tokenRef);
-      const verification = await azure.verifyConnection({
-        ...normalizedInput,
-        pat,
-      });
-      const resolvedProfileId = connection.profileId || getState().activeProfileId || "default";
-      const normalizedConnection = {
-        id: connectionId,
-        label: String(normalizedInput.label || connectionId).trim(),
-        orgUrl: String(normalizedInput.orgUrl || "")
-          .trim()
-          .replace(/\/+$/, ""),
-        login: String(normalizedInput.login || "").trim(),
-        tokenRef,
-        enabled: normalizedInput.enabled !== false,
-        profileId: resolvedProfileId,
-        projectFilters: Array.isArray(normalizedInput.projectFilters) ? [...normalizedInput.projectFilters] : [],
-        repositoryFilters: Array.isArray(normalizedInput.repositoryFilters)
-          ? [...normalizedInput.repositoryFilters]
-          : [],
-        pollSeconds: Number(normalizedInput.pollSeconds) || getAzureSettings().defaultPollSeconds || 120,
-        reviewRoot: String(normalizedInput.reviewRoot || getAzureSettings().reviewRoot || "").trim(),
-      };
-
-      if (pat) {
-        await credentialStore.setSecret(tokenRef, pat);
-      }
-
-      await store.mutate((draft) => {
-        const azureSettings = draft.settings.integrations.azureDevops;
-        azureSettings.reviewRoot = normalizedConnection.reviewRoot || azureSettings.reviewRoot;
-        const index = azureSettings.connections.findIndex((entry) => entry.id === connectionId);
-        if (index >= 0) {
-          azureSettings.connections[index] = normalizedConnection;
-        } else {
-          azureSettings.connections.push(normalizedConnection);
-        }
-      });
-
-      await ensureAzureWorkspace();
-      await refreshAzure();
-      scheduleAzurePolling();
-      broadcastState();
-      return {
-        payload: getPayload(),
-        verification,
-      };
-    },
-    async deleteAzureConnection(connectionId) {
-      const connection = getAzureConnections().find((entry) => entry.id === connectionId);
-      if (connection?.tokenRef) {
-        await credentialStore.deleteSecret(connection.tokenRef);
-      }
-      await store.mutate((draft) => {
-        draft.settings.integrations.azureDevops.connections =
-          draft.settings.integrations.azureDevops.connections.filter((entry) => entry.id !== connectionId);
-      });
-      await refreshAzure();
-      scheduleAzurePolling();
-      broadcastState();
-      return getPayload();
-    },
-    async refreshAzureState() {
-      const activeWsId = getState().activeWorkspaceId;
-      await refreshGit(activeWsId);
-      await refreshAzure();
-      return getPayload();
-    },
-    queryAzureAuditLog(filters = {}) {
-      return auditLogStore.query(filters);
-    },
-    getAzureAuditStats(filters = {}) {
-      return auditLogStore.getStats(filters);
-    },
-    async markAzurePullRequestSeen(prKey) {
-      await azure.markPullRequestSeen(prKey);
-      return getPayload();
-    },
-    async openAzurePullRequest(payload) {
-      let result;
-      try {
-        result = await azure.openReviewWorkspace({
-          state: getState(),
-          prKey: payload.prKey,
-          workspaceId: payload.workspaceId || "",
-        });
-      } catch (err) {
-        const message = err instanceof Error ? err.message : err?.stderr || err?.error?.message || String(err);
-        throw new Error(message, { cause: err });
-      }
-      await store.mutate((draft) => {
-        const normalized = normalizeWorkspace(result.workspace);
-        const index = draft.workspaces.findIndex((entry) => entry.id === normalized.id);
-        if (index >= 0) {
-          draft.workspaces[index] = normalized;
-        } else {
-          draft.workspaces.push(normalized);
-        }
-        draft.activeWorkspaceId = normalized.id;
-      });
-      await refreshGit(result.workspace.id);
-      await azure.markPullRequestSeen(payload.prKey);
-      await refreshAzure();
-      sessions.syncWithState(getState());
-      ensureVisibleSession(result.workspace.id);
-      broadcastState();
-      return getPayload();
-    },
-    async commentAzurePullRequest(payload) {
-      await azure.addPullRequestComment(payload);
-      await refreshAzure();
-      return getPayload();
-    },
-    async updateAzureThreadStatus(payload) {
-      await azure.updateThreadStatus(payload);
-      await refreshAzure();
-      return getPayload();
-    },
-    async createReviewBridgeDraftComment(payload) {
-      await reviewBridgeStore.createDraftComment(payload);
-      broadcastState();
-      return getPayload();
-    },
-    async saveReviewBridgeDraft(payload) {
-      await reviewBridgeStore.saveDraftResponse(payload);
-      broadcastState();
-      return getPayload();
-    },
-    async queueReviewBridgeDraft(payload) {
-      await reviewBridgeStore.queueDraftResponse(payload);
-      broadcastState();
-      return getPayload();
-    },
-    async saveAgentPrompt(payload) {
-      reviewBridgeStore.saveAgentPrompt(payload);
-      broadcastState();
-      return getPayload();
-    },
-    async deleteAgentPrompt(payload) {
-      reviewBridgeStore.deleteAgentPrompt(payload.promptId);
-      broadcastState();
-      return getPayload();
-    },
-    async resetAgentPrompts() {
-      reviewBridgeStore.resetAgentPrompts();
-      broadcastState();
-      return getPayload();
-    },
-    async replyWithCodeChanges(payload) {
-      await reviewBridgeStore.replyWithCodeChanges(payload);
-      broadcastState();
-      return getPayload();
-    },
-    async deleteReviewBridgeComment(payload) {
-      await reviewBridgeStore.deleteComment(payload);
-      broadcastState();
-      return getPayload();
-    },
-    async deleteReviewBridgeDraft(payload) {
-      await reviewBridgeStore.deleteDraft(payload);
-      broadcastState();
-      return getPayload();
-    },
-    async syncReviewBridgePullRequest(payload) {
-      const prKey = String(payload?.prKey || "").trim();
-      if (!prKey) {
-        throw new Error("Pull request key is required.");
-      }
-      // Determine provider from prKey or current PR data
-      const prData = reviewBridgeStore.getPullRequestContext?.(prKey);
-      const isGitHub = prData?.provider === "github" || github.findSummary(prKey);
-      await reviewBridgeStore.syncPendingDrafts(prKey, async (entry) => {
-        if (isGitHub) {
-          await github.addPullRequestComment({ prKey, body: entry.body });
-        } else {
-          await azure.addPullRequestComment({
-            prKey,
-            content: entry.body,
-            threadId: entry.remoteThreadId,
-            parentCommentId: entry.parentCommentId || 0,
-          });
-        }
-        return {
-          publishedAt: new Date().toISOString(),
-          threadId: entry.remoteThreadId,
-        };
-      });
-      if (isGitHub) {
-        await refreshGitHub();
-      } else {
-        await refreshAzure();
-      }
-      broadcastState();
-      return getPayload();
-    },
-    async pushAndPublishReview(payload) {
-      const workspaceId = String(payload?.workspaceId || "").trim();
-      if (!workspaceId) {
-        throw new Error("Workspace ID is required.");
-      }
-      const state = getState();
-      const workspace = (state.workspaces || []).find((ws) => ws.id === workspaceId);
-      if (!workspace) {
-        throw new Error("Workspace was not found.");
-      }
-      const prKey = workspace.review?.prKey;
-      if (!prKey) {
-        throw new Error("This workspace is not associated with a pull request.");
-      }
-      // Count commits ahead of remote
-      const sourceBranch = String(
-        workspace.review?.pullRequest?.sourceRefName || workspace.review?.pullRequest?.sourceBranch || "",
-      ).replace(/^refs\/heads\//, "");
-      const aheadResult = await git
-        .execGit(workspace.cwd, ["rev-list", "--count", `refs/remotes/origin/${sourceBranch}..HEAD`])
-        .catch(() => ({ stdout: "0" }));
-      const commitCount = Number(aheadResult.stdout.trim()) || 0;
-      // Only check for uncommitted changes when there are commits to push
-      const provider = workspace.review?.provider;
-      if (commitCount > 0) {
-        const dirtyState = await git.getCachedWorktreeDirtyState(workspace.cwd);
-        if (dirtyState.dirty) {
-          throw new Error("You have uncommitted changes. Please commit or stash them before pushing.");
-        }
-        if (provider === "github") {
-          await github.pushReviewWorkspace({ workspace });
-        } else {
-          await azure.pushReviewWorkspace({ workspace });
-        }
-      }
-      const pushOk = true;
-      // Step 2: publish queued drafts (only if push succeeded)
-      let publishedCount = 0;
-      let publishError = "";
-      try {
-        await reviewBridgeStore.syncPendingDrafts(prKey, async (entry) => {
-          if (provider === "github") {
-            await github.addPullRequestComment({ prKey, body: entry.body });
-          } else {
-            await azure.addPullRequestComment({
-              prKey,
-              content: entry.body,
-              threadId: entry.remoteThreadId,
-              parentCommentId: entry.parentCommentId || 0,
-            });
-          }
-          publishedCount += 1;
-          return {
-            publishedAt: new Date().toISOString(),
-            threadId: entry.remoteThreadId,
-          };
-        });
-      } catch (error) {
-        publishError = error instanceof Error ? error.message : String(error || "Publish failed.");
-      }
-      await refreshGit(workspaceId);
-      if (provider === "github") {
-        await refreshGitHub();
-      } else {
-        await refreshAzure();
-      }
-      broadcastState();
-      const result = getPayload();
-      result.pushAndPublishResult = { commitCount, publishedCount, pushOk, publishError };
-      return result;
-    },
-    async voteAzurePullRequest(payload) {
-      await azure.setPullRequestVote(payload);
-      await refreshAzure();
-      return getPayload();
-    },
-    async rerunAzureCheck(prKey, checkItem) {
-      await azure.rerunCheck(prKey, checkItem);
-      broadcastState();
-      return getPayload();
-    },
-    async fetchAzureReviewWorkspace(workspaceId) {
-      const workspace = findWorkspace(getState(), workspaceId);
-      if (!workspace?.review) {
-        throw new Error("Azure review workspace not found.");
-      }
-      await azure.fetchReviewWorkspace({ workspace });
-      await refreshGit(workspaceId);
-      broadcastState();
-      return getPayload();
-    },
-    async rebaseAzureReviewWorkspace(workspaceId) {
-      const workspace = findWorkspace(getState(), workspaceId);
-      if (!workspace?.review) {
-        throw new Error("Azure review workspace not found.");
-      }
-      await azure.rebaseReviewWorkspace({ workspace });
-      await refreshGit(workspaceId);
-      broadcastState();
-      return getPayload();
-    },
-    async pushAzureReviewWorkspace(workspaceId, { force = false } = {}) {
-      const workspace = findWorkspace(getState(), workspaceId);
-      if (!workspace?.review) {
-        throw new Error("Azure review workspace not found.");
-      }
-      const dirtyState = await git.getCachedWorktreeDirtyState(workspace.cwd);
-      if (dirtyState.dirty) {
-        throw new Error(
-          `Cannot push: ${dirtyState.dirtyCount} uncommitted change${dirtyState.dirtyCount !== 1 ? "s" : ""} in the worktree. ` +
-            "Commit your changes first, then try again.",
-        );
-      }
-      const snapshot = git.getSnapshot(workspaceId);
-      await azure.pushReviewWorkspace({ workspace, force, branch: snapshot?.branch });
-      await refreshGit(workspaceId);
-      await refreshAzure();
-      return getPayload();
-    },
-
-    // --- GitHub ---
-
-    async verifyGitHubConnection(connection) {
-      return github.verifyConnection(connection);
-    },
-    async saveGitHubConnection(connection) {
-      const { normalizeConnectionInput: normalizeGH, deriveApiBaseUrl } = await import("./github-utils.js");
-      const normalizedInput = normalizeGH(connection);
-      const connectionId = normalizedInput.id || `gh-${randomUUID()}`;
-      const tokenRef = connection.tokenRef || `cred:${connectionId}`;
-      const pat = connection.pat || credentialStore.getSecret(tokenRef);
-      const verification = await github.verifyConnection({ ...normalizedInput, pat });
-      const resolvedProfileId = connection.profileId || getState().activeProfileId || "default";
-      const normalizedConnection = {
-        id: connectionId,
-        label: String(normalizedInput.label || connectionId).trim(),
-        hostUrl: String(normalizedInput.hostUrl || "https://github.com")
-          .trim()
-          .replace(/\/+$/, ""),
-        apiBaseUrl: normalizedInput.apiBaseUrl || deriveApiBaseUrl(normalizedInput.hostUrl),
-        currentUserLogin: verification.login || normalizedInput.currentUserLogin || "",
-        tokenRef,
-        enabled: normalizedInput.enabled !== false,
-        profileId: resolvedProfileId,
-        ownerFilters: Array.isArray(normalizedInput.ownerFilters) ? [...normalizedInput.ownerFilters] : [],
-        repositoryFilters: Array.isArray(normalizedInput.repositoryFilters)
-          ? [...normalizedInput.repositoryFilters]
-          : [],
-        pollSeconds: Number(normalizedInput.pollSeconds) || getGitHubSettings().defaultPollSeconds || 120,
-        reviewRoot: String(normalizedInput.reviewRoot || getGitHubSettings().reviewRoot || "").trim(),
-      };
-      if (pat) {
-        await credentialStore.setSecret(tokenRef, pat);
-      }
-      await store.mutate((draft) => {
-        const ghSettings = draft.settings.integrations.github;
-        ghSettings.reviewRoot = normalizedConnection.reviewRoot || ghSettings.reviewRoot;
-        const index = ghSettings.connections.findIndex((c) => c.id === connectionId);
-        if (index >= 0) {
-          ghSettings.connections[index] = normalizedConnection;
-        } else {
-          ghSettings.connections.push(normalizedConnection);
-        }
-      });
-      await ensureGitHubWorkspace();
-      await refreshGitHub();
-      scheduleGitHubPolling();
-      broadcastState();
-      return { payload: getPayload(), verification };
-    },
-    async deleteGitHubConnection(connectionId) {
-      const connection = getGitHubConnections().find((c) => c.id === connectionId);
-      if (connection?.tokenRef) {
-        await credentialStore.deleteSecret(connection.tokenRef);
-      }
-      await store.mutate((draft) => {
-        draft.settings.integrations.github.connections = draft.settings.integrations.github.connections.filter(
-          (c) => c.id !== connectionId,
-        );
-      });
-      await refreshGitHub();
-      scheduleGitHubPolling();
-      broadcastState();
-      return getPayload();
-    },
-    async refreshGitHubState() {
-      const activeWsId = getState().activeWorkspaceId;
-      await refreshGit(activeWsId);
-      await refreshGitHub();
-      return getPayload();
-    },
-    queryGitHubAuditLog(filters = {}) {
-      return githubAuditLogStore.query(filters);
-    },
-    getGitHubAuditStats(filters = {}) {
-      return githubAuditLogStore.getStats(filters);
-    },
-    async markGitHubPullRequestSeen(prKey) {
-      await github.markPullRequestSeen(prKey);
-      return getPayload();
-    },
-    async openGitHubPullRequest(payload) {
-      let result;
-      try {
-        result = await github.openReviewWorkspace({
-          state: getState(),
-          prKey: payload.prKey,
-          workspaceId: payload.workspaceId || "",
-        });
-      } catch (err) {
-        const message = err instanceof Error ? err.message : err?.stderr || err?.error?.message || String(err);
-        throw new Error(message, { cause: err });
-      }
-      await store.mutate((draft) => {
-        const normalized = normalizeWorkspace(result.workspace);
-        const index = draft.workspaces.findIndex((ws) => ws.id === normalized.id);
-        if (index >= 0) {
-          draft.workspaces[index] = normalized;
-        } else {
-          draft.workspaces.push(normalized);
-        }
-        draft.activeWorkspaceId = normalized.id;
-      });
-      await refreshGit(result.workspace.id);
-      await github.markPullRequestSeen(payload.prKey);
-      await refreshGitHub();
-      sessions.syncWithState(getState());
-      ensureVisibleSession(result.workspace.id);
-      broadcastState();
-      return getPayload();
-    },
-    async commentGitHubPullRequest(payload) {
-      await github.addPullRequestComment(payload);
-      await refreshGitHub();
-      return getPayload();
-    },
-    async submitGitHubPullRequestReview(payload) {
-      await github.submitPullRequestReview(payload);
-      await refreshGitHub();
-      return getPayload();
-    },
-    async rerunGitHubCheck(prKey, checkItem) {
-      await github.rerunCheck(prKey, checkItem);
-      broadcastState();
-      return getPayload();
-    },
-    async fetchGitHubReviewWorkspace(workspaceId) {
-      const workspace = findWorkspace(getState(), workspaceId);
-      if (!workspace?.review) throw new Error("GitHub review workspace not found.");
-      await github.fetchReviewWorkspace({ workspace });
-      await refreshGit(workspaceId);
-      broadcastState();
-      return getPayload();
-    },
-    async rebaseGitHubReviewWorkspace(workspaceId) {
-      const workspace = findWorkspace(getState(), workspaceId);
-      if (!workspace?.review) throw new Error("GitHub review workspace not found.");
-      await github.rebaseReviewWorkspace({ workspace });
-      await refreshGit(workspaceId);
-      broadcastState();
-      return getPayload();
-    },
-    async githubListRemoteBranches(payload) {
-      const workspace = resolveGitWorkspace(payload.workspaceId);
-      const connectionId =
-        workspace.connectionId || workspace.review?.connectionId || workspace.quickfix?.connectionId || "";
-      if (!connectionId) throw new Error("No GitHub connection associated with this workspace.");
-      const snapshot = git.getSnapshot(workspace.id);
-      const remoteUrl = snapshot?.remotes?.origin || "";
-      // Extract owner/repo from remote URL
-      const match = remoteUrl.match(/github\.com[/:]([^/]+)\/([^/.]+)/);
-      if (!match) throw new Error("Cannot determine GitHub owner/repo from remote URL.");
-      const branches = await github.listRemoteBranches(connectionId, match[1], match[2]);
-      return { branches };
-    },
-    async githubCreatePullRequest(payload = {}) {
-      const workspace = resolveGitWorkspace(payload.workspaceId);
-      const connectionId =
-        workspace.connectionId || workspace.review?.connectionId || workspace.quickfix?.connectionId || "";
-      if (!connectionId) throw new Error("No GitHub connection associated with this workspace.");
-      const snapshot = git.getSnapshot(workspace.id);
-      if (!snapshot?.available) throw new Error("Git workspace is unavailable.");
-      const remoteUrl = snapshot.remotes?.origin || "";
-      const match = remoteUrl.match(/github\.com[/:]([^/]+)\/([^/.]+)/);
-      if (!match) throw new Error("Cannot determine GitHub owner/repo from remote URL.");
-      const owner = match[1];
-      const repo = match[2];
-      const sourceBranch = payload.sourceBranch || snapshot.branch;
-      const result = await github.createPullRequestForWorkspace({
-        connectionId,
-        owner,
-        repo,
-        sourceBranch,
-        targetBranch: payload.targetBranch,
-        title: payload.title,
-        description: payload.description || "",
-        isDraft: payload.isDraft || false,
-      });
-
-      // Promote quickfix workspace → full review workspace after PR creation
-      if (workspace.quickfix && result.pullRequestNumber) {
-        const { createPullRequestKey: ghPrKey } = await import("./github-utils.js");
-        const prKey = ghPrKey(connectionId, owner, repo, result.pullRequestNumber);
-        await store.mutate((draft) => {
-          const ws = draft.workspaces.find((w) => w.id === workspace.id);
-          if (ws) {
-            ws.name = `${owner}/${repo} PR #${result.pullRequestNumber}`;
-            ws.review = {
-              ...(ws.review || {}),
-              provider: "github",
-              prKey,
-              connectionId,
-              hostUrl: ws.review?.hostUrl || "",
-              parentWorkspaceId: ws.review?.parentWorkspaceId || ws.quickfix?.parentWorkspaceId || "",
-              repository: { owner, name: repo, fullName: `${owner}/${repo}`, remoteUrl },
-              pullRequest: {
-                id: result.pullRequestNumber,
-                number: result.pullRequestNumber,
-                title: result.title || payload.title || "",
-                status: "open",
-                mergeStatus: "",
-                url: result.url || "",
-                webUrl: result.url || "",
-                sourceRefName: sourceBranch,
-                targetRefName: payload.targetBranch,
-              },
-              role: "author",
-              checkout: ws.review?.checkout || {
-                mode: "managed-worktree",
-                rootPath: workspace.cwd,
-                cacheRepoPath: "",
-              },
-            };
-            ws.quickfix = null;
-          }
-        });
-        await azureReviewStore.upsertTrackedPullRequest(prKey, {
-          reviewWorkspaceId: workspace.id,
-          lastSeenActivityAt: new Date().toISOString(),
-        });
-
-        // Seed PR summary into GitHub snapshot so ensurePullRequestDetail can find it
-        // (GitHub API may not return the new PR in inbox queries immediately)
-        github.seedPullRequestSummary(prKey, {
-          connectionId,
-          prKey,
-          repository: { owner, name: repo, fullName: `${owner}/${repo}`, remoteUrl },
-          pullRequest: {
-            id: result.pullRequestNumber,
-            number: result.pullRequestNumber,
-            title: result.title || payload.title || "",
-            status: "open",
-            mergeStatus: "",
-            url: result.url || "",
-            webUrl: result.url || "",
-            headSha: "",
-            sourceRefName: sourceBranch,
-            targetRefName: payload.targetBranch,
-          },
-          role: "author",
-          reviewWorkspaceId: workspace.id,
-          lastRemoteActivityAt: new Date().toISOString(),
-        });
-      }
-
-      await refreshGit(workspace.id);
-      await refreshGitHub();
-      broadcastState();
-      return { result, payload: getPayload() };
-    },
-    async githubQuickFixListRepos(payload) {
-      return { repositories: await github.listQuickFixRepositories(payload.connectionId) };
-    },
-    async githubQuickFixListBranches(payload) {
-      return { branches: await github.listQuickFixBranches(payload.connectionId, payload.owner, payload.repo) };
-    },
-    async githubQuickFixCreate(payload) {
-      const result = await github.openQuickFixWorkspace({
-        state: getState(),
-        connectionId: payload.connectionId,
-        owner: payload.owner,
-        repo: payload.repo,
-        remoteUrl: payload.remoteUrl,
-        baseBranch: payload.baseBranch,
-        newBranchName: payload.newBranchName,
-      });
-      await store.mutate((draft) => {
-        const normalized = normalizeWorkspace(result.workspace);
-        draft.workspaces.push(normalized);
-        draft.activeWorkspaceId = normalized.id;
-      });
-      await refreshGit(result.workspace.id);
-      sessions.syncWithState(getState());
-      ensureVisibleSession(result.workspace.id);
-      broadcastState();
-      return getPayload();
-    },
-    async pushGitHubReviewWorkspace(workspaceId, { force = false } = {}) {
-      const workspace = findWorkspace(getState(), workspaceId);
-      if (!workspace?.review) throw new Error("GitHub review workspace not found.");
-      const dirtyState = await git.getCachedWorktreeDirtyState(workspace.cwd);
-      if (dirtyState.dirty) {
-        throw new Error(
-          `Cannot push: ${dirtyState.dirtyCount} uncommitted change${dirtyState.dirtyCount !== 1 ? "s" : ""} in the worktree. ` +
-            "Commit your changes first, then try again.",
-        );
-      }
-      const snapshot = git.getSnapshot(workspaceId);
-      await github.pushReviewWorkspace({ workspace, force, branch: snapshot?.branch });
-      await refreshGit(workspaceId);
-      await refreshGitHub();
-      return getPayload();
-    },
-
-    async azureCreatePullRequest(payload = {}) {
-      const workspace = resolveGitWorkspace(payload.workspaceId);
-      const snapshot = git.getSnapshot(workspace.id);
-      if (!snapshot?.available) throw new Error("Git workspace is unavailable.");
-      const remoteUrl = snapshot.remotes?.origin || "";
-      if (!remoteUrl) throw new Error("No origin remote found for this workspace.");
-      const result = await azure.createPullRequestForWorkspace({
-        remoteUrl,
-        sourceBranch: payload.sourceBranch || snapshot.branch,
-        targetBranch: payload.targetBranch,
-        title: payload.title,
-        description: payload.description || "",
-        isDraft: payload.isDraft || false,
-        connectionId:
-          payload.connectionId ||
-          workspace.connectionId ||
-          workspace.review?.connectionId ||
-          workspace.quickfix?.connectionId ||
-          "",
-      });
-
-      // Promote quickfix workspace → full review workspace after PR creation
-      if (workspace.quickfix && result.pullRequestId) {
-        const qf = workspace.quickfix;
-        const prKey = azure.buildPrKey(qf.connectionId, qf.repositoryId, result.pullRequestId);
-        await store.mutate((draft) => {
-          const ws = draft.workspaces.find((w) => w.id === workspace.id);
-          if (ws) {
-            ws.name = `${qf.repositoryName} PR #${result.pullRequestId}`;
-            ws.review = {
-              ...(ws.review || {}),
-              provider: "azure-devops",
-              prKey,
-              connectionId: qf.connectionId,
-              orgUrl: ws.review?.orgUrl || "",
-              parentWorkspaceId: ws.review?.parentWorkspaceId || qf.parentWorkspaceId || "",
-              project: { id: "", name: qf.projectName },
-              repository: { id: qf.repositoryId, name: qf.repositoryName, remoteUrl: qf.remoteUrl },
-              pullRequest: {
-                id: result.pullRequestId,
-                title: result.title || payload.title || "",
-                status: "active",
-                mergeStatus: "",
-                url: result.url || "",
-                webUrl: result.url || "",
-                sourceRefName: `refs/heads/${payload.sourceBranch || snapshot.branch}`,
-                targetRefName: `refs/heads/${payload.targetBranch}`,
-              },
-              role: "author",
-              checkout: ws.review?.checkout || {
-                mode: "managed-worktree",
-                rootPath: workspace.cwd,
-                cacheRepoPath: "",
-              },
-            };
-            ws.quickfix = null;
-          }
-        });
-        await azure.reviewStore?.upsertTrackedPullRequest(prKey, {
-          reviewWorkspaceId: workspace.id,
-          lastSeenActivityAt: new Date().toISOString(),
-        });
-
-        // Seed PR summary into Azure snapshot so ensurePullRequestDetail can find it
-        azure.seedPullRequestSummary(prKey, {
-          connectionId: qf.connectionId,
-          prKey,
-          project: { id: "", name: qf.projectName },
-          repository: { id: qf.repositoryId, name: qf.repositoryName, remoteUrl: qf.remoteUrl },
-          pullRequest: {
-            id: result.pullRequestId,
-            title: result.title || payload.title || "",
-            status: "active",
-            mergeStatus: "",
-            url: result.url || "",
-            webUrl: result.url || "",
-            sourceRefName: `refs/heads/${payload.sourceBranch || snapshot.branch}`,
-            targetRefName: `refs/heads/${payload.targetBranch}`,
-          },
-          role: "author",
-          reviewWorkspaceId: workspace.id,
-          lastRemoteActivityAt: new Date().toISOString(),
-        });
-      }
-
-      await refreshGit(workspace.id);
-      await refreshAzure();
-      broadcastState();
-      return { payload: getPayload(), result };
-    },
-    async azureListRemoteBranches(payload = {}) {
-      const workspace = resolveGitWorkspace(payload.workspaceId);
-      const snapshot = git.getSnapshot(workspace.id);
-      if (!snapshot?.available) throw new Error("Git workspace is unavailable.");
-      const remoteUrl = snapshot.remotes?.origin || "";
-      if (!remoteUrl) throw new Error("No origin remote found for this workspace.");
-      const connection = azure.findConnectionForRemote(remoteUrl);
-      if (!connection) return { branches: [] };
-      const branches = await azure.listRemoteBranches(connection.id, remoteUrl);
-      return { branches };
-    },
-
-    // --- Quick Fix wizard endpoints -----------------------------------------
-    async azureQuickFixListProjects(payload = {}) {
-      return { projects: await azure.listQuickFixProjects(payload.connectionId) };
-    },
-    async azureQuickFixListRepositories(payload = {}) {
-      return { repositories: await azure.listQuickFixRepositories(payload.connectionId, payload.projectName) };
-    },
-    async azureQuickFixListBranches(payload = {}) {
-      return {
-        branches: await azure.listQuickFixBranches(payload.connectionId, payload.projectName, payload.repositoryId),
-      };
-    },
-    async azureQuickFixCreate(payload = {}) {
-      let result;
-      try {
-        result = await azure.openQuickFixWorkspace({
-          state: getState(),
-          connectionId: payload.connectionId,
-          projectName: payload.projectName,
-          repositoryId: payload.repositoryId,
-          repositoryName: payload.repositoryName,
-          remoteUrl: payload.remoteUrl,
-          baseBranch: payload.baseBranch,
-          newBranchName: payload.newBranchName,
-        });
-      } catch (err) {
-        const message = err instanceof Error ? err.message : err?.stderr || err?.error?.message || String(err);
-        throw new Error(message, { cause: err });
-      }
-      await store.mutate((draft) => {
-        const normalized = normalizeWorkspace(result.workspace);
-        // Insert after the Azure parent workspace and its existing children
-        const parentId = result.parentWorkspaceId;
-        if (parentId) {
-          let insertIdx = draft.workspaces.findIndex((ws) => ws.id === parentId);
-          if (insertIdx >= 0) {
-            insertIdx++;
-            while (insertIdx < draft.workspaces.length) {
-              const ws = draft.workspaces[insertIdx];
-              const isChild =
-                ws.review?.checkout?.mode === "managed-worktree" ||
-                ws.quickfix?.parentWorkspaceId === parentId ||
-                ((ws.notes || "").startsWith("Worktree of ") && ws.review?.parentWorkspaceId === parentId);
-              if (!isChild) break;
-              insertIdx++;
-            }
-            draft.workspaces.splice(insertIdx, 0, normalized);
-          } else {
-            draft.workspaces.push(normalized);
-          }
-        } else {
-          draft.workspaces.push(normalized);
-        }
-        draft.activeWorkspaceId = normalized.id;
-      });
-      await refreshGit(result.workspace.id);
-      sessions.syncWithState(getState());
-      ensureVisibleSession(result.workspace.id);
-      broadcastState();
-      return getPayload();
-    },
+    // Azure, GitHub, and Review Bridge handlers provided by providerHandlers (spread above)
 
     async regenerateRemoteToken() {
       await store.mutate((draft) => {
@@ -2883,6 +2096,8 @@ export async function createRuntime({
         log.debug("first user input recorded", { sessionId });
       }
       if (signal) signal.hasUserInput = true;
+      // Pause task runner if user types during active evaluation
+      taskRunner.onUserInput(sessionId);
       const descriptor = parseSessionId(sessionId);
       if (descriptor) {
         const current = projectAlerts.get(descriptor.workspaceId);
@@ -2915,6 +2130,7 @@ export async function createRuntime({
         cancelPromptTimer(signal);
         signal.busy = false;
         signal.waitingRaised = false;
+        signal.lastOutputAt = 0;
         signal.lastAlertAt = now;
       }
       broadcastState();
@@ -2972,116 +2188,8 @@ export async function createRuntime({
       await refreshDocker();
       return getPayload();
     },
-    async refreshGitState(projectId = null) {
-      await refreshGit(projectId);
-      broadcastState();
-      return getPayload();
-    },
-    async gitFetch(payload = {}) {
-      const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId);
-      const connection = resolveGitConnection(workspace);
-      return runGitWorkspaceAction(workspace, git.fetch(workspace, { connection }));
-    },
-    async gitPull(payload = {}) {
-      const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId);
-      const connection = resolveGitConnection(workspace);
-      return runGitWorkspaceAction(workspace, git.pull(workspace, { connection }));
-    },
-    async gitPush(payload = {}) {
-      const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId);
-      const connection = resolveGitConnection(workspace);
-      return runGitWorkspaceAction(workspace, git.push(workspace, { connection }));
-    },
-    async gitCheckoutBranch(payload = {}) {
-      const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId);
-      return runGitWorkspaceAction(workspace, git.checkoutBranch(workspace, payload));
-    },
-    async gitCreateBranch(payload = {}) {
-      const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId);
-      return runGitWorkspaceAction(workspace, git.createBranch(workspace, payload));
-    },
-    async gitMergeIntoCurrent(payload = {}) {
-      const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId);
-      return runGitWorkspaceAction(workspace, git.mergeIntoCurrent(workspace, payload));
-    },
-    async gitRebaseOnto(payload = {}) {
-      const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId);
-      return runGitWorkspaceAction(workspace, git.rebaseOnto(workspace, payload));
-    },
-    async gitContinueOperation(payload = {}) {
-      const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId);
-      return runGitWorkspaceAction(workspace, git.continueOperation(workspace));
-    },
-    async gitAbortOperation(payload = {}) {
-      const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId);
-      return runGitWorkspaceAction(workspace, git.abortOperation(workspace));
-    },
-    async gitDiffPreview(payload = {}) {
-      const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId);
-      return git.diffPreview(workspace, payload);
-    },
-    async gitMergeCurrentIntoBase(payload = {}) {
-      const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId);
-      const actionResult = await runGitWorkspaceAction(workspace, git.mergeCurrentIntoBase(workspace, payload));
-      if (actionResult.result?.ok) {
-        await store.mutate((draft) => {
-          const ws = draft.workspaces.find((w) => w.id === workspace.id);
-          if (ws) ws.branchMerged = true;
-        });
-        actionResult.payload = getPayload();
-      }
-      return actionResult;
-    },
-    async gitRemoveWorktree(payload = {}) {
-      const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId);
-      const result = await git.removeWorktree(workspace, payload);
-      await syncWorktrees();
-      return { payload: getPayload(), result };
-    },
-    async gitCommitAll(payload = {}) {
-      const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId);
-      return runGitWorkspaceAction(workspace, git.commitAll(workspace, payload));
-    },
-    async gitStash(payload = {}) {
-      const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId);
-      return runGitWorkspaceAction(workspace, git.stash(workspace, payload));
-    },
-    async gitStashPop(payload = {}) {
-      const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId);
-      return runGitWorkspaceAction(workspace, git.stashPop(workspace));
-    },
-    async gitCommitDiff(payload = {}) {
-      const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId);
-      return git.commitDiff(workspace, payload);
-    },
-    async gitListTags(payload = {}) {
-      const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId);
-      const connection = resolveGitConnection(workspace);
-      return git.listTags(workspace, { connection });
-    },
-    async gitCreateTag(payload = {}) {
-      const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId);
-      return runGitWorkspaceAction(workspace, git.createTag(workspace, payload));
-    },
-    async gitDeleteTag(payload = {}) {
-      const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId);
-      return runGitWorkspaceAction(workspace, git.deleteTag(workspace, payload));
-    },
-    async gitPushTag(payload = {}) {
-      const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId);
-      const connection = resolveGitConnection(workspace);
-      return runGitWorkspaceAction(workspace, git.pushTag(workspace, { ...payload, connection }));
-    },
-    async gitPushAllTags(payload = {}) {
-      const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId);
-      const connection = resolveGitConnection(workspace);
-      return runGitWorkspaceAction(workspace, git.pushAllTags(workspace, { connection }));
-    },
-    async gitDeleteRemoteTag(payload = {}) {
-      const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId);
-      const connection = resolveGitConnection(workspace);
-      return runGitWorkspaceAction(workspace, git.deleteRemoteTag(workspace, { ...payload, connection }));
-    },
+    // Git handlers provided by gitHandlers (spread above)
+
     async refreshTunnelState() {
       await tunnel.refreshAvailability();
       return getPayload();
@@ -3421,6 +2529,72 @@ export async function createRuntime({
       const result = await versionChecker.checkForUpdates(true);
       broadcastState();
       return result;
+    },
+
+    // --- Task runner API ---
+    async createTaskWorkspace(config) {
+      log.info("createTaskWorkspace", { cwd: config.cwd, hasDescription: !!config.description });
+      const state = getState();
+
+      // Check for other task workspaces with the same cwd that are currently active
+      const normalizedCwd = String(config.cwd || "")
+        .replace(/[\\/]+$/, "")
+        .toLowerCase();
+      const conflicting = state.workspaces.filter(
+        (ws) =>
+          ws.kind === "task" &&
+          ws.task &&
+          ws.task.state !== "idle" &&
+          String(ws.cwd || "")
+            .replace(/[\\/]+$/, "")
+            .toLowerCase() === normalizedCwd,
+      );
+      let cwdWarning = "";
+      if (conflicting.length > 0) {
+        cwdWarning = `Another task workspace ("${conflicting[0].name}") is active on the same directory. Running both may cause conflicts with tests and file operations.`;
+        log.warn("createTaskWorkspace: duplicate cwd detected", {
+          cwd: config.cwd,
+          conflictingWorkspaces: conflicting.map((ws) => ws.id),
+        });
+      }
+
+      const workspace = taskRunner.createTaskWorkspace({
+        state,
+        description: config.description,
+        cwd: config.cwd,
+        parentWorkspaceId: config.parentWorkspaceId,
+        maxRounds: config.maxRounds,
+      });
+      // Write task files immediately so they're available in the Dashboard
+      await taskRunner.writeInitialFiles(workspace.cwd, workspace.task);
+      // saveWorkspace normalizes and persists
+      await this.saveWorkspace(workspace);
+      // Activate the new workspace
+      await this.activateWorkspace(workspace.id);
+      return { workspaceId: workspace.id, cwdWarning, payload: getPayload() };
+    },
+    async startTask(workspaceId) {
+      const result = await taskRunner.startTask(workspaceId);
+      return { ok: result, payload: getPayload() };
+    },
+    stopTask(workspaceId) {
+      const result = taskRunner.stopTask(workspaceId);
+      return { ok: result, payload: getPayload() };
+    },
+    pauseTask(workspaceId) {
+      const result = taskRunner.pauseTask(workspaceId);
+      return { ok: result, payload: getPayload() };
+    },
+    resumeTask(workspaceId) {
+      const result = taskRunner.resumeTask(workspaceId);
+      return { ok: result, payload: getPayload() };
+    },
+    async resetTask(workspaceId) {
+      const result = await taskRunner.resetTask(workspaceId);
+      return { ok: result, payload: getPayload() };
+    },
+    getTaskStatus(workspaceId) {
+      return taskRunner.getTaskState(workspaceId);
     },
   };
 }

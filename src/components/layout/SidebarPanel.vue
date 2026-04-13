@@ -19,6 +19,8 @@
       @create-worktree="$emit('create-worktree', ws.id)"
       @edit="$emit('edit-workspace', ws.id)"
       @delete="$emit('delete-workspace', ws.id)"
+      @task-toggle="handleTaskToggle(ws)"
+      @task-stop="handleTaskStop(ws)"
     />
     <div v-if="suggestions.length" class="workspace-suggestions">
       <p class="eyebrow workspace-suggestions__title">Available plugins</p>
@@ -46,7 +48,7 @@
 </template>
 
 <script setup>
-import { computed, ref } from "vue";
+import { computed, ref, inject } from "vue";
 import { useAppStore } from "../../stores/app.js";
 import { useWorkspaceDragDrop } from "../../composables/useDragDrop.js";
 import { buildWorkspaceCards } from "../../app/workspace-render.js";
@@ -109,5 +111,41 @@ const emit = defineEmits(["create-worktree", "edit-workspace", "delete-workspace
 function onActivate(workspaceId) {
   store.activateWorkspace(workspaceId);
   emit("activate", workspaceId);
+}
+
+const api = inject("api");
+
+async function handleTaskToggle(ws) {
+  if (!api) return;
+  const taskState = ws.taskState;
+  try {
+    if (
+      taskState === "running" ||
+      taskState === "evaluating" ||
+      taskState === "judge-evaluating" ||
+      taskState === "refreshing"
+    ) {
+      const result = await api.pauseTask({ workspaceId: ws.id });
+      if (result?.payload) store.handleBroadcastPayload(result.payload);
+    } else if (taskState === "paused") {
+      const result = await api.resumeTask({ workspaceId: ws.id });
+      if (result?.payload) store.handleBroadcastPayload(result.payload);
+    } else {
+      const result = await api.startTask({ workspaceId: ws.id });
+      if (result?.payload) store.handleBroadcastPayload(result.payload);
+    }
+  } catch (err) {
+    console.error("[sidebar] task toggle failed:", err);
+  }
+}
+
+async function handleTaskStop(ws) {
+  if (!api) return;
+  try {
+    const result = await api.stopTask({ workspaceId: ws.id });
+    if (result?.payload) store.handleBroadcastPayload(result.payload);
+  } catch (err) {
+    console.error("[sidebar] task stop failed:", err);
+  }
 }
 </script>

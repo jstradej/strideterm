@@ -88,16 +88,29 @@ export function useNotificationCapture() {
           const hasUnread = alertViewId && notifStore.items.some((n) => !n.read && n.viewId === alertViewId);
           if (hasUnread) continue;
 
+          // Detect task-specific alerts (detail starts with "task-")
+          const isTaskAlert = typeof alert.detail === "string" && alert.detail.startsWith("task-");
+          const taskDetail = isTaskAlert ? alert.detail.replace(/^task-\w+:\s*/, "") : "";
+
+          let title;
           let body;
-          if (alert.kind === "waiting") {
+          if (isTaskAlert && alert.detail.startsWith("task-completed")) {
+            title = "Task completed";
+            body = taskDetail ? `${wsName}: ${taskDetail}` : `${wsName} task finished successfully.`;
+          } else if (isTaskAlert && alert.detail.startsWith("task-failed")) {
+            title = "Task failed";
+            body = taskDetail ? `${wsName}: ${taskDetail}` : `${wsName} task failed.`;
+          } else if (alert.kind === "waiting") {
+            title = "Waiting for input";
             body = `${tabName} in ${wsName} is waiting for input.`;
           } else {
+            title = "Task completed";
             const exitInfo = Number.isInteger(alert.exitCode) ? ` (exit ${alert.exitCode})` : "";
             body = `${tabName} in ${wsName} finished${exitInfo}.`;
           }
 
           const entry = notifStore.add({
-            title: alert.kind === "waiting" ? "Waiting for input" : "Task completed",
+            title,
             body,
             kind: alert.kind || "completed",
             workspaceId: wsId,

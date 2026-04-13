@@ -1,0 +1,471 @@
+<template>
+  <div class="workspace-pane__body workspace-pane__body--task-dashboard">
+    <div class="td">
+      <!-- Header with controls -->
+      <div class="td__header">
+        <div class="td__title">
+          <h2>{{ taskState?.description || "Task workspace" }}</h2>
+          <span class="td__badge" :class="`td__badge--${taskState?.state || 'idle'}`">
+            {{ stateLabel }}
+          </span>
+          <span v-if="['running', 'evaluating', 'refreshing'].includes(taskState?.state)" class="td__round">
+            Round {{ taskState?.currentRound || 0 }}/{{ taskState?.maxRounds || 10 }}
+          </span>
+          <span v-if="taskState?.startedAt && taskState.state !== 'idle'" class="td__elapsed" :title="elapsedTitle">
+            {{ elapsedFormatted }}
+          </span>
+        </div>
+        <div class="td__controls">
+          <button
+            v-if="
+              taskState?.state === 'idle' ||
+              taskState?.state === 'paused' ||
+              taskState?.state === 'completed' ||
+              taskState?.state === 'failed'
+            "
+            class="button button--sm"
+            @click="onStart"
+          >
+            {{ taskState?.state === "idle" ? "Start" : "Continue" }}
+          </button>
+          <button
+            v-if="
+              taskState?.state === 'running' ||
+              taskState?.state === 'evaluating' ||
+              taskState?.state === 'judge-evaluating'
+            "
+            class="button button--ghost button--sm"
+            @click="onPause"
+          >
+            Pause
+          </button>
+          <button v-if="taskState?.state !== 'idle'" class="button button--ghost button--sm" @click="onStop">
+            Stop
+          </button>
+          <button
+            v-if="taskState?.state === 'failed' || taskState?.state === 'completed'"
+            class="button button--ghost button--sm"
+            title="Reset rounds and start fresh"
+            @click="onReset"
+          >
+            Reset
+          </button>
+        </div>
+      </div>
+
+      <!-- Tab bar -->
+      <div class="td__tabs">
+        <button
+          v-for="t in tabs"
+          :key="t.id"
+          class="td__tab"
+          :class="{ 'td__tab--active': activeTab === t.id }"
+          @click="activeTab = t.id"
+        >
+          {{ t.label }}
+        </button>
+      </div>
+
+      <!-- Tab content -->
+      <div class="td__body">
+        <TaskDashboardHelpTab v-if="activeTab === 'help'" :task-id="taskState?.taskId" />
+
+        <TaskDashboardStatusTab
+          v-if="activeTab === 'status'"
+          :task-state="taskState"
+          :workspace-cwd="workspace?.cwd || ''"
+          :task-id="taskState?.taskId || ''"
+        />
+
+        <TaskDashboardFilesTab
+          v-if="activeTab === 'files'"
+          :task-files="files.taskFiles.value"
+          :active-file="files.activeFile.value"
+          :active-file-content="files.activeFileContent.value"
+          :active-file-dirty="files.activeFileDirty.value"
+          :editor-language="files.editorLanguage.value"
+          :file-loading="files.fileLoading.value"
+          :file-error="files.fileError.value"
+          :file-save-status="files.fileSaveStatus.value"
+          @switch-file="files.switchFile"
+          @mark-dirty="files.markFileDirty"
+          @save="files.saveActiveFile"
+          @reload="files.reloadActiveFile"
+          @update:active-file-content="(v) => (files.activeFileContent.value = v)"
+        />
+
+        <!-- CONFIG tab (small — stays inline) -->
+        <div v-if="activeTab === 'config'" class="td__section">
+          <label class="td__field">
+            <span>Task description</span>
+            <div class="td__value">{{ taskState?.description || "(none — instruct the Worker directly)" }}</div>
+          </label>
+          <label class="td__field">
+            <span>Max rounds</span>
+            <div class="td__value">{{ taskState?.maxRounds || 10 }}</div>
+          </label>
+          <label class="td__field">
+            <span>Finish criteria</span>
+            <div class="td__value">
+              Defined in <strong>FINISH_CRITERIA.md</strong> &mdash;
+              <button
+                class="td__link-btn"
+                @click="
+                  activeTab = 'files';
+                  files.switchFile('FINISH_CRITERIA.md');
+                "
+              >
+                edit in Files tab
+              </button>
+            </div>
+          </label>
+        </div>
+      </div>
+    </div>
+  </div>
+</template>
+
+<script setup>
+import { ref, computed, inject, watch, onUnmounted } from "vue";
+import { useAppStore } from "../../stores/app.js";
+import { useTaskFiles } from "../../composables/useTaskFiles.js";
+import TaskDashboardHelpTab from "./TaskDashboardHelpTab.vue";
+import TaskDashboardStatusTab from "./TaskDashboardStatusTab.vue";
+import TaskDashboardFilesTab from "./TaskDashboardFilesTab.vue";
+
+defineProps({
+  workspaceId: { type: String, required: true },
+  showHeader: { type: Boolean, default: false },
+});
+
+const store = useAppStore();
+const api = inject("api");
+const activeTab = ref("status");
+
+const tabs = [
+  { id: "status", label: "Status" },
+  { id: "files", label: "Files" },
+  { id: "config", label: "Config" },
+  { id: "help", label: "Help" },
+];
+
+const workspace = computed(() => store.activeWorkspace);
+const taskState = computed(() => workspace.value?.task || null);
+
+// File editing — delegated to composable
+const files = useTaskFiles(api, workspace, taskState);
+
+const stateLabel = computed(() => {
+  const s = taskState.value?.state;
+  if (s === "running") return "Running";
+  if (s === "evaluating") return "Evaluating";
+  if (s === "judge-evaluating") return "Judge evaluating";
+  if (s === "refreshing") return "Refreshing context";
+  if (s === "completed") return "Completed";
+  if (s === "failed") return "Failed";
+  if (s === "paused") return "Paused";
+  return "Idle";
+});
+
+// ── Elapsed timer ───────────────────────────────────────────────
+const ACTIVE_STATES = new Set(["running", "evaluating", "judge-evaluating", "refreshing"]);
+const elapsedMs = ref(0);
+let elapsedTimer = null;
+
+function updateElapsed() {
+  const ts = taskState.value;
+  if (!ts?.startedAt) {
+    elapsedMs.value = 0;
+    return;
+  }
+  const paused = ts.totalPausedMs || 0;
+  if (ts.finishedAt) {
+    elapsedMs.value = ts.finishedAt - ts.startedAt - paused;
+  } else if (ts.pausedAt) {
+    elapsedMs.value = ts.pausedAt - ts.startedAt - paused;
+  } else {
+    elapsedMs.value = Date.now() - ts.startedAt - paused;
+  }
+}
+
+function startElapsedTimer() {
+  stopElapsedTimer();
+  updateElapsed();
+  elapsedTimer = setInterval(updateElapsed, 1000);
+}
+
+function stopElapsedTimer() {
+  if (elapsedTimer) {
+    clearInterval(elapsedTimer);
+    elapsedTimer = null;
+  }
+}
+
+watch(
+  () => taskState.value?.state,
+  (state) => {
+    if (ACTIVE_STATES.has(state)) {
+      startElapsedTimer();
+    } else {
+      updateElapsed();
+      stopElapsedTimer();
+    }
+  },
+  { immediate: true },
+);
+
+onUnmounted(stopElapsedTimer);
+
+const elapsedFormatted = computed(() => {
+  const ms = elapsedMs.value;
+  if (ms <= 0) return "";
+  const totalSecs = Math.floor(ms / 1000);
+  const h = Math.floor(totalSecs / 3600);
+  const m = Math.floor((totalSecs % 3600) / 60);
+  const s = totalSecs % 60;
+  if (h > 0) return `${h}h ${String(m).padStart(2, "0")}m`;
+  if (m > 0) return `${m}:${String(s).padStart(2, "0")}`;
+  return `${s}s`;
+});
+
+const elapsedTitle = computed(() => {
+  const ts = taskState.value;
+  if (!ts?.startedAt) return "";
+  const started = new Date(ts.startedAt).toLocaleTimeString();
+  if (ts.finishedAt) {
+    const ended = new Date(ts.finishedAt).toLocaleTimeString();
+    return `Started ${started}, ended ${ended}`;
+  }
+  return `Started ${started}`;
+});
+
+// Auto-switch to Status tab when task starts running
+watch(
+  () => taskState.value?.state,
+  (state, prev) => {
+    if (state === "running" && (!prev || prev === "idle")) {
+      activeTab.value = "status";
+    }
+  },
+);
+
+// Auto-load first file when switching to Files tab
+watch(activeTab, (tab) => {
+  if (tab === "files" && !(files.activeFile.value in files.fileContents.value)) {
+    files.loadFile(files.activeFile.value);
+  }
+});
+
+function wsId() {
+  return workspace.value?.id;
+}
+
+async function onStart() {
+  const id = wsId();
+  if (!api || !id) return;
+  try {
+    const s = taskState.value?.state;
+    if (s === "paused" || s === "completed" || s === "failed") {
+      const r = await api.resumeTask({ workspaceId: id });
+      if (r?.payload) store.handleBroadcastPayload(r.payload);
+    } else {
+      const r = await api.startTask({ workspaceId: id });
+      if (r?.payload) store.handleBroadcastPayload(r.payload);
+    }
+    activeTab.value = "status";
+  } catch (err) {
+    console.error("[task-dashboard] start/resume failed:", err);
+  }
+}
+
+async function onPause() {
+  const id = wsId();
+  if (!api || !id) return;
+  try {
+    const r = await api.pauseTask({ workspaceId: id });
+    if (r?.payload) store.handleBroadcastPayload(r.payload);
+  } catch (err) {
+    console.error("[task-dashboard] pause failed:", err);
+  }
+}
+
+async function onStop() {
+  const id = wsId();
+  if (!api || !id) return;
+  try {
+    const r = await api.stopTask({ workspaceId: id });
+    if (r?.payload) store.handleBroadcastPayload(r.payload);
+  } catch (err) {
+    console.error("[task-dashboard] stop failed:", err);
+  }
+}
+
+async function onReset() {
+  const id = wsId();
+  if (!api || !id) return;
+  try {
+    const r = await api.resetTask({ workspaceId: id });
+    if (r?.payload) store.handleBroadcastPayload(r.payload);
+    activeTab.value = "files";
+  } catch (err) {
+    console.error("[task-dashboard] reset failed:", err);
+  }
+}
+</script>
+
+<style scoped>
+.td {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+  color: var(--fg, #ccc);
+  font-size: 13px;
+}
+.td__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  padding: 12px 16px;
+  gap: 12px;
+  border-bottom: 1px solid var(--border, #333);
+}
+.td__title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+.td__title h2 {
+  font-size: 14px;
+  font-weight: 600;
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 350px;
+}
+.td__badge {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  padding: 2px 6px;
+  border-radius: 3px;
+  letter-spacing: 0.04em;
+}
+.td__badge--idle {
+  background: #555;
+  color: #aaa;
+}
+.td__badge--running {
+  background: #1b5e20;
+  color: #a5d6a7;
+}
+.td__badge--evaluating,
+.td__badge--judge-evaluating {
+  background: #e65100;
+  color: #ffcc80;
+}
+.td__badge--completed {
+  background: #004d40;
+  color: #80cbc4;
+}
+.td__badge--failed {
+  background: #b71c1c;
+  color: #ef9a9a;
+}
+.td__badge--refreshing {
+  background: #0d47a1;
+  color: #90caf9;
+}
+.td__badge--paused {
+  background: #4a148c;
+  color: #ce93d8;
+}
+.td__round {
+  font-size: 11px;
+  opacity: 0.6;
+}
+.td__elapsed {
+  font-size: 11px;
+  font-family: monospace;
+  color: var(--muted, #888);
+  background: rgba(255, 255, 255, 0.04);
+  padding: 1px 6px;
+  border-radius: 3px;
+  letter-spacing: 0.02em;
+}
+.td__controls {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+.td__tabs {
+  display: flex;
+  border-bottom: 1px solid var(--border, #333);
+  padding: 0 16px;
+}
+.td__tab {
+  background: none;
+  border: none;
+  color: var(--muted, #888);
+  font-size: 12px;
+  padding: 6px 12px;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  transition:
+    color 0.15s,
+    border-color 0.15s;
+}
+.td__tab:hover {
+  color: var(--fg, #ccc);
+}
+.td__tab--active {
+  color: var(--fg, #ccc);
+  border-bottom-color: var(--accent, #7c4dff);
+}
+.td__body {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 16px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.15) transparent;
+}
+.td__body::-webkit-scrollbar {
+  width: 6px;
+}
+.td__body::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.15);
+  border-radius: 3px;
+}
+.td__field {
+  display: block;
+  margin-bottom: 12px;
+}
+.td__field > span {
+  display: block;
+  font-weight: 600;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  opacity: 0.6;
+  margin-bottom: 3px;
+}
+.td__value {
+  line-height: 1.5;
+}
+.td__link-btn {
+  background: none;
+  border: none;
+  color: var(--accent, #7c4dff);
+  cursor: pointer;
+  font-size: inherit;
+  text-decoration: underline;
+  padding: 0;
+}
+.td__link-btn:hover {
+  opacity: 0.8;
+}
+</style>

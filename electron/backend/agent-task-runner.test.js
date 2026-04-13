@@ -1,0 +1,413 @@
+import { describe, expect, test, vi, beforeEach } from "vitest";
+import { AgentTaskRunner, parseFinishCriteriaMd, checkCommandSafety } from "./agent-task-runner.js";
+
+function createMockDeps(workspaces = []) {
+  const written = [];
+  const alerts = [];
+  let broadcastCount = 0;
+
+  return {
+    writeToSession: vi.fn((sessionId, data) => written.push({ sessionId, data })),
+    getState: () => ({ workspaces, activeProfileId: "default" }),
+    broadcastState: vi.fn(() => broadcastCount++),
+    raiseAlert: vi.fn((alert) => alerts.push(alert)),
+    restartSession: vi.fn(async () => {}),
+    written,
+    alerts,
+    get broadcastCount() {
+      return broadcastCount;
+    },
+  };
+}
+
+function createTaskWorkspace(runner, overrides = {}) {
+  const ws = runner.createTaskWorkspace({
+    state: { activeProfileId: "default" },
+    description: overrides.description || "Implement feature X",
+    cwd: overrides.cwd || "/tmp/test-project",
+    parentWorkspaceId: "",
+    maxRounds: overrides.maxRounds || 3,
+  });
+  return ws;
+}
+
+describe("AgentTaskRunner", () => {
+  let runner;
+  let deps;
+  let workspace;
+
+  beforeEach(() => {
+    runner = new AgentTaskRunner();
+    workspace = createTaskWorkspace(runner);
+    deps = createMockDeps([workspace]);
+    runner.init(deps);
+  });
+
+  describe("createTaskWorkspace", () => {
+    test("creates workspace with correct structure", () => {
+      expect(workspace.kind).toBe("task");
+      expect(workspace.panels).toHaveLength(3);
+      expect(workspace.panels[0].title).toBe("Dashboard");
+      expect(workspace.panels[0].command).toBe("__task-dashboard__");
+      expect(workspace.panels[1].title).toBe("Worker");
+      expect(workspace.panels[1].command).toBe("claude --dangerously-skip-permissions --model sonnet");
+      expect(workspace.panels[2].title).toBe("Judge");
+      expect(workspace.task).toBeDefined();
+      expect(workspace.task.state).toBe("idle");
+      expect(workspace.task.maxRounds).toBe(3);
+      expect(workspace.task.workerPanelId).toBe(workspace.panels[1].id);
+      expect(workspace.task.judgePanelId).toBe(workspace.panels[2].id);
+    });
+
+    test("truncates long descriptions in workspace name", () => {
+      const ws = createTaskWorkspace(runner, {
+        description: "A very long task description that exceeds the fifty character limit for names",
+      });
+      expect(ws.name.length).toBeLessThanOrEqual(50);
+      expect(ws.name).toContain("...");
+    });
+  });
+
+  describe("task lifecycle", () => {
+    test("stopTask sets state to idle", () => {
+      workspace.task.state = "running";
+      const result = runner.stopTask(workspace.id);
+      expect(result).toBe(true);
+      expect(workspace.task.state).toBe("idle");
+    });
+
+    test("stopTask returns false for non-task workspace", () => {
+      const result = runner.stopTask("nonexistent");
+      expect(result).toBe(false);
+    });
+
+    test("pauseTask pauses a running task", () => {
+      workspace.task.state = "running";
+      const result = runner.pauseTask(workspace.id);
+      expect(result).toBe(true);
+      expect(workspace.task.state).toBe("paused");
+    });
+
+    test("pauseTask pauses during judge-evaluating", () => {
+      workspace.task.state = "judge-evaluating";
+      const result = runner.pauseTask(workspace.id);
+      expect(result).toBe(true);
+      expect(workspace.task.state).toBe("paused");
+    });
+
+    test("pauseTask pauses during refreshing", () => {
+      workspace.task.state = "refreshing";
+      const result = runner.pauseTask(workspace.id);
+      expect(result).toBe(true);
+      expect(workspace.task.state).toBe("paused");
+    });
+
+    test("pauseTask returns false if not running", () => {
+      workspace.task.state = "idle";
+      const result = runner.pauseTask(workspace.id);
+      expect(result).toBe(false);
+    });
+
+    test("resumeTask resumes a paused task", () => {
+      workspace.task.state = "paused";
+      const result = runner.resumeTask(workspace.id);
+      expect(result).toBe(true);
+      expect(workspace.task.state).toBe("running");
+    });
+
+    test("resumeTask returns false if not paused", () => {
+      workspace.task.state = "running";
+      const result = runner.resumeTask(workspace.id);
+      expect(result).toBe(false);
+    });
+  });
+
+  describe("onAgentIdle", () => {
+    test("returns false for non-task session", () => {
+      const result = runner.onAgentIdle("someWorkspace:somePanel");
+      expect(result).toBe(false);
+    });
+
+    test("returns false if task is not running", () => {
+      workspace.task.state = "idle";
+      const sessionId = `${workspace.id}:${workspace.task.workerPanelId}`;
+      const result = runner.onAgentIdle(sessionId);
+      expect(result).toBe(false);
+    });
+
+    test("returns true for worker session in running state", () => {
+      workspace.task.state = "running";
+      const sessionId = `${workspace.id}:${workspace.task.workerPanelId}`;
+      const result = runner.onAgentIdle(sessionId);
+      expect(result).toBe(true);
+    });
+
+    test("returns true for judge session in judge-evaluating state", () => {
+      workspace.task.state = "judge-evaluating";
+      const sessionId = `${workspace.id}:${workspace.task.judgePanelId}`;
+      const result = runner.onAgentIdle(sessionId);
+      expect(result).toBe(true);
+    });
+
+    test("returns false for judge session when not judge-evaluating", () => {
+      workspace.task.state = "running";
+      const sessionId = `${workspace.id}:${workspace.task.judgePanelId}`;
+      const result = runner.onAgentIdle(sessionId);
+      expect(result).toBe(false);
+    });
+  });
+
+  describe("onSessionExit", () => {
+    test("pauses task when worker session exits", () => {
+      workspace.task.state = "running";
+      const sessionId = `${workspace.id}:${workspace.task.workerPanelId}`;
+      runner.onSessionExit(sessionId);
+      expect(workspace.task.state).toBe("paused");
+    });
+
+    test("does not pause for judge session exit", () => {
+      workspace.task.state = "running";
+      const sessionId = `${workspace.id}:${workspace.task.judgePanelId}`;
+      runner.onSessionExit(sessionId);
+      expect(workspace.task.state).toBe("running");
+    });
+
+    test("does not pause if task is not running", () => {
+      workspace.task.state = "idle";
+      const sessionId = `${workspace.id}:${workspace.task.workerPanelId}`;
+      runner.onSessionExit(sessionId);
+      expect(workspace.task.state).toBe("idle");
+    });
+  });
+
+  describe("onUserInput", () => {
+    test("pauses task during evaluation", () => {
+      workspace.task.state = "evaluating";
+      const sessionId = `${workspace.id}:${workspace.task.workerPanelId}`;
+      runner.onUserInput(sessionId);
+      expect(workspace.task.state).toBe("paused");
+    });
+
+    test("pauses task during judge evaluation", () => {
+      workspace.task.state = "judge-evaluating";
+      const sessionId = `${workspace.id}:${workspace.task.judgePanelId}`;
+      runner.onUserInput(sessionId);
+      expect(workspace.task.state).toBe("paused");
+    });
+
+    test("does not pause during running (worker is working)", () => {
+      workspace.task.state = "running";
+      const sessionId = `${workspace.id}:${workspace.task.workerPanelId}`;
+      runner.onUserInput(sessionId);
+      expect(workspace.task.state).toBe("running");
+    });
+  });
+
+  describe("getTaskSnapshot", () => {
+    test("returns empty object when no task workspaces", () => {
+      const runner2 = new AgentTaskRunner();
+      runner2.init(createMockDeps([]));
+      expect(runner2.getTaskSnapshot()).toEqual({});
+    });
+
+    test("returns task state for task workspaces", () => {
+      workspace.task.state = "running";
+      workspace.task.currentRound = 2;
+      const snapshot = runner.getTaskSnapshot();
+      expect(snapshot[workspace.id]).toBeDefined();
+      expect(snapshot[workspace.id].state).toBe("running");
+      expect(snapshot[workspace.id].currentRound).toBe(2);
+      expect(snapshot[workspace.id].workerPanelId).toBe(workspace.task.workerPanelId);
+      expect(snapshot[workspace.id].judgePanelId).toBe(workspace.task.judgePanelId);
+    });
+  });
+
+  describe("getTaskState", () => {
+    test("returns task state for valid workspace", () => {
+      const state = runner.getTaskState(workspace.id);
+      expect(state).toBeDefined();
+      expect(state.description).toBe("Implement feature X");
+    });
+
+    test("returns null for non-task workspace", () => {
+      const state = runner.getTaskState("nonexistent");
+      expect(state).toBeNull();
+    });
+  });
+});
+
+describe("parseFinishCriteriaMd", () => {
+  test("parses verify commands with label and command", () => {
+    const result = parseFinishCriteriaMd(`# Finish Criteria
+
+## Verify Commands
+- Tests: \`npm test\`
+- Lint: \`npm run lint\`
+`);
+    expect(result.verifyCommands).toHaveLength(2);
+    expect(result.verifyCommands[0]).toEqual({ label: "Tests", command: "npm test", timeoutMs: 60_000 });
+    expect(result.verifyCommands[1]).toEqual({ label: "Lint", command: "npm run lint", timeoutMs: 60_000 });
+  });
+
+  test("parses timeout from command line", () => {
+    const result = parseFinishCriteriaMd(`## Verify Commands
+- Build: \`npm run build\` (timeout: 120s)
+`);
+    expect(result.verifyCommands[0].timeoutMs).toBe(120_000);
+  });
+
+  test("parses required and forbidden files", () => {
+    const result = parseFinishCriteriaMd(`## Required Files
+- src/hello.js
+- src/hello.test.js
+
+## Forbidden Files
+- tmp/debug.log
+`);
+    expect(result.requiredPaths).toEqual(["src/hello.js", "src/hello.test.js"]);
+    expect(result.forbiddenPaths).toEqual(["tmp/debug.log"]);
+  });
+
+  test("returns empty for missing file", () => {
+    const result = parseFinishCriteriaMd("");
+    expect(result.verifyCommands).toEqual([]);
+    expect(result.requiredPaths).toEqual([]);
+    expect(result.forbiddenPaths).toEqual([]);
+  });
+
+  test("ignores HTML comments", () => {
+    const result = parseFinishCriteriaMd(`## Verify Commands
+<!-- - Tests: \`npm test\` -->
+- Lint: \`npm run lint\`
+`);
+    expect(result.verifyCommands).toHaveLength(1);
+    expect(result.verifyCommands[0].label).toBe("Lint");
+  });
+
+  test("handles bare backtick commands without label", () => {
+    const result = parseFinishCriteriaMd(`## Verify Commands
+- \`cargo test\`
+`);
+    expect(result.verifyCommands[0]).toEqual({ label: "cargo test", command: "cargo test", timeoutMs: 60_000 });
+  });
+});
+
+describe("createTaskWorkspace - shower mode defaults", () => {
+  test("includes showerInterval and lastShowerRound", () => {
+    const runner = new AgentTaskRunner();
+    const ws = runner.createTaskWorkspace({
+      state: { activeProfileId: "default" },
+      description: "Test task",
+      cwd: "/tmp/test",
+      parentWorkspaceId: "",
+      maxRounds: 10,
+    });
+    expect(ws.task.showerInterval).toBe(5);
+    expect(ws.task.lastShowerRound).toBe(0);
+    expect(ws.task.lastJudgeInstructions).toBe("");
+  });
+});
+
+describe("startTask - prompt sent tracking", () => {
+  test("sets promptSent to true when description is provided", async () => {
+    const runner = new AgentTaskRunner();
+    const ws = runner.createTaskWorkspace({
+      state: { activeProfileId: "default" },
+      description: "Test task",
+      cwd: "/tmp/test",
+      parentWorkspaceId: "",
+      maxRounds: 3,
+    });
+    const deps = createMockDeps([ws]);
+    runner.init(deps);
+
+    await runner.startTask(ws.id);
+    expect(ws.task.promptSent).toBe(true);
+    expect(ws.task.state).toBe("running");
+  });
+
+  test("sets promptSent to false when no description", async () => {
+    const runner = new AgentTaskRunner();
+    const ws = runner.createTaskWorkspace({
+      state: { activeProfileId: "default" },
+      description: "",
+      cwd: "/tmp/test",
+      parentWorkspaceId: "",
+      maxRounds: 3,
+    });
+    const deps = createMockDeps([ws]);
+    runner.init(deps);
+
+    await runner.startTask(ws.id);
+    expect(ws.task.promptSent).toBe(false);
+  });
+});
+
+describe("checkCommandSafety", () => {
+  test("returns empty for safe commands", () => {
+    expect(checkCommandSafety("npm test")).toEqual([]);
+    expect(checkCommandSafety("npm run lint")).toEqual([]);
+    expect(checkCommandSafety("cargo test")).toEqual([]);
+    expect(checkCommandSafety("pytest -q")).toEqual([]);
+    expect(checkCommandSafety("go vet ./...")).toEqual([]);
+  });
+
+  test("flags rm -rf", () => {
+    const warnings = checkCommandSafety("rm -rf /tmp/test");
+    expect(warnings.length).toBeGreaterThan(0);
+    expect(warnings[0]).toContain("recursive");
+  });
+
+  test("flags git push", () => {
+    const warnings = checkCommandSafety("git push origin main");
+    expect(warnings.length).toBeGreaterThan(0);
+    expect(warnings[0]).toContain("git push");
+  });
+
+  test("flags git reset --hard", () => {
+    const warnings = checkCommandSafety("git reset --hard HEAD~1");
+    expect(warnings.length).toBeGreaterThan(0);
+  });
+
+  test("flags command substitution", () => {
+    const warnings = checkCommandSafety("echo $(whoami)");
+    expect(warnings.length).toBeGreaterThan(0);
+    expect(warnings[0]).toContain("injection");
+  });
+
+  test("flags backtick substitution", () => {
+    const warnings = checkCommandSafety("echo `id`");
+    expect(warnings.length).toBeGreaterThan(0);
+  });
+});
+
+describe("resetTask", () => {
+  test("resets a failed task to idle", async () => {
+    const runner = new AgentTaskRunner();
+    const ws = createTaskWorkspace(runner);
+    const deps = createMockDeps([ws]);
+    runner.init(deps);
+
+    ws.task.state = "failed";
+    ws.task.currentRound = 5;
+    ws.task.rounds = [{ round: 1 }, { round: 2 }];
+
+    const result = await runner.resetTask(ws.id);
+    expect(result).toBe(true);
+    expect(ws.task.state).toBe("idle");
+    expect(ws.task.currentRound).toBe(0);
+    expect(ws.task.rounds).toEqual([]);
+    expect(ws.task.promptSent).toBe(false);
+  });
+
+  test("returns false for running task", async () => {
+    const runner = new AgentTaskRunner();
+    const ws = createTaskWorkspace(runner);
+    const deps = createMockDeps([ws]);
+    runner.init(deps);
+
+    ws.task.state = "running";
+    const result = await runner.resetTask(ws.id);
+    expect(result).toBe(false);
+  });
+});

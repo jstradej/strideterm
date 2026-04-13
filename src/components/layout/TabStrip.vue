@@ -30,7 +30,8 @@
       @contextmenu.prevent="$emit('contextmenu-tab', { x: $event.clientX, y: $event.clientY, viewId: tab.id })"
     >
       <span>{{ tab.title }}</span>
-      <small>{{ tab.status }}</small>
+      <small v-if="tab.taskBadge" class="tab__task-badge" :title="tab.taskTooltip">{{ tab.taskBadge }}</small>
+      <small v-else>{{ tab.status }}</small>
       <span v-if="tab.attention" class="tab__attention" :title="tab.attentionTooltip">🔔</span>
       <span v-if="tab.persistent" class="tab__rename" :title="'Rename tab'" @click.stop="$emit('rename-tab', tab.id)"
         >✎</span
@@ -59,8 +60,32 @@ const tabModels = computed(() => {
   const activeViewId = store.activeViewId;
   const splitGroup = store.splitGroup;
 
+  const workspace = store.activeWorkspace;
+  const taskState = store.payload?.taskRunner?.[workspace?.id];
+
   return tabs.map((tab) => {
-    const tabAttention = store.getTabAttentionForView(store.activeWorkspace?.id || "", tab.id);
+    const tabAttention = store.getTabAttentionForView(workspace?.id || "", tab.id);
+
+    // Task runner badge for worker/judge panels
+    let taskBadge = "";
+    let taskTooltip = "";
+    if (taskState && workspace?.task) {
+      const panelId = tab.id.includes(":") ? tab.id.split(":").pop() : tab.id;
+      if (panelId === taskState.workerPanelId || panelId === taskState.judgePanelId) {
+        const role = panelId === taskState.workerPanelId ? "Worker" : "Judge";
+        const s = taskState.state;
+        if (s === "running") taskBadge = `R${taskState.currentRound}`;
+        else if (s === "evaluating") taskBadge = "...";
+        else if (s === "judge-evaluating")
+          taskBadge = panelId === taskState.judgePanelId ? "..." : `R${taskState.currentRound}`;
+        else if (s === "refreshing") taskBadge = "\u21BB";
+        else if (s === "completed") taskBadge = "\u2713";
+        else if (s === "failed") taskBadge = "\u2717";
+        else if (s === "paused") taskBadge = "||";
+        taskTooltip = `${role} \u2014 ${s} (round ${taskState.currentRound}/${taskState.maxRounds})`;
+      }
+    }
+
     return {
       id: tab.id,
       title: tab.title,
@@ -73,7 +98,10 @@ const tabModels = computed(() => {
       attention: !!tabAttention,
       attentionFresh: isFreshAlert(tabAttention),
       attentionTooltip: tabAttentionTitle(tabAttention),
+      taskBadge,
+      taskTooltip,
       titleTooltip:
+        taskTooltip ||
         tabAttentionTitle(tabAttention) ||
         (tab.persistent
           ? "Double click to rename. Drag to reorder."
