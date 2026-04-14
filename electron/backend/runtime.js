@@ -144,6 +144,40 @@ export async function createRuntime({
   const GitHubManagerImpl = dependencies.GitHubManager || GitHubManager;
   const createPluginManagerImpl = dependencies.createPluginManager || createPluginManager;
   const execFileTextImpl = dependencies.execFileText || execFileText;
+
+  // Platform-optimized recursive directory removal.
+  // On Windows, Node's fs.rm is slow on NTFS due to per-file stat calls. The
+  // built-in `rd /s /q` operates at the filesystem driver level and is much
+  // faster for large trees.  Falls back to fs.rm on other platforms and when
+  // `rd` fails (e.g. path too long, permissions).
+  async function rmPath(dirPath) {
+    // On Windows, try the fast native path first (once — if it fails due to
+    // locked files, retrying it won't help; let the retry loop use fs.rm which
+    // gives us proper EBUSY/EPERM error codes for the backoff logic).
+    if (process.platform === "win32") {
+      try {
+        await execFileTextImpl("cmd.exe", ["/c", "rd", "/s", "/q", dirPath], { timeout: 30_000 });
+        return;
+      } catch {
+        // rd failed (e.g. locked files, long paths) — fall through to fs.rm with retries
+      }
+    }
+
+    const retryDelays = [300, 600, 1200];
+    for (let attempt = 0; attempt <= retryDelays.length; attempt++) {
+      try {
+        await rm(dirPath, { recursive: true, force: true });
+        return;
+      } catch (err) {
+        if (attempt < retryDelays.length && (err.code === "EBUSY" || err.code === "EPERM")) {
+          await new Promise((resolve) => setTimeout(resolve, retryDelays[attempt]));
+          continue;
+        }
+        throw err;
+      }
+    }
+  }
+
   const checkRemoteOriginImpl = dependencies.checkRemoteOrigin || checkRemoteOrigin;
   const getTerminalEnvironmentImpl = dependencies.getTerminalEnvironment || detectTerminalEnvironmentImpl;
   const statePath = path.join(userDataPath, "strideterm-state.json");
@@ -1871,7 +1905,11 @@ export async function createRuntime({
           pendingWorktreeDeletions.add(diskPath);
           try {
             await sessionsExited;
-            await new Promise((resolve) => setTimeout(resolve, 1000));
+            // Short delay for Windows NTFS to release file handles after PTY exit.
+            // macOS/Linux release handles synchronously on process exit — no delay needed.
+            if (process.platform === "win32") {
+              await new Promise((resolve) => setTimeout(resolve, 200));
+            }
 
             const cacheRepoPath = workspace.review?.checkout?.cacheRepoPath || "";
             // Task worktrees store the base repo path explicitly
@@ -1885,26 +1923,16 @@ export async function createRuntime({
                 await execFileTextImpl("git", ["worktree", "remove", "--force", diskPath], { cwd: gitCwd });
                 gitRemoved = true;
               } catch {}
-              try {
-                await execFileTextImpl("git", ["worktree", "prune"], { cwd: gitCwd });
-              } catch {}
+              // Prune doesn't need to block — it just cleans up stale admin refs
+              execFileTextImpl("git", ["worktree", "prune"], { cwd: gitCwd }).catch(() => {});
             }
 
             if (!gitRemoved) {
-              for (let attempt = 0; attempt < 5; attempt++) {
-                try {
-                  await rm(diskPath, { recursive: true, force: true });
-                  break;
-                } catch (err) {
-                  if (attempt < 4 && (err.code === "EBUSY" || err.code === "EPERM")) {
-                    await new Promise((resolve) => setTimeout(resolve, 1500));
-                    continue;
-                  }
-                  diskDeleteError = `Could not delete ${diskPath}: ${err?.message || err}`;
-                  log.warn("workspace disk delete failed", { diskPath, err: diskDeleteError });
-                }
-              }
+              await rmPath(diskPath);
             }
+          } catch (err) {
+            diskDeleteError = `Could not delete ${diskPath}: ${err?.message || err}`;
+            log.warn("workspace disk delete failed", { diskPath, err: diskDeleteError });
           } finally {
             pendingWorktreeDeletions.delete(diskPath);
           }
