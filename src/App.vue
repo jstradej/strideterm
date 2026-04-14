@@ -1,5 +1,14 @@
 <template>
+  <!-- Splash screen — stays visible until initial payload arrives -->
+  <div v-if="!store.payload && !store.bootstrapError" class="splash">
+    <img src="/splash.png" alt="strIDEterm" class="splash__logo" />
+    <div class="splash__progress">
+      <div class="splash__bar"></div>
+    </div>
+  </div>
+
   <div
+    v-else
     ref="frameRef"
     class="frame"
     :class="{
@@ -327,3 +336,56 @@ useAttentionSync(api);
 useKeyboardShortcuts(api, { onNewWorkspace: () => store.openNewWorkspaceFlow() });
 useSidebarResize(frameRef, sidebarRef);
 </script>
+
+<style>
+.splash {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  background: #141416;
+  gap: 20px;
+  padding: 20px;
+}
+.splash__logo {
+  max-width: 480px;
+  width: 90%;
+  border-radius: 8px;
+  opacity: 0.92;
+}
+.splash__progress {
+  width: 220px;
+  height: 3px;
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 2px;
+  overflow: hidden;
+}
+.splash__bar {
+  height: 100%;
+  width: 0%;
+  background: #ffa424;
+  border-radius: 2px;
+  animation: splash-fill 28s cubic-bezier(0.1, 0.4, 0.2, 1) forwards;
+}
+@keyframes splash-fill {
+  0% {
+    width: 0%;
+  }
+  15% {
+    width: 30%;
+  }
+  40% {
+    width: 55%;
+  }
+  70% {
+    width: 78%;
+  }
+  90% {
+    width: 90%;
+  }
+  100% {
+    width: 97%;
+  }
+}
+</style>
