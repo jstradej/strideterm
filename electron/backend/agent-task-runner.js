@@ -68,6 +68,38 @@ export class AgentTaskRunner {
     this.#broadcastState = broadcastState;
     this.#raiseAlert = raiseAlert;
     this.#restartSession = restartSession;
+
+    // Pause any tasks left in active states from a previous session.
+    // After an app restart, Claude Code sessions are fresh (no context),
+    // so auto-resuming would redo work blindly. The user can explicitly
+    // click Continue to resume.
+    this.#reconcileOnStartup();
+  }
+
+  #reconcileOnStartup() {
+    const state = this.#getState();
+    if (!state?.workspaces) return;
+
+    const ACTIVE = new Set(["running", "evaluating", "judge-evaluating", "refreshing"]);
+    let changed = false;
+
+    for (const workspace of state.workspaces) {
+      if (workspace.kind !== "task" || !workspace.task) continue;
+      if (!ACTIVE.has(workspace.task.state)) continue;
+
+      log.info("reconcileOnStartup: pausing task left in active state", {
+        workspaceId: workspace.id,
+        previousState: workspace.task.state,
+      });
+      workspace.task.pausedFromState = "";
+      this.#setTaskState(workspace.task, "paused");
+      this.#logTaskEvent(workspace, "task-paused", `Paused on startup (was ${workspace.task.state})`);
+      changed = true;
+    }
+
+    // No broadcastState() here — runtime isn't fully initialized yet
+    // (getPayload depends on pluginManager etc.). The corrected state
+    // will be included in the first natural broadcast after startup.
   }
 
   // ---------------------------------------------------------------------------
@@ -797,8 +829,9 @@ export class AgentTaskRunner {
 
         const judgeSetupStart = Date.now();
 
-        // Clear old verdict
+        // Clear old verdict and nudge flag for fresh judge evaluation
         await this.#clearVerdict(workspace.cwd, task.taskId);
+        task.judgeNudged = false;
 
         // Gather git context so the judge can see actual repo changes
         const gitContext = await this.#getGitContext(workspace.cwd);
@@ -840,9 +873,22 @@ export class AgentTaskRunner {
     try {
       const verdict = await this.#readVerdict(workspace.cwd, task.taskId);
 
-      // If verdict file is missing, judge didn't produce one — warn and pause after repeated failures
+      // If verdict file is missing, nudge the judge once before giving up.
+      // LLMs sometimes output the verdict as text instead of writing the file.
+      if (verdict.reason === "Judge did not produce a verdict file." && !task.judgeNudged) {
+        task.judgeNudged = true;
+        const dir = taskDirRel(task.taskId);
+        const nudge = `You MUST write your verdict to ${dir}/${VERDICT_FILE} as a JSON file now. Use the Write tool or cat/heredoc. Example:\n\n{"verdict": "complete", "reason": "All requirements met."}\n\nWrite the file now.`;
+        const judgeSessionId = `${workspaceId}:${task.judgePanelId}`;
+        log.info("judge verdict file missing, sending nudge", { workspaceId });
+        this.#logTaskEvent(workspace, "judge-nudged", "Verdict file missing — reminded Judge to write it");
+        await this.#injectPrompt(judgeSessionId, nudge, workspace);
+        this.#broadcastState();
+        return; // Wait for next judge idle — will re-enter #handleJudgeVerdict
+      }
+
       if (verdict.reason === "Judge did not produce a verdict file.") {
-        log.warn("judge verdict file missing", { workspaceId, round: task.currentRound });
+        log.warn("judge verdict file missing after nudge", { workspaceId, round: task.currentRound });
         this.#setTaskState(task, "paused");
         this.#broadcastState();
         this.#raiseTaskAlert(workspace, "failed", "Judge did not produce a verdict file");
@@ -1747,18 +1793,20 @@ Do NOT continue working on the task — only write the handoff summary.`;
     // 1. Ctrl+C to interrupt any running tool/command
     this.#writeToSession(workerSessionId, "\x03");
 
-    // 2. After brief pause, tell Claude Code to stop — but keep context intact
+    // 2. After pause (agent needs time to cancel and return to prompt), write the stop message
     const reason =
       kind === "completed"
         ? "The Judge has approved your work. The task is complete."
         : "The task runner has stopped (max rounds or error).";
+    const message = `\nThe task has ended: ${reason} Do not start new work or continue the previous task. Wait for the user.`;
     setTimeout(() => {
-      this.#writeToSession(
-        workerSessionId,
-        `\nThe task has ended: ${reason} Do not start new work or continue the previous task. Wait for the user.\r`,
-      );
-      log.debug("stop message sent to Worker", { workspaceId: workspace.id });
-    }, 800);
+      this.#writeToSession(workerSessionId, message);
+      // Send Enter separately after text is written (same pattern as #injectPrompt)
+      setTimeout(() => {
+        this.#writeToSession(workerSessionId, "\r");
+        log.debug("stop message sent to Worker", { workspaceId: workspace.id });
+      }, 200);
+    }, 2000);
   }
 
   /**

@@ -574,3 +574,63 @@ describe("resetTask", () => {
     expect(result).toBe(false);
   });
 });
+
+describe("reconcileOnStartup", () => {
+  test("pauses tasks left in running state from previous session", () => {
+    const runner = new AgentTaskRunner();
+    const ws = createTaskWorkspace(runner);
+    ws.task.state = "running";
+    ws.task.promptSent = true;
+
+    const deps = createMockDeps([ws]);
+    runner.init(deps); // reconcile runs inside init
+
+    expect(ws.task.state).toBe("paused");
+    // No broadcastState during init — runtime isn't fully initialized yet
+    expect(deps.broadcastState).not.toHaveBeenCalled();
+  });
+
+  test("pauses tasks left in evaluating state", () => {
+    const runner = new AgentTaskRunner();
+    const ws = createTaskWorkspace(runner);
+    ws.task.state = "evaluating";
+
+    const deps = createMockDeps([ws]);
+    runner.init(deps);
+
+    expect(ws.task.state).toBe("paused");
+  });
+
+  test("pauses tasks left in judge-evaluating state", () => {
+    const runner = new AgentTaskRunner();
+    const ws = createTaskWorkspace(runner);
+    ws.task.state = "judge-evaluating";
+
+    const deps = createMockDeps([ws]);
+    runner.init(deps);
+
+    expect(ws.task.state).toBe("paused");
+  });
+
+  test("does not touch idle, paused, completed, or failed tasks", () => {
+    const runner = new AgentTaskRunner();
+    const idle = createTaskWorkspace(runner);
+    const paused = createTaskWorkspace(runner);
+    const completed = createTaskWorkspace(runner);
+    const failed = createTaskWorkspace(runner);
+
+    idle.task.state = "idle";
+    paused.task.state = "paused";
+    completed.task.state = "completed";
+    failed.task.state = "failed";
+
+    const deps = createMockDeps([idle, paused, completed, failed]);
+    runner.init(deps);
+
+    expect(idle.task.state).toBe("idle");
+    expect(paused.task.state).toBe("paused");
+    expect(completed.task.state).toBe("completed");
+    expect(failed.task.state).toBe("failed");
+    expect(deps.broadcastState).not.toHaveBeenCalled();
+  });
+});

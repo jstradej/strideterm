@@ -108,30 +108,25 @@ ${git.diffNames || "(no changed files)"}`;
     }
   }
 
-  if (customInstructions) {
-    return `${context}
+  // --- System preamble (always present, user cannot override) ---
+  const systemPreamble = `${context}
 
 Task files directory: ${dir}/
 Verdict file: ${dir}/${VERDICT_FILE}
 Judge scratchpad: ${dir}/${JUDGE_TODO_FILE}
 
-${customInstructions}
-
-Write your verdict to ${dir}/${VERDICT_FILE} as JSON: {"verdict": "complete"|"continue", "reason": "..."}`;
-  }
-
-  return `${context}
-
-Hard rules:
+Hard rules (system-enforced):
 - Do not trust the worker's completion claim by default.
 - Prefer "continue" over "complete" when uncertain.
 - If any deterministic check failed, reject completion.
 - Treat these worker phrases as red flags: "would you like me to continue", "should I proceed", "all set", "task complete", "done".
 - Reject any stop that leaves active TODO items, WORK_LOCK present, or failing verify commands.
-- You are not a second worker — do not expand scope or plan features.
+- You are not a second worker — do not expand scope or plan features.`;
 
-Instructions:
-1. Read ${dir}/${TASK_FILE} for the full task description and requirements
+  // --- Evaluation instructions (user-customizable via JUDGE_PROMPT.md) ---
+  const evaluationInstructions =
+    customInstructions ||
+    `1. Read ${dir}/${TASK_FILE} for the full task description and requirements
 2. **Requirements check**: Go through every requirement/acceptance criterion in the task description point by point — verify each one is actually implemented, not just claimed
 3. **Code review**: Read the changed files. Check for:
    - Correctness: does the code actually do what the task asks?
@@ -140,11 +135,22 @@ Instructions:
    - Consistency with the existing codebase style
    Do NOT nitpick style preferences or demand perfection — focus on real issues that would matter in a code review
 4. Run any relevant checks yourself if needed (read files, run commands)
-5. Keep notes in ${dir}/${JUDGE_TODO_FILE} (tiny scratchpad — for each requirement, note whether it's verified or missing; note any code quality issues found)
-6. Write your verdict to ${dir}/${VERDICT_FILE}:
-   - If ALL requirements are met and code quality is acceptable: {"verdict": "complete", "reason": "..."}
-   - If ANY requirement is missing, or there are real code quality issues: {"verdict": "continue", "reason": "..."}
-   Your "reason" must list specific issues — file paths, line descriptions, what's wrong and what to fix`;
+5. Keep notes in ${dir}/${JUDGE_TODO_FILE} (tiny scratchpad — for each requirement, note whether it's verified or missing; note any code quality issues found)`;
+
+  // --- Verdict delivery (always present, user cannot override) ---
+  const verdictBlock = `FINAL STEP — write verdict (mandatory, system reads this file):
+Write your verdict to ${dir}/${VERDICT_FILE} as a JSON file.
+  If ALL requirements are met and code quality is acceptable:  {"verdict": "complete", "reason": "..."}
+  If ANY requirement is missing or there are real issues:       {"verdict": "continue", "reason": "..."}
+Your "reason" must be specific — file paths, what's wrong, what to fix.
+Do NOT just print the verdict in text. You MUST write the JSON file. The system cannot read your conversation output.`;
+
+  return `${systemPreamble}
+
+Evaluation instructions${customInstructions ? " (from JUDGE_PROMPT.md)" : ""}:
+${evaluationInstructions}
+
+${verdictBlock}`;
 }
 
 export function buildJudgeFeedbackPrompt(task, verdict) {

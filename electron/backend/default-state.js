@@ -192,6 +192,13 @@ export function normalizeWorkspace(workspace, index = 0) {
       : null,
     task: workspace.task
       ? {
+          // Spread first: preserves runtime-only properties (promptSent,
+          // pausedFromState, showerResumePrompt, etc.) that the task runner
+          // sets directly on the object during execution.  Without this,
+          // store.mutate() → normalizeState would strip them, causing bugs
+          // like duplicate prompt injection on workspace switch.
+          ...workspace.task,
+          // Normalize/default all persisted properties (overrides spread)
           taskId: workspace.task.taskId || "",
           description: workspace.task.description || "",
           parentWorkspaceId: workspace.task.parentWorkspaceId || "",
@@ -221,6 +228,11 @@ export function normalizeWorkspace(workspace, index = 0) {
           rounds: Array.isArray(workspace.task.rounds) ? workspace.task.rounds : [],
           lastShowerRound: workspace.task.lastShowerRound || 0,
           lastJudgeInstructions: workspace.task.lastJudgeInstructions || "",
+          // Defaults for runtime-only properties (needed when loading from disk
+          // where these don't exist; during runtime the spread above preserves them)
+          promptSent: workspace.task.promptSent ?? false,
+          pausedFromState: workspace.task.pausedFromState ?? "",
+          showerResumePrompt: workspace.task.showerResumePrompt ?? "",
           startedAt: workspace.task.startedAt || null,
           totalPausedMs: workspace.task.totalPausedMs || 0,
           pausedAt: workspace.task.pausedAt || null,

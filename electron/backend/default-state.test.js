@@ -303,4 +303,49 @@ describe("default state", () => {
     expect(state.workspaces[0].icon).toBe("\u2728");
     expect(state.workspaces[0].panels[0].title).toBe("\u{1F916} Claude Code");
   });
+
+  test("normalizeWorkspace preserves task runtime properties through store.mutate()", () => {
+    const workspace = normalizeWorkspace({
+      id: "task-ws",
+      kind: "task",
+      panels: [
+        { id: "dash", title: "Dashboard", command: "__task-dashboard__" },
+        { id: "worker", title: "Worker", command: "claude" },
+        { id: "judge", title: "Judge", command: "claude" },
+      ],
+      task: {
+        taskId: "test-task-id",
+        description: "test task",
+        workerPanelId: "worker",
+        judgePanelId: "judge",
+        state: "running",
+        currentRound: 2,
+        // Runtime-only properties set by task runner during execution
+        promptSent: true,
+        pausedFromState: "evaluating",
+        showerResumePrompt: "Resume: continue working on the task",
+      },
+    });
+
+    expect(workspace.task.promptSent).toBe(true);
+    expect(workspace.task.pausedFromState).toBe("evaluating");
+    expect(workspace.task.showerResumePrompt).toBe("Resume: continue working on the task");
+  });
+
+  test("normalizeWorkspace defaults task runtime properties to safe values", () => {
+    const workspace = normalizeWorkspace({
+      id: "task-ws",
+      kind: "task",
+      panels: [{ id: "worker", title: "Worker", command: "claude" }],
+      task: {
+        taskId: "test-task-id",
+        description: "test",
+        // Runtime properties NOT set (undefined) — should default safely
+      },
+    });
+
+    expect(workspace.task.promptSent).toBe(false);
+    expect(workspace.task.pausedFromState).toBe("");
+    expect(workspace.task.showerResumePrompt).toBe("");
+  });
 });
