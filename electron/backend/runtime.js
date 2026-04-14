@@ -2,7 +2,7 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import { watch } from "node:fs";
+import { watch, readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { readFile, writeFile, mkdir, readdir, access, rm } from "node:fs/promises";
 import { EventEmitter } from "node:events";
 import { createRequire } from "node:module";
@@ -172,6 +172,95 @@ export async function createRuntime({
     log.info("logger reconfigured from stored settings", { level: storedLogLevel });
   }
 
+  // ---------------------------------------------------------------------------
+  // Notify URL file registration — Claude Code hooks don't inherit parent env
+  // vars, so we write URLs to a JSON file that the hook script reads.
+  //
+  // Multiple strideterm instances (exe + dev, different profiles) may share
+  // this file.  Each URL embeds the notify server port, so entries from
+  // different instances don't conflict.  On startup we purge stale entries
+  // from OUR port (previous run on same port) but leave other ports alone.
+  // ---------------------------------------------------------------------------
+  const notifyUrlsPath = path.join(userDataPath, "hooks", "notify-urls.json");
+
+  function normalizeCwd(cwd) {
+    return cwd.replace(/\\/g, "/").toLowerCase();
+  }
+
+  function getUrlPort(u) {
+    try {
+      return new URL(u).port;
+    } catch {
+      return "";
+    }
+  }
+
+  function getUrlSid(u) {
+    try {
+      return new URL(u).searchParams.get("sid") || "";
+    } catch {
+      return "";
+    }
+  }
+
+  /** Read the shared file, or return empty object on any error. */
+  function readNotifyUrls() {
+    try {
+      return JSON.parse(readFileSync(notifyUrlsPath, "utf8"));
+    } catch {
+      return {};
+    }
+  }
+
+  /** Write the shared file (not atomic — acceptable for this advisory data). */
+  function writeNotifyUrls(data) {
+    const dir = path.dirname(notifyUrlsPath);
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+    writeFileSync(notifyUrlsPath, JSON.stringify(data, null, 2), "utf8");
+  }
+
+  function registerNotifyUrl(cwd, url) {
+    const key = normalizeCwd(cwd);
+    const myPort = getUrlPort(url);
+    const mySid = getUrlSid(url);
+
+    // Read current file (may contain entries from other instances)
+    const data = readNotifyUrls();
+    if (!data[key]) data[key] = [];
+
+    // Remove stale entry for same sessionId, keep entries from other instances
+    data[key] = data[key].filter((u) => getUrlSid(u) !== mySid);
+    data[key].push(url);
+
+    try {
+      writeNotifyUrls(data);
+      log.debug("notify-urls.json updated", { cwd: key, urls: data[key].length, port: myPort });
+    } catch (err) {
+      log.warn("failed to write notify-urls.json", { err: err.message });
+    }
+  }
+
+  /** Remove all URLs belonging to our notify server port (called on shutdown). */
+  function cleanupNotifyUrls(port) {
+    try {
+      const data = readNotifyUrls();
+      const portStr = String(port);
+      let removed = 0;
+      for (const key of Object.keys(data)) {
+        const before = data[key].length;
+        data[key] = data[key].filter((u) => getUrlPort(u) !== portStr);
+        removed += before - data[key].length;
+        if (data[key].length === 0) delete data[key];
+      }
+      if (removed > 0) {
+        writeNotifyUrls(data);
+        log.debug("notify-urls.json cleanup", { port: portStr, removed });
+      }
+    } catch (err) {
+      log.debug("notify-urls.json cleanup failed", { err: err.message });
+    }
+  }
+
   const sessions = new SessionManagerImpl({
     getSessionEnv: ({ workspace, sessionId }) => {
       const env = {};
@@ -183,10 +272,16 @@ export async function createRuntime({
         env.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS = "1";
       }
 
-      // Agent notification hook URL
+      // Agent notification hook URL — set in env (for non-Claude-Code agents)
+      // AND write to notify-urls.json (for Claude Code hooks, which don't inherit
+      // parent env vars — only CLAUDE_* vars are passed to hook processes).
       if (notifyServerHandle?.port && sessionId) {
-        env.STRIDETERM_NOTIFY_URL = buildNotifyUrl(notifyServerHandle.port, sessionId, notifySecret);
+        const notifyUrl = buildNotifyUrl(notifyServerHandle.port, sessionId, notifySecret);
+        env.STRIDETERM_NOTIFY_URL = notifyUrl;
         log.debug("injected STRIDETERM_NOTIFY_URL", { sessionId, port: notifyServerHandle.port });
+        if (workspace?.cwd) {
+          registerNotifyUrl(workspace.cwd, notifyUrl);
+        }
       } else if (sessionId) {
         log.debug("STRIDETERM_NOTIFY_URL not injected (notify server not running)", { sessionId });
       }
@@ -340,18 +435,42 @@ export async function createRuntime({
   }
 
   function handleAgentHookNotification({ sessionId, notificationType }) {
-    log.trace("agent hook notification received", { sessionId, notificationType });
+    log.debug("agent hook notification received", { sessionId, notificationType });
     if (!sessionId) {
-      log.trace("hook ignored: no sessionId");
+      log.debug("hook ignored: no sessionId");
       return;
     }
+
+    const relevantTypes = new Set(["idle_prompt", "permission_prompt"]);
+    if (!relevantTypes.has(notificationType)) {
+      log.debug("hook ignored: irrelevant type", { sessionId, notificationType });
+      return;
+    }
+
+    // -----------------------------------------------------------------------
+    // Task runner gets FIRST dibs — task sessions are system-controlled.
+    // Guards like hasUserInput / waitingRaised / cooldown / visibility are
+    // designed for user-facing notifications and must NOT block the task
+    // evaluation cycle.  The task runner has its own validation (state check,
+    // panel matching, re-entrance guard).
+    // -----------------------------------------------------------------------
+    if (taskRunner.onAgentIdle(sessionId, "hook")) {
+      log.info("hook handled by task runner", { sessionId, notificationType });
+      const signal = sessionSignals.get(sessionId);
+      if (signal) {
+        signal.lastHookAlertAt = Date.now();
+        cancelPromptTimer(signal);
+      }
+      return;
+    }
+
     const signal = sessionSignals.get(sessionId);
     if (!signal) {
-      log.trace("hook ignored: no signal for session", { sessionId });
+      log.debug("hook ignored: no signal for session", { sessionId });
       return;
     }
     if (!signal.hasUserInput) {
-      log.trace("hook ignored: no user input yet", {
+      log.debug("hook ignored: no user input yet", {
         sessionId,
         hasUserInput: signal.hasUserInput,
         busy: signal.busy,
@@ -360,13 +479,7 @@ export async function createRuntime({
       return;
     }
     if (signal.waitingRaised) {
-      log.trace("hook ignored: waiting already raised", { sessionId });
-      return;
-    }
-
-    const relevantTypes = new Set(["idle_prompt", "permission_prompt"]);
-    if (!relevantTypes.has(notificationType)) {
-      log.debug("hook ignored: irrelevant type", { sessionId, notificationType });
+      log.debug("hook ignored: waiting already raised", { sessionId });
       return;
     }
 
@@ -388,12 +501,6 @@ export async function createRuntime({
 
     signal.lastHookAlertAt = now;
     cancelPromptTimer(signal);
-
-    // Task runner intercept: if session belongs to a running task, let task runner handle it
-    if (taskRunner.onAgentIdle(sessionId)) {
-      log.debug("hook handled by task runner", { sessionId });
-      return;
-    }
 
     if (isSessionVisible(sessionId)) {
       log.trace("hook: session visible, resetting signal", { sessionId });
@@ -447,7 +554,9 @@ export async function createRuntime({
 
   async function stopAgentNotifyServer() {
     if (notifyServerHandle) {
-      log.info("stopping notify server");
+      const port = notifyServerHandle.port;
+      log.info("stopping notify server", { port });
+      cleanupNotifyUrls(port);
       try {
         await notifyServerHandle.close();
       } catch (error) {
@@ -1001,32 +1110,40 @@ export async function createRuntime({
       // When a shell with integration (bash/zsh/PowerShell) emits OSC 133;D,
       // the previous command has finished and the shell prompt has returned.
       // This gives us instant, reliable detection for shell-hosted agents.
-      if (OSC133_COMMAND_FINISHED_RE.test(rawText) && signal.hasUserInput) {
-        log.trace("OSC 133;D detected", { sessionId: payload.sessionId, busy: signal.busy });
-        const now = Date.now();
-        const inCooldown = signal.lastAlertAt > 0 && now - signal.lastAlertAt < notifConfig.alertCooldownMs;
-        if (signal.busy && !inCooldown) {
+      if (OSC133_COMMAND_FINISHED_RE.test(rawText)) {
+        log.debug("OSC 133;D detected", {
+          sessionId: payload.sessionId,
+          busy: signal.busy,
+          hasUserInput: signal.hasUserInput,
+        });
+        // Task runner intercept FIRST — bypass hasUserInput/cooldown guards
+        if (taskRunner.onAgentIdle(payload.sessionId, "osc133")) {
+          log.debug("OSC 133;D: task runner handled idle", { sessionId: payload.sessionId });
           cancelPromptTimer(signal);
-          if (taskRunner.onAgentIdle(payload.sessionId)) {
-            log.trace("OSC 133;D: task runner handled idle", { sessionId: payload.sessionId });
-          } else if (isSessionVisible(payload.sessionId)) {
-            log.trace("OSC 133;D: session visible, resetting", { sessionId: payload.sessionId });
-            resetSessionSignal(payload.sessionId);
-          } else {
-            log.debug("OSC 133;D triggering alert", { sessionId: payload.sessionId });
-            raiseWaitingAlert({
+        } else if (signal.hasUserInput) {
+          const now = Date.now();
+          const inCooldown = signal.lastAlertAt > 0 && now - signal.lastAlertAt < notifConfig.alertCooldownMs;
+          if (signal.busy && !inCooldown) {
+            cancelPromptTimer(signal);
+            if (isSessionVisible(payload.sessionId)) {
+              log.trace("OSC 133;D: session visible, resetting", { sessionId: payload.sessionId });
+              resetSessionSignal(payload.sessionId);
+            } else {
+              log.debug("OSC 133;D triggering alert", { sessionId: payload.sessionId });
+              raiseWaitingAlert({
+                sessionId: payload.sessionId,
+                projectId: descriptor.workspaceId,
+                panelId: descriptor.panelId,
+                title: panel?.title || descriptor.panelId,
+                detail: "osc133-finished",
+              });
+            }
+          } else if (inCooldown) {
+            log.trace("OSC 133;D: cooldown active, skipping", {
               sessionId: payload.sessionId,
-              projectId: descriptor.workspaceId,
-              panelId: descriptor.panelId,
-              title: panel?.title || descriptor.panelId,
-              detail: "osc133-finished",
+              remainingMs: notifConfig.alertCooldownMs - (now - signal.lastAlertAt),
             });
           }
-        } else if (inCooldown) {
-          log.trace("OSC 133;D: cooldown active, skipping", {
-            sessionId: payload.sessionId,
-            remainingMs: notifConfig.alertCooldownMs - (now - signal.lastAlertAt),
-          });
         }
         // Skip normal detection for this chunk — OSC 133;D is authoritative.
       } else if (signal.agentLike) {
@@ -1068,17 +1185,19 @@ export async function createRuntime({
                 return;
               }
               signal.promptTimer = null;
+              // Task runner intercept FIRST — task workspaces have their own
+              // validation (WORK_LOCK, TODO checks) so they don't need the
+              // idle-pattern guard.  Claude Code's statusbar line doesn't match
+              // AGENT_IDLE_PATTERNS, which would block task detection otherwise.
+              if (taskRunner.onAgentIdle(sid, "hook-fallback")) {
+                log.info("hook-fallback silence: task runner handled idle", { sessionId: sid });
+                return;
+              }
               if (signal.lastOutputLine && !matchesAgentIdle(signal.lastOutputLine)) {
                 log.trace("agent hook-primary fallback: last line not idle", {
                   sessionId: sid,
                   lastOutputLine: signal.lastOutputLine,
                 });
-                return;
-              }
-              // Task runner intercept BEFORE visibility check — task workspaces
-              // may be visible while the runner is actively waiting for idle.
-              if (taskRunner.onAgentIdle(sid)) {
-                log.trace("hook-fallback silence: task runner handled idle", { sessionId: sid });
                 return;
               }
               if (isSessionVisible(sid)) {
@@ -1136,16 +1255,16 @@ export async function createRuntime({
                   return;
                 }
                 signal.promptTimer = null;
+                // Task runner intercept FIRST (same rationale as hook-fallback path)
+                if (taskRunner.onAgentIdle(sid, "silence")) {
+                  log.info("agent silence: task runner handled idle", { sessionId: sid });
+                  return;
+                }
                 if (signal.lastOutputLine && !matchesAgentIdle(signal.lastOutputLine)) {
                   log.trace("agent silence expired but last line not idle", {
                     sessionId: sid,
                     lastOutputLine: signal.lastOutputLine,
                   });
-                  return;
-                }
-                // Task runner intercept BEFORE visibility check
-                if (taskRunner.onAgentIdle(sid)) {
-                  log.trace("agent silence: task runner handled idle", { sessionId: sid });
                   return;
                 }
                 if (isSessionVisible(sid)) {

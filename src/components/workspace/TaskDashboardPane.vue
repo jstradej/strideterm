@@ -279,8 +279,7 @@ async function onStart() {
       const r = await api.resumeTask({ workspaceId: id });
       if (r?.payload) store.handleBroadcastPayload(r.payload);
     } else {
-      const r = await api.startTask({ workspaceId: id });
-      if (r?.payload) store.handleBroadcastPayload(r.payload);
+      await store.startTaskWithHookCheck(id);
     }
     activeTab.value = "status";
   } catch (err) {

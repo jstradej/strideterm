@@ -207,6 +207,24 @@ describe("AgentTaskRunner", () => {
       expect(workspace.task.state).toBe("running");
     });
 
+    test("resumeTask resumes to judge-evaluating when pausedFromState is judge-evaluating", () => {
+      workspace.task.state = "paused";
+      workspace.task.pausedFromState = "judge-evaluating";
+      const result = runner.resumeTask(workspace.id);
+      expect(result).toBe(true);
+      expect(workspace.task.state).toBe("judge-evaluating");
+      expect(workspace.task.pausedFromState).toBe("");
+    });
+
+    test("resumeTask resumes to running when pausedFromState is evaluating", () => {
+      workspace.task.state = "paused";
+      workspace.task.pausedFromState = "evaluating";
+      const result = runner.resumeTask(workspace.id);
+      expect(result).toBe(true);
+      expect(workspace.task.state).toBe("running");
+      expect(workspace.task.pausedFromState).toBe("");
+    });
+
     test("resumeTask returns false if not paused", () => {
       workspace.task.state = "running";
       const result = runner.resumeTask(workspace.id);
@@ -250,11 +268,13 @@ describe("AgentTaskRunner", () => {
   });
 
   describe("onSessionExit", () => {
-    test("pauses task when worker session exits", () => {
+    test("pauses task when worker session exits and clears pausedFromState", () => {
       workspace.task.state = "running";
+      workspace.task.pausedFromState = "evaluating"; // stale value from before
       const sessionId = `${workspace.id}:${workspace.task.workerPanelId}`;
       runner.onSessionExit(sessionId);
       expect(workspace.task.state).toBe("paused");
+      expect(workspace.task.pausedFromState).toBe("");
     });
 
     test("does not pause for judge session exit", () => {
@@ -273,18 +293,20 @@ describe("AgentTaskRunner", () => {
   });
 
   describe("onUserInput", () => {
-    test("pauses task during evaluation", () => {
+    test("pauses task during evaluation when input targets worker panel", () => {
       workspace.task.state = "evaluating";
       const sessionId = `${workspace.id}:${workspace.task.workerPanelId}`;
       runner.onUserInput(sessionId);
       expect(workspace.task.state).toBe("paused");
+      expect(workspace.task.pausedFromState).toBe("evaluating");
     });
 
-    test("pauses task during judge evaluation", () => {
+    test("pauses task during judge evaluation when input targets judge panel", () => {
       workspace.task.state = "judge-evaluating";
       const sessionId = `${workspace.id}:${workspace.task.judgePanelId}`;
       runner.onUserInput(sessionId);
       expect(workspace.task.state).toBe("paused");
+      expect(workspace.task.pausedFromState).toBe("judge-evaluating");
     });
 
     test("does not pause during running (worker is working)", () => {
@@ -292,6 +314,20 @@ describe("AgentTaskRunner", () => {
       const sessionId = `${workspace.id}:${workspace.task.workerPanelId}`;
       runner.onUserInput(sessionId);
       expect(workspace.task.state).toBe("running");
+    });
+
+    test("does not pause when input targets worker panel during judge-evaluating", () => {
+      workspace.task.state = "judge-evaluating";
+      const sessionId = `${workspace.id}:${workspace.task.workerPanelId}`;
+      runner.onUserInput(sessionId);
+      expect(workspace.task.state).toBe("judge-evaluating");
+    });
+
+    test("does not pause when input targets judge panel during evaluating", () => {
+      workspace.task.state = "evaluating";
+      const sessionId = `${workspace.id}:${workspace.task.judgePanelId}`;
+      runner.onUserInput(sessionId);
+      expect(workspace.task.state).toBe("evaluating");
     });
   });
 
@@ -516,6 +552,7 @@ describe("resetTask", () => {
     ws.task.state = "failed";
     ws.task.currentRound = 5;
     ws.task.rounds = [{ round: 1 }, { round: 2 }];
+    ws.task.pausedFromState = "evaluating";
 
     const result = await runner.resetTask(ws.id);
     expect(result).toBe(true);
@@ -523,6 +560,7 @@ describe("resetTask", () => {
     expect(ws.task.currentRound).toBe(0);
     expect(ws.task.rounds).toEqual([]);
     expect(ws.task.promptSent).toBe(false);
+    expect(ws.task.pausedFromState).toBe("");
   });
 
   test("returns false for running task", async () => {

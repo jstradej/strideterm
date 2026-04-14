@@ -21,30 +21,91 @@ const HOOK_MARKERS = ["STRIDETERM_NOTIFY_URL", "hooks/notify.mjs", "hooks\\notif
 // Cross-platform Node.js script that reads stdin and POSTs to STRIDETERM_NOTIFY_URL.
 // Written to ~/.strideterm/hooks/notify.mjs at runtime so the path is stable
 // regardless of how strIDEterm is packaged (ASAR, binary, dev).
+// Notify hook script — runs as a Claude Code Notification hook.
+// Claude Code does NOT pass parent env vars to hook processes, only CLAUDE_*.
+// So we resolve the notify URL from a file written by strideterm's runtime.
+//
+// Logs to ~/.strideterm/logs/hook.log (errors/warnings only, auto-truncated
+// at 3MB for retention).  Successful delivery is visible in strideterm.log
+// via notify-server entries — no need to log success here.
 const NOTIFY_SCRIPT_CONTENT = `import http from "node:http";
-const url = process.env.STRIDETERM_NOTIFY_URL;
-if (!url) process.exit(0);
+import fs from "node:fs";
+import path from "node:path";
+import os from "node:os";
+
+const LOG_PATH = path.join(os.homedir(), ".strideterm", "logs", "hook.log");
+const LOG_MAX_BYTES = 3 * 1024 * 1024; // 3 MB
+function log(level, msg) {
+  try {
+    const line = new Date().toISOString().replace("T", " ").replace("Z", "") + " " + level + "  [hook] " + msg + "\\n";
+    // Simple retention: if over limit, start fresh (atomic — no partial read/write)
+    try { if (fs.statSync(LOG_PATH).size > LOG_MAX_BYTES) fs.writeFileSync(LOG_PATH, ""); } catch {}
+    fs.appendFileSync(LOG_PATH, line);
+  } catch {}
+}
+
+const URLS_PATH = path.join(os.homedir(), ".strideterm", "hooks", "notify-urls.json");
+const projectDir = process.env.CLAUDE_PROJECT_DIR || "";
+let url = process.env.STRIDETERM_NOTIFY_URL || "";
+
+let allUrls = url ? [url] : [];
+
+if (allUrls.length === 0) {
+  try {
+    const mapping = JSON.parse(fs.readFileSync(URLS_PATH, "utf8"));
+    const norm = (p) => p.replace(/\\\\\\\\/g, "/").replace(/\\\\/g, "/").toLowerCase();
+    if (projectDir) {
+      const key = norm(projectDir);
+      const urls = mapping[key];
+      if (Array.isArray(urls) && urls.length > 0) {
+        allUrls = urls;
+      }
+    }
+    // Fallback: CLAUDE_PROJECT_DIR missing or no match — POST to all URLs.
+    // Server validates secret; only the matching session returns 200.
+    if (allUrls.length === 0) {
+      for (const urls of Object.values(mapping)) {
+        if (Array.isArray(urls)) allUrls.push(...urls);
+      }
+      if (allUrls.length > 0) log("WARN", "no match for projectDir=" + projectDir + ", broadcasting to " + allUrls.length + " url(s)");
+    }
+  } catch (e) {
+    log("ERROR", "cannot read " + URLS_PATH + ": " + e.message);
+  }
+}
+
+if (allUrls.length === 0) {
+  log("WARN", "no notify urls resolved (projectDir=" + projectDir + ")");
+  process.exit(0);
+}
+
 let body = "";
 process.stdin.setEncoding("utf8");
 process.stdin.on("data", (chunk) => { body += chunk; });
 process.stdin.on("end", () => {
-  let parsed;
-  try { parsed = new URL(url); } catch (e) { process.stderr.write("strideterm-hook: invalid URL: " + url + "\\n"); process.exit(0); }
-  const options = {
-    hostname: parsed.hostname,
-    port: parsed.port,
-    path: parsed.pathname + parsed.search,
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    timeout: 4000,
-  };
-  const req = http.request(options, (res) => {
-    if (res.statusCode !== 200) process.stderr.write("strideterm-hook: POST " + url + " returned " + res.statusCode + "\\n");
-    process.exit(0);
-  });
-  req.on("error", (e) => { process.stderr.write("strideterm-hook: POST failed: " + e.message + "\\n"); process.exit(0); });
-  req.on("timeout", () => { process.stderr.write("strideterm-hook: POST timeout\\n"); req.destroy(); process.exit(0); });
-  req.end(body);
+  let pending = allUrls.length;
+  function done() { if (--pending <= 0) process.exit(0); }
+  for (const u of allUrls) {
+    let parsed;
+    try { parsed = new URL(u); } catch (e) { log("ERROR", "invalid url: " + u); done(); continue; }
+    const options = {
+      hostname: parsed.hostname,
+      port: parsed.port,
+      path: parsed.pathname + parsed.search,
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      timeout: 4000,
+    };
+    const req = http.request(options, (res) => {
+      if (res.statusCode !== 200 && res.statusCode !== 403) {
+        log("WARN", "POST " + parsed.port + " -> " + res.statusCode);
+      }
+      done();
+    });
+    req.on("error", (e) => { log("ERROR", "POST failed: " + e.message); done(); });
+    req.on("timeout", () => { log("ERROR", "POST timeout (4s)"); req.destroy(); done(); });
+    req.end(body);
+  }
 });
 process.stdin.resume();
 `;

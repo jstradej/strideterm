@@ -257,11 +257,31 @@ export class AgentTaskRunner {
     const resumable = new Set(["paused", "completed", "failed"]);
     if (!resumable.has(workspace.task.state)) return false;
 
-    this.#setTaskState(workspace.task, "running");
-    // Don't re-send the prompt — the user is already interacting with the worker
-    log.info("task resumed", { workspaceId, previousState: workspace.task.state });
-    this.#logTaskEvent(workspace, "task-resumed");
+    const task = workspace.task;
+    const previousState = task.state;
+    // Restore to the state we were in before pausing, not always "running".
+    // If paused during judge-evaluating, resume to judge-evaluating so the
+    // verdict can be read.  If paused from evaluating/refreshing, fall back
+    // to running (the evaluation was interrupted and needs to restart from
+    // the next worker idle).
+    const resumeTo = task.pausedFromState === "judge-evaluating" ? "judge-evaluating" : "running";
+    task.pausedFromState = "";
+
+    this.#setTaskState(task, resumeTo);
+    log.info("task resumed", { workspaceId, previousState, resumeTo });
+    this.#logTaskEvent(workspace, "task-resumed", `Resumed to ${resumeTo}`);
     this.#broadcastState();
+
+    // If resumed to judge-evaluating, the judge's idle hook may have already
+    // fired and been ignored while paused.  Proactively try to read the
+    // verdict — if the file exists, handle it; otherwise wait for the next hook.
+    if (resumeTo === "judge-evaluating") {
+      log.info("resumed to judge-evaluating, proactively checking verdict", { workspaceId });
+      this.#handleJudgeVerdict(workspace).catch((err) => {
+        log.error("proactive verdict check failed", { workspaceId, err: err.message });
+      });
+    }
+
     return true;
   }
 
@@ -282,6 +302,7 @@ export class AgentTaskRunner {
     task.currentRound = 0;
     task.rounds = [];
     task.promptSent = false;
+    task.pausedFromState = "";
     task.showerResumePrompt = "";
     task.lastShowerRound = 0;
     // Preserve lastJudgeInstructions — might be useful for next run
@@ -314,7 +335,7 @@ export class AgentTaskRunner {
    * Called when an agent session goes idle (hook, OSC 133, or silence fallback).
    * Returns true if this session belongs to a task workspace and was handled.
    */
-  onAgentIdle(sessionId) {
+  onAgentIdle(sessionId, source = "unknown") {
     const parts = sessionId.split(":");
     if (parts.length < 2) return false;
 
@@ -327,7 +348,7 @@ export class AgentTaskRunner {
     }
 
     const task = workspace.task;
-    log.trace("onAgentIdle: task workspace found", {
+    log.debug("onAgentIdle: task workspace found", {
       sessionId,
       workspaceId,
       panelId,
@@ -339,7 +360,7 @@ export class AgentTaskRunner {
     });
 
     if (task.state !== "running" && task.state !== "judge-evaluating") {
-      log.trace("onAgentIdle: task not in actionable state, ignoring", { sessionId, taskState: task.state });
+      log.debug("onAgentIdle: task not in actionable state, ignoring", { sessionId, taskState: task.state });
       return false;
     }
 
@@ -347,7 +368,7 @@ export class AgentTaskRunner {
     const isJudge = panelId === task.judgePanelId;
 
     if (!isWorker && !isJudge) {
-      log.trace("onAgentIdle: panel is neither worker nor judge", { sessionId, panelId });
+      log.debug("onAgentIdle: panel is neither worker nor judge", { sessionId, panelId });
       return false;
     }
 
@@ -368,11 +389,19 @@ export class AgentTaskRunner {
         return true;
       }
 
+      const elapsedMs = task.startedAt ? Date.now() - task.startedAt : 0;
       log.info("worker idle detected, starting evaluation", {
         workspaceId,
         sessionId,
         round: task.currentRound,
+        elapsedMs,
+        source,
       });
+      this.#logTaskEvent(
+        workspace,
+        "worker-idle-detected",
+        `Worker went idle via ${source} (${(elapsedMs / 1000).toFixed(1)}s since start). Starting checks…`,
+      );
       this.#evaluateWorker(workspace).catch((err) => {
         log.error("evaluateWorker error", { workspaceId, err: err.message });
       });
@@ -380,7 +409,8 @@ export class AgentTaskRunner {
     }
 
     if (isJudge && task.state === "judge-evaluating") {
-      log.info("judge idle detected, reading verdict", { workspaceId, sessionId });
+      log.info("judge idle detected, reading verdict", { workspaceId, sessionId, source });
+      this.#logTaskEvent(workspace, "judge-idle-detected", `Judge went idle via ${source}. Reading verdict…`);
       this.#handleJudgeVerdict(workspace).catch((err) => {
         log.error("handleJudgeVerdict error", { workspaceId, err: err.message });
       });
@@ -406,6 +436,7 @@ export class AgentTaskRunner {
 
     const ACTIVE = new Set(["running", "evaluating", "judge-evaluating", "refreshing"]);
     if (panelId === workspace.task.workerPanelId && ACTIVE.has(workspace.task.state)) {
+      workspace.task.pausedFromState = "";
       this.#setTaskState(workspace.task, "paused");
       this.#evaluating.delete(workspaceId);
       log.warn("worker session exited, task paused", { workspaceId, sessionId });
@@ -418,21 +449,40 @@ export class AgentTaskRunner {
   /**
    * Called from runtime.writeToSession when user types into a task workspace panel.
    * Auto-pauses the task runner to avoid conflicts with user input.
+   *
+   * Only pauses when input targets the CURRENTLY ACTIVE agent panel:
+   * - evaluating/refreshing → only worker panel input pauses
+   * - judge-evaluating → only judge panel input pauses
+   * This prevents accidental pauses from clicking on the idle panel
+   * (e.g. focus events from xterm.js when switching between panels).
    */
   onUserInput(sessionId) {
     const parts = sessionId.split(":");
     if (parts.length < 2) return;
 
     const workspaceId = parts.slice(0, -1).join(":");
+    const panelId = parts[parts.length - 1];
     const workspace = this.#findTaskWorkspace(workspaceId);
     if (!workspace) return;
 
     const task = workspace.task;
-    // Only pause if the task runner is actively driving the session
-    if (task.state === "evaluating" || task.state === "judge-evaluating" || task.state === "refreshing") {
+    // Only pause if input targets the panel that the task runner is actively driving
+    const isWorkerInput = panelId === task.workerPanelId;
+    const isJudgeInput = panelId === task.judgePanelId;
+    const shouldPause =
+      ((task.state === "evaluating" || task.state === "refreshing") && isWorkerInput) ||
+      (task.state === "judge-evaluating" && isJudgeInput);
+
+    if (shouldPause) {
+      task.pausedFromState = task.state;
       this.#setTaskState(task, "paused");
       this.#evaluating.delete(workspaceId);
-      log.info("user input detected during evaluation, task paused", { workspaceId, sessionId });
+      log.info("user input detected during evaluation, task paused", {
+        workspaceId,
+        sessionId,
+        panelId,
+        pausedFromState: task.pausedFromState,
+      });
       this.#broadcastState();
     }
   }
@@ -550,6 +600,7 @@ export class AgentTaskRunner {
     this.#evaluating.add(workspaceId);
 
     try {
+      const evalStart = Date.now();
       this.#setTaskState(task, "evaluating");
       this.#broadcastState();
 
@@ -649,6 +700,7 @@ export class AgentTaskRunner {
       }
       const passedCount = round.checks.filter((c) => c.passed).length;
       const failedCount = round.checks.filter((c) => !c.passed).length;
+      const evalMs = Date.now() - evalStart;
       log.info("evaluation round complete", {
         workspaceId,
         round: round.round,
@@ -656,12 +708,13 @@ export class AgentTaskRunner {
         passed: passedCount,
         failed: failedCount,
         allPassed,
+        evalMs,
       });
       const checkSummary = round.checks.map((c) => `${c.passed ? "PASS" : "FAIL"} ${c.label}`).join(", ");
       this.#logTaskEvent(
         workspace,
         "evaluation-complete",
-        `${passedCount}/${round.checks.length} passed. ${checkSummary}`,
+        `${passedCount}/${round.checks.length} passed (${evalMs}ms). ${checkSummary}`,
       );
 
       // Final interruption check before acting on results
@@ -742,24 +795,33 @@ export class AgentTaskRunner {
         round.action = "judge-requested";
         task.currentRound += 1;
 
+        const judgeSetupStart = Date.now();
+
         // Clear old verdict
         await this.#clearVerdict(workspace.cwd, task.taskId);
 
         // Gather git context so the judge can see actual repo changes
         const gitContext = await this.#getGitContext(workspace.cwd);
+        const gitContextMs = Date.now() - judgeSetupStart;
 
         // Inject judge evaluation prompt
         const judgeSessionId = `${workspaceId}:${task.judgePanelId}`;
         const judgePrompt = await buildJudgePrompt(task, round, gitContext, workspace.cwd);
         await this.#injectPrompt(judgeSessionId, judgePrompt, workspace);
+        const totalSetupMs = Date.now() - judgeSetupStart;
         this.#setTaskState(task, "judge-evaluating");
-        log.info("judge evaluation requested", { workspaceId, round: task.currentRound });
-        this.#logTaskEvent(workspace, "judge-requested", "All checks passed, Judge evaluation started");
+        log.info("judge evaluation requested", { workspaceId, round: task.currentRound, gitContextMs, totalSetupMs });
+        this.#logTaskEvent(
+          workspace,
+          "judge-requested",
+          `All checks passed. Judge prompt injected (git: ${gitContextMs}ms, total setup: ${totalSetupMs}ms)`,
+        );
       }
 
       this.#broadcastState();
     } catch (err) {
       log.error("evaluateWorker failed", { workspaceId, err: err.message });
+      task.pausedFromState = "";
       this.#setTaskState(task, "paused");
       this.#broadcastState();
     } finally {
@@ -790,9 +852,11 @@ export class AgentTaskRunner {
       log.info("judge verdict", { workspaceId, verdict: verdict.verdict, reason: verdict.reason });
       this.#logTaskEvent(workspace, "judge-verdict", `Verdict: ${verdict.verdict}. ${verdict.reason || ""}`);
 
-      // Bail out if user paused/reset while reading verdict
-      if (this.#wasInterrupted(workspaceId, new Set(["judge-evaluating"]))) {
-        log.info("judge verdict handling interrupted", { workspaceId });
+      // Bail out if user paused/reset while reading verdict.
+      // Note: #wasInterrupted checks #evaluating set which is only used by
+      // #evaluateWorker, so we check the task state directly here.
+      if (task.state !== "judge-evaluating") {
+        log.info("judge verdict handling interrupted (state changed)", { workspaceId, taskState: task.state });
         return;
       }
 
