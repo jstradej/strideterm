@@ -1,5 +1,32 @@
 import { attentionTitle, isFreshAttention, safeColor, tabAttentionTitle, isFreshAlert } from "./helpers.js";
 
+function getParentId(ws) {
+  if (ws.review?.checkout?.mode === "managed-worktree" && ws.review?.parentWorkspaceId)
+    return ws.review.parentWorkspaceId;
+  if (ws.quickfix?.parentWorkspaceId) return ws.quickfix.parentWorkspaceId;
+  if (ws.task?.parentWorkspaceId) return ws.task.parentWorkspaceId;
+  return null;
+}
+
+function computeDepth(workspace, byId, seen = new Set()) {
+  const parentId = getParentId(workspace);
+  if (parentId && !seen.has(parentId)) {
+    const parent = byId.get(parentId);
+    if (parent) {
+      seen.add(parentId);
+      return computeDepth(parent, byId, seen) + 1;
+    }
+    return 1;
+  }
+  if (
+    ["azure-devops", "github"].includes(workspace.review?.provider) &&
+    workspace.review?.checkout?.mode === "managed-worktree"
+  )
+    return 1;
+  if ((workspace.notes || "").startsWith("Worktree of ")) return 1;
+  return 0;
+}
+
 export function buildTabStripModel({ tabs, activeViewId, isInSplitGroup, getTabAttention }) {
   return tabs.map((session) => {
     const tabAttention = getTabAttention(session.id);
@@ -34,16 +61,16 @@ export function buildWorkspaceCards({
   getPrStatus,
   taskRunnerSnapshot,
 }) {
+  const byId = new Map(workspaces.map((w) => [w.id, w]));
   return workspaces.map((workspace, index) => {
     const active = workspace.id === activeWorkspaceId;
     const gitSnapshot = getGitSnapshot(workspace.id);
     const attention = getWorkspaceAttention(workspace.id);
     const attentionTooltip = attentionTitle(attention);
+    const depth = computeDepth(workspace, byId);
     const isReviewChild =
       ["azure-devops", "github"].includes(workspace.review?.provider) &&
       workspace.review?.checkout?.mode === "managed-worktree";
-    const isQuickFixChild = !!workspace.quickfix?.parentWorkspaceId;
-    const isTaskChild = !!workspace.task?.parentWorkspaceId;
     const checks = typeof getChecks === "function" ? getChecks(workspace) : null;
     const checksState = checks?.failedCount
       ? "failed"
@@ -92,7 +119,7 @@ export function buildWorkspaceCards({
       attentionTooltip,
       kind: workspace.kind || "terminal",
       gitAvailable: !!gitSnapshot?.available,
-      isWorktree: (workspace.notes || "").startsWith("Worktree of ") || isReviewChild || isQuickFixChild || isTaskChild,
+      depth,
       checksState,
       prStatus,
       taskState: taskState || null,

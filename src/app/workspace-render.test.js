@@ -33,7 +33,7 @@ describe("buildWorkspaceCards", () => {
     });
 
     expect(azureCard.summary).toContain("C:/reviews");
-    expect(reviewCard.isWorktree).toBe(true);
+    expect(reviewCard.depth).toBe(1);
   });
 
   test("builds docker workspace card with Docker summary", () => {

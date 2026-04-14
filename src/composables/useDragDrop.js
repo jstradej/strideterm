@@ -37,22 +37,23 @@ function getWorktreeGroup(workspaceId, workspaces) {
     if (parent) return getWorktreeGroup(parent.id, workspaces);
   }
 
-  // This is a parent — collect all children
+  // This is a root — collect all descendants recursively
   const groupIds = [ws.id];
-  const prefix = ws.name + " / ";
+  collectDescendants(ws.id, ws.name, workspaces, groupIds);
+  return groupIds;
+}
+
+function collectDescendants(parentId, parentName, workspaces, result) {
+  const prefix = parentName + " / ";
   for (const w of workspaces) {
-    if (w.id === ws.id) continue;
-    // Explicit parent reference (review/quickfix children)
-    if (isChildOf(w, ws.id)) {
-      groupIds.push(w.id);
-      continue;
-    }
-    // Legacy worktree children by name convention
-    if (w.name.startsWith(prefix) && (w.notes || "").startsWith("Worktree of ")) {
-      groupIds.push(w.id);
+    if (result.includes(w.id)) continue;
+    if (isChildOf(w, parentId)) {
+      result.push(w.id);
+      collectDescendants(w.id, w.name, workspaces, result);
+    } else if (w.name.startsWith(prefix) && (w.notes || "").startsWith("Worktree of ")) {
+      result.push(w.id);
     }
   }
-  return groupIds;
 }
 
 /**

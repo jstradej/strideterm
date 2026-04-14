@@ -1034,8 +1034,7 @@ dt {
   bottom: -1px;
 }
 
-.workspace-card--worktree {
-  margin-left: 16px;
+.workspace-card--sub {
   border-left: 2px solid color-mix(in srgb, var(--accent), transparent 50%);
   font-size: 0.95em;
 }

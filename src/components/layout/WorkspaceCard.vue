@@ -5,11 +5,11 @@
       'workspace-card--active': workspace.active,
       'workspace-card--attention': workspace.attentionCount > 0,
       'workspace-card--attention-fresh': workspace.attentionFresh,
-      'workspace-card--worktree': workspace.isWorktree,
+      'workspace-card--sub': workspace.depth > 0,
       'workspace-card--pr-completed': workspace.prStatus === 'completed',
       'workspace-card--pr-abandoned': workspace.prStatus === 'abandoned',
     }"
-    :style="`--accent:${workspace.color}`"
+    :style="`--accent:${workspace.color}${workspace.depth > 0 ? `;margin-left:${workspace.depth * 16}px` : ''}`"
     :title="workspace.title"
     draggable="true"
     @click="$emit('activate')"
