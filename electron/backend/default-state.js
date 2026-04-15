@@ -206,21 +206,6 @@ export function normalizeWorkspace(workspace, index = 0) {
           worktreeBranch: workspace.task.worktreeBranch || "",
           workerPanelId: workspace.task.workerPanelId || "",
           judgePanelId: workspace.task.judgePanelId || "",
-          finishCriteria: {
-            verifyCommands: Array.isArray(workspace.task.finishCriteria?.verifyCommands)
-              ? workspace.task.finishCriteria.verifyCommands.map((cmd) => ({
-                  label: cmd.label || "",
-                  command: cmd.command || "",
-                  timeoutMs: cmd.timeoutMs || 60000,
-                }))
-              : [],
-            requiredPaths: Array.isArray(workspace.task.finishCriteria?.requiredPaths)
-              ? workspace.task.finishCriteria.requiredPaths
-              : [],
-            forbiddenPaths: Array.isArray(workspace.task.finishCriteria?.forbiddenPaths)
-              ? workspace.task.finishCriteria.forbiddenPaths
-              : [],
-          },
           maxRounds: workspace.task.maxRounds || 10,
           showerInterval: workspace.task.showerInterval ?? 5,
           state: workspace.task.state || "idle",

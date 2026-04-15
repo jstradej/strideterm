@@ -146,8 +146,7 @@
           >. Control files, git commits, and all changes stay isolated in this worktree.
         </p>
         <p v-else class="info-box">
-          Control files (TASK.md, TODO.md, FINISH_CRITERIA.md, WORK_LOCK) are managed automatically. Edit them in the
-          Dashboard.
+          Control files (TASK.md, TODO.md, WORK_LOCK) are managed automatically. Edit them in the Dashboard.
         </p>
       </template>
 

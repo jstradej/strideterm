@@ -1,5 +1,6 @@
 import { describe, expect, test, vi, beforeEach } from "vitest";
-import { AgentTaskRunner, parseFinishCriteriaMd, checkCommandSafety } from "./agent-task-runner.js";
+import { AgentTaskRunner } from "./agent-task-runner.js";
+import { formatVerifyChecklist } from "./agent-task-utils.js";
 
 function createMockDeps(workspaces = []) {
   const written = [];
@@ -364,59 +365,22 @@ describe("AgentTaskRunner", () => {
   });
 });
 
-describe("parseFinishCriteriaMd", () => {
-  test("parses verify commands with label and command", () => {
-    const result = parseFinishCriteriaMd(`# Finish Criteria
-
-## Verify Commands
-- Tests: \`npm test\`
-- Lint: \`npm run lint\`
-`);
-    expect(result.verifyCommands).toHaveLength(2);
-    expect(result.verifyCommands[0]).toEqual({ label: "Tests", command: "npm test", timeoutMs: 60_000 });
-    expect(result.verifyCommands[1]).toEqual({ label: "Lint", command: "npm run lint", timeoutMs: 60_000 });
+describe("formatVerifyChecklist", () => {
+  test("formats detected commands as markdown checklist", () => {
+    const result = formatVerifyChecklist([
+      { label: "Tests", command: "npm test", timeoutMs: 60_000 },
+      { label: "Lint", command: "npm run lint", timeoutMs: 60_000 },
+    ]);
+    expect(result).toBe("- [ ] Run `npm test` — must pass\n- [ ] Run `npm run lint` — must pass");
   });
 
-  test("parses timeout from command line", () => {
-    const result = parseFinishCriteriaMd(`## Verify Commands
-- Build: \`npm run build\` (timeout: 120s)
-`);
-    expect(result.verifyCommands[0].timeoutMs).toBe(120_000);
+  test("returns empty string for empty array", () => {
+    expect(formatVerifyChecklist([])).toBe("");
   });
 
-  test("parses required and forbidden files", () => {
-    const result = parseFinishCriteriaMd(`## Required Files
-- src/hello.js
-- src/hello.test.js
-
-## Forbidden Files
-- tmp/debug.log
-`);
-    expect(result.requiredPaths).toEqual(["src/hello.js", "src/hello.test.js"]);
-    expect(result.forbiddenPaths).toEqual(["tmp/debug.log"]);
-  });
-
-  test("returns empty for missing file", () => {
-    const result = parseFinishCriteriaMd("");
-    expect(result.verifyCommands).toEqual([]);
-    expect(result.requiredPaths).toEqual([]);
-    expect(result.forbiddenPaths).toEqual([]);
-  });
-
-  test("ignores HTML comments", () => {
-    const result = parseFinishCriteriaMd(`## Verify Commands
-<!-- - Tests: \`npm test\` -->
-- Lint: \`npm run lint\`
-`);
-    expect(result.verifyCommands).toHaveLength(1);
-    expect(result.verifyCommands[0].label).toBe("Lint");
-  });
-
-  test("handles bare backtick commands without label", () => {
-    const result = parseFinishCriteriaMd(`## Verify Commands
-- \`cargo test\`
-`);
-    expect(result.verifyCommands[0]).toEqual({ label: "cargo test", command: "cargo test", timeoutMs: 60_000 });
+  test("returns empty string for null/undefined", () => {
+    expect(formatVerifyChecklist(null)).toBe("");
+    expect(formatVerifyChecklist(undefined)).toBe("");
   });
 });
 
@@ -501,44 +465,6 @@ describe("startTask - prompt sent tracking", () => {
 
     await runner.startTask(ws.id);
     expect(ws.task.promptSent).toBe(false);
-  });
-});
-
-describe("checkCommandSafety", () => {
-  test("returns empty for safe commands", () => {
-    expect(checkCommandSafety("npm test")).toEqual([]);
-    expect(checkCommandSafety("npm run lint")).toEqual([]);
-    expect(checkCommandSafety("cargo test")).toEqual([]);
-    expect(checkCommandSafety("pytest -q")).toEqual([]);
-    expect(checkCommandSafety("go vet ./...")).toEqual([]);
-  });
-
-  test("flags rm -rf", () => {
-    const warnings = checkCommandSafety("rm -rf /tmp/test");
-    expect(warnings.length).toBeGreaterThan(0);
-    expect(warnings[0]).toContain("recursive");
-  });
-
-  test("flags git push", () => {
-    const warnings = checkCommandSafety("git push origin main");
-    expect(warnings.length).toBeGreaterThan(0);
-    expect(warnings[0]).toContain("git push");
-  });
-
-  test("flags git reset --hard", () => {
-    const warnings = checkCommandSafety("git reset --hard HEAD~1");
-    expect(warnings.length).toBeGreaterThan(0);
-  });
-
-  test("flags command substitution", () => {
-    const warnings = checkCommandSafety("echo $(whoami)");
-    expect(warnings.length).toBeGreaterThan(0);
-    expect(warnings[0]).toContain("injection");
-  });
-
-  test("flags backtick substitution", () => {
-    const warnings = checkCommandSafety("echo `id`");
-    expect(warnings.length).toBeGreaterThan(0);
   });
 });
 

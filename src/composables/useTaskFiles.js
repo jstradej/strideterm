@@ -1,6 +1,6 @@
 import { ref, computed } from "vue";
 
-const TASK_FILES = ["TASK.md", "TODO.md", "FINISH_CRITERIA.md", "JUDGE_PROMPT.md", "JUDGE_TODO.md", "TASK_LOG.jsonl"];
+const TASK_FILES = ["TASK.md", "TODO.md", "JUDGE_PROMPT.md", "JUDGE_TODO.md", "TASK_LOG.jsonl"];
 
 /**
  * Composable for task dashboard file editing.

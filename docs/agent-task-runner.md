@@ -1,6 +1,6 @@
 # Agent Task Runner
 
-The Agent Task Runner is a supervised coding loop that coordinates two AI agents (Worker + Judge) to complete coding tasks autonomously. It auto-detects verification commands from your project, runs deterministic checks between rounds, and uses an independent judge to evaluate completion.
+The Agent Task Runner is a supervised coding loop that coordinates two AI agents (Worker + Judge) to complete coding tasks autonomously. It auto-detects verification commands from your project and pre-fills them as a checklist in TASK.md, then uses an independent judge to evaluate completion.
 
 ## Quick Start
 
@@ -11,7 +11,7 @@ The Agent Task Runner is a supervised coding loop that coordinates two AI agents
 5. Click **Create workspace** — control files are generated automatically
 6. Press **Start** in the Dashboard to begin
 
-The Worker (Claude Code) will start executing the task. When it goes idle, the Task Runner automatically runs verification checks and, if they pass, asks the Judge to independently evaluate the work.
+The Worker (Claude Code) will start executing the task. When it goes idle, the Task Runner automatically runs built-in checks and, if they pass, asks the Judge to independently evaluate the work.
 
 ## How It Works
 
@@ -20,6 +20,7 @@ You write a task
     |
     v
 [Worker] executes the task, commits changes
+    |     (runs verification checklist from TASK.md before finishing)
     |
     v  (worker goes idle)
 [Built-in checks] WORK_LOCK absent? TODO clear?
@@ -27,12 +28,7 @@ You write a task
     |-- FAIL --> re-prompt Worker with failure details
     |
     v  PASS
-[Verify commands] npm test, lint, etc.
-    |
-    |-- FAIL --> re-prompt Worker with output
-    |
-    v  PASS
-[Judge] independently reviews git diff + task
+[Judge] independently reviews git diff + task + verification checklist
     |
     |-- "continue" --> re-prompt Worker with feedback
     |
@@ -92,58 +88,63 @@ connections are removed after disconnect.
 
 All task state lives in `.strideterm/tasks/<taskId>/` inside your project directory. These files are auto-gitignored.
 
-| File                   | Purpose                                         | Who writes it                    |
-| ---------------------- | ----------------------------------------------- | -------------------------------- |
-| **TASK.md**            | Full task description and rules                 | Auto-generated, you can edit     |
-| **TODO.md**            | Kanban board (To Do / In Progress / Done)       | Worker updates, you can pre-fill |
-| **FINISH_CRITERIA.md** | Verification commands, required/forbidden files | Auto-detected, you can edit      |
-| **JUDGE_PROMPT.md**    | Customizable Judge evaluation instructions      | Auto-generated, you can edit     |
-| **WORK_LOCK**          | Signal file: "work remains"                     | Worker deletes when done         |
-| **JUDGE_TODO.md**      | Judge's evaluation scratchpad                   | Judge only (you can read)        |
-| **verdict.json**       | Judge's completion verdict                      | Judge only                       |
+| File                | Purpose                                         | Who writes it                    |
+| ------------------- | ----------------------------------------------- | -------------------------------- |
+| **TASK.md**         | Task description, verification checklist, rules | Auto-generated, you can edit     |
+| **TODO.md**         | Kanban board (To Do / In Progress / Done)       | Worker updates, you can pre-fill |
+| **JUDGE_PROMPT.md** | Customizable Judge evaluation instructions      | Auto-generated, you can edit     |
+| **WORK_LOCK**       | Signal file: "work remains"                     | Worker deletes when done         |
+| **JUDGE_TODO.md**   | Judge's evaluation scratchpad                   | Judge only (you can read)        |
+| **verdict.json**    | Judge's completion verdict                      | Judge only                       |
 
 ### Editing Control Files
 
 Switch to the **Files** tab in the Dashboard to edit any control file. Common edits:
 
-- **TASK.md** — Refine the task description before pressing Start
+- **TASK.md** — Refine the task description, add/remove verification steps, adjust rules
 - **TODO.md** — Pre-fill specific to-do items before starting
-- **FINISH_CRITERIA.md** — Add/remove verification commands, adjust timeouts
+
+### Verification Checklist
+
+When you create a task workspace, the Task Runner auto-detects your project's tooling (package.json, Cargo.toml, pyproject.toml, etc.) and pre-fills a **"Verification before completion"** section in TASK.md:
+
+```markdown
+## Verification before completion
+
+- [ ] Run `npm test` — must pass
+- [ ] Run `npm run lint` — must pass
+- [ ] Run `npx tsc --noEmit` — must pass
+```
+
+This checklist is **yours to edit** — add, remove, rewrite in your own language. Both the Worker and Judge read it:
+
+- The **Worker** runs each check before claiming completion
+- The **Judge** independently re-runs the checks to verify
+
+You don't need a special format — write in plain language:
+
+```markdown
+## Verification before completion
+
+- [ ] Spusť testy: `npm test`
+- [ ] Zkontroluj, že existuje soubor src/api/users.ts
+- [ ] Ověř, že stávající testy stále procházejí
+```
 
 ### Two layers of verification
 
-The Agent Task Runner verifies completion at two levels:
+1. **Worker self-verification** — the Worker reads the verification checklist in TASK.md and runs each check before finishing. This is the first line of defense.
 
-1. **Deterministic checks** (FINISH_CRITERIA.md) — automated, binary pass/fail:
-   - Verification commands: `npm test`, `npm run lint`, etc. (auto-detected from your project)
-   - Required/forbidden file paths
-   - WORK_LOCK absent, TODO sections clear
+2. **Judge evaluation** (AI-based) — the Judge independently:
+   - **Re-runs the verification checklist** from TASK.md to confirm the Worker's claims
+   - **Requirements check**: reads TASK.md and verifies every requirement point by point against the actual code changes (git diff)
+   - **Code review**: reads the changed files and checks for bugs, edge cases, dead code, debug leftovers, and consistency with existing codebase style
 
-2. **Judge evaluation** (AI-based) — the Judge does two things automatically:
-   - **Requirements check**: reads TASK.md and verifies every requirement point by point against the actual code changes (git diff). "Did the worker actually implement pagination?" "Is the error handling complete?"
-   - **Code review**: reads the changed files and checks for bugs, edge cases, dead code, debug leftovers, and consistency with existing codebase style. This is a real code review, not just a rubber stamp.
-
-You don't need to add "check the requirements" or "do a code review" as a verify command — the Judge does both automatically. Put **automated, deterministic checks** in FINISH_CRITERIA.md (tests, lint, type-check) and leave **requirement verification and code quality review** to the Judge.
-
-If the Judge finds code quality issues, it sends the Worker back with specific feedback ("function X in file Y has an unhandled edge case when Z is empty"). The Worker fixes it and the cycle repeats until the Judge is satisfied.
-
-### Verification Command Format
-
-In FINISH_CRITERIA.md, verification commands use this format:
-
-```markdown
-## Verify Commands
-
-- Tests: `npm test`
-- Lint: `npm run lint` (timeout: 30s)
-- Type-check: `npx tsc --noEmit` (timeout: 120s)
-```
-
-The Task Runner auto-detects commands for Node.js, Python, Rust, Go, Java (Maven/Gradle), .NET, Ruby, and Makefile projects.
+If the Judge finds issues, it sends the Worker back with specific feedback. The cycle repeats until the Judge is satisfied.
 
 ### Customizing the Judge
 
-The Judge's evaluation behavior is defined in **JUDGE_PROMPT.md**. By default it does a requirements check (point by point) and a code review (bugs, edge cases, quality). You can customize this in the Files tab before or during task execution.
+The Judge's evaluation behavior is defined in **JUDGE_PROMPT.md**. By default it runs the verification checklist, does a requirements check (point by point), and a code review (bugs, edge cases, quality). You can customize this in the Files tab before or during task execution.
 
 **Examples of customization:**
 
@@ -182,12 +183,13 @@ Skip code review entirely (faster, less strict):
 # Judge Instructions
 
 1. Read the task description in TASK.md
-2. Verify each requirement is implemented
-3. Write verdict to verdict.json
+2. Run the verification checklist commands
+3. Verify each requirement is implemented
+4. Write verdict to verdict.json
    Do not review code quality — only check if requirements are met.
 ```
 
-The Judge always receives task description, automated check results, and git context regardless of what you write in JUDGE_PROMPT.md.
+The Judge always receives task description, built-in check results, and git context regardless of what you write in JUDGE_PROMPT.md.
 
 ## Git Integration
 
@@ -250,11 +252,11 @@ Shows the execution pipeline (Worker -> Checks -> Judge -> Done) and a history o
 
 ### Files Tab
 
-Built-in editor for task control files. Edit TASK.md, TODO.md, or FINISH_CRITERIA.md directly without leaving the workspace.
+Built-in editor for task control files. Edit TASK.md, TODO.md, or JUDGE_PROMPT.md directly without leaving the workspace.
 
 ### Config Tab
 
-Shows the task configuration (description, max rounds) with a link to edit finish criteria.
+Shows the task configuration (description, max rounds) with a link to edit verification steps in TASK.md.
 
 ### Help Tab
 
@@ -289,8 +291,7 @@ After stopping, completing, or failing a task, you'll see **Continue** and **Res
 1. Press **Pause** to pause the task (or wait for it to complete/fail)
 2. Press **Reset** — clears rounds, returns to idle
 3. Switch to the **Files** tab and edit what you need:
-   - **TASK.md** — change the assignment entirely, or refine the description
-   - **FINISH_CRITERIA.md** — add/remove verification commands, adjust timeouts
+   - **TASK.md** — change the assignment, update the verification checklist, or refine the description
    - **TODO.md** — rewrite the to-do list for the next run
 4. Press **Start** to run the task again with your updated files
 
@@ -304,7 +305,7 @@ This makes the task workspace reusable: create it once, then reset and re-run as
 - **Pre-fill TODO.md**: If you know the subtasks, write them before pressing Start — it guides the Worker
 - **Watch the first round**: Monitor the Worker's approach in round 1 and Pause if it's going in the wrong direction
 - **Use the terminal**: You can always type directly into the Worker or Judge terminal for course correction
-- **Check FINISH_CRITERIA.md**: The auto-detected commands may not be perfect — review and adjust before starting
+- **Review the verification checklist**: The auto-detected commands may not be perfect — review and adjust in TASK.md before starting
 
 ---
 
@@ -328,10 +329,7 @@ Worker goes idle (hook/OSC 133/silence detection)
     --> AgentTaskRunner.onAgentIdle(sessionId)
       --> #evaluateWorker(workspace)
         --> #runBuiltInChecks()         // WORK_LOCK, TODO sections
-        --> [short-circuit if failed]   // skip verify commands
-        --> #readFinishCriteria()       // parse FINISH_CRITERIA.md
-        --> #runFileChecks()            // required/forbidden paths
-        --> #runVerifyCommands()        // npm test, lint, etc.
+        --> [short-circuit if failed]   // re-prompt worker
         --> #getGitContext()            // git status, diff
         --> #buildJudgePrompt()         // include git context
         --> #injectPrompt() to Judge    // file-based for long prompts
@@ -355,7 +353,7 @@ idle --> running --> evaluating --> judge-evaluating --> completed
 
 - **idle**: Not started
 - **running**: Worker is executing
-- **evaluating**: Built-in checks + verify commands running
+- **evaluating**: Built-in checks running
 - **judge-evaluating**: Judge is reviewing
 - **refreshing**: Shower mode — restarting worker session with fresh context
 - **paused**: User intervened or error occurred
@@ -367,6 +365,9 @@ idle --> running --> evaluating --> judge-evaluating --> completed
 | File                                                  | Purpose                                                         |
 | ----------------------------------------------------- | --------------------------------------------------------------- |
 | `electron/backend/agent-task-runner.js`               | Core orchestrator (state machine, checks, prompts, shower mode) |
+| `electron/backend/agent-task-prompts.js`              | Worker and Judge prompt builders                                |
+| `electron/backend/agent-task-utils.js`                | Shared constants and helpers                                    |
+| `electron/backend/agent-task-detection.js`            | Project technology detection (auto-detect verify commands)      |
 | `electron/backend/agent-task-runner.test.js`          | Unit tests                                                      |
 | `src/components/workspace/TaskDashboardPane.vue`      | Dashboard shell (header, tabs, controls)                        |
 | `src/components/workspace/TaskDashboardStatusTab.vue` | Pipeline + round history                                        |
@@ -387,13 +388,13 @@ This avoids reliability issues with pasting large text blocks into terminal sess
 
 ### Completion Claim Heuristic
 
-Before running expensive verification commands (tests, lint), the runner checks if the Worker has signaled completion:
+Before invoking the Judge, the runner checks if the Worker has signaled completion:
 
-- **WORK_LOCK exists?** Worker hasn't claimed done -> skip verify commands, re-prompt immediately
-- **TODO "In Progress" not empty?** Active items remain -> skip verify commands
-- **Both clear?** Run the full verification suite
+- **WORK_LOCK exists?** Worker hasn't claimed done -> re-prompt immediately
+- **TODO "In Progress" not empty?** Active items remain -> re-prompt
+- **Both clear?** Invoke the Judge for independent evaluation
 
-This saves minutes per round on projects with slow test suites.
+This saves time by only involving the Judge when the Worker believes the task is done.
 
 ### Persistence
 

@@ -13,11 +13,7 @@
         empty.
       </li>
       <li>
-        Then it runs <strong>verification commands</strong> from FINISH_CRITERIA.md (tests, lint, etc.) in a separate
-        process.
-      </li>
-      <li>
-        If any check fails, the Worker is <strong>re-prompted</strong> with failure details and continues working.
+        If built-in checks fail, the Worker is <strong>re-prompted</strong> with failure details and continues working.
       </li>
       <li>
         If all checks pass, the <strong>Judge</strong> (another Claude Code) independently evaluates whether the task is
@@ -35,17 +31,13 @@
     </p>
     <ul class="td__help-list">
       <li>
-        <strong>TASK.md</strong> &mdash; The full task description, finish criteria, and rules. Both the Worker and
-        Judge read this file to understand what needs to be done.
+        <strong>TASK.md</strong> &mdash; The full task description, verification checklist, and rules. Both the Worker
+        and Judge read this file. Verification commands (tests, lint, etc.) are auto-detected and pre-filled here
+        &mdash; edit freely.
       </li>
       <li>
         <strong>TODO.md</strong> &mdash; Kanban-style board with To Do / In Progress / Done sections. The Worker updates
         this as it makes progress. You can pre-fill items here before starting.
-      </li>
-      <li>
-        <strong>FINISH_CRITERIA.md</strong> &mdash; Simple list of verification commands (<code
-          >- Tests: `npm test`</code
-        >), required/forbidden file paths. Auto-detected from your project. Task Runner reads this before each round.
       </li>
       <li>
         <strong>WORK_LOCK</strong> &mdash; Simple signal file: "work remains". The Worker must delete it when genuinely
@@ -66,11 +58,15 @@ Add pagination to the `/api/users` endpoint. Return 25 items
 per page with `?page=N` query parameter. Include `totalPages`
 and `currentPage` in the response. Add integration tests.
 
+## Verification before completion
+- [ ] Run `npm test` — must pass
+- [ ] Run `npm run lint` — no errors
+
 ## Rules
 - Commit your work regularly with clear messages (the judge reviews git diffs)
 - Do not push to any remote
 - Update TODO.md as you work (move items between sections)
-- Finish criteria and verification commands are in FINISH_CRITERIA.md
+- Before finishing, complete the verification checklist above
 - Remove WORK_LOCK only when genuinely done
 - The judge will independently verify your work</pre
     >
@@ -91,22 +87,16 @@ and `currentPage` in the response. Add integration tests.
     >
 
     <h4>
-      Example: FINISH_CRITERIA.md
+      Example: verification checklist
       <button class="td__copy-btn" @click="copyExample('criteria')">copy</button>
     </h4>
     <pre ref="exampleCriteria" class="td__example">
-# Finish Criteria
-
-## Verify Commands
-- Tests: `npm test`
-- Lint: `npm run lint` (timeout: 30s)
-
-## Required Files
-- src/controllers/users.js
-- tests/users-pagination.test.js
-
-## Forbidden Files
-```</pre
+## Verification before completion
+- [ ] Run `npm test` — must pass
+- [ ] Run `npm run lint` — no errors
+- [ ] Run `npx tsc --noEmit` — no type errors
+- [ ] Ensure src/controllers/users.js exists
+- [ ] Ensure tests/users-pagination.test.js exists</pre
     >
 
     <h4>Reset &amp; Retry</h4>
@@ -119,8 +109,8 @@ and `currentPage` in the response. Add integration tests.
       <li>Press <strong>Pause</strong> to pause the task (or wait for it to complete/fail).</li>
       <li>Press <strong>Reset</strong> &mdash; clears rounds, returns to idle.</li>
       <li>
-        Switch to <strong>Files</strong> and edit what you need &mdash; change <strong>TASK.md</strong> for a different
-        assignment, adjust <strong>FINISH_CRITERIA.md</strong>, or rewrite <strong>TODO.md</strong>.
+        Switch to <strong>Files</strong> and edit what you need &mdash; change <strong>TASK.md</strong> (including the
+        verification checklist) or rewrite <strong>TODO.md</strong>.
       </li>
       <li>Press <strong>Start</strong> to run the task again with your updated files.</li>
     </ol>

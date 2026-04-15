@@ -115,14 +115,14 @@
             </div>
           </label>
           <label class="td__field">
-            <span>Finish criteria</span>
+            <span>Verification</span>
             <div class="td__value">
-              Defined in <strong>FINISH_CRITERIA.md</strong> &mdash;
+              Defined in the &ldquo;Verification before completion&rdquo; section of <strong>TASK.md</strong> &mdash;
               <button
                 class="td__link-btn"
                 @click="
                   activeTab = 'files';
-                  files.switchFile('FINISH_CRITERIA.md');
+                  files.switchFile('TASK.md');
                 "
               >
                 edit in Files tab

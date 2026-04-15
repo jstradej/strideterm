@@ -10,7 +10,6 @@ import { getLogger } from "./logger.js";
 import {
   TASK_FILE,
   TODO_FILE,
-  CRITERIA_FILE,
   JUDGE_TODO_FILE,
   JUDGE_PROMPT_FILE,
   VERDICT_FILE,
@@ -32,16 +31,16 @@ ${task.description ? fenceUserInput(task.description) : "(Read the task from " +
 Rules:
 - Work directly in the repository.
 - **Commit your changes** regularly with clear, descriptive commit messages. The judge reviews git diffs to verify your work. Do NOT push to any remote.
-- Read and obey \`${dir}/${TODO_FILE}\`, \`${dir}/${CRITERIA_FILE}\`, and \`${dir}/${WORK_LOCK_FILE}\`.
+- Read and obey \`${dir}/${TODO_FILE}\` and \`${dir}/${WORK_LOCK_FILE}\`.
 - Ignore \`${dir}/${JUDGE_TODO_FILE}\` — that file belongs to the judge.
 - Do not ask the human whether you should continue. The judge decides that.
 - Do not say "would you like me to continue", "should I proceed", "if you want, I can", or similar optional-next-step language.
-- If you think the task is done, verify it against the finish criteria before stopping.
-- Do not claim done just because you finished one slice. Return done only when the whole task is complete.
-- Remove \`${dir}/${WORK_LOCK_FILE}\` only when the finish criteria genuinely pass.
+- Before finishing, complete the **"Verification before completion"** checklist in \`${dir}/${TASK_FILE}\`. Run every listed command and ensure it passes.
+- Do not claim done just because you finished one slice. Return done only when the whole task is complete and all verification steps pass.
+- Remove \`${dir}/${WORK_LOCK_FILE}\` only when you have verified everything passes.
 - Update \`${dir}/${TODO_FILE}\` as you make progress (move items between sections).
 - Prefer continuing work over asking for more instructions.
-- When you are done, simply stop. Automated checks and a judge will verify your work.`;
+- When you are done, simply stop. A judge will independently verify your work.`;
 }
 
 export function buildRePrompt(task, round) {
@@ -66,6 +65,7 @@ export function buildRePrompt(task, round) {
     "",
     "Continue working. Do not stop while real work remains.",
     `Check ${dir}/${TODO_FILE} for remaining items.`,
+    `Before finishing, complete the verification checklist in ${dir}/${TASK_FILE}.`,
     `Remove ${dir}/${WORK_LOCK_FILE} only when genuinely done.`,
   );
 
@@ -120,22 +120,23 @@ Hard rules (system-enforced):
 - Prefer "continue" over "complete" when uncertain.
 - If any deterministic check failed, reject completion.
 - Treat these worker phrases as red flags: "would you like me to continue", "should I proceed", "all set", "task complete", "done".
-- Reject any stop that leaves active TODO items, WORK_LOCK present, or failing verify commands.
+- Reject any stop that leaves active TODO items or WORK_LOCK present.
 - You are not a second worker — do not expand scope or plan features.`;
 
   // --- Evaluation instructions (user-customizable via JUDGE_PROMPT.md) ---
   const evaluationInstructions =
     customInstructions ||
-    `1. Read ${dir}/${TASK_FILE} for the full task description and requirements
-2. **Requirements check**: Go through every requirement/acceptance criterion in the task description point by point — verify each one is actually implemented, not just claimed
-3. **Code review**: Read the changed files. Check for:
+    `1. Read ${dir}/${TASK_FILE} for the full task description, requirements, and verification checklist
+2. **Verification checklist**: If ${dir}/${TASK_FILE} contains a "Verification before completion" section, run each listed command yourself and verify it passes. This is critical — do not trust the worker's claim that they pass
+3. **Requirements check**: Go through every requirement/acceptance criterion in the task description point by point — verify each one is actually implemented, not just claimed
+4. **Code review**: Read the changed files. Check for:
    - Correctness: does the code actually do what the task asks?
    - Obvious bugs, edge cases, or error handling gaps
    - Code quality: no dead code, no debug leftovers, reasonable naming
    - Consistency with the existing codebase style
    Do NOT nitpick style preferences or demand perfection — focus on real issues that would matter in a code review
-4. Run any relevant checks yourself if needed (read files, run commands)
-5. Keep notes in ${dir}/${JUDGE_TODO_FILE} (tiny scratchpad — for each requirement, note whether it's verified or missing; note any code quality issues found)`;
+5. Run any additional checks yourself if needed (read files, run commands)
+6. Keep notes in ${dir}/${JUDGE_TODO_FILE} (tiny scratchpad — for each requirement, note whether it's verified or missing; note any code quality issues found)`;
 
   // --- Verdict delivery (always present, user cannot override) ---
   const verdictBlock = `FINAL STEP — write verdict (mandatory, system reads this file):
@@ -162,5 +163,6 @@ Judge feedback: ${verdict.reason || "No specific feedback provided."}
 Round ${task.currentRound}/${task.maxRounds}. Continue working.
 Do not stop while real work remains. Do not ask "should I proceed".
 Check ${dir}/${TODO_FILE} for remaining items.
+Before finishing, complete the verification checklist in ${dir}/${TASK_FILE}.
 Remove ${dir}/${WORK_LOCK_FILE} only when genuinely done.`;
 }

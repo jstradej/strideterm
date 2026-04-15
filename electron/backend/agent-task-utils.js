@@ -9,7 +9,6 @@ export const TASK_ROOT = ".strideterm/tasks";
 export const VERDICT_FILE = "verdict.json";
 export const TASK_FILE = "TASK.md";
 export const TODO_FILE = "TODO.md";
-export const CRITERIA_FILE = "FINISH_CRITERIA.md";
 export const JUDGE_TODO_FILE = "JUDGE_TODO.md";
 export const JUDGE_PROMPT_FILE = "JUDGE_PROMPT.md";
 export const WORK_LOCK_FILE = "WORK_LOCK";
@@ -85,66 +84,10 @@ export function activeItems(lines) {
 }
 
 /**
- * Parse FINISH_CRITERIA.md in simple markdown format.
+ * Format auto-detected verify commands as a markdown checklist
+ * for inclusion in TASK.md's verification section.
  */
-export function parseFinishCriteriaMd(text) {
-  const sections = {};
-  let current = "";
-  for (const rawLine of String(text || "").split("\n")) {
-    const line = rawLine.trim();
-    if (line.startsWith("## ")) {
-      current = line.slice(3).trim().toLowerCase();
-      sections[current] = [];
-      continue;
-    }
-    if (current && line.startsWith("- ") && !line.startsWith("<!--")) {
-      sections[current].push(line.slice(2).trim());
-    }
-  }
-
-  const verifyCommands = (sections["verify commands"] || []).map((entry) => {
-    const cmdMatch = entry.match(/^(.+?):\s*`([^`]+)`(?:\s*\(timeout:\s*(\d+)s?\))?$/);
-    if (cmdMatch) {
-      return {
-        label: cmdMatch[1].trim(),
-        command: cmdMatch[2].trim(),
-        timeoutMs: cmdMatch[3] ? Number(cmdMatch[3]) * 1000 : 60_000,
-      };
-    }
-    const bareMatch = entry.match(/^`([^`]+)`/);
-    if (bareMatch) {
-      return { label: bareMatch[1], command: bareMatch[1], timeoutMs: 60_000 };
-    }
-    return { label: entry, command: entry, timeoutMs: 60_000 };
-  });
-
-  const requiredPaths = (sections["required files"] || []).filter(Boolean);
-  const forbiddenPaths = (sections["forbidden files"] || []).filter(Boolean);
-
-  return { verifyCommands, requiredPaths, forbiddenPaths };
-}
-
-const DANGEROUS_PATTERNS = [
-  { pattern: /\brm\s+(-[a-z]*r|-[a-z]*f|--recursive|--force)/i, reason: "recursive/forced delete" },
-  { pattern: /\bformat\b/i, reason: "disk format command" },
-  { pattern: /\bmkfs\b/i, reason: "filesystem format" },
-  { pattern: /\bdd\s+/i, reason: "low-level disk write" },
-  { pattern: />\s*\/dev\/sd/i, reason: "writing to block device" },
-  { pattern: /\bgit\s+push\b/i, reason: "git push" },
-  { pattern: /\bgit\s+reset\s+--hard\b/i, reason: "destructive git reset" },
-  { pattern: /\$\(.*\)|`[^`]+`/, reason: "command substitution (potential injection)" },
-];
-
-/**
- * Check a command string for dangerous patterns.
- * Returns an array of warning strings (empty if safe).
- */
-export function checkCommandSafety(command) {
-  const warnings = [];
-  for (const { pattern, reason } of DANGEROUS_PATTERNS) {
-    if (pattern.test(command)) {
-      warnings.push(reason);
-    }
-  }
-  return warnings;
+export function formatVerifyChecklist(detected) {
+  if (!detected?.length) return "";
+  return detected.map((cmd) => `- [ ] Run \`${cmd.command}\` — must pass`).join("\n");
 }

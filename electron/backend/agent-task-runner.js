@@ -7,7 +7,6 @@ import {
   VERDICT_FILE,
   TASK_FILE,
   TODO_FILE,
-  CRITERIA_FILE,
   JUDGE_TODO_FILE,
   JUDGE_PROMPT_FILE,
   WORK_LOCK_FILE,
@@ -24,8 +23,7 @@ import {
   tailLines,
   parseTodoSections,
   activeItems,
-  parseFinishCriteriaMd,
-  checkCommandSafety,
+  formatVerifyChecklist,
 } from "./agent-task-utils.js";
 import { detectProjectVerifyCommands, detectStackReviewHints } from "./agent-task-detection.js";
 import {
@@ -171,8 +169,6 @@ export class AgentTaskRunner {
         worktreeBranch: "",
         workerPanelId,
         judgePanelId,
-        // Finish criteria are read from FINISH_CRITERIA.md at evaluation time (not stored here)
-        finishCriteria: { verifyCommands: [], requiredPaths: [], forbiddenPaths: [] },
         maxRounds: maxRounds || 10,
         showerInterval: DEFAULT_SHOWER_INTERVAL,
         state: "idle",
@@ -345,7 +341,7 @@ export class AgentTaskRunner {
       const dir = taskDir(workspace.cwd, task.taskId);
       await writeFile(
         path.join(dir, WORK_LOCK_FILE),
-        "Work remains. Remove this file only when the finish criteria genuinely pass.\n",
+        "Work remains. Remove this file only when the task is complete and all verification steps pass.\n",
         "utf8",
       );
       log.debug("WORK_LOCK recreated for reset", { workspaceId });
@@ -662,74 +658,17 @@ export class AgentTaskRunner {
         return;
       }
 
-      // Short-circuit: if built-in checks already fail (WORK_LOCK present,
-      // active TODO items), skip expensive verify commands and file checks.
-      // Inspired by codex-runner's "completion claim heuristic" — only run
-      // the full test/lint suite when the worker signals it thinks it's done.
-      const builtInsPassed = builtInChecks.every((c) => c.passed);
-      if (!builtInsPassed) {
-        log.info("built-in checks failed, skipping verify commands (short-circuit)", {
+      // If built-in checks fail (WORK_LOCK present, active TODO items),
+      // re-prompt the worker immediately — no need to invoke the judge.
+      const allPassed = builtInChecks.every((c) => c.passed);
+      if (!allPassed) {
+        log.info("built-in checks failed, skipping judge (short-circuit)", {
           workspaceId,
           round: round.round,
           failedChecks: builtInChecks.filter((c) => !c.passed).map((c) => c.label),
         });
       }
 
-      let allPassed = false;
-
-      if (builtInsPassed) {
-        // Worker claims completion — run the full verification suite.
-        const criteria = await this.#readFinishCriteria(workspace.cwd, task.taskId);
-        log.debug("finish criteria loaded", {
-          workspaceId,
-          verifyCommands: criteria.verifyCommands.length,
-          requiredPaths: criteria.requiredPaths.length,
-        });
-
-        // Run file existence checks from criteria
-        const fileChecks = await this.#runFileChecks(workspace.cwd, criteria);
-        round.checks.push(...fileChecks);
-        this.#broadcastState(); // Stream file check results to UI
-
-        // Run verify commands one at a time, broadcasting after each
-        for (const cmd of criteria.verifyCommands || []) {
-          // Safety check: warn about dangerous commands but still run them
-          // (user explicitly defined these in FINISH_CRITERIA.md)
-          const warnings = checkCommandSafety(cmd.command);
-          if (warnings.length > 0) {
-            log.warn("verify command flagged as potentially dangerous", {
-              workspaceId,
-              command: cmd.command,
-              warnings,
-            });
-          }
-
-          const result = await this.#execCommand(cmd.command, workspace.cwd, cmd.timeoutMs || 60_000);
-          const check = {
-            label: cmd.label || cmd.command,
-            passed: result.exitCode === 0,
-            exitCode: result.exitCode,
-            warning: warnings.length > 0 ? warnings.join(", ") : "",
-            outputTail: tailLines(result.stderr || result.stdout, MAX_OUTPUT_TAIL),
-          };
-          round.checks.push(check);
-          log.debug("verify command", {
-            workspaceId,
-            check: check.label,
-            passed: check.passed,
-            exitCode: check.exitCode,
-          });
-          this.#broadcastState(); // Stream each verify result to UI
-
-          // Bail out if user paused/reset while command was running
-          if (this.#wasInterrupted(workspaceId, new Set(["evaluating"]))) {
-            log.info("evaluation interrupted during verify commands", { workspaceId });
-            return;
-          }
-        }
-
-        allPassed = round.checks.every((c) => c.passed);
-      }
       const passedCount = round.checks.filter((c) => c.passed).length;
       const failedCount = round.checks.filter((c) => !c.passed).length;
       const evalMs = Date.now() - evalStart;
@@ -837,8 +776,9 @@ export class AgentTaskRunner {
         const gitContext = await this.#getGitContext(workspace.cwd);
         const gitContextMs = Date.now() - judgeSetupStart;
 
-        // Inject judge evaluation prompt
+        // Clear judge context for independent evaluation, then inject prompt
         const judgeSessionId = `${workspaceId}:${task.judgePanelId}`;
+        await this.#clearSessionContext(judgeSessionId);
         const judgePrompt = await buildJudgePrompt(task, round, gitContext, workspace.cwd);
         await this.#injectPrompt(judgeSessionId, judgePrompt, workspace);
         const totalSetupMs = Date.now() - judgeSetupStart;
@@ -1054,45 +994,6 @@ export class AgentTaskRunner {
     };
   }
 
-  // ---------------------------------------------------------------------------
-  // Verification checks (from FINISH_CRITERIA.md)
-  // ---------------------------------------------------------------------------
-
-  async #runFileChecks(cwd, criteria) {
-    const results = [];
-
-    for (const filePath of criteria.requiredPaths || []) {
-      const fullPath = path.resolve(cwd, filePath);
-      let passed = false;
-      try {
-        await access(fullPath);
-        passed = true;
-      } catch {
-        // File doesn't exist
-      }
-      results.push({ label: `Required: ${filePath}`, passed, exitCode: passed ? 0 : 1, outputTail: "" });
-    }
-
-    for (const filePath of criteria.forbiddenPaths || []) {
-      const fullPath = path.resolve(cwd, filePath);
-      let exists = false;
-      try {
-        await access(fullPath);
-        exists = true;
-      } catch {
-        // Good — file doesn't exist
-      }
-      results.push({
-        label: `Forbidden: ${filePath}`,
-        passed: !exists,
-        exitCode: exists ? 1 : 0,
-        outputTail: exists ? "File exists but should not" : "",
-      });
-    }
-
-    return results;
-  }
-
   #execCommand(command, cwd, timeoutMs) {
     const childPromise = new Promise((resolve) => {
       const child = exec(command, {
@@ -1172,32 +1073,6 @@ export class AgentTaskRunner {
     }
   }
 
-  /**
-   * Read finish criteria from FINISH_CRITERIA.md at evaluation time.
-   *
-   * Parses a simple human-friendly markdown format:
-   *   ## Verify Commands
-   *   - Tests: `npm test`
-   *   - Lint: `npm run lint`    (optional timeout: 30s)
-   *
-   *   ## Required Files
-   *   - src/hello.js
-   *
-   *   ## Forbidden Files
-   *   - tmp/debug.log
-   */
-  async #readFinishCriteria(cwd, taskId) {
-    const empty = { verifyCommands: [], requiredPaths: [], forbiddenPaths: [] };
-    const filePath = path.join(taskDir(cwd, taskId), CRITERIA_FILE);
-    try {
-      const raw = await readFile(filePath, "utf8");
-      return parseFinishCriteriaMd(raw);
-    } catch {
-      log.debug("FINISH_CRITERIA.md not found or unreadable", { filePath });
-      return empty;
-    }
-  }
-
   // ---------------------------------------------------------------------------
   // Task file setup
   // ---------------------------------------------------------------------------
@@ -1217,18 +1092,38 @@ export class AgentTaskRunner {
       : `> No task description provided. Instruct the Worker directly in the terminal,
 > or write your task here and press Start.`;
 
+    const verifyChecklist = formatVerifyChecklist(detected);
+    const verifySection = verifyChecklist
+      ? `## Verification before completion
+
+> Auto-detected from your project. Edit freely — add, remove, or rewrite in your own language.
+> The Worker and Judge both read this section. The Worker must run these checks before finishing.
+
+${verifyChecklist}
+`
+      : `## Verification before completion
+
+> No commands auto-detected. Add your own checks here, for example:
+>
+> \`- [ ] Run \\\`npm test\\\` — must pass\`
+> \`- [ ] Run \\\`npm run lint\\\` — no errors\`
+>
+> The Worker will run these before finishing. The Judge will verify them independently.
+`;
+
     const taskMd = `# Task
 
 > Created: ${now} | Project: ${cwd}
 
 ${descriptionBlock}
 
+${verifySection}
 ## Rules
 
 - **Commit your work** regularly with clear, descriptive messages (the judge reviews git diffs)
 - Update ${relDir}/${TODO_FILE} as you work (move items between sections)
-- Finish criteria and verification commands are in ${relDir}/${CRITERIA_FILE}
-- The judge will independently verify your work after automated checks pass
+- Before finishing, complete every item in the "Verification before completion" section above
+- The judge will independently verify your work
 - Focus on completing the task fully — partial completions will be sent back
 - Do not push to any remote — the task runner works locally only
 - **Do not install new dependencies** unless the task explicitly requires it. If you must add a package, prefer an established version (not the latest release) and pin the exact version (no ^ or ~ prefix)
@@ -1250,37 +1145,10 @@ ${descriptionBlock}
 ## Done
 `;
 
-    const verifyCmds = detected.length
-      ? detected.map((cmd) => `- ${cmd.label}: \`${cmd.command}\``).join("\n")
-      : `> No commands detected. Add your own below, for example:
->
-> \`- Tests: \\\`npm test\\\`\`
-> \`- Lint: \\\`npm run lint\\\` (timeout: 30s)\``;
-
-    const criteriaMd = `# Finish Criteria
-
-> Created: ${now} | Project: ${cwd}
->
-> The Task Runner reads this file before each evaluation round.
-> ${detected.length ? "Commands below were auto-detected from your project." : "Add verification commands that must pass for the task to be considered done."}
-
-## Verify Commands
-
-${verifyCmds}
-
-## Required Files
-
-> List files that must exist when done, one per line: \`- path/to/file\`
-
-## Forbidden Files
-
-> List files that must NOT exist, one per line: \`- path/to/file\`
-`;
-
     // JUDGE_TODO_FILE is intentionally NOT pre-created — the Judge creates it.
     // JUDGE_PROMPT_FILE IS pre-created so users can customize it before starting.
 
-    const workLock = "Work remains. Remove this file only when the finish criteria genuinely pass.\n";
+    const workLock = "Work remains. Remove this file only when the task is complete and all verification steps pass.\n";
 
     const stackSection = stackHints.length
       ? `\n## Technology-specific checks\n\n${stackHints.map((h) => `- ${h}`).join("\n")}\n`
@@ -1295,17 +1163,18 @@ ${verifyCmds}
 
 ## Evaluation steps
 
-1. Read the task description in ${relDir}/${TASK_FILE}
-2. **Requirements check**: Go through every requirement point by point — verify each one is actually implemented, not just claimed
-3. **Code review**: Read the changed files and check for:
+1. Read ${relDir}/${TASK_FILE} for the full task description, requirements, and verification checklist
+2. **Verification checklist**: If TASK.md contains a "Verification before completion" section, run each listed command yourself and verify it passes — do not trust the Worker's claim
+3. **Requirements check**: Go through every requirement point by point — verify each one is actually implemented, not just claimed
+4. **Code review**: Read the changed files and check for:
    - Correctness: does the code do what the task asks?
    - Obvious bugs, edge cases, or error handling gaps
    - Code quality: no dead code, no debug leftovers, reasonable naming
    - Consistency with the existing codebase style
    Do NOT nitpick style preferences — focus on real issues
-4. Run any checks yourself if needed (read files, run commands)
-5. Keep notes in ${relDir}/${JUDGE_TODO_FILE}
-6. Write your verdict to ${relDir}/${VERDICT_FILE}:
+5. Run any additional checks yourself if needed (read files, run commands)
+6. Keep notes in ${relDir}/${JUDGE_TODO_FILE}
+7. Write your verdict to ${relDir}/${VERDICT_FILE}:
    - Complete: \`{"verdict": "complete", "reason": "..."}\`
    - Continue: \`{"verdict": "continue", "reason": "..."}\`
    List specific issues with file paths and descriptions
@@ -1320,7 +1189,6 @@ ${stackSection}
     await Promise.all([
       writeFile(path.join(dir, TASK_FILE), taskMd, "utf8"),
       writeFile(path.join(dir, TODO_FILE), todoMd, "utf8"),
-      writeFile(path.join(dir, CRITERIA_FILE), criteriaMd, "utf8"),
       writeFile(path.join(dir, JUDGE_PROMPT_FILE), judgePromptMd, "utf8"),
       // JUDGE_TODO_FILE is intentionally NOT pre-created — Claude Code's
       // Write tool rejects overwrites of existing files unless Read was
@@ -1553,13 +1421,14 @@ Do NOT continue working on the task — only write the handoff summary.`;
     parts.push(
       "## Rules",
       `- **Commit your changes** regularly with clear commit messages. The judge reviews git diffs. Do NOT push.`,
-      `- Read and obey \`${dir}/${TODO_FILE}\`, \`${dir}/${CRITERIA_FILE}\`, and \`${dir}/${WORK_LOCK_FILE}\`.`,
+      `- Read and obey \`${dir}/${TODO_FILE}\` and \`${dir}/${WORK_LOCK_FILE}\`.`,
       `- Ignore \`${dir}/${JUDGE_TODO_FILE}\` — that file belongs to the judge.`,
       `- Continue working from where the previous session left off.`,
       `- Update \`${dir}/${TODO_FILE}\` as you make progress.`,
-      `- Remove \`${dir}/${WORK_LOCK_FILE}\` only when the finish criteria genuinely pass.`,
+      `- Before finishing, complete the verification checklist in \`${dir}/${TASK_FILE}\`.`,
+      `- Remove \`${dir}/${WORK_LOCK_FILE}\` only when you have verified everything passes.`,
       `- Do not ask the human whether you should continue. The judge decides that.`,
-      `- When you are done, simply stop. Automated checks and a judge will verify your work.`,
+      `- When you are done, simply stop. A judge will independently verify your work.`,
     );
 
     return parts.join("\n");
@@ -1729,6 +1598,24 @@ Do NOT continue working on the task — only write the handoff summary.`;
   }
 
   /**
+   * Send /clear to an agent session to reset its conversation context.
+   * Returns a promise that resolves after a short delay to allow the
+   * command to be processed before injecting the next prompt.
+   */
+  #clearSessionContext(sessionId) {
+    if (!this.#writeToSession) return Promise.resolve();
+    log.debug("clearing session context", { sessionId });
+    this.#writeToSession(sessionId, "/clear");
+    // Send Enter to execute the slash command, then wait for it to complete
+    return new Promise((resolve) => {
+      setTimeout(() => {
+        this.#writeToSession(sessionId, "\r");
+        setTimeout(resolve, 800);
+      }, 200);
+    });
+  }
+
+  /**
    * Inject a prompt into a PTY session. For short prompts (< FILE_PROMPT_THRESHOLD
    * chars) paste directly. For longer prompts, write to a file and send a short
    * directive — more reliable and avoids PTY paste issues with large text.
@@ -1857,6 +1744,3 @@ Do NOT continue working on the task — only write the handoff summary.`;
     }
   }
 }
-
-// Re-export for external consumers
-export { parseFinishCriteriaMd, checkCommandSafety } from "./agent-task-utils.js";
