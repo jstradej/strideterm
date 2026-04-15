@@ -9,18 +9,6 @@
     @drop="dragDrop.onDrop"
     @dragend="dragDrop.onDragend"
   >
-    <div v-if="hasAnyStarred" class="workspace-star-filter">
-      <button
-        type="button"
-        class="workspace-star-filter__btn"
-        :class="{ 'workspace-star-filter__btn--active': store.starFilterActive }"
-        :title="store.starFilterActive ? 'Show all workspaces' : 'Show starred only'"
-        @click="store.starFilterActive = !store.starFilterActive"
-      >
-        {{ store.starFilterActive ? "★" : "☆" }}
-        <span class="workspace-star-filter__label">Starred</span>
-      </button>
-    </div>
     <WorkspaceCard
       v-for="ws in displayedCards"
       :key="ws.id"
