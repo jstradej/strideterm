@@ -215,16 +215,31 @@ function onActivate(workspaceId) {
 
 const api = inject("api");
 
-async function handleToggleStar(ws) {
+function handleToggleStar(ws) {
   if (!api) return;
-  const fullWs = store.filteredWorkspaces.find((w) => w.id === ws.id);
-  if (!fullWs) return;
-  try {
-    const result = await api.saveWorkspace({ ...fullWs, starred: !fullWs.starred });
-    if (result) store.handleBroadcastPayload(result);
-  } catch (err) {
-    console.error("[sidebar] toggle star failed:", err);
-  }
+  const allWs = store.payload?.appState?.workspaces;
+  if (!allWs) return;
+  const idx = allWs.findIndex((w) => w.id === ws.id);
+  if (idx < 0) return;
+
+  // Optimistic UI update — flip starred immediately
+  const nextStarred = !allWs[idx].starred;
+  const nextWorkspaces = [...allWs];
+  nextWorkspaces[idx] = { ...nextWorkspaces[idx], starred: nextStarred };
+  store.payload = {
+    ...store.payload,
+    appState: { ...store.payload.appState, workspaces: nextWorkspaces },
+  };
+
+  // Persist in background
+  api
+    .saveWorkspace({ ...allWs[idx], starred: nextStarred })
+    .then((result) => {
+      if (result) store.handleBroadcastPayload(result);
+    })
+    .catch((err) => {
+      console.error("[sidebar] toggle star failed:", err);
+    });
 }
 
 async function handleTaskToggle(ws) {

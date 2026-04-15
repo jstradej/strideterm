@@ -22,16 +22,6 @@
       <div class="sidebar__head">
         <h1 class="brand">str<em>IDE</em>term</h1>
         <div class="sidebar__tools">
-          <button
-            v-if="hasAnyStarred"
-            type="button"
-            class="sidebar__icon-btn"
-            :class="{ 'sidebar__icon-btn--star-active': store.starFilterActive }"
-            :title="store.starFilterActive ? 'Show all workspaces' : 'Show starred only'"
-            @click="store.starFilterActive = !store.starFilterActive"
-          >
-            {{ store.starFilterActive ? "★" : "☆" }}
-          </button>
           <button type="button" class="sidebar__icon-btn" title="Add workspace" @click="store.openNewWorkspaceFlow()">
             +
           </button>
@@ -240,7 +230,6 @@ const tabPickerAnchor = ref(null);
 
 const sidebarCollapseLabel = computed(() => (store.sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"));
 
-const hasAnyStarred = computed(() => store.filteredWorkspaces.some((ws) => ws.starred));
 const showWelcome = computed(() => store.payload && store.filteredWorkspaces.length === 0);
 
 const versionLabel = computed(() => {
