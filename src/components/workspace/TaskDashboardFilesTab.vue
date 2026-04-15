@@ -11,6 +11,21 @@
         {{ f.name }}
         <span v-if="f.dirty" class="td__file-dirty">*</span>
       </button>
+      <div class="td__editor-actions">
+        <span
+          v-if="fileSaveStatus"
+          class="td__save-status"
+          :class="{
+            'td__save-status--ok': fileSaveStatus.includes('\u2713'),
+            'td__save-status--err': fileSaveStatus.includes('\u2717'),
+          }"
+          >{{ fileSaveStatus }}</span
+        >
+        <button class="button button--sm" :disabled="!activeFileDirty" @click="saveActiveFile">Save</button>
+        <button class="button button--ghost button--sm" :disabled="!activeFileDirty" @click="reloadActiveFile">
+          Revert
+        </button>
+      </div>
     </div>
     <div v-if="fileLoading" class="td__empty">Loading...</div>
     <div v-else-if="fileError" class="td__empty">{{ fileError }}</div>
@@ -22,21 +37,6 @@
           @update:model-value="onEditorChange"
           @save="saveActiveFile"
         />
-      </div>
-      <div class="td__editor-actions">
-        <button class="button button--sm" :disabled="!activeFileDirty" @click="saveActiveFile">Save</button>
-        <button class="button button--ghost button--sm" :disabled="!activeFileDirty" @click="reloadActiveFile">
-          Revert
-        </button>
-        <span
-          v-if="fileSaveStatus"
-          class="td__save-status"
-          :class="{
-            'td__save-status--ok': fileSaveStatus.includes('\u2713'),
-            'td__save-status--err': fileSaveStatus.includes('\u2717'),
-          }"
-          >{{ fileSaveStatus }}</span
-        >
       </div>
     </template>
   </div>
@@ -119,7 +119,7 @@ function reloadActiveFile() {
   display: flex;
   align-items: center;
   gap: 6px;
-  margin-top: 8px;
+  margin-left: auto;
 }
 .td__save-status {
   font-size: 12px;

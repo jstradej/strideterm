@@ -97,6 +97,13 @@
           @update:active-file-content="(v) => (files.activeFileContent.value = v)"
         />
 
+        <TaskDashboardLogTab
+          v-if="activeTab === 'log'"
+          :task-state="taskState"
+          :workspace-cwd="workspace?.cwd || ''"
+          :task-id="taskState?.taskId || ''"
+        />
+
         <!-- CONFIG tab (small — stays inline) -->
         <div v-if="activeTab === 'config'" class="td__section">
           <label class="td__field">
@@ -142,6 +149,7 @@ import { useTaskFiles } from "../../composables/useTaskFiles.js";
 import TaskDashboardHelpTab from "./TaskDashboardHelpTab.vue";
 import TaskDashboardStatusTab from "./TaskDashboardStatusTab.vue";
 import TaskDashboardFilesTab from "./TaskDashboardFilesTab.vue";
+import TaskDashboardLogTab from "./TaskDashboardLogTab.vue";
 
 defineProps({
   workspaceId: { type: String, required: true },
@@ -156,6 +164,7 @@ const tabs = [
   { id: "status", label: "Status" },
   { id: "files", label: "Files" },
   { id: "config", label: "Config" },
+  { id: "log", label: "Log" },
   { id: "help", label: "Help" },
 ];
 

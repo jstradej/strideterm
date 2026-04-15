@@ -77,45 +77,11 @@
             : "Waiting for activity..."
       }}
     </div>
-
-    <!-- Event log timeline -->
-    <div v-if="logEntries.length" class="td__log">
-      <div class="td__log-header" @click="logExpanded = !logExpanded">
-        <span class="td__log-toggle">{{ logExpanded ? "\u25BE" : "\u25B8" }}</span>
-        <strong>Event Log</strong>
-        <span class="td__log-count">{{ logEntries.length }} events</span>
-        <span class="td__log-actions" @click.stop>
-          <button class="td__log-btn" title="Copy log to clipboard" @click="copyLog">
-            {{ copyFeedback || "Copy" }}
-          </button>
-          <button class="td__log-btn" title="Save log as text file" @click="saveLog">Save</button>
-        </span>
-      </div>
-      <div v-if="logExpanded" class="td__log-entries">
-        <div
-          v-for="(entry, i) in logEntries"
-          :key="i"
-          class="td__log-entry"
-          :class="`td__log-entry--${eventCategory(entry.event)}`"
-        >
-          <time class="td__log-ts">{{ formatTime(entry.ts) }}</time>
-          <span class="td__log-event">{{ eventLabel(entry.event) }}</span>
-          <span v-if="entry.round" class="td__log-round">R{{ entry.round }}</span>
-          <span v-if="entry.detail" class="td__log-detail">{{ entry.detail }}</span>
-        </div>
-      </div>
-    </div>
-    <div v-else-if="taskState?.state !== 'idle'" class="td__log">
-      <div class="td__log-header td__log-header--empty">
-        <strong>Event Log</strong>
-        <span class="td__log-count">events appear here during task execution</span>
-      </div>
-    </div>
   </div>
 </template>
 
 <script setup>
-import { computed, ref, inject, watch } from "vue";
+import { computed, ref } from "vue";
 
 const props = defineProps({
   taskState: { type: Object, default: null },
@@ -123,86 +89,7 @@ const props = defineProps({
   taskId: { type: String, default: "" },
 });
 
-const api = inject("api");
-const logExpanded = ref(true);
-const logRaw = ref("");
 const selectedRound = ref(null);
-const copyFeedback = ref("");
-
-// ── Event log from TASK_LOG.jsonl ─────────────────────────────────
-async function loadLog() {
-  if (!api || !props.workspaceCwd || !props.taskId) return;
-  try {
-    const result = await api.fileRead({
-      rootPath: props.workspaceCwd,
-      relativePath: `.strideterm/tasks/${props.taskId}/TASK_LOG.jsonl`,
-    });
-    logRaw.value = result?.content ?? "";
-  } catch {
-    logRaw.value = "";
-  }
-}
-
-const logEntries = computed(() => {
-  if (!logRaw.value) return [];
-  return logRaw.value
-    .split("\n")
-    .filter((line) => line.trim())
-    .map((line) => {
-      try {
-        return JSON.parse(line);
-      } catch {
-        return null;
-      }
-    })
-    .filter(Boolean);
-});
-
-const EVENT_LABELS = {
-  "task-started": "Task started",
-  "task-stopped": "Task stopped",
-  "task-paused": "Task paused",
-  "task-resumed": "Task resumed",
-  "task-reset": "Task reset",
-  "task-completed": "Task completed",
-  "task-failed": "Task failed",
-  "evaluation-complete": "Checks finished",
-  "worker-reprompted": "Worker re-prompted",
-  "judge-requested": "Judge requested",
-  "judge-verdict": "Judge verdict",
-  "shower-started": "Context refresh",
-  "shower-completed": "Refresh done",
-  "shower-failed": "Refresh failed",
-};
-
-function eventLabel(event) {
-  return EVENT_LABELS[event] || event;
-}
-
-function eventCategory(event) {
-  if (event === "task-completed") return "success";
-  if (event === "task-failed" || event === "shower-failed") return "error";
-  if (event.startsWith("judge-")) return "judge";
-  if (event.startsWith("shower-")) return "shower";
-  if (event === "worker-reprompted") return "warn";
-  return "info";
-}
-
-watch(
-  () => props.taskState?.state,
-  () => loadLog(),
-);
-watch(
-  () => props.taskState?.currentRound,
-  () => loadLog(),
-);
-watch(
-  () => props.taskId,
-  (id) => {
-    if (id) loadLog();
-  },
-  { immediate: true },
-);
 
 // ── Rounds ────────────────────────────────────────────────────────
 const roundsChronological = computed(() => props.taskState?.rounds || []);
@@ -311,44 +198,6 @@ function formatTime(iso) {
   } catch {
     return iso;
   }
-}
-
-// ── Log export ────────────────────────────────────────────────────
-function formatLogText() {
-  return logEntries.value
-    .map((entry) => {
-      const time = formatTime(entry.ts);
-      const label = eventLabel(entry.event);
-      const round = entry.round ? `R${entry.round}` : "";
-      const detail = entry.detail || "";
-      return [time, label, round, detail].filter(Boolean).join("  ");
-    })
-    .join("\n");
-}
-
-async function copyLog() {
-  try {
-    await navigator.clipboard.writeText(formatLogText());
-    copyFeedback.value = "Copied!";
-  } catch {
-    copyFeedback.value = "Failed";
-  }
-  setTimeout(() => {
-    copyFeedback.value = "";
-  }, 2000);
-}
-
-function saveLog() {
-  const text = formatLogText();
-  const blob = new Blob([text], { type: "text/plain" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = `task-log-${props.taskId || "export"}.txt`;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(url);
 }
 </script>
 
@@ -622,128 +471,5 @@ function saveLog() {
   line-height: 1.4;
   white-space: pre-wrap;
   word-break: break-word;
-}
-
-/* ── Event log ────────────────────────────────────────────────── */
-.td__log {
-  margin-top: 8px;
-  border-top: 1px solid var(--border, #333);
-  padding-top: 8px;
-}
-.td__log-header {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  cursor: pointer;
-  font-size: 12px;
-  padding: 4px 0;
-  user-select: none;
-}
-.td__log-header--empty {
-  cursor: default;
-  opacity: 0.5;
-}
-.td__log-toggle {
-  font-size: 10px;
-  width: 12px;
-}
-.td__log-count {
-  font-size: 11px;
-  opacity: 0.5;
-}
-.td__log-actions {
-  margin-left: auto;
-  display: flex;
-  gap: 4px;
-}
-.td__log-btn {
-  background: rgba(255, 255, 255, 0.06);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  color: #aaa;
-  font-size: 10px;
-  padding: 2px 8px;
-  border-radius: 3px;
-  cursor: pointer;
-  min-width: 42px;
-  text-align: center;
-  transition:
-    background 0.15s,
-    color 0.15s;
-}
-.td__log-btn:hover {
-  background: rgba(255, 255, 255, 0.1);
-  color: #ddd;
-}
-.td__log-entries {
-  margin-top: 6px;
-  overflow-y: auto;
-  scrollbar-width: thin;
-}
-.td__log-entry {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  padding: 3px 0;
-  font-size: 11px;
-  line-height: 1.4;
-  border-left: 2px solid #444;
-  padding-left: 8px;
-  margin-bottom: 1px;
-}
-.td__log-entry--success {
-  border-left-color: #4caf50;
-}
-.td__log-entry--error {
-  border-left-color: #e57373;
-}
-.td__log-entry--judge {
-  border-left-color: #7c4dff;
-}
-.td__log-entry--warn {
-  border-left-color: #ff9800;
-}
-.td__log-entry--shower {
-  border-left-color: #29b6f6;
-}
-.td__log-entry--info {
-  border-left-color: #555;
-}
-.td__log-ts {
-  color: #666;
-  font-family: monospace;
-  font-size: 10px;
-  flex-shrink: 0;
-}
-.td__log-event {
-  font-weight: 600;
-  flex-shrink: 0;
-  white-space: nowrap;
-}
-.td__log-entry--success .td__log-event {
-  color: #81c784;
-}
-.td__log-entry--error .td__log-event {
-  color: #e57373;
-}
-.td__log-entry--judge .td__log-event {
-  color: #b39ddb;
-}
-.td__log-entry--warn .td__log-event {
-  color: #ffcc80;
-}
-.td__log-entry--shower .td__log-event {
-  color: #81d4fa;
-}
-.td__log-round {
-  font-size: 10px;
-  opacity: 0.5;
-  flex-shrink: 0;
-}
-.td__log-detail {
-  opacity: 0.7;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  min-width: 0;
 }
 </style>
