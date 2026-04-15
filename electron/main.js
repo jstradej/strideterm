@@ -9,7 +9,29 @@ import { startRemoteServer } from "./backend/remote-server.js";
 import { parseReviewBridgeMcpArgs, runReviewBridgeMcpServer } from "./backend/review-bridge-mcp.js";
 import { createDefaultState, normalizeState } from "./backend/default-state.js";
 import { APP_CONFIG, getRendererDevUrl } from "../config/app-config.js";
-import { getLogger, shutdownLogger } from "./backend/logger.js";
+import { getLogger, setLogDir, shutdownLogger } from "./backend/logger.js";
+
+// --- Custom data directory (--data-dir <path> or STRIDETERM_DATA_DIR env) ---
+function resolveDataDir() {
+  const args = process.argv.slice(1);
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === "--data-dir" && args[i + 1]) return path.resolve(args[i + 1]);
+    if (args[i].startsWith("--data-dir=")) return path.resolve(args[i].slice("--data-dir=".length));
+  }
+  return process.env.STRIDETERM_DATA_DIR ? path.resolve(process.env.STRIDETERM_DATA_DIR) : "";
+}
+
+const customDataDir = resolveDataDir();
+const userDataPath = customDataDir || path.join(os.homedir(), ".strideterm");
+
+// When using a custom data dir, change the app name so Electron uses a
+// separate single-instance lock and separate session data.
+if (customDataDir) {
+  const suffix = path.basename(customDataDir);
+  app.name = `strideterm-${suffix}`;
+  app.setPath("userData", path.join(customDataDir, "electron-data"));
+  setLogDir(path.join(customDataDir, "logs"));
+}
 
 const log = getLogger("main");
 const require = createRequire(import.meta.url);
@@ -80,7 +102,8 @@ function updateNativeAttention(payload) {
   const activeProfileId = payload?.appState?.activeProfileId || "default";
   const activeProfile = (payload?.appState?.profiles || []).find((p) => p.id === activeProfileId);
   const profileSuffix = activeProfile && activeProfileId !== "default" ? ` [${activeProfile.name}]` : "";
-  const baseTitle = APP_CONFIG.electron.title + profileSuffix;
+  const dataDirSuffix = customDataDir ? ` (${path.basename(customDataDir)})` : "";
+  const baseTitle = APP_CONFIG.electron.title + profileSuffix + dataDirSuffix;
   const title = count > 0 ? `(${count}) ${baseTitle}` : baseTitle;
 
   if (app.setBadgeCount) {
@@ -455,7 +478,6 @@ async function restartRemoteServer() {
 
 async function startServices() {
   runtimeState.runtimeInteractive = false;
-  const userDataPath = path.join(os.homedir(), ".strideterm");
   runtimeState.runtime = await createRuntime({
     userDataPath,
     builtinPluginsDir: path.join(app.getAppPath(), "plugins"),

@@ -43,9 +43,11 @@
     </span>
     <button
       type="button"
+      draggable="false"
       class="workspace-card__star"
       :class="{ 'workspace-card__star--active': workspace.starred }"
       :title="workspace.starred ? 'Remove star' : 'Star this workspace'"
+      @mousedown.stop
       @click.stop="$emit('toggle-star')"
     >
       {{ workspace.starred ? "★" : "☆" }}

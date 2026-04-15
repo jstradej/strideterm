@@ -4,7 +4,14 @@ import { mkdirSync } from "node:fs";
 import winston from "winston";
 import { APP_CONFIG } from "../../config/app-config.js";
 
-const LOG_DIR = path.join(os.homedir(), ".strideterm", "logs");
+let LOG_DIR = path.join(os.homedir(), ".strideterm", "logs");
+
+/**
+ * Override the log directory. Must be called before initLogger().
+ */
+export function setLogDir(dir) {
+  LOG_DIR = dir;
+}
 
 // Winston uses syslog-adjacent levels by default. We define custom levels
 // matching the familiar ERROR / WARN / INFO / DEBUG / TRACE hierarchy.

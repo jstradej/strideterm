@@ -114,6 +114,23 @@ All state is stored in `~/.strideterm/`:
 
 Settings are accessible via the gear icon in the sidebar (General, Tab Templates, About tabs). strIDEterm checks for updates on startup and shows available releases in the About tab.
 
+### Multiple Instances (Custom Data Directory)
+
+You can run multiple strIDEterm instances side by side (e.g. a packaged EXE and a dev build) by giving each its own data directory:
+
+```bash
+# Packaged app
+strideterm.exe --data-dir C:\Users\me\.strideterm-dev
+
+# Dev mode
+STRIDETERM_DATA_DIR=~/.strideterm-dev npm run dev:electron
+
+# Or pass it directly to Electron
+npx electron . --data-dir ~/.strideterm-dev
+```
+
+Each data directory gets its own state file, logs, credentials, and single-instance lock. The window title shows the directory name as a suffix so you can tell instances apart. `--data-dir` takes precedence over the `STRIDETERM_DATA_DIR` environment variable.
+
 ## Remote Access
 
 strIDEterm can expose the workspace over HTTP/WebSocket to another device.
