@@ -174,17 +174,30 @@ const displayedCards = computed(() => {
       childrenOf.get(pid).add(ws.id);
     }
   }
+  // Recursively collect all descendants of a workspace
+  function addDescendants(id) {
+    const kids = childrenOf.get(id);
+    if (!kids) return;
+    for (const kid of kids) {
+      visible.add(kid);
+      addDescendants(kid);
+    }
+  }
+  // Walk up to the root ancestor
+  function addAncestors(id) {
+    const pid = parentOf.get(id);
+    if (pid) {
+      visible.add(pid);
+      addAncestors(pid);
+    }
+  }
   // Collect visible IDs
   const visible = new Set();
   for (const ws of allWs) {
     if (!ws.starred) continue;
     visible.add(ws.id);
-    const pid = parentOf.get(ws.id);
-    // Starred child → show parent too
-    if (pid) visible.add(pid);
-    // Starred parent → show all children
-    const kids = childrenOf.get(ws.id);
-    if (kids) for (const kid of kids) visible.add(kid);
+    addAncestors(ws.id);
+    addDescendants(ws.id);
   }
   return workspaceCards.value.filter((card) => visible.has(card.id));
 });
