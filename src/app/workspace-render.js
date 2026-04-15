@@ -123,6 +123,7 @@ export function buildWorkspaceCards({
       checksState,
       prStatus,
       taskState: taskState || null,
+      starred: Boolean(workspace.starred),
     };
   });
 }

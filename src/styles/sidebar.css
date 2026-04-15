@@ -828,6 +828,10 @@ dt {
   min-width: 0;
 }
 
+.workspace-card {
+  grid-template-columns: auto auto minmax(0, 1fr) auto;
+}
+
 .project--active,
 .workspace-card--active {
   border-color: var(--accent);
@@ -1123,6 +1127,82 @@ dt {
   border-bottom-color: #888;
 }
 
+/* Star toggle on workspace card */
+.workspace-card__star {
+  width: 18px;
+  height: 18px;
+  display: grid;
+  place-items: center;
+  border: none;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0;
+  opacity: 0;
+  transition:
+    opacity 0.12s,
+    color 0.12s;
+}
+
+.workspace-card:hover .workspace-card__star,
+.workspace-card--active .workspace-card__star,
+.workspace-card__star--active {
+  opacity: 1;
+}
+
+.workspace-card__star--active {
+  color: #f5c542;
+}
+
+.workspace-card__star:hover {
+  color: #f5c542;
+  opacity: 1;
+}
+
+/* Star filter toggle above workspace list */
+.workspace-star-filter {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 2px;
+}
+
+.workspace-star-filter__btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 11px;
+  padding: 2px 7px;
+  cursor: pointer;
+  font-family: inherit;
+  transition:
+    background 0.12s,
+    color 0.12s,
+    border-color 0.12s;
+}
+
+.workspace-star-filter__btn:hover {
+  background: rgba(var(--tint), 0.06);
+  color: var(--text);
+}
+
+.workspace-star-filter__btn--active {
+  background: rgba(245, 197, 66, 0.12);
+  border-color: rgba(245, 197, 66, 0.4);
+  color: #f5c542;
+}
+
+.workspace-star-filter__btn--active:hover {
+  background: rgba(245, 197, 66, 0.18);
+  color: #f5c542;
+}
+
 @keyframes task-corner-blink {
   0%,
   100% {
@@ -1165,6 +1245,11 @@ dt {
   text-align: center;
   padding: 8px 4px;
   gap: 4px;
+}
+
+.frame--sidebar-collapsed .workspace-card__star,
+.frame--sidebar-collapsed .workspace-star-filter {
+  display: none;
 }
 
 .frame--sidebar-collapsed .workspace-card__badge,
@@ -1272,6 +1357,14 @@ dt {
     padding: 4px 6px;
   }
 
+  .workspace-card__star {
+    display: none;
+  }
+
+  .workspace-star-filter__label {
+    display: none;
+  }
+
   .workspace-card__actions {
     display: none;
   }
@@ -1333,6 +1426,11 @@ dt {
     text-align: center;
     padding: 6px 4px;
     gap: 2px;
+  }
+
+  .workspace-card__star,
+  .workspace-star-filter {
+    display: none;
   }
 
   .workspace-card__meta small,

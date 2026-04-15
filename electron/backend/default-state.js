@@ -190,6 +190,7 @@ export function normalizeWorkspace(workspace, index = 0) {
           parentWorkspaceId: workspace.quickfix.parentWorkspaceId || "",
         }
       : null,
+    starred: Boolean(workspace.starred),
     task: workspace.task
       ? {
           // Spread first: preserves runtime-only properties (promptSent,

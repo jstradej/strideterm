@@ -9,13 +9,26 @@
     @drop="dragDrop.onDrop"
     @dragend="dragDrop.onDragend"
   >
+    <div v-if="hasAnyStarred" class="workspace-star-filter">
+      <button
+        type="button"
+        class="workspace-star-filter__btn"
+        :class="{ 'workspace-star-filter__btn--active': store.starFilterActive }"
+        :title="store.starFilterActive ? 'Show all workspaces' : 'Show starred only'"
+        @click="store.starFilterActive = !store.starFilterActive"
+      >
+        {{ store.starFilterActive ? "★" : "☆" }}
+        <span class="workspace-star-filter__label">Starred</span>
+      </button>
+    </div>
     <WorkspaceCard
-      v-for="ws in workspaceCards"
+      v-for="ws in displayedCards"
       :key="ws.id"
       :workspace="ws"
       :data-workspace-id="ws.id"
       @activate="onActivate(ws.id)"
       @open-menu="onOpenMenu($event, ws)"
+      @toggle-star="handleToggleStar(ws)"
       @task-toggle="handleTaskToggle(ws)"
       @task-stop="handleTaskStop(ws)"
     />
@@ -96,6 +109,23 @@ const store = useAppStore();
 const listRef = ref(null);
 const dragDrop = useWorkspaceDragDrop(listRef);
 
+function resolveParentId(ws, allWs) {
+  if (ws.review?.checkout?.mode === "managed-worktree" && ws.review?.parentWorkspaceId)
+    return ws.review.parentWorkspaceId;
+  if (ws.quickfix?.parentWorkspaceId) return ws.quickfix.parentWorkspaceId;
+  if (ws.task?.parentWorkspaceId) return ws.task.parentWorkspaceId;
+  // Legacy worktree: "Worktree of ParentName" — resolve parent by name (profile-aware)
+  if ((ws.notes || "").startsWith("Worktree of ")) {
+    const parentName = ws.name.split(" / ")[0];
+    const wsProfile = ws.profileId || "default";
+    const parent =
+      allWs.find((c) => c.name === parentName && c.id !== ws.id && (c.profileId || "default") === wsProfile) ||
+      allWs.find((c) => c.name === parentName && c.id !== ws.id);
+    return parent?.id || null;
+  }
+  return null;
+}
+
 const workspaceCards = computed(() => {
   const payload = store.payload;
   if (!payload) return [];
@@ -135,6 +165,42 @@ const workspaceCards = computed(() => {
   });
 });
 
+const hasAnyStarred = computed(() => store.filteredWorkspaces.some((ws) => ws.starred));
+
+// Auto-deactivate star filter when no starred workspaces remain
+watch(hasAnyStarred, (has) => {
+  if (!has) store.starFilterActive = false;
+});
+
+const displayedCards = computed(() => {
+  if (!store.starFilterActive) return workspaceCards.value;
+  const allWs = store.filteredWorkspaces;
+  // Build parent→children and child→parent maps
+  const childrenOf = new Map(); // parentId → Set<childId>
+  const parentOf = new Map(); // childId → parentId
+  for (const ws of allWs) {
+    const pid = resolveParentId(ws, allWs);
+    if (pid) {
+      parentOf.set(ws.id, pid);
+      if (!childrenOf.has(pid)) childrenOf.set(pid, new Set());
+      childrenOf.get(pid).add(ws.id);
+    }
+  }
+  // Collect visible IDs
+  const visible = new Set();
+  for (const ws of allWs) {
+    if (!ws.starred) continue;
+    visible.add(ws.id);
+    const pid = parentOf.get(ws.id);
+    // Starred child → show parent too
+    if (pid) visible.add(pid);
+    // Starred parent → show all children
+    const kids = childrenOf.get(ws.id);
+    if (kids) for (const kid of kids) visible.add(kid);
+  }
+  return workspaceCards.value.filter((card) => visible.has(card.id));
+});
+
 const suggestions = computed(() => {
   const payload = store.payload;
   if (!payload) return [];
@@ -160,6 +226,18 @@ function onActivate(workspaceId) {
 }
 
 const api = inject("api");
+
+async function handleToggleStar(ws) {
+  if (!api) return;
+  const fullWs = store.filteredWorkspaces.find((w) => w.id === ws.id);
+  if (!fullWs) return;
+  try {
+    const result = await api.saveWorkspace({ ...fullWs, starred: !fullWs.starred });
+    if (result) store.handleBroadcastPayload(result);
+  } catch (err) {
+    console.error("[sidebar] toggle star failed:", err);
+  }
+}
 
 async function handleTaskToggle(ws) {
   if (!api) return;

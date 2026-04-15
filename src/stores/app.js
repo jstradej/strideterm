@@ -41,6 +41,7 @@ export const useAppStore = defineStore("app", () => {
   const selectedLanUrl = ref("");
   const contextMenu = ref(null); // { x, y, viewId } | null
   const layoutPickerAnchor = ref(null); // DOMRect | null (for positioning)
+  const starFilterActive = ref(false);
 
   // --- Race condition prevention ---
   const pendingWorkspaceActivationId = ref("");
@@ -618,6 +619,7 @@ export const useAppStore = defineStore("app", () => {
     selectedLanUrl,
     contextMenu,
     layoutPickerAnchor,
+    starFilterActive,
     pendingWorkspaceActivationId,
     pendingViewActivationId,
     suppressBroadcast,

@@ -41,6 +41,15 @@
         ]"
       ></span>
     </span>
+    <button
+      type="button"
+      class="workspace-card__star"
+      :class="{ 'workspace-card__star--active': workspace.starred }"
+      :title="workspace.starred ? 'Remove star' : 'Star this workspace'"
+      @click.stop="$emit('toggle-star')"
+    >
+      {{ workspace.starred ? "★" : "☆" }}
+    </button>
     <span class="workspace-card__meta">
       <span class="workspace-card__title-row">
         <strong>{{ workspace.name }}</strong>
@@ -109,5 +118,5 @@
 defineProps({
   workspace: { type: Object, required: true },
 });
-defineEmits(["activate", "open-menu", "dragstart", "dragover", "drop", "task-toggle", "task-stop"]);
+defineEmits(["activate", "open-menu", "dragstart", "dragover", "drop", "toggle-star", "task-toggle", "task-stop"]);
 </script>
