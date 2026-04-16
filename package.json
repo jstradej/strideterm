@@ -161,7 +161,7 @@
     "wait-on": "^9.0.5"
   },
   "overrides": {
-    "dompurify": "3.3.3"
+    "dompurify": "3.4.0"
   },
   "lint-staged": {
     "*.{js,vue}": [
