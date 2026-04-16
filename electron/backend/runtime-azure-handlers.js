@@ -9,6 +9,7 @@ import { normalizeConnectionInput } from "./azure-devops-manager.js";
  */
 export function createAzureHandlers(ctx) {
   const {
+    log,
     getState,
     store,
     azure,
@@ -124,6 +125,7 @@ export function createAzureHandlers(ctx) {
         });
       } catch (err) {
         const message = err instanceof Error ? err.message : err?.stderr || err?.error?.message || String(err);
+        log.warn("openAzurePullRequest failed", { prKey: payload.prKey, err: message });
         throw new Error(message, { cause: err });
       }
       await store.mutate((draft) => {
@@ -328,6 +330,7 @@ export function createAzureHandlers(ctx) {
         });
       } catch (err) {
         const message = err instanceof Error ? err.message : err?.stderr || err?.error?.message || String(err);
+        log.warn("azureQuickFixCreate failed", { repositoryName: payload.repositoryName, err: message });
         throw new Error(message, { cause: err });
       }
       await store.mutate((draft) => {

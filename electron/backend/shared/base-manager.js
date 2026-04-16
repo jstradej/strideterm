@@ -194,6 +194,8 @@ export class BaseProviderManager extends EventEmitter {
     if (token) {
       extraArgs.push("-c", `http.extraheader=${encodeAuthHeader(effectiveLogin, token)}`);
     }
+    // Log only user-visible args (extraArgs contain credentials)
+    this.log.debug(`git ${args.join(" ")}`, { cwd });
     try {
       return await this.execFileText("git", [...extraArgs, ...args], {
         cwd,
@@ -205,10 +207,17 @@ export class BaseProviderManager extends EventEmitter {
         if (!text) return text;
         return String(text).replace(/Basic\s+[A-Za-z0-9+/=]+/g, "Basic ***");
       };
-      if (error.stdout) error.stdout = sanitize(error.stdout);
-      if (error.stderr) error.stderr = sanitize(error.stderr);
-      if (error.message) error.message = sanitize(error.message);
-      throw error;
+      // execFileText rejects with a plain { error, stdout, stderr } object.
+      // Electron IPC cannot serialize plain objects into error messages, so
+      // convert to a proper Error with the stderr/message as the message.
+      const stderr = sanitize(error.stderr);
+      const innerMsg = sanitize(error.error?.message || error.message);
+      const msg = stderr || innerMsg || "Git command failed";
+      this.log.warn(`git ${args[0]} failed`, { cwd, msg });
+      const wrapped = new Error(msg);
+      wrapped.stdout = sanitize(error.stdout);
+      wrapped.stderr = stderr;
+      throw wrapped;
     }
   }
 }

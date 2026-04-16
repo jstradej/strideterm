@@ -914,6 +914,7 @@ export class AzureDevOpsManager extends BaseProviderManager {
     if (!token) {
       throw new Error("PAT is missing.");
     }
+    this.log.info("fetch review workspace", { workspaceId: workspace.id });
     await this.runGit(workspace.cwd, ["fetch", "origin"], {
       login: connection.login,
       token,
@@ -923,6 +924,7 @@ export class AzureDevOpsManager extends BaseProviderManager {
   async rebaseReviewWorkspace({ workspace }) {
     await this.fetchReviewWorkspace({ workspace });
     const targetBranch = stripRefsPrefix(workspace.review?.pullRequest?.targetRefName);
+    this.log.info("rebase review workspace", { workspaceId: workspace.id, targetBranch });
     await this.runGit(workspace.cwd, ["rebase", `origin/${targetBranch}`]);
   }
 
@@ -1014,6 +1016,7 @@ export class AzureDevOpsManager extends BaseProviderManager {
     const pushArgs = force
       ? ["push", "--force-with-lease", "-u", "origin", `HEAD:refs/heads/${sourceBranch}`]
       : ["push", "-u", "origin", `HEAD:refs/heads/${sourceBranch}`];
+    this.log.info("push review workspace", { workspaceId: workspace.id, sourceBranch, force });
     await this.runGit(workspace.cwd, pushArgs, {
       login: connection.login,
       token,

@@ -717,12 +717,14 @@ export class GitHubManager extends BaseProviderManager {
     if (!connection) throw new Error("GitHub connection was not found.");
     const token = this.credentialStore.getSecret(connection.tokenRef);
     if (!token) throw new Error("PAT is missing.");
+    this.log.info("fetch review workspace", { workspaceId: workspace.id });
     await this.runGit(workspace.cwd, ["fetch", "origin"], { token });
   }
 
   async rebaseReviewWorkspace({ workspace }) {
     await this.fetchReviewWorkspace({ workspace });
     const targetBranch = stripRefsPrefix(workspace.review?.pullRequest?.targetRefName);
+    this.log.info("rebase review workspace", { workspaceId: workspace.id, targetBranch });
     await this.runGit(workspace.cwd, ["rebase", `origin/${targetBranch}`]);
   }
 
@@ -739,6 +741,7 @@ export class GitHubManager extends BaseProviderManager {
     const pushArgs = force
       ? ["push", "--force-with-lease", "-u", "origin", `HEAD:refs/heads/${sourceBranch}`]
       : ["push", "-u", "origin", `HEAD:refs/heads/${sourceBranch}`];
+    this.log.info("push review workspace", { workspaceId: workspace.id, sourceBranch, force });
     await this.runGit(workspace.cwd, pushArgs, { token });
   }
 

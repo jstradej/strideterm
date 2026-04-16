@@ -1707,6 +1707,7 @@ export async function createRuntime({
   });
 
   const providerHandlers = createProviderHandlers({
+    log,
     getState,
     store,
     azure,

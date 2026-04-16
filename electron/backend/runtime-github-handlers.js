@@ -8,6 +8,7 @@ import { normalizeWorkspace } from "./default-state.js";
  */
 export function createGitHubHandlers(ctx) {
   const {
+    log,
     getState,
     store,
     github,
@@ -118,6 +119,7 @@ export function createGitHubHandlers(ctx) {
         });
       } catch (err) {
         const message = err instanceof Error ? err.message : err?.stderr || err?.error?.message || String(err);
+        log.warn("openGitHubPullRequest failed", { prKey: payload.prKey, err: message });
         throw new Error(message, { cause: err });
       }
       await store.mutate((draft) => {
