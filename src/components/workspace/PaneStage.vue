@@ -50,7 +50,7 @@
 </template>
 
 <script setup>
-import { computed, watch, defineAsyncComponent } from "vue";
+import { computed, watch, nextTick, defineAsyncComponent } from "vue";
 import { useAppStore } from "../../stores/app.js";
 import { useTerminalStore } from "../../stores/terminal.js";
 import {
@@ -285,6 +285,18 @@ watch(
   (tabs) => {
     const validSessionIds = new Set(tabs.filter((t) => t.type === "terminal").map((t) => t.id));
     termStore.pruneTerminalViews(validSessionIds);
+  },
+);
+
+// Auto-focus the active terminal when the active session changes (workspace switch,
+// tab change, notification click) so the user can start typing immediately. nextTick
+// waits for the pane to mount; focusActiveTerminal already skips when an overlay is open.
+watch(
+  () => store.activeSessionId,
+  async (sessionId) => {
+    if (!sessionId) return;
+    await nextTick();
+    termStore.focusActiveTerminal();
   },
 );
 </script>

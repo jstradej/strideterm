@@ -4,6 +4,7 @@ import * as fm from "./file-manager.js";
 import {
   validateIpc,
   workspaceSchema,
+  workspaceUIStateSchema,
   projectSchema,
   settingsSchema,
   azureConnectionSchema,
@@ -268,6 +269,10 @@ export function registerIpc(runtime, emitToRenderer, { includeStateGet = true } 
   );
 
   ipcMain.handle("session:activate", async (_event, sessionId) => runtime.activateSession(sessionId));
+  ipcMain.handle("workspace:set-ui-state", async (_event, workspaceId, uiState) => {
+    const parsed = validateIpc(workspaceUIStateSchema, { workspaceId, uiState }, "workspace:set-ui-state");
+    return runtime.setWorkspaceUIState(parsed.workspaceId, parsed.uiState);
+  });
   ipcMain.handle("attention:sync", async (_event, payload) =>
     runtime.syncAttentionContext(validateIpc(attentionSyncSchema, payload || {}, "attention:sync")),
   );
@@ -587,6 +592,7 @@ export function registerIpc(runtime, emitToRenderer, { includeStateGet = true } 
     ipcMain.removeHandler("github:quickfix:list-branches");
     ipcMain.removeHandler("github:quickfix:create");
     ipcMain.removeHandler("session:activate");
+    ipcMain.removeHandler("workspace:set-ui-state");
     ipcMain.removeHandler("attention:sync");
     ipcMain.removeHandler("attention:clear-all");
     ipcMain.removeHandler("terminal:restart");

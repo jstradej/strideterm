@@ -1809,11 +1809,41 @@ export async function createRuntime({
         draft.activeWorkspaceId = descriptor.workspaceId;
         if (workspace.panels.some((panel) => panel.id === descriptor.panelId)) {
           workspace.activePanelId = descriptor.panelId;
+          workspace.activeViewId = sessionId;
         }
       });
 
       sessions.ensureSession(getState(), sessionId);
       broadcastState();
+      return getPayload();
+    },
+    async setWorkspaceUIState(workspaceId, uiState) {
+      if (!workspaceId || !uiState || typeof uiState !== "object") {
+        return getPayload();
+      }
+      const { activeViewId, splitLayout, splitViewIds } = uiState;
+      let changed = false;
+      await store.mutate((draft) => {
+        const workspace = findWorkspace(draft, workspaceId);
+        if (!workspace) return;
+        if (typeof activeViewId === "string") {
+          workspace.activeViewId = activeViewId;
+          const sessionPrefix = `${workspaceId}:`;
+          if (activeViewId.startsWith(sessionPrefix)) {
+            const panelId = activeViewId.slice(sessionPrefix.length);
+            if (workspace.panels.some((panel) => panel.id === panelId)) {
+              workspace.activePanelId = panelId;
+            }
+          }
+          changed = true;
+        }
+        if (splitLayout === null || typeof splitLayout === "string") {
+          workspace.splitLayout = splitLayout || null;
+          workspace.splitViewIds = Array.isArray(splitViewIds) ? [...splitViewIds] : [];
+          changed = true;
+        }
+      });
+      if (changed) broadcastState();
       return getPayload();
     },
     async saveWorkspace(workspace) {

@@ -29,6 +29,15 @@ export const workspaceSchema = z
 
 export const projectSchema = workspaceSchema;
 
+export const workspaceUIStateSchema = z.object({
+  workspaceId: nonEmptyString,
+  uiState: z.object({
+    activeViewId: z.string().optional(),
+    splitLayout: z.enum(["cols", "rows", "top-split"]).nullable().optional(),
+    splitViewIds: z.array(z.string()).optional(),
+  }),
+});
+
 export const settingsSchema = z.object({}).passthrough();
 
 export const azureConnectionSchema = z

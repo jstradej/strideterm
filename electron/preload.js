@@ -9,6 +9,7 @@ contextBridge.exposeInMainWorld("strideterm", {
   activateWorkspace: (workspaceId) => ipcRenderer.invoke("workspace:activate", workspaceId),
   activateProject: (projectId) => ipcRenderer.invoke("project:activate", projectId),
   activateSession: (sessionId) => ipcRenderer.invoke("session:activate", sessionId),
+  setWorkspaceUIState: (workspaceId, uiState) => ipcRenderer.invoke("workspace:set-ui-state", workspaceId, uiState),
   syncAttentionContext: (payload) => ipcRenderer.invoke("attention:sync", payload),
   clearAllAttention: () => ipcRenderer.invoke("attention:clear-all"),
   saveWorkspace: (workspace) => ipcRenderer.invoke("workspace:save", workspace),

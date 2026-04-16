@@ -95,6 +95,72 @@ function normalizePanel(panel, panelIndex = 0) {
   };
 }
 
+const KNOWN_VIEW_PREFIXES = [
+  "git:",
+  "docker:",
+  "azure:",
+  "github:",
+  "review:",
+  "files:",
+  "browser:",
+  "task-dashboard:",
+];
+const VALID_SPLIT_LAYOUTS = new Set(["cols", "rows", "top-split"]);
+
+function isKnownPrefixViewId(viewId) {
+  return typeof viewId === "string" && KNOWN_VIEW_PREFIXES.some((prefix) => viewId.startsWith(prefix));
+}
+
+function isValidWorkspaceViewId(viewId, workspaceId, panels) {
+  if (typeof viewId !== "string" || !viewId) return false;
+  if (isKnownPrefixViewId(viewId)) return true;
+  const sessionPrefix = `${workspaceId}:`;
+  if (!viewId.startsWith(sessionPrefix)) return false;
+  const panelId = viewId.slice(sessionPrefix.length);
+  return panels.some((panel) => panel.id === panelId);
+}
+
+function panelViewId(panel, workspaceId) {
+  if (!panel) return null;
+  if (panel.command === "__task-dashboard__") return `task-dashboard:${panel.id}`;
+  if (panel.command === "__files__") return `files:${panel.id}`;
+  if (/^https?:\/\//i.test(panel.command || "")) return `browser:${panel.id}`;
+  return `${workspaceId}:${panel.id}`;
+}
+
+// Rewrites a session-style viewId (`${workspaceId}:${panelId}`) to its canonical
+// form when it points to a non-terminal panel (dashboard/files/browser). Older
+// state files persisted the session-style id for dashboard panels, which then
+// failed to match splitGroup.viewIds and collapsed the layout to solo.
+function canonicalizeViewId(viewId, workspaceId, panels) {
+  if (typeof viewId !== "string" || !viewId) return viewId;
+  if (isKnownPrefixViewId(viewId)) return viewId;
+  const sessionPrefix = `${workspaceId}:`;
+  if (!viewId.startsWith(sessionPrefix)) return viewId;
+  const panelId = viewId.slice(sessionPrefix.length);
+  const panel = panels.find((p) => p.id === panelId);
+  if (!panel) return viewId;
+  return panelViewId(panel, workspaceId);
+}
+
+function normalizeWorkspaceUIState(workspace, workspaceId, panels, activePanelId) {
+  const activePanel = activePanelId ? panels.find((p) => p.id === activePanelId) : null;
+  const fallbackViewId = panelViewId(activePanel, workspaceId);
+  const rawViewId = typeof workspace.activeViewId === "string" ? workspace.activeViewId : "";
+  const canonicalRaw = canonicalizeViewId(rawViewId, workspaceId, panels);
+  const activeViewId = isValidWorkspaceViewId(canonicalRaw, workspaceId, panels) ? canonicalRaw : fallbackViewId;
+
+  const rawLayout = workspace.splitLayout;
+  const rawSplitIds = Array.isArray(workspace.splitViewIds) ? workspace.splitViewIds : [];
+  const canonicalSplitIds = rawSplitIds
+    .map((id) => canonicalizeViewId(id, workspaceId, panels))
+    .filter((id) => isValidWorkspaceViewId(id, workspaceId, panels));
+  if (!VALID_SPLIT_LAYOUTS.has(rawLayout) || canonicalSplitIds.length < 2) {
+    return { activeViewId, splitLayout: null, splitViewIds: [] };
+  }
+  return { activeViewId, splitLayout: rawLayout, splitViewIds: canonicalSplitIds };
+}
+
 export function normalizeWorkspace(workspace, index = 0) {
   const isDockerWorkspace = (workspace.id || "") === "docker" || workspace.kind === "docker";
   const isAzureWorkspace = workspace.kind === "azure";
@@ -110,9 +176,16 @@ export function normalizeWorkspace(workspace, index = 0) {
   const activePanelId = panels.some((panel) => panel.id === workspace.activePanelId)
     ? workspace.activePanelId
     : fallbackPanelId;
+  const workspaceId = workspace.id || `workspace-${index + 1}`;
+  const { activeViewId, splitLayout, splitViewIds } = normalizeWorkspaceUIState(
+    workspace,
+    workspaceId,
+    panels,
+    activePanelId,
+  );
 
   return {
-    id: workspace.id || `workspace-${index + 1}`,
+    id: workspaceId,
     name: repairVisibleText(workspace.name || `Workspace ${index + 1}`),
     icon: repairVisibleText(workspace.icon || APP_CONFIG.ui.defaultProjectIcon),
     color: workspace.color || APP_CONFIG.ui.defaultProjectColor,
@@ -132,6 +205,9 @@ export function normalizeWorkspace(workspace, index = 0) {
     profileId: workspace.profileId || "default",
     connectionId: workspace.connectionId || workspace.quickfix?.connectionId || workspace.review?.connectionId || "",
     activePanelId,
+    activeViewId,
+    splitLayout,
+    splitViewIds,
     panels,
     review: workspace.review
       ? {

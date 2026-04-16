@@ -17,6 +17,9 @@ import {
   isAzureViewId,
   isGitHubViewId,
   isReviewViewId,
+  isBrowserViewId,
+  isFilesViewId,
+  isTaskDashboardViewId,
 } from "../app/helpers.js";
 import { createDialogActions } from "./app-dialog-actions.js";
 import { createWorkspaceActions } from "./app-workspace-actions.js";
@@ -182,6 +185,18 @@ export const useAppStore = defineStore("app", () => {
     } else {
       _splitGroupCache.delete(wsId);
     }
+    // Persist to backend so the layout survives restarts (fire-and-forget).
+    // Skip while a workspace activation is pending — the splitGroup update during
+    // that window is just us restoring the persisted state, not a user change.
+    if (pendingWorkspaceActivationId.value) return;
+    if (_api?.setWorkspaceUIState) {
+      _api
+        .setWorkspaceUIState(wsId, {
+          splitLayout: next?.layout || null,
+          splitViewIds: next?.viewIds ? [...next.viewIds] : [],
+        })
+        .catch(() => {});
+    }
   });
 
   // Normalize activeViewId and splitGroup when tabs change
@@ -268,6 +283,67 @@ export const useAppStore = defineStore("app", () => {
     };
   }
 
+  function isSessionViewIdFor(viewId, workspaceId) {
+    if (typeof viewId !== "string" || !viewId || !workspaceId) return false;
+    if (isGitViewId(viewId) || isDockerViewId(viewId) || isAzureViewId(viewId) || isGitHubViewId(viewId)) return false;
+    if (isReviewViewId(viewId) || isBrowserViewId(viewId) || isFilesViewId(viewId) || isTaskDashboardViewId(viewId))
+      return false;
+    return viewId.startsWith(`${workspaceId}:`);
+  }
+
+  function resolveSplitForWorkspace(workspaceEntry, workspaceId) {
+    if (
+      workspaceEntry?.splitLayout &&
+      Array.isArray(workspaceEntry.splitViewIds) &&
+      workspaceEntry.splitViewIds.length >= 2
+    ) {
+      return { layout: workspaceEntry.splitLayout, viewIds: [...workspaceEntry.splitViewIds] };
+    }
+    const cached = _splitGroupCache.get(workspaceId);
+    if (cached) return cached;
+    if (workspaceEntry?.kind === "task" && workspaceEntry.panels?.length >= 3) {
+      const viewIds = workspaceEntry.panels.slice(0, 3).map((p) => {
+        if (p.command === "__task-dashboard__") return `task-dashboard:${p.id}`;
+        return `${workspaceId}:${p.id}`;
+      });
+      return { layout: "top-split", viewIds };
+    }
+    if (workspaceEntry?.kind === "task" && workspaceEntry.panels?.length >= 2) {
+      const viewIds = workspaceEntry.panels.slice(0, 2).map((p) => {
+        if (p.command === "__task-dashboard__") return `task-dashboard:${p.id}`;
+        return `${workspaceId}:${p.id}`;
+      });
+      return { layout: "cols", viewIds };
+    }
+    return null;
+  }
+
+  function applyWorkspaceUIStateFromEntry(wsEntry, workspaceId, { optimisticOnly = false } = {}) {
+    if (!workspaceId) return;
+    const nextSplit = resolveSplitForWorkspace(wsEntry, workspaceId);
+    splitGroup.value = nextSplit;
+    if (nextSplit) _splitGroupCache.set(workspaceId, nextSplit);
+
+    if (pendingViewActivationId.value) return;
+    const storedViewId = wsEntry?.activeViewId || "";
+    const fallbackViewId = wsEntry?.activePanelId ? `${workspaceId}:${wsEntry.activePanelId}` : "";
+    const nextViewId = storedViewId || fallbackViewId || null;
+    if (!nextViewId) return;
+    // Optimistic phase: the workspace snapshot lacks git/docker/azure data, so
+    // special-prefix tabs aren't yet in the tabs list and the workspaceTabs watcher
+    // would stomp them. Restore only session IDs here; handleBroadcastPayload and
+    // activateWorkspace's await path restore the rest once the real payload arrives.
+    if (optimisticOnly && !isSessionViewIdFor(nextViewId, workspaceId)) {
+      if (fallbackViewId) {
+        activeViewId.value = fallbackViewId;
+        activeSessionId.value = fallbackViewId;
+      }
+      return;
+    }
+    activeViewId.value = nextViewId;
+    activeSessionId.value = isSessionViewIdFor(nextViewId, workspaceId) ? nextViewId : null;
+  }
+
   function applyOptimisticWorkspaceActivation(workspaceId) {
     const appState = payload.value?.appState;
     if (!appState || !(appState.workspaces || []).some((ws) => ws.id === workspaceId)) {
@@ -298,6 +374,9 @@ export const useAppStore = defineStore("app", () => {
           }
         : {}),
     };
+
+    const wsEntry = (appState.workspaces || []).find((ws) => ws.id === workspaceId);
+    applyWorkspaceUIStateFromEntry(wsEntry, workspaceId, { optimisticOnly: true });
     return true;
   }
 
@@ -308,41 +387,23 @@ export const useAppStore = defineStore("app", () => {
     const isBootstrap = Boolean(nextPayload?.meta?.bootstrap);
 
     if (pendingWsId && incomingWsId && incomingWsId !== pendingWsId) return;
-    if (pendingWsId && incomingWsId === pendingWsId && !isBootstrap) {
+    const completingActivation = pendingWsId && incomingWsId === pendingWsId && !isBootstrap;
+    if (completingActivation) {
       pendingWorkspaceActivationId.value = "";
     }
 
     bootstrapError.value = "";
     clearRemoteConnectionIssue();
 
-    if (nextPayload?.appState?.activeWorkspaceId !== payload.value?.appState?.activeWorkspaceId) {
+    const workspaceChanged = nextPayload?.appState?.activeWorkspaceId !== payload.value?.appState?.activeWorkspaceId;
+    if (workspaceChanged || completingActivation) {
       const prevWsId = payload.value?.appState?.activeWorkspaceId;
-      if (prevWsId && splitGroup.value) {
+      if (workspaceChanged && prevWsId && splitGroup.value) {
         _splitGroupCache.set(prevWsId, splitGroup.value);
       }
       const nextWsId = nextPayload?.appState?.activeWorkspaceId;
-      const cachedSplit = nextWsId && _splitGroupCache.get(nextWsId);
-      if (cachedSplit) {
-        splitGroup.value = cachedSplit;
-      } else {
-        // Auto-split task workspaces: Dashboard on top, Worker + Judge on bottom
-        const nextWs = nextPayload?.workspace?.workspace || nextPayload?.workspace?.project;
-        if (nextWs?.kind === "task" && nextWs.panels?.length >= 3) {
-          const viewIds = nextWs.panels.slice(0, 3).map((p) => {
-            if (p.command === "__task-dashboard__") return `task-dashboard:${p.id}`;
-            return `${nextWsId}:${p.id}`;
-          });
-          splitGroup.value = { layout: "top-split", viewIds };
-        } else if (nextWs?.kind === "task" && nextWs.panels?.length >= 2) {
-          const viewIds = nextWs.panels.slice(0, 2).map((p) => {
-            if (p.command === "__task-dashboard__") return `task-dashboard:${p.id}`;
-            return `${nextWsId}:${p.id}`;
-          });
-          splitGroup.value = { layout: "cols", viewIds };
-        } else {
-          splitGroup.value = null;
-        }
-      }
+      const nextWsEntry = nextWsId ? (nextPayload?.appState?.workspaces || []).find((ws) => ws.id === nextWsId) : null;
+      applyWorkspaceUIStateFromEntry(nextWsEntry, nextWsId);
     }
 
     if (pendingViewActivationId.value) {
@@ -386,24 +447,6 @@ export const useAppStore = defineStore("app", () => {
       _splitGroupCache.set(prevWsId, splitGroup.value);
     }
     applyOptimisticWorkspaceActivation(workspaceId);
-    const cachedSplit = _splitGroupCache.get(workspaceId);
-    if (cachedSplit) {
-      splitGroup.value = cachedSplit;
-    } else {
-      // Auto-split task workspaces when no cached layout exists
-      const ws = (payload.value?.appState?.workspaces || []).find((w) => w.id === workspaceId);
-      if (ws?.kind === "task" && ws.panels?.length >= 3) {
-        const viewIds = ws.panels.slice(0, 3).map((p) => {
-          if (p.command === "__task-dashboard__") return `task-dashboard:${p.id}`;
-          return `${workspaceId}:${p.id}`;
-        });
-        splitGroup.value = { layout: "top-split", viewIds };
-      } else {
-        splitGroup.value = null;
-      }
-    }
-    activeViewId.value = null;
-    activeSessionId.value = null;
     try {
       const nextPayload = await _api.activateWorkspace(workspaceId);
       if (
@@ -414,6 +457,12 @@ export const useAppStore = defineStore("app", () => {
         // Update cache with fresh server data for the newly activated workspace
         _cacheCurrentWorkspace();
         if (!nextPayload?.meta?.bootstrap) pendingWorkspaceActivationId.value = "";
+        // Full restore (including special-prefix activeViewId) now that the real
+        // payload is available — broadcastPayload may have already handled this, but
+        // if the broadcast arrives after this await returns, the optimistic fallback
+        // would otherwise stick.
+        const wsEntry = (nextPayload?.appState?.workspaces || []).find((ws) => ws.id === workspaceId);
+        applyWorkspaceUIStateFromEntry(wsEntry, workspaceId);
       }
     } catch {
       pendingWorkspaceActivationId.value = "";
@@ -424,12 +473,26 @@ export const useAppStore = defineStore("app", () => {
     if (!viewId || viewId === activeViewId.value) return;
 
     activeViewId.value = viewId;
-    if (isGitViewId(viewId) || isDockerViewId(viewId) || isAzureViewId(viewId) || isReviewViewId(viewId)) {
+    if (
+      isGitViewId(viewId) ||
+      isDockerViewId(viewId) ||
+      isAzureViewId(viewId) ||
+      isGitHubViewId(viewId) ||
+      isReviewViewId(viewId) ||
+      isBrowserViewId(viewId) ||
+      isFilesViewId(viewId) ||
+      isTaskDashboardViewId(viewId)
+    ) {
       pendingViewActivationId.value = "";
       activeSessionId.value = null;
+      // Persist the non-session active view so it's restored on workspace switch/restart.
+      // Sessions already persist via api.activateSession below.
+      const wsId = payload.value?.appState?.activeWorkspaceId;
+      if (wsId && _api?.setWorkspaceUIState) {
+        _api.setWorkspaceUIState(wsId, { activeViewId: viewId }).catch(() => {});
+      }
       // Refresh git data on-demand when the Git tab is activated
       if (isGitViewId(viewId) && _api) {
-        const wsId = payload.value?.appState?.activeWorkspaceId;
         if (wsId) {
           _api
             .refreshGit(wsId)

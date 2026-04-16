@@ -462,6 +462,11 @@ async function handleApiRequest(runtime, request, response) {
       return;
     }
 
+    if (request.method === "POST" && url.pathname === "/api/workspace/set-ui-state") {
+      json(response, 200, await runtime.setWorkspaceUIState(body.workspaceId, body.uiState));
+      return;
+    }
+
     if (request.method === "POST" && url.pathname === "/api/attention/sync") {
       json(response, 200, await runtime.syncAttentionContext(body));
       return;
