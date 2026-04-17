@@ -89,7 +89,7 @@ export function buildPullRequestSummary({
   const trackedReviewWsId = tracked.reviewWorkspaceId || "";
   const trackedReviewInProfile = trackedReviewWsId && profileWorkspaces.some((ws) => ws.id === trackedReviewWsId);
 
-  return {
+  const summary = {
     provider: "azure-devops",
     prKey,
     connectionId: connection.id,
@@ -180,4 +180,22 @@ export function buildPullRequestSummary({
           })),
       })),
   };
+
+  // Raw signals used by the manager's sync() to detect notification-worthy
+  // deltas vs tracked.lastNotifiedActivityAt. Kept out of the summary so they
+  // don't leak into the broadcast payload.
+  const internals = {
+    comments,
+    commentsByOthers,
+    voteSignature,
+    sourceCommitId: pr.lastMergeSourceCommit?.commitId || "",
+    sourceCommitter: pr.lastMergeSourceCommit?.committer || null,
+    sourceCommitAuthor: pr.lastMergeSourceCommit?.author || null,
+    latestCommitAt: toIsoOrNull(latestCommitAt),
+    reviewerMap: new Map(reviewerInfo.reviewers.map((reviewer) => [reviewer.id, reviewer])),
+    myReviewerId: reviewerInfo.myReviewerId,
+    mergeStatus,
+  };
+
+  return { summary, internals };
 }

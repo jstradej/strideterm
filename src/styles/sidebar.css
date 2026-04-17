@@ -832,6 +832,25 @@ dt {
   border-color: rgba(255, 164, 36, 0.32);
 }
 
+/* Connection error box — used on Azure/GitHub connection cards when lastError
+   is set. Red wash + bold label so the user notices the actual reason the
+   status chip says "error". */
+.connection-error {
+  margin: 4px 0;
+  padding: 6px 8px;
+  background: rgba(255, 111, 141, 0.1);
+  border: 1px solid rgba(255, 111, 141, 0.35);
+  border-radius: 3px;
+  color: var(--danger);
+  font-size: 11px;
+  line-height: 1.4;
+  word-break: break-word;
+}
+.connection-error strong {
+  color: var(--danger);
+  margin-right: 4px;
+}
+
 .docker-state {
   border-radius: 3px;
   padding: 5px 9px;

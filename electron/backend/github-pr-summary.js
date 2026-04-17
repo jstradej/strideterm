@@ -309,7 +309,7 @@ export function buildPullRequestSummary({
 
   const hostUrl = trimTrailingSlash(connection.hostUrl || "https://github.com");
 
-  return {
+  const summary = {
     provider: "github",
     prKey,
     connectionId: connection.id,
@@ -385,9 +385,23 @@ export function buildPullRequestSummary({
       .sort((a, b) => parseDate(b.submittedAt) - parseDate(a.submittedAt)),
     checks,
     commentCount: issueComments.length + reviewComments.length,
-    // Tracking signatures (not exposed in UI, used for change detection)
-    _reviewStateSignature: reviewStateSignature,
-    _headSha: headSha,
-    _checksSignature: checksSignature,
   };
+
+  // Raw signals for the manager's sync() delta detection. Keeping these out of
+  // the summary avoids leaking implementation details into the broadcast
+  // payload and the UI.
+  const internals = {
+    reviewStateSignature,
+    headSha,
+    checksSignature,
+    otherIssueComments,
+    otherReviewComments,
+    reviews,
+    reviewerMap: new Map(reviewerInfo.reviewers.map((reviewer) => [reviewer.login, reviewer])),
+    myLogin: currentUserLogin,
+    checksFailedCount: checks.failedCount,
+    mergeableState: pr.mergeable_state || "",
+  };
+
+  return { summary, internals };
 }

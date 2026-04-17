@@ -227,12 +227,14 @@ import NotificationCenter from "./components/layout/NotificationCenter.vue";
 import NotificationToast from "./components/layout/NotificationToast.vue";
 import ReturnToAppBanner from "./components/layout/ReturnToAppBanner.vue";
 import { useNotificationCapture } from "./composables/useNotificationCapture.js";
+import { useReviewNotifications } from "./composables/useReviewNotifications.js";
 import { useNotificationStore } from "./stores/notifications.js";
 
 const api = inject("api");
 const store = useAppStore();
 const notifStore = useNotificationStore();
 const { latestToast } = useNotificationCapture();
+useReviewNotifications(latestToast);
 
 const frameRef = ref(null);
 const sidebarRef = ref(null);

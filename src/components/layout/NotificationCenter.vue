@@ -212,12 +212,26 @@ function relativeTime(isoString) {
 
 function sessionIcon(s) {
   if (s.urgency === "urgent") return "🚨";
+  // Connection-level failures carry a distinct icon so they aren't mistaken
+  // for a PR comment (both sit in the "review" category).
+  if (s.category === "review" && s.meta?.kind === "connection-error") return "🔌";
+  if (s.category === "review") return "💬";
+  // A successfully finished agent task earns the checkered flag so it visually
+  // stands apart from generic shell completions (which stay as ✅).
+  if (s.category === "task" && s.state === "finished") return "🏁";
   if (s.state === "waiting") return "⏳";
   if (s.state === "finished") return "✅";
   return "🔔";
 }
 
 function sessionTitle(s) {
+  if (s.category === "review") {
+    // The latest event title already reads "New comment on repo #123" etc.,
+    // so prefer it over the workspace › tab composition used for terminal
+    // notifications (those are nameless per-tab alerts).
+    const latest = s.events[0];
+    return latest?.title || s.workspaceName || "Pull request";
+  }
   const wsName = s.workspaceName || s.workspaceId || "Workspace";
   const tab = s.tabName || s.viewId || "Tab";
   return `${wsName} › ${tab}`;
@@ -231,10 +245,14 @@ function sessionBody(s) {
 
 function itemClass(s, section, idx) {
   const flatIdx = flatIndexOf(s, section);
+  const provider = s.meta?.provider || "";
+  const providerSuffix = provider === "azure-devops" ? "azure" : provider === "github" ? "github" : "";
   return {
     "notification-item--urgent": s.urgency === "urgent",
     "notification-item--unread": s.state === "waiting",
     "notification-item--selected": flatIdx === selectedIndex.value,
+    "notification-item--review": s.category === "review",
+    [`notification-item--review-${providerSuffix}`]: s.category === "review" && providerSuffix,
     [`notification-item--${s.state}`]: true,
     [`notif-idx-${idx}`]: true,
   };
@@ -255,29 +273,49 @@ function backendSessionId(s) {
   return s.viewId || s.id;
 }
 
+function resolveJumpTarget(s) {
+  if (s.category !== "review") {
+    return { workspaceId: s.workspaceId || "", viewId: s.viewId || "" };
+  }
+  const workspaces = appStore.payload?.appState?.workspaces || [];
+  const preferredId = s.meta?.reviewWorkspaceId || s.meta?.existingWorkspaceId || s.workspaceId || "";
+  const direct = preferredId && workspaces.find((w) => w.id === preferredId);
+  if (direct) return { workspaceId: direct.id, viewId: "" };
+  // No review workspace yet — fall back to the provider inbox.
+  const inboxKind = s.meta?.provider === "github" ? "github" : "azure";
+  const activeProfile = appStore.payload?.appState?.activeProfileId || "default";
+  const inbox = workspaces.find((w) => w.kind === inboxKind && (w.profileId || "default") === activeProfile);
+  return { workspaceId: inbox?.id || "", viewId: "" };
+}
+
 async function jump(s) {
   // Jump = user engaged with this session → dismissed=false (resets adaptive counter).
-  // Backend clear first so tab badge goes away immediately.
-  await notifStore.clearOnBackend(backendSessionId(s), { dismissed: false });
+  // Terminal alerts have a backend counterpart to clear; review events don't.
+  if (s.category !== "review") {
+    await notifStore.clearOnBackend(backendSessionId(s), { dismissed: false });
+  }
   notifStore.setState(s.id, "resolved");
 
-  if (!s.workspaceId || !appStore.payload) return;
-  const ws = (appStore.payload.appState?.workspaces || []).find((w) => w.id === s.workspaceId);
-  if (!ws) return;
-
-  const activeWsId = appStore.payload.appState?.activeWorkspaceId;
-  if (activeWsId !== s.workspaceId) {
-    await appStore.activateWorkspace(s.workspaceId);
+  const target = resolveJumpTarget(s);
+  if (!target.workspaceId || !appStore.payload) {
+    notifStore.closePanel();
+    return;
   }
-  if (s.viewId) appStore.activateView(s.viewId);
+  const activeWsId = appStore.payload.appState?.activeWorkspaceId;
+  if (activeWsId !== target.workspaceId) {
+    await appStore.activateWorkspace(target.workspaceId);
+  }
+  if (target.viewId) appStore.activateView(target.viewId);
   notifStore.closePanel();
 }
 
 async function dismiss(s) {
   // Dismiss = user silenced the alert WITHOUT engaging → dismissed=true.
-  // Feeds adaptive suppression: a session that keeps getting dismissed
-  // doubles its silence threshold, then disables T3 entirely.
-  await notifStore.clearOnBackend(backendSessionId(s), { dismissed: true });
+  // Feeds adaptive suppression for terminal alerts; review events don't
+  // use adaptive suppression, so skip the backend call.
+  if (s.category !== "review") {
+    await notifStore.clearOnBackend(backendSessionId(s), { dismissed: true });
+  }
   notifStore.setState(s.id, "resolved");
 }
 

@@ -7,10 +7,22 @@ import { BaseProviderManager, createReviewWorkspacePanels } from "./shared/base-
 import { classifyAzureRequest, parseAzureUrl } from "./azure-audit-log-store.js";
 import { buildPullRequestSummary, findWorkspaceForPullRequest } from "./azure-devops-pr-summary.js";
 import {
+  appendReviewActivity,
+  buildConnectionErrorEvent,
+  buildReviewActivityEvent,
+  diffSignatureKeys,
+  filterNewComments,
+  parseAzureVoteSignature,
+  seedNotifiedTimestamp,
+  shouldSeedConnection,
+  truncateBody,
+} from "./shared/review-activity.js";
+import {
   AZURE_REVIEW_ICON,
   AZURE_REVIEW_COLOR,
   DEFAULT_REVIEW_ROOT,
   clone,
+  identityMatches,
   sanitizePathSegment,
   normalizeReviewRoot,
   createPullRequestKey,
@@ -122,12 +134,14 @@ export class AzureDevOpsManager extends BaseProviderManager {
     const visibleSummaries = [];
     const detailMap = { ...this.snapshot.pullRequests };
     const trackedPullRequests = {};
+    const newActivityEvents = [];
 
     for (const connection of connections.filter((entry) => entry.enabled !== false)) {
       this.setAuditContext({ connectionId: connection.id, userInitiated: false });
       const persistedState = reviewState.connections?.[connection.id] || {};
       const connectionSnapshot = createConnectionSnapshot(connection, persistedState);
       connectionSnapshots.push(connectionSnapshot);
+      const seedingConnection = shouldSeedConnection(this._seededConnections, connection.id);
 
       try {
         const token = this.credentialStore.getSecret(connection.tokenRef);
@@ -164,7 +178,7 @@ export class AzureDevOpsManager extends BaseProviderManager {
             );
             const prKey = createPullRequestKey(connection.id, pr.repository.id, pr.pullRequestId);
             const tracked = this.reviewStore.getTrackedPullRequest(prKey) || {};
-            const summary = buildPullRequestSummary({
+            const { summary, internals } = buildPullRequestSummary({
               connection,
               pr,
               projectName: project.name,
@@ -176,6 +190,16 @@ export class AzureDevOpsManager extends BaseProviderManager {
               now: this.now,
             });
             visibleSummaries.push(summary);
+
+            const { events, lastNotifiedActivityAt } = this._detectAzureReviewActivityDeltas({
+              connection,
+              tracked,
+              summary,
+              internals,
+              seedingConnection,
+            });
+            newActivityEvents.push(...events);
+
             if (this.reviewBridgeStore?.syncPullRequest) {
               try {
                 await this.reviewBridgeStore.syncPullRequest(summary);
@@ -193,13 +217,11 @@ export class AzureDevOpsManager extends BaseProviderManager {
               repositoryName: pr.repository.name,
               reviewWorkspaceId: summary.reviewWorkspaceId || tracked.reviewWorkspaceId || "",
               lastRemoteActivityAt: summary.lastRemoteActivityAt,
-              lastVoteSignature: summary.reviewerSummary.reviewers
-                .map((reviewer) => `${reviewer.id}:${reviewer.vote}:${reviewer.hasDeclined ? 1 : 0}`)
-                .sort()
-                .join("|"),
+              lastVoteSignature: internals.voteSignature,
               lastMergeStatus: summary.pullRequest.mergeStatus,
               lastSourceCommitId: summary.pullRequest.sourceCommitId,
               lastSeenActivityAt: tracked.lastSeenActivityAt || null,
+              lastNotifiedActivityAt,
             };
             detailMap[prKey] = {
               ...(detailMap[prKey] || {}),
@@ -208,6 +230,7 @@ export class AzureDevOpsManager extends BaseProviderManager {
             };
           }
         }
+        this._seededConnections.add(connection.id);
 
         connectionSnapshot.status = "ok";
         connectionSnapshot.lastError = "";
@@ -228,6 +251,21 @@ export class AzureDevOpsManager extends BaseProviderManager {
           lastError: connectionSnapshot.lastError,
           lastSyncAt: connectionSnapshot.lastSyncAt,
         });
+      }
+
+      // Connection-level errors are surfaced once per transition: when status
+      // flips into "error" OR when the error message changes. Silent on
+      // startup if the error was already persisted from the previous session.
+      const connectionErrorEvent = buildConnectionErrorEvent({
+        provider: "azure-devops",
+        connection,
+        prevState: persistedState,
+        currentStatus: connectionSnapshot.status,
+        currentError: connectionSnapshot.lastError,
+        at: connectionSnapshot.lastSyncAt || new Date(this.now()).toISOString(),
+      });
+      if (connectionErrorEvent) {
+        newActivityEvents.push(connectionErrorEvent);
       }
     }
 
@@ -310,6 +348,7 @@ export class AzureDevOpsManager extends BaseProviderManager {
       },
       trackedPullRequests,
       pullRequests: detailMap,
+      reviewActivity: appendReviewActivity(this.snapshot.reviewActivity, newActivityEvents),
       sync: {
         running: false,
         lastStartedAt: startedAt,
@@ -318,6 +357,179 @@ export class AzureDevOpsManager extends BaseProviderManager {
     };
     this.setSnapshot(snapshot);
     return this.getSnapshot();
+  }
+
+  /**
+   * Compare a PR summary against its tracked state and emit review-activity
+   * events for changes caused by people other than the current user.
+   *
+   * Returns `{ events, lastNotifiedActivityAt }`. The caller persists the new
+   * marker in the tracked store so the next poll starts from here.
+   *
+   * On the connection's first sync (seedingConnection=true) we silently seed
+   * every PR's marker to avoid a flood of "new" events at app startup.
+   */
+  _detectAzureReviewActivityDeltas({ connection, tracked, summary, internals, seedingConnection }) {
+    const nowIso = new Date(this.now()).toISOString();
+    const events = [];
+
+    if (seedingConnection) {
+      return {
+        events,
+        lastNotifiedActivityAt: seedNotifiedTimestamp(summary, nowIso),
+      };
+    }
+
+    const prevNotifiedAt = tracked.lastNotifiedActivityAt || "";
+
+    // Brand-new PR that wasn't in the tracked store before this poll.
+    // Emit a `pr-new` event when the current user is the requested reviewer.
+    if (!prevNotifiedAt) {
+      if (summary.role === "reviewer") {
+        events.push(
+          buildReviewActivityEvent({
+            provider: "azure-devops",
+            summary,
+            kind: "pr-new",
+            at: summary.lastRemoteActivityAt || nowIso,
+            title: `Review requested: ${summary.repository.name} #${summary.pullRequest.id}`,
+            body: truncateBody(`${summary.author.displayName}: ${summary.pullRequest.title}`),
+            actor: { login: summary.author.uniqueName, displayName: summary.author.displayName },
+          }),
+        );
+      }
+      return {
+        events,
+        lastNotifiedActivityAt: seedNotifiedTimestamp(summary, nowIso),
+      };
+    }
+
+    // 1) New comments from other people.
+    const newComments = filterNewComments({
+      comments: internals.commentsByOthers,
+      sinceIsoString: prevNotifiedAt,
+      isSelf: (author) => identityMatches(connection.login, author),
+      getTimestamp: (comment) => comment.lastUpdatedDate || comment.publishedDate,
+      getAuthor: (comment) => comment.author,
+    });
+    if (newComments.length > 0) {
+      const latest = newComments[newComments.length - 1];
+      const actor = {
+        login: latest.author?.uniqueName || "",
+        displayName: latest.author?.displayName || latest.author?.uniqueName || "Someone",
+      };
+      const title =
+        newComments.length > 1
+          ? `${newComments.length} new comments on ${summary.repository.name} #${summary.pullRequest.id}`
+          : `New comment on ${summary.repository.name} #${summary.pullRequest.id}`;
+      events.push(
+        buildReviewActivityEvent({
+          provider: "azure-devops",
+          summary,
+          kind: "pr-new-comment",
+          at: latest.lastUpdatedDate || latest.publishedDate || nowIso,
+          title,
+          body: truncateBody(`${actor.displayName}: ${latest.content || ""}`),
+          actor,
+        }),
+      );
+    }
+
+    // 2) Vote change by a reviewer other than the current user.
+    if (tracked.lastVoteSignature && tracked.lastVoteSignature !== internals.voteSignature) {
+      const prevMap = parseAzureVoteSignature(tracked.lastVoteSignature);
+      const currMap = parseAzureVoteSignature(internals.voteSignature);
+      const changedIds = diffSignatureKeys(prevMap, currMap, internals.myReviewerId);
+      const changedReviewers = changedIds
+        .map((id) => internals.reviewerMap.get(id))
+        .filter((reviewer) => reviewer && !identityMatches(connection.login, reviewer));
+      if (changedReviewers.length > 0) {
+        const reviewer = changedReviewers[0];
+        const voteLabel =
+          reviewer.vote >= 10
+            ? "approved"
+            : reviewer.vote === 5
+              ? "approved with suggestions"
+              : reviewer.vote === -5
+                ? "is waiting for the author"
+                : reviewer.vote <= -10
+                  ? "rejected the changes"
+                  : "reset their vote";
+        events.push(
+          buildReviewActivityEvent({
+            provider: "azure-devops",
+            summary,
+            kind: "pr-vote-changed",
+            at: nowIso,
+            title: `Review updated on ${summary.repository.name} #${summary.pullRequest.id}`,
+            body: truncateBody(`${reviewer.displayName} ${voteLabel}.`),
+            actor: { login: reviewer.uniqueName, displayName: reviewer.displayName },
+            urgency: reviewer.vote <= -10 ? "urgent" : "normal",
+          }),
+        );
+      }
+    }
+
+    // 3) Source branch updated — only notify when the pusher is someone else.
+    if (
+      tracked.lastSourceCommitId &&
+      tracked.lastSourceCommitId !== internals.sourceCommitId &&
+      internals.sourceCommitId
+    ) {
+      const pusher = internals.sourceCommitter || internals.sourceCommitAuthor || null;
+      // Azure git-commit identity uses `{ name, email }` while user identity
+      // uses `{ uniqueName, mailAddress, displayName }` — normalize before
+      // comparing so a push by the current user is correctly self-filtered.
+      const pusherIdentity = pusher
+        ? {
+            ...pusher,
+            mailAddress: pusher.email || pusher.mailAddress || "",
+            uniqueName: pusher.email || pusher.uniqueName || "",
+            displayName: pusher.name || pusher.displayName || "",
+          }
+        : null;
+      if (!identityMatches(connection.login, pusherIdentity)) {
+        events.push(
+          buildReviewActivityEvent({
+            provider: "azure-devops",
+            summary,
+            kind: "pr-source-updated",
+            at: internals.latestCommitAt || nowIso,
+            title: `${summary.repository.name} #${summary.pullRequest.id} has new commits`,
+            body: truncateBody(pusher?.name ? `${pusher.name} pushed updates.` : "New commits were pushed."),
+            actor: pusher ? { login: pusher.email || "", displayName: pusher.name || "" } : null,
+          }),
+        );
+      }
+    }
+
+    // 4) Merge status turned bad (conflicts, policy rejection) — urgent for the author.
+    if (summary.role === "author" && tracked.lastMergeStatus && tracked.lastMergeStatus !== internals.mergeStatus) {
+      const normalized = String(internals.mergeStatus || "").toLowerCase();
+      const isBad =
+        normalized.includes("conflict") ||
+        normalized.includes("fail") ||
+        normalized.includes("reject") ||
+        normalized === "rejectedbypolicy";
+      if (isBad) {
+        events.push(
+          buildReviewActivityEvent({
+            provider: "azure-devops",
+            summary,
+            kind: "pr-merge-status-changed",
+            at: nowIso,
+            title: `${summary.repository.name} #${summary.pullRequest.id} needs attention`,
+            body: truncateBody(`Merge status: ${internals.mergeStatus}`),
+            urgency: "urgent",
+          }),
+        );
+      }
+    }
+
+    return {
+      events,
+      lastNotifiedActivityAt: events.length > 0 ? nowIso : prevNotifiedAt,
+    };
   }
 
   async ensurePullRequestDetail(prKey, { workspaces = [], force = false } = {}) {

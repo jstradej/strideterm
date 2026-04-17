@@ -104,9 +104,7 @@
                   }}{{ conn.repositoryFilters?.length ? ` · ${conn.repositoryFilters.join(", ")}` : "" }} · poll
                   {{ conn.pollSeconds || 120 }}s
                 </div>
-                <div v-if="conn.lastError" style="font-size: 11px; color: var(--danger); padding: 2px 0">
-                  {{ conn.lastError }}
-                </div>
+                <div v-if="conn.lastError" class="connection-error"><strong>Error:</strong> {{ conn.lastError }}</div>
                 <div v-if="conn.lastSyncAt" style="font-size: 11px; color: var(--muted); padding: 2px 0">
                   Last sync: {{ new Date(conn.lastSyncAt).toLocaleString() }}
                 </div>

@@ -109,6 +109,7 @@ export function useNotificationCapture() {
             body = `${tabName} in ${wsName} finished${exitInfo}.`;
           }
 
+          const category = isTaskAlert ? "task" : "terminal";
           const entry = notifStore.add({
             title,
             body,
@@ -119,9 +120,12 @@ export function useNotificationCapture() {
             workspaceName: wsName,
             tabName,
             viewId: alert.sessionId || "",
+            category,
           });
 
-          latestToast.value = entry;
+          // Attach category on the toast payload so NotificationToast can pick
+          // the right icon without reaching into the session store.
+          latestToast.value = { ...entry, category };
           fireNotificationAlert(entry.title, entry.body, {
             tier: entry.tier,
             urgency: entry.urgency,

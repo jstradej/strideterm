@@ -80,6 +80,7 @@ export function createEmptySnapshot() {
     },
     trackedPullRequests: {},
     pullRequests: {},
+    reviewActivity: [],
     sync: {
       running: false,
       lastStartedAt: null,

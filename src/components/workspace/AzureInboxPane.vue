@@ -78,7 +78,12 @@
                   >
                 </div>
                 <div style="font-size: 12px; color: var(--muted); padding: 4px 0">
-                  {{ conn.login }} · {{ conn.projectFilters?.join(", ") || "all projects" }}
+                  {{ conn.login }} · {{ conn.projectFilters?.join(", ") || "all projects" }} · poll
+                  {{ conn.pollSeconds || 120 }}s
+                </div>
+                <div v-if="conn.lastError" class="connection-error"><strong>Error:</strong> {{ conn.lastError }}</div>
+                <div v-if="conn.lastSyncAt" style="font-size: 11px; color: var(--muted); padding: 2px 0">
+                  Last sync: {{ new Date(conn.lastSyncAt).toLocaleString() }}
                 </div>
                 <div class="docker-card__actions">
                   <button

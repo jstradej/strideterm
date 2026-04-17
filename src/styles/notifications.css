@@ -286,6 +286,63 @@
   text-align: center;
 }
 
+/* Review activity notifications (Azure/GitHub PR events) — distinct from
+   terminal completions. A colored left-border plus a subtle wash identifies
+   the provider at a glance. */
+.notification-item--review {
+  border-left: 3px solid #7a8cff;
+  background: rgba(122, 140, 255, 0.05);
+}
+.notification-item--review:hover {
+  background: rgba(122, 140, 255, 0.1);
+}
+.notification-item--review-azure {
+  border-left-color: #0078d4;
+  background: rgba(0, 120, 212, 0.06);
+}
+.notification-item--review-azure:hover {
+  background: rgba(0, 120, 212, 0.12);
+}
+.notification-item--review-github {
+  border-left-color: #238636;
+  background: rgba(35, 134, 54, 0.06);
+}
+.notification-item--review-github:hover {
+  background: rgba(35, 134, 54, 0.12);
+}
+
+.notification-item__provider-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 22px;
+  padding: 0 5px;
+  height: 16px;
+  margin-right: 4px;
+  border-radius: 3px;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: #fff;
+}
+.notification-item__provider-badge--azure {
+  background: #0078d4;
+}
+.notification-item__provider-badge--github {
+  background: #238636;
+}
+
+.notification-toast--review {
+  border-left: 3px solid #7a8cff;
+}
+.notification-toast--review-azure {
+  border-left-color: #0078d4;
+}
+.notification-toast--review-github {
+  border-left-color: #238636;
+}
+
 .notification-item__content {
   min-width: 0;
 }

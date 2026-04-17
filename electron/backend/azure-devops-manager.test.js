@@ -654,7 +654,7 @@ describe("AzureDevOpsManager", () => {
     createManager({
       secrets: { "cred:ado-main": "pat-123" },
     });
-    const summary = buildPullRequestSummary({
+    const { summary } = buildPullRequestSummary({
       connection,
       pr: {
         pullRequestId: 123,

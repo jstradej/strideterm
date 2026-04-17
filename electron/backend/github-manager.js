@@ -7,6 +7,17 @@ import { BaseProviderManager, createReviewWorkspacePanels } from "./shared/base-
 import { classifyGitHubRequest, parseGitHubUrl } from "./github-audit-log-store.js";
 import { buildPullRequestSummary, findWorkspaceForPullRequest } from "./github-pr-summary.js";
 import {
+  appendReviewActivity,
+  buildConnectionErrorEvent,
+  buildReviewActivityEvent,
+  diffSignatureKeys,
+  filterNewComments,
+  parseGitHubReviewSignature,
+  seedNotifiedTimestamp,
+  shouldSeedConnection,
+  truncateBody,
+} from "./shared/review-activity.js";
+import {
   GITHUB_REVIEW_ICON,
   GITHUB_REVIEW_COLOR,
   DEFAULT_REVIEW_ROOT,
@@ -120,12 +131,14 @@ export class GitHubManager extends BaseProviderManager {
     const visibleSummaries = [];
     const detailMap = { ...this.snapshot.pullRequests };
     const trackedPullRequests = {};
+    const newActivityEvents = [];
 
     for (const connection of connections.filter((c) => c.enabled !== false)) {
       this.setAuditContext({ connectionId: connection.id, userInitiated: false });
       const persistedState = reviewState.connections?.[connection.id] || {};
       const connectionSnapshot = createConnectionSnapshot(connection, persistedState);
       connectionSnapshots.push(connectionSnapshot);
+      const seedingConnection = shouldSeedConnection(this._seededConnections, connection.id);
 
       try {
         const token = this.credentialStore.getSecret(connection.tokenRef);
@@ -181,7 +194,7 @@ export class GitHubManager extends BaseProviderManager {
             ]);
 
             const tracked = this.reviewStore.getTrackedPullRequest(prKey) || {};
-            const summary = buildPullRequestSummary({
+            const { summary, internals } = buildPullRequestSummary({
               connection,
               pr,
               reviews,
@@ -195,6 +208,14 @@ export class GitHubManager extends BaseProviderManager {
               now: this.now,
             });
             visibleSummaries.push(summary);
+
+            const { events, lastNotifiedActivityAt } = this._detectGitHubReviewActivityDeltas({
+              tracked,
+              summary,
+              internals,
+              seedingConnection,
+            });
+            newActivityEvents.push(...events);
 
             if (this.reviewBridgeStore?.syncPullRequest) {
               try {
@@ -213,10 +234,11 @@ export class GitHubManager extends BaseProviderManager {
               repo: prRepo,
               reviewWorkspaceId: summary.reviewWorkspaceId || tracked.reviewWorkspaceId || "",
               lastRemoteActivityAt: summary.lastRemoteActivityAt,
-              lastReviewStateSignature: summary._reviewStateSignature,
-              lastHeadSha: summary._headSha,
-              lastChecksSignature: summary._checksSignature,
+              lastReviewStateSignature: internals.reviewStateSignature,
+              lastHeadSha: internals.headSha,
+              lastChecksSignature: internals.checksSignature,
               lastSeenActivityAt: tracked.lastSeenActivityAt || null,
+              lastNotifiedActivityAt,
             };
             detailMap[prKey] = {
               ...(detailMap[prKey] || {}),
@@ -224,6 +246,7 @@ export class GitHubManager extends BaseProviderManager {
             };
           }
         }
+        this._seededConnections.add(connection.id);
 
         connectionSnapshot.status = "ok";
         connectionSnapshot.lastError = "";
@@ -244,6 +267,21 @@ export class GitHubManager extends BaseProviderManager {
           lastError: connectionSnapshot.lastError,
           lastSyncAt: connectionSnapshot.lastSyncAt,
         });
+      }
+
+      // Mirrors AzureDevOpsManager — notify once per transition into error
+      // (or on a different error message), not every poll while the error
+      // persists and not on startup if the same error was already persisted.
+      const connectionErrorEvent = buildConnectionErrorEvent({
+        provider: "github",
+        connection,
+        prevState: persistedState,
+        currentStatus: connectionSnapshot.status,
+        currentError: connectionSnapshot.lastError,
+        at: connectionSnapshot.lastSyncAt || new Date(this.now()).toISOString(),
+      });
+      if (connectionErrorEvent) {
+        newActivityEvents.push(connectionErrorEvent);
       }
     }
 
@@ -318,6 +356,7 @@ export class GitHubManager extends BaseProviderManager {
       },
       trackedPullRequests,
       pullRequests: detailMap,
+      reviewActivity: appendReviewActivity(this.snapshot.reviewActivity, newActivityEvents),
       sync: {
         running: false,
         lastStartedAt: startedAt,
@@ -326,6 +365,163 @@ export class GitHubManager extends BaseProviderManager {
     };
     this.setSnapshot(snapshot);
     return this.getSnapshot();
+  }
+
+  /**
+   * Compare a PR summary against its tracked state and emit review-activity
+   * events for changes caused by people other than the current user.
+   *
+   * Mirror of AzureDevOpsManager._detectAzureReviewActivityDeltas — same
+   * contract, GitHub-specific identity and vote logic.
+   */
+  _detectGitHubReviewActivityDeltas({ tracked, summary, internals, seedingConnection }) {
+    const nowIso = new Date(this.now()).toISOString();
+    const events = [];
+    const myLogin = String(internals.myLogin || "").toLowerCase();
+    const isSelfLogin = (login) => Boolean(myLogin) && String(login || "").toLowerCase() === myLogin;
+
+    if (seedingConnection) {
+      return {
+        events,
+        lastNotifiedActivityAt: seedNotifiedTimestamp(summary, nowIso),
+      };
+    }
+
+    const prevNotifiedAt = tracked.lastNotifiedActivityAt || "";
+
+    if (!prevNotifiedAt) {
+      if (summary.role === "reviewer") {
+        events.push(
+          buildReviewActivityEvent({
+            provider: "github",
+            summary,
+            kind: "pr-new",
+            at: summary.lastRemoteActivityAt || nowIso,
+            title: `Review requested: ${summary.repository.fullName} #${summary.pullRequest.number}`,
+            body: truncateBody(`${summary.author.displayName}: ${summary.pullRequest.title}`),
+            actor: { login: summary.author.login, displayName: summary.author.displayName },
+          }),
+        );
+      }
+      return {
+        events,
+        lastNotifiedActivityAt: seedNotifiedTimestamp(summary, nowIso),
+      };
+    }
+
+    // 1) New issue + review comments from other users.
+    const newIssue = filterNewComments({
+      comments: internals.otherIssueComments,
+      sinceIsoString: prevNotifiedAt,
+      isSelf: (author) => isSelfLogin(author?.login),
+      getTimestamp: (comment) => comment.updated_at || comment.created_at,
+      getAuthor: (comment) => comment.user || {},
+    });
+    const newReview = filterNewComments({
+      comments: internals.otherReviewComments,
+      sinceIsoString: prevNotifiedAt,
+      isSelf: (author) => isSelfLogin(author?.login),
+      getTimestamp: (comment) => comment.updated_at || comment.created_at,
+      getAuthor: (comment) => comment.user || {},
+    });
+    const newComments = [...newIssue, ...newReview].sort(
+      (a, b) => parseDate(a.updated_at || a.created_at) - parseDate(b.updated_at || b.created_at),
+    );
+    if (newComments.length > 0) {
+      const latest = newComments[newComments.length - 1];
+      const actor = {
+        login: latest.user?.login || "",
+        displayName: latest.user?.name || latest.user?.login || "Someone",
+      };
+      const title =
+        newComments.length > 1
+          ? `${newComments.length} new comments on ${summary.repository.fullName} #${summary.pullRequest.number}`
+          : `New comment on ${summary.repository.fullName} #${summary.pullRequest.number}`;
+      events.push(
+        buildReviewActivityEvent({
+          provider: "github",
+          summary,
+          kind: "pr-new-comment",
+          at: latest.updated_at || latest.created_at || nowIso,
+          title,
+          body: truncateBody(`${actor.displayName}: ${latest.body || ""}`),
+          actor,
+        }),
+      );
+    }
+
+    // 2) Review state change by somebody other than me.
+    if (tracked.lastReviewStateSignature && tracked.lastReviewStateSignature !== internals.reviewStateSignature) {
+      const prevMap = parseGitHubReviewSignature(tracked.lastReviewStateSignature);
+      const currMap = parseGitHubReviewSignature(internals.reviewStateSignature);
+      const changedLogins = diffSignatureKeys(prevMap, currMap, myLogin);
+      const changedReviewers = changedLogins
+        .map((login) => internals.reviewerMap.get(login))
+        .filter((reviewer) => reviewer && !isSelfLogin(reviewer.login));
+      if (changedReviewers.length > 0) {
+        const reviewer = changedReviewers[0];
+        const verb =
+          reviewer.state === "approved"
+            ? "approved"
+            : reviewer.state === "changes_requested"
+              ? "requested changes"
+              : reviewer.state === "dismissed"
+                ? "dismissed their review"
+                : "updated their review";
+        events.push(
+          buildReviewActivityEvent({
+            provider: "github",
+            summary,
+            kind: "pr-vote-changed",
+            at: nowIso,
+            title: `Review updated on ${summary.repository.fullName} #${summary.pullRequest.number}`,
+            body: truncateBody(`${reviewer.displayName} ${verb}.`),
+            actor: { login: reviewer.login, displayName: reviewer.displayName },
+            urgency: reviewer.state === "changes_requested" ? "urgent" : "normal",
+          }),
+        );
+      }
+    }
+
+    // 3) Source HEAD updated — GitHub doesn't tell us the pusher cheaply, so
+    // only notify reviewers (the author almost always pushed themselves).
+    if (tracked.lastHeadSha && tracked.lastHeadSha !== internals.headSha && summary.role === "reviewer") {
+      events.push(
+        buildReviewActivityEvent({
+          provider: "github",
+          summary,
+          kind: "pr-source-updated",
+          at: summary.pullRequest.updatedAt || nowIso,
+          title: `${summary.repository.fullName} #${summary.pullRequest.number} has new commits`,
+          body: "The source branch was updated.",
+        }),
+      );
+    }
+
+    // 4) Checks newly failing — relevant to the author (they need to fix).
+    if (
+      summary.role === "author" &&
+      tracked.lastChecksSignature &&
+      tracked.lastChecksSignature !== internals.checksSignature &&
+      internals.checksFailedCount > 0
+    ) {
+      events.push(
+        buildReviewActivityEvent({
+          provider: "github",
+          summary,
+          kind: "pr-checks-failed",
+          at: nowIso,
+          title: `Checks failing on ${summary.repository.fullName} #${summary.pullRequest.number}`,
+          body: truncateBody(`${internals.checksFailedCount} check(s) failed.`),
+          urgency: "urgent",
+        }),
+      );
+    }
+
+    return {
+      events,
+      lastNotifiedActivityAt: events.length > 0 ? nowIso : prevNotifiedAt,
+    };
   }
 
   // ---------------------------------------------------------------------------

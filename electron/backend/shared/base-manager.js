@@ -44,6 +44,11 @@ export class BaseProviderManager extends EventEmitter {
     this.snapshot = createEmptySnapshot();
     this.syncTimer = null;
 
+    // Connections that have completed their first sync in this process.
+    // Used by review-activity delta detection to suppress notifications
+    // on startup (otherwise every existing PR would be announced as "new").
+    this._seededConnections = new Set();
+
     this.providerLabel = "provider";
     this.defaultGitLogin = "";
     this._log = null;

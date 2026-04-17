@@ -48,7 +48,9 @@ function saveToStorage(sessions) {
 }
 
 function kindToState(kind) {
-  return kind === "completed" || kind === "info" ? "finished" : "waiting";
+  // Review activity and info/completed events don't block on user input —
+  // they land in "Finished" so the user can ack them at their convenience.
+  return kind === "completed" || kind === "info" || kind === "review" ? "finished" : "waiting";
 }
 
 export const useNotificationStore = defineStore("notifications", () => {
@@ -101,6 +103,8 @@ export const useNotificationStore = defineStore("notifications", () => {
     workspaceName = "",
     tabName = "",
     viewId = "",
+    category = "terminal",
+    meta = null,
   }) {
     const id = threadId(workspaceId, viewId);
     const eventEntry = {
@@ -119,6 +123,8 @@ export const useNotificationStore = defineStore("notifications", () => {
       existing.latestAt = eventEntry.at;
       existing.workspaceName = workspaceName || existing.workspaceName;
       existing.tabName = tabName || existing.tabName;
+      if (category) existing.category = category;
+      if (meta) existing.meta = { ...(existing.meta || {}), ...meta };
       // Urgent always takes precedence; waiting > finished when comparing kinds.
       const nextState = kindToState(kind);
       if (existing.state === "resolved" && (nextState === "waiting" || urgency === "urgent")) {
@@ -141,6 +147,8 @@ export const useNotificationStore = defineStore("notifications", () => {
         state: kindToState(kind),
         tier,
         urgency,
+        category,
+        meta: meta || null,
         firstAt: eventEntry.at,
         latestAt: eventEntry.at,
         events: [eventEntry],
