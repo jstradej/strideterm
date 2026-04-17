@@ -12,6 +12,7 @@ contextBridge.exposeInMainWorld("strideterm", {
   setWorkspaceUIState: (workspaceId, uiState) => ipcRenderer.invoke("workspace:set-ui-state", workspaceId, uiState),
   syncAttentionContext: (payload) => ipcRenderer.invoke("attention:sync", payload),
   clearAllAttention: () => ipcRenderer.invoke("attention:clear-all"),
+  clearAlertForSession: (sessionId, options) => ipcRenderer.invoke("attention:clear-session", sessionId, options),
   saveWorkspace: (workspace) => ipcRenderer.invoke("workspace:save", workspace),
   saveProject: (project) => ipcRenderer.invoke("project:save", project),
   deleteWorkspace: (workspaceId, options) => ipcRenderer.invoke("workspace:delete", workspaceId, options),
@@ -77,6 +78,8 @@ contextBridge.exposeInMainWorld("strideterm", {
   configureAgentHook: () => ipcRenderer.invoke("agent-hook:configure"),
   removeAgentHook: () => ipcRenderer.invoke("agent-hook:remove"),
   getAgentHookStatus: () => ipcRenderer.invoke("agent-hook:status"),
+  testAgentHook: () => ipcRenderer.invoke("agent-hook:test"),
+  getNotificationMetrics: () => ipcRenderer.invoke("notifications:metrics"),
   // Task runner
   recheckClaude: () => ipcRenderer.invoke("task:recheck-claude"),
   createTaskWorkspace: (payload) => ipcRenderer.invoke("task:create-workspace", payload),

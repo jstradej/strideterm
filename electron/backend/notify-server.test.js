@@ -128,6 +128,7 @@ describe("POST /notify", () => {
     const url = buildNotifyUrl(handle.port, "ws1:panel1", secret);
 
     const res = await postJson(url, {
+      hook: "Notification",
       notification_type: "idle_prompt",
       message: "Task complete",
       title: "Done",
@@ -136,9 +137,20 @@ describe("POST /notify", () => {
     expect(res.status).toBe(200);
     expect(JSON.parse(res.body)).toEqual({});
     expect(onNotification).toHaveBeenCalledOnce();
-    expect(onNotification).toHaveBeenCalledWith({
-      sessionId: "ws1:panel1",
-      notificationType: "idle_prompt",
+    expect(onNotification).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionId: "ws1:panel1",
+        hook: "Notification",
+        subtype: "idle_prompt",
+        notificationType: "idle_prompt",
+        message: "Task complete",
+        title: "Done",
+      }),
+    );
+    // Raw payload is forwarded for dispatcher / future telemetry
+    expect(onNotification.mock.calls[0][0].payload).toEqual({
+      hook: "Notification",
+      notification_type: "idle_prompt",
       message: "Task complete",
       title: "Done",
     });
@@ -148,23 +160,62 @@ describe("POST /notify", () => {
     const { handle, secret, onNotification } = await createServer();
     const url = buildNotifyUrl(handle.port, "ws2:panel3", secret);
 
-    await postJson(url, { notification_type: "permission_prompt", message: "Approve?" });
+    await postJson(url, { hook: "Notification", notification_type: "permission_prompt", message: "Approve?" });
 
-    expect(onNotification).toHaveBeenCalledWith({
-      sessionId: "ws2:panel3",
-      notificationType: "permission_prompt",
-      message: "Approve?",
-      title: "",
-    });
+    expect(onNotification).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionId: "ws2:panel3",
+        hook: "Notification",
+        subtype: "permission_prompt",
+        notificationType: "permission_prompt",
+        message: "Approve?",
+        title: "",
+      }),
+    );
   });
 
-  test("defaults to idle_prompt when notification_type is empty", async () => {
+  test("defaults to Notification/idle_prompt when hook and notification_type are empty", async () => {
     const { handle, secret, onNotification } = await createServer();
     const url = buildNotifyUrl(handle.port, "ws1:p1", secret);
 
     await postJson(url, { message: "hello" });
 
-    expect(onNotification).toHaveBeenCalledWith(expect.objectContaining({ notificationType: "idle_prompt" }));
+    expect(onNotification).toHaveBeenCalledWith(
+      expect.objectContaining({ hook: "Notification", notificationType: "idle_prompt" }),
+    );
+  });
+
+  test("reads hook from payload.hook_event_name as fallback", async () => {
+    const { handle, secret, onNotification } = await createServer();
+    const url = buildNotifyUrl(handle.port, "ws1:p1", secret);
+
+    await postJson(url, { hook_event_name: "Stop" });
+
+    expect(onNotification).toHaveBeenCalledWith(expect.objectContaining({ hook: "Stop", subtype: "" }));
+  });
+
+  test("forwards Stop / SubagentStop / UserPromptSubmit hooks through dispatcher-shaped payload", async () => {
+    const { handle, secret, onNotification } = await createServer();
+
+    await postJson(buildNotifyUrl(handle.port, "ws1:p1", secret), { hook: "Stop" });
+    await postJson(buildNotifyUrl(handle.port, "ws1:p1", secret), { hook: "SubagentStop" });
+    await postJson(buildNotifyUrl(handle.port, "ws1:p1", secret), { hook: "UserPromptSubmit" });
+
+    expect(onNotification).toHaveBeenCalledTimes(3);
+    expect(onNotification.mock.calls[0][0]).toMatchObject({ hook: "Stop", subtype: "" });
+    expect(onNotification.mock.calls[1][0]).toMatchObject({ hook: "SubagentStop", subtype: "" });
+    expect(onNotification.mock.calls[2][0]).toMatchObject({ hook: "UserPromptSubmit", subtype: "" });
+  });
+
+  test("forwards unknown hook names to dispatcher (no early filter)", async () => {
+    const { handle, secret, onNotification } = await createServer();
+    const url = buildNotifyUrl(handle.port, "ws1:p1", secret);
+
+    await postJson(url, { hook: "SomeFutureHook", notification_type: "new_subtype" });
+
+    expect(onNotification).toHaveBeenCalledWith(
+      expect.objectContaining({ hook: "SomeFutureHook", subtype: "new_subtype" }),
+    );
   });
 
   test("handles empty body", async () => {
@@ -174,12 +225,16 @@ describe("POST /notify", () => {
     const res = await postJson(url);
 
     expect(res.status).toBe(200);
-    expect(onNotification).toHaveBeenCalledWith({
-      sessionId: "ws1:p1",
-      notificationType: "idle_prompt",
-      message: "",
-      title: "",
-    });
+    expect(onNotification).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionId: "ws1:p1",
+        hook: "Notification",
+        subtype: "",
+        notificationType: "idle_prompt",
+        message: "",
+        title: "",
+      }),
+    );
   });
 
   test("handles multiple sessions on the same server", async () => {
@@ -304,14 +359,17 @@ describe("error handling", () => {
     expect(res.status).toBe(400);
   });
 
-  test("silently ignores unknown notification types", async () => {
+  test("forwards unknown notification subtypes to onNotification (dispatcher classifies)", async () => {
     const { handle, secret, onNotification } = await createServer();
     const url = buildNotifyUrl(handle.port, "ws1:p1", secret);
 
-    const res = await postJson(url, { notification_type: "unknown_type" });
+    const res = await postJson(url, { notification_type: "some_new_subtype" });
 
     expect(res.status).toBe(200);
-    expect(onNotification).not.toHaveBeenCalled();
+    // No allowlist — every event reaches the dispatcher, which then decides.
+    expect(onNotification).toHaveBeenCalledWith(
+      expect.objectContaining({ hook: "Notification", subtype: "some_new_subtype" }),
+    );
   });
 
   test("does not crash when onNotification throws", async () => {

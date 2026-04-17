@@ -1,6 +1,7 @@
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
+import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { watch, readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { readFile, writeFile, mkdir, readdir, access, rm } from "node:fs/promises";
@@ -31,6 +32,26 @@ import {
   detectClaudeHookStatus,
 } from "./claude-hook-config.js";
 import { AgentTaskRunner } from "./agent-task-runner.js";
+import { classifyHookEvent } from "./notifications/classifier.js";
+import {
+  classifyCommand,
+  allowT3ForCommandClass,
+  allowExitAlertForCommandClass,
+} from "./notifications/command-classifier.js";
+import { hasRecentAnimation } from "./notifications/detector-signals.js";
+import {
+  recordInteraction as adaptiveRecordInteraction,
+  recordDismissed as adaptiveRecordDismissed,
+  forget as adaptiveForget,
+  adaptiveMultiplier,
+  isT3Disabled,
+} from "./notifications/adaptive.js";
+import {
+  recordAlert as metricsRecordAlert,
+  recordHook as metricsRecordHook,
+  recordDismissedWithoutInteraction as metricsRecordDismissed,
+  getMetrics,
+} from "./notifications/metrics.js";
 import { createProviderHandlers } from "./runtime-provider-handlers.js";
 import { createGitHandlers } from "./runtime-git-handlers.js";
 import { createProviderLifecycle } from "./runtime-provider-lifecycle.js";
@@ -42,6 +63,7 @@ import {
   lastNonEmptyLine,
   matchesPrompt,
   matchesAgentIdle,
+  matchesWaitingPattern,
   createSessionSignal,
   detectTerminalEnvironment as detectTerminalEnvironmentImpl,
   OSC133_COMMAND_FINISHED_RE,
@@ -51,7 +73,6 @@ import {
   HOOK_FALLBACK_SILENCE_MS,
   ATTENTION_MIN_DISPLAY_MS,
   ATTENTION_VISIBILITY_GRACE_MS,
-  WAITING_PATTERNS,
 } from "./runtime-utils.js";
 import { APP_CONFIG } from "../../config/app-config.js";
 import { createVersionChecker } from "./version-checker.js";
@@ -468,67 +489,162 @@ export async function createRuntime({
     return state.settings?.notifications || APP_CONFIG.notifications;
   }
 
-  function handleAgentHookNotification({ sessionId, notificationType }) {
-    log.debug("agent hook notification received", { sessionId, notificationType });
+  // One-shot listeners used by testClaudeHook() to confirm end-to-end
+  // round-trip: notify.mjs → notify-server → dispatcher.
+  // Key = probe_id, value = resolve callback.  Cleared on resolution or timeout.
+  const hookProbeListeners = new Map();
+
+  /**
+   * Dispatch a Claude Code hook event (Phase 0 § 3.2.b).
+   *
+   * Pipeline:
+   *   1. Record on session signal (hookCapable, lastHookAt, lastHookType).
+   *   2. Task runner first dibs (onHookEvent) — task workspaces own their
+   *      sessions and must not be alerted through the user pipeline.
+   *   3. Classify via classifyHookEvent → user-facing or system-only.
+   *   4. Side-effects (e.g. UserPromptSubmit resets busy, lastPromptAt).
+   *   5. User-level gating: hasUserInput, visibility, cooldown (urgent bypasses).
+   *   6. Raise T1 alert at classified urgency.
+   *
+   * Accepts the new shape {sessionId, hook, subtype, payload} plus the legacy
+   * {sessionId, notificationType} for back-compat with the IPC helper.
+   */
+  async function dispatchAgentHookEvent(event) {
+    const sessionId = event?.sessionId || "";
+    const hook = event?.hook || "Notification";
+    const subtype = event?.subtype || event?.notificationType || "";
+
+    log.debug("agent hook event received", { sessionId, hook, subtype });
+    metricsRecordHook(hook);
+
+    // --- Short-circuit: probe events from testClaudeHook() ---
+    // These never reach task runner or user pipeline.  They exist only to
+    // confirm that notify.mjs can successfully POST to notify-server and
+    // be dispatched.  Payload carries { probe_id: "<uuid>" }.
+    const probeId = event?.payload?.probe_id;
+    if (probeId && hookProbeListeners.has(probeId)) {
+      const resolve = hookProbeListeners.get(probeId);
+      hookProbeListeners.delete(probeId);
+      log.debug("hook probe received", { probeId, sessionId });
+      try {
+        resolve({ ok: true, sessionId, hook, subtype });
+      } catch (err) {
+        log.warn("probe resolver threw", { err: err.message });
+      }
+      return;
+    }
+
     if (!sessionId) {
       log.debug("hook ignored: no sessionId");
       return;
     }
 
-    const relevantTypes = new Set(["idle_prompt", "permission_prompt"]);
-    if (!relevantTypes.has(notificationType)) {
-      log.debug("hook ignored: irrelevant type", { sessionId, notificationType });
+    const descriptor = parseSessionId(sessionId);
+    if (!descriptor) {
+      log.debug("hook ignored: unparseable sessionId", { sessionId });
       return;
     }
 
-    // -----------------------------------------------------------------------
-    // Task runner gets FIRST dibs — task sessions are system-controlled.
-    // Guards like hasUserInput / waitingRaised / cooldown / visibility are
-    // designed for user-facing notifications and must NOT block the task
-    // evaluation cycle.  The task runner has its own validation (state check,
-    // panel matching, re-entrance guard).
-    // -----------------------------------------------------------------------
-    if (taskRunner.onAgentIdle(sessionId, "hook")) {
-      log.info("hook handled by task runner", { sessionId, notificationType });
-      const signal = sessionSignals.get(sessionId);
-      if (signal) {
+    // --- 1. Record on signal (for hookCapable gating in detector) ---
+    const state = getState();
+    const project = findWorkspace(state, descriptor.workspaceId);
+    const panel = project?.panels.find((p) => p.id === descriptor.panelId) || null;
+    const signal = getSessionSignal(sessionId, project, panel);
+    signal.hookCapable = true;
+    signal.lastHookAt = Date.now();
+    signal.lastHookType = subtype ? `${hook}:${subtype}` : hook;
+
+    // --- 2. Task runner first dibs ---
+    try {
+      const consumed = taskRunner.onHookEvent({ sessionId, hook, subtype });
+      if (consumed) {
+        log.info("hook consumed by task runner", { sessionId, hook, subtype });
         signal.lastHookAlertAt = Date.now();
         cancelPromptTimer(signal);
+        return;
       }
+    } catch (err) {
+      log.warn("taskRunner.onHookEvent threw", { sessionId, hook, subtype, err: err.message });
+      // Fall through to user pipeline — task runner errors must not eat events.
+    }
+
+    // --- 3. Classify ---
+    const classification = classifyHookEvent(hook, subtype);
+
+    // --- 4. Side-effects for system-only events (applied regardless of gating) ---
+    applyHookSideEffects(signal, hook, subtype);
+
+    if (!classification.userFacing) {
+      log.trace("hook system-only — no user alert", { sessionId, hook, subtype });
       return;
     }
 
-    const signal = sessionSignals.get(sessionId);
-    if (!signal) {
-      log.debug("hook ignored: no signal for session", { sessionId });
-      return;
-    }
+    // --- 5. User-level gating ---
     if (!signal.hasUserInput) {
-      log.debug("hook ignored: no user input yet", {
-        sessionId,
-        hasUserInput: signal.hasUserInput,
-        busy: signal.busy,
-        agentLike: signal.agentLike,
-      });
+      log.debug("hook ignored: no user input yet", { sessionId, hook, subtype });
       return;
     }
-    if (signal.waitingRaised) {
-      log.debug("hook ignored: waiting already raised", { sessionId });
+    if (signal.waitingRaised && classification.urgency !== "urgent") {
+      log.debug("hook ignored: waiting already raised (not urgent)", { sessionId, hook });
+      return;
+    }
+    if (isSessionVisible(sessionId)) {
+      log.trace("hook: session visible, resetting signal", { sessionId });
+      resetSessionSignal(sessionId);
       return;
     }
 
-    const descriptor = parseSessionId(sessionId);
-    if (!descriptor) return;
-
-    const state = getState();
     const notifConfig = getNotificationConfig(state);
     const now = Date.now();
-    const inCooldown = signal.lastAlertAt > 0 && now - signal.lastAlertAt < notifConfig.alertCooldownMs;
+    const cooldownMs = notifConfig.alertCooldownMs;
+    const urgentCooldownMs = 3_000; // urgent has its own short cooldown, see plan § 3.2.c
+    const effectiveCooldown = classification.urgency === "urgent" ? urgentCooldownMs : cooldownMs;
+    const inCooldown = signal.lastAlertAt > 0 && now - signal.lastAlertAt < effectiveCooldown;
     if (inCooldown) {
       log.debug("hook ignored: cooldown active", {
         sessionId,
-        cooldownMs: notifConfig.alertCooldownMs,
-        remainingMs: notifConfig.alertCooldownMs - (now - signal.lastAlertAt),
+        urgency: classification.urgency,
+        remainingMs: effectiveCooldown - (now - signal.lastAlertAt),
+      });
+      return;
+    }
+
+    // Repeat idle_prompt suppression: Claude Code occasionally re-fires
+    // `Notification:idle_prompt` for the SAME waiting state (e.g. on focus
+    // changes, periodic heartbeats, statusline redraws). If nothing the user
+    // cares about has happened since the last alert, the second hook is
+    // redundant noise.
+    //
+    // "Nothing happened" means ALL of:
+    //   1. User has not submitted a new prompt to Claude since the last
+    //      alert (`lastPromptAt <= lastAlertAt`). UserPromptSubmit is the
+    //      authoritative "user sent work" signal — if they haven't, Claude
+    //      is still in the same waiting state.
+    //   2. Claude has not emitted substantial output since last alert
+    //      (`outputBursts < 10`). Tiny status-line heartbeats bump bursts
+    //      by 1-2, but a real new response is 20+ chunks; threshold of 10
+    //      distinguishes them.
+    //
+    // Gated by `agentLike` so non-agent sessions (which don't track
+    // outputBursts in the detector) aren't affected.
+    //
+    // Urgent (permission_prompt) always bypasses — those are blockers.
+    const userSubmittedSinceAlert = signal.lastPromptAt > 0 && signal.lastPromptAt > signal.lastAlertAt;
+    const substantialOutputSinceAlert = signal.outputBursts >= 10;
+    if (
+      hook === "Notification" &&
+      subtype === "idle_prompt" &&
+      classification.urgency !== "urgent" &&
+      signal.agentLike &&
+      signal.everAlerted &&
+      !userSubmittedSinceAlert &&
+      !substantialOutputSinceAlert
+    ) {
+      log.debug("hook ignored: repeat idle_prompt with no intervening activity", {
+        sessionId,
+        lastAlertAgeMs: now - signal.lastAlertAt,
+        outputBursts: signal.outputBursts,
+        userSubmittedSinceAlert,
       });
       return;
     }
@@ -536,25 +652,48 @@ export async function createRuntime({
     signal.lastHookAlertAt = now;
     cancelPromptTimer(signal);
 
-    if (isSessionVisible(sessionId)) {
-      log.trace("hook: session visible, resetting signal", { sessionId });
-      resetSessionSignal(sessionId);
-      return;
-    }
-
-    const project = findWorkspace(state, descriptor.workspaceId);
-    const panel = project?.panels.find((p) => p.id === descriptor.panelId) || null;
-    const detail = notificationType === "permission_prompt" ? "agent-hook-permission" : "agent-hook-idle";
-
-    log.info("agent hook raising alert", { sessionId, notificationType, detail, title: panel?.title });
-    raiseWaitingAlert({
+    // --- 6. Raise T1 alert ---
+    log.info("agent hook raising alert", {
+      sessionId,
+      hook,
+      subtype,
+      urgency: classification.urgency,
+      detail: classification.detail,
+    });
+    raiseAlert({
       sessionId,
       projectId: descriptor.workspaceId,
       panelId: descriptor.panelId,
       title: panel?.title || descriptor.panelId,
-      detail,
+      kind: classification.kind,
+      tier: classification.tier ?? 1,
+      urgency: classification.urgency,
+      detail: classification.detail,
     });
   }
+
+  /**
+   * Side-effects applied to a session signal based on hook type.
+   * Runs whether the event is user-facing or system-only.
+   */
+  function applyHookSideEffects(signal, hook, subtype) {
+    if (!signal) return;
+    if (hook === "UserPromptSubmit") {
+      // User started new work — prior idle state is stale.
+      signal.lastPromptAt = Date.now();
+      signal.busy = false;
+      signal.outputBursts = 0;
+      signal.waitingRaised = false;
+      cancelPromptTimer(signal);
+      log.trace("UserPromptSubmit: reset busy/waitingRaised", { sessionId: signal.sessionId });
+    }
+    // Known no-ops for now (Stop, SubagentStop, Notification) — intentionally
+    // do not touch busy here; dispatcher gating handles alerts.
+    void subtype;
+  }
+
+  // Back-compat alias for IPC helper `notifyAgentHook`.
+  const handleAgentHookNotification = dispatchAgentHookEvent;
 
   async function startAgentNotifyServer() {
     const state = getState();
@@ -877,8 +1016,21 @@ export async function createRuntime({
     },
     getState,
     broadcastState,
-    raiseAlert({ projectId, panelId, sessionId, title, kind, detail }) {
-      addProjectAlert({ projectId, panelId, sessionId, title, kind, detail });
+    raiseAlert({ projectId, panelId, sessionId, title, kind, detail, tier, urgency, exitCode }) {
+      // Task runner completions/failures are authoritative — always T1.
+      // `failed` variants are urgent so the user notices a broken task.
+      const inferredUrgency = urgency || (kind === "waiting" || kind === "completed" ? "normal" : "urgent");
+      addProjectAlert({
+        projectId,
+        panelId,
+        sessionId,
+        title,
+        kind,
+        detail,
+        tier: tier ?? 1,
+        urgency: inferredUrgency,
+        exitCode,
+      });
       broadcastState();
     },
     async restartSession(sessionId) {
@@ -935,8 +1087,18 @@ export async function createRuntime({
     });
   }
 
-  function addProjectAlert({ projectId, panelId, sessionId, title, exitCode = null, kind = "completed", detail = "" }) {
-    log.debug("addProjectAlert", { projectId, panelId, sessionId, title, kind, detail, exitCode });
+  function addProjectAlert({
+    projectId,
+    panelId,
+    sessionId,
+    title,
+    exitCode = null,
+    kind = "completed",
+    detail = "",
+    tier = 1,
+    urgency = "normal",
+  }) {
+    log.debug("addProjectAlert", { projectId, panelId, sessionId, title, kind, tier, urgency, detail, exitCode });
     const current = projectAlerts.get(projectId) || {
       count: 0,
       latestAt: null,
@@ -950,6 +1112,8 @@ export async function createRuntime({
         title,
         exitCode,
         kind,
+        tier,
+        urgency,
         detail,
         at: new Date().toISOString(),
       },
@@ -978,6 +1142,53 @@ export async function createRuntime({
     }
     sessionSignals.set(sessionId, current);
     return current;
+  }
+
+  /**
+   * Phase 2 § 3.2.4. Accumulate typed characters and, on Enter, classify
+   * the completed command.  Simple heuristic — handles printable keystrokes
+   * and basic backspace; ignores arrow keys / escape sequences (they don't
+   * change the command text for classification purposes).
+   */
+  function updateCommandClassFromInput(signal, data) {
+    if (!signal || !data) return;
+    for (const ch of String(data)) {
+      if (ch === "\r" || ch === "\n") {
+        const cmd = signal.inputBuffer.trim();
+        signal.inputBuffer = "";
+        if (cmd) {
+          const cls = classifyCommand(cmd);
+          signal.commandClass = cls;
+          signal.currentCommand = cmd.slice(0, 120);
+          log.debug("command classified", { sessionId: signal.sessionId, cls, cmd: signal.currentCommand });
+        }
+      } else if (ch === "\u007f" || ch === "\b") {
+        // Backspace / DEL — trim last char
+        signal.inputBuffer = signal.inputBuffer.slice(0, -1);
+      } else if (ch === "\u0003" || ch === "\u0004") {
+        // Ctrl-C / Ctrl-D — abandon buffer and reset class
+        signal.inputBuffer = "";
+        signal.commandClass = "";
+        signal.currentCommand = "";
+      } else if (ch >= " " && ch !== "\u001b") {
+        // Printable ASCII + beyond (printable). Skip ESC sequences.
+        signal.inputBuffer += ch;
+        // Hard cap — we don't need more than 200 chars for classification
+        if (signal.inputBuffer.length > 200) signal.inputBuffer = signal.inputBuffer.slice(-200);
+      }
+    }
+  }
+
+  /**
+   * Plan Phase 1 § 4.7 / Phase 2 § 3.2.5.
+   * Was the user actively typing in this session within the grace window?
+   * Used to suppress silence-based (T3) alerts — if the user interacted
+   * seconds ago, they are obviously present and don't need a notification.
+   */
+  function isInInteractionGrace(signal, notifConfig) {
+    if (!signal?.lastUserInteractionAt) return false;
+    const graceMs = notifConfig?.userInteractionGraceMs ?? 10_000;
+    return Date.now() - signal.lastUserInteractionAt < graceMs;
   }
 
   function cancelPromptTimer(signal) {
@@ -1010,31 +1221,103 @@ export async function createRuntime({
     const signal = sessionSignals.get(sessionId);
     cancelPromptTimer(signal);
     sessionSignals.delete(sessionId);
+    adaptiveForget(sessionId);
   }
 
-  function raiseWaitingAlert({ sessionId, projectId, panelId, title, detail }) {
+  /**
+   * Unified alert primitive — all callers go through here.
+   *
+   * @param {Object} spec
+   * @param {string} spec.sessionId
+   * @param {string} spec.projectId
+   * @param {string} spec.panelId
+   * @param {string} spec.title
+   * @param {"waiting"|"completed"|"info"} [spec.kind="waiting"]
+   * @param {1|2|3} [spec.tier=1]                 — 1 authoritative (hooks, OSC133;D, BEL, exit, task-runner)
+   *                                                 2 strong (explicit patterns, confirmed)
+   *                                                 3 weak (silence + pattern heuristic)
+   * @param {"normal"|"urgent"} [spec.urgency="normal"]  — urgent bypasses cooldown + waitingRaised latch
+   * @param {string} [spec.detail=""]
+   * @param {number|null} [spec.exitCode=null]
+   * @returns {boolean} true if alert was raised, false if suppressed (e.g. duplicate)
+   */
+  function raiseAlert({
+    sessionId,
+    projectId,
+    panelId,
+    title,
+    kind = "waiting",
+    tier = 1,
+    urgency = "normal",
+    detail = "",
+    exitCode = null,
+  }) {
     const signal = sessionSignals.get(sessionId);
-    if (signal?.waitingRaised) {
-      log.trace("raiseWaitingAlert skipped: already raised", { sessionId, detail });
+
+    // Duplicate suppression for "waiting" — each session can have one pending
+    // waiting alert at a time.  Urgent bypasses (e.g. permission prompt
+    // arrives after an idle prompt within cooldown).
+    if (kind === "waiting" && urgency !== "urgent" && signal?.waitingRaised) {
+      log.trace("raiseAlert skipped: waiting already raised", { sessionId, detail });
       return false;
     }
 
-    log.info("ALERT raised", { sessionId, projectId, panelId, title, detail, kind: "waiting" });
+    log.info("ALERT raised", { sessionId, projectId, panelId, title, kind, tier, urgency, detail, exitCode });
+    // Plan § 3.5: when notifications.debug is on, emit a structured decision
+    // trace at info level so users can diagnose false positives without
+    // rebuilding with a different log level. Runs only when flag is enabled.
+    if (getNotificationConfig().debug) {
+      log.info("[notif-debug] alert-raised", {
+        sessionId,
+        tier,
+        urgency,
+        kind,
+        detail,
+        commandClass: signal?.commandClass || "",
+        hookCapable: signal?.hookCapable || false,
+        outputBursts: signal?.outputBursts || 0,
+        lastHookType: signal?.lastHookType || "",
+      });
+    }
+    metricsRecordAlert({ tier, kind, urgency, commandClass: signal?.commandClass || "" });
     addProjectAlert({
       projectId,
       panelId,
       sessionId,
       title,
-      kind: "waiting",
+      kind,
+      tier,
+      urgency,
       detail,
+      exitCode,
     });
     if (signal) {
-      signal.waitingRaised = true;
+      if (kind === "waiting") {
+        signal.waitingRaised = true;
+      }
       signal.busy = false;
       signal.lastAlertAt = Date.now();
+      signal.everAlerted = true;
     }
     broadcastState();
     return true;
+  }
+
+  /**
+   * Back-compat wrapper — existing callers that only know about "waiting"
+   * alerts keep working.  Prefer `raiseAlert` for new code.
+   */
+  function raiseWaitingAlert({ sessionId, projectId, panelId, title, detail, urgency = "normal" }) {
+    return raiseAlert({
+      sessionId,
+      projectId,
+      panelId,
+      title,
+      kind: "waiting",
+      tier: 1,
+      urgency,
+      detail,
+    });
   }
 
   function ensureVisibleSession(workspaceId = getState().activeWorkspaceId) {
@@ -1134,10 +1417,34 @@ export async function createRuntime({
       const rawText = String(payload.data || "");
       const cleanText = stripAnsi(rawText);
       const lastLine = lastNonEmptyLine(cleanText);
-      const lastLineLower = lastLine.toLowerCase();
 
       if (AGENT_OUTPUT_RE.test(cleanText)) {
         signal.agentLike = true;
+      }
+
+      // Phase 2 § 3.2.7 bullet 1: if the session has been genuinely silent
+      // for longer than 5× agentQuietMs, reset the busy latch. The next burst
+      // starts fresh, so a stale "busy" from hours ago can't piggy-back a
+      // false positive onto a small, unrelated output blip.
+      if (signal.busy && signal.lastOutputAt > 0) {
+        const idleFor = Date.now() - signal.lastOutputAt;
+        const staleThreshold = 5 * notifConfig.agentQuietMs;
+        if (idleFor > staleThreshold) {
+          log.debug("resetting stale busy latch after long silence", {
+            sessionId: payload.sessionId,
+            idleMs: idleFor,
+            thresholdMs: staleThreshold,
+          });
+          cancelPromptTimer(signal);
+          signal.busy = false;
+          signal.outputBursts = 0;
+          signal.waitingRaised = false;
+        }
+      }
+
+      // Phase 3 § 3.2.2: track animation activity for T3 suppression
+      if (hasRecentAnimation(rawText)) {
+        signal.lastAnimationAt = Date.now();
       }
 
       // --- OSC 133;D: shell integration command-finished signal ---
@@ -1180,11 +1487,48 @@ export async function createRuntime({
           }
         }
         // Skip normal detection for this chunk — OSC 133;D is authoritative.
+      } else if (signal.agentLike && signal.hookCapable) {
+        // --- Agent sessions with proven hooks: trust them exclusively ---
+        // Phase 0 § 3.2.d — a session that has fired at least one hook event
+        // uses hooks as its ONLY alert source (plus BEL / OSC 133;D already
+        // handled above).  Silence-based fallback is off — it's the primary
+        // source of false positives during long Claude Code turns.
+        const now = Date.now();
+        const inCooldown = signal.lastAlertAt > 0 && now - signal.lastAlertAt < notifConfig.alertCooldownMs;
+        const hasBell = rawText.includes("\u0007");
+
+        // Still track busy so task runner sees activity; still update
+        // lastOutputLine so any future hook-fallback logic has context.
+        if (cleanText.trim()) {
+          signal.busy = true;
+          signal.outputBursts += 1;
+        }
+        if (lastLine) {
+          signal.lastOutputLine = lastLine;
+        }
+        signal.lastOutputAt = Date.now();
+
+        // BEL is a legacy T1 signal (some agents emit it alongside hooks).
+        // Keep honoring it — cheap, authoritative, no false positives.
+        if (hasBell && !inCooldown && signal.hasUserInput) {
+          cancelPromptTimer(signal);
+          if (isSessionVisible(payload.sessionId)) {
+            resetSessionSignal(payload.sessionId);
+          } else {
+            raiseWaitingAlert({
+              sessionId: payload.sessionId,
+              projectId: descriptor.workspaceId,
+              panelId: descriptor.panelId,
+              title: panel?.title || descriptor.panelId,
+              detail: "bell-hookcapable",
+            });
+          }
+        }
+        // No silence timer, no hook-fallback: hooks are the source of truth.
       } else if (signal.agentLike) {
-        // --- Agent sessions: hook-preferred detection ---
-        // When the notify server is running (hooks enabled), we trust hooks
-        // as the primary signal and only use a long fallback silence timer.
-        // When hooks are NOT available, we fall back to bell + silence detection.
+        // --- Agent sessions without proven hooks: fallback path ---
+        // Either hooks haven't fired yet (first turn) or config is broken.
+        // We keep bell + silence detection as safety net.
         const now = Date.now();
         const inCooldown = signal.lastAlertAt > 0 && now - signal.lastAlertAt < notifConfig.alertCooldownMs;
         const hasBell = rawText.includes("\u0007");
@@ -1201,6 +1545,24 @@ export async function createRuntime({
         }
         if (lastLine) {
           signal.lastOutputLine = lastLine;
+        }
+
+        // Log a one-shot warning if an agent session has been busy for a long
+        // time with no hook ever arriving — almost always a config issue.
+        if (
+          signal.busy &&
+          !signal.hookCapable &&
+          !signal._hookMissingWarned &&
+          signal.lastOutputAt > 0 &&
+          Date.now() - signal.lastOutputAt < 30_000 &&
+          signal.lastAlertAt > 0 &&
+          Date.now() - signal.lastAlertAt > 60_000
+        ) {
+          log.warn("agent session has been active >60s with no hook event — hook may be misconfigured", {
+            sessionId: payload.sessionId,
+            agentLike: signal.agentLike,
+          });
+          signal._hookMissingWarned = true;
         }
 
         if (hooksEnabled) {
@@ -1239,15 +1601,31 @@ export async function createRuntime({
                 resetSessionSignal(sid);
                 return;
               }
-              log.info("agent hook-primary fallback: no hook arrived, raising alert", {
+              // Plan Phase 1 § 4.7: user was actively typing in this session
+              // very recently — they are not gone, don't alert.
+              if (isInInteractionGrace(signal, notifConfig)) {
+                log.trace("agent hook-primary fallback: user interacted recently", { sessionId: sid });
+                return;
+              }
+              if (!allowT3ForCommandClass(signal.commandClass)) {
+                log.trace("agent hook-primary fallback: command class suppresses T3", {
+                  sessionId: sid,
+                  commandClass: signal.commandClass,
+                });
+                return;
+              }
+              log.info("agent hook-primary fallback: no hook arrived, raising T3 alert", {
                 sessionId: sid,
                 fallbackMs: HOOK_FALLBACK_SILENCE_MS,
               });
-              raiseWaitingAlert({
+              raiseAlert({
                 sessionId: sid,
                 projectId: descriptor.workspaceId,
                 panelId: descriptor.panelId,
                 title: panel?.title || descriptor.panelId,
+                kind: "waiting",
+                tier: 3,
+                urgency: "normal",
                 detail: "hook-fallback",
               });
             }, HOOK_FALLBACK_SILENCE_MS);
@@ -1276,10 +1654,13 @@ export async function createRuntime({
             const hookActive = signal.lastHookAlertAt > 0 && Date.now() - signal.lastHookAlertAt < 60_000;
 
             if (signal.busy && !inCooldown && signal.hasUserInput && !hookActive && !signal.promptTimer) {
-              const quietMs =
+              // Phase 3 § 3.2.6: adaptive multiplier reduces noise for
+              // sessions the user keeps dismissing.
+              const baseQuietMs =
                 signal.outputBursts >= AGENT_OUTPUT_BURST_THRESHOLD
                   ? notifConfig.agentQuietFastMs
                   : notifConfig.agentQuietMs;
+              const quietMs = baseQuietMs * adaptiveMultiplier(payload.sessionId);
               const sid = payload.sessionId;
               signal.promptTimer = setTimeout(function silenceCheck() {
                 const silentFor = Date.now() - (signal.lastOutputAt || 0);
@@ -1306,16 +1687,39 @@ export async function createRuntime({
                   resetSessionSignal(sid);
                   return;
                 }
-                log.debug("agent silence timer triggering alert", {
+                if (isInInteractionGrace(signal, notifConfig)) {
+                  log.trace("agent silence: user interacted recently, suppressing T3", { sessionId: sid });
+                  return;
+                }
+                if (!allowT3ForCommandClass(signal.commandClass)) {
+                  log.trace("agent silence: command class suppresses T3", {
+                    sessionId: sid,
+                    commandClass: signal.commandClass,
+                  });
+                  return;
+                }
+                if (isT3Disabled(sid)) {
+                  log.trace("agent silence: T3 disabled by adaptive suppression", { sessionId: sid });
+                  return;
+                }
+                // Phase 3 § 3.2.2: program was animating recently — not idle
+                if (signal.lastAnimationAt > 0 && Date.now() - signal.lastAnimationAt < 2_000) {
+                  log.trace("agent silence: animation still active, suppressing T3", { sessionId: sid });
+                  return;
+                }
+                log.debug("agent silence timer triggering T3 alert", {
                   sessionId: sid,
                   quietMs,
                   lastOutputLine: signal.lastOutputLine,
                 });
-                raiseWaitingAlert({
+                raiseAlert({
                   sessionId: sid,
                   projectId: descriptor.workspaceId,
                   panelId: descriptor.panelId,
                   title: panel?.title || descriptor.panelId,
+                  kind: "waiting",
+                  tier: 3,
+                  urgency: "normal",
                   detail: "prompt-returned",
                 });
               }, quietMs);
@@ -1324,8 +1728,10 @@ export async function createRuntime({
         }
       } else {
         // --- Non-agent sessions: prompt-pattern detection ---
-        const explicitWaiting =
-          rawText.includes("\u0007") || WAITING_PATTERNS.some((pattern) => pattern.test(lastLineLower));
+        // Plan Phase 1 § 4.1: end-of-line anchored WAITING_PATTERNS only.
+        // Use the raw lastLine (with case) — patterns are /i anyway, and
+        // lowercasing was belt-and-braces that hid nothing useful.
+        const explicitWaiting = rawText.includes("\u0007") || matchesWaitingPattern(lastLine);
         const promptLike = matchesPrompt(lastLine);
         const onlyPrompt = promptLike && cleanText.trim() === lastLine.trim();
 
@@ -1343,11 +1749,15 @@ export async function createRuntime({
           if (isSessionVisible(payload.sessionId)) {
             resetSessionSignal(payload.sessionId);
           } else {
-            raiseWaitingAlert({
+            // T2: pattern confirmation, not a silence heuristic.
+            raiseAlert({
               sessionId: payload.sessionId,
               projectId: descriptor.workspaceId,
               panelId: descriptor.panelId,
               title: panel?.title || descriptor.panelId,
+              kind: "waiting",
+              tier: 2,
+              urgency: "normal",
               detail: "explicit-input",
             });
           }
@@ -1358,19 +1768,42 @@ export async function createRuntime({
             lastLine,
           });
           cancelPromptTimer(signal);
+          const sid = payload.sessionId;
           signal.promptTimer = setTimeout(() => {
             signal.promptTimer = null;
-            if (isSessionVisible(payload.sessionId)) {
-              log.trace("prompt quiet expired: session visible, resetting", { sessionId: payload.sessionId });
-              resetSessionSignal(payload.sessionId);
+            if (isSessionVisible(sid)) {
+              log.trace("prompt quiet expired: session visible, resetting", { sessionId: sid });
+              resetSessionSignal(sid);
               return;
             }
-            log.debug("prompt quiet timer triggering alert", { sessionId: payload.sessionId });
-            raiseWaitingAlert({
-              sessionId: payload.sessionId,
+            if (isInInteractionGrace(signal, notifConfig)) {
+              log.trace("prompt quiet: user interacted recently, suppressing T3", { sessionId: sid });
+              return;
+            }
+            if (!allowT3ForCommandClass(signal.commandClass)) {
+              log.trace("prompt quiet: command class suppresses T3", {
+                sessionId: sid,
+                commandClass: signal.commandClass,
+              });
+              return;
+            }
+            if (isT3Disabled(sid)) {
+              log.trace("prompt quiet: T3 disabled by adaptive suppression", { sessionId: sid });
+              return;
+            }
+            if (signal.lastAnimationAt > 0 && Date.now() - signal.lastAnimationAt < 2_000) {
+              log.trace("prompt quiet: animation still active, suppressing T3", { sessionId: sid });
+              return;
+            }
+            log.debug("prompt quiet timer triggering T3 alert", { sessionId: sid });
+            raiseAlert({
+              sessionId: sid,
               projectId: descriptor.workspaceId,
               panelId: descriptor.panelId,
               title: panel?.title || descriptor.panelId,
+              kind: "waiting",
+              tier: 3,
+              urgency: "normal",
               detail: "prompt-returned",
             });
           }, notifConfig.promptQuietMs);
@@ -1394,20 +1827,27 @@ export async function createRuntime({
     const project = descriptor ? findWorkspace(state, descriptor.workspaceId) : null;
     const panel = project?.panels.find((item) => item.id === descriptor?.panelId) || null;
     const signal = descriptor ? sessionSignals.get(payload.sessionId) : null;
+    // Phase 2 § 3.2.4: exit alerts suppressed for shell class — shells exit
+    // when the user types `exit` themselves; alerting is noise.
+    const classAllowsExit = allowExitAlertForCommandClass(signal?.commandClass || "");
     const shouldRaiseAlert =
       !payload.intentional &&
       descriptor &&
       shouldTrackProjectAlert(project, panel) &&
       signal?.hasUserInput &&
-      !isSessionVisible(payload.sessionId);
+      !isSessionVisible(payload.sessionId) &&
+      classAllowsExit;
     if (shouldRaiseAlert) {
-      addProjectAlert({
+      raiseAlert({
         projectId: descriptor.workspaceId,
         panelId: descriptor.panelId,
         sessionId: payload.sessionId,
         title: panel?.title || descriptor.panelId,
         exitCode: payload.exitCode,
         kind: "completed",
+        tier: 1,
+        urgency: "normal",
+        detail: `exit:${signal?.commandClass || "shell"}`,
       });
     }
     deleteSessionSignal(payload.sessionId);
@@ -2080,7 +2520,19 @@ export async function createRuntime({
       if (signal && !signal.hasUserInput) {
         log.debug("first user input recorded", { sessionId });
       }
-      if (signal) signal.hasUserInput = true;
+      if (signal) {
+        signal.hasUserInput = true;
+        // Plan Phase 1 § 4.7: records the moment of active user engagement
+        // with THIS session. Detector uses it to suppress T3 alerts within
+        // the grace window (userInteractionGraceMs).
+        signal.lastUserInteractionAt = Date.now();
+        // Phase 2 § 3.2.4: accumulate keystrokes so we can classify the
+        // command when Enter is pressed. Filter control characters — we
+        // only care about the command text itself.
+        updateCommandClassFromInput(signal, data);
+        // Phase 3 § 3.2.6: active user interaction resets adaptive counter
+        adaptiveRecordInteraction(sessionId);
+      }
       // Pause task runner if user types during active evaluation
       taskRunner.onUserInput(sessionId);
       const descriptor = parseSessionId(sessionId);
@@ -2094,9 +2546,15 @@ export async function createRuntime({
       }
       sessions.writeToSession(sessionId, data);
     },
-    notifyAgentHook(sessionId, notificationType = "idle_prompt") {
-      log.debug("notifyAgentHook called", { sessionId, notificationType });
-      handleAgentHookNotification({ sessionId, notificationType, message: "", title: "" });
+    notifyAgentHook(sessionId, notificationType = "idle_prompt", hook = "Notification") {
+      log.debug("notifyAgentHook called", { sessionId, hook, notificationType });
+      dispatchAgentHookEvent({
+        sessionId,
+        hook,
+        subtype: notificationType,
+        notificationType,
+        payload: {},
+      });
     },
     async configureClaudeHook() {
       return configureClaudeHook(userDataPath);
@@ -2106,6 +2564,132 @@ export async function createRuntime({
     },
     async getClaudeHookStatus() {
       return detectClaudeHookStatus(userDataPath);
+    },
+    /**
+     * Expose notification-pipeline metrics for the About dialog / diagnostics.
+     * Pure read — returns a snapshot.
+     */
+    getNotificationMetrics() {
+      return getMetrics();
+    },
+    /**
+     * End-to-end probe of the Claude Code notification hook pipeline.
+     *
+     * Spawns the installed notify.mjs with synthetic stdin containing a
+     * probe UUID. Waits up to 2s for dispatcher to receive the probe.
+     * Returns { ok, elapsedMs?, reason?, logTail? }.
+     */
+    async testClaudeHook() {
+      // 1. Ensure script + hooks are configured.
+      const status = await detectClaudeHookStatus(userDataPath);
+      if (status.status === "error") {
+        return { ok: false, reason: "config-error", detail: status.error };
+      }
+      if (status.status !== "configured") {
+        const cfg = await configureClaudeHook(userDataPath);
+        if (!cfg.ok) return { ok: false, reason: "configure-failed", detail: cfg.error };
+      }
+
+      // 2. Ensure notify-server is running — the probe needs a live endpoint.
+      if (!notifyServerHandle) {
+        await startAgentNotifyServer();
+      }
+      if (!notifyServerHandle) {
+        return { ok: false, reason: "notify-server-unavailable" };
+      }
+
+      // 3. Build probe URL with the shared secret.
+      const probeId = randomUUID();
+      const probeSessionId = `probe:${probeId}`;
+      const probeUrl = buildNotifyUrl(notifyServerHandle.port, probeSessionId, notifySecret);
+
+      // 4. Register one-shot listener (resolves when dispatcher sees probe).
+      const receivedPromise = new Promise((resolve) => {
+        hookProbeListeners.set(probeId, resolve);
+        setTimeout(() => {
+          if (hookProbeListeners.has(probeId)) {
+            hookProbeListeners.delete(probeId);
+            resolve({ ok: false, reason: "timeout" });
+          }
+        }, 2000);
+      });
+
+      // 5. Spawn notify.mjs with probe payload. Override STRIDETERM_NOTIFY_URL
+      //    so it doesn't rely on CLAUDE_PROJECT_DIR / notify-urls.json.
+      const scriptPath = path.join(userDataPath, "hooks", "notify.mjs");
+      const startedAt = Date.now();
+      let spawnError = null;
+      try {
+        const child = spawn(process.execPath, [scriptPath, "Notification"], {
+          env: {
+            ...process.env,
+            STRIDETERM_NOTIFY_URL: probeUrl,
+            CLAUDE_PROJECT_DIR: "",
+          },
+          stdio: ["pipe", "ignore", "ignore"],
+        });
+        child.on("error", (err) => {
+          spawnError = err;
+        });
+        child.stdin.write(JSON.stringify({ notification_type: "probe", probe_id: probeId }));
+        child.stdin.end();
+      } catch (err) {
+        hookProbeListeners.delete(probeId);
+        return { ok: false, reason: "spawn-failed", detail: err.message };
+      }
+
+      const result = await receivedPromise;
+      const elapsedMs = Date.now() - startedAt;
+
+      if (result?.ok) {
+        return { ok: true, elapsedMs };
+      }
+
+      if (spawnError) {
+        return { ok: false, reason: "spawn-error", detail: spawnError.message, elapsedMs };
+      }
+
+      // Timeout — surface hook.log tail so the user can see what happened.
+      let logTail = "";
+      try {
+        const logPath = path.join(os.homedir(), ".strideterm", "logs", "hook.log");
+        const raw = await readFile(logPath, "utf8");
+        logTail = raw.split("\n").slice(-10).join("\n");
+      } catch {
+        /* no log yet */
+      }
+      return { ok: false, reason: "timeout", elapsedMs, logTail };
+    },
+    /**
+     * Clear a single session's alert entry. Called from the notification
+     * center when the user clicks Jump or Dismiss — without this, the tab
+     * badge stays lit after the UI-side notification is removed.
+     * Plan § 3.3.3.
+     *
+     * @param {string} sessionId
+     * @param {Object} [options]
+     * @param {boolean} [options.dismissed=false]
+     *   true  → user clicked "Dismiss" (no engagement). Feeds adaptive
+     *           suppression (§ 3.2.6) so a session that keeps getting
+     *           dismissed without interaction goes quieter on its own.
+     *   false → user clicked "Jump" or alert auto-cleared. Treated as
+     *           engagement — resets the adaptive dismiss counter.
+     */
+    clearAlertForSession(sessionId, { dismissed = false } = {}) {
+      if (!sessionId) return getPayload();
+      const descriptor = parseSessionId(sessionId);
+      if (!descriptor) return getPayload();
+      log.debug("clearAlertForSession", { sessionId, dismissed });
+      clearProjectAlerts(descriptor.workspaceId, descriptor.panelId);
+      resetSessionSignal(sessionId);
+      if (dismissed) {
+        adaptiveRecordDismissed(sessionId);
+        metricsRecordDismissed();
+      } else {
+        adaptiveRecordInteraction(sessionId);
+      }
+      broadcastState();
+      return getPayload();
     },
     clearAllAttention() {
       log.debug("clearing all attention alerts");
@@ -2121,11 +2705,23 @@ export async function createRuntime({
       broadcastState();
       return getPayload();
     },
-    syncAttentionContext({ visibleSessionIds = [] } = {}) {
+    syncAttentionContext({ visibleSessionIds = [], windowFocused = true } = {}) {
       const nextIds = (Array.isArray(visibleSessionIds) ? visibleSessionIds : [])
         .map((sessionId) => String(sessionId || "").trim())
         .filter(Boolean);
       updateVisibleSessions(nextIds);
+
+      // Phase 2 § 3.2.5: if the window is focused, a visible session counts
+      // as active user interaction — updates lastUserInteractionAt so
+      // silence timers for other (also visible) sessions don't fire as the
+      // user scrolls between tabs.
+      if (windowFocused) {
+        const now = Date.now();
+        for (const sid of nextIds) {
+          const signal = sessionSignals.get(sid);
+          if (signal) signal.lastUserInteractionAt = now;
+        }
+      }
 
       // Clear alerts for visible sessions that have been shown long enough
       const now = Date.now();

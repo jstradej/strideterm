@@ -1,20 +1,27 @@
 <template>
   <Transition name="notif-panel">
-    <aside v-if="notifStore.panelOpen" class="notification-center" @click.stop>
+    <aside
+      v-if="notifStore.panelOpen"
+      ref="panelRef"
+      class="notification-center"
+      tabindex="0"
+      @click.stop
+      @keydown="onKeydown"
+    >
       <header class="notification-center__header">
         <h2 class="notification-center__title">Notifications</h2>
         <div class="notification-center__actions">
           <button
-            v-if="notifStore.unreadCount > 0"
+            v-if="notifStore.unreadCount > 0 || notifStore.finishedSessions.length > 0"
             type="button"
             class="notification-center__action"
-            title="Mark all as read"
+            title="Acknowledge all finished"
             @click="notifStore.markAllRead()"
           >
-            Mark read
+            Ack finished
           </button>
           <button
-            v-if="notifStore.items.length > 0"
+            v-if="notifStore.sessions.length > 0"
             type="button"
             class="notification-center__action notification-center__action--danger"
             title="Clear all notifications"
@@ -29,50 +36,112 @@
       </header>
 
       <div ref="bodyRef" class="notification-center__body">
-        <div v-if="notifStore.items.length === 0" class="notification-center__empty">No notifications yet.</div>
+        <div v-if="notifStore.sessions.length === 0" class="notification-center__empty">No notifications yet.</div>
 
-        <TransitionGroup name="notif-item" tag="div" class="notification-center__list">
-          <div
-            v-for="item in notifStore.items"
-            :key="item.id"
-            class="notification-item"
-            :class="{
-              'notification-item--unread': !item.read,
-              [`notification-item--${item.kind}`]: true,
-            }"
-            @click="onClickItem(item)"
-          >
-            <div class="notification-item__icon">{{ itemIcon(item) }}</div>
-            <div class="notification-item__content">
-              <div class="notification-item__head">
-                <strong class="notification-item__title">{{ item.title }}</strong>
-                <time class="notification-item__time" :title="item.at">{{ relativeTime(item.at) }}</time>
-              </div>
-              <p class="notification-item__body">{{ item.body }}</p>
-            </div>
-            <button
-              type="button"
-              class="notification-item__remove"
-              title="Remove"
-              @click.stop="notifStore.remove(item.id)"
+        <!-- Needs input — live alerts the user should act on -->
+        <section v-if="visibleWaiting.length > 0" class="notif-section">
+          <h3 class="notif-section__title">
+            <span>Needs input</span>
+            <span class="notif-section__count">{{ visibleWaiting.length }}</span>
+          </h3>
+          <div class="notification-center__list">
+            <div
+              v-for="(s, idx) in visibleWaiting"
+              :key="s.id"
+              class="notification-item"
+              :class="itemClass(s, 'waiting', idx)"
+              @click="onClickSession(s)"
             >
-              &times;
-            </button>
+              <div class="notification-item__icon">{{ sessionIcon(s) }}</div>
+              <div class="notification-item__content">
+                <div class="notification-item__head">
+                  <strong class="notification-item__title">{{ sessionTitle(s) }}</strong>
+                  <time class="notification-item__time" :title="s.latestAt">{{ relativeTime(s.latestAt) }}</time>
+                </div>
+                <p class="notification-item__body">{{ sessionBody(s) }}</p>
+                <div class="notification-item__quick-actions">
+                  <button class="quick-action" title="Jump (Enter)" @click.stop="jump(s)">Jump</button>
+                  <button class="quick-action" title="Dismiss (d)" @click.stop="dismiss(s)">Dismiss</button>
+                  <button class="quick-action" title="Snooze 10m (s)" @click.stop="snooze(s)">Snooze</button>
+                </div>
+              </div>
+            </div>
           </div>
-        </TransitionGroup>
+        </section>
+
+        <!-- Finished — completed sessions awaiting ack -->
+        <section v-if="visibleFinished.length > 0" class="notif-section">
+          <h3 class="notif-section__title">
+            <span>Finished</span>
+            <span class="notif-section__count">{{ visibleFinished.length }}</span>
+          </h3>
+          <div class="notification-center__list">
+            <div
+              v-for="(s, idx) in visibleFinished"
+              :key="s.id"
+              class="notification-item notification-item--finished"
+              :class="itemClass(s, 'finished', idx)"
+              @click="onClickSession(s)"
+            >
+              <div class="notification-item__icon">{{ sessionIcon(s) }}</div>
+              <div class="notification-item__content">
+                <div class="notification-item__head">
+                  <strong class="notification-item__title">{{ sessionTitle(s) }}</strong>
+                  <time class="notification-item__time" :title="s.latestAt">{{ relativeTime(s.latestAt) }}</time>
+                </div>
+                <p class="notification-item__body">{{ sessionBody(s) }}</p>
+              </div>
+              <button class="notification-item__remove" title="Remove" @click.stop="notifStore.remove(s.id)">
+                &times;
+              </button>
+            </div>
+          </div>
+        </section>
+
+        <!-- Older — resolved / stale -->
+        <section v-if="visibleOlder.length > 0" class="notif-section notif-section--older">
+          <h3 class="notif-section__title notif-section__title--collapsible" @click="showOlder = !showOlder">
+            <span>{{ showOlder ? "▾" : "▸" }} Older</span>
+            <span class="notif-section__count">{{ visibleOlder.length }}</span>
+          </h3>
+          <div v-if="showOlder" class="notification-center__list">
+            <div
+              v-for="(s, idx) in visibleOlder"
+              :key="s.id"
+              class="notification-item notification-item--resolved"
+              :class="itemClass(s, 'older', idx)"
+              @click="onClickSession(s)"
+            >
+              <div class="notification-item__icon">{{ sessionIcon(s) }}</div>
+              <div class="notification-item__content">
+                <div class="notification-item__head">
+                  <strong class="notification-item__title">{{ sessionTitle(s) }}</strong>
+                  <time class="notification-item__time" :title="s.latestAt">{{ relativeTime(s.latestAt) }}</time>
+                </div>
+                <p class="notification-item__body">{{ sessionBody(s) }}</p>
+              </div>
+              <button class="notification-item__remove" title="Remove" @click.stop="notifStore.remove(s.id)">
+                &times;
+              </button>
+            </div>
+          </div>
+        </section>
       </div>
     </aside>
   </Transition>
 </template>
 
 <script setup>
-import { ref, onMounted, onUnmounted } from "vue";
+import { ref, computed, onMounted, onUnmounted, nextTick, watch } from "vue";
 import { useNotificationStore } from "../../stores/notifications.js";
 import { useAppStore } from "../../stores/app.js";
 
 const notifStore = useNotificationStore();
 const appStore = useAppStore();
 const bodyRef = ref(null);
+const panelRef = ref(null);
+const showOlder = ref(false);
+const selectedIndex = ref(0);
 
 let tickTimer = null;
 const tick = ref(0);
@@ -85,8 +154,51 @@ onMounted(() => {
 
 onUnmounted(() => clearInterval(tickTimer));
 
+// Snooze gate — hide sessions whose snoozedUntil hasn't elapsed.
+const now = ref(Date.now());
+setInterval(() => {
+  now.value = Date.now();
+}, 30_000);
+
+function isSnoozed(s) {
+  return s.snoozedUntil && s.snoozedUntil > now.value;
+}
+
+const visibleWaiting = computed(() => {
+  // Urgent first, then by recency
+  const waiting = notifStore.waitingSessions.filter((s) => !isSnoozed(s));
+  return [...waiting].sort((a, b) => {
+    const au = a.urgency === "urgent" ? 0 : 1;
+    const bu = b.urgency === "urgent" ? 0 : 1;
+    if (au !== bu) return au - bu;
+    return new Date(b.latestAt).getTime() - new Date(a.latestAt).getTime();
+  });
+});
+
+const visibleFinished = computed(() => notifStore.finishedSessions.filter((s) => !isSnoozed(s)));
+
+const visibleOlder = computed(() => notifStore.resolvedSessions.filter((s) => !isSnoozed(s)).slice(0, 30));
+
+// Flat list for keyboard nav ordering.
+const allVisible = computed(() => [...visibleWaiting.value, ...visibleFinished.value, ...visibleOlder.value]);
+
+// Reset selection on panel open or list shrink.
+watch(
+  () => notifStore.panelOpen,
+  async (isOpen) => {
+    if (isOpen) {
+      selectedIndex.value = 0;
+      await nextTick();
+      panelRef.value?.focus();
+    }
+  },
+);
+
+watch(allVisible, (list) => {
+  if (selectedIndex.value >= list.length) selectedIndex.value = Math.max(0, list.length - 1);
+});
+
 function relativeTime(isoString) {
-  // Access tick to force reactivity updates
   void tick.value;
   const diff = Date.now() - new Date(isoString).getTime();
   if (diff < 60_000) return "just now";
@@ -98,31 +210,123 @@ function relativeTime(isoString) {
   return `${days}d ago`;
 }
 
-function itemIcon(item) {
-  if (item.kind === "waiting") return "⏳";
-  if (item.kind === "completed") return "✅";
+function sessionIcon(s) {
+  if (s.urgency === "urgent") return "🚨";
+  if (s.state === "waiting") return "⏳";
+  if (s.state === "finished") return "✅";
   return "🔔";
 }
 
-async function onClickItem(item) {
-  notifStore.remove(item.id);
-  if (!item.workspaceId || !appStore.payload) return;
+function sessionTitle(s) {
+  const wsName = s.workspaceName || s.workspaceId || "Workspace";
+  const tab = s.tabName || s.viewId || "Tab";
+  return `${wsName} › ${tab}`;
+}
 
-  const ws = (appStore.payload.appState?.workspaces || []).find((w) => w.id === item.workspaceId);
+function sessionBody(s) {
+  const latest = s.events[0];
+  if (!latest) return "";
+  return latest.body || latest.title || "";
+}
+
+function itemClass(s, section, idx) {
+  const flatIdx = flatIndexOf(s, section);
+  return {
+    "notification-item--urgent": s.urgency === "urgent",
+    "notification-item--unread": s.state === "waiting",
+    "notification-item--selected": flatIdx === selectedIndex.value,
+    [`notification-item--${s.state}`]: true,
+    [`notif-idx-${idx}`]: true,
+  };
+}
+
+function flatIndexOf(s, section) {
+  if (section === "waiting") return visibleWaiting.value.indexOf(s);
+  if (section === "finished") return visibleWaiting.value.length + visibleFinished.value.indexOf(s);
+  return visibleWaiting.value.length + visibleFinished.value.length + visibleOlder.value.indexOf(s);
+}
+
+// Build the backend sessionId for a notification session row. `viewId` is the
+// full `workspaceId:panelId` key as captured in useNotificationCapture from
+// `alert.sessionId` — use it directly. Prepending `workspaceId` again produced
+// a malformed `workspaceId:workspaceId:panelId`, which parseSessionId
+// split wrong and caused clearProjectAlerts / resetSessionSignal to no-op.
+function backendSessionId(s) {
+  return s.viewId || s.id;
+}
+
+async function jump(s) {
+  // Jump = user engaged with this session → dismissed=false (resets adaptive counter).
+  // Backend clear first so tab badge goes away immediately.
+  await notifStore.clearOnBackend(backendSessionId(s), { dismissed: false });
+  notifStore.setState(s.id, "resolved");
+
+  if (!s.workspaceId || !appStore.payload) return;
+  const ws = (appStore.payload.appState?.workspaces || []).find((w) => w.id === s.workspaceId);
   if (!ws) return;
 
-  // Switch to the workspace first
   const activeWsId = appStore.payload.appState?.activeWorkspaceId;
-  if (activeWsId !== item.workspaceId) {
-    await appStore.activateWorkspace(item.workspaceId);
+  if (activeWsId !== s.workspaceId) {
+    await appStore.activateWorkspace(s.workspaceId);
   }
-
-  // Then activate the specific tab/view
-  if (item.viewId) {
-    appStore.activateView(item.viewId);
-  }
-
+  if (s.viewId) appStore.activateView(s.viewId);
   notifStore.closePanel();
+}
+
+async function dismiss(s) {
+  // Dismiss = user silenced the alert WITHOUT engaging → dismissed=true.
+  // Feeds adaptive suppression: a session that keeps getting dismissed
+  // doubles its silence threshold, then disables T3 entirely.
+  await notifStore.clearOnBackend(backendSessionId(s), { dismissed: true });
+  notifStore.setState(s.id, "resolved");
+}
+
+function snooze(s) {
+  notifStore.snooze(s.id, 600_000);
+}
+
+function onClickSession(s) {
+  jump(s);
+}
+
+function onKeydown(ev) {
+  const list = allVisible.value;
+  if (list.length === 0) return;
+  const current = list[selectedIndex.value];
+  switch (ev.key) {
+    case "j":
+    case "ArrowDown":
+      ev.preventDefault();
+      selectedIndex.value = Math.min(list.length - 1, selectedIndex.value + 1);
+      break;
+    case "k":
+    case "ArrowUp":
+      ev.preventDefault();
+      selectedIndex.value = Math.max(0, selectedIndex.value - 1);
+      break;
+    case "Enter":
+      ev.preventDefault();
+      if (current) jump(current);
+      break;
+    case "d":
+      ev.preventDefault();
+      if (current) dismiss(current);
+      break;
+    case "s":
+      ev.preventDefault();
+      if (current) snooze(current);
+      break;
+    case "A":
+      if (ev.shiftKey) {
+        ev.preventDefault();
+        notifStore.markAllRead();
+      }
+      break;
+    case "Escape":
+      ev.preventDefault();
+      notifStore.closePanel();
+      break;
+  }
 }
 
 function onClickOutside(event) {

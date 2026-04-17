@@ -170,6 +170,116 @@
   background: rgba(255, 164, 36, 0.08);
 }
 
+/* --- Sections (Needs input / Finished / Older) --- */
+.notif-section {
+  padding: 4px 0;
+}
+.notif-section + .notif-section {
+  border-top: 1px solid rgba(var(--tint), 0.06);
+  margin-top: 6px;
+  padding-top: 6px;
+}
+.notif-section__title {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin: 2px 12px 4px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+.notif-section__title--collapsible {
+  cursor: pointer;
+  user-select: none;
+}
+.notif-section__count {
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--muted);
+}
+
+.notification-item--selected {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.notification-item--resolved {
+  opacity: 0.65;
+}
+.notification-item--finished {
+  /* subtle amber wash to differentiate from neutral resolved */
+  background: rgba(110, 223, 182, 0.04);
+}
+.notification-item__quick-actions {
+  display: flex;
+  gap: 4px;
+  margin-top: 4px;
+}
+.quick-action {
+  padding: 2px 8px;
+  font-size: 11px;
+  border: 1px solid rgba(var(--tint), 0.12);
+  background: transparent;
+  color: var(--text);
+  border-radius: 3px;
+  cursor: pointer;
+}
+.quick-action:hover {
+  background: rgba(var(--tint), 0.06);
+  border-color: var(--accent);
+}
+
+/* --- Return-to-app banner --- */
+.return-banner {
+  position: fixed;
+  top: 14px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 9999;
+  background: rgba(255, 90, 90, 0.94);
+  color: #fff;
+  padding: 8px 16px;
+  border-radius: 6px;
+  box-shadow: 0 6px 22px rgba(0, 0, 0, 0.35);
+  font-size: 13px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  cursor: pointer;
+}
+.return-banner__action {
+  background: rgba(255, 255, 255, 0.2);
+  border: 1px solid rgba(255, 255, 255, 0.4);
+  color: #fff;
+  padding: 2px 10px;
+  border-radius: 3px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.return-banner__close {
+  background: transparent;
+  border: none;
+  color: #fff;
+  font-size: 18px;
+  cursor: pointer;
+  line-height: 1;
+}
+
+/* Urgent (permission prompts, task failures) — distinct red styling */
+.notification-item--urgent {
+  border-left-color: #ff5a5a;
+  background: rgba(255, 90, 90, 0.08);
+}
+
+.notification-item--urgent:hover {
+  background: rgba(255, 90, 90, 0.14);
+}
+
+.notification-item--urgent .notification-item__title {
+  color: #ff7a7a;
+}
+
 .notification-item__icon {
   font-size: 14px;
   line-height: 20px;
@@ -264,6 +374,15 @@
 
 .notification-toast--completed {
   border-left: 3px solid #6edfb6;
+}
+
+.notification-toast--urgent {
+  border-left: 3px solid #ff5a5a;
+  box-shadow: 0 4px 18px rgba(255, 90, 90, 0.3);
+}
+
+.notification-toast--urgent .notification-toast__title {
+  color: #ff7a7a;
 }
 
 .notification-toast__icon {

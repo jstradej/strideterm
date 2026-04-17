@@ -113,6 +113,8 @@ export function useNotificationCapture() {
             title,
             body,
             kind: alert.kind || "completed",
+            tier: Number.isInteger(alert.tier) ? alert.tier : 1,
+            urgency: alert.urgency === "urgent" ? "urgent" : "normal",
             workspaceId: wsId,
             workspaceName: wsName,
             tabName,
@@ -120,18 +122,24 @@ export function useNotificationCapture() {
           });
 
           latestToast.value = entry;
-          fireNotificationAlert(entry.title, entry.body);
+          fireNotificationAlert(entry.title, entry.body, {
+            tier: entry.tier,
+            urgency: entry.urgency,
+            sessionKey: `${wsId}:${alertViewId}`,
+          });
         }
       }
 
-      // --- Phase 2: Detect DISAPPEARED alerts and remove their notifications ---
+      // --- Phase 2: Detect DISAPPEARED alerts and resolve their sessions ---
       const nextActiveViewIds = collectActiveViewIds(byWs);
       for (const viewId of activeAlertViewIds) {
         if (!nextActiveViewIds.has(viewId)) {
-          // Alert for this viewId disappeared — remove matching notifications
-          for (const item of [...notifStore.items]) {
-            if (item.viewId === viewId) {
-              notifStore.remove(item.id);
+          // Alert for this viewId disappeared on the backend — the live
+          // waiting state is over. Transition the thread to resolved so
+          // it drops out of "Needs input" but stays in history briefly.
+          for (const s of [...notifStore.sessions]) {
+            if (s.viewId === viewId && s.state === "waiting") {
+              notifStore.setState(s.id, "resolved");
             }
           }
         }
@@ -156,10 +164,13 @@ export function useNotificationCapture() {
    * no longer exists. Notifications mirror live alert state, not history.
    */
   function markStaleNotificationsRead() {
+    // On startup, any session still in "waiting" but without a live
+    // backend alert has been resolved while the app was closed.
+    // Demote to "resolved" (keeps history) rather than dropping.
     let changed = false;
-    for (const item of [...notifStore.items]) {
-      if (item.viewId && !activeAlertViewIds.has(item.viewId)) {
-        notifStore.remove(item.id);
+    for (const s of [...notifStore.sessions]) {
+      if (s.viewId && s.state === "waiting" && !activeAlertViewIds.has(s.viewId)) {
+        notifStore.setState(s.id, "resolved");
         changed = true;
       }
     }

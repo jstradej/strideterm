@@ -313,11 +313,14 @@ export const workspaceReorderSchema = z.array(nonEmptyString);
 
 export const attentionSyncSchema = z.object({
   visibleSessionIds: z.array(z.string()).optional(),
+  windowFocused: z.boolean().optional(),
 });
 
 export const notificationShowSchema = z.object({
   title: z.string().optional(),
   body: z.string().optional(),
+  urgency: z.enum(["normal", "urgent"]).optional(),
+  requireInteraction: z.boolean().optional(),
 });
 
 export const workspacePushOptionsSchema = z.object({

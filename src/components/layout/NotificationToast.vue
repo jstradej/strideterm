@@ -3,7 +3,10 @@
     <div
       v-if="visible"
       class="notification-toast"
-      :class="`notification-toast--${toast?.kind || 'info'}`"
+      :class="[
+        `notification-toast--${toast?.kind || 'info'}`,
+        { 'notification-toast--urgent': toast?.urgency === 'urgent' },
+      ]"
       @click="onClickToast"
     >
       <div class="notification-toast__icon">{{ kindIcon }}</div>
@@ -32,6 +35,7 @@ let hideTimer = null;
 
 const kindIcon = computed(() => {
   if (!props.toast) return "";
+  if (props.toast.urgency === "urgent") return "🚨";
   if (props.toast.kind === "waiting") return "⏳";
   if (props.toast.kind === "completed") return "✅";
   return "🔔";

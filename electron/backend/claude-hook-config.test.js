@@ -10,6 +10,7 @@ import {
   detectClaudeHookStatus,
   NOTIFY_SCRIPT_CONTENT,
   findExistingHook,
+  HOOKS_TO_REGISTER,
 } from "./claude-hook-config.js";
 
 let tempDir;
@@ -249,6 +250,81 @@ describe("configureClaudeHook", () => {
     expect(command).not.toContain("\\");
     expect(command).toContain("/");
   });
+
+  test("registers all four hook types (Notification, Stop, SubagentStop, UserPromptSubmit)", async () => {
+    const userDataPath = path.join(tempDir, "strideterm-data");
+    await fs.mkdir(userDataPath, { recursive: true });
+
+    const result = await configureClaudeHook(userDataPath);
+    expect(result.ok).toBe(true);
+    expect(result.registered).toEqual(HOOKS_TO_REGISTER);
+
+    const settings = JSON.parse(await fs.readFile(result.settingsPath, "utf8"));
+    for (const hookName of HOOKS_TO_REGISTER) {
+      expect(settings.hooks[hookName]).toHaveLength(1);
+      expect(settings.hooks[hookName][0].hooks[0].command).toContain("notify.mjs");
+      // Hook name is passed as argv so the same script handles all types
+      expect(settings.hooks[hookName][0].hooks[0].command).toContain(hookName);
+    }
+  });
+
+  test("hook command includes hook name as argv[2]", async () => {
+    const userDataPath = path.join(tempDir, "strideterm-data");
+    await fs.mkdir(userDataPath, { recursive: true });
+
+    await configureClaudeHook(userDataPath);
+
+    const settingsPath = path.join(mockHomedir, ".claude", "settings.json");
+    const settings = JSON.parse(await fs.readFile(settingsPath, "utf8"));
+
+    expect(settings.hooks.Notification[0].hooks[0].command).toMatch(/notify\.mjs"\s+Notification$/);
+    expect(settings.hooks.Stop[0].hooks[0].command).toMatch(/notify\.mjs"\s+Stop$/);
+    expect(settings.hooks.SubagentStop[0].hooks[0].command).toMatch(/notify\.mjs"\s+SubagentStop$/);
+    expect(settings.hooks.UserPromptSubmit[0].hooks[0].command).toMatch(/notify\.mjs"\s+UserPromptSubmit$/);
+  });
+
+  test("re-configure does not duplicate entries in any hook category", async () => {
+    const userDataPath = path.join(tempDir, "strideterm-data");
+    await fs.mkdir(userDataPath, { recursive: true });
+
+    await configureClaudeHook(userDataPath);
+    await configureClaudeHook(userDataPath);
+
+    const settingsPath = path.join(mockHomedir, ".claude", "settings.json");
+    const settings = JSON.parse(await fs.readFile(settingsPath, "utf8"));
+
+    for (const hookName of HOOKS_TO_REGISTER) {
+      expect(settings.hooks[hookName]).toHaveLength(1);
+    }
+  });
+
+  test("preserves unrelated hooks in Stop / UserPromptSubmit categories", async () => {
+    const userDataPath = path.join(tempDir, "strideterm-data");
+    await fs.mkdir(userDataPath, { recursive: true });
+
+    const claudeDir = path.join(mockHomedir, ".claude");
+    await fs.mkdir(claudeDir, { recursive: true });
+    await fs.writeFile(
+      path.join(claudeDir, "settings.json"),
+      JSON.stringify({
+        hooks: {
+          Stop: [{ matcher: "", hooks: [{ type: "command", command: "echo user-stop" }] }],
+          UserPromptSubmit: [{ matcher: "", hooks: [{ type: "command", command: "echo user-prompt" }] }],
+        },
+      }),
+    );
+
+    const result = await configureClaudeHook(userDataPath);
+    expect(result.ok).toBe(true);
+
+    const settings = JSON.parse(await fs.readFile(result.settingsPath, "utf8"));
+    expect(settings.hooks.Stop).toHaveLength(2);
+    expect(settings.hooks.Stop[0].hooks[0].command).toBe("echo user-stop");
+    expect(settings.hooks.Stop[1].hooks[0].command).toContain("notify.mjs");
+
+    expect(settings.hooks.UserPromptSubmit).toHaveLength(2);
+    expect(settings.hooks.UserPromptSubmit[0].hooks[0].command).toBe("echo user-prompt");
+  });
 });
 
 // --- removeClaudeHook ---
@@ -316,6 +392,47 @@ describe("removeClaudeHook", () => {
     expect(result.ok).toBe(true);
     expect(result.removed).toBe(false);
   });
+
+  test("removes strIDEterm entries from all four hook categories", async () => {
+    const userDataPath = path.join(tempDir, "strideterm-data");
+    await fs.mkdir(userDataPath, { recursive: true });
+
+    await configureClaudeHook(userDataPath);
+
+    const result = await removeClaudeHook();
+    expect(result.ok).toBe(true);
+    expect(result.removed).toBe(true);
+    expect(result.removedFrom).toEqual(expect.arrayContaining(HOOKS_TO_REGISTER));
+
+    const settings = JSON.parse(await fs.readFile(path.join(mockHomedir, ".claude", "settings.json"), "utf8"));
+    // All four categories should be cleaned up
+    expect(settings.hooks).toBeUndefined();
+  });
+
+  test("removes strIDEterm from Stop but keeps unrelated Stop hooks", async () => {
+    const userDataPath = path.join(tempDir, "strideterm-data");
+    await fs.mkdir(userDataPath, { recursive: true });
+
+    await configureClaudeHook(userDataPath);
+
+    // Add a user's own Stop hook alongside strIDEterm's
+    const settingsPath = path.join(mockHomedir, ".claude", "settings.json");
+    const settings = JSON.parse(await fs.readFile(settingsPath, "utf8"));
+    settings.hooks.Stop.push({ matcher: "", hooks: [{ type: "command", command: "echo user-stop" }] });
+    await fs.writeFile(settingsPath, JSON.stringify(settings, null, 2));
+
+    const result = await removeClaudeHook();
+    expect(result.ok).toBe(true);
+    expect(result.removed).toBe(true);
+
+    const updated = JSON.parse(await fs.readFile(settingsPath, "utf8"));
+    expect(updated.hooks.Stop).toHaveLength(1);
+    expect(updated.hooks.Stop[0].hooks[0].command).toBe("echo user-stop");
+    // Other categories fully cleaned up
+    expect(updated.hooks.Notification).toBeUndefined();
+    expect(updated.hooks.SubagentStop).toBeUndefined();
+    expect(updated.hooks.UserPromptSubmit).toBeUndefined();
+  });
 });
 
 // --- detectClaudeHookStatus ---
@@ -376,5 +493,42 @@ describe("detectClaudeHookStatus", () => {
     const result = await detectClaudeHookStatus(userDataPath);
     expect(result.status).toBe("error");
     expect(result.error).toBeTruthy();
+  });
+
+  test('returns "partial" when only some hooks are registered (legacy upgrade)', async () => {
+    const userDataPath = path.join(tempDir, "strideterm-data");
+    await fs.mkdir(userDataPath, { recursive: true });
+
+    // Ensure script exists
+    await ensureNotifyScript(userDataPath);
+
+    // Write legacy-style config with only Notification hook registered
+    const scriptPath = path.join(userDataPath, "hooks", "notify.mjs").replace(/\\/g, "/");
+    const claudeDir = path.join(mockHomedir, ".claude");
+    await fs.mkdir(claudeDir, { recursive: true });
+    await fs.writeFile(
+      path.join(claudeDir, "settings.json"),
+      JSON.stringify({
+        hooks: {
+          Notification: [{ matcher: "", hooks: [{ type: "command", command: `node "${scriptPath}"`, timeout: 5 }] }],
+        },
+      }),
+    );
+
+    const result = await detectClaudeHookStatus(userDataPath);
+    expect(result.status).toBe("partial");
+    expect(result.registered).toContain("Notification");
+    expect(result.missingHooks).toEqual(expect.arrayContaining(["Stop", "SubagentStop", "UserPromptSubmit"]));
+  });
+
+  test('returns "configured" when all four hooks are registered', async () => {
+    const userDataPath = path.join(tempDir, "strideterm-data");
+    await fs.mkdir(userDataPath, { recursive: true });
+
+    await configureClaudeHook(userDataPath);
+
+    const result = await detectClaudeHookStatus(userDataPath);
+    expect(result.status).toBe("configured");
+    expect(result.registered).toEqual(HOOKS_TO_REGISTER);
   });
 });

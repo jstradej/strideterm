@@ -195,6 +195,9 @@
   <!-- Notification center panel -->
   <NotificationCenter />
 
+  <!-- Return-to-app banner (shows when focus returns after >30s with waiting sessions) -->
+  <ReturnToAppBanner />
+
   <!-- Notification toast -->
   <NotificationToast :toast="latestToast" @dismissed="latestToast = null" />
 </template>
@@ -222,6 +225,7 @@ import LayoutPicker from "./components/layout/LayoutPicker.vue";
 import TabPickerDropdown from "./components/layout/TabPickerDropdown.vue";
 import NotificationCenter from "./components/layout/NotificationCenter.vue";
 import NotificationToast from "./components/layout/NotificationToast.vue";
+import ReturnToAppBanner from "./components/layout/ReturnToAppBanner.vue";
 import { useNotificationCapture } from "./composables/useNotificationCapture.js";
 import { useNotificationStore } from "./stores/notifications.js";
 

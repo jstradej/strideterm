@@ -277,6 +277,11 @@ export function registerIpc(runtime, emitToRenderer, { includeStateGet = true } 
     runtime.syncAttentionContext(validateIpc(attentionSyncSchema, payload || {}, "attention:sync")),
   );
   ipcMain.handle("attention:clear-all", async () => runtime.clearAllAttention());
+  ipcMain.handle("attention:clear-session", async (_event, sessionId, options) =>
+    runtime.clearAlertForSession(String(sessionId || ""), {
+      dismissed: options?.dismissed === true,
+    }),
+  );
   ipcMain.handle("terminal:restart", async (_event, sessionId) => runtime.restartSession(sessionId));
   ipcMain.handle("terminal:close", async (_event, sessionId) => runtime.closeSession(sessionId));
   ipcMain.handle("remote:token:regenerate", async () => runtime.regenerateRemoteToken());
@@ -286,6 +291,8 @@ export function registerIpc(runtime, emitToRenderer, { includeStateGet = true } 
   ipcMain.handle("agent-hook:configure", async () => runtime.configureClaudeHook());
   ipcMain.handle("agent-hook:remove", async () => runtime.removeClaudeHook());
   ipcMain.handle("agent-hook:status", async () => runtime.getClaudeHookStatus());
+  ipcMain.handle("agent-hook:test", async () => runtime.testClaudeHook());
+  ipcMain.handle("notifications:metrics", async () => runtime.getNotificationMetrics());
 
   // --- Task runner ---
   ipcMain.handle("task:recheck-claude", async () => runtime.recheckClaude());
@@ -405,10 +412,16 @@ export function registerIpc(runtime, emitToRenderer, { includeStateGet = true } 
   ipcMain.handle("notification:show-system", async (_event, payload) => {
     if (!Notification.isSupported()) return;
     const validated = validateIpc(notificationShowSchema, payload || {}, "notification:show-system");
+    const urgent = validated.urgency === "urgent" || validated.requireInteraction === true;
     const notif = new Notification({
       title: validated.title || "strIDEterm",
       body: validated.body || "",
       icon: join(app.getAppPath(), "assets", "icon.png"),
+      // Windows/macOS honor `urgency`; Linux uses `urgency: "critical"`
+      urgency: urgent ? "critical" : "normal",
+      // On platforms that support it (macOS, some Linux), keeps the
+      // notification visible until the user acts on it.
+      timeoutType: urgent ? "never" : "default",
     });
     notif.on("click", () => {
       const win = BrowserWindow.getAllWindows()[0];
@@ -418,6 +431,13 @@ export function registerIpc(runtime, emitToRenderer, { includeStateGet = true } 
       }
     });
     notif.show();
+    // Extra attention for urgent: flash taskbar until the window gets focus.
+    if (urgent) {
+      const win = BrowserWindow.getAllWindows()[0];
+      if (win && !win.isFocused() && typeof win.flashFrame === "function") {
+        win.flashFrame(true);
+      }
+    }
   });
 
   ipcMain.handle("app:check-for-updates", async () => runtime.checkForUpdates());
@@ -595,6 +615,8 @@ export function registerIpc(runtime, emitToRenderer, { includeStateGet = true } 
     ipcMain.removeHandler("workspace:set-ui-state");
     ipcMain.removeHandler("attention:sync");
     ipcMain.removeHandler("attention:clear-all");
+    ipcMain.removeHandler("attention:clear-session");
+    ipcMain.removeHandler("notifications:metrics");
     ipcMain.removeHandler("terminal:restart");
     ipcMain.removeHandler("terminal:close");
     ipcMain.removeHandler("remote:token:regenerate");

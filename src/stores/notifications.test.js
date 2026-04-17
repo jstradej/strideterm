@@ -2,59 +2,111 @@ import { describe, it, expect, beforeEach } from "vitest";
 import { setActivePinia, createPinia } from "pinia";
 import { useNotificationStore } from "./notifications.js";
 
-describe("notification store", () => {
+describe("notification store (session-grouped)", () => {
   beforeEach(() => {
     setActivePinia(createPinia());
     window.localStorage.removeItem("strideterm-notifications");
+    window.localStorage.removeItem("strideterm-notifications-v2");
   });
 
-  it("starts with empty items", () => {
+  function addUnique(store, overrides = {}) {
+    return store.add({
+      title: "Test",
+      body: "Body",
+      kind: "waiting",
+      workspaceId: "ws-" + Math.random().toString(36).slice(2, 8),
+      viewId: "view-" + Math.random().toString(36).slice(2, 8),
+      ...overrides,
+    });
+  }
+
+  it("starts empty", () => {
     const store = useNotificationStore();
+    expect(store.sessions).toEqual([]);
     expect(store.items).toEqual([]);
     expect(store.unreadCount).toBe(0);
     expect(store.panelOpen).toBe(false);
   });
 
-  it("adds a notification and increments unread count", () => {
+  it("adds a waiting event — session state is waiting, unreadCount=1", () => {
     const store = useNotificationStore();
-    const entry = store.add({ title: "Test", body: "Something happened", kind: "completed" });
-    expect(store.items).toHaveLength(1);
+    addUnique(store, { kind: "waiting" });
+    expect(store.sessions).toHaveLength(1);
+    expect(store.sessions[0].state).toBe("waiting");
     expect(store.unreadCount).toBe(1);
+    expect(store.items).toHaveLength(1);
+  });
+
+  it("adds a completed event — session state is finished, unreadCount=0", () => {
+    const store = useNotificationStore();
+    addUnique(store, { kind: "completed" });
+    expect(store.sessions[0].state).toBe("finished");
+    expect(store.unreadCount).toBe(0);
+  });
+
+  it("groups multiple events for the same session", () => {
+    const store = useNotificationStore();
+    store.add({ title: "First", body: "a", kind: "waiting", workspaceId: "ws1", viewId: "v1" });
+    store.add({ title: "Second", body: "b", kind: "waiting", workspaceId: "ws1", viewId: "v1" });
+    expect(store.sessions).toHaveLength(1);
+    expect(store.sessions[0].events).toHaveLength(2);
+    // Latest event first
+    expect(store.sessions[0].events[0].title).toBe("Second");
+    // items computed flattens them
+    expect(store.items).toHaveLength(2);
+  });
+
+  it("urgent event promotes session urgency", () => {
+    const store = useNotificationStore();
+    store.add({ title: "Idle", kind: "waiting", workspaceId: "ws1", viewId: "v1", urgency: "normal" });
+    store.add({ title: "Permission", kind: "waiting", workspaceId: "ws1", viewId: "v1", urgency: "urgent" });
+    expect(store.sessions[0].urgency).toBe("urgent");
+  });
+
+  it("markRead moves a session to resolved", () => {
+    const store = useNotificationStore();
+    const entry = addUnique(store, { kind: "waiting", workspaceId: "ws1", viewId: "v1" });
+    store.markRead("ws1:v1");
+    expect(store.sessions[0].state).toBe("resolved");
+    expect(store.unreadCount).toBe(0);
     expect(entry.id).toBeTruthy();
-    expect(entry.read).toBe(false);
   });
 
-  it("marks a notification as read", () => {
+  it("markAllRead resolves waiting + finished sessions", () => {
     const store = useNotificationStore();
-    const entry = store.add({ title: "Test", body: "Body" });
-    store.markRead(entry.id);
-    expect(store.items[0].read).toBe(true);
-    expect(store.unreadCount).toBe(0);
-  });
-
-  it("marks all as read", () => {
-    const store = useNotificationStore();
-    store.add({ title: "A", body: "a" });
-    store.add({ title: "B", body: "b" });
-    expect(store.unreadCount).toBe(2);
+    store.add({ title: "A", kind: "waiting", workspaceId: "ws1", viewId: "v1" });
+    store.add({ title: "B", kind: "completed", workspaceId: "ws2", viewId: "v2" });
+    expect(store.waitingSessions).toHaveLength(1);
+    expect(store.finishedSessions).toHaveLength(1);
     store.markAllRead();
-    expect(store.unreadCount).toBe(0);
+    expect(store.waitingSessions).toHaveLength(0);
+    expect(store.finishedSessions).toHaveLength(0);
+    expect(store.resolvedSessions).toHaveLength(2);
   });
 
-  it("removes a notification", () => {
+  it("remove by thread id drops the whole session", () => {
     const store = useNotificationStore();
-    const entry = store.add({ title: "X", body: "x" });
-    store.remove(entry.id);
-    expect(store.items).toHaveLength(0);
+    store.add({ title: "A", kind: "waiting", workspaceId: "ws1", viewId: "v1" });
+    store.add({ title: "B", kind: "waiting", workspaceId: "ws1", viewId: "v1" });
+    store.remove("ws1:v1");
+    expect(store.sessions).toHaveLength(0);
   });
 
-  it("clears all notifications", () => {
+  it("remove by event id (legacy) prunes just the event; session survives if events remain", () => {
     const store = useNotificationStore();
-    store.add({ title: "A", body: "a" });
-    store.add({ title: "B", body: "b" });
-    store.clearAll();
-    expect(store.items).toHaveLength(0);
-    expect(store.unreadCount).toBe(0);
+    const first = store.add({ title: "A", kind: "waiting", workspaceId: "ws1", viewId: "v1" });
+    store.add({ title: "B", kind: "waiting", workspaceId: "ws1", viewId: "v1" });
+    store.remove(first.id);
+    expect(store.sessions).toHaveLength(1);
+    expect(store.sessions[0].events).toHaveLength(1);
+    expect(store.sessions[0].events[0].title).toBe("B");
+  });
+
+  it("snooze hides a session for the requested duration", () => {
+    const store = useNotificationStore();
+    store.add({ title: "A", kind: "waiting", workspaceId: "ws1", viewId: "v1" });
+    store.snooze("ws1:v1", 600_000);
+    expect(store.sessions[0].snoozedUntil).toBeGreaterThan(Date.now());
   });
 
   it("toggles panel open/closed", () => {
@@ -66,27 +118,32 @@ describe("notification store", () => {
     expect(store.panelOpen).toBe(false);
   });
 
-  it("persists to localStorage", () => {
+  it("persists to localStorage v2", () => {
     const store = useNotificationStore();
-    store.add({ title: "Saved", body: "persistent" });
-    const raw = JSON.parse(window.localStorage.getItem("strideterm-notifications"));
+    store.add({ title: "Saved", kind: "waiting", workspaceId: "ws1", viewId: "v1" });
+    const raw = JSON.parse(window.localStorage.getItem("strideterm-notifications-v2"));
     expect(raw).toHaveLength(1);
-    expect(raw[0].title).toBe("Saved");
+    expect(raw[0].events[0].title).toBe("Saved");
+    expect(raw[0].state).toBe("waiting");
   });
 
-  it("limits notifications to 100", () => {
+  it("newest session floats to the top after new event", () => {
     const store = useNotificationStore();
-    for (let i = 0; i < 110; i++) {
-      store.add({ title: `N${i}`, body: `body ${i}` });
-    }
-    expect(store.items.length).toBeLessThanOrEqual(100);
+    store.add({ title: "First", kind: "waiting", workspaceId: "ws1", viewId: "v1" });
+    store.add({ title: "Second", kind: "waiting", workspaceId: "ws2", viewId: "v2" });
+    expect(store.sessions[0].workspaceId).toBe("ws2");
+
+    // New event on ws1 should move it back to top
+    store.add({ title: "Third", kind: "waiting", workspaceId: "ws1", viewId: "v1" });
+    expect(store.sessions[0].workspaceId).toBe("ws1");
   });
 
-  it("newest notification is first in the list", () => {
+  it("clearOnBackend exists and tolerates missing api gracefully", async () => {
     const store = useNotificationStore();
-    store.add({ title: "First", body: "a" });
-    store.add({ title: "Second", body: "b" });
-    expect(store.items[0].title).toBe("Second");
-    expect(store.items[1].title).toBe("First");
+    // No app store api is wired in this test harness — clearOnBackend must
+    // resolve cleanly (best-effort) instead of throwing.
+    await expect(store.clearOnBackend("ws1:panel1", { dismissed: true })).resolves.toBeUndefined();
+    await expect(store.clearOnBackend("ws1:panel2", { dismissed: false })).resolves.toBeUndefined();
+    await expect(store.clearOnBackend("ws1:panel3")).resolves.toBeUndefined();
   });
 });

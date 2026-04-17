@@ -1097,8 +1097,9 @@ describe("runtime integration", () => {
         data: "PS C:\\repo> ",
       });
 
-      // Agent sessions use a longer quiet period before raising prompt-returned alerts
-      await vi.advanceTimersByTimeAsync(21_000);
+      // Agent sessions use a longer quiet period before raising prompt-returned
+      // alerts. Default after Phase 1 is 45s. Advance past it.
+      await vi.advanceTimersByTimeAsync(46_000);
 
       expect(fixture.runtime.getPayload().attention.byProject.frontend).toMatchObject({
         count: 1,
@@ -1107,6 +1108,7 @@ describe("runtime integration", () => {
         panelId: "codex",
         kind: "waiting",
         detail: "prompt-returned",
+        tier: 3,
       });
     } finally {
       vi.useRealTimers();
@@ -1255,12 +1257,15 @@ describe("runtime integration", () => {
 
     const state = fixture.store.getState();
     expect(state.settings.notifications).toBeDefined();
-    expect(state.settings.notifications.promptQuietMs).toBe(900);
-    expect(state.settings.notifications.agentQuietMs).toBe(20_000);
-    expect(state.settings.notifications.agentQuietFastMs).toBe(12_000);
+    // Phase 1 raised defaults — 900→2500 and 20s→45s.
+    expect(state.settings.notifications.promptQuietMs).toBe(2500);
+    expect(state.settings.notifications.agentQuietMs).toBe(45_000);
+    expect(state.settings.notifications.agentQuietFastMs).toBe(25_000);
     expect(state.settings.notifications.alertCooldownMs).toBe(15_000);
     expect(state.settings.notifications.shellIntegration).toBe(true);
     expect(state.settings.notifications.agentHook).toBe(true);
+    expect(state.settings.notifications.userInteractionGraceMs).toBe(10_000);
+    expect(state.settings.notifications.debug).toBe(false);
   });
 
   test("agentNotifyHook info is included in payload", async () => {
@@ -1334,7 +1339,9 @@ describe("runtime integration", () => {
       expect(payload.attention.byProject.backend.alerts[0]).toMatchObject({
         panelId: "shell",
         kind: "waiting",
-        detail: "agent-hook-idle",
+        detail: "hook:Notification:idle_prompt",
+        tier: 1,
+        urgency: "normal",
       });
     } finally {
       vi.useRealTimers();
@@ -1377,7 +1384,9 @@ describe("runtime integration", () => {
       fixture.runtime.notifyAgentHook("backend:shell", "permission_prompt");
 
       expect(fixture.runtime.getPayload().attention.byProject.backend.alerts[0]).toMatchObject({
-        detail: "agent-hook-permission",
+        detail: "hook:Notification:permission_prompt",
+        tier: 1,
+        urgency: "urgent",
       });
     } finally {
       vi.useRealTimers();
@@ -1850,5 +1859,578 @@ describe("runtime integration", () => {
     expect(fixture.store.saveCalls).toBe(0);
     await fixture.runtime.stop();
     expect(fixture.store.saveCalls).toBe(0);
+  });
+
+  // ---------------------------------------------------------------------------
+  // Plan § 6: Critical scenario regression tests.
+  //
+  // These enforce the invariants the notifications redesign is built on.
+  // Each failure corresponds to a user-visible regression; don't ship red.
+  // ---------------------------------------------------------------------------
+
+  async function createTwoWorkspaceFixture() {
+    return createFixture({
+      initialState: {
+        activeProjectId: "frontend",
+        projects: [
+          {
+            id: "frontend",
+            name: "Frontend",
+            kind: "terminal",
+            cwd: "/tmp/frontend",
+            activePanelId: "claude",
+            panels: [{ id: "claude", title: "Claude Code", command: "claude", shell: true, startup: "default" }],
+          },
+          {
+            id: "backend",
+            name: "Backend",
+            kind: "terminal",
+            cwd: "/tmp/backend",
+            activePanelId: "shell",
+            panels: [{ id: "shell", title: "Shell", command: "", shell: true, startup: "default" }],
+          },
+        ],
+      },
+    });
+  }
+
+  test("(Gap 2 regression) permission_prompt during idle cooldown fires urgent alert", async () => {
+    vi.useFakeTimers();
+    try {
+      const fixture = await createTwoWorkspaceFixture();
+      fixtures.push(fixture);
+
+      // Put backend session off-screen so alerts land.
+      await fixture.runtime.syncAttentionContext({ visibleSessionIds: ["frontend:claude"] });
+      fixture.sessionManager.emit("terminal:data", { sessionId: "backend:shell", data: "$ " });
+      await vi.advanceTimersByTimeAsync(16_000);
+      fixture.runtime.writeToSession("backend:shell", "claude\r");
+
+      // First alert: normal idle_prompt.
+      fixture.runtime.notifyAgentHook("backend:shell", "idle_prompt");
+      expect(fixture.runtime.getPayload().attention.byProject.backend.alerts[0]).toMatchObject({
+        urgency: "normal",
+        detail: "hook:Notification:idle_prompt",
+      });
+
+      // Inside the 15s standard cooldown window (5s elapsed) — a second
+      // idle_prompt would be suppressed, but permission_prompt is urgent and
+      // MUST reach the user even inside cooldown.
+      await vi.advanceTimersByTimeAsync(5_000);
+      fixture.runtime.notifyAgentHook("backend:shell", "permission_prompt");
+
+      const alerts = fixture.runtime.getPayload().attention.byProject.backend.alerts;
+      expect(alerts[0]).toMatchObject({
+        urgency: "urgent",
+        detail: "hook:Notification:permission_prompt",
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("(Gap 2 regression) urgent alert still respects its own 3s short cooldown", async () => {
+    vi.useFakeTimers();
+    try {
+      const fixture = await createTwoWorkspaceFixture();
+      fixtures.push(fixture);
+
+      await fixture.runtime.syncAttentionContext({ visibleSessionIds: ["frontend:claude"] });
+      fixture.sessionManager.emit("terminal:data", { sessionId: "backend:shell", data: "$ " });
+      await vi.advanceTimersByTimeAsync(16_000);
+      fixture.runtime.writeToSession("backend:shell", "claude\r");
+
+      // Two permission_prompts within 3s — second is coalesced.
+      fixture.runtime.notifyAgentHook("backend:shell", "permission_prompt");
+      const firstAt = fixture.runtime.getPayload().attention.byProject.backend.alerts[0].at;
+
+      await vi.advanceTimersByTimeAsync(1_000);
+      fixture.runtime.notifyAgentHook("backend:shell", "permission_prompt");
+      const stillFirst = fixture.runtime.getPayload().attention.byProject.backend.alerts[0].at;
+      expect(stillFirst).toBe(firstAt);
+
+      // After 3s urgent cooldown expires, next urgent alert lands.
+      await vi.advanceTimersByTimeAsync(3_500);
+      fixture.runtime.notifyAgentHook("backend:shell", "permission_prompt");
+      const newer = fixture.runtime.getPayload().attention.byProject.backend.alerts[0].at;
+      expect(newer).not.toBe(firstAt);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("hookCapable agent session does NOT raise T3 silence alert", async () => {
+    vi.useFakeTimers();
+    try {
+      const fixture = await createTwoWorkspaceFixture();
+      fixtures.push(fixture);
+
+      await fixture.runtime.syncAttentionContext({ visibleSessionIds: ["frontend:claude"] });
+      // Prime the session as agent-like with user input
+      fixture.sessionManager.emit("terminal:data", { sessionId: "backend:shell", data: "claude code v1.0\n" });
+      await vi.advanceTimersByTimeAsync(16_000);
+      fixture.runtime.writeToSession("backend:shell", "do a thing\r");
+
+      // A hook fires once — now signal.hookCapable = true. We clear the
+      // alert (simulates user ack'ing) so the next detector cycle starts fresh.
+      fixture.runtime.notifyAgentHook("backend:shell", "idle_prompt");
+      expect(fixture.runtime.getPayload().attention.byProject.backend).toMatchObject({ count: 1 });
+      fixture.runtime.clearAlertForSession("backend:shell", { dismissed: false });
+
+      // Simulate a long burst of output + long silence. Without hookCapable
+      // gating this would trigger a T3 silence alert; with it, nothing fires.
+      for (let i = 0; i < 20; i += 1) {
+        fixture.sessionManager.emit("terminal:data", { sessionId: "backend:shell", data: `line ${i}\n` });
+      }
+      // Well past agentQuietMs (45s) and agentQuietFastMs (25s).
+      await vi.advanceTimersByTimeAsync(120_000);
+
+      expect(fixture.runtime.getPayload().attention.byProject.backend).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("repeat idle_prompt with no new activity does NOT re-alert (real-world repeat bug)", async () => {
+    vi.useFakeTimers();
+    try {
+      // Real-world scenario from user report: Claude fired idle_prompt once,
+      // user jumped to the session, navigated away, Claude fired idle_prompt
+      // AGAIN for the same waiting state → spurious second notification.
+      //
+      // Expected behavior: repeat hooks without new output bursts or a
+      // UserPromptSubmit in between are coalesced silently.
+      const fixture = await createTwoWorkspaceFixture();
+      fixtures.push(fixture);
+
+      // Backend tab off-screen; prime as agent-like via AGENT_OUTPUT_RE match.
+      await fixture.runtime.syncAttentionContext({ visibleSessionIds: ["frontend:claude"] });
+      fixture.sessionManager.emit("terminal:data", { sessionId: "backend:shell", data: "claude code v1.0\n" });
+      await vi.advanceTimersByTimeAsync(16_000);
+      fixture.runtime.writeToSession("backend:shell", "fix bug\r");
+
+      // Claude finishes a response — emit some output bursts so the first
+      // idle_prompt looks like a real turn completion.
+      for (let i = 0; i < 5; i += 1) {
+        fixture.sessionManager.emit("terminal:data", { sessionId: "backend:shell", data: `line ${i}\n` });
+      }
+
+      // First idle_prompt → alert fires.
+      fixture.runtime.notifyAgentHook("backend:shell", "idle_prompt");
+      expect(fixture.runtime.getPayload().attention.byProject.backend).toMatchObject({ count: 1 });
+
+      // User views the session (Jump equivalent): clearAlertForSession with
+      // dismissed=false. This resets signal.waitingRaised/busy/outputBursts.
+      fixture.runtime.clearAlertForSession("backend:shell", { dismissed: false });
+      expect(fixture.runtime.getPayload().attention.byProject.backend).toBeUndefined();
+
+      // User navigates away (backend panel no longer visible).
+      await fixture.runtime.syncAttentionContext({ visibleSessionIds: ["frontend:claude"] });
+      await vi.advanceTimersByTimeAsync(20_000); // past cooldown
+
+      // Claude fires idle_prompt AGAIN for the same waiting state — no new
+      // output bursts happened since reset.
+      fixture.runtime.notifyAgentHook("backend:shell", "idle_prompt");
+
+      // No re-alert: the repeat idle_prompt is suppressed.
+      expect(fixture.runtime.getPayload().attention.byProject.backend).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("idle_prompt AFTER UserPromptSubmit DOES re-alert (legit turn)", async () => {
+    vi.useFakeTimers();
+    try {
+      // Counter-test to the repeat-idle suppression: if the user sent a new
+      // prompt (UserPromptSubmit hook) after the previous alert, the next
+      // idle_prompt is a legit "Claude finished the new turn" and must fire.
+      const fixture = await createTwoWorkspaceFixture();
+      fixtures.push(fixture);
+
+      await fixture.runtime.syncAttentionContext({ visibleSessionIds: ["frontend:claude"] });
+      fixture.sessionManager.emit("terminal:data", { sessionId: "backend:shell", data: "claude code v1.0\n" });
+      await vi.advanceTimersByTimeAsync(16_000);
+      fixture.runtime.writeToSession("backend:shell", "fix bug\r");
+
+      // Claude emits enough output to look like a real turn, then alerts.
+      for (let i = 0; i < 12; i += 1) {
+        fixture.sessionManager.emit("terminal:data", { sessionId: "backend:shell", data: `first ${i}\n` });
+      }
+      fixture.runtime.notifyAgentHook("backend:shell", "idle_prompt");
+      expect(fixture.runtime.getPayload().attention.byProject.backend).toMatchObject({ count: 1 });
+
+      // User views and acks — signal reset zeros outputBursts.
+      fixture.runtime.clearAlertForSession("backend:shell", { dismissed: false });
+      await fixture.runtime.syncAttentionContext({ visibleSessionIds: ["frontend:claude"] });
+      await vi.advanceTimersByTimeAsync(20_000);
+
+      // User types a new message — UserPromptSubmit hook fires. This is the
+      // authoritative "user gave Claude new work" signal.
+      fixture.runtime.notifyAgentHook("backend:shell", "", "UserPromptSubmit");
+
+      // Claude works, then idle again.
+      for (let i = 0; i < 12; i += 1) {
+        fixture.sessionManager.emit("terminal:data", { sessionId: "backend:shell", data: `second ${i}\n` });
+      }
+      fixture.runtime.notifyAgentHook("backend:shell", "idle_prompt");
+      expect(fixture.runtime.getPayload().attention.byProject.backend).toMatchObject({ count: 1 });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("idle_prompt AFTER substantial output (fallback without UserPromptSubmit) DOES re-alert", async () => {
+    vi.useFakeTimers();
+    try {
+      // Defense for stale config: if UserPromptSubmit hook isn't registered
+      // (old ~/.claude/settings.json without Phase 0 upgrade), we fall back
+      // to output-burst threshold. 10+ bursts after reset = real turn.
+      const fixture = await createTwoWorkspaceFixture();
+      fixtures.push(fixture);
+
+      await fixture.runtime.syncAttentionContext({ visibleSessionIds: ["frontend:claude"] });
+      fixture.sessionManager.emit("terminal:data", { sessionId: "backend:shell", data: "claude code v1.0\n" });
+      await vi.advanceTimersByTimeAsync(16_000);
+      fixture.runtime.writeToSession("backend:shell", "fix bug\r");
+
+      for (let i = 0; i < 12; i += 1) {
+        fixture.sessionManager.emit("terminal:data", { sessionId: "backend:shell", data: `first ${i}\n` });
+      }
+      fixture.runtime.notifyAgentHook("backend:shell", "idle_prompt");
+      expect(fixture.runtime.getPayload().attention.byProject.backend).toMatchObject({ count: 1 });
+
+      fixture.runtime.clearAlertForSession("backend:shell", { dismissed: false });
+      await fixture.runtime.syncAttentionContext({ visibleSessionIds: ["frontend:claude"] });
+      await vi.advanceTimersByTimeAsync(20_000);
+
+      // No UserPromptSubmit (stale config), but Claude produces 12+ bursts.
+      for (let i = 0; i < 12; i += 1) {
+        fixture.sessionManager.emit("terminal:data", { sessionId: "backend:shell", data: `second ${i}\n` });
+      }
+
+      fixture.runtime.notifyAgentHook("backend:shell", "idle_prompt");
+      expect(fixture.runtime.getPayload().attention.byProject.backend).toMatchObject({ count: 1 });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("small heartbeat bursts (< threshold) without UserPromptSubmit DO suppress", async () => {
+    vi.useFakeTimers();
+    try {
+      // Statusline redraws / cursor positioning might emit 1-3 output chunks
+      // without representing real new work. Those must NOT defeat the repeat
+      // idle_prompt suppression.
+      const fixture = await createTwoWorkspaceFixture();
+      fixtures.push(fixture);
+
+      await fixture.runtime.syncAttentionContext({ visibleSessionIds: ["frontend:claude"] });
+      fixture.sessionManager.emit("terminal:data", { sessionId: "backend:shell", data: "claude code v1.0\n" });
+      await vi.advanceTimersByTimeAsync(16_000);
+      fixture.runtime.writeToSession("backend:shell", "fix bug\r");
+
+      for (let i = 0; i < 12; i += 1) {
+        fixture.sessionManager.emit("terminal:data", { sessionId: "backend:shell", data: `first ${i}\n` });
+      }
+      fixture.runtime.notifyAgentHook("backend:shell", "idle_prompt");
+      expect(fixture.runtime.getPayload().attention.byProject.backend).toMatchObject({ count: 1 });
+
+      fixture.runtime.clearAlertForSession("backend:shell", { dismissed: false });
+      await fixture.runtime.syncAttentionContext({ visibleSessionIds: ["frontend:claude"] });
+      await vi.advanceTimersByTimeAsync(20_000);
+
+      // A few heartbeat bursts — well under the 10-burst threshold.
+      for (let i = 0; i < 3; i += 1) {
+        fixture.sessionManager.emit("terminal:data", { sessionId: "backend:shell", data: `tick ${i}\n` });
+      }
+
+      // Repeat idle_prompt, no user prompt, only 3 bursts → suppress.
+      fixture.runtime.notifyAgentHook("backend:shell", "idle_prompt");
+      expect(fixture.runtime.getPayload().attention.byProject.backend).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("permission_prompt is NEVER suppressed by repeat-idle guard (urgent bypass)", async () => {
+    vi.useFakeTimers();
+    try {
+      // Regression guard: urgent permission_prompt must reach the user even
+      // when the session's lastAlertAt is set and outputBursts is 0 — the
+      // suppression rule is idle_prompt only.
+      const fixture = await createTwoWorkspaceFixture();
+      fixtures.push(fixture);
+
+      await fixture.runtime.syncAttentionContext({ visibleSessionIds: ["frontend:claude"] });
+      fixture.sessionManager.emit("terminal:data", { sessionId: "backend:shell", data: "$ " });
+      await vi.advanceTimersByTimeAsync(16_000);
+      fixture.runtime.writeToSession("backend:shell", "claude\r");
+
+      fixture.runtime.notifyAgentHook("backend:shell", "idle_prompt");
+      fixture.runtime.clearAlertForSession("backend:shell", { dismissed: false });
+      await fixture.runtime.syncAttentionContext({ visibleSessionIds: ["frontend:claude"] });
+      await vi.advanceTimersByTimeAsync(20_000);
+
+      // Permission prompt with zero intervening output — urgent, must alert.
+      fixture.runtime.notifyAgentHook("backend:shell", "permission_prompt");
+
+      expect(fixture.runtime.getPayload().attention.byProject.backend.alerts[0]).toMatchObject({
+        urgency: "urgent",
+        detail: "hook:Notification:permission_prompt",
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("idle task workspace does NOT fire spurious user alerts from auto-spawned Claude", async () => {
+    vi.useFakeTimers();
+    try {
+      // Real-world bug report: user created task workspace but never pressed
+      // Start. Worker and Judge panels auto-spawn Claude (default startup).
+      // Both Claudes sit idle and fire Notification:idle_prompt hooks. The
+      // task runner must consume them — the user shouldn't see "Worker
+      // waiting for input" notifications for a task they never initiated.
+      const fixture = await createFixture({
+        initialState: {
+          activeProjectId: "frontend",
+          projects: [
+            {
+              id: "frontend",
+              name: "Frontend",
+              kind: "terminal",
+              cwd: "/tmp/frontend",
+              activePanelId: "claude",
+              panels: [{ id: "claude", title: "Claude Code", command: "claude", shell: true, startup: "default" }],
+            },
+          ],
+          workspaces: [
+            {
+              id: "idletask",
+              name: "Not started yet",
+              kind: "task",
+              cwd: "/tmp/idletask",
+              activePanelId: "worker",
+              panels: [
+                { id: "worker", title: "Worker", command: "claude", shell: true, startup: "default" },
+                { id: "judge", title: "Judge", command: "claude", shell: true, startup: "default" },
+              ],
+              task: {
+                taskId: "t1",
+                state: "idle",
+                promptSent: false,
+                currentRound: 0,
+                workerPanelId: "worker",
+                judgePanelId: "judge",
+              },
+            },
+          ],
+        },
+      });
+      fixtures.push(fixture);
+
+      await fixture.runtime.syncAttentionContext({ visibleSessionIds: ["frontend:claude"] });
+      // Both panels go through normal priming (input received, some output).
+      fixture.sessionManager.emit("terminal:data", { sessionId: "idletask:worker", data: "$ " });
+      fixture.sessionManager.emit("terminal:data", { sessionId: "idletask:judge", data: "$ " });
+      await vi.advanceTimersByTimeAsync(16_000);
+      fixture.runtime.writeToSession("idletask:worker", "claude\r");
+      fixture.runtime.writeToSession("idletask:judge", "claude\r");
+
+      // Auto-spawned Claude on both panels hits idle → fires Notification hook.
+      fixture.runtime.notifyAgentHook("idletask:worker", "idle_prompt");
+      fixture.runtime.notifyAgentHook("idletask:judge", "idle_prompt");
+
+      // NEITHER should reach the user — task runner consumes both.
+      expect(fixture.runtime.getPayload().attention.byProject.idletask).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("(Gap 1 regression) Stop hook in paused task falls through to user pipeline", async () => {
+    vi.useFakeTimers();
+    try {
+      const fixture = await createFixture({
+        initialState: {
+          activeProjectId: "frontend",
+          projects: [
+            {
+              id: "frontend",
+              name: "Frontend",
+              kind: "terminal",
+              cwd: "/tmp/frontend",
+              activePanelId: "claude",
+              panels: [{ id: "claude", title: "Claude Code", command: "claude", shell: true, startup: "default" }],
+            },
+          ],
+          workspaces: [
+            {
+              id: "mytask",
+              name: "My task",
+              kind: "task",
+              cwd: "/tmp/mytask",
+              activePanelId: "worker",
+              panels: [
+                { id: "worker", title: "Worker", command: "claude", shell: true, startup: "default" },
+                { id: "judge", title: "Judge", command: "claude", shell: true, startup: "default" },
+              ],
+              task: {
+                taskId: "t1",
+                state: "paused",
+                workerPanelId: "worker",
+                judgePanelId: "judge",
+                currentRound: 1,
+              },
+            },
+          ],
+        },
+      });
+      fixtures.push(fixture);
+
+      await fixture.runtime.syncAttentionContext({ visibleSessionIds: ["frontend:claude"] });
+      fixture.sessionManager.emit("terminal:data", { sessionId: "mytask:worker", data: "$ " });
+      await vi.advanceTimersByTimeAsync(16_000);
+      fixture.runtime.writeToSession("mytask:worker", "go\r");
+
+      // Task paused → task runner returns false → user pipeline sees the event.
+      fixture.runtime.notifyAgentHook("mytask:worker", "idle_prompt");
+
+      const alerts = fixture.runtime.getPayload().attention.byProject.mytask?.alerts || [];
+      expect(alerts[0]).toMatchObject({
+        detail: "hook:Notification:idle_prompt",
+        tier: 1,
+        urgency: "normal",
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("clearAlertForSession removes the attention entry and resets signal", async () => {
+    vi.useFakeTimers();
+    try {
+      const fixture = await createTwoWorkspaceFixture();
+      fixtures.push(fixture);
+
+      await fixture.runtime.syncAttentionContext({ visibleSessionIds: ["frontend:claude"] });
+      fixture.sessionManager.emit("terminal:data", { sessionId: "backend:shell", data: "$ " });
+      await vi.advanceTimersByTimeAsync(16_000);
+      fixture.runtime.writeToSession("backend:shell", "claude\r");
+      fixture.runtime.notifyAgentHook("backend:shell", "idle_prompt");
+      expect(fixture.runtime.getPayload().attention.byProject.backend).toMatchObject({ count: 1 });
+
+      const payload = fixture.runtime.clearAlertForSession("backend:shell");
+      expect(payload.attention.byProject.backend).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("clearAlertForSession({dismissed:true}) feeds adaptive suppression", async () => {
+    vi.useFakeTimers();
+    try {
+      const fixture = await createTwoWorkspaceFixture();
+      fixtures.push(fixture);
+      const baseline = fixture.runtime.getNotificationMetrics().dismissedWithoutInteraction;
+
+      await fixture.runtime.syncAttentionContext({ visibleSessionIds: ["frontend:claude"] });
+      fixture.sessionManager.emit("terminal:data", { sessionId: "backend:shell", data: "$ " });
+      await vi.advanceTimersByTimeAsync(16_000);
+      fixture.runtime.writeToSession("backend:shell", "claude\r");
+
+      // Dismiss 3 alerts in a row — adaptive multiplier should kick in (×2).
+      for (let i = 0; i < 3; i += 1) {
+        fixture.runtime.notifyAgentHook("backend:shell", "idle_prompt");
+        fixture.runtime.clearAlertForSession("backend:shell", { dismissed: true });
+        await vi.advanceTimersByTimeAsync(16_000);
+      }
+
+      expect(fixture.runtime.getNotificationMetrics().dismissedWithoutInteraction).toBe(baseline + 3);
+
+      // One more dismissal should keep metrics incrementing.
+      fixture.runtime.notifyAgentHook("backend:shell", "idle_prompt");
+      fixture.runtime.clearAlertForSession("backend:shell", { dismissed: true });
+      expect(fixture.runtime.getNotificationMetrics().dismissedWithoutInteraction).toBe(baseline + 4);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("clearAlertForSession without dismissed flag does NOT increment dismissal metric", async () => {
+    vi.useFakeTimers();
+    try {
+      const fixture = await createTwoWorkspaceFixture();
+      fixtures.push(fixture);
+      const baseline = fixture.runtime.getNotificationMetrics().dismissedWithoutInteraction;
+
+      await fixture.runtime.syncAttentionContext({ visibleSessionIds: ["frontend:claude"] });
+      fixture.sessionManager.emit("terminal:data", { sessionId: "backend:shell", data: "$ " });
+      await vi.advanceTimersByTimeAsync(16_000);
+      fixture.runtime.writeToSession("backend:shell", "claude\r");
+
+      fixture.runtime.notifyAgentHook("backend:shell", "idle_prompt");
+      // Jump equivalent — clears without dismissed flag
+      fixture.runtime.clearAlertForSession("backend:shell");
+
+      expect(fixture.runtime.getNotificationMetrics().dismissedWithoutInteraction).toBe(baseline);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("notification metrics track hooks, alerts, tier and urgency", async () => {
+    vi.useFakeTimers();
+    try {
+      const fixture = await createTwoWorkspaceFixture();
+      fixtures.push(fixture);
+
+      await fixture.runtime.syncAttentionContext({ visibleSessionIds: ["frontend:claude"] });
+      fixture.sessionManager.emit("terminal:data", { sessionId: "backend:shell", data: "$ " });
+      await vi.advanceTimersByTimeAsync(16_000);
+      fixture.runtime.writeToSession("backend:shell", "claude\r");
+
+      fixture.runtime.notifyAgentHook("backend:shell", "idle_prompt");
+      await vi.advanceTimersByTimeAsync(20_000);
+      fixture.runtime.notifyAgentHook("backend:shell", "permission_prompt");
+
+      const m = fixture.runtime.getNotificationMetrics();
+      expect(m.hooksReceived).toBeGreaterThanOrEqual(2);
+      expect(m.alertsTotal).toBeGreaterThanOrEqual(2);
+      expect(m.alertsByUrgency.urgent).toBeGreaterThanOrEqual(1);
+      expect(m.alertsByTier[1]).toBeGreaterThanOrEqual(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("stale busy latch resets after 5× agentQuietMs silence", async () => {
+    vi.useFakeTimers();
+    try {
+      const fixture = await createTwoWorkspaceFixture();
+      fixtures.push(fixture);
+
+      await fixture.runtime.syncAttentionContext({ visibleSessionIds: ["frontend:claude"] });
+      fixture.sessionManager.emit("terminal:data", { sessionId: "backend:shell", data: "building...\n" });
+      await vi.advanceTimersByTimeAsync(16_000);
+      fixture.runtime.writeToSession("backend:shell", "npm run build\r");
+      fixture.sessionManager.emit("terminal:data", { sessionId: "backend:shell", data: "compiling...\n" });
+
+      // Wait 5× agentQuietMs (default 45s) + a buffer so the stale-busy reset
+      // fires when the next chunk arrives. Using the shipped default directly
+      // — if it changes, the assertion still holds because we overshoot.
+      const staleMs = 45_000 * 5 + 5_000;
+      await vi.advanceTimersByTimeAsync(staleMs);
+
+      // Emit a fresh burst — the stale-busy guard should reset outputBursts
+      // and busy before processing this chunk, so no alert piggy-backs on the
+      // now-stale busy latch.
+      fixture.sessionManager.emit("terminal:data", { sessionId: "backend:shell", data: "compiled.\n" });
+
+      expect(fixture.runtime.getPayload().attention.byProject.backend).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

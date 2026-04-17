@@ -177,6 +177,11 @@ function createRemoteTransport() {
     setWorkspaceUIState: (workspaceId, uiState) => fetchJson("/api/workspace/set-ui-state", { workspaceId, uiState }),
     syncAttentionContext: (payload) => fetchJson("/api/attention/sync", payload),
     clearAllAttention: () => fetchJson("/api/attention/clear-all", {}),
+    clearAlertForSession: (sessionId, options) =>
+      fetchJson("/api/attention/clear-session", {
+        sessionId,
+        dismissed: options?.dismissed === true,
+      }),
     saveWorkspace: (workspace) => fetchJson("/api/workspace/save", { workspace }),
     saveProject: (project) => fetchJson("/api/project/save", { project }),
     deleteWorkspace: (workspaceId, options) => fetchJson("/api/workspace/delete", { workspaceId, ...options }),

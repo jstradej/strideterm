@@ -17,7 +17,20 @@ const log = getLogger("notify-server");
  */
 
 const MAX_BODY_SIZE = 64 * 1024; // 64 KB — hook payloads are small
-const VALID_NOTIFICATION_TYPES = new Set(["idle_prompt", "permission_prompt", "auth_success", "elicitation_dialog"]);
+
+// Hook names we accept. Unknown names are logged but not dropped at the HTTP
+// layer — the dispatcher decides user-facing vs system-only based on the
+// classification table, so experimentation / new hook types don't require a
+// server restart.
+const KNOWN_HOOK_NAMES = new Set([
+  "Notification",
+  "Stop",
+  "SubagentStop",
+  "UserPromptSubmit",
+  "PreToolUse",
+  "PostToolUse",
+  "PreCompact",
+]);
 
 export function generateNotifySecret() {
   return crypto.randomUUID();
@@ -104,23 +117,35 @@ export function startNotifyServer({ onNotification, secret, logger: _logger = nu
           }
         }
 
-        const notificationType = String(payload.notification_type || "").trim();
-        if (notificationType && !VALID_NOTIFICATION_TYPES.has(notificationType)) {
-          log.trace("unknown notification type ignored", { notificationType, sessionId });
-          response.writeHead(200, { "Content-Type": "application/json" });
-          response.end("{}");
-          return;
+        // The notify.mjs script injects `hook` into the body (from argv[2])
+        // so every event type (Notification, Stop, SubagentStop,
+        // UserPromptSubmit) reaches us with its name. Fall back to
+        // hook_event_name (some Claude versions include it) and finally
+        // to "Notification" so legacy scripts still work.
+        const hook = String(payload.hook || payload.hook_event_name || "Notification").trim();
+        if (!KNOWN_HOOK_NAMES.has(hook)) {
+          log.trace("unknown hook name — still forwarding for dispatcher to classify", { hook, sessionId });
         }
+
+        // For Notification hooks the subtype (idle_prompt / permission_prompt /
+        // etc.) is meaningful; for other hooks it is usually empty.
+        const subtype = String(payload.notification_type || "").trim();
 
         log.trace("notification received", {
           sessionId,
-          notificationType: notificationType || "idle_prompt",
+          hook,
+          subtype: subtype || null,
           message: String(payload.message || "").slice(0, 100),
         });
         try {
           onNotification({
             sessionId,
-            notificationType: notificationType || "idle_prompt",
+            hook,
+            subtype,
+            payload,
+            // Back-compat fields for callers that haven't migrated to the new shape.
+            // Dispatcher (Phase 0 step 4) ignores these and reads hook/subtype instead.
+            notificationType: subtype || "idle_prompt",
             message: String(payload.message || ""),
             title: String(payload.title || ""),
           });

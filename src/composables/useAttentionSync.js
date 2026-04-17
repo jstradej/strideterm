@@ -8,6 +8,24 @@ export function useAttentionSync(api) {
   let resyncTimer = null;
   let syncDebounce = null;
   let lastSyncKey = "";
+  let windowFocused = typeof document !== "undefined" ? document.hasFocus() : true;
+
+  // Track browser/Electron window focus so the backend can treat "visible +
+  // focused" as real user engagement (Phase 2 § 3.2.5).
+  function onFocus() {
+    windowFocused = true;
+    lastSyncKey = "";
+    sync();
+  }
+  function onBlur() {
+    windowFocused = false;
+    lastSyncKey = "";
+    sync();
+  }
+  if (typeof window !== "undefined") {
+    window.addEventListener("focus", onFocus);
+    window.addEventListener("blur", onBlur);
+  }
 
   function sync() {
     const { count, waitingCount } = appStore.attentionSummary;
@@ -19,7 +37,7 @@ export function useAttentionSync(api) {
     const visibleSessionIds = appStore.visibleTabs.filter((tab) => tab.type === "terminal").map((tab) => tab.id);
 
     // Deduplicate: skip API call if nothing changed
-    const syncKey = `${count}:${waitingCount}:${profile.id}:${visibleSessionIds.join(",")}`;
+    const syncKey = `${count}:${waitingCount}:${profile.id}:${visibleSessionIds.join(",")}:${windowFocused}`;
     if (syncKey === lastSyncKey) return;
     lastSyncKey = syncKey;
 
@@ -33,7 +51,7 @@ export function useAttentionSync(api) {
       }
     }
 
-    api.syncAttentionContext?.({ visibleSessionIds });
+    api.syncAttentionContext?.({ visibleSessionIds, windowFocused });
 
     // If any visible tab still has an attention alert, schedule a re-sync
     // so the backend clears it once ATTENTION_MIN_DISPLAY_MS (3s) elapses.
@@ -61,5 +79,9 @@ export function useAttentionSync(api) {
   onScopeDispose(() => {
     clearTimeout(resyncTimer);
     clearTimeout(syncDebounce);
+    if (typeof window !== "undefined") {
+      window.removeEventListener("focus", onFocus);
+      window.removeEventListener("blur", onBlur);
+    }
   });
 }

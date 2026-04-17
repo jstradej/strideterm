@@ -387,16 +387,21 @@ export class AgentTaskRunner {
       currentRound: task.currentRound,
     });
 
-    if (task.state !== "running" && task.state !== "judge-evaluating") {
-      log.debug("onAgentIdle: task not in actionable state, ignoring", { sessionId, taskState: task.state });
-      return false;
-    }
-
     const isWorker = panelId === task.workerPanelId;
     const isJudge = panelId === task.judgePanelId;
 
     if (!isWorker && !isJudge) {
+      // Arbitrary panel inside a task workspace (e.g. a docs/readme tab the
+      // user added manually). Fall through so the user pipeline decides.
       log.debug("onAgentIdle: panel is neither worker nor judge", { sessionId, panelId });
+      return false;
+    }
+
+    // Paused: user might be hands-on (reviewing, resuming, asking questions
+    // in the worker/judge panel). Fall through so they can be alerted.
+    // See plan § 3.2.d rule 4.
+    if (task.state === "paused") {
+      log.debug("onAgentIdle: paused task, falling through to user pipeline", { sessionId, taskState: task.state });
       return false;
     }
 
@@ -445,7 +450,20 @@ export class AgentTaskRunner {
       return true;
     }
 
-    return false;
+    // Worker/judge panel in a non-actionable state: idle/completed/failed
+    // (task never started or already finished) or evaluating/refreshing
+    // (task is between phases, driven by the runner itself). In all these
+    // cases the user hasn't asked for attention on this panel, so we
+    // consume the hook event to prevent spurious "waiting for input"
+    // notifications from auto-spawned Claude sessions.
+    log.debug("onAgentIdle: worker/judge panel in non-actionable state, consuming", {
+      sessionId,
+      taskState: task.state,
+      panelId,
+      isWorker,
+      isJudge,
+    });
+    return true;
   }
 
   /**
@@ -472,6 +490,75 @@ export class AgentTaskRunner {
       this.#raiseTaskAlert(workspace, "failed", "Worker session exited — task paused");
       this.#broadcastState();
     }
+  }
+
+  /**
+   * Superset hook-event entry point — dispatcher (notifications/dispatcher.js)
+   * calls this FIRST for every hook event. Task runner has first dibs:
+   *
+   *   Returns true  → consumed, dispatcher SHALL NOT raise a user alert
+   *   Returns false → not a task session (or not actionable) — fall through
+   *                   to the normal user notification pipeline
+   *
+   * Delegates to onAgentIdle / onSubagentStop / onUserPromptSubmit based on
+   * the hook name.  Unknown hooks are passed through (returns false).
+   */
+  onHookEvent({ sessionId, hook, subtype }) {
+    if (!sessionId || !hook) return false;
+
+    switch (hook) {
+      case "Notification":
+        return this.onAgentIdle(sessionId, subtype ? `hook:${subtype}` : "hook:notification");
+      case "Stop":
+        // Treat assistant-turn end as an idle signal. Task runner checks
+        // state/panel and either proceeds with verification or returns false.
+        return this.onAgentIdle(sessionId, "hook:stop");
+      case "SubagentStop":
+        return this.onSubagentStop(sessionId);
+      case "UserPromptSubmit":
+        return this.onUserPromptSubmit(sessionId);
+      default:
+        return false;
+    }
+  }
+
+  /**
+   * Sub-agent finished — log for the task audit trail. Task runner does
+   * not act on this (sub-agent outputs are already aggregated by the parent).
+   * Returns true for task workspaces so the dispatcher skips the user alert
+   * (SubagentStop is classified system-only anyway, but this keeps the
+   * task-workspace branch explicit).
+   */
+  onSubagentStop(sessionId) {
+    const parts = sessionId.split(":");
+    if (parts.length < 2) return false;
+    const workspaceId = parts.slice(0, -1).join(":");
+    const workspace = this.#findTaskWorkspace(workspaceId);
+    if (!workspace) return false;
+
+    log.trace("onSubagentStop: task session sub-agent stopped", { sessionId });
+    this.#logTaskEvent(workspace, "subagent-stop", "A sub-agent finished");
+    return true;
+  }
+
+  /**
+   * User submitted a new prompt — cancel any pending judge-reprompt work
+   * (user is steering the conversation themselves).  Returns true for task
+   * workspaces so the dispatcher skips the user alert (UserPromptSubmit is
+   * classified system-only; this is belt-and-braces).
+   */
+  onUserPromptSubmit(sessionId) {
+    const parts = sessionId.split(":");
+    if (parts.length < 2) return false;
+    const workspaceId = parts.slice(0, -1).join(":");
+    const workspace = this.#findTaskWorkspace(workspaceId);
+    if (!workspace) return false;
+
+    log.trace("onUserPromptSubmit: user sent prompt in task workspace", { sessionId });
+    // If task is paused and user is taking over, leave it paused — don't
+    // resume automatically.  The user can click Continue when ready.
+    this.#logTaskEvent(workspace, "user-prompt-submit", "User submitted a prompt");
+    return true;
   }
 
   /**
@@ -1707,13 +1794,19 @@ Do NOT continue working on the task — only write the handoff summary.`;
     const task = workspace.task;
     const roundInfo = task.currentRound ? ` after ${task.currentRound} round${task.currentRound !== 1 ? "s" : ""}` : "";
     const detail = reason ? `task-${kind}: ${reason}` : `task-${kind}${roundInfo}`;
-    log.info("raising task alert", { workspaceId: workspace.id, kind, detail });
+    // Task completed = normal urgency (you can check it later).
+    // Task failed/crashed = urgent — otherwise a broken task sits silent
+    // and defeats the point of running it unattended.
+    const urgency = kind === "completed" ? "normal" : "urgent";
+    log.info("raising task alert", { workspaceId: workspace.id, kind, detail, urgency });
     this.#raiseAlert({
       projectId: workspace.id,
       panelId: workspace.task.workerPanelId,
       sessionId: `${workspace.id}:${workspace.task.workerPanelId}`,
       title: workspace.name,
       kind: kind === "completed" ? "completed" : "waiting",
+      tier: 1,
+      urgency,
       detail,
     });
   }

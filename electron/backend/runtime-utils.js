@@ -20,21 +20,20 @@ export const HOOK_FALLBACK_SILENCE_MS = 120_000; // 2 minutes
 export const ATTENTION_MIN_DISPLAY_MS = 3_000;
 export const ATTENTION_VISIBILITY_GRACE_MS = 5_000;
 
+// Plan § 3.2.3: end-of-line anchored only. Dropped /\bapprove\b/i and
+// /\bdo you want to\b/i — they match anywhere in a line and fire on random
+// log output / docs / commit messages.
 export const WAITING_PATTERNS = [
-  /\bwaiting for input\b/i,
-  /\bneeds your input\b/i,
-  /\brequires your input\b/i,
-  /\bpermission required\b/i,
-  /\bapproval required\b/i,
-  /\bapprove\b/i,
-  /\bpress enter\b/i,
-  /\bpress any key\b/i,
+  /\bwaiting for input\s*$/i,
+  /\bneeds your input\s*$/i,
+  /\brequires your input\s*$/i,
+  /\bpermission (?:required|needed)\??\s*$/i,
+  /\bapproval required\??\s*$/i,
+  /\bpress (?:enter|any key)(?: to continue)?\s*$/i,
   /\bcontinue\?\s*$/i,
-  /\bselect an option\b/i,
-  /\bchoose an option\b/i,
-  /\bwould you like to\b/i,
-  /\bdo you want to\b/i,
-  /\[[ yYnN/]+\]/,
+  /\b(?:select|choose) an option\s*$/i,
+  /\[[yYnN/]+\]\s*\??\s*$/, // [y/N], [Y/n], [y/n] — only at end of line, no spaces inside
+  /\?\s*\((?:yes\/no|y\/n)\)\s*$/i,
 ];
 
 export const PROMPT_PATTERNS_SAFE = [
@@ -44,13 +43,20 @@ export const PROMPT_PATTERNS_SAFE = [
   /^(?:\([^)\n]{1,80}\)\s*)?.{0,180}[›❯➜]\s*$/,
 ];
 
+// Plan § 3.2.3: drop single-char catcher (`/^\s*>\s*$/` matched any grep /
+// markdown line with just `>`). Require trailing space or full box closure.
 export const AGENT_IDLE_PATTERNS = [
-  /^\s*>\s*$/, // Claude Code idle prompt
-  /^\s*[$#>❯›➜]\s*$/, // Generic single-char prompts
-  /^\s*╭─/, // Claude Code boxed prompt start
-  /^\s*\$\s*$/, // Plain dollar prompt
-  ...PROMPT_PATTERNS_SAFE, // Also accept regular shell prompts (agent exited back to shell)
+  /^> $/, // Claude Code idle prompt with trailing space
+  /^❯ $/,
+  /^➜ $/,
+  /^› $/,
+  /^╭─ .+ ─╮$/, // full Claude Code boxed prompt (opening + content + closing)
+  ...PROMPT_PATTERNS_SAFE, // agent that exited back to shell
 ];
+
+// Maximum length for idle / prompt pattern matching. Real prompts are short;
+// long lines are output text that happened to match loosely.
+export const MAX_PATTERN_LINE_LENGTH = 80;
 
 // --- Helpers ---
 
@@ -79,24 +85,39 @@ export function lastNonEmptyLine(value) {
     .split("\n");
   for (let index = lines.length - 1; index >= 0; index -= 1) {
     if (lines[index].trim()) {
-      return lines[index].trimEnd();
+      // Preserve trailing spaces — Claude Code idle prompt is exactly "> "
+      // (greater-than + space). Trimming here hid the space and broke
+      // the tight AGENT_IDLE_PATTERNS that require it.
+      return lines[index];
     }
   }
   return "";
 }
 
 export function matchesPrompt(line) {
-  if (!line) {
-    return false;
-  }
+  if (!line) return false;
+  // Long lines are not prompts — they're output text that happens to match.
+  if (line.length > MAX_PATTERN_LINE_LENGTH) return false;
   return PROMPT_PATTERNS_SAFE.some((pattern) => pattern.test(line));
 }
 
+// Plan § 3.2.3: empty line is NOT idle by default. Previous behavior fired
+// false positives whenever lastOutputLine failed to capture a non-empty line.
+//
+// IMPORTANT: we do NOT trim trailing whitespace here — a genuine idle prompt
+// is exactly `"> "` (greater-than + space). Trimming it away would match
+// lines that just happen to end with `>`, which is the loose behavior the
+// tightened patterns were designed to prevent.
 export function matchesAgentIdle(line) {
-  if (!line) {
-    return true; // Empty line after silence = likely idle
-  }
-  return AGENT_IDLE_PATTERNS.some((pattern) => pattern.test(line.trimEnd()));
+  if (!line) return false;
+  if (line.length > MAX_PATTERN_LINE_LENGTH) return false;
+  return AGENT_IDLE_PATTERNS.some((pattern) => pattern.test(line));
+}
+
+export function matchesWaitingPattern(line) {
+  if (!line) return false;
+  if (line.length > MAX_PATTERN_LINE_LENGTH) return false;
+  return WAITING_PATTERNS.some((pattern) => pattern.test(line));
 }
 
 export function createSessionSignal(sessionId) {
@@ -112,6 +133,34 @@ export function createSessionSignal(sessionId) {
     lastOutputLine: "",
     lastAlertAt: Date.now(),
     lastHookAlertAt: 0,
+    // True once a user-facing alert has actually been raised for this
+    // session. Distinct from `lastAlertAt` (which starts at signal creation
+    // time to seed the initial-warmup cooldown). Used by the repeat-idle
+    // suppression in dispatcher to tell "first alert ever" apart from
+    // "second alert without anything new happening".
+    everAlerted: false,
+    // Hook-first pipeline tracking (Phase 0 § 3.2.d).
+    // Set to true by dispatcher on first hook event; disables silence-based
+    // fallback entirely for agent sessions that have proven hooks work.
+    hookCapable: false,
+    lastHookAt: 0,
+    lastHookType: "", // e.g. "Notification:idle_prompt", "Stop"
+    lastPromptAt: 0, // UserPromptSubmit timestamp
+    // Plan Phase 1 § 4.7 / Phase 2 § 3.2.5:
+    // Updated on any user input / when session becomes visible + focused.
+    // T3 (heuristic) alerts suppressed while within userInteractionGraceMs.
+    lastUserInteractionAt: 0,
+    // Phase 2 § 3.2.4: detected command class for current invocation.
+    // null / "" until classified; reset by OSC 133;C or by shell prompt match.
+    commandClass: "",
+    // Name of the currently-running command (best-effort, for diagnostics).
+    currentCommand: "",
+    // Keystroke accumulator for command classification on Enter.
+    inputBuffer: "",
+    // Phase 3 § 3.2.2: timestamp of last cursor-movement / spinner / progress
+    // animation in PTY output. T3 alerts suppress if this was recent — the
+    // program is still redrawing, not idle.
+    lastAnimationAt: 0,
   };
 }
 

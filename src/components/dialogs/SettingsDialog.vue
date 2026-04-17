@@ -115,6 +115,49 @@
         <small class="help-text">
           Start a local listener for instant agent idle detection via Claude Code notification hooks.
         </small>
+        <label class="settings-checkbox">
+          <input v-model="notifDebug" type="checkbox" />
+          <span>Debug logging</span>
+        </label>
+        <small class="help-text">
+          Promote detection decisions (which tier, which guards passed/failed) to info-level logs. Useful when
+          diagnosing false positives — paste log excerpts into bug reports.
+        </small>
+        <details v-if="metricsSnapshot" class="metrics-details">
+          <summary class="metrics-summary">Notification metrics</summary>
+          <div class="metrics-grid">
+            <div class="metrics-cell">
+              <span class="metrics-label">Uptime</span>
+              <span class="metrics-value">{{ formatMetricsUptime(metricsSnapshot.uptimeMs) }}</span>
+            </div>
+            <div class="metrics-cell">
+              <span class="metrics-label">Hooks received</span>
+              <span class="metrics-value">{{ metricsSnapshot.hooksReceived }}</span>
+            </div>
+            <div class="metrics-cell">
+              <span class="metrics-label">Alerts total</span>
+              <span class="metrics-value">{{ metricsSnapshot.alertsTotal }}</span>
+            </div>
+            <div class="metrics-cell">
+              <span class="metrics-label">T1 / T2 / T3</span>
+              <span class="metrics-value">
+                {{ metricsSnapshot.alertsByTier[1] || 0 }} / {{ metricsSnapshot.alertsByTier[2] || 0 }} /
+                {{ metricsSnapshot.alertsByTier[3] || 0 }}
+              </span>
+            </div>
+            <div class="metrics-cell">
+              <span class="metrics-label">Urgent / Normal</span>
+              <span class="metrics-value">
+                {{ metricsSnapshot.alertsByUrgency.urgent || 0 }} / {{ metricsSnapshot.alertsByUrgency.normal || 0 }}
+              </span>
+            </div>
+            <div class="metrics-cell">
+              <span class="metrics-label">Dismissed w/o interaction</span>
+              <span class="metrics-value">{{ metricsSnapshot.dismissedWithoutInteraction }}</span>
+            </div>
+          </div>
+          <button type="button" class="button button--ghost button--small" @click="refreshMetrics">Refresh</button>
+        </details>
         <div v-if="notifAgentHook" class="hook-setup-section">
           <div class="hook-status-row">
             <span class="hook-status-badge" :class="'hook-status--' + hookStatus">
@@ -138,7 +181,30 @@
             >
               Remove hook
             </button>
+            <button
+              v-if="hookStatus === 'configured' || hookStatus === 'partial'"
+              type="button"
+              class="button button--small"
+              :disabled="hookBusy || hookTesting"
+              @click="handleTestHook"
+            >
+              {{ hookTesting ? "Testing..." : "Test hook" }}
+            </button>
           </div>
+          <p
+            v-if="hookTestResult"
+            class="hook-test-result"
+            :class="hookTestResult.ok ? 'hook-test-ok' : 'hook-test-fail'"
+          >
+            <span v-if="hookTestResult.ok">✓ Hook delivered in {{ hookTestResult.elapsedMs }} ms.</span>
+            <span v-else>
+              ✗ {{ hookTestFailLabel(hookTestResult.reason) }}
+              <span v-if="hookTestResult.detail"> — {{ hookTestResult.detail }}</span>
+            </span>
+          </p>
+          <pre v-if="hookTestResult && !hookTestResult.ok && hookTestResult.logTail" class="hook-log-tail">{{
+            hookTestResult.logTail
+          }}</pre>
           <p v-if="hookError" class="hook-error">{{ hookError }}</p>
           <details class="hook-setup-details">
             <summary class="hook-setup-summary">Manual setup (advanced)</summary>
@@ -222,7 +288,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, computed, inject, toRaw, onMounted } from "vue";
+import { ref, reactive, computed, inject, toRaw, onMounted, onBeforeUnmount } from "vue";
 
 const TABS = [
   { id: "general", label: "General" },
@@ -251,12 +317,25 @@ const selectedTheme = ref(props.settings.theme || "dark");
 const logLevel = ref(props.settings.logLevel || "warn");
 const externalEditor = ref(props.settings.externalEditor || "");
 const cloudflaredPath = ref(props.settings.remoteAccess?.cloudflaredPath || "");
-const notifPromptQuietMs = ref(props.settings.notifications?.promptQuietMs ?? 900);
-const notifAgentQuietMs = ref(props.settings.notifications?.agentQuietMs ?? 20000);
-const notifAgentQuietFastMs = ref(props.settings.notifications?.agentQuietFastMs ?? 12000);
+const notifPromptQuietMs = ref(props.settings.notifications?.promptQuietMs ?? 2500);
+const notifAgentQuietMs = ref(props.settings.notifications?.agentQuietMs ?? 45000);
+const notifAgentQuietFastMs = ref(props.settings.notifications?.agentQuietFastMs ?? 25000);
 const notifAlertCooldownMs = ref(props.settings.notifications?.alertCooldownMs ?? 15000);
 const notifShellIntegration = ref(props.settings.notifications?.shellIntegration ?? true);
 const notifAgentHook = ref(props.settings.notifications?.agentHook ?? true);
+const notifDebug = ref(props.settings.notifications?.debug ?? false);
+const metricsSnapshot = ref(null);
+let metricsTimer = null;
+
+async function refreshMetrics() {
+  try {
+    if (api?.getNotificationMetrics) {
+      metricsSnapshot.value = await api.getNotificationMetrics();
+    }
+  } catch {
+    // Best-effort — metrics viewer just shows "—" if fetch fails.
+  }
+}
 const hookCopied = ref(false);
 const hookStatus = ref("unknown"); // "configured" | "not-configured" | "script-missing" | "error" | "unknown"
 const hookError = ref("");
@@ -315,11 +394,15 @@ async function browseCloudflared() {
 
 const HOOK_STATUS_LABELS = {
   configured: "Configured",
+  partial: "Partial — upgrade available",
   "not-configured": "Not configured",
   "script-missing": "Script missing",
   error: "Error",
   unknown: "Checking...",
 };
+
+const hookTesting = ref(false);
+const hookTestResult = ref(null);
 
 const hookConfigJson = `{
   "hooks": {
@@ -389,6 +472,44 @@ async function handleRemoveHook() {
   }
 }
 
+async function handleTestHook() {
+  if (!api?.testAgentHook) return;
+  hookTesting.value = true;
+  hookTestResult.value = null;
+  try {
+    const result = await api.testAgentHook();
+    hookTestResult.value = result;
+    if (result?.ok) {
+      // Test passed — refresh status in case it went from partial → configured.
+      await refreshHookStatus();
+    }
+  } catch (error) {
+    hookTestResult.value = { ok: false, reason: "exception", detail: error?.message || String(error) };
+  } finally {
+    hookTesting.value = false;
+  }
+}
+
+function hookTestFailLabel(reason) {
+  switch (reason) {
+    case "timeout":
+      return "Hook did not arrive within 2s";
+    case "notify-server-unavailable":
+      return "Notify server is not running — enable Agent hook first";
+    case "configure-failed":
+      return "Could not configure Claude Code settings";
+    case "config-error":
+      return "Error reading Claude Code settings";
+    case "spawn-failed":
+    case "spawn-error":
+      return "Could not launch notify.mjs — Node.js may be missing";
+    case "exception":
+      return "Unexpected error";
+    default:
+      return `Failed (${reason || "unknown"})`;
+  }
+}
+
 async function copyHookConfig() {
   try {
     await navigator.clipboard.writeText(hookConfigJson);
@@ -401,8 +522,28 @@ async function copyHookConfig() {
   }
 }
 
+function formatMetricsUptime(ms) {
+  const sec = Math.floor((ms || 0) / 1000);
+  if (sec < 60) return `${sec}s`;
+  const min = Math.floor(sec / 60);
+  if (min < 60) return `${min}m`;
+  const hrs = Math.floor(min / 60);
+  const remMin = min % 60;
+  return remMin > 0 ? `${hrs}h ${remMin}m` : `${hrs}h`;
+}
+
 onMounted(() => {
   refreshHookStatus();
+  refreshMetrics();
+  // Poll metrics every 10s while the dialog is open.
+  metricsTimer = setInterval(refreshMetrics, 10_000);
+});
+
+onBeforeUnmount(() => {
+  if (metricsTimer) {
+    clearInterval(metricsTimer);
+    metricsTimer = null;
+  }
 });
 
 function handleSave() {
@@ -418,6 +559,7 @@ function handleSave() {
       alertCooldownMs: notifAlertCooldownMs.value,
       shellIntegration: notifShellIntegration.value,
       agentHook: notifAgentHook.value,
+      debug: notifDebug.value,
     },
     tabTemplates: templates.filter((t) => t.title || t.command).map((t) => ({ ...toRaw(t) })),
   });
@@ -669,6 +811,27 @@ function handleSave() {
   font-size: 12px;
   margin: 0;
 }
+.hook-test-result {
+  font-size: 12px;
+  margin: 4px 0 0;
+}
+.hook-test-ok {
+  color: var(--success, #6edfb6);
+}
+.hook-test-fail {
+  color: var(--danger);
+}
+.hook-log-tail {
+  font-size: 11px;
+  max-height: 140px;
+  overflow: auto;
+  background: rgba(0, 0, 0, 0.25);
+  padding: 6px 8px;
+  border-radius: 4px;
+  margin: 4px 0 0;
+  white-space: pre-wrap;
+  font-family: var(--mono, monospace);
+}
 .button--small {
   padding: 4px 10px;
   font-size: 12px;
@@ -703,5 +866,37 @@ function handleSave() {
 .hook-copy-btn {
   margin-top: 6px;
   font-size: 12px;
+}
+.metrics-details {
+  margin-top: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.02);
+}
+.metrics-summary {
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--muted);
+  user-select: none;
+}
+.metrics-grid {
+  margin-top: 8px;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px 16px;
+}
+.metrics-cell {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+  padding: 3px 0;
+}
+.metrics-label {
+  color: var(--muted);
+}
+.metrics-value {
+  font-variant-numeric: tabular-nums;
+  color: inherit;
 }
 </style>

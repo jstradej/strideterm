@@ -43,6 +43,7 @@ playwright-report/
 blob-report/
 
 CLAUDE.md
+.claude/
 
 # strIDEterm local artifacts
 .strideterm/

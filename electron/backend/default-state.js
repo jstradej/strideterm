@@ -318,8 +318,10 @@ export function createDefaultState() {
         agentQuietMs: APP_CONFIG.notifications.agentQuietMs,
         agentQuietFastMs: APP_CONFIG.notifications.agentQuietFastMs,
         alertCooldownMs: APP_CONFIG.notifications.alertCooldownMs,
+        userInteractionGraceMs: APP_CONFIG.notifications.userInteractionGraceMs,
         shellIntegration: APP_CONFIG.notifications.shellIntegration,
         agentHook: APP_CONFIG.notifications.agentHook,
+        debug: APP_CONFIG.notifications.debug,
       },
       remoteAccess: {
         enabled: APP_CONFIG.remoteAccess.enabled,
@@ -581,6 +583,10 @@ export function normalizeState(rawState = {}) {
         Number(rawNotifications.alertCooldownMs) >= 0
           ? Number(rawNotifications.alertCooldownMs)
           : defaults.settings.notifications.alertCooldownMs,
+      userInteractionGraceMs:
+        Number(rawNotifications.userInteractionGraceMs) >= 0
+          ? Number(rawNotifications.userInteractionGraceMs)
+          : defaults.settings.notifications.userInteractionGraceMs,
       shellIntegration:
         typeof rawNotifications.shellIntegration === "boolean"
           ? rawNotifications.shellIntegration
@@ -589,6 +595,8 @@ export function normalizeState(rawState = {}) {
         typeof rawNotifications.agentHook === "boolean"
           ? rawNotifications.agentHook
           : defaults.settings.notifications.agentHook,
+      debug:
+        typeof rawNotifications.debug === "boolean" ? rawNotifications.debug : defaults.settings.notifications.debug,
     },
     remoteAccess: {
       ...defaults.settings.remoteAccess,
