@@ -82,7 +82,11 @@ export const useNotificationStore = defineStore("notifications", () => {
     return flat;
   });
 
-  const unreadCount = computed(() => sessions.value.reduce((acc, s) => acc + (s.state === "waiting" ? 1 : 0), 0));
+  // Bell badge shows anything the user hasn't acknowledged yet — live waiting
+  // sessions AND finished-but-unacked ones (the "Ack finished" queue).
+  const unreadCount = computed(() =>
+    sessions.value.reduce((acc, s) => acc + (s.state === "waiting" || s.state === "finished" ? 1 : 0), 0),
+  );
 
   const waitingSessions = computed(() => sessions.value.filter((s) => s.state === "waiting"));
   const finishedSessions = computed(() => sessions.value.filter((s) => s.state === "finished"));

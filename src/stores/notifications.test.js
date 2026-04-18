@@ -37,11 +37,13 @@ describe("notification store (session-grouped)", () => {
     expect(store.items).toHaveLength(1);
   });
 
-  it("adds a completed event — session state is finished, unreadCount=0", () => {
+  it("adds a completed event — session state is finished, unreadCount=1 (waits for Ack)", () => {
     const store = useNotificationStore();
     addUnique(store, { kind: "completed" });
     expect(store.sessions[0].state).toBe("finished");
-    expect(store.unreadCount).toBe(0);
+    // Finished sessions count toward the bell badge until the user acknowledges
+    // them via Ack finished.
+    expect(store.unreadCount).toBe(1);
   });
 
   it("groups multiple events for the same session", () => {
