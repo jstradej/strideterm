@@ -769,6 +769,17 @@ async function handleSubmit() {
 .grid--2col {
   grid-template-columns: 1fr 1fr;
 }
+/* Force matching height for the Provider select and the Model input next to it
+   — browser defaults render native select / input at slightly different heights
+   which looked ragged in the agent config grid. */
+.agent-config-section input[type="text"],
+.agent-config-section input:not([type]),
+.agent-config-section select {
+  box-sizing: border-box;
+  height: 32px;
+  padding: 4px 8px;
+  line-height: 20px;
+}
 .checkbox-inline {
   display: flex;
   flex-direction: row;
