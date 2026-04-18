@@ -31,6 +31,8 @@ import {
   removeClaudeHook,
   detectClaudeHookStatus,
 } from "./claude-hook-config.js";
+import { configureGeminiHook, removeGeminiHook, detectGeminiHookStatus } from "./gemini-hook-config.js";
+import { configureCodexHook, removeCodexHook, detectCodexHookStatus } from "./codex-hook-config.js";
 import { AgentTaskRunner } from "./agent-task-runner.js";
 import { getProvider, getAllProviders } from "./providers/provider-registry.js";
 import { classifyHookEvent } from "./notifications/classifier.js";
@@ -2611,6 +2613,24 @@ export async function createRuntime({
     async getClaudeHookStatus() {
       return detectClaudeHookStatus(userDataPath);
     },
+    async configureGeminiHook() {
+      return configureGeminiHook(userDataPath);
+    },
+    async removeGeminiHook() {
+      return removeGeminiHook();
+    },
+    async getGeminiHookStatus() {
+      return detectGeminiHookStatus(userDataPath);
+    },
+    async configureCodexHook() {
+      return configureCodexHook(userDataPath);
+    },
+    async removeCodexHook() {
+      return removeCodexHook();
+    },
+    async getCodexHookStatus() {
+      return detectCodexHookStatus(userDataPath);
+    },
     /**
      * Expose notification-pipeline metrics for the About dialog / diagnostics.
      * Pure read — returns a snapshot.
@@ -2619,37 +2639,33 @@ export async function createRuntime({
       return getMetrics();
     },
     /**
-     * End-to-end probe of the Claude Code notification hook pipeline.
+     * End-to-end probe of a notification hook pipeline (Claude or Gemini).
      *
      * Spawns the installed notify.mjs with synthetic stdin containing a
-     * probe UUID. Waits up to 2s for dispatcher to receive the probe.
+     * probe UUID. Waits up to 2s for the dispatcher to receive it.
      * Returns { ok, elapsedMs?, reason?, logTail? }.
+     *
+     * Provider-neutral — both Claude and Gemini use the same notify.mjs;
+     * this helper just needs a detect/configure pair for the requested
+     * provider.
      */
-    async testClaudeHook() {
-      // 1. Ensure script + hooks are configured.
-      const status = await detectClaudeHookStatus(userDataPath);
+    async runHookProbe({ detectStatus, configure }) {
+      const status = await detectStatus(userDataPath);
       if (status.status === "error") {
         return { ok: false, reason: "config-error", detail: status.error };
       }
       if (status.status !== "configured") {
-        const cfg = await configureClaudeHook(userDataPath);
+        const cfg = await configure(userDataPath);
         if (!cfg.ok) return { ok: false, reason: "configure-failed", detail: cfg.error };
       }
 
-      // 2. Ensure notify-server is running — the probe needs a live endpoint.
-      if (!notifyServerHandle) {
-        await startAgentNotifyServer();
-      }
-      if (!notifyServerHandle) {
-        return { ok: false, reason: "notify-server-unavailable" };
-      }
+      if (!notifyServerHandle) await startAgentNotifyServer();
+      if (!notifyServerHandle) return { ok: false, reason: "notify-server-unavailable" };
 
-      // 3. Build probe URL with the shared secret.
       const probeId = randomUUID();
       const probeSessionId = `probe:${probeId}`;
       const probeUrl = buildNotifyUrl(notifyServerHandle.port, probeSessionId, notifySecret);
 
-      // 4. Register one-shot listener (resolves when dispatcher sees probe).
       const receivedPromise = new Promise((resolve) => {
         hookProbeListeners.set(probeId, resolve);
         setTimeout(() => {
@@ -2660,8 +2676,8 @@ export async function createRuntime({
         }, 2000);
       });
 
-      // 5. Spawn notify.mjs with probe payload. Override STRIDETERM_NOTIFY_URL
-      //    so it doesn't rely on CLAUDE_PROJECT_DIR / notify-urls.json.
+      // Override STRIDETERM_NOTIFY_URL so the probe doesn't rely on
+      // CLAUDE_PROJECT_DIR / notify-urls.json resolution.
       const scriptPath = path.join(userDataPath, "hooks", "notify.mjs");
       const startedAt = Date.now();
       let spawnError = null;
@@ -2688,10 +2704,7 @@ export async function createRuntime({
       const result = await receivedPromise;
       const elapsedMs = Date.now() - startedAt;
 
-      if (result?.ok) {
-        return { ok: true, elapsedMs };
-      }
-
+      if (result?.ok) return { ok: true, elapsedMs };
       if (spawnError) {
         return { ok: false, reason: "spawn-error", detail: spawnError.message, elapsedMs };
       }
@@ -2706,6 +2719,15 @@ export async function createRuntime({
         /* no log yet */
       }
       return { ok: false, reason: "timeout", elapsedMs, logTail };
+    },
+    async testClaudeHook() {
+      return this.runHookProbe({ detectStatus: detectClaudeHookStatus, configure: configureClaudeHook });
+    },
+    async testGeminiHook() {
+      return this.runHookProbe({ detectStatus: detectGeminiHookStatus, configure: configureGeminiHook });
+    },
+    async testCodexHook() {
+      return this.runHookProbe({ detectStatus: detectCodexHookStatus, configure: configureCodexHook });
     },
     /**
      * Clear a single session's alert entry. Called from the notification

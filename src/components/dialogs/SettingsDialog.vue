@@ -82,19 +82,31 @@
       <div>
         <span class="section-label">Notification Timing</span>
         <div class="settings-grid">
-          <label class="settings-grid__field">
+          <label
+            class="settings-grid__field"
+            title="Silence threshold before we decide the shell prompt has returned and raise a 'command finished' alert. Too low = spurious alerts mid-command. Default: 900 ms."
+          >
             <span class="settings-grid__label">Prompt quiet (ms)</span>
             <input v-model.number="notifPromptQuietMs" type="number" min="0" step="100" class="settings-input" />
           </label>
-          <label class="settings-grid__field">
+          <label
+            class="settings-grid__field"
+            title="Silence threshold before an AI agent session is considered idle (default 20 s). Applies when no hook/OSC 133 signal is available."
+          >
             <span class="settings-grid__label">Agent idle (ms)</span>
             <input v-model.number="notifAgentQuietMs" type="number" min="0" step="1000" class="settings-input" />
           </label>
-          <label class="settings-grid__field">
+          <label
+            class="settings-grid__field"
+            title="Shorter idle threshold used after a recent output burst — lets us react faster after the agent was clearly active. Default: 12 s."
+          >
             <span class="settings-grid__label">Agent idle fast (ms)</span>
             <input v-model.number="notifAgentQuietFastMs" type="number" min="0" step="1000" class="settings-input" />
           </label>
-          <label class="settings-grid__field">
+          <label
+            class="settings-grid__field"
+            title="Minimum gap between two alerts from the same session. Prevents alert spam when a session rapidly flips between busy and idle. Default: 15 s."
+          >
             <span class="settings-grid__label">Alert cooldown (ms)</span>
             <input v-model.number="notifAlertCooldownMs" type="number" min="0" step="1000" class="settings-input" />
           </label>
@@ -103,7 +115,10 @@
           How long to wait before raising alerts. Prompt quiet = silence before shell prompt alert. Agent idle = silence
           before agent idle alert. Cooldown = minimum gap between alerts.
         </small>
-        <div class="settings-check">
+        <div
+          class="settings-check"
+          title="Inject bash/zsh/PowerShell OSC 133 escape sequences into every PTY so strIDEterm can detect command completion instantly (zero false positives) instead of relying on silence timers."
+        >
           <label class="settings-check__row">
             <input v-model="notifShellIntegration" type="checkbox" />
             <span>Shell integration (OSC 133)</span>
@@ -112,16 +127,23 @@
             >Auto-inject shell integration for instant command-completion detection.</small
           >
         </div>
-        <div class="settings-check">
+        <div
+          class="settings-check"
+          title="Enable the local HTTP listener that receives notification events from Claude Code, Gemini CLI, and Codex CLI hooks. Required before you can Configure any provider below."
+        >
           <label class="settings-check__row">
             <input v-model="notifAgentHook" type="checkbox" />
             <span>Agent notification hook</span>
           </label>
-          <small class="settings-check__help"
-            >Start a local listener for instant agent idle detection via Claude Code notification hooks.</small
-          >
+          <small class="settings-check__help">
+            Start a local listener for instant agent idle detection. Enables the per-provider Configure buttons below
+            (Claude Code, Gemini CLI, Codex CLI).
+          </small>
         </div>
-        <div class="settings-check">
+        <div
+          class="settings-check"
+          title="Verbose logging of detection decisions for diagnosing false positives / missed alerts. Writes to ~/.strideterm/logs/strideterm.log — paste excerpts into bug reports."
+        >
           <label class="settings-check__row">
             <input v-model="notifDebug" type="checkbox" />
             <span>Debug logging</span>
@@ -167,6 +189,7 @@
           <button type="button" class="button button--ghost button--small" @click="refreshMetrics">Refresh</button>
         </details>
         <div v-if="notifAgentHook" class="hook-setup-section">
+          <div class="hook-section-title">Claude Code</div>
           <div class="hook-status-row">
             <span class="hook-status-badge" :class="'hook-status--' + hookStatus">
               {{ HOOK_STATUS_LABELS[hookStatus] || hookStatus }}
@@ -176,6 +199,7 @@
               type="button"
               class="button button--small"
               :disabled="hookBusy"
+              title="Install strIDEterm hook entries into ~/.claude/settings.json so Claude Code fires Notification/Stop/SubagentStop/UserPromptSubmit events to the local listener. Merges with existing user hooks."
               @click="handleConfigureHook"
             >
               {{ hookBusy ? "Configuring..." : "Configure Claude Code" }}
@@ -185,6 +209,7 @@
               type="button"
               class="button button--ghost button--small"
               :disabled="hookBusy"
+              title="Remove only strIDEterm's hook entries from ~/.claude/settings.json. Your own hooks stay intact."
               @click="handleRemoveHook"
             >
               Remove hook
@@ -194,6 +219,7 @@
               type="button"
               class="button button--small"
               :disabled="hookBusy || hookTesting"
+              title="End-to-end probe: spawns notify.mjs with a synthetic payload and measures round-trip latency to confirm the full pipeline (hook → HTTP listener → dispatcher) is live."
               @click="handleTestHook"
             >
               {{ hookTesting ? "Testing..." : "Test hook" }}
@@ -222,7 +248,9 @@
                 <a
                   href="#"
                   class="link-accent"
-                  @click.prevent="api?.openExternal?.('https://github.com/jstradej/strideterm#agent-hook')"
+                  @click.prevent="
+                    api?.openExternal?.('https://github.com/jstradej/strideterm#agent-notification-hooks')
+                  "
                   >notify script</a
                 >
                 at the referenced path:
@@ -230,6 +258,142 @@
               <pre class="hook-setup-code">{{ hookConfigJson }}</pre>
               <button type="button" class="button button--ghost hook-copy-btn" @click="copyHookConfig">
                 {{ hookCopied ? "Copied!" : "Copy to clipboard" }}
+              </button>
+            </div>
+          </details>
+
+          <div class="hook-section-title hook-section-title--spaced">Gemini CLI</div>
+          <div class="hook-status-row">
+            <span class="hook-status-badge" :class="'hook-status--' + geminiHookStatus">
+              {{ HOOK_STATUS_LABELS[geminiHookStatus] || geminiHookStatus }}
+            </span>
+            <button
+              v-if="geminiHookStatus !== 'configured'"
+              type="button"
+              class="button button--small"
+              :disabled="geminiHookBusy"
+              title="Install strIDEterm hook entries into ~/.gemini/settings.json. Registers AfterAgent, Notification, and BeforeAgent events (mapped to Claude-compatible names for the shared dispatcher). Preserves your existing Gemini settings."
+              @click="handleConfigureGeminiHook"
+            >
+              {{ geminiHookBusy ? "Configuring..." : "Configure Gemini CLI" }}
+            </button>
+            <button
+              v-else
+              type="button"
+              class="button button--ghost button--small"
+              :disabled="geminiHookBusy"
+              title="Remove only strIDEterm's hook entries from ~/.gemini/settings.json. Other Gemini config (MCP servers, extensions, user hooks) stays intact."
+              @click="handleRemoveGeminiHook"
+            >
+              Remove hook
+            </button>
+            <button
+              v-if="geminiHookStatus === 'configured' || geminiHookStatus === 'partial'"
+              type="button"
+              class="button button--small"
+              :disabled="geminiHookBusy || geminiHookTesting"
+              title="End-to-end probe through the shared notify.mjs. Confirms the Gemini hook → listener → dispatcher pipeline delivers events within 2 s."
+              @click="handleTestGeminiHook"
+            >
+              {{ geminiHookTesting ? "Testing..." : "Test hook" }}
+            </button>
+          </div>
+          <p
+            v-if="geminiHookTestResult"
+            class="hook-test-result"
+            :class="geminiHookTestResult.ok ? 'hook-test-ok' : 'hook-test-fail'"
+          >
+            <span v-if="geminiHookTestResult.ok">✓ Hook delivered in {{ geminiHookTestResult.elapsedMs }} ms.</span>
+            <span v-else>
+              ✗ {{ hookTestFailLabel(geminiHookTestResult.reason) }}
+              <span v-if="geminiHookTestResult.detail"> — {{ geminiHookTestResult.detail }}</span>
+            </span>
+          </p>
+          <pre
+            v-if="geminiHookTestResult && !geminiHookTestResult.ok && geminiHookTestResult.logTail"
+            class="hook-log-tail"
+            >{{ geminiHookTestResult.logTail }}</pre
+          >
+          <p v-if="geminiHookError" class="hook-error">{{ geminiHookError }}</p>
+          <details class="hook-setup-details">
+            <summary class="hook-setup-summary">Manual setup (advanced)</summary>
+            <div class="hook-setup-content">
+              <p>If auto-configure fails, add this to <code>~/.gemini/settings.json</code>:</p>
+              <pre class="hook-setup-code">{{ geminiHookConfigJson }}</pre>
+              <button type="button" class="button button--ghost hook-copy-btn" @click="copyGeminiHookConfig">
+                {{ geminiHookCopied ? "Copied!" : "Copy to clipboard" }}
+              </button>
+            </div>
+          </details>
+
+          <div class="hook-section-title hook-section-title--spaced">Codex CLI</div>
+          <p v-if="codexHookStatus === 'flag-missing'" class="hook-warn">
+            Hooks are registered but the <code>codex_hooks</code> feature flag is not set in
+            <code>~/.codex/config.toml</code>. Click Configure to fix.
+          </p>
+          <p class="hook-info">Requires Codex CLI 0.121.0+ on Windows.</p>
+          <div class="hook-status-row">
+            <span class="hook-status-badge" :class="'hook-status--' + codexHookStatus">
+              {{ HOOK_STATUS_LABELS[codexHookStatus] || codexHookStatus }}
+            </span>
+            <button
+              v-if="codexHookStatus !== 'configured'"
+              type="button"
+              class="button button--small"
+              :disabled="codexHookBusy"
+              title="Writes two files: (1) [features] codex_hooks = true into ~/.codex/config.toml (required for Codex to load hooks), (2) Stop + UserPromptSubmit entries into ~/.codex/hooks.json. Merges with existing settings."
+              @click="handleConfigureCodexHook"
+            >
+              {{ codexHookBusy ? "Configuring..." : "Configure Codex CLI" }}
+            </button>
+            <button
+              v-else
+              type="button"
+              class="button button--ghost button--small"
+              :disabled="codexHookBusy"
+              title="Remove only strIDEterm's hook entries from ~/.codex/hooks.json. The codex_hooks feature flag in config.toml is left alone — other hooks you may have rely on it."
+              @click="handleRemoveCodexHook"
+            >
+              Remove hook
+            </button>
+            <button
+              v-if="codexHookStatus === 'configured' || codexHookStatus === 'partial'"
+              type="button"
+              class="button button--small"
+              :disabled="codexHookBusy || codexHookTesting"
+              title="End-to-end probe through the shared notify.mjs. Confirms the Codex hook → listener → dispatcher pipeline delivers events within 2 s."
+              @click="handleTestCodexHook"
+            >
+              {{ codexHookTesting ? "Testing..." : "Test hook" }}
+            </button>
+          </div>
+          <p
+            v-if="codexHookTestResult"
+            class="hook-test-result"
+            :class="codexHookTestResult.ok ? 'hook-test-ok' : 'hook-test-fail'"
+          >
+            <span v-if="codexHookTestResult.ok">✓ Hook delivered in {{ codexHookTestResult.elapsedMs }} ms.</span>
+            <span v-else>
+              ✗ {{ hookTestFailLabel(codexHookTestResult.reason) }}
+              <span v-if="codexHookTestResult.detail"> — {{ codexHookTestResult.detail }}</span>
+            </span>
+          </p>
+          <pre
+            v-if="codexHookTestResult && !codexHookTestResult.ok && codexHookTestResult.logTail"
+            class="hook-log-tail"
+            >{{ codexHookTestResult.logTail }}</pre
+          >
+          <p v-if="codexHookError" class="hook-error">{{ codexHookError }}</p>
+          <details class="hook-setup-details">
+            <summary class="hook-setup-summary">Manual setup (advanced)</summary>
+            <div class="hook-setup-content">
+              <p>
+                If auto-configure fails, (1) add <code>[features]<br />codex_hooks = true</code> to
+                <code>~/.codex/config.toml</code>, then (2) add this to <code>~/.codex/hooks.json</code>:
+              </p>
+              <pre class="hook-setup-code">{{ codexHookConfigJson }}</pre>
+              <button type="button" class="button button--ghost hook-copy-btn" @click="copyCodexHookConfig">
+                {{ codexHookCopied ? "Copied!" : "Copy to clipboard" }}
               </button>
             </div>
           </details>
@@ -405,12 +569,27 @@ const HOOK_STATUS_LABELS = {
   partial: "Partial — upgrade available",
   "not-configured": "Not configured",
   "script-missing": "Script missing",
+  "flag-missing": "Feature flag missing",
   error: "Error",
   unknown: "Checking...",
 };
 
 const hookTesting = ref(false);
 const hookTestResult = ref(null);
+
+// --- Gemini hook state (parallel to Claude) ---
+const geminiHookStatus = ref("unknown");
+const geminiHookError = ref("");
+const geminiHookBusy = ref(false);
+const geminiHookTesting = ref(false);
+const geminiHookTestResult = ref(null);
+
+// --- Codex hook state (parallel to Claude/Gemini) ---
+const codexHookStatus = ref("unknown");
+const codexHookError = ref("");
+const codexHookBusy = ref(false);
+const codexHookTesting = ref(false);
+const codexHookTestResult = ref(null);
 
 const hookConfigJson = `{
   "hooks": {
@@ -429,25 +608,153 @@ const hookConfigJson = `{
   }
 }`;
 
+// Gemini CLI uses the Claude-compatible nested shape (matcher + hooks array) with
+// millisecond timeouts. AfterAgent only honors "*" for the matcher. Event names
+// map onto Claude aliases via argv[2] so the shared dispatcher works.
+const geminiHookConfigJson = `{
+  "hooks": {
+    "AfterAgent": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "name": "strideterm-Stop",
+            "type": "command",
+            "command": "node \\"~/.strideterm/hooks/notify.mjs\\" Stop",
+            "timeout": 5000
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "name": "strideterm-Notification",
+            "type": "command",
+            "command": "node \\"~/.strideterm/hooks/notify.mjs\\" Notification",
+            "timeout": 5000
+          }
+        ]
+      }
+    ],
+    "BeforeAgent": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "name": "strideterm-UserPromptSubmit",
+            "type": "command",
+            "command": "node \\"~/.strideterm/hooks/notify.mjs\\" UserPromptSubmit",
+            "timeout": 5000
+          }
+        ]
+      }
+    ]
+  }
+}`;
+const geminiHookCopied = ref(false);
+async function copyGeminiHookConfig() {
+  try {
+    await navigator.clipboard.writeText(geminiHookConfigJson);
+    geminiHookCopied.value = true;
+    setTimeout(() => {
+      geminiHookCopied.value = false;
+    }, 2000);
+  } catch {
+    // Clipboard API not available
+  }
+}
+
+// Codex CLI hooks — same nested shape as Claude (matcher + hooks array).
+// Requires `codex_hooks = true` in ~/.codex/config.toml to load.
+const codexHookConfigJson = `{
+  "hooks": {
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \\"~/.strideterm/hooks/notify.mjs\\" Stop",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \\"~/.strideterm/hooks/notify.mjs\\" UserPromptSubmit",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}`;
+const codexHookCopied = ref(false);
+async function copyCodexHookConfig() {
+  try {
+    await navigator.clipboard.writeText(codexHookConfigJson);
+    codexHookCopied.value = true;
+    setTimeout(() => {
+      codexHookCopied.value = false;
+    }, 2000);
+  } catch {
+    // Clipboard API not available
+  }
+}
+
 async function refreshHookStatus() {
-  if (!api?.getAgentHookStatus) {
+  if (!api?.getClaudeHookStatus) {
     hookStatus.value = "unknown";
     return;
   }
   try {
-    const result = await api.getAgentHookStatus();
+    const result = await api.getClaudeHookStatus();
     hookStatus.value = result.status || "unknown";
   } catch {
     hookStatus.value = "error";
   }
 }
 
+async function refreshGeminiHookStatus() {
+  if (!api?.getGeminiHookStatus) {
+    geminiHookStatus.value = "unknown";
+    return;
+  }
+  try {
+    const result = await api.getGeminiHookStatus();
+    geminiHookStatus.value = result.status || "unknown";
+  } catch {
+    geminiHookStatus.value = "error";
+  }
+}
+
+async function refreshCodexHookStatus() {
+  if (!api?.getCodexHookStatus) {
+    codexHookStatus.value = "unknown";
+    return;
+  }
+  try {
+    const result = await api.getCodexHookStatus();
+    codexHookStatus.value = result.status || "unknown";
+  } catch {
+    codexHookStatus.value = "error";
+  }
+}
+
 async function handleConfigureHook() {
-  if (!api?.configureAgentHook) return;
+  if (!api?.configureClaudeHook) return;
   hookBusy.value = true;
   hookError.value = "";
   try {
-    const result = await api.configureAgentHook();
+    const result = await api.configureClaudeHook();
     if (result.ok) {
       hookStatus.value = "configured";
     } else {
@@ -463,11 +770,11 @@ async function handleConfigureHook() {
 }
 
 async function handleRemoveHook() {
-  if (!api?.removeAgentHook) return;
+  if (!api?.removeClaudeHook) return;
   hookBusy.value = true;
   hookError.value = "";
   try {
-    const result = await api.removeAgentHook();
+    const result = await api.removeClaudeHook();
     if (result.ok) {
       hookStatus.value = "not-configured";
     } else {
@@ -481,11 +788,11 @@ async function handleRemoveHook() {
 }
 
 async function handleTestHook() {
-  if (!api?.testAgentHook) return;
+  if (!api?.testClaudeHook) return;
   hookTesting.value = true;
   hookTestResult.value = null;
   try {
-    const result = await api.testAgentHook();
+    const result = await api.testClaudeHook();
     hookTestResult.value = result;
     if (result?.ok) {
       // Test passed — refresh status in case it went from partial → configured.
@@ -495,6 +802,112 @@ async function handleTestHook() {
     hookTestResult.value = { ok: false, reason: "exception", detail: error?.message || String(error) };
   } finally {
     hookTesting.value = false;
+  }
+}
+
+async function handleConfigureGeminiHook() {
+  if (!api?.configureGeminiHook) return;
+  geminiHookBusy.value = true;
+  geminiHookError.value = "";
+  try {
+    const result = await api.configureGeminiHook();
+    if (result.ok) {
+      geminiHookStatus.value = "configured";
+    } else {
+      geminiHookError.value = result.error || "Configuration failed.";
+      geminiHookStatus.value = "error";
+    }
+  } catch (error) {
+    geminiHookError.value = error.message || "Unexpected error during configuration.";
+    geminiHookStatus.value = "error";
+  } finally {
+    geminiHookBusy.value = false;
+  }
+}
+
+async function handleRemoveGeminiHook() {
+  if (!api?.removeGeminiHook) return;
+  geminiHookBusy.value = true;
+  geminiHookError.value = "";
+  try {
+    const result = await api.removeGeminiHook();
+    if (result.ok) {
+      geminiHookStatus.value = "not-configured";
+    } else {
+      geminiHookError.value = result.error || "Removal failed.";
+    }
+  } catch (error) {
+    geminiHookError.value = error.message || "Unexpected error during removal.";
+  } finally {
+    geminiHookBusy.value = false;
+  }
+}
+
+async function handleTestGeminiHook() {
+  if (!api?.testGeminiHook) return;
+  geminiHookTesting.value = true;
+  geminiHookTestResult.value = null;
+  try {
+    const result = await api.testGeminiHook();
+    geminiHookTestResult.value = result;
+    if (result?.ok) await refreshGeminiHookStatus();
+  } catch (error) {
+    geminiHookTestResult.value = { ok: false, reason: "exception", detail: error?.message || String(error) };
+  } finally {
+    geminiHookTesting.value = false;
+  }
+}
+
+async function handleConfigureCodexHook() {
+  if (!api?.configureCodexHook) return;
+  codexHookBusy.value = true;
+  codexHookError.value = "";
+  try {
+    const result = await api.configureCodexHook();
+    if (result.ok) {
+      codexHookStatus.value = "configured";
+    } else {
+      codexHookError.value = result.error || "Configuration failed.";
+      codexHookStatus.value = "error";
+    }
+  } catch (error) {
+    codexHookError.value = error.message || "Unexpected error during configuration.";
+    codexHookStatus.value = "error";
+  } finally {
+    codexHookBusy.value = false;
+  }
+}
+
+async function handleRemoveCodexHook() {
+  if (!api?.removeCodexHook) return;
+  codexHookBusy.value = true;
+  codexHookError.value = "";
+  try {
+    const result = await api.removeCodexHook();
+    if (result.ok) {
+      codexHookStatus.value = "not-configured";
+    } else {
+      codexHookError.value = result.error || "Removal failed.";
+    }
+  } catch (error) {
+    codexHookError.value = error.message || "Unexpected error during removal.";
+  } finally {
+    codexHookBusy.value = false;
+  }
+}
+
+async function handleTestCodexHook() {
+  if (!api?.testCodexHook) return;
+  codexHookTesting.value = true;
+  codexHookTestResult.value = null;
+  try {
+    const result = await api.testCodexHook();
+    codexHookTestResult.value = result;
+    if (result?.ok) await refreshCodexHookStatus();
+  } catch (error) {
+    codexHookTestResult.value = { ok: false, reason: "exception", detail: error?.message || String(error) };
+  } finally {
+    codexHookTesting.value = false;
   }
 }
 
@@ -542,6 +955,8 @@ function formatMetricsUptime(ms) {
 
 onMounted(() => {
   refreshHookStatus();
+  refreshGeminiHookStatus();
+  refreshCodexHookStatus();
   refreshMetrics();
   // Poll metrics every 10s while the dialog is open.
   metricsTimer = setInterval(refreshMetrics, 10_000);
@@ -824,6 +1239,18 @@ function handleSave() {
   display: grid;
   gap: 8px;
 }
+.hook-section-title {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  opacity: 0.65;
+}
+.hook-section-title--spaced {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
 .hook-status-row {
   display: flex;
   align-items: center;
@@ -845,9 +1272,21 @@ function handleSave() {
   background: rgba(255, 255, 255, 0.06);
 }
 .hook-status--error,
-.hook-status--script-missing {
+.hook-status--script-missing,
+.hook-status--flag-missing {
   color: var(--danger);
   background: rgba(255, 80, 80, 0.12);
+}
+.hook-warn {
+  color: var(--warning, #e8a540);
+  font-size: 12px;
+  margin: 0;
+}
+.hook-info {
+  color: var(--muted);
+  font-size: 11px;
+  margin: 0;
+  opacity: 0.8;
 }
 .hook-error {
   color: var(--danger);

@@ -288,10 +288,18 @@ export function registerIpc(runtime, emitToRenderer, { includeStateGet = true } 
   ipcMain.handle("tunnel:refresh", async () => runtime.refreshTunnelState());
   ipcMain.handle("tunnel:create", async () => runtime.createCloudflareTunnel());
   ipcMain.handle("tunnel:stop", async () => runtime.stopCloudflareTunnel());
-  ipcMain.handle("agent-hook:configure", async () => runtime.configureClaudeHook());
-  ipcMain.handle("agent-hook:remove", async () => runtime.removeClaudeHook());
-  ipcMain.handle("agent-hook:status", async () => runtime.getClaudeHookStatus());
-  ipcMain.handle("agent-hook:test", async () => runtime.testClaudeHook());
+  ipcMain.handle("claude-hook:configure", async () => runtime.configureClaudeHook());
+  ipcMain.handle("claude-hook:remove", async () => runtime.removeClaudeHook());
+  ipcMain.handle("claude-hook:status", async () => runtime.getClaudeHookStatus());
+  ipcMain.handle("claude-hook:test", async () => runtime.testClaudeHook());
+  ipcMain.handle("gemini-hook:configure", async () => runtime.configureGeminiHook());
+  ipcMain.handle("gemini-hook:remove", async () => runtime.removeGeminiHook());
+  ipcMain.handle("gemini-hook:status", async () => runtime.getGeminiHookStatus());
+  ipcMain.handle("gemini-hook:test", async () => runtime.testGeminiHook());
+  ipcMain.handle("codex-hook:configure", async () => runtime.configureCodexHook());
+  ipcMain.handle("codex-hook:remove", async () => runtime.removeCodexHook());
+  ipcMain.handle("codex-hook:status", async () => runtime.getCodexHookStatus());
+  ipcMain.handle("codex-hook:test", async () => runtime.testCodexHook());
   ipcMain.handle("notifications:metrics", async () => runtime.getNotificationMetrics());
 
   // --- Task runner ---
@@ -624,9 +632,18 @@ export function registerIpc(runtime, emitToRenderer, { includeStateGet = true } 
     ipcMain.removeHandler("tunnel:refresh");
     ipcMain.removeHandler("tunnel:create");
     ipcMain.removeHandler("tunnel:stop");
-    ipcMain.removeHandler("agent-hook:configure");
-    ipcMain.removeHandler("agent-hook:remove");
-    ipcMain.removeHandler("agent-hook:status");
+    ipcMain.removeHandler("claude-hook:configure");
+    ipcMain.removeHandler("claude-hook:remove");
+    ipcMain.removeHandler("claude-hook:status");
+    ipcMain.removeHandler("claude-hook:test");
+    ipcMain.removeHandler("gemini-hook:configure");
+    ipcMain.removeHandler("gemini-hook:remove");
+    ipcMain.removeHandler("gemini-hook:status");
+    ipcMain.removeHandler("gemini-hook:test");
+    ipcMain.removeHandler("codex-hook:configure");
+    ipcMain.removeHandler("codex-hook:remove");
+    ipcMain.removeHandler("codex-hook:status");
+    ipcMain.removeHandler("codex-hook:test");
     ipcMain.removeHandler("task:create-workspace");
     ipcMain.removeHandler("task:start");
     ipcMain.removeHandler("task:stop");

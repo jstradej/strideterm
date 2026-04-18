@@ -2,16 +2,19 @@
 
 The Agent Task Runner is a supervised coding loop that coordinates two AI agents (Worker + Judge) to complete coding tasks autonomously. It auto-detects verification commands from your project and pre-fills them as a checklist in TASK.md, then uses an independent judge to evaluate completion.
 
+Worker and Judge each run one of the supported CLIs — **Claude Code**, **Codex CLI**, or **Gemini CLI** — selected independently per role. You can mix providers (e.g. Claude Code as Worker + Gemini CLI as Judge) to take advantage of each model's strengths.
+
 ## Quick Start
 
 1. Click the **+** button in the sidebar and select **Create task workspace**
 2. Choose your **project directory** (must contain the code you want to modify)
 3. _(Optional)_ Check **Create in git worktree** to isolate the task on its own branch
-4. Write a **task assignment** describing what needs to be done
-5. Click **Create workspace** — control files are generated automatically
-6. Press **Start** in the Dashboard to begin
+4. Pick the **Worker** and **Judge** agents — provider (Claude Code / Codex CLI / Gemini CLI) + model. Unavailable providers (not on PATH) are disabled.
+5. Write a **task assignment** describing what needs to be done
+6. Click **Create workspace** — control files are generated automatically
+7. Press **Start** in the Dashboard to begin
 
-The Worker (Claude Code) will start executing the task. When it goes idle, the Task Runner automatically runs built-in checks and, if they pass, asks the Judge to independently evaluate the work.
+The Worker will start executing the task. When it goes idle, the Task Runner automatically runs built-in checks and, if they pass, asks the Judge to independently evaluate the work.
 
 ## How It Works
 
@@ -37,6 +40,34 @@ Done! You get notified.
 ```
 
 The loop repeats until the Judge approves the work or the maximum number of rounds is reached.
+
+## Provider Selection
+
+Each task workspace configures Worker and Judge independently. Two modes:
+
+**Picker mode (default)** — pick a provider and model from dropdowns, plus a per-role **Skip permission prompts (dangerous)** checkbox. Defaults per provider: Claude and Codex skip on, Gemini skip off. The checkbox controls CLI flags:
+
+| Provider    | Skip ON flag                                                       |
+| ----------- | ------------------------------------------------------------------ |
+| Claude Code | `--dangerously-skip-permissions`                                   |
+| Codex CLI   | `--dangerously-bypass-approvals-and-sandbox -s danger-full-access` |
+| Gemini CLI  | `--yolo`                                                           |
+
+**Advanced: custom command** — full CLI command string, e.g. `codex --model o3 --approval-mode auto`. Toggling to advanced prefills the field from the picker state so you can tweak rather than start blank.
+
+Choose **Default** as the model to let the CLI use its own default without passing a `--model` flag.
+
+### Idle detection per provider
+
+Each CLI signals end-of-turn differently. The Task Runner picks up on the first of the following that fires:
+
+| Provider    | Primary signal                                         | Fallback                                 |
+| ----------- | ------------------------------------------------------ | ---------------------------------------- |
+| Claude Code | OSC 133 shell integration (instant)                    | Notification / Stop hooks, silence timer |
+| Codex CLI   | Stop hook (instant, requires hook configuration)       | Silence timer (8 s)                      |
+| Gemini CLI  | AfterAgent hook (instant, requires hook configuration) | Silence timer (8 s)                      |
+
+For instant Codex and Gemini handoffs, enable their notification hooks in **Settings → Notifications**. Without hooks the silence heuristic still works but introduces an 8-second delay per handoff (and longer if the CLI reasons for a while). Codex hooks require **Codex CLI 0.121.0+** on Windows — older Windows builds ship with hooks gated off.
 
 ## Writing Good Task Descriptions
 

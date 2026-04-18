@@ -514,7 +514,7 @@ export function createDialogActions(ctx) {
             });
             if (settingsResult?.payload) ctx.payload.value = settingsResult.payload;
             // Then configure the hook in Claude Code
-            await api.configureAgentHook();
+            await api.configureClaudeHook();
           } catch (err) {
             console.error("[task] hook configure failed:", err);
           }
@@ -526,7 +526,7 @@ export function createDialogActions(ctx) {
 
     // Setting is on — check if hook is actually configured in Claude Code
     try {
-      const hookResult = await api.getAgentHookStatus();
+      const hookResult = await api.getClaudeHookStatus();
       if (hookResult?.status === "configured") {
         // All good — start immediately
         await doStartTask(workspaceId);
@@ -549,7 +549,7 @@ export function createDialogActions(ctx) {
       onConfigure: async () => {
         closeDialog();
         try {
-          await api.configureAgentHook();
+          await api.configureClaudeHook();
         } catch (err) {
           console.error("[task] hook configure failed:", err);
         }

@@ -1,4 +1,4 @@
-import { writeFile, mkdir, readFile } from "node:fs/promises";
+import { writeFile, readFile } from "node:fs/promises";
 import path from "node:path";
 import { BaseProvider, checkBinaryOnPath } from "./base-provider.js";
 
@@ -28,18 +28,15 @@ export class GeminiProvider extends BaseProvider {
   }
 
   /**
-   * Write .gemini/settings.json with yolo approval mode so the agent doesn't
-   * prompt for tool approvals during task execution. Also ensures .gemini/ is
-   * in the project's .gitignore.
+   * Ensure .gemini/ is in the project's .gitignore so Gemini's per-project
+   * state (chats, cache) doesn't leak into commits.
+   *
+   * Notification hooks are NOT configured here — they live at user scope in
+   * ~/.gemini/settings.json and are set up explicitly via the Settings dialog
+   * (see gemini-hook-config.js). Tool-approval skipping is handled by the
+   * --yolo CLI flag when skipPermissions is on.
    */
   async beforeStart(cwd) {
-    const geminiDir = path.join(cwd, ".gemini");
-    await mkdir(geminiDir, { recursive: true });
-
-    const settingsPath = path.join(geminiDir, "settings.json");
-    const settings = { toolApproval: "yolo" };
-    await writeFile(settingsPath, JSON.stringify(settings, null, 2), "utf8");
-
     await this.#ensureGitIgnore(cwd);
   }
 

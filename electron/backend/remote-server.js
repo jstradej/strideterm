@@ -405,16 +405,52 @@ async function handleApiRequest(runtime, request, response) {
       return;
     }
 
-    if (request.method === "POST" && url.pathname === "/api/agent-hook/configure") {
+    if (request.method === "POST" && url.pathname === "/api/claude-hook/configure") {
       json(response, 200, await runtime.configureClaudeHook());
       return;
     }
-    if (request.method === "POST" && url.pathname === "/api/agent-hook/remove") {
+    if (request.method === "POST" && url.pathname === "/api/claude-hook/remove") {
       json(response, 200, await runtime.removeClaudeHook());
       return;
     }
-    if (request.method === "POST" && url.pathname === "/api/agent-hook/status") {
+    if (request.method === "POST" && url.pathname === "/api/claude-hook/status") {
       json(response, 200, await runtime.getClaudeHookStatus());
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/api/gemini-hook/configure") {
+      json(response, 200, await runtime.configureGeminiHook());
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/api/gemini-hook/remove") {
+      json(response, 200, await runtime.removeGeminiHook());
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/api/gemini-hook/status") {
+      json(response, 200, await runtime.getGeminiHookStatus());
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/api/claude-hook/test") {
+      json(response, 200, await runtime.testClaudeHook());
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/api/gemini-hook/test") {
+      json(response, 200, await runtime.testGeminiHook());
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/api/codex-hook/configure") {
+      json(response, 200, await runtime.configureCodexHook());
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/api/codex-hook/remove") {
+      json(response, 200, await runtime.removeCodexHook());
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/api/codex-hook/status") {
+      json(response, 200, await runtime.getCodexHookStatus());
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/api/codex-hook/test") {
+      json(response, 200, await runtime.testCodexHook());
       return;
     }
 

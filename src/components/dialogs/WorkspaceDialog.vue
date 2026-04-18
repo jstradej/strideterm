@@ -100,7 +100,7 @@
             placeholder="e.g. task/add-pagination"
             :required="draft.useWorktree"
             maxlength="200"
-            pattern="[a-zA-Z0-9._\/-]+"
+            pattern="[\-a-zA-Z0-9._\/]+"
             title="Only letters, numbers, dots, hyphens, slashes, or underscores"
           />
           <span class="field-hint"
