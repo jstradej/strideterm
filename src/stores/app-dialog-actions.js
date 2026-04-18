@@ -327,6 +327,22 @@ export function createDialogActions(ctx) {
       })
       .catch(() => {});
 
+    // Check all provider availabilities in the background — result is passed
+    // to the dialog via the providerAvailability prop after resolution.
+    const providerAvailabilityRef = { value: {} };
+    ctx
+      .getApi()
+      .checkProviders?.()
+      .then((result) => {
+        providerAvailabilityRef.value = result || {};
+      })
+      .catch(() => {});
+
+    // Use per-user taskDefaults from settings for the initial provider selection
+    const taskDefaults = ctx.payload.value?.appState?.settings?.taskDefaults || {};
+    const defaultWorkerProvider = taskDefaults.workerProvider || { providerId: "claude", model: "sonnet" };
+    const defaultJudgeProvider = taskDefaults.judgeProvider || { providerId: "claude", model: "opus" };
+
     // Build a task workspace draft with panel stubs so the full dialog
     // can bind to workerPanel/judgePanel commands.
     const workerPanelId = `panel-${crypto.randomUUID()}`;
@@ -366,6 +382,11 @@ export function createDialogActions(ctx) {
         judgePanelId,
         maxRounds: 10,
       },
+      // Provider selection (new)
+      workerProvider: { ...defaultWorkerProvider },
+      judgeProvider: { ...defaultJudgeProvider },
+      workerCommandOverride: false,
+      judgeCommandOverride: false,
       // Extra fields consumed by the creation flow only
       useWorktree: false,
       worktreeBranch: "",
@@ -375,6 +396,7 @@ export function createDialogActions(ctx) {
       workspace: taskDraft,
       creating: true,
       tabTemplates: [],
+      providerAvailabilityRef,
       onCancel: closeDialog,
       onSubmit: async (draft) => {
         try {
@@ -388,11 +410,23 @@ export function createDialogActions(ctx) {
             notes: draft.notes || "",
           };
 
-          // Extract worker/judge commands from panel stubs
+          // Extract worker/judge config: provider dropdown or raw command override
           const wp = draft.panels?.find((p) => p.id === workerPanelId);
           const jp = draft.panels?.find((p) => p.id === judgePanelId);
-          if (wp?.command) config.workerCommand = wp.command;
-          if (jp?.command) config.judgeCommand = jp.command;
+          if (draft.workerCommandOverride) {
+            if (wp?.command) config.workerCommand = wp.command;
+          } else if (draft.workerProvider) {
+            config.workerProvider = draft.workerProvider;
+          } else if (wp?.command) {
+            config.workerCommand = wp.command;
+          }
+          if (draft.judgeCommandOverride) {
+            if (jp?.command) config.judgeCommand = jp.command;
+          } else if (draft.judgeProvider) {
+            config.judgeProvider = draft.judgeProvider;
+          } else if (jp?.command) {
+            config.judgeCommand = jp.command;
+          }
 
           // Worktree config
           if (draft.useWorktree) {

@@ -428,6 +428,10 @@ async function handleApiRequest(runtime, request, response) {
       json(response, 200, await runtime.recheckClaude());
       return;
     }
+    if (request.method === "POST" && url.pathname === "/api/task/check-providers") {
+      json(response, 200, await runtime.checkProviders());
+      return;
+    }
     if (request.method === "POST" && url.pathname === "/api/task/create") {
       json(response, 200, await runtime.createTaskWorkspace(body));
       return;

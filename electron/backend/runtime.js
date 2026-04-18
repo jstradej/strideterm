@@ -32,6 +32,7 @@ import {
   detectClaudeHookStatus,
 } from "./claude-hook-config.js";
 import { AgentTaskRunner } from "./agent-task-runner.js";
+import { getProvider, getAllProviders } from "./providers/provider-registry.js";
 import { classifyHookEvent } from "./notifications/classifier.js";
 import {
   classifyCommand,
@@ -320,11 +321,22 @@ export async function createRuntime({
     getSessionEnv: ({ workspace, sessionId }) => {
       const env = {};
 
-      // Disable Claude Code background/scheduled tasks in task workspaces.
-      // The task runner controls the lifecycle — autonomous background work
-      // would interfere with the worker/judge evaluation cycle.
-      if (workspace?.kind === "task") {
-        env.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS = "1";
+      // Set provider-specific environment variables for task workspace sessions.
+      // CLAUDE_CODE_DISABLE_BACKGROUND_TASKS is Claude-specific — only inject it
+      // for Claude provider sessions, not Codex or Gemini.
+      if (workspace?.kind === "task" && workspace.task) {
+        const panelId = sessionId ? sessionId.split(":").pop() : "";
+        const isWorker = panelId === workspace.task.workerPanelId;
+        const providerConfig = isWorker
+          ? workspace.task.workerProviderConfig || { providerId: "claude" }
+          : workspace.task.judgeProviderConfig || { providerId: "claude" };
+        try {
+          const provider = getProvider(providerConfig.providerId);
+          Object.assign(env, provider.getEnvironment(providerConfig));
+        } catch {
+          // Unknown provider — fall back to Claude defaults for backward compat
+          env.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS = "1";
+        }
       }
 
       // Agent notification hook URL — set in env (for non-Claude-Code agents)
@@ -3128,6 +3140,17 @@ export async function createRuntime({
       const available = await recheckClaudeAvailability();
       return { available, payload: getPayload() };
     },
+    async checkProviders() {
+      const results = {};
+      for (const ProviderClass of getAllProviders()) {
+        try {
+          results[ProviderClass.id] = await new ProviderClass().checkAvailability();
+        } catch (err) {
+          results[ProviderClass.id] = { available: false, error: err.message };
+        }
+      }
+      return results;
+    },
     async createTaskWorkspace(config) {
       log.info("createTaskWorkspace", {
         cwd: config.cwd,
@@ -3218,6 +3241,8 @@ export async function createRuntime({
         notes: config.notes,
         workerCommand: config.workerCommand,
         judgeCommand: config.judgeCommand,
+        workerProvider: config.workerProvider,
+        judgeProvider: config.judgeProvider,
       });
 
       // Store worktree metadata in task object

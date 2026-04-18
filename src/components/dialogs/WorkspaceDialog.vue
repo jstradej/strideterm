@@ -124,21 +124,98 @@
             <input v-model.number="draft.task.maxRounds" type="number" min="1" max="100" />
           </label>
         </div>
-        <label
-          title="Command used to launch the Worker agent. Add flags like --dangerously-skip-permissions or --mcp-config as needed."
-        >
-          <span>Worker command</span>
-          <input v-model="workerPanel.command" placeholder="claude" maxlength="500" />
-        </label>
-        <label
-          title="Command used to launch the Judge agent. Usually the same as Worker but can use a different model or configuration."
-        >
-          <span>Judge command</span>
-          <input v-model="judgePanel.command" placeholder="claude" maxlength="500" />
-        </label>
+        <!-- Worker agent configuration -->
+        <div class="agent-config-section">
+          <div class="agent-config-section__header">
+            <span class="agent-config-section__label">Worker agent</span>
+            <button
+              type="button"
+              class="button button--ghost agent-config-section__advanced-btn"
+              @click="draft.workerCommandOverride = !draft.workerCommandOverride"
+            >
+              {{ draft.workerCommandOverride ? "Use provider picker" : "Advanced: custom command" }}
+            </button>
+          </div>
+          <template v-if="!draft.workerCommandOverride">
+            <div class="grid grid--2col">
+              <label>
+                <span>Provider</span>
+                <select v-model="draft.workerProvider.providerId" @change="onWorkerProviderChange">
+                  <option
+                    v-for="p in PROVIDER_CHOICES"
+                    :key="p.id"
+                    :value="p.id"
+                    :disabled="providerAvailability[p.id]?.available === false"
+                  >
+                    {{ p.name }}{{ providerAvailability[p.id]?.available === false ? " (not found)" : "" }}
+                  </option>
+                </select>
+              </label>
+              <label>
+                <span>Model</span>
+                <select v-model="draft.workerProvider.model">
+                  <option v-for="m in workerModelChoices" :key="m.id" :value="m.id">{{ m.name }}</option>
+                </select>
+              </label>
+            </div>
+          </template>
+          <label v-else title="Full CLI command including flags">
+            <span>Worker command</span>
+            <input
+              v-model="workerPanel.command"
+              placeholder="claude --dangerously-skip-permissions --model sonnet"
+              maxlength="500"
+            />
+          </label>
+        </div>
 
-        <p v-if="isCreatingTask && !claudeAvailable" class="warning-box">
-          Claude Code CLI (claude) was not found on your PATH. The Worker and Judge panels require it to run.
+        <!-- Judge agent configuration -->
+        <div class="agent-config-section">
+          <div class="agent-config-section__header">
+            <span class="agent-config-section__label">Judge agent</span>
+            <button
+              type="button"
+              class="button button--ghost agent-config-section__advanced-btn"
+              @click="draft.judgeCommandOverride = !draft.judgeCommandOverride"
+            >
+              {{ draft.judgeCommandOverride ? "Use provider picker" : "Advanced: custom command" }}
+            </button>
+          </div>
+          <template v-if="!draft.judgeCommandOverride">
+            <div class="grid grid--2col">
+              <label>
+                <span>Provider</span>
+                <select v-model="draft.judgeProvider.providerId" @change="onJudgeProviderChange">
+                  <option
+                    v-for="p in PROVIDER_CHOICES"
+                    :key="p.id"
+                    :value="p.id"
+                    :disabled="providerAvailability[p.id]?.available === false"
+                  >
+                    {{ p.name }}{{ providerAvailability[p.id]?.available === false ? " (not found)" : "" }}
+                  </option>
+                </select>
+              </label>
+              <label>
+                <span>Model</span>
+                <select v-model="draft.judgeProvider.model">
+                  <option v-for="m in judgeModelChoices" :key="m.id" :value="m.id">{{ m.name }}</option>
+                </select>
+              </label>
+            </div>
+          </template>
+          <label v-else title="Full CLI command including flags">
+            <span>Judge command</span>
+            <input
+              v-model="judgePanel.command"
+              placeholder="claude --dangerously-skip-permissions --model opus"
+              maxlength="500"
+            />
+          </label>
+        </div>
+
+        <p v-if="isCreatingTask && !claudeAvailable && workerNeedsClaudeWarning" class="warning-box">
+          Claude Code CLI (claude) was not found on your PATH. The selected provider requires it.
         </p>
 
         <p v-if="isCreatingTask && draft.useWorktree" class="info-box">
@@ -176,12 +253,41 @@
 </template>
 
 <script setup>
-import { reactive, computed, inject, ref, watch } from "vue";
+import { reactive, computed, inject, ref, watch, onMounted } from "vue";
 import { cloneWorkspace, createEmptyWorkspace } from "../../workspace-state.js";
 import { APP_CONFIG } from "../../../config/app-config.js";
 import { safeColor } from "../../app/helpers.js";
 import { useAppStore } from "../../stores/app.js";
 import PanelEditor from "./PanelEditor.vue";
+
+const PROVIDER_CHOICES = [
+  {
+    id: "claude",
+    name: "Claude Code",
+    models: [
+      { id: "sonnet", name: "Claude Sonnet 4.6", suggestedRole: "worker" },
+      { id: "opus", name: "Claude Opus 4.6", suggestedRole: "judge" },
+      { id: "haiku", name: "Claude Haiku 4.5", suggestedRole: null },
+    ],
+  },
+  {
+    id: "codex",
+    name: "Codex CLI",
+    models: [
+      { id: "o4-mini", name: "o4-mini", suggestedRole: "worker" },
+      { id: "o3", name: "o3", suggestedRole: "judge" },
+      { id: "gpt-4.1", name: "GPT-4.1", suggestedRole: null },
+    ],
+  },
+  {
+    id: "gemini",
+    name: "Gemini CLI",
+    models: [
+      { id: "gemini-2.5-pro", name: "Gemini 2.5 Pro", suggestedRole: "judge" },
+      { id: "gemini-2.5-flash", name: "Gemini 2.5 Flash", suggestedRole: "worker" },
+    ],
+  },
+];
 
 const BADGE_ICONS = [
   "\u{1F4BB}",
@@ -238,6 +344,7 @@ const props = defineProps({
   workspace: { type: Object, default: null },
   tabTemplates: { type: Array, default: () => [] },
   creating: { type: Boolean, default: false },
+  providerAvailabilityRef: { type: Object, default: null },
 });
 
 const emit = defineEmits(["cancel", "submit"]);
@@ -249,6 +356,13 @@ const cwdPlaceholder = APP_CONFIG.ui.defaultProjectCwdPlaceholder;
 // Build a mutable reactive draft
 const rawDraft = props.workspace ? cloneWorkspace(props.workspace) : createEmptyWorkspace();
 rawDraft.color = safeColor(rawDraft.color);
+// Ensure provider fields are present for task drafts (backward compat with old workspaces)
+if (rawDraft.kind === "task" || props.creating) {
+  if (!rawDraft.workerProvider) rawDraft.workerProvider = { providerId: "claude", model: "sonnet" };
+  if (!rawDraft.judgeProvider) rawDraft.judgeProvider = { providerId: "claude", model: "opus" };
+  if (rawDraft.workerCommandOverride === undefined) rawDraft.workerCommandOverride = false;
+  if (rawDraft.judgeCommandOverride === undefined) rawDraft.judgeCommandOverride = false;
+}
 const draft = reactive(rawDraft);
 
 const store = useAppStore();
@@ -262,6 +376,59 @@ const submitting = ref(false);
 
 // Claude availability (cached in payload, re-checked before dialog opens)
 const claudeAvailable = computed(() => store.payload?.environment?.claudeAvailable !== false);
+
+// Provider availability — populated asynchronously from checkProviders()
+const providerAvailability = ref({});
+
+onMounted(async () => {
+  // If the parent passed a ref, poll it once resolved
+  if (props.providerAvailabilityRef) {
+    // Check the ref at a short interval until it has data
+    const poll = setInterval(() => {
+      const data = props.providerAvailabilityRef.value;
+      if (data && Object.keys(data).length > 0) {
+        providerAvailability.value = data;
+        clearInterval(poll);
+      }
+    }, 300);
+    setTimeout(() => clearInterval(poll), 10000); // give up after 10s
+  }
+  // Also try a direct call if api is available
+  if (api?.checkProviders) {
+    try {
+      const result = await api.checkProviders();
+      if (result) providerAvailability.value = result;
+    } catch {}
+  }
+});
+
+const workerModelChoices = computed(() => {
+  const p = PROVIDER_CHOICES.find((c) => c.id === draft.workerProvider?.providerId);
+  return p?.models || [];
+});
+
+const judgeModelChoices = computed(() => {
+  const p = PROVIDER_CHOICES.find((c) => c.id === draft.judgeProvider?.providerId);
+  return p?.models || [];
+});
+
+const workerNeedsClaudeWarning = computed(() => {
+  const pid = draft.workerProvider?.providerId || draft.judgeProvider?.providerId;
+  return pid === "claude" || !pid;
+});
+
+function onWorkerProviderChange() {
+  // Auto-select suggested worker model for the new provider
+  const p = PROVIDER_CHOICES.find((c) => c.id === draft.workerProvider?.providerId);
+  const suggested = p?.models?.find((m) => m.suggestedRole === "worker") || p?.models?.[0];
+  if (suggested && draft.workerProvider) draft.workerProvider.model = suggested.id;
+}
+
+function onJudgeProviderChange() {
+  const p = PROVIDER_CHOICES.find((c) => c.id === draft.judgeProvider?.providerId);
+  const suggested = p?.models?.find((m) => m.suggestedRole === "judge") || p?.models?.[0];
+  if (suggested && draft.judgeProvider) draft.judgeProvider.model = suggested.id;
+}
 
 // For task workspaces: direct references to worker/judge panels for editing
 const workerPanel = computed(
@@ -473,5 +640,35 @@ async function handleSubmit() {
   color: var(--muted, #888);
   margin-top: 4px;
   line-height: 1.4;
+}
+.agent-config-section {
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 10px 12px;
+  margin-bottom: 0;
+}
+.agent-config-section__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+.agent-config-section__label {
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  opacity: 0.7;
+}
+.agent-config-section__advanced-btn {
+  font-size: 11px;
+  padding: 2px 8px;
+  opacity: 0.7;
+}
+.agent-config-section__advanced-btn:hover {
+  opacity: 1;
+}
+.grid--2col {
+  grid-template-columns: 1fr 1fr;
 }
 </style>

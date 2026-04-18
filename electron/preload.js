@@ -82,6 +82,7 @@ contextBridge.exposeInMainWorld("strideterm", {
   getNotificationMetrics: () => ipcRenderer.invoke("notifications:metrics"),
   // Task runner
   recheckClaude: () => ipcRenderer.invoke("task:recheck-claude"),
+  checkProviders: () => ipcRenderer.invoke("task:check-providers"),
   createTaskWorkspace: (payload) => ipcRenderer.invoke("task:create-workspace", payload),
   startTask: (payload) => ipcRenderer.invoke("task:start", payload),
   stopTask: (payload) => ipcRenderer.invoke("task:stop", payload),

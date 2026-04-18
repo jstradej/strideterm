@@ -50,9 +50,9 @@ describe("AgentTaskRunner", () => {
       expect(workspace.panels).toHaveLength(3);
       expect(workspace.panels[0].title).toBe("Dashboard");
       expect(workspace.panels[0].command).toBe("__task-dashboard__");
-      expect(workspace.panels[1].title).toBe("Worker");
+      expect(workspace.panels[1].title).toContain("Worker");
       expect(workspace.panels[1].command).toBe("claude --dangerously-skip-permissions --model sonnet");
-      expect(workspace.panels[2].title).toBe("Judge");
+      expect(workspace.panels[2].title).toContain("Judge");
       expect(workspace.task).toBeDefined();
       expect(workspace.task.state).toBe("idle");
       expect(workspace.task.maxRounds).toBe(3);

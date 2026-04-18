@@ -111,17 +111,13 @@ describe("WorkspaceDialog", () => {
       expect(ta).toBeDefined();
     });
 
-    test("shows worker and judge command inputs", () => {
+    test("shows worker and judge provider/model selects", () => {
       const wrapper = mountDialog({ workspace: buildTaskDraft(), creating: true });
-      const inputs = wrapper.findAll("input");
-      const workerInput = inputs.find(
-        (i) => i.attributes("placeholder") === "claude" && i.element.closest("label")?.textContent?.includes("Worker"),
-      );
-      const judgeInput = inputs.find(
-        (i) => i.attributes("placeholder") === "claude" && i.element.closest("label")?.textContent?.includes("Judge"),
-      );
-      expect(workerInput).toBeDefined();
-      expect(judgeInput).toBeDefined();
+      const selects = wrapper.findAll("select");
+      // Expect at least 2 selects: Worker provider + Worker model (+ Judge provider + Judge model)
+      expect(selects.length).toBeGreaterThanOrEqual(2);
+      const agentSections = wrapper.findAll(".agent-config-section");
+      expect(agentSections.length).toBe(2);
     });
 
     test("shows max rounds input", () => {

@@ -296,6 +296,7 @@ export function registerIpc(runtime, emitToRenderer, { includeStateGet = true } 
 
   // --- Task runner ---
   ipcMain.handle("task:recheck-claude", async () => runtime.recheckClaude());
+  ipcMain.handle("task:check-providers", async () => runtime.checkProviders());
   ipcMain.handle("task:create-workspace", async (_event, payload) =>
     runtime.createTaskWorkspace(validateIpc(taskWorkspaceCreateSchema, payload, "task:create-workspace")),
   );

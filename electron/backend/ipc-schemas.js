@@ -288,6 +288,12 @@ export const githubQuickFixCreateSchema = z.object({
 
 // --- Task runner schemas ---
 
+export const providerConfigSchema = z.object({
+  providerId: z.enum(["claude", "codex", "gemini"]),
+  model: z.string().max(100),
+  extra: z.record(z.unknown()).optional(),
+});
+
 export const taskWorkspaceCreateSchema = z.object({
   cwd: nonEmptyString,
   description: z.string().optional().default(""),
@@ -301,6 +307,8 @@ export const taskWorkspaceCreateSchema = z.object({
   notes: z.string().max(500).optional(),
   workerCommand: z.string().max(500).optional(),
   judgeCommand: z.string().max(500).optional(),
+  workerProvider: providerConfigSchema.optional(),
+  judgeProvider: providerConfigSchema.optional(),
 });
 
 export const taskWorkspaceActionSchema = z.object({

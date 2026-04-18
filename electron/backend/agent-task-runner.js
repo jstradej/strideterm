@@ -3,6 +3,7 @@ import { exec } from "node:child_process";
 import { access, readFile, writeFile, mkdir, rm } from "node:fs/promises";
 import path from "node:path";
 import { getLogger } from "./logger.js";
+import { getProvider, parseProviderFromCommand } from "./providers/provider-registry.js";
 import {
   VERDICT_FILE,
   TASK_FILE,
@@ -119,6 +120,8 @@ export class AgentTaskRunner {
     notes,
     workerCommand,
     judgeCommand,
+    workerProvider,
+    judgeProvider,
   }) {
     const workspaceId = `workspace-${randomUUID()}`;
     const dashboardPanelId = `panel-${randomUUID()}`;
@@ -130,6 +133,28 @@ export class AgentTaskRunner {
         ? description.slice(0, 47) + "..."
         : description
       : "Task workspace";
+
+    // Resolve worker provider config: explicit workerProvider > parse workerCommand > Claude default
+    const workerProviderConfig =
+      workerProvider ||
+      (workerCommand ? parseProviderFromCommand(workerCommand) : { providerId: "claude", model: "sonnet" });
+    const judgeProviderConfig =
+      judgeProvider ||
+      (judgeCommand ? parseProviderFromCommand(judgeCommand) : { providerId: "claude", model: "opus" });
+
+    // Build panel commands from provider config, or use explicit command override
+    const wp = getProvider(workerProviderConfig.providerId);
+    const jp = getProvider(judgeProviderConfig.providerId);
+    const resolvedWorkerCmd =
+      workerCommand?.trim() ||
+      wp.buildCommand({ model: workerProviderConfig.model, role: "worker", extra: workerProviderConfig.extra });
+    const resolvedJudgeCmd =
+      judgeCommand?.trim() ||
+      jp.buildCommand({ model: judgeProviderConfig.model, role: "judge", extra: judgeProviderConfig.extra });
+
+    // Panel titles include provider/model so the user can see at a glance
+    const workerTitle = `Worker (${wp.constructor.displayName} ${workerProviderConfig.model})`;
+    const judgeTitle = `Judge (${jp.constructor.displayName} ${judgeProviderConfig.model})`;
 
     return {
       id: workspaceId,
@@ -148,15 +173,15 @@ export class AgentTaskRunner {
         { id: dashboardPanelId, title: "Dashboard", command: "__task-dashboard__", shell: false, startup: "none" },
         {
           id: workerPanelId,
-          title: "Worker",
-          command: workerCommand?.trim() || "claude --dangerously-skip-permissions --model sonnet",
+          title: workerTitle,
+          command: resolvedWorkerCmd,
           shell: true,
           startup: "default",
         },
         {
           id: judgePanelId,
-          title: "Judge",
-          command: judgeCommand?.trim() || "claude --dangerously-skip-permissions --model opus",
+          title: judgeTitle,
+          command: resolvedJudgeCmd,
           shell: true,
           startup: "default",
         },
@@ -174,12 +199,14 @@ export class AgentTaskRunner {
         state: "idle",
         currentRound: 0,
         rounds: [],
-        lastShowerRound: 0, // Track when the last shower happened
-        lastJudgeInstructions: "", // Carry judge feedback through showers
-        startedAt: null, // Date.now() when task started
-        totalPausedMs: 0, // Accumulated pause duration
-        pausedAt: null, // Date.now() when current pause began
-        finishedAt: null, // Date.now() when completed/failed
+        lastShowerRound: 0,
+        lastJudgeInstructions: "",
+        workerProviderConfig,
+        judgeProviderConfig,
+        startedAt: null,
+        totalPausedMs: 0,
+        pausedAt: null,
+        finishedAt: null,
       },
     };
   }
@@ -224,6 +251,20 @@ export class AgentTaskRunner {
     // If the directory has no .git, we run `git init` + initial commit.
     // This is read-only from the perspective of the user's work — we never push.
     await this.#ensureGitRepo(workspace.cwd);
+
+    // Provider-specific setup (e.g. Gemini writes yolo policy file)
+    try {
+      const workerProviderConfig = task.workerProviderConfig || { providerId: "claude" };
+      const judgeProviderConfig = task.judgeProviderConfig || { providerId: "claude" };
+      const workerProv = getProvider(workerProviderConfig.providerId);
+      await workerProv.beforeStart(workspace.cwd);
+      if (judgeProviderConfig.providerId !== workerProviderConfig.providerId) {
+        const judgeProv = getProvider(judgeProviderConfig.providerId);
+        await judgeProv.beforeStart(workspace.cwd);
+      }
+    } catch (err) {
+      log.warn("startTask: provider beforeStart failed (non-fatal)", { workspaceId, err: err.message });
+    }
 
     this.#setTaskState(task, "running");
     task.currentRound = 0;
@@ -659,6 +700,28 @@ export class AgentTaskRunner {
   }
 
   /**
+   * Return the idle timeout (ms) for a given task session, based on the
+   * provider configured for that panel (worker or judge).
+   */
+  getIdleTimeout(sessionId) {
+    const parts = sessionId.split(":");
+    if (parts.length < 2) return null;
+    const workspaceId = parts.slice(0, -1).join(":");
+    const panelId = parts[parts.length - 1];
+    const workspace = this.#findTaskWorkspace(workspaceId);
+    if (!workspace) return null;
+    const task = workspace.task;
+    const isWorker = panelId === task.workerPanelId;
+    const config = isWorker ? task.workerProviderConfig : task.judgeProviderConfig;
+    if (!config?.providerId) return null;
+    try {
+      return getProvider(config.providerId).idleTimeoutMs;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
    * Returns serializable snapshot of all task workspaces for payload broadcast.
    */
   getTaskSnapshot() {
@@ -677,6 +740,8 @@ export class AgentTaskRunner {
           judgePanelId: workspace.task.judgePanelId,
           rounds: workspace.task.rounds,
           lastShowerRound: workspace.task.lastShowerRound || 0,
+          workerProviderConfig: workspace.task.workerProviderConfig || null,
+          judgeProviderConfig: workspace.task.judgeProviderConfig || null,
           startedAt: workspace.task.startedAt || null,
           totalPausedMs: workspace.task.totalPausedMs || 0,
           pausedAt: workspace.task.pausedAt || null,

@@ -122,6 +122,14 @@
             </div>
           </label>
           <label class="td__field">
+            <span>Worker agent</span>
+            <div class="td__value">{{ workerProviderLabel }}</div>
+          </label>
+          <label class="td__field">
+            <span>Judge agent</span>
+            <div class="td__value">{{ judgeProviderLabel }}</div>
+          </label>
+          <label class="td__field">
             <span>Verification</span>
             <div class="td__value">
               Defined in the &ldquo;Verification before completion&rdquo; section of <strong>TASK.md</strong> &mdash;
@@ -173,6 +181,17 @@ const taskState = computed(() => workspace.value?.task || null);
 
 // File editing — delegated to composable
 const files = useTaskFiles(api, workspace, taskState);
+
+const PROVIDER_DISPLAY_NAMES = { claude: "Claude Code", codex: "Codex CLI", gemini: "Gemini CLI" };
+
+function providerLabel(config) {
+  if (!config) return "Claude Code (sonnet)";
+  const name = PROVIDER_DISPLAY_NAMES[config.providerId] || config.providerId;
+  return config.model ? `${name} (${config.model})` : name;
+}
+
+const workerProviderLabel = computed(() => providerLabel(taskState.value?.workerProviderConfig));
+const judgeProviderLabel = computed(() => providerLabel(taskState.value?.judgeProviderConfig));
 
 const stateLabel = computed(() => {
   const s = taskState.value?.state;

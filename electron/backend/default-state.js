@@ -290,6 +290,9 @@ export function normalizeWorkspace(workspace, index = 0) {
           rounds: Array.isArray(workspace.task.rounds) ? workspace.task.rounds : [],
           lastShowerRound: workspace.task.lastShowerRound || 0,
           lastJudgeInstructions: workspace.task.lastJudgeInstructions || "",
+          // Provider configs — migrated from panel command strings if absent
+          workerProviderConfig: workspace.task.workerProviderConfig || null,
+          judgeProviderConfig: workspace.task.judgeProviderConfig || null,
           // Defaults for runtime-only properties (needed when loading from disk
           // where these don't exist; during runtime the spread above preserves them)
           promptSent: workspace.task.promptSent ?? false,
@@ -330,6 +333,10 @@ export function createDefaultState() {
         token: createAccessToken(),
         customPublicUrl: "",
         cloudflaredPath: "",
+      },
+      taskDefaults: {
+        workerProvider: { providerId: "claude", model: "sonnet" },
+        judgeProvider: { providerId: "claude", model: "opus" },
       },
       integrations: {
         azureDevops: {
@@ -649,6 +656,18 @@ export function normalizeState(rawState = {}) {
               reviewRoot: connection.reviewRoot || defaults.settings.integrations.github.reviewRoot,
             }))
           : [],
+      },
+    },
+    taskDefaults: {
+      ...defaults.settings.taskDefaults,
+      ...((rawState.settings || {}).taskDefaults || {}),
+      workerProvider: {
+        ...defaults.settings.taskDefaults.workerProvider,
+        ...(((rawState.settings || {}).taskDefaults || {}).workerProvider || {}),
+      },
+      judgeProvider: {
+        ...defaults.settings.taskDefaults.judgeProvider,
+        ...(((rawState.settings || {}).taskDefaults || {}).judgeProvider || {}),
       },
     },
   };
