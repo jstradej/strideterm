@@ -161,7 +161,6 @@
                   :list="`worker-model-list-${draft.workerProvider.providerId}`"
                   placeholder="Default"
                   maxlength="100"
-                  class="settings-input"
                 />
                 <datalist :id="`worker-model-list-${draft.workerProvider.providerId}`">
                   <option
@@ -225,7 +224,6 @@
                   :list="`judge-model-list-${draft.judgeProvider.providerId}`"
                   placeholder="Default"
                   maxlength="100"
-                  class="settings-input"
                 />
                 <datalist :id="`judge-model-list-${draft.judgeProvider.providerId}`">
                   <option
