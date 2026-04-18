@@ -76,15 +76,28 @@ describe("provider-registry", () => {
       expect(result.model).toBe("sonnet");
     });
 
-    test("parses codex command", () => {
+    test("parses codex command without model uses default", () => {
       const result = parseProviderFromCommand("codex --dangerously-bypass-approvals-and-sandbox -s danger-full-access");
       expect(result.providerId).toBe("codex");
-      expect(result.model).toBe("o4-mini");
+      expect(result.model).toBe("gpt-5.4-mini");
     });
 
-    test("parses gemini command", () => {
-      const result = parseProviderFromCommand("gemini -m gemini-2.5-pro");
+    test("parses codex command with explicit -m model", () => {
+      const result = parseProviderFromCommand("codex -m gpt-5.4");
+      expect(result.providerId).toBe("codex");
+      expect(result.model).toBe("gpt-5.4");
+    });
+
+    test("parses gemini command with explicit -m model", () => {
+      const result = parseProviderFromCommand("gemini -m gemini-3-pro-preview");
       expect(result.providerId).toBe("gemini");
+      expect(result.model).toBe("gemini-3-pro-preview");
+    });
+
+    test("parses gemini command without model uses default", () => {
+      const result = parseProviderFromCommand("gemini --yolo");
+      expect(result.providerId).toBe("gemini");
+      expect(result.model).toBe("gemini-2.5-flash");
     });
   });
 });
@@ -142,8 +155,8 @@ describe("CodexProvider", () => {
   });
 
   test("buildCommand with model includes --model flag", () => {
-    const cmd = provider.buildCommand({ model: "o3" });
-    expect(cmd).toContain("--model o3");
+    const cmd = provider.buildCommand({ model: "gpt-5.4" });
+    expect(cmd).toContain("--model gpt-5.4");
   });
 
   test("getEnvironment returns empty object", () => {

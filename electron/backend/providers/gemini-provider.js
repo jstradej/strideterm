@@ -6,8 +6,10 @@ export class GeminiProvider extends BaseProvider {
   static id = "gemini";
   static displayName = "Gemini CLI";
   static models = [
-    { id: "gemini-2.5-pro", name: "Gemini 2.5 Pro", suggestedRole: "judge" },
-    { id: "gemini-2.5-flash", name: "Gemini 2.5 Flash", suggestedRole: "worker" },
+    { id: "gemini-3-pro-preview", name: "Gemini 3 Pro (preview)", suggestedRole: "judge" },
+    { id: "gemini-3-flash-preview", name: "Gemini 3 Flash (preview)", suggestedRole: "worker" },
+    { id: "gemini-2.5-pro", name: "Gemini 2.5 Pro", suggestedRole: null },
+    { id: "gemini-2.5-flash", name: "Gemini 2.5 Flash", suggestedRole: null },
   ];
 
   static defaultSkipPermissions = false;

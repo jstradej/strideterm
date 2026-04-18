@@ -4,9 +4,10 @@ export class CodexProvider extends BaseProvider {
   static id = "codex";
   static displayName = "Codex CLI";
   static models = [
-    { id: "o4-mini", name: "o4-mini", suggestedRole: "worker" },
-    { id: "o3", name: "o3", suggestedRole: "judge" },
-    { id: "gpt-4.1", name: "GPT-4.1", suggestedRole: null },
+    { id: "gpt-5.4", name: "GPT-5.4", suggestedRole: "judge" },
+    { id: "gpt-5.4-mini", name: "GPT-5.4 mini", suggestedRole: "worker" },
+    { id: "gpt-5.3-codex", name: "GPT-5.3 Codex", suggestedRole: null },
+    { id: "gpt-5.2", name: "GPT-5.2", suggestedRole: null },
   ];
 
   static defaultSkipPermissions = true;

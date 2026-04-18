@@ -42,8 +42,14 @@ export function getProviderChoices() {
 export function parseProviderFromCommand(cmd) {
   if (!cmd) return { providerId: "claude", model: "sonnet" };
   const trimmed = cmd.trim();
-  if (trimmed.startsWith("codex")) return { providerId: "codex", model: "o4-mini" };
-  if (trimmed.startsWith("gemini")) return { providerId: "gemini", model: "gemini-2.5-flash" };
+  if (trimmed.startsWith("codex")) {
+    const m = trimmed.match(/(?:--model|-m)\s+(\S+)/);
+    return { providerId: "codex", model: m?.[1] || "gpt-5.4-mini" };
+  }
+  if (trimmed.startsWith("gemini")) {
+    const m = trimmed.match(/(?:--model|-m)\s+(\S+)/);
+    return { providerId: "gemini", model: m?.[1] || "gemini-2.5-flash" };
+  }
   const modelMatch = trimmed.match(/--model\s+(\S+)/);
   return { providerId: "claude", model: modelMatch?.[1] || "sonnet" };
 }

@@ -288,9 +288,10 @@ const PROVIDER_CHOICES = [
     defaultSkipPermissions: true,
     models: [
       { id: "", name: "Default", suggestedRole: null },
-      { id: "o4-mini", name: "o4-mini", suggestedRole: "worker" },
-      { id: "o3", name: "o3", suggestedRole: "judge" },
-      { id: "gpt-4.1", name: "GPT-4.1", suggestedRole: null },
+      { id: "gpt-5.4", name: "GPT-5.4", suggestedRole: "judge" },
+      { id: "gpt-5.4-mini", name: "GPT-5.4 mini", suggestedRole: "worker" },
+      { id: "gpt-5.3-codex", name: "GPT-5.3 Codex", suggestedRole: null },
+      { id: "gpt-5.2", name: "GPT-5.2", suggestedRole: null },
     ],
   },
   {
@@ -299,8 +300,10 @@ const PROVIDER_CHOICES = [
     defaultSkipPermissions: false,
     models: [
       { id: "", name: "Default", suggestedRole: null },
-      { id: "gemini-2.5-pro", name: "Pro", suggestedRole: "judge" },
-      { id: "gemini-2.5-flash", name: "Flash", suggestedRole: "worker" },
+      { id: "gemini-3-pro-preview", name: "3 Pro (preview)", suggestedRole: "judge" },
+      { id: "gemini-3-flash-preview", name: "3 Flash (preview)", suggestedRole: "worker" },
+      { id: "gemini-2.5-pro", name: "2.5 Pro", suggestedRole: null },
+      { id: "gemini-2.5-flash", name: "2.5 Flash", suggestedRole: null },
     ],
   },
 ];
