@@ -1668,10 +1668,15 @@ export async function createRuntime({
             if (signal.busy && !inCooldown && signal.hasUserInput && !hookActive && !signal.promptTimer) {
               // Phase 3 § 3.2.6: adaptive multiplier reduces noise for
               // sessions the user keeps dismissing.
+              // For task sessions, use the provider's idleTimeoutMs (e.g. 8s for
+              // Codex/Gemini vs the global 20s agentQuietMs).
+              const providerIdleMs = taskRunner.getIdleTimeout(payload.sessionId);
               const baseQuietMs =
-                signal.outputBursts >= AGENT_OUTPUT_BURST_THRESHOLD
-                  ? notifConfig.agentQuietFastMs
-                  : notifConfig.agentQuietMs;
+                providerIdleMs != null
+                  ? providerIdleMs
+                  : signal.outputBursts >= AGENT_OUTPUT_BURST_THRESHOLD
+                    ? notifConfig.agentQuietFastMs
+                    : notifConfig.agentQuietMs;
               const quietMs = baseQuietMs * adaptiveMultiplier(payload.sessionId);
               const sid = payload.sessionId;
               signal.promptTimer = setTimeout(function silenceCheck() {
