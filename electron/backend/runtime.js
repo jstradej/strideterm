@@ -87,6 +87,31 @@ const reviewBridgeCliPath = fileURLToPath(new URL("./review-bridge-cli.js", impo
 
 // Utilities imported from runtime-utils.js
 
+/**
+ * Returns true if the PTY write data represents a real keypress or pasted text
+ * from the user. Returns false if the data is purely passive terminal bookkeeping
+ * — mouse tracking, focus in/out, and bracketed-paste markers — which are emitted
+ * by xterm.js on clicks and window focus changes without the user actually typing.
+ *
+ * Used to decide whether a terminal write should pause a running task workspace.
+ * Without this filter, clicking into a task panel to watch it would pause the task.
+ */
+export function hasMeaningfulUserInput(data) {
+  if (!data) return false;
+  const str = typeof data === "string" ? data : data.toString("binary");
+  // Strip all known passive escape sequences; if anything remains, it's real input.
+  const stripped = str
+    // SGR mouse: \x1b[<btn;x;yM or m
+    .replace(/\x1b\[<\d+;\d+;\d+[Mm]/g, "")
+    // X10/normal mouse: \x1b[M followed by 3 bytes (btn, x, y) — any bytes incl newline
+    .replace(/\x1b\[M[\s\S]{3}/g, "")
+    // xterm highlight mouse: \x1b[T followed by 6 bytes
+    .replace(/\x1b\[T[\s\S]{6}/g, "")
+    // Focus in / focus out
+    .replace(/\x1b\[[IO]/g, "");
+  return stripped.length > 0;
+}
+
 function createTunnelOriginUrl(remoteConfig = {}) {
   const rawHost = String(remoteConfig.host || "").trim();
   const host =
@@ -2550,8 +2575,12 @@ export async function createRuntime({
         // Phase 3 § 3.2.6: active user interaction resets adaptive counter
         adaptiveRecordInteraction(sessionId);
       }
-      // Pause task runner if user types during active evaluation
-      taskRunner.onUserInput(sessionId);
+      // Pause task runner only on real typing — mouse clicks and focus events
+      // emit escape sequences too (e.g. \x1b[<0;x;yM) and would otherwise pause
+      // the task just because the user clicked into the panel to watch.
+      if (hasMeaningfulUserInput(data)) {
+        taskRunner.onUserInput(sessionId);
+      }
       const descriptor = parseSessionId(sessionId);
       if (descriptor) {
         const current = projectAlerts.get(descriptor.workspaceId);

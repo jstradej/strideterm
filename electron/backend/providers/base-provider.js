@@ -1,3 +1,23 @@
+import { exec } from "node:child_process";
+
+/**
+ * Check if a binary is reachable on the system PATH.
+ * Uses `where` on Windows and `which` on Unix — much faster and more reliable
+ * than invoking the binary with --version (which can hang on first-run JS init
+ * or auth prompts).
+ */
+export function checkBinaryOnPath(binary) {
+  return new Promise((resolve) => {
+    const cmd = process.platform === "win32" ? "where" : "which";
+    exec(`${cmd} ${binary}`, { timeout: 5000 }, (err, stdout) => {
+      if (err || !stdout.trim()) {
+        return resolve({ available: false, error: `${binary} not found on PATH` });
+      }
+      resolve({ available: true, path: stdout.trim().split(/\r?\n/)[0].trim() });
+    });
+  });
+}
+
 export class BaseProvider {
   static id = "base";
   static displayName = "Base Provider";

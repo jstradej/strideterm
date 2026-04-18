@@ -452,7 +452,9 @@ export function createDialogActions(ctx) {
           );
           if (parent) config.parentWorkspaceId = parent.id;
 
-          const result = await ctx.getApi().createTaskWorkspace(config);
+          // Strip Vue reactive proxies before IPC — structuredClone can't serialize them
+          const plainConfig = JSON.parse(JSON.stringify(config));
+          const result = await ctx.getApi().createTaskWorkspace(plainConfig);
           if (result?.payload) {
             ctx.payload.value = result.payload;
           }

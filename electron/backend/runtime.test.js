@@ -3,7 +3,7 @@ import path from "node:path";
 import fs from "node:fs/promises";
 import { EventEmitter } from "node:events";
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { createRuntime, detectTerminalEnvironment } from "./runtime.js";
+import { createRuntime, detectTerminalEnvironment, hasMeaningfulUserInput } from "./runtime.js";
 import { createSessionId, normalizeState } from "./default-state.js";
 
 function createMemoryStore(initialState) {
@@ -605,6 +605,53 @@ describe("detectTerminalEnvironment", () => {
     expect(detectTerminalEnvironment({ platform: "linux", release: "6.8.0" })).toEqual({
       platform: "linux",
     });
+  });
+});
+
+describe("hasMeaningfulUserInput", () => {
+  test("returns false for empty/undefined input", () => {
+    expect(hasMeaningfulUserInput("")).toBe(false);
+    expect(hasMeaningfulUserInput(null)).toBe(false);
+    expect(hasMeaningfulUserInput(undefined)).toBe(false);
+  });
+
+  test("returns false for SGR mouse events (click, drag, wheel)", () => {
+    expect(hasMeaningfulUserInput("\x1b[<0;40;12M")).toBe(false);
+    expect(hasMeaningfulUserInput("\x1b[<0;40;12m")).toBe(false);
+    expect(hasMeaningfulUserInput("\x1b[<64;10;5M")).toBe(false); // wheel up
+  });
+
+  test("returns false for X10 mouse events", () => {
+    expect(hasMeaningfulUserInput("\x1b[M   ")).toBe(false);
+  });
+
+  test("returns false for focus in/out", () => {
+    expect(hasMeaningfulUserInput("\x1b[I")).toBe(false);
+    expect(hasMeaningfulUserInput("\x1b[O")).toBe(false);
+  });
+
+  test("returns false for concatenated passive sequences", () => {
+    expect(hasMeaningfulUserInput("\x1b[I\x1b[<0;40;12M\x1b[<0;40;12m\x1b[O")).toBe(false);
+  });
+
+  test("returns true for typed characters", () => {
+    expect(hasMeaningfulUserInput("a")).toBe(true);
+    expect(hasMeaningfulUserInput("hello")).toBe(true);
+  });
+
+  test("returns true for Enter and control chars", () => {
+    expect(hasMeaningfulUserInput("\r")).toBe(true);
+    expect(hasMeaningfulUserInput("\x03")).toBe(true); // Ctrl+C
+  });
+
+  test("returns true for arrow keys and function keys", () => {
+    expect(hasMeaningfulUserInput("\x1b[A")).toBe(true); // up arrow
+    expect(hasMeaningfulUserInput("\x1b[B")).toBe(true); // down arrow
+    expect(hasMeaningfulUserInput("\x1bOP")).toBe(true); // F1
+  });
+
+  test("returns true when mouse event is followed by typed text", () => {
+    expect(hasMeaningfulUserInput("\x1b[<0;40;12Mabc")).toBe(true);
   });
 });
 

@@ -1,5 +1,4 @@
-import { exec } from "node:child_process";
-import { BaseProvider } from "./base-provider.js";
+import { BaseProvider, checkBinaryOnPath } from "./base-provider.js";
 
 export class CodexProvider extends BaseProvider {
   static id = "codex";
@@ -10,8 +9,11 @@ export class CodexProvider extends BaseProvider {
     { id: "gpt-4.1", name: "GPT-4.1", suggestedRole: null },
   ];
 
-  buildCommand({ model } = {}) {
-    const parts = ["codex", "--dangerously-bypass-approvals-and-sandbox", "-s", "danger-full-access"];
+  static defaultSkipPermissions = true;
+
+  buildCommand({ model, skipPermissions = true } = {}) {
+    const parts = ["codex"];
+    if (skipPermissions) parts.push("--dangerously-bypass-approvals-and-sandbox", "-s", "danger-full-access");
     if (model) parts.push("--model", model);
     return parts.join(" ");
   }
@@ -25,11 +27,6 @@ export class CodexProvider extends BaseProvider {
   }
 
   async checkAvailability() {
-    return new Promise((resolve) => {
-      exec("codex --version", { timeout: 5000 }, (err, stdout) => {
-        if (err) return resolve({ available: false, error: err.message });
-        resolve({ available: true, version: stdout.trim() });
-      });
-    });
+    return checkBinaryOnPath("codex");
   }
 }

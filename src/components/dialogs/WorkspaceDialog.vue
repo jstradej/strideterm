@@ -100,7 +100,7 @@
             placeholder="e.g. task/add-pagination"
             :required="draft.useWorktree"
             maxlength="200"
-            pattern="[a-zA-Z0-9._/\-]+"
+            pattern="[a-zA-Z0-9._\/-]+"
             title="Only letters, numbers, dots, hyphens, slashes, or underscores"
           />
           <span class="field-hint"
@@ -131,7 +131,7 @@
             <button
               type="button"
               class="button button--ghost agent-config-section__advanced-btn"
-              @click="draft.workerCommandOverride = !draft.workerCommandOverride"
+              @click="toggleWorkerOverride"
             >
               {{ draft.workerCommandOverride ? "Use provider picker" : "Advanced: custom command" }}
             </button>
@@ -146,6 +146,7 @@
                     :key="p.id"
                     :value="p.id"
                     :disabled="providerAvailability[p.id]?.available === false"
+                    :title="providerAvailability[p.id]?.error || ''"
                   >
                     {{ p.name }}{{ providerAvailability[p.id]?.available === false ? " (not found)" : "" }}
                   </option>
@@ -158,6 +159,10 @@
                 </select>
               </label>
             </div>
+            <label class="checkbox-inline">
+              <input v-model="draft.workerProvider.skipPermissions" type="checkbox" />
+              <span>Skip permission prompts (dangerous)</span>
+            </label>
           </template>
           <label v-else title="Full CLI command including flags">
             <span>Worker command</span>
@@ -176,7 +181,7 @@
             <button
               type="button"
               class="button button--ghost agent-config-section__advanced-btn"
-              @click="draft.judgeCommandOverride = !draft.judgeCommandOverride"
+              @click="toggleJudgeOverride"
             >
               {{ draft.judgeCommandOverride ? "Use provider picker" : "Advanced: custom command" }}
             </button>
@@ -191,6 +196,7 @@
                     :key="p.id"
                     :value="p.id"
                     :disabled="providerAvailability[p.id]?.available === false"
+                    :title="providerAvailability[p.id]?.error || ''"
                   >
                     {{ p.name }}{{ providerAvailability[p.id]?.available === false ? " (not found)" : "" }}
                   </option>
@@ -203,6 +209,10 @@
                 </select>
               </label>
             </div>
+            <label class="checkbox-inline">
+              <input v-model="draft.judgeProvider.skipPermissions" type="checkbox" />
+              <span>Skip permission prompts (dangerous)</span>
+            </label>
           </template>
           <label v-else title="Full CLI command including flags">
             <span>Judge command</span>
@@ -264,16 +274,20 @@ const PROVIDER_CHOICES = [
   {
     id: "claude",
     name: "Claude Code",
+    defaultSkipPermissions: true,
     models: [
-      { id: "sonnet", name: "Claude Sonnet 4.6", suggestedRole: "worker" },
-      { id: "opus", name: "Claude Opus 4.6", suggestedRole: "judge" },
-      { id: "haiku", name: "Claude Haiku 4.5", suggestedRole: null },
+      { id: "", name: "Default", suggestedRole: null },
+      { id: "sonnet", name: "Sonnet", suggestedRole: "worker" },
+      { id: "opus", name: "Opus", suggestedRole: "judge" },
+      { id: "haiku", name: "Haiku", suggestedRole: null },
     ],
   },
   {
     id: "codex",
     name: "Codex CLI",
+    defaultSkipPermissions: true,
     models: [
+      { id: "", name: "Default", suggestedRole: null },
       { id: "o4-mini", name: "o4-mini", suggestedRole: "worker" },
       { id: "o3", name: "o3", suggestedRole: "judge" },
       { id: "gpt-4.1", name: "GPT-4.1", suggestedRole: null },
@@ -282,12 +296,36 @@ const PROVIDER_CHOICES = [
   {
     id: "gemini",
     name: "Gemini CLI",
+    defaultSkipPermissions: false,
     models: [
-      { id: "gemini-2.5-pro", name: "Gemini 2.5 Pro", suggestedRole: "judge" },
-      { id: "gemini-2.5-flash", name: "Gemini 2.5 Flash", suggestedRole: "worker" },
+      { id: "", name: "Default", suggestedRole: null },
+      { id: "gemini-2.5-pro", name: "Pro", suggestedRole: "judge" },
+      { id: "gemini-2.5-flash", name: "Flash", suggestedRole: "worker" },
     ],
   },
 ];
+
+function buildProviderCommand({ providerId, model, skipPermissions }) {
+  if (providerId === "claude") {
+    const parts = ["claude"];
+    if (skipPermissions) parts.push("--dangerously-skip-permissions");
+    if (model) parts.push("--model", model);
+    return parts.join(" ");
+  }
+  if (providerId === "codex") {
+    const parts = ["codex"];
+    if (skipPermissions) parts.push("--dangerously-bypass-approvals-and-sandbox", "-s", "danger-full-access");
+    if (model) parts.push("--model", model);
+    return parts.join(" ");
+  }
+  if (providerId === "gemini") {
+    const parts = ["gemini"];
+    if (skipPermissions) parts.push("--yolo");
+    if (model) parts.push("-m", model);
+    return parts.join(" ");
+  }
+  return "";
+}
 
 const BADGE_ICONS = [
   "\u{1F4BB}",
@@ -360,6 +398,12 @@ rawDraft.color = safeColor(rawDraft.color);
 if (rawDraft.kind === "task" || props.creating) {
   if (!rawDraft.workerProvider) rawDraft.workerProvider = { providerId: "claude", model: "sonnet" };
   if (!rawDraft.judgeProvider) rawDraft.judgeProvider = { providerId: "claude", model: "opus" };
+  for (const key of ["workerProvider", "judgeProvider"]) {
+    if (rawDraft[key].skipPermissions === undefined) {
+      const p = PROVIDER_CHOICES.find((c) => c.id === rawDraft[key].providerId);
+      rawDraft[key].skipPermissions = p?.defaultSkipPermissions ?? false;
+    }
+  }
   if (rawDraft.workerCommandOverride === undefined) rawDraft.workerCommandOverride = false;
   if (rawDraft.judgeCommandOverride === undefined) rawDraft.judgeCommandOverride = false;
 }
@@ -418,16 +462,41 @@ const workerNeedsClaudeWarning = computed(() => {
 });
 
 function onWorkerProviderChange() {
-  // Auto-select suggested worker model for the new provider
+  // Auto-select suggested worker model + reset skipPermissions to provider default
   const p = PROVIDER_CHOICES.find((c) => c.id === draft.workerProvider?.providerId);
   const suggested = p?.models?.find((m) => m.suggestedRole === "worker") || p?.models?.[0];
   if (suggested && draft.workerProvider) draft.workerProvider.model = suggested.id;
+  if (p && draft.workerProvider) draft.workerProvider.skipPermissions = p.defaultSkipPermissions ?? false;
 }
 
 function onJudgeProviderChange() {
   const p = PROVIDER_CHOICES.find((c) => c.id === draft.judgeProvider?.providerId);
   const suggested = p?.models?.find((m) => m.suggestedRole === "judge") || p?.models?.[0];
   if (suggested && draft.judgeProvider) draft.judgeProvider.model = suggested.id;
+  if (p && draft.judgeProvider) draft.judgeProvider.skipPermissions = p.defaultSkipPermissions ?? false;
+}
+
+function toggleWorkerOverride() {
+  // When enabling advanced custom command, prefill with current picker state
+  if (!draft.workerCommandOverride && workerPanel.value && draft.workerProvider) {
+    workerPanel.value.command = buildProviderCommand({
+      providerId: draft.workerProvider.providerId,
+      model: draft.workerProvider.model,
+      skipPermissions: draft.workerProvider.skipPermissions,
+    });
+  }
+  draft.workerCommandOverride = !draft.workerCommandOverride;
+}
+
+function toggleJudgeOverride() {
+  if (!draft.judgeCommandOverride && judgePanel.value && draft.judgeProvider) {
+    judgePanel.value.command = buildProviderCommand({
+      providerId: draft.judgeProvider.providerId,
+      model: draft.judgeProvider.model,
+      skipPermissions: draft.judgeProvider.skipPermissions,
+    });
+  }
+  draft.judgeCommandOverride = !draft.judgeCommandOverride;
 }
 
 // For task workspaces: direct references to worker/judge panels for editing
@@ -670,5 +739,19 @@ async function handleSubmit() {
 }
 .grid--2col {
   grid-template-columns: 1fr 1fr;
+}
+.checkbox-inline {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  cursor: pointer;
+  font-size: 12px;
+  opacity: 0.85;
+}
+.checkbox-inline input {
+  width: auto;
+  margin: 0;
 }
 </style>

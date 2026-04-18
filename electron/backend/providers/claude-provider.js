@@ -1,5 +1,4 @@
-import { exec } from "node:child_process";
-import { BaseProvider } from "./base-provider.js";
+import { BaseProvider, checkBinaryOnPath } from "./base-provider.js";
 
 export class ClaudeProvider extends BaseProvider {
   static id = "claude";
@@ -10,8 +9,11 @@ export class ClaudeProvider extends BaseProvider {
     { id: "haiku", name: "Claude Haiku 4.5", suggestedRole: null },
   ];
 
-  buildCommand({ model, extra } = {}) {
-    const parts = ["claude", "--dangerously-skip-permissions"];
+  static defaultSkipPermissions = true;
+
+  buildCommand({ model, extra, skipPermissions = true } = {}) {
+    const parts = ["claude"];
+    if (skipPermissions) parts.push("--dangerously-skip-permissions");
     if (model) parts.push("--model", model);
     if (extra?.mcpConfig) parts.push("--mcp-config", extra.mcpConfig);
     return parts.join(" ");
@@ -32,11 +34,6 @@ export class ClaudeProvider extends BaseProvider {
   }
 
   async checkAvailability() {
-    return new Promise((resolve) => {
-      exec("claude --version", { timeout: 5000 }, (err, stdout) => {
-        if (err) return resolve({ available: false, error: err.message });
-        resolve({ available: true, version: stdout.trim() });
-      });
-    });
+    return checkBinaryOnPath("claude");
   }
 }

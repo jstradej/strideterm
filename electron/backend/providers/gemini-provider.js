@@ -1,7 +1,6 @@
-import { exec } from "node:child_process";
 import { writeFile, mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
-import { BaseProvider } from "./base-provider.js";
+import { BaseProvider, checkBinaryOnPath } from "./base-provider.js";
 
 export class GeminiProvider extends BaseProvider {
   static id = "gemini";
@@ -11,8 +10,11 @@ export class GeminiProvider extends BaseProvider {
     { id: "gemini-2.5-flash", name: "Gemini 2.5 Flash", suggestedRole: "worker" },
   ];
 
-  buildCommand({ model } = {}) {
+  static defaultSkipPermissions = false;
+
+  buildCommand({ model, skipPermissions = false } = {}) {
     const parts = ["gemini"];
+    if (skipPermissions) parts.push("--yolo");
     if (model) parts.push("-m", model);
     return parts.join(" ");
   }
@@ -57,11 +59,6 @@ export class GeminiProvider extends BaseProvider {
   }
 
   async checkAvailability() {
-    return new Promise((resolve) => {
-      exec("gemini --version", { timeout: 5000 }, (err, stdout) => {
-        if (err) return resolve({ available: false, error: err.message });
-        resolve({ available: true, version: stdout.trim() });
-      });
-    });
+    return checkBinaryOnPath("gemini");
   }
 }

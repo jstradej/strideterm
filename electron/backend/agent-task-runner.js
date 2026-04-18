@@ -147,10 +147,20 @@ export class AgentTaskRunner {
     const jp = getProvider(judgeProviderConfig.providerId);
     const resolvedWorkerCmd =
       workerCommand?.trim() ||
-      wp.buildCommand({ model: workerProviderConfig.model, role: "worker", extra: workerProviderConfig.extra });
+      wp.buildCommand({
+        model: workerProviderConfig.model,
+        role: "worker",
+        extra: workerProviderConfig.extra,
+        skipPermissions: workerProviderConfig.skipPermissions ?? wp.constructor.defaultSkipPermissions ?? false,
+      });
     const resolvedJudgeCmd =
       judgeCommand?.trim() ||
-      jp.buildCommand({ model: judgeProviderConfig.model, role: "judge", extra: judgeProviderConfig.extra });
+      jp.buildCommand({
+        model: judgeProviderConfig.model,
+        role: "judge",
+        extra: judgeProviderConfig.extra,
+        skipPermissions: judgeProviderConfig.skipPermissions ?? jp.constructor.defaultSkipPermissions ?? false,
+      });
 
     // Panel titles include provider/model so the user can see at a glance
     const workerTitle = `Worker (${wp.constructor.displayName} ${workerProviderConfig.model})`;
