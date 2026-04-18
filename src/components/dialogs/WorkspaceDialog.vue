@@ -152,11 +152,25 @@
                   </option>
                 </select>
               </label>
-              <label>
+              <label
+                title="Leave empty for the CLI's own default, pick from the suggestion list, or type any model ID your CLI version supports — Codex and Gemini change their model catalog often and we don't want a rebuild every time."
+              >
                 <span>Model</span>
-                <select v-model="draft.workerProvider.model">
-                  <option v-for="m in workerModelChoices" :key="m.id" :value="m.id">{{ m.name }}</option>
-                </select>
+                <input
+                  v-model="draft.workerProvider.model"
+                  :list="`worker-model-list-${draft.workerProvider.providerId}`"
+                  placeholder="Default"
+                  maxlength="100"
+                  class="settings-input"
+                />
+                <datalist :id="`worker-model-list-${draft.workerProvider.providerId}`">
+                  <option
+                    v-for="m in workerModelChoices"
+                    :key="m.id || 'default'"
+                    :value="m.id"
+                    :label="m.name + (m.suggestedRole === 'worker' ? ' (suggested)' : '')"
+                  />
+                </datalist>
               </label>
             </div>
             <label class="checkbox-inline">
@@ -202,11 +216,25 @@
                   </option>
                 </select>
               </label>
-              <label>
+              <label
+                title="Leave empty for the CLI's own default, pick from the suggestion list, or type any model ID your CLI version supports — Codex and Gemini change their model catalog often and we don't want a rebuild every time."
+              >
                 <span>Model</span>
-                <select v-model="draft.judgeProvider.model">
-                  <option v-for="m in judgeModelChoices" :key="m.id" :value="m.id">{{ m.name }}</option>
-                </select>
+                <input
+                  v-model="draft.judgeProvider.model"
+                  :list="`judge-model-list-${draft.judgeProvider.providerId}`"
+                  placeholder="Default"
+                  maxlength="100"
+                  class="settings-input"
+                />
+                <datalist :id="`judge-model-list-${draft.judgeProvider.providerId}`">
+                  <option
+                    v-for="m in judgeModelChoices"
+                    :key="m.id || 'default'"
+                    :value="m.id"
+                    :label="m.name + (m.suggestedRole === 'judge' ? ' (suggested)' : '')"
+                  />
+                </datalist>
               </label>
             </div>
             <label class="checkbox-inline">
