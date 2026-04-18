@@ -103,26 +103,34 @@
           How long to wait before raising alerts. Prompt quiet = silence before shell prompt alert. Agent idle = silence
           before agent idle alert. Cooldown = minimum gap between alerts.
         </small>
-        <label class="settings-checkbox">
-          <input v-model="notifShellIntegration" type="checkbox" />
-          <span>Shell integration (OSC 133)</span>
-        </label>
-        <small class="help-text">Auto-inject shell integration for instant command-completion detection.</small>
-        <label class="settings-checkbox">
-          <input v-model="notifAgentHook" type="checkbox" />
-          <span>Agent notification hook</span>
-        </label>
-        <small class="help-text">
-          Start a local listener for instant agent idle detection via Claude Code notification hooks.
-        </small>
-        <label class="settings-checkbox">
-          <input v-model="notifDebug" type="checkbox" />
-          <span>Debug logging</span>
-        </label>
-        <small class="help-text">
-          Promote detection decisions (which tier, which guards passed/failed) to info-level logs. Useful when
-          diagnosing false positives — paste log excerpts into bug reports.
-        </small>
+        <div class="settings-check">
+          <label class="settings-check__row">
+            <input v-model="notifShellIntegration" type="checkbox" />
+            <span>Shell integration (OSC 133)</span>
+          </label>
+          <small class="settings-check__help"
+            >Auto-inject shell integration for instant command-completion detection.</small
+          >
+        </div>
+        <div class="settings-check">
+          <label class="settings-check__row">
+            <input v-model="notifAgentHook" type="checkbox" />
+            <span>Agent notification hook</span>
+          </label>
+          <small class="settings-check__help"
+            >Start a local listener for instant agent idle detection via Claude Code notification hooks.</small
+          >
+        </div>
+        <div class="settings-check">
+          <label class="settings-check__row">
+            <input v-model="notifDebug" type="checkbox" />
+            <span>Debug logging</span>
+          </label>
+          <small class="settings-check__help"
+            >Promote detection decisions (which tier, which guards passed/failed) to info-level logs. Useful when
+            diagnosing false positives — paste log excerpts into bug reports.</small
+          >
+        </div>
         <details v-if="metricsSnapshot" class="metrics-details">
           <summary class="metrics-summary">Notification metrics</summary>
           <div class="metrics-grid">
@@ -605,6 +613,7 @@ function handleSave() {
   overflow-y: auto;
   scrollbar-gutter: stable;
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 20px;
   align-content: start;
   padding-bottom: 4px;
@@ -757,6 +766,40 @@ function handleSave() {
 }
 .settings-checkbox input {
   accent-color: var(--accent);
+}
+.settings-check {
+  margin-top: 12px;
+}
+.settings-check__row {
+  display: flex;
+  grid-template-columns: none;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.settings-check__row input[type="checkbox"] {
+  width: auto;
+  padding: 0;
+  border: none;
+  background: none;
+  accent-color: var(--accent);
+  flex-shrink: 0;
+  margin: 0;
+}
+.settings-check__row span {
+  font-size: 13px;
+  text-transform: none;
+  letter-spacing: normal;
+  color: var(--text);
+}
+.settings-check__help {
+  display: block;
+  margin-top: 4px;
+  padding-left: 24px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
 }
 .settings-footer {
   flex-shrink: 0;

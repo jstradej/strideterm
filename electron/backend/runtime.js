@@ -2623,6 +2623,7 @@ export async function createRuntime({
         const child = spawn(process.execPath, [scriptPath, "Notification"], {
           env: {
             ...process.env,
+            ELECTRON_RUN_AS_NODE: "1",
             STRIDETERM_NOTIFY_URL: probeUrl,
             CLAUDE_PROJECT_DIR: "",
           },

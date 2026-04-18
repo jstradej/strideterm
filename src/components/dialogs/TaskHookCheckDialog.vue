@@ -34,7 +34,7 @@
 defineProps({
   needsSettingEnable: { type: Boolean, default: false },
 });
-defineEmits(["cancel", "skip", "configure"]);
+const emit = defineEmits(["cancel", "skip", "configure"]);
 </script>
 
 <style scoped>
