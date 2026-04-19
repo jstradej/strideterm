@@ -92,7 +92,10 @@ export function useReviewNotifications(latestToastRef = null) {
         meta,
       });
 
-      if (latestToastRef) {
+      // Skip toast assignment while the dock is pinned — the dock already
+      // shows the arrival, and a stale latestToast would pop as a toast the
+      // moment the user unpins.
+      if (latestToastRef && !notifStore.pinned) {
         // Enrich the toast entry so NotificationToast can render a provider-
         // specific accent. The session carries meta already; the returned
         // event entry doesn't, so attach it here for the toast consumer.

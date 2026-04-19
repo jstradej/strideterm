@@ -1337,6 +1337,13 @@ export async function createRuntime({
       signal.busy = false;
       signal.lastAlertAt = Date.now();
       signal.everAlerted = true;
+      // Reset output-burst counter so "substantial output since last alert"
+      // means output that ARRIVED AFTER the user was alerted. Without this,
+      // bursts that led up to the alert (e.g. the response text just before
+      // Claude's Stop hook) remain counted, causing the repeat-idle_prompt
+      // suppression below to think there's been new activity — so a redundant
+      // idle_prompt right after a Stop/completed alert would slip through.
+      signal.outputBursts = 0;
     }
     broadcastState();
     return true;

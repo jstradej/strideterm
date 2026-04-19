@@ -125,7 +125,12 @@ export function useNotificationCapture() {
 
           // Attach category on the toast payload so NotificationToast can pick
           // the right icon without reaching into the session store.
-          latestToast.value = { ...entry, category };
+          // Skip toast assignment while the dock is pinned — the dock itself
+          // shows the arrival, and leaving latestToast stale would surface it
+          // as a toast the moment the user unpins.
+          if (!notifStore.pinned) {
+            latestToast.value = { ...entry, category };
+          }
           fireNotificationAlert(entry.title, entry.body, {
             tier: entry.tier,
             urgency: entry.urgency,

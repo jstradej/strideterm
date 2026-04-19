@@ -16,6 +16,7 @@ import { ref, computed } from "vue";
 
 const STORAGE_KEY = "strideterm-notifications-v2";
 const LEGACY_KEY = "strideterm-notifications";
+const PINNED_KEY = "strideterm-notifications-pinned";
 const MAX_SESSIONS = 200;
 const MAX_EVENTS_PER_SESSION = 20;
 
@@ -47,6 +48,22 @@ function saveToStorage(sessions) {
   }
 }
 
+function loadPinned() {
+  try {
+    return window.localStorage.getItem(PINNED_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function savePinned(value) {
+  try {
+    window.localStorage.setItem(PINNED_KEY, value ? "1" : "0");
+  } catch {
+    // Ignore storage failures.
+  }
+}
+
 function kindToState(kind) {
   // Review activity and info/completed events don't block on user input —
   // they land in "Finished" so the user can ack them at their convenience.
@@ -56,6 +73,12 @@ function kindToState(kind) {
 export const useNotificationStore = defineStore("notifications", () => {
   const sessions = ref(loadFromStorage());
   const panelOpen = ref(false);
+  const pinned = ref(loadPinned());
+  // Incremented whenever something (e.g. a keyboard shortcut) explicitly
+  // wants the dock focused. The component watches this counter and calls
+  // focus() — a ref-bump is used so repeated requests retrigger even when
+  // pinned/open state hasn't changed.
+  const focusRequestSignal = ref(0);
 
   // Back-compat computed: a flat `items` list still exposed so older
   // consumers (and tests) can iterate per-event.  New UI reads `sessions`.
@@ -273,11 +296,32 @@ export const useNotificationStore = defineStore("notifications", () => {
     panelOpen.value = false;
   }
 
+  function togglePin() {
+    pinned.value = !pinned.value;
+    savePinned(pinned.value);
+    if (pinned.value) {
+      // Pinning makes the panel permanently visible — clear the transient
+      // overlay flag so unpinning later doesn't leave it stuck open.
+      panelOpen.value = false;
+    } else {
+      // Unpinning: keep the panel visible as an overlay so the user can see
+      // what's there and close it deliberately with × or Esc. Without this
+      // the panel would vanish immediately, feeling abrupt.
+      panelOpen.value = true;
+    }
+  }
+
+  function requestFocus() {
+    focusRequestSignal.value += 1;
+  }
+
   return {
     // State
     sessions,
     items, // back-compat
     panelOpen,
+    pinned,
+    focusRequestSignal,
     // Computed
     unreadCount,
     waitingSessions,
@@ -296,5 +340,7 @@ export const useNotificationStore = defineStore("notifications", () => {
     clearOnBackend,
     togglePanel,
     closePanel,
+    togglePin,
+    requestFocus,
   };
 });

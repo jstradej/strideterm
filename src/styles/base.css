@@ -14,6 +14,7 @@
   --tint: 255, 255, 255;
   --sidebar-width: 248px;
   --sidebar-collapsed-width: 84px;
+  --notif-dock-width: 360px;
   color-scheme: dark;
   font-family: Inter, "Segoe UI", system-ui, sans-serif;
 }
@@ -164,4 +165,12 @@ textarea {
 
 .frame--sidebar-collapsed {
   grid-template-columns: var(--sidebar-collapsed-width) 1fr;
+}
+
+.frame--notif-pinned {
+  grid-template-columns: var(--sidebar-width) 1fr var(--notif-dock-width);
+}
+
+.frame--notif-pinned.frame--sidebar-collapsed {
+  grid-template-columns: var(--sidebar-collapsed-width) 1fr var(--notif-dock-width);
 }

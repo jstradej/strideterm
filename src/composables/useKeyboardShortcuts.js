@@ -1,6 +1,7 @@
 import { onMounted, onUnmounted } from "vue";
 import { useAppStore } from "../stores/app.js";
 import { useTerminalStore } from "../stores/terminal.js";
+import { useNotificationStore } from "../stores/notifications.js";
 
 function shortcutTabDirection(event) {
   const key = String(event?.key || "");
@@ -13,6 +14,7 @@ function shortcutTabDirection(event) {
 export function useKeyboardShortcuts(api, { onNewWorkspace } = {}) {
   const appStore = useAppStore();
   const termStore = useTerminalStore();
+  const notifStore = useNotificationStore();
 
   async function handleKeydown(event) {
     if ((event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey) {
@@ -28,6 +30,18 @@ export function useKeyboardShortcuts(api, { onNewWorkspace } = {}) {
         }
         return;
       }
+    }
+
+    // Ctrl/Cmd+Shift+N — focus the notification dock. When pinned, just
+    // focuses; when unpinned, opens the overlay panel and focuses it.
+    if ((event.ctrlKey || event.metaKey) && event.shiftKey && !event.altKey && event.key.toLowerCase() === "n") {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      if (!notifStore.pinned && !notifStore.panelOpen) {
+        notifStore.togglePanel();
+      }
+      notifStore.requestFocus();
+      return;
     }
 
     if (!(event.ctrlKey || event.metaKey)) return;

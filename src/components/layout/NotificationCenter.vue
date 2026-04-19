@@ -1,15 +1,26 @@
 <template>
   <Transition name="notif-panel">
     <aside
-      v-if="notifStore.panelOpen"
+      v-if="notifStore.pinned || notifStore.panelOpen"
       ref="panelRef"
       class="notification-center"
+      :class="{ 'notification-center--pinned': notifStore.pinned }"
       tabindex="0"
       @click.stop
       @keydown="onKeydown"
+      @pointermove="onPointerInteract"
+      @pointerdown="onPointerInteract"
     >
       <header class="notification-center__header">
-        <h2 class="notification-center__title">Notifications</h2>
+        <h2 class="notification-center__title">
+          Notifications
+          <span
+            v-if="notifStore.unreadCount > 0"
+            class="notification-center__title-badge"
+            :title="`${notifStore.unreadCount} unread`"
+            >{{ notifStore.unreadCount > 99 ? "99+" : notifStore.unreadCount }}</span
+          >
+        </h2>
         <div class="notification-center__actions">
           <button
             v-if="notifStore.unreadCount > 0 || notifStore.finishedSessions.length > 0"
@@ -29,103 +40,110 @@
           >
             Clear all
           </button>
-          <button type="button" class="notification-center__close" title="Close" @click="notifStore.closePanel()">
+          <button
+            type="button"
+            class="notification-center__pin"
+            :class="{ 'notification-center__pin--active': notifStore.pinned }"
+            :title="notifStore.pinned ? 'Unpin panel' : 'Pin panel to the right'"
+            @click="notifStore.togglePin()"
+          >
+            {{ notifStore.pinned ? "📌" : "📍" }}
+          </button>
+          <button
+            v-if="!notifStore.pinned"
+            type="button"
+            class="notification-center__close"
+            title="Close"
+            @click="notifStore.closePanel()"
+          >
             &times;
           </button>
         </div>
       </header>
 
-      <div ref="bodyRef" class="notification-center__body">
+      <Transition name="notif-pill">
+        <button
+          v-if="unseenCount > 0"
+          type="button"
+          class="notification-center__new-pill"
+          title="Scroll to top and show new"
+          @click="scrollToTopAndClear"
+        >
+          ↑ {{ unseenCount }} new
+        </button>
+      </Transition>
+
+      <div ref="bodyRef" class="notification-center__body" @scroll="onBodyScroll">
         <div v-if="notifStore.sessions.length === 0" class="notification-center__empty">No notifications yet.</div>
 
-        <!-- Needs input — live alerts the user should act on -->
-        <section v-if="visibleWaiting.length > 0" class="notif-section">
-          <h3 class="notif-section__title">
-            <span>Needs input</span>
-            <span class="notif-section__count">{{ visibleWaiting.length }}</span>
-          </h3>
-          <div class="notification-center__list">
+        <!-- Flat chronological timeline with day-band separators.
+             State is conveyed via icon + item modifier class (waiting/finished/
+             resolved/urgent) so the reader can scan the time axis without
+             category grouping. -->
+        <div v-if="timeline.length > 0" class="notification-center__list">
+          <template v-for="row in timeline" :key="row.key">
+            <div v-if="row.kind === 'separator'" class="notif-day-separator">
+              <span class="notif-day-separator__line"></span>
+              <span class="notif-day-separator__label">{{ row.label }}</span>
+              <span class="notif-day-separator__line"></span>
+            </div>
             <div
-              v-for="(s, idx) in visibleWaiting"
-              :key="s.id"
+              v-else
               class="notification-item"
-              :class="itemClass(s, 'waiting', idx)"
-              @click="onClickSession(s)"
+              :class="itemClass(row.session)"
+              @click="onClickSession(row.session)"
+              @pointermove="clearFlash(row.session.id)"
             >
-              <div class="notification-item__icon">{{ sessionIcon(s) }}</div>
+              <div class="notification-item__icon">{{ sessionIcon(row.session) }}</div>
               <div class="notification-item__content">
                 <div class="notification-item__head">
-                  <strong class="notification-item__title">{{ sessionTitle(s) }}</strong>
-                  <time class="notification-item__time" :title="s.latestAt">{{ relativeTime(s.latestAt) }}</time>
+                  <strong class="notification-item__title">
+                    <span v-if="flashingIds.has(row.session.id)" class="notification-item__new-pill">NEW</span>
+                    {{ sessionTitle(row.session) }}
+                  </strong>
+                  <span class="notification-item__meta">
+                    <span
+                      v-if="row.session.events && row.session.events.length > 1"
+                      class="notification-item__count"
+                      :title="`${row.session.events.length} events on this session`"
+                      >·{{ row.session.events.length }}×</span
+                    >
+                    <time class="notification-item__time" :title="row.session.latestAt">
+                      {{ relativeTime(row.session.latestAt) }}
+                    </time>
+                  </span>
                 </div>
-                <p class="notification-item__body">{{ sessionBody(s) }}</p>
-                <div class="notification-item__quick-actions">
-                  <button class="quick-action" title="Jump (Enter)" @click.stop="jump(s)">Jump</button>
-                  <button class="quick-action" title="Dismiss (d)" @click.stop="dismiss(s)">Dismiss</button>
-                  <button class="quick-action" title="Snooze 10m (s)" @click.stop="snooze(s)">Snooze</button>
+                <p class="notification-item__body">{{ sessionBody(row.session) }}</p>
+                <div v-if="row.session.state === 'waiting'" class="notification-item__quick-actions">
+                  <button class="quick-action" title="Jump to session (Enter)" @click.stop="jump(row.session)">
+                    Jump
+                  </button>
+                  <button
+                    class="quick-action"
+                    title="Silence without acting — feeds adaptive suppression (d)"
+                    @click.stop="dismiss(row.session)"
+                  >
+                    Dismiss
+                  </button>
+                  <button class="quick-action" title="Snooze for 10 minutes (s)" @click.stop="snooze(row.session)">
+                    Snooze
+                  </button>
                 </div>
               </div>
-            </div>
-          </div>
-        </section>
-
-        <!-- Finished — completed sessions awaiting ack -->
-        <section v-if="visibleFinished.length > 0" class="notif-section">
-          <h3 class="notif-section__title">
-            <span>Finished</span>
-            <span class="notif-section__count">{{ visibleFinished.length }}</span>
-          </h3>
-          <div class="notification-center__list">
-            <div
-              v-for="(s, idx) in visibleFinished"
-              :key="s.id"
-              class="notification-item notification-item--finished"
-              :class="itemClass(s, 'finished', idx)"
-              @click="onClickSession(s)"
-            >
-              <div class="notification-item__icon">{{ sessionIcon(s) }}</div>
-              <div class="notification-item__content">
-                <div class="notification-item__head">
-                  <strong class="notification-item__title">{{ sessionTitle(s) }}</strong>
-                  <time class="notification-item__time" :title="s.latestAt">{{ relativeTime(s.latestAt) }}</time>
-                </div>
-                <p class="notification-item__body">{{ sessionBody(s) }}</p>
-              </div>
-              <button class="notification-item__remove" title="Remove" @click.stop="notifStore.remove(s.id)">
+              <!-- Hard-delete from history. Hidden on "waiting" items so the
+                   user is nudged toward Dismiss/Snooze/Jump instead of
+                   silently dropping a live alert. -->
+              <button
+                v-if="row.session.state !== 'waiting'"
+                class="notification-item__remove"
+                title="Remove from history"
+                @click.stop="notifStore.remove(row.session.id)"
+              >
                 &times;
               </button>
             </div>
-          </div>
-        </section>
-
-        <!-- Older — resolved / stale -->
-        <section v-if="visibleOlder.length > 0" class="notif-section notif-section--older">
-          <h3 class="notif-section__title notif-section__title--collapsible" @click="showOlder = !showOlder">
-            <span>{{ showOlder ? "▾" : "▸" }} Older</span>
-            <span class="notif-section__count">{{ visibleOlder.length }}</span>
-          </h3>
-          <div v-if="showOlder" class="notification-center__list">
-            <div
-              v-for="(s, idx) in visibleOlder"
-              :key="s.id"
-              class="notification-item notification-item--resolved"
-              :class="itemClass(s, 'older', idx)"
-              @click="onClickSession(s)"
-            >
-              <div class="notification-item__icon">{{ sessionIcon(s) }}</div>
-              <div class="notification-item__content">
-                <div class="notification-item__head">
-                  <strong class="notification-item__title">{{ sessionTitle(s) }}</strong>
-                  <time class="notification-item__time" :title="s.latestAt">{{ relativeTime(s.latestAt) }}</time>
-                </div>
-                <p class="notification-item__body">{{ sessionBody(s) }}</p>
-              </div>
-              <button class="notification-item__remove" title="Remove" @click.stop="notifStore.remove(s.id)">
-                &times;
-              </button>
-            </div>
-          </div>
-        </section>
+          </template>
+        </div>
       </div>
     </aside>
   </Transition>
@@ -140,47 +158,116 @@ const notifStore = useNotificationStore();
 const appStore = useAppStore();
 const bodyRef = ref(null);
 const panelRef = ref(null);
-const showOlder = ref(false);
 const selectedIndex = ref(0);
+// Selection outline is only shown when the user is actively driving the list
+// with the keyboard. Mouse interaction resets it so the panel doesn't look
+// like the first row is already "armed" on open.
+const keyboardActive = ref(false);
+
+// Items flashing (newly arrived — stay highlighted until the user hovers
+// them, so they're still findable on return to the app). Safety timeout
+// ensures nothing stays glowing forever if the user ignores it.
+const flashingIds = ref(new Set());
+const FLASH_SAFETY_MS = 30_000;
+
+// Scroll-state tracking — when the user is scrolled down reading older
+// entries and a new alert arrives at the top, we surface a "N new ↑" pill
+// instead of silently shifting the list under them.
+const NEAR_TOP_PX = 100;
+const isNearTop = ref(true);
+const unseenCount = ref(0);
+
+function onBodyScroll() {
+  if (!bodyRef.value) return;
+  const atTop = bodyRef.value.scrollTop < NEAR_TOP_PX;
+  isNearTop.value = atTop;
+  if (atTop) unseenCount.value = 0;
+}
+
+function scrollToTopAndClear() {
+  if (!bodyRef.value) return;
+  bodyRef.value.scrollTo({ top: 0, behavior: "smooth" });
+  unseenCount.value = 0;
+}
 
 let tickTimer = null;
+let snoozeTimer = null;
 const tick = ref(0);
+// Snooze gate — hide sessions whose snoozedUntil hasn't elapsed.
+const now = ref(Date.now());
 
 onMounted(() => {
   tickTimer = setInterval(() => {
     tick.value++;
   }, 30_000);
+  snoozeTimer = setInterval(() => {
+    now.value = Date.now();
+  }, 30_000);
 });
 
-onUnmounted(() => clearInterval(tickTimer));
-
-// Snooze gate — hide sessions whose snoozedUntil hasn't elapsed.
-const now = ref(Date.now());
-setInterval(() => {
-  now.value = Date.now();
-}, 30_000);
+onUnmounted(() => {
+  clearInterval(tickTimer);
+  clearInterval(snoozeTimer);
+});
 
 function isSnoozed(s) {
   return s.snoozedUntil && s.snoozedUntil > now.value;
 }
 
-const visibleWaiting = computed(() => {
-  // Urgent first, then by recency
-  const waiting = notifStore.waitingSessions.filter((s) => !isSnoozed(s));
-  return [...waiting].sort((a, b) => {
-    const au = a.urgency === "urgent" ? 0 : 1;
-    const bu = b.urgency === "urgent" ? 0 : 1;
-    if (au !== bu) return au - bu;
-    return new Date(b.latestAt).getTime() - new Date(a.latestAt).getTime();
-  });
+// Flat chronological list — all non-snoozed sessions, newest first.
+// Capped so the DOM doesn't grow unbounded for long-running sessions.
+const MAX_TIMELINE = 50;
+const visibleSessions = computed(() => {
+  const list = notifStore.sessions.filter((s) => !isSnoozed(s));
+  return [...list]
+    .sort((a, b) => new Date(b.latestAt).getTime() - new Date(a.latestAt).getTime())
+    .slice(0, MAX_TIMELINE);
 });
 
-const visibleFinished = computed(() => notifStore.finishedSessions.filter((s) => !isSnoozed(s)));
+// Day-band label — "Today" / "Yesterday" / weekday name (this week) /
+// locale date (older). Used as the separator key + label.
+function dayBandKey(d) {
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  const target = new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+  const diffDays = Math.round((today - target) / 86400000);
+  if (diffDays <= 0) return "today";
+  if (diffDays === 1) return "yesterday";
+  if (diffDays < 7) return `weekday-${d.getDay()}`;
+  return `date-${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+}
 
-const visibleOlder = computed(() => notifStore.resolvedSessions.filter((s) => !isSnoozed(s)).slice(0, 30));
+function dayBandLabel(d) {
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  const target = new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+  const diffDays = Math.round((today - target) / 86400000);
+  if (diffDays <= 0) return "Today";
+  if (diffDays === 1) return "Yesterday";
+  if (diffDays < 7) return d.toLocaleDateString(undefined, { weekday: "long" });
+  return d.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
+}
 
-// Flat list for keyboard nav ordering.
-const allVisible = computed(() => [...visibleWaiting.value, ...visibleFinished.value, ...visibleOlder.value]);
+// Interleave sessions with day-band separator rows. Re-runs whenever the
+// underlying list changes — cheap for <=50 items.
+const timeline = computed(() => {
+  void tick.value;
+  const rows = [];
+  let lastBand = "";
+  for (const s of visibleSessions.value) {
+    const d = new Date(s.latestAt);
+    const band = dayBandKey(d);
+    if (band !== lastBand) {
+      rows.push({ kind: "separator", key: `sep-${band}`, label: dayBandLabel(d) });
+      lastBand = band;
+    }
+    rows.push({ kind: "item", key: s.id, session: s });
+  }
+  return rows;
+});
+
+// Flat list of sessions for keyboard nav.
+const allVisible = computed(() => visibleSessions.value);
 
 // Reset selection on panel open or list shrink.
 watch(
@@ -188,15 +275,138 @@ watch(
   async (isOpen) => {
     if (isOpen) {
       selectedIndex.value = 0;
+      keyboardActive.value = false;
       await nextTick();
       panelRef.value?.focus();
     }
   },
 );
 
+function onPointerInteract() {
+  // Any mouse activity within the panel clears the keyboard-selection outline,
+  // so the panel doesn't look like the first row is "armed" when the user is
+  // pointing at other rows with the cursor.
+  if (keyboardActive.value) keyboardActive.value = false;
+}
+
+// When the user pins the panel, focus it once so keyboard nav works without
+// requiring a click first.
+watch(
+  () => notifStore.pinned,
+  async (isPinned) => {
+    if (isPinned) {
+      await nextTick();
+      panelRef.value?.focus();
+    }
+  },
+);
+
+// External focus requests (e.g. Ctrl+Shift+N shortcut). Counter-based so
+// repeated presses retrigger focus even when state didn't change.
+watch(
+  () => notifStore.focusRequestSignal,
+  async () => {
+    await nextTick();
+    panelRef.value?.focus();
+  },
+);
+
 watch(allVisible, (list) => {
   if (selectedIndex.value >= list.length) selectedIndex.value = Math.max(0, list.length - 1);
+  // Clear the "N new" pill if the list shrank to zero (e.g. Clear all) —
+  // the scroll event doesn't fire on an emptied container, so unseenCount
+  // would otherwise linger as a stale badge over an empty list.
+  if (list.length === 0) unseenCount.value = 0;
 });
+
+// Flash both newly-appeared sessions AND existing sessions whose latestAt
+// advanced (i.e. a new event landed on the same thread — e.g. Claude Code
+// completed a second task after the first). Tracking `latestAt` per session
+// means the re-bubble up to the top is accompanied by a pulse so the user
+// recognises "this is the session I saw before, just updated".
+//
+// If the app window is not focused when the event arrives, we queue the id
+// into `pendingFlashIds` and promote them on focus — so flashes aren't
+// missed while the user is in another app.
+const seenLatestAt = new Map(); // sessionId → latestAt (ISO)
+const pendingFlashIds = new Set();
+let flashSeeded = false;
+
+function triggerFlash(id) {
+  flashingIds.value.add(id);
+  // Force reactivity on the Set (Vue doesn't track Set.add mutations).
+  flashingIds.value = new Set(flashingIds.value);
+  // Safety timeout disabled for testing — flash persists until pointermove
+  // within the item clears it. Re-enable with setTimeout(clearFlash, FLASH_SAFETY_MS)
+  // if this proves too insistent when several flashes pile up unattended.
+  // Using pointermove (not pointerenter) is deliberate: Chromium dispatches
+  // pointerenter on layout-induced element-under-pointer changes, which would
+  // wipe a flash the instant the list re-ordered under a stationary cursor.
+}
+
+function clearFlash(id) {
+  if (!flashingIds.value.has(id)) return;
+  flashingIds.value.delete(id);
+  flashingIds.value = new Set(flashingIds.value);
+}
+
+function smoothScrollToTop() {
+  nextTick(() => {
+    bodyRef.value?.scrollTo({ top: 0, behavior: "smooth" });
+  });
+}
+
+// Decide how to surface a newly-arrived session:
+//  - panel not visible → no-op (bell badge + toast already alert)
+//  - user is near the top → flash + smooth-scroll so the item is visible
+//    and items below slide down naturally
+//  - user is scrolled down reading → flash + increment unseenCount so the
+//    "N new ↑" pill surfaces; don't yank their scroll position
+function surfaceNewItem(id) {
+  const panelVisible = notifStore.pinned || notifStore.panelOpen;
+  if (!panelVisible) return;
+  triggerFlash(id);
+  if (isNearTop.value) {
+    smoothScrollToTop();
+  } else {
+    unseenCount.value += 1;
+  }
+}
+
+watch(
+  () => notifStore.sessions.map((s) => ({ id: s.id, latestAt: s.latestAt })),
+  (snapshot) => {
+    if (!flashSeeded) {
+      for (const s of snapshot) seenLatestAt.set(s.id, s.latestAt);
+      flashSeeded = true;
+      return;
+    }
+    const hasFocus = typeof document !== "undefined" && document.hasFocus();
+    for (const { id, latestAt } of snapshot) {
+      const prev = seenLatestAt.get(id);
+      if (prev === latestAt) continue;
+      seenLatestAt.set(id, latestAt);
+      if (hasFocus) {
+        surfaceNewItem(id);
+      } else {
+        pendingFlashIds.add(id);
+      }
+    }
+  },
+  { immediate: true },
+);
+
+function onWindowFocus() {
+  if (pendingFlashIds.size === 0) return;
+  const ids = [...pendingFlashIds];
+  pendingFlashIds.clear();
+  // Drain all at once — if several alerts piled up while away, they all
+  // pulse in sync, which reads as "these are the new ones" at a glance.
+  for (const id of ids) surfaceNewItem(id);
+}
+
+onMounted(() => window.addEventListener("focus", onWindowFocus));
+onUnmounted(() => window.removeEventListener("focus", onWindowFocus));
 
 function relativeTime(isoString) {
   void tick.value;
@@ -243,25 +453,19 @@ function sessionBody(s) {
   return latest.body || latest.title || "";
 }
 
-function itemClass(s, section, idx) {
-  const flatIdx = flatIndexOf(s, section);
+function itemClass(s) {
+  const flatIdx = visibleSessions.value.indexOf(s);
   const provider = s.meta?.provider || "";
   const providerSuffix = provider === "azure-devops" ? "azure" : provider === "github" ? "github" : "";
   return {
     "notification-item--urgent": s.urgency === "urgent",
     "notification-item--unread": s.state === "waiting",
-    "notification-item--selected": flatIdx === selectedIndex.value,
+    "notification-item--selected": keyboardActive.value && flatIdx === selectedIndex.value,
     "notification-item--review": s.category === "review",
     [`notification-item--review-${providerSuffix}`]: s.category === "review" && providerSuffix,
     [`notification-item--${s.state}`]: true,
-    [`notif-idx-${idx}`]: true,
+    "notification-item--flash": flashingIds.value.has(s.id),
   };
-}
-
-function flatIndexOf(s, section) {
-  if (section === "waiting") return visibleWaiting.value.indexOf(s);
-  if (section === "finished") return visibleWaiting.value.length + visibleFinished.value.indexOf(s);
-  return visibleWaiting.value.length + visibleFinished.value.length + visibleOlder.value.indexOf(s);
 }
 
 // Build the backend sessionId for a notification session row. `viewId` is the
@@ -298,7 +502,7 @@ async function jump(s) {
 
   const target = resolveJumpTarget(s);
   if (!target.workspaceId || !appStore.payload) {
-    notifStore.closePanel();
+    if (!notifStore.pinned) notifStore.closePanel();
     return;
   }
   const activeWsId = appStore.payload.appState?.activeWorkspaceId;
@@ -306,7 +510,8 @@ async function jump(s) {
     await appStore.activateWorkspace(target.workspaceId);
   }
   if (target.viewId) appStore.activateView(target.viewId);
-  notifStore.closePanel();
+  // Pinned dock stays open — the item greys in place instead of the panel closing.
+  if (!notifStore.pinned) notifStore.closePanel();
 }
 
 async function dismiss(s) {
@@ -335,11 +540,13 @@ function onKeydown(ev) {
     case "j":
     case "ArrowDown":
       ev.preventDefault();
+      keyboardActive.value = true;
       selectedIndex.value = Math.min(list.length - 1, selectedIndex.value + 1);
       break;
     case "k":
     case "ArrowUp":
       ev.preventDefault();
+      keyboardActive.value = true;
       selectedIndex.value = Math.max(0, selectedIndex.value - 1);
       break;
     case "Enter":
@@ -361,6 +568,8 @@ function onKeydown(ev) {
       }
       break;
     case "Escape":
+      // When pinned, Esc is a no-op — user expects the dock to stay put.
+      if (notifStore.pinned) return;
       ev.preventDefault();
       notifStore.closePanel();
       break;
@@ -368,6 +577,7 @@ function onKeydown(ev) {
 }
 
 function onClickOutside(event) {
+  if (notifStore.pinned) return;
   if (
     notifStore.panelOpen &&
     !event.target.closest(".notification-center") &&

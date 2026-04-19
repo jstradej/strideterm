@@ -14,6 +14,7 @@
     :class="{
       'frame--remote': api?.isRemote,
       'frame--sidebar-collapsed': store.sidebarCollapsed,
+      'frame--notif-pinned': notifStore.pinned,
     }"
   >
     <div class="sidebar-backdrop" data-role="sidebar-backdrop" @click="closeSidebar"></div>
@@ -139,6 +140,7 @@
           <div v-if="mobileTabOpen" class="mobile-tab-picker__backdrop" @click="mobileTabOpen = false"></div>
 
           <button
+            v-if="!notifStore.pinned"
             type="button"
             class="notification-bell"
             :class="{ 'notification-bell--has-unread': notifStore.unreadCount > 0 }"
@@ -175,6 +177,10 @@
         <PaneStage v-else-if="store.payload" />
       </section>
     </main>
+
+    <!-- Notification center — direct child of .frame so pinned mode can
+         occupy the 3rd grid column. Unpinned mode uses position: fixed. -->
+    <NotificationCenter />
   </div>
 
   <!-- Bootstrap error -->
@@ -192,14 +198,12 @@
   <!-- Tab picker dropdown -->
   <TabPickerDropdown :anchor-rect="tabPickerAnchor" @close="tabPickerAnchor = null" />
 
-  <!-- Notification center panel -->
-  <NotificationCenter />
-
   <!-- Return-to-app banner (shows when focus returns after >30s with waiting sessions) -->
   <ReturnToAppBanner />
 
-  <!-- Notification toast -->
-  <NotificationToast :toast="latestToast" @dismissed="latestToast = null" />
+  <!-- Notification toast — suppressed when the dock is pinned (the dock
+       itself plays that role). Sound alert still fires via useNotificationCapture. -->
+  <NotificationToast v-if="!notifStore.pinned" :toast="latestToast" @dismissed="latestToast = null" />
 </template>
 
 <script setup>
