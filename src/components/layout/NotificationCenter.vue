@@ -466,6 +466,11 @@ function itemClass(s) {
   const flatIdx = visibleSessions.value.indexOf(s);
   const provider = s.meta?.provider || "";
   const providerSuffix = provider === "azure-devops" ? "azure" : provider === "github" ? "github" : "";
+  // Flash (warm pulse + icon shake) is meant to draw the eye to something new.
+  // Once the user has acted on the session (resolved: jumped/dismissed/snoozed),
+  // the row goes grey and any ongoing flash should stop — otherwise the shake
+  // keeps running on an item the user already handled.
+  const shouldFlash = s.state !== "resolved" && flashingIds.value.has(s.id);
   return {
     "notification-item--urgent": s.urgency === "urgent",
     "notification-item--unread": s.state === "waiting",
@@ -473,7 +478,7 @@ function itemClass(s) {
     "notification-item--review": s.category === "review",
     [`notification-item--review-${providerSuffix}`]: s.category === "review" && providerSuffix,
     [`notification-item--${s.state}`]: true,
-    "notification-item--flash": flashingIds.value.has(s.id),
+    "notification-item--flash": shouldFlash,
   };
 }
 
