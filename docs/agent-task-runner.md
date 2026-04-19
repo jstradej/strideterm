@@ -59,15 +59,17 @@ Choose **Default** as the model to let the CLI use its own default without passi
 
 ### Idle detection per provider
 
-Each CLI signals end-of-turn differently. The Task Runner picks up on the first of the following that fires:
+Each CLI signals end-of-turn differently. Notification hooks are the primary signal for all three — they're instant, reliable, and don't depend on the agent emitting any particular terminal sequence between turns. Without hooks configured, the Task Runner falls back to a silence-based heuristic.
 
-| Provider    | Primary signal                                         | Fallback                                 |
-| ----------- | ------------------------------------------------------ | ---------------------------------------- |
-| Claude Code | OSC 133 shell integration (instant)                    | Notification / Stop hooks, silence timer |
-| Codex CLI   | Stop hook (instant, requires hook configuration)       | Silence timer (8 s)                      |
-| Gemini CLI  | AfterAgent hook (instant, requires hook configuration) | Silence timer (8 s)                      |
+| Provider    | Primary signal (with hooks)                        | Fallback (no hooks)         |
+| ----------- | -------------------------------------------------- | --------------------------- |
+| Claude Code | Notification / Stop / SubagentStop hooks (instant) | OSC 133 + silence heuristic |
+| Codex CLI   | Stop / UserPromptSubmit hooks (instant)            | Silence timer (8 s)         |
+| Gemini CLI  | AfterAgent / Notification hooks (instant)          | Silence timer (8 s)         |
 
-For instant Codex and Gemini handoffs, enable their notification hooks in **Settings → Notifications**. Without hooks the silence heuristic still works but introduces an 8-second delay per handoff (and longer if the CLI reasons for a while). Codex hooks require **Codex CLI 0.121.0+** on Windows — older Windows builds ship with hooks gated off.
+Enable hooks for all three providers in **Settings → Notifications** — one click each. Without hooks the silence heuristic still works but introduces an 8-second delay per handoff (and longer if the CLI reasons for a while), and is more prone to false positives during long turns. OSC 133 shell integration only fires when a _shell_ returns to its prompt, so for interactive agent sessions (which never return to a prompt between turns) it's effectively silent — hooks are what carries the signal.
+
+Codex hooks require **Codex CLI 0.121.0+** on Windows — older Windows builds ship with hooks gated off.
 
 ## Writing Good Task Descriptions
 
@@ -157,9 +159,9 @@ You don't need a special format — write in plain language:
 ```markdown
 ## Verification before completion
 
-- [ ] Spusť testy: `npm test`
-- [ ] Zkontroluj, že existuje soubor src/api/users.ts
-- [ ] Ověř, že stávající testy stále procházejí
+- [ ] Run the tests: `npm test`
+- [ ] Verify that `src/api/users.ts` exists
+- [ ] Confirm that existing tests still pass
 ```
 
 ### Two layers of verification
@@ -345,7 +347,7 @@ This makes the task workspace reusable: create it once, then reset and re-run as
 ### Architecture
 
 ```
-TaskWorkspaceDialog (UI)
+WorkspaceDialog (UI, task mode)
   --> transport.js: createTaskWorkspace()
     --> runtime.js: createTaskWorkspace()
       --> [if useWorktree] git worktree add     // create isolated branch
@@ -355,14 +357,14 @@ TaskWorkspaceDialog (UI)
 ```
 
 ```
-Worker goes idle (hook/OSC 133/silence detection)
+Worker goes idle (hook/silence detection)
   --> runtime.onAgentIdle(sessionId)
     --> AgentTaskRunner.onAgentIdle(sessionId)
       --> #evaluateWorker(workspace)
         --> #runBuiltInChecks()         // WORK_LOCK, TODO sections
         --> [short-circuit if failed]   // re-prompt worker
         --> #getGitContext()            // git status, diff
-        --> #buildJudgePrompt()         // include git context
+        --> buildJudgePrompt()          // include git context
         --> #injectPrompt() to Judge    // file-based for long prompts
 ```
 
@@ -390,22 +392,6 @@ idle --> running --> evaluating --> judge-evaluating --> completed
 - **paused**: User intervened or error occurred
 - **completed**: Judge approved
 - **failed**: Max rounds reached
-
-### Key Implementation Files
-
-| File                                                  | Purpose                                                         |
-| ----------------------------------------------------- | --------------------------------------------------------------- |
-| `electron/backend/agent-task-runner.js`               | Core orchestrator (state machine, checks, prompts, shower mode) |
-| `electron/backend/agent-task-prompts.js`              | Worker and Judge prompt builders                                |
-| `electron/backend/agent-task-utils.js`                | Shared constants and helpers                                    |
-| `electron/backend/agent-task-detection.js`            | Project technology detection (auto-detect verify commands)      |
-| `electron/backend/agent-task-runner.test.js`          | Unit tests                                                      |
-| `src/components/workspace/TaskDashboardPane.vue`      | Dashboard shell (header, tabs, controls)                        |
-| `src/components/workspace/TaskDashboardStatusTab.vue` | Pipeline + round history                                        |
-| `src/components/workspace/TaskDashboardFilesTab.vue`  | Control file editor                                             |
-| `src/components/workspace/TaskDashboardHelpTab.vue`   | Help content                                                    |
-| `src/composables/useTaskFiles.js`                     | File I/O composable                                             |
-| `src/components/dialogs/TaskWorkspaceDialog.vue`      | Creation dialog                                                 |
 
 ### Prompt Injection
 

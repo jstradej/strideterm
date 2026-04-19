@@ -172,7 +172,7 @@ strIDEterm integrates with each supported agent CLI's hook system so you get ins
 
 All providers share a single notification script (`~/.strideterm/hooks/notify.mjs`) that posts events to a local HTTP endpoint embedded in strIDEterm. The script is written automatically on startup, so you never need to edit it by hand. Settings also exposes a **Test hook** button that runs an end-to-end probe and reports delivery latency.
 
-**Without hooks** the Task Runner falls back to OSC 133 shell integration (Claude) or silence heuristics (Codex, Gemini, 8 s default). Hooks are optional but strongly recommended for long Judge reasoning passes where silence timers add up.
+**Without hooks** the Task Runner falls back to a silence-based heuristic (8 s default) for all three providers. OSC 133 shell integration only fires when a _shell_ returns to its prompt, so for interactive agent sessions (which never return to a prompt between turns) it doesn't help — hooks carry the primary signal. Hooks are optional but strongly recommended for long Judge reasoning passes where silence timers add up.
 
 ## Plugins
 
