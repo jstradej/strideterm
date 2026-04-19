@@ -90,6 +90,8 @@
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  container-type: inline-size;
+  container-name: notif-dock;
 }
 
 /* Pinned: panel becomes the 3rd grid column of .frame instead of an overlay.
@@ -108,6 +110,23 @@
   padding-top: 32px;
   box-shadow: none;
   z-index: auto;
+}
+
+.notif-dock-resize-handle {
+  position: absolute;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  width: 10px;
+  cursor: col-resize;
+  z-index: 50;
+  background: transparent;
+  transition: background 0.15s;
+}
+
+.notif-dock-resize-handle:hover,
+.notif-dock-resize-handle--active {
+  background: var(--accent);
 }
 
 .notification-center__header {
@@ -170,6 +189,46 @@
 
 .notification-center__action--danger:hover {
   color: var(--danger);
+}
+
+.notification-center__action-icon {
+  display: none;
+  font-size: 13px;
+  line-height: 1;
+}
+
+/* Narrow dock: collapse text labels into icons so the header stops wrapping
+   when the user shrinks the panel. Threshold picked just above the point
+   where "Ack finished" starts to break onto two lines. */
+@container notif-dock (max-width: 320px) {
+  .notification-center__action-label {
+    display: none;
+  }
+  .notification-center__action-icon {
+    display: inline-flex;
+  }
+  .notification-center__action {
+    padding: 4px 6px;
+    min-width: 26px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+}
+
+/* Even narrower: tighten the header row so the title + badge + icons all
+   fit on one line without horizontal overflow. */
+@container notif-dock (max-width: 260px) {
+  .notification-center__header {
+    padding: 10px 8px;
+    gap: 6px;
+  }
+  .notification-center__title {
+    font-size: 12px;
+  }
+  .notification-center__actions {
+    gap: 2px;
+  }
 }
 
 .notification-center__close {

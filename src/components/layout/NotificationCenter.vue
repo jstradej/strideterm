@@ -11,6 +11,12 @@
       @pointermove="onPointerInteract"
       @pointerdown="onPointerInteract"
     >
+      <div
+        v-if="notifStore.pinned"
+        class="notif-dock-resize-handle"
+        data-role="notif-dock-resize-handle"
+        title="Drag to resize · double-click to reset"
+      ></div>
       <header class="notification-center__header">
         <h2 class="notification-center__title">
           Notifications
@@ -29,7 +35,8 @@
             title="Acknowledge all finished"
             @click="notifStore.markAllRead()"
           >
-            Ack finished
+            <span class="notification-center__action-icon" aria-hidden="true">✓</span>
+            <span class="notification-center__action-label">Ack finished</span>
           </button>
           <button
             v-if="notifStore.sessions.length > 0"
@@ -38,7 +45,8 @@
             title="Clear all notifications"
             @click="notifStore.clearAll()"
           >
-            Clear all
+            <span class="notification-center__action-icon" aria-hidden="true">🗑</span>
+            <span class="notification-center__action-label">Clear all</span>
           </button>
           <button
             type="button"

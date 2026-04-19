@@ -213,7 +213,8 @@ import { useGlobalEvents } from "./composables/useGlobalEvents.js";
 import { useAttentionSync } from "./composables/useAttentionSync.js";
 import { useKeyboardShortcuts } from "./composables/useKeyboardShortcuts.js";
 import { useSidebarResize } from "./composables/useSidebarResize.js";
-import { writeSidebarCollapsed, readSidebarWidth } from "./app/helpers.js";
+import { useNotificationDockResize } from "./composables/useNotificationDockResize.js";
+import { writeSidebarCollapsed, readSidebarWidth, readNotificationDockWidth } from "./app/helpers.js";
 import ProfileBar from "./components/layout/ProfileBar.vue";
 import SidebarPanel from "./components/layout/SidebarPanel.vue";
 import TabStrip from "./components/layout/TabStrip.vue";
@@ -342,6 +343,10 @@ onMounted(() => {
   if (savedWidth && frameRef.value) {
     frameRef.value.style.setProperty("--sidebar-width", `${savedWidth}px`);
   }
+  const savedDockWidth = readNotificationDockWidth();
+  if (savedDockWidth && frameRef.value) {
+    frameRef.value.style.setProperty("--notif-dock-width", `${savedDockWidth}px`);
+  }
 });
 
 onErrorCaptured((err, instance, info) => {
@@ -353,6 +358,7 @@ useGlobalEvents();
 useAttentionSync(api);
 useKeyboardShortcuts(api, { onNewWorkspace: () => store.openNewWorkspaceFlow() });
 useSidebarResize(frameRef, sidebarRef);
+useNotificationDockResize(frameRef);
 </script>
 
 <style>

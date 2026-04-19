@@ -245,7 +245,7 @@ export function readSidebarWidth() {
     const raw = window.localStorage.getItem("strideterm-sidebar-width");
     if (!raw) return null;
     const value = Number.parseInt(raw, 10);
-    return Number.isFinite(value) && value >= 180 && value <= 500 ? value : null;
+    return Number.isFinite(value) && value >= 180 && value <= 1200 ? value : null;
   } catch {
     return null;
   }
@@ -254,6 +254,25 @@ export function readSidebarWidth() {
 export function writeSidebarWidth(value) {
   try {
     window.localStorage.setItem("strideterm-sidebar-width", String(value));
+  } catch {
+    // Ignore localStorage failures in restricted browser contexts.
+  }
+}
+
+export function readNotificationDockWidth() {
+  try {
+    const raw = window.localStorage.getItem("strideterm-notif-dock-width");
+    if (!raw) return null;
+    const value = Number.parseInt(raw, 10);
+    return Number.isFinite(value) && value >= 200 && value <= 1200 ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+export function writeNotificationDockWidth(value) {
+  try {
+    window.localStorage.setItem("strideterm-notif-dock-width", String(value));
   } catch {
     // Ignore localStorage failures in restricted browser contexts.
   }
