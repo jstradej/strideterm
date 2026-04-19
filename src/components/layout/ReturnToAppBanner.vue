@@ -28,6 +28,8 @@ function onFocus() {
   if (blurAt === 0 || Date.now() - blurAt < 30_000) return;
   blurAt = 0;
   if (waitingCount.value === 0) return;
+  // Pinned dock already shows waiting sessions in-place — banner would be redundant.
+  if (notifStore.pinned) return;
   show();
 }
 function onBlur() {
