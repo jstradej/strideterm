@@ -1,4 +1,5 @@
-import { watch, ref } from "vue";
+import { watch } from "vue";
+import { storeToRefs } from "pinia";
 import { useAppStore } from "../stores/app.js";
 import { useNotificationStore } from "../stores/notifications.js";
 import { fireNotificationAlert } from "./useNotificationSound.js";
@@ -17,7 +18,11 @@ import { fireNotificationAlert } from "./useNotificationSound.js";
 export function useNotificationCapture() {
   const appStore = useAppStore();
   const notifStore = useNotificationStore();
-  const latestToast = ref(null);
+  // Share the toast slot with the store so app-level errors (showError) and
+  // other non-alert sources can push toasts through the same ref App.vue binds.
+  // storeToRefs preserves the Ref wrapping (vs. a plain destructure that would
+  // unwrap to a value and break `.value = …` writes in this composable).
+  const { latestToast } = storeToRefs(notifStore);
 
   // Track alert IDs we have already seen so we only fire once per alert.
   const seenAlertKeys = new Set();

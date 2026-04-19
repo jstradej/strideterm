@@ -422,6 +422,7 @@ function relativeTime(isoString) {
 
 function sessionIcon(s) {
   if (s.urgency === "urgent") return "🚨";
+  if (s.category === "error") return "❌";
   // Connection-level failures carry a distinct icon so they aren't mistaken
   // for a PR comment (both sit in the "review" category).
   if (s.category === "review" && s.meta?.kind === "connection-error") return "🔌";

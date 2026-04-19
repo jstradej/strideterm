@@ -28,6 +28,7 @@ let hideTimer = null;
 const kindIcon = computed(() => {
   if (!props.toast) return "";
   if (props.toast.urgency === "urgent") return "🚨";
+  if (props.toast.kind === "error") return "❌";
   if (props.toast.kind === "review" && props.toast.meta?.kind === "connection-error") return "🔌";
   if (props.toast.kind === "review") return "💬";
   // Agent task finishing its judge loop gets the checkered flag.

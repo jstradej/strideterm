@@ -71,6 +71,10 @@
         />
         <button class="button button--ghost" @click="addProfile">+ Add</button>
       </div>
+      <div v-if="errorMessage" class="dialog__error" role="alert">
+        <span class="dialog__error-icon" aria-hidden="true">⚠</span>
+        <span class="dialog__error-text">{{ errorMessage }}</span>
+      </div>
     </div>
   </div>
 </template>
@@ -91,29 +95,64 @@ const attrs = useAttrs();
 
 const localProfiles = reactive(props.profiles.map((p) => ({ ...p })));
 const newProfileName = ref("");
+const errorMessage = ref("");
 
 function workspaceCount(profileId) {
   return props.workspaces.filter((ws) => (ws.profileId || "default") === profileId).length;
 }
 
+// Strip Vue reactive proxies before handing a profile to the parent (which
+// forwards it into Electron IPC). Nested `workspaceIds` is a reactive array
+// proxy — structuredClone can't serialize it and throws "An object could
+// not be cloned", which silently killed the save without feedback.
+function plainProfile(profile) {
+  return JSON.parse(JSON.stringify(profile));
+}
+
+function handleError(err) {
+  const raw = err?.message || String(err || "Unknown error");
+  errorMessage.value = raw.replace(/^Error invoking remote method '[^']+':\s*/, "").replace(/^Error:\s*/, "");
+}
+
 async function onRenameProfile(profile) {
   const name = profile.name.trim();
-  if (name) await attrs.onSave?.({ ...profile, name });
+  if (!name) return;
+  errorMessage.value = "";
+  try {
+    await attrs.onSave?.(plainProfile({ ...profile, name }));
+  } catch (err) {
+    handleError(err);
+  }
 }
 
 async function onProfileColorChange(profile, color) {
   profile.color = color;
-  await attrs.onSave?.({ ...profile });
+  errorMessage.value = "";
+  try {
+    await attrs.onSave?.(plainProfile(profile));
+  } catch (err) {
+    handleError(err);
+  }
 }
 
 async function handleActivate(profileId) {
-  await attrs.onActivate?.(profileId);
+  errorMessage.value = "";
+  try {
+    await attrs.onActivate?.(profileId);
+  } catch (err) {
+    handleError(err);
+  }
 }
 
 async function handleDelete(profileId) {
-  await attrs.onDelete?.(profileId);
-  const idx = localProfiles.findIndex((p) => p.id === profileId);
-  if (idx >= 0) localProfiles.splice(idx, 1);
+  errorMessage.value = "";
+  try {
+    await attrs.onDelete?.(profileId);
+    const idx = localProfiles.findIndex((p) => p.id === profileId);
+    if (idx >= 0) localProfiles.splice(idx, 1);
+  } catch (err) {
+    handleError(err);
+  }
 }
 
 async function addProfile() {
@@ -121,9 +160,14 @@ async function addProfile() {
   if (!name) return;
   if (localProfiles.some((p) => p.name.toLowerCase() === name.toLowerCase())) return;
   const newProfile = { id: `profile-${crypto.randomUUID()}`, name, color: "#ffa424", workspaceIds: [] };
-  await attrs.onSave?.(newProfile);
-  localProfiles.push(newProfile);
-  newProfileName.value = "";
+  errorMessage.value = "";
+  try {
+    await attrs.onSave?.(plainProfile(newProfile));
+    localProfiles.push(newProfile);
+    newProfileName.value = "";
+  } catch (err) {
+    handleError(err);
+  }
 }
 </script>
 

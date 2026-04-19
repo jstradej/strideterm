@@ -671,6 +671,15 @@
   color: #ff7a7a;
 }
 
+.notification-toast--error {
+  border-left: 3px solid #ff5a5a;
+  background: rgba(255, 90, 90, 0.08);
+}
+
+.notification-toast--error .notification-toast__title {
+  color: #ff7a7a;
+}
+
 .notification-toast__icon {
   font-size: 14px;
   line-height: 20px;

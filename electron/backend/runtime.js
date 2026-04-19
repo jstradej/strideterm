@@ -3214,6 +3214,24 @@ export async function createRuntime({
       }
       return results;
     },
+    // Lightweight probe used by the task workspace dialog to decide whether
+    // "Create in git worktree" makes sense for the chosen cwd. Treats any
+    // failure (non-existent path, not a git repo, git CLI missing) as
+    // "not a repo" — the caller just wants a boolean to gate the checkbox.
+    async checkIsGitRepo(cwd) {
+      const trimmed = String(cwd || "").trim();
+      if (!trimmed) return { isGitRepo: false, reason: "empty" };
+      try {
+        const { stdout } = await execFileTextImpl("git", ["rev-parse", "--is-inside-work-tree"], { cwd: trimmed });
+        return { isGitRepo: stdout.trim() === "true" };
+      } catch (err) {
+        const stderr = err?.stderr?.trim() || err?.error?.message || "";
+        if (stderr.includes("not a git repository")) return { isGitRepo: false, reason: "not-a-repo" };
+        // Could not even run git — treat as "unknown" so the dialog stays
+        // permissive rather than blocking based on a transient failure.
+        return { isGitRepo: false, reason: "error", error: stderr || "unknown error" };
+      }
+    },
     async createTaskWorkspace(config) {
       log.info("createTaskWorkspace", {
         cwd: config.cwd,
@@ -3256,11 +3274,20 @@ export async function createRuntime({
         try {
           await execFileTextImpl("git", ["worktree", "add", treePath, "-b", branch], { cwd: config.cwd });
         } catch (err) {
-          // If branch already exists, try without -b (attach to existing branch)
-          if (err.message?.includes("already exists") || err.stderr?.includes("already exists")) {
+          // execFileText rejects with { error, stdout, stderr } — the useful
+          // message lives in stderr. err.message is undefined here, so don't
+          // rely on it for either the branch-exists fallback or the user error.
+          const stderr = err.stderr?.trim() || err.error?.message || err.message || "";
+          if (stderr.includes("already exists")) {
             await execFileTextImpl("git", ["worktree", "add", treePath, branch], { cwd: config.cwd });
+          } else if (stderr.includes("not a git repository")) {
+            // Most common user mistake — surface a clear, actionable message.
+            throw new Error(
+              `"${config.cwd}" is not a git repository. Initialize with \`git init\` there, or disable "Use git worktree" in the task dialog.`,
+              { cause: err },
+            );
           } else {
-            throw new Error(`Failed to create git worktree: ${err.message}`, { cause: err });
+            throw new Error(`Failed to create git worktree: ${stderr || "unknown error"}`, { cause: err });
           }
         }
 

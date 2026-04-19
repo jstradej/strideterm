@@ -79,6 +79,10 @@ export const useNotificationStore = defineStore("notifications", () => {
   // focus() — a ref-bump is used so repeated requests retrigger even when
   // pinned/open state hasn't changed.
   const focusRequestSignal = ref(0);
+  // Transient toast payload. Lives in the store (not in a composable) so any
+  // part of the app can trigger a toast via showError/showToast without
+  // threading a ref through prop drilling or custom event buses.
+  const latestToast = ref(null);
 
   // Back-compat computed: a flat `items` list still exposed so older
   // consumers (and tests) can iterate per-event.  New UI reads `sessions`.
@@ -315,6 +319,28 @@ export const useNotificationStore = defineStore("notifications", () => {
     focusRequestSignal.value += 1;
   }
 
+  // Surface an app-level error to the user: persistent entry in the dock
+  // (so it survives scroll-away) plus a transient toast (so it grabs
+  // attention even when the dock is closed behind a dialog). Callers should
+  // use this instead of `console.error` for anything the user needs to act
+  // on or recover from — failed IPC, backend validation errors, etc.
+  function showError(title, body, { workspaceId = "", workspaceName = "" } = {}) {
+    const entry = addEvent({
+      title,
+      body,
+      kind: "error",
+      tier: 1,
+      urgency: "normal",
+      workspaceId,
+      workspaceName,
+      category: "error",
+    });
+    if (!pinned.value) {
+      latestToast.value = { ...entry, category: "error" };
+    }
+    return entry;
+  }
+
   return {
     // State
     sessions,
@@ -322,6 +348,7 @@ export const useNotificationStore = defineStore("notifications", () => {
     panelOpen,
     pinned,
     focusRequestSignal,
+    latestToast,
     // Computed
     unreadCount,
     waitingSessions,
@@ -342,5 +369,6 @@ export const useNotificationStore = defineStore("notifications", () => {
     closePanel,
     togglePin,
     requestFocus,
+    showError,
   };
 });

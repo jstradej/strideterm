@@ -475,6 +475,11 @@ export function createDialogActions(ctx) {
           }
         } catch (err) {
           console.error("[task-workspace] create failed:", err);
+          // Re-throw so the dialog's inline error banner can render the
+          // message. Do NOT close the dialog here — the user needs to see
+          // what went wrong and correct the cwd (e.g. the directory isn't
+          // a git repo) without retyping the whole task description.
+          throw err;
         }
       },
     });

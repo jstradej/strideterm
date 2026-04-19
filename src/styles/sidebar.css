@@ -147,6 +147,35 @@ dt {
   justify-content: space-between;
 }
 
+/* Inline error banner shown inside a dialog when the submit handler rejects.
+   Sits above the footer so the user sees *why* the primary action failed
+   without having to glance away at a toast behind the modal. */
+.dialog__error {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 8px 0 0;
+  padding: 10px 12px;
+  border: 1px solid rgba(255, 111, 141, 0.45);
+  border-radius: 4px;
+  background: rgba(255, 111, 141, 0.12);
+  color: #ffd7df;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.dialog__error-icon {
+  font-size: 15px;
+  line-height: 1.2;
+  flex-shrink: 0;
+}
+
+.dialog__error-text {
+  flex: 1;
+  min-width: 0;
+  word-break: break-word;
+}
+
 .sidebar__head {
   display: flex;
   align-items: center;

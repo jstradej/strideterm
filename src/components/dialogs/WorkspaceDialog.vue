@@ -41,40 +41,48 @@
         <span>Name</span>
         <input v-model="draft.name" name="name" required maxlength="60" />
       </label>
-      <div class="grid">
-        <label>
-          <span>Badge</span>
-          <input v-model="draft.icon" name="icon" maxlength="4" />
-          <div class="icon-picker">
-            <button
-              v-for="icon in BADGE_ICONS"
-              :key="icon"
-              type="button"
-              class="button button--ghost icon-picker__btn"
-              @click="draft.icon = icon"
-            >
-              {{ icon }}
-            </button>
+      <!-- Badge / accent / notes rarely need editing during creation, so
+           they're tucked behind a collapsed disclosure to keep the primary
+           fields (cwd, name, task) above the fold. -->
+      <details class="appearance-details">
+        <summary class="appearance-summary">Appearance & notes</summary>
+        <div class="appearance-content">
+          <div class="grid">
+            <label>
+              <span>Badge</span>
+              <input v-model="draft.icon" name="icon" maxlength="4" />
+              <div class="icon-picker">
+                <button
+                  v-for="icon in BADGE_ICONS"
+                  :key="icon"
+                  type="button"
+                  class="button button--ghost icon-picker__btn"
+                  @click="draft.icon = icon"
+                >
+                  {{ icon }}
+                </button>
+              </div>
+            </label>
+            <label>
+              <span>Accent</span>
+              <div class="accent-row">
+                <input v-model="draft.color" name="color" type="color" class="color-input" />
+                <span class="color-preview" :style="{ background: draft.color }"></span>
+              </div>
+            </label>
           </div>
-        </label>
-        <label>
-          <span>Accent</span>
-          <div class="accent-row">
-            <input v-model="draft.color" name="color" type="color" class="color-input" />
-            <span class="color-preview" :style="{ background: draft.color }"></span>
-          </div>
-        </label>
-      </div>
-      <label>
-        <span>Notes</span>
-        <textarea
-          v-model="draft.notes"
-          name="notes"
-          rows="3"
-          placeholder="What belongs in this workspace?"
-          maxlength="500"
-        />
-      </label>
+          <label>
+            <span>Notes</span>
+            <textarea
+              v-model="draft.notes"
+              name="notes"
+              rows="3"
+              placeholder="What belongs in this workspace?"
+              maxlength="500"
+            />
+          </label>
+        </div>
+      </details>
 
       <!-- Docker workspace: no manual panels -->
       <p v-if="isDocker" class="info-box">
@@ -86,10 +94,16 @@
         <label
           v-if="isCreatingTask"
           class="checkbox-label"
-          title="Create a git worktree from the base repository so the task agent works on an isolated branch."
+          :class="{ 'checkbox-label--disabled': cwdIsGitRepo === false }"
+          :title="
+            cwdIsGitRepo === false
+              ? 'The selected directory is not a git repository. Initialize with `git init` there to enable this option.'
+              : 'Create a git worktree from the base repository so the task agent works on an isolated branch.'
+          "
         >
-          <input v-model="draft.useWorktree" type="checkbox" />
+          <input v-model="draft.useWorktree" type="checkbox" :disabled="cwdIsGitRepo === false" />
           <span>Create in git worktree</span>
+          <span v-if="cwdIsGitRepo === false" class="field-hint field-hint--inline">(not a git repo)</span>
         </label>
 
         <label v-if="isCreatingTask && draft.useWorktree">
@@ -276,6 +290,11 @@
         />
       </template>
 
+      <div v-if="errorMessage" class="dialog__error" role="alert">
+        <span class="dialog__error-icon" aria-hidden="true">⚠</span>
+        <span class="dialog__error-text">{{ errorMessage }}</span>
+      </div>
+
       <footer class="dialog__footer">
         <button type="button" class="button button--ghost" :disabled="submitting" @click="emit('cancel')">
           Cancel
@@ -289,7 +308,7 @@
 </template>
 
 <script setup>
-import { reactive, computed, inject, ref, watch, onMounted } from "vue";
+import { reactive, computed, inject, ref, watch, onMounted, useAttrs } from "vue";
 import { cloneWorkspace, createEmptyWorkspace } from "../../workspace-state.js";
 import { APP_CONFIG } from "../../../config/app-config.js";
 import { safeColor } from "../../app/helpers.js";
@@ -407,6 +426,8 @@ const BADGE_ICONS = [
   "\u{1F5D1}",
 ];
 
+defineOptions({ inheritAttrs: false });
+
 const props = defineProps({
   workspace: { type: Object, default: null },
   tabTemplates: { type: Array, default: () => [] },
@@ -414,7 +435,12 @@ const props = defineProps({
   providerAvailabilityRef: { type: Object, default: null },
 });
 
-const emit = defineEmits(["cancel", "submit"]);
+// Intentionally NOT declaring "submit" in defineEmits — Vue strips declared
+// events from $attrs, which would make attrs.onSubmit undefined and silently
+// swallow any rejection from the parent's async submit handler. Treating
+// onSubmit as a regular callback prop via useAttrs lets us await + catch.
+const emit = defineEmits(["cancel"]);
+const attrs = useAttrs();
 
 const api = inject("api");
 
@@ -446,6 +472,96 @@ const isTask = computed(() => draft.kind === "task");
 const isCreatingTask = computed(() => isTask.value && props.creating);
 
 const submitting = ref(false);
+// Inline error surface — shown as a banner above the footer when the parent
+// onSubmit handler rejects (e.g. backend git error). Cleared on each submit
+// attempt so stale errors don't linger after the user corrects the input.
+const errorMessage = ref("");
+
+// Git-repo probe result for the current cwd. null = unknown (still loading
+// or API unavailable), true = git repo, false = plain directory. Used to
+// gate the "Create in git worktree" checkbox so the user can't pick an
+// impossible path that would fail at submit time.
+const cwdIsGitRepo = ref(null);
+// Track whether the user has edited the Name field — once they have, we
+// stop overwriting it with the auto-filled "{folder} · {branch}" pattern.
+const nameAutoGenerated = ref(!(draft.name || "").trim());
+
+function basenameOf(p) {
+  const trimmed = String(p || "")
+    .trim()
+    .replace(/[\\/]+$/, "");
+  if (!trimmed) return "";
+  const parts = trimmed.split(/[\\/]/);
+  return parts[parts.length - 1] || "";
+}
+
+function buildAutoName() {
+  const base = basenameOf(draft.cwd);
+  if (!base) return "";
+  const branch = (draft.worktreeBranch || "").trim();
+  return draft.useWorktree && branch ? `${base} - ${branch}` : base;
+}
+
+// Auto-fill Name from cwd basename (+ branch when worktree is on). Stops
+// overwriting as soon as the user types something that doesn't match the
+// auto-generated pattern — their edit wins.
+watch(
+  [() => draft.cwd, () => draft.useWorktree, () => draft.worktreeBranch],
+  () => {
+    if (!isCreatingTask.value || !nameAutoGenerated.value) return;
+    const next = buildAutoName();
+    if (next) draft.name = next;
+  },
+  { immediate: true },
+);
+watch(
+  () => draft.name,
+  (val) => {
+    if (!isCreatingTask.value) return;
+    if (!val) {
+      nameAutoGenerated.value = true;
+      return;
+    }
+    if (val !== buildAutoName()) nameAutoGenerated.value = false;
+  },
+);
+
+// Probe whether the cwd is a git repo. Debounced so typing into the path
+// field doesn't spam the backend. When the probe says "not a repo", we
+// also flip useWorktree off so the user doesn't submit a doomed config.
+let gitProbeTimer = null;
+watch(
+  () => draft.cwd,
+  (cwd) => {
+    if (!isCreatingTask.value) return;
+    if (gitProbeTimer) clearTimeout(gitProbeTimer);
+    const trimmed = (cwd || "").trim();
+    if (!trimmed) {
+      cwdIsGitRepo.value = null;
+      return;
+    }
+    // While the probe is in flight treat the state as unknown — avoids a
+    // frame of "(not a git repo)" when the user is mid-typing a valid path.
+    cwdIsGitRepo.value = null;
+    gitProbeTimer = setTimeout(async () => {
+      if (!api?.checkIsGitRepo) return;
+      try {
+        const result = await api.checkIsGitRepo(trimmed);
+        // Ignore stale results if the user has since typed a different path.
+        if ((draft.cwd || "").trim() !== trimmed) return;
+        cwdIsGitRepo.value = !!result?.isGitRepo;
+        if (!result?.isGitRepo && draft.useWorktree) {
+          draft.useWorktree = false;
+        }
+      } catch {
+        // On probe failure, stay permissive (null) — don't block the user
+        // on a transient issue; backend will still validate at submit time.
+        cwdIsGitRepo.value = null;
+      }
+    }, 350);
+  },
+  { immediate: true },
+);
 
 // Claude availability (cached in payload, re-checked before dialog opens)
 const claudeAvailable = computed(() => store.payload?.environment?.claudeAvailable !== false);
@@ -648,15 +764,56 @@ async function handleSubmit() {
   }
 
   submitting.value = true;
+  errorMessage.value = "";
   try {
-    emit("submit", result);
+    // Call the parent-provided onSubmit directly (via attrs) rather than
+    // emit so we can await the async handler and catch its rejection —
+    // emit is fire-and-forget and would swallow backend errors, leaving
+    // the dialog open with no feedback about what went wrong.
+    await attrs.onSubmit?.(result);
+  } catch (err) {
+    errorMessage.value = extractErrorMessage(err);
   } finally {
     submitting.value = false;
   }
 }
+
+// Error surfaced by either the backend (Electron IPC forwards "Error: …")
+// or a thrown Error from the parent handler. Strip the leading "Error:
+// Error invoking remote method '…': Error:" prefix that Electron wraps
+// around remote rejections — it's noise for end users.
+function extractErrorMessage(err) {
+  const raw = err?.message || String(err || "Unknown error");
+  return raw.replace(/^Error invoking remote method '[^']+':\s*/, "").replace(/^Error:\s*/, "");
+}
 </script>
 
 <style scoped>
+.appearance-details {
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.02);
+  padding: 6px 10px;
+}
+.appearance-summary {
+  font-size: 12px;
+  color: var(--muted);
+  cursor: pointer;
+  user-select: none;
+  padding: 2px 0;
+}
+.appearance-summary:hover {
+  color: var(--text);
+}
+.appearance-details[open] .appearance-summary {
+  margin-bottom: 8px;
+  color: var(--text);
+}
+.appearance-content {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
 .icon-picker {
   display: grid;
   grid-template-columns: repeat(auto-fill, 32px);
@@ -732,12 +889,24 @@ async function handleSubmit() {
 .checkbox-label span {
   font-size: 13px;
 }
+.checkbox-label--disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+.checkbox-label--disabled input[type="checkbox"] {
+  cursor: not-allowed;
+}
 .field-hint {
   display: block;
   font-size: 11px;
   color: var(--muted, #888);
   margin-top: 4px;
   line-height: 1.4;
+}
+.field-hint--inline {
+  display: inline;
+  margin: 0 0 0 4px;
+  font-style: italic;
 }
 .agent-config-section {
   border: 1px solid var(--border);

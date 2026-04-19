@@ -91,6 +91,7 @@ contextBridge.exposeInMainWorld("strideterm", {
   // Task runner
   recheckClaude: () => ipcRenderer.invoke("task:recheck-claude"),
   checkProviders: () => ipcRenderer.invoke("task:check-providers"),
+  checkIsGitRepo: (cwd) => ipcRenderer.invoke("task:check-git-repo", cwd),
   createTaskWorkspace: (payload) => ipcRenderer.invoke("task:create-workspace", payload),
   startTask: (payload) => ipcRenderer.invoke("task:start", payload),
   stopTask: (payload) => ipcRenderer.invoke("task:stop", payload),

@@ -468,6 +468,10 @@ async function handleApiRequest(runtime, request, response) {
       json(response, 200, await runtime.checkProviders());
       return;
     }
+    if (request.method === "POST" && url.pathname === "/api/task/check-git-repo") {
+      json(response, 200, await runtime.checkIsGitRepo(String(body?.cwd || "")));
+      return;
+    }
     if (request.method === "POST" && url.pathname === "/api/task/create") {
       json(response, 200, await runtime.createTaskWorkspace(body));
       return;
