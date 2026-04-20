@@ -270,7 +270,33 @@ export function createWorkspaceActions(ctx) {
       ? toIndex - (fromIndex < toIndex ? 1 : 0)
       : toIndex + (fromIndex < toIndex ? 0 : 1);
     nextWorkspace.panels.splice(Math.max(0, insertionIndex), 0, movedPanel);
-    ctx.payload.value = await ctx.getApi().saveWorkspace(nextWorkspace);
+
+    // Optimistic update — saveWorkspace on the backend also runs refreshGit
+    // (~10 git subprocesses), which on a real repo adds hundreds of ms before
+    // the new order becomes visible. Reflect the reorder locally right away
+    // so the drop feels instant; the backend response overwrites it when ready.
+    const prevPayload = ctx.payload.value;
+    const wrapper = prevPayload?.workspace;
+    if (wrapper?.workspace?.id === nextWorkspace.id) {
+      const panelOrder = new Map(nextWorkspace.panels.map((p, i) => [p.id, i]));
+      const reorderedSessions = [...(wrapper.sessions || [])].sort(
+        (a, b) => (panelOrder.get(a.panelId) ?? 999) - (panelOrder.get(b.panelId) ?? 999),
+      );
+      const prevWorkspaces = prevPayload.appState?.workspaces || [];
+      const nextWorkspaces = prevWorkspaces.map((w) => (w.id === nextWorkspace.id ? nextWorkspace : w));
+      ctx.payload.value = {
+        ...prevPayload,
+        workspace: { workspace: nextWorkspace, project: nextWorkspace, sessions: reorderedSessions },
+        appState: { ...prevPayload.appState, workspaces: nextWorkspaces },
+      };
+    }
+
+    try {
+      ctx.payload.value = await ctx.getApi().saveWorkspace(nextWorkspace);
+    } catch (err) {
+      if (prevPayload) ctx.payload.value = prevPayload;
+      throw err;
+    }
   }
 
   async function renameTab(viewId, title) {
@@ -295,7 +321,28 @@ export function createWorkspaceActions(ctx) {
   // --- Workspace reordering ----------------------------------------------
 
   async function reorderWorkspaces(orderedIds) {
-    ctx.payload.value = await ctx.getApi().reorderWorkspaces(orderedIds);
+    // Optimistic update — the IPC round-trip (including JSON persist + broadcast)
+    // otherwise leaves the sidebar stale for long enough that users think the
+    // drop didn't register and retry.
+    const prevPayload = ctx.payload.value;
+    const currentWorkspaces = prevPayload?.appState?.workspaces || [];
+    if (currentWorkspaces.length) {
+      const byId = new Map(currentWorkspaces.map((w) => [w.id, w]));
+      const reordered = orderedIds.map((id) => byId.get(id)).filter(Boolean);
+      for (const w of currentWorkspaces) {
+        if (!reordered.includes(w)) reordered.push(w);
+      }
+      ctx.payload.value = {
+        ...prevPayload,
+        appState: { ...prevPayload.appState, workspaces: reordered },
+      };
+    }
+    try {
+      ctx.payload.value = await ctx.getApi().reorderWorkspaces(orderedIds);
+    } catch (err) {
+      if (prevPayload) ctx.payload.value = prevPayload;
+      throw err;
+    }
   }
 
   return {
