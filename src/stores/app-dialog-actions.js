@@ -42,27 +42,28 @@ export function createDialogActions(ctx) {
     ctx.layoutPickerAnchor.value = null;
   }
 
-  // --- Tab rename dialog -------------------------------------------------
+  // --- Tab edit dialog ---------------------------------------------------
 
-  function renameTabWithDialog(viewId) {
+  function editTabWithDialog(viewId) {
     const target = ctx.getPanelByViewId(viewId);
     if (!target) return;
-    openDialog("TextInputDialog", {
+    openDialog("EditTabDialog", {
       eyebrow: "Workspace",
-      title: "Rename tab",
-      label: "Tab name",
-      value: target.panel.title || "",
-      submitLabel: "Rename",
+      title: target.panel.title || "",
+      command: target.panel.command || "",
       onCancel: closeDialog,
-      onSubmit: async (nextTitle) => {
-        const trimmedTitle = nextTitle.trim();
-        if (!trimmedTitle || trimmedTitle === target.panel.title) {
+      onSubmit: async ({ title, command }) => {
+        const nextTitle = (title || "").trim();
+        const nextCommand = (command || "").trim();
+        const sameTitle = nextTitle === (target.panel.title || "").trim();
+        const sameCommand = nextCommand === (target.panel.command || "").trim();
+        if (!nextTitle || (sameTitle && sameCommand)) {
           closeDialog();
           return;
         }
         const nextWorkspace = cloneWorkspace(target.workspace);
         nextWorkspace.panels = nextWorkspace.panels.map((p) =>
-          p.id === target.panel.id ? { ...p, title: trimmedTitle } : p,
+          p.id === target.panel.id ? { ...p, title: nextTitle, command: nextCommand } : p,
         );
         ctx.payload.value = await ctx.getApi().saveWorkspace(nextWorkspace);
         closeDialog();
@@ -571,7 +572,7 @@ export function createDialogActions(ctx) {
     hideContextMenu,
     showLayoutPicker,
     hideLayoutPicker,
-    renameTabWithDialog,
+    editTabWithDialog,
     openWorkspaceDialog,
     openNewWorkspaceFlow,
     openSettingsDialog,

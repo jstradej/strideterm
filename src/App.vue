@@ -111,7 +111,7 @@
           </button>
 
           <TabStrip
-            @rename-tab="store.renameTabWithDialog($event)"
+            @edit-tab="store.editTabWithDialog($event)"
             @close-tab="store.closeTab($event)"
             @contextmenu-tab="onTabContextMenu"
           />

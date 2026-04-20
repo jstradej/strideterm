@@ -25,7 +25,7 @@
       :title="tab.titleTooltip"
       :draggable="tab.persistent"
       @click="store.activateView(tab.id).then(() => nextTick(() => termStore.focusActiveTerminal()))"
-      @dblclick="tab.persistent && $emit('rename-tab', tab.id)"
+      @dblclick="tab.persistent && $emit('edit-tab', tab.id)"
       @dragstart="dragDrop.onDragstart"
       @contextmenu.prevent="$emit('contextmenu-tab', { x: $event.clientX, y: $event.clientY, viewId: tab.id })"
     >
@@ -33,7 +33,7 @@
       <small v-if="tab.taskBadge" class="tab__task-badge" :title="tab.taskTooltip">{{ tab.taskBadge }}</small>
       <small v-else>{{ tab.status }}</small>
       <span v-if="tab.attention" class="tab__attention" :title="tab.attentionTooltip">🔔</span>
-      <span v-if="tab.persistent" class="tab__rename" :title="'Rename tab'" @click.stop="$emit('rename-tab', tab.id)"
+      <span v-if="tab.persistent" class="tab__rename" :title="'Edit tab'" @click.stop="$emit('edit-tab', tab.id)"
         >✎</span
       >
       <span v-if="tab.closable" class="tab__close" :title="'Close tab'" @click.stop="$emit('close-tab', tab.id)"
@@ -104,11 +104,11 @@ const tabModels = computed(() => {
         taskTooltip ||
         tabAttentionTitle(tabAttention) ||
         (tab.persistent
-          ? "Double click to rename. Drag to reorder."
+          ? "Double click to edit. Drag to reorder."
           : `${tab.title}${tab.status ? `\n${tab.status}` : ""}`),
     };
   });
 });
 
-defineEmits(["rename-tab", "close-tab", "contextmenu-tab"]);
+defineEmits(["edit-tab", "close-tab", "contextmenu-tab"]);
 </script>

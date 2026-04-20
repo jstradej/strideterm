@@ -116,9 +116,9 @@ function terminalPaneActions(tab) {
       ? [
           {
             className: "workspace-pane__icon-btn",
-            action: "rename-tab",
+            action: "edit-tab",
             viewId: tab.id,
-            title: "Rename tab",
+            title: "Edit tab",
             label: "✎",
           },
         ]
@@ -269,13 +269,16 @@ function onPaneAction(action, tab) {
     case "select-tab":
       store.activateView(tab.id);
       break;
+    case "edit-tab":
+      store.editTabWithDialog(action.viewId);
+      break;
     case "export-terminal-transcript":
       termStore.exportTerminalTranscript(action.sessionId, { title: tab.title });
       break;
     case "clear-terminal":
       termStore.clearTerminalViewport(action.sessionId);
       break;
-    // Other actions (restart-session, rename-tab, close-tab, etc.) handled in Phase 4
+    // Other actions (restart-session, close-tab, etc.) handled in Phase 4
   }
 }
 

@@ -3,8 +3,8 @@
     <div v-if="store.contextMenu" ref="menuRef" class="context-menu" :style="menuStyle" @click.stop>
       <template v-if="isTerminal">
         <button type="button" class="context-menu__item" @click="onRestart">&#x21BB; Restart</button>
-        <button v-if="hasPersistentPanel" type="button" class="context-menu__item" @click="onRename">
-          &#x270E; Rename tab
+        <button v-if="hasPersistentPanel" type="button" class="context-menu__item" @click="onEdit">
+          &#x270E; Edit tab
         </button>
       </template>
       <template v-if="inGroup">
@@ -89,9 +89,9 @@ function onRestart() {
   store.hideContextMenu();
 }
 
-function onRename() {
+function onEdit() {
   store.hideContextMenu();
-  store.renameTabWithDialog(viewId.value);
+  store.editTabWithDialog(viewId.value);
 }
 
 function onRemoveFromGroup() {
