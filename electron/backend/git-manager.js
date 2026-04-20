@@ -703,6 +703,9 @@ export class GitManager extends EventEmitter {
     if (!targetBranch) {
       return createStructuredResult({ ok: false, summary: "Branch name is required." });
     }
+    if (targetBranch.startsWith("-")) {
+      return createStructuredResult({ ok: false, summary: "Invalid branch name." });
+    }
 
     return this.runWriteAction(workspace, {
       type: "checkout",
@@ -718,8 +721,14 @@ export class GitManager extends EventEmitter {
       return createStructuredResult({ ok: false, summary: "Branch name is required." });
     }
 
+    if (newBranch.startsWith("-")) {
+      return createStructuredResult({ ok: false, summary: "Invalid branch name." });
+    }
     const args = ["checkout", "-b", newBranch];
     if (startPoint) {
+      if (String(startPoint).startsWith("-")) {
+        return createStructuredResult({ ok: false, summary: "Invalid start point." });
+      }
       args.push(startPoint);
     }
 
@@ -939,6 +948,14 @@ export class GitManager extends EventEmitter {
       return createStructuredResult({
         ok: false,
         summary: "A base branch could not be determined for this repository.",
+        warnings,
+      });
+    }
+
+    if (["merge", "rebase"].includes(type) && resolvedBaseBranch.startsWith("-")) {
+      return createStructuredResult({
+        ok: false,
+        summary: "Invalid base branch.",
         warnings,
       });
     }

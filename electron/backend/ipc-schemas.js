@@ -7,6 +7,11 @@ import { z } from "zod";
 
 const nonEmptyString = z.string().min(1);
 
+// Git refs cannot start with '-' — prevents option injection in execFile args arrays.
+const safeGitRef = z.string().refine((v) => !v.startsWith("-"), {
+  message: "Git ref cannot start with '-'",
+});
+
 export const workspaceSchema = z
   .object({
     id: nonEmptyString,
@@ -126,6 +131,7 @@ export const agentPromptDeleteSchema = z.object({
 export const gitPayloadSchema = z
   .object({
     workspaceId: nonEmptyString,
+    baseBranch: safeGitRef.optional(),
   })
   .passthrough();
 
@@ -133,7 +139,7 @@ export const gitDiffPreviewSchema = z.object({
   workspaceId: nonEmptyString,
   path: nonEmptyString,
   scope: z.string().optional(),
-  baseBranch: z.string().optional(),
+  baseBranch: safeGitRef.optional(),
 });
 
 export const gitCommitSchema = z
@@ -147,7 +153,7 @@ export const gitTagSchema = z.object({
   workspaceId: nonEmptyString,
   tagName: nonEmptyString,
   message: z.string().optional(),
-  commit: z.string().optional(),
+  commit: safeGitRef.optional(),
 });
 
 export const dockerActionSchema = z.object({
