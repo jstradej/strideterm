@@ -60,6 +60,7 @@ import {
   rerunCheckSchema,
   taskWorkspaceCreateSchema,
   taskWorkspaceActionSchema,
+  taskRejectVerdictSchema,
 } from "./ipc-schemas.js";
 
 export function registerIpc(runtime, emitToRenderer, { includeStateGet = true } = {}) {
@@ -324,6 +325,10 @@ export function registerIpc(runtime, emitToRenderer, { includeStateGet = true } 
   ipcMain.handle("task:reset", async (_event, payload) =>
     runtime.resetTask(validateIpc(taskWorkspaceActionSchema, payload, "task:reset").workspaceId),
   );
+  ipcMain.handle("task:reject-verdict", async (_event, payload) => {
+    const parsed = validateIpc(taskRejectVerdictSchema, payload, "task:reject-verdict");
+    return runtime.rejectTaskVerdict(parsed.workspaceId, parsed.feedback);
+  });
   ipcMain.handle("task:status", async (_event, workspaceId) => runtime.getTaskStatus(workspaceId));
   ipcMain.handle("docker:refresh", async () => runtime.refreshDockerState());
   ipcMain.handle("git:refresh", async (_event, projectId) => runtime.refreshGitState(projectId));

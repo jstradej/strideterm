@@ -32,6 +32,7 @@ import {
   buildRePrompt,
   buildJudgePrompt,
   buildJudgeFeedbackPrompt,
+  buildUserFeedbackPrompt,
 } from "./agent-task-prompts.js";
 
 const log = getLogger("task-runner");
@@ -279,6 +280,7 @@ export class AgentTaskRunner {
     this.#setTaskState(task, "running");
     task.currentRound = 0;
     task.rounds = [];
+    this.#ensureRunningRound(task);
 
     // Claude Code is already running (started with the workspace).
     // Send the task prompt now — agent is ready and waiting for input.
@@ -406,6 +408,79 @@ export class AgentTaskRunner {
     return true;
   }
 
+  /**
+   * User rejects the judge's "complete" (or max-rounds "failed") verdict and
+   * sends the worker back to the loop with their own feedback. Treated as an
+   * override of the last verdict: recreates WORK_LOCK, starts a new round, and
+   * injects a user-feedback prompt that tells the worker to re-run the full
+   * self-audit and address the feedback plus any additional gaps.
+   */
+  async rejectTaskVerdict(workspaceId, feedback) {
+    const workspace = this.#findTaskWorkspace(workspaceId);
+    if (!workspace) return false;
+
+    const task = workspace.task;
+    const reopenable = new Set(["completed", "failed"]);
+    if (!reopenable.has(task.state)) {
+      log.warn("rejectTaskVerdict: task not in reopenable state", { workspaceId, state: task.state });
+      return false;
+    }
+    const trimmed = String(feedback || "").trim();
+    if (!trimmed) {
+      log.warn("rejectTaskVerdict: empty feedback", { workspaceId });
+      return false;
+    }
+
+    const previousState = task.state;
+    const lastRound = task.rounds?.[task.rounds.length - 1];
+    if (lastRound) lastRound.action = "re-prompted";
+
+    // Recreate WORK_LOCK so built-in checks behave as usual for the next round.
+    try {
+      const dir = taskDir(workspace.cwd, task.taskId);
+      await writeFile(
+        path.join(dir, WORK_LOCK_FILE),
+        "Work remains. Remove this file only when the task is complete and all verification steps pass.\n",
+        "utf8",
+      );
+    } catch (err) {
+      log.warn("rejectTaskVerdict: failed to recreate WORK_LOCK", { workspaceId, err: err.message });
+    }
+
+    // Don't increment currentRound — ensureRunningRound already pushes the
+    // next chip at currentRound+1, mirroring how a normal judge "continue"
+    // transitions (currentRound was already bumped when the judge was
+    // invoked). Skipping this would make the chip numbering jump (e.g. from
+    // #3 directly to #5).
+    // If we're already at the max-rounds ceiling (task was "failed" or just
+    // happened to complete at the limit), grant one more round's worth so the
+    // next eval doesn't immediately fail again. User can Send Back repeatedly.
+    const nextRoundNumber = (task.currentRound || 0) + 1;
+    if ((task.maxRounds || 0) < nextRoundNumber) {
+      task.maxRounds = nextRoundNumber;
+    }
+    task.lastJudgeInstructions = `User override: ${trimmed}`;
+
+    this.#setTaskState(task, "running");
+    this.#ensureRunningRound(task);
+
+    const prompt = buildUserFeedbackPrompt(task, trimmed);
+    const workerSessionId = `${workspaceId}:${task.workerPanelId}`;
+    try {
+      await this.#injectPrompt(workerSessionId, prompt, workspace);
+    } catch (err) {
+      log.error("rejectTaskVerdict: failed to inject prompt", { workspaceId, err: err.message });
+      this.#setTaskState(task, previousState);
+      this.#broadcastState();
+      return false;
+    }
+
+    log.info("task verdict rejected by user", { workspaceId, previousState, round: task.currentRound });
+    this.#logTaskEvent(workspace, "verdict-rejected", `User feedback: ${trimmed}`);
+    this.#broadcastState();
+    return true;
+  }
+
   // ---------------------------------------------------------------------------
   // Idle detection entry point — called from runtime.js
   // ---------------------------------------------------------------------------
@@ -464,6 +539,10 @@ export class AgentTaskRunner {
         const isResume = !!task.showerResumePrompt;
         const prompt = task.showerResumePrompt || buildInitialWorkerPrompt(task);
         log.info("worker ready, injecting prompt", { workspaceId, sessionId, isResume });
+        // Ensure a "running" round chip exists for this iteration — covers
+        // description-empty initial inject (idempotent vs. startTask) and the
+        // post-shower case where the previous round ended as "shower".
+        this.#ensureRunningRound(task);
         this.#injectPrompt(`${workspaceId}:${task.workerPanelId}`, prompt, workspace).catch((err) => {
           log.error("failed to inject prompt", { workspaceId, err: err.message });
         });
@@ -700,6 +779,29 @@ export class AgentTaskRunner {
     task.state = newState;
   }
 
+  /**
+   * Ensure a "running" round chip exists for the current worker iteration.
+   * Idempotent: if the last round is already "running", returns it; otherwise
+   * pushes a fresh round {round: currentRound+1, action: "running"}. Called at
+   * every worker-prompt injection site so the chip appears immediately when a
+   * new iteration begins — not only once evaluation starts.
+   */
+  #ensureRunningRound(task) {
+    const last = task.rounds?.[task.rounds.length - 1];
+    if (last && last.action === "running") return last;
+    const round = {
+      round: (task.currentRound || 0) + 1,
+      startedAt: new Date().toISOString(),
+      checks: [],
+      judgeVerdict: null,
+      judgeReason: "",
+      action: "running",
+    };
+    if (!Array.isArray(task.rounds)) task.rounds = [];
+    task.rounds.push(round);
+    return round;
+  }
+
   // ---------------------------------------------------------------------------
   // State queries
   // ---------------------------------------------------------------------------
@@ -794,17 +896,15 @@ export class AgentTaskRunner {
       this.#setTaskState(task, "evaluating");
       this.#broadcastState();
 
-      const round = {
-        round: task.currentRound + 1,
-        startedAt: new Date().toISOString(),
-        checks: [],
-        judgeVerdict: null,
-        judgeReason: "",
-        action: "evaluating",
-      };
-
-      // Push round early so UI can show streaming check results
-      task.rounds.push(round);
+      // A "running" round was pushed when the worker iteration began (by
+      // startTask / onAgentIdle first inject / re-prompt / shower). Reuse it
+      // so the chip's identity doesn't change between "currently working" and
+      // "being evaluated" — only the action label updates.
+      const round = this.#ensureRunningRound(task);
+      round.action = "evaluating";
+      round.checks = [];
+      round.judgeVerdict = null;
+      round.judgeReason = "";
 
       // Built-in checks: WORK_LOCK + TODO.md sections (always run, cheap)
       const builtInChecks = await this.#runBuiltInChecks(workspace.cwd, task.taskId);
@@ -909,12 +1009,14 @@ export class AgentTaskRunner {
               const workerSessionId = `${workspaceId}:${task.workerPanelId}`;
               await this.#injectPrompt(workerSessionId, prompt, workspace);
               this.#setTaskState(task, "running");
+              this.#ensureRunningRound(task);
             }
           } else {
             const prompt = buildRePrompt(task, round);
             const workerSessionId = `${workspaceId}:${task.workerPanelId}`;
             await this.#injectPrompt(workerSessionId, prompt, workspace);
             this.#setTaskState(task, "running");
+            this.#ensureRunningRound(task);
             log.info("worker re-prompted", { workspaceId, round: task.currentRound });
             this.#logTaskEvent(
               workspace,
@@ -1046,6 +1148,7 @@ export class AgentTaskRunner {
           await this.#injectPrompt(workerSessionId, prompt, workspace);
           this.#setTaskState(task, "running");
           if (lastRound) lastRound.action = "re-prompted";
+          this.#ensureRunningRound(task);
           log.info("worker re-prompted with judge feedback", { workspaceId, round: task.currentRound });
           this.#logTaskEvent(workspace, "worker-reprompted", `Judge feedback: ${verdict.reason || "continue working"}`);
         }
@@ -1320,32 +1423,65 @@ ${verifySection}
 
 > Edit this file to customize how the Judge evaluates the Worker's output.
 > If this file exists, its content replaces the default judge instructions.
-> The Judge always receives the task description, check results, and git context
-> regardless of what you write here.
+> The Judge always receives the task description, check results, git context,
+> and the system-enforced hard rules regardless of what you write here —
+> in particular the zero-tolerance completion rule and the forbidden-phrase
+> list cannot be overridden.
+
+## Guiding principle — bias toward "continue"
+
+The cost of returning "continue" is a few extra minutes of agent time.
+The cost of returning "complete" when something was missed is incomplete work
+shipped to the user, who may never catch it. These costs are not symmetric.
+
+Default to "continue" under any uncertainty. If you hedged ("seems", "appears",
+"looks like", "probably", "should be", "I think"), if you accepted a worker claim
+without verifying it in the code, if you could not produce a file:line citation, or
+if you noticed an unexplored area of the change — return "continue". A single
+unresolved "I'm not sure" anywhere in your evaluation is sufficient reason to
+return "continue".
+
+Judge the code on disk, not the worker's effort or reasoning. "The worker is
+close" is an argument for "continue", not for "complete".
 
 ## Evaluation steps
 
-1. Read ${relDir}/${TASK_FILE} for the full task description, requirements, and verification checklist
-2. **Verification checklist**: If TASK.md contains a "Verification before completion" section, run each listed command yourself and verify it passes — do not trust the Worker's claim
-3. **Requirements check**: Go through every requirement point by point — verify each one is actually implemented, not just claimed
-4. **Code review**: Read the changed files and check for:
-   - Correctness: does the code do what the task asks?
-   - Obvious bugs, edge cases, or error handling gaps
-   - Code quality: no dead code, no debug leftovers, reasonable naming
-   - Consistency with the existing codebase style
-   Do NOT nitpick style preferences — focus on real issues
-5. Run any additional checks yourself if needed (read files, run commands)
-6. Keep notes in ${relDir}/${JUDGE_TODO_FILE}
-7. Write your verdict to ${relDir}/${VERDICT_FILE}:
-   - Complete: \`{"verdict": "complete", "reason": "..."}\`
-   - Continue: \`{"verdict": "continue", "reason": "..."}\`
-   List specific issues with file paths and descriptions
+1. Read ${relDir}/${TASK_FILE} completely. Also read any plan file referenced in the task (e.g. \`.private/plan-*.md\`). Extract EVERY requirement, acceptance criterion, plan bullet, verification-checklist item, and explicit deliverable into a single flat numbered list.
+
+2. **Verification checklist**: If TASK.md contains a "Verification before completion" section, run each listed command yourself and confirm it passes — do not trust the Worker's claim.
+
+3. **Per-requirement audit (mandatory, mechanical)**: For EACH numbered item from step 1, write one of these three labels with a concrete citation from the current working tree or committed diff:
+   - \`IMPLEMENTED\` — cite file:line (or \`grep\`/\`git diff\` output) proving the deliverable exists right now. No citation → not allowed to mark it IMPLEMENTED.
+   - \`PARTIAL\` — describe exactly what is present vs missing, with file:line references on both sides.
+   - \`MISSING\` — the deliverable is not in the code. Cite the grep/search that came back empty.
+
+4. **Code review** of the changed files. Flag only real issues (not style preferences):
+   - Correctness: does the code actually do what the task asks?
+   - Bugs, unhandled edge cases, missing error handling
+   - Dead code, debug leftovers, placeholder values, new TODO comments introduced by the Worker (new TODOs = incomplete work)
+   - Tests: if the task required tests, verify they exist and actually cover the behavior, not just smoke-test passes.
+
+5. Run any additional commands needed to verify claims (grep, git diff, cat, test runners).
+
+6. Write the full per-requirement audit from step 3 to ${relDir}/${JUDGE_TODO_FILE} — this is how the user audits your reasoning after the fact, so it must be complete.
+
+7. **Verdict rule (mechanical — no judgment calls):**
+   - ANY item from step 3 is PARTIAL or MISSING → verdict "continue"
+   - ANY deterministic check failed → verdict "continue"
+   - ANY code-review finding of the type in step 4 → verdict "continue"
+   - Only if EVERY item is IMPLEMENTED with a concrete citation AND all checks pass AND no code-review findings → verdict "complete"
+
+8. Write your verdict to ${relDir}/${VERDICT_FILE}:
+   - Complete: \`{"verdict": "complete", "reason": "All <N> requirements verified implemented: ..."}\`
+   - Continue: \`{"verdict": "continue", "reason": "Missing: ...; Partial: ..."}\`
+   Include concrete file:line citations. A "complete" verdict with no citations, or with any phrase like "mostly", "substantially", "largely", "essentially", "close enough", "good enough", "small enough", or mentioning follow-up/deferred work is by definition wrong — change it to "continue".
 ${stackSection}
-## Severity guide
+## Severity guide (informational — does NOT soften the completion rule)
 
 - **Blocker** (must fix): broken functionality, security vulnerability, data loss risk, failing tests
 - **Major** (should fix): missing error handling, logic bugs, missing edge cases, API contract violations
-- **Minor** (nice to fix): naming inconsistencies, dead code, missing types — only flag if egregious
+- **Minor** (still blocks completion if listed in the plan/TODO): naming inconsistencies, dead code, missing types
+  Any minor item that was an explicit deliverable or plan bullet still counts as incomplete — severity does not grant a pass.
 `;
 
     await Promise.all([

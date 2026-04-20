@@ -46,6 +46,14 @@
             Pause
           </button>
           <button
+            v-if="taskState?.state === 'completed' || taskState?.state === 'failed'"
+            class="button button--ghost button--sm"
+            title="Override the verdict and send the Worker back with your own feedback"
+            @click="onRejectVerdict"
+          >
+            Send back
+          </button>
+          <button
             v-if="taskState?.state === 'paused' || taskState?.state === 'completed' || taskState?.state === 'failed'"
             class="button button--ghost button--sm"
             title="Clear all rounds and return to idle — edit TASK.md or other files, then press Start"
@@ -337,13 +345,48 @@ async function onReset() {
     console.error("[task-dashboard] reset failed:", err);
   }
 }
+
+function onRejectVerdict() {
+  const id = wsId();
+  if (!api || !id) return;
+  const verdictLabel = taskState.value?.state === "failed" ? "Max rounds reached" : "Judge said complete";
+  store.openDialog("TextAreaDialog", {
+    eyebrow: "Task runner",
+    title: "Send Worker back with feedback",
+    label: `${verdictLabel} — describe what's still missing so the Worker runs one more round:`,
+    placeholder:
+      "e.g. The CLAUDE.md section on git polling was not updated; UC-12 auto-dismiss is still not wired to the snapshot watcher.",
+    submitLabel: "Send back",
+    onCancel: () => store.closeDialog(),
+    onSubmit: async (feedback) => {
+      try {
+        const r = await api.rejectTaskVerdict({ workspaceId: id, feedback });
+        if (r?.payload) store.handleBroadcastPayload(r.payload);
+        activeTab.value = "status";
+      } catch (err) {
+        console.error("[task-dashboard] reject verdict failed:", err);
+      } finally {
+        store.closeDialog();
+      }
+    },
+  });
+}
 </script>
 
 <style scoped>
-.td {
+/* Make the outer pane body a flex container so .td can flex:1 into a
+   definite height. Relying on height: 100% through the .workspace-pane
+   grid chain was unreliable in this nested layout. */
+.workspace-pane__body--task-dashboard {
   display: flex;
   flex-direction: column;
   height: 100%;
+}
+.td {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
   overflow: hidden;
   color: var(--fg, #ccc);
   font-size: 13px;
@@ -453,16 +496,28 @@ async function onReset() {
 }
 .td__body {
   flex: 1;
-  overflow-y: auto;
-  overflow-x: hidden;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
   padding: 16px;
+  overflow: hidden;
   scrollbar-width: thin;
   scrollbar-color: rgba(255, 255, 255, 0.15) transparent;
 }
-.td__body::-webkit-scrollbar {
+/* Non-files tabs need their own scroll container since .td__body is grid
+   and doesn't scroll. Files tab hides overflow (inner editor handles it). */
+.td__body :deep(.td__section) {
+  overflow-y: auto;
+  overflow-x: hidden;
+  min-height: 0;
+}
+.td__body :deep(.td__section--files) {
+  overflow: hidden;
+}
+.td__body :deep(.td__section)::-webkit-scrollbar {
   width: 6px;
 }
-.td__body::-webkit-scrollbar-thumb {
+.td__body :deep(.td__section)::-webkit-scrollbar-thumb {
   background: rgba(255, 255, 255, 0.15);
   border-radius: 3px;
 }

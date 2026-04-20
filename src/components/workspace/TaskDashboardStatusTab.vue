@@ -66,9 +66,30 @@
         Judge: <strong>{{ selectedRoundData.judgeVerdict }}</strong>
         <p v-if="selectedRoundData.judgeReason" class="td__verdict-reason">{{ selectedRoundData.judgeReason }}</p>
       </div>
+      <table v-if="selectedRoundEntries.length" class="td__activity-table">
+        <thead>
+          <tr>
+            <th class="td__activity-th td__activity-th--time">Time</th>
+            <th class="td__activity-th td__activity-th--event">Event</th>
+            <th class="td__activity-th td__activity-th--detail">Detail</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr
+            v-for="(entry, i) in selectedRoundEntries"
+            :key="i"
+            class="td__activity-tr"
+            :class="`td__activity-tr--${eventCategory(entry.event)}`"
+          >
+            <td class="td__activity-td td__activity-td--time">{{ formatTime(entry.ts) }}</td>
+            <td class="td__activity-td td__activity-td--event">{{ eventLabel(entry.event) }}</td>
+            <td class="td__activity-td td__activity-td--detail" :title="entry.detail">{{ entry.detail || "" }}</td>
+          </tr>
+        </tbody>
+      </table>
     </div>
 
-    <div v-if="!roundsChronological.length" class="td__empty">
+    <div v-if="!roundsChronological.length && !allLogEntries.length" class="td__empty">
       {{
         taskState?.state === "idle"
           ? "Press Start to begin."
@@ -81,7 +102,7 @@
 </template>
 
 <script setup>
-import { computed, ref } from "vue";
+import { computed, ref, inject, watch } from "vue";
 
 const props = defineProps({
   taskState: { type: Object, default: null },
@@ -89,10 +110,32 @@ const props = defineProps({
   taskId: { type: String, default: "" },
 });
 
+const api = inject("api");
 const selectedRound = ref(null);
+const logRaw = ref("");
 
 // ── Rounds ────────────────────────────────────────────────────────
 const roundsChronological = computed(() => props.taskState?.rounds || []);
+
+// Auto-select the latest round so the user sees what's happening without
+// having to click a chip. User can still click another chip to inspect an
+// older round; if they close the detail, we re-open the newest on the next
+// round change.
+watch(
+  roundsChronological,
+  (rounds, prev) => {
+    if (!rounds.length) {
+      selectedRound.value = null;
+      return;
+    }
+    const latest = rounds[rounds.length - 1].round;
+    const prevLatest = prev?.length ? prev[prev.length - 1].round : null;
+    if (selectedRound.value == null || selectedRound.value === prevLatest) {
+      selectedRound.value = latest;
+    }
+  },
+  { immediate: true },
+);
 
 const selectedRoundData = computed(() => {
   if (selectedRound.value == null) return null;
@@ -104,6 +147,7 @@ function roundStatus(round) {
   if (round.action === "failed") return "error";
   if (round.action === "re-prompted") return "warn";
   if (round.action === "judge-requested") return "judge";
+  if (round.action === "running" || round.action === "evaluating" || round.action === "shower") return "active";
   return "neutral";
 }
 
@@ -189,6 +233,110 @@ const pipelineSteps = computed(() => {
     };
   });
 });
+
+// ── Activity log (compact view of TASK_LOG.jsonl) ─────────────────
+// The full log lives in the Log tab; Status shows a tail so the user sees
+// what's happening from the moment the task starts without switching tabs.
+const EVENT_LABELS = {
+  "task-started": "Task started",
+  "task-stopped": "Task stopped",
+  "task-paused": "Task paused",
+  "task-resumed": "Task resumed",
+  "task-reset": "Task reset",
+  "task-completed": "Task completed",
+  "task-failed": "Task failed",
+  "evaluation-complete": "Checks finished",
+  "worker-reprompted": "Worker re-prompted",
+  "judge-requested": "Judge requested",
+  "judge-verdict": "Judge verdict",
+  "judge-nudged": "Judge nudged",
+  "shower-started": "Context refresh",
+  "shower-completed": "Refresh done",
+  "shower-failed": "Refresh failed",
+  "worker-idle-detected": "Worker idle",
+  "verdict-rejected": "User rejected verdict",
+};
+
+function eventLabel(event) {
+  return EVENT_LABELS[event] || event;
+}
+
+function eventCategory(event) {
+  if (event === "task-completed") return "success";
+  if (event === "task-failed" || event === "shower-failed") return "error";
+  if (event.startsWith("judge-")) return "judge";
+  if (event.startsWith("shower-")) return "shower";
+  if (event === "worker-reprompted" || event === "verdict-rejected") return "warn";
+  return "info";
+}
+
+async function loadLog() {
+  if (!api || !props.workspaceCwd || !props.taskId) return;
+  try {
+    const result = await api.fileRead({
+      rootPath: props.workspaceCwd,
+      relativePath: `.strideterm/tasks/${props.taskId}/TASK_LOG.jsonl`,
+    });
+    logRaw.value = result?.content ?? "";
+  } catch {
+    logRaw.value = "";
+  }
+}
+
+const allLogEntries = computed(() => {
+  if (!logRaw.value) return [];
+  return logRaw.value
+    .split("\n")
+    .filter((line) => line.trim())
+    .map((line) => {
+      try {
+        return JSON.parse(line);
+      } catch {
+        return null;
+      }
+    })
+    .filter(Boolean);
+});
+
+// Filter log entries by the selected round's time window. The backend's
+// `round` field on each entry is `task.currentRound || 0`, which jumps at
+// different points in the eval pipeline and doesn't cleanly map to round
+// chips. A time window between `round.startedAt` and the next round's
+// `startedAt` is an accurate, backend-agnostic mapping.
+const selectedRoundEntries = computed(() => {
+  const r = selectedRoundData.value;
+  if (!r?.startedAt) return [];
+  const rounds = roundsChronological.value;
+  const idx = rounds.findIndex((x) => x.round === r.round);
+  const startMs = Date.parse(r.startedAt);
+  if (Number.isNaN(startMs)) return [];
+  const next = rounds[idx + 1];
+  const endMs = next?.startedAt ? Date.parse(next.startedAt) : Infinity;
+  return allLogEntries.value.filter((e) => {
+    const ts = Date.parse(e.ts);
+    return !Number.isNaN(ts) && ts >= startMs && ts < endMs;
+  });
+});
+
+watch(
+  () => props.taskState?.state,
+  () => loadLog(),
+);
+watch(
+  () => props.taskState?.currentRound,
+  () => loadLog(),
+);
+watch(
+  () => props.taskState?.rounds?.length,
+  () => loadLog(),
+);
+watch(
+  () => props.taskId,
+  (id) => {
+    if (id) loadLog();
+  },
+  { immediate: true },
+);
 
 // ── Helpers ───────────────────────────────────────────────────────
 function formatTime(iso) {
@@ -371,6 +519,21 @@ function formatTime(iso) {
   background: #283593;
   color: #9fa8da;
 }
+.td__rchip--active {
+  background: #4caf50;
+  color: #fff;
+  box-shadow: 0 0 6px rgba(76, 175, 80, 0.5);
+  animation: rchip-pulse 1.5s ease-in-out infinite;
+}
+@keyframes rchip-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 6px rgba(76, 175, 80, 0.5);
+  }
+  50% {
+    box-shadow: 0 0 2px rgba(76, 175, 80, 0.2);
+  }
+}
 .td__rchip--neutral {
   background: #444;
   color: #999;
@@ -417,6 +580,12 @@ function formatTime(iso) {
 .td__round-action--judge-requested {
   background: #1a237e;
   color: #9fa8da;
+}
+.td__round-action--running,
+.td__round-action--evaluating,
+.td__round-action--shower {
+  background: #1b5e20;
+  color: #a5d6a7;
 }
 .td__round-action--completed {
   background: #004d40;
@@ -471,5 +640,89 @@ function formatTime(iso) {
   line-height: 1.4;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+/* ── Per-round activity table ─────────────────────────────────── */
+.td__activity-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+  line-height: 1.4;
+  table-layout: fixed;
+  margin-top: 8px;
+}
+.td__activity-th {
+  text-align: left;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: #666;
+  padding: 3px 6px;
+  border-bottom: 1px solid var(--border, #333);
+  white-space: nowrap;
+}
+.td__activity-th--time {
+  width: 72px;
+}
+.td__activity-th--event {
+  width: 140px;
+}
+.td__activity-td {
+  padding: 3px 6px;
+  vertical-align: top;
+  border-left: 2px solid #444;
+}
+.td__activity-td--time {
+  color: #666;
+  font-family: monospace;
+  font-size: 10px;
+  white-space: nowrap;
+}
+.td__activity-td--event {
+  font-weight: 600;
+  white-space: nowrap;
+}
+.td__activity-td--detail {
+  opacity: 0.7;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.td__activity-tr--success .td__activity-td:first-child {
+  border-left-color: #4caf50;
+}
+.td__activity-tr--success .td__activity-td--event {
+  color: #81c784;
+}
+.td__activity-tr--error .td__activity-td:first-child {
+  border-left-color: #e57373;
+}
+.td__activity-tr--error .td__activity-td--event {
+  color: #e57373;
+}
+.td__activity-tr--judge .td__activity-td:first-child {
+  border-left-color: #7c4dff;
+}
+.td__activity-tr--judge .td__activity-td--event {
+  color: #b39ddb;
+}
+.td__activity-tr--warn .td__activity-td:first-child {
+  border-left-color: #ff9800;
+}
+.td__activity-tr--warn .td__activity-td--event {
+  color: #ffcc80;
+}
+.td__activity-tr--shower .td__activity-td:first-child {
+  border-left-color: #29b6f6;
+}
+.td__activity-tr--shower .td__activity-td--event {
+  color: #81d4fa;
+}
+.td__activity-tr--info .td__activity-td:first-child {
+  border-left-color: #555;
+}
+.td__activity-td:not(:first-child) {
+  border-left: none;
 }
 </style>

@@ -496,6 +496,10 @@ async function handleApiRequest(runtime, request, response) {
       json(response, 200, await runtime.resetTask(body.workspaceId));
       return;
     }
+    if (request.method === "POST" && url.pathname === "/api/task/reject-verdict") {
+      json(response, 200, await runtime.rejectTaskVerdict(body.workspaceId, body.feedback));
+      return;
+    }
     if (request.method === "POST" && url.pathname === "/api/task/status") {
       json(response, 200, runtime.getTaskStatus(body.workspaceId));
       return;

@@ -98,6 +98,7 @@ contextBridge.exposeInMainWorld("strideterm", {
   pauseTask: (payload) => ipcRenderer.invoke("task:pause", payload),
   resumeTask: (payload) => ipcRenderer.invoke("task:resume", payload),
   resetTask: (payload) => ipcRenderer.invoke("task:reset", payload),
+  rejectTaskVerdict: (payload) => ipcRenderer.invoke("task:reject-verdict", payload),
   getTaskStatus: (workspaceId) => ipcRenderer.invoke("task:status", workspaceId),
   refreshTunnel: () => ipcRenderer.invoke("tunnel:refresh"),
   createCloudflareTunnel: () => ipcRenderer.invoke("tunnel:create"),

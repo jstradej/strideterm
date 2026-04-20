@@ -27,6 +27,7 @@ const emit = defineEmits(["update:modelValue", "save"]);
 
 const container = ref(null);
 let editor = null;
+let resizeObserver = null;
 
 onMounted(() => {
   if (!container.value) return;
@@ -44,7 +45,7 @@ onMounted(() => {
     fontSize: 13,
     fontFamily: '"Cascadia Code", "Fira Code", "JetBrains Mono", monospace',
     tabSize: 2,
-    automaticLayout: true,
+    automaticLayout: false,
     padding: { top: 8 },
     renderLineHighlight: "gutter",
     overviewRulerLanes: 0,
@@ -54,6 +55,29 @@ onMounted(() => {
       horizontalScrollbarSize: 8,
     },
   });
+
+  // Observe the *parent* of the container (.td__editor-wrap or similar) and
+  // force the container + Monaco to that size. Monaco's built-in
+  // automaticLayout observes the container itself, which can get stuck at
+  // min-height when wrapped in ambiguous flex/grid chains. Driving from the
+  // parent's size avoids the chicken-and-egg between container height and
+  // Monaco's measured viewport.
+  const parent = container.value.parentElement;
+  if (parent) {
+    const applySize = () => {
+      const rect = parent.getBoundingClientRect();
+      const w = Math.floor(rect.width);
+      const h = Math.floor(rect.height);
+      if (w > 0 && h > 0) {
+        container.value.style.width = `${w}px`;
+        container.value.style.height = `${h}px`;
+        editor?.layout({ width: w, height: h });
+      }
+    };
+    resizeObserver = new ResizeObserver(applySize);
+    resizeObserver.observe(parent);
+    applySize();
+  }
 
   // Emit changes
   editor.onDidChangeModelContent(() => {
@@ -98,6 +122,10 @@ watch(
 );
 
 onBeforeUnmount(() => {
+  if (resizeObserver) {
+    resizeObserver.disconnect();
+    resizeObserver = null;
+  }
   if (editor) {
     editor.dispose();
     editor = null;
@@ -106,10 +134,11 @@ onBeforeUnmount(() => {
 </script>
 
 <style scoped>
+/* Size is driven entirely from JS (ResizeObserver on parent). Omitting
+   intrinsic sizing here prevents Monaco's scoped min-height from winning
+   the cascade against our inline pixel dimensions. */
 .monaco-editor-container {
-  width: 100%;
-  height: 100%;
-  min-height: 200px;
+  display: block;
   border: 1px solid var(--border, #333);
   border-radius: 4px;
   overflow: hidden;

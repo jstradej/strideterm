@@ -316,6 +316,11 @@ export const taskWorkspaceActionSchema = z.object({
   workspaceId: nonEmptyString,
 });
 
+export const taskRejectVerdictSchema = z.object({
+  workspaceId: nonEmptyString,
+  feedback: z.string().min(1).max(5000),
+});
+
 // --- Misc schemas ---
 
 export const workspaceReorderSchema = z.array(nonEmptyString);

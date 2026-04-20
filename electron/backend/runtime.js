@@ -1640,7 +1640,12 @@ export async function createRuntime({
           // instead of cancel+restart on every PTY chunk.
           signal.lastOutputAt = Date.now();
 
-          if (signal.busy && !inCooldown && signal.hasUserInput && !signal.promptTimer) {
+          // Task sessions bypass the hasUserInput gate — the runner has its
+          // own state machine and must be notified even if nothing has been
+          // typed into the PTY yet (e.g. task started with no description,
+          // waiting for the first idle so we can inject "read TASK.md").
+          const isTaskSession = taskRunner.getIdleTimeout(payload.sessionId) != null;
+          if (signal.busy && !inCooldown && (signal.hasUserInput || isTaskSession) && !signal.promptTimer) {
             const sid = payload.sessionId;
             signal.promptTimer = setTimeout(function hookFallbackCheck() {
               const silentFor = Date.now() - (signal.lastOutputAt || 0);
@@ -1722,12 +1727,22 @@ export async function createRuntime({
 
             const hookActive = signal.lastHookAlertAt > 0 && Date.now() - signal.lastHookAlertAt < 60_000;
 
-            if (signal.busy && !inCooldown && signal.hasUserInput && !hookActive && !signal.promptTimer) {
+            // Task sessions bypass hasUserInput — runner needs the idle tick
+            // even without prior PTY input (e.g. description-less task waiting
+            // for first idle to inject "read TASK.md").
+            const providerIdleMs = taskRunner.getIdleTimeout(payload.sessionId);
+            const isTaskSession = providerIdleMs != null;
+            if (
+              signal.busy &&
+              !inCooldown &&
+              (signal.hasUserInput || isTaskSession) &&
+              !hookActive &&
+              !signal.promptTimer
+            ) {
               // Phase 3 § 3.2.6: adaptive multiplier reduces noise for
               // sessions the user keeps dismissing.
               // For task sessions, use the provider's idleTimeoutMs (e.g. 8s for
               // Codex/Gemini vs the global 20s agentQuietMs).
-              const providerIdleMs = taskRunner.getIdleTimeout(payload.sessionId);
               const baseQuietMs =
                 providerIdleMs != null
                   ? providerIdleMs
@@ -3503,6 +3518,10 @@ export async function createRuntime({
     },
     async resetTask(workspaceId) {
       const result = await taskRunner.resetTask(workspaceId);
+      return { ok: result, payload: getPayload() };
+    },
+    async rejectTaskVerdict(workspaceId, feedback) {
+      const result = await taskRunner.rejectTaskVerdict(workspaceId, feedback);
       return { ok: result, payload: getPayload() };
     },
     getTaskStatus(workspaceId) {

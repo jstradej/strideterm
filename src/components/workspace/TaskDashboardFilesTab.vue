@@ -1,5 +1,5 @@
 <template>
-  <div class="td__section">
+  <div class="td__section td__section--files">
     <div class="td__file-tabs">
       <button
         v-for="f in taskFiles"
@@ -76,16 +76,27 @@ function reloadActiveFile() {
 </script>
 
 <style scoped>
+/* Grid item of .td__body (grid with minmax(0, 1fr)) — default
+   align-self: stretch sizes us to the cell. Inside we use our own 2-row
+   grid so file-tabs keep their natural height and editor-wrap takes 1fr. */
+.td__section--files {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
 .td__empty {
   opacity: 0.5;
   padding: 24px 0;
   text-align: center;
+  flex: 1;
 }
 .td__file-tabs {
   display: flex;
   gap: 2px;
   margin-bottom: 8px;
   border-bottom: 1px solid var(--border, #333);
+  flex-shrink: 0;
 }
 .td__file-tab {
   background: none;
@@ -110,10 +121,15 @@ function reloadActiveFile() {
   margin-left: 2px;
 }
 .td__editor-wrap {
-  flex: 1;
-  min-height: 250px;
+  flex: 1 1 auto;
+  min-height: 300px;
   border-radius: 4px;
   overflow: hidden;
+  position: relative;
+}
+.td__editor-wrap > :deep(.monaco-editor-container) {
+  position: absolute;
+  inset: 0;
 }
 .td__editor-actions {
   display: flex;
