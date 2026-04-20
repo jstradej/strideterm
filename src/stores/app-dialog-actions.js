@@ -303,6 +303,7 @@ export function createDialogActions(ctx) {
       title: "New worktree",
       label: "Branch name",
       value: "",
+      placeholder: "feature/my-branch",
       submitLabel: "Create",
       onCancel: closeDialog,
       onSubmit: async (name) => {

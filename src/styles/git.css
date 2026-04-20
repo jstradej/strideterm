@@ -414,6 +414,72 @@
   background: color-mix(in srgb, var(--panel-elevated), var(--accent) 6%);
 }
 
+.git-operation-banner--warn {
+  border-color: rgba(255, 184, 108, 0.5);
+  background: rgba(255, 184, 108, 0.06);
+}
+
+.git-operation-banner--danger {
+  border-color: rgba(255, 111, 141, 0.55);
+  background: rgba(255, 111, 141, 0.07);
+}
+
+.button--danger {
+  background: rgba(255, 111, 141, 0.18);
+  border-color: rgba(255, 111, 141, 0.4);
+  color: #ff6f8d;
+}
+
+.button--danger:hover {
+  background: rgba(255, 111, 141, 0.28);
+}
+
+.git-diverged-banner {
+  display: grid;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid rgba(255, 184, 108, 0.5);
+  border-radius: 4px;
+  background: rgba(255, 184, 108, 0.06);
+  margin-bottom: 4px;
+}
+
+.git-diverged-banner__actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.git-info-banner {
+  display: grid;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: rgba(var(--tint), 0.03);
+  margin-bottom: 4px;
+}
+
+.git-info-banner--warn {
+  border-color: rgba(255, 184, 108, 0.4);
+  background: rgba(255, 184, 108, 0.05);
+}
+
+.git-info-banner--error {
+  border-color: rgba(255, 111, 141, 0.35);
+  background: rgba(255, 111, 141, 0.05);
+}
+
+.workspace-chip--muted {
+  opacity: 0.65;
+}
+
+.workspace-chip--warn {
+  background: rgba(255, 184, 108, 0.18);
+  color: #ffb86c;
+  border-color: rgba(255, 184, 108, 0.35);
+}
+
 .git-output {
   margin: 0;
   padding: 10px;

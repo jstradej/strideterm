@@ -20,6 +20,7 @@ import { createCredentialStore } from "./credential-store.js";
 import { createAzureReviewStore } from "./azure-review-store.js";
 import { createReviewBridgeStore } from "./review-bridge-store.js";
 import { createAzureAuditLogStore } from "./azure-audit-log-store.js";
+import { createGitAuditLogStore } from "./git-audit-log-store.js";
 import { buildReviewAgentLaunch, buildMcpServerSpec } from "./review-bridge-agent-launch.js";
 import { AzureDevOpsManager } from "./azure-devops-manager.js";
 import { GitHubManager } from "./github-manager.js";
@@ -427,9 +428,11 @@ export async function createRuntime({
   });
   const auditLogDbPath = path.join(reviewBridgeRoot, "azure-audit-log.db");
   const auditLogStore = createAzureAuditLogStore(auditLogDbPath);
+  const gitAuditLogDbPath = path.join(reviewBridgeRoot, "git-audit-log.db");
+  const gitAuditLogStore = createGitAuditLogStore(gitAuditLogDbPath);
 
   const docker = new DockerManagerImpl();
-  const git = new GitManagerImpl({ credentialStore, auditLogStore });
+  const git = new GitManagerImpl({ credentialStore, auditLogStore, gitAuditLogStore });
   const tunnel = new TunnelManagerImpl();
   const azure = new AzureDevOpsManagerImpl({
     credentialStore,
@@ -1452,6 +1455,19 @@ export async function createRuntime({
     return until != null && Date.now() < until;
   }
 
+  // perf-3: per-workspace debounce map for git refresh triggered by OSC 133;D
+  const gitRefreshDebounceMap = new Map();
+  function scheduleGitRefreshFromShell(workspaceId) {
+    const existing = gitRefreshDebounceMap.get(workspaceId);
+    if (existing) clearTimeout(existing);
+    const timer = setTimeout(() => {
+      gitRefreshDebounceMap.delete(workspaceId);
+      refreshGit(workspaceId).catch(() => {});
+      broadcastState();
+    }, 1000);
+    gitRefreshDebounceMap.set(workspaceId, timer);
+  }
+
   sessions.on("terminal:data", (payload) => {
     const descriptor = parseSessionId(payload.sessionId);
     const state = getState();
@@ -1533,6 +1549,13 @@ export async function createRuntime({
           }
         }
         // Skip normal detection for this chunk — OSC 133;D is authoritative.
+        // perf-3: schedule a debounced git refresh if this session is in a git workspace
+        if (descriptor?.workspaceId) {
+          const wsSnapshot = git.getSnapshot?.(descriptor.workspaceId);
+          if (wsSnapshot?.available) {
+            scheduleGitRefreshFromShell(descriptor.workspaceId);
+          }
+        }
       } else if (signal.agentLike && signal.hookCapable) {
         // --- Agent sessions with proven hooks: trust them exclusively ---
         // Phase 0 § 3.2.d — a session that has fired at least one hook event
@@ -2139,6 +2162,75 @@ export async function createRuntime({
     }, APP_CONFIG.runtime.gitPollMs);
   }
 
+  // perf-4: fs.watch on .strideterm/tree/ per parent workspace
+  // Debounced watcher map: treeDir → { watcher, debounceTimer }
+  const treeDirWatchers = new Map();
+  const TREE_WATCH_DEBOUNCE_MS = 500;
+
+  function startTreeDirWatcher(treeDir) {
+    if (treeDirWatchers.has(treeDir)) return;
+    let debounceTimer = null;
+    try {
+      const watcher = watch(treeDir, { persistent: false }, () => {
+        if (debounceTimer) clearTimeout(debounceTimer);
+        debounceTimer = setTimeout(async () => {
+          debounceTimer = null;
+          try {
+            if (await syncWorktrees()) {
+              sessions.syncWithState(getState());
+              broadcastState();
+            }
+          } catch {
+            // Non-fatal
+          }
+        }, TREE_WATCH_DEBOUNCE_MS);
+      });
+      watcher.on("error", () => {
+        treeDirWatchers.delete(treeDir);
+      });
+      treeDirWatchers.set(treeDir, {
+        watcher,
+        get debounceTimer() {
+          return debounceTimer;
+        },
+      });
+    } catch {
+      // treeDir may not exist yet — polling backstop will catch it
+    }
+  }
+
+  function stopTreeDirWatcher(treeDir) {
+    const entry = treeDirWatchers.get(treeDir);
+    if (entry) {
+      try {
+        entry.watcher.close();
+      } catch {
+        /* ignore */
+      }
+      treeDirWatchers.delete(treeDir);
+    }
+  }
+
+  function syncTreeDirWatchers() {
+    const state = getState();
+    const parents = state.workspaces.filter(
+      (ws) =>
+        !(ws.notes || "").startsWith("Worktree of ") &&
+        ws.kind !== "azure" &&
+        ws.review?.provider !== "azure-devops" &&
+        ws.cwd,
+    );
+    const activeDirs = new Set(parents.map((ws) => path.join(ws.cwd, ".strideterm", "tree")));
+    // Stop watchers for removed parents
+    for (const dir of treeDirWatchers.keys()) {
+      if (!activeDirs.has(dir)) stopTreeDirWatcher(dir);
+    }
+    // Start watchers for new parents
+    for (const dir of activeDirs) {
+      if (!treeDirWatchers.has(dir)) startTreeDirWatcher(dir);
+    }
+  }
+
   const pluginManager = await createPluginManagerImpl({
     pluginsDir,
     builtinPluginsDir: builtinPluginsDir || null,
@@ -2147,19 +2239,44 @@ export async function createRuntime({
 
   async function runInitialRefresh() {
     await refreshDocker();
-    await refreshGit();
+    // perf-1: eager refresh only the active workspace; background-refresh the rest
+    const activeId = getState().activeWorkspaceId;
+    if (activeId) {
+      await refreshGit(activeId);
+    } else {
+      await refreshGit();
+    }
     await refreshAzure();
     scheduleAzurePolling();
     await refreshGitHub();
     scheduleGitHubPolling();
     await syncWorktrees();
     await tunnel.refreshAvailability();
+
+    // Background: inspect remaining workspaces so they don't block first render
+    if (activeId) {
+      queueMicrotask(async () => {
+        const others = getState().workspaces.filter(
+          (ws) => ws.id !== activeId && ws.kind !== "azure" && ws.kind !== "github",
+        );
+        for (const ws of others) {
+          try {
+            await refreshGit(ws.id);
+            broadcastState();
+          } catch {
+            // Non-fatal — background refresh; user can click Refresh if needed
+          }
+          await new Promise((r) => setImmediate(r));
+        }
+      });
+    }
   }
 
   await ensureNotifyScript(userDataPath).catch(() => {});
   await startAgentNotifyServer();
   ensureDockerPolling();
   ensureGitPolling();
+  syncTreeDirWatchers();
   if (deferInitialRefresh) {
     scheduleAzurePolling();
     scheduleGitHubPolling();
@@ -2502,6 +2619,14 @@ export async function createRuntime({
           notifications: {
             ...draft.settings.notifications,
             ...(settings.notifications || {}),
+          },
+          git: {
+            ...draft.settings.git,
+            ...(settings.git || {}),
+            ui: {
+              ...(draft.settings.git?.ui || {}),
+              ...(settings.git?.ui || {}),
+            },
           },
         };
         // Keep tabTemplates out of the settings object
@@ -3171,6 +3296,7 @@ export async function createRuntime({
       await reviewBridgeStore.close?.();
       auditLogStore.close?.();
       githubAuditLogStore.close?.();
+      gitAuditLogStore.close?.();
       // State is already persisted on each mutate/replace operation.
       // Avoid rewriting the file on shutdown, which can overwrite newer
       // on-disk state if another instance touched it more recently.

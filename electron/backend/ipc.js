@@ -393,6 +393,9 @@ export function registerIpc(runtime, emitToRenderer, { includeStateGet = true } 
   ipcMain.handle("git:delete-remote-tag", async (_event, payload) =>
     runtime.gitDeleteRemoteTag(validateIpc(gitTagSchema, payload, "git:delete-remote-tag")),
   );
+  ipcMain.handle("git:force-push-with-lease", async (_event, payload) =>
+    runtime.gitForcePushWithLease(validateIpc(gitPayloadSchema, payload, "git:force-push-with-lease")),
+  );
   ipcMain.handle("docker:action", async (_event, action, containerId) => {
     const validated = validateIpc(dockerActionSchema, { action, containerId }, "docker:action");
     return runtime.dockerAction(validated.action, validated.containerId);

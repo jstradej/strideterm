@@ -1,5 +1,5 @@
 <template>
-  <article class="git-card">
+  <article v-if="shouldRender" class="git-card" data-testid="operation-card">
     <div class="section-head">
       <div>
         <p class="eyebrow">Operation Status</p>
@@ -7,23 +7,17 @@
       </div>
     </div>
 
-    <!-- Pending confirm banner -->
-    <template v-if="pending">
-      <div class="git-operation-banner git-operation-banner--confirm">
-        <strong>{{ pendingLines[0] || "" }}</strong>
-        <p v-for="(line, i) in pendingLines.slice(1)" :key="i">{{ line }}</p>
-        <div class="git-operation-actions">
-          <button type="button" class="button" @click="gitUiStore.gitConfirmAction(workspaceId)">Confirm</button>
-          <button type="button" class="button button--ghost" @click="gitUiStore.clearPendingGitAction(workspaceId)">
-            Cancel
-          </button>
-        </div>
-      </div>
-    </template>
+    <!-- Pending confirm — severity-aware (info/warn/danger) -->
+    <ConfirmDialog
+      v-if="pending"
+      :pending="pending"
+      @confirm="gitUiStore.gitConfirmAction(workspaceId)"
+      @cancel="gitUiStore.clearPendingGitAction(workspaceId)"
+    />
 
     <!-- Active operation banner -->
     <template v-if="operation.inProgress">
-      <div class="git-operation-banner git-operation-banner--warning">
+      <div class="git-operation-banner git-operation-banner--warning" data-testid="operation-in-progress">
         <strong>{{ operation.label || "Git operation in progress" }}</strong>
         <p v-if="operation.details">{{ operation.details }}</p>
         <small v-if="operation.conflicts?.length">{{ operation.conflicts.join(", ") }}</small>
@@ -67,16 +61,13 @@
         <pre v-if="result.rawOutput" class="git-output">{{ result.rawOutput }}</pre>
       </div>
     </template>
-
-    <template v-if="!operation.inProgress && !result && !pending">
-      <p class="git-card__hint">No merge, rebase, cherry-pick, or bisect is currently running.</p>
-    </template>
   </article>
 </template>
 
 <script setup>
 import { computed } from "vue";
 import { useGitUiStore } from "../../../stores/git-ui.js";
+import ConfirmDialog from "./ConfirmDialog.vue";
 
 const props = defineProps({
   snapshot: { type: Object, required: true },
@@ -90,7 +81,7 @@ const operation = computed(() => props.snapshot.operationState || {});
 const pending = computed(() => props.gitUi.pendingAction || null);
 const result = computed(() => props.gitUi.lastResult || null);
 
-const pendingLines = computed(() => String(pending.value?.message || "").split("\n"));
+const shouldRender = computed(() => operation.value.inProgress || !!result.value || !!pending.value);
 
 const heading = computed(() => {
   if (pending.value) return "Confirm action";

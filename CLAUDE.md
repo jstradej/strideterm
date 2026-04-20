@@ -74,7 +74,7 @@ The core — no Electron dependency. Can be driven by Electron IPC or the remote
 - **ipc.js** — registers all `ipcMain.handle()` handlers; returns cleanup function
 - **ipc-schemas.js** — Zod validation for every IPC payload
 - **remote-server.js** — HTTP + WebSocket server for remote/LAN access (token auth)
-- **git-manager.js** — polling (20s), branch/status/log/worktree parsing, merge/rebase/stash/commit ops
+- **git-manager.js** — event-driven `inspectWorkspace` (~10 git subprocesses per call, 8 s snapshot cache); triggered on user actions, workspace switch, and OSC 133;D shell signal. The `gitPoll` loop in `runtime.js` only calls `syncWorktrees()` (filesystem stat, no git subprocesses) every 60 s as a backstop for externally-added/removed worktrees. Full git snapshot is **never** polled periodically.
 - **docker-manager.js** — polling (15s), container list, start/stop/restart/remove/shell/logs
 - **azure-devops-manager.js** — Azure DevOps PR inbox polling, review workspace creation, audit logging
 - **github-manager.js** — GitHub PR inbox polling, review workspace creation, audit logging (same architecture as Azure DevOps)

@@ -117,5 +117,10 @@ export function createGitHandlers(ctx) {
       const connection = resolveGitConnection(workspace);
       return runGitWorkspaceAction(workspace, git.deleteRemoteTag(workspace, { ...payload, connection }));
     },
+    async gitForcePushWithLease(payload = {}) {
+      const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId);
+      const connection = resolveGitConnection(workspace);
+      return runGitWorkspaceAction(workspace, git.forcePushWithLease(workspace, { connection }));
+    },
   };
 }

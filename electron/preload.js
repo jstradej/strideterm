@@ -128,6 +128,7 @@ contextBridge.exposeInMainWorld("strideterm", {
   gitPushTag: (payload) => ipcRenderer.invoke("git:push-tag", payload),
   gitPushAllTags: (payload) => ipcRenderer.invoke("git:push-all-tags", payload),
   gitDeleteRemoteTag: (payload) => ipcRenderer.invoke("git:delete-remote-tag", payload),
+  gitForcePushWithLease: (payload) => ipcRenderer.invoke("git:force-push-with-lease", payload),
   dockerAction: (action, containerId) => ipcRenderer.invoke("docker:action", action, containerId),
   openDockerSession: (payload) => ipcRenderer.invoke("docker:open-session", payload),
   openLazydockerSession: (payload) => ipcRenderer.invoke("docker:open-lazydocker", payload),

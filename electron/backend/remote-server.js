@@ -655,6 +655,11 @@ async function handleApiRequest(runtime, request, response) {
       return;
     }
 
+    if (request.method === "POST" && url.pathname === "/api/git/force-push-with-lease") {
+      json(response, 200, await runtime.gitForcePushWithLease(body));
+      return;
+    }
+
     if (request.method === "POST" && url.pathname === "/api/docker/action") {
       json(response, 200, await runtime.dockerAction(body.action, body.containerId));
       return;

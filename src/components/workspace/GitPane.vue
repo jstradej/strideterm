@@ -14,29 +14,46 @@
     <div v-else class="git-view">
       <div class="git-view__toolbar">
         <div class="git-view__summary">
-          <span class="workspace-chip"
-            ><strong>{{ snapshot.branch }}</strong> branch</span
+          <!-- Branch chip — detached HEAD gets special styling -->
+          <span :class="['workspace-chip', isDetachedHead && 'workspace-chip--warn']">
+            <strong>{{ isDetachedHead ? `detached HEAD @ ${snapshot.branch}` : snapshot.branch }}</strong>
+            <template v-if="!isDetachedHead"> branch</template>
+          </span>
+          <span :class="['workspace-chip', isLinkedWorktree && 'workspace-chip--alert']">
+            <strong>{{ snapshot.isMainWorktree ? "main" : "linked" }}</strong> worktree
+          </span>
+          <!-- ahead/behind only when upstream exists -->
+          <template v-if="snapshot.upstream">
+            <span v-if="snapshot.aheadCount > 0" class="workspace-chip">
+              <strong>{{ snapshot.aheadCount }}</strong> ahead
+            </span>
+            <span v-if="snapshot.behindCount > 0" class="workspace-chip">
+              <strong>{{ snapshot.behindCount }}</strong> behind
+            </span>
+          </template>
+          <!-- no-upstream / no-remote contextual chips -->
+          <span
+            v-if="!snapshot.upstream && remoteCount > 0 && !showAllActions"
+            class="workspace-chip workspace-chip--muted"
           >
-          <span :class="['workspace-chip', isLinkedWorktree && 'workspace-chip--alert']"
-            ><strong>{{ snapshot.isMainWorktree ? "main" : "linked" }}</strong> worktree</span
-          >
-          <span class="workspace-chip"
-            ><strong>{{ snapshot.aheadCount || 0 }}</strong> ahead</span
-          >
-          <span class="workspace-chip"
-            ><strong>{{ snapshot.behindCount || 0 }}</strong> behind</span
-          >
-          <span class="workspace-chip"
-            ><strong>{{ snapshot.dirty ? snapshot.dirtyCount : 0 }}</strong>
-            {{ snapshot.dirty ? "dirty" : "clean" }}</span
-          >
-          <span v-if="operation.inProgress" class="workspace-chip workspace-chip--alert"
-            ><strong>{{ operation.kind }}</strong> in progress</span
-          >
+            no upstream
+          </span>
+          <span v-if="remoteCount === 0 && !showAllActions" class="workspace-chip workspace-chip--muted">
+            no remote
+          </span>
+          <!-- dirty badge only when actually dirty -->
+          <span v-if="snapshot.dirty" class="workspace-chip">
+            <strong>{{ snapshot.dirtyCount }}</strong> dirty
+          </span>
+          <span v-if="operation.inProgress" class="workspace-chip workspace-chip--alert">
+            <strong>{{ operation.kind }}</strong> in progress
+          </span>
         </div>
         <div class="git-view__actions">
+          <!-- Refresh: always visible, never primary -->
           <button
             type="button"
+            data-testid="refresh-button"
             :class="['button', 'button--ghost', gitUi.busyAction === 'refresh' && 'button--busy']"
             :disabled="!!gitUi.busyAction"
             title="Re-read git status from disk"
@@ -44,46 +61,65 @@
           >
             {{ gitUi.busyAction === "refresh" ? "Refreshing…" : "Refresh" }}
           </button>
+
+          <!-- Fetch: hidden when no remotes (UC-8), never primary -->
           <button
+            v-if="showFetch"
             type="button"
+            data-testid="fetch-button"
             :class="['button', 'button--ghost', gitUi.busyAction === 'fetch' && 'button--busy']"
-            :disabled="!!gitUi.busyAction"
+            :disabled="!!gitUi.busyAction || !!gitUi.pendingAction || operation.inProgress"
             title="Download remote refs without changing your working tree"
             @click="gitUiStore.gitFetch(workspaceId)"
           >
             {{ gitUi.busyAction === "fetch" ? "Fetching…" : "Fetch" }}
           </button>
+
+          <!-- Pull: hidden when no upstream (UC-1, UC-9) unless showAllActions -->
           <button
+            v-if="showPull"
             type="button"
-            :class="['button', 'button--ghost', gitUi.busyAction === 'pull' && 'button--busy']"
-            :disabled="!!gitUi.busyAction"
-            title="Fetch and fast-forward merge remote changes into your branch"
+            data-testid="pull-button"
+            :class="['button', pullIsPrimary ? '' : 'button--ghost', gitUi.busyAction === 'pull' && 'button--busy']"
+            :disabled="pullDisabled"
+            :title="pullTooltip"
             @click="gitUiStore.gitPull(workspaceId)"
           >
             {{ gitUi.busyAction === "pull" ? "Pulling…" : "Pull" }}
           </button>
+
+          <!-- Push: hidden when detached/review/no-remotes (structural impossibility) -->
           <button
-            v-if="!isReviewWorkspace"
+            v-if="showPush"
             type="button"
-            :class="['button', gitUi.busyAction === 'push' && 'button--busy']"
-            :disabled="!!gitUi.busyAction || !canPush"
+            data-testid="push-button"
+            :class="['button', pushIsPrimary ? '' : 'button--ghost', gitUi.busyAction === 'push' && 'button--busy']"
+            :disabled="pushDisabled"
             :title="pushTooltip"
             @click="gitUiStore.gitPush(workspaceId)"
           >
-            {{ gitUi.busyAction === "push" ? "Pushing…" : "Push" }}
+            {{ gitUi.busyAction === "push" ? "Pushing…" : pushLabel }}
           </button>
+
+          <!-- New worktree: hidden when commitCount === 0 (UC-7) unless showAllActions -->
           <button
+            v-if="showNewWorktree"
             type="button"
+            data-testid="new-worktree-button"
             class="button button--ghost"
+            :disabled="!!gitUi.busyAction || !!gitUi.pendingAction || operation.inProgress"
             title="Create a new git worktree with its own branch"
             @click="onCreateWorktree"
           >
             New worktree
           </button>
+
+          <!-- Open Lazygit: never primary -->
           <button
             v-if="snapshot.lazygit?.available"
             type="button"
-            class="button"
+            data-testid="lazygit-button"
+            class="button button--ghost"
             style="white-space: nowrap"
             @click="gitUiStore.openLazygit(workspaceId)"
           >
@@ -99,6 +135,7 @@
           >
             Install Lazygit
           </button>
+
           <select
             v-if="availableConnections.length && !isReviewWorkspace"
             class="git-branch-select"
@@ -131,10 +168,64 @@
         <!-- ===== Branch tab ===== -->
         <template v-if="activeTab === 'branch'">
           <div class="git-section">
+            <!-- UC-7: empty repo banner -->
+            <div v-if="isEmptyRepo" data-testid="empty-repo-banner" class="git-info-banner git-info-banner--warn">
+              <strong>No commits yet</strong>
+              <p>Make your first commit in the Changes tab to get started.</p>
+            </div>
+
+            <!-- UC-8: no remote banner -->
+            <div v-if="hasNoRemote && !showAllActions" data-testid="no-remote-banner" class="git-info-banner">
+              <strong>No remote configured</strong>
+              <p>This repo has no remote. Add a remote to enable fetch/pull/push.</p>
+            </div>
+
+            <!-- UC-3: diverged banner -->
+            <div v-if="isDiverged" data-testid="diverged-banner" class="git-diverged-banner">
+              <strong
+                >Upstream has diverged ({{ snapshot.aheadCount }} ahead, {{ snapshot.behindCount }} behind)</strong
+              >
+              <p>Pull or rebase if upstream has new work, or force-push if you intentionally rewrote local history.</p>
+              <div class="git-diverged-banner__actions">
+                <button
+                  type="button"
+                  class="button button--ghost"
+                  :disabled="!!gitUi.busyAction || operation.inProgress"
+                  title="Open Update Current Branch to pull/rebase"
+                  @click="gitUiStore.gitSwitchTab(workspaceId, 'branch')"
+                >
+                  Pull / Rebase
+                </button>
+                <button
+                  v-if="!isReviewWorkspace"
+                  type="button"
+                  data-testid="force-push-button"
+                  class="button button--ghost button--danger"
+                  :disabled="!!gitUi.busyAction || operation.inProgress || !!gitUi.pendingAction"
+                  title="Force-push with lease — aborts if remote was updated since your last fetch"
+                  @click="
+                    gitUiStore.confirmForcePushWithLease(
+                      workspaceId,
+                      {
+                        branch: snapshot.branch,
+                        remote: pushRemote,
+                        behindCount: snapshot.behindCount,
+                      },
+                      snapshot,
+                    )
+                  "
+                >
+                  Force push (with lease)
+                </button>
+              </div>
+            </div>
+
             <GitOperationCard :snapshot="snapshot" :workspace-id="workspaceId" :git-ui="gitUi" />
 
-            <!-- Update current branch with base branch selector -->
-            <article class="git-card">
+            <!-- UC-6: detached HEAD banner in Changes tab is handled there; here just info -->
+
+            <!-- Update current branch — hidden when current === base -->
+            <article v-if="showUpdateCurrentBranch" class="git-card" data-testid="update-current-branch-card">
               <div class="section-head">
                 <div>
                   <p class="eyebrow">Update Current Branch</p>
@@ -143,14 +234,18 @@
               </div>
               <div class="git-detail-list">
                 <span><strong>Current branch:</strong> {{ snapshot.branch }}</span>
-                <span class="git-detail-list__row">
-                  <strong>Base branch:</strong>
-                  <template v-if="isLinkedWorktree">{{ effectiveBaseBranch || "?" }}</template>
-                  <select v-else class="git-branch-select" :value="effectiveBaseBranch" @change="onBaseBranchChange">
-                    <option v-if="!effectiveBaseBranch" value="" disabled>-- select --</option>
-                    <option v-for="b in baseBranchOptions" :key="b" :value="b">{{ b }}</option>
-                  </select>
-                </span>
+                <template v-if="isLinkedWorktree">
+                  <span class="git-detail-list__row">
+                    <strong>Base branch:</strong>
+                    {{ effectiveBaseBranch || "?" }}
+                  </span>
+                </template>
+                <GitBaseBranchPicker
+                  v-else
+                  :model-value="effectiveBaseBranch"
+                  :options="baseBranchOptions"
+                  @update:model-value="(v) => gitUiStore.gitSetBaseBranch(workspaceId, v)"
+                />
                 <span><strong>Upstream:</strong> {{ snapshot.upstream || "none" }}</span>
                 <span
                   ><strong>Ahead/behind upstream:</strong> {{ snapshot.aheadCount || 0 }} /
@@ -159,11 +254,11 @@
                 <span><strong>Last fetch:</strong> {{ formatDateLabel(snapshot.lastFetchAt) }}</span>
               </div>
               <template v-if="effectiveBaseBranch">
-                <div class="git-operation-actions">
+                <div v-if="!isReviewWorkspace" class="git-operation-actions">
                   <button
                     type="button"
                     class="button"
-                    :disabled="!!(gitUi.busyAction || operation.inProgress)"
+                    :disabled="!!(gitUi.busyAction || operation.inProgress || !!gitUi.pendingAction)"
                     :title="`Rebase current branch onto local ${effectiveBaseBranch}`"
                     @click="gitUiStore.gitRebaseBase(workspaceId, effectiveBaseBranch)"
                   >
@@ -173,7 +268,7 @@
                     v-if="!isReviewWorkspace"
                     type="button"
                     class="button button--ghost"
-                    :disabled="!!(gitUi.busyAction || operation.inProgress)"
+                    :disabled="!!(gitUi.busyAction || operation.inProgress || !!gitUi.pendingAction)"
                     :title="`Merge local ${effectiveBaseBranch} into current branch`"
                     @click="gitUiStore.gitMergeBase(workspaceId, effectiveBaseBranch)"
                   >
@@ -184,11 +279,24 @@
                   Operations use the local {{ effectiveBaseBranch }} branch. Fetch first to sync with remote.
                 </p>
               </template>
-              <p v-else class="git-card__hint">Select a base branch above to enable rebase/merge operations.</p>
+              <template v-else>
+                <p class="git-card__hint">Select a base branch above to enable rebase/merge operations.</p>
+                <p v-if="baseBranchOptions.length === 0" class="git-card__hint">
+                  No local branches found. Run Fetch to populate remote branches.
+                  <button
+                    type="button"
+                    class="button button--ghost button--small"
+                    style="margin-left: 6px"
+                    @click="gitUiStore.gitFetch(workspaceId)"
+                  >
+                    Fetch
+                  </button>
+                </p>
+              </template>
             </article>
 
-            <!-- Stash card -->
-            <article class="git-card">
+            <!-- Stash card — hidden when clean and 0 stashes -->
+            <article v-if="showStashCard" data-testid="stash-card" class="git-card">
               <div class="section-head">
                 <div>
                   <p class="eyebrow">Stash</p>
@@ -199,7 +307,7 @@
                 <button
                   type="button"
                   class="button"
-                  :disabled="!!(gitUi.busyAction || !snapshot.dirty)"
+                  :disabled="!!(gitUi.busyAction || !snapshot.dirty || !!gitUi.pendingAction || operation.inProgress)"
                   title="Save uncommitted changes to the stash"
                   @click="gitUiStore.gitStash(workspaceId)"
                 >
@@ -208,8 +316,12 @@
                 <button
                   type="button"
                   class="button button--ghost"
-                  :disabled="!!(gitUi.busyAction || !(snapshot.stashCount > 0))"
-                  title="Restore the most recent stash entry"
+                  :disabled="
+                    !!(gitUi.busyAction || !(snapshot.stashCount > 0) || !!gitUi.pendingAction || operation.inProgress)
+                  "
+                  :title="
+                    snapshot.dirty ? 'Pop may conflict with local changes' : 'Restore the most recent stash entry'
+                  "
                   @click="gitUiStore.gitStashPop(workspaceId)"
                 >
                   {{ gitUi.busyAction === "stash-pop" ? "Popping…" : "Unstash (pop)" }}
@@ -277,7 +389,7 @@
             </article>
 
             <GitMergeBackCard
-              v-if="!isReviewWorkspace"
+              v-if="showMergeBack"
               :snapshot="snapshot"
               :workspace-id="workspaceId"
               :workspaces="workspaces"
@@ -299,6 +411,19 @@
                     <p class="eyebrow">Changes</p>
                     <h3>{{ snapshot.dirty ? "Working tree overview" : "No local changes" }}</h3>
                   </div>
+                </div>
+                <!-- UC-6: detached HEAD banner -->
+                <div v-if="isDetachedHead" class="git-info-banner git-info-banner--warn" style="margin-bottom: 8px">
+                  <strong>Detached HEAD</strong>
+                  <p>You are on a detached HEAD. Commits will be lost unless you create a branch.</p>
+                  <button
+                    v-if="!isReviewWorkspace"
+                    type="button"
+                    class="button button--ghost button--small"
+                    @click="gitUiStore.gitCreateBranch(workspaceId, `branch-from-detached`)"
+                  >
+                    Create branch from HEAD
+                  </button>
                 </div>
                 <GitDiffStat :stat="snapshot.diffStat" />
                 <GitChangeList
@@ -328,18 +453,22 @@
                   @select="(p, s) => gitUiStore.gitSelectDiff(workspaceId, p, s)"
                   @open-editor="onOpenInEditor"
                 />
-                <div v-if="snapshot.dirty" class="git-commit-form" style="margin-top: 12px">
+                <div v-if="snapshot.dirty && !isReviewWorkspace" class="git-commit-form" style="margin-top: 12px">
                   <input
                     v-model="commitMessage"
                     name="commit-message"
                     type="text"
                     placeholder="Commit message"
+                    :disabled="operation.inProgress"
+                    :title="!snapshot.staged?.length && snapshot.dirty ? 'Will stage and commit all changes' : ''"
                     @keydown.enter="onCommitAll"
                   />
                   <button
                     type="button"
                     class="button"
-                    :disabled="!!gitUi.busyAction || !commitMessage.trim()"
+                    :disabled="
+                      !!gitUi.busyAction || !commitMessage.trim() || operation.inProgress || !!gitUi.pendingAction
+                    "
                     title="Stage all changes and commit"
                     @click="onCommitAll"
                   >
@@ -377,11 +506,24 @@
                     <h3>{{ effectiveBaseBranch || "No base branch" }}</h3>
                   </div>
                 </div>
-                <GitDiffStat :stat="compare.diffStat" />
-                <div class="git-detail-list">
-                  <span><strong>Branch commits:</strong> {{ compare.aheadCount || 0 }}</span>
-                  <span><strong>Missing from base:</strong> {{ compare.behindCount || 0 }}</span>
-                </div>
+                <!-- CTA when no base branch is selected (was just "No base branch" text before) -->
+                <template v-if="!effectiveBaseBranch">
+                  <p class="git-card__hint">Select a base branch to see which commits are unique to this branch.</p>
+                  <div class="git-detail-list" style="margin-top: 8px">
+                    <GitBaseBranchPicker
+                      :model-value="effectiveBaseBranch"
+                      :options="baseBranchOptions"
+                      @update:model-value="(v) => gitUiStore.gitSetBaseBranch(workspaceId, v)"
+                    />
+                  </div>
+                </template>
+                <template v-else>
+                  <GitDiffStat :stat="compare.diffStat" />
+                  <div class="git-detail-list">
+                    <span><strong>Branch commits:</strong> {{ compare.aheadCount || 0 }}</span>
+                    <span><strong>Missing from base:</strong> {{ compare.behindCount || 0 }}</span>
+                  </div>
+                </template>
               </article>
             </div>
             <div class="git-history__panels">
@@ -408,7 +550,7 @@
 
         <!-- ===== Pull Request tab ===== -->
         <template v-else-if="activeTab === 'pr'">
-          <div class="git-section">
+          <div class="git-section" data-testid="pr-tab-panel">
             <article class="git-card">
               <div class="section-head">
                 <div>
@@ -416,12 +558,17 @@
                   <h3>{{ snapshot.branch }} &rarr; {{ prTargetBranch || "?" }}</h3>
                 </div>
               </div>
+              <!-- UC-8: no remote -->
+              <div v-if="hasNoRemote" class="git-card__hint git-card__hint--warning" style="margin-bottom: 8px">
+                This repo has no remote. Add a remote before connecting a PR provider.
+              </div>
+              <!-- No connection selected -->
               <div
-                v-if="!activeConnectionId && !hasAzureConnection"
+                v-else-if="!activeConnectionId && !hasAzureConnection"
                 class="git-card__hint git-card__hint--warning"
                 style="margin-bottom: 8px"
               >
-                No connection selected. Choose a connection in the toolbar dropdown to enable PR creation.
+                Connect Azure DevOps or GitHub to create pull requests. Use the credentials dropdown in the toolbar.
               </div>
               <template v-else>
                 <p class="git-card__hint" style="margin-bottom: 8px">
@@ -466,7 +613,22 @@
                     <button
                       type="button"
                       class="button"
-                      :disabled="!prCanSubmit || !!gitUi.busyAction"
+                      :disabled="
+                        !prCanSubmit ||
+                        !!gitUi.busyAction ||
+                        snapshot.aheadCount === 0 ||
+                        !snapshot.upstream ||
+                        snapshot.dirty
+                      "
+                      :title="
+                        !snapshot.upstream
+                          ? 'Publish the branch first before creating a PR'
+                          : snapshot.dirty
+                            ? 'Commit or stash changes before creating a PR'
+                            : snapshot.aheadCount === 0
+                              ? 'Nothing to PR — no commits ahead of upstream'
+                              : ''
+                      "
                       @click="onCreatePr"
                     >
                       {{ gitUi.busyAction === "create-pr" ? "Creating…" : "Create Pull Request" }}
@@ -498,7 +660,12 @@
                   <h3>{{ snapshot.branch }} &mdash; {{ (gitUi.tags || []).length }} tag(s)</h3>
                 </div>
               </div>
-              <GitTagList :workspace-id="workspaceId" :git-ui="gitUi" />
+              <GitTagList
+                :workspace-id="workspaceId"
+                :git-ui="gitUi"
+                :snapshot="snapshot"
+                :is-review-workspace="isReviewWorkspace"
+              />
             </article>
           </div>
         </template>
@@ -519,7 +686,14 @@
                 <span><strong>Main worktree:</strong> {{ snapshot.mainWorktreePath || snapshot.root }}</span>
                 <span><strong>Current path:</strong> {{ snapshot.worktreePath || snapshot.root }}</span>
               </div>
-              <GitWorktreeList :snapshot="snapshot" :workspaces="workspaces" />
+              <GitWorktreeList
+                :snapshot="snapshot"
+                :workspaces="workspaces"
+                :workspace-id="workspaceId"
+                :git-ui="gitUi"
+                :push-remote="pushRemote"
+                :is-review-workspace="isReviewWorkspace"
+              />
             </article>
           </div>
         </template>
@@ -541,6 +715,7 @@ import GitMergeBackCard from "./git/GitMergeBackCard.vue";
 import GitWorktreeList from "./git/GitWorktreeList.vue";
 import GitTagList from "./git/GitTagList.vue";
 import GitCommitLog from "./git/GitCommitLog.vue";
+import GitBaseBranchPicker from "./git/GitBaseBranchPicker.vue";
 
 const props = defineProps({
   workspaceId: { type: String, required: true },
@@ -561,9 +736,20 @@ const operation = computed(() => snapshot.value?.operationState || {});
 const baseBranch = computed(() => snapshot.value?.baseBranch || snapshot.value?.compareWithBase?.baseBranch || "");
 const compare = computed(() => snapshot.value?.compareWithBase || {});
 const activeTab = computed(() => gitUi.value.activeTab || "branch");
+const showAllActions = computed(() => appStore.payload?.appState?.settings?.git?.ui?.showAllActions === true);
 
 // Effective base branch: override from UI, or auto-detected
 const effectiveBaseBranch = computed(() => gitUi.value.overrideBaseBranch || baseBranch.value);
+
+// Remote / upstream state
+const remoteCount = computed(() => Object.keys(snapshot.value?.remotes || {}).filter((k) => !k.includes(":")).length);
+const hasNoRemote = computed(() => remoteCount.value === 0);
+const isDetachedHead = computed(() => snapshot.value?.branch === "HEAD" || !snapshot.value?.branch);
+const isEmptyRepo = computed(() => (snapshot.value?.commitCount || 0) === 0);
+const isDiverged = computed(() => {
+  const s = snapshot.value;
+  return s && s.aheadCount > 0 && s.behindCount > 0 && s.upstream;
+});
 
 // Push button state — detect remote name from upstream or remotes list
 const pushRemote = computed(() => {
@@ -582,18 +768,111 @@ const upstreamMatchesBranch = computed(() => {
 const canPush = computed(() => {
   const s = snapshot.value;
   if (!s) return false;
-  // Can push when: commits ahead, no upstream (new branch), or upstream tracks wrong branch
   return s.aheadCount > 0 || !s.upstream || !upstreamMatchesBranch.value;
+});
+
+// UC-17: primary button arbitration — at most 1 primary in toolbar
+const primaryAction = computed(() => {
+  if (showAllActions.value) {
+    // legacy: all primary-qualified get primary
+    const s = snapshot.value;
+    if (!s) return null;
+    if (s.behindCount > 0 && !isDiverged.value) return "pull";
+    if (s.aheadCount > 0 && s.upstream) return "push";
+    return null;
+  }
+  if (operation.value.inProgress) return null;
+  if (gitUi.value.pendingAction) return null;
+  if (isDiverged.value) return null;
+  if (isDetachedHead.value) return null;
+  const s = snapshot.value;
+  if (!s) return null;
+  if (s.behindCount > 0) return "pull";
+  if (s.aheadCount > 0 && s.upstream) return "push";
+  return null;
+});
+
+// Visibility rules for toolbar buttons
+const showFetch = computed(() => showAllActions.value || remoteCount.value > 0);
+const showPull = computed(() => {
+  if (showAllActions.value) return true;
+  return !!snapshot.value?.upstream;
+});
+const showPush = computed(() => {
+  if (isDetachedHead.value) return false; // structural
+  if (isReviewWorkspace.value) return false; // structural
+  if (hasNoRemote.value) return false; // structural
+  return true;
+});
+const showNewWorktree = computed(() => {
+  if (isReviewWorkspace.value) return false;
+  return showAllActions.value || (snapshot.value?.commitCount || 0) > 0;
+});
+
+// Pull state
+const pullIsPrimary = computed(() => primaryAction.value === "pull");
+const pullDisabled = computed(() => {
+  if (!!gitUi.value.busyAction || operation.value.inProgress || !!gitUi.value.pendingAction) return true;
+  if (!snapshot.value?.upstream) return true;
+  if (snapshot.value?.dirty) return true;
+  if (isDetachedHead.value) return true;
+  if ((snapshot.value?.behindCount || 0) === 0 && !isDiverged.value) return true;
+  return false;
+});
+const pullTooltip = computed(() => {
+  const s = snapshot.value;
+  if (!s?.upstream) return "No upstream tracking branch";
+  if (s.dirty) return "Commit or stash changes before pulling";
+  if (isDetachedHead.value) return "Cannot pull in detached HEAD state";
+  if (s.behindCount > 0) return `Pull ${s.behindCount} commit${s.behindCount !== 1 ? "s" : ""} from ${s.upstream}`;
+  return "Nothing to pull";
+});
+
+// Push state
+const pushLabel = computed(() => {
+  const s = snapshot.value;
+  if (!s) return "Push";
+  if (!s.upstream || !upstreamMatchesBranch.value) return "Publish branch";
+  return "Push";
+});
+const pushIsPrimary = computed(() => primaryAction.value === "push");
+const pushDisabled = computed(() => {
+  if (!!gitUi.value.busyAction || operation.value.inProgress || !!gitUi.value.pendingAction) return true;
+  if (isDiverged.value && !showAllActions.value) return true;
+  if (!canPush.value) return true;
+  return false;
 });
 const pushTooltip = computed(() => {
   const s = snapshot.value;
   if (!s) return "Push";
+  if (isDiverged.value && !showAllActions.value)
+    return "Push may be rejected — branch diverged from upstream. Use Force push (with lease) in the banner above if you rewrote history intentionally.";
   const target = `${pushRemote.value}/${s.branch}`;
   if (!s.upstream || !upstreamMatchesBranch.value) {
     return `Push ${s.branch} and set upstream to ${target}`;
   }
   if (s.aheadCount > 0) return `Push ${s.aheadCount} commit${s.aheadCount !== 1 ? "s" : ""} to ${target}`;
   return "Nothing to push";
+});
+
+// Card visibility
+const showStashCard = computed(() => {
+  if (isReviewWorkspace.value) return false;
+  return showAllActions.value || snapshot.value?.dirty || (snapshot.value?.stashCount || 0) > 0;
+});
+const showUpdateCurrentBranch = computed(() => {
+  if (!snapshot.value) return false;
+  if (!showAllActions.value && effectiveBaseBranch.value === snapshot.value.branch) return false;
+  return true;
+});
+const showMergeBack = computed(() => {
+  if (isReviewWorkspace.value) return false;
+  if (!showAllActions.value) {
+    if (!isLinkedWorktree.value) return false;
+    if (!effectiveBaseBranch.value) return false;
+    if (effectiveBaseBranch.value === snapshot.value?.branch) return false;
+  }
+  return true;
 });
 
 // Commit form (Changes tab)
@@ -639,7 +918,6 @@ const hasAzureConnection = computed(() => {
 });
 
 // Connection selection for authenticated git operations (push/fetch/PR).
-// Reads from git.connections which merges all providers (Azure, future GitHub/GitLab).
 const availableConnections = computed(() => (appStore.payload?.git?.connections || []).filter((c) => c.enabled));
 const activeConnectionId = computed(() => workspace.value?.connectionId || "");
 const activeConnectionLabel = computed(() => {
@@ -697,6 +975,13 @@ watch(
   { immediate: true },
 );
 
+// UC-12: auto-dismiss stale pending confirm when snapshot state changes
+watch(snapshot, (newSnapshot) => {
+  if (newSnapshot && gitUi.value.pendingAction) {
+    gitUiStore.dismissStalePending(props.workspaceId, newSnapshot);
+  }
+});
+
 const tabs = computed(() => {
   const list = [
     { id: "branch", label: "Branch", badge: operation.value.inProgress ? "!" : "" },
@@ -706,12 +991,10 @@ const tabs = computed(() => {
       badge: (snapshot.value?.dirtyCount || 0) > 0 ? String(snapshot.value.dirtyCount) : "",
     },
     { id: "history", label: "History", badge: "" },
+    { id: "pr", label: "Pull Request", badge: "" },
+    { id: "tags", label: "Tags", badge: "" },
+    { id: "worktrees", label: "Worktrees", badge: "" },
   ];
-  if (!isReviewWorkspace.value) {
-    list.push({ id: "pr", label: "Pull Request", badge: "" });
-  }
-  list.push({ id: "tags", label: "Tags", badge: "" });
-  list.push({ id: "worktrees", label: "Worktrees", badge: "" });
   return list;
 });
 
@@ -765,18 +1048,7 @@ function onHeaderAction(action) {
 }
 
 function onCreateWorktree() {
-  appStore.openDialog("TextInputDialog", {
-    eyebrow: "Git",
-    title: "New worktree",
-    label: "Branch name",
-    placeholder: "feature/my-branch",
-    submitLabel: "Create",
-    onSubmit: (name) => appStore.createWorktree(props.workspaceId, name),
-  });
-}
-
-function onBaseBranchChange(event) {
-  gitUiStore.gitSetBaseBranch(props.workspaceId, event.target.value);
+  appStore.createWorktreeWithDialog(props.workspaceId);
 }
 
 function onCheckoutBranch() {

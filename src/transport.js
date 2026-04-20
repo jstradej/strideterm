@@ -293,6 +293,7 @@ function createRemoteTransport() {
     gitPushTag: (payload) => fetchJson("/api/git/push-tag", payload),
     gitPushAllTags: (payload) => fetchJson("/api/git/push-all-tags", payload),
     gitDeleteRemoteTag: (payload) => fetchJson("/api/git/delete-remote-tag", payload),
+    gitForcePushWithLease: (payload) => fetchJson("/api/git/force-push-with-lease", payload),
     dockerAction: (action, containerId) => fetchJson("/api/docker/action", { action, containerId }),
     openDockerSession: (payload) => fetchJson("/api/docker/open-session", payload),
     openLazydockerSession: (payload) => fetchJson("/api/docker/open-lazydocker", payload),

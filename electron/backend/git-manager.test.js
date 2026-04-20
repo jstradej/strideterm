@@ -137,6 +137,85 @@ describe("GitManager", () => {
     expect(snapshot.lastFetchAt).toBeTruthy();
   });
 
+  test("inspectWorkspace marks per-sibling branchMerged via git branch --merged", async () => {
+    const { root } = await createGitFixture();
+    const siblingMain = path.join(root, ".strideterm", "tree", "main-wt");
+    const siblingMerged = path.join(root, ".strideterm", "tree", "feature-merged");
+    const siblingActive = path.join(root, ".strideterm", "tree", "feature-active");
+    await fs.mkdir(siblingMain, { recursive: true });
+    await fs.mkdir(siblingMerged, { recursive: true });
+    await fs.mkdir(siblingActive, { recursive: true });
+
+    const execGitImpl = createExecMock({
+      [`${root}::rev-parse --show-toplevel`]: { stdout: `${root}\n`, stderr: "" },
+      [`${root}::rev-parse --abbrev-ref HEAD`]: { stdout: "feature-x\n", stderr: "" },
+      [`${root}::remote -v`]: { stdout: "", stderr: "" },
+      [`${root}::rev-list --count HEAD`]: { stdout: "10\n", stderr: "" },
+      [`${root}::status --porcelain=v2 --branch`]: { stdout: "# branch.head feature-x\n", stderr: "" },
+      [`${root}::status --short`]: { stdout: "", stderr: "" },
+      [`${root}::log --date=relative --pretty=format:%h%x09%ad%x09%an%x09%d%x09%s -n 18`]: { stdout: "", stderr: "" },
+      [`${root}::rev-parse --git-dir`]: { stdout: ".git\n", stderr: "" },
+      [`${root}::rev-parse --git-common-dir`]: { stdout: ".git\n", stderr: "" },
+      [`${root}::worktree list --porcelain`]: {
+        stdout: [
+          `worktree ${root}`,
+          "HEAD aaaa111",
+          "branch refs/heads/feature-x",
+          "",
+          `worktree ${siblingMain}`,
+          "HEAD bbbb222",
+          "branch refs/heads/main",
+          "",
+          `worktree ${siblingMerged}`,
+          "HEAD cccc333",
+          "branch refs/heads/feature-merged",
+          "",
+          `worktree ${siblingActive}`,
+          "HEAD dddd444",
+          "branch refs/heads/feature-active",
+          "",
+        ].join("\n"),
+        stderr: "",
+      },
+      [`${root}::for-each-ref --format=%(refname:short) refs/heads refs/remotes`]: {
+        stdout: "feature-x\nmain\nfeature-merged\nfeature-active\n",
+        stderr: "",
+      },
+      [`${root}::merge-base HEAD main`]: { stdout: "aaaaaaa\n", stderr: "" },
+      [`${root}::rev-list --count aaaaaaa..HEAD`]: { stdout: "2\n", stderr: "" },
+      [`${root}::rev-list --left-right --count HEAD...main`]: { stdout: "2\t0\n", stderr: "" },
+      [`${root}::log --date=relative --pretty=format:%h%x09%ad%x09%an%x09%d%x09%s -n 18 main..HEAD`]: {
+        stdout: "",
+        stderr: "",
+      },
+      [`${root}::diff --name-status main...HEAD`]: { stdout: "", stderr: "" },
+      [`${root}::diff --shortstat main...HEAD`]: { stdout: "", stderr: "" },
+      [`${root}::diff --cached --shortstat`]: { stdout: "", stderr: "" },
+      [`${root}::diff --shortstat`]: { stdout: "", stderr: "" },
+      [`${root}::diff --name-only --diff-filter=U`]: { stdout: "", stderr: "" },
+      [`${root}::branch --merged main --format=%(refname:short)`]: {
+        stdout: "main\nfeature-merged\n",
+        stderr: "",
+      },
+      [`${siblingMain}::status --short`]: { stdout: "", stderr: "" },
+      [`${siblingMerged}::status --short`]: { stdout: "", stderr: "" },
+      [`${siblingActive}::status --short`]: { stdout: "", stderr: "" },
+    });
+    const manager = new GitManager({ execGitImpl });
+    manager.detectLazygit = async () => ({ available: false, backend: null, error: "missing", launch: null });
+
+    const snapshot = await manager.inspectWorkspace({ id: "frontend", cwd: root, kind: "terminal" });
+
+    expect(snapshot.branch).toBe("feature-x");
+    expect(snapshot.baseBranch).toBe("main");
+    const merged = snapshot.siblingWorktrees.find((e) => e.branch === "feature-merged");
+    const active = snapshot.siblingWorktrees.find((e) => e.branch === "feature-active");
+    const mainEntry = snapshot.siblingWorktrees.find((e) => e.branch === "main");
+    expect(merged?.branchMerged).toBe(true);
+    expect(active?.branchMerged).toBe(false);
+    expect(mainEntry?.branchMerged).toBe(false);
+  });
+
   test("inspectWorkspace detects active merge operation and conflicts", async () => {
     const { root } = await createGitFixture();
     await fs.writeFile(path.join(root, ".git", "MERGE_HEAD"), "abcdef\n", "utf8");
@@ -698,5 +777,254 @@ describe("GitManager", () => {
     });
 
     expect(execGitImpl).toHaveBeenCalledWith(root, ["push"]);
+  });
+
+  // ─── Phase 4: forcePushWithLease audit log ────────────────────────
+
+  test("forcePushWithLease records expectedRef, previousRemoteRef, newRemoteRef in gitAuditLogStore", async () => {
+    const { root } = await createGitFixture();
+    // execGitImpl call sequence:
+    // 1. inspectWorkspace (several calls — mocked below)
+    // 2. rev-parse origin/feature-x → expectedRef hash
+    // 3. push --force-with-lease=feature-x:abc123 origin feature-x → success
+    // 4. rev-parse HEAD → newRemoteRef hash
+    const execGitImpl = createExecMock({
+      [`${root}::rev-parse --show-toplevel`]: { stdout: `${root}\n`, stderr: "" },
+      [`${root}::rev-parse --abbrev-ref HEAD`]: { stdout: "feature-x\n", stderr: "" },
+      [`${root}::remote -v`]: {
+        stdout: "origin\thttps://example.com/repo.git (fetch)\norigin\thttps://example.com/repo.git (push)\n",
+        stderr: "",
+      },
+      [`${root}::rev-list --count HEAD`]: { stdout: "5\n", stderr: "" },
+      [`${root}::status --porcelain=v2 --branch`]: {
+        stdout: "# branch.head feature-x\n# branch.upstream origin/feature-x\n# branch.ab +2 -3\n",
+        stderr: "",
+      },
+      [`${root}::status --short`]: { stdout: "", stderr: "" },
+      [`${root}::log --date=relative --pretty=format:%h%x09%ad%x09%an%x09%d%x09%s -n 18`]: { stdout: "", stderr: "" },
+      [`${root}::rev-parse --git-dir`]: { stdout: ".git\n", stderr: "" },
+      [`${root}::rev-parse --git-common-dir`]: { stdout: ".git\n", stderr: "" },
+      [`${root}::worktree list --porcelain`]: {
+        stdout: `worktree ${root}\nHEAD abc\nbranch refs/heads/feature-x\n`,
+        stderr: "",
+      },
+      [`${root}::for-each-ref --format=%(refname:short) refs/heads refs/remotes`]: {
+        stdout: "feature-x\norigin/feature-x\n",
+        stderr: "",
+      },
+      [`${root}::rev-list --left-right --count HEAD...origin/feature-x`]: { stdout: "2\t3\n", stderr: "" },
+      [`${root}::log --date=relative --pretty=format:%h%x09%ad%x09%an%x09%d%x09%s -n 18 origin/feature-x..HEAD`]: {
+        stdout: "",
+        stderr: "",
+      },
+      [`${root}::diff --name-status origin/feature-x...HEAD`]: { stdout: "", stderr: "" },
+      [`${root}::diff --shortstat origin/feature-x...HEAD`]: { stdout: "", stderr: "" },
+      [`${root}::diff --cached --shortstat`]: { stdout: "", stderr: "" },
+      [`${root}::diff --shortstat`]: { stdout: "", stderr: "" },
+      [`${root}::diff --name-only --diff-filter=U`]: { stdout: "", stderr: "" },
+      // Pre-push: resolve upstream hash
+      [`${root}::rev-parse origin/feature-x`]: { stdout: "abc123abc123\n", stderr: "" },
+      // The actual push (with explicit lease ref)
+      [`${root}::push --force-with-lease=feature-x:abc123abc123 origin feature-x`]: {
+        stdout: "",
+        stderr: "To https://example.com/repo.git\n + abc123..def456 feature-x -> feature-x (forced)\n",
+      },
+      // Post-push: resolve HEAD
+      [`${root}::rev-parse HEAD`]: { stdout: "def456def456\n", stderr: "" },
+    });
+    const gitAuditLogStore = { logEntry: vi.fn() };
+    const manager = new GitManager({ execGitImpl, gitAuditLogStore });
+    manager.detectLazygit = async () => ({ available: false, backend: null, error: "missing", launch: null });
+
+    const result = await manager.forcePushWithLease({ id: "ws-1", cwd: root }, { connection: null });
+
+    expect(result.ok).toBe(true);
+    expect(gitAuditLogStore.logEntry).toHaveBeenCalledWith(
+      expect.objectContaining({
+        connectionId: "system-ws-1",
+        category: "write",
+        expectedRef: "abc123abc123",
+        previousRemoteRef: "abc123abc123",
+        newRemoteRef: "def456def456",
+      }),
+    );
+  });
+
+  test("push with connection=null writes to gitAuditLogStore, not auditLogStore", async () => {
+    const { root } = await createGitFixture();
+    const execGitImpl = vi.fn().mockResolvedValue({ stdout: "", stderr: "" });
+    const auditLogStore = { logEntry: vi.fn() };
+    const gitAuditLogStore = { logEntry: vi.fn() };
+    const manager = new GitManager({ execGitImpl, auditLogStore, gitAuditLogStore });
+    manager.inspectWorkspace = vi.fn().mockResolvedValue({
+      available: true,
+      branch: "main",
+      upstream: "origin/main",
+      aheadCount: 1,
+      behindCount: 0,
+      dirty: false,
+      remotes: { origin: "https://example.com/repo.git" },
+      operationState: { kind: "idle", inProgress: false, conflicts: [] },
+    });
+
+    const result = await manager.push({ id: "ws-2", cwd: root }, { connection: null });
+
+    expect(result.ok).toBe(true);
+    expect(auditLogStore.logEntry).not.toHaveBeenCalled();
+    expect(gitAuditLogStore.logEntry).toHaveBeenCalledWith(
+      expect.objectContaining({
+        connectionId: "system-ws-2",
+        remoteUrl: "https://example.com/repo.git",
+        category: "write",
+      }),
+    );
+  });
+
+  test("fetch with connection=null writes to gitAuditLogStore", async () => {
+    const { root } = await createGitFixture();
+    const execGitImpl = vi.fn().mockResolvedValue({ stdout: "", stderr: "" });
+    const gitAuditLogStore = { logEntry: vi.fn() };
+    const manager = new GitManager({ execGitImpl, gitAuditLogStore });
+    manager.inspectWorkspace = vi.fn().mockResolvedValue({
+      available: true,
+      branch: "main",
+      upstream: "origin/main",
+      aheadCount: 0,
+      behindCount: 0,
+      dirty: false,
+      remotes: { origin: "https://example.com/repo.git" },
+      operationState: { kind: "idle", inProgress: false, conflicts: [] },
+    });
+
+    const result = await manager.fetch({ id: "ws-3", cwd: root }, { connection: null });
+
+    expect(result.ok).toBe(true);
+    expect(gitAuditLogStore.logEntry).toHaveBeenCalledWith(
+      expect.objectContaining({
+        connectionId: "system-ws-3",
+        category: "read",
+      }),
+    );
+  });
+
+  // ─── P-1: dirtyCount consistency ─────────────────────────────────
+
+  test("dirtyCount equals unique changed-file count for staged+unstaged only", async () => {
+    const { root } = await createGitFixture();
+    const execGitImpl = createExecMock({
+      [`${root}::rev-parse --show-toplevel`]: { stdout: `${root}\n`, stderr: "" },
+      [`${root}::rev-parse --abbrev-ref HEAD`]: { stdout: "main\n", stderr: "" },
+      [`${root}::remote -v`]: { stdout: "", stderr: "" },
+      [`${root}::rev-list --count HEAD`]: { stdout: "5\n", stderr: "" },
+      [`${root}::status --porcelain=v2 --branch`]: {
+        stdout: [
+          "# branch.head main",
+          "1 M. N... 100644 100644 100644 aaa bbb src/a.js",
+          "1 .M N... 100644 100644 100644 ccc ddd src/b.js",
+        ].join("\n"),
+        stderr: "",
+      },
+      [`${root}::status --short`]: { stdout: "M  src/a.js\n M src/b.js\n", stderr: "" },
+      [`${root}::log --date=relative --pretty=format:%h%x09%ad%x09%an%x09%d%x09%s -n 18`]: { stdout: "", stderr: "" },
+      [`${root}::rev-parse --git-dir`]: { stdout: ".git\n", stderr: "" },
+      [`${root}::rev-parse --git-common-dir`]: { stdout: ".git\n", stderr: "" },
+      [`${root}::worktree list --porcelain`]: {
+        stdout: `worktree ${root}\nHEAD abc\nbranch refs/heads/main\n`,
+        stderr: "",
+      },
+      [`${root}::for-each-ref --format=%(refname:short) refs/heads refs/remotes`]: { stdout: "main\n", stderr: "" },
+      [`${root}::diff --cached --shortstat`]: { stdout: " 1 file changed, 2 insertions(+)\n", stderr: "" },
+      [`${root}::diff --shortstat`]: { stdout: " 1 file changed, 1 deletion(-)\n", stderr: "" },
+      [`${root}::diff --name-only --diff-filter=U`]: { stdout: "", stderr: "" },
+    });
+    const manager = new GitManager({ execGitImpl });
+    manager.detectLazygit = async () => ({ available: false, backend: null, error: "missing", launch: null });
+
+    const snapshot = await manager.inspectWorkspace({ id: "ws-1", cwd: root, kind: "terminal" });
+
+    expect(snapshot.staged).toHaveLength(1);
+    expect(snapshot.unstaged).toHaveLength(1);
+    expect(snapshot.untracked).toHaveLength(0);
+    expect(snapshot.dirtyCount).toBe(2);
+    expect(snapshot.dirty).toBe(true);
+  });
+
+  test("dirtyCount equals unique changed-file count for untracked only", async () => {
+    const { root } = await createGitFixture();
+    const execGitImpl = createExecMock({
+      [`${root}::rev-parse --show-toplevel`]: { stdout: `${root}\n`, stderr: "" },
+      [`${root}::rev-parse --abbrev-ref HEAD`]: { stdout: "main\n", stderr: "" },
+      [`${root}::remote -v`]: { stdout: "", stderr: "" },
+      [`${root}::rev-list --count HEAD`]: { stdout: "5\n", stderr: "" },
+      [`${root}::status --porcelain=v2 --branch`]: {
+        stdout: ["# branch.head main", "? new-file.txt", "? another.txt"].join("\n"),
+        stderr: "",
+      },
+      [`${root}::status --short`]: { stdout: "?? new-file.txt\n?? another.txt\n", stderr: "" },
+      [`${root}::log --date=relative --pretty=format:%h%x09%ad%x09%an%x09%d%x09%s -n 18`]: { stdout: "", stderr: "" },
+      [`${root}::rev-parse --git-dir`]: { stdout: ".git\n", stderr: "" },
+      [`${root}::rev-parse --git-common-dir`]: { stdout: ".git\n", stderr: "" },
+      [`${root}::worktree list --porcelain`]: {
+        stdout: `worktree ${root}\nHEAD abc\nbranch refs/heads/main\n`,
+        stderr: "",
+      },
+      [`${root}::for-each-ref --format=%(refname:short) refs/heads refs/remotes`]: { stdout: "main\n", stderr: "" },
+      [`${root}::diff --cached --shortstat`]: { stdout: "", stderr: "" },
+      [`${root}::diff --shortstat`]: { stdout: "", stderr: "" },
+      [`${root}::diff --name-only --diff-filter=U`]: { stdout: "", stderr: "" },
+    });
+    const manager = new GitManager({ execGitImpl });
+    manager.detectLazygit = async () => ({ available: false, backend: null, error: "missing", launch: null });
+
+    const snapshot = await manager.inspectWorkspace({ id: "ws-1", cwd: root, kind: "terminal" });
+
+    expect(snapshot.staged).toHaveLength(0);
+    expect(snapshot.unstaged).toHaveLength(0);
+    expect(snapshot.untracked).toHaveLength(2);
+    expect(snapshot.dirtyCount).toBe(2);
+    expect(snapshot.dirty).toBe(true);
+  });
+
+  test("dirtyCount deduplicates same path across staged+unstaged+untracked (mix of 3 unique files)", async () => {
+    const { root } = await createGitFixture();
+    const execGitImpl = createExecMock({
+      [`${root}::rev-parse --show-toplevel`]: { stdout: `${root}\n`, stderr: "" },
+      [`${root}::rev-parse --abbrev-ref HEAD`]: { stdout: "main\n", stderr: "" },
+      [`${root}::remote -v`]: { stdout: "", stderr: "" },
+      [`${root}::rev-list --count HEAD`]: { stdout: "5\n", stderr: "" },
+      [`${root}::status --porcelain=v2 --branch`]: {
+        stdout: [
+          "# branch.head main",
+          "1 MM N... 100644 100644 100644 aaa bbb src/a.js",
+          "1 .M N... 100644 100644 100644 ccc ddd src/b.js",
+          "? new.txt",
+        ].join("\n"),
+        stderr: "",
+      },
+      [`${root}::status --short`]: { stdout: "MM src/a.js\n M src/b.js\n?? new.txt\n", stderr: "" },
+      [`${root}::log --date=relative --pretty=format:%h%x09%ad%x09%an%x09%d%x09%s -n 18`]: { stdout: "", stderr: "" },
+      [`${root}::rev-parse --git-dir`]: { stdout: ".git\n", stderr: "" },
+      [`${root}::rev-parse --git-common-dir`]: { stdout: ".git\n", stderr: "" },
+      [`${root}::worktree list --porcelain`]: {
+        stdout: `worktree ${root}\nHEAD abc\nbranch refs/heads/main\n`,
+        stderr: "",
+      },
+      [`${root}::for-each-ref --format=%(refname:short) refs/heads refs/remotes`]: { stdout: "main\n", stderr: "" },
+      [`${root}::diff --cached --shortstat`]: { stdout: " 1 file changed, 3 insertions(+)\n", stderr: "" },
+      [`${root}::diff --shortstat`]: { stdout: " 2 files changed, 1 insertion(+)\n", stderr: "" },
+      [`${root}::diff --name-only --diff-filter=U`]: { stdout: "", stderr: "" },
+    });
+    const manager = new GitManager({ execGitImpl });
+    manager.detectLazygit = async () => ({ available: false, backend: null, error: "missing", launch: null });
+
+    const snapshot = await manager.inspectWorkspace({ id: "ws-1", cwd: root, kind: "terminal" });
+
+    // src/a.js appears in both staged and unstaged — must count once
+    expect(snapshot.staged.map((e) => e.path)).toContain("src/a.js");
+    expect(snapshot.unstaged.map((e) => e.path)).toContain("src/a.js");
+    expect(snapshot.unstaged.map((e) => e.path)).toContain("src/b.js");
+    expect(snapshot.untracked.map((e) => e.path)).toContain("new.txt");
+    expect(snapshot.dirtyCount).toBe(3);
+    expect(snapshot.dirty).toBe(true);
   });
 });

@@ -2,7 +2,7 @@
   <article class="git-card">
     <div class="section-head">
       <div>
-        <p class="eyebrow">Merge Back</p>
+        <p class="eyebrow">{{ isCleanupMode ? "Cleanup" : "Merge Back" }}</p>
         <h3>{{ snapshot.branch }} &rarr; {{ resolvedBaseBranch || "?" }}</h3>
       </div>
     </div>
@@ -20,6 +20,49 @@
 
     <template v-if="!resolvedBaseBranch">
       <p class="git-card__hint">Base branch was not detected.</p>
+    </template>
+
+    <!-- UC-13: Cleanup mode — branch is merged -->
+    <template v-else-if="isCleanupMode">
+      <div class="git-info-banner" style="margin-bottom: 8px">
+        <strong>Branch merged</strong>
+        <p>
+          Branch <code>{{ snapshot.branch }}</code> has been merged into <code>{{ resolvedBaseBranch }}</code
+          >. Ready to clean up.
+        </p>
+      </div>
+      <div class="git-operation-actions">
+        <button
+          type="button"
+          class="button button--ghost danger"
+          :disabled="!!gitUi.busyAction"
+          title="Remove worktree directory and delete the merged branch"
+          @click="
+            gitUiStore.confirmRemoveWorktreeDeleteBranch(workspaceId, {
+              worktreePath: snapshot.worktreePath,
+              branch: snapshot.branch,
+              branchMerged: true,
+            })
+          "
+        >
+          Remove worktree + delete branch
+        </button>
+        <button
+          type="button"
+          class="button button--ghost"
+          :disabled="!!gitUi.busyAction"
+          title="Remove the worktree but keep the branch"
+          @click="
+            gitUiStore.confirmRemoveWorktree(workspaceId, {
+              worktreePath: snapshot.worktreePath,
+              branch: snapshot.branch,
+              branchMerged: true,
+            })
+          "
+        >
+          Remove worktree only
+        </button>
+      </div>
     </template>
 
     <template v-else-if="!compare.aheadCount">
@@ -140,7 +183,13 @@
             class="button button--ghost danger"
             :disabled="!!gitUi.busyAction"
             title="Removes this worktree directory and deletes the branch."
-            @click="gitUiStore.gitRemoveWorktree(workspaceId, snapshot.worktreePath, true)"
+            @click="
+              gitUiStore.confirmRemoveWorktreeDeleteBranch(workspaceId, {
+                worktreePath: snapshot.worktreePath,
+                branch: snapshot.branch,
+                branchMerged: snapshot.branchMerged,
+              })
+            "
           >
             Remove worktree + delete branch
           </button>
@@ -149,7 +198,13 @@
             class="button button--ghost"
             :disabled="!!gitUi.busyAction"
             title="Removes the worktree but keeps the branch."
-            @click="gitUiStore.gitRemoveWorktree(workspaceId, snapshot.worktreePath, false)"
+            @click="
+              gitUiStore.confirmRemoveWorktree(workspaceId, {
+                worktreePath: snapshot.worktreePath,
+                branch: snapshot.branch,
+                branchMerged: snapshot.branchMerged,
+              })
+            "
           >
             Remove worktree only
           </button>
@@ -181,6 +236,11 @@ const compare = computed(() => props.snapshot.compareWithBase || {});
 const localOverride = ref("");
 const resolvedBaseBranch = computed(
   () => localOverride.value || props.effectiveBaseBranch || props.snapshot.baseBranch || compare.value.baseBranch || "",
+);
+
+// UC-13: cleanup mode — branch merged into base, no commits ahead
+const isCleanupMode = computed(
+  () => props.snapshot.branchMerged === true && (compare.value.aheadCount || 0) === 0 && props.isLinkedWorktree,
 );
 
 function onTargetChange(event) {

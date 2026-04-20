@@ -43,7 +43,7 @@ export const APP_CONFIG = {
   },
   runtime: {
     dockerPollMs: envNumber("STRIDETERM_DOCKER_POLL_MS", 15000),
-    gitPollMs: envNumber("STRIDETERM_GIT_POLL_MS", 20000),
+    gitPollMs: envNumber("STRIDETERM_GIT_POLL_MS", 60000),
     projectAlertLimit: envNumber("STRIDETERM_PROJECT_ALERT_LIMIT", 6),
   },
   notifications: {

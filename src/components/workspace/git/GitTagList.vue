@@ -1,7 +1,7 @@
 <template>
   <div class="git-tags">
-    <!-- Create tag form -->
-    <div class="git-tags__create">
+    <!-- Create/push tag controls — hidden in review workspace (UC-15) -->
+    <div v-if="!isReviewWorkspace" class="git-tags__create">
       <div class="git-detail-list">
         <span class="git-detail-list__row">
           <strong>New tag:</strong>
@@ -57,6 +57,19 @@
       </div>
     </div>
 
+    <!-- Read-only refresh for review workspace -->
+    <div v-else class="git-operation-actions">
+      <button
+        type="button"
+        class="button button--ghost"
+        :disabled="!!gitUi.busyAction || gitUi.tagsLoading"
+        title="Reload tag list from the local repository"
+        @click="onRefresh"
+      >
+        {{ gitUi.tagsLoading ? "Loading..." : "Refresh" }}
+      </button>
+    </div>
+
     <!-- Operation result -->
     <div v-if="resultMessage" :class="['git-card__hint', resultIsError && 'git-card__hint--warning']">
       <p>{{ resultMessage }}</p>
@@ -97,7 +110,7 @@
           <small v-if="tag.date"> on {{ formatDate(tag.date) }}</small>
           <small v-if="!tag.local" style="font-style: italic">Fetch to see details</small>
         </div>
-        <div class="git-tag-item__actions">
+        <div v-if="!isReviewWorkspace" class="git-tag-item__actions">
           <button
             v-if="tag.local && !tag.pushed"
             type="button"
@@ -142,6 +155,8 @@ import { useGitUiStore } from "../../../stores/git-ui.js";
 const props = defineProps({
   workspaceId: { type: String, required: true },
   gitUi: { type: Object, required: true },
+  snapshot: { type: Object, default: () => ({}) },
+  isReviewWorkspace: { type: Boolean, default: false },
 });
 
 const gitUiStore = useGitUiStore();
@@ -208,12 +223,12 @@ function onPushAll() {
 
 function onDelete(tag) {
   clearResult();
-  gitUiStore.gitDeleteTag(props.workspaceId, tag.name);
+  gitUiStore.confirmDeleteLocalTag(props.workspaceId, tag.name);
 }
 
 function onDeleteRemote(tag) {
   clearResult();
-  gitUiStore.gitDeleteRemoteTag(props.workspaceId, tag.name);
+  gitUiStore.confirmDeleteRemoteTag(props.workspaceId, tag.name);
 }
 
 function onRefresh() {

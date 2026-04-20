@@ -417,6 +417,24 @@
       </div>
     </div>
 
+    <!-- Git tab -->
+    <div v-else-if="activeTab === 'git'" class="settings-tab-content">
+      <div
+        class="settings-check"
+        title="When enabled, the Git tab shows all actions regardless of the current repository state (no context-based hiding). Useful for power users who prefer the raw unfiltered view."
+      >
+        <label class="settings-check__row">
+          <input v-model="gitShowAllActions" type="checkbox" />
+          <span>Show all actions</span>
+        </label>
+        <small class="settings-check__help">
+          When off (default), actions that don't apply to the current state are hidden (e.g. Pull is hidden when there's
+          no upstream, Push is hidden when in detached HEAD). Turn on to show all actions at all times — only structural
+          impossibilities are still hidden (e.g. Push when there's no remote at all).
+        </small>
+      </div>
+    </div>
+
     <!-- About tab -->
     <div v-else-if="activeTab === 'about'" class="settings-tab-content about-content">
       <h1 class="about-title">str<em class="about-accent">IDE</em>term</h1>
@@ -465,6 +483,7 @@ import { ref, reactive, computed, inject, toRaw, onMounted, onBeforeUnmount } fr
 const TABS = [
   { id: "general", label: "General" },
   { id: "templates", label: "Tab Templates" },
+  { id: "git", label: "Git" },
   { id: "about", label: "About" },
 ];
 
@@ -496,6 +515,7 @@ const notifAlertCooldownMs = ref(props.settings.notifications?.alertCooldownMs ?
 const notifShellIntegration = ref(props.settings.notifications?.shellIntegration ?? true);
 const notifAgentHook = ref(props.settings.notifications?.agentHook ?? true);
 const notifDebug = ref(props.settings.notifications?.debug ?? false);
+const gitShowAllActions = ref(props.settings.git?.ui?.showAllActions ?? false);
 const metricsSnapshot = ref(null);
 let metricsTimer = null;
 
@@ -985,6 +1005,7 @@ function handleSave() {
       debug: notifDebug.value,
     },
     tabTemplates: templates.filter((t) => t.title || t.command).map((t) => ({ ...toRaw(t) })),
+    git: { ui: { showAllActions: gitShowAllActions.value } },
   });
 }
 </script>

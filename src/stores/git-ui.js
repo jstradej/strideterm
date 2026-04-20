@@ -28,6 +28,31 @@ function buildConfirmMessage({ type, snapshot, baseBranch }) {
   return lines.join("\n");
 }
 
+function computeSnapshotHash(snapshot) {
+  if (!snapshot) return "";
+  return [
+    snapshot.operationState?.kind,
+    snapshot.aheadCount,
+    snapshot.behindCount,
+    snapshot.compareWithBase?.aheadCount,
+    snapshot.compareWithBase?.behindCount,
+    snapshot.dirtyCount,
+  ].join("|");
+}
+
+function buildDestructiveConfirm({ action, severity, title, body, confirmLabel, cancelLabel, payload }) {
+  return {
+    action,
+    severity: severity || "info",
+    title,
+    body: body || "",
+    confirmLabel: confirmLabel || "Confirm",
+    cancelLabel: cancelLabel || "Cancel",
+    payload: payload || {},
+    isDestructive: true,
+  };
+}
+
 export const useGitUiStore = defineStore("git-ui", () => {
   // Per-workspace UI state indexed by workspaceId
   const state = ref({});
@@ -142,7 +167,35 @@ export const useGitUiStore = defineStore("git-ui", () => {
       baseBranch,
       stashDirty: snapshot?.dirty || false,
       message: buildConfirmMessage({ type, snapshot, baseBranch }),
+      severity: "info",
+      isDestructive: false,
+      snapshotHash: computeSnapshotHash(snapshot),
     };
+  }
+
+  function setPendingDestructiveAction(workspaceId, confirm, snapshot = null) {
+    const ui = ensure(workspaceId);
+    ui.pendingAction = { ...confirm, snapshotHash: computeSnapshotHash(snapshot) };
+  }
+
+  function dismissStalePending(workspaceId, currentSnapshot) {
+    const ui = get(workspaceId);
+    if (!ui.pendingAction) return;
+    const stored = ui.pendingAction.snapshotHash;
+    if (!stored) return;
+    if (stored !== computeSnapshotHash(currentSnapshot)) {
+      const ws = ensure(workspaceId);
+      ws.pendingAction = null;
+      ws.lastResult = {
+        ok: false,
+        summary: "Repository state changed — please reconfirm.",
+        warnings: [],
+        conflicts: [],
+        rawOutput: "",
+        operationState: null,
+        at: new Date().toISOString(),
+      };
+    }
   }
 
   function clearPendingGitAction(workspaceId) {
@@ -155,6 +208,31 @@ export const useGitUiStore = defineStore("git-ui", () => {
     const pending = ui.pendingAction;
     if (!pending) return;
     ui.pendingAction = null;
+
+    // Destructive actions dispatched by buildDestructiveConfirm
+    if (pending.isDestructive) {
+      const { action, payload: p } = pending;
+      if (action === "deleteLocalTag") {
+        await runGitAction(workspaceId, "delete-tag", () => _api.gitDeleteTag({ workspaceId, tagName: p.tagName }));
+        await gitListTags(workspaceId);
+      } else if (action === "deleteRemoteTag") {
+        await runGitAction(workspaceId, "delete-remote-tag", () =>
+          _api.gitDeleteRemoteTag({ workspaceId, tagName: p.tagName }),
+        );
+        await gitListTags(workspaceId);
+      } else if (action === "removeWorktree") {
+        await runGitAction(workspaceId, "remove-worktree", () =>
+          _api.gitRemoveWorktree({ workspaceId, worktreePath: p.worktreePath, deleteBranch: false }),
+        );
+      } else if (action === "removeWorktreeDeleteBranch") {
+        await runGitAction(workspaceId, "remove-worktree", () =>
+          _api.gitRemoveWorktree({ workspaceId, worktreePath: p.worktreePath, deleteBranch: true }),
+        );
+      } else if (action === "forcePushWithLease") {
+        await runGitAction(workspaceId, "force-push", () => _api.gitForcePushWithLease({ workspaceId }));
+      }
+      return;
+    }
 
     if (pending.type === "abort") {
       await runGitAction(workspaceId, "abort", () => _api.gitAbortOperation({ workspaceId }));
@@ -169,6 +247,89 @@ export const useGitUiStore = defineStore("git-ui", () => {
     const payload = { workspaceId, baseBranch: pending.baseBranch, stashDirty: pending.stashDirty };
     await runGitAction(workspaceId, pending.type, () =>
       pending.type === "merge" ? _api.gitMergeIntoCurrent(payload) : _api.gitRebaseOnto(payload),
+    );
+  }
+
+  function confirmDeleteLocalTag(workspaceId, tagName) {
+    setPendingDestructiveAction(
+      workspaceId,
+      buildDestructiveConfirm({
+        action: "deleteLocalTag",
+        severity: "warn",
+        title: "Delete local tag",
+        body: `Delete tag \`${tagName}\` locally?`,
+        confirmLabel: "Delete",
+        payload: { tagName },
+      }),
+    );
+  }
+
+  function confirmDeleteRemoteTag(workspaceId, tagName) {
+    setPendingDestructiveAction(
+      workspaceId,
+      buildDestructiveConfirm({
+        action: "deleteRemoteTag",
+        severity: "danger",
+        title: "Delete remote tag",
+        body: `Delete tag \`${tagName}\` on remote? This cannot be undone.`,
+        confirmLabel: "Delete from remote",
+        payload: { tagName },
+      }),
+    );
+  }
+
+  function confirmRemoveWorktree(workspaceId, { worktreePath, branch, branchMerged }, snapshot = null) {
+    const severity = branchMerged ? "warn" : "danger";
+    const body = branchMerged
+      ? `Remove worktree at \`${worktreePath}\`? Branch \`${branch}\` will be kept.`
+      : `Remove worktree at \`${worktreePath}\`? Branch \`${branch}\` has unmerged commits and will be kept.`;
+    setPendingDestructiveAction(
+      workspaceId,
+      buildDestructiveConfirm({
+        action: "removeWorktree",
+        severity,
+        title: "Remove worktree",
+        body,
+        confirmLabel: "Remove",
+        payload: { worktreePath },
+      }),
+      snapshot,
+    );
+  }
+
+  function confirmRemoveWorktreeDeleteBranch(workspaceId, { worktreePath, branch, branchMerged }, snapshot = null) {
+    const severity = branchMerged ? "warn" : "danger";
+    const body = branchMerged
+      ? `Remove worktree and delete merged branch \`${branch}\`?`
+      : `Branch \`${branch}\` has unmerged commits. Remove worktree and delete branch anyway?`;
+    setPendingDestructiveAction(
+      workspaceId,
+      buildDestructiveConfirm({
+        action: "removeWorktreeDeleteBranch",
+        severity,
+        title: "Remove worktree + delete branch",
+        body,
+        confirmLabel: severity === "danger" ? "Delete (unmerged)" : "Remove + delete",
+        payload: { worktreePath },
+      }),
+      snapshot,
+    );
+  }
+
+  function confirmForcePushWithLease(workspaceId, { branch, remote, behindCount }, snapshot = null) {
+    setPendingDestructiveAction(
+      workspaceId,
+      buildDestructiveConfirm({
+        action: "forcePushWithLease",
+        severity: "danger",
+        title: "Force push (with lease)",
+        body:
+          `Force-push \`${branch}\` to \`${remote}/${branch}\`? Remote is ${behindCount} commit(s) ahead — those commits will be overwritten. ` +
+          "`--force-with-lease` aborts if someone pushed since your last fetch, but users who already pulled will need to reset their local branch.",
+        confirmLabel: "Force push",
+        payload: { branch, remote },
+      }),
+      snapshot,
     );
   }
 
@@ -418,7 +579,9 @@ export const useGitUiStore = defineStore("git-ui", () => {
     gitCheckoutBranch,
     gitCreateBranch,
     setPendingGitAction,
+    setPendingDestructiveAction,
     clearPendingGitAction,
+    dismissStalePending,
     gitConfirmAction,
     gitContinue,
     gitAbort,
@@ -426,6 +589,11 @@ export const useGitUiStore = defineStore("git-ui", () => {
     gitRebaseBase,
     gitMergeIntoBase,
     gitRemoveWorktree,
+    confirmDeleteLocalTag,
+    confirmDeleteRemoteTag,
+    confirmRemoveWorktree,
+    confirmRemoveWorktreeDeleteBranch,
+    confirmForcePushWithLease,
     gitCommitAll,
     gitSelectCommit,
     gitSelectDiff,

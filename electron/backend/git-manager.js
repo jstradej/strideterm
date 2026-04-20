@@ -53,6 +53,7 @@ export class GitManager extends EventEmitter {
     snapshotCacheTtlMs = SNAPSHOT_CACHE_TTL_MS,
     credentialStore = null,
     auditLogStore = null,
+    gitAuditLogStore = null,
   } = {}) {
     super();
     this.snapshots = new Map();
@@ -63,6 +64,7 @@ export class GitManager extends EventEmitter {
     this.snapshotCacheTtlMs = snapshotCacheTtlMs;
     this.credentialStore = credentialStore;
     this.auditLogStore = auditLogStore;
+    this.gitAuditLogStore = gitAuditLogStore;
   }
 
   async execGit(cwd, args) {
@@ -293,15 +295,39 @@ export class GitManager extends EventEmitter {
         }
       }
 
+      // Per-sibling branchMerged detection: `git branch --merged <baseBranch>` lists
+      // local branches whose tip is reachable from baseBranch (i.e. already merged in).
+      // One extra subprocess per snapshot, covered by the 8 s cache.
+      let mergedBranchesSet = new Set();
+      if (baseBranch && worktrees.length > 1) {
+        try {
+          const mergedResult = await this.execGit(root, [
+            "branch",
+            "--merged",
+            baseBranch,
+            "--format=%(refname:short)",
+          ]);
+          mergedBranchesSet = new Set(
+            mergedResult.stdout
+              .split("\n")
+              .map((line) => line.trim())
+              .filter(Boolean),
+          );
+        } catch {
+          // baseBranch not resolvable locally — leave set empty
+        }
+      }
+
       const siblingWorktrees = await Promise.all(
         worktrees.map(async (entry, index) => {
           const isCurrent = path.resolve(entry.path) === path.resolve(root);
           const dirtyState = isCurrent
             ? { dirty: dirtyCount > 0, dirtyCount }
             : await this.getCachedWorktreeDirtyState(entry.path);
+          const entryBranch = entry.branch || "";
           return {
             path: entry.path,
-            branch: entry.branch || (entry.detached ? "detached" : ""),
+            branch: entryBranch || (entry.detached ? "detached" : ""),
             head: entry.head || "",
             isCurrent,
             isMainWorktree: index === 0,
@@ -311,6 +337,8 @@ export class GitManager extends EventEmitter {
             bare: entry.bare,
             locked: entry.locked,
             prunable: entry.prunable,
+            branchMerged:
+              !!entryBranch && !entry.detached && entryBranch !== baseBranch && mergedBranchesSet.has(entryBranch),
           };
         }),
       );
@@ -610,6 +638,66 @@ export class GitManager extends EventEmitter {
     });
   }
 
+  async forcePushWithLease(workspace, { connection = null } = {}) {
+    const snapshot = await this.inspectWorkspace(workspace);
+    if (!snapshot.available) {
+      return createStructuredResult({ ok: false, summary: snapshot.error || "Git workspace is unavailable." });
+    }
+    const branch = snapshot.branch;
+    if (!branch) {
+      return createStructuredResult({
+        ok: false,
+        summary: "Cannot force-push: no branch is checked out (detached HEAD).",
+      });
+    }
+    if (!(snapshot.aheadCount > 0 && snapshot.behindCount > 0)) {
+      return createStructuredResult({
+        ok: false,
+        summary: "Force-push with lease is only available when the branch has diverged from upstream.",
+      });
+    }
+    const remoteNames = Object.keys(snapshot.remotes || {}).filter((k) => !k.includes(":"));
+    const upstream = snapshot.upstream || "";
+    const remote = remoteNames.find((r) => upstream.startsWith(`${r}/`)) || remoteNames[0] || "origin";
+    const target = `${remote}/${branch}`;
+
+    // Resolve expected ref hash (current remote tracking ref = what --force-with-lease checks)
+    const extraAudit = { expectedRef: "", previousRemoteRef: "", newRemoteRef: "" };
+    if (upstream) {
+      try {
+        const refResult = await this.execGit(workspace.cwd, ["rev-parse", upstream]);
+        extraAudit.expectedRef = refResult.stdout.trim();
+        extraAudit.previousRemoteRef = refResult.stdout.trim();
+      } catch {
+        // Not fatal — push will still use bare --force-with-lease
+      }
+    }
+
+    const leaseArg = extraAudit.expectedRef
+      ? `--force-with-lease=${branch}:${extraAudit.expectedRef}`
+      : "--force-with-lease";
+
+    return this.runWriteAction(workspace, {
+      type: "force-push",
+      label: `Force push (with lease) to ${target}`,
+      baseBranch: " ",
+      allowDirty: true,
+      skipPreflight: true,
+      run: async (cwd) => {
+        const r = await this.execAuthGit(cwd, ["push", leaseArg, remote, branch], { connection });
+        try {
+          const headResult = await this.execGit(cwd, ["rev-parse", "HEAD"]);
+          extraAudit.newRemoteRef = headResult.stdout.trim();
+        } catch {
+          // Non-fatal
+        }
+        return r;
+      },
+      connection,
+      extraAudit,
+    });
+  }
+
   async checkoutBranch(workspace, { branch } = {}) {
     const targetBranch = String(branch || "").trim();
     if (!targetBranch) {
@@ -812,6 +900,7 @@ export class GitManager extends EventEmitter {
       skipPreflight = false,
       run,
       connection = null,
+      extraAudit = {},
     },
   ) {
     this.invalidateSnapshotCache(workspace.id);
@@ -879,7 +968,16 @@ export class GitManager extends EventEmitter {
       }
       const durationMs = Date.now() - startTime;
       log.info("git action completed", { type, label, durationMs });
-      this._logGitAudit({ type, connection, success: true, durationMs });
+      const remoteUrl = Object.values(snapshot.remotes || {})[0] || "";
+      this._logGitAudit({
+        type,
+        connection,
+        success: true,
+        durationMs,
+        workspaceId: workspace.id,
+        remoteUrl,
+        extra: extraAudit,
+      });
       return createStructuredResult({
         ok: true,
         summary: resolvedBaseBranch
@@ -890,7 +988,16 @@ export class GitManager extends EventEmitter {
       });
     } catch (error) {
       log.warn("git action failed", { type, label, err: extractErrorMessage(error) });
-      this._logGitAudit({ type, connection, success: false, errorMessage: extractErrorMessage(error) });
+      const remoteUrlOnError = Object.values(snapshot.remotes || {})[0] || "";
+      this._logGitAudit({
+        type,
+        connection,
+        success: false,
+        errorMessage: extractErrorMessage(error),
+        workspaceId: workspace.id,
+        remoteUrl: remoteUrlOnError,
+        extra: extraAudit,
+      });
       const operationSnapshot = await this.inspectWorkspace(workspace);
       let restoreOutput = "";
       if (stashLabel && !operationSnapshot.operationState.inProgress) {
@@ -914,31 +1021,61 @@ export class GitManager extends EventEmitter {
     }
   }
 
-  _logGitAudit({ type, connection, success, durationMs, errorMessage }) {
-    if (!connection?.id || !this.auditLogStore) {
-      return;
-    }
+  _logGitAudit({ type, connection, success, durationMs, errorMessage, workspaceId, remoteUrl, extra = {} }) {
+    const REMOTE_OPS = new Set([
+      "push",
+      "pull",
+      "fetch",
+      "force-push",
+      "push-tag",
+      "push-all-tags",
+      "delete-remote-tag",
+    ]);
+    const isRemoteOp = REMOTE_OPS.has(type);
+    const writeOps = new Set(["push", "push-tag", "push-all-tags", "delete-remote-tag", "force-push"]);
+
     try {
-      // Use orgUrl (Azure), or future provider base URLs, falling back to label.
-      const organization = connection.orgUrl || connection.baseUrl || connection.label || "";
-      this.auditLogStore.logEntry({
-        timestamp: new Date().toISOString(),
-        connectionId: connection.id,
-        organization,
-        project: "",
-        operation: `git${type.charAt(0).toUpperCase()}${type.slice(1)}`,
-        category: ["push", "push-tag", "push-all-tags", "delete-remote-tag"].includes(type) ? "write" : "read",
-        method: "GIT",
-        url: "",
-        statusCode: null,
-        success,
-        errorMessage: errorMessage || null,
-        durationMs: durationMs ?? null,
-        resourceType: "git",
-        resourceId: "",
-        summary: `git ${type} (${connection.provider || "unknown"})`,
-        userInitiated: true,
-      });
+      if (connection?.id && this.auditLogStore) {
+        const organization = connection.orgUrl || connection.baseUrl || connection.label || "";
+        this.auditLogStore.logEntry({
+          timestamp: new Date().toISOString(),
+          connectionId: connection.id,
+          organization,
+          project: "",
+          operation: `git${type.charAt(0).toUpperCase()}${type.slice(1)}`,
+          category: writeOps.has(type) ? "write" : "read",
+          method: "GIT",
+          url: "",
+          statusCode: null,
+          success,
+          errorMessage: errorMessage || null,
+          durationMs: durationMs ?? null,
+          resourceType: "git",
+          resourceId: "",
+          summary: `git ${type} (${connection.provider || "unknown"})`,
+          userInitiated: true,
+          ...extra,
+        });
+      } else if (!connection?.id && isRemoteOp && this.gitAuditLogStore) {
+        this.gitAuditLogStore.logEntry({
+          timestamp: new Date().toISOString(),
+          connectionId: `system-${workspaceId || "unknown"}`,
+          remoteUrl: remoteUrl || "",
+          operation: `git${type.charAt(0).toUpperCase()}${type.slice(1)}`,
+          category: writeOps.has(type) ? "write" : "read",
+          method: "GIT",
+          url: "",
+          statusCode: null,
+          success,
+          errorMessage: errorMessage || null,
+          durationMs: durationMs ?? null,
+          resourceType: "git",
+          resourceId: `${type}@${remoteUrl || "unknown"}`,
+          summary: `git ${type} (system credentials)`,
+          userInitiated: true,
+          ...extra,
+        });
+      }
     } catch {
       // Never let audit logging break the main flow
     }
@@ -1130,13 +1267,21 @@ export class GitManager extends EventEmitter {
       return createStructuredResult({ ok: false, summary: "Workspace has no working directory." });
     }
     try {
-      const args = ["stash", "push"];
+      const args = ["stash", "push", "--include-untracked"];
       if (message) args.push("-m", message);
       const result = await this.execGit(workspace.cwd, args);
+      const combined = joinRawOutput(result.stdout, result.stderr);
+      if (/no local changes to save/i.test(combined)) {
+        return createStructuredResult({
+          ok: false,
+          summary: "No local changes to stash.",
+          rawOutput: combined,
+        });
+      }
       return createStructuredResult({
         ok: true,
         summary: "Changes stashed successfully.",
-        rawOutput: joinRawOutput(result.stdout, result.stderr),
+        rawOutput: combined,
       });
     } catch (error) {
       return createStructuredResult({

@@ -352,6 +352,11 @@ export function createDefaultState() {
           connections: [],
         },
       },
+      git: {
+        ui: {
+          showAllActions: false,
+        },
+      },
     },
     tabTemplates: [
       { id: "shell", title: "Shell", command: "", icon: "\u{1F4BB}" },
@@ -668,6 +673,14 @@ export function normalizeState(rawState = {}) {
       judgeProvider: {
         ...defaults.settings.taskDefaults.judgeProvider,
         ...(((rawState.settings || {}).taskDefaults || {}).judgeProvider || {}),
+      },
+    },
+    git: {
+      ui: {
+        showAllActions:
+          typeof (rawState.settings || {}).git?.ui?.showAllActions === "boolean"
+            ? (rawState.settings || {}).git.ui.showAllActions
+            : defaults.settings.git.ui.showAllActions,
       },
     },
   };
