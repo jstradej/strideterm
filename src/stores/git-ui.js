@@ -90,8 +90,9 @@ export const useGitUiStore = defineStore("git-ui", () => {
   function setActiveRoot(workspaceId, rootPath) {
     const ui = ensure(workspaceId);
     ui.activeRootPath = rootPath || "";
-    // Persist across reload — fire-and-forget
-    _api?.setWorkspaceUIState({ workspaceId, uiState: { activeRootPath: rootPath || "" } })?.catch?.(() => {});
+    if (_api?.setWorkspaceUIState) {
+      _api.setWorkspaceUIState(workspaceId, { activeRootPath: rootPath || "" }).catch(() => {});
+    }
   }
 
   function getActiveRoot(workspaceId) {

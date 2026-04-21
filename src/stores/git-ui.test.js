@@ -44,10 +44,7 @@ describe("git-ui store", () => {
       const store = useGitUiStore();
       store.init(mockApi);
       store.setActiveRoot("ws1", "/repo/b");
-      expect(mockApi.setWorkspaceUIState).toHaveBeenCalledWith({
-        workspaceId: "ws1",
-        uiState: { activeRootPath: "/repo/b" },
-      });
+      expect(mockApi.setWorkspaceUIState).toHaveBeenCalledWith("ws1", { activeRootPath: "/repo/b" });
     });
 
     test("does not throw when api is not initialized (no init call)", () => {
@@ -64,10 +61,7 @@ describe("git-ui store", () => {
       const store = useGitUiStore();
       store.init(mockApi);
       store.setActiveRoot("ws1", "");
-      expect(mockApi.setWorkspaceUIState).toHaveBeenCalledWith({
-        workspaceId: "ws1",
-        uiState: { activeRootPath: "" },
-      });
+      expect(mockApi.setWorkspaceUIState).toHaveBeenCalledWith("ws1", { activeRootPath: "" });
     });
   });
 

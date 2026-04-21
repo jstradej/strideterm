@@ -735,10 +735,11 @@ describe("resumeTask - late prompt delivery", () => {
     // Late-delivery prompt injection is fire-and-forget (returns a promise).
     // #injectPrompt tries fs.writeFile first (fails with ENOENT in the test
     // sandbox, which is two async ticks) and then falls back to direct paste.
-    // Wait until writeToSession has been called rather than guessing a delay.
+    // promptSent = true is set inside the outer .then() after writeToSession,
+    // so poll that — it's strictly later than the write.
     const workerSessionId = `${ws.id}:${ws.task.workerPanelId}`;
     const deadline = Date.now() + 1000;
-    while (Date.now() < deadline && deps.written.filter((w) => w.sessionId === workerSessionId).length === 0) {
+    while (Date.now() < deadline && !ws.task.promptSent) {
       await new Promise((resolve) => setTimeout(resolve, 10));
     }
 

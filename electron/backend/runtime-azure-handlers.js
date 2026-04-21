@@ -262,13 +262,13 @@ export function createAzureHandlers(ctx) {
                 sourceRefName: `refs/heads/${payload.sourceBranch || snapshot.branch}`,
                 targetRefName: `refs/heads/${payload.targetBranch}`,
               },
-               role: "author",
-               checkout: ws.review?.checkout || {
-                 mode: "managed-worktree",
-                 rootPath: rootPath || workspace.cwd,
-                 cacheRepoPath: "",
-               },
-             };
+              role: "author",
+              checkout: ws.review?.checkout || {
+                mode: "managed-worktree",
+                rootPath: rootPath || workspace.cwd,
+                cacheRepoPath: "",
+              },
+            };
             ws.quickfix = null;
           }
         });

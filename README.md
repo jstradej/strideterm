@@ -13,6 +13,7 @@
 - **Profiles** - switch between different sets of workspaces (e.g. Work, Personal, Client projects) with colored profile bar
 - **Split Layouts** - arrange terminals in columns, rows, or a grid — see everything at once without switching tabs
 - **Git Integration** - branch info, dirty count, commit log, worktree creation, and Lazygit support
+- **Multi-repo Workspaces** - group sibling repositories (e.g. microservices) under one workspace via `gitRoots`; Git pane shows a repo switcher above the tabs, and a dedicated Bulk sub-tab runs Fetch all / Pull all (ff-only) across every repo with per-row status. Single-repo behavior is unchanged when `gitRoots` is empty or has a single entry.
 - **Azure DevOps PR Review** - pull request inbox grouped by repo, managed review workspaces, AI agent integration (review + fix code), push & publish workflow, and MCP bridge — see [docs](docs/azure-devops-review.md)
 - **GitHub PR Review** - pull request inbox, managed review workspaces with local checkout, comment and review submission (Approve / Request Changes / Comment), push & publish workflow, and MCP bridge for AI agents — see [docs](docs/github-pr-review.md)
 - **Agent Task Runner** - supervised coding loop with Worker + Judge agents (Claude Code, Codex CLI, Gemini CLI, or GitHub Copilot for either role): auto-detects project verification commands, runs deterministic checks between rounds, git-aware judge evaluation, periodic context refresh (shower mode), and a Dashboard UI for monitoring progress — see [docs](docs/agent-task-runner.md)

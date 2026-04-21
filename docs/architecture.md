@@ -122,7 +122,8 @@ Persisted data includes:
 - tab templates (user-editable presets)
 - ordered workspaces with profile assignment
 - per-workspace notes, path, color, and badge
-- per-workspace tabs (terminal and browser)
+- per-workspace `gitRoots` (for multi-repo workspaces) and `uiState.activeRootPath` (last-selected repo in the Git pane switcher)
+- per-workspace tabs (terminal and browser), each with an optional `cwd` override to target a specific git root
 - per-workspace active tab
 - per-tab startup policy
 
@@ -137,6 +138,36 @@ Runtime-only data includes:
 - connected remote clients
 
 This split lets the UI reconnect to the same logical workspace without serializing raw process state.
+
+## Git Manager Runtime
+
+Files:
+
+- `electron/backend/git-manager.js`
+- `electron/backend/fs-probe.js`
+- `electron/backend/runtime-git-handlers.js`
+
+Responsibilities:
+
+- produce a `GitSnapshot` per tracked git root (branch, upstream, ahead/behind, dirty counts, operation state, worktrees, tags)
+- execute write actions (fetch, pull, push, checkout, branch, merge, rebase, stash, tag, commit, diff preview, worktree add/remove) with Azure DevOps / GitHub credential injection and audit logging
+- probe a parent directory for sibling git repositories to power multi-repo workspace detection
+- back the renderer's Git pane, Bulk sub-tab, and Lazygit launch point via a stable IPC contract
+
+Current behavior:
+
+- event-driven: `inspectWorkspace` fans out to ~10 git subprocesses per root on user actions, workspace switch, or OSC 133;D shell completion signal; results cached for 8 s
+- the periodic `gitPoll` loop only calls `syncWorktrees()` (filesystem stat, no git subprocesses) every 60 s as a backstop; full snapshots are never polled on a timer
+- multi-repo: `inspectWorkspaceRoots(workspace)` iterates over `workspace.gitRoots` and returns N snapshots keyed by `(workspaceId, rootPath)`; `inspectWorkspace` is a thin back-compat wrapper that returns the primary root's snapshot
+- every git write-action method accepts an optional `rootPath`; omitted = primary root (`gitRoots[0]` or `workspace.cwd`)
+- review workspaces (Azure DevOps / GitHub PR) are pinned single-root and bypass multi-repo routing
+- audit log entries for Azure-authed operations include the target `rootPath` so per-repo activity is traceable
+
+Detection flow for multi-repo workspaces:
+
+- `fs-probe.js#probeDirectory(path)` walks up to two directory levels under a candidate parent, ignores `.git`, `node_modules`, dotfiles, and a small denylist, and stops at each detected repo boundary
+- pure filesystem — no git subprocess calls during the probe
+- hard budget caps runtime (`readdir` count + wall-clock); on exhaustion returns `truncated: true` so the Workspace dialog can warn
 
 ## Docker Manager Runtime
 
