@@ -1172,15 +1172,23 @@ function extractErrorMessage(err) {
 }
 .multi-repo-toggle {
   display: flex;
+  flex-direction: row;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   cursor: pointer;
   font-size: 13px;
 }
+.multi-repo-toggle input[type="checkbox"],
+.multi-repo-parent-toggle input[type="checkbox"] {
+  width: auto;
+  flex: none;
+  margin: 0;
+}
 .multi-repo-parent-toggle {
   display: flex;
+  flex-direction: row;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   cursor: pointer;
   font-size: 12px;
   opacity: 0.85;
