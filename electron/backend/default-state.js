@@ -104,6 +104,7 @@ function normalizePanel(panel, panelIndex = 0) {
       : null,
     shell: panel.shell !== false,
     startup: panel.startup || (panelIndex === 0 ? APP_CONFIG.ui.defaultPanelStartup : APP_CONFIG.ui.manualPanelStartup),
+    cwd: panel.cwd || "",
   };
 }
 
@@ -168,9 +169,14 @@ function normalizeWorkspaceUIState(workspace, workspaceId, panels, activePanelId
     .map((id) => canonicalizeViewId(id, workspaceId, panels))
     .filter((id) => isValidWorkspaceViewId(id, workspaceId, panels));
   if (!VALID_SPLIT_LAYOUTS.has(rawLayout) || canonicalSplitIds.length < 2) {
-    return { activeViewId, splitLayout: null, splitViewIds: [] };
+    return { activeViewId, splitLayout: null, splitViewIds: [], activeRootPath: workspace.activeRootPath || "" };
   }
-  return { activeViewId, splitLayout: rawLayout, splitViewIds: canonicalSplitIds };
+  return {
+    activeViewId,
+    splitLayout: rawLayout,
+    splitViewIds: canonicalSplitIds,
+    activeRootPath: workspace.activeRootPath || "",
+  };
 }
 
 export function normalizeWorkspace(workspace, index = 0) {
@@ -189,7 +195,7 @@ export function normalizeWorkspace(workspace, index = 0) {
     ? workspace.activePanelId
     : fallbackPanelId;
   const workspaceId = workspace.id || `workspace-${index + 1}`;
-  const { activeViewId, splitLayout, splitViewIds } = normalizeWorkspaceUIState(
+  const { activeViewId, splitLayout, splitViewIds, activeRootPath } = normalizeWorkspaceUIState(
     workspace,
     workspaceId,
     panels,
@@ -213,6 +219,17 @@ export function normalizeWorkspace(workspace, index = 0) {
     source: workspace.source === "plugin" ? "plugin" : "manual",
     pluginId: workspace.pluginId || "",
     cwd: workspace.cwd || (isAzureWorkspace || isGitHubWorkspace ? "" : defaultCwd()),
+    gitRoots: (function () {
+      // Don't allow gitRoots on review workspaces or task workspaces that run in a worktree
+      if (isAzureWorkspace || isGitHubWorkspace) return [];
+      if (isTaskWorkspace && workspace.task?.worktreeBranch) return [];
+      const roots = Array.isArray(workspace.gitRoots) ? workspace.gitRoots.filter(Boolean) : [];
+      return roots
+        .map((r) => String(r).replace(/\\/g, "/").replace(/\/+$/, ""))
+        .filter(Boolean)
+        .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "accent" }));
+    })(),
+    activeRootPath: activeRootPath || "",
     notes: repairVisibleText(workspace.notes || ""),
     profileId: workspace.profileId || "default",
     connectionId: workspace.connectionId || workspace.quickfix?.connectionId || workspace.review?.connectionId || "",
@@ -430,6 +447,17 @@ function groupChildWorkspaces(workspaces) {
     const norm = workspace.cwd.replace(/\\/g, "/").replace(/\/+$/, "");
     if (!byCwd.has(norm)) byCwd.set(norm, []);
     byCwd.get(norm).push(workspace);
+  }
+
+  // Also index each workspace's gitRoots so worktree children of multi-repo parents can find their parent
+  for (const workspace of workspaces) {
+    if (!Array.isArray(workspace.gitRoots)) continue;
+    for (const root of workspace.gitRoots) {
+      if (!root) continue;
+      const norm = root.replace(/\\/g, "/").replace(/\/+$/, "");
+      if (!byCwd.has(norm)) byCwd.set(norm, []);
+      if (!byCwd.get(norm).includes(workspace)) byCwd.get(norm).push(workspace);
+    }
   }
 
   function findParentByCwd(workspace) {

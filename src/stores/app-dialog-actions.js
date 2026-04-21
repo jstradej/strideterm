@@ -490,23 +490,32 @@ export function createDialogActions(ctx) {
             config.worktreeBranch = draft.worktreeBranch || "";
           }
 
-          // Auto-detect parent workspace by matching cwd within the active profile.
-          const normCwd = (config.cwd || "")
-            .replace(/[\\/]+$/, "")
-            .replace(/\\/g, "/")
-            .toLowerCase();
-          const activeProfileId = ctx.payload.value?.appState?.activeProfileId || "default";
-          const workspaces = ctx.payload.value?.appState?.workspaces || [];
-          const parent = workspaces.find(
-            (ws) =>
-              ws.kind !== "task" &&
-              (ws.profileId || "default") === activeProfileId &&
-              (ws.cwd || "")
-                .replace(/[\\/]+$/, "")
-                .replace(/\\/g, "/")
-                .toLowerCase() === normCwd,
-          );
-          if (parent) config.parentWorkspaceId = parent.id;
+          // gitRoots inheritance — non-worktree task inside a multi-repo parent
+          if (Array.isArray(draft.gitRoots) && draft.gitRoots.length >= 2) {
+            config.gitRoots = draft.gitRoots;
+          }
+
+          // Use parent workspace ID passed by the dialog when available; otherwise auto-detect.
+          if (draft.parentWorkspaceId) {
+            config.parentWorkspaceId = draft.parentWorkspaceId;
+          } else {
+            const normCwd = (draft.cwd || "")
+              .replace(/[\\/]+$/, "")
+              .replace(/\\/g, "/")
+              .toLowerCase();
+            const activeProfileId = ctx.payload.value?.appState?.activeProfileId || "default";
+            const workspaces = ctx.payload.value?.appState?.workspaces || [];
+            const parent = workspaces.find(
+              (ws) =>
+                ws.kind !== "task" &&
+                (ws.profileId || "default") === activeProfileId &&
+                (ws.cwd || "")
+                  .replace(/[\\/]+$/, "")
+                  .replace(/\\/g, "/")
+                  .toLowerCase() === normCwd,
+            );
+            if (parent) config.parentWorkspaceId = parent.id;
+          }
 
           // Strip Vue reactive proxies before IPC — structuredClone can't serialize them
           const plainConfig = JSON.parse(JSON.stringify(config));

@@ -2021,6 +2021,20 @@ export async function createRuntime({
     return workspace;
   }
 
+  function resolveGitRootPath(workspace, rootPath) {
+    const roots = workspace.gitRoots || [];
+    if (!rootPath) {
+      return roots[0] || "";
+    }
+    if (!roots.length) return rootPath; // single-repo, accept any rootPath
+    if (roots.includes(rootPath)) return rootPath;
+    // normalize comparison
+    const normalized = rootPath.replace(/\\/g, "/").replace(/\/+$/, "");
+    const match = roots.find((r) => r.replace(/\\/g, "/").replace(/\/+$/, "") === normalized);
+    if (match) return match;
+    return null; // rootPath not in gitRoots — reject
+  }
+
   async function runGitWorkspaceAction(workspace, actionPromise) {
     const result = await actionPromise;
     await refreshGit(workspace.id);
@@ -2325,6 +2339,7 @@ export async function createRuntime({
     refreshGit,
     resolveGitWorkspace,
     resolveGitConnection,
+    resolveGitRootPath,
     runGitWorkspaceAction,
     syncWorktrees,
   });
@@ -2353,6 +2368,7 @@ export async function createRuntime({
     scheduleAzurePolling,
     scheduleGitHubPolling,
     resolveGitWorkspace,
+    resolveGitRootPath,
     getAzureSettings,
     getAzureConnections,
     getGitHubSettings,
@@ -2444,7 +2460,7 @@ export async function createRuntime({
       if (!workspaceId || !uiState || typeof uiState !== "object") {
         return getPayload();
       }
-      const { activeViewId, splitLayout, splitViewIds } = uiState;
+      const { activeViewId, splitLayout, splitViewIds, activeRootPath } = uiState;
       let changed = false;
       await store.mutate((draft) => {
         const workspace = findWorkspace(draft, workspaceId);
@@ -2463,6 +2479,10 @@ export async function createRuntime({
         if (splitLayout === null || typeof splitLayout === "string") {
           workspace.splitLayout = splitLayout || null;
           workspace.splitViewIds = Array.isArray(splitViewIds) ? [...splitViewIds] : [];
+          changed = true;
+        }
+        if (typeof activeRootPath === "string") {
+          workspace.activeRootPath = activeRootPath;
           changed = true;
         }
       });
@@ -3115,10 +3135,10 @@ export async function createRuntime({
       broadcastState();
       return getPayload();
     },
-    async openLazygitSession({ workspaceId, projectId }) {
+    async openLazygitSession({ workspaceId, projectId, rootPath }) {
       const targetWorkspaceId = workspaceId || projectId;
       await refreshGit(targetWorkspaceId);
-      const launch = git.createLazygitLaunch(targetWorkspaceId);
+      const launch = git.createLazygitLaunch(targetWorkspaceId, rootPath || null);
       if (!launch) {
         throw new Error("Lazygit is not available for this workspace.");
       }
@@ -3385,6 +3405,12 @@ export async function createRuntime({
         return { isGitRepo: false, reason: "error", error: stderr || "unknown error" };
       }
     },
+    async probeDirectory(cwd) {
+      const trimmed = String(cwd || "").trim();
+      if (!trimmed) return { path: "", isGitRepo: false, childRepos: [], scannedDepth: 0, truncated: false };
+      const { probeDirectory: probe } = await import("./fs-probe.js");
+      return probe(trimmed);
+    },
     async createTaskWorkspace(config) {
       log.info("createTaskWorkspace", {
         cwd: config.cwd,
@@ -3492,6 +3518,11 @@ export async function createRuntime({
       if (worktreeBase) {
         workspace.task.worktreeBase = worktreeBase;
         workspace.task.worktreeBranch = worktreeBranch;
+      }
+
+      // Inherit gitRoots for non-worktree tasks running inside a multi-repo parent workspace
+      if (Array.isArray(config.gitRoots) && config.gitRoots.length >= 2 && !config.useWorktree) {
+        workspace.gitRoots = config.gitRoots;
       }
 
       // Write task files immediately so they're available in the Dashboard.

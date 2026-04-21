@@ -87,6 +87,17 @@ export const useGitUiStore = defineStore("git-ui", () => {
     state.value = next;
   }
 
+  function setActiveRoot(workspaceId, rootPath) {
+    const ui = ensure(workspaceId);
+    ui.activeRootPath = rootPath || "";
+    // Persist across reload — fire-and-forget
+    _api?.setWorkspaceUIState({ workspaceId, uiState: { activeRootPath: rootPath || "" } })?.catch?.(() => {});
+  }
+
+  function getActiveRoot(workspaceId) {
+    return state.value[workspaceId]?.activeRootPath || null;
+  }
+
   async function runGitAction(workspaceId, busyAction, runner) {
     const { useAppStore } = await import("./app.js");
     const appStore = useAppStore();
@@ -102,13 +113,15 @@ export const useGitUiStore = defineStore("git-ui", () => {
       ui.lastResult = response?.result ? { ...response.result, at: new Date().toISOString() } : null;
 
       if (ui.selectedDiff?.path) {
-        const snapshot = appStore.getGitSnapshot(workspaceId);
+        const rootPath = getActiveRoot(workspaceId);
+        const snapshot = appStore.getGitSnapshot(workspaceId, rootPath);
         const preview = await _api
           .gitDiffPreview({
             workspaceId,
             path: ui.selectedDiff.path,
             scope: ui.selectedDiff.scope,
             baseBranch: snapshot?.baseBranch || snapshot?.compareWithBase?.baseBranch || "",
+            rootPath,
           })
           .catch(() => null);
         if (preview) ui.diffPreview = preview;
@@ -141,23 +154,54 @@ export const useGitUiStore = defineStore("git-ui", () => {
   }
 
   async function gitFetch(workspaceId) {
-    await runGitAction(workspaceId, "fetch", () => _api.gitFetch({ workspaceId }));
+    const rootPath = getActiveRoot(workspaceId);
+    await runGitAction(workspaceId, "fetch", () => _api.gitFetch({ workspaceId, rootPath }));
   }
 
   async function gitPull(workspaceId) {
-    await runGitAction(workspaceId, "pull", () => _api.gitPull({ workspaceId }));
+    const rootPath = getActiveRoot(workspaceId);
+    await runGitAction(workspaceId, "pull", () => _api.gitPull({ workspaceId, rootPath }));
   }
 
   async function gitPush(workspaceId) {
-    await runGitAction(workspaceId, "push", () => _api.gitPush({ workspaceId }));
+    const rootPath = getActiveRoot(workspaceId);
+    await runGitAction(workspaceId, "push", () => _api.gitPush({ workspaceId, rootPath }));
   }
 
   async function gitCheckoutBranch(workspaceId, branch) {
-    await runGitAction(workspaceId, "checkout", () => _api.gitCheckoutBranch({ workspaceId, branch }));
+    const rootPath = getActiveRoot(workspaceId);
+    await runGitAction(workspaceId, "checkout", () => _api.gitCheckoutBranch({ workspaceId, branch, rootPath }));
   }
 
   async function gitCreateBranch(workspaceId, branch, startPoint) {
-    await runGitAction(workspaceId, "create-branch", () => _api.gitCreateBranch({ workspaceId, branch, startPoint }));
+    const rootPath = getActiveRoot(workspaceId);
+    await runGitAction(workspaceId, "create-branch", () =>
+      _api.gitCreateBranch({ workspaceId, branch, startPoint, rootPath }),
+    );
+  }
+
+  async function bulkFetch(workspaceId) {
+    const { useAppStore } = await import("./app.js");
+    const appStore = useAppStore();
+    const workspace = appStore.filteredWorkspaces?.find((w) => w.id === workspaceId);
+    const roots = workspace?.gitRoots?.length ? workspace.gitRoots : [workspace?.cwd].filter(Boolean);
+    for (const rootPath of roots) {
+      await runGitAction(workspaceId, `bulk-fetch:${rootPath}`, () => _api.gitFetch({ workspaceId, rootPath }));
+    }
+  }
+
+  async function bulkPull(workspaceId) {
+    const { useAppStore } = await import("./app.js");
+    const appStore = useAppStore();
+    const workspace = appStore.filteredWorkspaces?.find((w) => w.id === workspaceId);
+    const roots = workspace?.gitRoots?.length ? workspace.gitRoots : [workspace?.cwd].filter(Boolean);
+    const entry = appStore.payload?.git?.workspaces?.[workspaceId];
+    for (const rootPath of roots) {
+      // Skip dirty repos
+      const snap = entry?.roots?.[rootPath] || (entry?.rootPath === rootPath ? entry : null);
+      if (snap?.dirty) continue;
+      await runGitAction(workspaceId, `bulk-pull:${rootPath}`, () => _api.gitPull({ workspaceId, rootPath }));
+    }
   }
 
   function setPendingGitAction(workspaceId, { type, baseBranch, snapshot }) {
@@ -209,15 +253,19 @@ export const useGitUiStore = defineStore("git-ui", () => {
     if (!pending) return;
     ui.pendingAction = null;
 
+    const rootPath = getActiveRoot(workspaceId);
+
     // Destructive actions dispatched by buildDestructiveConfirm
     if (pending.isDestructive) {
       const { action, payload: p } = pending;
       if (action === "deleteLocalTag") {
-        await runGitAction(workspaceId, "delete-tag", () => _api.gitDeleteTag({ workspaceId, tagName: p.tagName }));
+        await runGitAction(workspaceId, "delete-tag", () =>
+          _api.gitDeleteTag({ workspaceId, tagName: p.tagName, rootPath }),
+        );
         await gitListTags(workspaceId);
       } else if (action === "deleteRemoteTag") {
         await runGitAction(workspaceId, "delete-remote-tag", () =>
-          _api.gitDeleteRemoteTag({ workspaceId, tagName: p.tagName }),
+          _api.gitDeleteRemoteTag({ workspaceId, tagName: p.tagName, rootPath }),
         );
         await gitListTags(workspaceId);
       } else if (action === "removeWorktree") {
@@ -229,22 +277,22 @@ export const useGitUiStore = defineStore("git-ui", () => {
           _api.gitRemoveWorktree({ workspaceId, worktreePath: p.worktreePath, deleteBranch: true }),
         );
       } else if (action === "forcePushWithLease") {
-        await runGitAction(workspaceId, "force-push", () => _api.gitForcePushWithLease({ workspaceId }));
+        await runGitAction(workspaceId, "force-push", () => _api.gitForcePushWithLease({ workspaceId, rootPath }));
       }
       return;
     }
 
     if (pending.type === "abort") {
-      await runGitAction(workspaceId, "abort", () => _api.gitAbortOperation({ workspaceId }));
+      await runGitAction(workspaceId, "abort", () => _api.gitAbortOperation({ workspaceId, rootPath }));
       return;
     }
     if (pending.type === "merge-into-base") {
       await runGitAction(workspaceId, "merge-into-base", () =>
-        _api.gitMergeCurrentIntoBase({ workspaceId, baseBranch: pending.baseBranch }),
+        _api.gitMergeCurrentIntoBase({ workspaceId, baseBranch: pending.baseBranch, rootPath }),
       );
       return;
     }
-    const payload = { workspaceId, baseBranch: pending.baseBranch, stashDirty: pending.stashDirty };
+    const payload = { workspaceId, baseBranch: pending.baseBranch, stashDirty: pending.stashDirty, rootPath };
     await runGitAction(workspaceId, pending.type, () =>
       pending.type === "merge" ? _api.gitMergeIntoCurrent(payload) : _api.gitRebaseOnto(payload),
     );
@@ -334,20 +382,23 @@ export const useGitUiStore = defineStore("git-ui", () => {
   }
 
   async function gitContinue(workspaceId) {
-    await runGitAction(workspaceId, "continue", () => _api.gitContinueOperation({ workspaceId }));
+    const rootPath = getActiveRoot(workspaceId);
+    await runGitAction(workspaceId, "continue", () => _api.gitContinueOperation({ workspaceId, rootPath }));
   }
 
   async function gitAbort(workspaceId) {
     const { useAppStore } = await import("./app.js");
     const appStore = useAppStore();
-    const snapshot = appStore.getGitSnapshot(workspaceId);
+    const rootPath = getActiveRoot(workspaceId);
+    const snapshot = appStore.getGitSnapshot(workspaceId, rootPath);
     setPendingGitAction(workspaceId, { type: "abort", snapshot, baseBranch: "" });
   }
 
   async function gitMergeBase(workspaceId, baseBranch) {
     const { useAppStore } = await import("./app.js");
     const appStore = useAppStore();
-    const snapshot = appStore.getGitSnapshot(workspaceId);
+    const rootPath = getActiveRoot(workspaceId);
+    const snapshot = appStore.getGitSnapshot(workspaceId, rootPath);
     if (!snapshot?.available) return;
     setPendingGitAction(workspaceId, { type: "merge", snapshot, baseBranch: baseBranch || snapshot.baseBranch });
   }
@@ -355,7 +406,8 @@ export const useGitUiStore = defineStore("git-ui", () => {
   async function gitRebaseBase(workspaceId, baseBranch) {
     const { useAppStore } = await import("./app.js");
     const appStore = useAppStore();
-    const snapshot = appStore.getGitSnapshot(workspaceId);
+    const rootPath = getActiveRoot(workspaceId);
+    const snapshot = appStore.getGitSnapshot(workspaceId, rootPath);
     if (!snapshot?.available) return;
     setPendingGitAction(workspaceId, { type: "rebase", snapshot, baseBranch: baseBranch || snapshot.baseBranch });
   }
@@ -363,7 +415,8 @@ export const useGitUiStore = defineStore("git-ui", () => {
   async function gitMergeIntoBase(workspaceId, baseBranch) {
     const { useAppStore } = await import("./app.js");
     const appStore = useAppStore();
-    const snapshot = appStore.getGitSnapshot(workspaceId);
+    const rootPath = getActiveRoot(workspaceId);
+    const snapshot = appStore.getGitSnapshot(workspaceId, rootPath);
     if (!snapshot?.available) return;
     setPendingGitAction(workspaceId, { type: "merge-into-base", snapshot, baseBranch });
   }
@@ -376,7 +429,8 @@ export const useGitUiStore = defineStore("git-ui", () => {
 
   async function gitCommitAll(workspaceId, message) {
     if (!message) return;
-    await runGitAction(workspaceId, "commit", () => _api.gitCommitAll({ workspaceId, message }));
+    const rootPath = getActiveRoot(workspaceId);
+    await runGitAction(workspaceId, "commit", () => _api.gitCommitAll({ workspaceId, message, rootPath }));
   }
 
   async function gitSelectCommit(workspaceId, hash) {
@@ -395,7 +449,8 @@ export const useGitUiStore = defineStore("git-ui", () => {
     if (!path) return;
     const { useAppStore } = await import("./app.js");
     const appStore = useAppStore();
-    const snapshot = appStore.getGitSnapshot(workspaceId);
+    const rootPath = getActiveRoot(workspaceId);
+    const snapshot = appStore.getGitSnapshot(workspaceId, rootPath);
     const ui = ensure(workspaceId);
     ui.selectedDiff = { path, scope };
     ui.diffPreview = { ok: true, path, scope, diff: "", summary: "Loading diff preview..." };
@@ -405,6 +460,7 @@ export const useGitUiStore = defineStore("git-ui", () => {
         path,
         scope,
         baseBranch: snapshot?.baseBranch || snapshot?.compareWithBase?.baseBranch || "",
+        rootPath,
       });
     } catch (error) {
       ui.diffPreview = { ok: false, path, scope, diff: "", summary: error?.message || "Diff preview failed to load." };
@@ -420,20 +476,23 @@ export const useGitUiStore = defineStore("git-ui", () => {
   }
 
   async function gitStash(workspaceId, message) {
-    await runGitAction(workspaceId, "stash", () => _api.gitStash({ workspaceId, message: message || "" }));
+    const rootPath = getActiveRoot(workspaceId);
+    await runGitAction(workspaceId, "stash", () => _api.gitStash({ workspaceId, message: message || "", rootPath }));
   }
 
   async function gitStashPop(workspaceId) {
-    await runGitAction(workspaceId, "stash-pop", () => _api.gitStashPop({ workspaceId }));
+    const rootPath = getActiveRoot(workspaceId);
+    await runGitAction(workspaceId, "stash-pop", () => _api.gitStashPop({ workspaceId, rootPath }));
   }
 
   // --- Tag actions ---
 
   async function gitListTags(workspaceId) {
+    const rootPath = getActiveRoot(workspaceId);
     const ui = ensure(workspaceId);
     ui.tagsLoading = true;
     try {
-      const result = await _api.gitListTags({ workspaceId });
+      const result = await _api.gitListTags({ workspaceId, rootPath });
       ui.tags = result?.tags || [];
       ui.tagsError = result?.ok === false ? result.summary : "";
     } catch (error) {
@@ -445,29 +504,36 @@ export const useGitUiStore = defineStore("git-ui", () => {
   }
 
   async function gitCreateTag(workspaceId, tagName, message) {
+    const rootPath = getActiveRoot(workspaceId);
     await runGitAction(workspaceId, "create-tag", () =>
-      _api.gitCreateTag({ workspaceId, tagName, message: message || "" }),
+      _api.gitCreateTag({ workspaceId, tagName, message: message || "", rootPath }),
     );
     await gitListTags(workspaceId);
   }
 
   async function gitDeleteTag(workspaceId, tagName) {
-    await runGitAction(workspaceId, "delete-tag", () => _api.gitDeleteTag({ workspaceId, tagName }));
+    const rootPath = getActiveRoot(workspaceId);
+    await runGitAction(workspaceId, "delete-tag", () => _api.gitDeleteTag({ workspaceId, tagName, rootPath }));
     await gitListTags(workspaceId);
   }
 
   async function gitPushTag(workspaceId, tagName) {
-    await runGitAction(workspaceId, "push-tag", () => _api.gitPushTag({ workspaceId, tagName }));
+    const rootPath = getActiveRoot(workspaceId);
+    await runGitAction(workspaceId, "push-tag", () => _api.gitPushTag({ workspaceId, tagName, rootPath }));
     await gitListTags(workspaceId);
   }
 
   async function gitPushAllTags(workspaceId) {
-    await runGitAction(workspaceId, "push-all-tags", () => _api.gitPushAllTags({ workspaceId }));
+    const rootPath = getActiveRoot(workspaceId);
+    await runGitAction(workspaceId, "push-all-tags", () => _api.gitPushAllTags({ workspaceId, rootPath }));
     await gitListTags(workspaceId);
   }
 
   async function gitDeleteRemoteTag(workspaceId, tagName) {
-    await runGitAction(workspaceId, "delete-remote-tag", () => _api.gitDeleteRemoteTag({ workspaceId, tagName }));
+    const rootPath = getActiveRoot(workspaceId);
+    await runGitAction(workspaceId, "delete-remote-tag", () =>
+      _api.gitDeleteRemoteTag({ workspaceId, tagName, rootPath }),
+    );
     await gitListTags(workspaceId);
   }
 
@@ -477,6 +543,7 @@ export const useGitUiStore = defineStore("git-ui", () => {
   }
 
   async function azureCreatePullRequest(workspaceId, { title, description, sourceBranch, targetBranch, connectionId }) {
+    const rootPath = getActiveRoot(workspaceId);
     return runGitAction(workspaceId, "create-pr", () =>
       _api.azureCreatePullRequest({
         workspaceId,
@@ -485,6 +552,7 @@ export const useGitUiStore = defineStore("git-ui", () => {
         sourceBranch,
         targetBranch,
         connectionId,
+        rootPath,
       }),
     );
   }
@@ -493,7 +561,8 @@ export const useGitUiStore = defineStore("git-ui", () => {
     const ui = ensure(workspaceId);
     ui.remoteBranchesLoading = true;
     try {
-      const result = await _api.azureListRemoteBranches({ workspaceId });
+      const rootPath = getActiveRoot(workspaceId);
+      const result = await _api.azureListRemoteBranches({ workspaceId, rootPath });
       ui.remoteBranches = result?.branches || [];
     } catch {
       ui.remoteBranches = [];
@@ -505,7 +574,8 @@ export const useGitUiStore = defineStore("git-ui", () => {
   async function openLazygit(workspaceId) {
     const { useAppStore } = await import("./app.js");
     const appStore = useAppStore();
-    const nextPayload = await _api.openLazygitSession({ workspaceId });
+    const rootPath = getActiveRoot(workspaceId);
+    const nextPayload = await _api.openLazygitSession({ workspaceId, rootPath });
     appStore.payload = nextPayload;
     appStore.activeViewId = `${workspaceId}:lazygit`;
   }
@@ -543,7 +613,8 @@ export const useGitUiStore = defineStore("git-ui", () => {
     if (!workspaceId || !filePath) return;
     const { useAppStore } = await import("./app.js");
     const appStore = useAppStore();
-    const snapshot = appStore.getGitSnapshot(workspaceId);
+    const rootPath = getActiveRoot(workspaceId);
+    const snapshot = appStore.getGitSnapshot(workspaceId, rootPath);
     const resolvedBase = baseBranch || snapshot?.baseBranch || snapshot?.compareWithBase?.baseBranch || "";
     const ui = ensure(workspaceId);
     ui.reviewSelectedFile = filePath;
@@ -565,17 +636,43 @@ export const useGitUiStore = defineStore("git-ui", () => {
     }
   }
 
+  async function refreshRoot(workspaceId, rootPath) {
+    await runGitAction(workspaceId, `refresh:${rootPath}`, async () => {
+      const payload = await _api.refreshGit(workspaceId);
+      return { payload };
+    });
+  }
+
+  async function pullRoot(workspaceId, rootPath) {
+    await runGitAction(workspaceId, `pull:${rootPath}`, () => _api.gitPull({ workspaceId, rootPath }));
+  }
+
+  async function revealRoot(workspaceId, rootPath) {
+    if (!rootPath) return;
+    const { useAppStore } = await import("./app.js");
+    const appStore = useAppStore();
+    await appStore.quickAddTab(rootPath);
+  }
+
   return {
     // Read accessor
     get,
     cleanup,
     init,
+    // Active root management
+    setActiveRoot,
+    getActiveRoot,
     // Git actions
     runGitAction,
     refreshGit,
     gitFetch,
     gitPull,
     gitPush,
+    bulkFetch,
+    bulkPull,
+    refreshRoot,
+    pullRoot,
+    revealRoot,
     gitCheckoutBranch,
     gitCreateBranch,
     setPendingGitAction,

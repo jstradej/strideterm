@@ -24,6 +24,7 @@ import {
 import { createDialogActions } from "./app-dialog-actions.js";
 import { createWorkspaceActions } from "./app-workspace-actions.js";
 import { createApiActions } from "./app-api-actions.js";
+import { useGitUiStore } from "./git-ui.js";
 
 export const useAppStore = defineStore("app", () => {
   // --- Server payload (shallowRef for performance — never deeply reactive) ---
@@ -535,8 +536,30 @@ export const useAppStore = defineStore("app", () => {
   }
 
   // --- Selectors exposed for components ---
-  function getGitSnapshot(workspaceId) {
-    return payload.value?.git?.workspaces?.[workspaceId] || payload.value?.git?.projects?.[workspaceId] || null;
+  function getGitSnapshot(workspaceId, rootPath = null) {
+    const entry = payload.value?.git?.workspaces?.[workspaceId] || payload.value?.git?.projects?.[workspaceId] || null;
+    if (!entry) return null;
+    if (!entry.roots) return entry; // legacy single-root payload
+    const key = rootPath || entry.primaryRoot;
+    return entry.roots?.[key] || entry.roots?.[entry.primaryRoot] || null;
+  }
+
+  function getActiveGitSnapshot(workspaceId) {
+    // Prefer in-memory active root from git-ui store (updates immediately on root selection).
+    // Fall back to persisted activeRootPath from payload so the correct root shows on reload.
+    const gitUiActiveRoot = useGitUiStore().getActiveRoot(workspaceId);
+    if (gitUiActiveRoot) {
+      // Validate that the active root still exists; reset to primary if stale
+      const entry = payload.value?.git?.workspaces?.[workspaceId] || payload.value?.git?.projects?.[workspaceId];
+      if (!entry?.roots || entry.roots[gitUiActiveRoot]) {
+        return getGitSnapshot(workspaceId, gitUiActiveRoot);
+      }
+    }
+    const ws =
+      filteredWorkspaces.value?.find((w) => w.id === workspaceId) ||
+      payload.value?.appState?.workspaces?.find?.((w) => w.id === workspaceId) ||
+      null;
+    return getGitSnapshot(workspaceId, ws?.activeRootPath || null);
   }
 
   function getWorkspaceAttentionForId(workspaceId) {
@@ -714,6 +737,7 @@ export const useAppStore = defineStore("app", () => {
     ...apiActions,
     // Selectors
     getGitSnapshot,
+    getActiveGitSnapshot,
     getWorkspaceAttentionForId,
     getTabAttentionForView,
     getPanelByViewId,

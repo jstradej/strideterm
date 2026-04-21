@@ -409,4 +409,92 @@ describe("default state", () => {
     expect(workspace.task.pausedFromState).toBe("");
     expect(workspace.task.showerResumePrompt).toBe("");
   });
+
+  test("workspace with gitRoots round-trips through normalize", () => {
+    const workspace = normalizeWorkspace({
+      id: "monorepo",
+      name: "Monorepo",
+      cwd: "C:/work/monorepo",
+      panels: [{ id: "shell", title: "Shell", command: "" }],
+      gitRoots: ["C:/work/monorepo/web", "C:/work/monorepo/api", "C:/work/monorepo/infra"],
+    });
+
+    // Paths are normalized to forward slashes and sorted alphabetically
+    expect(workspace.gitRoots).toEqual(["C:/work/monorepo/api", "C:/work/monorepo/infra", "C:/work/monorepo/web"]);
+    expect(workspace.gitRoots.length).toBe(3);
+  });
+
+  test("missing gitRoots normalizes to []", () => {
+    const workspace = normalizeWorkspace({
+      id: "single-repo",
+      name: "Single Repo",
+      cwd: "C:/work/app",
+      panels: [{ id: "shell", title: "Shell", command: "" }],
+    });
+
+    expect(workspace.gitRoots).toEqual([]);
+  });
+
+  test("azure workspace gitRoots forced to []", () => {
+    const workspace = normalizeWorkspace({
+      id: "azure-root",
+      kind: "azure",
+      name: "Azure",
+      gitRoots: ["C:/work/repo1", "C:/work/repo2"],
+    });
+
+    expect(workspace.gitRoots).toEqual([]);
+  });
+
+  test("panel cwd is preserved", () => {
+    const workspace = normalizeWorkspace({
+      id: "ws1",
+      name: "WS1",
+      cwd: "C:/work/parent",
+      panels: [
+        { id: "api", title: "API", command: "", cwd: "C:/work/parent/api" },
+        { id: "web", title: "Web", command: "" },
+      ],
+    });
+
+    const apiPanel = workspace.panels.find((p) => p.id === "api");
+    const webPanel = workspace.panels.find((p) => p.id === "web");
+    expect(apiPanel.cwd).toBe("C:/work/parent/api");
+    expect(webPanel.cwd).toBe("");
+  });
+
+  test("activeRootPath is preserved in workspace uiState", () => {
+    const workspace = normalizeWorkspace({
+      id: "ws-multi",
+      name: "Multi",
+      cwd: "C:/work/ms",
+      panels: [{ id: "shell", title: "Shell", command: "" }],
+      activeRootPath: "C:/work/ms/api",
+    });
+
+    expect(workspace.activeRootPath).toBe("C:/work/ms/api");
+  });
+
+  test("normalizeState indexes gitRoots in byCwd so worktree children find multi-repo parent", () => {
+    const state = normalizeState({
+      workspaces: [
+        {
+          id: "parent",
+          name: "monorepo",
+          cwd: "C:/work/monorepo",
+          gitRoots: ["C:/work/monorepo/api", "C:/work/monorepo/web"],
+        },
+        {
+          id: "child-task",
+          name: "monorepo / feature",
+          notes: "Worktree of monorepo",
+          cwd: "C:/work/monorepo/.strideterm/tree/feature",
+        },
+      ],
+    });
+
+    const ids = state.workspaces.map((w) => w.id);
+    // Child should be grouped right after parent
+    expect(ids.indexOf("child-task")).toBe(ids.indexOf("parent") + 1);
+  });
 });

@@ -25,9 +25,18 @@ export function createAzureHandlers(ctx) {
     ensureVisibleSession,
     scheduleAzurePolling,
     resolveGitWorkspace,
+    resolveGitRootPath,
     getAzureSettings,
     getAzureConnections,
   } = ctx;
+
+  function resolveRootPath(workspace, rawRootPath) {
+    const resolved = resolveGitRootPath(workspace, rawRootPath || "");
+    if (rawRootPath && !resolved) {
+      throw new Error(`Root path not found in workspace gitRoots: ${rawRootPath}`);
+    }
+    return resolved || "";
+  }
 
   return {
     async verifyAzureConnection(connection) {
@@ -206,7 +215,8 @@ export function createAzureHandlers(ctx) {
     },
     async azureCreatePullRequest(payload = {}) {
       const workspace = resolveGitWorkspace(payload.workspaceId);
-      const snapshot = git.getSnapshot(workspace.id);
+      const rootPath = resolveRootPath(workspace, payload.rootPath);
+      const snapshot = git.getSnapshot(workspace.id, rootPath);
       if (!snapshot?.available) throw new Error("Git workspace is unavailable.");
       const remoteUrl = snapshot.remotes?.origin || "";
       if (!remoteUrl) throw new Error("No origin remote found for this workspace.");
@@ -252,13 +262,13 @@ export function createAzureHandlers(ctx) {
                 sourceRefName: `refs/heads/${payload.sourceBranch || snapshot.branch}`,
                 targetRefName: `refs/heads/${payload.targetBranch}`,
               },
-              role: "author",
-              checkout: ws.review?.checkout || {
-                mode: "managed-worktree",
-                rootPath: workspace.cwd,
-                cacheRepoPath: "",
-              },
-            };
+               role: "author",
+               checkout: ws.review?.checkout || {
+                 mode: "managed-worktree",
+                 rootPath: rootPath || workspace.cwd,
+                 cacheRepoPath: "",
+               },
+             };
             ws.quickfix = null;
           }
         });
@@ -295,7 +305,8 @@ export function createAzureHandlers(ctx) {
     },
     async azureListRemoteBranches(payload = {}) {
       const workspace = resolveGitWorkspace(payload.workspaceId);
-      const snapshot = git.getSnapshot(workspace.id);
+      const rootPath = resolveRootPath(workspace, payload.rootPath);
+      const snapshot = git.getSnapshot(workspace.id, rootPath);
       if (!snapshot?.available) throw new Error("Git workspace is unavailable.");
       const remoteUrl = snapshot.remotes?.origin || "";
       if (!remoteUrl) throw new Error("No origin remote found for this workspace.");

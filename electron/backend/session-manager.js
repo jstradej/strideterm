@@ -200,7 +200,7 @@ export class SessionManager extends EventEmitter {
       sessionId: key,
       file: launcher.file,
       args: launcher.args,
-      cwd: launchOverride?.cwd || workspace.cwd,
+      cwd: launchOverride?.cwd || panel.cwd || workspace.cwd,
       shellIntegration: shellIntEnabled,
     });
 
@@ -208,7 +208,7 @@ export class SessionManager extends EventEmitter {
       name: APP_CONFIG.session.termName,
       cols: APP_CONFIG.session.defaultCols,
       rows: APP_CONFIG.session.defaultRows,
-      cwd: launchOverride?.cwd || workspace.cwd,
+      cwd: launchOverride?.cwd || panel.cwd || workspace.cwd,
       env: {
         ...process.env,
         ...integrationEnv,

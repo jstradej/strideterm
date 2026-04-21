@@ -1,6 +1,13 @@
 <template>
   <Teleport to="body">
     <div v-if="visible" ref="dropdownRef" class="tab-picker-dropdown" :style="dropdownStyle" @click.stop>
+      <div v-if="showCwdPicker" class="tab-picker-dropdown__cwd-row">
+        <span class="tab-picker-dropdown__cwd-label">Working directory</span>
+        <select v-model="selectedCwd" class="tab-picker-dropdown__cwd-select">
+          <option value="">Workspace default</option>
+          <option v-for="root in gitRoots" :key="root" :value="root">{{ formatRootLabel(root) }}</option>
+        </select>
+      </div>
       <button
         v-for="tmpl in templates"
         :key="tmpl.title"
@@ -35,11 +42,29 @@ const emit = defineEmits(["close"]);
 const store = useAppStore();
 const dropdownRef = ref(null);
 const visible = computed(() => Boolean(props.anchorRect));
+const selectedCwd = ref("");
 
 const templates = computed(() => {
   const tpls = store.payload?.appState?.tabTemplates;
   return Array.isArray(tpls) && tpls.length ? tpls : FALLBACK_TEMPLATES;
 });
+
+const activeWorkspace = computed(() => {
+  const ws = store.payload?.workspace;
+  return ws?.workspace || ws?.project || null;
+});
+
+const gitRoots = computed(() => {
+  const ws = activeWorkspace.value;
+  return Array.isArray(ws?.gitRoots) && ws.gitRoots.length >= 2 ? ws.gitRoots : [];
+});
+
+const showCwdPicker = computed(() => gitRoots.value.length >= 2);
+
+function formatRootLabel(rootPath) {
+  if (!rootPath) return "";
+  return rootPath.split(/[\\/]/).filter(Boolean).at(-1) || rootPath;
+}
 
 const dropdownStyle = computed(() => {
   if (!props.anchorRect) return {};
@@ -55,12 +80,12 @@ const dropdownStyle = computed(() => {
 async function addTemplateTab(tmpl) {
   emit("close");
   const title = `${tmpl.icon || ""} ${tmpl.title || "Shell"}`.trim();
-  await store.quickAddTemplateTab(tmpl.command || "", title);
+  await store.quickAddTemplateTab(tmpl.command || "", title, selectedCwd.value);
 }
 
 async function addCustomTab() {
   emit("close");
-  await store.quickAddTab();
+  await store.quickAddTab(selectedCwd.value);
 }
 
 function onDocumentClick(e) {
@@ -72,6 +97,7 @@ function onDocumentClick(e) {
 watch(visible, (isVisible) => {
   document.removeEventListener("click", onDocumentClick);
   if (isVisible) {
+    selectedCwd.value = "";
     requestAnimationFrame(() => document.addEventListener("click", onDocumentClick));
   }
 });

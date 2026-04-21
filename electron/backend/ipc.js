@@ -311,6 +311,7 @@ export function registerIpc(runtime, emitToRenderer, { includeStateGet = true } 
   ipcMain.handle("task:recheck-claude", async () => runtime.recheckClaude());
   ipcMain.handle("task:check-providers", async () => runtime.checkProviders());
   ipcMain.handle("task:check-git-repo", async (_event, cwd) => runtime.checkIsGitRepo(String(cwd || "")));
+  ipcMain.handle("fs:probe-directory", async (_event, cwd) => runtime.probeDirectory(String(cwd || "")));
   ipcMain.handle("task:create-workspace", async (_event, payload) =>
     runtime.createTaskWorkspace(validateIpc(taskWorkspaceCreateSchema, payload, "task:create-workspace")),
   );

@@ -103,16 +103,75 @@ export class GitManager extends EventEmitter {
     return execFileText("git", [...extraArgs, ...args], { cwd, env: sanitizeGitEnvironment() });
   }
 
+  _cacheKey(workspaceId, rootPath) {
+    return rootPath ? `${workspaceId}:${path.resolve(rootPath)}` : workspaceId;
+  }
+
   getWorkspaceMap() {
-    return Object.fromEntries(this.snapshots.entries());
+    // Build { [workspaceId]: { primaryRoot, roots: { [rootPath]: snapshot } } }
+    // Also duplicate primary snapshot fields at top level for back-compat.
+    const workspaceIds = new Set();
+    for (const key of this.snapshots.keys()) {
+      const colonIdx = key.indexOf(":");
+      workspaceIds.add(colonIdx >= 0 ? key.slice(0, colonIdx) : key);
+    }
+
+    const result = {};
+    for (const workspaceId of workspaceIds) {
+      const snapshotEntries = [];
+      for (const [key, snapshot] of this.snapshots.entries()) {
+        const colonIdx = key.indexOf(":");
+        const wid = colonIdx >= 0 ? key.slice(0, colonIdx) : key;
+        if (wid === workspaceId) {
+          snapshotEntries.push(snapshot);
+        }
+      }
+      if (!snapshotEntries.length) continue;
+
+      const primarySnapshot = snapshotEntries[0];
+      if (snapshotEntries.length === 1 && !snapshotEntries[0]?.rootPath) {
+        // Single-root back-compat: emit flat snapshot (no roots map)
+        result[workspaceId] = primarySnapshot;
+      } else {
+        // Multi-root: emit structured object
+        const roots = {};
+        let primaryRoot = "";
+        for (const snap of snapshotEntries) {
+          const rp = snap?.rootPath || snap?.cwd || "";
+          if (rp) {
+            roots[rp] = snap;
+            if (!primaryRoot) primaryRoot = rp;
+          }
+        }
+        result[workspaceId] = {
+          ...primarySnapshot, // back-compat: duplicate primary fields at top level
+          primaryRoot,
+          roots,
+        };
+      }
+    }
+    return result;
   }
 
   getProjectMap() {
     return this.getWorkspaceMap();
   }
 
-  getSnapshot(workspaceId) {
-    return this.snapshots.get(workspaceId) || null;
+  getSnapshot(workspaceId, rootPath = null) {
+    if (rootPath) {
+      return this.snapshots.get(this._cacheKey(workspaceId, rootPath)) || null;
+    }
+    return this.snapshots.get(workspaceId) || this.getSnapshots(workspaceId)[0] || null;
+  }
+
+  getSnapshots(workspaceId) {
+    const result = [];
+    for (const [key, value] of this.snapshots.entries()) {
+      if (key === workspaceId || key.startsWith(`${workspaceId}:`)) {
+        result.push(value);
+      }
+    }
+    return result;
   }
 
   async getCachedWorktreeDirtyState(worktreePath, fallbackDirty = false) {
@@ -129,10 +188,11 @@ export class GitManager extends EventEmitter {
     return value;
   }
 
-  async detectLazygit(workspace) {
+  async detectLazygit(workspace, rootPath = null) {
+    const cwd = rootPath || workspace.cwd;
     const hostBinary = this.resolveLazygitBinary();
     try {
-      await execFileText(hostBinary, ["--version"], { cwd: workspace.cwd });
+      await execFileText(hostBinary, ["--version"], { cwd });
       return {
         available: true,
         backend: "host",
@@ -146,7 +206,7 @@ export class GitManager extends EventEmitter {
       // Fall through to WSL detection.
     }
 
-    const wslCwd = toWslPath(workspace.cwd);
+    const wslCwd = toWslPath(cwd);
     if (!wslCwd) {
       return {
         available: false,
@@ -194,8 +254,8 @@ export class GitManager extends EventEmitter {
     return "lazygit";
   }
 
-  async inspectWorkspace(workspace) {
-    if (!workspace || workspace.kind === "docker" || !workspace.cwd) {
+  async _inspectRoot(workspace, rootPath) {
+    if (!workspace || workspace.kind === "docker" || !rootPath) {
       return createUnavailableSnapshot(
         workspace || { id: "", cwd: "" },
         "Git metadata is available only for file-backed workspaces.",
@@ -203,7 +263,7 @@ export class GitManager extends EventEmitter {
     }
 
     try {
-      const rootResult = await this.execGit(workspace.cwd, ["rev-parse", "--show-toplevel"]);
+      const rootResult = await this.execGit(rootPath, ["rev-parse", "--show-toplevel"]);
       const root = rootResult.stdout.trim();
       const [
         branchResult,
@@ -218,32 +278,32 @@ export class GitManager extends EventEmitter {
         worktreeListResult,
         branchListResult,
       ] = await Promise.all([
-        this.execGit(workspace.cwd, ["rev-parse", "--abbrev-ref", "HEAD"]).catch(() => ({
+        this.execGit(rootPath, ["rev-parse", "--abbrev-ref", "HEAD"]).catch(() => ({
           stdout: "HEAD",
           stderr: "",
         })),
-        this.execGit(workspace.cwd, ["remote", "-v"]).catch(() => ({ stdout: "", stderr: "" })),
-        this.execGit(workspace.cwd, ["rev-list", "--count", "HEAD"]).catch(() => ({ stdout: "0", stderr: "" })),
-        this.execGit(workspace.cwd, ["status", "--porcelain=v2", "--branch"]).catch(() => ({ stdout: "", stderr: "" })),
-        this.execGit(workspace.cwd, ["status", "--short"]).catch(() => ({ stdout: "", stderr: "" })),
-        this.execGit(workspace.cwd, [
+        this.execGit(rootPath, ["remote", "-v"]).catch(() => ({ stdout: "", stderr: "" })),
+        this.execGit(rootPath, ["rev-list", "--count", "HEAD"]).catch(() => ({ stdout: "0", stderr: "" })),
+        this.execGit(rootPath, ["status", "--porcelain=v2", "--branch"]).catch(() => ({ stdout: "", stderr: "" })),
+        this.execGit(rootPath, ["status", "--short"]).catch(() => ({ stdout: "", stderr: "" })),
+        this.execGit(rootPath, [
           "log",
           "--date=relative",
           "--pretty=format:%h%x09%ad%x09%an%x09%d%x09%s",
           "-n",
           String(APP_CONFIG.git.recentLogLimit),
         ]).catch(() => ({ stdout: "", stderr: "" })),
-        this.detectLazygit(workspace),
-        this.execGit(workspace.cwd, ["rev-parse", "--git-dir"]).catch(() => ({ stdout: ".git", stderr: "" })),
-        this.execGit(workspace.cwd, ["rev-parse", "--git-common-dir"]).catch(() => ({ stdout: ".git", stderr: "" })),
-        this.execGit(workspace.cwd, ["worktree", "list", "--porcelain"]).catch(() => ({ stdout: "", stderr: "" })),
-        this.execGit(workspace.cwd, ["for-each-ref", "--format=%(refname:short)", "refs/heads", "refs/remotes"]).catch(
+        this.detectLazygit(workspace, rootPath),
+        this.execGit(rootPath, ["rev-parse", "--git-dir"]).catch(() => ({ stdout: ".git", stderr: "" })),
+        this.execGit(rootPath, ["rev-parse", "--git-common-dir"]).catch(() => ({ stdout: ".git", stderr: "" })),
+        this.execGit(rootPath, ["worktree", "list", "--porcelain"]).catch(() => ({ stdout: "", stderr: "" })),
+        this.execGit(rootPath, ["for-each-ref", "--format=%(refname:short)", "refs/heads", "refs/remotes"]).catch(
           () => ({ stdout: "", stderr: "" }),
         ),
       ]);
 
-      const gitDir = resolveGitPath(workspace.cwd, gitDirResult.stdout);
-      const gitCommonDir = resolveGitPath(workspace.cwd, gitCommonDirResult.stdout);
+      const gitDir = resolveGitPath(rootPath, gitDirResult.stdout);
+      const gitCommonDir = resolveGitPath(rootPath, gitCommonDirResult.stdout);
       const parsedStatus = parsePorcelainV2(statusV2Result.stdout);
       const staged = parsedStatus.staged;
       const unstaged = parsedStatus.unstaged;
@@ -258,7 +318,7 @@ export class GitManager extends EventEmitter {
         parsedStatus.branch && parsedStatus.branch !== "(detached)"
           ? parsedStatus.branch
           : branchResult.stdout.trim() || "HEAD";
-      const upstream = parsedStatus.upstream || (await this.readUpstream(workspace.cwd));
+      const upstream = parsedStatus.upstream || (await this.readUpstream(rootPath));
       // For review workspaces, compare against the remote source branch (where we push to).
       // The target branch (where the PR merges into) is handled by the Summary tab's "Rebase on target".
       const reviewSourceRef = String(workspace.review?.pullRequest?.sourceRefName || "")
@@ -266,14 +326,14 @@ export class GitManager extends EventEmitter {
         .trim();
       const baseBranch = reviewSourceRef
         ? `origin/${reviewSourceRef}`
-        : await this.detectBestBaseBranch(workspace.cwd, branch, upstream, branchNames);
+        : await this.detectBestBaseBranch(rootPath, branch, upstream, branchNames);
       const [compareWithBase, stashCount] = await Promise.all([
-        this.readBaseComparison(workspace.cwd, baseBranch, branch),
-        this.getStashCount(workspace.cwd),
+        this.readBaseComparison(rootPath, baseBranch, branch),
+        this.getStashCount(rootPath),
       ]);
-      const operationState = await this.inspectOperationState(workspace.cwd, { gitDir, gitCommonDir });
-      const stagedDiffStat = await this.readDiffStat(workspace.cwd, ["diff", "--cached", "--shortstat"]);
-      const unstagedDiffStat = await this.readDiffStat(workspace.cwd, ["diff", "--shortstat"]);
+      const operationState = await this.inspectOperationState(rootPath, { gitDir, gitCommonDir });
+      const stagedDiffStat = await this.readDiffStat(rootPath, ["diff", "--cached", "--shortstat"]);
+      const unstagedDiffStat = await this.readDiffStat(rootPath, ["diff", "--shortstat"]);
       const untrackedDiffStat = summarizeNameStatusEntries(untracked.map((entry) => ({ code: "?", path: entry.path })));
       // Check if this worktree's branch has been merged into the base branch.
       // Only mark as merged if: not the main worktree, not dirty, HEAD is ancestor of baseBranch,
@@ -346,7 +406,8 @@ export class GitManager extends EventEmitter {
       return {
         workspaceId: workspace.id,
         projectId: workspace.id,
-        cwd: workspace.cwd,
+        cwd: rootPath,
+        rootPath,
         available: true,
         root,
         repository: path.basename(root),
@@ -392,6 +453,27 @@ export class GitManager extends EventEmitter {
     } catch (error) {
       return createUnavailableSnapshot(workspace, extractErrorMessage(error));
     }
+  }
+
+  async inspectWorkspaceRoots(workspace) {
+    if (!workspace || workspace.kind === "docker") {
+      return { roots: [], primaryRoot: "" };
+    }
+    const roots = (workspace.gitRoots?.length ? workspace.gitRoots : [workspace.cwd]).filter(Boolean);
+    if (!roots.length) return { roots: [], primaryRoot: "" };
+    const snapshots = await Promise.all(roots.map((root) => this._inspectRoot(workspace, root)));
+    return { roots: snapshots, primaryRoot: roots[0] };
+  }
+
+  async inspectWorkspace(workspace) {
+    if (!workspace || workspace.kind === "docker" || !workspace.cwd) {
+      return createUnavailableSnapshot(
+        workspace || { id: "", cwd: "" },
+        "Git metadata is available only for file-backed workspaces.",
+      );
+    }
+    const { roots } = await this.inspectWorkspaceRoots(workspace);
+    return roots[0] || createUnavailableSnapshot(workspace, "No git roots detected.");
   }
 
   async inspectProject(project) {
@@ -533,36 +615,62 @@ export class GitManager extends EventEmitter {
     }
   }
 
-  invalidateSnapshotCache(workspaceId = null) {
-    if (workspaceId) {
-      this.snapshotCache.delete(workspaceId);
-    } else {
+  invalidateSnapshotCache(workspaceId = null, rootPath = null) {
+    if (!workspaceId) {
       this.snapshotCache.clear();
+      return;
+    }
+    if (rootPath) {
+      this.snapshotCache.delete(this._cacheKey(workspaceId, rootPath));
+    } else {
+      // Delete all cache entries for this workspace (prefix match)
+      for (const key of this.snapshotCache.keys()) {
+        if (key === workspaceId || key.startsWith(`${workspaceId}:`)) {
+          this.snapshotCache.delete(key);
+        }
+      }
     }
   }
 
   async refreshWorkspaces(workspaces = []) {
     const now = this.now().getTime();
     const nextSnapshots = new Map();
-    const results = await Promise.all(
+
+    await Promise.all(
       workspaces.map(async (workspace) => {
-        const cached = this.snapshotCache.get(workspace.id);
-        if (cached && now - cached.at < this.snapshotCacheTtlMs) {
-          return [workspace.id, cached.snapshot];
+        const roots = (workspace.gitRoots?.length ? workspace.gitRoots : [workspace.cwd]).filter(Boolean);
+        if (!roots.length) {
+          // Docker or cwd-less workspace
+          const cacheKey = workspace.id;
+          const cached = this.snapshotCache.get(cacheKey);
+          if (cached && now - cached.at < this.snapshotCacheTtlMs) {
+            nextSnapshots.set(cacheKey, cached.snapshot);
+            return;
+          }
+          const snapshot = await this._inspectRoot(workspace, workspace.cwd);
+          this.snapshotCache.set(cacheKey, { at: this.now().getTime(), snapshot });
+          nextSnapshots.set(cacheKey, snapshot);
+          return;
         }
-        const snapshot = await this.inspectWorkspace(workspace);
-        this.snapshotCache.set(workspace.id, { at: this.now().getTime(), snapshot });
-        return [workspace.id, snapshot];
+
+        await Promise.all(
+          roots.map(async (rootPath) => {
+            const cacheKey = this._cacheKey(workspace.id, rootPath);
+            const cached = this.snapshotCache.get(cacheKey);
+            if (cached && now - cached.at < this.snapshotCacheTtlMs) {
+              nextSnapshots.set(cacheKey, cached.snapshot);
+              return;
+            }
+            const snapshot = await this._inspectRoot(workspace, rootPath);
+            this.snapshotCache.set(cacheKey, { at: this.now().getTime(), snapshot });
+            nextSnapshots.set(cacheKey, snapshot);
+          }),
+        );
       }),
     );
 
-    for (const [workspaceId, snapshot] of results) {
-      nextSnapshots.set(workspaceId, snapshot);
-    }
-
-    // Merge into existing snapshots — don't discard snapshots for workspaces not in this refresh
-    for (const [workspaceId, snapshot] of nextSnapshots) {
-      this.snapshots.set(workspaceId, snapshot);
+    for (const [key, snapshot] of nextSnapshots) {
+      this.snapshots.set(key, snapshot);
     }
     this.emit("updated", this.getWorkspaceMap());
     return this.getWorkspaceMap();
@@ -572,38 +680,37 @@ export class GitManager extends EventEmitter {
     return this.refreshWorkspaces(projects);
   }
 
-  createLazygitLaunch(workspaceId) {
-    const snapshot = this.getSnapshot(workspaceId);
+  createLazygitLaunch(workspaceId, rootPath = null) {
+    const snapshot = this.getSnapshot(workspaceId, rootPath);
     return snapshot?.lazygit?.launch
-      ? {
-          file: snapshot.lazygit.launch.file,
-          args: [...snapshot.lazygit.launch.args],
-        }
+      ? { file: snapshot.lazygit.launch.file, args: [...snapshot.lazygit.launch.args] }
       : null;
   }
 
-  async fetch(workspace, { connection = null } = {}) {
+  async fetch(workspace, { connection = null, rootPath = "" } = {}) {
     return this.runWriteAction(workspace, {
       type: "fetch",
       label: "Fetch",
       run: async (cwd) => this.execAuthGit(cwd, ["fetch", "--all", "--prune"], { connection }),
       allowDirty: true,
       connection,
+      rootPath,
     });
   }
 
-  async pull(workspace, { connection = null } = {}) {
+  async pull(workspace, { connection = null, rootPath = "" } = {}) {
     return this.runWriteAction(workspace, {
       type: "pull",
       label: "Pull",
       run: async (cwd) => this.execAuthGit(cwd, ["pull", "--ff-only"], { connection }),
       allowDirty: true,
       connection,
+      rootPath,
     });
   }
 
-  async push(workspace, { connection = null } = {}) {
-    const snapshot = await this.inspectWorkspace(workspace);
+  async push(workspace, { connection = null, rootPath = "" } = {}) {
+    const snapshot = await (rootPath ? this._inspectRoot(workspace, rootPath) : this.inspectWorkspace(workspace));
     if (!snapshot.available) {
       return createStructuredResult({ ok: false, summary: snapshot.error || "Git workspace is unavailable." });
     }
@@ -635,11 +742,12 @@ export class GitManager extends EventEmitter {
       skipPreflight: true,
       run: async (cwd) => this.execAuthGit(cwd, pushArgs, { connection }),
       connection,
+      rootPath,
     });
   }
 
-  async forcePushWithLease(workspace, { connection = null } = {}) {
-    const snapshot = await this.inspectWorkspace(workspace);
+  async forcePushWithLease(workspace, { connection = null, rootPath = "" } = {}) {
+    const snapshot = await (rootPath ? this._inspectRoot(workspace, rootPath) : this.inspectWorkspace(workspace));
     if (!snapshot.available) {
       return createStructuredResult({ ok: false, summary: snapshot.error || "Git workspace is unavailable." });
     }
@@ -660,12 +768,13 @@ export class GitManager extends EventEmitter {
     const upstream = snapshot.upstream || "";
     const remote = remoteNames.find((r) => upstream.startsWith(`${r}/`)) || remoteNames[0] || "origin";
     const target = `${remote}/${branch}`;
+    const effectiveCwd = rootPath || workspace.cwd;
 
     // Resolve expected ref hash (current remote tracking ref = what --force-with-lease checks)
     const extraAudit = { expectedRef: "", previousRemoteRef: "", newRemoteRef: "" };
     if (upstream) {
       try {
-        const refResult = await this.execGit(workspace.cwd, ["rev-parse", upstream]);
+        const refResult = await this.execGit(effectiveCwd, ["rev-parse", upstream]);
         extraAudit.expectedRef = refResult.stdout.trim();
         extraAudit.previousRemoteRef = refResult.stdout.trim();
       } catch {
@@ -695,10 +804,11 @@ export class GitManager extends EventEmitter {
       },
       connection,
       extraAudit,
+      rootPath,
     });
   }
 
-  async checkoutBranch(workspace, { branch } = {}) {
+  async checkoutBranch(workspace, { branch, rootPath = "" } = {}) {
     const targetBranch = String(branch || "").trim();
     if (!targetBranch) {
       return createStructuredResult({ ok: false, summary: "Branch name is required." });
@@ -712,10 +822,11 @@ export class GitManager extends EventEmitter {
       label: "Checkout",
       skipPreflight: true,
       run: async (cwd) => this.execGit(cwd, ["checkout", targetBranch]),
+      rootPath,
     });
   }
 
-  async createBranch(workspace, { branch, startPoint = "" } = {}) {
+  async createBranch(workspace, { branch, startPoint = "", rootPath = "" } = {}) {
     const newBranch = String(branch || "").trim();
     if (!newBranch) {
       return createStructuredResult({ ok: false, summary: "Branch name is required." });
@@ -737,31 +848,34 @@ export class GitManager extends EventEmitter {
       label: "Create branch",
       skipPreflight: true,
       run: async (cwd) => this.execGit(cwd, args),
+      rootPath,
     });
   }
 
-  async mergeIntoCurrent(workspace, { baseBranch, stashDirty = false } = {}) {
+  async mergeIntoCurrent(workspace, { baseBranch, stashDirty = false, rootPath = "" } = {}) {
     return this.runWriteAction(workspace, {
       type: "merge",
       label: "Merge",
       baseBranch,
       stashDirty,
       run: async (cwd, resolvedBaseBranch) => this.execGit(cwd, ["merge", "--no-edit", resolvedBaseBranch]),
+      rootPath,
     });
   }
 
-  async rebaseOnto(workspace, { baseBranch, stashDirty = false } = {}) {
+  async rebaseOnto(workspace, { baseBranch, stashDirty = false, rootPath = "" } = {}) {
     return this.runWriteAction(workspace, {
       type: "rebase",
       label: "Rebase",
       baseBranch,
       stashDirty,
       run: async (cwd, resolvedBaseBranch) => this.execGit(cwd, ["rebase", resolvedBaseBranch]),
+      rootPath,
     });
   }
 
-  async continueOperation(workspace) {
-    const snapshot = await this.inspectWorkspace(workspace);
+  async continueOperation(workspace, { rootPath = "" } = {}) {
+    const snapshot = await (rootPath ? this._inspectRoot(workspace, rootPath) : this.inspectWorkspace(workspace));
     if (!snapshot.available) {
       return createStructuredResult({
         ok: false,
@@ -783,11 +897,12 @@ export class GitManager extends EventEmitter {
       allowDirty: true,
       skipPreflight: true,
       run: async (cwd) => this.execGit(cwd, args),
+      rootPath,
     });
   }
 
-  async abortOperation(workspace) {
-    const snapshot = await this.inspectWorkspace(workspace);
+  async abortOperation(workspace, { rootPath = "" } = {}) {
+    const snapshot = await (rootPath ? this._inspectRoot(workspace, rootPath) : this.inspectWorkspace(workspace));
     if (!snapshot.available) {
       return createStructuredResult({
         ok: false,
@@ -803,16 +918,18 @@ export class GitManager extends EventEmitter {
       });
     }
 
+    const effectiveCwd = rootPath || workspace.cwd;
     const result = await this.runWriteAction(workspace, {
       type: snapshot.operationState.kind,
       label: "Abort",
       allowDirty: true,
       skipPreflight: true,
       run: async (cwd) => this.execGit(cwd, args),
+      rootPath,
     });
 
     if (result.ok) {
-      const stashRestore = await this.restoreStridetermStash(workspace.cwd);
+      const stashRestore = await this.restoreStridetermStash(effectiveCwd);
       if (stashRestore) {
         result.rawOutput = joinRawOutput(result.rawOutput, stashRestore);
         result.warnings.push("Restored previously stashed local changes.");
@@ -822,8 +939,9 @@ export class GitManager extends EventEmitter {
     return result;
   }
 
-  async diffPreview(workspace, { path: targetPath, scope = "unstaged", baseBranch = "" } = {}) {
-    if (!workspace?.cwd || !targetPath) {
+  async diffPreview(workspace, { path: targetPath, scope = "unstaged", baseBranch = "", rootPath = "" } = {}) {
+    const effectiveCwd = rootPath || workspace?.cwd;
+    if (!effectiveCwd || !targetPath) {
       return {
         ok: false,
         scope,
@@ -837,7 +955,7 @@ export class GitManager extends EventEmitter {
       ? scope
       : "unstaged";
     if (normalizedScope === "untracked") {
-      const preview = await renderUntrackedDiffPreview(this.execGit.bind(this), workspace.cwd, targetPath);
+      const preview = await renderUntrackedDiffPreview(this.execGit.bind(this), effectiveCwd, targetPath);
       return {
         ok: preview.ok,
         scope: normalizedScope,
@@ -855,7 +973,7 @@ export class GitManager extends EventEmitter {
           : ["diff", "--", targetPath];
 
     try {
-      const result = await this.execGit(workspace.cwd, args);
+      const result = await this.execGit(effectiveCwd, args);
       const diff = trimDiffPreview(result.stdout || result.stderr || "");
       return {
         ok: true,
@@ -875,13 +993,14 @@ export class GitManager extends EventEmitter {
     }
   }
 
-  async commitDiff(workspace, { hash } = {}) {
-    if (!workspace?.cwd || !hash) {
+  async commitDiff(workspace, { hash, rootPath = "" } = {}) {
+    const effectiveCwd = rootPath || workspace?.cwd;
+    if (!effectiveCwd || !hash) {
       return { ok: false, hash: hash || "", diff: "", summary: "Workspace cwd and commit hash are required." };
     }
 
     try {
-      const result = await this.execGit(workspace.cwd, ["show", "--stat", "--patch", hash]);
+      const result = await this.execGit(effectiveCwd, ["show", "--stat", "--patch", hash]);
       return {
         ok: true,
         hash,
@@ -910,10 +1029,11 @@ export class GitManager extends EventEmitter {
       run,
       connection = null,
       extraAudit = {},
+      rootPath = "",
     },
   ) {
-    this.invalidateSnapshotCache(workspace.id);
-    const snapshot = await this.inspectWorkspace(workspace);
+    this.invalidateSnapshotCache(workspace.id, rootPath || null);
+    const snapshot = await (rootPath ? this._inspectRoot(workspace, rootPath) : this.inspectWorkspace(workspace));
     if (!snapshot.available) {
       return createStructuredResult({
         ok: false,
@@ -963,10 +1083,11 @@ export class GitManager extends EventEmitter {
     let stashLabel = "";
     let stashOutput = "";
 
+    const effectiveCwd = rootPath || workspace.cwd;
     try {
       if (stashDirty && snapshot.dirty) {
         stashLabel = `strideterm-${type}-${this.now().toISOString()}`;
-        const stashResult = await this.execGit(workspace.cwd, [
+        const stashResult = await this.execGit(effectiveCwd, [
           "stash",
           "push",
           "--include-untracked",
@@ -976,16 +1097,17 @@ export class GitManager extends EventEmitter {
         stashOutput = stashResult.stdout || stashResult.stderr || "";
       }
 
-      log.debug("git action starting", { type, label, cwd: workspace.cwd, baseBranch: resolvedBaseBranch });
+      log.debug("git action starting", { type, label, cwd: effectiveCwd, baseBranch: resolvedBaseBranch });
       const startTime = Date.now();
-      const actionResult = await run(workspace.cwd, resolvedBaseBranch);
+      const actionResult = await run(effectiveCwd, resolvedBaseBranch);
       let restoreOutput = "";
       if (stashLabel) {
-        restoreOutput = await this.restoreStash(workspace.cwd);
+        restoreOutput = await this.restoreStash(effectiveCwd);
       }
       const durationMs = Date.now() - startTime;
       log.info("git action completed", { type, label, durationMs });
       const remoteUrl = Object.values(snapshot.remotes || {})[0] || "";
+      const auditExtra = rootPath ? { ...extraAudit, rootPath } : extraAudit;
       this._logGitAudit({
         type,
         connection,
@@ -993,7 +1115,7 @@ export class GitManager extends EventEmitter {
         durationMs,
         workspaceId: workspace.id,
         remoteUrl,
-        extra: extraAudit,
+        extra: auditExtra,
       });
       return createStructuredResult({
         ok: true,
@@ -1006,6 +1128,7 @@ export class GitManager extends EventEmitter {
     } catch (error) {
       log.warn("git action failed", { type, label, err: extractErrorMessage(error) });
       const remoteUrlOnError = Object.values(snapshot.remotes || {})[0] || "";
+      const auditExtraOnError = rootPath ? { ...extraAudit, rootPath } : extraAudit;
       this._logGitAudit({
         type,
         connection,
@@ -1013,12 +1136,14 @@ export class GitManager extends EventEmitter {
         errorMessage: extractErrorMessage(error),
         workspaceId: workspace.id,
         remoteUrl: remoteUrlOnError,
-        extra: extraAudit,
+        extra: auditExtraOnError,
       });
-      const operationSnapshot = await this.inspectWorkspace(workspace);
+      const operationSnapshot = await (rootPath
+        ? this._inspectRoot(workspace, rootPath)
+        : this.inspectWorkspace(workspace));
       let restoreOutput = "";
       if (stashLabel && !operationSnapshot.operationState.inProgress) {
-        restoreOutput = await this.restoreStash(workspace.cwd);
+        restoreOutput = await this.restoreStash(effectiveCwd);
       } else if (stashLabel) {
         warnings.push("Stashed local changes were kept because the Git operation needs manual resolution.");
       }
@@ -1107,8 +1232,8 @@ export class GitManager extends EventEmitter {
     }
   }
 
-  async mergeCurrentIntoBase(workspace, { baseBranch } = {}) {
-    const snapshot = await this.inspectWorkspace(workspace);
+  async mergeCurrentIntoBase(workspace, { baseBranch, rootPath = "" } = {}) {
+    const snapshot = await (rootPath ? this._inspectRoot(workspace, rootPath) : this.inspectWorkspace(workspace));
     if (!snapshot.available) {
       return createStructuredResult({ ok: false, summary: snapshot.error || "Git workspace is unavailable." });
     }
@@ -1165,19 +1290,20 @@ export class GitManager extends EventEmitter {
     }
   }
 
-  async commitAll(workspace, { message } = {}) {
+  async commitAll(workspace, { message, rootPath = "" } = {}) {
     const commitMessage = String(message || "").trim();
     if (!commitMessage) {
       return createStructuredResult({ ok: false, summary: "Commit message is required." });
     }
 
-    if (!workspace?.cwd) {
+    const effectiveCwd = rootPath || workspace?.cwd;
+    if (!effectiveCwd) {
       return createStructuredResult({ ok: false, summary: "Workspace has no working directory." });
     }
 
     try {
-      await this.execGit(workspace.cwd, ["add", "-A"]);
-      const result = await this.execGit(workspace.cwd, ["commit", "-m", commitMessage]);
+      await this.execGit(effectiveCwd, ["add", "-A"]);
+      const result = await this.execGit(effectiveCwd, ["commit", "-m", commitMessage]);
       return createStructuredResult({
         ok: true,
         summary: "Changes committed successfully.",
@@ -1192,13 +1318,14 @@ export class GitManager extends EventEmitter {
     }
   }
 
-  async removeWorktree(workspace, { worktreePath, deleteBranch = false } = {}) {
-    if (!workspace?.cwd || !worktreePath) {
+  async removeWorktree(workspace, { worktreePath, deleteBranch = false, rootPath = "" } = {}) {
+    const effectiveCwd = rootPath || workspace?.cwd;
+    if (!effectiveCwd || !worktreePath) {
       return createStructuredResult({ ok: false, summary: "Worktree path is required." });
     }
 
     const resolvedPath = path.resolve(worktreePath);
-    const mainPath = path.resolve(workspace.cwd);
+    const mainPath = path.resolve(effectiveCwd);
     if (resolvedPath === mainPath) {
       return createStructuredResult({ ok: false, summary: "Cannot remove the main worktree." });
     }
@@ -1207,7 +1334,7 @@ export class GitManager extends EventEmitter {
     if (deleteBranch) {
       try {
         const worktrees = parseWorktreeList(
-          (await this.execGit(workspace.cwd, ["worktree", "list", "--porcelain"])).stdout,
+          (await this.execGit(effectiveCwd, ["worktree", "list", "--porcelain"])).stdout,
         );
         branchName = worktrees.find((entry) => path.resolve(entry.path) === resolvedPath)?.branch || "";
       } catch {
@@ -1216,7 +1343,7 @@ export class GitManager extends EventEmitter {
     }
 
     try {
-      await this.execGit(workspace.cwd, ["worktree", "remove", "--force", resolvedPath]);
+      await this.execGit(effectiveCwd, ["worktree", "remove", "--force", resolvedPath]);
     } catch (error) {
       return createStructuredResult({
         ok: false,
@@ -1228,7 +1355,7 @@ export class GitManager extends EventEmitter {
     let branchOutput = "";
     if (deleteBranch && branchName) {
       try {
-        const result = await this.execGit(workspace.cwd, ["branch", "-d", branchName]);
+        const result = await this.execGit(effectiveCwd, ["branch", "-d", branchName]);
         branchOutput = joinRawOutput(result.stdout, result.stderr);
       } catch (error) {
         branchOutput = `Branch ${branchName} could not be deleted (may not be fully merged): ${joinRawOutput(error.stdout, error.stderr)}`;
@@ -1279,14 +1406,15 @@ export class GitManager extends EventEmitter {
     }
   }
 
-  async stash(workspace, { message = "" } = {}) {
-    if (!workspace?.cwd) {
+  async stash(workspace, { message = "", rootPath = "" } = {}) {
+    const effectiveCwd = rootPath || workspace?.cwd;
+    if (!effectiveCwd) {
       return createStructuredResult({ ok: false, summary: "Workspace has no working directory." });
     }
     try {
       const args = ["stash", "push", "--include-untracked"];
       if (message) args.push("-m", message);
-      const result = await this.execGit(workspace.cwd, args);
+      const result = await this.execGit(effectiveCwd, args);
       const combined = joinRawOutput(result.stdout, result.stderr);
       if (/no local changes to save/i.test(combined)) {
         return createStructuredResult({
@@ -1309,12 +1437,13 @@ export class GitManager extends EventEmitter {
     }
   }
 
-  async stashPop(workspace) {
-    if (!workspace?.cwd) {
+  async stashPop(workspace, { rootPath = "" } = {}) {
+    const effectiveCwd = rootPath || workspace?.cwd;
+    if (!effectiveCwd) {
       return createStructuredResult({ ok: false, summary: "Workspace has no working directory." });
     }
     try {
-      const result = await this.execGit(workspace.cwd, ["stash", "pop"]);
+      const result = await this.execGit(effectiveCwd, ["stash", "pop"]);
       return createStructuredResult({
         ok: true,
         summary: "Stash applied and removed.",
@@ -1331,8 +1460,9 @@ export class GitManager extends EventEmitter {
 
   // ─── Tag operations ───────────────────────────────────────────────
 
-  async listTags(workspace, { connection = null } = {}) {
-    if (!workspace?.cwd) {
+  async listTags(workspace, { connection = null, rootPath = "" } = {}) {
+    const effectiveCwd = rootPath || workspace?.cwd;
+    if (!effectiveCwd) {
       return { ok: false, tags: [], summary: "Workspace has no working directory." };
     }
     try {
@@ -1345,7 +1475,7 @@ export class GitManager extends EventEmitter {
         "%(subject)",
         "%(objectname:short)",
       ].join("%09");
-      const result = await this.execGit(workspace.cwd, [
+      const result = await this.execGit(effectiveCwd, [
         "for-each-ref",
         `--format=${fmt}`,
         "--sort=-creatordate",
@@ -1369,7 +1499,7 @@ export class GitManager extends EventEmitter {
       // Check which tags exist on remote
       const remoteTags = new Set();
       try {
-        const remoteResult = await this.execAuthGit(workspace.cwd, ["ls-remote", "--tags", "origin"], { connection });
+        const remoteResult = await this.execAuthGit(effectiveCwd, ["ls-remote", "--tags", "origin"], { connection });
         const remoteLines = String(remoteResult.stdout || "")
           .split(/\r?\n/)
           .filter(Boolean);
@@ -1410,18 +1540,19 @@ export class GitManager extends EventEmitter {
     }
   }
 
-  async createTag(workspace, { tagName, message = "", commit = "" } = {}) {
+  async createTag(workspace, { tagName, message = "", commit = "", rootPath = "" } = {}) {
     const name = String(tagName || "").trim();
     if (!name) {
       return createStructuredResult({ ok: false, summary: "Tag name is required." });
     }
-    if (!workspace?.cwd) {
+    const effectiveCwd = rootPath || workspace?.cwd;
+    if (!effectiveCwd) {
       return createStructuredResult({ ok: false, summary: "Workspace has no working directory." });
     }
     try {
       const args = message ? ["tag", "-a", name, "-m", message] : ["tag", name];
       if (commit) args.push(commit);
-      const result = await this.execGit(workspace.cwd, args);
+      const result = await this.execGit(effectiveCwd, args);
       return createStructuredResult({
         ok: true,
         summary: `Tag '${name}' created.`,
@@ -1436,16 +1567,17 @@ export class GitManager extends EventEmitter {
     }
   }
 
-  async deleteTag(workspace, { tagName } = {}) {
+  async deleteTag(workspace, { tagName, rootPath = "" } = {}) {
     const name = String(tagName || "").trim();
     if (!name) {
       return createStructuredResult({ ok: false, summary: "Tag name is required." });
     }
-    if (!workspace?.cwd) {
+    const effectiveCwd = rootPath || workspace?.cwd;
+    if (!effectiveCwd) {
       return createStructuredResult({ ok: false, summary: "Workspace has no working directory." });
     }
     try {
-      const result = await this.execGit(workspace.cwd, ["tag", "-d", name]);
+      const result = await this.execGit(effectiveCwd, ["tag", "-d", name]);
       return createStructuredResult({
         ok: true,
         summary: `Tag '${name}' deleted.`,
@@ -1460,7 +1592,7 @@ export class GitManager extends EventEmitter {
     }
   }
 
-  async pushTag(workspace, { tagName, connection = null } = {}) {
+  async pushTag(workspace, { tagName, connection = null, rootPath = "" } = {}) {
     const name = String(tagName || "").trim();
     if (!name) {
       return createStructuredResult({ ok: false, summary: "Tag name is required." });
@@ -1472,10 +1604,11 @@ export class GitManager extends EventEmitter {
       skipPreflight: true,
       run: async (cwd) => this.execAuthGit(cwd, ["push", "origin", `refs/tags/${name}`], { connection }),
       connection,
+      rootPath,
     });
   }
 
-  async pushAllTags(workspace, { connection = null } = {}) {
+  async pushAllTags(workspace, { connection = null, rootPath = "" } = {}) {
     return this.runWriteAction(workspace, {
       type: "push-all-tags",
       label: "Push all tags",
@@ -1483,10 +1616,11 @@ export class GitManager extends EventEmitter {
       skipPreflight: true,
       run: async (cwd) => this.execAuthGit(cwd, ["push", "origin", "--tags"], { connection }),
       connection,
+      rootPath,
     });
   }
 
-  async deleteRemoteTag(workspace, { tagName, connection = null } = {}) {
+  async deleteRemoteTag(workspace, { tagName, connection = null, rootPath = "" } = {}) {
     const name = String(tagName || "").trim();
     if (!name) {
       return createStructuredResult({ ok: false, summary: "Tag name is required." });
@@ -1498,6 +1632,7 @@ export class GitManager extends EventEmitter {
       skipPreflight: true,
       run: async (cwd) => this.execAuthGit(cwd, ["push", "origin", `:refs/tags/${name}`], { connection }),
       connection,
+      rootPath,
     });
   }
 

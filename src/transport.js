@@ -210,6 +210,7 @@ function createRemoteTransport() {
     recheckClaude: () => fetchJson("/api/task/recheck-claude", {}),
     checkProviders: () => fetchJson("/api/task/check-providers", {}),
     checkIsGitRepo: (cwd) => fetchJson("/api/task/check-git-repo", { cwd }),
+    probeDirectory: (cwd) => fetchJson("/api/fs/probe-directory", { cwd }),
     createTaskWorkspace: (payload) => fetchJson("/api/task/create", payload),
     startTask: (payload) => fetchJson("/api/task/start", payload),
     stopTask: (payload) => fetchJson("/api/task/stop", payload),

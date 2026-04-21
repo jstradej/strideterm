@@ -17,6 +17,7 @@ export const workspaceSchema = z
     id: nonEmptyString,
     name: z.string(),
     cwd: z.string().optional(),
+    gitRoots: z.array(z.string()).optional(),
     kind: z.string().optional(),
     panels: z
       .array(
@@ -24,6 +25,7 @@ export const workspaceSchema = z
           id: nonEmptyString,
           title: z.string(),
           command: z.string().optional(),
+          cwd: z.string().optional(),
           shell: z.boolean().optional(),
           startup: z.string().optional(),
         }),
@@ -40,6 +42,7 @@ export const workspaceUIStateSchema = z.object({
     activeViewId: z.string().optional(),
     splitLayout: z.enum(["cols", "rows", "top-split"]).nullable().optional(),
     splitViewIds: z.array(z.string()).optional(),
+    activeRootPath: z.string().optional(),
   }),
 });
 
@@ -128,10 +131,18 @@ export const agentPromptDeleteSchema = z.object({
   promptId: nonEmptyString,
 });
 
+// Shared fragment for git operations that may target a specific root in a multi-repo workspace.
+export const gitWorkspaceRef = z.object({
+  workspaceId: z.string().optional(),
+  projectId: z.string().optional(),
+  rootPath: z.string().optional(),
+});
+
 export const gitPayloadSchema = z
   .object({
     workspaceId: nonEmptyString,
     baseBranch: safeGitRef.optional(),
+    rootPath: z.string().optional(),
   })
   .passthrough();
 
@@ -140,6 +151,7 @@ export const gitDiffPreviewSchema = z.object({
   path: nonEmptyString,
   scope: z.string().optional(),
   baseBranch: safeGitRef.optional(),
+  rootPath: z.string().optional(),
 });
 
 export const gitCommitSchema = z
@@ -308,6 +320,7 @@ export const taskWorkspaceCreateSchema = z.object({
   maxRounds: z.number().int().min(1).max(100).optional(),
   useWorktree: z.boolean().optional(),
   worktreeBranch: z.string().optional(),
+  gitRoots: z.array(z.string()).optional(),
   name: z.string().max(60).optional(),
   icon: z.string().max(4).optional(),
   color: z.string().max(20).optional(),

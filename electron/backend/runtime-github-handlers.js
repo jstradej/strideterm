@@ -25,9 +25,18 @@ export function createGitHubHandlers(ctx) {
     ensureVisibleSession,
     scheduleGitHubPolling,
     resolveGitWorkspace,
+    resolveGitRootPath,
     getGitHubSettings,
     getGitHubConnections,
   } = ctx;
+
+  function resolveRootPath(workspace, rawRootPath) {
+    const resolved = resolveGitRootPath(workspace, rawRootPath || "");
+    if (rawRootPath && !resolved) {
+      throw new Error(`Root path not found in workspace gitRoots: ${rawRootPath}`);
+    }
+    return resolved || "";
+  }
 
   return {
     async verifyGitHubConnection(connection) {
@@ -192,7 +201,8 @@ export function createGitHubHandlers(ctx) {
       const connectionId =
         workspace.connectionId || workspace.review?.connectionId || workspace.quickfix?.connectionId || "";
       if (!connectionId) throw new Error("No GitHub connection associated with this workspace.");
-      const snapshot = git.getSnapshot(workspace.id);
+      const rootPath = resolveRootPath(workspace, payload.rootPath);
+      const snapshot = git.getSnapshot(workspace.id, rootPath);
       const remoteUrl = snapshot?.remotes?.origin || "";
       const match = remoteUrl.match(/github\.com[/:]([^/]+)\/([^/.]+)/);
       if (!match) throw new Error("Cannot determine GitHub owner/repo from remote URL.");
@@ -204,7 +214,8 @@ export function createGitHubHandlers(ctx) {
       const connectionId =
         workspace.connectionId || workspace.review?.connectionId || workspace.quickfix?.connectionId || "";
       if (!connectionId) throw new Error("No GitHub connection associated with this workspace.");
-      const snapshot = git.getSnapshot(workspace.id);
+      const rootPath = resolveRootPath(workspace, payload.rootPath);
+      const snapshot = git.getSnapshot(workspace.id, rootPath);
       if (!snapshot?.available) throw new Error("Git workspace is unavailable.");
       const remoteUrl = snapshot.remotes?.origin || "";
       const match = remoteUrl.match(/github\.com[/:]([^/]+)\/([^/.]+)/);
@@ -252,7 +263,7 @@ export function createGitHubHandlers(ctx) {
               role: "author",
               checkout: ws.review?.checkout || {
                 mode: "managed-worktree",
-                rootPath: workspace.cwd,
+                rootPath: rootPath || workspace.cwd,
                 cacheRepoPath: "",
               },
             };

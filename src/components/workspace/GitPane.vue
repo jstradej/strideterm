@@ -149,6 +149,15 @@
         </div>
       </div>
 
+      <!-- Repo picker (multi-root workspaces only) -->
+      <div v-if="showRepoPicker" class="git-repo-picker">
+        <label class="git-repo-picker__label">Repository</label>
+        <select class="git-repo-picker__select" :value="activeRootPath" @change="onRootChange($event.target.value)">
+          <option v-for="root in gitRoots" :key="root" :value="root">{{ formatRootLabel(root) }}</option>
+        </select>
+        <span class="git-repo-picker__hint">{{ gitRoots.length }} repos</span>
+      </div>
+
       <!-- Tab nav -->
       <nav class="git-tabs" role="tablist" aria-label="Git sections">
         <button
@@ -697,6 +706,19 @@
             </article>
           </div>
         </template>
+
+        <!-- ===== Bulk tab (multi-repo only) ===== -->
+        <template v-else-if="activeTab === 'bulk'">
+          <BulkRepoTable
+            :roots-snapshots="allRootsSnapshots"
+            :workspace-id="props.workspaceId"
+            :on-fetch-all="() => gitUiStore.bulkFetch(props.workspaceId)"
+            :on-pull-all="() => gitUiStore.bulkPull(props.workspaceId)"
+            :on-refresh-root="(rootPath) => gitUiStore.refreshRoot(props.workspaceId, rootPath)"
+            :on-pull-root="(rootPath) => gitUiStore.pullRoot(props.workspaceId, rootPath)"
+            :on-reveal-root="(rootPath) => gitUiStore.revealRoot(props.workspaceId, rootPath)"
+          />
+        </template>
       </section>
     </div>
   </div>
@@ -716,6 +738,7 @@ import GitWorktreeList from "./git/GitWorktreeList.vue";
 import GitTagList from "./git/GitTagList.vue";
 import GitCommitLog from "./git/GitCommitLog.vue";
 import GitBaseBranchPicker from "./git/GitBaseBranchPicker.vue";
+import BulkRepoTable from "./git/BulkRepoTable.vue";
 
 const props = defineProps({
   workspaceId: { type: String, required: true },
@@ -725,12 +748,23 @@ const props = defineProps({
 const appStore = useAppStore();
 const gitUiStore = useGitUiStore();
 
-const snapshot = computed(() => appStore.getGitSnapshot(props.workspaceId));
+const snapshot = computed(() => appStore.getActiveGitSnapshot(props.workspaceId));
 const gitUi = computed(() => gitUiStore.get(props.workspaceId));
 const workspaces = computed(() => appStore.filteredWorkspaces);
 
 const workspace = computed(() => (appStore.filteredWorkspaces || []).find((ws) => ws.id === props.workspaceId));
 const isReviewWorkspace = computed(() => !!workspace.value?.review?.prKey);
+
+// Multi-repo computed values
+const gitRoots = computed(() => workspace.value?.gitRoots || []);
+const isMultiRepo = computed(() => gitRoots.value.length >= 2);
+const showRepoPicker = computed(() => isMultiRepo.value && !isReviewWorkspace.value);
+const activeRootPath = computed(() => gitUiStore.getActiveRoot(props.workspaceId) || snapshot.value?.rootPath || "");
+const allRootsSnapshots = computed(() => {
+  const entry = appStore.payload?.git?.workspaces?.[props.workspaceId];
+  if (!entry?.roots) return [];
+  return Object.entries(entry.roots).map(([rootPath, snap]) => ({ rootPath, ...snap }));
+});
 const isLinkedWorktree = computed(() => snapshot.value?.isWorktree && !snapshot.value?.isMainWorktree);
 const operation = computed(() => snapshot.value?.operationState || {});
 const baseBranch = computed(() => snapshot.value?.baseBranch || snapshot.value?.compareWithBase?.baseBranch || "");
@@ -884,6 +918,24 @@ function onCommitAll() {
   commitMessage.value = "";
 }
 
+// Multi-repo root picker
+function onRootChange(newRoot) {
+  gitUiStore.setActiveRoot(props.workspaceId, newRoot);
+}
+
+function formatRootLabel(rootPath) {
+  if (!rootPath) return "";
+  const basename = rootPath.split(/[\\/]/).filter(Boolean).at(-1) || rootPath;
+  // collision check: if two roots share the same basename, show parent/basename
+  const others = gitRoots.value.filter((r) => r !== rootPath);
+  const collision = others.some((r) => (r.split(/[\\/]/).filter(Boolean).at(-1) || r) === basename);
+  if (collision) {
+    const parts = rootPath.split(/[\\/]/).filter(Boolean);
+    return parts.length >= 2 ? `${parts.at(-2)}/${parts.at(-1)}` : basename;
+  }
+  return basename;
+}
+
 // Branch options for combo box
 const baseBranchOptions = computed(() => {
   const names = snapshot.value?.branchNames || [];
@@ -995,6 +1047,9 @@ const tabs = computed(() => {
     { id: "tags", label: "Tags", badge: "" },
     { id: "worktrees", label: "Worktrees", badge: "" },
   ];
+  if (isMultiRepo.value) {
+    list.push({ id: "bulk", label: "Bulk", badge: "" });
+  }
   return list;
 });
 
@@ -1109,3 +1164,37 @@ function openExternal(url) {
   }
 }
 </script>
+
+<style scoped>
+.git-repo-picker {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--border-color, #333);
+  background: var(--surface-bg, #1e1e1e);
+}
+
+.git-repo-picker__label {
+  font-size: 11px;
+  color: var(--text-muted, #888);
+  white-space: nowrap;
+}
+
+.git-repo-picker__select {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  background: var(--input-bg, #2d2d2d);
+  color: var(--text-primary, #ccc);
+  border: 1px solid var(--border-color, #444);
+  border-radius: 3px;
+  padding: 2px 4px;
+}
+
+.git-repo-picker__hint {
+  font-size: 10px;
+  color: var(--text-muted, #666);
+  white-space: nowrap;
+}
+</style>

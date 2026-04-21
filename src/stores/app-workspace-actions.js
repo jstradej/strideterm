@@ -162,20 +162,22 @@ export function createWorkspaceActions(ctx) {
       });
   }
 
-  async function quickAddTab() {
+  async function quickAddTab(cwdOverride = "") {
     const workspace = ctx.payload.value?.workspace;
     const activeWs = workspace?.workspace || workspace?.project;
     if (!activeWs || activeWs.kind === "docker" || activeWs.kind === "azure" || activeWs.kind === "github") return;
 
     const nextWorkspace = cloneWorkspace(activeWs);
     const panelId = `panel-${crypto.randomUUID()}`;
-    nextWorkspace.panels.push({
+    const panel = {
       id: panelId,
       title: `${APP_CONFIG.ui.numberedPanelTitlePrefix} ${nextWorkspace.panels.length + 1}`,
       command: "",
       shell: true,
       startup: APP_CONFIG.ui.defaultPanelStartup,
-    });
+    };
+    if (cwdOverride) panel.cwd = cwdOverride;
+    nextWorkspace.panels.push(panel);
     nextWorkspace.activePanelId = panelId;
     await ctx.withSuppressedBroadcast(async () => {
       ctx.payload.value = await ctx.getApi().saveWorkspace(nextWorkspace);
@@ -183,7 +185,7 @@ export function createWorkspaceActions(ctx) {
     ctx.activeViewId.value = `${nextWorkspace.id}:${panelId}`;
   }
 
-  async function quickAddTemplateTab(command, title) {
+  async function quickAddTemplateTab(command, title, cwdOverride = "") {
     const workspace = ctx.payload.value?.workspace;
     const activeWs = workspace?.workspace || workspace?.project;
     if (!activeWs || activeWs.kind === "docker" || activeWs.kind === "azure" || activeWs.kind === "github") return;
@@ -194,13 +196,15 @@ export function createWorkspaceActions(ctx) {
     const isFiles = command === "__files__";
     const isTaskDashboard = command === "__task-dashboard__";
     const isVirtual = isFiles || isTaskDashboard;
-    nextWorkspace.panels.push({
+    const panel = {
       id: panelId,
       title: title || "Shell",
       command: command || "",
       shell: !isVirtual,
       startup: isVirtual ? "none" : APP_CONFIG.ui.defaultPanelStartup,
-    });
+    };
+    if (cwdOverride) panel.cwd = cwdOverride;
+    nextWorkspace.panels.push(panel);
     nextWorkspace.activePanelId = panelId;
     const nextViewId = isBrowser
       ? `browser:${panelId}`

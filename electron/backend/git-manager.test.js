@@ -409,9 +409,9 @@ describe("GitManager", () => {
     let inspectCount = 0;
     let nowValue = new Date("2026-03-17T12:00:00.000Z");
     const manager = new GitManager({ execGitImpl: vi.fn(), now: () => nowValue, snapshotCacheTtlMs: 5000 });
-    manager.inspectWorkspace = vi.fn(async (workspace) => {
+    manager._inspectRoot = vi.fn(async (workspace, rootPath) => {
       inspectCount++;
-      return { workspaceId: workspace.id, available: true, branch: "main", inspectCount };
+      return { workspaceId: workspace.id, rootPath, available: true, branch: "main", inspectCount };
     });
 
     const workspaces = [{ id: "ws-1", cwd: "/tmp/project", kind: "terminal" }];
@@ -434,9 +434,9 @@ describe("GitManager", () => {
     let inspectCount = 0;
     const nowValue = new Date("2026-03-17T12:00:00.000Z");
     const manager = new GitManager({ execGitImpl: vi.fn(), now: () => nowValue, snapshotCacheTtlMs: 60000 });
-    manager.inspectWorkspace = vi.fn(async (workspace) => {
+    manager._inspectRoot = vi.fn(async (workspace, rootPath) => {
       inspectCount++;
-      return { workspaceId: workspace.id, available: true };
+      return { workspaceId: workspace.id, rootPath, available: true };
     });
 
     const workspaces = [{ id: "ws-1", cwd: "/tmp/project", kind: "terminal" }];
@@ -452,9 +452,9 @@ describe("GitManager", () => {
     let inspectCount = 0;
     const nowValue = new Date("2026-03-17T12:00:00.000Z");
     const manager = new GitManager({ execGitImpl: vi.fn(), now: () => nowValue, snapshotCacheTtlMs: 60000 });
-    manager.inspectWorkspace = vi.fn(async (workspace) => {
+    manager._inspectRoot = vi.fn(async (workspace, rootPath) => {
       inspectCount++;
-      return { workspaceId: workspace.id, available: true };
+      return { workspaceId: workspace.id, rootPath, available: true };
     });
 
     const workspaces = [
@@ -1026,5 +1026,281 @@ describe("GitManager", () => {
     expect(snapshot.untracked.map((e) => e.path)).toContain("new.txt");
     expect(snapshot.dirtyCount).toBe(3);
     expect(snapshot.dirty).toBe(true);
+  });
+
+  // ─── runWriteAction rootPath routing ─────────────────────────────
+
+  describe("runWriteAction rootPath routing", () => {
+    test("runWriteAction uses rootPath as effectiveCwd when provided", async () => {
+      const root = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-rw-"));
+      tempPaths.push(root);
+      await fs.mkdir(path.join(root, ".git"), { recursive: true });
+      await fs.mkdir(path.join(root, "sub"), { recursive: true });
+      await fs.mkdir(path.join(root, "sub", ".git"), { recursive: true });
+
+      const subPath = path.join(root, "sub").replace(/\\/g, "/");
+
+      const execGitImpl = async (cwd, args) => {
+        if (args[0] === "rev-parse" && args[1] === "--show-toplevel") return { stdout: cwd + "\n", stderr: "" };
+        if (args[0] === "rev-parse" && args[1] === "--abbrev-ref") return { stdout: "main\n", stderr: "" };
+        if (args[0] === "remote") return { stdout: "", stderr: "" };
+        if (args[0] === "rev-list" && args[1] === "--count") return { stdout: "1\n", stderr: "" };
+        if (args[0] === "status" && args.includes("--porcelain=v2"))
+          return { stdout: "# branch.oid abc\n# branch.head main\n", stderr: "" };
+        if (args[0] === "status" && args.includes("--short")) return { stdout: "", stderr: "" };
+        if (args[0] === "log") return { stdout: "", stderr: "" };
+        if (args[0] === "stash" && args[1] === "list") return { stdout: "", stderr: "" };
+        if (args[0] === "diff" && args.includes("--cached")) return { stdout: "", stderr: "" };
+        if (args[0] === "diff" && args.includes("--shortstat")) return { stdout: "", stderr: "" };
+        if (args[0] === "diff" && args.includes("--name-only")) return { stdout: "", stderr: "" };
+        if (args[0] === "diff") return { stdout: "", stderr: "" };
+        if (args[0] === "ls-files") return { stdout: "", stderr: "" };
+        if (args[0] === "worktree")
+          return { stdout: `worktree ${cwd}\nHEAD abc\nbranch refs/heads/main\n`, stderr: "" };
+        if (args[0] === "for-each-ref") return { stdout: "main\n", stderr: "" };
+        if (args[0] === "rev-parse" && args[1] === "--git-dir") return { stdout: ".git\n", stderr: "" };
+        if (args[0] === "rev-parse" && args[1] === "--git-common-dir") return { stdout: ".git\n", stderr: "" };
+        return { stdout: "", stderr: "" };
+      };
+
+      const mgr = new GitManager({ execGitImpl });
+      mgr.detectLazygit = async () => ({ available: false, backend: null, error: "missing", launch: null });
+
+      const workspace = { id: "ws1", cwd: root.replace(/\\/g, "/"), gitRoots: [root.replace(/\\/g, "/"), subPath] };
+
+      let actionCwd = null;
+      await mgr.runWriteAction(workspace, {
+        type: "fetch",
+        label: "Fetch",
+        rootPath: subPath,
+        skipPreflight: true,
+        run: async (cwd) => {
+          actionCwd = cwd;
+          return { stdout: "", stderr: "" };
+        },
+      });
+
+      expect(actionCwd).toBe(subPath);
+    });
+
+    test("runWriteAction uses workspace.cwd when rootPath is not provided", async () => {
+      const root = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-rw2-"));
+      tempPaths.push(root);
+      await fs.mkdir(path.join(root, ".git"), { recursive: true });
+
+      const normalizedRoot = root.replace(/\\/g, "/");
+
+      const execGitImpl = async (cwd, args) => {
+        if (args[0] === "rev-parse" && args[1] === "--show-toplevel") return { stdout: cwd + "\n", stderr: "" };
+        if (args[0] === "rev-parse" && args[1] === "--abbrev-ref") return { stdout: "main\n", stderr: "" };
+        if (args[0] === "remote") return { stdout: "", stderr: "" };
+        if (args[0] === "rev-list" && args[1] === "--count") return { stdout: "1\n", stderr: "" };
+        if (args[0] === "status" && args.includes("--porcelain=v2"))
+          return { stdout: "# branch.oid abc\n# branch.head main\n", stderr: "" };
+        if (args[0] === "status" && args.includes("--short")) return { stdout: "", stderr: "" };
+        if (args[0] === "log") return { stdout: "", stderr: "" };
+        if (args[0] === "diff") return { stdout: "", stderr: "" };
+        if (args[0] === "worktree")
+          return { stdout: `worktree ${cwd}\nHEAD abc\nbranch refs/heads/main\n`, stderr: "" };
+        if (args[0] === "for-each-ref") return { stdout: "main\n", stderr: "" };
+        if (args[0] === "rev-parse" && args[1] === "--git-dir") return { stdout: ".git\n", stderr: "" };
+        if (args[0] === "rev-parse" && args[1] === "--git-common-dir") return { stdout: ".git\n", stderr: "" };
+        return { stdout: "", stderr: "" };
+      };
+
+      const mgr = new GitManager({ execGitImpl });
+      mgr.detectLazygit = async () => ({ available: false, backend: null, error: "missing", launch: null });
+
+      const workspace = { id: "ws2", cwd: normalizedRoot };
+
+      let actionCwd = null;
+      await mgr.runWriteAction(workspace, {
+        type: "fetch",
+        label: "Fetch",
+        // rootPath omitted
+        skipPreflight: true,
+        run: async (cwd) => {
+          actionCwd = cwd;
+          return { stdout: "", stderr: "" };
+        },
+      });
+
+      expect(actionCwd).toBe(normalizedRoot);
+    });
+
+    test("runWriteAction includes rootPath in audit log extra", async () => {
+      const root = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-audit-"));
+      tempPaths.push(root);
+      await fs.mkdir(path.join(root, ".git"), { recursive: true });
+      const subPath = path.join(root, "sub").replace(/\\/g, "/");
+      await fs.mkdir(path.join(root, "sub"), { recursive: true });
+      await fs.mkdir(path.join(root, "sub", ".git"), { recursive: true });
+
+      const execGitImpl = async (cwd, args) => {
+        if (args[0] === "rev-parse" && args[1] === "--show-toplevel") return { stdout: cwd + "\n", stderr: "" };
+        if (args[0] === "rev-parse" && args[1] === "--abbrev-ref") return { stdout: "main\n", stderr: "" };
+        if (args[0] === "remote") return { stdout: "", stderr: "" };
+        if (args[0] === "rev-list" && args[1] === "--count") return { stdout: "1\n", stderr: "" };
+        if (args[0] === "status" && args.includes("--porcelain=v2"))
+          return { stdout: "# branch.oid abc\n# branch.head main\n", stderr: "" };
+        if (args[0] === "status" && args.includes("--short")) return { stdout: "", stderr: "" };
+        if (args[0] === "log") return { stdout: "", stderr: "" };
+        if (args[0] === "diff") return { stdout: "", stderr: "" };
+        if (args[0] === "worktree")
+          return { stdout: `worktree ${cwd}\nHEAD abc\nbranch refs/heads/main\n`, stderr: "" };
+        if (args[0] === "for-each-ref") return { stdout: "main\n", stderr: "" };
+        if (args[0] === "rev-parse" && args[1] === "--git-dir") return { stdout: ".git\n", stderr: "" };
+        if (args[0] === "rev-parse" && args[1] === "--git-common-dir") return { stdout: ".git\n", stderr: "" };
+        return { stdout: "", stderr: "" };
+      };
+
+      const mgr = new GitManager({ execGitImpl });
+      mgr.detectLazygit = async () => ({ available: false, backend: null, error: "missing", launch: null });
+
+      const auditEntries = [];
+      mgr._logGitAudit = (entry) => auditEntries.push(entry);
+
+      const workspace = {
+        id: "ws-audit",
+        cwd: root.replace(/\\/g, "/"),
+        gitRoots: [root.replace(/\\/g, "/"), subPath],
+      };
+
+      await mgr.runWriteAction(workspace, {
+        type: "fetch",
+        label: "Fetch",
+        rootPath: subPath,
+        skipPreflight: true,
+        run: async () => ({ stdout: "", stderr: "" }),
+      });
+
+      const successEntry = auditEntries.find((e) => e.success === true);
+      expect(successEntry).toBeTruthy();
+      expect(successEntry.extra?.rootPath).toBe(subPath);
+    });
+  });
+
+  // ─── inspectWorkspaceRoots ────────────────────────────────────────
+
+  describe("inspectWorkspaceRoots", () => {
+    test("returns empty result when workspace has no cwd and no gitRoots", async () => {
+      const mgr = new GitManager({});
+      const result = await mgr.inspectWorkspaceRoots({ id: "ws1", cwd: "", gitRoots: [] });
+      expect(result.roots).toEqual([]);
+      expect(result.primaryRoot).toBe("");
+    });
+
+    test("uses workspace.cwd as single root when gitRoots is empty", async () => {
+      const mgr = new GitManager({});
+      const fakeSnap = { workspaceId: "ws1", rootPath: "/repo", branch: "main", available: true };
+      mgr._inspectRoot = vi.fn().mockResolvedValue(fakeSnap);
+      const result = await mgr.inspectWorkspaceRoots({ id: "ws1", cwd: "/repo", gitRoots: [] });
+      expect(result.roots).toHaveLength(1);
+      expect(result.primaryRoot).toBe("/repo");
+      expect(mgr._inspectRoot).toHaveBeenCalledWith(expect.objectContaining({ id: "ws1" }), "/repo");
+    });
+
+    test("returns N snapshots for N gitRoots entries", async () => {
+      const mgr = new GitManager({});
+      mgr._inspectRoot = vi.fn().mockImplementation(async (ws, rp) => ({
+        workspaceId: ws.id,
+        rootPath: rp,
+        available: true,
+      }));
+      const workspace = { id: "ws1", cwd: "/ms", gitRoots: ["/ms/api", "/ms/web", "/ms/infra"] };
+      const result = await mgr.inspectWorkspaceRoots(workspace);
+      expect(result.roots).toHaveLength(3);
+      expect(result.primaryRoot).toBe("/ms/api");
+      expect(mgr._inspectRoot).toHaveBeenCalledTimes(3);
+    });
+
+    test("refreshWorkspaces cache key isolates siblings", async () => {
+      const mgr = new GitManager({});
+      let inspectCount = 0;
+      mgr._inspectRoot = vi.fn().mockImplementation(async (ws, rp) => {
+        inspectCount++;
+        return { workspaceId: ws.id, rootPath: rp, available: true };
+      });
+      const workspace = { id: "ws1", cwd: "/ms", gitRoots: ["/ms/api", "/ms/web"] };
+
+      // First refresh — both roots are inspected
+      await mgr.refreshWorkspaces([workspace]);
+      expect(inspectCount).toBe(2);
+
+      // Second refresh within TTL — both are cached
+      await mgr.refreshWorkspaces([workspace]);
+      expect(inspectCount).toBe(2);
+
+      // Invalidate only /ms/api cache, /ms/web remains
+      mgr.invalidateSnapshotCache("ws1", "/ms/api");
+
+      // Third refresh — only api gets re-inspected
+      await mgr.refreshWorkspaces([workspace]);
+      expect(inspectCount).toBe(3);
+    });
+
+    test("inspectWorkspace back-compat returns primary root snapshot", async () => {
+      const mgr = new GitManager({});
+      const fakeSnap = { workspaceId: "ws1", rootPath: "/repo", branch: "main", available: true };
+      mgr._inspectRoot = vi.fn().mockResolvedValue(fakeSnap);
+      const result = await mgr.inspectWorkspace({ id: "ws1", cwd: "/repo", kind: "terminal" });
+      expect(result).toBe(fakeSnap);
+    });
+
+    test("getSnapshot returns primary root snapshot when called without rootPath", () => {
+      const mgr = new GitManager({});
+      const primary = { workspaceId: "ws1", rootPath: "/ms/api", branch: "main", available: true };
+      const secondary = { workspaceId: "ws1", rootPath: "/ms/web", branch: "main", available: true };
+      mgr.snapshots.set(mgr._cacheKey("ws1", "/ms/api"), primary);
+      mgr.snapshots.set(mgr._cacheKey("ws1", "/ms/web"), secondary);
+      expect(mgr.getSnapshot("ws1")).toBe(primary);
+    });
+
+    test("getSnapshot returns the requested root snapshot when rootPath is provided", () => {
+      const mgr = new GitManager({});
+      const primary = { workspaceId: "ws1", rootPath: "/ms/api", branch: "main", available: true };
+      const secondary = { workspaceId: "ws1", rootPath: "/ms/web", branch: "main", available: true };
+      mgr.snapshots.set(mgr._cacheKey("ws1", "/ms/api"), primary);
+      mgr.snapshots.set(mgr._cacheKey("ws1", "/ms/web"), secondary);
+      expect(mgr.getSnapshot("ws1", "/ms/web")).toBe(secondary);
+    });
+  });
+
+  // ─── stash rootPath routing ───────────────────────────────────────
+
+  describe("stash rootPath routing", () => {
+    test("stash uses rootPath as effective cwd when provided", async () => {
+      const calls = [];
+      const execGitImpl = vi.fn().mockImplementation(async (cwd, args) => {
+        calls.push({ cwd, cmd: args[0] });
+        return { stdout: "No local changes to save\n", stderr: "" };
+      });
+      const mgr = new GitManager({ execGitImpl });
+      const workspace = { id: "ws1", cwd: "/ms" };
+      await mgr.stash(workspace, { rootPath: "/ms/api" });
+      expect(calls[0].cwd).toBe("/ms/api");
+    });
+
+    test("stash falls back to workspace.cwd when rootPath is empty", async () => {
+      const calls = [];
+      const execGitImpl = vi.fn().mockImplementation(async (cwd) => {
+        calls.push(cwd);
+        return { stdout: "No local changes to save\n", stderr: "" };
+      });
+      const mgr = new GitManager({ execGitImpl });
+      await mgr.stash({ id: "ws1", cwd: "/ms/root" }, { rootPath: "" });
+      expect(calls[0]).toBe("/ms/root");
+    });
+
+    test("stashPop uses rootPath as effective cwd when provided", async () => {
+      const calls = [];
+      const execGitImpl = vi.fn().mockImplementation(async (cwd) => {
+        calls.push(cwd);
+        return { stdout: "HEAD is now at abc main\n", stderr: "" };
+      });
+      const mgr = new GitManager({ execGitImpl });
+      await mgr.stashPop({ id: "ws1", cwd: "/ms" }, { rootPath: "/ms/web" });
+      expect(calls[0]).toBe("/ms/web");
+    });
   });
 });
