@@ -314,11 +314,11 @@
           >
             {{ rescanning ? "Scanning\u2026" : "Re-scan" }}
           </button>
-          <label class="multi-repo-toggle">
-            <input type="checkbox" :checked="enableMultiRepo" @change="enableMultiRepo = $event.target.checked" />
-            Treat as multi-repo workspace
-          </label>
         </div>
+        <label class="multi-repo-toggle">
+          <input type="checkbox" :checked="enableMultiRepo" @change="enableMultiRepo = $event.target.checked" />
+          Treat as multi-repo workspace
+        </label>
         <template v-if="enableMultiRepo">
           <label v-if="cwdIsGitRepo" class="multi-repo-parent-toggle">
             <input

@@ -344,7 +344,29 @@ export function createDialogActions(ctx) {
 
   // --- Worktree dialog ---------------------------------------------------
 
-  function createWorktreeWithDialog(workspaceId) {
+  function createWorktreeWithDialog(workspaceId, { preselectedRootPath = "" } = {}) {
+    const workspaces = ctx.payload.value?.appState?.workspaces || [];
+    const target = workspaces.find((w) => w.id === workspaceId);
+    const gitRoots = Array.isArray(target?.gitRoots) ? target.gitRoots.filter(Boolean) : [];
+    const isMultiRepo = gitRoots.length >= 2;
+
+    if (isMultiRepo) {
+      const repoChoices = gitRoots.map((root) => ({
+        value: root,
+        label: formatRootBasename(root, gitRoots),
+      }));
+      openDialog("WorktreeDialog", {
+        repoChoices,
+        preselectedRootPath: preselectedRootPath || gitRoots[0],
+        onCancel: closeDialog,
+        onSubmit: async ({ name, rootPath }) => {
+          closeDialog();
+          await ctx.createWorktree(workspaceId, name, rootPath);
+        },
+      });
+      return;
+    }
+
     openDialog("TextInputDialog", {
       eyebrow: "Git",
       title: "New worktree",
@@ -355,9 +377,20 @@ export function createDialogActions(ctx) {
       onCancel: closeDialog,
       onSubmit: async (name) => {
         closeDialog();
-        await ctx.createWorktree(workspaceId, name);
+        await ctx.createWorktree(workspaceId, name, preselectedRootPath || "");
       },
     });
+  }
+
+  function formatRootBasename(rootPath, allRoots) {
+    const basename = rootPath.split(/[\\/]/).filter(Boolean).at(-1) || rootPath;
+    const collisions = allRoots.filter((r) => {
+      const rb = r.split(/[\\/]/).filter(Boolean).at(-1) || r;
+      return rb === basename && r !== rootPath;
+    });
+    if (!collisions.length) return basename;
+    const segments = rootPath.split(/[\\/]/).filter(Boolean);
+    return segments.slice(-2).join("/") || basename;
   }
 
   function openTaskWorkspaceDialog() {

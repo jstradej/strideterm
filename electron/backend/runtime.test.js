@@ -1832,6 +1832,61 @@ describe("runtime integration", () => {
     expect(projectWorkspaces[1].cwd).toBe(path.join(projectRoot, ".strideterm", "tree", "feature-x"));
   });
 
+  test("createWorktree on multi-repo workspace requires rootPath and runs inside the selected repo", async () => {
+    const parentRoot = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-multirepo-"));
+    tempPaths.push(parentRoot);
+    const repoA = path.join(parentRoot, "service-a");
+    const repoB = path.join(parentRoot, "service-b");
+    await fs.mkdir(repoA, { recursive: true });
+    await fs.mkdir(repoB, { recursive: true });
+
+    const fixture = await createFixture({
+      initialState: {
+        activeProjectId: "stack",
+        projects: [
+          {
+            id: "stack",
+            name: "Stack",
+            icon: "ST",
+            color: "#ffa424",
+            kind: "terminal",
+            cwd: parentRoot,
+            gitRoots: [repoA, repoB],
+            activePanelId: "dev",
+            panels: [{ id: "dev", title: "Dev", command: "", shell: true, startup: "default" }],
+          },
+        ],
+      },
+    });
+    fixtures.push(fixture);
+
+    await expect(fixture.runtime.createWorktree({ projectId: "stack", name: "feature-x" })).rejects.toThrow(
+      /Multi-repo workspace requires a repository/i,
+    );
+
+    await expect(
+      fixture.runtime.createWorktree({ projectId: "stack", name: "feature-x", rootPath: "/bogus/path" }),
+    ).rejects.toThrow(/not part of this workspace/i);
+
+    const payload = await fixture.runtime.createWorktree({
+      projectId: "stack",
+      name: "feature-x",
+      rootPath: repoA,
+    });
+
+    expect(fixture.execFileText).toHaveBeenCalledWith(
+      "git",
+      ["worktree", "add", path.join(repoA, ".strideterm", "tree", "feature-x"), "-b", "feature-x"],
+      { cwd: repoA },
+    );
+    const gitignore = await fs.readFile(path.join(repoA, ".gitignore"), "utf8");
+    expect(gitignore).toContain(".strideterm/");
+    const child = payload.appState.projects.find((p) => p.name === "Stack / feature-x");
+    expect(child?.cwd).toBe(path.join(repoA, ".strideterm", "tree", "feature-x"));
+    // Child inherits nothing from multi-repo — it's a single-repo worktree
+    expect(child?.gitRoots || []).toHaveLength(0);
+  });
+
   test("returns structured payload for git fetch and diff preview actions", async () => {
     const fixture = await createFixture({
       initialState: {

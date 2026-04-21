@@ -3176,7 +3176,7 @@ export async function createRuntime({
       broadcastState();
       return getPayload();
     },
-    async createWorktree({ workspaceId, projectId, name }) {
+    async createWorktree({ workspaceId, projectId, name, rootPath }) {
       const targetWorkspaceId = workspaceId || projectId;
       if (!name || !/^[a-zA-Z0-9._-]+$/.test(name)) {
         throw new Error("Worktree name must contain only alphanumeric characters, dots, hyphens, or underscores.");
@@ -3184,10 +3184,30 @@ export async function createRuntime({
       const project = findWorkspace(getState(), targetWorkspaceId);
       if (!project?.cwd) throw new Error("Workspace has no working directory");
 
-      const treePath = path.join(project.cwd, ".strideterm", "tree", name);
+      // Multi-repo: a rootPath must be chosen. Single-repo: fall back to workspace cwd.
+      const normalizePath = (p) =>
+        String(p || "")
+          .replace(/\\/g, "/")
+          .replace(/\/+$/, "");
+      const gitRoots = Array.isArray(project.gitRoots) ? project.gitRoots.filter(Boolean) : [];
+      let repoPath = rootPath || "";
+      if (gitRoots.length >= 2) {
+        if (!repoPath) {
+          throw new Error("Multi-repo workspace requires a repository to be selected for the worktree.");
+        }
+        const normRepo = normalizePath(repoPath);
+        const normRoots = gitRoots.map(normalizePath);
+        if (!normRoots.includes(normRepo) && normRepo !== normalizePath(project.cwd)) {
+          throw new Error(`Selected repository ${repoPath} is not part of this workspace.`);
+        }
+      } else if (!repoPath) {
+        repoPath = project.cwd;
+      }
 
-      // Ensure .strideterm/ in .gitignore
-      const gitignorePath = path.join(project.cwd, ".gitignore");
+      const treePath = path.join(repoPath, ".strideterm", "tree", name);
+
+      // Ensure .strideterm/ in .gitignore (inside the chosen repo)
+      const gitignorePath = path.join(repoPath, ".gitignore");
       let gitignoreContent = "";
       try {
         gitignoreContent = await readFile(gitignorePath, "utf-8");
@@ -3200,8 +3220,8 @@ export async function createRuntime({
       // Ensure directory exists for worktree
       await mkdir(path.dirname(treePath), { recursive: true });
 
-      // git worktree add
-      await execFileTextImpl("git", ["worktree", "add", treePath, "-b", name], { cwd: project.cwd });
+      // git worktree add — run inside the chosen repo root, not the workspace parent
+      await execFileTextImpl("git", ["worktree", "add", treePath, "-b", name], { cwd: repoPath });
 
       // Create subproject cloning parent panels
       const newProject = normalizeWorkspace({

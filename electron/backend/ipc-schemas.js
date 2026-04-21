@@ -196,6 +196,7 @@ export const profileSchema = z
 export const worktreeSchema = z.object({
   workspaceId: nonEmptyString,
   name: nonEmptyString,
+  rootPath: z.string().optional(),
 });
 
 export const removeWorktreeSchema = z.object({

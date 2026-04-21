@@ -17,6 +17,7 @@ import { useAppStore } from "../../stores/app.js";
 
 const DIALOGS = {
   TextInputDialog: defineAsyncComponent(() => import("./TextInputDialog.vue")),
+  WorktreeDialog: defineAsyncComponent(() => import("./WorktreeDialog.vue")),
   TextAreaDialog: defineAsyncComponent(() => import("./TextAreaDialog.vue")),
   EditTabDialog: defineAsyncComponent(() => import("./EditTabDialog.vue")),
   HelpDialog: defineAsyncComponent(() => import("./HelpDialog.vue")),

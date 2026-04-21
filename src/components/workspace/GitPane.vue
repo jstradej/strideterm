@@ -13,6 +13,14 @@
     </div>
     <div v-else class="git-view">
       <div class="git-view__toolbar">
+        <!-- Repo picker (multi-root workspaces only) — first position, compact -->
+        <label v-if="showRepoPicker" class="git-repo-picker">
+          <span class="git-repo-picker__label">Repo</span>
+          <select class="git-repo-picker__select" :value="activeRootPath" @change="onRootChange($event.target.value)">
+            <option v-for="root in gitRoots" :key="root" :value="root">{{ formatRootLabel(root) }}</option>
+          </select>
+          <span class="git-repo-picker__hint">{{ gitRoots.length }}</span>
+        </label>
         <div class="git-view__summary">
           <!-- Branch chip — detached HEAD gets special styling -->
           <span :class="['workspace-chip', isDetachedHead && 'workspace-chip--warn']">
@@ -149,15 +157,6 @@
         </div>
       </div>
 
-      <!-- Repo picker (multi-root workspaces only) -->
-      <div v-if="showRepoPicker" class="git-repo-picker">
-        <label class="git-repo-picker__label">Repository</label>
-        <select class="git-repo-picker__select" :value="activeRootPath" @change="onRootChange($event.target.value)">
-          <option v-for="root in gitRoots" :key="root" :value="root">{{ formatRootLabel(root) }}</option>
-        </select>
-        <span class="git-repo-picker__hint">{{ gitRoots.length }} repos</span>
-      </div>
-
       <!-- Tab nav -->
       <nav class="git-tabs" role="tablist" aria-label="Git sections">
         <button
@@ -173,7 +172,14 @@
         </button>
       </nav>
 
-      <section role="tabpanel" style="min-height: 0; overflow: auto; display: grid">
+      <section
+        role="tabpanel"
+        :class="['git-view__panel', isSwitchingRepo && 'git-view__panel--busy']"
+        style="min-height: 0; overflow: auto; display: grid"
+      >
+        <div v-if="isSwitchingRepo" class="git-view__overlay" aria-hidden="true">
+          <div class="git-view__spinner"></div>
+        </div>
         <!-- ===== Branch tab ===== -->
         <template v-if="activeTab === 'branch'">
           <div class="git-section">
@@ -919,8 +925,18 @@ function onCommitAll() {
 }
 
 // Multi-repo root picker
-function onRootChange(newRoot) {
+const isSwitchingRepo = ref(false);
+async function onRootChange(newRoot) {
+  if (newRoot === activeRootPath.value) return;
+  isSwitchingRepo.value = true;
   gitUiStore.setActiveRoot(props.workspaceId, newRoot);
+  try {
+    await gitUiStore.refreshGit(props.workspaceId);
+  } finally {
+    // Min 180ms visibility so the user sees the transition even on cache-warm switches
+    await new Promise((resolve) => setTimeout(resolve, 180));
+    isSwitchingRepo.value = false;
+  }
 }
 
 function formatRootLabel(rootPath) {
@@ -1103,7 +1119,7 @@ function onHeaderAction(action) {
 }
 
 function onCreateWorktree() {
-  appStore.createWorktreeWithDialog(props.workspaceId);
+  appStore.createWorktreeWithDialog(props.workspaceId, { preselectedRootPath: activeRootPath.value || "" });
 }
 
 function onCheckoutBranch() {
@@ -1167,34 +1183,66 @@ function openExternal(url) {
 
 <style scoped>
 .git-repo-picker {
-  display: flex;
+  display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 4px 8px;
-  border-bottom: 1px solid var(--border-color, #333);
-  background: var(--surface-bg, #1e1e1e);
+  font-size: 12px;
+  padding: 2px 10px 2px 2px;
+  margin-right: 2px;
+  border-right: 1px solid var(--border);
 }
 
 .git-repo-picker__label {
   font-size: 11px;
-  color: var(--text-muted, #888);
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
   white-space: nowrap;
 }
 
 .git-repo-picker__select {
-  flex: 1;
-  min-width: 0;
   font-size: 12px;
-  background: var(--input-bg, #2d2d2d);
-  color: var(--text-primary, #ccc);
-  border: 1px solid var(--border-color, #444);
+  max-width: 180px;
+  background: var(--input-bg, var(--panel));
+  color: var(--text, #ccc);
+  border: 1px solid var(--border);
   border-radius: 3px;
   padding: 2px 4px;
 }
 
 .git-repo-picker__hint {
   font-size: 10px;
-  color: var(--text-muted, #666);
+  color: var(--muted);
   white-space: nowrap;
+  opacity: 0.7;
+}
+
+.git-view__panel--busy {
+  position: relative;
+  overflow: hidden;
+}
+.git-view__overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10;
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(1px);
+  pointer-events: none;
+}
+.git-view__spinner {
+  width: 32px;
+  height: 32px;
+  border: 3px solid var(--border);
+  border-top-color: var(--accent, #e8a838);
+  border-radius: 50%;
+  animation: git-spin 0.8s linear infinite;
+}
+@keyframes git-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 </style>

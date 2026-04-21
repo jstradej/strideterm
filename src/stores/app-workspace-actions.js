@@ -315,9 +315,9 @@ export function createWorkspaceActions(ctx) {
     ctx.payload.value = await ctx.getApi().saveWorkspace(nextWorkspace);
   }
 
-  async function createWorktree(workspaceId, name) {
+  async function createWorktree(workspaceId, name, rootPath = "") {
     if (!workspaceId || !name) return;
-    ctx.payload.value = await ctx.getApi().createWorktree({ workspaceId, name });
+    ctx.payload.value = await ctx.getApi().createWorktree({ workspaceId, name, rootPath });
     ctx.splitGroup.value = null;
     ctx.hiddenViewIds.value = new Set();
   }
