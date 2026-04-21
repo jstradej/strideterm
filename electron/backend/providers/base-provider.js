@@ -67,6 +67,43 @@ export class BaseProvider {
   }
 
   /**
+   * Milliseconds to wait between pasting the prompt text and sending Enter.
+   * TUIs that buffer paste input (Ink-based React CLIs) may drop the Enter
+   * keystroke if it arrives while the paste is still being processed. Claude
+   * and Codex are fine at 200ms; GitHub Copilot's TUI needs longer.
+   */
+  get promptSubmitDelayMs() {
+    return 200;
+  }
+
+  /**
+   * How to deliver prompt text into the PTY:
+   *   "paste" — write the whole string in one chunk (default, fast).
+   *   "type"  — stream character-by-character with a small gap, simulating
+   *             keyboard input. Necessary for TUIs that treat fast bulk input
+   *             as a paste event (Ink's `useInput({paste: true})`), which
+   *             swallows the trailing \r as a literal character instead of
+   *             interpreting it as the Enter key.
+   * GitHub Copilot needs "type" — plain paste never submits.
+   */
+  get promptInjectionStyle() {
+    return "paste";
+  }
+
+  /** Milliseconds between characters when promptInjectionStyle === "type". */
+  get promptTypingGapMs() {
+    return 8;
+  }
+
+  /**
+   * Milliseconds to wait after submitting `/clear` before sending the next
+   * prompt. This gives the CLI time to finish resetting its UI/state.
+   */
+  get clearCommandSettleMs() {
+    return 800;
+  }
+
+  /**
    * Hook called before the first prompt is injected.
    * Providers can write config files here (e.g. Gemini yolo policy).
    * @param {string} _cwd

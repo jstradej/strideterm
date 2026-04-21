@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-const SUPPORTED_REVIEW_AGENTS = new Set(["claude", "codex"]);
+const SUPPORTED_REVIEW_AGENTS = new Set(["claude", "codex", "copilot"]);
 const DEFAULT_APP_ENTRY = path.resolve(fileURLToPath(new URL("../../", import.meta.url)));
 const REVIEW_BRIDGE_STDIO_ENTRY = fileURLToPath(new URL("./review-bridge-mcp-stdio.js", import.meta.url));
 
@@ -329,6 +329,60 @@ function buildCodexLaunch({ workspace, panel, context, processInfo }) {
   };
 }
 
+function buildCopilotLaunch({ workspace, panel, context, processInfo }) {
+  const mcp = buildMcpServerSpec({ context, processInfo });
+  const platform = processInfo?.platform || process.platform;
+  const args = [...inheritedPanelArgs(panel)];
+  if (!args.includes("--allow-all-tools") && !args.includes("--yolo") && !args.includes("--allow-all")) {
+    args.unshift("--allow-all-tools");
+  }
+  // Copilot exposes per-session MCP servers via --additional-mcp-config. The
+  // argument accepts inline JSON (matches Claude's --mcp-config shape).
+  args.push(
+    "--additional-mcp-config",
+    JSON.stringify({
+      mcpServers: {
+        review: {
+          command: mcp.command,
+          args: mcp.args,
+          env: mcp.env,
+        },
+      },
+    }),
+    "--add-dir",
+    String(workspace?.cwd || ""),
+    "-i",
+    buildReviewPrompt(context),
+  );
+
+  if (platform === "win32") {
+    const copilotPath = resolveWindowsCommandPath("copilot", processInfo, [".cmd", ".bat", ".exe", ".ps1"]);
+    if (copilotPath) {
+      return {
+        file: copilotPath,
+        args,
+        cwd: workspace?.cwd || "",
+        env: mcp.env || {},
+        skipCommandInjection: true,
+      };
+    }
+    return {
+      file: "copilot",
+      args,
+      cwd: workspace?.cwd || "",
+      env: mcp.env || {},
+      skipCommandInjection: true,
+    };
+  }
+
+  return {
+    file: "copilot",
+    args,
+    cwd: workspace?.cwd || "",
+    skipCommandInjection: true,
+  };
+}
+
 export function detectReviewAgentPanel(panel = {}) {
   const commandToken = firstCommandToken(panel.command);
   if (SUPPORTED_REVIEW_AGENTS.has(commandToken)) {
@@ -346,6 +400,9 @@ export function detectReviewAgentPanel(panel = {}) {
   }
 
   const title = normalizeText(panel.title);
+  if (title.includes("github copilot") || title.includes("copilot")) {
+    return "copilot";
+  }
   if (title.includes("claude")) {
     return "claude";
   }
@@ -369,6 +426,9 @@ export function buildReviewAgentLaunch({ workspace, panel, context, processInfo 
   }
   if (agent === "codex") {
     return buildCodexLaunch({ workspace, panel, context, processInfo });
+  }
+  if (agent === "copilot") {
+    return buildCopilotLaunch({ workspace, panel, context, processInfo });
   }
   return null;
 }

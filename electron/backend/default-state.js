@@ -34,12 +34,24 @@ function defaultCwd() {
   return os.homedir();
 }
 
+/**
+ * Returns the strIDEterm user-data directory, honoring the STRIDETERM_DATA_DIR
+ * env var used by dev1.ps1 and --data-dir. Centralized here so every module
+ * that falls back to a "default" path under strIDEterm's data dir picks up the
+ * override consistently — otherwise dev instances bleed into ~/.strideterm.
+ */
+export function strideDataDir() {
+  return process.env.STRIDETERM_DATA_DIR
+    ? path.resolve(process.env.STRIDETERM_DATA_DIR)
+    : path.join(os.homedir(), ".strideterm");
+}
+
 function defaultAzureReviewRoot() {
-  return path.join(os.homedir(), ".strideterm", "azure-pr");
+  return path.join(strideDataDir(), "azure-pr");
 }
 
 function defaultGitHubReviewRoot() {
-  return path.join(os.homedir(), ".strideterm", "github-pr");
+  return path.join(strideDataDir(), "github-pr");
 }
 
 export function createAccessToken() {
@@ -363,6 +375,7 @@ export function createDefaultState() {
       { id: "claude", title: "Claude Code", command: "claude", icon: "\u{1F916}" },
       { id: "codex", title: "Codex", command: "codex", icon: "\u{1F9E0}" },
       { id: "gemini", title: "Gemini CLI", command: "gemini", icon: "\u2728" },
+      { id: "copilot", title: "GitHub Copilot", command: "copilot", icon: "\u{1F419}" },
       { id: "devserver", title: "Dev Server", command: "npm run dev", icon: "\u{1F680}" },
       { id: "tests", title: "Tests", command: "npm test", icon: "\u{1F9EA}" },
       { id: "docker", title: "Docker Compose", command: "docker compose up", icon: "\u{1F433}" },
@@ -565,6 +578,21 @@ export function normalizeState(rawState = {}) {
   // Ensure the "files" template exists for existing users.
   if (!tabTemplates.some((t) => t.id === "files" || t.command === "__files__")) {
     tabTemplates.push({ id: "files", title: "Files", command: "__files__", icon: "\u{1F4C2}" });
+  }
+  // Migration for existing users: ensure the "copilot" agent template exists
+  // alongside claude/codex/gemini. Insert right after the last built-in agent
+  // so the group stays tidy in the Tab picker dropdown.
+  if (!tabTemplates.some((t) => t.id === "copilot" || t.command === "copilot")) {
+    const copilotTemplate = { id: "copilot", title: "GitHub Copilot", command: "copilot", icon: "\u{1F419}" };
+    const anchorIdx = (() => {
+      for (const anchor of ["gemini", "codex", "claude"]) {
+        const idx = tabTemplates.findIndex((t) => t.id === anchor);
+        if (idx >= 0) return idx;
+      }
+      return -1;
+    })();
+    if (anchorIdx >= 0) tabTemplates.splice(anchorIdx + 1, 0, copilotTemplate);
+    else tabTemplates.push(copilotTemplate);
   }
   const profiles = normalizeProfiles(rawState.profiles, defaults);
   const activeProfileId = profiles.some((profile) => profile.id === rawState.activeProfileId)

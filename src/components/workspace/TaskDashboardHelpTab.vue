@@ -6,7 +6,10 @@
         You provide a <strong>task description</strong> (or instruct the Worker directly). The system auto-generates
         control files and detects verification commands from your project.
       </li>
-      <li><strong>Worker</strong> (Claude Code) executes the task in its terminal panel.</li>
+      <li>
+        <strong>Worker</strong> (Claude Code, Codex, Gemini CLI, or GitHub Copilot) executes the task in its terminal
+        panel.
+      </li>
       <li>
         When the Worker goes idle, the <strong>Task Runner</strong> kicks in automatically and runs
         <strong>built-in checks</strong>: WORK_LOCK must be absent, TODO "In Progress" and "Blocked" sections must be
@@ -16,8 +19,8 @@
         If built-in checks fail, the Worker is <strong>re-prompted</strong> with failure details and continues working.
       </li>
       <li>
-        If all checks pass, the <strong>Judge</strong> (another Claude Code) independently evaluates whether the task is
-        genuinely complete.
+        If all checks pass, the <strong>Judge</strong> (any of the supported agents — same options as the Worker)
+        independently evaluates whether the task is genuinely complete.
       </li>
       <li>
         The Judge writes a verdict. If "continue", the Worker gets actionable feedback. If "complete", you get notified.

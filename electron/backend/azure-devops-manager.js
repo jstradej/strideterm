@@ -20,7 +20,7 @@ import {
 import {
   AZURE_REVIEW_ICON,
   AZURE_REVIEW_COLOR,
-  DEFAULT_REVIEW_ROOT,
+  getDefaultReviewRoot,
   clone,
   identityMatches,
   sanitizePathSegment,
@@ -898,7 +898,7 @@ export class AzureDevOpsManager extends BaseProviderManager {
       (workspaces || []).find(
         (workspace) => workspace.kind === "azure" && (workspace.profileId || "default") === (profileId || "default"),
       ) || null;
-    const reviewRoot = parentAzureWorkspace?.cwd || connection.reviewRoot || DEFAULT_REVIEW_ROOT;
+    const reviewRoot = parentAzureWorkspace?.cwd || connection.reviewRoot || getDefaultReviewRoot();
 
     return {
       parentWorkspaceId: parentAzureWorkspace?.id || "",
@@ -980,7 +980,7 @@ export class AzureDevOpsManager extends BaseProviderManager {
       summary,
       connection,
       token,
-      reviewRoot: parentAzureWorkspace?.cwd || connection.reviewRoot || DEFAULT_REVIEW_ROOT,
+      reviewRoot: parentAzureWorkspace?.cwd || connection.reviewRoot || getDefaultReviewRoot(),
     });
     const panels = createReviewWorkspacePanels(parentAzureWorkspace?.panels || [], state.tabTemplates || []);
     const workspace = {
@@ -1329,7 +1329,7 @@ export class AzureDevOpsManager extends BaseProviderManager {
     const activeProfile = state.activeProfileId || "default";
     const parentAzureWorkspace =
       state.workspaces.find((ws) => ws.kind === "azure" && (ws.profileId || "default") === activeProfile) || null;
-    const reviewRoot = parentAzureWorkspace?.cwd || connection.reviewRoot || DEFAULT_REVIEW_ROOT;
+    const reviewRoot = parentAzureWorkspace?.cwd || connection.reviewRoot || getDefaultReviewRoot();
 
     const repository = { id: repositoryId, name: repositoryName, remoteUrl };
     const checkout = await this.prepareQuickFixCheckout({
@@ -1389,7 +1389,7 @@ export class AzureDevOpsManager extends BaseProviderManager {
 export {
   AZURE_REVIEW_COLOR,
   AZURE_REVIEW_ICON,
-  DEFAULT_REVIEW_ROOT,
+  getDefaultReviewRoot,
   createPullRequestKey,
   normalizeConnectionInput,
   normalizeRemoteUrl,

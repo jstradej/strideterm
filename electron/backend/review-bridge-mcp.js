@@ -439,7 +439,7 @@ export async function runReviewBridgeMcpServer({ rootPath, prKey, workspaceId })
           ),
         lineNumber: z.number().int().positive().optional().describe("Line number in the file the comment refers to."),
         priority: z.enum(["low", "medium", "high"]).optional().describe("Priority for the draft comment."),
-        authorAgent: z.string().optional().describe("Agent label such as claude or codex."),
+        authorAgent: z.string().optional().describe("Agent label such as claude, codex, or copilot."),
       },
     },
     async (input) => handlers.createDraftComment(input),
@@ -455,7 +455,7 @@ export async function runReviewBridgeMcpServer({ rootPath, prKey, workspaceId })
         index: z.number().int().positive().optional().describe("1-based comment index from list_review_comments."),
         commentKey: z.string().optional().describe("Exact comment key when you already know it."),
         body: z.string().min(1).describe("Draft reply body to store locally."),
-        authorAgent: z.string().optional().describe("Agent label such as claude or codex."),
+        authorAgent: z.string().optional().describe("Agent label such as claude, codex, or copilot."),
         confidence: z.number().min(0).max(1).optional().describe("Optional confidence score from 0 to 1."),
         needsHumanApproval: z
           .boolean()
@@ -502,7 +502,7 @@ export async function runReviewBridgeMcpServer({ rootPath, prKey, workspaceId })
             "Your reply to the reviewer. This is the full text that will appear on the Azure DevOps thread. " +
               "Describe what you changed and why. Write naturally as a response to the reviewer's comment.",
           ),
-        authorAgent: z.string().optional().describe("Agent label such as claude or codex."),
+        authorAgent: z.string().optional().describe("Agent label such as claude, codex, or copilot."),
       },
     },
     async (input) => handlers.replyWithCodeChanges(input),

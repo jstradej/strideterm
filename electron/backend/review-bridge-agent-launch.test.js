@@ -34,8 +34,18 @@ describe("review bridge agent launch", () => {
   test("detects built-in review agent panels", () => {
     expect(detectReviewAgentPanel({ command: "claude" })).toBe("claude");
     expect(detectReviewAgentPanel({ command: "codex" })).toBe("codex");
+    expect(detectReviewAgentPanel({ command: "copilot" })).toBe("copilot");
     expect(detectReviewAgentPanel({ command: '"C:/Tools/Claude/claude.exe" --model haiku' })).toBe("claude");
+    expect(detectReviewAgentPanel({ command: '"C:/Tools/copilot.cmd" --allow-all-tools' })).toBe("copilot");
     expect(detectReviewAgentPanel({ command: "npm test" })).toBeNull();
+  });
+
+  test("detects copilot from panel title when command doesn't match", () => {
+    // Panel with no command but a descriptive title (e.g. user-customized terminal tab)
+    expect(detectReviewAgentPanel({ title: "GitHub Copilot" })).toBe("copilot");
+    expect(detectReviewAgentPanel({ title: "github copilot session" })).toBe("copilot");
+    // Generic "copilot" in title also matches — users shortening the label
+    expect(detectReviewAgentPanel({ title: "Copilot" })).toBe("copilot");
   });
 
   test("builds a claude launch with embedded review MCP config", () => {
@@ -181,6 +191,81 @@ describe("review bridge agent launch", () => {
       ELECTRON_RUN_AS_NODE: "1",
     });
     expect(launch.args.join(" ")).toContain("--review-bridge-mcp");
+  });
+
+  test("builds a copilot launch with --additional-mcp-config and --allow-all-tools", () => {
+    const launch = buildReviewAgentLaunch({
+      workspace: createWorkspace(),
+      panel: { id: "copilot", title: "GitHub Copilot", command: "copilot --model claude-sonnet-4.6" },
+      context: createContext(),
+      processInfo: {
+        execPath: "C:/Program Files/strIDEterm/strIDEterm.exe",
+        argv: ["C:/Program Files/strIDEterm/strIDEterm.exe"],
+        defaultApp: false,
+        platform: "linux",
+      },
+    });
+
+    expect(launch).toMatchObject({
+      file: "copilot",
+      skipCommandInjection: true,
+    });
+    // Copilot's permission bypass flag must be present even when the panel
+    // command omits it — review MCP requires tool access.
+    expect(launch.args).toContain("--allow-all-tools");
+    // Panel args are inherited (everything after "copilot")
+    expect(launch.args).toContain("--model");
+    expect(launch.args).toContain("claude-sonnet-4.6");
+    expect(launch.args).toContain("--additional-mcp-config");
+    expect(launch.args).toContain("--add-dir");
+    expect(launch.args).toContain("C:/reviews/pr-123");
+    expect(launch.args).toContain("-i");
+
+    // MCP config is inline JSON (same pattern as Claude's --mcp-config)
+    const configArg = launch.args[launch.args.indexOf("--additional-mcp-config") + 1];
+    const parsed = JSON.parse(configArg);
+    expect(parsed.mcpServers.review.command).toBe("C:/Program Files/strIDEterm/strIDEterm.exe");
+    expect(parsed.mcpServers.review.args).toContain("--review-bridge-mcp");
+    expect(parsed.mcpServers.review.args).toContain("--review-pr-key");
+    expect(parsed.mcpServers.review.args).toContain("ado-main:repo-1:123");
+  });
+
+  test("does not duplicate --allow-all-tools when panel command already includes it", () => {
+    const launch = buildReviewAgentLaunch({
+      workspace: createWorkspace(),
+      panel: { id: "copilot", title: "GitHub Copilot", command: "copilot --allow-all-tools --model gpt-5.4" },
+      context: createContext(),
+      processInfo: {
+        execPath: "C:/Program Files/strIDEterm/strIDEterm.exe",
+        argv: ["C:/Program Files/strIDEterm/strIDEterm.exe"],
+        defaultApp: false,
+        platform: "linux",
+      },
+    });
+
+    const allowCount = launch.args.filter((arg) => arg === "--allow-all-tools").length;
+    expect(allowCount).toBe(1);
+  });
+
+  test("resolves copilot binary path on Windows via commandLookup", () => {
+    const launch = buildReviewAgentLaunch({
+      workspace: createWorkspace(),
+      panel: { id: "copilot", title: "GitHub Copilot", command: "copilot" },
+      context: createContext(),
+      processInfo: {
+        execPath: "C:/Program Files/strIDEterm/strIDEterm.exe",
+        argv: ["C:/Program Files/strIDEterm/strIDEterm.exe"],
+        defaultApp: false,
+        platform: "win32",
+        commandLookup: {
+          copilot: "C:/Users/test/AppData/Roaming/npm/copilot.cmd",
+        },
+      },
+    });
+
+    expect(launch.file).toBe("C:/Users/test/AppData/Roaming/npm/copilot.cmd");
+    expect(launch.args).toContain("--allow-all-tools");
+    expect(launch.args).toContain("--additional-mcp-config");
   });
 
   test("uses node plus codex js entrypoint on Windows", () => {

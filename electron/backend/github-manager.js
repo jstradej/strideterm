@@ -20,7 +20,7 @@ import {
 import {
   GITHUB_REVIEW_ICON,
   GITHUB_REVIEW_COLOR,
-  DEFAULT_REVIEW_ROOT,
+  getDefaultReviewRoot,
   clone,
   sanitizePathSegment,
   normalizeReviewRoot,
@@ -836,7 +836,7 @@ export class GitHubManager extends BaseProviderManager {
       summary,
       connection,
       token,
-      reviewRoot: parentGitHubWorkspace?.cwd || connection.reviewRoot || DEFAULT_REVIEW_ROOT,
+      reviewRoot: parentGitHubWorkspace?.cwd || connection.reviewRoot || getDefaultReviewRoot(),
     });
     const panels = createReviewWorkspacePanels(parentGitHubWorkspace?.panels || [], state.tabTemplates || []);
     const workspace = {
@@ -1015,7 +1015,7 @@ export class GitHubManager extends BaseProviderManager {
     const activeProfile = state.activeProfileId || "default";
     const parentGitHubWorkspace =
       state.workspaces.find((ws) => ws.kind === "github" && (ws.profileId || "default") === activeProfile) || null;
-    const reviewRoot = parentGitHubWorkspace?.cwd || connection.reviewRoot || DEFAULT_REVIEW_ROOT;
+    const reviewRoot = parentGitHubWorkspace?.cwd || connection.reviewRoot || getDefaultReviewRoot();
 
     const cacheRepoPath = await this.ensureCacheRepo({ connection, token, owner, repo, remoteUrl, reviewRoot });
 
@@ -1102,7 +1102,7 @@ export class GitHubManager extends BaseProviderManager {
 export {
   GITHUB_REVIEW_COLOR,
   GITHUB_REVIEW_ICON,
-  DEFAULT_REVIEW_ROOT,
+  getDefaultReviewRoot,
   createPullRequestKey,
   normalizeConnectionInput,
   normalizeRemoteUrl,

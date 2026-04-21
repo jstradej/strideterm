@@ -120,6 +120,19 @@ describe("WorkspaceDialog", () => {
       expect(agentSections.length).toBe(2);
     });
 
+    test("provider dropdown lists all four built-in providers (claude, codex, gemini, copilot)", () => {
+      const wrapper = mountDialog({ workspace: buildTaskDraft(), creating: true });
+      const html = wrapper.html();
+      // Provider <option> values come from PROVIDER_CHOICES. Each provider id
+      // should appear as an option value in the rendered DOM.
+      expect(html).toContain('value="claude"');
+      expect(html).toContain('value="codex"');
+      expect(html).toContain('value="gemini"');
+      expect(html).toContain('value="copilot"');
+      // And the display name for the newly added provider must render too
+      expect(html).toContain("GitHub Copilot");
+    });
+
     test("shows max rounds input", () => {
       const wrapper = mountDialog({ workspace: buildTaskDraft(), creating: true });
       const maxRoundsInput = wrapper.find('input[type="number"]');

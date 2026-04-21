@@ -31,7 +31,7 @@ export const HOOKS_TO_REGISTER = ["Notification", "Stop", "SubagentStop", "UserP
 const HOOK_MARKERS = ["STRIDETERM_NOTIFY_URL", "hooks/notify.mjs", "hooks\\notify.mjs"];
 
 // Cross-platform Node.js script that reads stdin and POSTs to the strIDEterm
-// notify-server. Written to ~/.strideterm/hooks/notify.mjs at runtime.
+// notify-server. Written to <userDataPath>/hooks/notify.mjs at runtime.
 //
 // argv[2] is the hook name (Notification | Stop | SubagentStop | UserPromptSubmit)
 // injected by buildHookEntry. The script parses stdin as JSON, augments it with
@@ -40,25 +40,35 @@ const HOOK_MARKERS = ["STRIDETERM_NOTIFY_URL", "hooks/notify.mjs", "hooks\\notif
 // Claude Code does NOT pass parent env vars to hook processes (only CLAUDE_*).
 // URLs are resolved from a file written by strideterm's runtime.
 //
-// Logs to ~/.strideterm/logs/hook.log (errors/warnings only, auto-truncated
+// Paths resolve from `import.meta.url` so each installed script points at its
+// own <userDataPath> — critical for dev instances (dev1.ps1 / --data-dir) whose
+// runtime writes notify-urls.json under ~/.strideterm-dev. Using os.homedir()
+// here would route every hook back to ~/.strideterm regardless of instance.
+//
+// Logs to <userDataPath>/logs/hook.log (errors/warnings only, auto-truncated
 // at 3MB for retention). Successful delivery is visible in strideterm.log
 // via notify-server entries.
 const NOTIFY_SCRIPT_CONTENT = `import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
-import os from "node:os";
+import { fileURLToPath } from "node:url";
 
-const LOG_PATH = path.join(os.homedir(), ".strideterm", "logs", "hook.log");
+// __dirname equivalent for ESM — resolves to <userDataPath>/hooks/
+const HOOKS_DIR = path.dirname(fileURLToPath(import.meta.url));
+const DATA_DIR = path.dirname(HOOKS_DIR);
+
+const LOG_PATH = path.join(DATA_DIR, "logs", "hook.log");
 const LOG_MAX_BYTES = 3 * 1024 * 1024; // 3 MB
 function log(level, msg) {
   try {
     const line = new Date().toISOString().replace("T", " ").replace("Z", "") + " " + level + "  [hook] " + msg + "\\n";
     try { if (fs.statSync(LOG_PATH).size > LOG_MAX_BYTES) fs.writeFileSync(LOG_PATH, ""); } catch {}
+    try { fs.mkdirSync(path.dirname(LOG_PATH), { recursive: true }); } catch {}
     fs.appendFileSync(LOG_PATH, line);
   } catch {}
 }
 
-const URLS_PATH = path.join(os.homedir(), ".strideterm", "hooks", "notify-urls.json");
+const URLS_PATH = path.join(HOOKS_DIR, "notify-urls.json");
 const projectDir = process.env.CLAUDE_PROJECT_DIR || "";
 // Hook name — passed as argv[2] by buildHookEntry. Falls back to payload
 // hook_event_name (Claude Code may include this) or "Notification" as a

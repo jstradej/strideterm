@@ -10,8 +10,9 @@ import os from "node:os";
 export const ANSI_ESCAPE_RE =
   /\u001B\[[0-?]*[ -/]*[@-~]|\u001B\][^\u0007]*(?:\u0007|\u001B\\)|\u009B[0-?]*[ -/]*[@-~]/g;
 export const OSC133_COMMAND_FINISHED_RE = /\u001B\]133;D/;
-export const AGENT_NAME_RE = /\b(claude|codex|opencode|aider|gemini)\b/i;
-export const AGENT_OUTPUT_RE = /\b(claude code|openai codex|codex|claude|gemini|aider|opencode)\b/i;
+export const AGENT_NAME_RE = /\b(claude|codex|opencode|aider|gemini|copilot)\b/i;
+export const AGENT_OUTPUT_RE =
+  /\b(claude code|openai codex|codex|claude|gemini|aider|opencode|github copilot|copilot)\b/i;
 export const AGENT_OUTPUT_BURST_THRESHOLD = 10;
 
 // When hooks are active, bell/silence detection is suppressed. If no hook

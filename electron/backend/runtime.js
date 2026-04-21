@@ -1,5 +1,4 @@
 import http from "node:http";
-import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -34,6 +33,7 @@ import {
 } from "./claude-hook-config.js";
 import { configureGeminiHook, removeGeminiHook, detectGeminiHookStatus } from "./gemini-hook-config.js";
 import { configureCodexHook, removeCodexHook, detectCodexHookStatus } from "./codex-hook-config.js";
+import { configureCopilotHook, removeCopilotHook, detectCopilotHookStatus } from "./copilot-hook-config.js";
 import { AgentTaskRunner } from "./agent-task-runner.js";
 import { getProvider, getAllProviders } from "./providers/provider-registry.js";
 import { classifyHookEvent } from "./notifications/classifier.js";
@@ -785,7 +785,7 @@ export async function createRuntime({
     return (
       state.settings?.integrations?.azureDevops || {
         enabled: true,
-        reviewRoot: path.join(os.homedir(), ".strideterm", "azure-pr"),
+        reviewRoot: path.join(userDataPath, "azure-pr"),
         defaultPollSeconds: 120,
         connections: [],
       }
@@ -802,7 +802,7 @@ export async function createRuntime({
     return (
       state.settings?.integrations?.github || {
         enabled: true,
-        reviewRoot: path.join(os.homedir(), ".strideterm", "github-pr"),
+        reviewRoot: path.join(userDataPath, "github-pr"),
         defaultPollSeconds: 120,
         connections: [],
       }
@@ -2778,6 +2778,15 @@ export async function createRuntime({
     async getCodexHookStatus() {
       return detectCodexHookStatus(userDataPath);
     },
+    async configureCopilotHook() {
+      return configureCopilotHook(userDataPath);
+    },
+    async removeCopilotHook() {
+      return removeCopilotHook();
+    },
+    async getCopilotHookStatus() {
+      return detectCopilotHookStatus(userDataPath);
+    },
     /**
      * Expose notification-pipeline metrics for the About dialog / diagnostics.
      * Pure read — returns a snapshot.
@@ -2859,7 +2868,7 @@ export async function createRuntime({
       // Timeout — surface hook.log tail so the user can see what happened.
       let logTail = "";
       try {
-        const logPath = path.join(os.homedir(), ".strideterm", "logs", "hook.log");
+        const logPath = path.join(userDataPath, "logs", "hook.log");
         const raw = await readFile(logPath, "utf8");
         logTail = raw.split("\n").slice(-10).join("\n");
       } catch {
@@ -2875,6 +2884,9 @@ export async function createRuntime({
     },
     async testCodexHook() {
       return this.runHookProbe({ detectStatus: detectCodexHookStatus, configure: configureCodexHook });
+    },
+    async testCopilotHook() {
+      return this.runHookProbe({ detectStatus: detectCopilotHookStatus, configure: configureCopilotHook });
     },
     /**
      * Clear a single session's alert entry. Called from the notification

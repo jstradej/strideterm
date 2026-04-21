@@ -1,6 +1,13 @@
+import os from "node:os";
+import path from "node:path";
+import fs from "node:fs/promises";
 import { describe, expect, test, vi, beforeEach } from "vitest";
-import { AgentTaskRunner } from "./agent-task-runner.js";
-import { formatVerifyChecklist } from "./agent-task-utils.js";
+import {
+  AgentTaskRunner,
+  buildProgrammaticCopilotJudgeCommand,
+  shouldUseProgrammaticCopilotJudge,
+} from "./agent-task-runner.js";
+import { TODO_FILE, WORK_LOCK_FILE, formatVerifyChecklist, taskDir } from "./agent-task-utils.js";
 
 function createMockDeps(workspaces = []) {
   const written = [];
@@ -158,6 +165,42 @@ describe("AgentTaskRunner", () => {
     test("uses default commands when custom commands are not provided", () => {
       expect(workspace.panels[1].command).toBe("claude --dangerously-skip-permissions --model sonnet");
       expect(workspace.panels[2].command).toContain("claude");
+    });
+
+    test("builds copilot worker/judge commands from explicit workerProvider", () => {
+      const ws = runner.createTaskWorkspace({
+        state: { activeProfileId: "default" },
+        description: "Copilot task",
+        cwd: "/tmp/test",
+        parentWorkspaceId: "",
+        workerProvider: { providerId: "copilot", model: "gpt-5.4" },
+        judgeProvider: { providerId: "copilot", model: "claude-opus-4.7" },
+      });
+
+      // Provider-derived commands route through CopilotProvider.buildCommand
+      expect(ws.panels[1].command).toBe("copilot --allow-all-tools --model gpt-5.4");
+      expect(ws.panels[2].command).toBe("copilot --allow-all-tools --model claude-opus-4.7");
+
+      // Panel titles surface the provider displayName so user sees which agent is running
+      expect(ws.panels[1].title).toContain("GitHub Copilot");
+      expect(ws.panels[2].title).toContain("GitHub Copilot");
+
+      // Task provider config is persisted for later restarts
+      expect(ws.task.workerProviderConfig.providerId).toBe("copilot");
+      expect(ws.task.judgeProviderConfig.providerId).toBe("copilot");
+    });
+
+    test("parses copilot providerId from legacy workerCommand string", () => {
+      const ws = runner.createTaskWorkspace({
+        state: { activeProfileId: "default" },
+        description: "Legacy-string task",
+        cwd: "/tmp/test",
+        parentWorkspaceId: "",
+        workerCommand: "copilot --allow-all-tools --model gpt-5.4",
+      });
+
+      expect(ws.task.workerProviderConfig.providerId).toBe("copilot");
+      expect(ws.task.workerProviderConfig.model).toBe("gpt-5.4");
     });
   });
 
@@ -517,6 +560,24 @@ describe("AgentTaskRunner", () => {
       expect(snapshot[workspace.id].workerPanelId).toBe(workspace.task.workerPanelId);
       expect(snapshot[workspace.id].judgePanelId).toBe(workspace.task.judgePanelId);
     });
+
+    test("marks Windows Copilot judge workspaces as headless in snapshot", () => {
+      const ws = runner.createTaskWorkspace({
+        state: { activeProfileId: "default" },
+        description: "Copilot judge",
+        cwd: "/tmp/test",
+        parentWorkspaceId: "",
+        judgeProvider: { providerId: "copilot", model: "gpt-5.4-mini" },
+      });
+      const runner2 = new AgentTaskRunner();
+      runner2.init(createMockDeps([ws]));
+
+      const snapshot = runner2.getTaskSnapshot();
+      expect(snapshot[ws.id].judgeExecutionMode).toBe(
+        process.platform === "win32" ? "headless-copilot" : "interactive",
+      );
+      expect(snapshot[ws.id].judgeProgrammaticRunning).toBe(false);
+    });
   });
 
   describe("getTaskState", () => {
@@ -619,7 +680,12 @@ describe("startTask - prompt sent tracking", () => {
     expect(ws.task.state).toBe("running");
   });
 
-  test("sets promptSent to false when no description", async () => {
+  test("sets promptSent=true even with empty description (prompt points Worker to TASK.md)", async () => {
+    // Regression: old behavior gated prompt injection on task.description being
+    // truthy, so a user who created the task without a description and later
+    // edited TASK.md saw Start as a silent no-op. The prompt template falls
+    // back to "Read the task from <taskDir>/TASK.md" for empty descriptions,
+    // so Start should always inject the prompt.
     const runner = new AgentTaskRunner();
     const ws = runner.createTaskWorkspace({
       state: { activeProfileId: "default" },
@@ -632,7 +698,183 @@ describe("startTask - prompt sent tracking", () => {
     runner.init(deps);
 
     await runner.startTask(ws.id);
-    expect(ws.task.promptSent).toBe(false);
+    expect(ws.task.promptSent).toBe(true);
+    expect(ws.task.state).toBe("running");
+    // Worker panel should have received the prompt string (pasted via writeToSession)
+    const workerSessionId = `${ws.id}:${ws.task.workerPanelId}`;
+    const written = deps.written.filter((w) => w.sessionId === workerSessionId);
+    expect(written.length).toBeGreaterThan(0);
+  });
+});
+
+describe("resumeTask - late prompt delivery", () => {
+  test("injects prompt on resume if startTask ran before prompt was ever sent", async () => {
+    // Scenario: legacy task workspace created/started under the old code path
+    // with promptSent=false. User pauses and resumes — the Worker must finally
+    // receive the initial prompt so Resume isn't a silent no-op.
+    const runner = new AgentTaskRunner();
+    const ws = runner.createTaskWorkspace({
+      state: { activeProfileId: "default" },
+      description: "",
+      cwd: "/tmp/test",
+      parentWorkspaceId: "",
+      maxRounds: 3,
+    });
+    const deps = createMockDeps([ws]);
+    runner.init(deps);
+
+    // Simulate legacy "Start with empty desc → promptSent stayed false → paused"
+    ws.task.state = "paused";
+    ws.task.promptSent = false;
+    deps.written.length = 0;
+
+    const result = runner.resumeTask(ws.id);
+    expect(result).toBe(true);
+    expect(ws.task.state).toBe("running");
+
+    // Late-delivery prompt injection is fire-and-forget (returns a promise).
+    // #injectPrompt tries fs.writeFile first (fails with ENOENT in the test
+    // sandbox, which is two async ticks) and then falls back to direct paste.
+    // Wait until writeToSession has been called rather than guessing a delay.
+    const workerSessionId = `${ws.id}:${ws.task.workerPanelId}`;
+    const deadline = Date.now() + 1000;
+    while (Date.now() < deadline && deps.written.filter((w) => w.sessionId === workerSessionId).length === 0) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+
+    const written = deps.written.filter((w) => w.sessionId === workerSessionId);
+    expect(written.length).toBeGreaterThan(0);
+    expect(ws.task.promptSent).toBe(true);
+  });
+
+  test("streams prompt char-by-char for Copilot (bypasses Ink paste detection)", async () => {
+    // Regression: bulk PTY writes are treated as a paste event by Copilot's
+    // Ink TUI, which keeps the trailing \r as a literal character instead of
+    // interpreting it as Enter. Streaming one char at a time forces each
+    // keystroke to be its own event and lets the final \r submit the line.
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-typing-"));
+    const runner = new AgentTaskRunner();
+    const ws = runner.createTaskWorkspace({
+      state: { activeProfileId: "default" },
+      description: "",
+      cwd: tmp,
+      parentWorkspaceId: "",
+      workerProvider: { providerId: "copilot", model: "gpt-5.4" },
+    });
+    // Pre-create the task dir so #injectPrompt can write PROMPT.md and then
+    // inject a SHORT directive ("Read X/PROMPT.md and follow ...") rather
+    // than stream the full multi-kilobyte worker template char-by-char.
+    await fs.mkdir(taskDir(tmp, ws.task.taskId), { recursive: true });
+
+    const deps = createMockDeps([ws]);
+    runner.init(deps);
+
+    ws.task.state = "paused";
+    ws.task.promptSent = false;
+
+    runner.resumeTask(ws.id);
+
+    const sessionId = `${ws.id}:${ws.task.workerPanelId}`;
+    // Wait (in real time) until we see the final \r or timeout. The typing
+    // cascade is a chain of setTimeout per char — fake timers and this
+    // chain don't interact well (cascading micro-setTimeouts don't always
+    // drain cleanly), so use real timers with a generous deadline. Copilot's
+    // gap is 30ms × ~90 chars + 150ms enter ≈ 2.9s; give the loop 6s headroom.
+    const deadline = Date.now() + 6000;
+    while (Date.now() < deadline) {
+      if (deps.written.some((w) => w.sessionId === sessionId && w.data === "\r")) break;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+
+    const writes = deps.written.filter((w) => w.sessionId === sessionId);
+
+    // Many separate writes (one per char), NOT a single bulk write of the prompt.
+    expect(writes.length).toBeGreaterThan(10);
+    const bulkWrite = writes.find((w) => w.data && w.data.length > 5);
+    expect(bulkWrite).toBeUndefined();
+
+    // Final Enter must be present and come AFTER the last text char.
+    expect(writes.some((w) => w.data === "\r")).toBe(true);
+    const dataSeq = writes.map((w) => w.data);
+    const lastEnterIdx = dataSeq.lastIndexOf("\r");
+    expect(lastEnterIdx).toBe(dataSeq.length - 1);
+
+    await fs.rm(tmp, { recursive: true, force: true });
+  });
+
+  test("uses paste style with single bulk write for Claude (no char-by-char overhead)", async () => {
+    const runner = new AgentTaskRunner();
+    const ws = runner.createTaskWorkspace({
+      state: { activeProfileId: "default" },
+      description: "",
+      cwd: "/tmp/test",
+      parentWorkspaceId: "",
+      workerProvider: { providerId: "claude", model: "sonnet" },
+    });
+    const deps = createMockDeps([ws]);
+    runner.init(deps);
+
+    ws.task.state = "paused";
+    ws.task.promptSent = false;
+
+    runner.resumeTask(ws.id);
+
+    const sessionId = `${ws.id}:${ws.task.workerPanelId}`;
+    const deadline = Date.now() + 2000;
+    while (Date.now() < deadline) {
+      if (deps.written.filter((w) => w.sessionId === sessionId).length >= 2) break;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+
+    const writes = deps.written.filter((w) => w.sessionId === sessionId);
+
+    // Claude should get ONE bulk text write + ONE \r (two writes total).
+    expect(writes.length).toBe(2);
+    expect(writes[0].data.length).toBeGreaterThan(10);
+    expect(writes[1].data).toBe("\r");
+  });
+
+  test("uses programmatic Copilot judge mode on Windows", () => {
+    expect(shouldUseProgrammaticCopilotJudge({ providerId: "copilot" }, "win32")).toBe(true);
+    expect(shouldUseProgrammaticCopilotJudge({ providerId: "copilot" }, "linux")).toBe(false);
+    expect(shouldUseProgrammaticCopilotJudge({ providerId: "claude" }, "win32")).toBe(false);
+
+    const command = buildProgrammaticCopilotJudgeCommand({
+      promptPath: "C:\\temp\\judge prompt.md",
+      cwd: "C:\\temp\\repo",
+      model: "gpt-5.4-mini",
+      platform: "win32",
+    });
+    expect(command).toContain('type "C:\\temp\\judge prompt.md" | copilot');
+    expect(command).toContain("--no-ask-user");
+    expect(command).toContain("--allow-all-tools");
+    expect(command).toContain('--add-dir "C:\\temp\\repo"');
+    expect(command).toContain('--model "gpt-5.4-mini"');
+  });
+
+  test("does not re-send prompt on resume if it was already sent", async () => {
+    const runner = new AgentTaskRunner();
+    const ws = runner.createTaskWorkspace({
+      state: { activeProfileId: "default" },
+      description: "Real task",
+      cwd: "/tmp/test",
+      parentWorkspaceId: "",
+      maxRounds: 3,
+    });
+    const deps = createMockDeps([ws]);
+    runner.init(deps);
+
+    ws.task.state = "paused";
+    ws.task.promptSent = true;
+    deps.written.length = 0;
+
+    runner.resumeTask(ws.id);
+    // Same wait window as the positive case, so if a prompt WERE sent we'd see it.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    const workerSessionId = `${ws.id}:${ws.task.workerPanelId}`;
+    const written = deps.written.filter((w) => w.sessionId === workerSessionId);
+    expect(written.length).toBe(0);
   });
 });
 

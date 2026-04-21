@@ -5,10 +5,9 @@
  * Extracted from runtime.js following the same ctx factory pattern
  * as runtime-azure-handlers.js and runtime-github-handlers.js.
  */
-import os from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import { normalizeWorkspace } from "./default-state.js";
+import { normalizeWorkspace, strideDataDir } from "./default-state.js";
 import { normalizeReviewRoot, shortPathKey } from "./azure-devops-manager.js";
 import { APP_CONFIG } from "../../config/app-config.js";
 import { getLogger } from "./logger.js";
@@ -60,7 +59,7 @@ export function createProviderLifecycle(ctx) {
       icon: "AZ",
       color: "#0078d4",
       kind: "azure",
-      cwd: getAzureSettings().reviewRoot || path.join(os.homedir(), ".strideterm", "azure-pr"),
+      cwd: getAzureSettings().reviewRoot || path.join(strideDataDir(), "azure-pr"),
       notes: "Azure DevOps inbox",
       profileId,
       panels,
@@ -280,7 +279,7 @@ export function createProviderLifecycle(ctx) {
       icon: "GH",
       color: "#238636",
       kind: "github",
-      cwd: getGitHubSettings().reviewRoot || path.join(os.homedir(), ".strideterm", "github-pr"),
+      cwd: getGitHubSettings().reviewRoot || path.join(strideDataDir(), "github-pr"),
       notes: "GitHub inbox",
       profileId,
       panels,

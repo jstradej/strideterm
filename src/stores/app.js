@@ -143,7 +143,7 @@ export const useAppStore = defineStore("app", () => {
       isContainerRunning,
     });
     // Fingerprint includes all visible fields: id, title, status, tone
-    const key = result.map((t) => `${t.id}:${t.title}:${t.status}:${t.tone}`).join("|");
+    const key = result.map((t) => `${t.id}:${t.type}:${t.title}:${t.status}:${t.tone}`).join("|");
     if (key === _prevTabsKey) return _prevTabs;
     _prevTabsKey = key;
     _prevTabs = result;
@@ -473,7 +473,9 @@ export const useAppStore = defineStore("app", () => {
     if (!viewId || viewId === activeViewId.value) return;
 
     activeViewId.value = viewId;
+    const selectedTab = workspaceTabs.value.find((tab) => tab.id === viewId) || null;
     if (
+      (selectedTab && selectedTab.type !== "terminal") ||
       isGitViewId(viewId) ||
       isDockerViewId(viewId) ||
       isAzureViewId(viewId) ||

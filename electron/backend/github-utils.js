@@ -27,10 +27,17 @@ import {
 
 export const GITHUB_REVIEW_ICON = "GH";
 export const GITHUB_REVIEW_COLOR = "#238636";
-export const DEFAULT_REVIEW_ROOT = path.join(os.homedir(), ".strideterm", "github-pr");
+// Resolve lazily so dev instances (STRIDETERM_DATA_DIR / --data-dir) don't
+// default to the prod ~/.strideterm dir. A module-level `const` evaluates
+// once at import time, before main.js sets the env var.
+export function getDefaultReviewRoot() {
+  return process.env.STRIDETERM_DATA_DIR
+    ? path.join(path.resolve(process.env.STRIDETERM_DATA_DIR), "github-pr")
+    : path.join(os.homedir(), ".strideterm", "github-pr");
+}
 
 export function normalizeReviewRoot(value) {
-  return baseNormalizeReviewRoot(value, DEFAULT_REVIEW_ROOT);
+  return baseNormalizeReviewRoot(value, getDefaultReviewRoot());
 }
 
 /**

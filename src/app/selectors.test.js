@@ -95,4 +95,47 @@ describe("workspace selectors", () => {
 
     expect(result).toBeNull();
   });
+
+  test("renders Windows Copilot judge tabs as headless judge panes", () => {
+    const tabs = getWorkspaceTabs({
+      workspace: {
+        workspace: {
+          id: "task-1",
+          kind: "task",
+          task: {
+            workerPanelId: "worker",
+            judgePanelId: "judge",
+          },
+          panels: [
+            { id: "dash", title: "Dashboard", command: "__task-dashboard__" },
+            { id: "worker", title: "Worker", command: "claude" },
+            { id: "judge", title: "Judge", command: "copilot --allow-all-tools --model gpt-5.4-mini" },
+          ],
+        },
+        sessions: [
+          { sessionId: "task-1:worker", panelId: "worker", title: "Worker", status: "running" },
+          { sessionId: "task-1:judge", panelId: "judge", title: "Judge", status: "running" },
+        ],
+      },
+      payload: {
+        taskRunner: {
+          "task-1": {
+            judgePanelId: "judge",
+            judgeExecutionMode: "headless-copilot",
+            judgeProgrammaticRunning: true,
+            state: "judge-evaluating",
+          },
+        },
+      },
+      hiddenViewIds: new Set(),
+      statusTone: (status) => status,
+      isContainerRunning: () => false,
+    });
+
+    expect(tabs.find((tab) => tab.id === "task-1:judge")).toMatchObject({
+      type: "headless-judge",
+      status: "headless judge",
+      tone: "running",
+    });
+  });
 });

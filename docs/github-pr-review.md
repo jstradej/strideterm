@@ -42,7 +42,7 @@ Clicking **Review** on a PR creates a local workspace:
 1. Clones the repository (cached, shared across PRs from the same repo)
 2. Creates a git worktree at `{reviewRoot}/reviews/{connection}/pr-{number}/`
 3. Checks out the PR source branch
-4. Opens the workspace with terminal tabs (Claude Code, Codex, Shell) and review pane
+4. Opens the workspace with terminal tabs (Claude Code, Codex, GitHub Copilot, Shell) and review pane
 
 For PRs you authored, strIDEterm can attach to your existing workspace instead of creating a duplicate.
 
@@ -91,7 +91,7 @@ Merge conflict detection with file tree and diff preview.
 
 ### Agent
 
-Ready-to-use prompt templates for AI agents. Copy a prompt and paste it into Claude Code or Codex. Templates are editable and stored locally.
+Ready-to-use prompt templates for AI agents. Copy a prompt and paste it into Claude Code, Codex, or GitHub Copilot. Templates are editable and stored locally.
 
 Also shows the MCP server command line for connecting custom agents.
 
@@ -119,8 +119,8 @@ After publishing, draft comments are removed from the local database and re-impo
 
 Same workflow as Azure DevOps:
 
-1. Open a Claude Code or Codex tab in the review workspace
-2. The agent automatically gets MCP tools for the review bridge
+1. Open a Claude Code, Codex, or GitHub Copilot tab in the review workspace
+2. The agent automatically gets MCP tools for the review bridge (Copilot uses `--additional-mcp-config` with inline JSON; Claude uses `--mcp-config`; Codex uses `-c mcp_servers.review.*`)
 3. The agent reads comments, analyzes code, writes draft replies
 4. Drafts appear in the Comments tab
 5. Click **Push & publish** to send to GitHub

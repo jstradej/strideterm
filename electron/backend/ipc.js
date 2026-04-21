@@ -301,6 +301,10 @@ export function registerIpc(runtime, emitToRenderer, { includeStateGet = true } 
   ipcMain.handle("codex-hook:remove", async () => runtime.removeCodexHook());
   ipcMain.handle("codex-hook:status", async () => runtime.getCodexHookStatus());
   ipcMain.handle("codex-hook:test", async () => runtime.testCodexHook());
+  ipcMain.handle("copilot-hook:configure", async () => runtime.configureCopilotHook());
+  ipcMain.handle("copilot-hook:remove", async () => runtime.removeCopilotHook());
+  ipcMain.handle("copilot-hook:status", async () => runtime.getCopilotHookStatus());
+  ipcMain.handle("copilot-hook:test", async () => runtime.testCopilotHook());
   ipcMain.handle("notifications:metrics", async () => runtime.getNotificationMetrics());
 
   // --- Task runner ---
@@ -653,6 +657,10 @@ export function registerIpc(runtime, emitToRenderer, { includeStateGet = true } 
     ipcMain.removeHandler("codex-hook:remove");
     ipcMain.removeHandler("codex-hook:status");
     ipcMain.removeHandler("codex-hook:test");
+    ipcMain.removeHandler("copilot-hook:configure");
+    ipcMain.removeHandler("copilot-hook:remove");
+    ipcMain.removeHandler("copilot-hook:status");
+    ipcMain.removeHandler("copilot-hook:test");
     ipcMain.removeHandler("task:create-workspace");
     ipcMain.removeHandler("task:start");
     ipcMain.removeHandler("task:stop");

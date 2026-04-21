@@ -1,0 +1,76 @@
+import { BaseProvider, checkBinaryOnPath } from "./base-provider.js";
+
+export class CopilotProvider extends BaseProvider {
+  static id = "copilot";
+  static displayName = "GitHub Copilot";
+  // Curated subset of GitHub Copilot's model catalog. The full list changes
+  // frequently as GitHub rotates model availability; keeping this short avoids
+  // churn. Users can still override via --model in the command field.
+  static models = [
+    { id: "claude-sonnet-4.6", name: "Claude Sonnet 4.6", suggestedRole: "worker" },
+    { id: "claude-opus-4.7", name: "Claude Opus 4.7", suggestedRole: "judge" },
+    { id: "gpt-5.4", name: "GPT-5.4", suggestedRole: "worker" },
+    { id: "gpt-5.3-codex", name: "GPT-5.3 Codex", suggestedRole: null },
+    { id: "gpt-5.4-mini", name: "GPT-5.4 mini", suggestedRole: null },
+  ];
+
+  static defaultSkipPermissions = true;
+
+  buildCommand({ model, skipPermissions = true } = {}) {
+    const parts = ["copilot"];
+    if (skipPermissions) parts.push("--allow-all-tools");
+    if (model) parts.push("--model", model);
+    return parts.join(" ");
+  }
+
+  getEnvironment() {
+    // Env equivalent of --allow-all-tools; belt-and-braces so PTY children that
+    // re-exec copilot (rare) still inherit the permissive mode.
+    return { COPILOT_ALLOW_ALL: "true" };
+  }
+
+  get idleDetection() {
+    return "silence";
+  }
+
+  get idleTimeoutMs() {
+    return 8000;
+  }
+
+  /**
+   * Copilot's Ink-based TUI treats fast bulk PTY writes as a paste event and
+   * drops the content when the app's useInput handler doesn't opt into paste.
+   * We stream character-by-character so each char is a distinct keystroke
+   * event. Gap must exceed Ink's read-frame tick (~16ms on a 60Hz event
+   * loop) — otherwise multiple chars land in the same `data` event and Ink
+   * re-classifies them as paste. Empirically 8ms was too short (input never
+   * appeared); 30ms sits safely above the frame threshold.
+   *
+   * Cost: ~3s typing for a ~90-char "Read PROMPT.md and follow ..." directive.
+   * Worth it — paste-style and longer paste-to-Enter delays both failed.
+   */
+  get promptInjectionStyle() {
+    return "type";
+  }
+
+  get promptTypingGapMs() {
+    return 30;
+  }
+
+  /** With "type" style the final Enter fires right after the last char. */
+  get promptSubmitDelayMs() {
+    return 150;
+  }
+
+  /**
+   * Ink needs a moment to finish the `/clear` redraw before a new typed prompt
+   * arrives, otherwise the next input can disappear into the refresh.
+   */
+  get clearCommandSettleMs() {
+    return 1200;
+  }
+
+  async checkAvailability() {
+    return checkBinaryOnPath("copilot");
+  }
+}

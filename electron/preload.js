@@ -87,6 +87,10 @@ contextBridge.exposeInMainWorld("strideterm", {
   removeCodexHook: () => ipcRenderer.invoke("codex-hook:remove"),
   getCodexHookStatus: () => ipcRenderer.invoke("codex-hook:status"),
   testCodexHook: () => ipcRenderer.invoke("codex-hook:test"),
+  configureCopilotHook: () => ipcRenderer.invoke("copilot-hook:configure"),
+  removeCopilotHook: () => ipcRenderer.invoke("copilot-hook:remove"),
+  getCopilotHookStatus: () => ipcRenderer.invoke("copilot-hook:status"),
+  testCopilotHook: () => ipcRenderer.invoke("copilot-hook:test"),
   getNotificationMetrics: () => ipcRenderer.invoke("notifications:metrics"),
   // Task runner
   recheckClaude: () => ipcRenderer.invoke("task:recheck-claude"),

@@ -351,6 +351,19 @@ const PROVIDER_CHOICES = [
       { id: "gemini-2.5-flash", name: "2.5 Flash", suggestedRole: null },
     ],
   },
+  {
+    id: "copilot",
+    name: "GitHub Copilot",
+    defaultSkipPermissions: true,
+    models: [
+      { id: "", name: "Default", suggestedRole: null },
+      { id: "claude-sonnet-4.6", name: "Claude Sonnet 4.6", suggestedRole: "worker" },
+      { id: "claude-opus-4.7", name: "Claude Opus 4.7", suggestedRole: "judge" },
+      { id: "gpt-5.4", name: "GPT-5.4", suggestedRole: "worker" },
+      { id: "gpt-5.3-codex", name: "GPT-5.3 Codex", suggestedRole: null },
+      { id: "gpt-5.4-mini", name: "GPT-5.4 mini", suggestedRole: null },
+    ],
+  },
 ];
 
 function buildProviderCommand({ providerId, model, skipPermissions }) {
@@ -370,6 +383,12 @@ function buildProviderCommand({ providerId, model, skipPermissions }) {
     const parts = ["gemini"];
     if (skipPermissions) parts.push("--yolo");
     if (model) parts.push("-m", model);
+    return parts.join(" ");
+  }
+  if (providerId === "copilot") {
+    const parts = ["copilot"];
+    if (skipPermissions) parts.push("--allow-all-tools");
+    if (model) parts.push("--model", model);
     return parts.join(" ");
   }
   return "";

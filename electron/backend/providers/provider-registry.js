@@ -1,6 +1,7 @@
 import { ClaudeProvider } from "./claude-provider.js";
 import { CodexProvider } from "./codex-provider.js";
 import { GeminiProvider } from "./gemini-provider.js";
+import { CopilotProvider } from "./copilot-provider.js";
 
 const providers = new Map();
 
@@ -42,6 +43,10 @@ export function getProviderChoices() {
 export function parseProviderFromCommand(cmd) {
   if (!cmd) return { providerId: "claude", model: "sonnet" };
   const trimmed = cmd.trim();
+  if (trimmed.startsWith("copilot")) {
+    const m = trimmed.match(/--model\s+(\S+)/);
+    return { providerId: "copilot", model: m?.[1] || "claude-sonnet-4.6" };
+  }
   if (trimmed.startsWith("codex")) {
     const m = trimmed.match(/(?:--model|-m)\s+(\S+)/);
     return { providerId: "codex", model: m?.[1] || "gpt-5.4-mini" };
@@ -58,3 +63,4 @@ export function parseProviderFromCommand(cmd) {
 registerProvider(ClaudeProvider);
 registerProvider(CodexProvider);
 registerProvider(GeminiProvider);
+registerProvider(CopilotProvider);

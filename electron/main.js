@@ -24,6 +24,14 @@ function resolveDataDir() {
 const customDataDir = resolveDataDir();
 const userDataPath = customDataDir || path.join(os.homedir(), ".strideterm");
 
+// Expose the resolved data dir via env so modules that read it lazily
+// (DEFAULT_REVIEW_ROOT getters, strideDataDir() helper in default-state.js,
+// runtime fallbacks) see the same path — including when the user passed
+// --data-dir on the CLI rather than setting the env var manually.
+if (customDataDir) {
+  process.env.STRIDETERM_DATA_DIR = customDataDir;
+}
+
 // When using a custom data dir, change the app name so Electron uses a
 // separate single-instance lock and separate session data.
 if (customDataDir) {
@@ -394,7 +402,10 @@ async function loadBootstrapPayload() {
   }
 
   runtimeState.bootstrapPayload = (async () => {
-    const statePath = path.join(os.homedir(), ".strideterm", "strideterm-state.json");
+    // MUST use userDataPath — hardcoding ~/.strideterm here was the root cause
+    // of dev instances ("dev1.ps1" / --data-dir) briefly showing prod workspaces
+    // in the renderer before the runtime came up.
+    const statePath = path.join(userDataPath, "strideterm-state.json");
     let appState = createDefaultState();
 
     try {

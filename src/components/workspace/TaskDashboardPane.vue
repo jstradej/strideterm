@@ -190,7 +190,12 @@ const taskState = computed(() => workspace.value?.task || null);
 // File editing — delegated to composable
 const files = useTaskFiles(api, workspace, taskState);
 
-const PROVIDER_DISPLAY_NAMES = { claude: "Claude Code", codex: "Codex CLI", gemini: "Gemini CLI" };
+const PROVIDER_DISPLAY_NAMES = {
+  claude: "Claude Code",
+  codex: "Codex CLI",
+  gemini: "Gemini CLI",
+  copilot: "GitHub Copilot",
+};
 
 function providerLabel(config) {
   if (!config) return "Claude Code (sonnet)";

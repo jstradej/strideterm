@@ -201,6 +201,10 @@ function createRemoteTransport() {
     removeCodexHook: () => fetchJson("/api/codex-hook/remove", {}),
     getCodexHookStatus: () => fetchJson("/api/codex-hook/status", {}),
     testCodexHook: () => fetchJson("/api/codex-hook/test", {}),
+    configureCopilotHook: () => fetchJson("/api/copilot-hook/configure", {}),
+    removeCopilotHook: () => fetchJson("/api/copilot-hook/remove", {}),
+    getCopilotHookStatus: () => fetchJson("/api/copilot-hook/status", {}),
+    testCopilotHook: () => fetchJson("/api/copilot-hook/test", {}),
     checkCommand: (command) => fetchJson("/api/check-command", { command }),
     // Task runner
     recheckClaude: () => fetchJson("/api/task/recheck-claude", {}),

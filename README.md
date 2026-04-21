@@ -7,7 +7,7 @@
 ## Features
 
 - **Workspaces** - organize projects into separate workspaces, each with its own terminal tabs, working directory, and settings
-- **Tab Templates** - quickly add Shell, Claude Code, Codex, Gemini CLI, Dev Server, Files, and other preset tabs
+- **Tab Templates** - quickly add Shell, Claude Code, Codex, Gemini CLI, GitHub Copilot, Dev Server, Files, and other preset tabs
 - **File Manager** - browse, preview, and edit files with an expandable tree, resizable panels, and right-click context menu (copy, rename, delete)
 - **Embedded Browser** - open web pages directly in a tab with URL bar and navigation controls
 - **Profiles** - switch between different sets of workspaces (e.g. Work, Personal, Client projects) with colored profile bar
@@ -15,7 +15,7 @@
 - **Git Integration** - branch info, dirty count, commit log, worktree creation, and Lazygit support
 - **Azure DevOps PR Review** - pull request inbox grouped by repo, managed review workspaces, AI agent integration (review + fix code), push & publish workflow, and MCP bridge — see [docs](docs/azure-devops-review.md)
 - **GitHub PR Review** - pull request inbox, managed review workspaces with local checkout, comment and review submission (Approve / Request Changes / Comment), push & publish workflow, and MCP bridge for AI agents — see [docs](docs/github-pr-review.md)
-- **Agent Task Runner** - supervised coding loop with Worker + Judge agents (Claude Code, Codex CLI, or Gemini CLI for either role): auto-detects project verification commands, runs deterministic checks between rounds, git-aware judge evaluation, periodic context refresh (shower mode), and a Dashboard UI for monitoring progress — see [docs](docs/agent-task-runner.md)
+- **Agent Task Runner** - supervised coding loop with Worker + Judge agents (Claude Code, Codex CLI, Gemini CLI, or GitHub Copilot for either role): auto-detects project verification commands, runs deterministic checks between rounds, git-aware judge evaluation, periodic context refresh (shower mode), and a Dashboard UI for monitoring progress — see [docs](docs/agent-task-runner.md)
 - **Docker Manager** - list containers, run actions, open shells, and stream logs
 - **Remote Access** - access your workspace from any device via LAN or Cloudflare tunnel with QR code
 - **Plugins** - extend functionality with plugins (Docker Ops and System Monitor built-in)
@@ -23,7 +23,7 @@
   - Audio ding when focused, system notification when in background
   - OSC 133 shell integration (auto-injected for bash/zsh/PowerShell) for instant detection
   - Silence-based heuristics for AI agents with configurable timing
-  - Optional notification hooks for [Claude Code](https://docs.anthropic.com/en/docs/claude-code/hooks), [Gemini CLI](https://geminicli.com/docs/hooks/), and [Codex CLI](https://developers.openai.com/codex/hooks) — one click in Settings enables instant idle/waiting alerts. Codex requires v0.121.0+ on Windows.
+  - Optional notification hooks for [Claude Code](https://docs.anthropic.com/en/docs/claude-code/hooks), [Gemini CLI](https://geminicli.com/docs/hooks/), [Codex CLI](https://developers.openai.com/codex/hooks), and GitHub Copilot CLI — one click in Settings enables instant idle/waiting alerts. Codex requires v0.121.0+ on Windows; Copilot requires v1.0.32+.
   - Tunable per user via settings or environment variables
 - **Keyboard Shortcuts** - navigate workspaces, tabs, and layouts entirely from the keyboard for a fast, mouse-free workflow
 - **Light/Dark Theme** - full theme support including terminal colors and title bar
@@ -74,7 +74,7 @@ Most users should use the [pre-built releases](https://github.com/jstradej/strid
 - Docker CLI - for Docker workspaces
 - `lazygit` - for Git TUI
 - `cloudflared` - for Cloudflare tunnel remote access
-- `claude`, `codex`, or `gemini` CLI — for [Agent Task Runner](#agent-task-runner). Worker and Judge agents each pick one provider independently; any combination is allowed.
+- `claude`, `codex`, `gemini`, or `copilot` CLI — for [Agent Task Runner](#agent-task-runner). Worker and Judge agents each pick one provider independently; any combination is allowed.
 
 **Native build note:** `node-pty` requires local build tools (Visual Studio Build Tools on Windows, Xcode CLT on macOS, `build-essential` + `python3` on Linux).
 
@@ -149,7 +149,7 @@ From another device: `http://<your-lan-ip>:43123/?token=<token>`
 
 ## Agent Task Runner
 
-strIDEterm can run a supervised coding loop where a **Worker** agent implements your task while a **Judge** agent independently verifies the results. Worker and Judge can each be **Claude Code**, **Codex CLI**, or **Gemini CLI** — mix and match (e.g. Claude worker + Gemini judge). Between rounds, the runner executes deterministic checks (tests, lint, build) and uses git diffs to give the judge full context.
+strIDEterm can run a supervised coding loop where a **Worker** agent implements your task while a **Judge** agent independently verifies the results. Worker and Judge can each be **Claude Code**, **Codex CLI**, **Gemini CLI**, or **GitHub Copilot** — mix and match (e.g. Claude worker + Copilot judge). Between rounds, the runner executes deterministic checks (tests, lint, build) and uses git diffs to give the judge full context.
 
 1. Create a task workspace from the sidebar context menu
 2. Pick the Worker and Judge providers and models (or use a custom CLI command)
@@ -158,21 +158,24 @@ strIDEterm can run a supervised coding loop where a **Worker** agent implements 
 
 Key features: auto-detected verify commands, TODO/WORK_LOCK file protocol, periodic context refresh (shower mode) for long tasks, and a Dashboard tab showing round-by-round progress with check results and judge feedback.
 
-Requires at least one of [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) (`claude`), [Codex CLI](https://developers.openai.com/codex/cli) (`codex`), or [Gemini CLI](https://geminicli.com/) (`gemini`) on your PATH. See [Agent Task Runner docs](docs/agent-task-runner.md) for full details.
+Requires at least one of [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) (`claude`), [Codex CLI](https://developers.openai.com/codex/cli) (`codex`), [Gemini CLI](https://geminicli.com/) (`gemini`), or [GitHub Copilot CLI](https://docs.github.com/en/copilot/github-copilot-in-the-cli) (`copilot`) on your PATH. See [Agent Task Runner docs](docs/agent-task-runner.md) for full details.
 
 ## Agent Notification Hooks
 
 strIDEterm integrates with each supported agent CLI's hook system so you get instant alerts when an agent finishes a turn or needs input — no polling, no silence timers. One-click setup per provider in **Settings → Notifications**:
 
-| Provider    | Config location                                                                   | Events registered                                  | Notes                                                                                                |
-| ----------- | --------------------------------------------------------------------------------- | -------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
-| Claude Code | `~/.claude/settings.json`                                                         | Notification, Stop, SubagentStop, UserPromptSubmit | Widest event coverage                                                                                |
-| Gemini CLI  | `~/.gemini/settings.json`                                                         | AfterAgent, Notification, BeforeAgent              | Event names auto-mapped to Claude aliases                                                            |
-| Codex CLI   | `~/.codex/hooks.json` + `[features] codex_hooks = true` in `~/.codex/config.toml` | Stop, UserPromptSubmit                             | Requires Codex CLI **0.121.0+** on Windows ([PR #17268](https://github.com/openai/codex/pull/17268)) |
+| Provider       | Config location                                                                   | Events registered                                  | Notes                                                                                                |
+| -------------- | --------------------------------------------------------------------------------- | -------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| Claude Code    | `~/.claude/settings.json`                                                         | Notification, Stop, SubagentStop, UserPromptSubmit | Widest event coverage                                                                                |
+| Gemini CLI     | `~/.gemini/settings.json`                                                         | AfterAgent, Notification, BeforeAgent              | Event names auto-mapped to Claude aliases                                                            |
+| Codex CLI      | `~/.codex/hooks.json` + `[features] codex_hooks = true` in `~/.codex/config.toml` | Stop, UserPromptSubmit                             | Requires Codex CLI **0.121.0+** on Windows ([PR #17268](https://github.com/openai/codex/pull/17268)) |
+| GitHub Copilot | `~/.copilot/config.json` (top-level `hooks` key)                                  | sessionEnd, userPromptSubmitted                    | Requires Copilot CLI **1.0.32+**. Respects `COPILOT_HOME` env var override                           |
 
 All providers share a single notification script (`~/.strideterm/hooks/notify.mjs`) that posts events to a local HTTP endpoint embedded in strIDEterm. The script is written automatically on startup, so you never need to edit it by hand. Settings also exposes a **Test hook** button that runs an end-to-end probe and reports delivery latency.
 
-**Without hooks** the Task Runner falls back to a silence-based heuristic (8 s default) for all three providers. OSC 133 shell integration only fires when a _shell_ returns to its prompt, so for interactive agent sessions (which never return to a prompt between turns) it doesn't help — hooks carry the primary signal. Hooks are optional but strongly recommended for long Judge reasoning passes where silence timers add up.
+**Without hooks** the Task Runner falls back to a silence-based heuristic (8 s default) for all four providers. OSC 133 shell integration only fires when a _shell_ returns to its prompt, so for interactive agent sessions (which never return to a prompt between turns) it doesn't help — hooks carry the primary signal. Hooks are optional but strongly recommended for long Judge reasoning passes where silence timers add up.
+
+**Copilot note:** if the user has `disableAllHooks: true` set in `~/.copilot/config.json` (Copilot's global kill-switch), Settings shows a distinct _"Configured — hooks disabled"_ badge so you know installed entries won't fire until you clear the flag.
 
 ## Plugins
 

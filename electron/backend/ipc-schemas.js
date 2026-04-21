@@ -289,7 +289,7 @@ export const githubQuickFixCreateSchema = z.object({
 // --- Task runner schemas ---
 
 export const providerConfigSchema = z.object({
-  providerId: z.enum(["claude", "codex", "gemini"]),
+  providerId: z.enum(["claude", "codex", "gemini", "copilot"]),
   model: z.string().max(100),
   skipPermissions: z.boolean().optional(),
   extra: z.record(z.unknown()).optional(),

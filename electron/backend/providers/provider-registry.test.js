@@ -3,6 +3,7 @@ import { getProvider, getAllProviders, getProviderChoices, parseProviderFromComm
 import { ClaudeProvider } from "./claude-provider.js";
 import { CodexProvider } from "./codex-provider.js";
 import { GeminiProvider } from "./gemini-provider.js";
+import { CopilotProvider } from "./copilot-provider.js";
 
 describe("provider-registry", () => {
   describe("getProvider", () => {
@@ -21,18 +22,24 @@ describe("provider-registry", () => {
       expect(p).toBeInstanceOf(GeminiProvider);
     });
 
+    test("returns CopilotProvider for 'copilot'", () => {
+      const p = getProvider("copilot");
+      expect(p).toBeInstanceOf(CopilotProvider);
+    });
+
     test("throws for unknown provider", () => {
       expect(() => getProvider("unknown-provider")).toThrow("Unknown provider: unknown-provider");
     });
   });
 
   describe("getAllProviders", () => {
-    test("returns all three built-in providers", () => {
+    test("returns all built-in providers", () => {
       const all = getAllProviders();
       const ids = all.map((P) => P.id);
       expect(ids).toContain("claude");
       expect(ids).toContain("codex");
       expect(ids).toContain("gemini");
+      expect(ids).toContain("copilot");
     });
   });
 
@@ -98,6 +105,18 @@ describe("provider-registry", () => {
       const result = parseProviderFromCommand("gemini --yolo");
       expect(result.providerId).toBe("gemini");
       expect(result.model).toBe("gemini-2.5-flash");
+    });
+
+    test("parses copilot command with explicit --model", () => {
+      const result = parseProviderFromCommand("copilot --allow-all-tools --model gpt-5.4");
+      expect(result.providerId).toBe("copilot");
+      expect(result.model).toBe("gpt-5.4");
+    });
+
+    test("parses copilot command without model uses default", () => {
+      const result = parseProviderFromCommand("copilot --allow-all-tools");
+      expect(result.providerId).toBe("copilot");
+      expect(result.model).toBe("claude-sonnet-4.6");
     });
   });
 });
@@ -206,5 +225,66 @@ describe("GeminiProvider", () => {
   test("static id and displayName", () => {
     expect(GeminiProvider.id).toBe("gemini");
     expect(GeminiProvider.displayName).toBe("Gemini CLI");
+  });
+});
+
+describe("CopilotProvider", () => {
+  let provider;
+  beforeEach(() => {
+    provider = new CopilotProvider();
+  });
+
+  test("buildCommand without model includes --allow-all-tools", () => {
+    const cmd = provider.buildCommand({});
+    expect(cmd).toBe("copilot --allow-all-tools");
+  });
+
+  test("buildCommand with model includes --model flag", () => {
+    const cmd = provider.buildCommand({ model: "gpt-5.4" });
+    expect(cmd).toBe("copilot --allow-all-tools --model gpt-5.4");
+  });
+
+  test("buildCommand with skipPermissions=false omits --allow-all-tools", () => {
+    const cmd = provider.buildCommand({ model: "gpt-5.4", skipPermissions: false });
+    expect(cmd).toBe("copilot --model gpt-5.4");
+  });
+
+  test("getEnvironment returns COPILOT_ALLOW_ALL=true", () => {
+    expect(provider.getEnvironment().COPILOT_ALLOW_ALL).toBe("true");
+  });
+
+  test("idleDetection is silence", () => {
+    expect(provider.idleDetection).toBe("silence");
+  });
+
+  test("idleTimeoutMs is 8000", () => {
+    expect(provider.idleTimeoutMs).toBe(8000);
+  });
+
+  test("promptInjectionStyle is 'type' (streams char-by-char to bypass Ink paste detection)", () => {
+    // Copilot's Ink TUI treats bulk PTY writes as a paste event and keeps the
+    // trailing \r as a literal character instead of submitting the line.
+    // Streaming one char at a time bypasses the paste heuristic entirely —
+    // each char is a separate keystroke and the final \r is a clean Enter.
+    expect(provider.promptInjectionStyle).toBe("type");
+  });
+
+  test("static id and displayName", () => {
+    expect(CopilotProvider.id).toBe("copilot");
+    expect(CopilotProvider.displayName).toBe("GitHub Copilot");
+  });
+});
+
+describe("base provider prompt injection defaults", () => {
+  test("Claude/Codex/Gemini use paste style with the 200ms default delay", () => {
+    const claude = new ClaudeProvider();
+    const codex = new CodexProvider();
+    const gemini = new GeminiProvider();
+    expect(claude.promptInjectionStyle).toBe("paste");
+    expect(codex.promptInjectionStyle).toBe("paste");
+    expect(gemini.promptInjectionStyle).toBe("paste");
+    expect(claude.promptSubmitDelayMs).toBe(200);
+    expect(codex.promptSubmitDelayMs).toBe(200);
+    expect(gemini.promptSubmitDelayMs).toBe(200);
   });
 });

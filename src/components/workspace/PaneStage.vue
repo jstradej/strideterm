@@ -59,9 +59,7 @@ import {
   isAzureViewId,
   isGitHubViewId,
   isReviewViewId,
-  isBrowserViewId,
   isFilesViewId,
-  isTaskDashboardViewId,
 } from "../../app/helpers.js";
 import PaneShell from "../layout/PaneShell.vue";
 import TerminalPane from "./TerminalPane.vue";
@@ -74,6 +72,7 @@ const GitHubInboxPane = defineAsyncComponent(() => import("./GitHubInboxPane.vue
 const BrowserPane = defineAsyncComponent(() => import("./BrowserPane.vue"));
 const FileManagerPane = defineAsyncComponent(() => import("./FileManagerPane.vue"));
 const TaskDashboardPane = defineAsyncComponent(() => import("./TaskDashboardPane.vue"));
+const HeadlessJudgePane = defineAsyncComponent(() => import("./HeadlessJudgePane.vue"));
 
 const AREA_NAMES = ["a", "b", "c", "d"];
 const AREA_LAYOUTS = new Set(["top-split", "left-split"]);
@@ -212,6 +211,22 @@ function nonTerminalPaneActions(tab) {
       },
     ];
   }
+  if (tab.type === "headless-judge") {
+    return [
+      { className: "workspace-pane__icon-btn", action: "select-tab", viewId: tab.id, title: "Focus tab", label: "◉" },
+      ...(tab.persistent
+        ? [
+            {
+              className: "workspace-pane__icon-btn",
+              action: "edit-tab",
+              viewId: tab.id,
+              title: "Edit tab",
+              label: "✎",
+            },
+          ]
+        : []),
+    ];
+  }
   return [];
 }
 
@@ -224,6 +239,7 @@ const PANE_COMPONENTS = {
   browser: BrowserPane,
   files: FileManagerPane,
   "task-dashboard": TaskDashboardPane,
+  "headless-judge": HeadlessJudgePane,
 };
 
 function paneComponent(type) {
@@ -238,6 +254,7 @@ function paneProps(tab) {
   if (tab.type === "review") return { workspaceId: tab.id.replace(/^review:/, "") };
   if (tab.type === "files") return { workspaceId: tab.id.replace(/^files:/, "") };
   if (tab.type === "task-dashboard") return { workspaceId: tab.id.replace(/^task-dashboard:/, "") };
+  if (tab.type === "headless-judge") return { sessionId: tab.id };
   return { tab };
 }
 
@@ -249,18 +266,9 @@ function onStageMousedown(event) {
   }
   const viewId = pane.dataset.viewId;
   if (!viewId) return;
+  const tab = visibleTabs.value.find((entry) => entry.id === viewId) || null;
   store.activeViewId = viewId;
-  store.activeSessionId =
-    isGitViewId(viewId) ||
-    isDockerViewId(viewId) ||
-    isAzureViewId(viewId) ||
-    isGitHubViewId(viewId) ||
-    isReviewViewId(viewId) ||
-    isBrowserViewId(viewId) ||
-    isFilesViewId(viewId) ||
-    isTaskDashboardViewId(viewId)
-      ? null
-      : viewId;
+  store.activeSessionId = tab?.type === "terminal" ? viewId : null;
   termStore.focusActiveTerminal();
 }
 

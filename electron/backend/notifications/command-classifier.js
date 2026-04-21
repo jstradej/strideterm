@@ -5,7 +5,7 @@
  * Plan § 3.2.4 / Phase 2. Pure function — no state, no I/O.
  *
  * Classes:
- *   agent     — Claude Code / Codex / Aider / Gemini / Opencode — hooks preferred
+ *   agent     — Claude Code / Codex / Aider / Gemini / Opencode / GitHub Copilot — hooks preferred
  *   streaming — long-running servers / watchers that idle by design; no T3 alerts
  *   tui       — full-screen interactive programs (vim, less, top); no alerts at all
  *   job       — one-shot build/install/test jobs; alert only on exit
@@ -16,7 +16,7 @@
  * we fall back to "shell" which keeps the full heuristic pipeline active.
  */
 
-const AGENT_RE = /^\s*(?:env\s+\S+=\S+\s+)*(claude|codex|aider|opencode|gemini)(?:\s|$)/i;
+const AGENT_RE = /^\s*(?:env\s+\S+=\S+\s+)*(claude|codex|aider|opencode|gemini|copilot)(?:\s|$)/i;
 
 const STREAMING_RE = new RegExp(
   [

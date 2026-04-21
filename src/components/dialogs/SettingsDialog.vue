@@ -129,7 +129,7 @@
         </div>
         <div
           class="settings-check"
-          title="Enable the local HTTP listener that receives notification events from Claude Code, Gemini CLI, and Codex CLI hooks. Required before you can Configure any provider below."
+          title="Enable the local HTTP listener that receives notification events from Claude Code, Gemini CLI, Codex CLI, and GitHub Copilot hooks. Required before you can Configure any provider below."
         >
           <label class="settings-check__row">
             <input v-model="notifAgentHook" type="checkbox" />
@@ -137,7 +137,7 @@
           </label>
           <small class="settings-check__help">
             Start a local listener for instant agent idle detection. Enables the per-provider Configure buttons below
-            (Claude Code, Gemini CLI, Codex CLI).
+            (Claude Code, Gemini CLI, Codex CLI, GitHub Copilot).
           </small>
         </div>
         <div
@@ -397,6 +397,76 @@
               </button>
             </div>
           </details>
+
+          <div class="hook-section-title hook-section-title--spaced">GitHub Copilot</div>
+          <p v-if="copilotHookStatus === 'configured-but-disabled'" class="hook-warn">
+            Hooks are registered but <code>disableAllHooks</code> is <code>true</code> in
+            <code>~/.copilot/config.json</code>. Set it back to <code>false</code> (or remove the key) to let hooks
+            fire.
+          </p>
+          <p class="hook-info">Requires GitHub Copilot CLI 1.0.32+.</p>
+          <div class="hook-status-row">
+            <span class="hook-status-badge" :class="'hook-status--' + copilotHookStatus">
+              {{ HOOK_STATUS_LABELS[copilotHookStatus] || copilotHookStatus }}
+            </span>
+            <button
+              v-if="copilotHookStatus !== 'configured'"
+              type="button"
+              class="button button--small"
+              :disabled="copilotHookBusy"
+              title="Install strIDEterm hook entries into ~/.copilot/config.json. Registers sessionEnd and userPromptSubmitted events (mapped to Claude-compatible argv for the shared dispatcher). Preserves your existing Copilot settings."
+              @click="handleConfigureCopilotHook"
+            >
+              {{ copilotHookBusy ? "Configuring..." : "Configure GitHub Copilot" }}
+            </button>
+            <button
+              v-else
+              type="button"
+              class="button button--ghost button--small"
+              :disabled="copilotHookBusy"
+              title="Remove only strIDEterm's hook entries from ~/.copilot/config.json. Other Copilot config (model, MCP servers, user hooks) stays intact."
+              @click="handleRemoveCopilotHook"
+            >
+              Remove hook
+            </button>
+            <button
+              v-if="copilotHookStatus === 'configured' || copilotHookStatus === 'partial'"
+              type="button"
+              class="button button--small"
+              :disabled="copilotHookBusy || copilotHookTesting"
+              title="End-to-end probe through the shared notify.mjs. Confirms the Copilot hook → listener → dispatcher pipeline delivers events within 2 s."
+              @click="handleTestCopilotHook"
+            >
+              {{ copilotHookTesting ? "Testing..." : "Test hook" }}
+            </button>
+          </div>
+          <p
+            v-if="copilotHookTestResult"
+            class="hook-test-result"
+            :class="copilotHookTestResult.ok ? 'hook-test-ok' : 'hook-test-fail'"
+          >
+            <span v-if="copilotHookTestResult.ok">✓ Hook delivered in {{ copilotHookTestResult.elapsedMs }} ms.</span>
+            <span v-else>
+              ✗ {{ hookTestFailLabel(copilotHookTestResult.reason) }}
+              <span v-if="copilotHookTestResult.detail"> — {{ copilotHookTestResult.detail }}</span>
+            </span>
+          </p>
+          <pre
+            v-if="copilotHookTestResult && !copilotHookTestResult.ok && copilotHookTestResult.logTail"
+            class="hook-log-tail"
+            >{{ copilotHookTestResult.logTail }}</pre
+          >
+          <p v-if="copilotHookError" class="hook-error">{{ copilotHookError }}</p>
+          <details class="hook-setup-details">
+            <summary class="hook-setup-summary">Manual setup (advanced)</summary>
+            <div class="hook-setup-content">
+              <p>If auto-configure fails, add this to <code>~/.copilot/config.json</code>:</p>
+              <pre class="hook-setup-code">{{ copilotHookConfigJson }}</pre>
+              <button type="button" class="button button--ghost hook-copy-btn" @click="copyCopilotHookConfig">
+                {{ copilotHookCopied ? "Copied!" : "Copy to clipboard" }}
+              </button>
+            </div>
+          </details>
         </div>
       </div>
     </div>
@@ -590,6 +660,7 @@ const HOOK_STATUS_LABELS = {
   "not-configured": "Not configured",
   "script-missing": "Script missing",
   "flag-missing": "Feature flag missing",
+  "configured-but-disabled": "Configured — hooks disabled",
   error: "Error",
   unknown: "Checking...",
 };
@@ -610,6 +681,13 @@ const codexHookError = ref("");
 const codexHookBusy = ref(false);
 const codexHookTesting = ref(false);
 const codexHookTestResult = ref(null);
+
+// --- Copilot hook state (parallel to Claude/Gemini/Codex) ---
+const copilotHookStatus = ref("unknown");
+const copilotHookError = ref("");
+const copilotHookBusy = ref(false);
+const copilotHookTesting = ref(false);
+const copilotHookTestResult = ref(null);
 
 const hookConfigJson = `{
   "hooks": {
@@ -730,6 +808,42 @@ async function copyCodexHookConfig() {
   }
 }
 
+// GitHub Copilot hooks — flat schema with separate bash/powershell scripts at
+// the top level of ~/.copilot/config.json. Copilot event names (sessionEnd /
+// userPromptSubmitted) map to Claude argv aliases via the notify.mjs argv[2].
+const copilotHookConfigJson = `{
+  "hooks": {
+    "sessionEnd": [
+      {
+        "type": "command",
+        "bash": "node \\"~/.strideterm/hooks/notify.mjs\\" Stop",
+        "powershell": "node \\"~/.strideterm/hooks/notify.mjs\\" Stop",
+        "timeoutSec": 5
+      }
+    ],
+    "userPromptSubmitted": [
+      {
+        "type": "command",
+        "bash": "node \\"~/.strideterm/hooks/notify.mjs\\" UserPromptSubmit",
+        "powershell": "node \\"~/.strideterm/hooks/notify.mjs\\" UserPromptSubmit",
+        "timeoutSec": 5
+      }
+    ]
+  }
+}`;
+const copilotHookCopied = ref(false);
+async function copyCopilotHookConfig() {
+  try {
+    await navigator.clipboard.writeText(copilotHookConfigJson);
+    copilotHookCopied.value = true;
+    setTimeout(() => {
+      copilotHookCopied.value = false;
+    }, 2000);
+  } catch {
+    // Clipboard API not available
+  }
+}
+
 async function refreshHookStatus() {
   if (!api?.getClaudeHookStatus) {
     hookStatus.value = "unknown";
@@ -766,6 +880,19 @@ async function refreshCodexHookStatus() {
     codexHookStatus.value = result.status || "unknown";
   } catch {
     codexHookStatus.value = "error";
+  }
+}
+
+async function refreshCopilotHookStatus() {
+  if (!api?.getCopilotHookStatus) {
+    copilotHookStatus.value = "unknown";
+    return;
+  }
+  try {
+    const result = await api.getCopilotHookStatus();
+    copilotHookStatus.value = result.status || "unknown";
+  } catch {
+    copilotHookStatus.value = "error";
   }
 }
 
@@ -931,6 +1058,62 @@ async function handleTestCodexHook() {
   }
 }
 
+async function handleConfigureCopilotHook() {
+  if (!api?.configureCopilotHook) return;
+  copilotHookBusy.value = true;
+  copilotHookError.value = "";
+  try {
+    const result = await api.configureCopilotHook();
+    if (result.ok) {
+      copilotHookStatus.value = "configured";
+      // Re-check: configure doesn't flip disableAllHooks, so if it was true
+      // the status will actually be "configured-but-disabled".
+      await refreshCopilotHookStatus();
+    } else {
+      copilotHookError.value = result.error || "Configuration failed.";
+      copilotHookStatus.value = "error";
+    }
+  } catch (error) {
+    copilotHookError.value = error.message || "Unexpected error during configuration.";
+    copilotHookStatus.value = "error";
+  } finally {
+    copilotHookBusy.value = false;
+  }
+}
+
+async function handleRemoveCopilotHook() {
+  if (!api?.removeCopilotHook) return;
+  copilotHookBusy.value = true;
+  copilotHookError.value = "";
+  try {
+    const result = await api.removeCopilotHook();
+    if (result.ok) {
+      copilotHookStatus.value = "not-configured";
+    } else {
+      copilotHookError.value = result.error || "Removal failed.";
+    }
+  } catch (error) {
+    copilotHookError.value = error.message || "Unexpected error during removal.";
+  } finally {
+    copilotHookBusy.value = false;
+  }
+}
+
+async function handleTestCopilotHook() {
+  if (!api?.testCopilotHook) return;
+  copilotHookTesting.value = true;
+  copilotHookTestResult.value = null;
+  try {
+    const result = await api.testCopilotHook();
+    copilotHookTestResult.value = result;
+    if (result?.ok) await refreshCopilotHookStatus();
+  } catch (error) {
+    copilotHookTestResult.value = { ok: false, reason: "exception", detail: error?.message || String(error) };
+  } finally {
+    copilotHookTesting.value = false;
+  }
+}
+
 function hookTestFailLabel(reason) {
   switch (reason) {
     case "timeout":
@@ -977,6 +1160,7 @@ onMounted(() => {
   refreshHookStatus();
   refreshGeminiHookStatus();
   refreshCodexHookStatus();
+  refreshCopilotHookStatus();
   refreshMetrics();
   // Poll metrics every 10s while the dialog is open.
   metricsTimer = setInterval(refreshMetrics, 10_000);

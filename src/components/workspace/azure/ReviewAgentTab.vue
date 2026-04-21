@@ -44,7 +44,9 @@
           </button>
         </div>
       </div>
-      <p class="git-card__hint">Copy a prompt and paste it into Claude Code, Codex, or any MCP-capable agent.</p>
+      <p class="git-card__hint">
+        Copy a prompt and paste it into Claude Code, Codex, GitHub Copilot, or any MCP-capable agent.
+      </p>
       <div class="docker-list review-card__list review-card__list--dense review-agent-prompts">
         <template v-if="agentPrompts.length">
           <article v-for="prompt in agentPrompts" :key="prompt.promptId" class="docker-card review-agent-card">
@@ -102,8 +104,8 @@
         </div>
       </div>
       <p class="git-card__hint">
-        Claude Code and Codex get MCP tools auto-attached when launched in this workspace. For other agents, configure
-        the MCP server manually.
+        Claude Code, Codex, and GitHub Copilot get MCP tools auto-attached when launched in this workspace. For other
+        agents, configure the MCP server manually.
       </p>
       <div style="margin-top: 12px">
         <p class="eyebrow" style="margin-bottom: 4px">MCP Server Command</p>

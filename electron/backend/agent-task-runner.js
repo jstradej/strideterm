@@ -36,6 +36,27 @@ import {
 } from "./agent-task-prompts.js";
 
 const log = getLogger("task-runner");
+const COPILOT_PROGRAMMATIC_JUDGE_PROMPT_FILE = "JUDGE_INPUT.md";
+const COPILOT_PROGRAMMATIC_JUDGE_TIMEOUT_MS = 180_000;
+
+function quoteShellArg(value, platform = process.platform) {
+  const text = String(value ?? "");
+  if (platform === "win32") return `"${text.replace(/"/g, '""')}"`;
+  return `'${text.replace(/'/g, `'\\''`)}'`;
+}
+
+export function shouldUseProgrammaticCopilotJudge(providerConfig, platform = process.platform) {
+  return platform === "win32" && providerConfig?.providerId === "copilot";
+}
+
+export function buildProgrammaticCopilotJudgeCommand({ promptPath, cwd, model, platform = process.platform }) {
+  const source =
+    platform === "win32" ? `type ${quoteShellArg(promptPath, platform)}` : `cat ${quoteShellArg(promptPath, platform)}`;
+  const parts = ["copilot", "-s", "--no-ask-user", "--allow-all-tools"];
+  if (cwd) parts.push("--add-dir", quoteShellArg(cwd, platform));
+  if (model) parts.push("--model", quoteShellArg(model, platform));
+  return `${source} | ${parts.join(" ")}`;
+}
 
 /**
  * Agent Task Runner — orchestrates a worker + judge evaluation loop.
@@ -50,6 +71,8 @@ export class AgentTaskRunner {
   #evaluating = new Set();
   /** @type {Map<string, Promise>} per-cwd git init locks to prevent concurrent init */
   #gitInitLocks = new Map();
+  /** @type {Set<string>} workspaceIds with a headless programmatic judge in flight */
+  #programmaticJudges = new Set();
 
   // Injected dependencies (set via init())
   #writeToSession = null;
@@ -278,24 +301,29 @@ export class AgentTaskRunner {
     }
 
     this.#setTaskState(task, "running");
-    task.currentRound = 0;
+    task.currentRound = 1;
     task.rounds = [];
     this.#ensureRunningRound(task);
 
     // Claude Code is already running (started with the workspace).
     // Send the task prompt now — agent is ready and waiting for input.
-    if (task.description) {
-      const workerSessionId = `${workspaceId}:${task.workerPanelId}`;
-      const prompt = buildInitialWorkerPrompt(task);
-      await this.#injectPrompt(workerSessionId, prompt, workspace);
-      task.promptSent = true;
-      log.info("task started, prompt sent to worker", { workspaceId, taskId: task.taskId });
-      this.#logTaskEvent(workspace, "task-started", "Prompt sent to Worker");
-    } else {
-      task.promptSent = false;
-      log.info("task started, no description — waiting for user input", { workspaceId, taskId: task.taskId });
-      this.#logTaskEvent(workspace, "task-started", "No description — waiting for user input");
-    }
+    //
+    // We always send even when task.description is empty: the prompt template
+    // already falls back to "Read the task from <taskDir>/TASK.md" in that case,
+    // which is exactly what users expect after they edit TASK.md in the Files
+    // tab and press Start. Gating on description meant Start was a silent no-op
+    // for that workflow, and only typing directly into the terminal worked.
+    const workerSessionId = `${workspaceId}:${task.workerPanelId}`;
+    const prompt = buildInitialWorkerPrompt(task);
+    await this.#injectPrompt(workerSessionId, prompt, workspace);
+    task.promptSent = true;
+    const detail = task.description ? "Prompt sent to Worker" : "Prompt sent to Worker (task in TASK.md)";
+    log.info("task started, prompt sent to worker", {
+      workspaceId,
+      taskId: task.taskId,
+      hasDescription: !!task.description,
+    });
+    this.#logTaskEvent(workspace, "task-started", detail);
 
     this.#broadcastState();
     return true;
@@ -352,6 +380,24 @@ export class AgentTaskRunner {
     log.info("task resumed", { workspaceId, previousState, resumeTo });
     this.#logTaskEvent(workspace, "task-resumed", `Resumed to ${resumeTo}`);
     this.#broadcastState();
+
+    // If the initial prompt was never delivered (startTask ran with an empty
+    // description under the old code path, or the user is resuming a state that
+    // never sent a prompt), inject it now. Without this, Resume would flip the
+    // state badge to "running" but the Worker would still sit idle waiting.
+    if (!task.promptSent && resumeTo === "running") {
+      const workerSessionId = `${workspaceId}:${task.workerPanelId}`;
+      const prompt = buildInitialWorkerPrompt(task);
+      this.#injectPrompt(workerSessionId, prompt, workspace)
+        .then(() => {
+          task.promptSent = true;
+          this.#logTaskEvent(workspace, "prompt-sent", "Prompt delivered on resume");
+          this.#broadcastState();
+        })
+        .catch((err) => {
+          log.error("late-delivery prompt injection failed", { workspaceId, err: err.message });
+        });
+    }
 
     // If resumed to judge-evaluating, the judge's idle hook may have already
     // fired and been ignored while paused.  Proactively try to read the
@@ -447,17 +493,14 @@ export class AgentTaskRunner {
       log.warn("rejectTaskVerdict: failed to recreate WORK_LOCK", { workspaceId, err: err.message });
     }
 
-    // Don't increment currentRound — ensureRunningRound already pushes the
-    // next chip at currentRound+1, mirroring how a normal judge "continue"
-    // transitions (currentRound was already bumped when the judge was
-    // invoked). Skipping this would make the chip numbering jump (e.g. from
-    // #3 directly to #5).
-    // If we're already at the max-rounds ceiling (task was "failed" or just
-    // happened to complete at the limit), grant one more round's worth so the
-    // next eval doesn't immediately fail again. User can Send Back repeatedly.
-    const nextRoundNumber = (task.currentRound || 0) + 1;
-    if ((task.maxRounds || 0) < nextRoundNumber) {
-      task.maxRounds = nextRoundNumber;
+    // User override starts a fresh round. Increment currentRound so the new
+    // chip (pushed by ensureRunningRound below) gets the next number. If we
+    // hit the max-rounds ceiling (task was failed or completed at the limit),
+    // grant one more round's worth so the next eval doesn't immediately fail
+    // again — user can Send Back repeatedly.
+    task.currentRound = (task.currentRound || 0) + 1;
+    if ((task.maxRounds || 0) < task.currentRound) {
+      task.maxRounds = task.currentRound;
     }
     task.lastJudgeInstructions = `User override: ${trimmed}`;
 
@@ -572,6 +615,10 @@ export class AgentTaskRunner {
     }
 
     if (isJudge && task.state === "judge-evaluating") {
+      if (this.#programmaticJudges.has(workspaceId)) {
+        log.debug("judge idle ignored while programmatic judge is running", { workspaceId, sessionId, source });
+        return true;
+      }
       log.info("judge idle detected, reading verdict", { workspaceId, sessionId, source });
       this.#logTaskEvent(workspace, "judge-idle-detected", `Judge went idle via ${source}. Reading verdict…`);
       this.#handleJudgeVerdict(workspace).catch((err) => {
@@ -782,15 +829,16 @@ export class AgentTaskRunner {
   /**
    * Ensure a "running" round chip exists for the current worker iteration.
    * Idempotent: if the last round is already "running", returns it; otherwise
-   * pushes a fresh round {round: currentRound+1, action: "running"}. Called at
-   * every worker-prompt injection site so the chip appears immediately when a
-   * new iteration begins — not only once evaluation starts.
+   * pushes a fresh round {round: currentRound, action: "running"}. A "round"
+   * is one full worker → checks → judge cycle; it only advances when the
+   * judge sends the worker back (or the user rejects the verdict). Check
+   * failures re-prompt within the same round, so no new chip is pushed.
    */
   #ensureRunningRound(task) {
     const last = task.rounds?.[task.rounds.length - 1];
     if (last && last.action === "running") return last;
     const round = {
-      round: (task.currentRound || 0) + 1,
+      round: task.currentRound || 1,
       startedAt: new Date().toISOString(),
       checks: [],
       judgeVerdict: null,
@@ -854,6 +902,10 @@ export class AgentTaskRunner {
           lastShowerRound: workspace.task.lastShowerRound || 0,
           workerProviderConfig: workspace.task.workerProviderConfig || null,
           judgeProviderConfig: workspace.task.judgeProviderConfig || null,
+          judgeExecutionMode: shouldUseProgrammaticCopilotJudge(workspace.task.judgeProviderConfig)
+            ? "headless-copilot"
+            : "interactive",
+          judgeProgrammaticRunning: this.#programmaticJudges.has(workspace.id),
           startedAt: workspace.task.startedAt || null,
           totalPausedMs: workspace.task.totalPausedMs || 0,
           pausedAt: workspace.task.pausedAt || null,
@@ -957,78 +1009,53 @@ export class AgentTaskRunner {
       }
 
       if (!allPassed) {
-        // Re-prompt worker with failure details
-        round.action = "re-prompted";
-        task.currentRound += 1;
-
-        if (task.currentRound >= task.maxRounds) {
-          this.#setTaskState(task, "failed");
-          round.action = "failed";
-          const failedNames = round.checks.filter((c) => !c.passed).map((c) => c.label);
-          log.info("task failed: max rounds reached", {
+        // Re-prompt worker with failure details — stays WITHIN the same round.
+        // A round only advances when the judge sends the worker back; check
+        // failures are just another worker attempt in the current round, so we
+        // keep the same chip (action flips back to "running" so subsequent
+        // #ensureRunningRound calls reuse this entry).
+        if (this.#shouldShower(task)) {
+          log.info("shower mode triggered before re-prompt", {
             workspaceId,
-            rounds: task.currentRound,
-            failedChecks: failedNames,
+            round: task.currentRound,
+            lastShower: task.lastShowerRound || 0,
           });
+          round.action = "shower";
+          this.#setTaskState(task, "refreshing");
           this.#logTaskEvent(
             workspace,
-            "task-failed",
-            `Max rounds (${task.maxRounds}) reached. Failed: ${failedNames.join(", ")}`,
+            "shower-started",
+            "Refreshing Worker context (killing session, writing handoff)",
           );
-          this.#raiseTaskAlert(
-            workspace,
-            "failed",
-            `Max rounds reached. Failed: ${failedNames.join(", ") || "checks"}`,
-          );
-          this.#notifyWorkerTaskEnded(workspace, "failed");
-        } else {
-          // Check if worker is due for a shower (context refresh)
-          if (this.#shouldShower(task)) {
-            log.info("shower mode triggered before re-prompt", {
-              workspaceId,
-              round: task.currentRound,
-              lastShower: task.lastShowerRound || 0,
-            });
-            round.action = "shower";
-            this.#setTaskState(task, "refreshing");
-            this.#logTaskEvent(
-              workspace,
-              "shower-started",
-              "Refreshing Worker context (killing session, writing handoff)",
-            );
-            this.#broadcastState();
-            const showerOk = await this.#performShower(workspace);
-            if (showerOk) {
-              this.#setTaskState(task, "running");
-              log.info("shower completed, waiting for refreshed worker", { workspaceId });
-              this.#logTaskEvent(workspace, "shower-completed", "Worker session restarted with fresh context");
-            } else {
-              log.warn("shower failed, falling back to normal re-prompt", { workspaceId });
-              this.#logTaskEvent(workspace, "shower-failed", "Handoff not written in time, falling back to re-prompt");
-              const prompt = buildRePrompt(task, round);
-              const workerSessionId = `${workspaceId}:${task.workerPanelId}`;
-              await this.#injectPrompt(workerSessionId, prompt, workspace);
-              this.#setTaskState(task, "running");
-              this.#ensureRunningRound(task);
-            }
+          this.#broadcastState();
+          const showerOk = await this.#performShower(workspace);
+          if (showerOk) {
+            this.#setTaskState(task, "running");
+            round.action = "running";
+            log.info("shower completed, waiting for refreshed worker", { workspaceId });
+            this.#logTaskEvent(workspace, "shower-completed", "Worker session restarted with fresh context");
           } else {
+            log.warn("shower failed, falling back to normal re-prompt", { workspaceId });
+            this.#logTaskEvent(workspace, "shower-failed", "Handoff not written in time, falling back to re-prompt");
             const prompt = buildRePrompt(task, round);
             const workerSessionId = `${workspaceId}:${task.workerPanelId}`;
             await this.#injectPrompt(workerSessionId, prompt, workspace);
             this.#setTaskState(task, "running");
-            this.#ensureRunningRound(task);
-            log.info("worker re-prompted", { workspaceId, round: task.currentRound });
-            this.#logTaskEvent(
-              workspace,
-              "worker-reprompted",
-              "Checks failed, Worker re-prompted with failure details",
-            );
+            round.action = "running";
           }
+        } else {
+          const prompt = buildRePrompt(task, round);
+          const workerSessionId = `${workspaceId}:${task.workerPanelId}`;
+          await this.#injectPrompt(workerSessionId, prompt, workspace);
+          this.#setTaskState(task, "running");
+          round.action = "running";
+          log.info("worker re-prompted", { workspaceId, round: task.currentRound });
+          this.#logTaskEvent(workspace, "worker-reprompted", "Checks failed, Worker re-prompted with failure details");
         }
       } else {
-        // All checks passed — invoke judge
+        // All checks passed — invoke judge (still within the current round;
+        // currentRound only advances when the judge says "continue").
         round.action = "judge-requested";
-        task.currentRound += 1;
 
         const judgeSetupStart = Date.now();
 
@@ -1040,10 +1067,48 @@ export class AgentTaskRunner {
         const gitContext = await this.#getGitContext(workspace.cwd);
         const gitContextMs = Date.now() - judgeSetupStart;
 
-        // Clear judge context for independent evaluation, then inject prompt
         const judgeSessionId = `${workspaceId}:${task.judgePanelId}`;
-        await this.#clearSessionContext(judgeSessionId);
         const judgePrompt = await buildJudgePrompt(task, round, gitContext, workspace.cwd);
+        if (shouldUseProgrammaticCopilotJudge(task.judgeProviderConfig)) {
+          this.#setTaskState(task, "judge-evaluating");
+          this.#programmaticJudges.add(workspaceId);
+          this.#broadcastState();
+          this.#logTaskEvent(
+            workspace,
+            "judge-requested",
+            `All checks passed. Running Copilot judge in programmatic mode on Windows (git: ${gitContextMs}ms)`,
+          );
+          const judgeResult = await this.#runProgrammaticCopilotJudge(workspace, judgePrompt);
+          const totalJudgeMs = Date.now() - judgeSetupStart;
+          const judgeSummaryTail = tailLines(judgeResult.stderr || judgeResult.stdout, MAX_OUTPUT_TAIL);
+          if (judgeResult.exitCode !== 0) {
+            log.warn("programmatic Copilot judge exited non-zero", {
+              workspaceId,
+              exitCode: judgeResult.exitCode,
+              stderr: judgeSummaryTail,
+            });
+          } else {
+            log.info("programmatic Copilot judge completed", { workspaceId, round: task.currentRound, totalJudgeMs });
+          }
+          this.#logTaskEvent(
+            workspace,
+            "judge-programmatic-finished",
+            `Copilot judge finished in programmatic mode (${totalJudgeMs}ms, exit ${judgeResult.exitCode})${
+              judgeResult.exitCode !== 0 && judgeSummaryTail ? ` — ${judgeSummaryTail}` : ""
+            }`,
+          );
+          if (this.#wasInterrupted(workspaceId, new Set(["judge-evaluating"]))) {
+            log.info("programmatic judge interrupted before verdict handling", { workspaceId });
+            return;
+          }
+          task.judgeNudged = true;
+          await this.#handleJudgeVerdict(workspace);
+          this.#programmaticJudges.delete(workspaceId);
+          return;
+        }
+
+        // Clear judge context for independent evaluation, then inject prompt
+        await this.#clearSessionContext(judgeSessionId, workspace);
         await this.#injectPrompt(judgeSessionId, judgePrompt, workspace);
         const totalSetupMs = Date.now() - judgeSetupStart;
         this.#setTaskState(task, "judge-evaluating");
@@ -1062,6 +1127,7 @@ export class AgentTaskRunner {
       this.#setTaskState(task, "paused");
       this.#broadcastState();
     } finally {
+      this.#programmaticJudges.delete(workspaceId);
       this.#evaluating.delete(workspaceId);
     }
   }
@@ -1143,11 +1209,13 @@ export class AgentTaskRunner {
           this.#raiseTaskAlert(workspace, "failed", `Max rounds reached. Judge: ${verdict.reason || "incomplete"}`);
           this.#notifyWorkerTaskEnded(workspace, "failed");
         } else {
+          // Judge sent the worker back — this starts a new round.
           const prompt = buildJudgeFeedbackPrompt(task, verdict);
           const workerSessionId = `${workspaceId}:${task.workerPanelId}`;
           await this.#injectPrompt(workerSessionId, prompt, workspace);
           this.#setTaskState(task, "running");
           if (lastRound) lastRound.action = "re-prompted";
+          task.currentRound += 1;
           this.#ensureRunningRound(task);
           log.info("worker re-prompted with judge feedback", { workspaceId, round: task.currentRound });
           this.#logTaskEvent(workspace, "worker-reprompted", `Judge feedback: ${verdict.reason || "continue working"}`);
@@ -1294,6 +1362,24 @@ export class AgentTaskRunner {
     });
 
     return Promise.race([childPromise, hardTimeout]);
+  }
+
+  async #runProgrammaticCopilotJudge(workspace, prompt) {
+    const task = workspace?.task;
+    const promptPath = path.join(taskDir(workspace.cwd, task.taskId), COPILOT_PROGRAMMATIC_JUDGE_PROMPT_FILE);
+    await writeFile(promptPath, prompt, "utf8");
+    const command = buildProgrammaticCopilotJudgeCommand({
+      promptPath,
+      cwd: workspace.cwd,
+      model: task.judgeProviderConfig?.model,
+    });
+    log.info("running programmatic Copilot judge", {
+      workspaceId: workspace.id,
+      taskId: task.taskId,
+      promptPath: COPILOT_PROGRAMMATIC_JUDGE_PROMPT_FILE,
+      model: task.judgeProviderConfig?.model || "",
+    });
+    return this.#execCommand(command, workspace.cwd, COPILOT_PROGRAMMATIC_JUDGE_TIMEOUT_MS);
   }
 
   // ---------------------------------------------------------------------------
@@ -1900,17 +1986,18 @@ Do NOT continue working on the task — only write the handoff summary.`;
    * Returns a promise that resolves after a short delay to allow the
    * command to be processed before injecting the next prompt.
    */
-  #clearSessionContext(sessionId) {
-    if (!this.#writeToSession) return Promise.resolve();
-    log.debug("clearing session context", { sessionId });
-    this.#writeToSession(sessionId, "/clear");
-    // Send Enter to execute the slash command, then wait for it to complete
-    return new Promise((resolve) => {
-      setTimeout(() => {
-        this.#writeToSession(sessionId, "\r");
-        setTimeout(resolve, 800);
-      }, 200);
+  async #clearSessionContext(sessionId, workspace) {
+    if (!this.#writeToSession) return;
+    const strategy = this.#resolveInjectionStrategy(sessionId, workspace);
+    log.debug("clearing session context", {
+      sessionId,
+      style: strategy.style,
+      clearSettleMs: strategy.clearSettleMs,
     });
+    await this.#writeAndSubmit(sessionId, "/clear", strategy);
+    if (strategy.clearSettleMs > 0) {
+      await new Promise((resolve) => setTimeout(resolve, strategy.clearSettleMs));
+    }
   }
 
   /**
@@ -1951,13 +2038,94 @@ Do NOT continue working on the task — only write the handoff summary.`;
       }
     }
 
-    log.trace("injectPrompt: writing to PTY", { sessionId, length: injection.length, fileBased: injection !== text });
-    this.#writeToSession(sessionId, injection);
-    setTimeout(() => {
-      log.trace("injectPrompt: sending Enter after 200ms delay", { sessionId });
-      this.#writeToSession(sessionId, "\r");
-    }, 200);
-    log.debug("prompt injected", { sessionId, length: injection.length, originalLength: text.length });
+    // Look up per-provider injection style and timings. Ink-based TUIs
+    // (GitHub Copilot) need "type" style — streaming chars one at a time
+    // bypasses paste detection that would otherwise swallow the trailing \r.
+    const strategy = this.#resolveInjectionStrategy(sessionId, workspace);
+    log.trace("injectPrompt: writing to PTY", {
+      sessionId,
+      length: injection.length,
+      fileBased: injection !== text,
+      style: strategy.style,
+      submitDelayMs: strategy.submitDelayMs,
+      typingGapMs: strategy.typingGapMs,
+    });
+
+    await this.#writeAndSubmit(sessionId, injection, strategy);
+    log.debug("prompt injected", {
+      sessionId,
+      length: injection.length,
+      originalLength: text.length,
+      style: strategy.style,
+    });
+  }
+
+  /**
+   * Stream a prompt character-by-character, then send Enter. Used for TUIs
+   * that misclassify fast bulk writes as a paste event (Copilot).
+   */
+  #typeAndSubmit(sessionId, text, { typingGapMs, submitDelayMs }) {
+    return new Promise((resolve) => {
+      let index = 0;
+      const typeNext = () => {
+        if (index >= text.length) {
+          setTimeout(() => {
+            log.trace("typeAndSubmit: sending Enter after type complete", { sessionId });
+            this.#writeToSession(sessionId, "\r");
+            resolve();
+          }, submitDelayMs);
+          return;
+        }
+        this.#writeToSession(sessionId, text[index]);
+        index += 1;
+        setTimeout(typeNext, typingGapMs);
+      };
+      typeNext();
+    });
+  }
+
+  /**
+   * Send text to a PTY using the provider's preferred strategy and resolve only
+   * after the final Enter has been written.
+   */
+  #writeAndSubmit(sessionId, text, strategy) {
+    if (strategy.style === "type") {
+      return this.#typeAndSubmit(sessionId, text, strategy);
+    }
+    this.#writeToSession(sessionId, text);
+    return new Promise((resolve) => {
+      setTimeout(() => {
+        log.trace("writeAndSubmit: sending Enter", { sessionId, submitDelay: strategy.submitDelayMs });
+        this.#writeToSession(sessionId, "\r");
+        resolve();
+      }, strategy.submitDelayMs);
+    });
+  }
+
+  /**
+   * Resolve the injection strategy for a given panel session: look up the
+   * provider config by panel id and return its style + timings. Falls back
+   * to sensible defaults for ad-hoc injections or unknown providers.
+   */
+  #resolveInjectionStrategy(sessionId, workspace) {
+    const fallback = { style: "paste", submitDelayMs: 200, typingGapMs: 8, clearSettleMs: 800 };
+    if (!workspace?.task) return fallback;
+    const panelId = sessionId.split(":").slice(1).join(":");
+    let providerConfig = null;
+    if (panelId === workspace.task.workerPanelId) providerConfig = workspace.task.workerProviderConfig;
+    else if (panelId === workspace.task.judgePanelId) providerConfig = workspace.task.judgeProviderConfig;
+    if (!providerConfig?.providerId) return fallback;
+    try {
+      const provider = getProvider(providerConfig.providerId);
+      return {
+        style: provider.promptInjectionStyle ?? fallback.style,
+        submitDelayMs: provider.promptSubmitDelayMs ?? fallback.submitDelayMs,
+        typingGapMs: provider.promptTypingGapMs ?? fallback.typingGapMs,
+        clearSettleMs: provider.clearCommandSettleMs ?? fallback.clearSettleMs,
+      };
+    } catch {
+      return fallback;
+    }
   }
 
   /**

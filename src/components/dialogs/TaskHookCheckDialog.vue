@@ -16,10 +16,11 @@
       </p>
       <p v-if="needsSettingEnable" style="font-size: 13px; color: var(--text-muted); margin: 0">
         The agent hook setting is currently disabled. Configuring will enable it and install the notification hook into
-        Claude Code.
+        {{ providerDisplayName }}.
       </p>
       <p v-else style="font-size: 13px; color: var(--text-muted); margin: 0">
-        The hook notification script needs to be registered in Claude Code's settings. This is a one-time setup.
+        The hook notification script needs to be registered in {{ providerDisplayName }}'s settings. This is a one-time
+        setup.
       </p>
       <footer class="dialog__footer" style="gap: 8px">
         <button type="button" class="button button--ghost" @click="emit('cancel')">Cancel</button>
@@ -33,6 +34,7 @@
 <script setup>
 defineProps({
   needsSettingEnable: { type: Boolean, default: false },
+  providerDisplayName: { type: String, default: "Claude Code" },
 });
 const emit = defineEmits(["cancel", "skip", "configure"]);
 </script>

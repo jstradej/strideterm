@@ -14,6 +14,67 @@ describe("default state", () => {
     expect(state.workspaces).toEqual([]);
   });
 
+  test("normalizeState migrates legacy tabTemplates by adding copilot after gemini", () => {
+    // Simulate a pre-Copilot user whose state was saved before the provider was added.
+    const state = normalizeState({
+      tabTemplates: [
+        { id: "shell", title: "Shell", command: "", icon: "\u{1F4BB}" },
+        { id: "claude", title: "Claude Code", command: "claude", icon: "\u{1F916}" },
+        { id: "codex", title: "Codex", command: "codex", icon: "\u{1F9E0}" },
+        { id: "gemini", title: "Gemini CLI", command: "gemini", icon: "\u2728" },
+        { id: "devserver", title: "Dev Server", command: "npm run dev", icon: "\u{1F680}" },
+      ],
+    });
+
+    const ids = state.tabTemplates.map((t) => t.id);
+    expect(ids).toContain("copilot");
+    // Must sit right after the last built-in agent (gemini) for a tidy group
+    const geminiIdx = ids.indexOf("gemini");
+    const copilotIdx = ids.indexOf("copilot");
+    expect(copilotIdx).toBe(geminiIdx + 1);
+
+    const copilot = state.tabTemplates[copilotIdx];
+    expect(copilot).toMatchObject({ id: "copilot", title: "GitHub Copilot", command: "copilot" });
+  });
+
+  test("normalizeState does not duplicate copilot template if user already has one", () => {
+    const state = normalizeState({
+      tabTemplates: [
+        { id: "shell", title: "Shell", command: "" },
+        { id: "copilot", title: "My Copilot", command: "copilot --model gpt-5.4" },
+      ],
+    });
+    const copilotEntries = state.tabTemplates.filter((t) => t.id === "copilot" || t.command?.startsWith("copilot"));
+    expect(copilotEntries).toHaveLength(1);
+    // User's customized entry is preserved — not clobbered by the default
+    expect(copilotEntries[0].title).toBe("My Copilot");
+  });
+
+  test("normalizeState falls back to appending copilot when no agent anchors exist", () => {
+    const state = normalizeState({
+      tabTemplates: [
+        { id: "shell", title: "Shell", command: "" },
+        { id: "devserver", title: "Dev Server", command: "npm run dev" },
+      ],
+    });
+    // No claude/codex/gemini anchor — copilot should still be added (appended).
+    const ids = state.tabTemplates.map((t) => t.id);
+    expect(ids).toContain("copilot");
+  });
+
+  test("default tab templates include every built-in agent provider", () => {
+    const state = createDefaultState();
+    const ids = state.tabTemplates.map((tpl) => tpl.id);
+    expect(ids).toContain("claude");
+    expect(ids).toContain("codex");
+    expect(ids).toContain("gemini");
+    expect(ids).toContain("copilot");
+
+    const copilot = state.tabTemplates.find((tpl) => tpl.id === "copilot");
+    expect(copilot).toMatchObject({ title: "GitHub Copilot", command: "copilot" });
+    expect(copilot.icon).toBeTruthy();
+  });
+
   test("normalizeWorkspace preserves explicit launch config", () => {
     const workspace = normalizeWorkspace({
       id: "docker",

@@ -453,6 +453,22 @@ async function handleApiRequest(runtime, request, response) {
       json(response, 200, await runtime.testCodexHook());
       return;
     }
+    if (request.method === "POST" && url.pathname === "/api/copilot-hook/configure") {
+      json(response, 200, await runtime.configureCopilotHook());
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/api/copilot-hook/remove") {
+      json(response, 200, await runtime.removeCopilotHook());
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/api/copilot-hook/status") {
+      json(response, 200, await runtime.getCopilotHookStatus());
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/api/copilot-hook/test") {
+      json(response, 200, await runtime.testCopilotHook());
+      return;
+    }
 
     if (request.method === "POST" && url.pathname === "/api/check-command") {
       json(response, 200, await runtime.checkCommand(body.command));

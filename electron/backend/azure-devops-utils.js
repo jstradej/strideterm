@@ -30,7 +30,14 @@ export const API_VERSION = "7.1";
 export const POLICY_API_VERSION = "7.1-preview.1";
 export const AZURE_REVIEW_ICON = "AZ";
 export const AZURE_REVIEW_COLOR = "#0078d4";
-export const DEFAULT_REVIEW_ROOT = path.join(os.homedir(), ".strideterm", "azure-pr");
+// Resolve lazily so dev instances (STRIDETERM_DATA_DIR / --data-dir) don't
+// default to the prod ~/.strideterm dir. A module-level `const` evaluates
+// once at import time, before main.js sets the env var.
+export function getDefaultReviewRoot() {
+  return process.env.STRIDETERM_DATA_DIR
+    ? path.join(path.resolve(process.env.STRIDETERM_DATA_DIR), "azure-pr")
+    : path.join(os.homedir(), ".strideterm", "azure-pr");
+}
 export const STATUS_PRIORITY = {
   active: 2,
   pending: 1,
@@ -45,7 +52,7 @@ export const CHECK_STATE_PRIORITY = {
 };
 
 export function normalizeReviewRoot(value) {
-  return baseNormalizeReviewRoot(value, DEFAULT_REVIEW_ROOT);
+  return baseNormalizeReviewRoot(value, getDefaultReviewRoot());
 }
 
 export function uniqueList(values = []) {

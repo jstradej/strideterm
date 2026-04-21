@@ -9,6 +9,8 @@ describe("classifyCommand — agents", () => {
     ["aider ./src", "agent"],
     ["opencode", "agent"],
     ["gemini chat", "agent"],
+    ["copilot", "agent"],
+    ["copilot --allow-all-tools --model gpt-5.4", "agent"],
     ["env ANTHROPIC_API_KEY=x claude", "agent"],
   ])('"%s" → %s', (input, expected) => {
     expect(classifyCommand(input)).toBe(expected);

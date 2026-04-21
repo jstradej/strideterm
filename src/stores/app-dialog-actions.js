@@ -1,5 +1,51 @@
 import { cloneWorkspace } from "../workspace-state.js";
 
+// Build an initial CLI command string for a provider — used to pre-populate
+// the worker/judge panel command field when we don't have a Vue-level
+// buildProviderCommand in scope. Must stay aligned with the backend provider
+// classes (electron/backend/providers/*) and the WorkspaceDialog copy.
+function buildProviderCommandString({ providerId, model, skipPermissions } = {}) {
+  if (providerId === "claude") {
+    const parts = ["claude"];
+    if (skipPermissions !== false) parts.push("--dangerously-skip-permissions");
+    if (model) parts.push("--model", model);
+    return parts.join(" ");
+  }
+  if (providerId === "codex") {
+    const parts = ["codex"];
+    if (skipPermissions !== false) parts.push("--dangerously-bypass-approvals-and-sandbox", "-s", "danger-full-access");
+    if (model) parts.push("--model", model);
+    return parts.join(" ");
+  }
+  if (providerId === "gemini") {
+    const parts = ["gemini"];
+    if (skipPermissions === true) parts.push("--yolo");
+    if (model) parts.push("-m", model);
+    return parts.join(" ");
+  }
+  if (providerId === "copilot") {
+    const parts = ["copilot"];
+    if (skipPermissions !== false) parts.push("--allow-all-tools");
+    if (model) parts.push("--model", model);
+    return parts.join(" ");
+  }
+  return "claude --dangerously-skip-permissions --model sonnet";
+}
+
+// Hook API selectors per provider id. Returns null for providers that don't
+// currently have a hook-config story (none today).
+function hookApiForProvider(api, providerId) {
+  if (!api) return null;
+  if (providerId === "codex")
+    return { status: api.getCodexHookStatus, configure: api.configureCodexHook, displayName: "Codex CLI" };
+  if (providerId === "gemini")
+    return { status: api.getGeminiHookStatus, configure: api.configureGeminiHook, displayName: "Gemini CLI" };
+  if (providerId === "copilot")
+    return { status: api.getCopilotHookStatus, configure: api.configureCopilotHook, displayName: "GitHub Copilot" };
+  // Default to Claude for legacy workspaces and explicit claude selection.
+  return { status: api.getClaudeHookStatus, configure: api.configureClaudeHook, displayName: "Claude Code" };
+}
+
 /**
  * Factory for dialog / overlay / context-menu / layout-picker actions.
  *
@@ -345,6 +391,14 @@ export function createDialogActions(ctx) {
     const defaultWorkerProvider = taskDefaults.workerProvider || { providerId: "claude", model: "sonnet" };
     const defaultJudgeProvider = taskDefaults.judgeProvider || { providerId: "claude", model: "opus" };
 
+    // The panel command needs to reflect the active provider default, otherwise
+    // a user with defaultWorkerProvider !== "claude" briefly sees a stale
+    // "claude --dangerously-skip-permissions ..." string before WorkspaceDialog's
+    // watcher rewrites it. Worse — if the user clicks Create without touching
+    // the provider picker, we'd submit a claude command for a Copilot task.
+    const initialWorkerCommand = buildProviderCommandString(defaultWorkerProvider);
+    const initialJudgeCommand = buildProviderCommandString(defaultJudgeProvider);
+
     // Build a task workspace draft with panel stubs so the full dialog
     // can bind to workerPanel/judgePanel commands.
     const workerPanelId = `panel-${crypto.randomUUID()}`;
@@ -366,14 +420,14 @@ export function createDialogActions(ctx) {
         {
           id: workerPanelId,
           title: "Worker",
-          command: "claude --dangerously-skip-permissions --model sonnet",
+          command: initialWorkerCommand,
           shell: true,
           startup: "default",
         },
         {
           id: judgePanelId,
           title: "Judge",
-          command: "claude --dangerously-skip-permissions --model opus",
+          command: initialJudgeCommand,
           shell: true,
           startup: "default",
         },
@@ -503,10 +557,19 @@ export function createDialogActions(ctx) {
     const settings = ctx.payload.value?.appState?.settings?.notifications;
     const hookSettingEnabled = settings?.agentHook !== false;
 
+    // Resolve the worker's provider so the check targets the right hook file.
+    // Falls back to claude for legacy workspaces missing workerProvider.
+    const workspaces = ctx.payload.value?.appState?.workspaces || [];
+    const ws = workspaces.find((w) => w.id === workspaceId) || null;
+    const workerProviderId = ws?.task?.workerProviderConfig?.providerId || ws?.workerProvider?.providerId || "claude";
+    const hookApi = hookApiForProvider(api, workerProviderId);
+    const providerDisplayName = hookApi?.displayName || "the agent";
+
     // If setting is off, hooks can't work — show dialog immediately
     if (!hookSettingEnabled) {
       openDialog("TaskHookCheckDialog", {
         needsSettingEnable: true,
+        providerDisplayName,
         onCancel: closeDialog,
         onSkip: () => {
           closeDialog();
@@ -520,8 +583,8 @@ export function createDialogActions(ctx) {
               notifications: { ...settings, agentHook: true },
             });
             if (settingsResult?.payload) ctx.payload.value = settingsResult.payload;
-            // Then configure the hook in Claude Code
-            await api.configureClaudeHook();
+            // Then configure the hook for the worker provider
+            if (hookApi?.configure) await hookApi.configure();
           } catch (err) {
             console.error("[task] hook configure failed:", err);
           }
@@ -531,9 +594,9 @@ export function createDialogActions(ctx) {
       return;
     }
 
-    // Setting is on — check if hook is actually configured in Claude Code
+    // Setting is on — check if the worker provider's hook is actually configured
     try {
-      const hookResult = await api.getClaudeHookStatus();
+      const hookResult = hookApi?.status ? await hookApi.status() : null;
       if (hookResult?.status === "configured") {
         // All good — start immediately
         await doStartTask(workspaceId);
@@ -548,6 +611,7 @@ export function createDialogActions(ctx) {
     // Hook not configured — show dialog
     openDialog("TaskHookCheckDialog", {
       needsSettingEnable: false,
+      providerDisplayName,
       onCancel: closeDialog,
       onSkip: () => {
         closeDialog();
@@ -556,7 +620,7 @@ export function createDialogActions(ctx) {
       onConfigure: async () => {
         closeDialog();
         try {
-          await api.configureClaudeHook();
+          if (hookApi?.configure) await hookApi.configure();
         } catch (err) {
           console.error("[task] hook configure failed:", err);
         }

@@ -8,6 +8,28 @@ export function summarizeAttention(payload) {
   };
 }
 
+function getHeadlessJudgeTabMeta(activeWorkspace, payload, panelId) {
+  const liveTask = payload?.taskRunner?.[activeWorkspace?.id];
+  if (!liveTask || liveTask.judgeExecutionMode !== "headless-copilot" || panelId !== liveTask.judgePanelId) {
+    return null;
+  }
+
+  const state = liveTask.state || "idle";
+  const running = !!liveTask.judgeProgrammaticRunning;
+  let status = "headless judge";
+  if (running || state === "judge-evaluating") status = "headless judge";
+  else if (state === "completed") status = "headless result";
+  else if (state === "failed") status = "headless error";
+  else if (state === "paused") status = "headless paused";
+  else if (state === "idle") status = "headless ready";
+
+  return {
+    type: "headless-judge",
+    status,
+    tone: state === "failed" ? "error" : running || state === "judge-evaluating" ? "running" : "idle",
+  };
+}
+
 export function getWorkspaceAttention(payload, workspaceId) {
   return payload?.attention?.byWorkspace?.[workspaceId] || payload?.attention?.byProject?.[workspaceId] || null;
 }
@@ -88,15 +110,18 @@ export function getWorkspaceTabs({ workspace, payload, hiddenViewIds, statusTone
       : []),
     ...workspace.sessions
       .filter((session) => !nonTerminalPanelIds.has(session.panelId))
-      .map((session) => ({
-        id: session.sessionId,
-        type: "terminal",
-        title: session.title,
-        status: session.status,
-        tone: statusTone(session.status),
-        persistent: panelMap.has(session.panelId),
-        closable: true,
-      })),
+      .map((session) => {
+        const headlessJudge = getHeadlessJudgeTabMeta(activeWorkspace, payload, session.panelId);
+        return {
+          id: session.sessionId,
+          type: headlessJudge?.type || "terminal",
+          title: session.title,
+          status: headlessJudge?.status || session.status,
+          tone: headlessJudge?.tone || statusTone(session.status),
+          persistent: panelMap.has(session.panelId),
+          closable: true,
+        };
+      }),
   ];
 
   // Browser tabs from panels directly (stable ID, no backend session dependency)
