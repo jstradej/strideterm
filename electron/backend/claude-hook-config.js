@@ -69,51 +69,43 @@ function log(level, msg) {
 }
 
 const URLS_PATH = path.join(HOOKS_DIR, "notify-urls.json");
-const projectDir = process.env.CLAUDE_PROJECT_DIR || "";
 // Hook name — passed as argv[2] by buildHookEntry. Falls back to payload
 // hook_event_name (Claude Code may include this) or "Notification" as a
 // last resort for older hook scripts not re-installed yet.
 const hookNameArg = process.argv[2] || "";
-let url = process.env.STRIDETERM_NOTIFY_URL || "";
+const envUrl = process.env.STRIDETERM_NOTIFY_URL || "";
+const envProjectDir = process.env.CLAUDE_PROJECT_DIR || "";
 
-let allUrls = url ? [url] : [];
+const norm = (p) => String(p || "").replace(/\\\\/g, "/").toLowerCase().replace(/\\/+$/, "");
 
-if (allUrls.length === 0) {
+function resolveUrls(projectDir) {
+  if (!projectDir) return [];
+  let mapping;
   try {
-    const mapping = JSON.parse(fs.readFileSync(URLS_PATH, "utf8"));
-    const norm = (p) => p.replace(/\\\\\\\\/g, "/").replace(/\\\\/g, "/").toLowerCase();
-    if (projectDir) {
-      const key = norm(projectDir);
-      const urls = mapping[key];
-      if (Array.isArray(urls) && urls.length > 0) {
-        allUrls = urls;
-      }
-    }
-    // Fallback: CLAUDE_PROJECT_DIR missing or no match — POST to all URLs.
-    // Server validates secret; only the matching session returns 200.
-    if (allUrls.length === 0) {
-      for (const urls of Object.values(mapping)) {
-        if (Array.isArray(urls)) allUrls.push(...urls);
-      }
-      if (allUrls.length > 0) log("WARN", "no match for projectDir=" + projectDir + ", broadcasting to " + allUrls.length + " url(s)");
-    }
+    mapping = JSON.parse(fs.readFileSync(URLS_PATH, "utf8"));
   } catch (e) {
     log("ERROR", "cannot read " + URLS_PATH + ": " + e.message);
+    return [];
   }
-}
-
-if (allUrls.length === 0) {
-  log("WARN", "no notify urls resolved (projectDir=" + projectDir + ", hook=" + hookNameArg + ")");
-  process.exit(0);
+  const needle = norm(projectDir);
+  if (Array.isArray(mapping[needle])) return mapping[needle];
+  // Longest-prefix match so claude invoked in a subdirectory still routes
+  // to its owning strideterm workspace. External agents running outside
+  // any registered workspace will never match and exit silently — that
+  // is intentional so their notifications don't leak into strideterm.
+  let bestKey = "";
+  for (const key of Object.keys(mapping)) {
+    if ((needle === key || needle.startsWith(key + "/")) && key.length > bestKey.length) {
+      bestKey = key;
+    }
+  }
+  return bestKey ? (mapping[bestKey] || []) : [];
 }
 
 let body = "";
 process.stdin.setEncoding("utf8");
 process.stdin.on("data", (chunk) => { body += chunk; });
 process.stdin.on("end", () => {
-  // Augment payload with hook name so notify-server/dispatcher can route
-  // without having to encode the hook type into the URL (which would
-  // require per-hook URL mapping).
   let parsed;
   try {
     parsed = body.trim() ? JSON.parse(body) : {};
@@ -121,8 +113,27 @@ process.stdin.on("end", () => {
     parsed = { raw_body: body };
   }
   parsed.hook = hookNameArg || parsed.hook_event_name || parsed.hook || "Notification";
-  const outgoing = JSON.stringify(parsed);
 
+  // Resolve notify URLs. Precedence:
+  //   1. STRIDETERM_NOTIFY_URL — direct handoff from parent PTY env (only
+  //      works if the agent propagates strideterm env vars to hooks).
+  //   2. CLAUDE_PROJECT_DIR — set by Claude Code.
+  //   3. payload.cwd — set by Codex.
+  // If none of these match a strideterm-registered workspace, exit silently:
+  // this hook is firing from an agent run the user started outside any
+  // strideterm PTY (e.g. "claude" in another terminal) and we must not leak
+  // its notifications into strideterm tabs.
+  let allUrls = envUrl ? [envUrl] : [];
+  const payloadCwd = typeof parsed.cwd === "string" ? parsed.cwd : "";
+  const projectDir = envProjectDir || payloadCwd;
+  if (allUrls.length === 0) allUrls = resolveUrls(projectDir);
+
+  if (allUrls.length === 0) {
+    log("DEBUG", "no match for projectDir=" + (projectDir || "<unset>") + " (hook=" + parsed.hook + ") — skipping");
+    process.exit(0);
+  }
+
+  const outgoing = JSON.stringify(parsed);
   let pending = allUrls.length;
   function done() { if (--pending <= 0) process.exit(0); }
   for (const u of allUrls) {

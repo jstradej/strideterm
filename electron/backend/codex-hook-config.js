@@ -19,8 +19,10 @@ const log = getLogger("codex-hook");
  * Windows; older versions will accept the config but not fire hooks.
  *
  * Codex's hook payload on stdin includes `hook_event_name` and `cwd`, so the
- * shared notify.mjs resolves notify URLs via notify-urls.json broadcast when
- * Codex does not propagate strIDEterm env vars to child hooks.
+ * shared notify.mjs resolves notify URLs by matching payload.cwd against the
+ * workspace cwds registered in notify-urls.json. Codex runs that fire outside
+ * any registered workspace are dropped, so external `codex` invocations do
+ * not leak notifications into strIDEterm.
  *
  * Codex's event names match Claude's for the events we care about (Stop,
  * UserPromptSubmit), so no alias mapping is needed — argv[2] is passed through
