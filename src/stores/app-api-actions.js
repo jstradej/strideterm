@@ -45,9 +45,9 @@ export function createApiActions(ctx) {
     ctx.payload.value = await ctx.getApi().openAzurePullRequest({ prKey, workspaceId: workspaceId || "" });
   }
 
-  async function azureFetchReviewWorkspace(workspaceId) {
+  async function azureFetchReviewWorkspace(workspaceId, options) {
     if (!workspaceId) return;
-    ctx.payload.value = await ctx.getApi().fetchAzureReviewWorkspace(workspaceId);
+    ctx.payload.value = await ctx.getApi().fetchAzureReviewWorkspace(workspaceId, options);
   }
 
   async function azureRebaseReviewWorkspace(workspaceId) {
@@ -175,9 +175,9 @@ export function createApiActions(ctx) {
     ctx.payload.value = await ctx.getApi().submitGitHubPullRequestReview({ prKey, event, body });
   }
 
-  async function githubFetchReviewWorkspace(workspaceId) {
+  async function githubFetchReviewWorkspace(workspaceId, options) {
     if (!workspaceId) return;
-    ctx.payload.value = await ctx.getApi().fetchGitHubReviewWorkspace(workspaceId);
+    ctx.payload.value = await ctx.getApi().fetchGitHubReviewWorkspace(workspaceId, options);
   }
 
   async function githubRebaseReviewWorkspace(workspaceId) {

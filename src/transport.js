@@ -239,7 +239,8 @@ function createRemoteTransport() {
     pushAndPublishReview: (payload) => fetchJson("/api/review-bridge/pull-request/push-and-publish", payload),
     updateAzureThreadStatus: (payload) => fetchJson("/api/azure/pull-request/thread-status", payload),
     voteAzurePullRequest: (payload) => fetchJson("/api/azure/pull-request/vote", payload),
-    fetchAzureReviewWorkspace: (workspaceId) => fetchJson("/api/azure/workspace/fetch", { workspaceId }),
+    fetchAzureReviewWorkspace: (workspaceId, options) =>
+      fetchJson("/api/azure/workspace/fetch", { workspaceId, ...(options || {}) }),
     rebaseAzureReviewWorkspace: (workspaceId) => fetchJson("/api/azure/workspace/rebase", { workspaceId }),
     pushAzureReviewWorkspace: (workspaceId, options) =>
       fetchJson("/api/azure/workspace/push", { workspaceId, ...options }),
@@ -261,7 +262,8 @@ function createRemoteTransport() {
     commentGitHubPullRequest: (payload) => fetchJson("/api/github/pull-request/comment", payload),
     submitGitHubPullRequestReview: (payload) => fetchJson("/api/github/pull-request/review", payload),
     rerunGitHubCheck: (prKey, checkItem) => fetchJson("/api/github/rerun-check", { prKey, checkItem }),
-    fetchGitHubReviewWorkspace: (workspaceId) => fetchJson("/api/github/workspace/fetch", { workspaceId }),
+    fetchGitHubReviewWorkspace: (workspaceId, options) =>
+      fetchJson("/api/github/workspace/fetch", { workspaceId, ...(options || {}) }),
     rebaseGitHubReviewWorkspace: (workspaceId) => fetchJson("/api/github/workspace/rebase", { workspaceId }),
     pushGitHubReviewWorkspace: (workspaceId, options) =>
       fetchJson("/api/github/workspace/push", { workspaceId, ...options }),

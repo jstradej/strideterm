@@ -171,8 +171,10 @@ export function registerIpc(runtime, emitToRenderer, { includeStateGet = true } 
   ipcMain.handle("azure:pull-request:vote", async (_event, payload) =>
     runtime.voteAzurePullRequest(validateIpc(azureVoteSchema, payload, "azure:pull-request:vote")),
   );
-  ipcMain.handle("azure:workspace:fetch", async (_event, workspaceId) =>
-    runtime.fetchAzureReviewWorkspace(workspaceId),
+  ipcMain.handle("azure:workspace:fetch", async (_event, workspaceId, options) =>
+    runtime.fetchAzureReviewWorkspace(workspaceId, {
+      pullFfOnly: !!(options && options.pullFfOnly),
+    }),
   );
   ipcMain.handle("azure:workspace:rebase", async (_event, workspaceId) =>
     runtime.rebaseAzureReviewWorkspace(workspaceId),
@@ -239,8 +241,10 @@ export function registerIpc(runtime, emitToRenderer, { includeStateGet = true } 
     const validated = validateIpc(rerunCheckSchema, { prKey, checkItem }, "github:rerun-check");
     return runtime.rerunGitHubCheck(validated.prKey, validated.checkItem);
   });
-  ipcMain.handle("github:workspace:fetch", async (_event, workspaceId) =>
-    runtime.fetchGitHubReviewWorkspace(workspaceId),
+  ipcMain.handle("github:workspace:fetch", async (_event, workspaceId, options) =>
+    runtime.fetchGitHubReviewWorkspace(workspaceId, {
+      pullFfOnly: !!(options && options.pullFfOnly),
+    }),
   );
   ipcMain.handle("github:workspace:rebase", async (_event, workspaceId) =>
     runtime.rebaseGitHubReviewWorkspace(workspaceId),

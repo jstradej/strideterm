@@ -44,7 +44,8 @@ contextBridge.exposeInMainWorld("strideterm", {
   syncReviewBridgePullRequest: (payload) => ipcRenderer.invoke("review-bridge:pull-request:sync", payload),
   pushAndPublishReview: (payload) => ipcRenderer.invoke("review-bridge:pull-request:push-and-publish", payload),
   voteAzurePullRequest: (payload) => ipcRenderer.invoke("azure:pull-request:vote", payload),
-  fetchAzureReviewWorkspace: (workspaceId) => ipcRenderer.invoke("azure:workspace:fetch", workspaceId),
+  fetchAzureReviewWorkspace: (workspaceId, options) =>
+    ipcRenderer.invoke("azure:workspace:fetch", workspaceId, options),
   rebaseAzureReviewWorkspace: (workspaceId) => ipcRenderer.invoke("azure:workspace:rebase", workspaceId),
   pushAzureReviewWorkspace: (workspaceId, options) => ipcRenderer.invoke("azure:workspace:push", workspaceId, options),
   azureCreatePullRequest: (payload) => ipcRenderer.invoke("azure:create-pull-request", payload),
@@ -65,7 +66,8 @@ contextBridge.exposeInMainWorld("strideterm", {
   commentGitHubPullRequest: (payload) => ipcRenderer.invoke("github:pull-request:comment", payload),
   submitGitHubPullRequestReview: (payload) => ipcRenderer.invoke("github:pull-request:review", payload),
   rerunGitHubCheck: (prKey, checkItem) => ipcRenderer.invoke("github:rerun-check", prKey, checkItem),
-  fetchGitHubReviewWorkspace: (workspaceId) => ipcRenderer.invoke("github:workspace:fetch", workspaceId),
+  fetchGitHubReviewWorkspace: (workspaceId, options) =>
+    ipcRenderer.invoke("github:workspace:fetch", workspaceId, options),
   rebaseGitHubReviewWorkspace: (workspaceId) => ipcRenderer.invoke("github:workspace:rebase", workspaceId),
   pushGitHubReviewWorkspace: (workspaceId, options) =>
     ipcRenderer.invoke("github:workspace:push", workspaceId, options),

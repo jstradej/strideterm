@@ -908,13 +908,25 @@ export class GitHubManager extends BaseProviderManager {
   // Workspace git operations
   // ---------------------------------------------------------------------------
 
-  async fetchReviewWorkspace({ workspace }) {
+  async fetchReviewWorkspace({ workspace, pullFfOnly = false } = {}) {
     const connection = this.findConnection(workspace.review?.connectionId);
     if (!connection) throw new Error("GitHub connection was not found.");
     const token = this.credentialStore.getSecret(connection.tokenRef);
     if (!token) throw new Error("PAT is missing.");
+    const auth = { token };
+    if (pullFfOnly) {
+      // Refresh-from-review path: fetch refs then fast-forward the working
+      // copy so the reviewer sees the author's latest code locally. --ff-only
+      // will refuse if the reviewer has local commits or a dirty tree; we
+      // let the error propagate so the user knows exactly why HEAD didn't
+      // advance. Fetch has already succeeded by then, so History is current.
+      this.log.info("pull review workspace (ff-only)", { workspaceId: workspace.id });
+      await this.runGit(workspace.cwd, ["fetch", "origin"], auth);
+      await this.runGit(workspace.cwd, ["merge", "--ff-only", "@{u}"], auth);
+      return;
+    }
     this.log.info("fetch review workspace", { workspaceId: workspace.id });
-    await this.runGit(workspace.cwd, ["fetch", "origin"], { token });
+    await this.runGit(workspace.cwd, ["fetch", "origin"], auth);
   }
 
   async rebaseReviewWorkspace({ workspace }) {

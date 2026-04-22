@@ -960,14 +960,36 @@ const busyAction = ref("");
 
 async function handleRefresh() {
   busyAction.value = "refresh";
+  toolbarError.value = "";
   try {
-    if (isGitHub.value) {
-      await appStore.refreshGitHub();
-      if (prKey.value) await appStore.markGitHubPrSeen(prKey.value);
-    } else {
-      await appStore.refreshAzure();
-      if (prKey.value) await appStore.markAzurePrSeen(prKey.value);
-    }
+    // Refresh in parallel: provider metadata (PR status, comments, reviewers)
+    // AND a git fetch + fast-forward of the review worktree so new commits
+    // from the author are actually checked out locally, not just present as
+    // refs. --ff-only on the backend keeps this safe: if the reviewer has
+    // made their own local commits, the fast-forward is skipped and the
+    // fetch still updates origin/* so History reflects the remote state.
+    //
+    // allSettled (not Promise.all) so one task failing doesn't cancel the
+    // other — if metadata refreshes but fetch fails, the user still gets
+    // the fresh comments and sees the fetch error in the toolbar bar.
+    const wsId = props.workspaceId;
+    const fetchOpts = { pullFfOnly: true };
+    const tasks = isGitHub.value
+      ? [
+          { label: "PR metadata", run: () => appStore.refreshGitHub() },
+          { label: "git fetch", run: () => (wsId ? appStore.githubFetchReviewWorkspace(wsId, fetchOpts) : null) },
+          { label: "mark seen", run: () => (prKey.value ? appStore.markGitHubPrSeen(prKey.value) : null) },
+        ]
+      : [
+          { label: "PR metadata", run: () => appStore.refreshAzure() },
+          { label: "git fetch", run: () => (wsId ? appStore.azureFetchReviewWorkspace(wsId, fetchOpts) : null) },
+          { label: "mark seen", run: () => (prKey.value ? appStore.markAzurePrSeen(prKey.value) : null) },
+        ];
+    const results = await Promise.allSettled(tasks.map((t) => t.run()));
+    const errors = results
+      .map((r, i) => (r.status === "rejected" ? `${tasks[i].label}: ${r.reason?.message || r.reason}` : null))
+      .filter(Boolean);
+    if (errors.length) toolbarError.value = `Refresh partial: ${errors.join("; ")}`;
   } finally {
     busyAction.value = "";
   }

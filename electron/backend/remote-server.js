@@ -258,7 +258,7 @@ async function handleApiRequest(runtime, request, response) {
     }
 
     if (request.method === "POST" && url.pathname === "/api/azure/workspace/fetch") {
-      json(response, 200, await runtime.fetchAzureReviewWorkspace(body.workspaceId));
+      json(response, 200, await runtime.fetchAzureReviewWorkspace(body.workspaceId, { pullFfOnly: !!body.pullFfOnly }));
       return;
     }
 
@@ -353,7 +353,11 @@ async function handleApiRequest(runtime, request, response) {
       return;
     }
     if (request.method === "POST" && url.pathname === "/api/github/workspace/fetch") {
-      json(response, 200, await runtime.fetchGitHubReviewWorkspace(body.workspaceId));
+      json(
+        response,
+        200,
+        await runtime.fetchGitHubReviewWorkspace(body.workspaceId, { pullFfOnly: !!body.pullFfOnly }),
+      );
       return;
     }
     if (request.method === "POST" && url.pathname === "/api/github/workspace/rebase") {
