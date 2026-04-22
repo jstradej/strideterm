@@ -114,6 +114,7 @@
             @edit-tab="store.editTabWithDialog($event)"
             @close-tab="store.closeTab($event)"
             @contextmenu-tab="onTabContextMenu"
+            @menu-tab="onTabContextMenu"
           />
 
           <!-- Mobile tab picker (replaces cramped tab strip) -->
@@ -171,7 +172,11 @@
         </div>
 
         <!-- Welcome screen (no workspaces yet) -->
-        <WelcomeScreen v-if="showWelcome" @new-workspace="store.openNewWorkspaceFlow()" />
+        <WelcomeScreen
+          v-if="showWelcome"
+          @new-workspace="store.openNewWorkspaceFlow()"
+          @open-settings="store.openSettingsDialog()"
+        />
 
         <!-- Terminal + pane stage -->
         <PaneStage v-else-if="store.payload" />

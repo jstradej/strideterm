@@ -1,21 +1,37 @@
 <template>
   <Teleport to="body">
     <div v-if="store.contextMenu" ref="menuRef" class="context-menu" :style="menuStyle" @click.stop>
+      <button type="button" class="context-menu__item" @click="onFocus">&#x25C9; Focus tab</button>
+
       <template v-if="isTerminal">
-        <button type="button" class="context-menu__item" @click="onRestart">&#x21BB; Restart</button>
         <button v-if="hasPersistentPanel" type="button" class="context-menu__item" @click="onEdit">
           &#x270E; Edit tab
         </button>
+        <button type="button" class="context-menu__item" @click="onSaveTranscript">&#x21E9; Save last 500 lines</button>
+        <button type="button" class="context-menu__item" @click="onClear">&#x232B; Clear output</button>
+        <button type="button" class="context-menu__item" @click="onRestart">&#x21BB; Restart</button>
       </template>
+
+      <button v-if="refreshKind" type="button" class="context-menu__item" @click="onRefresh">
+        &#x21BB; Refresh {{ refreshLabel }}
+      </button>
+
+      <template v-if="canClose">
+        <div class="context-menu__divider"></div>
+        <button type="button" class="context-menu__item context-menu__item--danger" @click="onClose">
+          &#x2715; Close tab
+        </button>
+      </template>
+
       <template v-if="inGroup">
-        <div v-if="isTerminal" class="context-menu__divider"></div>
+        <div class="context-menu__divider"></div>
         <button type="button" class="context-menu__item" @click="onRemoveFromGroup">&#x2715; Remove from split</button>
         <button type="button" class="context-menu__item context-menu__item--danger" @click="onDisbandGroup">
           &#x2573; Disband split
         </button>
       </template>
       <template v-else-if="canAddToSplit">
-        <div v-if="isTerminal" class="context-menu__divider"></div>
+        <div class="context-menu__divider"></div>
         <button type="button" class="context-menu__item" @click="onAddToGroup">+ Add to split</button>
       </template>
     </div>
@@ -26,7 +42,16 @@
 import { ref, computed, watch, nextTick, onMounted, onBeforeUnmount } from "vue";
 import { useAppStore } from "../../stores/app.js";
 import { useTerminalStore } from "../../stores/terminal.js";
-import { isGitViewId, isDockerViewId } from "../../app/helpers.js";
+import {
+  isGitViewId,
+  isDockerViewId,
+  isAzureViewId,
+  isGitHubViewId,
+  isReviewViewId,
+  isFilesViewId,
+  isBrowserViewId,
+  isTaskDashboardViewId,
+} from "../../app/helpers.js";
 
 const store = useAppStore();
 const termStore = useTerminalStore();
@@ -44,12 +69,51 @@ const viewId = computed(() => store.contextMenu?.viewId || "");
 const rawX = computed(() => store.contextMenu?.x || 0);
 const rawY = computed(() => store.contextMenu?.y || 0);
 
-const isTerminal = computed(() => viewId.value && !isGitViewId(viewId.value) && !isDockerViewId(viewId.value));
+const isTerminal = computed(() => {
+  const id = viewId.value;
+  if (!id) return false;
+  return (
+    !isGitViewId(id) &&
+    !isDockerViewId(id) &&
+    !isAzureViewId(id) &&
+    !isGitHubViewId(id) &&
+    !isReviewViewId(id) &&
+    !isFilesViewId(id) &&
+    !isBrowserViewId(id) &&
+    !isTaskDashboardViewId(id)
+  );
+});
+
+const currentTab = computed(() => (store.workspaceTabs || []).find((t) => t.id === viewId.value) || null);
 
 const hasPersistentPanel = computed(() => {
   const target = store.getPanelByViewId(viewId.value);
   return Boolean(target);
 });
+
+const canClose = computed(() => (currentTab.value ? currentTab.value.closable !== false : false));
+
+const refreshKind = computed(() => {
+  const id = viewId.value;
+  if (isDockerViewId(id)) return "docker";
+  if (isAzureViewId(id)) return "azure";
+  if (isGitHubViewId(id)) return "github";
+  if (isReviewViewId(id)) {
+    const wsId = id.replace(/^review:/, "");
+    const ws = store.payload?.appState?.workspaces?.find((w) => w.id === wsId);
+    return ws?.review?.provider === "github" ? "github" : "azure";
+  }
+  return "";
+});
+
+const refreshLabel = computed(
+  () =>
+    ({
+      docker: "Docker",
+      azure: "Azure DevOps",
+      github: "GitHub",
+    })[refreshKind.value] || "",
+);
 
 const inGroup = computed(() => Boolean(store.splitGroup?.viewIds.includes(viewId.value)));
 
@@ -59,7 +123,6 @@ const canAddToSplit = computed(() => {
   return store.splitGroup.viewIds.length < slots;
 });
 
-// Adjusted position (set after mount to clamp to viewport)
 const adjustedX = ref(rawX.value);
 const adjustedY = ref(rawY.value);
 
@@ -84,6 +147,11 @@ watch(
   },
 );
 
+function onFocus() {
+  store.activateView(viewId.value);
+  store.hideContextMenu();
+}
+
 function onRestart() {
   termStore.restartSession(viewId.value);
   store.hideContextMenu();
@@ -92,6 +160,29 @@ function onRestart() {
 function onEdit() {
   store.hideContextMenu();
   store.editTabWithDialog(viewId.value);
+}
+
+function onSaveTranscript() {
+  termStore.exportTerminalTranscript(viewId.value, { title: currentTab.value?.title || "" });
+  store.hideContextMenu();
+}
+
+function onClear() {
+  termStore.clearTerminalViewport(viewId.value);
+  store.hideContextMenu();
+}
+
+function onClose() {
+  store.hideContextMenu();
+  store.closeTab(viewId.value);
+}
+
+function onRefresh() {
+  const kind = refreshKind.value;
+  store.hideContextMenu();
+  if (kind === "docker") store.refreshDocker();
+  else if (kind === "azure") store.refreshAzure();
+  else if (kind === "github") store.refreshGitHub();
 }
 
 function onRemoveFromGroup() {

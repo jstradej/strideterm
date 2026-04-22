@@ -360,6 +360,35 @@
   color: var(--text);
 }
 
+.tab__menu {
+  grid-row: 1;
+  grid-column: 2;
+  align-self: start;
+  width: 16px;
+  height: 16px;
+  display: grid;
+  place-items: center;
+  border-radius: 3px;
+  font-size: 12px;
+  line-height: 1;
+  color: var(--muted);
+  opacity: 0.5;
+  transition:
+    opacity 0.12s,
+    background 0.12s,
+    color 0.12s;
+}
+
+.tab:hover .tab__menu,
+.tab--active .tab__menu {
+  opacity: 1;
+}
+
+.tab__menu:hover {
+  background: rgba(var(--tint), 0.1);
+  color: var(--text);
+}
+
 .tab__attention {
   grid-row: 1;
   grid-column: 3;
@@ -717,4 +746,31 @@
   color: var(--accent);
   font-weight: 800;
   font-size: 12px;
+}
+
+.welcome-screen__link {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--accent);
+  font: inherit;
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.welcome-screen__link:hover {
+  color: var(--text);
+}
+
+.welcome-screen__actions {
+  display: flex;
+  gap: 10px;
+  justify-content: center;
+  flex-wrap: wrap;
+  margin-top: 16px;
+}
+
+.welcome-screen__actions .button {
+  padding: 10px 20px;
+  font-size: 14px;
 }

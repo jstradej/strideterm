@@ -7,37 +7,45 @@
         <div class="welcome-screen__step">
           <span class="welcome-screen__step-num">1</span>
           <div>
+            <strong>Review settings &amp; configure hooks</strong>
+            <small
+              >Set your theme, notification timings and agent hooks in
+              <button type="button" class="welcome-screen__link" @click="$emit('open-settings')">
+                Settings ⚙
+              </button></small
+            >
+          </div>
+        </div>
+        <div class="welcome-screen__step">
+          <span class="welcome-screen__step-num">2</span>
+          <div>
             <strong>Create a workspace</strong>
             <small>Click <strong>+</strong> in the sidebar or press <strong>Ctrl+N</strong></small>
           </div>
         </div>
         <div class="welcome-screen__step">
-          <span class="welcome-screen__step-num">2</span>
+          <span class="welcome-screen__step-num">3</span>
           <div>
             <strong>Pick a working directory</strong>
             <small>Browse to your project folder</small>
           </div>
         </div>
         <div class="welcome-screen__step">
-          <span class="welcome-screen__step-num">3</span>
+          <span class="welcome-screen__step-num">4</span>
           <div>
             <strong>Add terminal tabs</strong>
             <small>Shell, Claude Code, Codex, Gemini, Dev Server, Browser...</small>
           </div>
         </div>
       </div>
-      <button
-        type="button"
-        class="button"
-        style="margin-top: 16px; padding: 10px 24px; font-size: 14px"
-        @click="$emit('new-workspace')"
-      >
-        + Create your first workspace
-      </button>
+      <div class="welcome-screen__actions">
+        <button type="button" class="button button--ghost" @click="$emit('open-settings')">⚙ Open Settings</button>
+        <button type="button" class="button" @click="$emit('new-workspace')">+ Create your first workspace</button>
+      </div>
     </div>
   </div>
 </template>
 
 <script setup>
-defineEmits(["new-workspace"]);
+defineEmits(["new-workspace", "open-settings"]);
 </script>
