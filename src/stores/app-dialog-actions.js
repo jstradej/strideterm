@@ -118,12 +118,12 @@ export function createDialogActions(ctx) {
     });
   }
 
-  function openNewTabDialog(cwdOverride = "") {
+  function openNewTabDialog(cwdOverride = "", presetTitle = "", presetCommand = "") {
     openDialog("EditTabDialog", {
       eyebrow: "Workspace",
       mode: "new",
-      title: "\u{1F4BB} Shell",
-      command: "",
+      title: presetTitle || "\u{1F4BB} Shell",
+      command: presetCommand || "",
       onCancel: closeDialog,
       onSubmit: async ({ title, command }) => {
         const nextTitle = (title || "").trim();

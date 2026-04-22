@@ -249,7 +249,7 @@
   color: var(--muted);
   padding: 6px 8px 6px 10px;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto auto auto auto;
+  grid-template-columns: minmax(0, 1fr) auto auto;
   grid-template-rows: auto auto;
   gap: 0 2px;
   align-items: center;
@@ -312,54 +312,6 @@
   font-size: 11px;
 }
 
-.tab__close {
-  grid-row: 1;
-  grid-column: 5;
-  align-self: start;
-  width: 16px;
-  height: 16px;
-  display: grid;
-  place-items: center;
-  border-radius: 3px;
-  font-size: 13px;
-  line-height: 1;
-  color: var(--danger);
-  opacity: 0.5;
-  transition:
-    opacity 0.12s,
-    background 0.12s,
-    color 0.12s;
-}
-
-.tab__rename {
-  grid-row: 1;
-  grid-column: 4;
-  align-self: start;
-  width: 16px;
-  height: 16px;
-  display: grid;
-  place-items: center;
-  border-radius: 3px;
-  font-size: 10px;
-  line-height: 1;
-  color: var(--muted);
-  opacity: 0.5;
-  transition:
-    opacity 0.12s,
-    background 0.12s,
-    color 0.12s;
-}
-
-.tab:hover .tab__rename,
-.tab--active .tab__rename {
-  opacity: 1;
-}
-
-.tab__rename:hover {
-  background: rgba(var(--tint), 0.1);
-  color: var(--text);
-}
-
 .tab__menu {
   grid-row: 1;
   grid-column: 2;
@@ -417,16 +369,6 @@
   border-radius: 3px;
   letter-spacing: 0.02em;
   white-space: nowrap;
-}
-
-.tab:hover .tab__close,
-.tab--active .tab__close {
-  opacity: 1;
-}
-
-.tab__close:hover {
-  background: rgba(var(--tint), 0.1);
-  color: var(--danger);
 }
 
 .tab--dragging {

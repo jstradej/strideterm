@@ -112,7 +112,6 @@
 
           <TabStrip
             @edit-tab="store.editTabWithDialog($event)"
-            @close-tab="store.closeTab($event)"
             @contextmenu-tab="onTabContextMenu"
             @menu-tab="onTabContextMenu"
           />

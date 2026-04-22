@@ -34,12 +34,6 @@
       <small v-else>{{ tab.status }}</small>
       <span v-if="tab.attention" class="tab__attention" :title="tab.attentionTooltip">🔔</span>
       <span class="tab__menu" :title="'Tab menu'" @click.stop="onMenuClick($event, tab.id)">☰</span>
-      <span v-if="tab.persistent" class="tab__rename" :title="'Edit tab'" @click.stop="$emit('edit-tab', tab.id)"
-        >✎</span
-      >
-      <span v-if="tab.closable" class="tab__close" :title="'Close tab'" @click.stop="$emit('close-tab', tab.id)"
-        >×</span
-      >
     </button>
   </div>
 </template>
@@ -111,7 +105,7 @@ const tabModels = computed(() => {
   });
 });
 
-const emit = defineEmits(["edit-tab", "close-tab", "contextmenu-tab", "menu-tab"]);
+const emit = defineEmits(["edit-tab", "contextmenu-tab", "menu-tab"]);
 
 function onMenuClick(event, viewId) {
   const btn = event.currentTarget || event.target;

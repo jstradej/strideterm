@@ -44,14 +44,6 @@ describe("TabStrip", () => {
     expect(tab.find("small").text()).toBe("running");
   });
 
-  test("renders stable rename (✎) and close (×) icons without mojibake", () => {
-    const store = useAppStore();
-    store.payload = makePayload([{ id: "ws1:shell", title: "Shell", status: "", persistent: true, closable: true }]);
-    const wrapper = mount(TabStrip);
-    expect(wrapper.find(".tab__rename").text()).toBe("✎");
-    expect(wrapper.find(".tab__close").text()).toBe("×");
-  });
-
   test("marks active tab with tab--active class", () => {
     const store = useAppStore();
     store.payload = makePayload([

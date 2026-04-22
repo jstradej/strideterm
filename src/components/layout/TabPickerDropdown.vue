@@ -82,10 +82,10 @@ const dropdownStyle = computed(() => {
   };
 });
 
-async function addTemplateTab(tmpl) {
+function addTemplateTab(tmpl) {
   emit("close");
   const title = `${tmpl.icon || ""} ${tmpl.title || "Shell"}`.trim();
-  await store.quickAddTemplateTab(tmpl.command || "", title, selectedCwd.value);
+  store.openNewTabDialog(selectedCwd.value, title, tmpl.command || "");
 }
 
 function addCustomTab() {
