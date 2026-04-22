@@ -88,9 +88,9 @@ async function addTemplateTab(tmpl) {
   await store.quickAddTemplateTab(tmpl.command || "", title, selectedCwd.value);
 }
 
-async function addCustomTab() {
+function addCustomTab() {
   emit("close");
-  await store.quickAddTab(selectedCwd.value);
+  store.openNewTabDialog(selectedCwd.value);
 }
 
 function onDocumentClick(e) {

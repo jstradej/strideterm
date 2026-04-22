@@ -95,6 +95,7 @@ export function createDialogActions(ctx) {
     if (!target) return;
     openDialog("EditTabDialog", {
       eyebrow: "Workspace",
+      mode: "edit",
       title: target.panel.title || "",
       command: target.panel.command || "",
       onCancel: closeDialog,
@@ -113,6 +114,25 @@ export function createDialogActions(ctx) {
         );
         ctx.payload.value = await ctx.getApi().saveWorkspace(nextWorkspace);
         closeDialog();
+      },
+    });
+  }
+
+  function openNewTabDialog(cwdOverride = "") {
+    openDialog("EditTabDialog", {
+      eyebrow: "Workspace",
+      mode: "new",
+      title: "\u{1F4BB} Shell",
+      command: "",
+      onCancel: closeDialog,
+      onSubmit: async ({ title, command }) => {
+        const nextTitle = (title || "").trim();
+        if (!nextTitle) {
+          closeDialog();
+          return;
+        }
+        closeDialog();
+        await ctx.quickAddTemplateTab(command || "", nextTitle, cwdOverride);
       },
     });
   }
@@ -679,6 +699,7 @@ export function createDialogActions(ctx) {
     showLayoutPicker,
     hideLayoutPicker,
     editTabWithDialog,
+    openNewTabDialog,
     openWorkspaceDialog,
     openNewWorkspaceFlow,
     openSettingsDialog,

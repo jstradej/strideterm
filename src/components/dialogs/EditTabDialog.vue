@@ -3,7 +3,7 @@
     <div class="dialog__header">
       <div>
         <p class="eyebrow">{{ eyebrow }}</p>
-        <h2>Edit tab</h2>
+        <h2>{{ mode === "new" ? "New tab" : "Edit tab" }}</h2>
       </div>
       <button type="button" class="button button--ghost" @click="emit('cancel')">Close</button>
     </div>
@@ -34,7 +34,7 @@
       </label>
       <footer class="dialog__footer">
         <button type="button" class="button button--ghost" @click="emit('cancel')">Cancel</button>
-        <button type="submit" class="button">Save</button>
+        <button type="submit" class="button">{{ mode === "new" ? "Create tab" : "Save" }}</button>
       </footer>
     </form>
   </div>
@@ -98,6 +98,7 @@ const props = defineProps({
   eyebrow: { type: String, default: "Workspace" },
   title: { type: String, default: "" },
   command: { type: String, default: "" },
+  mode: { type: String, default: "edit" },
 });
 
 const emit = defineEmits(["cancel", "submit"]);

@@ -609,6 +609,7 @@ export const useAppStore = defineStore("app", () => {
     withSuppressedBroadcast,
     getPanelByViewId,
     createWorktree: workspaceActions.createWorktree,
+    quickAddTemplateTab: workspaceActions.quickAddTemplateTab,
   });
 
   // --- Init ---
