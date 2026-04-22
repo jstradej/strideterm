@@ -75,6 +75,70 @@ describe("default state", () => {
     expect(copilot.icon).toBeTruthy();
   });
 
+  test("default tab templates include PowerShell right after Shell", () => {
+    const state = createDefaultState();
+    const ids = state.tabTemplates.map((tpl) => tpl.id);
+    const shellIdx = ids.indexOf("shell");
+    const psIdx = ids.indexOf("powershell");
+    expect(shellIdx).toBeGreaterThanOrEqual(0);
+    expect(psIdx).toBe(shellIdx + 1);
+
+    const ps = state.tabTemplates[psIdx];
+    expect(ps).toMatchObject({ id: "powershell", title: "PowerShell", command: "powershell" });
+    expect(ps.icon).toBeTruthy();
+  });
+
+  const isWindows = process.platform === "win32";
+
+  test.runIf(isWindows)("normalizeState on Windows adds powershell/pwsh/git-bash/wsl after shell", () => {
+    const state = normalizeState({
+      tabTemplates: [
+        { id: "shell", title: "Shell", command: "", icon: "\u{1F4BB}" },
+        { id: "claude", title: "Claude Code", command: "claude", icon: "\u{1F916}" },
+      ],
+    });
+    const ids = state.tabTemplates.map((t) => t.id);
+    expect(ids).toContain("powershell");
+    expect(ids).toContain("pwsh");
+    expect(ids).toContain("git-bash");
+    expect(ids).toContain("wsl");
+  });
+
+  test.runIf(isWindows)("normalizeState does not duplicate powershell template if user already has one", () => {
+    const state = normalizeState({
+      tabTemplates: [
+        { id: "shell", title: "Shell", command: "" },
+        { id: "powershell", title: "PS 7", command: "pwsh -NoLogo" },
+      ],
+    });
+    const psEntries = state.tabTemplates.filter((t) => t.id === "powershell");
+    expect(psEntries).toHaveLength(1);
+    expect(psEntries[0].title).toBe("PS 7");
+  });
+
+  test.runIf(!isWindows)("normalizeState on non-Windows adds bash/zsh/fish after shell", () => {
+    const state = normalizeState({
+      tabTemplates: [
+        { id: "shell", title: "Shell", command: "", icon: "\u{1F4BB}" },
+        { id: "claude", title: "Claude Code", command: "claude", icon: "\u{1F916}" },
+      ],
+    });
+    const ids = state.tabTemplates.map((t) => t.id);
+    expect(ids).toContain("bash");
+    expect(ids).toContain("zsh");
+    expect(ids).toContain("fish");
+    expect(ids).not.toContain("powershell");
+    expect(ids).not.toContain("wsl");
+  });
+
+  test("normalizeState preserves the platforms field on templates", () => {
+    const state = normalizeState({
+      tabTemplates: [{ id: "custom", title: "Win-only", command: "foo", platforms: ["win32"] }],
+    });
+    const custom = state.tabTemplates.find((t) => t.id === "custom");
+    expect(custom?.platforms).toEqual(["win32"]);
+  });
+
   test("normalizeWorkspace preserves explicit launch config", () => {
     const workspace = normalizeWorkspace({
       id: "docker",

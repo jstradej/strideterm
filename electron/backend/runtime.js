@@ -1015,6 +1015,7 @@ export async function createRuntime({
         appVersion: packageVersion,
         repositoryUrl: APP_CONFIG.app.repositoryUrl,
         versionCheck: versionChecker.getCachedResult(),
+        platform: process.platform,
       },
       appState: (() => {
         const cloned = clone(state);

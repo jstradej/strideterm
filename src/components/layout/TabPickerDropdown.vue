@@ -28,6 +28,9 @@ import { useAppStore } from "../../stores/app.js";
 
 const FALLBACK_TEMPLATES = [
   { title: "Shell", command: "", icon: "\u{1F4BB}" },
+  { title: "PowerShell", command: "powershell", icon: "\u{1F537}", platforms: ["win32"] },
+  { title: "Bash", command: "bash", icon: "\u{1F41A}", platforms: ["darwin", "linux"] },
+  { title: "Zsh", command: "zsh", icon: "\u{1F41A}", platforms: ["darwin", "linux"] },
   { title: "Claude Code", command: "claude", icon: "\u{1F916}" },
   { title: "Browser", command: "https://", icon: "\u{1F310}" },
   { title: "Files", command: "__files__", icon: "\u{1F4C2}" },
@@ -46,7 +49,9 @@ const selectedCwd = ref("");
 
 const templates = computed(() => {
   const tpls = store.payload?.appState?.tabTemplates;
-  return Array.isArray(tpls) && tpls.length ? tpls : FALLBACK_TEMPLATES;
+  const list = Array.isArray(tpls) && tpls.length ? tpls : FALLBACK_TEMPLATES;
+  const platform = store.payload?.meta?.platform || "";
+  return list.filter((tmpl) => !Array.isArray(tmpl.platforms) || !platform || tmpl.platforms.includes(platform));
 });
 
 const activeWorkspace = computed(() => {

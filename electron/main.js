@@ -423,6 +423,7 @@ async function loadBootstrapPayload() {
         appVersion: packageVersion,
         repositoryUrl: APP_CONFIG.app.repositoryUrl,
         bootstrap: true,
+        platform: process.platform,
       },
       appState,
       workspace: activeWorkspace,

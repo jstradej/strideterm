@@ -389,6 +389,13 @@ export function createDefaultState() {
     },
     tabTemplates: [
       { id: "shell", title: "Shell", command: "", icon: "\u{1F4BB}" },
+      { id: "powershell", title: "PowerShell", command: "powershell", icon: "\u{1F537}", platforms: ["win32"] },
+      { id: "pwsh", title: "PowerShell 7", command: "pwsh", icon: "⚡", platforms: ["win32"] },
+      { id: "git-bash", title: "Git Bash", command: "bash --login -i", icon: "\u{1F333}", platforms: ["win32"] },
+      { id: "wsl", title: "WSL", command: "wsl", icon: "\u{1F427}", platforms: ["win32"] },
+      { id: "bash", title: "Bash", command: "bash", icon: "\u{1F41A}", platforms: ["darwin", "linux"] },
+      { id: "zsh", title: "Zsh", command: "zsh", icon: "\u{1F41A}", platforms: ["darwin", "linux"] },
+      { id: "fish", title: "Fish", command: "fish", icon: "\u{1F420}", platforms: ["darwin", "linux"] },
       { id: "claude", title: "Claude Code", command: "claude", icon: "\u{1F916}" },
       { id: "codex", title: "Codex", command: "codex", icon: "\u{1F9E0}" },
       { id: "gemini", title: "Gemini CLI", command: "gemini", icon: "\u2728" },
@@ -601,11 +608,62 @@ export function normalizeState(rawState = {}) {
           title: repairVisibleText(tmpl.title || "Untitled"),
           command: tmpl.command ?? "",
           icon: repairVisibleText(tmpl.icon || "\u{1F4BB}"),
+          ...(Array.isArray(tmpl.platforms) ? { platforms: tmpl.platforms.slice() } : {}),
         }))
       : defaults.tabTemplates;
   // Ensure the "files" template exists for existing users.
   if (!tabTemplates.some((t) => t.id === "files" || t.command === "__files__")) {
     tabTemplates.push({ id: "files", title: "Files", command: "__files__", icon: "\u{1F4C2}" });
+  }
+  // Platform-conditional shell migrations. Insert right after the "shell"
+  // template so the shells stay grouped in the Tab picker dropdown.
+  const shellIdx = tabTemplates.findIndex((t) => t.id === "shell");
+  const insertAfterShell = (tmpl) => {
+    if (shellIdx >= 0) tabTemplates.splice(shellIdx + 1, 0, tmpl);
+    else tabTemplates.push(tmpl);
+  };
+  if (process.platform === "win32") {
+    const ensureWinShell = (spec, match) => {
+      if (!tabTemplates.some(match)) insertAfterShell(spec);
+    };
+    ensureWinShell(
+      { id: "powershell", title: "PowerShell", command: "powershell", icon: "\u{1F537}", platforms: ["win32"] },
+      (t) => t.id === "powershell" || t.command === "powershell",
+    );
+    ensureWinShell(
+      { id: "pwsh", title: "PowerShell 7", command: "pwsh", icon: "⚡", platforms: ["win32"] },
+      (t) => t.id === "pwsh" || t.command === "pwsh",
+    );
+    ensureWinShell(
+      {
+        id: "git-bash",
+        title: "Git Bash",
+        command: "bash --login -i",
+        icon: "\u{1F333}",
+        platforms: ["win32"],
+      },
+      (t) => t.id === "git-bash" || (typeof t.command === "string" && t.command.startsWith("bash")),
+    );
+    ensureWinShell(
+      { id: "wsl", title: "WSL", command: "wsl", icon: "\u{1F427}", platforms: ["win32"] },
+      (t) => t.id === "wsl" || t.command === "wsl" || (typeof t.command === "string" && t.command.startsWith("wsl ")),
+    );
+  } else {
+    const ensurePosixShell = (spec, match) => {
+      if (!tabTemplates.some(match)) insertAfterShell(spec);
+    };
+    ensurePosixShell(
+      { id: "bash", title: "Bash", command: "bash", icon: "\u{1F41A}", platforms: ["darwin", "linux"] },
+      (t) => t.id === "bash" || t.command === "bash",
+    );
+    ensurePosixShell(
+      { id: "zsh", title: "Zsh", command: "zsh", icon: "\u{1F41A}", platforms: ["darwin", "linux"] },
+      (t) => t.id === "zsh" || t.command === "zsh",
+    );
+    ensurePosixShell(
+      { id: "fish", title: "Fish", command: "fish", icon: "\u{1F420}", platforms: ["darwin", "linux"] },
+      (t) => t.id === "fish" || t.command === "fish",
+    );
   }
   // Migration for existing users: ensure the "copilot" agent template exists
   // alongside claude/codex/gemini. Insert right after the last built-in agent

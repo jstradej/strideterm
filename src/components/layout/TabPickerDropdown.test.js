@@ -20,7 +20,7 @@ describe("TabPickerDropdown", () => {
     wrapper.unmount();
   });
 
-  test("renders fallback template buttons and custom tab option", () => {
+  test("renders fallback template buttons and custom tab option (no platform filter)", () => {
     const wrapper = mount(TabPickerDropdown, {
       props: { anchorRect: ANCHOR },
       attachTo: document.body,
@@ -28,11 +28,42 @@ describe("TabPickerDropdown", () => {
     const dropdown = document.querySelector(".tab-picker-dropdown");
     expect(dropdown).not.toBeNull();
     const buttons = dropdown.querySelectorAll("button");
-    // 4 fallback templates + 1 custom
-    expect(buttons.length).toBe(5);
+    // Without meta.platform set, platform-specific templates are NOT filtered out
+    // (7 fallback + 1 custom).
+    expect(buttons.length).toBe(8);
     const texts = Array.from(buttons).map((b) => b.textContent.trim());
     expect(texts.some((t) => t.includes("Shell"))).toBe(true);
     expect(texts.some((t) => t.includes("Custom"))).toBe(true);
+    wrapper.unmount();
+  });
+
+  test("filters fallback templates by platform when meta.platform is set (win32)", () => {
+    const store = useAppStore();
+    store.payload = { meta: { platform: "win32" } };
+    const wrapper = mount(TabPickerDropdown, {
+      props: { anchorRect: ANCHOR },
+      attachTo: document.body,
+    });
+    const dropdown = document.querySelector(".tab-picker-dropdown");
+    const texts = Array.from(dropdown.querySelectorAll("button")).map((b) => b.textContent.trim());
+    expect(texts.some((t) => t.includes("PowerShell"))).toBe(true);
+    expect(texts.some((t) => t.includes("Bash"))).toBe(false);
+    expect(texts.some((t) => t.includes("Zsh"))).toBe(false);
+    wrapper.unmount();
+  });
+
+  test("filters fallback templates by platform when meta.platform is set (linux)", () => {
+    const store = useAppStore();
+    store.payload = { meta: { platform: "linux" } };
+    const wrapper = mount(TabPickerDropdown, {
+      props: { anchorRect: ANCHOR },
+      attachTo: document.body,
+    });
+    const dropdown = document.querySelector(".tab-picker-dropdown");
+    const texts = Array.from(dropdown.querySelectorAll("button")).map((b) => b.textContent.trim());
+    expect(texts.some((t) => t.includes("Bash"))).toBe(true);
+    expect(texts.some((t) => t.includes("Zsh"))).toBe(true);
+    expect(texts.some((t) => t.includes("PowerShell"))).toBe(false);
     wrapper.unmount();
   });
 
