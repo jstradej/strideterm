@@ -118,7 +118,7 @@ const KNOWN_VIEW_PREFIXES = [
   "browser:",
   "task-dashboard:",
 ];
-const VALID_SPLIT_LAYOUTS = new Set(["cols", "rows", "top-split"]);
+const VALID_SPLIT_LAYOUTS = new Set(["cols", "rows", "top-split", "left-split", "grid"]);
 
 function isKnownPrefixViewId(viewId) {
   return typeof viewId === "string" && KNOWN_VIEW_PREFIXES.some((prefix) => viewId.startsWith(prefix));

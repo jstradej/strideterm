@@ -40,7 +40,7 @@ export const workspaceUIStateSchema = z.object({
   workspaceId: nonEmptyString,
   uiState: z.object({
     activeViewId: z.string().optional(),
-    splitLayout: z.enum(["cols", "rows", "top-split"]).nullable().optional(),
+    splitLayout: z.enum(["cols", "rows", "top-split", "left-split", "grid"]).nullable().optional(),
     splitViewIds: z.array(z.string()).optional(),
     activeRootPath: z.string().optional(),
   }),

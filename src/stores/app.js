@@ -398,10 +398,10 @@ export const useAppStore = defineStore("app", () => {
 
     const workspaceChanged = nextPayload?.appState?.activeWorkspaceId !== payload.value?.appState?.activeWorkspaceId;
     if (workspaceChanged || completingActivation) {
-      const prevWsId = payload.value?.appState?.activeWorkspaceId;
-      if (workspaceChanged && prevWsId && splitGroup.value) {
-        _splitGroupCache.set(prevWsId, splitGroup.value);
-      }
+      // activateWorkspace() already cached the outgoing workspace's split
+      // BEFORE optimistic activation swapped splitGroup.value. Caching here
+      // would overwrite that with the NEW workspace's split under the OLD
+      // workspace id — the same bug that ate the layout on every switch.
       const nextWsId = nextPayload?.appState?.activeWorkspaceId;
       const nextWsEntry = nextWsId ? (nextPayload?.appState?.workspaces || []).find((ws) => ws.id === nextWsId) : null;
       applyWorkspaceUIStateFromEntry(nextWsEntry, nextWsId);
