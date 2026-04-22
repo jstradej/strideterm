@@ -1,6 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { exec } from "node:child_process";
-import { access, readFile, writeFile, mkdir, rm } from "node:fs/promises";
+import { readFile, writeFile, rm } from "node:fs/promises";
 import path from "node:path";
 import { getLogger } from "./logger.js";
 import { getProvider, parseProviderFromCommand } from "./providers/provider-registry.js";
@@ -9,7 +8,6 @@ import {
   TASK_FILE,
   TODO_FILE,
   JUDGE_TODO_FILE,
-  JUDGE_PROMPT_FILE,
   WORK_LOCK_FILE,
   TASK_LOG_FILE,
   PROMPT_FILE,
@@ -17,16 +15,11 @@ import {
   MAX_OUTPUT_TAIL,
   FILE_PROMPT_THRESHOLD,
   DEFAULT_SHOWER_INTERVAL,
-  verdictSchema,
   taskDir,
   taskDirRel,
   fenceUserInput,
   tailLines,
-  parseTodoSections,
-  activeItems,
-  formatVerifyChecklist,
 } from "./agent-task-utils.js";
-import { detectProjectVerifyCommands, detectStackReviewHints } from "./agent-task-detection.js";
 import {
   buildInitialWorkerPrompt,
   buildRePrompt,
@@ -34,6 +27,17 @@ import {
   buildJudgeFeedbackPrompt,
   buildUserFeedbackPrompt,
 } from "./agent-task-prompts.js";
+import { execCommand } from "./agent-task-exec.js";
+import {
+  cleanupTaskFiles as cleanupTaskFilesImpl,
+  clearVerdict,
+  ensureGitIgnore,
+  readVerdict,
+  runBuiltInChecks,
+  waitForFile,
+  writeTaskFiles,
+} from "./agent-task-files.js";
+import { ensureGitRepo, getGitContext } from "./agent-task-git.js";
 
 const log = getLogger("task-runner");
 const COPILOT_PROGRAMMATIC_JUDGE_PROMPT_FILE = "JUDGE_INPUT.md";
@@ -256,8 +260,8 @@ export class AgentTaskRunner {
       hasDescription: !!task.description,
       descriptionLength: (task.description || "").length,
     });
-    await this.#writeTaskFiles(cwd, task);
-    await this.#ensureGitIgnore(cwd);
+    await writeTaskFiles(cwd, task, log);
+    await ensureGitIgnore(cwd, log);
   }
 
   // ---------------------------------------------------------------------------
@@ -284,7 +288,7 @@ export class AgentTaskRunner {
     // Ensure a git repo exists so the judge can see diffs/status.
     // If the directory has no .git, we run `git init` + initial commit.
     // This is read-only from the perspective of the user's work — we never push.
-    await this.#ensureGitRepo(workspace.cwd);
+    await ensureGitRepo(workspace.cwd, { execCommand, gitInitLocks: this.#gitInitLocks, log });
 
     // Provider-specific setup (e.g. Gemini writes yolo policy file)
     try {
@@ -959,7 +963,7 @@ export class AgentTaskRunner {
       round.judgeReason = "";
 
       // Built-in checks: WORK_LOCK + TODO.md sections (always run, cheap)
-      const builtInChecks = await this.#runBuiltInChecks(workspace.cwd, task.taskId);
+      const builtInChecks = await runBuiltInChecks(workspace.cwd, task.taskId, { execCommand, log });
       round.checks.push(...builtInChecks);
       this.#broadcastState(); // Stream built-in results to UI
       for (const c of builtInChecks) {
@@ -1060,11 +1064,11 @@ export class AgentTaskRunner {
         const judgeSetupStart = Date.now();
 
         // Clear old verdict and nudge flag for fresh judge evaluation
-        await this.#clearVerdict(workspace.cwd, task.taskId);
+        await clearVerdict(workspace.cwd, task.taskId);
         task.judgeNudged = false;
 
         // Gather git context so the judge can see actual repo changes
-        const gitContext = await this.#getGitContext(workspace.cwd);
+        const gitContext = await getGitContext(workspace.cwd, { execCommand, log });
         const gitContextMs = Date.now() - judgeSetupStart;
 
         const judgeSessionId = `${workspaceId}:${task.judgePanelId}`;
@@ -1141,7 +1145,7 @@ export class AgentTaskRunner {
     const workspaceId = workspace.id;
 
     try {
-      const verdict = await this.#readVerdict(workspace.cwd, task.taskId);
+      const verdict = await readVerdict(workspace.cwd, task.taskId, log);
 
       // If verdict file is missing, nudge the judge once before giving up.
       // LLMs sometimes output the verdict as text instead of writing the file.
@@ -1230,140 +1234,6 @@ export class AgentTaskRunner {
     }
   }
 
-  // ---------------------------------------------------------------------------
-  // Built-in checks (WORK_LOCK + TODO.md parsing — inspired by codex-runner)
-  // ---------------------------------------------------------------------------
-
-  /**
-   * Check WORK_LOCK absence and TODO.md section state.
-   * These run on every idle, before verify commands.
-   */
-  async #runBuiltInChecks(cwd, taskId) {
-    const dir = taskDir(cwd, taskId);
-    const results = [];
-
-    // WORK_LOCK must be absent for completion
-    let lockExists = false;
-    try {
-      await access(path.join(dir, WORK_LOCK_FILE));
-      lockExists = true;
-    } catch {
-      // Good — no lock
-    }
-    results.push({
-      label: "WORK_LOCK absent",
-      passed: !lockExists,
-      exitCode: lockExists ? 1 : 0,
-      outputTail: lockExists ? "WORK_LOCK exists — worker has not signaled completion. Remove it when done." : "",
-    });
-
-    // Parse TODO.md sections
-    try {
-      const todoContent = await readFile(path.join(dir, TODO_FILE), "utf8");
-      const sections = parseTodoSections(todoContent);
-
-      const inProgress = activeItems(sections["In Progress"] || []);
-      results.push({
-        label: "TODO: In Progress empty",
-        passed: inProgress.length === 0,
-        exitCode: inProgress.length > 0 ? 1 : 0,
-        outputTail: inProgress.length > 0 ? `Active items:\n${inProgress.join("\n")}` : "",
-      });
-
-      const blocked = activeItems(sections["Blocked"] || []);
-      results.push({
-        label: "TODO: Blocked empty",
-        passed: blocked.length === 0,
-        exitCode: blocked.length > 0 ? 1 : 0,
-        outputTail: blocked.length > 0 ? `Blocked items:\n${blocked.join("\n")}` : "",
-      });
-    } catch {
-      results.push({
-        label: "TODO.md exists",
-        passed: false,
-        exitCode: 1,
-        outputTail: "TODO.md not found — worker should create and maintain it.",
-      });
-    }
-
-    // If package-lock.json was modified, run npm audit to catch known CVEs.
-    // This is cheap (local DB check, no registry queries) and catches agents
-    // that install dependencies with known vulnerabilities.
-    const auditCheck = await this.#checkLockfileAudit(cwd);
-    if (auditCheck) results.push(auditCheck);
-
-    return results;
-  }
-
-  /**
-   * If package-lock.json was modified, run `npm audit --audit-level=high`.
-   * Returns null if lockfile is unchanged or project doesn't use npm.
-   */
-  async #checkLockfileAudit(cwd) {
-    try {
-      await access(path.join(cwd, "package-lock.json"));
-    } catch {
-      return null;
-    }
-
-    // Check if lockfile was modified (working tree or staged)
-    const checks = await Promise.all([
-      this.#execCommand("git diff --name-only HEAD -- package-lock.json", cwd, 10_000),
-      this.#execCommand("git diff --name-only --cached -- package-lock.json", cwd, 10_000),
-    ]);
-    const dirty = checks.some((r) => r.stdout.trim().includes("package-lock.json"));
-    if (!dirty) return null;
-
-    log.info("lockfile modified by agent, running npm audit", { cwd });
-    const result = await this.#execCommand("npm audit --audit-level=high", cwd, 60_000);
-    return {
-      label: "Lockfile security audit",
-      passed: result.exitCode === 0,
-      exitCode: result.exitCode,
-      outputTail:
-        result.exitCode === 0
-          ? "package-lock.json changed — npm audit passed."
-          : tailLines(result.stderr || result.stdout, MAX_OUTPUT_TAIL),
-    };
-  }
-
-  #execCommand(command, cwd, timeoutMs) {
-    const childPromise = new Promise((resolve) => {
-      const child = exec(command, {
-        cwd,
-        timeout: timeoutMs,
-        windowsHide: true,
-        maxBuffer: 2 * 1024 * 1024,
-        env: { ...process.env, FORCE_COLOR: "0" },
-      });
-
-      let stdout = "";
-      let stderr = "";
-
-      child.stdout?.on("data", (chunk) => {
-        stdout += chunk;
-      });
-      child.stderr?.on("data", (chunk) => {
-        stderr += chunk;
-      });
-      child.on("close", (code) => {
-        resolve({ exitCode: code ?? 1, stdout, stderr });
-      });
-      child.on("error", (err) => {
-        resolve({ exitCode: 1, stdout, stderr: err.message });
-      });
-    });
-
-    // Hard timeout safety net — resolves even if child process events don't fire
-    const hardTimeout = new Promise((resolve) => {
-      setTimeout(() => {
-        resolve({ exitCode: 1, stdout: "", stderr: `Command timed out after ${timeoutMs}ms` });
-      }, timeoutMs + 5000);
-    });
-
-    return Promise.race([childPromise, hardTimeout]);
-  }
-
   async #runProgrammaticCopilotJudge(workspace, prompt) {
     const task = workspace?.task;
     const promptPath = path.join(taskDir(workspace.cwd, task.taskId), COPILOT_PROGRAMMATIC_JUDGE_PROMPT_FILE);
@@ -1379,264 +1249,14 @@ export class AgentTaskRunner {
       promptPath: COPILOT_PROGRAMMATIC_JUDGE_PROMPT_FILE,
       model: task.judgeProviderConfig?.model || "",
     });
-    return this.#execCommand(command, workspace.cwd, COPILOT_PROGRAMMATIC_JUDGE_TIMEOUT_MS);
-  }
-
-  // ---------------------------------------------------------------------------
-  // Verdict file I/O
-  // ---------------------------------------------------------------------------
-
-  async #readVerdict(cwd, taskId) {
-    const verdictPath = path.join(taskDir(cwd, taskId), VERDICT_FILE);
-    try {
-      const raw = await readFile(verdictPath, "utf8");
-      const data = JSON.parse(raw);
-      const parsed = verdictSchema.safeParse(data);
-      if (!parsed.success) {
-        log.warn("verdict file failed schema validation", {
-          verdictPath,
-          errors: parsed.error.issues.map((i) => i.message),
-        });
-        return {
-          verdict: "continue",
-          reason: `Verdict file has invalid format: ${parsed.error.issues.map((i) => i.message).join(", ")}`,
-        };
-      }
-      log.debug("verdict file parsed", { verdictPath, verdict: parsed.data.verdict });
-      return { verdict: parsed.data.verdict, reason: parsed.data.reason };
-    } catch (err) {
-      if (err.code === "ENOENT") {
-        log.warn("verdict file missing — judge did not write it", { verdictPath });
-        return { verdict: "continue", reason: "Judge did not produce a verdict file." };
-      }
-      // JSON parse error or other FS error — verdict file exists but is corrupt
-      log.error("verdict file malformed or unreadable", { verdictPath, err: err.message });
-      return { verdict: "continue", reason: `Verdict file could not be parsed: ${err.message}` };
-    }
-  }
-
-  async #clearVerdict(cwd, taskId) {
-    const verdictPath = path.join(taskDir(cwd, taskId), VERDICT_FILE);
-    try {
-      await rm(verdictPath, { force: true });
-    } catch {
-      // Ignore
-    }
-  }
-
-  // ---------------------------------------------------------------------------
-  // Task file setup
-  // ---------------------------------------------------------------------------
-
-  async #writeTaskFiles(cwd, task) {
-    const dir = taskDir(cwd, task.taskId);
-    const relDir = taskDirRel(task.taskId);
-    await mkdir(dir, { recursive: true });
-
-    // Auto-detect verification commands and technology stack from project files
-    const detected = await detectProjectVerifyCommands(cwd);
-    const stackHints = await detectStackReviewHints(cwd);
-    const now = new Date().toISOString().replace("T", " ").slice(0, 19);
-
-    const descriptionBlock = task.description
-      ? task.description
-      : `> No task description provided. Instruct the Worker directly in the terminal,
-> or write your task here and press Start.`;
-
-    const verifyChecklist = formatVerifyChecklist(detected);
-    const verifySection = verifyChecklist
-      ? `## Verification before completion
-
-> Auto-detected from your project. Edit freely — add, remove, or rewrite in your own language.
-> The Worker and Judge both read this section. The Worker must run these checks before finishing.
-
-${verifyChecklist}
-`
-      : `## Verification before completion
-
-> No commands auto-detected. Add your own checks here, for example:
->
-> \`- [ ] Run \\\`npm test\\\` — must pass\`
-> \`- [ ] Run \\\`npm run lint\\\` — no errors\`
->
-> The Worker will run these before finishing. The Judge will verify them independently.
-`;
-
-    const taskMd = `# Task
-
-> Created: ${now} | Project: ${cwd}
-
-${descriptionBlock}
-
-${verifySection}
-## Rules
-
-- **Commit your work** regularly with clear, descriptive messages (the judge reviews git diffs)
-- Update ${relDir}/${TODO_FILE} as you work (move items between sections)
-- Before finishing, complete every item in the "Verification before completion" section above
-- The judge will independently verify your work
-- Focus on completing the task fully — partial completions will be sent back
-- Do not push to any remote — the task runner works locally only
-- **Do not install new dependencies** unless the task explicitly requires it. If you must add a package, prefer an established version (not the latest release) and pin the exact version (no ^ or ~ prefix)
-`;
-
-    const todoMd = `# TODO
-
-> Created: ${now}
->
-> The Worker updates this file as it progresses. You can pre-fill items before starting.
-> The Task Runner checks that "In Progress" and "Blocked" sections are empty before completion.
-
-## To Do
-
-- [ ] Complete the task described in ${relDir}/${TASK_FILE}
-
-## In Progress
-
-## Done
-`;
-
-    // JUDGE_TODO_FILE is intentionally NOT pre-created — the Judge creates it.
-    // JUDGE_PROMPT_FILE IS pre-created so users can customize it before starting.
-
-    const workLock = "Work remains. Remove this file only when the task is complete and all verification steps pass.\n";
-
-    const stackSection = stackHints.length
-      ? `\n## Technology-specific checks\n\n${stackHints.map((h) => `- ${h}`).join("\n")}\n`
-      : "";
-
-    const judgePromptMd = `# Judge Instructions
-
-> Edit this file to customize how the Judge evaluates the Worker's output.
-> If this file exists, its content replaces the default judge instructions.
-> The Judge always receives the task description, check results, git context,
-> and the system-enforced hard rules regardless of what you write here —
-> in particular the zero-tolerance completion rule and the forbidden-phrase
-> list cannot be overridden.
-
-## Guiding principle — bias toward "continue"
-
-The cost of returning "continue" is a few extra minutes of agent time.
-The cost of returning "complete" when something was missed is incomplete work
-shipped to the user, who may never catch it. These costs are not symmetric.
-
-Default to "continue" under any uncertainty. If you hedged ("seems", "appears",
-"looks like", "probably", "should be", "I think"), if you accepted a worker claim
-without verifying it in the code, if you could not produce a file:line citation, or
-if you noticed an unexplored area of the change — return "continue". A single
-unresolved "I'm not sure" anywhere in your evaluation is sufficient reason to
-return "continue".
-
-Judge the code on disk, not the worker's effort or reasoning. "The worker is
-close" is an argument for "continue", not for "complete".
-
-## Evaluation steps
-
-1. Read ${relDir}/${TASK_FILE} completely. Also read any plan file referenced in the task (e.g. \`.private/plan-*.md\`). Extract EVERY requirement, acceptance criterion, plan bullet, verification-checklist item, and explicit deliverable into a single flat numbered list.
-
-2. **Verification checklist**: If TASK.md contains a "Verification before completion" section, run each listed command yourself and confirm it passes — do not trust the Worker's claim.
-
-3. **Per-requirement audit (mandatory, mechanical)**: For EACH numbered item from step 1, write one of these three labels with a concrete citation from the current working tree or committed diff:
-   - \`IMPLEMENTED\` — cite file:line (or \`grep\`/\`git diff\` output) proving the deliverable exists right now. No citation → not allowed to mark it IMPLEMENTED.
-   - \`PARTIAL\` — describe exactly what is present vs missing, with file:line references on both sides.
-   - \`MISSING\` — the deliverable is not in the code. Cite the grep/search that came back empty.
-
-4. **Code review** of the changed files. Flag only real issues (not style preferences):
-   - Correctness: does the code actually do what the task asks?
-   - Bugs, unhandled edge cases, missing error handling
-   - Dead code, debug leftovers, placeholder values, new TODO comments introduced by the Worker (new TODOs = incomplete work)
-   - Tests: if the task required tests, verify they exist and actually cover the behavior, not just smoke-test passes.
-
-5. Run any additional commands needed to verify claims (grep, git diff, cat, test runners).
-
-6. Write the full per-requirement audit from step 3 to ${relDir}/${JUDGE_TODO_FILE} — this is how the user audits your reasoning after the fact, so it must be complete.
-
-7. **Verdict rule (mechanical — no judgment calls):**
-   - ANY item from step 3 is PARTIAL or MISSING → verdict "continue"
-   - ANY deterministic check failed → verdict "continue"
-   - ANY code-review finding of the type in step 4 → verdict "continue"
-   - Only if EVERY item is IMPLEMENTED with a concrete citation AND all checks pass AND no code-review findings → verdict "complete"
-
-8. Write your verdict to ${relDir}/${VERDICT_FILE}:
-   - Complete: \`{"verdict": "complete", "reason": "All <N> requirements verified implemented: ..."}\`
-   - Continue: \`{"verdict": "continue", "reason": "Missing: ...; Partial: ..."}\`
-   Include concrete file:line citations. A "complete" verdict with no citations, or with any phrase like "mostly", "substantially", "largely", "essentially", "close enough", "good enough", "small enough", or mentioning follow-up/deferred work is by definition wrong — change it to "continue".
-${stackSection}
-## Severity guide (informational — does NOT soften the completion rule)
-
-- **Blocker** (must fix): broken functionality, security vulnerability, data loss risk, failing tests
-- **Major** (should fix): missing error handling, logic bugs, missing edge cases, API contract violations
-- **Minor** (still blocks completion if listed in the plan/TODO): naming inconsistencies, dead code, missing types
-  Any minor item that was an explicit deliverable or plan bullet still counts as incomplete — severity does not grant a pass.
-`;
-
-    await Promise.all([
-      writeFile(path.join(dir, TASK_FILE), taskMd, "utf8"),
-      writeFile(path.join(dir, TODO_FILE), todoMd, "utf8"),
-      writeFile(path.join(dir, JUDGE_PROMPT_FILE), judgePromptMd, "utf8"),
-      // JUDGE_TODO_FILE is intentionally NOT pre-created — Claude Code's
-      // Write tool rejects overwrites of existing files unless Read was
-      // called first.  Letting the judge create it fresh avoids this.
-      writeFile(path.join(dir, WORK_LOCK_FILE), workLock, "utf8"),
-    ]);
-
-    log.info("task files written", { dir, detectedCommands: detected.length });
-  }
-
-  // ---------------------------------------------------------------------------
-  // Helpers
-  // ---------------------------------------------------------------------------
-
-  /**
-   * Ensure .strideterm/ is in the project's .gitignore so task files
-   * (and other strideterm data like worktrees) don't get committed.
-   */
-  async #ensureGitIgnore(cwd) {
-    const gitignorePath = path.join(cwd, ".gitignore");
-    const entry = ".strideterm/";
-    try {
-      const content = await readFile(gitignorePath, "utf8");
-      if (content.includes(entry)) {
-        log.trace(".strideterm/ already in .gitignore", { cwd });
-        return;
-      }
-      // Append to existing .gitignore
-      const separator = content.endsWith("\n") ? "" : "\n";
-      await writeFile(gitignorePath, content + separator + entry + "\n", "utf8");
-      log.debug("appended .strideterm/ to .gitignore", { cwd });
-    } catch (err) {
-      if (err.code === "ENOENT") {
-        // No .gitignore — create one
-        try {
-          await writeFile(gitignorePath, entry + "\n", "utf8");
-          log.debug("created .gitignore with .strideterm/ entry", { cwd });
-        } catch (writeErr) {
-          log.warn("failed to create .gitignore", { cwd, err: writeErr.message });
-        }
-      } else {
-        log.warn("failed to read .gitignore", { cwd, err: err.message });
-      }
-    }
+    return execCommand(command, workspace.cwd, COPILOT_PROGRAMMATIC_JUDGE_TIMEOUT_MS);
   }
 
   /**
    * Remove task files for a workspace. Called when a task workspace is deleted.
    */
   async cleanupTaskFiles(cwd, taskId) {
-    if (!cwd || !taskId) {
-      log.warn("cleanupTaskFiles: missing cwd or taskId, skipping cleanup", {
-        cwd: cwd || "(empty)",
-        taskId: taskId || "(empty)",
-      });
-      return;
-    }
-    const dir = taskDir(cwd, taskId);
-    try {
-      await rm(dir, { recursive: true, force: true });
-      log.info("task files cleaned up", { dir });
-    } catch (err) {
-      log.warn("failed to clean up task files", { dir, err: err.message });
-    }
+    await cleanupTaskFilesImpl(cwd, taskId, log);
   }
 
   // ---------------------------------------------------------------------------
@@ -1716,7 +1336,7 @@ Do NOT continue working on the task — only write the handoff summary.`;
     log.debug("shower mode: handoff directive sent, waiting for handoff file", { workspaceId });
 
     // Step 3: Wait for handoff file (poll with timeout)
-    const handoffWritten = await this.#waitForFile(handoffPath, 120_000); // 2 min timeout
+    const handoffWritten = await waitForFile(handoffPath, 120_000); // 2 min timeout
 
     if (!handoffWritten) {
       log.warn("shower mode: handoff file not written within timeout, skipping shower", { workspaceId });
@@ -1816,158 +1436,6 @@ Do NOT continue working on the task — only write the handoff summary.`;
     );
 
     return parts.join("\n");
-  }
-
-  /**
-   * Poll for a file to appear with meaningful content, with timeout.
-   * Returns true if file was found and has content, false if timeout.
-   */
-  async #waitForFile(filePath, timeoutMs = 120_000) {
-    const start = Date.now();
-    const pollInterval = 3000; // Check every 3 seconds
-
-    while (Date.now() - start < timeoutMs) {
-      try {
-        await access(filePath);
-        const content = await readFile(filePath, "utf8");
-        const trimmed = content.trim();
-        // Require meaningful content: at least 10 chars and contains
-        // word characters (not just whitespace/punctuation/partial writes)
-        if (trimmed.length > 10 && /\w/.test(trimmed)) {
-          return true;
-        }
-      } catch {
-        // File doesn't exist yet
-      }
-      await new Promise((resolve) => setTimeout(resolve, pollInterval));
-    }
-
-    return false;
-  }
-
-  // ---------------------------------------------------------------------------
-  // Git context — read-only repo state for judge evaluation
-  // ---------------------------------------------------------------------------
-
-  /**
-   * Ensure the project directory has a git repo. If not, run `git init`
-   * so that git diff/status work for the judge. Never touches remotes.
-   */
-  async #ensureGitRepo(cwd) {
-    const gitDir = path.join(cwd, ".git");
-    try {
-      await access(gitDir);
-      log.trace("git repo exists", { cwd });
-      return true; // Already a git repo
-    } catch {
-      // No .git directory — serialize concurrent init attempts per cwd
-      if (this.#gitInitLocks.has(cwd)) {
-        log.debug("git init already in progress, waiting", { cwd });
-        return this.#gitInitLocks.get(cwd);
-      }
-
-      const initPromise = this.#doGitInit(cwd);
-      this.#gitInitLocks.set(cwd, initPromise);
-      try {
-        return await initPromise;
-      } finally {
-        this.#gitInitLocks.delete(cwd);
-      }
-    }
-  }
-
-  async #doGitInit(cwd) {
-    log.info("no git repo found, running git init", { cwd });
-    try {
-      // Re-check after acquiring lock — another caller may have finished first
-      try {
-        await access(path.join(cwd, ".git"));
-        log.trace("git repo appeared while waiting for lock", { cwd });
-        return true;
-      } catch {
-        // Still no .git — proceed
-      }
-
-      const result = await this.#execCommand("git init", cwd, 10_000);
-      if (result.exitCode === 0) {
-        log.info("git repo initialized", { cwd });
-        // Create an initial commit so `git diff` has a baseline
-        await this.#execCommand("git add -A", cwd, 10_000);
-        await this.#execCommand(
-          'git commit -m "Initial commit (auto-created by strideterm task runner)" --allow-empty',
-          cwd,
-          10_000,
-        );
-        log.info("initial commit created", { cwd });
-        return true;
-      }
-      log.warn("git init failed", { cwd, exitCode: result.exitCode, stderr: result.stderr });
-      return false;
-    } catch (err) {
-      log.warn("git init error", { cwd, err: err.message });
-      return false;
-    }
-  }
-
-  /**
-   * Gather read-only git context for the judge prompt.
-   * Returns { status, diffStat, diffNames } — all clipped for prompt size.
-   *
-   * Inspired by codex-runner's _repo_context() which runs the same three commands.
-   * Clips output to prevent huge diffs from bloating the prompt.
-   */
-  async #getGitContext(cwd) {
-    const empty = { status: "Not a git repository.", diffStat: "", diffNames: "" };
-    const gitDir = path.join(cwd, ".git");
-    try {
-      await access(gitDir);
-    } catch {
-      log.debug("getGitContext: no .git directory", { cwd });
-      return empty;
-    }
-
-    const MAX_LINES = 80;
-    const MAX_CHARS = 5000;
-
-    function clip(text, label = "output") {
-      if (!text) return "(clean)";
-      const lines = text.split("\n");
-      const totalLines = lines.length;
-      let clipped =
-        totalLines > MAX_LINES
-          ? lines.slice(0, MAX_LINES).join("\n") +
-            `\n... (${totalLines - MAX_LINES} more lines hidden out of ${totalLines} total ${label} lines)`
-          : text;
-      if (clipped.length > MAX_CHARS) {
-        clipped = clipped.slice(0, MAX_CHARS) + `\n... (${label} truncated at ${MAX_CHARS} chars)`;
-      }
-      return clipped;
-    }
-
-    try {
-      const [statusResult, diffStatResult, diffNamesResult] = await Promise.all([
-        this.#execCommand("git status --short", cwd, 10_000),
-        this.#execCommand("git diff --stat", cwd, 10_000),
-        this.#execCommand("git diff --name-only", cwd, 10_000),
-      ]);
-
-      const context = {
-        status: clip(statusResult.stdout.trim(), "git status"),
-        diffStat: clip(diffStatResult.stdout.trim(), "diff stat"),
-        diffNames: clip(diffNamesResult.stdout.trim(), "changed files"),
-      };
-
-      log.debug("git context gathered", {
-        cwd,
-        statusLines: statusResult.stdout.split("\n").length,
-        diffFiles: diffNamesResult.stdout.split("\n").filter(Boolean).length,
-      });
-
-      return context;
-    } catch (err) {
-      log.warn("failed to gather git context", { cwd, err: err.message });
-      return empty;
-    }
   }
 
   // ---------------------------------------------------------------------------

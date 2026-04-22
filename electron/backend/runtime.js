@@ -81,6 +81,7 @@ import {
 import { APP_CONFIG } from "../../config/app-config.js";
 import { createVersionChecker } from "./version-checker.js";
 import { initLogger, getLogger, setLogLevel, reconfigureLogger } from "./logger.js";
+import { createRuntimeAttentionManager } from "./runtime-attention.js";
 
 const log = getLogger("runtime");
 
@@ -457,9 +458,7 @@ export async function createRuntime({
   let remoteInfo = null;
   let dockerPoll = null;
   let gitPoll = null;
-  const projectAlerts = new Map();
   const attentionContext = createAttentionContext();
-  const sessionSignals = new Map();
 
   // --- Claude CLI availability (persisted; only re-checked when not yet found) ---
   let claudeAvailableCache = getState().settings?.claudeAvailable === true;
@@ -972,6 +971,43 @@ export async function createRuntime({
     userDataPath,
   });
 
+  const {
+    projectAlerts,
+    sessionSignals,
+    getAttentionSnapshot,
+    cancelPromptTimer,
+    resetSessionSignal,
+    deleteSessionSignal,
+    addProjectAlert,
+    clearProjectAlerts,
+    clearAlertSession,
+    getSessionSignal,
+    raiseAlert,
+    raiseWaitingAlert,
+    ensureVisibleSession,
+    syncSessionSignalsWithState,
+    shouldTrackProjectAlert,
+    updateVisibleSessions,
+    isSessionVisible,
+    markSessionPromptInjected,
+  } = createRuntimeAttentionManager({
+    log,
+    getState,
+    sessions,
+    createSessionId,
+    parseSessionId,
+    getNotificationConfig,
+    createSessionSignal,
+    adaptiveForget,
+    metricsRecordAlert,
+    APP_CONFIG,
+    AGENT_NAME_RE,
+    ATTENTION_VISIBILITY_GRACE_MS,
+    attentionContext,
+    broadcastState,
+    isKnownPluginProject,
+  });
+
   function getPayload() {
     const state = getState();
     return {
@@ -992,12 +1028,7 @@ export async function createRuntime({
         return cloned;
       })(),
       workspace: sessions.getWorkspace(state),
-      attention: {
-        byWorkspace: Object.fromEntries(projectAlerts.entries()),
-        byProject: Object.fromEntries(projectAlerts.entries()),
-        activeWorkspace: projectAlerts.get(state.activeWorkspaceId) || null,
-        activeProject: projectAlerts.get(state.activeProjectId) || null,
-      },
+      attention: getAttentionSnapshot(state),
       docker: docker.getSnapshot(),
       git: {
         workspaces: git.getProjectMap(),
@@ -1048,13 +1079,7 @@ export async function createRuntime({
   taskRunner.init({
     writeToSession(sessionId, data) {
       sessions.writeToSession(sessionId, data);
-      // Set signal so idle detection tracks the injected prompt correctly
-      const signal = sessionSignals.get(sessionId);
-      if (signal) {
-        signal.busy = true;
-        signal.hasUserInput = true;
-        signal.waitingRaised = false;
-      }
+      markSessionPromptInjected(sessionId);
     },
     getState,
     broadcastState,
@@ -1085,105 +1110,6 @@ export async function createRuntime({
     const originUrl = createTunnelOriginUrl(remoteConfig);
     await checkRemoteOriginImpl(originUrl);
     return originUrl;
-  }
-
-  function clearAlertSession(sessionId) {
-    const descriptor = parseSessionId(sessionId);
-    if (!descriptor) {
-      return false;
-    }
-
-    const current = projectAlerts.get(descriptor.workspaceId);
-    if (!current?.alerts?.some((alert) => alert.panelId === descriptor.panelId)) {
-      return false;
-    }
-
-    clearProjectAlerts(descriptor.workspaceId, descriptor.panelId);
-    resetSessionSignal(sessionId);
-    return true;
-  }
-
-  function clearProjectAlerts(projectId, panelId = null) {
-    if (!projectId || !projectAlerts.has(projectId)) {
-      return;
-    }
-
-    if (!panelId) {
-      log.trace("clearing all alerts for project", { projectId });
-      projectAlerts.delete(projectId);
-      return;
-    }
-    log.trace("clearing alert", { projectId, panelId });
-
-    const current = projectAlerts.get(projectId);
-    const nextAlerts = current.alerts.filter((alert) => alert.panelId !== panelId);
-    if (!nextAlerts.length) {
-      projectAlerts.delete(projectId);
-      return;
-    }
-
-    projectAlerts.set(projectId, {
-      ...current,
-      count: nextAlerts.length,
-      alerts: nextAlerts,
-    });
-  }
-
-  function addProjectAlert({
-    projectId,
-    panelId,
-    sessionId,
-    title,
-    exitCode = null,
-    kind = "completed",
-    detail = "",
-    tier = 1,
-    urgency = "normal",
-  }) {
-    log.debug("addProjectAlert", { projectId, panelId, sessionId, title, kind, tier, urgency, detail, exitCode });
-    const current = projectAlerts.get(projectId) || {
-      count: 0,
-      latestAt: null,
-      alerts: [],
-    };
-    const nextAlerts = [
-      {
-        projectId,
-        panelId,
-        sessionId,
-        title,
-        exitCode,
-        kind,
-        tier,
-        urgency,
-        detail,
-        at: new Date().toISOString(),
-      },
-      ...current.alerts.filter((alert) => alert.panelId !== panelId),
-    ].slice(0, APP_CONFIG.runtime.projectAlertLimit);
-
-    projectAlerts.set(projectId, {
-      count: nextAlerts.length,
-      latestAt: nextAlerts[0]?.at || null,
-      alerts: nextAlerts,
-    });
-  }
-
-  function getSessionSignal(sessionId, project, panel) {
-    const isNew = !sessionSignals.has(sessionId);
-    const current = sessionSignals.get(sessionId) || createSessionSignal(sessionId);
-    if (!current.agentLike) {
-      const wasAgent = current.agentLike;
-      current.agentLike = AGENT_NAME_RE.test(panel?.command || "") || AGENT_NAME_RE.test(panel?.title || "");
-      if (!wasAgent && current.agentLike) {
-        log.debug("session classified as agent-like", { sessionId, command: panel?.command, title: panel?.title });
-      }
-    }
-    if (isNew) {
-      log.trace("session signal created", { sessionId, agentLike: current.agentLike });
-    }
-    sessionSignals.set(sessionId, current);
-    return current;
   }
 
   /**
@@ -1233,171 +1159,6 @@ export async function createRuntime({
     return Date.now() - signal.lastUserInteractionAt < graceMs;
   }
 
-  function cancelPromptTimer(signal) {
-    if (!signal?.promptTimer) {
-      return;
-    }
-    clearTimeout(signal.promptTimer);
-    signal.promptTimer = null;
-  }
-
-  function resetSessionSignal(sessionId) {
-    const signal = sessionSignals.get(sessionId);
-    if (!signal) {
-      return;
-    }
-    const wasBusy = signal.busy;
-    const wasWaiting = signal.waitingRaised;
-    cancelPromptTimer(signal);
-    signal.busy = false;
-    signal.waitingRaised = false;
-    signal.outputBursts = 0;
-    signal.lastOutputAt = 0;
-    signal.lastHookAlertAt = 0;
-    if (wasBusy || wasWaiting) {
-      log.trace("session signal reset", { sessionId, wasBusy, wasWaiting });
-    }
-  }
-
-  function deleteSessionSignal(sessionId) {
-    const signal = sessionSignals.get(sessionId);
-    cancelPromptTimer(signal);
-    sessionSignals.delete(sessionId);
-    adaptiveForget(sessionId);
-  }
-
-  /**
-   * Unified alert primitive — all callers go through here.
-   *
-   * @param {Object} spec
-   * @param {string} spec.sessionId
-   * @param {string} spec.projectId
-   * @param {string} spec.panelId
-   * @param {string} spec.title
-   * @param {"waiting"|"completed"|"info"} [spec.kind="waiting"]
-   * @param {1|2|3} [spec.tier=1]                 — 1 authoritative (hooks, OSC133;D, BEL, exit, task-runner)
-   *                                                 2 strong (explicit patterns, confirmed)
-   *                                                 3 weak (silence + pattern heuristic)
-   * @param {"normal"|"urgent"} [spec.urgency="normal"]  — urgent bypasses cooldown + waitingRaised latch
-   * @param {string} [spec.detail=""]
-   * @param {number|null} [spec.exitCode=null]
-   * @returns {boolean} true if alert was raised, false if suppressed (e.g. duplicate)
-   */
-  function raiseAlert({
-    sessionId,
-    projectId,
-    panelId,
-    title,
-    kind = "waiting",
-    tier = 1,
-    urgency = "normal",
-    detail = "",
-    exitCode = null,
-  }) {
-    const signal = sessionSignals.get(sessionId);
-
-    // Duplicate suppression for "waiting" — each session can have one pending
-    // waiting alert at a time.  Urgent bypasses (e.g. permission prompt
-    // arrives after an idle prompt within cooldown).
-    if (kind === "waiting" && urgency !== "urgent" && signal?.waitingRaised) {
-      log.trace("raiseAlert skipped: waiting already raised", { sessionId, detail });
-      return false;
-    }
-
-    log.info("ALERT raised", { sessionId, projectId, panelId, title, kind, tier, urgency, detail, exitCode });
-    // Plan § 3.5: when notifications.debug is on, emit a structured decision
-    // trace at info level so users can diagnose false positives without
-    // rebuilding with a different log level. Runs only when flag is enabled.
-    if (getNotificationConfig().debug) {
-      log.info("[notif-debug] alert-raised", {
-        sessionId,
-        tier,
-        urgency,
-        kind,
-        detail,
-        commandClass: signal?.commandClass || "",
-        hookCapable: signal?.hookCapable || false,
-        outputBursts: signal?.outputBursts || 0,
-        lastHookType: signal?.lastHookType || "",
-      });
-    }
-    metricsRecordAlert({ tier, kind, urgency, commandClass: signal?.commandClass || "" });
-    addProjectAlert({
-      projectId,
-      panelId,
-      sessionId,
-      title,
-      kind,
-      tier,
-      urgency,
-      detail,
-      exitCode,
-    });
-    if (signal) {
-      if (kind === "waiting") {
-        signal.waitingRaised = true;
-      }
-      signal.busy = false;
-      signal.lastAlertAt = Date.now();
-      signal.everAlerted = true;
-      // Reset output-burst counter so "substantial output since last alert"
-      // means output that ARRIVED AFTER the user was alerted. Without this,
-      // bursts that led up to the alert (e.g. the response text just before
-      // Claude's Stop hook) remain counted, causing the repeat-idle_prompt
-      // suppression below to think there's been new activity — so a redundant
-      // idle_prompt right after a Stop/completed alert would slip through.
-      signal.outputBursts = 0;
-    }
-    broadcastState();
-    return true;
-  }
-
-  /**
-   * Back-compat wrapper — existing callers that only know about "waiting"
-   * alerts keep working.  Prefer `raiseAlert` for new code.
-   */
-  function raiseWaitingAlert({ sessionId, projectId, panelId, title, detail, urgency = "normal" }) {
-    return raiseAlert({
-      sessionId,
-      projectId,
-      panelId,
-      title,
-      kind: "waiting",
-      tier: 1,
-      urgency,
-      detail,
-    });
-  }
-
-  function ensureVisibleSession(workspaceId = getState().activeWorkspaceId) {
-    const state = getState();
-    const workspace = state.workspaces.find((w) => w.id === workspaceId);
-    if (!workspace) return null;
-    if (workspace.kind === "azure") {
-      return null;
-    }
-    // Start all panels with "default" startup (not just the active one)
-    for (const panel of workspace.panels) {
-      if (panel.startup === APP_CONFIG.ui.defaultPanelStartup && !/^https?:\/\//i.test(panel.command || "")) {
-        sessions.ensureSession(state, `${workspace.id}:${panel.id}`);
-      }
-    }
-    return sessions.resolveDefaultSessionId(state, workspaceId);
-  }
-
-  function syncSessionSignalsWithState() {
-    const validSessionIds = new Set(
-      getState().workspaces.flatMap((workspace) =>
-        workspace.panels.map((panel) => createSessionId(workspace.id, panel.id)),
-      ),
-    );
-    for (const sessionId of [...sessionSignals.keys()]) {
-      if (!validSessionIds.has(sessionId)) {
-        deleteSessionSignal(sessionId);
-      }
-    }
-  }
-
   function isKnownPluginProject(project) {
     if (!project) {
       return false;
@@ -1416,43 +1177,6 @@ export async function createRuntime({
       const templateKind = template.kind || plugin.kind || APP_CONFIG.ui.defaultProjectKind;
       return templateName === project.name && templateIcon === project.icon && templateKind === project.kind;
     });
-  }
-
-  function shouldTrackProjectAlert(project, panel) {
-    return Boolean(
-      project &&
-      panel &&
-      (project.kind === "terminal" || project.kind === "task") &&
-      !isKnownPluginProject(project) &&
-      !panel.launch?.file &&
-      panel.shell !== false,
-    );
-  }
-
-  function updateVisibleSessions(nextIds) {
-    const prev = attentionContext.visibleSessionIds;
-    const next = new Set(nextIds);
-    log.trace("updateVisibleSessions", { prev: [...prev], next: [...next] });
-    const now = Date.now();
-    for (const sessionId of prev) {
-      if (!next.has(sessionId)) {
-        attentionContext.recentlyVisibleUntil.set(sessionId, now + ATTENTION_VISIBILITY_GRACE_MS);
-      }
-    }
-    for (const sessionId of next) {
-      attentionContext.recentlyVisibleUntil.delete(sessionId);
-    }
-    // Prune expired grace period entries
-    for (const [sessionId, until] of attentionContext.recentlyVisibleUntil) {
-      if (now >= until) attentionContext.recentlyVisibleUntil.delete(sessionId);
-    }
-    attentionContext.visibleSessionIds = next;
-  }
-
-  function isSessionVisible(sessionId) {
-    if (attentionContext.visibleSessionIds.has(sessionId)) return true;
-    const until = attentionContext.recentlyVisibleUntil.get(sessionId);
-    return until != null && Date.now() < until;
   }
 
   // perf-3: per-workspace debounce map for git refresh triggered by OSC 133;D
