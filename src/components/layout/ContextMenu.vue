@@ -32,6 +32,20 @@
       </template>
 
       <template v-if="inGroup">
+        <template v-if="moveTargets.length">
+          <div class="context-menu__divider"></div>
+          <div class="context-menu__label">Move to</div>
+          <button
+            v-for="target in moveTargets"
+            :key="target.viewId"
+            type="button"
+            class="context-menu__item"
+            @click="onSwapWith(target.viewId)"
+          >
+            <span class="context-menu__icon">{{ target.arrow }}</span
+            ><span>{{ target.title }}</span>
+          </button>
+        </template>
         <div class="context-menu__divider"></div>
         <button type="button" class="context-menu__item" @click="onRemoveFromGroup">
           <span class="context-menu__icon">&#x2715;</span><span>Remove from split</span>
@@ -129,6 +143,86 @@ const refreshLabel = computed(
 
 const inGroup = computed(() => Boolean(store.splitGroup?.viewIds.includes(viewId.value)));
 
+// Slot extents per layout. Spanning panes (top pane of "top-split", left
+// pane of "left-split") cover the full width/height, so their cMin/cMax
+// or rMin/rMax reflect that — the arrow logic treats a target that spans
+// past the source's center as "directly above/below/beside", not diagonal.
+const SLOT_BOXES = {
+  solo: [{ rMin: 0, rMax: 0, cMin: 0, cMax: 0 }],
+  cols: [
+    { rMin: 0, rMax: 0, cMin: 0, cMax: 0 },
+    { rMin: 0, rMax: 0, cMin: 1, cMax: 1 },
+  ],
+  rows: [
+    { rMin: 0, rMax: 0, cMin: 0, cMax: 0 },
+    { rMin: 1, rMax: 1, cMin: 0, cMax: 0 },
+  ],
+  grid: [
+    { rMin: 0, rMax: 0, cMin: 0, cMax: 0 },
+    { rMin: 0, rMax: 0, cMin: 1, cMax: 1 },
+    { rMin: 1, rMax: 1, cMin: 0, cMax: 0 },
+    { rMin: 1, rMax: 1, cMin: 1, cMax: 1 },
+  ],
+  "top-split": [
+    { rMin: 0, rMax: 0, cMin: 0, cMax: 1 },
+    { rMin: 1, rMax: 1, cMin: 0, cMax: 0 },
+    { rMin: 1, rMax: 1, cMin: 1, cMax: 1 },
+  ],
+  "left-split": [
+    { rMin: 0, rMax: 1, cMin: 0, cMax: 0 },
+    { rMin: 0, rMax: 0, cMin: 1, cMax: 1 },
+    { rMin: 1, rMax: 1, cMin: 1, cMax: 1 },
+  ],
+};
+
+function boxCenter(box) {
+  return { r: (box.rMin + box.rMax) / 2, c: (box.cMin + box.cMax) / 2 };
+}
+
+function arrowFor(srcBox, tgtBox) {
+  const src = boxCenter(srcBox);
+  let dr = 0;
+  if (tgtBox.rMax < src.r) dr = -1;
+  else if (tgtBox.rMin > src.r) dr = 1;
+  let dc = 0;
+  if (tgtBox.cMax < src.c) dc = -1;
+  else if (tgtBox.cMin > src.c) dc = 1;
+  if (dr < 0 && dc < 0) return "↖";
+  if (dr < 0 && dc > 0) return "↗";
+  if (dr > 0 && dc < 0) return "↙";
+  if (dr > 0 && dc > 0) return "↘";
+  if (dr < 0) return "↑";
+  if (dr > 0) return "↓";
+  if (dc < 0) return "←";
+  if (dc > 0) return "→";
+  return "⇄";
+}
+
+// List of swap targets for the currently right-clicked pane. Each entry
+// has the target viewId, the arrow glyph showing which direction the pane
+// will move into, and the target pane's title for context.
+const moveTargets = computed(() => {
+  const sg = store.splitGroup;
+  if (!sg || !inGroup.value) return [];
+  const boxes = SLOT_BOXES[sg.layout];
+  if (!Array.isArray(boxes)) return [];
+  const srcIdx = sg.viewIds.indexOf(viewId.value);
+  if (srcIdx < 0 || !boxes[srcIdx]) return [];
+  const srcBox = boxes[srcIdx];
+  const tabs = store.workspaceTabs || [];
+  const out = [];
+  for (let i = 0; i < sg.viewIds.length; i += 1) {
+    if (i === srcIdx || !boxes[i]) continue;
+    const tab = tabs.find((t) => t.id === sg.viewIds[i]);
+    out.push({
+      viewId: sg.viewIds[i],
+      title: tab?.title || sg.viewIds[i],
+      arrow: arrowFor(srcBox, boxes[i]),
+    });
+  }
+  return out;
+});
+
 const canAddToSplit = computed(() => {
   if (inGroup.value || !store.splitGroup) return false;
   const slots = LAYOUTS[store.splitGroup.layout]?.slots || 2;
@@ -211,6 +305,12 @@ function onRemoveFromGroup() {
   const id = viewId.value;
   store.hideContextMenu();
   store.ctxRemoveFromGroup(id);
+}
+
+function onSwapWith(targetId) {
+  const id = viewId.value;
+  store.hideContextMenu();
+  store.swapInSplit(id, targetId);
 }
 
 function onDisbandGroup() {

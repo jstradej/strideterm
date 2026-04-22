@@ -250,6 +250,19 @@ export function createWorkspaceActions(ctx) {
     }
   }
 
+  function swapInSplit(aViewId, bViewId) {
+    if (!ctx.splitGroup.value) return;
+    if (!aViewId || !bViewId || aViewId === bViewId) return;
+    const ids = ctx.splitGroup.value.viewIds;
+    const iA = ids.indexOf(aViewId);
+    const iB = ids.indexOf(bViewId);
+    if (iA < 0 || iB < 0) return;
+    const next = [...ids];
+    next[iA] = bViewId;
+    next[iB] = aViewId;
+    ctx.splitGroup.value = { ...ctx.splitGroup.value, viewIds: next };
+  }
+
   // --- Session / panel ---------------------------------------------------
 
   async function restartSession(sessionId) {
@@ -359,6 +372,7 @@ export function createWorkspaceActions(ctx) {
     disbandSplit,
     ctxRemoveFromGroup,
     ctxAddToGroup,
+    swapInSplit,
     restartSession,
     reorderPanels,
     renameTab,

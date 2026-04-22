@@ -454,6 +454,9 @@
   border-radius: 3px;
   overflow: hidden;
   background: color-mix(in srgb, var(--panel), var(--bg) 10%);
+  /* Container query scope for responsive pane header: below the threshold
+     the swap arrows collapse into a hamburger button. */
+  container-type: inline-size;
 }
 
 .workspace-pane--plain {
@@ -525,6 +528,56 @@
 .workspace-pane__icon-btn--danger:hover {
   background: rgba(255, 111, 141, 0.12);
   border-color: rgba(255, 111, 141, 0.28);
+}
+
+.workspace-pane__icon-btn--swap {
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.workspace-pane__icon-btn--swap:hover {
+  color: var(--text);
+}
+
+.workspace-pane__action-divider {
+  color: var(--muted);
+  opacity: 0.4;
+  font-weight: 400;
+  padding: 0 2px;
+  align-self: center;
+  user-select: none;
+}
+
+/* Responsive collapse:
+   - Above 420 px: inline base icons + | + swap arrows, hamburger hidden.
+   - 320–420 px:   base icons stay, swap arrows + divider hide, hamburger
+                   visible so the Move-to list is still reachable.
+   - Below 320 px: every inline icon hides, only the hamburger remains.
+                   The context menu it opens contains every action
+                   (focus/edit/save/clear/restart/close + Move to). */
+.workspace-pane__icon-btn--menu {
+  display: none;
+}
+
+@container (max-width: 420px) {
+  .workspace-pane__icon-btn--swap,
+  .workspace-pane__action-divider {
+    display: none;
+  }
+
+  .workspace-pane__icon-btn.workspace-pane__icon-btn--menu {
+    display: grid;
+  }
+}
+
+@container (max-width: 320px) {
+  .workspace-pane__icon-btn {
+    display: none;
+  }
+
+  .workspace-pane__icon-btn.workspace-pane__icon-btn--menu {
+    display: grid;
+  }
 }
 
 .workspace-pane__body {

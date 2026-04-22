@@ -22,7 +22,7 @@
           :title="tab.title"
           :status="tab.status"
           :actions="terminalPaneActions(tab)"
-          @action="onPaneAction($event, tab)"
+          @action="(a, e) => onPaneAction(a, tab, e)"
         />
         <TerminalPane :session-id="tab.id" />
       </template>
@@ -39,7 +39,7 @@
           :title="tab.title"
           :status="tab.status"
           :actions="nonTerminalPaneActions(tab)"
-          @action="onPaneAction($event, tab)"
+          @action="(a, e) => onPaneAction(a, tab, e)"
         />
         <div class="workspace-pane__body workspace-pane__body--git">
           <!-- Pane content rendered in later phases -->
@@ -77,6 +77,69 @@ const HeadlessJudgePane = defineAsyncComponent(() => import("./HeadlessJudgePane
 const AREA_NAMES = ["a", "b", "c", "d"];
 const AREA_LAYOUTS = new Set(["top-split", "left-split"]);
 
+// Per-layout slot geometry. Each slot has a center (rCenter/cCenter) and an
+// extent (rMin..rMax, cMin..cMax). Extents differ from centers for spanning
+// panes — e.g. the top pane in "top-split" occupies the full width, so its
+// cMin/cMax are 0/1 while its cCenter is 0.5. Without this, the arrow from
+// a bottom sub-pane to the top pane resolved to "↗" / "↖" instead of "↑".
+const SLOT_BOXES = {
+  solo: [{ rMin: 0, rMax: 0, cMin: 0, cMax: 0 }],
+  cols: [
+    { rMin: 0, rMax: 0, cMin: 0, cMax: 0 },
+    { rMin: 0, rMax: 0, cMin: 1, cMax: 1 },
+  ],
+  rows: [
+    { rMin: 0, rMax: 0, cMin: 0, cMax: 0 },
+    { rMin: 1, rMax: 1, cMin: 0, cMax: 0 },
+  ],
+  grid: [
+    { rMin: 0, rMax: 0, cMin: 0, cMax: 0 },
+    { rMin: 0, rMax: 0, cMin: 1, cMax: 1 },
+    { rMin: 1, rMax: 1, cMin: 0, cMax: 0 },
+    { rMin: 1, rMax: 1, cMin: 1, cMax: 1 },
+  ],
+  "top-split": [
+    { rMin: 0, rMax: 0, cMin: 0, cMax: 1 }, // full-width top
+    { rMin: 1, rMax: 1, cMin: 0, cMax: 0 },
+    { rMin: 1, rMax: 1, cMin: 1, cMax: 1 },
+  ],
+  "left-split": [
+    { rMin: 0, rMax: 1, cMin: 0, cMax: 0 }, // full-height left
+    { rMin: 0, rMax: 0, cMin: 1, cMax: 1 },
+    { rMin: 1, rMax: 1, cMin: 1, cMax: 1 },
+  ],
+};
+
+function boxCenter(box) {
+  return { r: (box.rMin + box.rMax) / 2, c: (box.cMin + box.cMax) / 2 };
+}
+
+// Direction from src → tgt. If the target's extent covers the source's
+// center on an axis, that axis contributes 0 (the target spans past me —
+// it's neither to my left nor right, or neither above nor below).
+function swapDirection(srcBox, tgtBox) {
+  const src = boxCenter(srcBox);
+  let dr = 0;
+  if (tgtBox.rMax < src.r) dr = -1;
+  else if (tgtBox.rMin > src.r) dr = 1;
+  let dc = 0;
+  if (tgtBox.cMax < src.c) dc = -1;
+  else if (tgtBox.cMin > src.c) dc = 1;
+  return [dr, dc];
+}
+
+function swapArrow(dr, dc) {
+  if (dr < 0 && dc < 0) return "↖";
+  if (dr < 0 && dc > 0) return "↗";
+  if (dr > 0 && dc < 0) return "↙";
+  if (dr > 0 && dc > 0) return "↘";
+  if (dr < 0) return "↑";
+  if (dr > 0) return "↓";
+  if (dc < 0) return "←";
+  if (dc > 0) return "→";
+  return "⇄";
+}
+
 const store = useAppStore();
 const termStore = useTerminalStore();
 
@@ -108,8 +171,63 @@ function gridAreaStyle(index) {
   return area ? { gridArea: area } : {};
 }
 
+// Build swap actions for the current pane based on the active split group.
+// Returns an empty array for solo / unsplit tabs so headers stay tidy. The
+// inline arrows hide on narrow panes via a CSS container query; a hamburger
+// sibling then gives access to the same swap targets through the context
+// menu's "Move to" section.
+function paneSwapActions(tab) {
+  const sg = store.splitGroup;
+  if (!sg || !sg.viewIds.includes(tab.id)) return [];
+  const boxes = SLOT_BOXES[sg.layout];
+  if (!Array.isArray(boxes)) return [];
+  const srcIdx = sg.viewIds.indexOf(tab.id);
+  if (srcIdx < 0 || !boxes[srcIdx]) return [];
+  const srcBox = boxes[srcIdx];
+  const tabs = store.workspaceTabs || [];
+  const out = [];
+  for (let i = 0; i < sg.viewIds.length; i += 1) {
+    if (i === srcIdx || !boxes[i]) continue;
+    const targetId = sg.viewIds[i];
+    const [dr, dc] = swapDirection(srcBox, boxes[i]);
+    const targetTab = tabs.find((t) => t.id === targetId);
+    out.push({
+      className: "workspace-pane__icon-btn workspace-pane__icon-btn--swap",
+      action: "swap-with",
+      viewId: tab.id,
+      targetViewId: targetId,
+      title: `Swap with ${targetTab?.title || targetId}`,
+      label: swapArrow(dr, dc),
+    });
+  }
+  return out;
+}
+
+function paneMenuAction(tab) {
+  return {
+    className: "workspace-pane__icon-btn workspace-pane__icon-btn--menu",
+    action: "pane-menu",
+    viewId: tab.id,
+    title: "Pane menu",
+    label: "☰",
+  };
+}
+
+// Wrap a list of existing pane actions with the swap row (+ divider) when
+// the tab is part of the split group. Also appends the hamburger menu
+// button, which the container query shows on narrow panes as a fallback.
+function withSwapAndMenu(tab, baseActions) {
+  const swaps = paneSwapActions(tab);
+  const menu = paneMenuAction(tab);
+  // Always append the hamburger — it's hidden on wide panes and exposes
+  // every action (swap + base icons) when the container query collapses
+  // the inline buttons at narrow widths.
+  if (!swaps.length) return [...baseActions, menu];
+  return [...baseActions, { action: "divider" }, ...swaps, menu];
+}
+
 function terminalPaneActions(tab) {
-  return [
+  return withSwapAndMenu(tab, [
     { className: "workspace-pane__icon-btn", action: "select-tab", viewId: tab.id, title: "Focus tab", label: "◉" },
     ...(tab.persistent
       ? [
@@ -150,10 +268,14 @@ function terminalPaneActions(tab) {
       title: "Close tab",
       label: "×",
     },
-  ];
+  ]);
 }
 
 function nonTerminalPaneActions(tab) {
+  return withSwapAndMenu(tab, nonTerminalPaneBaseActions(tab));
+}
+
+function nonTerminalPaneBaseActions(tab) {
   if (isGitViewId(tab.id)) {
     return [
       { className: "workspace-pane__icon-btn", action: "select-tab", viewId: tab.id, title: "Focus tab", label: "◉" },
@@ -272,7 +394,7 @@ function onStageMousedown(event) {
   termStore.focusActiveTerminal();
 }
 
-function onPaneAction(action, tab) {
+function onPaneAction(action, tab, event) {
   switch (action.action) {
     case "select-tab":
       store.activateView(tab.id);
@@ -286,6 +408,17 @@ function onPaneAction(action, tab) {
     case "clear-terminal":
       termStore.clearTerminalViewport(action.sessionId);
       break;
+    case "swap-with":
+      store.swapInSplit(action.viewId, action.targetViewId);
+      break;
+    case "pane-menu": {
+      const btn = event?.currentTarget || event?.target;
+      const rect = btn?.getBoundingClientRect?.();
+      const x = rect ? rect.left : 0;
+      const y = rect ? rect.bottom + 4 : 0;
+      store.showContextMenu(x, y, tab.id);
+      break;
+    }
     // Other actions (restart-session, close-tab, etc.) handled in Phase 4
   }
 }

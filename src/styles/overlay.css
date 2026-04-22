@@ -288,6 +288,14 @@ textarea {
   background: rgba(255, 111, 141, 0.1);
 }
 
+.context-menu__label {
+  padding: 4px 12px 2px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+
 .context-menu__divider {
   height: 1px;
   margin: 4px 8px;
