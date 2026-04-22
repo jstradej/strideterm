@@ -262,6 +262,16 @@ textarea {
   white-space: nowrap;
 }
 
+.context-menu__icon {
+  flex: 0 0 auto;
+  width: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  line-height: 1;
+}
+
 .context-menu__item:hover {
   background: rgba(var(--tint), 0.07);
 }

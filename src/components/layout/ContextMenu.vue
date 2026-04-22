@@ -1,38 +1,50 @@
 <template>
   <Teleport to="body">
     <div v-if="store.contextMenu" ref="menuRef" class="context-menu" :style="menuStyle" @click.stop>
-      <button type="button" class="context-menu__item" @click="onFocus">&#x25C9; Focus tab</button>
+      <button type="button" class="context-menu__item" @click="onFocus">
+        <span class="context-menu__icon">&#x25C9;</span><span>Focus tab</span>
+      </button>
 
       <template v-if="isTerminal">
         <button v-if="hasPersistentPanel" type="button" class="context-menu__item" @click="onEdit">
-          &#x270E; Edit tab
+          <span class="context-menu__icon">&#x270E;</span><span>Edit tab</span>
         </button>
-        <button type="button" class="context-menu__item" @click="onSaveTranscript">&#x21E9; Save last 500 lines</button>
-        <button type="button" class="context-menu__item" @click="onClear">&#x232B; Clear output</button>
-        <button type="button" class="context-menu__item" @click="onRestart">&#x21BB; Restart</button>
+        <button type="button" class="context-menu__item" @click="onSaveTranscript">
+          <span class="context-menu__icon">&#x21E9;</span><span>Save last 500 lines</span>
+        </button>
+        <button type="button" class="context-menu__item" @click="onClear">
+          <span class="context-menu__icon">&#x232B;</span><span>Clear output</span>
+        </button>
+        <button type="button" class="context-menu__item" @click="onRestart">
+          <span class="context-menu__icon">&#x21BB;</span><span>Restart</span>
+        </button>
       </template>
 
       <button v-if="refreshKind" type="button" class="context-menu__item" @click="onRefresh">
-        &#x21BB; Refresh {{ refreshLabel }}
+        <span class="context-menu__icon">&#x21BB;</span><span>Refresh {{ refreshLabel }}</span>
       </button>
 
       <template v-if="canClose">
         <div class="context-menu__divider"></div>
         <button type="button" class="context-menu__item context-menu__item--danger" @click="onClose">
-          &#x2715; Close tab
+          <span class="context-menu__icon">&#x2715;</span><span>Close tab</span>
         </button>
       </template>
 
       <template v-if="inGroup">
         <div class="context-menu__divider"></div>
-        <button type="button" class="context-menu__item" @click="onRemoveFromGroup">&#x2715; Remove from split</button>
+        <button type="button" class="context-menu__item" @click="onRemoveFromGroup">
+          <span class="context-menu__icon">&#x2715;</span><span>Remove from split</span>
+        </button>
         <button type="button" class="context-menu__item context-menu__item--danger" @click="onDisbandGroup">
-          &#x2573; Disband split
+          <span class="context-menu__icon">&#x2573;</span><span>Disband split</span>
         </button>
       </template>
       <template v-else-if="canAddToSplit">
         <div class="context-menu__divider"></div>
-        <button type="button" class="context-menu__item" @click="onAddToGroup">+ Add to split</button>
+        <button type="button" class="context-menu__item" @click="onAddToGroup">
+          <span class="context-menu__icon">+</span><span>Add to split</span>
+        </button>
       </template>
     </div>
   </Teleport>
@@ -147,34 +159,44 @@ watch(
   },
 );
 
+// Every handler MUST snapshot viewId.value before hideContextMenu() — the
+// computed resolves against store.contextMenu, which hideContextMenu() sets
+// to null, so any later read of viewId.value returns "".
 function onFocus() {
-  store.activateView(viewId.value);
+  const id = viewId.value;
   store.hideContextMenu();
+  store.activateView(id);
 }
 
 function onRestart() {
-  termStore.restartSession(viewId.value);
+  const id = viewId.value;
   store.hideContextMenu();
+  termStore.restartSession(id);
 }
 
 function onEdit() {
+  const id = viewId.value;
   store.hideContextMenu();
-  store.editTabWithDialog(viewId.value);
+  store.editTabWithDialog(id);
 }
 
 function onSaveTranscript() {
-  termStore.exportTerminalTranscript(viewId.value, { title: currentTab.value?.title || "" });
+  const id = viewId.value;
+  const title = currentTab.value?.title || "";
   store.hideContextMenu();
+  termStore.exportTerminalTranscript(id, { title });
 }
 
 function onClear() {
-  termStore.clearTerminalViewport(viewId.value);
+  const id = viewId.value;
   store.hideContextMenu();
+  termStore.clearTerminalViewport(id);
 }
 
 function onClose() {
+  const id = viewId.value;
   store.hideContextMenu();
-  store.closeTab(viewId.value);
+  store.closeTab(id);
 }
 
 function onRefresh() {
@@ -186,13 +208,14 @@ function onRefresh() {
 }
 
 function onRemoveFromGroup() {
-  store.ctxRemoveFromGroup(viewId.value);
+  const id = viewId.value;
   store.hideContextMenu();
+  store.ctxRemoveFromGroup(id);
 }
 
 function onDisbandGroup() {
-  store.disbandSplit();
   store.hideContextMenu();
+  store.disbandSplit();
 }
 
 function onAddToGroup() {
