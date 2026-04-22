@@ -81,11 +81,15 @@ const tabModels = computed(() => {
       }
     }
 
+    // When the tab has an attention alert, the bell already conveys
+    // "agent needs input". Keeping the activity chip visible ("running")
+    // contradicts that — suppress the chip so the bell speaks alone.
+    const suppressStatus = !!tabAttention;
     return {
       id: tab.id,
       title: tab.title,
-      status: tab.status,
-      tone: tab.tone,
+      status: suppressStatus ? "" : tab.status,
+      tone: suppressStatus ? "idle" : tab.tone,
       active: tab.id === activeViewId,
       grouped: splitGroup?.viewIds.includes(tab.id) || false,
       persistent: !!tab.persistent,

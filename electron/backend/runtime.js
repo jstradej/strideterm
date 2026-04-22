@@ -71,6 +71,7 @@ import {
   createSessionSignal,
   detectTerminalEnvironment as detectTerminalEnvironmentImpl,
   OSC133_COMMAND_FINISHED_RE,
+  OSC133_COMMAND_START_RE,
   AGENT_NAME_RE,
   AGENT_OUTPUT_RE,
   AGENT_OUTPUT_BURST_THRESHOLD,
@@ -726,10 +727,14 @@ export async function createRuntime({
       signal.outputBursts = 0;
       signal.waitingRaised = false;
       cancelPromptTimer(signal);
+      setSessionActivity(signal, "running");
       log.trace("UserPromptSubmit: reset busy/waitingRaised", { sessionId: signal.sessionId });
+    } else if (hook === "Stop" || hook === "SubagentStop") {
+      // Agent finished its turn — flash a "done" chip then fade to idle.
+      setSessionActivity(signal, "done", { exitCode: 0 });
     }
-    // Known no-ops for now (Stop, SubagentStop, Notification) — intentionally
-    // do not touch busy here; dispatcher gating handles alerts.
+    // Notification is informational only — leave chip state untouched; it
+    // typically means "waiting for input" mid-turn, not a turn boundary.
     void subtype;
   }
 
@@ -1008,6 +1013,54 @@ export async function createRuntime({
     isKnownPluginProject,
   });
 
+  // --- Tab activity chip state ----------------------------------------
+  // Drives the small status label on each tab. Independent from signal.busy
+  // (which governs notifications). Transitions:
+  //   idle  --OSC133;C / UserPromptSubmit-->   running
+  //   running --OSC133;D / Stop-->              done (+exit code)
+  //   done  --after ACTIVITY_FADE_MS-->         idle
+  // Sessions without shell integration and no hooks simply stay "idle" —
+  // showing no chip is preferable to a misleading permanent "running" label.
+  const ACTIVITY_FADE_MS = 3000;
+  const activityFadeTimers = new Map();
+
+  function scheduleActivityFade(sessionId) {
+    const prior = activityFadeTimers.get(sessionId);
+    if (prior) clearTimeout(prior);
+    const timer = setTimeout(() => {
+      activityFadeTimers.delete(sessionId);
+      const signal = sessionSignals.get(sessionId);
+      if (!signal) return;
+      if (signal.activity === "done") {
+        signal.activity = "idle";
+        broadcastState();
+      }
+    }, ACTIVITY_FADE_MS);
+    activityFadeTimers.set(sessionId, timer);
+  }
+
+  function clearActivityFade(sessionId) {
+    const prior = activityFadeTimers.get(sessionId);
+    if (prior) {
+      clearTimeout(prior);
+      activityFadeTimers.delete(sessionId);
+    }
+  }
+
+  function setSessionActivity(signal, activity, { exitCode = null } = {}) {
+    if (!signal) return;
+    if (signal.activity === activity && activity !== "done") return;
+    signal.activity = activity;
+    if (activity === "done") {
+      signal.lastExitCode = exitCode;
+      signal.lastCommandFinishedAt = Date.now();
+      scheduleActivityFade(signal.sessionId);
+    } else {
+      clearActivityFade(signal.sessionId);
+    }
+    broadcastState();
+  }
+
   function getPayload() {
     const state = getState();
     return {
@@ -1028,7 +1081,22 @@ export async function createRuntime({
         }
         return cloned;
       })(),
-      workspace: sessions.getWorkspace(state),
+      workspace: (() => {
+        const ws = sessions.getWorkspace(state);
+        if (ws?.sessions) {
+          ws.sessions = ws.sessions.map((s) => {
+            const signal = sessionSignals.get(s.sessionId);
+            if (!signal) return s;
+            return {
+              ...s,
+              activity: signal.activity || "idle",
+              lastExitCode: signal.lastExitCode,
+              lastCommandFinishedAt: signal.lastCommandFinishedAt || 0,
+            };
+          });
+        }
+        return ws;
+      })(),
       attention: getAttentionSnapshot(state),
       docker: docker.getSnapshot(),
       git: {
@@ -1234,11 +1302,21 @@ export async function createRuntime({
         signal.lastAnimationAt = Date.now();
       }
 
+      // --- OSC 133;C: command submitted (shell-integration) ---
+      // Mark the tab as "running". No alert semantics, no interaction with
+      // signal.busy — this is purely the UI chip.
+      if (OSC133_COMMAND_START_RE.test(rawText)) {
+        setSessionActivity(signal, "running");
+      }
+
       // --- OSC 133;D: shell integration command-finished signal ---
       // When a shell with integration (bash/zsh/PowerShell) emits OSC 133;D,
       // the previous command has finished and the shell prompt has returned.
       // This gives us instant, reliable detection for shell-hosted agents.
-      if (OSC133_COMMAND_FINISHED_RE.test(rawText)) {
+      const osc133FinishedMatch = rawText.match(OSC133_COMMAND_FINISHED_RE);
+      if (osc133FinishedMatch) {
+        const exitCode = osc133FinishedMatch[1] != null ? Number(osc133FinishedMatch[1]) : 0;
+        setSessionActivity(signal, "done", { exitCode });
         log.debug("OSC 133;D detected", {
           sessionId: payload.sessionId,
           busy: signal.busy,
@@ -1664,6 +1742,7 @@ export async function createRuntime({
         detail: `exit:${signal?.commandClass || "shell"}`,
       });
     }
+    clearActivityFade(payload.sessionId);
     deleteSessionSignal(payload.sessionId);
     events.emit("terminal:exit", payload);
     broadcastState();
@@ -2285,6 +2364,7 @@ export async function createRuntime({
       const sessionsExited = sessions.removeWorkspaceSessions(workspaceId);
       for (const sessionId of [...sessionSignals.keys()]) {
         if (sessionId.startsWith(`${workspaceId}:`)) {
+          clearActivityFade(sessionId);
           deleteSessionSignal(sessionId);
         }
       }
@@ -2442,6 +2522,7 @@ export async function createRuntime({
     },
     closeSession(sessionId) {
       clearAlertSession(sessionId);
+      clearActivityFade(sessionId);
       deleteSessionSignal(sessionId);
       sessions.removeSession(sessionId);
       broadcastState();

@@ -283,6 +283,12 @@
   min-width: 0;
 }
 
+.tab > small:empty::before {
+  /* Preserve vertical space when the status chip is hidden so tab height
+     does not jitter on command start/finish transitions. */
+  content: "\00a0";
+}
+
 .tab:hover {
   color: var(--text);
   background: rgba(var(--tint), 0.03);

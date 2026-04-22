@@ -9,7 +9,11 @@ import os from "node:os";
 
 export const ANSI_ESCAPE_RE =
   /\u001B\[[0-?]*[ -/]*[@-~]|\u001B\][^\u0007]*(?:\u0007|\u001B\\)|\u009B[0-?]*[ -/]*[@-~]/g;
-export const OSC133_COMMAND_FINISHED_RE = /\u001B\]133;D/;
+export const OSC133_COMMAND_FINISHED_RE = /\u001B\]133;D(?:;(-?\d+))?/;
+// OSC 133;C = command just submitted by the shell. Used as activity-start
+// signal for the tab status chip. Kept separate from signal.busy which has
+// different semantics (driven by output, governs notification eligibility).
+export const OSC133_COMMAND_START_RE = /\u001B\]133;C/;
 export const AGENT_NAME_RE = /\b(claude|codex|opencode|aider|gemini|copilot)\b/i;
 export const AGENT_OUTPUT_RE =
   /\b(claude code|openai codex|codex|claude|gemini|aider|opencode|github copilot|copilot)\b/i;
@@ -162,6 +166,13 @@ export function createSessionSignal(sessionId) {
     // animation in PTY output. T3 alerts suppress if this was recent — the
     // program is still redrawing, not idle.
     lastAnimationAt: 0,
+    // Tab-status chip state — purely UI, independent of busy/alert logic.
+    // "idle"    — at prompt, nothing executing (no chip shown)
+    // "running" — command executing (shell OSC 133;C → ;D, or agent UserPromptSubmit → Stop)
+    // "done"    — recently finished; lastExitCode drives tone; fades to "idle" after ~3 s
+    activity: "idle",
+    lastExitCode: null,
+    lastCommandFinishedAt: 0,
   };
 }
 

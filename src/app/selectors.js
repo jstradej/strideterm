@@ -8,6 +8,23 @@ export function summarizeAttention(payload) {
   };
 }
 
+// Derive the status chip shown on a terminal tab. Backend sets activity to
+// "running" between command start and end (OSC 133;C → ;D, or agent
+// UserPromptSubmit → Stop), "done" for ~3 s after finish, then "idle".
+// An idle tab gets no chip text — avoids the misleading permanent "running"
+// label the old code showed for every open PTY.
+function terminalStatusDisplay(session) {
+  if (session.status === "exited") return { status: "exited", tone: "error" };
+  const activity = session.activity || "idle";
+  if (activity === "running") return { status: "running", tone: "running" };
+  if (activity === "done") {
+    const exit = session.lastExitCode;
+    if (exit == null || exit === 0) return { status: "✓ done", tone: "running" };
+    return { status: `✗ exit ${exit}`, tone: "error" };
+  }
+  return { status: "", tone: "idle" };
+}
+
 function getHeadlessJudgeTabMeta(activeWorkspace, payload, panelId) {
   const liveTask = payload?.taskRunner?.[activeWorkspace?.id];
   if (!liveTask || liveTask.judgeExecutionMode !== "headless-copilot" || panelId !== liveTask.judgePanelId) {
@@ -48,7 +65,7 @@ export function getTabAttention(payload, workspaceId, viewId, { isGitViewId, isD
   return workspaceAttention.alerts.find((alert) => alert.sessionId === viewId || alert.panelId === panelId) || null;
 }
 
-export function getWorkspaceTabs({ workspace, payload, hiddenViewIds, statusTone, isContainerRunning }) {
+export function getWorkspaceTabs({ workspace, payload, hiddenViewIds, isContainerRunning }) {
   if (!workspace) {
     return [];
   }
@@ -112,12 +129,13 @@ export function getWorkspaceTabs({ workspace, payload, hiddenViewIds, statusTone
       .filter((session) => !nonTerminalPanelIds.has(session.panelId))
       .map((session) => {
         const headlessJudge = getHeadlessJudgeTabMeta(activeWorkspace, payload, session.panelId);
+        const disp = terminalStatusDisplay(session);
         return {
           id: session.sessionId,
           type: headlessJudge?.type || "terminal",
           title: session.title,
-          status: headlessJudge?.status || session.status,
-          tone: headlessJudge?.tone || statusTone(session.status),
+          status: headlessJudge?.status ?? disp.status,
+          tone: headlessJudge?.tone ?? disp.tone,
           persistent: panelMap.has(session.panelId),
           closable: true,
         };
