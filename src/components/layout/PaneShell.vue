@@ -13,7 +13,8 @@
           :class="action.className"
           :disabled="!!action.disabled"
           :title="action.title"
-          @click="onActionClick($event, action)"
+          @click.stop="onActionClick($event, action)"
+          @mousedown.stop
         >
           {{ action.label }}
         </button>
