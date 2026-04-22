@@ -13,7 +13,7 @@
           :class="action.className"
           :disabled="!!action.disabled"
           :title="action.title"
-          @click="$emit('action', action, $event)"
+          @click="onActionClick($event, action)"
         >
           {{ action.label }}
         </button>
@@ -28,5 +28,14 @@ defineProps({
   status: { type: String, default: "" },
   actions: { type: Array, default: () => [] },
 });
-defineEmits(["action"]);
+const emit = defineEmits(["action"]);
+
+// Capture the button element synchronously on click — event.currentTarget
+// is only reliable during the dispatched event lifecycle, so we snapshot
+// it into the emitted payload for callers that need to position menus
+// relative to the clicked button.
+function onActionClick(event, action) {
+  const anchorRect = event?.currentTarget?.getBoundingClientRect?.() || null;
+  emit("action", action, { anchorRect, event });
+}
 </script>

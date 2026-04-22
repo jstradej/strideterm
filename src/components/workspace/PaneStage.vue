@@ -22,7 +22,7 @@
           :title="tab.title"
           :status="tab.status"
           :actions="terminalPaneActions(tab)"
-          @action="(a, e) => onPaneAction(a, tab, e)"
+          @action="(a, meta) => onPaneAction(a, tab, meta)"
         />
         <TerminalPane :session-id="tab.id" />
       </template>
@@ -39,7 +39,7 @@
           :title="tab.title"
           :status="tab.status"
           :actions="nonTerminalPaneActions(tab)"
-          @action="(a, e) => onPaneAction(a, tab, e)"
+          @action="(a, meta) => onPaneAction(a, tab, meta)"
         />
         <div class="workspace-pane__body workspace-pane__body--git">
           <!-- Pane content rendered in later phases -->
@@ -394,7 +394,7 @@ function onStageMousedown(event) {
   termStore.focusActiveTerminal();
 }
 
-function onPaneAction(action, tab, event) {
+function onPaneAction(action, tab, meta) {
   switch (action.action) {
     case "select-tab":
       store.activateView(tab.id);
@@ -412,8 +412,7 @@ function onPaneAction(action, tab, event) {
       store.swapInSplit(action.viewId, action.targetViewId);
       break;
     case "pane-menu": {
-      const btn = event?.currentTarget || event?.target;
-      const rect = btn?.getBoundingClientRect?.();
+      const rect = meta?.anchorRect;
       const x = rect ? rect.left : 0;
       const y = rect ? rect.bottom + 4 : 0;
       store.showContextMenu(x, y, tab.id);
