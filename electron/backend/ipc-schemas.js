@@ -135,14 +135,14 @@ export const agentPromptDeleteSchema = z.object({
 export const gitWorkspaceRef = z.object({
   workspaceId: z.string().optional(),
   projectId: z.string().optional(),
-  rootPath: z.string().optional(),
+  rootPath: z.string().nullable().optional(),
 });
 
 export const gitPayloadSchema = z
   .object({
     workspaceId: nonEmptyString,
     baseBranch: safeGitRef.optional(),
-    rootPath: z.string().optional(),
+    rootPath: z.string().nullable().optional(),
   })
   .passthrough();
 
@@ -151,7 +151,7 @@ export const gitDiffPreviewSchema = z.object({
   path: nonEmptyString,
   scope: z.string().optional(),
   baseBranch: safeGitRef.optional(),
-  rootPath: z.string().optional(),
+  rootPath: z.string().nullable().optional(),
 });
 
 export const gitCommitSchema = z
