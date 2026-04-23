@@ -521,32 +521,12 @@
 }
 
 /* ── Git Branch Select & PR Form ── */
+/* !important is required to beat CustomSelect's scoped `width: 100%` on its root. */
 .git-branch-select {
-  padding: 4px 8px;
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  background: rgba(0, 0, 0, 0.2);
-  color: var(--text);
-  font-size: 12px;
-  font-family: inherit;
-  min-width: 180px;
-  max-width: 320px;
+  width: 220px !important;
 }
-
-.git-branch-select:focus {
-  border-color: var(--accent);
-  outline: none;
-}
-
-.git-branch-select option {
-  background: var(--panel);
-  color: var(--text);
-}
-
-.git-branch-select option:checked {
-  background: var(--accent) !important;
-  box-shadow: inset 0 0 0 100px var(--accent);
-  color: #000 !important;
+.git-view__actions .git-branch-select {
+  width: 180px !important;
 }
 
 .git-detail-list__row {

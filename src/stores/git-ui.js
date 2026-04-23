@@ -96,7 +96,7 @@ export const useGitUiStore = defineStore("git-ui", () => {
   }
 
   function getActiveRoot(workspaceId) {
-    return state.value[workspaceId]?.activeRootPath || null;
+    return state.value[workspaceId]?.activeRootPath || "";
   }
 
   async function runGitAction(workspaceId, busyAction, runner) {

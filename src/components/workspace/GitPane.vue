@@ -13,17 +13,6 @@
     </div>
     <div v-else class="git-view">
       <div class="git-view__toolbar">
-        <!-- Repo picker (multi-root workspaces only) — first position, compact -->
-        <label v-if="showRepoPicker" class="git-repo-picker">
-          <span class="git-repo-picker__label">Repo</span>
-          <CustomSelect
-            class="git-repo-picker__select"
-            :model-value="activeRootPath"
-            :options="repoPickerOptions"
-            @change="onRootChange"
-          />
-          <span class="git-repo-picker__hint">{{ gitRoots.length }}</span>
-        </label>
         <div class="git-view__summary">
           <!-- Branch chip — detached HEAD gets special styling -->
           <span :class="['workspace-chip', isDetachedHead && 'workspace-chip--warn']">
@@ -61,6 +50,17 @@
           </span>
         </div>
         <div class="git-view__actions">
+          <!-- Repo picker (multi-root workspaces only) — inline with actions, compact -->
+          <label v-if="showRepoPicker" class="git-repo-picker">
+            <span class="git-repo-picker__label">Repo</span>
+            <CustomSelect
+              class="git-repo-picker__select"
+              :model-value="activeRootPath"
+              :options="repoPickerOptions"
+              @change="onRootChange"
+            />
+            <span class="git-repo-picker__hint">{{ gitRoots.length }}</span>
+          </label>
           <!-- Refresh: always visible, never primary -->
           <button
             type="button"
@@ -1200,9 +1200,6 @@ function openExternal(url) {
   align-items: center;
   gap: 6px;
   font-size: 12px;
-  padding: 2px 10px 2px 2px;
-  margin-right: 2px;
-  border-right: 1px solid var(--border);
 }
 
 .git-repo-picker__label {
@@ -1213,14 +1210,8 @@ function openExternal(url) {
   white-space: nowrap;
 }
 
-.git-repo-picker__select {
-  font-size: 12px;
-  max-width: 180px;
-  background: var(--input-bg, var(--panel));
-  color: var(--text, #ccc);
-  border: 1px solid var(--border);
-  border-radius: 3px;
-  padding: 2px 4px;
+.git-view__actions .git-repo-picker__select {
+  width: 180px;
 }
 
 .git-repo-picker__hint {

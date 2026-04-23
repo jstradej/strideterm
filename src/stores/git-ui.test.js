@@ -14,17 +14,16 @@ describe("git-ui store", () => {
       expect(store.getActiveRoot("ws1")).toBe("/repo/a");
     });
 
-    test("getActiveRoot returns null when workspace is not known", () => {
+    test("getActiveRoot returns empty string when workspace is not known", () => {
       const store = useGitUiStore();
-      expect(store.getActiveRoot("unknown")).toBeNull();
+      expect(store.getActiveRoot("unknown")).toBe("");
     });
 
-    test("setActiveRoot clears to null when empty string is passed", () => {
+    test("setActiveRoot clears when empty string is passed", () => {
       const store = useGitUiStore();
       store.setActiveRoot("ws1", "/repo/a");
       store.setActiveRoot("ws1", "");
-      // Empty string is falsy — the `|| null` in getActiveRoot returns null
-      expect(store.getActiveRoot("ws1")).toBeNull();
+      expect(store.getActiveRoot("ws1")).toBe("");
     });
 
     test("setActiveRoot with one workspace does not affect another workspace", () => {
@@ -66,11 +65,11 @@ describe("git-ui store", () => {
   });
 
   describe("cleanup", () => {
-    test("cleanup removes workspace state so getActiveRoot returns null", () => {
+    test("cleanup removes workspace state so getActiveRoot returns empty string", () => {
       const store = useGitUiStore();
       store.setActiveRoot("ws1", "/repo/a");
       store.cleanup("ws1");
-      expect(store.getActiveRoot("ws1")).toBeNull();
+      expect(store.getActiveRoot("ws1")).toBe("");
     });
   });
 
