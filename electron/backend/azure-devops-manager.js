@@ -1117,7 +1117,7 @@ export class AzureDevOpsManager extends BaseProviderManager {
     );
   }
 
-  async fetchReviewWorkspace({ workspace, pullFfOnly = false } = {}) {
+  async fetchReviewWorkspace({ workspace }) {
     const connection = this.findConnection(workspace.review?.connectionId);
     if (!connection) {
       throw new Error("Azure DevOps connection was not found.");
@@ -1126,21 +1126,11 @@ export class AzureDevOpsManager extends BaseProviderManager {
     if (!token) {
       throw new Error("PAT is missing.");
     }
-    const auth = { login: connection.login, token };
-    if (pullFfOnly) {
-      // Refresh-from-review path: fetch refs, then fast-forward the working
-      // copy so the reviewer sees the author's latest code locally. --ff-only
-      // is intentionally restrictive — if the reviewer has local commits or a
-      // dirty tree, git refuses and we let the error propagate so the user
-      // knows exactly why their worktree didn't advance. Fetch has already
-      // succeeded at that point, so History reflects origin correctly.
-      this.log.info("pull review workspace (ff-only)", { workspaceId: workspace.id });
-      await this.runGit(workspace.cwd, ["fetch", "origin"], auth);
-      await this.runGit(workspace.cwd, ["merge", "--ff-only", "@{u}"], auth);
-      return;
-    }
     this.log.info("fetch review workspace", { workspaceId: workspace.id });
-    await this.runGit(workspace.cwd, ["fetch", "origin"], auth);
+    await this.runGit(workspace.cwd, ["fetch", "origin"], {
+      login: connection.login,
+      token,
+    });
   }
 
   async rebaseReviewWorkspace({ workspace }) {

@@ -91,17 +91,55 @@ function repairVisibleText(value, fallback = "") {
   return current;
 }
 
+function normalizeLaunch(launch) {
+  if (!launch) return null;
+  // SSH launch: carries either a reference to a saved host or an inline ad-hoc
+  // definition. We preserve both shapes faithfully so the panel survives
+  // reload. Private material is NEVER stored here — only refs into the
+  // credential store.
+  if (launch.kind === "ssh") {
+    const normalized = { kind: "ssh" };
+    if (launch.sshHostId) normalized.sshHostId = String(launch.sshHostId);
+    if (launch.sshInline && typeof launch.sshInline === "object") {
+      const inline = launch.sshInline;
+      const auth = inline.auth || {};
+      normalized.sshInline = {
+        host: String(inline.host || ""),
+        port: Number(inline.port) > 0 ? Number(inline.port) : 22,
+        username: String(inline.username || ""),
+        hostKeyPolicy: ["strict", "warn", "accept-new"].includes(inline.hostKeyPolicy) ? inline.hostKeyPolicy : "warn",
+        auth: {
+          methods: Array.isArray(auth.methods) && auth.methods.length ? [...auth.methods] : ["publickey"],
+          keyRef: auth.keyRef || "",
+          certRef: auth.certRef || "",
+          passwordRef: auth.passwordRef || "",
+          passphraseRef: auth.passphraseRef || "",
+          agent: ["auto", "socket", "pageant", "pipe", "off"].includes(auth.agent) ? auth.agent : "auto",
+        },
+        advanced: {
+          launchVia: ["ssh2", "system-ssh", "wsl"].includes(inline.advanced?.launchVia)
+            ? inline.advanced.launchVia
+            : "ssh2",
+          command: inline.advanced?.command || "",
+          agentForward: Boolean(inline.advanced?.agentForward),
+        },
+      };
+    }
+    return normalized;
+  }
+  // Classic PTY launch (file + args).
+  return {
+    file: launch.file || "",
+    args: [...(launch.args || [])],
+  };
+}
+
 function normalizePanel(panel, panelIndex = 0) {
   return {
     id: panel.id || `panel-${panelIndex + 1}`,
     title: repairVisibleText(panel.title || `Panel ${panelIndex + 1}`),
     command: panel.command || "",
-    launch: panel.launch
-      ? {
-          file: panel.launch.file || "",
-          args: [...(panel.launch.args || [])],
-        }
-      : null,
+    launch: normalizeLaunch(panel.launch),
     shell: panel.shell !== false,
     startup: panel.startup || (panelIndex === 0 ? APP_CONFIG.ui.defaultPanelStartup : APP_CONFIG.ui.manualPanelStartup),
     cwd: panel.cwd || "",
@@ -409,6 +447,16 @@ export function createDefaultState() {
     ],
     profiles: [{ id: "default", name: "Default", color: "#ffa424", workspaceIds: [] }],
     workspaces: [],
+    ssh: {
+      hosts: [],
+      keys: [],
+      certificates: [],
+      knownHosts: {},
+      settings: {
+        defaultAgentMode: "auto",
+        importedSshConfig: false,
+      },
+    },
   };
 
   return {
@@ -838,9 +886,19 @@ export function normalizeState(rawState = {}) {
     );
   }
 
+  const ssh = {
+    ...defaults.ssh,
+    ...(rawState.ssh || {}),
+    settings: {
+      ...defaults.ssh.settings,
+      ...((rawState.ssh || {}).settings || {}),
+    },
+  };
+
   const normalized = {
     ...defaults,
     ...rawState,
+    ssh,
     activeWorkspaceId,
     activeProfileId,
     settings: normalizedSettings,

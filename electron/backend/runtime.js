@@ -59,6 +59,8 @@ import {
 import { createProviderHandlers } from "./runtime-provider-handlers.js";
 import { createGitHandlers } from "./runtime-git-handlers.js";
 import { createProviderLifecycle } from "./runtime-provider-lifecycle.js";
+import { createSshHandlers } from "./ssh/runtime-ssh-handlers.js";
+import { SshManager } from "./ssh/ssh-manager.js";
 import {
   clone,
   findWorkspace,
@@ -347,7 +349,10 @@ export async function createRuntime({
     }
   }
 
+  const sshManager = new SshManager({ store, credentialStore, logger: log });
+
   const sessions = new SessionManagerImpl({
+    sshManager,
     getSessionEnv: ({ workspace, sessionId }) => {
       const env = {};
 
@@ -455,6 +460,11 @@ export async function createRuntime({
     execFileTextImpl,
   });
   const events = new EventEmitter();
+  // Forward SSH events onto the runtime event bus so Electron IPC and the
+  // remote WebSocket relay can pick them up via runtime.on("ssh:*", …).
+  for (const channel of ["ssh:auth-prompt", "ssh:host-key-change", "ssh:connection-state", "ssh:state"]) {
+    sshManager.on(channel, (payload) => events.emit(channel, payload));
+  }
   const terminalEnvironment = getTerminalEnvironmentImpl();
   let remoteInfo = null;
   let dockerPoll = null;
@@ -959,7 +969,6 @@ export async function createRuntime({
     findWorkspace,
   });
   const {
-    getAzureWorkspace,
     ensureAzureWorkspace,
     refreshAzure,
     scheduleAzurePolling,
@@ -2148,6 +2157,8 @@ export async function createRuntime({
     syncWorktrees,
   });
 
+  const sshHandlers = createSshHandlers({ sshManager, store, credentialStore, broadcastState });
+
   const providerHandlers = createProviderHandlers({
     log,
     getState,
@@ -2182,6 +2193,7 @@ export async function createRuntime({
   return {
     ...providerHandlers,
     ...gitHandlers,
+    ...sshHandlers,
     on(channel, handler) {
       events.on(channel, handler);
       return () => events.off(channel, handler);

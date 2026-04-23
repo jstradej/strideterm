@@ -1,16 +1,20 @@
 <template>
   <span class="git-detail-list__row">
     <strong>{{ label }}:</strong>
-    <select class="git-branch-select" :value="modelValue" @change="onChange">
-      <option v-if="!modelValue" value="" disabled>-- select --</option>
-      <option v-for="b in sortedOptions" :key="b" :value="b">{{ b }}</option>
-    </select>
+    <CustomSelect
+      class="git-branch-select"
+      :model-value="modelValue"
+      placeholder="-- select --"
+      :options="optionList"
+      @change="onChange"
+    />
     <slot name="after" />
   </span>
 </template>
 
 <script setup>
 import { computed } from "vue";
+import CustomSelect from "../../common/CustomSelect.vue";
 
 const props = defineProps({
   modelValue: { type: String, default: "" },
@@ -38,7 +42,9 @@ const sortedOptions = computed(() => {
   return out;
 });
 
-function onChange(event) {
-  emit("update:modelValue", event.target.value);
+const optionList = computed(() => sortedOptions.value.map((b) => ({ value: b, label: b })));
+
+function onChange(value) {
+  emit("update:modelValue", value);
 }
 </script>

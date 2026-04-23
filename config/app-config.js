@@ -90,6 +90,18 @@ export const APP_CONFIG = {
     posixShellFile: envString("STRIDETERM_POSIX_SHELL", "/bin/bash"),
     posixShellArgs: Object.freeze(["-l"]),
   },
+  ssh: {
+    defaultKeepaliveMs: envNumber("STRIDETERM_SSH_KEEPALIVE_MS", 30000),
+    defaultConnectTimeoutMs: envNumber("STRIDETERM_SSH_CONNECT_TIMEOUT_MS", 20000),
+    agentPath: envString("STRIDETERM_SSH_AGENT", ""),
+    preferAgent: envBoolean("STRIDETERM_SSH_PREFER_AGENT", true),
+    allowSystemSshFallback: envBoolean("STRIDETERM_SSH_ALLOW_SYSTEM_SSH", true),
+    certExpiryWarnHours: envNumber("STRIDETERM_SSH_CERT_WARN_HOURS", 2),
+    systemSshPath: envString("STRIDETERM_SSH_BINARY", ""),
+    wslDefaultDistro: envString("STRIDETERM_SSH_WSL_DISTRO", ""),
+    wslSshExec: envString("STRIDETERM_SSH_WSL_EXEC", "ssh"),
+    requireEncryptedStorage: envBoolean("STRIDETERM_SSH_REQUIRE_ENCRYPTED_STORAGE", true),
+  },
   git: {
     recentLogLimit: envNumber("STRIDETERM_GIT_LOG_LIMIT", 18),
     lazygitWingetPackagePrefix: envString("STRIDETERM_LAZYGIT_WINGET_PREFIX", "JesseDuffield.lazygit_"),

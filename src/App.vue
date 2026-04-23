@@ -208,6 +208,19 @@
   <!-- Notification toast — suppressed when the dock is pinned (the dock
        itself plays that role). Sound alert still fires via useNotificationCapture. -->
   <NotificationToast v-if="!notifStore.pinned" :toast="latestToast" @dismissed="latestToast = null" />
+
+  <!-- SSH modal prompts rendered as teleported overlays driven by the SSH
+       store. They sit outside the normal DialogOverlay because they're
+       triggered by backend events rather than user navigation, and can
+       coexist with other dialogs. -->
+  <Teleport to="body">
+    <div v-if="sshStore.authPrompt" class="overlay ssh-overlay">
+      <SshAuthPrompt :prompt="sshStore.authPrompt" />
+    </div>
+    <div v-if="sshStore.hostKeyWarning" class="overlay ssh-overlay">
+      <SshHostKeyWarning :warning="sshStore.hostKeyWarning" />
+    </div>
+  </Teleport>
 </template>
 
 <script setup>
@@ -235,15 +248,22 @@ import TabPickerDropdown from "./components/layout/TabPickerDropdown.vue";
 import NotificationCenter from "./components/layout/NotificationCenter.vue";
 import NotificationToast from "./components/layout/NotificationToast.vue";
 import ReturnToAppBanner from "./components/layout/ReturnToAppBanner.vue";
+import SshAuthPrompt from "./components/ssh/SshAuthPrompt.vue";
+import SshHostKeyWarning from "./components/ssh/SshHostKeyWarning.vue";
 import { useNotificationCapture } from "./composables/useNotificationCapture.js";
 import { useReviewNotifications } from "./composables/useReviewNotifications.js";
 import { useNotificationStore } from "./stores/notifications.js";
+import { useSshStore } from "./stores/ssh.js";
 
 const api = inject("api");
 const store = useAppStore();
 const notifStore = useNotificationStore();
+const sshStore = useSshStore();
 const { latestToast } = useNotificationCapture();
 useReviewNotifications(latestToast);
+
+sshStore.bindEvents();
+sshStore.load();
 
 const frameRef = ref(null);
 const sidebarRef = ref(null);

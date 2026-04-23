@@ -10,9 +10,7 @@
     <form class="form" @submit.prevent="handleSubmit">
       <label v-if="repoChoices.length > 1">
         <span>Repository</span>
-        <select v-model="selectedRoot" required>
-          <option v-for="root in repoChoices" :key="root.value" :value="root.value">{{ root.label }}</option>
-        </select>
+        <CustomSelect v-model="selectedRoot" :options="repoOptions" />
         <small class="form__hint">
           The worktree is created inside the selected repository. Each repo has its own branches.
         </small>
@@ -31,6 +29,7 @@
 
 <script setup>
 import { ref, computed, onMounted } from "vue";
+import CustomSelect from "../common/CustomSelect.vue";
 
 const props = defineProps({
   repoChoices: { type: Array, default: () => [] },
@@ -42,6 +41,8 @@ const emit = defineEmits(["cancel", "submit"]);
 const inputRef = ref(null);
 const branchName = ref("");
 const selectedRoot = ref(props.preselectedRootPath || props.repoChoices[0]?.value || "");
+
+const repoOptions = computed(() => props.repoChoices.map((r) => ({ value: r.value, label: r.label })));
 
 const canSubmit = computed(() => {
   if (!branchName.value.trim()) return false;

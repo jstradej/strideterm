@@ -4,6 +4,10 @@ function createEventHub() {
     terminalData: new Set(),
     terminalExit: new Set(),
     connectionState: new Set(),
+    sshAuthPrompt: new Set(),
+    sshHostKeyChange: new Set(),
+    sshState: new Set(),
+    sshConnectionState: new Set(),
   };
 }
 
@@ -92,6 +96,18 @@ function createRemoteTransport() {
     }
     if (message.type === "terminal:exit") {
       listeners.terminalExit.forEach((handler) => handler(message.payload));
+    }
+    if (message.type === "ssh:auth-prompt") {
+      listeners.sshAuthPrompt.forEach((handler) => handler(message.payload));
+    }
+    if (message.type === "ssh:host-key-change") {
+      listeners.sshHostKeyChange.forEach((handler) => handler(message.payload));
+    }
+    if (message.type === "ssh:state") {
+      listeners.sshState.forEach((handler) => handler(message.payload));
+    }
+    if (message.type === "ssh:connection-state") {
+      listeners.sshConnectionState.forEach((handler) => handler(message.payload));
     }
   });
 
@@ -239,8 +255,7 @@ function createRemoteTransport() {
     pushAndPublishReview: (payload) => fetchJson("/api/review-bridge/pull-request/push-and-publish", payload),
     updateAzureThreadStatus: (payload) => fetchJson("/api/azure/pull-request/thread-status", payload),
     voteAzurePullRequest: (payload) => fetchJson("/api/azure/pull-request/vote", payload),
-    fetchAzureReviewWorkspace: (workspaceId, options) =>
-      fetchJson("/api/azure/workspace/fetch", { workspaceId, ...(options || {}) }),
+    fetchAzureReviewWorkspace: (workspaceId) => fetchJson("/api/azure/workspace/fetch", { workspaceId }),
     rebaseAzureReviewWorkspace: (workspaceId) => fetchJson("/api/azure/workspace/rebase", { workspaceId }),
     pushAzureReviewWorkspace: (workspaceId, options) =>
       fetchJson("/api/azure/workspace/push", { workspaceId, ...options }),
@@ -262,8 +277,7 @@ function createRemoteTransport() {
     commentGitHubPullRequest: (payload) => fetchJson("/api/github/pull-request/comment", payload),
     submitGitHubPullRequestReview: (payload) => fetchJson("/api/github/pull-request/review", payload),
     rerunGitHubCheck: (prKey, checkItem) => fetchJson("/api/github/rerun-check", { prKey, checkItem }),
-    fetchGitHubReviewWorkspace: (workspaceId, options) =>
-      fetchJson("/api/github/workspace/fetch", { workspaceId, ...(options || {}) }),
+    fetchGitHubReviewWorkspace: (workspaceId) => fetchJson("/api/github/workspace/fetch", { workspaceId }),
     rebaseGitHubReviewWorkspace: (workspaceId) => fetchJson("/api/github/workspace/rebase", { workspaceId }),
     pushGitHubReviewWorkspace: (workspaceId, options) =>
       fetchJson("/api/github/workspace/push", { workspaceId, ...options }),
@@ -324,12 +338,38 @@ function createRemoteTransport() {
     fileOpenInExplorer: (absPath) => fetchJson("/api/file/open-in-explorer", { absPath }),
     fileOpenInEditor: (p) => fetchJson("/api/file/open-in-editor", p),
     fileInfo: (p) => fetchJson("/api/file/info", p),
+
+    sshHostsList: () => fetchJson("/api/ssh/hosts/list", {}),
+    sshHostsCreate: (payload) => fetchJson("/api/ssh/hosts/create", payload),
+    sshHostsUpdate: (payload) => fetchJson("/api/ssh/hosts/update", payload),
+    sshHostsDelete: (payload) => fetchJson("/api/ssh/hosts/delete", payload),
+    sshHostsDuplicate: (payload) => fetchJson("/api/ssh/hosts/duplicate", payload),
+    sshHostsTest: (payload) => fetchJson("/api/ssh/hosts/test", payload),
+    sshKeysList: () => fetchJson("/api/ssh/keys/list", {}),
+    sshKeysImport: (payload) => fetchJson("/api/ssh/keys/import", payload),
+    sshKeysGenerate: (payload) => fetchJson("/api/ssh/keys/generate", payload),
+    sshKeysDelete: (payload) => fetchJson("/api/ssh/keys/delete", payload),
+    sshCertsList: () => fetchJson("/api/ssh/certs/list", {}),
+    sshCertsImport: (payload) => fetchJson("/api/ssh/certs/import", payload),
+    sshCertsDelete: (payload) => fetchJson("/api/ssh/certs/delete", payload),
+    sshAuthAnswer: (payload) => fetchJson("/api/ssh/auth/answer", payload),
+    sshAuthCancel: (payload) => fetchJson("/api/ssh/auth/cancel", payload),
+    sshHostKeyAccept: (payload) => fetchJson("/api/ssh/host-key/accept", payload),
+    sshHostKeyReject: (payload) => fetchJson("/api/ssh/host-key/reject", payload),
+    sshConfigPreview: (payload) => fetchJson("/api/ssh/config/preview", payload),
+    sshConfigImport: (payload) => fetchJson("/api/ssh/config/import", payload),
+    sshKnownHostsImport: (payload) => fetchJson("/api/ssh/known-hosts/import", payload),
+
     resizeTerminal: (sessionId, size) => send({ type: "terminal:resize", sessionId, cols: size.cols, rows: size.rows }),
     writeTerminal: (sessionId, data) => send({ type: "terminal:input", sessionId, data }),
     onStateUpdated: (handler) => listeners.stateUpdated.add(handler),
     onTerminalData: (handler) => listeners.terminalData.add(handler),
     onTerminalExit: (handler) => listeners.terminalExit.add(handler),
     onConnectionState: (handler) => listeners.connectionState.add(handler),
+    onSshAuthPrompt: (handler) => listeners.sshAuthPrompt.add(handler),
+    onSshHostKeyChange: (handler) => listeners.sshHostKeyChange.add(handler),
+    onSshState: (handler) => listeners.sshState.add(handler),
+    onSshConnectionState: (handler) => listeners.sshConnectionState.add(handler),
     getRemoteToken: () => token,
     setRemoteToken: (nextToken) => {
       persistToken(nextToken);

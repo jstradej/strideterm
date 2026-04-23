@@ -16,9 +16,12 @@
         <!-- Repo picker (multi-root workspaces only) — first position, compact -->
         <label v-if="showRepoPicker" class="git-repo-picker">
           <span class="git-repo-picker__label">Repo</span>
-          <select class="git-repo-picker__select" :value="activeRootPath" @change="onRootChange($event.target.value)">
-            <option v-for="root in gitRoots" :key="root" :value="root">{{ formatRootLabel(root) }}</option>
-          </select>
+          <CustomSelect
+            class="git-repo-picker__select"
+            :model-value="activeRootPath"
+            :options="repoPickerOptions"
+            @change="onRootChange"
+          />
           <span class="git-repo-picker__hint">{{ gitRoots.length }}</span>
         </label>
         <div class="git-view__summary">
@@ -144,16 +147,13 @@
             Install Lazygit
           </button>
 
-          <select
+          <CustomSelect
             v-if="availableConnections.length && !isReviewWorkspace"
             class="git-branch-select"
-            :value="activeConnectionId"
-            title="Git credentials source"
+            :model-value="activeConnectionId"
+            :options="connectionOptions"
             @change="onConnectionChange"
-          >
-            <option value="">System credentials</option>
-            <option v-for="c in availableConnections" :key="c.id" :value="c.id">{{ c.label || c.id }}</option>
-          </select>
+          />
         </div>
       </div>
 
@@ -362,10 +362,12 @@
                 <div class="git-detail-list" style="margin-bottom: 8px">
                   <span class="git-detail-list__row">
                     <strong>Checkout:</strong>
-                    <select v-model="switchBranchTarget" class="git-branch-select">
-                      <option value="" disabled>-- select branch --</option>
-                      <option v-for="b in switchBranchOptions" :key="b" :value="b">{{ b }}</option>
-                    </select>
+                    <CustomSelect
+                      v-model="switchBranchTarget"
+                      class="git-branch-select"
+                      placeholder="-- select branch --"
+                      :options="switchBranchOptionsList"
+                    />
                     <button
                       type="button"
                       class="button"
@@ -596,10 +598,12 @@
                   </label>
                   <label class="git-pr-form__field">
                     <span class="git-pr-form__label">Target branch</span>
-                    <select v-model="prTargetBranch" class="git-branch-select">
-                      <option value="" disabled>-- select target --</option>
-                      <option v-for="b in prTargetOptions" :key="b" :value="b">{{ b }}</option>
-                    </select>
+                    <CustomSelect
+                      v-model="prTargetBranch"
+                      class="git-branch-select"
+                      placeholder="-- select target --"
+                      :options="prTargetOptionsList"
+                    />
                     <button
                       v-if="!gitUi.remoteBranchesLoading"
                       type="button"
@@ -745,6 +749,7 @@ import GitTagList from "./git/GitTagList.vue";
 import GitCommitLog from "./git/GitCommitLog.vue";
 import GitBaseBranchPicker from "./git/GitBaseBranchPicker.vue";
 import BulkRepoTable from "./git/BulkRepoTable.vue";
+import CustomSelect from "../common/CustomSelect.vue";
 
 const props = defineProps({
   workspaceId: { type: String, required: true },
@@ -1137,12 +1142,20 @@ function onCreateBranch() {
   }
 }
 
-function onConnectionChange(event) {
+function onConnectionChange(value) {
   const existing = (appStore.payload?.appState?.workspaces || []).find((ws) => ws.id === props.workspaceId);
   if (existing) {
-    appStore.saveWorkspace({ ...existing, connectionId: event.target.value });
+    appStore.saveWorkspace({ ...existing, connectionId: value });
   }
 }
+
+const repoPickerOptions = computed(() => gitRoots.value.map((root) => ({ value: root, label: formatRootLabel(root) })));
+const connectionOptions = computed(() => [
+  { value: "", label: "System credentials" },
+  ...availableConnections.value.map((c) => ({ value: c.id, label: c.label || c.id })),
+]);
+const switchBranchOptionsList = computed(() => switchBranchOptions.value.map((b) => ({ value: b, label: b })));
+const prTargetOptionsList = computed(() => prTargetOptions.value.map((b) => ({ value: b, label: b })));
 
 async function onCreatePr() {
   prResult.value = null;

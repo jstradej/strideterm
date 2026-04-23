@@ -55,9 +55,7 @@
 
     <div>
       <span class="section-label">Log Level</span>
-      <select v-model="form.logLevel" class="settings-input settings-select">
-        <option v-for="level in logLevels" :key="level" :value="level">{{ level }}</option>
-      </select>
+      <CustomSelect v-model="form.logLevel" class="settings-input settings-select" :options="logLevelOptions" />
       <small class="help-text"
         >Controls verbosity of application logging. Logs are written to ~/.strideterm/logs/.</small
       >
@@ -223,8 +221,9 @@
 </template>
 
 <script setup>
-import { inject } from "vue";
+import { computed, inject } from "vue";
 import SettingsHookProviderSection from "./SettingsHookProviderSection.vue";
+import CustomSelect from "../../common/CustomSelect.vue";
 
 const props = defineProps({
   api: { type: Object, default: null },
@@ -234,6 +233,8 @@ const props = defineProps({
 });
 
 const form = inject("settingsForm");
+
+const logLevelOptions = computed(() => props.logLevels.map((level) => ({ value: level, label: level })));
 
 async function browseEditor() {
   if (!props.api?.browseFile) return;

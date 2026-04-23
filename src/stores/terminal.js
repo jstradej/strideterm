@@ -74,6 +74,13 @@ export const useTerminalStore = defineStore("terminal", () => {
     return controller?.clearTerminalViewport(sessionId);
   }
 
+  // Synthetic write — used when the renderer needs to surface a note in the
+  // terminal (e.g. "Already disconnected") without a backend session to
+  // produce real terminal:data events.
+  function writeToTerminal(sessionId, data) {
+    controller?.handleTerminalData({ sessionId, data });
+  }
+
   function disconnectHiddenPaneObservers(visibleSessionIds) {
     return controller?.disconnectHiddenPaneObservers(visibleSessionIds);
   }
@@ -93,6 +100,7 @@ export const useTerminalStore = defineStore("terminal", () => {
     pruneTerminalViews,
     exportTerminalTranscript,
     clearTerminalViewport,
+    writeToTerminal,
     disconnectHiddenPaneObservers,
     syncTheme,
   };

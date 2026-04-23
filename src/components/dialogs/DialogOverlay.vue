@@ -30,6 +30,12 @@ const DIALOGS = {
   QuickFixWizardDialog: defineAsyncComponent(() => import("./QuickFixWizardDialog.vue")),
   BusyOverlay: defineAsyncComponent(() => import("./BusyOverlay.vue")),
   TaskHookCheckDialog: defineAsyncComponent(() => import("./TaskHookCheckDialog.vue")),
+  SshHostsDialog: defineAsyncComponent(() => import("../ssh/SshHostsDialog.vue")),
+  SshHostEditor: defineAsyncComponent(() => import("../ssh/SshHostEditor.vue")),
+  SshKeyManager: defineAsyncComponent(() => import("../ssh/SshKeyManager.vue")),
+  SshKeyGenerateDialog: defineAsyncComponent(() => import("../ssh/SshKeyGenerateDialog.vue")),
+  // SshAuthPrompt and SshHostKeyWarning are rendered directly from App.vue
+  // (driven by backend events, not openDialog), so they aren't in this map.
 };
 
 const store = useAppStore();

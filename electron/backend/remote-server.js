@@ -258,7 +258,7 @@ async function handleApiRequest(runtime, request, response) {
     }
 
     if (request.method === "POST" && url.pathname === "/api/azure/workspace/fetch") {
-      json(response, 200, await runtime.fetchAzureReviewWorkspace(body.workspaceId, { pullFfOnly: !!body.pullFfOnly }));
+      json(response, 200, await runtime.fetchAzureReviewWorkspace(body.workspaceId));
       return;
     }
 
@@ -353,11 +353,7 @@ async function handleApiRequest(runtime, request, response) {
       return;
     }
     if (request.method === "POST" && url.pathname === "/api/github/workspace/fetch") {
-      json(
-        response,
-        200,
-        await runtime.fetchGitHubReviewWorkspace(body.workspaceId, { pullFfOnly: !!body.pullFfOnly }),
-      );
+      json(response, 200, await runtime.fetchGitHubReviewWorkspace(body.workspaceId));
       return;
     }
     if (request.method === "POST" && url.pathname === "/api/github/workspace/rebase") {
@@ -788,6 +784,63 @@ async function handleApiRequest(runtime, request, response) {
       return;
     }
 
+    // --- SSH (remote is read-only per plan §14) ---
+    if (request.method === "POST" && url.pathname === "/api/ssh/hosts/list") {
+      json(response, 200, await runtime["ssh:hosts:list"]());
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/api/ssh/keys/list") {
+      // Returns metadata only; private-key material never leaves the host.
+      json(response, 200, await runtime["ssh:keys:list"]());
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/api/ssh/certs/list") {
+      json(response, 200, await runtime["ssh:certs:list"]());
+      return;
+    }
+    // Remote sessions are allowed to respond to active prompts only — they
+    // can't create/edit credentials. This mirrors how the user is already
+    // attached to a session created locally.
+    if (request.method === "POST" && url.pathname === "/api/ssh/auth/answer") {
+      json(response, 200, await runtime["ssh:auth:answer"](body));
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/api/ssh/auth/cancel") {
+      json(response, 200, await runtime["ssh:auth:cancel"](body));
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/api/ssh/host-key/accept") {
+      json(response, 200, await runtime["ssh:host-key:accept"](body));
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/api/ssh/host-key/reject") {
+      json(response, 200, await runtime["ssh:host-key:reject"](body));
+      return;
+    }
+    // Explicitly forbid credential/host administration from remote clients
+    // so a leaked token can't exfiltrate or plant SSH hosts/keys. See plan
+    // §14 — this must never be opened up without a per-host-on-remote
+    // authorization story.
+    if (
+      request.method === "POST" &&
+      (url.pathname === "/api/ssh/hosts/create" ||
+        url.pathname === "/api/ssh/hosts/update" ||
+        url.pathname === "/api/ssh/hosts/delete" ||
+        url.pathname === "/api/ssh/hosts/duplicate" ||
+        url.pathname === "/api/ssh/hosts/test" ||
+        url.pathname === "/api/ssh/keys/import" ||
+        url.pathname === "/api/ssh/keys/generate" ||
+        url.pathname === "/api/ssh/keys/delete" ||
+        url.pathname === "/api/ssh/certs/import" ||
+        url.pathname === "/api/ssh/certs/delete" ||
+        url.pathname === "/api/ssh/config/preview" ||
+        url.pathname === "/api/ssh/config/import" ||
+        url.pathname === "/api/ssh/known-hosts/import")
+    ) {
+      json(response, 403, { error: "SSH administration is not permitted on remote clients." });
+      return;
+    }
+
     json(response, 404, { error: "Not found" });
   } catch (error) {
     json(response, 500, { error: error.message || "Remote API failed" });
@@ -837,6 +890,10 @@ export async function startRemoteServer({ runtime, staticRoot, logger: _logger =
     runtime.on("state:updated", (payload) => broadcast({ type: "state:updated", payload })),
     runtime.on("terminal:data", (payload) => broadcast({ type: "terminal:data", payload })),
     runtime.on("terminal:exit", (payload) => broadcast({ type: "terminal:exit", payload })),
+    runtime.on("ssh:auth-prompt", (payload) => broadcast({ type: "ssh:auth-prompt", payload })),
+    runtime.on("ssh:host-key-change", (payload) => broadcast({ type: "ssh:host-key-change", payload })),
+    runtime.on("ssh:state", (payload) => broadcast({ type: "ssh:state", payload })),
+    runtime.on("ssh:connection-state", (payload) => broadcast({ type: "ssh:connection-state", payload })),
   ];
 
   server.on("upgrade", (request, socket, head) => {

@@ -113,24 +113,32 @@ describe("WorkspaceDialog", () => {
 
     test("shows worker and judge provider/model selects", () => {
       const wrapper = mountDialog({ workspace: buildTaskDraft(), creating: true });
-      const selects = wrapper.findAll("select");
-      // Expect at least 2 selects: Worker provider + Worker model (+ Judge provider + Judge model)
-      expect(selects.length).toBeGreaterThanOrEqual(2);
+      // Each agent section has one CustomSelect (provider picker) and a datalist-backed model input.
+      const customSelects = wrapper.findAllComponents({ name: "CustomSelect" });
+      expect(customSelects.length).toBeGreaterThanOrEqual(2);
       const agentSections = wrapper.findAll(".agent-config-section");
       expect(agentSections.length).toBe(2);
     });
 
     test("provider dropdown lists all four built-in providers (claude, codex, gemini, copilot)", () => {
       const wrapper = mountDialog({ workspace: buildTaskDraft(), creating: true });
-      const html = wrapper.html();
-      // Provider <option> values come from PROVIDER_CHOICES. Each provider id
-      // should appear as an option value in the rendered DOM.
-      expect(html).toContain('value="claude"');
-      expect(html).toContain('value="codex"');
-      expect(html).toContain('value="gemini"');
-      expect(html).toContain('value="copilot"');
-      // And the display name for the newly added provider must render too
-      expect(html).toContain("GitHub Copilot");
+      // The provider CustomSelect receives its choices via the `options` prop; inspect that
+      // instead of the DOM because the option list is teleported and only rendered when open.
+      const customSelects = wrapper.findAllComponents({ name: "CustomSelect" });
+      const providerSelects = customSelects.filter((c) => {
+        const opts = c.props("options") || [];
+        return opts.some((o) => o.value === "claude");
+      });
+      expect(providerSelects.length).toBeGreaterThanOrEqual(1);
+      const options = providerSelects[0].props("options");
+      const ids = options.map((o) => o.value);
+      expect(ids).toContain("claude");
+      expect(ids).toContain("codex");
+      expect(ids).toContain("gemini");
+      expect(ids).toContain("copilot");
+      // And the display name for the newly added provider must be present.
+      const labels = options.map((o) => o.label);
+      expect(labels.some((l) => l.includes("GitHub Copilot"))).toBe(true);
     });
 
     test("shows max rounds input", () => {

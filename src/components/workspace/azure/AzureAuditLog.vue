@@ -2,26 +2,10 @@
   <div class="azure-audit-log">
     <!-- Filters -->
     <div class="azure-audit-log__filters">
-      <select v-model="filterCategory" class="azure-audit-log__select">
-        <option value="">All operations</option>
-        <option value="read">Read</option>
-        <option value="write">Write</option>
-      </select>
-      <select v-model="filterSuccess" class="azure-audit-log__select">
-        <option value="">All status</option>
-        <option value="true">Success</option>
-        <option value="false">Error</option>
-      </select>
-      <select v-model="filterSource" class="azure-audit-log__select">
-        <option value="">All sources</option>
-        <option value="user">User</option>
-        <option value="sync">Sync</option>
-      </select>
-      <select v-model="filterRange" class="azure-audit-log__select">
-        <option value="24h">Last 24 hours</option>
-        <option value="7d">Last 7 days</option>
-        <option value="30d">Last 30 days</option>
-      </select>
+      <CustomSelect v-model="filterCategory" class="azure-audit-log__select" :options="filterCategoryOptions" />
+      <CustomSelect v-model="filterSuccess" class="azure-audit-log__select" :options="filterSuccessOptions" />
+      <CustomSelect v-model="filterSource" class="azure-audit-log__select" :options="filterSourceOptions" />
+      <CustomSelect v-model="filterRange" class="azure-audit-log__select" :options="filterRangeOptions" />
       <input
         v-model="searchText"
         type="text"
@@ -194,6 +178,28 @@
 <script setup>
 import { ref, computed, watch, onMounted, reactive } from "vue";
 import { useAppStore } from "../../../stores/app.js";
+import CustomSelect from "../../common/CustomSelect.vue";
+
+const filterCategoryOptions = [
+  { value: "", label: "All operations" },
+  { value: "read", label: "Read" },
+  { value: "write", label: "Write" },
+];
+const filterSuccessOptions = [
+  { value: "", label: "All status" },
+  { value: "true", label: "Success" },
+  { value: "false", label: "Error" },
+];
+const filterSourceOptions = [
+  { value: "", label: "All sources" },
+  { value: "user", label: "User" },
+  { value: "sync", label: "Sync" },
+];
+const filterRangeOptions = [
+  { value: "24h", label: "Last 24 hours" },
+  { value: "7d", label: "Last 7 days" },
+  { value: "30d", label: "Last 30 days" },
+];
 
 const props = defineProps({
   provider: { type: String, default: "azure" },

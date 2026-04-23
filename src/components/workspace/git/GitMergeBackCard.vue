@@ -11,10 +11,14 @@
       <span class="git-detail-list__row">
         <strong>Target branch:</strong>
         <template v-if="isLinkedWorktree">{{ resolvedBaseBranch || "?" }}</template>
-        <select v-else class="git-branch-select" :value="resolvedBaseBranch" @change="onTargetChange">
-          <option v-if="!resolvedBaseBranch" value="" disabled>-- select --</option>
-          <option v-for="b in baseBranchOptions" :key="b" :value="b">{{ b }}</option>
-        </select>
+        <CustomSelect
+          v-else
+          class="git-branch-select"
+          :model-value="resolvedBaseBranch"
+          placeholder="-- select --"
+          :options="baseBranchOptionList"
+          @change="onTargetChange"
+        />
       </span>
     </div>
 
@@ -218,6 +222,7 @@
 import { computed, ref } from "vue";
 import { useAppStore } from "../../../stores/app.js";
 import { useGitUiStore } from "../../../stores/git-ui.js";
+import CustomSelect from "../../common/CustomSelect.vue";
 
 const props = defineProps({
   snapshot: { type: Object, required: true },
@@ -243,9 +248,11 @@ const isCleanupMode = computed(
   () => props.snapshot.branchMerged === true && (compare.value.aheadCount || 0) === 0 && props.isLinkedWorktree,
 );
 
-function onTargetChange(event) {
-  localOverride.value = event.target.value;
+function onTargetChange(value) {
+  localOverride.value = value;
 }
+
+const baseBranchOptionList = computed(() => props.baseBranchOptions.map((b) => ({ value: b, label: b })));
 const potentialConflicts = computed(() => compare.value.potentialConflicts || []);
 
 const workspaceIdsByPath = computed(

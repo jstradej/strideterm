@@ -68,6 +68,10 @@ export function registerIpc(runtime, emitToRenderer, { includeStateGet = true } 
     runtime.on("state:updated", (payload) => emitToRenderer("state:updated", payload)),
     runtime.on("terminal:data", (payload) => emitToRenderer("terminal:data", payload)),
     runtime.on("terminal:exit", (payload) => emitToRenderer("terminal:exit", payload)),
+    runtime.on("ssh:auth-prompt", (payload) => emitToRenderer("ssh:auth-prompt", payload)),
+    runtime.on("ssh:host-key-change", (payload) => emitToRenderer("ssh:host-key-change", payload)),
+    runtime.on("ssh:connection-state", (payload) => emitToRenderer("ssh:connection-state", payload)),
+    runtime.on("ssh:state", (payload) => emitToRenderer("ssh:state", payload)),
   ];
 
   if (includeStateGet) {
@@ -168,13 +172,33 @@ export function registerIpc(runtime, emitToRenderer, { includeStateGet = true } 
       validateIpc(reviewBridgePushAndPublishSchema, payload, "review-bridge:pull-request:push-and-publish"),
     ),
   );
+
+  // --- SSH ---
+  ipcMain.handle("ssh:hosts:list", async () => runtime["ssh:hosts:list"]());
+  ipcMain.handle("ssh:hosts:create", async (_event, payload) => runtime["ssh:hosts:create"](payload));
+  ipcMain.handle("ssh:hosts:update", async (_event, payload) => runtime["ssh:hosts:update"](payload));
+  ipcMain.handle("ssh:hosts:delete", async (_event, payload) => runtime["ssh:hosts:delete"](payload));
+  ipcMain.handle("ssh:hosts:duplicate", async (_event, payload) => runtime["ssh:hosts:duplicate"](payload));
+  ipcMain.handle("ssh:hosts:test", async (_event, payload) => runtime["ssh:hosts:test"](payload));
+  ipcMain.handle("ssh:keys:list", async () => runtime["ssh:keys:list"]());
+  ipcMain.handle("ssh:keys:import", async (_event, payload) => runtime["ssh:keys:import"](payload));
+  ipcMain.handle("ssh:keys:generate", async (_event, payload) => runtime["ssh:keys:generate"](payload));
+  ipcMain.handle("ssh:keys:delete", async (_event, payload) => runtime["ssh:keys:delete"](payload));
+  ipcMain.handle("ssh:certs:list", async () => runtime["ssh:certs:list"]());
+  ipcMain.handle("ssh:certs:import", async (_event, payload) => runtime["ssh:certs:import"](payload));
+  ipcMain.handle("ssh:certs:delete", async (_event, payload) => runtime["ssh:certs:delete"](payload));
+  ipcMain.handle("ssh:auth:answer", async (_event, payload) => runtime["ssh:auth:answer"](payload));
+  ipcMain.handle("ssh:auth:cancel", async (_event, payload) => runtime["ssh:auth:cancel"](payload));
+  ipcMain.handle("ssh:host-key:accept", async (_event, payload) => runtime["ssh:host-key:accept"](payload));
+  ipcMain.handle("ssh:host-key:reject", async (_event, payload) => runtime["ssh:host-key:reject"](payload));
+  ipcMain.handle("ssh:config:preview", async (_event, payload) => runtime["ssh:config:preview"](payload));
+  ipcMain.handle("ssh:config:import", async (_event, payload) => runtime["ssh:config:import"](payload));
+  ipcMain.handle("ssh:known-hosts:import", async (_event, payload) => runtime["ssh:known-hosts:import"](payload));
   ipcMain.handle("azure:pull-request:vote", async (_event, payload) =>
     runtime.voteAzurePullRequest(validateIpc(azureVoteSchema, payload, "azure:pull-request:vote")),
   );
-  ipcMain.handle("azure:workspace:fetch", async (_event, workspaceId, options) =>
-    runtime.fetchAzureReviewWorkspace(workspaceId, {
-      pullFfOnly: !!(options && options.pullFfOnly),
-    }),
+  ipcMain.handle("azure:workspace:fetch", async (_event, workspaceId) =>
+    runtime.fetchAzureReviewWorkspace(workspaceId),
   );
   ipcMain.handle("azure:workspace:rebase", async (_event, workspaceId) =>
     runtime.rebaseAzureReviewWorkspace(workspaceId),
@@ -241,10 +265,8 @@ export function registerIpc(runtime, emitToRenderer, { includeStateGet = true } 
     const validated = validateIpc(rerunCheckSchema, { prKey, checkItem }, "github:rerun-check");
     return runtime.rerunGitHubCheck(validated.prKey, validated.checkItem);
   });
-  ipcMain.handle("github:workspace:fetch", async (_event, workspaceId, options) =>
-    runtime.fetchGitHubReviewWorkspace(workspaceId, {
-      pullFfOnly: !!(options && options.pullFfOnly),
-    }),
+  ipcMain.handle("github:workspace:fetch", async (_event, workspaceId) =>
+    runtime.fetchGitHubReviewWorkspace(workspaceId),
   );
   ipcMain.handle("github:workspace:rebase", async (_event, workspaceId) =>
     runtime.rebaseGitHubReviewWorkspace(workspaceId),
@@ -608,6 +630,26 @@ export function registerIpc(runtime, emitToRenderer, { includeStateGet = true } 
     ipcMain.removeHandler("review-bridge:agent-prompt:delete");
     ipcMain.removeHandler("review-bridge:pull-request:sync");
     ipcMain.removeHandler("review-bridge:pull-request:push-and-publish");
+    ipcMain.removeHandler("ssh:hosts:list");
+    ipcMain.removeHandler("ssh:hosts:create");
+    ipcMain.removeHandler("ssh:hosts:update");
+    ipcMain.removeHandler("ssh:hosts:delete");
+    ipcMain.removeHandler("ssh:hosts:duplicate");
+    ipcMain.removeHandler("ssh:hosts:test");
+    ipcMain.removeHandler("ssh:keys:list");
+    ipcMain.removeHandler("ssh:keys:import");
+    ipcMain.removeHandler("ssh:keys:generate");
+    ipcMain.removeHandler("ssh:keys:delete");
+    ipcMain.removeHandler("ssh:certs:list");
+    ipcMain.removeHandler("ssh:certs:import");
+    ipcMain.removeHandler("ssh:certs:delete");
+    ipcMain.removeHandler("ssh:auth:answer");
+    ipcMain.removeHandler("ssh:auth:cancel");
+    ipcMain.removeHandler("ssh:host-key:accept");
+    ipcMain.removeHandler("ssh:host-key:reject");
+    ipcMain.removeHandler("ssh:config:preview");
+    ipcMain.removeHandler("ssh:config:import");
+    ipcMain.removeHandler("ssh:known-hosts:import");
     ipcMain.removeHandler("azure:pull-request:vote");
     ipcMain.removeHandler("azure:workspace:fetch");
     ipcMain.removeHandler("azure:workspace:rebase");

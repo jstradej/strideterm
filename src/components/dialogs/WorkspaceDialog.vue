@@ -126,12 +126,11 @@
         <!-- §14: repo picker when parent workspace is multi-repo -->
         <label v-if="isCreatingTask && draft.useWorktree && parentIsMultiRepo">
           <span>Target repository *</span>
-          <select v-model="draft.repositoryForWorktree" :required="draft.useWorktree && parentIsMultiRepo">
-            <option value="">Select a repository…</option>
-            <option v-for="root in parentGitRoots" :key="root" :value="root">
-              {{ root.split(/[\\/]/).filter(Boolean).at(-1) }} — {{ root }}
-            </option>
-          </select>
+          <CustomSelect
+            v-model="draft.repositoryForWorktree"
+            placeholder="Select a repository…"
+            :options="repositoryForWorktreeOptions"
+          />
           <span class="field-hint">The worktree will be created inside the selected repository directory.</span>
         </label>
 
@@ -166,17 +165,11 @@
             <div class="grid grid--2col">
               <label>
                 <span>Provider</span>
-                <select v-model="draft.workerProvider.providerId" @change="onWorkerProviderChange">
-                  <option
-                    v-for="p in PROVIDER_CHOICES"
-                    :key="p.id"
-                    :value="p.id"
-                    :disabled="providerAvailability[p.id]?.available === false"
-                    :title="providerAvailability[p.id]?.error || ''"
-                  >
-                    {{ p.name }}{{ providerAvailability[p.id]?.available === false ? " (not found)" : "" }}
-                  </option>
-                </select>
+                <CustomSelect
+                  v-model="draft.workerProvider.providerId"
+                  :options="providerOptions"
+                  @change="onWorkerProviderChange"
+                />
               </label>
               <label
                 title="Leave empty for the CLI's own default, pick from the suggestion list, or type any model ID your CLI version supports — Codex and Gemini change their model catalog often and we don't want a rebuild every time."
@@ -229,17 +222,11 @@
             <div class="grid grid--2col">
               <label>
                 <span>Provider</span>
-                <select v-model="draft.judgeProvider.providerId" @change="onJudgeProviderChange">
-                  <option
-                    v-for="p in PROVIDER_CHOICES"
-                    :key="p.id"
-                    :value="p.id"
-                    :disabled="providerAvailability[p.id]?.available === false"
-                    :title="providerAvailability[p.id]?.error || ''"
-                  >
-                    {{ p.name }}{{ providerAvailability[p.id]?.available === false ? " (not found)" : "" }}
-                  </option>
-                </select>
+                <CustomSelect
+                  v-model="draft.judgeProvider.providerId"
+                  :options="providerOptions"
+                  @change="onJudgeProviderChange"
+                />
               </label>
               <label
                 title="Leave empty for the CLI's own default, pick from the suggestion list, or type any model ID your CLI version supports — Codex and Gemini change their model catalog often and we don't want a rebuild every time."
@@ -384,6 +371,7 @@ import { APP_CONFIG } from "../../../config/app-config.js";
 import { safeColor } from "../../app/helpers.js";
 import { useAppStore } from "../../stores/app.js";
 import PanelEditor from "./PanelEditor.vue";
+import CustomSelect from "../common/CustomSelect.vue";
 
 const PROVIDER_CHOICES = [
   {
@@ -761,6 +749,21 @@ const workerNeedsClaudeWarning = computed(() => {
   const pid = draft.workerProvider?.providerId || draft.judgeProvider?.providerId;
   return pid === "claude" || !pid;
 });
+
+const providerOptions = computed(() =>
+  PROVIDER_CHOICES.map((p) => ({
+    value: p.id,
+    label: `${p.name}${providerAvailability.value[p.id]?.available === false ? " (not found)" : ""}`,
+    disabled: providerAvailability.value[p.id]?.available === false,
+  })),
+);
+
+const repositoryForWorktreeOptions = computed(() =>
+  parentGitRoots.value.map((root) => ({
+    value: root,
+    label: `${root.split(/[\\/]/).filter(Boolean).at(-1)} — ${root}`,
+  })),
+);
 
 function onWorkerProviderChange() {
   // Auto-select suggested worker model + reset skipPermissions to provider default

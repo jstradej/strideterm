@@ -12,6 +12,52 @@ const safeGitRef = z.string().refine((v) => !v.startsWith("-"), {
   message: "Git ref cannot start with '-'",
 });
 
+// Launch shape carried on each panel. Two valid kinds:
+//   - classic PTY launcher: { file, args }
+//   - SSH session: { kind: "ssh", sshHostId } OR { kind: "ssh", sshInline: {...} }
+// Private material (keys/passwords) lives only in credential-store; launch
+// carries *refs* (e.g. keyRef = "ssh:key:abc").
+const sshInlineAuthSchema = z
+  .object({
+    methods: z.array(z.enum(["password", "publickey", "keyboard-interactive", "agent"])).default(["publickey"]),
+    keyRef: z.string().optional(),
+    certRef: z.string().optional(),
+    passwordRef: z.string().optional(),
+    passphraseRef: z.string().optional(),
+    agent: z.enum(["auto", "socket", "pageant", "pipe", "off"]).default("auto"),
+  })
+  .passthrough();
+
+const sshInlineSchema = z
+  .object({
+    host: nonEmptyString,
+    port: z.number().int().min(1).max(65535).default(22),
+    username: nonEmptyString,
+    hostKeyPolicy: z.enum(["strict", "warn", "accept-new"]).default("warn"),
+    auth: sshInlineAuthSchema,
+    advanced: z
+      .object({
+        launchVia: z.enum(["ssh2", "system-ssh", "wsl"]).default("ssh2"),
+        command: z.string().default(""),
+        agentForward: z.boolean().default(false),
+      })
+      .partial()
+      .default({}),
+  })
+  .passthrough();
+
+const panelLaunchSchema = z
+  .object({
+    kind: z.string().optional(),
+    file: z.string().optional(),
+    args: z.array(z.string()).optional(),
+    sshHostId: z.string().optional(),
+    sshInline: sshInlineSchema.optional(),
+  })
+  .passthrough()
+  .nullable()
+  .optional();
+
 export const workspaceSchema = z
   .object({
     id: nonEmptyString,
@@ -21,14 +67,17 @@ export const workspaceSchema = z
     kind: z.string().optional(),
     panels: z
       .array(
-        z.object({
-          id: nonEmptyString,
-          title: z.string(),
-          command: z.string().optional(),
-          cwd: z.string().optional(),
-          shell: z.boolean().optional(),
-          startup: z.string().optional(),
-        }),
+        z
+          .object({
+            id: nonEmptyString,
+            title: z.string(),
+            command: z.string().optional(),
+            cwd: z.string().optional(),
+            shell: z.boolean().optional(),
+            startup: z.string().optional(),
+            launch: panelLaunchSchema,
+          })
+          .passthrough(),
       )
       .optional(),
   })
@@ -135,14 +184,14 @@ export const agentPromptDeleteSchema = z.object({
 export const gitWorkspaceRef = z.object({
   workspaceId: z.string().optional(),
   projectId: z.string().optional(),
-  rootPath: z.string().nullable().optional(),
+  rootPath: z.string().optional(),
 });
 
 export const gitPayloadSchema = z
   .object({
     workspaceId: nonEmptyString,
     baseBranch: safeGitRef.optional(),
-    rootPath: z.string().nullable().optional(),
+    rootPath: z.string().optional(),
   })
   .passthrough();
 
@@ -151,7 +200,7 @@ export const gitDiffPreviewSchema = z.object({
   path: nonEmptyString,
   scope: z.string().optional(),
   baseBranch: safeGitRef.optional(),
-  rootPath: z.string().nullable().optional(),
+  rootPath: z.string().optional(),
 });
 
 export const gitCommitSchema = z
@@ -424,6 +473,91 @@ export const fileMoveSchema = z.object({
   rootPath: z.string().min(1),
   fromPath: z.string().min(1),
   toPath: z.string().min(1),
+});
+
+// --- SSH schemas ---
+
+export const sshHostCreateSchema = z.object({
+  name: z.string().min(1),
+  host: z.string().min(1),
+  port: z.number().int().min(1).max(65535).default(22),
+  username: z.string().min(1),
+  auth: z.object({
+    methods: z.array(z.enum(["password", "publickey", "keyboard-interactive", "agent"])).min(1),
+    keyRef: z.string().optional(),
+    certRef: z.string().optional(),
+    passwordRef: z.string().optional(),
+    passphraseRef: z.string().optional(),
+    agent: z.enum(["auto", "socket", "pageant", "pipe", "off"]).default("auto"),
+  }),
+  jump: z.array(z.string()).default([]),
+  hostKeyPolicy: z.enum(["strict", "warn", "accept-new"]).default("warn"),
+  advanced: z
+    .object({
+      keepaliveIntervalMs: z.number().int().min(0).default(30000),
+      keepaliveCountMax: z.number().int().min(0).default(3),
+      compression: z.boolean().default(true),
+      agentForward: z.boolean().default(false),
+      env: z.record(z.string(), z.string()).default({}),
+      command: z.string().default(""),
+      useSystemSsh: z.boolean().default(false), // From the spec §10, but later uses launchVia
+      launchVia: z.enum(["ssh2", "system-ssh", "wsl"]).default("ssh2"),
+      wsl: z
+        .object({
+          distro: z.string().nullable().optional(),
+          user: z.string().nullable().optional(),
+          exec: z.string().default("ssh"),
+          importFromWsl: z.boolean().default(false),
+        })
+        .optional(),
+    })
+    .partial()
+    .default({}),
+  tags: z.array(z.string()).default([]),
+});
+
+export const sshHostUpdateSchema = z.object({
+  id: z.string(),
+  patch: sshHostCreateSchema.partial(),
+});
+
+export const sshHostDeleteSchema = z.object({ id: z.string() });
+
+export const sshKeyImportSchema = z.object({
+  label: z.string(),
+  privateKey: z.string().min(1),
+  passphrase: z.string().optional(),
+});
+
+export const sshKeyGenerateSchema = z.object({
+  kind: z.enum(["ed25519", "ecdsa", "rsa"]),
+  bits: z.number().int().optional(),
+  comment: z.string().default(""),
+  passphrase: z.string().optional(),
+});
+
+export const sshCertImportSchema = z.object({
+  keyId: z.string(),
+  certificate: z.string().min(1),
+});
+
+export const sshAuthAnswerSchema = z.object({
+  sessionId: z.string(),
+  answers: z.array(z.string()),
+});
+
+export const sshAcceptHostKeySchema = z.object({
+  sessionId: z.string(),
+  mode: z.enum(["once", "permanent"]),
+});
+
+export const sshConfigImportSchema = z.object({
+  path: z.string().optional(),
+  hostIds: z.array(z.string()).optional(),
+});
+
+export const sshKnownHostsImportSchema = z.object({
+  path: z.string().optional(),
 });
 
 /**

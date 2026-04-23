@@ -29,10 +29,11 @@ describe("TabPickerDropdown", () => {
     expect(dropdown).not.toBeNull();
     const buttons = dropdown.querySelectorAll("button");
     // Without meta.platform set, platform-specific templates are NOT filtered out
-    // (7 fallback + 1 custom).
-    expect(buttons.length).toBe(8);
+    // (7 fallback + 1 SSH + 1 custom).
+    expect(buttons.length).toBe(9);
     const texts = Array.from(buttons).map((b) => b.textContent.trim());
     expect(texts.some((t) => t.includes("Shell"))).toBe(true);
+    expect(texts.some((t) => t.includes("SSH"))).toBe(true);
     expect(texts.some((t) => t.includes("Custom"))).toBe(true);
     wrapper.unmount();
   });

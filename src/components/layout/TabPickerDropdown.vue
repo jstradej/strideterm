@@ -3,10 +3,7 @@
     <div v-if="visible" ref="dropdownRef" class="tab-picker-dropdown" :style="dropdownStyle" @click.stop>
       <div v-if="showCwdPicker" class="tab-picker-dropdown__cwd-row">
         <span class="tab-picker-dropdown__cwd-label">Working directory</span>
-        <select v-model="selectedCwd" class="tab-picker-dropdown__cwd-select">
-          <option value="">Workspace default</option>
-          <option v-for="root in gitRoots" :key="root" :value="root">{{ formatRootLabel(root) }}</option>
-        </select>
+        <CustomSelect v-model="selectedCwd" class="tab-picker-dropdown__cwd-select" :options="cwdOptions" />
       </div>
       <button
         v-for="tmpl in templates"
@@ -17,6 +14,7 @@
       >
         {{ tmpl.icon || "" }} {{ tmpl.title || "Shell" }}
       </button>
+      <button type="button" class="tab-picker-dropdown__item" @click="addSshTab">🔐 SSH…</button>
       <button type="button" class="tab-picker-dropdown__item" @click="addCustomTab">+ Custom</button>
     </div>
   </Teleport>
@@ -25,6 +23,7 @@
 <script setup>
 import { ref, computed, watch, onBeforeUnmount } from "vue";
 import { useAppStore } from "../../stores/app.js";
+import CustomSelect from "../common/CustomSelect.vue";
 
 const FALLBACK_TEMPLATES = [
   { title: "Shell", command: "", icon: "\u{1F4BB}" },
@@ -66,6 +65,11 @@ const gitRoots = computed(() => {
 
 const showCwdPicker = computed(() => gitRoots.value.length >= 2);
 
+const cwdOptions = computed(() => [
+  { value: "", label: "Workspace default" },
+  ...gitRoots.value.map((root) => ({ value: root, label: formatRootLabel(root) })),
+]);
+
 function formatRootLabel(rootPath) {
   if (!rootPath) return "";
   return rootPath.split(/[\\/]/).filter(Boolean).at(-1) || rootPath;
@@ -91,6 +95,11 @@ function addTemplateTab(tmpl) {
 function addCustomTab() {
   emit("close");
   store.openNewTabDialog(selectedCwd.value);
+}
+
+function addSshTab() {
+  emit("close");
+  store.openNewTabDialog(selectedCwd.value, "", "", { tabType: "ssh" });
 }
 
 function onDocumentClick(e) {

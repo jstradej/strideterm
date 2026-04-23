@@ -1,6 +1,7 @@
 import path from "node:path";
 import fs from "node:fs/promises";
 import { existsSync } from "node:fs";
+import { APP_CONFIG } from "../../../config/app-config.js";
 
 function createDefaultState() {
   return {
@@ -87,9 +88,18 @@ export async function createCredentialStore(filePath, { safeStorage = null } = {
   await persist();
 
   return {
-    async setSecret(ref, secret) {
+    async setSecret(ref, secret, opts = {}) {
       if (!ref) {
         throw new Error("Credential ref is required.");
+      }
+      if (
+        !canEncrypt(safeStorage) &&
+        (ref.startsWith("ssh:key:") || ref.startsWith("ssh:passphrase:") || ref.startsWith("ssh:password:"))
+      ) {
+        const requireEncrypted = typeof APP_CONFIG !== "undefined" ? APP_CONFIG.ssh.requireEncryptedStorage : true;
+        if (requireEncrypted && !opts.forcePlaintext) {
+          throw new Error("Secure storage is not available. Refusing to store SSH credentials in plaintext.");
+        }
       }
       return enqueue(async () => {
         state.secrets[ref] = {

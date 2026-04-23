@@ -135,6 +135,12 @@
   color: var(--text);
 }
 
+.tab-picker-dropdown__cwd-select option:checked {
+  background: var(--accent) !important;
+  box-shadow: inset 0 0 0 100px var(--accent);
+  color: #000 !important;
+}
+
 .layout-picker {
   position: absolute;
   z-index: 9000;
@@ -211,7 +217,8 @@ label span {
 }
 
 input,
-textarea {
+textarea,
+select {
   width: 100%;
   border: 1px solid var(--border);
   border-radius: 3px;
@@ -219,6 +226,26 @@ textarea {
   color: inherit;
   padding: 8px 10px;
   font-size: 13px;
+}
+
+select {
+  /* Makes the native arrow glyph follow the dark theme. */
+  color-scheme: dark;
+}
+
+select option {
+  background: var(--panel-elevated);
+  color: var(--text);
+}
+
+/* Override the OS-default light-blue highlight for the selected option in
+   the open dropdown. Chromium on Windows paints a native highlight over
+   `background`, so we use `box-shadow inset` (which layers above it) plus
+   `!important` to force the accent color through. */
+select option:checked {
+  background: var(--accent) !important;
+  box-shadow: inset 0 0 0 100px var(--accent);
+  color: #000 !important;
 }
 
 .panel-card {

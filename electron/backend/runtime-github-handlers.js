@@ -164,10 +164,10 @@ export function createGitHubHandlers(ctx) {
       broadcastState();
       return getPayload();
     },
-    async fetchGitHubReviewWorkspace(workspaceId, { pullFfOnly = false } = {}) {
+    async fetchGitHubReviewWorkspace(workspaceId) {
       const workspace = findWorkspace(getState(), workspaceId);
       if (!workspace?.review) throw new Error("GitHub review workspace not found.");
-      await github.fetchReviewWorkspace({ workspace, pullFfOnly });
+      await github.fetchReviewWorkspace({ workspace });
       await refreshGit(workspaceId);
       broadcastState();
       return getPayload();

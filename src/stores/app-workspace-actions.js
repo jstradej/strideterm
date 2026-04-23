@@ -185,7 +185,7 @@ export function createWorkspaceActions(ctx) {
     ctx.activeViewId.value = `${nextWorkspace.id}:${panelId}`;
   }
 
-  async function quickAddTemplateTab(command, title, cwdOverride = "") {
+  async function quickAddTemplateTab(command, title, cwdOverride = "", options = {}) {
     const workspace = ctx.payload.value?.workspace;
     const activeWs = workspace?.workspace || workspace?.project;
     if (!activeWs || activeWs.kind === "docker" || activeWs.kind === "azure" || activeWs.kind === "github") return;
@@ -204,6 +204,13 @@ export function createWorkspaceActions(ctx) {
       startup: isVirtual ? "none" : APP_CONFIG.ui.defaultPanelStartup,
     };
     if (cwdOverride) panel.cwd = cwdOverride;
+    if (options.kind === "ssh") {
+      // Two valid shapes: saved host reference, or inline ad-hoc definition.
+      // Preference is explicit — callers can only ever pass one.
+      panel.launch = options.sshInline
+        ? { kind: "ssh", sshInline: options.sshInline }
+        : { kind: "ssh", sshHostId: options.sshHostId };
+    }
     nextWorkspace.panels.push(panel);
     nextWorkspace.activePanelId = panelId;
     const nextViewId = isBrowser

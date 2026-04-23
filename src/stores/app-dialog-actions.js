@@ -93,6 +93,18 @@ export function createDialogActions(ctx) {
   function editTabWithDialog(viewId) {
     const target = ctx.getPanelByViewId(viewId);
     if (!target) return;
+    // For SSH tabs pointing at a saved host, jump straight to the full host
+    // editor — tab-level edit (title/command only) is a poor fit when the
+    // user wants to tweak hostname, auth, etc.
+    const launch = target.panel.launch;
+    if (launch?.kind === "ssh" && launch.sshHostId) {
+      const appState = ctx.payload.value?.appState;
+      const host = appState?.ssh?.hosts?.find((h) => h.id === launch.sshHostId);
+      if (host && openSshHostEditor) {
+        openSshHostEditor(host);
+        return;
+      }
+    }
     openDialog("EditTabDialog", {
       eyebrow: "Workspace",
       mode: "edit",
@@ -118,21 +130,45 @@ export function createDialogActions(ctx) {
     });
   }
 
-  function openNewTabDialog(cwdOverride = "", presetTitle = "", presetCommand = "") {
+  function openNewTabDialog(cwdOverride = "", presetTitle = "", presetCommand = "", options = {}) {
+    const presetTabType = options.tabType === "ssh" ? "ssh" : "local";
+    const defaultTitle = presetTabType === "ssh" ? "" : "\u{1F4BB} Shell";
+    const presetSshMode = options.sshMode === "quick" ? "quick" : "saved";
+    const presetSshHostId = options.sshHostId || "";
     openDialog("EditTabDialog", {
       eyebrow: "Workspace",
       mode: "new",
-      title: presetTitle || "\u{1F4BB} Shell",
+      title: presetTitle || defaultTitle,
       command: presetCommand || "",
+      presetTabType,
+      presetSshMode,
+      presetSshHostId,
+      onEditSshHost: (host, currentState) => {
+        // Swap the new-tab dialog for the full host editor. When the editor
+        // closes (Save / Cancel / Close / backdrop) we re-open the new-tab
+        // dialog with the user's typed state preserved — otherwise they'd
+        // have to click "+ Tab" again just to pick a host.
+        openDialog("SshHostEditor", {
+          host,
+          onCancel: () => {
+            openNewTabDialog(cwdOverride, currentState.title, currentState.command, {
+              tabType: "ssh",
+              sshMode: currentState.sshMode,
+              sshHostId: currentState.sshHostId,
+            });
+          },
+        });
+      },
       onCancel: closeDialog,
-      onSubmit: async ({ title, command }) => {
+      onSubmit: async (payload) => {
+        const { title, command, kind, sshHostId, sshInline } = payload;
         const nextTitle = (title || "").trim();
         if (!nextTitle) {
           closeDialog();
           return;
         }
         closeDialog();
-        await ctx.quickAddTemplateTab(command || "", nextTitle, cwdOverride);
+        await ctx.quickAddTemplateTab(command || "", nextTitle, cwdOverride, { kind, sshHostId, sshInline });
       },
     });
   }
@@ -237,7 +273,8 @@ export function createDialogActions(ctx) {
       onCancel: closeDialog,
       onSave: async (patch) => {
         try {
-          ctx.payload.value = await ctx.getApi().updateSettings(patch);
+          const plain = JSON.parse(JSON.stringify(patch));
+          ctx.payload.value = await ctx.getApi().updateSettings(plain);
           closeDialog();
         } catch (err) {
           ctx.overlayProps.value = {
@@ -691,6 +728,28 @@ export function createDialogActions(ctx) {
     });
   }
 
+  // --- SSH dialogs -------------------------------------------------------
+
+  function openSshHostsDialog() {
+    openDialog("SshHostsDialog", { onCancel: closeDialog });
+  }
+
+  function openSshHostEditor(host = null) {
+    openDialog("SshHostEditor", {
+      host,
+      onCancel: closeDialog,
+      onSave: closeDialog,
+    });
+  }
+
+  function openSshKeyManager() {
+    openDialog("SshKeyManager", { onCancel: closeDialog });
+  }
+
+  function openSshKeyGenerateDialog() {
+    openDialog("SshKeyGenerateDialog", { onCancel: closeDialog });
+  }
+
   return {
     openDialog,
     closeDialog,
@@ -712,5 +771,9 @@ export function createDialogActions(ctx) {
     createWorktreeWithDialog,
     openTaskWorkspaceDialog,
     startTaskWithHookCheck,
+    openSshHostsDialog,
+    openSshHostEditor,
+    openSshKeyManager,
+    openSshKeyGenerateDialog,
   };
 }

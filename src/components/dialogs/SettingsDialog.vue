@@ -34,6 +34,10 @@
       <SettingsGitTab />
     </div>
 
+    <div v-else-if="activeTab === 'ssh'" class="settings-tab-content">
+      <SettingsSshTab />
+    </div>
+
     <div v-else-if="activeTab === 'about'" class="settings-tab-content">
       <SettingsAboutTab
         :api="api"
@@ -60,6 +64,7 @@ import { computed, inject, provide, reactive, ref, toRaw } from "vue";
 import SettingsAboutTab from "./settings/SettingsAboutTab.vue";
 import SettingsGeneralTab from "./settings/SettingsGeneralTab.vue";
 import SettingsGitTab from "./settings/SettingsGitTab.vue";
+import SettingsSshTab from "./settings/SettingsSshTab.vue";
 import SettingsTemplatesTab from "./settings/SettingsTemplatesTab.vue";
 import { useAgentHookSettings } from "./settings/useAgentHookSettings.js";
 
@@ -67,6 +72,7 @@ const TABS = [
   { id: "general", label: "General" },
   { id: "templates", label: "Tab Templates" },
   { id: "git", label: "Git" },
+  { id: "ssh", label: "SSH" },
   { id: "about", label: "About" },
 ];
 
@@ -108,6 +114,16 @@ const form = reactive({
     ui: {
       showAllActions: props.settings.git?.ui?.showAllActions ?? false,
     },
+  },
+  ssh: {
+    preferAgent: props.settings.ssh?.preferAgent ?? true,
+    agentPath: props.settings.ssh?.agentPath ?? "",
+    allowSystemSshFallback: props.settings.ssh?.allowSystemSshFallback ?? true,
+    certExpiryWarnHours: props.settings.ssh?.certExpiryWarnHours ?? 2,
+    defaultLaunchVia: props.settings.ssh?.defaultLaunchVia || "ssh2",
+    wslDefaultDistro: props.settings.ssh?.wslDefaultDistro || "",
+    systemSshPath: props.settings.ssh?.systemSshPath || "",
+    requireEncryptedStorage: props.settings.ssh?.requireEncryptedStorage ?? true,
   },
 });
 
@@ -166,22 +182,32 @@ function handleSave() {
     },
     tabTemplates: templates.filter((t) => t.title || t.command).map((t) => ({ ...toRaw(t) })),
     git: { ui: { showAllActions: form.git.ui.showAllActions } },
+    ssh: {
+      preferAgent: form.ssh.preferAgent,
+      agentPath: form.ssh.agentPath,
+      allowSystemSshFallback: form.ssh.allowSystemSshFallback,
+      certExpiryWarnHours: form.ssh.certExpiryWarnHours,
+      defaultLaunchVia: form.ssh.defaultLaunchVia,
+      wslDefaultDistro: form.ssh.wslDefaultDistro,
+      systemSshPath: form.ssh.systemSshPath,
+      requireEncryptedStorage: form.ssh.requireEncryptedStorage,
+    },
   });
 }
 </script>
 
 <style scoped>
 .settings-dialog {
-  width: min(540px, 100%);
+  width: min(620px, 100%);
   height: min(680px, 85vh);
   display: flex;
   flex-direction: column;
 }
 .settings-tab-bar {
   display: flex;
-  gap: 2px;
+  gap: 6px;
   margin: 12px 0 16px;
-  padding: 3px;
+  padding: 4px;
   border-radius: 6px;
   background: rgba(255, 255, 255, 0.04);
 }
@@ -193,6 +219,7 @@ function handleSave() {
   font: inherit;
   font-size: 13px;
   font-weight: 600;
+  white-space: nowrap;
   cursor: pointer;
   transition:
     background 0.12s,

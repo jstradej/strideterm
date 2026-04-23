@@ -6,8 +6,11 @@
       </button>
 
       <template v-if="isTerminal">
-        <button v-if="hasPersistentPanel" type="button" class="context-menu__item" @click="onEdit">
+        <button v-if="hasPersistentPanel && !isSshPanel" type="button" class="context-menu__item" @click="onEdit">
           <span class="context-menu__icon">&#x270E;</span><span>Edit tab</span>
+        </button>
+        <button v-if="isSshPanel" type="button" class="context-menu__item" @click="onEditSshHost">
+          <span class="context-menu__icon">&#x1F310;</span><span>Edit SSH host</span>
         </button>
         <button type="button" class="context-menu__item" @click="onSaveTranscript">
           <span class="context-menu__icon">&#x21E9;</span><span>Save last 500 lines</span>
@@ -15,7 +18,15 @@
         <button type="button" class="context-menu__item" @click="onClear">
           <span class="context-menu__icon">&#x232B;</span><span>Clear output</span>
         </button>
-        <button type="button" class="context-menu__item" @click="onRestart">
+        <template v-if="isSshPanel">
+          <button type="button" class="context-menu__item" @click="onRestart">
+            <span class="context-menu__icon">&#x21BB;</span><span>Reconnect SSH</span>
+          </button>
+          <button type="button" class="context-menu__item context-menu__item--danger" @click="onDisconnectSsh">
+            <span class="context-menu__icon">&#x274C;</span><span>Disconnect SSH</span>
+          </button>
+        </template>
+        <button v-else type="button" class="context-menu__item" @click="onRestart">
           <span class="context-menu__icon">&#x21BB;</span><span>Restart</span>
         </button>
       </template>
@@ -68,6 +79,7 @@
 import { ref, computed, watch, nextTick, onMounted, onBeforeUnmount } from "vue";
 import { useAppStore } from "../../stores/app.js";
 import { useTerminalStore } from "../../stores/terminal.js";
+import { useSshStore } from "../../stores/ssh.js";
 import {
   isGitViewId,
   isDockerViewId,
@@ -81,6 +93,7 @@ import {
 
 const store = useAppStore();
 const termStore = useTerminalStore();
+const sshStore = useSshStore();
 const menuRef = ref(null);
 const LAYOUTS = {
   solo: { slots: 1 },
@@ -115,6 +128,11 @@ const currentTab = computed(() => (store.workspaceTabs || []).find((t) => t.id =
 const hasPersistentPanel = computed(() => {
   const target = store.getPanelByViewId(viewId.value);
   return Boolean(target);
+});
+
+const isSshPanel = computed(() => {
+  const target = store.getPanelByViewId(viewId.value);
+  return target?.panel?.launch?.kind === "ssh";
 });
 
 const canClose = computed(() => (currentTab.value ? currentTab.value.closable !== false : false));
@@ -265,13 +283,39 @@ function onFocus() {
 function onRestart() {
   const id = viewId.value;
   store.hideContextMenu();
-  termStore.restartSession(id);
+  store.restartSession(id);
 }
 
 function onEdit() {
   const id = viewId.value;
   store.hideContextMenu();
   store.editTabWithDialog(id);
+}
+
+function onEditSshHost() {
+  const id = viewId.value;
+  store.hideContextMenu();
+  const target = store.getPanelByViewId(id);
+  const hostId = target?.panel?.launch?.sshHostId;
+  const host = sshStore.hosts.find((h) => h.id === hostId);
+  if (host && store.openSshHostEditor) {
+    store.openSshHostEditor(host);
+  }
+}
+
+function onDisconnectSsh() {
+  const id = viewId.value;
+  store.hideContextMenu();
+  // Guarantee visible feedback even when the backend no-ops (e.g. the session
+  // already failed/exited). If the session IS live, session-manager will also
+  // emit its own "Disconnected by user" banner — harmless duplicate.
+  termStore.writeToTerminal?.(id, "\r\n\x1b[90m── Disconnect requested\x1b[0m\r\n");
+  store
+    .getApi()
+    .closeTerminal?.(id)
+    .catch((err) => {
+      console.warn("Failed to disconnect SSH:", err);
+    });
 }
 
 function onSaveTranscript() {

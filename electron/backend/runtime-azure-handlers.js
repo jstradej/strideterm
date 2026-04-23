@@ -175,12 +175,12 @@ export function createAzureHandlers(ctx) {
       broadcastState();
       return getPayload();
     },
-    async fetchAzureReviewWorkspace(workspaceId, { pullFfOnly = false } = {}) {
+    async fetchAzureReviewWorkspace(workspaceId) {
       const workspace = findWorkspace(getState(), workspaceId);
       if (!workspace?.review) {
         throw new Error("Azure review workspace not found.");
       }
-      await azure.fetchReviewWorkspace({ workspace, pullFfOnly });
+      await azure.fetchReviewWorkspace({ workspace });
       await refreshGit(workspaceId);
       broadcastState();
       return getPayload();

@@ -86,10 +86,12 @@
             </label>
             <label class="git-pr-form__field">
               <span class="git-pr-form__label">Target branch</span>
-              <select v-model="prFormTarget" class="git-branch-select">
-                <option value="" disabled>-- select target --</option>
-                <option v-for="b in prFormBranches" :key="b" :value="b">{{ b }}</option>
-              </select>
+              <CustomSelect
+                v-model="prFormTarget"
+                class="git-branch-select"
+                placeholder="-- select target --"
+                :options="prFormTargetOptions"
+              />
               <button
                 v-if="!prFormLoadingBranches"
                 type="button"
@@ -608,6 +610,7 @@ import ReviewSummaryTab from "./azure/ReviewSummaryTab.vue";
 import ReviewCommentsTab from "./azure/ReviewCommentsTab.vue";
 import ReviewAgentTab from "./azure/ReviewAgentTab.vue";
 import ReviewPipelinesTab from "./shared/ReviewPipelinesTab.vue";
+import CustomSelect from "../common/CustomSelect.vue";
 
 const props = defineProps({
   workspaceId: { type: String, required: true },
@@ -725,6 +728,8 @@ const prFormDraft = ref(false);
 let prFormAutoFilled = false;
 
 const prFormCanSubmit = computed(() => prFormTarget.value && prFormTitle.value.trim());
+
+const prFormTargetOptions = computed(() => prFormBranches.value.map((b) => ({ value: b, label: b })));
 
 const api = inject("api");
 
@@ -960,36 +965,14 @@ const busyAction = ref("");
 
 async function handleRefresh() {
   busyAction.value = "refresh";
-  toolbarError.value = "";
   try {
-    // Refresh in parallel: provider metadata (PR status, comments, reviewers)
-    // AND a git fetch + fast-forward of the review worktree so new commits
-    // from the author are actually checked out locally, not just present as
-    // refs. --ff-only on the backend keeps this safe: if the reviewer has
-    // made their own local commits, the fast-forward is skipped and the
-    // fetch still updates origin/* so History reflects the remote state.
-    //
-    // allSettled (not Promise.all) so one task failing doesn't cancel the
-    // other — if metadata refreshes but fetch fails, the user still gets
-    // the fresh comments and sees the fetch error in the toolbar bar.
-    const wsId = props.workspaceId;
-    const fetchOpts = { pullFfOnly: true };
-    const tasks = isGitHub.value
-      ? [
-          { label: "PR metadata", run: () => appStore.refreshGitHub() },
-          { label: "git fetch", run: () => (wsId ? appStore.githubFetchReviewWorkspace(wsId, fetchOpts) : null) },
-          { label: "mark seen", run: () => (prKey.value ? appStore.markGitHubPrSeen(prKey.value) : null) },
-        ]
-      : [
-          { label: "PR metadata", run: () => appStore.refreshAzure() },
-          { label: "git fetch", run: () => (wsId ? appStore.azureFetchReviewWorkspace(wsId, fetchOpts) : null) },
-          { label: "mark seen", run: () => (prKey.value ? appStore.markAzurePrSeen(prKey.value) : null) },
-        ];
-    const results = await Promise.allSettled(tasks.map((t) => t.run()));
-    const errors = results
-      .map((r, i) => (r.status === "rejected" ? `${tasks[i].label}: ${r.reason?.message || r.reason}` : null))
-      .filter(Boolean);
-    if (errors.length) toolbarError.value = `Refresh partial: ${errors.join("; ")}`;
+    if (isGitHub.value) {
+      await appStore.refreshGitHub();
+      if (prKey.value) await appStore.markGitHubPrSeen(prKey.value);
+    } else {
+      await appStore.refreshAzure();
+      if (prKey.value) await appStore.markAzurePrSeen(prKey.value);
+    }
   } finally {
     busyAction.value = "";
   }
