@@ -18,6 +18,7 @@
 - **GitHub PR Review** - pull request inbox, managed review workspaces with local checkout, comment and review submission (Approve / Request Changes / Comment), push & publish workflow, and MCP bridge for AI agents — see [docs](docs/github-pr-review.md)
 - **Agent Task Runner** - supervised coding loop with Worker + Judge agents (Claude Code, Codex CLI, Gemini CLI, or GitHub Copilot for either role): auto-detects project verification commands, runs deterministic checks between rounds, git-aware judge evaluation, periodic context refresh (shower mode), and a Dashboard UI for monitoring progress — see [docs](docs/agent-task-runner.md)
 - **Docker Manager** - list containers, run actions, open shells, and stream logs
+- **SSH Support** - connect to remote machines from a saved host book or ad-hoc, with built-in key manager, host key TOFU verification, `~/.ssh/config` import, SSH agent support, jump hosts, and three launch modes (built-in, system `ssh`, or WSL) — see [docs](docs/ssh.md)
 - **Remote Access** - access your workspace from any device via LAN or Cloudflare tunnel with QR code
 - **Plugins** - extend functionality with plugins (Docker Ops and System Monitor built-in)
 - **Finish Notifications** - know when a command or agent finishes without watching the screen:
