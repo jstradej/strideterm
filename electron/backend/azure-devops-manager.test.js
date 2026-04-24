@@ -608,7 +608,9 @@ describe("AzureDevOpsManager", () => {
     });
 
     const cloneCall = execFileTextImpl.mock.calls.find((call) => call[1].includes("clone"));
-    const worktreeCall = execFileTextImpl.mock.calls.find((call) => call[1].includes("worktree"));
+    const worktreeCall = execFileTextImpl.mock.calls.find(
+      (call) => call[1].includes("worktree") && call[1].includes("add"),
+    );
     expect(cloneCall?.[1]?.at(-1)).toContain(path.join("repos", "ado-main"));
     expect(cloneCall?.[1]?.at(-1)).toContain("repo-1");
     expect(cloneCall?.[1]?.at(-1)).not.toContain(path.join("Platform", "web-app"));
@@ -621,8 +623,10 @@ describe("AzureDevOpsManager", () => {
   test("turns Windows long-path git failures into a readable message", async () => {
     const execFileTextImpl = vi
       .fn()
-      .mockResolvedValueOnce({ stdout: "", stderr: "" })
-      .mockResolvedValueOnce({ stdout: "", stderr: "" })
+      .mockResolvedValueOnce({ stdout: "", stderr: "" }) // clone
+      .mockResolvedValueOnce({ stdout: "", stderr: "" }) // fetch
+      .mockResolvedValueOnce({ stdout: "", stderr: "" }) // worktree prune
+      .mockRejectedValueOnce(new Error("not a ref")) // show-ref (branch does not exist)
       .mockRejectedValueOnce({
         stderr: [
           "Preparing worktree (new branch 'pr-123-feature')",

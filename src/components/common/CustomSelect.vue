@@ -76,6 +76,7 @@ function updateListPosition() {
   if (!buttonRef.value) return;
   const rect = buttonRef.value.getBoundingClientRect();
   const vh = window.innerHeight;
+  const vw = window.innerWidth;
   const spaceBelow = vh - rect.bottom - 8;
   const spaceAbove = rect.top - 8;
   const flipAbove = spaceBelow < Math.min(MAX_LIST_HEIGHT, 160) && spaceAbove > spaceBelow;
@@ -83,7 +84,9 @@ function updateListPosition() {
   listStyle.value = {
     position: "fixed",
     left: `${rect.left}px`,
-    width: `${rect.width}px`,
+    minWidth: `${rect.width}px`,
+    maxWidth: `${Math.max(160, vw - rect.left - 8)}px`,
+    width: "max-content",
     maxHeight: `${maxHeight}px`,
     ...(flipAbove ? { bottom: `${vh - rect.top + 3}px` } : { top: `${rect.bottom + 3}px` }),
   };
@@ -279,7 +282,7 @@ defineExpose({ focus: () => buttonRef.value?.focus() });
   top: calc(100% + 3px);
   left: 0;
   right: 0;
-  z-index: 9500;
+  z-index: 10050;
   max-height: 260px;
   overflow-y: auto;
   margin: 0;
@@ -295,6 +298,7 @@ defineExpose({ focus: () => buttonRef.value?.focus() });
   padding: 6px 10px;
   cursor: pointer;
   color: var(--text);
+  white-space: nowrap;
 }
 .custom-select__option--active:not(.custom-select__option--selected) {
   background: rgba(var(--tint), 0.12);

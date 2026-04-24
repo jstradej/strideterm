@@ -821,19 +821,41 @@ export class AzureDevOpsManager extends BaseProviderManager {
       );
 
       await mkdir(path.dirname(worktreePath), { recursive: true });
+      await this.runGit(cacheRepoPath, ["worktree", "prune"]).catch(() => {});
       const worktreeExists = await exists(path.join(worktreePath, ".git"));
       const localBranch = `pr-${summary.pullRequest.id}-${sanitizePathSegment(sourceBranch)}`;
 
       if (!worktreeExists) {
-        await this.runGit(cacheRepoPath, [
-          "worktree",
-          "add",
-          "--force",
-          "-b",
-          localBranch,
-          worktreePath,
-          `refs/remotes/origin/${sourceBranch}`,
-        ]);
+        const branchExists = await this.runGit(cacheRepoPath, [
+          "show-ref",
+          "--verify",
+          "--quiet",
+          `refs/heads/${localBranch}`,
+        ])
+          .then(() => true)
+          .catch(() => false);
+
+        if (branchExists) {
+          await this.runGit(cacheRepoPath, ["worktree", "add", "--force", worktreePath, localBranch]);
+          const ahead = await this.runGit(worktreePath, [
+            "rev-list",
+            "--count",
+            `refs/remotes/origin/${sourceBranch}..HEAD`,
+          ]).catch(() => ({ stdout: "0" }));
+          if (Number(ahead.stdout.trim()) === 0) {
+            await this.runGit(worktreePath, ["reset", "--hard", `refs/remotes/origin/${sourceBranch}`]);
+          }
+        } else {
+          await this.runGit(cacheRepoPath, [
+            "worktree",
+            "add",
+            "--force",
+            "-b",
+            localBranch,
+            worktreePath,
+            `refs/remotes/origin/${sourceBranch}`,
+          ]);
+        }
       } else {
         await this.runGit(worktreePath, ["checkout", localBranch]).catch(async () => {
           await this.runGit(worktreePath, ["checkout", "-B", localBranch, `refs/remotes/origin/${sourceBranch}`]);

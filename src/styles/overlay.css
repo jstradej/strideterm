@@ -119,7 +119,7 @@
 
 .tab-picker-dropdown__cwd-select {
   flex: 1;
-  min-width: 0;
+  min-width: 160px;
   padding: 3px 6px;
   font-size: 12px;
   font-family: inherit;

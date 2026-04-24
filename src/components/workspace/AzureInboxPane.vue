@@ -45,6 +45,29 @@
         </div>
       </div>
 
+      <div
+        v-if="openError"
+        style="
+          padding: 8px 12px;
+          font-size: 12px;
+          background: rgba(255, 80, 80, 0.08);
+          border-bottom: 1px solid var(--border);
+          display: flex;
+          align-items: center;
+          gap: 8px;
+        "
+      >
+        <span style="color: var(--danger, #e53935); white-space: pre-wrap">{{ openError }}</span>
+        <button
+          type="button"
+          class="button button--ghost"
+          style="font-size: 10px; padding: 1px 8px; margin-left: auto"
+          @click="openError = ''"
+        >
+          Dismiss
+        </button>
+      </div>
+
       <div class="azure-inbox__content">
         <section
           v-for="tab in inboxTabs"
@@ -196,6 +219,7 @@ const appStore = useAppStore();
 
 const busyAction = ref("");
 const activeTab = ref("all");
+const openError = ref("");
 
 const azureData = computed(() => appStore.payload?.azureDevops || {});
 const connections = computed(() => azureData.value.connections || []);
@@ -294,8 +318,13 @@ function onHeaderAction(action) {
   if (action.action === "refresh-azure") handleRefresh();
 }
 
-function onOpenPr({ prKey, workspaceId }) {
-  appStore.openAzurePullRequest(prKey, workspaceId);
+async function onOpenPr({ prKey, workspaceId }) {
+  openError.value = "";
+  try {
+    await appStore.openAzurePullRequest(prKey, workspaceId);
+  } catch (err) {
+    openError.value = err?.message || "Failed to open review workspace.";
+  }
 }
 
 function onOpenBrowser(url) {
