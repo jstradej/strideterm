@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { execFileText } from "./process-utils.js";
+import { guessLanguageFromPath } from "../../config/language-map.js";
 
 const TEXT_PREVIEW_MAX = 256 * 1024; // 256 KB
 const BINARY_SNIFF_SIZE = 8192;
@@ -584,8 +585,7 @@ export async function getGitRefs(rootPath, relativePath) {
  *     leftMissing, rightMissing, language, revision, source }
  */
 export async function computeFileDiff(rootPath, relativePath, { source = "head", revisionRef = "" } = {}) {
-  const ext = path.extname(relativePath).toLowerCase();
-  const language = guessMonacoLanguage(ext);
+  const language = guessLanguageFromPath(relativePath);
 
   // Right side is always the on-disk working copy (or staged file for "staged" source).
   let right;
@@ -664,50 +664,6 @@ function errorDiff(message, source) {
   };
 }
 
-const LANG_BY_EXT = {
-  ".js": "javascript",
-  ".mjs": "javascript",
-  ".cjs": "javascript",
-  ".jsx": "javascript",
-  ".ts": "typescript",
-  ".tsx": "typescript",
-  ".vue": "html",
-  ".json": "json",
-  ".md": "markdown",
-  ".markdown": "markdown",
-  ".html": "html",
-  ".htm": "html",
-  ".css": "css",
-  ".scss": "scss",
-  ".less": "less",
-  ".py": "python",
-  ".rb": "ruby",
-  ".go": "go",
-  ".rs": "rust",
-  ".java": "java",
-  ".cs": "csharp",
-  ".cpp": "cpp",
-  ".cc": "cpp",
-  ".c": "c",
-  ".h": "cpp",
-  ".php": "php",
-  ".sh": "shell",
-  ".bash": "shell",
-  ".zsh": "shell",
-  ".ps1": "powershell",
-  ".yml": "yaml",
-  ".yaml": "yaml",
-  ".xml": "xml",
-  ".toml": "ini",
-  ".ini": "ini",
-  ".sql": "sql",
-  ".dockerfile": "dockerfile",
-};
-
-function guessMonacoLanguage(extension) {
-  return LANG_BY_EXT[extension] || "plaintext";
-}
-
 const COMMIT_STATUS_MAP = {
   A: "staged",
   M: "modified",
@@ -739,7 +695,9 @@ export async function getCommitFiles(rootPath, hash) {
 
   let lines;
   try {
-    const args = ["diff-tree", "--no-commit-id", "--name-status", "-r", "-M", "-C", hash];
+    // --root makes the initial commit (no parent) report its files as adds
+    // instead of returning an empty diff.
+    const args = ["diff-tree", "--no-commit-id", "--name-status", "-r", "-M", "-C", "--root", hash];
     const result = await execFileText("git", args, { cwd: top });
     lines = (result.stdout || "").split(/\r?\n/).filter(Boolean);
   } catch (err) {
@@ -770,8 +728,7 @@ export async function getCommitFiles(rootPath, hash) {
  * Returns the same shape as computeFileDiff.
  */
 export async function computeCommitFileDiff(rootPath, relativePath, hash) {
-  const ext = path.extname(relativePath).toLowerCase();
-  const language = guessMonacoLanguage(ext);
+  const language = guessLanguageFromPath(relativePath);
   const root = path.resolve(rootPath);
   const top = await resolveGitToplevel(root);
   if (!top || !hash) {

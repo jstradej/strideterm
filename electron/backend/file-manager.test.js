@@ -19,6 +19,8 @@ import {
   computeFileDiff,
   getGitRefs,
   readFileAtRevision,
+  getCommitFiles,
+  computeCommitFileDiff,
 } from "./file-manager.js";
 
 function execGit(cwd, args) {
@@ -197,5 +199,95 @@ describe("file-manager git integration", () => {
     expect(["main", "master"]).toContain(refs.currentBranch);
     expect(refs.commits.length).toBeGreaterThan(0);
     expect(refs.commits[0].subject).toMatch(/initial/);
+  });
+
+  test("getGitFileStatus(includeIgnored:true) surfaces .gitignore'd entries", async () => {
+    // Drop a .gitignore + an ignored file, then check both flag values.
+    await fs.writeFile(path.join(repo, ".gitignore"), "ignored.log\n");
+    await fs.writeFile(path.join(repo, "ignored.log"), "noise\n");
+    try {
+      const without = await getGitFileStatus(repo);
+      expect(without.entries["ignored.log"]).toBeUndefined();
+
+      const withIgnored = await getGitFileStatus(repo, { includeIgnored: true });
+      expect(withIgnored.entries["ignored.log"]?.status).toBe("ignored");
+    } finally {
+      await fs.rm(path.join(repo, ".gitignore"), { force: true });
+      await fs.rm(path.join(repo, "ignored.log"), { force: true });
+    }
+  });
+});
+
+describe("file-manager commit history", () => {
+  let repo;
+  let firstCommit;
+  let secondCommit;
+
+  beforeAll(async () => {
+    repo = path.join(tmpRoot, "git-history-test");
+    await fs.mkdir(repo, { recursive: true });
+    await execGit(repo, ["init", "-q"]);
+    await execGit(repo, ["config", "user.email", "test@example.com"]);
+    await execGit(repo, ["config", "user.name", "Test"]);
+    await execGit(repo, ["config", "commit.gpgsign", "false"]);
+    // First commit — creates two files.
+    await fs.writeFile(path.join(repo, "alpha.txt"), "alpha v1\n");
+    await fs.writeFile(path.join(repo, "beta.txt"), "beta v1\n");
+    await execGit(repo, ["add", "."]);
+    await execGit(repo, ["commit", "-q", "-m", "first"]);
+    firstCommit = (await execGit(repo, ["rev-parse", "HEAD"])).stdout.trim();
+    // Second commit — modifies alpha, deletes beta, adds gamma.
+    await fs.writeFile(path.join(repo, "alpha.txt"), "alpha v2\n");
+    await fs.rm(path.join(repo, "beta.txt"));
+    await fs.writeFile(path.join(repo, "gamma.txt"), "gamma v1\n");
+    await execGit(repo, ["add", "-A"]);
+    await execGit(repo, ["commit", "-q", "-m", "second"]);
+    secondCommit = (await execGit(repo, ["rev-parse", "HEAD"])).stdout.trim();
+  });
+
+  test("getCommitFiles on initial commit lists adds with no parent", async () => {
+    const result = await getCommitFiles(repo, firstCommit);
+    expect(result.isRepo).toBe(true);
+    expect(result.parentHash).toBe(""); // no parent for the first commit
+    const paths = result.files.map((f) => f.path).sort();
+    expect(paths).toEqual(["alpha.txt", "beta.txt"]);
+    expect(result.files.every((f) => f.code === "A")).toBe(true);
+  });
+
+  test("getCommitFiles on second commit lists modify + delete + add", async () => {
+    const result = await getCommitFiles(repo, secondCommit);
+    expect(result.isRepo).toBe(true);
+    expect(result.parentHash).toBe(firstCommit);
+    const byPath = Object.fromEntries(result.files.map((f) => [f.path, f.code]));
+    expect(byPath["alpha.txt"]).toBe("M");
+    expect(byPath["beta.txt"]).toBe("D");
+    expect(byPath["gamma.txt"]).toBe("A");
+  });
+
+  test("getCommitFiles on missing hash returns empty files", async () => {
+    const result = await getCommitFiles(repo, "");
+    expect(result.isRepo).toBe(true);
+    expect(result.files).toEqual([]);
+  });
+
+  test("computeCommitFileDiff vs parent and against initial commit", async () => {
+    const vsParent = await computeCommitFileDiff(repo, "alpha.txt", secondCommit);
+    expect(vsParent.ok).toBe(true);
+    expect(vsParent.leftContent).toBe("alpha v1\n");
+    expect(vsParent.rightContent).toBe("alpha v2\n");
+    expect(vsParent.leftLabel).toMatch(/commit/);
+    expect(vsParent.rightLabel).toMatch(/commit/);
+    expect(vsParent.source).toBe("commitRange");
+
+    const initial = await computeCommitFileDiff(repo, "alpha.txt", firstCommit);
+    expect(initial.leftLabel).toBe("(no parent)");
+    expect(initial.leftMissing).toBe(true);
+    expect(initial.rightContent).toBe("alpha v1\n");
+  });
+
+  test("computeCommitFileDiff with empty hash returns errorDiff", async () => {
+    const result = await computeCommitFileDiff(repo, "alpha.txt", "");
+    expect(result.ok).toBe(false);
+    expect(result.leftError).toMatch(/missing commit hash/i);
   });
 });
