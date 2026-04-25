@@ -1,3 +1,4 @@
+/// <reference types="node" />
 import fs from "node:fs/promises";
 import path from "node:path";
 import { execFileText } from "./process-utils.js";
@@ -9,7 +10,7 @@ const MAX_ENTRIES = 1000;
 
 const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".gif", ".bmp", ".ico", ".svg", ".webp", ".avif"]);
 
-const GIT_STATUS_PRIORITY = {
+const GIT_STATUS_PRIORITY: Record<string, number> = {
   conflict: 5,
   staged: 4,
   modified: 3,
@@ -18,11 +19,141 @@ const GIT_STATUS_PRIORITY = {
   clean: 0,
 };
 
+// ---------------------------------------------------------------------------
+// Internal types
+// ---------------------------------------------------------------------------
+
+interface FileEntry {
+  name: string;
+  relativePath: string;
+  kind: "file" | "directory" | "symlink";
+  extension: string;
+  size: number;
+  modifiedAt: string;
+  hasChildren: boolean;
+  isHidden: boolean;
+}
+
+interface FilePreviewResult {
+  kind: "text" | "binary" | "image" | "directory" | "empty";
+  mimeType: string | null;
+  content: string | null;
+  truncated: boolean;
+  size: number;
+  encoding: string | null;
+  imageSrc: string | null;
+}
+
+interface FileContentResult {
+  content: string;
+  size: number;
+  encoding: string;
+}
+
+interface WriteResult {
+  ok: boolean;
+  size: number;
+}
+
+interface EntryResult {
+  entry: FileEntry;
+}
+
+interface FileInfoResult {
+  stat: {
+    size: number;
+    modifiedAt: string;
+    createdAt: string;
+    isDirectory: boolean;
+    isFile: boolean;
+    isSymlink: boolean;
+  };
+}
+
+interface GitStatusEntry {
+  status: string;
+  stagedStatus: string;
+  unstagedStatus: string;
+}
+
+interface GitFileStatusResult {
+  isRepo: boolean;
+  root: string;
+  rootRelativeToFm?: string;
+  entries: Record<string, GitStatusEntry>;
+  directories?: Record<string, string>;
+  error?: string;
+}
+
+interface FileRevisionResult {
+  ok: boolean;
+  content: string;
+  missing: boolean;
+  error?: string;
+  revision?: string | null;
+}
+
+interface GitCommit {
+  hash: string;
+  shortHash: string;
+  author: string;
+  date: string;
+  subject: string;
+}
+
+interface GitRefsResult {
+  isRepo: boolean;
+  branches: string[];
+  tags: string[];
+  commits: GitCommit[];
+  currentBranch: string;
+}
+
+interface DiffResult {
+  ok: boolean;
+  leftContent: string;
+  rightContent: string;
+  leftLabel: string;
+  rightLabel: string;
+  leftMissing: boolean;
+  rightMissing: boolean;
+  leftError: string;
+  rightError: string;
+  language: string;
+  revision: string | undefined;
+  source: string;
+}
+
+interface CommitFileEntry {
+  path: string;
+  code: string;
+  status: string;
+}
+
+interface CommitFilesResult {
+  isRepo: boolean;
+  hash: string;
+  parentHash: string;
+  files: CommitFileEntry[];
+  error?: string;
+}
+
+interface PorcelainEntry {
+  repoPath: string;
+  status: string;
+  stagedStatus?: string;
+  unstagedStatus?: string;
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
 /**
  * Resolve and guard a path against traversal outside the root.
  * Returns the absolute path, or throws if it escapes.
  */
-function safePath(rootPath, relativePath) {
+function safePath(rootPath: string, relativePath: string | null | undefined): string {
   const root = path.resolve(rootPath);
   const resolved = path.resolve(root, relativePath || "");
   const normalizedRoot = root.endsWith(path.sep) ? root : root + path.sep;
@@ -32,15 +163,15 @@ function safePath(rootPath, relativePath) {
   return resolved;
 }
 
-function toRelative(rootPath, absolutePath) {
+function toRelative(rootPath: string, absolutePath: string): string {
   return path.relative(rootPath, absolutePath).replace(/\\/g, "/");
 }
 
-function isHiddenEntry(name) {
+function isHiddenEntry(name: string): boolean {
   return name.startsWith(".");
 }
 
-async function statEntry(fullPath, rootPath) {
+async function statEntry(fullPath: string, rootPath: string): Promise<FileEntry> {
   const stat = await fs.stat(fullPath);
   const name = path.basename(fullPath);
   const ext = path.extname(name).toLowerCase();
@@ -57,7 +188,11 @@ async function statEntry(fullPath, rootPath) {
   }
 
   const lstat = await fs.lstat(fullPath);
-  const kind = lstat.isSymbolicLink() ? "symlink" : stat.isDirectory() ? "directory" : "file";
+  const kind: "file" | "directory" | "symlink" = lstat.isSymbolicLink()
+    ? "symlink"
+    : stat.isDirectory()
+      ? "directory"
+      : "file";
 
   return {
     name,
@@ -71,15 +206,15 @@ async function statEntry(fullPath, rootPath) {
   };
 }
 
-function looksLikeBinary(buffer) {
+function looksLikeBinary(buffer: Buffer): boolean {
   for (let i = 0; i < Math.min(buffer.length, BINARY_SNIFF_SIZE); i++) {
     if (buffer[i] === 0) return true;
   }
   return false;
 }
 
-function guessMimeType(ext) {
-  const map = {
+function guessMimeType(ext: string): string {
+  const map: Record<string, string> = {
     ".html": "text/html",
     ".htm": "text/html",
     ".css": "text/css",
@@ -106,12 +241,15 @@ function guessMimeType(ext) {
 // Public API
 // ---------------------------------------------------------------------------
 
-export async function listDirectory(rootPath, relativePath) {
+export async function listDirectory(
+  rootPath: string,
+  relativePath: string,
+): Promise<{ entries: FileEntry[]; path: string }> {
   const absDir = safePath(rootPath, relativePath);
   const dirents = await fs.readdir(absDir, { withFileTypes: true });
   const root = path.resolve(rootPath);
 
-  const entries = [];
+  const entries: FileEntry[] = [];
   for (const dirent of dirents.slice(0, MAX_ENTRIES)) {
     const fullPath = path.join(absDir, dirent.name);
 
@@ -139,11 +277,14 @@ export async function listDirectory(rootPath, relativePath) {
   };
 }
 
-export async function getDirectoryTree(rootPath, relativePath) {
+export async function getDirectoryTree(
+  rootPath: string,
+  relativePath: string,
+): Promise<{ entries: FileEntry[]; path: string }> {
   return listDirectory(rootPath, relativePath);
 }
 
-export async function readFilePreview(rootPath, relativePath) {
+export async function readFilePreview(rootPath: string, relativePath: string): Promise<FilePreviewResult> {
   const absFile = safePath(rootPath, relativePath);
   const stat = await fs.stat(absFile);
 
@@ -202,7 +343,7 @@ export async function readFilePreview(rootPath, relativePath) {
 
   // Text file — read up to limit
   const truncated = stat.size > TEXT_PREVIEW_MAX;
-  let content;
+  let content: string;
   if (truncated) {
     const fd2 = await fs.open(absFile, "r");
     try {
@@ -227,20 +368,24 @@ export async function readFilePreview(rootPath, relativePath) {
   };
 }
 
-export async function readFileContent(rootPath, relativePath) {
+export async function readFileContent(rootPath: string, relativePath: string): Promise<FileContentResult> {
   const absFile = safePath(rootPath, relativePath);
   const content = await fs.readFile(absFile, "utf-8");
   return { content, size: Buffer.byteLength(content, "utf-8"), encoding: "utf-8" };
 }
 
-export async function writeFileContent(rootPath, relativePath, content) {
+export async function writeFileContent(
+  rootPath: string,
+  relativePath: string,
+  content: string,
+): Promise<WriteResult> {
   const absFile = safePath(rootPath, relativePath);
   await fs.writeFile(absFile, content, "utf-8");
   const stat = await fs.stat(absFile);
   return { ok: true, size: stat.size };
 }
 
-export async function createFile(rootPath, parentPath, name) {
+export async function createFile(rootPath: string, parentPath: string, name: string): Promise<EntryResult> {
   const absDir = safePath(rootPath, parentPath);
   const absFile = path.join(absDir, name);
   safePath(rootPath, path.relative(path.resolve(rootPath), absFile));
@@ -248,7 +393,7 @@ export async function createFile(rootPath, parentPath, name) {
   return { entry: await statEntry(absFile, path.resolve(rootPath)) };
 }
 
-export async function createDirectory(rootPath, parentPath, name) {
+export async function createDirectory(rootPath: string, parentPath: string, name: string): Promise<EntryResult> {
   const absDir = safePath(rootPath, parentPath);
   const absNew = path.join(absDir, name);
   safePath(rootPath, path.relative(path.resolve(rootPath), absNew));
@@ -256,7 +401,7 @@ export async function createDirectory(rootPath, parentPath, name) {
   return { entry: await statEntry(absNew, path.resolve(rootPath)) };
 }
 
-export async function renameEntry(rootPath, relativePath, newName) {
+export async function renameEntry(rootPath: string, relativePath: string, newName: string): Promise<EntryResult> {
   const absOld = safePath(rootPath, relativePath);
   const absNew = path.join(path.dirname(absOld), newName);
   safePath(rootPath, path.relative(path.resolve(rootPath), absNew));
@@ -264,7 +409,7 @@ export async function renameEntry(rootPath, relativePath, newName) {
   return { entry: await statEntry(absNew, path.resolve(rootPath)) };
 }
 
-export async function deleteEntry(rootPath, relativePath) {
+export async function deleteEntry(rootPath: string, relativePath: string): Promise<{ ok: boolean }> {
   const absTarget = safePath(rootPath, relativePath);
   const stat = await fs.stat(absTarget);
   if (stat.isDirectory()) {
@@ -275,14 +420,14 @@ export async function deleteEntry(rootPath, relativePath) {
   return { ok: true };
 }
 
-export async function moveEntry(rootPath, fromPath, toPath) {
+export async function moveEntry(rootPath: string, fromPath: string, toPath: string): Promise<EntryResult> {
   const absFrom = safePath(rootPath, fromPath);
   const absTo = safePath(rootPath, toPath);
   await fs.rename(absFrom, absTo);
   return { entry: await statEntry(absTo, path.resolve(rootPath)) };
 }
 
-export async function copyEntry(rootPath, fromPath, toPath) {
+export async function copyEntry(rootPath: string, fromPath: string, toPath: string): Promise<EntryResult> {
   const absFrom = safePath(rootPath, fromPath);
   const absTo = safePath(rootPath, toPath);
   const stat = await fs.stat(absFrom);
@@ -294,7 +439,7 @@ export async function copyEntry(rootPath, fromPath, toPath) {
   return { entry: await statEntry(absTo, path.resolve(rootPath)) };
 }
 
-export async function getFileInfo(rootPath, relativePath) {
+export async function getFileInfo(rootPath: string, relativePath: string): Promise<FileInfoResult> {
   const absFile = safePath(rootPath, relativePath);
   const stat = await fs.stat(absFile);
   return {
@@ -318,7 +463,7 @@ export async function getFileInfo(rootPath, relativePath) {
  * Returns the absolute path to the work tree (which equals or contains rootPath),
  * or null if rootPath is not inside a git repository.
  */
-async function resolveGitToplevel(rootPath) {
+async function resolveGitToplevel(rootPath: string): Promise<string | null> {
   try {
     const result = await execFileText("git", ["rev-parse", "--show-toplevel"], {
       cwd: rootPath,
@@ -330,11 +475,11 @@ async function resolveGitToplevel(rootPath) {
   }
 }
 
-function ensureForwardSlashes(value) {
+function ensureForwardSlashes(value: unknown): string {
   return String(value || "").replace(/\\/g, "/");
 }
 
-function relativeFromRoot(rootPath, target) {
+function relativeFromRoot(rootPath: string, target: string): string {
   const rel = path.relative(rootPath, target);
   return ensureForwardSlashes(rel);
 }
@@ -344,7 +489,7 @@ function relativeFromRoot(rootPath, target) {
  * at our rootPath. If the file lives outside our rootPath (because rootPath
  * is a subdirectory of the repo) it will start with `../` and we drop it.
  */
-function repoPathToFmRelative(rootPath, repoRoot, repoRelative) {
+function repoPathToFmRelative(rootPath: string, repoRoot: string, repoRelative: string): string | null {
   const abs = path.resolve(repoRoot, repoRelative);
   const fmRel = path.relative(rootPath, abs);
   if (!fmRel || fmRel.startsWith("..")) return null;
@@ -355,10 +500,10 @@ function repoPathToFmRelative(rootPath, repoRoot, repoRelative) {
  * Decode git porcelain v2 path tokens — they may be quoted with C escapes
  * when they contain unusual characters.
  */
-function decodeGitPath(token) {
+function decodeGitPath(token: string): string {
   if (!token.startsWith('"') || !token.endsWith('"')) return token;
   const inner = token.slice(1, -1);
-  return inner.replace(/\\(.)/g, (_m, c) => {
+  return inner.replace(/\\(.)/g, (_m: string, c: string) => {
     if (c === "n") return "\n";
     if (c === "t") return "\t";
     if (c === "r") return "\r";
@@ -370,7 +515,7 @@ function decodeGitPath(token) {
  * Parse a single porcelain v2 entry line (one of "1", "2", "u", "?") and
  * return a { repoPath, status } object, or null if unparseable.
  */
-function parsePorcelainEntry(line) {
+function parsePorcelainEntry(line: string): PorcelainEntry | null {
   if (!line) return null;
   if (line.startsWith("? ")) {
     return { repoPath: decodeGitPath(line.slice(2).trim()), status: "untracked" };
@@ -389,7 +534,7 @@ function parsePorcelainEntry(line) {
   const [pathPart] = rest.split("\t");
   const repoPath = decodeGitPath(pathPart || "");
   if (!repoPath) return null;
-  let status;
+  let status: string;
   if (prefix === "u") status = "conflict";
   else if (stagedStatus !== "." && unstagedStatus !== ".")
     status = "staged"; // both — treat as staged with extra
@@ -404,7 +549,10 @@ function parsePorcelainEntry(line) {
  * our rootPath). statusInfo = { status, stagedStatus, unstagedStatus }.
  * Includes ignored entries when includeIgnored is true.
  */
-export async function getGitFileStatus(rootPath, { includeIgnored = false } = {}) {
+export async function getGitFileStatus(
+  rootPath: string,
+  { includeIgnored = false }: { includeIgnored?: boolean } = {},
+): Promise<GitFileStatusResult> {
   const root = path.resolve(rootPath);
   const top = await resolveGitToplevel(root);
   if (!top) {
@@ -415,14 +563,15 @@ export async function getGitFileStatus(rootPath, { includeIgnored = false } = {}
   // path mapping below.
   const args = ["-c", "status.relativePaths=false", "status", "--porcelain=v2", "--branch"];
   if (includeIgnored) args.push("--ignored");
-  let stdout;
+  let stdout: string;
   try {
     const result = await execFileText("git", args, { cwd: top });
     stdout = result.stdout || "";
   } catch (err) {
-    return { isRepo: true, root: top, entries: {}, error: err?.error?.message || "git status failed" };
+    const error = err as { error?: { message?: string } };
+    return { isRepo: true, root: top, entries: {}, error: error?.error?.message || "git status failed" };
   }
-  const entries = {};
+  const entries: Record<string, GitStatusEntry> = {};
   for (const rawLine of stdout.split(/\r?\n/)) {
     const line = rawLine.trimEnd();
     if (!line) continue;
@@ -441,7 +590,7 @@ export async function getGitFileStatus(rootPath, { includeIgnored = false } = {}
   // Derive directory rollups — a directory inherits the highest-priority
   // status of any descendant. This lets the tree show a marker on parent
   // folders even when only deep children are dirty.
-  const directoryRollup = {};
+  const directoryRollup: Record<string, string> = {};
   for (const [filePath, info] of Object.entries(entries)) {
     const parts = filePath.split("/");
     parts.pop();
@@ -472,7 +621,11 @@ export async function getGitFileStatus(rootPath, { includeIgnored = false } = {}
  *   - "" for the index ("staged")
  * Returns { ok, content, missing, encoding }.
  */
-export async function readFileAtRevision(rootPath, relativePath, revision) {
+export async function readFileAtRevision(
+  rootPath: string,
+  relativePath: string,
+  revision: string | null | undefined,
+): Promise<FileRevisionResult> {
   const absFile = safePath(rootPath, relativePath);
   const top = await resolveGitToplevel(path.resolve(rootPath));
   if (!top) {
@@ -487,7 +640,8 @@ export async function readFileAtRevision(rootPath, relativePath, revision) {
     const result = await execFileText("git", ["show", target], { cwd: top, encoding: "utf-8" });
     return { ok: true, content: result.stdout || "", missing: false, revision };
   } catch (err) {
-    const stderr = (err?.stderr || "").trim();
+    const error = err as { stderr?: string };
+    const stderr = (error?.stderr || "").trim();
     const missing = /exists on disk, but not in|does not exist|fatal: path|fatal: bad object/i.test(stderr);
     return { ok: !missing, content: "", missing, error: stderr || "git show failed", revision };
   }
@@ -496,7 +650,10 @@ export async function readFileAtRevision(rootPath, relativePath, revision) {
 /**
  * Read current working file content for diff. Returns { ok, content, missing }.
  */
-export async function readWorkingFile(rootPath, relativePath) {
+export async function readWorkingFile(
+  rootPath: string,
+  relativePath: string,
+): Promise<{ ok: boolean; content: string; missing: boolean; error?: string }> {
   try {
     const absFile = safePath(rootPath, relativePath);
     const stat = await fs.stat(absFile);
@@ -506,7 +663,8 @@ export async function readWorkingFile(rootPath, relativePath) {
     const content = await fs.readFile(absFile, "utf-8");
     return { ok: true, content, missing: false };
   } catch (err) {
-    return { ok: false, content: "", missing: true, error: err.message };
+    const error = err as Error;
+    return { ok: false, content: "", missing: true, error: error.message };
   }
 }
 
@@ -517,7 +675,7 @@ export async function readWorkingFile(rootPath, relativePath) {
  *   - commits:   { hash, shortHash, subject, author, date }[] (recent log of file)
  *   - currentBranch: string
  */
-export async function getGitRefs(rootPath, relativePath) {
+export async function getGitRefs(rootPath: string, relativePath?: string): Promise<GitRefsResult> {
   const root = path.resolve(rootPath);
   const top = await resolveGitToplevel(root);
   if (!top) {
@@ -584,12 +742,16 @@ export async function getGitRefs(rootPath, relativePath) {
  *   { ok, leftContent, rightContent, leftLabel, rightLabel,
  *     leftMissing, rightMissing, language, revision, source }
  */
-export async function computeFileDiff(rootPath, relativePath, { source = "head", revisionRef = "" } = {}) {
+export async function computeFileDiff(
+  rootPath: string,
+  relativePath: string,
+  { source = "head", revisionRef = "" }: { source?: string; revisionRef?: string } = {},
+): Promise<DiffResult> {
   const language = guessLanguageFromPath(relativePath);
 
   // Right side is always the on-disk working copy (or staged file for "staged" source).
-  let right;
-  let rightLabel;
+  let right: { ok: boolean; content: string; missing: boolean; error?: string; revision?: string | null };
+  let rightLabel: string;
   if (source === "staged") {
     right = await readFileAtRevision(rootPath, relativePath, ""); // index
     rightLabel = "staged";
@@ -599,9 +761,9 @@ export async function computeFileDiff(rootPath, relativePath, { source = "head",
   }
 
   // Left side is whatever the user picked.
-  let left;
-  let leftLabel;
-  let revisionUsed;
+  let left: { ok: boolean; content: string; missing: boolean; revision?: string | null; error?: string };
+  let leftLabel: string;
+  let revisionUsed: string | undefined;
   if (source === "head" || source === "staged") {
     left = await readFileAtRevision(rootPath, relativePath, "HEAD");
     leftLabel = "HEAD";
@@ -647,7 +809,7 @@ export async function computeFileDiff(rootPath, relativePath, { source = "head",
   };
 }
 
-function errorDiff(message, source) {
+function errorDiff(message: string, source: string): DiffResult {
   return {
     ok: false,
     leftContent: "",
@@ -664,7 +826,7 @@ function errorDiff(message, source) {
   };
 }
 
-const COMMIT_STATUS_MAP = {
+const COMMIT_STATUS_MAP: Record<string, string> = {
   A: "staged",
   M: "modified",
   D: "modified",
@@ -678,14 +840,14 @@ const COMMIT_STATUS_MAP = {
  * Return the list of files changed in a single commit (vs its first parent).
  * Returns: { isRepo, hash, parentHash, files: [{ path, code, status }] }
  */
-export async function getCommitFiles(rootPath, hash) {
+export async function getCommitFiles(rootPath: string, hash: string): Promise<CommitFilesResult> {
   const root = path.resolve(rootPath);
   const top = await resolveGitToplevel(root);
   if (!top) return { isRepo: false, hash, parentHash: "", files: [] };
   if (!hash) return { isRepo: true, hash: "", parentHash: "", files: [] };
 
   // Detect parent (handles initial commit by leaving parentHash empty).
-  let parentHash;
+  let parentHash: string;
   try {
     const parentResult = await execFileText("git", ["rev-parse", `${hash}^`], { cwd: top });
     parentHash = (parentResult.stdout || "").trim();
@@ -693,7 +855,7 @@ export async function getCommitFiles(rootPath, hash) {
     parentHash = "";
   }
 
-  let lines;
+  let lines: string[];
   try {
     // --root makes the initial commit (no parent) report its files as adds
     // instead of returning an empty diff.
@@ -701,10 +863,11 @@ export async function getCommitFiles(rootPath, hash) {
     const result = await execFileText("git", args, { cwd: top });
     lines = (result.stdout || "").split(/\r?\n/).filter(Boolean);
   } catch (err) {
-    return { isRepo: true, hash, parentHash, files: [], error: err?.error?.message || "git diff-tree failed" };
+    const error = err as { error?: { message?: string } };
+    return { isRepo: true, hash, parentHash, files: [], error: error?.error?.message || "git diff-tree failed" };
   }
 
-  const files = [];
+  const files: CommitFileEntry[] = [];
   for (const line of lines) {
     const parts = line.split("\t");
     const code = (parts[0] || "").trim();
@@ -727,7 +890,11 @@ export async function getCommitFiles(rootPath, hash) {
  * the commit has no parent / introduces a new file).
  * Returns the same shape as computeFileDiff.
  */
-export async function computeCommitFileDiff(rootPath, relativePath, hash) {
+export async function computeCommitFileDiff(
+  rootPath: string,
+  relativePath: string,
+  hash: string,
+): Promise<DiffResult> {
   const language = guessLanguageFromPath(relativePath);
   const root = path.resolve(rootPath);
   const top = await resolveGitToplevel(root);
@@ -736,8 +903,8 @@ export async function computeCommitFileDiff(rootPath, relativePath, hash) {
   }
 
   const right = await readFileAtRevision(rootPath, relativePath, hash);
-  let left;
-  let leftLabel;
+  let left: { ok: boolean; content: string; missing: boolean; revision?: string | null; error?: string };
+  let leftLabel: string;
   try {
     const parentResult = await execFileText("git", ["rev-parse", `${hash}^`], { cwd: top });
     const parent = (parentResult.stdout || "").trim();
