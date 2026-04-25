@@ -1,10 +1,39 @@
 import { cloneWorkspace } from "../workspace-state.js";
+import type { Ref, ShallowRef } from "vue";
+import type { StatePayload } from "../../electron/shared/types/state.js";
+import type { Transport } from "../transport.js";
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type AnyApi = any;
+
+interface DialogActionsCtx {
+  overlay: Ref<string | null>;
+  overlayProps: Ref<Record<string, unknown>>;
+  contextMenu: Ref<{ x: number; y: number; viewId: string } | null>;
+  layoutPickerAnchor: Ref<DOMRect | null>;
+  payload: ShallowRef<StatePayload | null>;
+  activeViewId: Ref<string | null>;
+  activeSessionId: Ref<string | null>;
+  splitGroup: Ref<{ layout: string; viewIds: string[] } | null>;
+  suppressBroadcast: Ref<boolean>;
+  hiddenViewIds: Ref<Set<string>>;
+  getApi: () => Transport;
+  withSuppressedBroadcast: (fn: () => Promise<void>) => Promise<void>;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  getPanelByViewId: (viewId: string, workspace?: any) => any;
+  createWorktree: (workspaceId: string, name: string, rootPath?: string) => Promise<void>;
+  quickAddTemplateTab: (command: string, title: string, cwdOverride?: string, options?: Record<string, unknown>) => Promise<void>;
+}
 
 // Build an initial CLI command string for a provider — used to pre-populate
 // the worker/judge panel command field when we don't have a Vue-level
 // buildProviderCommand in scope. Must stay aligned with the backend provider
 // classes (electron/backend/providers/*) and the WorkspaceDialog copy.
-function buildProviderCommandString({ providerId, model, skipPermissions } = {}) {
+function buildProviderCommandString({
+  providerId,
+  model,
+  skipPermissions,
+}: { providerId?: string; model?: string; skipPermissions?: boolean } = {}): string {
   if (providerId === "claude") {
     const parts = ["claude"];
     if (skipPermissions !== false) parts.push("--dangerously-skip-permissions");
@@ -13,7 +42,8 @@ function buildProviderCommandString({ providerId, model, skipPermissions } = {})
   }
   if (providerId === "codex") {
     const parts = ["codex"];
-    if (skipPermissions !== false) parts.push("--dangerously-bypass-approvals-and-sandbox", "-s", "danger-full-access");
+    if (skipPermissions !== false)
+      parts.push("--dangerously-bypass-approvals-and-sandbox", "-s", "danger-full-access");
     if (model) parts.push("--model", model);
     return parts.join(" ");
   }
@@ -34,14 +64,21 @@ function buildProviderCommandString({ providerId, model, skipPermissions } = {})
 
 // Hook API selectors per provider id. Returns null for providers that don't
 // currently have a hook-config story (none today).
-function hookApiForProvider(api, providerId) {
+function hookApiForProvider(
+  api: AnyApi,
+  providerId: string,
+): { status: (() => Promise<AnyApi>) | undefined; configure: (() => Promise<void>) | undefined; displayName: string } | null {
   if (!api) return null;
   if (providerId === "codex")
     return { status: api.getCodexHookStatus, configure: api.configureCodexHook, displayName: "Codex CLI" };
   if (providerId === "gemini")
     return { status: api.getGeminiHookStatus, configure: api.configureGeminiHook, displayName: "Gemini CLI" };
   if (providerId === "copilot")
-    return { status: api.getCopilotHookStatus, configure: api.configureCopilotHook, displayName: "GitHub Copilot" };
+    return {
+      status: api.getCopilotHookStatus,
+      configure: api.configureCopilotHook,
+      displayName: "GitHub Copilot",
+    };
   // Default to Claude for legacy workspaces and explicit claude selection.
   return { status: api.getClaudeHookStatus, configure: api.configureClaudeHook, displayName: "Claude Code" };
 }
@@ -49,48 +86,48 @@ function hookApiForProvider(api, providerId) {
 /**
  * Factory for dialog / overlay / context-menu / layout-picker actions.
  *
- * @param {object} ctx  Shared refs and helpers injected by the app store.
+ * @param ctx  Shared refs and helpers injected by the app store.
  *   overlay, overlayProps, contextMenu, layoutPickerAnchor,
  *   payload, activeViewId, activeSessionId, splitGroup, suppressBroadcast,
  *   hiddenViewIds, getApi, withSuppressedBroadcast, getPanelByViewId,
  *   createWorktree
  */
-export function createDialogActions(ctx) {
+export function createDialogActions(ctx: DialogActionsCtx) {
   // --- Dialog / overlay --------------------------------------------------
 
-  function openDialog(name, props = {}) {
+  function openDialog(name: string, props: Record<string, unknown> = {}): void {
     ctx.overlay.value = name;
     ctx.overlayProps.value = props;
   }
 
-  function closeDialog() {
+  function closeDialog(): void {
     ctx.overlay.value = null;
     ctx.overlayProps.value = {};
   }
 
   // --- Context menu ------------------------------------------------------
 
-  function showContextMenu(x, y, viewId) {
+  function showContextMenu(x: number, y: number, viewId: string): void {
     ctx.contextMenu.value = { x, y, viewId };
   }
 
-  function hideContextMenu() {
+  function hideContextMenu(): void {
     ctx.contextMenu.value = null;
   }
 
   // --- Layout picker -----------------------------------------------------
 
-  function showLayoutPicker(anchorRect) {
+  function showLayoutPicker(anchorRect: DOMRect): void {
     ctx.layoutPickerAnchor.value = anchorRect;
   }
 
-  function hideLayoutPicker() {
+  function hideLayoutPicker(): void {
     ctx.layoutPickerAnchor.value = null;
   }
 
   // --- Tab edit dialog ---------------------------------------------------
 
-  function editTabWithDialog(viewId) {
+  function editTabWithDialog(viewId: string): void {
     const target = ctx.getPanelByViewId(viewId);
     if (!target) return;
     // For SSH tabs pointing at a saved host, jump straight to the full host
@@ -99,7 +136,7 @@ export function createDialogActions(ctx) {
     const launch = target.panel.launch;
     if (launch?.kind === "ssh" && launch.sshHostId) {
       const appState = ctx.payload.value?.appState;
-      const host = appState?.ssh?.hosts?.find((h) => h.id === launch.sshHostId);
+      const host = appState?.ssh?.hosts?.find((h: AnyApi) => h.id === launch.sshHostId);
       if (host && openSshHostEditor) {
         openSshHostEditor(host);
         return;
@@ -111,7 +148,7 @@ export function createDialogActions(ctx) {
       title: target.panel.title || "",
       command: target.panel.command || "",
       onCancel: closeDialog,
-      onSubmit: async ({ title, command }) => {
+      onSubmit: async ({ title, command }: { title: string; command: string }) => {
         const nextTitle = (title || "").trim();
         const nextCommand = (command || "").trim();
         const sameTitle = nextTitle === (target.panel.title || "").trim();
@@ -121,16 +158,21 @@ export function createDialogActions(ctx) {
           return;
         }
         const nextWorkspace = cloneWorkspace(target.workspace);
-        nextWorkspace.panels = nextWorkspace.panels.map((p) =>
+        nextWorkspace.panels = nextWorkspace.panels.map((p: AnyApi) =>
           p.id === target.panel.id ? { ...p, title: nextTitle, command: nextCommand } : p,
         );
-        ctx.payload.value = await ctx.getApi().saveWorkspace(nextWorkspace);
+        ctx.payload.value = (await (ctx.getApi() as AnyApi).saveWorkspace(nextWorkspace)) as StatePayload;
         closeDialog();
       },
     });
   }
 
-  function openNewTabDialog(cwdOverride = "", presetTitle = "", presetCommand = "", options = {}) {
+  function openNewTabDialog(
+    cwdOverride = "",
+    presetTitle = "",
+    presetCommand = "",
+    options: { tabType?: string; sshMode?: string; sshHostId?: string } = {},
+  ): void {
     const presetTabType = options.tabType === "ssh" ? "ssh" : "local";
     const defaultTitle = presetTabType === "ssh" ? "" : "\u{1F4BB} Shell";
     const presetSshMode = options.sshMode === "quick" ? "quick" : "saved";
@@ -143,7 +185,7 @@ export function createDialogActions(ctx) {
       presetTabType,
       presetSshMode,
       presetSshHostId,
-      onEditSshHost: (host, currentState) => {
+      onEditSshHost: (host: AnyApi, currentState: AnyApi) => {
         // Swap the new-tab dialog for the full host editor. When the editor
         // closes (Save / Cancel / Close / backdrop) we re-open the new-tab
         // dialog with the user's typed state preserved — otherwise they'd
@@ -160,7 +202,7 @@ export function createDialogActions(ctx) {
         });
       },
       onCancel: closeDialog,
-      onSubmit: async (payload) => {
+      onSubmit: async (payload: AnyApi) => {
         const { title, command, kind, sshHostId, sshInline } = payload;
         const nextTitle = (title || "").trim();
         if (!nextTitle) {
@@ -175,17 +217,17 @@ export function createDialogActions(ctx) {
 
   // --- Workspace dialog --------------------------------------------------
 
-  function isBrowserPanel(panel = {}) {
+  function isBrowserPanel(panel: AnyApi = {}): boolean {
     return /^https?:\/\//i.test(String(panel.command || "").trim());
   }
 
-  function openWorkspaceDialog(workspace = null) {
+  function openWorkspaceDialog(workspace: AnyApi = null): void {
     const tabTemplates = ctx.payload.value?.appState?.tabTemplates || [];
     openDialog("WorkspaceDialog", {
       workspace,
       tabTemplates,
       onCancel: closeDialog,
-      onSubmit: async (draft) => {
+      onSubmit: async (draft: AnyApi) => {
         try {
           const isNew = !workspace;
           if (isNew) draft.profileId = ctx.payload.value?.appState?.activeProfileId || "default";
@@ -205,11 +247,11 @@ export function createDialogActions(ctx) {
               : `${draft.id}:${firstPanel.id}`;
           }
           // Strip reactive proxies — IPC structuredClone cannot handle Vue Proxy objects
-          const plain = JSON.parse(JSON.stringify(draft));
+          const plain = JSON.parse(JSON.stringify(draft)) as AnyApi;
           await ctx.withSuppressedBroadcast(async () => {
-            ctx.payload.value = await ctx.getApi().saveWorkspace(plain);
+            ctx.payload.value = (await (ctx.getApi() as AnyApi).saveWorkspace(plain)) as StatePayload;
             if (isNew) {
-              ctx.payload.value = await ctx.getApi().activateWorkspace(plain.id);
+              ctx.payload.value = (await (ctx.getApi() as AnyApi).activateWorkspace(plain.id)) as StatePayload;
             }
           });
         } catch (err) {
@@ -221,8 +263,8 @@ export function createDialogActions(ctx) {
     });
   }
 
-  function openNewWorkspaceFlow() {
-    const plugins = ctx.payload.value?.plugins || [];
+  function openNewWorkspaceFlow(): void {
+    const plugins = (ctx.payload.value as AnyApi)?.plugins || [];
     // Always show picker — it includes the Task Runner option alongside plugins and empty workspace
     openDialog("NewWorkspacePicker", {
       plugins,
@@ -235,15 +277,15 @@ export function createDialogActions(ctx) {
         closeDialog();
         openTaskWorkspaceDialog();
       },
-      onPickPlugin: (pluginId) => {
+      onPickPlugin: (pluginId: string) => {
         closeDialog();
-        const plugin = plugins.find((p) => p.id === pluginId);
+        const plugin = plugins.find((p: AnyApi) => p.id === pluginId);
         if (!plugin?.workspaceDefaults) {
           openWorkspaceDialog();
           return;
         }
         const tpl = plugin.workspaceDefaults;
-        const draft = {
+        const draft: AnyApi = {
           id: `workspace-${crypto.randomUUID()}`,
           name: tpl.name || plugin.name,
           icon: tpl.icon || plugin.icon || "PL",
@@ -254,7 +296,7 @@ export function createDialogActions(ctx) {
           cwd: "",
           notes: tpl.notes || "",
           activePanelId: tpl.panels?.[0]?.id || "",
-          panels: (tpl.panels || []).map((panel) => ({ ...panel })),
+          panels: (tpl.panels || []).map((panel: AnyApi) => ({ ...panel })),
         };
         openWorkspaceDialog(draft);
       },
@@ -263,47 +305,47 @@ export function createDialogActions(ctx) {
 
   // --- Settings / help / profiles / azure connection dialogs -------------
 
-  function openSettingsDialog() {
+  function openSettingsDialog(): void {
     openDialog("SettingsDialog", {
       settings: ctx.payload.value?.appState?.settings || {},
       tabTemplates: ctx.payload.value?.appState?.tabTemplates || [],
-      appVersion: ctx.payload.value?.meta?.appVersion || "",
-      repositoryUrl: ctx.payload.value?.meta?.repositoryUrl || "",
-      versionCheck: ctx.payload.value?.meta?.versionCheck || null,
+      appVersion: (ctx.payload.value as AnyApi)?.meta?.appVersion || "",
+      repositoryUrl: (ctx.payload.value as AnyApi)?.meta?.repositoryUrl || "",
+      versionCheck: (ctx.payload.value as AnyApi)?.meta?.versionCheck || null,
       onCancel: closeDialog,
-      onSave: async (patch) => {
+      onSave: async (patch: AnyApi) => {
         try {
-          const plain = JSON.parse(JSON.stringify(patch));
-          ctx.payload.value = await ctx.getApi().updateSettings(plain);
+          const plain = JSON.parse(JSON.stringify(patch)) as AnyApi;
+          ctx.payload.value = (await (ctx.getApi() as AnyApi).updateSettings(plain)) as StatePayload;
           closeDialog();
         } catch (err) {
           ctx.overlayProps.value = {
             ...ctx.overlayProps.value,
-            saveError: err.message || "Failed to save settings",
+            saveError: (err as Error).message || "Failed to save settings",
           };
         }
       },
     });
   }
 
-  function openHelpDialog() {
+  function openHelpDialog(): void {
     openDialog("HelpDialog", { onClose: closeDialog });
   }
 
-  function openProfilesDialog() {
-    const appState = ctx.payload.value?.appState || {};
+  function openProfilesDialog(): void {
+    const appState = ctx.payload.value?.appState || ({} as AnyApi);
     openDialog("ProfilesDialog", {
-      profiles: JSON.parse(JSON.stringify(appState.profiles || [])),
-      activeProfileId: appState.activeProfileId || "default",
-      workspaces: appState.workspaces || [],
+      profiles: JSON.parse(JSON.stringify((appState as AnyApi).profiles || [])) as unknown[],
+      activeProfileId: (appState as AnyApi).activeProfileId || "default",
+      workspaces: (appState as AnyApi).workspaces || [],
       onCancel: closeDialog,
-      onSave: async (profile) => {
-        ctx.payload.value = await ctx.getApi().saveProfile(profile);
+      onSave: async (profile: AnyApi) => {
+        ctx.payload.value = (await (ctx.getApi() as AnyApi).saveProfile(profile)) as StatePayload;
       },
-      onActivate: async (profileId) => {
+      onActivate: async (profileId: string) => {
         ctx.suppressBroadcast.value = true;
         try {
-          ctx.payload.value = await ctx.getApi().activateProfile(profileId);
+          ctx.payload.value = (await (ctx.getApi() as AnyApi).activateProfile(profileId)) as StatePayload;
         } catch (err) {
           ctx.suppressBroadcast.value = false;
           throw err;
@@ -316,47 +358,52 @@ export function createDialogActions(ctx) {
           ctx.suppressBroadcast.value = false;
         }, 200);
       },
-      onDelete: async (profileId) => {
-        ctx.payload.value = await ctx.getApi().deleteProfile(profileId);
+      onDelete: async (profileId: string) => {
+        ctx.payload.value = (await (ctx.getApi() as AnyApi).deleteProfile(profileId)) as StatePayload;
       },
     });
   }
 
-  function openAzureConnectionDialog(connectionId = "") {
-    const azureSettings = ctx.payload.value?.appState?.settings?.integrations?.azureDevops || {};
-    const connection = (azureSettings.connections || []).find((c) => c.id === connectionId) || null;
+  function openAzureConnectionDialog(connectionId = ""): void {
+    const azureSettings =
+      (ctx.payload.value?.appState?.settings as AnyApi)?.integrations?.azureDevops || {};
+    const connection = ((azureSettings as AnyApi).connections || []).find((c: AnyApi) => c.id === connectionId) || null;
     openDialog("AzureConnectionDialog", {
       connection,
-      defaultReviewRoot: azureSettings.reviewRoot || "",
+      defaultReviewRoot: (azureSettings as AnyApi).reviewRoot || "",
       onCancel: closeDialog,
-      onSave: async (draft) => {
+      onSave: async (draft: AnyApi) => {
         draft.profileId = ctx.payload.value?.appState?.activeProfileId || "default";
-        const result = await ctx.getApi().saveAzureConnection(draft);
-        ctx.payload.value = result.payload || result;
+        const result = (await (ctx.getApi() as AnyApi).saveAzureConnection(draft)) as AnyApi;
+        ctx.payload.value = (result.payload || result) as StatePayload;
         closeDialog();
       },
     });
   }
 
-  function openGitHubConnectionDialog(connectionId = "") {
-    const ghSettings = ctx.payload.value?.appState?.settings?.integrations?.github || {};
-    const connection = (ghSettings.connections || []).find((c) => c.id === connectionId) || null;
+  function openGitHubConnectionDialog(connectionId = ""): void {
+    const ghSettings =
+      (ctx.payload.value?.appState?.settings as AnyApi)?.integrations?.github || {};
+    const connection = ((ghSettings as AnyApi).connections || []).find((c: AnyApi) => c.id === connectionId) || null;
     openDialog("GitHubConnectionDialog", {
       connection,
-      defaultReviewRoot: ghSettings.reviewRoot || "",
+      defaultReviewRoot: (ghSettings as AnyApi).reviewRoot || "",
       onCancel: closeDialog,
-      onSave: async (draft) => {
+      onSave: async (draft: AnyApi) => {
         draft.profileId = ctx.payload.value?.appState?.activeProfileId || "default";
-        const result = await ctx.getApi().saveGitHubConnection(draft);
-        ctx.payload.value = result.payload || result;
+        const result = (await (ctx.getApi() as AnyApi).saveGitHubConnection(draft)) as AnyApi;
+        ctx.payload.value = (result.payload || result) as StatePayload;
         closeDialog();
       },
     });
   }
 
-  function openGitHubQuickFixWizard() {
-    const ghSettings = ctx.payload.value?.appState?.settings?.integrations?.github || {};
-    const connections = (ghSettings.connections || []).filter((c) => c.enabled !== false);
+  function openGitHubQuickFixWizard(): void {
+    const ghSettings =
+      (ctx.payload.value?.appState?.settings as AnyApi)?.integrations?.github || {};
+    const connections = ((ghSettings as AnyApi).connections || []).filter(
+      (c: AnyApi) => c.enabled !== false,
+    );
     if (!connections.length) {
       openGitHubConnectionDialog("");
       return;
@@ -365,10 +412,10 @@ export function createDialogActions(ctx) {
       provider: "github",
       connections,
       onCancel: closeDialog,
-      onCreate: (result) => {
+      onCreate: (result: AnyApi) => {
         closeDialog();
         if (result) {
-          ctx.payload.value = result;
+          ctx.payload.value = result as StatePayload;
           ctx.activeViewId.value = null;
           ctx.splitGroup.value = null;
         }
@@ -378,9 +425,12 @@ export function createDialogActions(ctx) {
 
   // --- Quick Fix wizard ---------------------------------------------------
 
-  function openQuickFixWizard() {
-    const azureSettings = ctx.payload.value?.appState?.settings?.integrations?.azureDevops || {};
-    const connections = (azureSettings.connections || []).filter((c) => c.enabled !== false);
+  function openQuickFixWizard(): void {
+    const azureSettings =
+      (ctx.payload.value?.appState?.settings as AnyApi)?.integrations?.azureDevops || {};
+    const connections = ((azureSettings as AnyApi).connections || []).filter(
+      (c: AnyApi) => c.enabled !== false,
+    );
     if (!connections.length) {
       openAzureConnectionDialog("");
       return;
@@ -388,10 +438,10 @@ export function createDialogActions(ctx) {
     openDialog("QuickFixWizardDialog", {
       connections,
       onCancel: closeDialog,
-      onCreate: (result) => {
+      onCreate: (result: AnyApi) => {
         closeDialog();
         if (result) {
-          ctx.payload.value = result;
+          ctx.payload.value = result as StatePayload;
           ctx.activeViewId.value = null;
           ctx.splitGroup.value = null;
         }
@@ -401,10 +451,15 @@ export function createDialogActions(ctx) {
 
   // --- Worktree dialog ---------------------------------------------------
 
-  function createWorktreeWithDialog(workspaceId, { preselectedRootPath = "" } = {}) {
+  function createWorktreeWithDialog(
+    workspaceId: string,
+    { preselectedRootPath = "" }: { preselectedRootPath?: string } = {},
+  ): void {
     const workspaces = ctx.payload.value?.appState?.workspaces || [];
-    const target = workspaces.find((w) => w.id === workspaceId);
-    const gitRoots = Array.isArray(target?.gitRoots) ? target.gitRoots.filter(Boolean) : [];
+    const target = workspaces.find((w: AnyApi) => w.id === workspaceId);
+    const gitRoots = Array.isArray((target as AnyApi)?.gitRoots)
+      ? ((target as AnyApi).gitRoots as string[]).filter(Boolean)
+      : [];
     const isMultiRepo = gitRoots.length >= 2;
 
     if (isMultiRepo) {
@@ -416,7 +471,7 @@ export function createDialogActions(ctx) {
         repoChoices,
         preselectedRootPath: preselectedRootPath || gitRoots[0],
         onCancel: closeDialog,
-        onSubmit: async ({ name, rootPath }) => {
+        onSubmit: async ({ name, rootPath }: { name: string; rootPath: string }) => {
           closeDialog();
           await ctx.createWorktree(workspaceId, name, rootPath);
         },
@@ -432,14 +487,14 @@ export function createDialogActions(ctx) {
       placeholder: "feature/my-branch",
       submitLabel: "Create",
       onCancel: closeDialog,
-      onSubmit: async (name) => {
+      onSubmit: async (name: string) => {
         closeDialog();
         await ctx.createWorktree(workspaceId, name, preselectedRootPath || "");
       },
     });
   }
 
-  function formatRootBasename(rootPath, allRoots) {
+  function formatRootBasename(rootPath: string, allRoots: string[]): string {
     const basename = rootPath.split(/[\\/]/).filter(Boolean).at(-1) || rootPath;
     const collisions = allRoots.filter((r) => {
       const rb = r.split(/[\\/]/).filter(Boolean).at(-1) || r;
@@ -450,51 +505,49 @@ export function createDialogActions(ctx) {
     return segments.slice(-2).join("/") || basename;
   }
 
-  function openTaskWorkspaceDialog() {
-    const ws = ctx.payload.value?.workspace;
+  function openTaskWorkspaceDialog(): void {
+    const ws = (ctx.payload.value as AnyApi)?.workspace;
     const activeWorkspace = ws?.workspace || ws?.project || null;
-    const initialCwd = activeWorkspace?.cwd || "";
+    const initialCwd = (activeWorkspace as AnyApi)?.cwd || "";
 
     // Re-check Claude CLI availability in the background so the dialog
     // shows up-to-date status (user may have installed claude mid-session)
-    ctx
-      .getApi()
+    (ctx.getApi() as AnyApi)
       .recheckClaude?.()
-      .then((result) => {
-        if (result?.payload) ctx.payload.value = result.payload;
+      .then((result: AnyApi) => {
+        if (result?.payload) ctx.payload.value = result.payload as StatePayload;
       })
       .catch(() => {});
 
     // Check all provider availabilities in the background — result is passed
     // to the dialog via the providerAvailability prop after resolution.
-    const providerAvailabilityRef = { value: {} };
-    ctx
-      .getApi()
+    const providerAvailabilityRef: { value: Record<string, unknown> } = { value: {} };
+    (ctx.getApi() as AnyApi)
       .checkProviders?.()
-      .then((result) => {
+      .then((result: AnyApi) => {
         providerAvailabilityRef.value = result || {};
       })
       .catch(() => {});
 
     // Use per-user taskDefaults from settings for the initial provider selection
-    const taskDefaults = ctx.payload.value?.appState?.settings?.taskDefaults || {};
-    const defaultWorkerProvider = taskDefaults.workerProvider || { providerId: "claude", model: "sonnet" };
-    const defaultJudgeProvider = taskDefaults.judgeProvider || { providerId: "claude", model: "opus" };
+    const taskDefaults = (ctx.payload.value?.appState?.settings as AnyApi)?.taskDefaults || {};
+    const defaultWorkerProvider = (taskDefaults as AnyApi).workerProvider || { providerId: "claude", model: "sonnet" };
+    const defaultJudgeProvider = (taskDefaults as AnyApi).judgeProvider || { providerId: "claude", model: "opus" };
 
     // The panel command needs to reflect the active provider default, otherwise
     // a user with defaultWorkerProvider !== "claude" briefly sees a stale
     // "claude --dangerously-skip-permissions ..." string before WorkspaceDialog's
     // watcher rewrites it. Worse — if the user clicks Create without touching
     // the provider picker, we'd submit a claude command for a Copilot task.
-    const initialWorkerCommand = buildProviderCommandString(defaultWorkerProvider);
-    const initialJudgeCommand = buildProviderCommandString(defaultJudgeProvider);
+    const initialWorkerCommand = buildProviderCommandString(defaultWorkerProvider as AnyApi);
+    const initialJudgeCommand = buildProviderCommandString(defaultJudgeProvider as AnyApi);
 
     // Build a task workspace draft with panel stubs so the full dialog
     // can bind to workerPanel/judgePanel commands.
     const workerPanelId = `panel-${crypto.randomUUID()}`;
     const judgePanelId = `panel-${crypto.randomUUID()}`;
     const dashboardPanelId = `panel-${crypto.randomUUID()}`;
-    const taskDraft = {
+    const taskDraft: AnyApi = {
       id: `workspace-${crypto.randomUUID()}`,
       name: "",
       icon: "\u{1F916}",
@@ -544,9 +597,9 @@ export function createDialogActions(ctx) {
       tabTemplates: [],
       providerAvailabilityRef,
       onCancel: closeDialog,
-      onSubmit: async (draft) => {
+      onSubmit: async (draft: AnyApi) => {
         try {
-          const config = {
+          const config: AnyApi = {
             cwd: draft.cwd,
             description: draft.task?.description || "",
             maxRounds: draft.task?.maxRounds || 10,
@@ -557,8 +610,8 @@ export function createDialogActions(ctx) {
           };
 
           // Extract worker/judge config: provider dropdown or raw command override
-          const wp = draft.panels?.find((p) => p.id === workerPanelId);
-          const jp = draft.panels?.find((p) => p.id === judgePanelId);
+          const wp = draft.panels?.find((p: AnyApi) => p.id === workerPanelId);
+          const jp = draft.panels?.find((p: AnyApi) => p.id === judgePanelId);
           if (draft.workerCommandOverride) {
             if (wp?.command) config.workerCommand = wp.command;
           } else if (draft.workerProvider) {
@@ -596,7 +649,7 @@ export function createDialogActions(ctx) {
             const activeProfileId = ctx.payload.value?.appState?.activeProfileId || "default";
             const workspaces = ctx.payload.value?.appState?.workspaces || [];
             const parent = workspaces.find(
-              (ws) =>
+              (ws: AnyApi) =>
                 ws.kind !== "task" &&
                 (ws.profileId || "default") === activeProfileId &&
                 (ws.cwd || "")
@@ -604,14 +657,14 @@ export function createDialogActions(ctx) {
                   .replace(/\\/g, "/")
                   .toLowerCase() === normCwd,
             );
-            if (parent) config.parentWorkspaceId = parent.id;
+            if (parent) config.parentWorkspaceId = (parent as AnyApi).id;
           }
 
           // Strip Vue reactive proxies before IPC — structuredClone can't serialize them
-          const plainConfig = JSON.parse(JSON.stringify(config));
-          const result = await ctx.getApi().createTaskWorkspace(plainConfig);
+          const plainConfig = JSON.parse(JSON.stringify(config)) as AnyApi;
+          const result = (await (ctx.getApi() as AnyApi).createTaskWorkspace(plainConfig)) as AnyApi;
           if (result?.payload) {
-            ctx.payload.value = result.payload;
+            ctx.payload.value = result.payload as StatePayload;
           }
           closeDialog();
           // Show warning if another task workspace uses the same directory
@@ -640,27 +693,30 @@ export function createDialogActions(ctx) {
     });
   }
 
-  async function doStartTask(workspaceId) {
-    const api = ctx.getApi();
+  async function doStartTask(workspaceId: string): Promise<void> {
+    const api = ctx.getApi() as AnyApi;
     try {
-      const result = await api.startTask({ workspaceId });
-      if (result?.payload) ctx.payload.value = result.payload;
+      const result = (await api.startTask({ workspaceId })) as AnyApi;
+      if (result?.payload) ctx.payload.value = result.payload as StatePayload;
     } catch (err) {
       console.error("[task] start failed:", err);
     }
   }
 
-  async function startTaskWithHookCheck(workspaceId) {
-    const api = ctx.getApi();
+  async function startTaskWithHookCheck(workspaceId: string): Promise<void> {
+    const api = ctx.getApi() as AnyApi;
     // Check if agent hook setting is enabled
-    const settings = ctx.payload.value?.appState?.settings?.notifications;
-    const hookSettingEnabled = settings?.agentHook !== false;
+    const settings = (ctx.payload.value?.appState?.settings as AnyApi)?.notifications;
+    const hookSettingEnabled = (settings as AnyApi)?.agentHook !== false;
 
     // Resolve the worker's provider so the check targets the right hook file.
     // Falls back to claude for legacy workspaces missing workerProvider.
     const workspaces = ctx.payload.value?.appState?.workspaces || [];
-    const ws = workspaces.find((w) => w.id === workspaceId) || null;
-    const workerProviderId = ws?.task?.workerProviderConfig?.providerId || ws?.workerProvider?.providerId || "claude";
+    const ws = (workspaces as AnyApi[]).find((w: AnyApi) => w.id === workspaceId) || null;
+    const workerProviderId =
+      (ws as AnyApi)?.task?.workerProviderConfig?.providerId ||
+      (ws as AnyApi)?.workerProvider?.providerId ||
+      "claude";
     const hookApi = hookApiForProvider(api, workerProviderId);
     const providerDisplayName = hookApi?.displayName || "the agent";
 
@@ -672,16 +728,16 @@ export function createDialogActions(ctx) {
         onCancel: closeDialog,
         onSkip: () => {
           closeDialog();
-          doStartTask(workspaceId);
+          void doStartTask(workspaceId);
         },
         onConfigure: async () => {
           closeDialog();
           try {
             // Enable the setting first
-            const settingsResult = await api.updateSettings({
-              notifications: { ...settings, agentHook: true },
-            });
-            if (settingsResult?.payload) ctx.payload.value = settingsResult.payload;
+            const settingsResult = (await api.updateSettings({
+              notifications: { ...(settings as AnyApi), agentHook: true },
+            })) as AnyApi;
+            if (settingsResult?.payload) ctx.payload.value = settingsResult.payload as StatePayload;
             // Then configure the hook for the worker provider
             if (hookApi?.configure) await hookApi.configure();
           } catch (err) {
@@ -695,8 +751,8 @@ export function createDialogActions(ctx) {
 
     // Setting is on — check if the worker provider's hook is actually configured
     try {
-      const hookResult = hookApi?.status ? await hookApi.status() : null;
-      if (hookResult?.status === "configured") {
+      const hookResult = hookApi?.status ? ((await hookApi.status()) as AnyApi) : null;
+      if ((hookResult as AnyApi)?.status === "configured") {
         // All good — start immediately
         await doStartTask(workspaceId);
         return;
@@ -714,7 +770,7 @@ export function createDialogActions(ctx) {
       onCancel: closeDialog,
       onSkip: () => {
         closeDialog();
-        doStartTask(workspaceId);
+        void doStartTask(workspaceId);
       },
       onConfigure: async () => {
         closeDialog();
@@ -730,11 +786,11 @@ export function createDialogActions(ctx) {
 
   // --- SSH dialogs -------------------------------------------------------
 
-  function openSshHostsDialog() {
+  function openSshHostsDialog(): void {
     openDialog("SshHostsDialog", { onCancel: closeDialog });
   }
 
-  function openSshHostEditor(host = null) {
+  function openSshHostEditor(host: AnyApi = null): void {
     openDialog("SshHostEditor", {
       host,
       onCancel: closeDialog,
@@ -742,11 +798,11 @@ export function createDialogActions(ctx) {
     });
   }
 
-  function openSshKeyManager() {
+  function openSshKeyManager(): void {
     openDialog("SshKeyManager", { onCancel: closeDialog });
   }
 
-  function openSshKeyGenerateDialog() {
+  function openSshKeyGenerateDialog(): void {
     openDialog("SshKeyGenerateDialog", { onCancel: closeDialog });
   }
 

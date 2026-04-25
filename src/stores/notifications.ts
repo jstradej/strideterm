@@ -20,14 +20,61 @@ const PINNED_KEY = "strideterm-notifications-pinned";
 const MAX_SESSIONS = 200;
 const MAX_EVENTS_PER_SESSION = 20;
 
-function threadId(workspaceId, viewId) {
+type NotificationState = "waiting" | "finished" | "resolved" | "snoozed";
+type NotificationUrgency = "normal" | "urgent";
+type NotificationKind = "waiting" | "completed" | "info" | "review" | "error" | "warning" | string;
+
+interface NotificationEvent {
+  id: string;
+  title: string;
+  body: string;
+  kind: NotificationKind;
+  tier: number;
+  urgency: NotificationUrgency;
+  at: string;
+}
+
+interface NotificationSession {
+  id: string;
+  workspaceId: string;
+  workspaceName: string;
+  tabName: string;
+  viewId: string;
+  state: NotificationState;
+  tier: number;
+  urgency: NotificationUrgency;
+  category: string;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  meta: Record<string, any> | null;
+  firstAt: string;
+  latestAt: string;
+  events: NotificationEvent[];
+  snoozedUntil: number;
+}
+
+interface AddEventPayload {
+  title: string;
+  body?: string;
+  kind?: NotificationKind;
+  tier?: number;
+  urgency?: NotificationUrgency;
+  workspaceId?: string;
+  workspaceName?: string;
+  tabName?: string;
+  viewId?: string;
+  category?: string;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  meta?: Record<string, any> | null;
+}
+
+function threadId(workspaceId: string, viewId: string): string {
   return `${workspaceId || ""}:${viewId || ""}`;
 }
 
-function loadFromStorage() {
+function loadFromStorage(): NotificationSession[] {
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY);
-    if (raw) return JSON.parse(raw);
+    if (raw) return JSON.parse(raw) as NotificationSession[];
   } catch {
     // fall through
   }
@@ -40,7 +87,7 @@ function loadFromStorage() {
   return [];
 }
 
-function saveToStorage(sessions) {
+function saveToStorage(sessions: NotificationSession[]): void {
   try {
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(sessions.slice(0, MAX_SESSIONS)));
   } catch {
@@ -48,7 +95,7 @@ function saveToStorage(sessions) {
   }
 }
 
-function loadPinned() {
+function loadPinned(): boolean {
   try {
     return window.localStorage.getItem(PINNED_KEY) === "1";
   } catch {
@@ -56,7 +103,7 @@ function loadPinned() {
   }
 }
 
-function savePinned(value) {
+function savePinned(value: boolean): void {
   try {
     window.localStorage.setItem(PINNED_KEY, value ? "1" : "0");
   } catch {
@@ -64,14 +111,14 @@ function savePinned(value) {
   }
 }
 
-function kindToState(kind) {
+function kindToState(kind: NotificationKind): NotificationState {
   // Review activity and info/completed events don't block on user input —
   // they land in "Finished" so the user can ack them at their convenience.
   return kind === "completed" || kind === "info" || kind === "review" ? "finished" : "waiting";
 }
 
 export const useNotificationStore = defineStore("notifications", () => {
-  const sessions = ref(loadFromStorage());
+  const sessions = ref<NotificationSession[]>(loadFromStorage());
   const panelOpen = ref(false);
   const pinned = ref(loadPinned());
   // Incremented whenever something (e.g. a keyboard shortcut) explicitly
@@ -82,12 +129,25 @@ export const useNotificationStore = defineStore("notifications", () => {
   // Transient toast payload. Lives in the store (not in a composable) so any
   // part of the app can trigger a toast via showError/showToast without
   // threading a ref through prop drilling or custom event buses.
-  const latestToast = ref(null);
+  const latestToast = ref<(NotificationEvent & { category: string }) | null>(null);
 
   // Back-compat computed: a flat `items` list still exposed so older
   // consumers (and tests) can iterate per-event.  New UI reads `sessions`.
   const items = computed(() => {
-    const flat = [];
+    const flat: Array<{
+      id: string;
+      title: string;
+      body: string;
+      kind: NotificationKind;
+      tier: number;
+      urgency: NotificationUrgency;
+      workspaceId: string;
+      workspaceName: string;
+      tabName: string;
+      viewId: string;
+      at: string;
+      read: boolean;
+    }> = [];
     for (const s of sessions.value) {
       for (const ev of s.events) {
         flat.push({
@@ -119,14 +179,14 @@ export const useNotificationStore = defineStore("notifications", () => {
   const finishedSessions = computed(() => sessions.value.filter((s) => s.state === "finished"));
   const resolvedSessions = computed(() => sessions.value.filter((s) => s.state === "resolved"));
 
-  function findSession(workspaceId, viewId) {
+  function findSession(workspaceId: string, viewId: string): NotificationSession | undefined {
     const id = threadId(workspaceId, viewId);
     return sessions.value.find((s) => s.id === id);
   }
 
   function addEvent({
     title,
-    body,
+    body = "",
     kind = "info",
     tier = 1,
     urgency = "normal",
@@ -136,9 +196,9 @@ export const useNotificationStore = defineStore("notifications", () => {
     viewId = "",
     category = "terminal",
     meta = null,
-  }) {
+  }: AddEventPayload): NotificationEvent {
     const id = threadId(workspaceId, viewId);
-    const eventEntry = {
+    const eventEntry: NotificationEvent = {
       id: crypto.randomUUID(),
       title,
       body,
@@ -169,7 +229,7 @@ export const useNotificationStore = defineStore("notifications", () => {
       // ordering stays intuitive even without an explicit sort.
       sessions.value = [existing, ...sessions.value.filter((s) => s !== existing)];
     } else {
-      const session = {
+      const session: NotificationSession = {
         id,
         workspaceId,
         workspaceName,
@@ -193,11 +253,11 @@ export const useNotificationStore = defineStore("notifications", () => {
   }
 
   // Back-compat alias for existing call sites.
-  function add(payload) {
+  function add(payload: AddEventPayload): NotificationEvent {
     return addEvent(payload);
   }
 
-  function setState(sessionRef, newState) {
+  function setState(sessionRef: string | NotificationSession, newState: NotificationState): void {
     const s = typeof sessionRef === "string" ? sessions.value.find((x) => x.id === sessionRef) : sessionRef;
     if (!s) return;
     s.state = newState;
@@ -205,7 +265,7 @@ export const useNotificationStore = defineStore("notifications", () => {
     saveToStorage(sessions.value);
   }
 
-  function snooze(sessionId, ms = 600_000) {
+  function snooze(sessionId: string, ms = 600_000): void {
     const s = sessions.value.find((x) => x.id === sessionId);
     if (!s) return;
     s.snoozedUntil = Date.now() + ms;
@@ -213,7 +273,7 @@ export const useNotificationStore = defineStore("notifications", () => {
     saveToStorage(sessions.value);
   }
 
-  function markAllRead() {
+  function markAllRead(): void {
     let changed = false;
     for (const s of sessions.value) {
       if (s.state === "waiting" || s.state === "finished") {
@@ -227,11 +287,11 @@ export const useNotificationStore = defineStore("notifications", () => {
     }
   }
 
-  function markRead(sessionId) {
+  function markRead(sessionId: string): void {
     setState(sessionId, "resolved");
   }
 
-  function remove(sessionIdOrEventId) {
+  function remove(sessionIdOrEventId: string): void {
     // Accept either a thread id or a legacy event id (back-compat with old UI).
     const before = sessions.value.length;
     sessions.value = sessions.value.filter((s) => {
@@ -247,13 +307,13 @@ export const useNotificationStore = defineStore("notifications", () => {
     saveToStorage(sessions.value);
   }
 
-  function removeByViewId(viewId) {
+  function removeByViewId(viewId: string): void {
     if (!viewId) return;
     sessions.value = sessions.value.filter((s) => s.viewId !== viewId);
     saveToStorage(sessions.value);
   }
 
-  function clearAll() {
+  function clearAll(): void {
     sessions.value = [];
     saveToStorage(sessions.value);
     // Also clear backend attention alerts (bells on tabs/workspaces)
@@ -262,10 +322,10 @@ export const useNotificationStore = defineStore("notifications", () => {
         const appStore = useAppStore();
         const api = appStore.getApi();
         if (api?.clearAllAttention) {
-          api
-            .clearAllAttention()
+          (api.clearAllAttention() as Promise<unknown>)
             .then((nextPayload) => {
-              if (nextPayload) appStore.payload = nextPayload;
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              if (nextPayload) appStore.payload = nextPayload as any;
             })
             .catch(() => {});
         }
@@ -278,29 +338,33 @@ export const useNotificationStore = defineStore("notifications", () => {
    * (engagement — dismissed=false) from Dismiss (no engagement — dismissed=true).
    * Backend uses the flag to feed adaptive suppression (plan § 3.2.6).
    */
-  async function clearOnBackend(sessionId, { dismissed = false } = {}) {
+  async function clearOnBackend(sessionId: string, { dismissed = false } = {}): Promise<void> {
     try {
       const { useAppStore } = await import("./app.js");
       const appStore = useAppStore();
       const api = appStore.getApi();
       if (api?.clearAlertForSession) {
-        const next = await api.clearAlertForSession(sessionId, { dismissed });
-        if (next) appStore.payload = next;
+        const next = await (api.clearAlertForSession as (id: string, opts: { dismissed: boolean }) => Promise<unknown>)(
+          sessionId,
+          { dismissed },
+        );
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        if (next) appStore.payload = next as any;
       }
     } catch {
       // Ignore — clearing backend state is best-effort.
     }
   }
 
-  function togglePanel() {
+  function togglePanel(): void {
     panelOpen.value = !panelOpen.value;
   }
 
-  function closePanel() {
+  function closePanel(): void {
     panelOpen.value = false;
   }
 
-  function togglePin() {
+  function togglePin(): void {
     pinned.value = !pinned.value;
     savePinned(pinned.value);
     if (pinned.value) {
@@ -315,7 +379,7 @@ export const useNotificationStore = defineStore("notifications", () => {
     }
   }
 
-  function requestFocus() {
+  function requestFocus(): void {
     focusRequestSignal.value += 1;
   }
 
@@ -324,7 +388,11 @@ export const useNotificationStore = defineStore("notifications", () => {
   // attention even when the dock is closed behind a dialog). Callers should
   // use this instead of `console.error` for anything the user needs to act
   // on or recover from — failed IPC, backend validation errors, etc.
-  function showError(title, body, { workspaceId = "", workspaceName = "" } = {}) {
+  function showError(
+    title: string,
+    body: string,
+    { workspaceId = "", workspaceName = "" }: { workspaceId?: string; workspaceName?: string } = {},
+  ): NotificationEvent {
     const entry = addEvent({
       title,
       body,

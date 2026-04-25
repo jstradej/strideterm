@@ -8,7 +8,6 @@ import {
   getWorkspaceAttention,
   getTabAttention,
 } from "../app/selectors.js";
-import { statusTone } from "../workspace-state.js";
 import {
   readSidebarCollapsed,
   isContainerRunning,
@@ -25,26 +24,44 @@ import { createDialogActions } from "./app-dialog-actions.js";
 import { createWorkspaceActions } from "./app-workspace-actions.js";
 import { createApiActions } from "./app-api-actions.js";
 import { useGitUiStore } from "./git-ui.js";
+import type { StatePayload } from "../../electron/shared/types/state.js";
+import type { Transport } from "../transport.js";
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type AnyApi = any;
+
+interface SplitGroup {
+  layout: string;
+  viewIds: string[];
+}
+
+interface WorkspacePayloadCache {
+  workspace: unknown;
+  docker: unknown;
+  attention: unknown;
+  activeWorkspaceGit: unknown;
+  activeProjectGit: unknown;
+}
 
 export const useAppStore = defineStore("app", () => {
   // --- Server payload (shallowRef for performance — never deeply reactive) ---
-  const payload = shallowRef(null);
+  const payload = shallowRef<StatePayload | null>(null);
 
   // --- UI state ---
-  const activeViewId = ref(null);
-  const activeSessionId = ref(null);
-  const splitGroup = ref(null); // { layout, viewIds } | null
-  const hiddenViewIds = ref(new Set());
+  const activeViewId = ref<string | null>(null);
+  const activeSessionId = ref<string | null>(null);
+  const splitGroup = ref<SplitGroup | null>(null); // { layout, viewIds } | null
+  const hiddenViewIds = ref(new Set<string>());
   const sidebarCollapsed = ref(readSidebarCollapsed());
-  const overlay = ref(null); // Vue component name string | null
-  const overlayProps = ref({});
+  const overlay = ref<string | null>(null); // Vue component name string | null
+  const overlayProps = ref<Record<string, unknown>>({});
   const bootstrapError = ref("");
   const remoteConnectionIssue = ref("");
   const remoteAccessExpanded = ref(false);
   const remoteAccessMode = ref("lan"); // "lan" | "cloudflare" | "vps"
   const selectedLanUrl = ref("");
-  const contextMenu = ref(null); // { x, y, viewId } | null
-  const layoutPickerAnchor = ref(null); // DOMRect | null (for positioning)
+  const contextMenu = ref<{ x: number; y: number; viewId: string } | null>(null); // { x, y, viewId } | null
+  const layoutPickerAnchor = ref<DOMRect | null>(null); // DOMRect | null (for positioning)
   const starFilterActive = ref(false);
 
   // --- Race condition prevention ---
@@ -56,26 +73,26 @@ export const useAppStore = defineStore("app", () => {
   // Stores workspace-specific payload parts keyed by workspace ID.
   // On switch-back, cached data is restored instantly during the optimistic phase,
   // so tabs keep their real statuses ("running"/"idle") instead of flashing to "idle".
-  const _workspacePayloadCache = new Map();
+  const _workspacePayloadCache = new Map<string, WorkspacePayloadCache>();
 
   // --- Per-workspace split layout cache ---
   // Preserves split configuration when switching away from a workspace,
   // so the layout is restored when the user returns.
-  const _splitGroupCache = new Map();
+  const _splitGroupCache = new Map<string, SplitGroup>();
 
   // --- Error handling ---
-  const lastError = ref(null); // { label, message, timestamp } | null
+  const lastError = ref<{ label: string; message: string; timestamp: number } | null>(null); // { label, message, timestamp } | null
 
-  function dismissError() {
+  function dismissError(): void {
     lastError.value = null;
   }
 
   // --- Internal api reference (set in init) ---
-  let _api = null;
+  let _api: Transport | null = null;
 
   /** Getter so action modules can access _api after init(). */
-  function getApi() {
-    return _api;
+  function getApi(): Transport {
+    return _api!;
   }
 
   // --- Memoized computed ---
@@ -88,19 +105,22 @@ export const useAppStore = defineStore("app", () => {
   // Each fingerprint must include ALL fields that downstream consumers read.
 
   const activeWorkspace = computed(() => {
-    const ws = payload.value?.workspace;
+    const ws = (payload.value as AnyApi)?.workspace;
     return ws?.workspace || ws?.project || null;
   });
 
   let _prevFilteredWsKey = "";
-  let _prevFilteredWs = [];
+  let _prevFilteredWs: AnyApi[] = [];
   const filteredWorkspaces = computed(() => {
     const workspaces = payload.value?.appState?.workspaces || [];
     const activeProfileId = payload.value?.appState?.activeProfileId || "default";
-    const result = workspaces.filter((ws) => (ws.profileId || "default") === activeProfileId);
+    const result = workspaces.filter((ws: AnyApi) => (ws.profileId || "default") === activeProfileId);
     // Include names and panel counts — these change on rename/add-tab/remove-tab
     const key = result
-      .map((ws) => `${ws.id}:${ws.name}:${(ws.panels || []).length}:${ws.connectionId || ""}:${ws.starred ? 1 : 0}`)
+      .map(
+        (ws: AnyApi) =>
+          `${ws.id}:${ws.name}:${(ws.panels || []).length}:${ws.connectionId || ""}:${ws.starred ? 1 : 0}`,
+      )
       .join(",");
     if (key === _prevFilteredWsKey) return _prevFilteredWs;
     _prevFilteredWsKey = key;
@@ -109,12 +129,13 @@ export const useAppStore = defineStore("app", () => {
   });
 
   let _prevProfileKey = "";
-  let _prevProfile = null;
+  let _prevProfile: AnyApi = null;
   const activeProfile = computed(() => {
     const profiles = payload.value?.appState?.profiles || [];
     const activeId = payload.value?.appState?.activeProfileId || "default";
-    const found = profiles.find((p) => p.id === activeId) || { id: "default", name: "Default", color: "#ffa424" };
-    const key = `${found.id}:${found.name}:${found.color}`;
+    const found =
+      profiles.find((p: AnyApi) => p.id === activeId) || { id: "default", name: "Default", color: "#ffa424" };
+    const key = `${(found as AnyApi).id}:${(found as AnyApi).name}:${(found as AnyApi).color}`;
     if (key === _prevProfileKey && _prevProfile) return _prevProfile;
     _prevProfileKey = key;
     _prevProfile = found;
@@ -132,22 +153,21 @@ export const useAppStore = defineStore("app", () => {
   });
 
   let _prevTabsKey = "";
-  let _prevTabs = [];
+  let _prevTabs: AnyApi[] = [];
   const workspaceTabs = computed(() => {
-    const workspace = payload.value?.workspace;
+    const workspace = (payload.value as AnyApi)?.workspace;
     if (!workspace) return [];
     const result = getWorkspaceTabs({
       workspace,
       payload: payload.value,
       hiddenViewIds: hiddenViewIds.value,
-      statusTone,
       isContainerRunning,
     });
     // Fingerprint includes all visible fields: id, title, status, tone
-    const key = result.map((t) => `${t.id}:${t.type}:${t.title}:${t.status}:${t.tone}`).join("|");
+    const key = (result as AnyApi[]).map((t: AnyApi) => `${t.id}:${t.type}:${t.title}:${t.status}:${t.tone}`).join("|");
     if (key === _prevTabsKey) return _prevTabs;
     _prevTabsKey = key;
-    _prevTabs = result;
+    _prevTabs = result as AnyApi[];
     return result;
   });
 
@@ -156,9 +176,10 @@ export const useAppStore = defineStore("app", () => {
       tabs: workspaceTabs.value,
       activeViewId: activeViewId.value,
       splitGroup: splitGroup.value,
-      isInSplitGroup: (viewId, sg) => sg?.viewIds.includes(viewId) || false,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      isInSplitGroup: (viewId: string | null, sg: any) => (viewId ? sg?.viewIds?.includes(viewId) : false) || false,
     });
-    return result.visibleTabs;
+    return (result as AnyApi).visibleTabs;
   });
 
   // Auto-mark notifications as read when switching to the relevant tab
@@ -190,8 +211,8 @@ export const useAppStore = defineStore("app", () => {
     // Skip while a workspace activation is pending — the splitGroup update during
     // that window is just us restoring the persisted state, not a user change.
     if (pendingWorkspaceActivationId.value) return;
-    if (_api?.setWorkspaceUIState) {
-      _api
+    if ((_api as AnyApi)?.setWorkspaceUIState) {
+      (_api as AnyApi)
         .setWorkspaceUIState(wsId, {
           splitLayout: next?.layout || null,
           splitViewIds: next?.viewIds ? [...next.viewIds] : [],
@@ -201,10 +222,10 @@ export const useAppStore = defineStore("app", () => {
   });
 
   // Normalize activeViewId and splitGroup when tabs change
-  watch(workspaceTabs, (tabs) => {
-    const validIds = new Set(tabs.map((t) => t.id));
+  watch(workspaceTabs, (tabs: AnyApi[]) => {
+    const validIds = new Set((tabs as AnyApi[]).map((t: AnyApi) => t.id));
     if (!activeViewId.value || !validIds.has(activeViewId.value)) {
-      activeViewId.value = tabs[0]?.id || null;
+      activeViewId.value = (tabs as AnyApi[])[0]?.id || null;
     }
     if (splitGroup.value) {
       const validSplitIds = splitGroup.value.viewIds.filter((id) => validIds.has(id));
@@ -243,8 +264,8 @@ export const useAppStore = defineStore("app", () => {
   // --- Helpers ---
 
   /** Save workspace-specific payload parts for the current workspace. */
-  function _cacheCurrentWorkspace() {
-    const p = payload.value;
+  function _cacheCurrentWorkspace(): void {
+    const p = payload.value as AnyApi;
     const wsId = p?.appState?.activeWorkspaceId;
     if (!wsId || !p?.workspace) return;
     _workspacePayloadCache.set(wsId, {
@@ -256,10 +277,10 @@ export const useAppStore = defineStore("app", () => {
     });
   }
 
-  function buildWorkspacePayloadSnapshot(workspaceId) {
+  function buildWorkspacePayloadSnapshot(workspaceId: string): AnyApi {
     const appState = payload.value?.appState;
     if (!appState) return null;
-    const workspace = (appState.workspaces || []).find((ws) => ws.id === workspaceId);
+    const workspace = (appState.workspaces || []).find((ws: AnyApi) => ws.id === workspaceId);
     if (!workspace) return null;
 
     // Strategy 2: return full cached workspace payload if available
@@ -270,10 +291,10 @@ export const useAppStore = defineStore("app", () => {
     return {
       workspace,
       project: workspace,
-      sessions: (workspace.panels || [])
-        .filter((panel) => !/^https?:\/\//i.test(panel.command || ""))
-        .map((panel) => ({
-          sessionId: `${workspace.id}:${panel.id}`,
+      sessions: ((workspace as AnyApi).panels || [])
+        .filter((panel: AnyApi) => !/^https?:\/\//i.test(panel.command || ""))
+        .map((panel: AnyApi) => ({
+          sessionId: `${(workspace as AnyApi).id}:${panel.id}`,
           panelId: panel.id,
           title: panel.title,
           command: panel.command,
@@ -284,7 +305,7 @@ export const useAppStore = defineStore("app", () => {
     };
   }
 
-  function isSessionViewIdFor(viewId, workspaceId) {
+  function isSessionViewIdFor(viewId: string, workspaceId: string): boolean {
     if (typeof viewId !== "string" || !viewId || !workspaceId) return false;
     if (isGitViewId(viewId) || isDockerViewId(viewId) || isAzureViewId(viewId) || isGitHubViewId(viewId)) return false;
     if (isReviewViewId(viewId) || isBrowserViewId(viewId) || isFilesViewId(viewId) || isTaskDashboardViewId(viewId))
@@ -292,7 +313,7 @@ export const useAppStore = defineStore("app", () => {
     return viewId.startsWith(`${workspaceId}:`);
   }
 
-  function resolveSplitForWorkspace(workspaceEntry, workspaceId) {
+  function resolveSplitForWorkspace(workspaceEntry: AnyApi, workspaceId: string): SplitGroup | null {
     if (
       workspaceEntry?.splitLayout &&
       Array.isArray(workspaceEntry.splitViewIds) &&
@@ -303,14 +324,14 @@ export const useAppStore = defineStore("app", () => {
     const cached = _splitGroupCache.get(workspaceId);
     if (cached) return cached;
     if (workspaceEntry?.kind === "task" && workspaceEntry.panels?.length >= 3) {
-      const viewIds = workspaceEntry.panels.slice(0, 3).map((p) => {
+      const viewIds = workspaceEntry.panels.slice(0, 3).map((p: AnyApi) => {
         if (p.command === "__task-dashboard__") return `task-dashboard:${p.id}`;
         return `${workspaceId}:${p.id}`;
       });
       return { layout: "top-split", viewIds };
     }
     if (workspaceEntry?.kind === "task" && workspaceEntry.panels?.length >= 2) {
-      const viewIds = workspaceEntry.panels.slice(0, 2).map((p) => {
+      const viewIds = workspaceEntry.panels.slice(0, 2).map((p: AnyApi) => {
         if (p.command === "__task-dashboard__") return `task-dashboard:${p.id}`;
         return `${workspaceId}:${p.id}`;
       });
@@ -319,7 +340,11 @@ export const useAppStore = defineStore("app", () => {
     return null;
   }
 
-  function applyWorkspaceUIStateFromEntry(wsEntry, workspaceId, { optimisticOnly = false } = {}) {
+  function applyWorkspaceUIStateFromEntry(
+    wsEntry: AnyApi,
+    workspaceId: string,
+    { optimisticOnly = false } = {},
+  ): void {
     if (!workspaceId) return;
     const nextSplit = resolveSplitForWorkspace(wsEntry, workspaceId);
     splitGroup.value = nextSplit;
@@ -345,9 +370,9 @@ export const useAppStore = defineStore("app", () => {
     activeSessionId.value = isSessionViewIdFor(nextViewId, workspaceId) ? nextViewId : null;
   }
 
-  function applyOptimisticWorkspaceActivation(workspaceId) {
+  function applyOptimisticWorkspaceActivation(workspaceId: string): boolean {
     const appState = payload.value?.appState;
-    if (!appState || !(appState.workspaces || []).some((ws) => ws.id === workspaceId)) {
+    if (!appState || !(appState.workspaces || []).some((ws: AnyApi) => ws.id === workspaceId)) {
       return false;
     }
 
@@ -357,16 +382,16 @@ export const useAppStore = defineStore("app", () => {
     pendingWorkspaceActivationId.value = workspaceId;
 
     const cached = _workspacePayloadCache.get(workspaceId);
-    const prevGit = payload.value.git;
+    const prevGit = (payload.value as AnyApi).git;
     payload.value = {
-      ...payload.value,
+      ...(payload.value as AnyApi),
       appState: { ...appState, activeWorkspaceId: workspaceId, activeProjectId: workspaceId },
       workspace: buildWorkspacePayloadSnapshot(workspaceId),
       // Restore cached workspace-specific data (docker, attention, active git)
       ...(cached
         ? {
-            docker: cached.docker ?? payload.value.docker,
-            attention: cached.attention ?? payload.value.attention,
+            docker: cached.docker ?? (payload.value as AnyApi).docker,
+            attention: cached.attention ?? (payload.value as AnyApi).attention,
             git: {
               ...prevGit,
               activeWorkspace: cached.activeWorkspaceGit ?? prevGit?.activeWorkspace,
@@ -374,18 +399,18 @@ export const useAppStore = defineStore("app", () => {
             },
           }
         : {}),
-    };
+    } as StatePayload;
 
-    const wsEntry = (appState.workspaces || []).find((ws) => ws.id === workspaceId);
+    const wsEntry = (appState.workspaces || []).find((ws: AnyApi) => ws.id === workspaceId);
     applyWorkspaceUIStateFromEntry(wsEntry, workspaceId, { optimisticOnly: true });
     return true;
   }
 
   // --- Broadcast handler ---
-  function handleBroadcastPayload(nextPayload) {
+  function handleBroadcastPayload(nextPayload: StatePayload): void {
     const pendingWsId = pendingWorkspaceActivationId.value;
-    const incomingWsId = nextPayload?.appState?.activeWorkspaceId || "";
-    const isBootstrap = Boolean(nextPayload?.meta?.bootstrap);
+    const incomingWsId = (nextPayload as AnyApi)?.appState?.activeWorkspaceId || "";
+    const isBootstrap = Boolean((nextPayload as AnyApi)?.meta?.bootstrap);
 
     if (pendingWsId && incomingWsId && incomingWsId !== pendingWsId) return;
     const completingActivation = pendingWsId && incomingWsId === pendingWsId && !isBootstrap;
@@ -396,29 +421,32 @@ export const useAppStore = defineStore("app", () => {
     bootstrapError.value = "";
     clearRemoteConnectionIssue();
 
-    const workspaceChanged = nextPayload?.appState?.activeWorkspaceId !== payload.value?.appState?.activeWorkspaceId;
+    const workspaceChanged =
+      (nextPayload as AnyApi)?.appState?.activeWorkspaceId !==
+      (payload.value as AnyApi)?.appState?.activeWorkspaceId;
     if (workspaceChanged || completingActivation) {
       // activateWorkspace() already cached the outgoing workspace's split
       // BEFORE optimistic activation swapped splitGroup.value. Caching here
       // would overwrite that with the NEW workspace's split under the OLD
       // workspace id — the same bug that ate the layout on every switch.
-      const nextWsId = nextPayload?.appState?.activeWorkspaceId;
-      const nextWsEntry = nextWsId ? (nextPayload?.appState?.workspaces || []).find((ws) => ws.id === nextWsId) : null;
+      const nextWsId = (nextPayload as AnyApi)?.appState?.activeWorkspaceId;
+      const nextWsEntry = nextWsId
+        ? ((nextPayload as AnyApi)?.appState?.workspaces || []).find((ws: AnyApi) => ws.id === nextWsId)
+        : null;
       applyWorkspaceUIStateFromEntry(nextWsEntry, nextWsId);
     }
 
     if (pendingViewActivationId.value) {
-      const nextWorkspace = nextPayload?.workspace;
+      const nextWorkspace = (nextPayload as AnyApi)?.workspace;
       const nextTabs = nextWorkspace
         ? getWorkspaceTabs({
             workspace: nextWorkspace,
             payload: nextPayload,
             hiddenViewIds: hiddenViewIds.value,
-            statusTone,
             isContainerRunning,
           })
         : [];
-      if (!nextTabs.some((tab) => tab.id === pendingViewActivationId.value)) return;
+      if (!(nextTabs as AnyApi[]).some((tab: AnyApi) => tab.id === pendingViewActivationId.value)) return;
       activeViewId.value = pendingViewActivationId.value;
       activeSessionId.value = pendingViewActivationId.value;
       if (!isBootstrap) pendingViewActivationId.value = "";
@@ -431,7 +459,7 @@ export const useAppStore = defineStore("app", () => {
   }
 
   // --- Actions ---
-  async function withSuppressedBroadcast(fn) {
+  async function withSuppressedBroadcast(fn: () => Promise<void>): Promise<void> {
     suppressBroadcast.value = true;
     try {
       return await fn();
@@ -442,27 +470,29 @@ export const useAppStore = defineStore("app", () => {
     }
   }
 
-  async function activateWorkspace(workspaceId) {
+  async function activateWorkspace(workspaceId: string): Promise<void> {
     const prevWsId = payload.value?.appState?.activeWorkspaceId;
     if (prevWsId && splitGroup.value) {
       _splitGroupCache.set(prevWsId, splitGroup.value);
     }
     applyOptimisticWorkspaceActivation(workspaceId);
     try {
-      const nextPayload = await _api.activateWorkspace(workspaceId);
+      const nextPayload = (await _api!.activateWorkspace(workspaceId)) as StatePayload;
       if (
         !pendingWorkspaceActivationId.value ||
-        nextPayload?.appState?.activeWorkspaceId === pendingWorkspaceActivationId.value
+        (nextPayload as AnyApi)?.appState?.activeWorkspaceId === pendingWorkspaceActivationId.value
       ) {
         payload.value = nextPayload;
         // Update cache with fresh server data for the newly activated workspace
         _cacheCurrentWorkspace();
-        if (!nextPayload?.meta?.bootstrap) pendingWorkspaceActivationId.value = "";
+        if (!(nextPayload as AnyApi)?.meta?.bootstrap) pendingWorkspaceActivationId.value = "";
         // Full restore (including special-prefix activeViewId) now that the real
         // payload is available — broadcastPayload may have already handled this, but
         // if the broadcast arrives after this await returns, the optimistic fallback
         // would otherwise stick.
-        const wsEntry = (nextPayload?.appState?.workspaces || []).find((ws) => ws.id === workspaceId);
+        const wsEntry = ((nextPayload as AnyApi)?.appState?.workspaces || []).find(
+          (ws: AnyApi) => ws.id === workspaceId,
+        );
         applyWorkspaceUIStateFromEntry(wsEntry, workspaceId);
       }
     } catch {
@@ -470,13 +500,13 @@ export const useAppStore = defineStore("app", () => {
     }
   }
 
-  async function activateView(viewId, { focus: _focus = true } = {}) {
+  async function activateView(viewId: string, { focus: _focus = true } = {}): Promise<void> {
     if (!viewId || viewId === activeViewId.value) return;
 
     activeViewId.value = viewId;
-    const selectedTab = workspaceTabs.value.find((tab) => tab.id === viewId) || null;
+    const selectedTab = (workspaceTabs.value as AnyApi[]).find((tab: AnyApi) => tab.id === viewId) || null;
     if (
-      (selectedTab && selectedTab.type !== "terminal") ||
+      (selectedTab && (selectedTab as AnyApi).type !== "terminal") ||
       isGitViewId(viewId) ||
       isDockerViewId(viewId) ||
       isAzureViewId(viewId) ||
@@ -491,15 +521,15 @@ export const useAppStore = defineStore("app", () => {
       // Persist the non-session active view so it's restored on workspace switch/restart.
       // Sessions already persist via api.activateSession below.
       const wsId = payload.value?.appState?.activeWorkspaceId;
-      if (wsId && _api?.setWorkspaceUIState) {
-        _api.setWorkspaceUIState(wsId, { activeViewId: viewId }).catch(() => {});
+      if (wsId && (_api as AnyApi)?.setWorkspaceUIState) {
+        (_api as AnyApi).setWorkspaceUIState(wsId, { activeViewId: viewId }).catch(() => {});
       }
       // Refresh git data on-demand when the Git tab is activated
       if (isGitViewId(viewId) && _api) {
         if (wsId) {
-          _api
+          (_api as AnyApi)
             .refreshGit(wsId)
-            .then((nextPayload) => {
+            .then((nextPayload: StatePayload) => {
               if (nextPayload && !pendingWorkspaceActivationId.value) {
                 payload.value = nextPayload;
                 _cacheCurrentWorkspace();
@@ -515,8 +545,8 @@ export const useAppStore = defineStore("app", () => {
     activeSessionId.value = viewId;
 
     try {
-      const nextPayload = await _api.activateSession(viewId);
-      if (pendingViewActivationId.value === viewId && !nextPayload?.meta?.bootstrap) {
+      const nextPayload = (await (_api as AnyApi).activateSession(viewId)) as StatePayload;
+      if (pendingViewActivationId.value === viewId && !(nextPayload as AnyApi)?.meta?.bootstrap) {
         pendingViewActivationId.value = "";
       }
       payload.value = nextPayload;
@@ -527,50 +557,55 @@ export const useAppStore = defineStore("app", () => {
     }
   }
 
-  function setRemoteConnectionIssue(message) {
+  function setRemoteConnectionIssue(message: string): void {
     remoteConnectionIssue.value = String(message || "").trim();
   }
 
-  function clearRemoteConnectionIssue() {
+  function clearRemoteConnectionIssue(): void {
     remoteConnectionIssue.value = "";
   }
 
   // --- Selectors exposed for components ---
-  function getGitSnapshot(workspaceId, rootPath = null) {
-    const entry = payload.value?.git?.workspaces?.[workspaceId] || payload.value?.git?.projects?.[workspaceId] || null;
+  function getGitSnapshot(workspaceId: string, rootPath: string | null = null): unknown {
+    const entry =
+      (payload.value as AnyApi)?.git?.workspaces?.[workspaceId] ||
+      (payload.value as AnyApi)?.git?.projects?.[workspaceId] ||
+      null;
     if (!entry) return null;
     if (!entry.roots) return entry; // legacy single-root payload
     const key = rootPath || entry.primaryRoot;
     return entry.roots?.[key] || entry.roots?.[entry.primaryRoot] || null;
   }
 
-  function getActiveGitSnapshot(workspaceId) {
+  function getActiveGitSnapshot(workspaceId: string): unknown {
     // Prefer in-memory active root from git-ui store (updates immediately on root selection).
     // Fall back to persisted activeRootPath from payload so the correct root shows on reload.
     const gitUiActiveRoot = useGitUiStore().getActiveRoot(workspaceId);
     if (gitUiActiveRoot) {
       // Validate that the active root still exists; reset to primary if stale
-      const entry = payload.value?.git?.workspaces?.[workspaceId] || payload.value?.git?.projects?.[workspaceId];
+      const entry =
+        (payload.value as AnyApi)?.git?.workspaces?.[workspaceId] ||
+        (payload.value as AnyApi)?.git?.projects?.[workspaceId];
       if (!entry?.roots || entry.roots[gitUiActiveRoot]) {
         return getGitSnapshot(workspaceId, gitUiActiveRoot);
       }
     }
     const ws =
-      filteredWorkspaces.value?.find((w) => w.id === workspaceId) ||
-      payload.value?.appState?.workspaces?.find?.((w) => w.id === workspaceId) ||
+      filteredWorkspaces.value?.find((w: AnyApi) => w.id === workspaceId) ||
+      (payload.value?.appState?.workspaces as AnyApi[] | undefined)?.find?.((w: AnyApi) => w.id === workspaceId) ||
       null;
-    return getGitSnapshot(workspaceId, ws?.activeRootPath || null);
+    return getGitSnapshot(workspaceId, (ws as AnyApi)?.activeRootPath || null);
   }
 
-  function getWorkspaceAttentionForId(workspaceId) {
+  function getWorkspaceAttentionForId(workspaceId: string): unknown {
     return getWorkspaceAttention(payload.value, workspaceId);
   }
 
-  function getTabAttentionForView(workspaceId, viewId) {
+  function getTabAttentionForView(workspaceId: string, viewId: string): unknown {
     return getTabAttention(payload.value, workspaceId, viewId, { isGitViewId, isDockerViewId });
   }
 
-  function getPanelByViewId(viewId, workspace = payload.value?.workspace) {
+  function getPanelByViewId(viewId: string, workspace = (payload.value as AnyApi)?.workspace): unknown {
     return getWorkspacePanelByViewId(viewId, workspace, {
       isGitViewId,
       isDockerViewId,
@@ -587,7 +622,7 @@ export const useAppStore = defineStore("app", () => {
     activeSessionId,
     splitGroup,
     hiddenViewIds,
-    workspaceTabs,
+    workspaceTabs: workspaceTabs as AnyApi,
     overlay,
     overlayProps,
     getApi,
@@ -613,21 +648,21 @@ export const useAppStore = defineStore("app", () => {
   });
 
   // --- Init ---
-  function init(api) {
+  function init(api: Transport): void {
     _api = api;
 
     api.onStateUpdated((nextPayload) => handleBroadcastPayload(nextPayload));
 
     api.onConnectionState?.((connection) => {
-      if (connection?.connected) {
+      if ((connection as AnyApi)?.connected) {
         clearRemoteConnectionIssue();
         return;
       }
-      if (connection?.message) setRemoteConnectionIssue(connection.message);
+      if ((connection as AnyApi)?.message) setRemoteConnectionIssue((connection as AnyApi).message);
     });
 
-    window.addEventListener("unhandledrejection", (event) => {
-      const error = event.reason;
+    window.addEventListener("unhandledrejection", (event: PromiseRejectionEvent) => {
+      const error = event.reason as AnyApi;
       if (!error?.isRemoteTransport) return;
       if (error.message) setRemoteConnectionIssue(error.message);
       event.preventDefault();
@@ -636,9 +671,10 @@ export const useAppStore = defineStore("app", () => {
     api
       .getState()
       .then((nextPayload) => {
+        const p = nextPayload as AnyApi;
         const pendingWsId = pendingWorkspaceActivationId.value;
-        const incomingWsId = nextPayload?.appState?.activeWorkspaceId || "";
-        const isBootstrap = Boolean(nextPayload?.meta?.bootstrap);
+        const incomingWsId = p?.appState?.activeWorkspaceId || "";
+        const isBootstrap = Boolean(p?.meta?.bootstrap);
 
         if (pendingWsId && incomingWsId && incomingWsId !== pendingWsId) return;
         if (pendingWsId && incomingWsId === pendingWsId && !isBootstrap) {
@@ -649,28 +685,27 @@ export const useAppStore = defineStore("app", () => {
         clearRemoteConnectionIssue();
 
         if (pendingViewActivationId.value) {
-          const nextWorkspace = nextPayload?.workspace;
+          const nextWorkspace = p?.workspace;
           const nextTabs = nextWorkspace
             ? getWorkspaceTabs({
                 workspace: nextWorkspace,
-                payload: nextPayload,
+                payload: p as StatePayload,
                 hiddenViewIds: hiddenViewIds.value,
-                statusTone,
                 isContainerRunning,
               })
             : [];
-          if (nextTabs.some((tab) => tab.id === pendingViewActivationId.value)) {
+          if ((nextTabs as AnyApi[]).some((tab: AnyApi) => tab.id === pendingViewActivationId.value)) {
             activeViewId.value = pendingViewActivationId.value;
             activeSessionId.value = pendingViewActivationId.value;
             if (!isBootstrap) pendingViewActivationId.value = "";
           }
         }
 
-        payload.value = nextPayload;
+        payload.value = p as StatePayload;
         // Seed cache with the initial workspace state on bootstrap
         _cacheCurrentWorkspace();
       })
-      .catch((error) => {
+      .catch((error: AnyApi) => {
         const message = error?.message?.includes("401")
           ? "Remote token is missing or invalid. Use the token from the desktop strIDEterm state file."
           : error?.message || "Unknown startup error.";
