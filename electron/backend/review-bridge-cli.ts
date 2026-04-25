@@ -1,8 +1,9 @@
+/// <reference types="node" />
 import fs from "node:fs/promises";
 import path from "node:path";
 import { createReviewBridgeStore } from "./review-bridge-store.js";
 
-function printHelp() {
+function printHelp(): void {
   console.log(`review-bridge-cli
 
 Usage:
@@ -21,9 +22,14 @@ Environment fallback:
 `);
 }
 
-function parseArgs(argv) {
+interface ParsedArgs {
+  command: string;
+  options: Record<string, string | boolean>;
+}
+
+function parseArgs(argv: string[]): ParsedArgs {
   const [command = "help", ...rest] = argv;
-  const options = {};
+  const options: Record<string, string | boolean> = {};
 
   for (let index = 0; index < rest.length; index += 1) {
     const token = rest[index];
@@ -43,7 +49,7 @@ function parseArgs(argv) {
   return { command, options };
 }
 
-function deriveRootPath(options) {
+function deriveRootPath(options: Record<string, string | boolean>): string {
   const explicit = String(options.root || process.env.STRIDETERM_REVIEW_ROOT || "").trim();
   if (explicit) {
     return explicit;
@@ -57,7 +63,7 @@ function deriveRootPath(options) {
   throw new Error("Review bridge root path was not provided. Set STRIDETERM_REVIEW_ROOT or STRIDETERM_REVIEW_DB.");
 }
 
-function derivePrKey(options) {
+function derivePrKey(options: Record<string, string | boolean>): string {
   const prKey = String(options["pr-key"] || process.env.STRIDETERM_REVIEW_PR_KEY || "").trim();
   if (!prKey) {
     throw new Error("Pull request key was not provided. Use --pr-key or STRIDETERM_REVIEW_PR_KEY.");
@@ -65,7 +71,49 @@ function derivePrKey(options) {
   return prKey;
 }
 
-function selectComment(context, options) {
+interface ReviewCommentEntry {
+  commentKey: string;
+  commentKind?: string;
+  status?: string;
+  priority?: string;
+  title?: string;
+  summary?: string;
+  remoteThreadId?: number | null;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  payload?: Record<string, any>;
+  updatedAt?: string | null;
+  createdAt?: string | null;
+}
+
+interface ReviewDraftEntry {
+  draftId?: string;
+  commentKey: string;
+  status?: string;
+}
+
+interface ReviewThreadReply {
+  id?: string | number;
+  author?: { displayName?: string };
+  content?: string;
+}
+
+interface ReviewThreadEntry {
+  id?: string | number;
+  status?: string;
+  filePath?: string;
+  lineStart?: number | null;
+  lineEnd?: number | null;
+  comments?: ReviewThreadReply[];
+}
+
+interface ReviewContext {
+  prKey: string;
+  comments?: ReviewCommentEntry[];
+  drafts?: ReviewDraftEntry[];
+  threads?: ReviewThreadEntry[];
+}
+
+function selectComment(context: ReviewContext, options: Record<string, string | boolean>): { comment: ReviewCommentEntry; index: number } {
   const comments = context.comments || [];
   const commentKey = String(options["comment-key"] || "").trim();
   if (commentKey) {
@@ -83,7 +131,7 @@ function selectComment(context, options) {
   return { comment: comments[indexValue - 1], index: indexValue };
 }
 
-function buildCommentDetail(context, comment) {
+function buildCommentDetail(context: ReviewContext, comment: ReviewCommentEntry) {
   const threadId = comment.remoteThreadId ?? comment.payload?.threadId ?? null;
   const thread =
     threadId == null ? null : (context.threads || []).find((entry) => Number(entry.id) === Number(threadId)) || null;
@@ -109,7 +157,7 @@ function buildCommentDetail(context, comment) {
   };
 }
 
-function printComments(context, asJson = false) {
+function printComments(context: ReviewContext, asJson = false): void {
   const comments = (context.comments || []).map((comment, index) => ({
     index: index + 1,
     commentKey: comment.commentKey,
@@ -141,7 +189,7 @@ function printComments(context, asJson = false) {
   }
 }
 
-async function readBody(options) {
+async function readBody(options: Record<string, string | boolean>): Promise<string> {
   if (typeof options.body === "string") {
     return options.body;
   }
@@ -151,7 +199,7 @@ async function readBody(options) {
   throw new Error("Draft body is required. Use --body or --body-file.");
 }
 
-async function main() {
+async function main(): Promise<void> {
   const { command, options } = parseArgs(process.argv.slice(2));
   if (!command || command === "help" || command === "--help" || command === "-h") {
     printHelp();
@@ -246,7 +294,7 @@ async function main() {
       });
       const createdComment = [...(nextContext?.comments || [])]
         .filter((entry) => entry.commentKind === "draft" || entry.commentKind === "local-comment")
-        .sort((left, right) => Date.parse(right.updatedAt || 0) - Date.parse(left.updatedAt || 0))[0];
+        .sort((left, right) => Date.parse(right.updatedAt || "0") - Date.parse(left.updatedAt || "0"))[0];
       console.log(
         JSON.stringify(
           {
