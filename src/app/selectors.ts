@@ -1,7 +1,65 @@
-export function summarizeAttention(payload) {
-  const alerts = Object.values(payload?.attention?.byWorkspace || payload?.attention?.byProject || {})
+import type { StatePayload, WorkspaceState, PanelState } from "../../electron/shared/types/state.js";
+
+// ---------------------------------------------------------------------------
+// Local structural types used by selectors
+// ---------------------------------------------------------------------------
+
+interface SessionLike {
+  sessionId: string;
+  panelId: string;
+  title: string;
+  status: string;
+  activity?: string;
+  lastExitCode?: number | null;
+}
+
+interface WorkspaceContainer {
+  workspace?: WorkspaceState;
+  project?: WorkspaceState;
+  sessions: SessionLike[];
+}
+
+interface AttentionAlert {
+  sessionId?: string;
+  panelId?: string;
+  kind?: string;
+  at?: string;
+  [key: string]: unknown;
+}
+
+interface AttentionEntry {
+  alerts?: AttentionAlert[];
+}
+
+interface SplitGroup {
+  viewIds: string[];
+  [key: string]: unknown;
+}
+
+interface WorkspaceTab {
+  id: string;
+  type: string;
+  title: string;
+  status: string;
+  tone: string;
+  persistent?: boolean;
+  closable?: boolean;
+  url?: string;
+}
+
+// ---------------------------------------------------------------------------
+
+export function summarizeAttention(payload: StatePayload | null | undefined): {
+  count: number;
+  waitingCount: number;
+} {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const byWorkspace = (payload?.attention as any)?.byWorkspace;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const byProject = (payload?.attention as any)?.byProject;
+  const alerts = Object.values((byWorkspace || byProject || {}) as Record<string, AttentionEntry>)
     .flatMap((entry) => entry?.alerts || [])
-    .sort((left, right) => new Date(right.at).getTime() - new Date(left.at).getTime());
+    .sort((left, right) => new Date(right.at ?? "").getTime() - new Date(left.at ?? "").getTime());
   return {
     count: alerts.length,
     waitingCount: alerts.filter((alert) => alert.kind === "waiting").length,
@@ -13,7 +71,7 @@ export function summarizeAttention(payload) {
 // UserPromptSubmit → Stop), "done" for ~3 s after finish, then "idle".
 // An idle tab gets no chip text — avoids the misleading permanent "running"
 // label the old code showed for every open PTY.
-function terminalStatusDisplay(session) {
+function terminalStatusDisplay(session: SessionLike): { status: string; tone: string } {
   if (session.status === "exited") return { status: "exited", tone: "error" };
   const activity = session.activity || "idle";
   if (activity === "running") return { status: "running", tone: "running" };
@@ -25,13 +83,18 @@ function terminalStatusDisplay(session) {
   return { status: "", tone: "idle" };
 }
 
-function getHeadlessJudgeTabMeta(activeWorkspace, payload, panelId) {
-  const liveTask = payload?.taskRunner?.[activeWorkspace?.id];
+function getHeadlessJudgeTabMeta(
+  activeWorkspace: WorkspaceState,
+  payload: StatePayload | null | undefined,
+  panelId: string,
+): { type: string; status: string; tone: string } | null {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const liveTask = (payload?.taskRunner as any)?.[activeWorkspace?.id] as Record<string, unknown> | undefined;
   if (!liveTask || liveTask.judgeExecutionMode !== "headless-copilot" || panelId !== liveTask.judgePanelId) {
     return null;
   }
 
-  const state = liveTask.state || "idle";
+  const state = String(liveTask.state || "idle");
   const running = !!liveTask.judgeProgrammaticRunning;
   let status = "headless judge";
   if (running || state === "judge-evaluating") status = "headless judge";
@@ -47,12 +110,24 @@ function getHeadlessJudgeTabMeta(activeWorkspace, payload, panelId) {
   };
 }
 
-export function getWorkspaceAttention(payload, workspaceId) {
-  return payload?.attention?.byWorkspace?.[workspaceId] || payload?.attention?.byProject?.[workspaceId] || null;
+export function getWorkspaceAttention(
+  payload: StatePayload | null | undefined,
+  workspaceId: string,
+): AttentionEntry | null {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const byWorkspace = (payload?.attention as any)?.byWorkspace as Record<string, AttentionEntry> | undefined;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const byProject = (payload?.attention as any)?.byProject as Record<string, AttentionEntry> | undefined;
+  return byWorkspace?.[workspaceId] || byProject?.[workspaceId] || null;
 }
 
-export function getTabAttention(payload, workspaceId, viewId, { isGitViewId, isDockerViewId }) {
-  if (!workspaceId || !viewId || isGitViewId(viewId) || isDockerViewId(viewId)) {
+export function getTabAttention(
+  payload: StatePayload | null | undefined,
+  workspaceId: string,
+  viewId: string,
+  helpers: { isGitViewId: (v: unknown) => boolean; isDockerViewId: (v: unknown) => boolean },
+): AttentionAlert | null {
+  if (!workspaceId || !viewId || helpers.isGitViewId(viewId) || helpers.isDockerViewId(viewId)) {
     return null;
   }
 
@@ -65,22 +140,38 @@ export function getTabAttention(payload, workspaceId, viewId, { isGitViewId, isD
   return workspaceAttention.alerts.find((alert) => alert.sessionId === viewId || alert.panelId === panelId) || null;
 }
 
-export function getWorkspaceTabs({ workspace, payload, hiddenViewIds, isContainerRunning }) {
+export function getWorkspaceTabs({
+  workspace,
+  payload,
+  hiddenViewIds,
+  isContainerRunning,
+}: {
+  workspace: WorkspaceContainer | null | undefined;
+  payload: StatePayload | null | undefined;
+  hiddenViewIds: Set<string>;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  isContainerRunning: (container: any) => boolean;
+}): WorkspaceTab[] {
   if (!workspace) {
     return [];
   }
 
-  const activeWorkspace = workspace.workspace || workspace.project;
-  const panels = activeWorkspace.panels || [];
+  const activeWorkspace = workspace.workspace ?? workspace.project;
+  if (!activeWorkspace) {
+    return [];
+  }
+  const panels: PanelState[] = activeWorkspace.panels || [];
   const panelMap = new Map(panels.map((panel) => [panel.id, panel]));
 
   if (activeWorkspace.kind === "azure") {
-    const azureTab = {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const inbox = (payload?.azureDevops as any)?.inbox;
+    const azureTab: WorkspaceTab = {
       id: `azure:${activeWorkspace.id}`,
       type: "azure",
       title: "Azure DevOps",
-      status: `${payload?.azureDevops?.inbox?.needsMyReview?.length || 0} reviews waiting`,
-      tone: (payload?.azureDevops?.inbox?.needsAttention?.length || 0) > 0 ? "error" : "running",
+      status: `${(inbox?.needsMyReview?.length as number | undefined) || 0} reviews waiting`,
+      tone: ((inbox?.needsAttention?.length as number | undefined) || 0) > 0 ? "error" : "running",
       persistent: true,
       closable: false,
     };
@@ -88,12 +179,14 @@ export function getWorkspaceTabs({ workspace, payload, hiddenViewIds, isContaine
   }
 
   if (activeWorkspace.kind === "github") {
-    const githubTab = {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const inbox = (payload?.github as any)?.inbox;
+    const githubTab: WorkspaceTab = {
       id: `github:${activeWorkspace.id}`,
       type: "github",
       title: "GitHub",
-      status: `${payload?.github?.inbox?.needsMyReview?.length || 0} reviews waiting`,
-      tone: (payload?.github?.inbox?.needsAttention?.length || 0) > 0 ? "error" : "running",
+      status: `${(inbox?.needsMyReview?.length as number | undefined) || 0} reviews waiting`,
+      tone: ((inbox?.needsAttention?.length as number | undefined) || 0) > 0 ? "error" : "running",
       persistent: true,
       closable: false,
     };
@@ -107,19 +200,19 @@ export function getWorkspaceTabs({ workspace, payload, hiddenViewIds, isContaine
   const nonTerminalPanelIds = new Set([...browserPanelIds, ...filesPanelIds, ...taskDashboardPanelIds]);
 
   // Terminal tabs from real sessions (exclude sessions for non-terminal panels)
-  const tabs = [
-    ...(["azure-devops", "github"].includes(activeWorkspace.review?.provider)
+  const tabs: WorkspaceTab[] = [
+    ...(["azure-devops", "github"].includes(activeWorkspace.review?.provider ?? "")
       ? [
           {
             id: `review:${activeWorkspace.id}`,
             type: "review",
             title: "Review",
             status:
-              activeWorkspace.review.pullRequest?.title ||
+              activeWorkspace.review?.pullRequest?.title ||
               (activeWorkspace.quickfix
                 ? "No PR yet"
-                : `${activeWorkspace.review.provider === "github" ? "GitHub" : "Azure"} review`),
-            tone: activeWorkspace.review.pullRequest ? "running" : "idle",
+                : `${activeWorkspace.review?.provider === "github" ? "GitHub" : "Azure"} review`),
+            tone: activeWorkspace.review?.pullRequest ? "running" : "idle",
             persistent: true,
             closable: false,
           },
@@ -200,8 +293,10 @@ export function getWorkspaceTabs({ workspace, payload, hiddenViewIds, isContaine
   }
 
   if (activeWorkspace.kind === "docker") {
-    const dockerState = payload?.docker || {};
-    const containers = dockerState.containers || [];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const dockerState = (payload?.docker as any) || {};
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const containers: unknown[] = (dockerState.containers as unknown[] | undefined) || [];
     const runningCount = containers.filter(isContainerRunning).length;
     tabs.push({
       id: `docker:${activeWorkspace.id}`,
@@ -229,9 +324,23 @@ export function getWorkspaceTabs({ workspace, payload, hiddenViewIds, isContaine
   return tabs.filter((tab) => !hiddenViewIds.has(tab.id));
 }
 
-export function getVisibleTabs({ tabs, activeViewId, splitGroup, isInSplitGroup }) {
+export function getVisibleTabs({
+  tabs,
+  activeViewId,
+  splitGroup,
+  isInSplitGroup,
+}: {
+  tabs: WorkspaceTab[];
+  activeViewId: string | null;
+  splitGroup: SplitGroup | null;
+  isInSplitGroup: (viewId: string | null, group: SplitGroup) => boolean;
+}): {
+  activeViewId: string | null;
+  splitGroup: SplitGroup | null;
+  visibleTabs: WorkspaceTab[];
+} {
   const validIds = new Set(tabs.map((tab) => tab.id));
-  const next = {
+  const next: { activeViewId: string | null; splitGroup: SplitGroup | null } = {
     activeViewId,
     splitGroup: splitGroup ? { ...splitGroup, viewIds: [...splitGroup.viewIds] } : null,
   };
@@ -247,7 +356,7 @@ export function getVisibleTabs({ tabs, activeViewId, splitGroup, isInSplitGroup 
     }
   }
 
-  let visibleIds;
+  let visibleIds: string[];
   if (next.splitGroup && isInSplitGroup(next.activeViewId, next.splitGroup)) {
     visibleIds = [...next.splitGroup.viewIds];
   } else {
@@ -257,27 +366,33 @@ export function getVisibleTabs({ tabs, activeViewId, splitGroup, isInSplitGroup 
   return {
     activeViewId: next.activeViewId,
     splitGroup: next.splitGroup,
-    visibleTabs: visibleIds.map((viewId) => tabs.find((tab) => tab.id === viewId)).filter(Boolean),
+    visibleTabs: visibleIds.map((viewId) => tabs.find((tab) => tab.id === viewId)).filter((t): t is WorkspaceTab => Boolean(t)),
   };
 }
 
 export function getWorkspacePanelByViewId(
-  viewId,
-  workspace,
-  { isGitViewId, isDockerViewId, isAzureViewId, isGitHubViewId, isReviewViewId },
-) {
+  viewId: string,
+  workspace: WorkspaceContainer | null | undefined,
+  helpers: {
+    isGitViewId: (v: unknown) => boolean;
+    isDockerViewId: (v: unknown) => boolean;
+    isAzureViewId: (v: unknown) => boolean;
+    isGitHubViewId?: (v: unknown) => boolean;
+    isReviewViewId: (v: unknown) => boolean;
+  },
+): { workspace: WorkspaceState; panel: PanelState } | null {
   if (
     !workspace ||
-    isGitViewId(viewId) ||
-    isDockerViewId(viewId) ||
-    isAzureViewId(viewId) ||
-    isGitHubViewId?.(viewId) ||
-    isReviewViewId(viewId)
+    helpers.isGitViewId(viewId) ||
+    helpers.isDockerViewId(viewId) ||
+    helpers.isAzureViewId(viewId) ||
+    helpers.isGitHubViewId?.(viewId) ||
+    helpers.isReviewViewId(viewId)
   ) {
     return null;
   }
 
-  const activeWorkspace = workspace.workspace || workspace.project;
+  const activeWorkspace = workspace.workspace ?? workspace.project;
   const panelId = String(viewId || "")
     .split(":")
     .slice(1)
@@ -287,7 +402,7 @@ export function getWorkspacePanelByViewId(
   }
 
   const panel = activeWorkspace?.panels?.find((entry) => entry.id === panelId) || null;
-  if (!panel) {
+  if (!panel || !activeWorkspace) {
     return null;
   }
 

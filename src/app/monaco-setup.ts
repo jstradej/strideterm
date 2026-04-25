@@ -21,7 +21,7 @@ import TsWorker from "monaco-editor/esm/vs/language/typescript/ts.worker?worker"
 
 if (typeof self !== "undefined" && !self.MonacoEnvironment) {
   self.MonacoEnvironment = {
-    getWorker(_id, label) {
+    getWorker(_id: string, label: string): Worker {
       switch (label) {
         case "json":
           return new JsonWorker();

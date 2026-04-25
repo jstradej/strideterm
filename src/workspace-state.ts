@@ -1,6 +1,28 @@
 import { APP_CONFIG } from "../config/app-config.js";
 
-export function createEmptyWorkspace() {
+export interface EmptyPanel {
+  id: string;
+  title: string;
+  command: string;
+  shell: boolean;
+  startup: string;
+}
+
+export interface EmptyWorkspace {
+  id: string;
+  name: string;
+  icon: string;
+  color: string;
+  kind: string;
+  source: string;
+  pluginId: string;
+  cwd: string;
+  notes: string;
+  activePanelId: string;
+  panels: EmptyPanel[];
+}
+
+export function createEmptyWorkspace(): EmptyWorkspace {
   const panelId = `panel-${crypto.randomUUID()}`;
   return {
     id: `workspace-${crypto.randomUUID()}`,
@@ -25,15 +47,15 @@ export function createEmptyWorkspace() {
   };
 }
 
-export function cloneWorkspace(workspace) {
-  return JSON.parse(JSON.stringify(workspace));
+export function cloneWorkspace<T>(workspace: T): T {
+  return JSON.parse(JSON.stringify(workspace)) as T;
 }
 
-export function normalizeWorkspaces(workspaces) {
+export function normalizeWorkspaces<T>(workspaces: T[]): T[] {
   return [...workspaces];
 }
 
-export function statusTone(status) {
+export function statusTone(status: string): "running" | "error" | "idle" {
   switch (status) {
     case "running":
       return "running";

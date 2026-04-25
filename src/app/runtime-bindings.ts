@@ -1,47 +1,119 @@
-function readActiveAttention(payload, workspaceId) {
-  return payload?.attention?.byWorkspace?.[workspaceId] || payload?.attention?.byProject?.[workspaceId] || null;
+import type { StatePayload } from "../../electron/shared/types/state.js";
+
+// ---------------------------------------------------------------------------
+// Local structural types
+// ---------------------------------------------------------------------------
+
+interface RuntimeTab {
+  id: string;
+  [key: string]: unknown;
 }
 
-function readActiveGitSnapshot(payload, workspaceId) {
+interface RuntimeWorkspace {
+  [key: string]: unknown;
+}
+
+interface RuntimeState {
+  pendingWorkspaceActivationId: string;
+  bootstrapError: string;
+  payload: StatePayload | null;
+  splitGroup: unknown;
+  pendingViewActivationId: string;
+  activeViewId: string | null;
+  activeSessionId: string | null;
+  overlay: unknown;
+  _suppressBroadcastRender: boolean;
+  [key: string]: unknown;
+}
+
+interface ConnectionState {
+  connected: boolean;
+  message?: string;
+}
+
+interface RuntimeApi {
+  onStateUpdated: (handler: (payload: StatePayload) => void) => void;
+  onTerminalData: (handler: (payload: { sessionId: string; data: string }) => void) => void;
+  onTerminalExit: (handler: (payload: { sessionId: string; exitCode: number; intentional?: boolean }) => void) => void;
+  onConnectionState?: (handler: (connection: ConnectionState) => void) => void;
+  activateWorkspace: (workspaceId: string) => Promise<unknown>;
+  restartTerminal: (sessionId: string) => Promise<unknown>;
+  getState: () => Promise<StatePayload>;
+}
+
+interface TerminalControllerLike {
+  handleTerminalData: (payload: { sessionId: string; data: string }) => void;
+  handleTerminalExit: (payload: { sessionId: string; exitCode: number; intentional?: boolean }) => void;
+}
+
+// ---------------------------------------------------------------------------
+
+function readActiveAttention(
+  payload: StatePayload | null | undefined,
+  workspaceId: string,
+): unknown {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const att = payload?.attention as any;
+  return att?.byWorkspace?.[workspaceId] || att?.byProject?.[workspaceId] || null;
+}
+
+function readActiveGitSnapshot(
+  payload: StatePayload | null | undefined,
+  workspaceId: string,
+): unknown {
   return payload?.git?.workspaces?.[workspaceId] || payload?.git?.projects?.[workspaceId] || null;
 }
 
-function readActiveReviewBridge(payload, reviewPrKey) {
-  const context = reviewPrKey ? payload?.reviewBridge?.pullRequests?.[reviewPrKey] || null : null;
+function readActiveReviewBridge(
+  payload: StatePayload | null | undefined,
+  reviewPrKey: string,
+): unknown {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const pullRequests = (payload?.reviewBridge as any)?.pullRequests as Record<string, any> | undefined;
+  const context: Record<string, unknown> | null = reviewPrKey ? pullRequests?.[reviewPrKey] || null : null;
   if (!context) {
     return null;
   }
   return {
     prKey: context.prKey,
     exportDir: context.exportDir,
-    comments: (context.comments || []).map((c) => ({
-      commentKey: c.commentKey,
-      commentKind: c.commentKind,
-      displayIndex: c.displayIndex,
-      remoteThreadId: c.remoteThreadId,
-      title: c.title,
-      summary: c.summary,
-      status: c.status,
-      priority: c.priority,
-      updatedAt: c.updatedAt,
-      payload: c.payload || {},
-    })),
-    drafts: (context.drafts || []).map((draft) => ({
-      draftId: draft.draftId,
-      commentKey: draft.commentKey,
-      body: draft.body,
-      status: draft.status,
-      authorAgent: draft.authorAgent,
-      updatedAt: draft.updatedAt,
-    })),
-    syncQueue: (context.syncQueue || []).map((item) => ({
-      queueId: item.queueId,
-      operation: item.operation,
-      status: item.status,
-      attempts: item.attempts,
-      lastError: item.lastError,
-      updatedAt: item.updatedAt,
-    })),
+    comments: ((context.comments as unknown[]) || []).map((c) => {
+      const comment = c as Record<string, unknown>;
+      return {
+        commentKey: comment.commentKey,
+        commentKind: comment.commentKind,
+        displayIndex: comment.displayIndex,
+        remoteThreadId: comment.remoteThreadId,
+        title: comment.title,
+        summary: comment.summary,
+        status: comment.status,
+        priority: comment.priority,
+        updatedAt: comment.updatedAt,
+        payload: comment.payload || {},
+      };
+    }),
+    drafts: ((context.drafts as unknown[]) || []).map((d) => {
+      const draft = d as Record<string, unknown>;
+      return {
+        draftId: draft.draftId,
+        commentKey: draft.commentKey,
+        body: draft.body,
+        status: draft.status,
+        authorAgent: draft.authorAgent,
+        updatedAt: draft.updatedAt,
+      };
+    }),
+    syncQueue: ((context.syncQueue as unknown[]) || []).map((it) => {
+      const item = it as Record<string, unknown>;
+      return {
+        queueId: item.queueId,
+        operation: item.operation,
+        status: item.status,
+        attempts: item.attempts,
+        lastError: item.lastError,
+        updatedAt: item.updatedAt,
+      };
+    }),
     briefMarkdownPath: context.briefMarkdownPath,
     briefJsonPath: context.briefJsonPath,
     threadsMarkdownPath: context.threadsMarkdownPath,
@@ -53,12 +125,19 @@ function readActiveReviewBridge(payload, reviewPrKey) {
   };
 }
 
-function selectActiveWorkspaceRenderState(payload) {
+function selectActiveWorkspaceRenderState(payload: StatePayload | null | undefined): unknown {
   const activeWorkspaceId = payload?.appState?.activeWorkspaceId || "";
   const activeWorkspace =
     (payload?.appState?.workspaces || []).find((workspace) => workspace.id === activeWorkspaceId) || null;
   const reviewProvider = activeWorkspace?.review?.provider || "";
-  const reviewPrKey = ["azure-devops", "github"].includes(reviewProvider) ? activeWorkspace.review.prKey : "";
+  const reviewPrKey = ["azure-devops", "github"].includes(reviewProvider)
+    ? (activeWorkspace?.review?.prKey ?? "")
+    : "";
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const azureDevops = payload?.azureDevops as any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const github = payload?.github as any;
 
   return {
     activeWorkspaceId,
@@ -71,15 +150,18 @@ function selectActiveWorkspaceRenderState(payload) {
     githubInbox: activeWorkspace?.kind === "github" ? payload?.github || null : null,
     azureReview:
       reviewProvider === "azure-devops" && reviewPrKey
-        ? payload?.azureDevops?.pullRequests?.[reviewPrKey] || null
+        ? azureDevops?.pullRequests?.[reviewPrKey] || null
         : null,
     githubReview:
-      reviewProvider === "github" && reviewPrKey ? payload?.github?.pullRequests?.[reviewPrKey] || null : null,
+      reviewProvider === "github" && reviewPrKey ? github?.pullRequests?.[reviewPrKey] || null : null,
     reviewBridge: readActiveReviewBridge(payload, reviewPrKey),
   };
 }
 
-export function shouldRenderActiveWorkspace(nextPayload, previousPayload) {
+export function shouldRenderActiveWorkspace(
+  nextPayload: StatePayload | null | undefined,
+  previousPayload: StatePayload | null | undefined,
+): boolean {
   if (!previousPayload) {
     return true;
   }
@@ -89,7 +171,7 @@ export function shouldRenderActiveWorkspace(nextPayload, previousPayload) {
   );
 }
 
-const _splitGroupCache = new Map();
+const _splitGroupCache = new Map<string, unknown>();
 
 export function wireRuntimeBindings({
   api,
@@ -114,11 +196,34 @@ export function wireRuntimeBindings({
   isReviewViewId,
   isBrowserViewId,
   terminalController,
-}) {
+}: {
+  api: RuntimeApi;
+  state: RuntimeState;
+  terminalStage: Element;
+  focusActiveTerminal: () => void;
+  render: () => void;
+  renderBackground?: () => void;
+  renderBootstrapError: (message: string) => void;
+  clearRemoteConnectionIssue: () => void;
+  setRemoteConnectionIssue: (message: string) => void;
+  openNewWorkspaceFlow: () => Promise<void>;
+  getFilteredWorkspaces: () => Array<{ id: string }>;
+  shortcutTabDirection: (event: KeyboardEvent) => number;
+  getWorkspace: () => RuntimeWorkspace | null;
+  getWorkspaceTabs: (workspace: RuntimeWorkspace) => RuntimeTab[];
+  activateView: (id: string) => Promise<void>;
+  scheduleActiveResize: () => void;
+  isGitViewId: (v: unknown) => boolean;
+  isDockerViewId: (v: unknown) => boolean;
+  isAzureViewId: (v: unknown) => boolean;
+  isReviewViewId: (v: unknown) => boolean;
+  isBrowserViewId: (v: unknown) => boolean;
+  terminalController: TerminalControllerLike;
+}): void {
   api.onStateUpdated((payload) => {
     const pendingWorkspaceId = state.pendingWorkspaceActivationId || "";
     const incomingWorkspaceId = payload?.appState?.activeWorkspaceId || "";
-    const isBootstrapPayload = Boolean(payload?.meta?.bootstrap);
+    const isBootstrapPayload = Boolean((payload?.meta as unknown as Record<string, unknown> | undefined)?.bootstrap);
     if (pendingWorkspaceId && incomingWorkspaceId && incomingWorkspaceId !== pendingWorkspaceId) {
       return;
     }
@@ -136,7 +241,7 @@ export function wireRuntimeBindings({
       state.splitGroup = (nextWsId && _splitGroupCache.get(nextWsId)) || null;
     }
     if (state.pendingViewActivationId) {
-      const nextWorkspace = payload?.workspace;
+      const nextWorkspace = payload?.workspace as RuntimeWorkspace | null;
       const nextTabs = nextWorkspace ? getWorkspaceTabs(nextWorkspace) : [];
       if (!nextTabs.some((tab) => tab.id === state.pendingViewActivationId)) {
         return;
@@ -182,13 +287,13 @@ export function wireRuntimeBindings({
   });
 
   window.addEventListener("unhandledrejection", (event) => {
-    const error = event.reason;
+    const error = event.reason as Record<string, unknown> | undefined;
     if (!error?.isRemoteTransport) {
       return;
     }
 
     if (error.message) {
-      setRemoteConnectionIssue(error.message);
+      setRemoteConnectionIssue(String(error.message));
     }
     event.preventDefault();
   });
@@ -206,7 +311,7 @@ export function wireRuntimeBindings({
           if (index < workspaces.length) {
             const prevId = state.payload?.appState?.activeWorkspaceId;
             if (prevId && state.splitGroup) _splitGroupCache.set(prevId, state.splitGroup);
-            state.payload = await api.activateWorkspace(workspaces[index].id);
+            state.payload = (await api.activateWorkspace(workspaces[index].id)) as StatePayload;
             state.splitGroup = _splitGroupCache.get(workspaces[index].id) || null;
             render();
             focusActiveTerminal();
@@ -222,7 +327,7 @@ export function wireRuntimeBindings({
       }
       if (event.key.toLowerCase() === "r" && state.activeSessionId) {
         event.preventDefault();
-        state.payload = await api.restartTerminal(state.activeSessionId);
+        state.payload = (await api.restartTerminal(state.activeSessionId)) as StatePayload;
         render();
         focusActiveTerminal();
         return;
@@ -244,7 +349,9 @@ export function wireRuntimeBindings({
   );
 
   terminalStage.addEventListener("mousedown", (event) => {
-    const pane = event.target.closest(".workspace-pane");
+    const mouseEvent = event as MouseEvent;
+    const target = mouseEvent.target as Element | null;
+    const pane = target?.closest(".workspace-pane") as HTMLElement | null;
     if (!pane) {
       focusActiveTerminal();
       return;
@@ -271,7 +378,7 @@ export function wireRuntimeBindings({
     window.visualViewport.addEventListener("resize", () => {
       cancelAnimationFrame(viewportTimer);
       viewportTimer = requestAnimationFrame(() => {
-        document.documentElement.style.height = `${window.visualViewport.height}px`;
+        document.documentElement.style.height = `${window.visualViewport!.height}px`;
         scheduleActiveResize();
       });
     });
@@ -282,7 +389,7 @@ export function wireRuntimeBindings({
     .then((payload) => {
       const pendingWorkspaceId = state.pendingWorkspaceActivationId || "";
       const incomingWorkspaceId = payload?.appState?.activeWorkspaceId || "";
-      const isBootstrapPayload = Boolean(payload?.meta?.bootstrap);
+      const isBootstrapPayload = Boolean((payload?.meta as unknown as Record<string, unknown> | undefined)?.bootstrap);
       if (pendingWorkspaceId && incomingWorkspaceId && incomingWorkspaceId !== pendingWorkspaceId) {
         return;
       }
@@ -292,7 +399,7 @@ export function wireRuntimeBindings({
       state.bootstrapError = "";
       clearRemoteConnectionIssue();
       if (state.pendingViewActivationId) {
-        const nextWorkspace = payload?.workspace;
+        const nextWorkspace = payload?.workspace as RuntimeWorkspace | null;
         const nextTabs = nextWorkspace ? getWorkspaceTabs(nextWorkspace) : [];
         if (nextTabs.some((tab) => tab.id === state.pendingViewActivationId)) {
           state.activeViewId = state.pendingViewActivationId;
@@ -306,10 +413,11 @@ export function wireRuntimeBindings({
       render();
       focusActiveTerminal();
     })
-    .catch((error) => {
-      const message = error?.message?.includes("401")
+    .catch((error: unknown) => {
+      const err = error as { message?: string } | null | undefined;
+      const message = err?.message?.includes("401")
         ? "Remote token is missing or invalid. Use the token from the desktop strIDEterm state file."
-        : error?.message || "Unknown startup error.";
+        : err?.message || "Unknown startup error.";
       renderBootstrapError(message);
     });
 }

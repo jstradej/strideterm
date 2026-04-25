@@ -1,14 +1,53 @@
 import { attentionTitle, isFreshAttention, safeColor, tabAttentionTitle, isFreshAlert } from "./helpers.js";
+import type { WorkspaceState, GitSnapshot } from "../../electron/shared/types/state.js";
 
-function getParentId(ws) {
+// ---------------------------------------------------------------------------
+// Local structural types
+// ---------------------------------------------------------------------------
+
+interface TabLike {
+  id: string;
+  title: string;
+  status: string;
+  tone: string;
+  persistent?: boolean;
+  closable?: boolean;
+}
+
+interface AttentionLike {
+  count?: number;
+  alerts?: Array<{ title?: string; kind?: string; exitCode?: number; at?: string }>;
+  latestAt?: string;
+}
+
+interface ChecksLike {
+  failedCount?: number;
+  pendingCount?: number;
+  passedCount?: number;
+}
+
+interface PrStatusInfo {
+  status?: string;
+  closedDate?: string;
+}
+
+interface LiveTask {
+  state?: string;
+  currentRound?: number;
+  maxRounds?: number;
+}
+
+// ---------------------------------------------------------------------------
+
+function getParentId(ws: WorkspaceState): string | null {
   if (ws.review?.checkout?.mode === "managed-worktree" && ws.review?.parentWorkspaceId)
     return ws.review.parentWorkspaceId;
   if (ws.quickfix?.parentWorkspaceId) return ws.quickfix.parentWorkspaceId;
-  if (ws.task?.parentWorkspaceId) return ws.task.parentWorkspaceId;
+  if (ws.task?.parentWorkspaceId) return ws.task.parentWorkspaceId ?? null;
   return null;
 }
 
-function computeDepth(workspace, byId, seen = new Set()) {
+function computeDepth(workspace: WorkspaceState, byId: Map<string, WorkspaceState>, seen = new Set<string>()): number {
   const parentId = getParentId(workspace);
   if (parentId && !seen.has(parentId)) {
     const parent = byId.get(parentId);
@@ -19,7 +58,7 @@ function computeDepth(workspace, byId, seen = new Set()) {
     return 1;
   }
   if (
-    ["azure-devops", "github"].includes(workspace.review?.provider) &&
+    ["azure-devops", "github"].includes(workspace.review?.provider ?? "") &&
     workspace.review?.checkout?.mode === "managed-worktree"
   )
     return 1;
@@ -27,10 +66,34 @@ function computeDepth(workspace, byId, seen = new Set()) {
   return 0;
 }
 
-export function buildTabStripModel({ tabs, activeViewId, isInSplitGroup, getTabAttention }) {
+export function buildTabStripModel({
+  tabs,
+  activeViewId,
+  isInSplitGroup,
+  getTabAttention,
+}: {
+  tabs: TabLike[];
+  activeViewId: string;
+  isInSplitGroup: (id: string) => boolean;
+  getTabAttention: (id: string) => AttentionLike | null | undefined;
+}): Array<{
+  id: string;
+  title: string;
+  status: string;
+  tone: string;
+  active: boolean;
+  grouped: boolean;
+  persistent: boolean;
+  closable: boolean;
+  attention: boolean;
+  attentionFresh: boolean;
+  attentionTooltip: string;
+  titleTooltip: string;
+}> {
   return tabs.map((session) => {
     const tabAttention = getTabAttention(session.id);
-    const attentionTooltip = tabAttentionTitle(tabAttention);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const attentionTooltip = tabAttentionTitle(tabAttention as any);
     return {
       id: session.id,
       title: session.title,
@@ -41,7 +104,8 @@ export function buildTabStripModel({ tabs, activeViewId, isInSplitGroup, getTabA
       persistent: !!session.persistent,
       closable: session.closable !== false,
       attention: !!tabAttention,
-      attentionFresh: isFreshAlert(tabAttention),
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      attentionFresh: isFreshAlert(tabAttention as any),
       attentionTooltip,
       titleTooltip:
         attentionTooltip ||
@@ -60,7 +124,15 @@ export function buildWorkspaceCards({
   getChecks,
   getPrStatus,
   taskRunnerSnapshot,
-}) {
+}: {
+  workspaces: WorkspaceState[];
+  activeWorkspaceId: string;
+  getGitSnapshot: (id: string) => GitSnapshot | null | undefined;
+  getWorkspaceAttention: (id: string) => AttentionLike | null | undefined;
+  getChecks?: ((workspace: WorkspaceState) => ChecksLike | null | undefined) | null;
+  getPrStatus?: ((workspace: WorkspaceState) => PrStatusInfo | null | undefined) | null;
+  taskRunnerSnapshot?: Record<string, LiveTask> | null;
+}): Array<Record<string, unknown>> {
   const byId = new Map(workspaces.map((w) => [w.id, w]));
   return workspaces.map((workspace, index) => {
     const active = workspace.id === activeWorkspaceId;
@@ -69,7 +141,7 @@ export function buildWorkspaceCards({
     const attentionTooltip = attentionTitle(attention);
     const depth = computeDepth(workspace, byId);
     const isReviewChild =
-      ["azure-devops", "github"].includes(workspace.review?.provider) &&
+      ["azure-devops", "github"].includes(workspace.review?.provider ?? "") &&
       workspace.review?.checkout?.mode === "managed-worktree";
     const checks = typeof getChecks === "function" ? getChecks(workspace) : null;
     const checksState = checks?.failedCount

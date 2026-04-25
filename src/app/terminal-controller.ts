@@ -1,8 +1,35 @@
 import { Terminal } from "@xterm/xterm";
+import type { ITheme } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
+import type { Ref } from "vue";
+import type { APP_CONFIG } from "../../config/app-config.js";
+import type { StatePayload } from "../../electron/shared/types/state.js";
 
-function resolveTerminalTheme(appConfig) {
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+
+interface TerminalView {
+  mount: HTMLDivElement;
+  term: Terminal;
+  fitAddon: FitAddon;
+  lastSizeKey: string | null;
+  resizeFrame: number | null;
+  resizeObserver: ResizeObserver | null;
+  opened: boolean;
+}
+
+interface TerminalControllerApi {
+  resizeTerminal: (sessionId: string, size: { cols: number; rows: number }) => void;
+  writeTerminal: (sessionId: string, data: string) => void;
+}
+
+type AppConfig = typeof APP_CONFIG;
+
+// ---------------------------------------------------------------------------
+
+function resolveTerminalTheme(appConfig: AppConfig): ITheme {
   const isLight = document.documentElement.dataset.theme === "light";
   return isLight
     ? { background: "#f7f7f9", foreground: "#18181b", cursor: "#18181b", selectionBackground: "rgba(0,0,0,0.15)" }
@@ -27,17 +54,31 @@ export function createTerminalController({
   shortcutTabDirection,
   downloadTextFile,
   safeFilenamePart,
+}: {
+  views: Ref<Map<string, TerminalView>>;
+  buffers: Ref<Map<string, string>>;
+  getActiveSessionId: () => string | null;
+  getOverlay: () => unknown;
+  getPayload: () => StatePayload | null | undefined;
+  api: TerminalControllerApi;
+  appConfig: AppConfig;
+  openTerminalLink: (event: { preventDefault?: () => void } | null | undefined, uri: string) => void;
+  getWindowsPtyOptions: (payload: StatePayload | null | undefined) => { backend: string; buildNumber: number } | null;
+  shortcutTabDirection: (event: KeyboardEvent) => number;
+  downloadTextFile: (filename: string, content: string) => void;
+  safeFilenamePart: (value: unknown, fallback?: string) => string;
 }) {
-  function focusActiveTerminal() {
+  function focusActiveTerminal(): void {
     if (getOverlay()) return;
-    const activeView = getActiveSessionId() ? views.value.get(getActiveSessionId()) : null;
+    const activeSessionId = getActiveSessionId();
+    const activeView = activeSessionId ? views.value.get(activeSessionId) : null;
     if (!activeView) {
       return;
     }
     window.requestAnimationFrame(() => activeView.term.focus());
   }
 
-  function pruneTerminalViews(validSessionIds) {
+  function pruneTerminalViews(validSessionIds: Set<string>): void {
     for (const [sessionId, view] of views.value.entries()) {
       if (validSessionIds.has(sessionId)) {
         continue;
@@ -52,7 +93,7 @@ export function createTerminalController({
     }
   }
 
-  function scheduleSessionResize(sessionId, { force = false } = {}) {
+  function scheduleSessionResize(sessionId: string, { force = false } = {}): void {
     const view = views.value.get(sessionId);
     if (!view || !view.mount.isConnected) {
       return;
@@ -75,7 +116,7 @@ export function createTerminalController({
     });
   }
 
-  function scheduleDeferredTerminalFits(sessionId) {
+  function scheduleDeferredTerminalFits(sessionId: string): void {
     window.requestAnimationFrame(() => {
       scheduleSessionResize(sessionId, { force: true });
       const view = views.value.get(sessionId);
@@ -96,14 +137,15 @@ export function createTerminalController({
       .catch(() => {});
   }
 
-  function scheduleActiveResize(options) {
-    if (!getActiveSessionId()) {
+  function scheduleActiveResize(options?: { force?: boolean }): void {
+    const activeSessionId = getActiveSessionId();
+    if (!activeSessionId) {
       return;
     }
-    scheduleSessionResize(getActiveSessionId(), options);
+    scheduleSessionResize(activeSessionId, options);
   }
 
-  function scheduleAllVisibleResize() {
+  function scheduleAllVisibleResize(): void {
     for (const [sessionId, view] of views.value.entries()) {
       if (view.mount.isConnected) {
         scheduleSessionResize(sessionId, { force: true });
@@ -111,16 +153,16 @@ export function createTerminalController({
     }
   }
 
-  function ensureTerminal(sessionId) {
+  function ensureTerminal(sessionId: string): TerminalView {
     if (views.value.has(sessionId)) {
-      return views.value.get(sessionId);
+      return views.value.get(sessionId)!;
     }
 
     const mount = document.createElement("div");
     mount.className = "terminal-host";
     mount.dataset.sessionId = sessionId;
     const windowsPty = getWindowsPtyOptions(getPayload());
-    const term = new Terminal({
+    const term = new Terminal(({
       fontFamily:
         '"JetBrainsMono NFM", "CaskaydiaCove NFM", "MesloLGS NF", "FiraCode NFM", "Cascadia Mono NF", "Cascadia Code PL", "Cascadia Mono", "JetBrains Mono", "Fira Code", "Consolas", monospace',
       fontSize: 13,
@@ -137,7 +179,8 @@ export function createTerminalController({
         allowNonHttpProtocols: false,
       },
       theme: resolveTerminalTheme(appConfig),
-    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    }) as any);
     const fitAddon = new FitAddon();
     const webLinksAddon = new WebLinksAddon(openTerminalLink);
     term.loadAddon(fitAddon);
@@ -180,10 +223,10 @@ export function createTerminalController({
       opened: false,
     });
 
-    return views.value.get(sessionId);
+    return views.value.get(sessionId)!;
   }
 
-  function disconnectHiddenPaneObservers(visibleSessionIds) {
+  function disconnectHiddenPaneObservers(visibleSessionIds: Set<string>): void {
     for (const [sessionId, view] of views.value.entries()) {
       if (visibleSessionIds.has(sessionId)) {
         continue;
@@ -193,7 +236,7 @@ export function createTerminalController({
     }
   }
 
-  function attachTerminalPane(sessionId, paneBody) {
+  function attachTerminalPane(sessionId: string, paneBody: Element): TerminalView {
     const view = ensureTerminal(sessionId);
     paneBody.append(view.mount);
     if (!view.opened) {
@@ -218,14 +261,14 @@ export function createTerminalController({
     return view;
   }
 
-  function getTerminalTranscript(sessionId, { lineCount = 500 } = {}) {
+  function getTerminalTranscript(sessionId: string, { lineCount = 500 } = {}): string {
     const view = views.value.get(sessionId);
     const buffer = view?.term?.buffer?.active;
     if (!buffer) {
       return "";
     }
 
-    const lines = [];
+    const lines: string[] = [];
     const start = Math.max(0, buffer.length - lineCount);
     for (let index = start; index < buffer.length; index += 1) {
       const line = buffer.getLine(index);
@@ -244,12 +287,12 @@ export function createTerminalController({
     return lines.join("\n").trimEnd();
   }
 
-  function clearTerminalViewport(sessionId) {
+  function clearTerminalViewport(sessionId: string): void {
     const view = views.value.get(sessionId);
     view?.term?.clear();
   }
 
-  function exportTerminalTranscript(sessionId, { title = "Terminal", lineCount = 500 } = {}) {
+  function exportTerminalTranscript(sessionId: string, { title = "Terminal", lineCount = 500 } = {}): boolean {
     const transcript = getTerminalTranscript(sessionId, { lineCount });
     if (!transcript) {
       return false;
@@ -264,7 +307,7 @@ export function createTerminalController({
     return true;
   }
 
-  function handleTerminalData({ sessionId, data }) {
+  function handleTerminalData({ sessionId, data }: { sessionId: string; data: string }): void {
     const view = views.value.get(sessionId);
     if (!view || !view.opened) {
       buffers.value.set(sessionId, `${buffers.value.get(sessionId) || ""}${data}`);
@@ -273,7 +316,15 @@ export function createTerminalController({
     view.term.write(data);
   }
 
-  function handleTerminalExit({ sessionId, exitCode, intentional }) {
+  function handleTerminalExit({
+    sessionId,
+    exitCode,
+    intentional,
+  }: {
+    sessionId: string;
+    exitCode: number;
+    intentional?: boolean;
+  }): void {
     if (intentional) {
       return;
     }

@@ -1,6 +1,30 @@
 import { APP_CONFIG } from "../../config/app-config.js";
+import type { StatePayload } from "../../electron/shared/types/state.js";
 
-export function escapeHtml(value) {
+interface AttentionAlert {
+  title?: string;
+  kind?: string;
+  exitCode?: number;
+  at?: string;
+}
+
+interface AttentionLike {
+  count?: number;
+  alerts?: AttentionAlert[];
+  latestAt?: string;
+}
+
+interface DockerContextEntry {
+  Current?: string;
+  [key: string]: unknown;
+}
+
+interface ContainerLike {
+  State?: string;
+  Status?: string;
+}
+
+export function escapeHtml(value: unknown): string {
   return String(value ?? "")
     .replaceAll("&", "&amp;")
     .replaceAll("<", "&lt;")
@@ -9,23 +33,27 @@ export function escapeHtml(value) {
     .replaceAll("'", "&#39;");
 }
 
-export function safeColor(value) {
-  return /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(String(value || "")) ? value : APP_CONFIG.ui.defaultProjectColor;
+export function safeColor(value: unknown): string {
+  return /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(String(value || "")) ? String(value) : APP_CONFIG.ui.defaultProjectColor;
 }
 
-export function normalizeAbsoluteUrl(value) {
+export function normalizeAbsoluteUrl(value: unknown): string {
   if (!value) {
     return "";
   }
 
   try {
-    return new URL(value).toString();
+    return new URL(String(value)).toString();
   } catch {
     return "";
   }
 }
 
-export function preferredRemoteUrl({ urls = [], tunnelUrl = "", customPublicUrl = "" } = {}) {
+export function preferredRemoteUrl({
+  urls = [] as string[],
+  tunnelUrl = "",
+  customPublicUrl = "",
+} = {}): string {
   const normalizedCustom = normalizeAbsoluteUrl(customPublicUrl);
   if (normalizedCustom) {
     return normalizedCustom;
@@ -39,7 +67,7 @@ export function preferredRemoteUrl({ urls = [], tunnelUrl = "", customPublicUrl 
   return privateUrl || urls[0] || "";
 }
 
-export function withRemoteToken(value, token) {
+export function withRemoteToken(value: unknown, token: string): string {
   const normalized = normalizeAbsoluteUrl(value);
   if (!normalized) {
     return "";
@@ -56,7 +84,7 @@ export function withRemoteToken(value, token) {
   }
 }
 
-export function summarizeRemoteHost(url) {
+export function summarizeRemoteHost(url: string): string {
   if (!url) {
     return "Unavailable";
   }
@@ -68,7 +96,7 @@ export function summarizeRemoteHost(url) {
   }
 }
 
-export function openTerminalLink(event, uri) {
+export function openTerminalLink(event: { preventDefault?: () => void } | null | undefined, uri: string): void {
   event?.preventDefault?.();
 
   try {
@@ -88,7 +116,7 @@ export function openTerminalLink(event, uri) {
   }
 }
 
-export function downloadTextFile(filename, content) {
+export function downloadTextFile(filename: string, content: string): void {
   const blob = new Blob([content], { type: "text/plain;charset=utf-8" });
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
@@ -101,7 +129,7 @@ export function downloadTextFile(filename, content) {
   window.setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
-export function safeFilenamePart(value, fallback = "terminal") {
+export function safeFilenamePart(value: unknown, fallback = "terminal"): string {
   const normalized = String(value || "")
     .replace(/[\\/:*?"<>|]+/g, "-")
     .replace(/\s+/g, "-")
@@ -111,19 +139,22 @@ export function safeFilenamePart(value, fallback = "terminal") {
   return normalized || fallback;
 }
 
-export function getWindowsPtyOptions(payload) {
-  const windowsPty = payload?.environment?.windowsPty;
+export function getWindowsPtyOptions(
+  payload: StatePayload | null | undefined,
+): { backend: string; buildNumber: number } | null {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const windowsPty = (payload?.environment?.windowsPty as any) ?? null;
   if (!windowsPty?.backend || !Number.isInteger(windowsPty.buildNumber)) {
     return null;
   }
 
   return {
-    backend: windowsPty.backend,
-    buildNumber: windowsPty.buildNumber,
+    backend: windowsPty.backend as string,
+    buildNumber: windowsPty.buildNumber as number,
   };
 }
 
-export function currentDockerContext(contexts = []) {
+export function currentDockerContext(contexts: DockerContextEntry[] = []): DockerContextEntry | null {
   return (
     contexts.find((context) => {
       const marker = String(context.Current || "")
@@ -136,50 +167,50 @@ export function currentDockerContext(contexts = []) {
   );
 }
 
-export function isContainerRunning(container) {
+export function isContainerRunning(container: ContainerLike | null | undefined): boolean {
   const state = String(container?.State || "").toLowerCase();
   const status = String(container?.Status || "").toLowerCase();
   return state === "running" || status.startsWith("up ");
 }
 
-export function isGitViewId(value) {
+export function isGitViewId(value: unknown): boolean {
   return String(value || "").startsWith("git:");
 }
 
-export function isDockerViewId(value) {
+export function isDockerViewId(value: unknown): boolean {
   return String(value || "").startsWith("docker:");
 }
 
-export function isBrowserViewId(value) {
+export function isBrowserViewId(value: unknown): boolean {
   return String(value || "").startsWith("browser:");
 }
 
-export function isAzureViewId(value) {
+export function isAzureViewId(value: unknown): boolean {
   return String(value || "").startsWith("azure:");
 }
 
-export function isGitHubViewId(value) {
+export function isGitHubViewId(value: unknown): boolean {
   return String(value || "").startsWith("github:");
 }
 
-export function isReviewViewId(value) {
+export function isReviewViewId(value: unknown): boolean {
   return String(value || "").startsWith("review:");
 }
 
-export function isFilesViewId(value) {
+export function isFilesViewId(value: unknown): boolean {
   return String(value || "").startsWith("files:");
 }
 
-export function isTaskDashboardViewId(value) {
+export function isTaskDashboardViewId(value: unknown): boolean {
   return String(value || "").startsWith("task-dashboard:");
 }
 
-export function isUrlCommand(value) {
+export function isUrlCommand(value: unknown): boolean {
   const cmd = String(value || "").trim();
   return /^https?:\/\//i.test(cmd);
 }
 
-export function attentionTitle(attention) {
+export function attentionTitle(attention: AttentionLike | null | undefined): string {
   if (!attention?.count) {
     return "";
   }
@@ -189,11 +220,11 @@ export function attentionTitle(attention) {
   if (latest?.kind === "waiting") {
     return `${attention.count} terminal ${attention.count === 1 ? "needs" : "need"} input. ${latestTitle}`;
   }
-  const exitCode = Number.isInteger(latest?.exitCode) ? ` (exit ${latest.exitCode})` : "";
+  const exitCode = Number.isInteger(latest?.exitCode) ? ` (exit ${latest?.exitCode})` : "";
   return `${attention.count} finished terminal ${attention.count === 1 ? "task" : "tasks"}. ${latestTitle}${exitCode}`;
 }
 
-export function isFreshAttention(attention) {
+export function isFreshAttention(attention: AttentionLike | null | undefined): boolean {
   if (!attention?.latestAt) {
     return false;
   }
@@ -202,7 +233,7 @@ export function isFreshAttention(attention) {
   return Number.isFinite(latestAt) && Date.now() - latestAt < 12000;
 }
 
-export function tabAttentionTitle(alert) {
+export function tabAttentionTitle(alert: AttentionAlert | null | undefined): string {
   if (!alert) {
     return "";
   }
@@ -215,7 +246,7 @@ export function tabAttentionTitle(alert) {
   return `${alert.title || "Terminal"} needs attention${exitCode}.`;
 }
 
-export function isFreshAlert(alert) {
+export function isFreshAlert(alert: AttentionAlert | null | undefined): boolean {
   if (!alert?.at) {
     return false;
   }
@@ -224,7 +255,7 @@ export function isFreshAlert(alert) {
   return Number.isFinite(at) && Date.now() - at < 12000;
 }
 
-export function readSidebarCollapsed() {
+export function readSidebarCollapsed(): boolean {
   try {
     return window.localStorage.getItem("strideterm-sidebar-collapsed") === "1";
   } catch {
@@ -232,7 +263,7 @@ export function readSidebarCollapsed() {
   }
 }
 
-export function writeSidebarCollapsed(value) {
+export function writeSidebarCollapsed(value: boolean): void {
   try {
     window.localStorage.setItem("strideterm-sidebar-collapsed", value ? "1" : "0");
   } catch {
@@ -240,7 +271,7 @@ export function writeSidebarCollapsed(value) {
   }
 }
 
-export function readSidebarWidth() {
+export function readSidebarWidth(): number | null {
   try {
     const raw = window.localStorage.getItem("strideterm-sidebar-width");
     if (!raw) return null;
@@ -251,7 +282,7 @@ export function readSidebarWidth() {
   }
 }
 
-export function writeSidebarWidth(value) {
+export function writeSidebarWidth(value: number): void {
   try {
     window.localStorage.setItem("strideterm-sidebar-width", String(value));
   } catch {
@@ -259,7 +290,7 @@ export function writeSidebarWidth(value) {
   }
 }
 
-export function readNotificationDockWidth() {
+export function readNotificationDockWidth(): number | null {
   try {
     const raw = window.localStorage.getItem("strideterm-notif-dock-width");
     if (!raw) return null;
@@ -270,7 +301,7 @@ export function readNotificationDockWidth() {
   }
 }
 
-export function writeNotificationDockWidth(value) {
+export function writeNotificationDockWidth(value: number): void {
   try {
     window.localStorage.setItem("strideterm-notif-dock-width", String(value));
   } catch {
