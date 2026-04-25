@@ -4,18 +4,8 @@
 
 <script setup>
 import { ref, onMounted, onBeforeUnmount, watch } from "vue";
+import "../../app/monaco-setup.js";
 import * as monaco from "monaco-editor";
-
-// Configure workers for Vite — Monaco needs this for syntax validation.
-// Use inline data-uri workers to avoid separate worker file bundling issues.
-self.MonacoEnvironment = self.MonacoEnvironment || {
-  getWorker(_moduleId, _label) {
-    // For simple use (markdown, json, plaintext) we don't need language workers.
-    // Return a minimal no-op worker via blob URL.
-    const blob = new Blob(["self.onmessage = function() {}"], { type: "application/javascript" });
-    return new Worker(URL.createObjectURL(blob));
-  },
-};
 
 const props = defineProps({
   modelValue: { type: String, default: "" },

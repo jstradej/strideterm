@@ -143,6 +143,35 @@ describe("file-manager store", () => {
     expect(moveCalled).toBe(false);
   });
 
+  it("expandTreeNode preserves child entry identity across re-expansion of parent", async () => {
+    const treeResponses = {
+      "": [
+        { name: "src", relativePath: "src", kind: "directory", isHidden: false },
+        { name: "lib", relativePath: "lib", kind: "directory", isHidden: false },
+      ],
+      src: [{ name: "components", relativePath: "src/components", kind: "directory", isHidden: false }],
+    };
+    const { api } = makeFakeApi({
+      fileTree: async (p) => ({ entries: treeResponses[p.relativePath] || [] }),
+    });
+    const store = useFileManagerStore();
+    store.setApi(api);
+    await store.init("/r");
+
+    await store.expandTreeNode("src");
+    // Re-expand root; the previously expanded "src" node must still have the correct relativePath.
+    await store.expandTreeNode("");
+
+    const root = store.treeNodes.get("");
+    const srcChild = root.children.find((c) => c.entry.name === "src");
+    expect(srcChild).toBeDefined();
+    expect(srcChild.entry.relativePath).toBe("src");
+    // No child should accidentally take on the root's empty relativePath.
+    for (const child of root.children) {
+      expect(child.entry.relativePath).not.toBe("");
+    }
+  });
+
   it("clipboard cut + paste flow clears the clipboard, copy keeps it", async () => {
     const { api } = makeFakeApi();
     const store = useFileManagerStore();

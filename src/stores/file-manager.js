@@ -156,15 +156,14 @@ export const useFileManagerStore = defineStore("fileManager", () => {
 
       const next = new Map(treeNodes.value);
       const existing = next.get(relativePath);
+      const fallbackEntry = relativePath
+        ? { name: relativePath.split("/").pop(), relativePath, kind: "directory" }
+        : { name: rootPath.value.split(/[/\\]/).pop() || "Root", relativePath: "", kind: "directory" };
       next.set(relativePath, {
-        entry: existing?.entry || {
-          name: rootPath.value.split(/[/\\]/).pop() || "Root",
-          relativePath: "",
-          kind: "directory",
-        },
+        entry: existing?.entry || fallbackEntry,
         children: dirs.map((e) => {
           const prev = next.get(e.relativePath);
-          return prev || { entry: e, children: null, expanded: false };
+          return prev ? { ...prev, entry: e } : { entry: e, children: null, expanded: false };
         }),
         expanded: true,
       });

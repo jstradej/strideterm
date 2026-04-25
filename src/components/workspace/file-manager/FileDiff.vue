@@ -13,51 +13,50 @@
         <div class="fm-diff__controls">
           <div class="fm-diff__source">
             <label class="fm-diff__label">Compare against:</label>
-            <select class="fm-diff__select" :value="store.diffSource" @change="onSourceChange($event.target.value)">
-              <option value="head">HEAD (current commit)</option>
-              <option value="staged">Staged (index)</option>
-              <option value="branch">Branch…</option>
-              <option value="commit">Commit…</option>
-              <option value="tag">Tag…</option>
-            </select>
+            <div class="fm-diff__select-wrap">
+              <CustomSelect
+                :model-value="store.diffSource"
+                :options="sourceOptions"
+                placeholder="Source…"
+                @update:model-value="onSourceChange"
+              />
+            </div>
           </div>
 
           <div v-if="store.diffSource === 'branch'" class="fm-diff__source">
             <label class="fm-diff__label">Branch:</label>
-            <select
-              class="fm-diff__select"
-              :value="store.diffRevisionRef"
-              @change="store.setDiffSource('branch', $event.target.value)"
-            >
-              <option value="">— select —</option>
-              <option v-for="branch in store.diffRefs.branches" :key="branch" :value="branch">{{ branch }}</option>
-            </select>
+            <div class="fm-diff__select-wrap">
+              <CustomSelect
+                :model-value="store.diffRevisionRef"
+                :options="branchOptions"
+                placeholder="— select —"
+                @update:model-value="(v) => store.setDiffSource('branch', v)"
+              />
+            </div>
           </div>
 
           <div v-if="store.diffSource === 'tag'" class="fm-diff__source">
             <label class="fm-diff__label">Tag:</label>
-            <select
-              class="fm-diff__select"
-              :value="store.diffRevisionRef"
-              @change="store.setDiffSource('tag', $event.target.value)"
-            >
-              <option value="">— select —</option>
-              <option v-for="tag in store.diffRefs.tags" :key="tag" :value="tag">{{ tag }}</option>
-            </select>
+            <div class="fm-diff__select-wrap">
+              <CustomSelect
+                :model-value="store.diffRevisionRef"
+                :options="tagOptions"
+                placeholder="— select —"
+                @update:model-value="(v) => store.setDiffSource('tag', v)"
+              />
+            </div>
           </div>
 
           <div v-if="store.diffSource === 'commit'" class="fm-diff__source fm-diff__source--commit">
             <label class="fm-diff__label">Commit:</label>
-            <select
-              class="fm-diff__select"
-              :value="store.diffRevisionRef"
-              @change="store.setDiffSource('commit', $event.target.value)"
-            >
-              <option value="">— pick from log —</option>
-              <option v-for="commit in store.diffRefs.commits" :key="commit.hash" :value="commit.hash">
-                {{ commit.shortHash }} · {{ commit.subject }} ({{ formatDate(commit.date) }})
-              </option>
-            </select>
+            <div class="fm-diff__select-wrap fm-diff__select-wrap--wide">
+              <CustomSelect
+                :model-value="store.diffRevisionRef"
+                :options="commitOptions"
+                placeholder="— pick from log —"
+                @update:model-value="(v) => store.setDiffSource('commit', v)"
+              />
+            </div>
             <input
               type="text"
               class="fm-diff__input"
@@ -69,6 +68,31 @@
           </div>
 
           <div class="fm-diff__spacer"></div>
+
+          <div class="fm-diff__nav">
+            <button
+              type="button"
+              class="fm-diff__btn"
+              :disabled="!changeCount"
+              title="Previous change (Shift+F7)"
+              @click="goToChange(-1)"
+            >
+              ◀
+            </button>
+            <span class="fm-diff__nav-counter" :class="{ 'fm-diff__nav-counter--empty': !changeCount }">
+              <template v-if="changeCount">{{ currentChangeIndex + 1 }} / {{ changeCount }}</template>
+              <template v-else>no changes</template>
+            </span>
+            <button
+              type="button"
+              class="fm-diff__btn"
+              :disabled="!changeCount"
+              title="Next change (F7)"
+              @click="goToChange(1)"
+            >
+              ▶
+            </button>
+          </div>
 
           <div class="fm-diff__layout-toggle">
             <label class="fm-diff__label">Layout:</label>
@@ -121,8 +145,7 @@
 
         <footer class="fm-diff__footer">
           <span class="fm-diff__hint">
-            <kbd>Esc</kbd> close · synced scroll · arrows navigate changes · <kbd>F7</kbd>/<kbd>Shift+F7</kbd> next/prev
-            change
+            <kbd>Esc</kbd> close · synced scroll · <kbd>F7</kbd> next change · <kbd>Shift+F7</kbd> previous change
           </span>
         </footer>
       </div>
@@ -131,19 +154,43 @@
 </template>
 
 <script setup>
-import { onBeforeUnmount, onMounted, ref, watch, nextTick } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch, nextTick } from "vue";
+import "../../../app/monaco-setup.js";
 import * as monaco from "monaco-editor";
 import { useFileManagerStore } from "../../../stores/file-manager.js";
+import CustomSelect from "../../common/CustomSelect.vue";
 
 const store = useFileManagerStore();
+
+const sourceOptions = [
+  { value: "head", label: "HEAD (current commit)" },
+  { value: "staged", label: "Staged (index)" },
+  { value: "branch", label: "Branch…" },
+  { value: "commit", label: "Commit…" },
+  { value: "tag", label: "Tag…" },
+];
+
+const branchOptions = computed(() => (store.diffRefs.branches || []).map((b) => ({ value: b, label: b })));
+const tagOptions = computed(() => (store.diffRefs.tags || []).map((t) => ({ value: t, label: t })));
+const commitOptions = computed(() =>
+  (store.diffRefs.commits || []).map((c) => ({
+    value: c.hash,
+    label: `${c.shortHash} · ${c.subject} (${formatDate(c.date)})`,
+  })),
+);
 const containerRef = ref(null);
 const bodyRef = ref(null);
 const sideBySide = ref(true);
 const manualCommit = ref("");
 
+const changes = ref([]);
+const currentChangeIndex = ref(-1);
+const changeCount = computed(() => changes.value.length);
+
 let diffEditor = null;
 let resizeObserver = null;
 let escListener = null;
+let updateDiffDisposable = null;
 
 function labelForSource() {
   switch (store.diffSource) {
@@ -216,6 +263,36 @@ function ensureEditor() {
   resizeObserver = new ResizeObserver(() => layoutEditor());
   if (bodyRef.value) resizeObserver.observe(bodyRef.value);
   layoutEditor();
+
+  // Whenever Monaco recomputes the diff, refresh our change list. This fires
+  // after model swaps and after live edits (here it's read-only, so really
+  // just after model swaps).
+  updateDiffDisposable = diffEditor.onDidUpdateDiff(() => refreshChangeList());
+}
+
+function refreshChangeList() {
+  if (!diffEditor) {
+    changes.value = [];
+    currentChangeIndex.value = -1;
+    return;
+  }
+  const list = diffEditor.getLineChanges() || [];
+  changes.value = list;
+  currentChangeIndex.value = list.length ? 0 : -1;
+}
+
+function goToChange(direction) {
+  if (!diffEditor || !changes.value.length) return;
+  const total = changes.value.length;
+  const next = (currentChangeIndex.value + direction + total) % total;
+  currentChangeIndex.value = next;
+  const change = changes.value[next];
+  // Prefer the modified line; fall back to original if a pure deletion.
+  const targetLine =
+    change.modifiedStartLineNumber > 0 ? change.modifiedStartLineNumber : change.originalStartLineNumber;
+  const modifiedEditor = diffEditor.getModifiedEditor();
+  modifiedEditor.revealLineInCenter(targetLine);
+  modifiedEditor.setPosition({ lineNumber: targetLine, column: 1 });
 }
 
 function layoutEditor() {
@@ -254,12 +331,14 @@ watch(
       applyDiffModels();
       layoutEditor();
     } else {
-      // Tear down on close so the editor doesn't keep models around.
+      // Tear down on close. Detach models from the editor BEFORE disposing
+      // them — Monaco asserts that a TextModel attached to a DiffEditorWidget
+      // must not be disposed while still attached.
       if (diffEditor) {
         const model = diffEditor.getModel();
+        diffEditor.setModel(null);
         if (model?.original) model.original.dispose();
         if (model?.modified) model.modified.dispose();
-        diffEditor.setModel(null);
       }
     }
   },
@@ -279,8 +358,12 @@ watch(sideBySide, (value) => {
 
 onMounted(() => {
   escListener = (event) => {
-    if (event.key === "Escape" && store.diffOpen) {
+    if (!store.diffOpen) return;
+    if (event.key === "Escape") {
       store.closeDiff();
+    } else if (event.key === "F7") {
+      event.preventDefault();
+      goToChange(event.shiftKey ? -1 : 1);
     }
   };
   document.addEventListener("keydown", escListener);
@@ -293,8 +376,13 @@ onBeforeUnmount(() => {
     resizeObserver.disconnect();
     resizeObserver = null;
   }
+  if (updateDiffDisposable) {
+    updateDiffDisposable.dispose();
+    updateDiffDisposable = null;
+  }
   if (diffEditor) {
     const model = diffEditor.getModel();
+    diffEditor.setModel(null);
     if (model?.original) model.original.dispose();
     if (model?.modified) model.modified.dispose();
     diffEditor.dispose();
@@ -401,7 +489,15 @@ onBeforeUnmount(() => {
   font-size: 11px;
 }
 
-.fm-diff__select,
+.fm-diff__select-wrap {
+  width: 200px;
+}
+
+.fm-diff__select-wrap--wide {
+  width: 320px;
+  max-width: 50vw;
+}
+
 .fm-diff__input {
   background: var(--bg);
   border: 1px solid var(--border);
@@ -410,14 +506,9 @@ onBeforeUnmount(() => {
   font-size: 12px;
   padding: 3px 6px;
   outline: none;
-  max-width: 280px;
-}
-
-.fm-diff__input {
   width: 200px;
 }
 
-.fm-diff__select:focus,
 .fm-diff__input:focus {
   border-color: var(--accent);
 }
@@ -426,6 +517,28 @@ onBeforeUnmount(() => {
   display: inline-flex;
   align-items: center;
   gap: 4px;
+}
+
+.fm-diff__nav {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 6px;
+  border-left: 1px solid var(--border);
+  border-right: 1px solid var(--border);
+}
+
+.fm-diff__nav-counter {
+  font-size: 11px;
+  color: var(--text);
+  min-width: 56px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.fm-diff__nav-counter--empty {
+  color: var(--muted);
+  font-style: italic;
 }
 
 .fm-diff__btn {
@@ -438,9 +551,14 @@ onBeforeUnmount(() => {
   cursor: pointer;
 }
 
-.fm-diff__btn:hover {
+.fm-diff__btn:hover:not(:disabled) {
   background: var(--border);
   color: var(--text);
+}
+
+.fm-diff__btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
 }
 
 .fm-diff__btn--active {

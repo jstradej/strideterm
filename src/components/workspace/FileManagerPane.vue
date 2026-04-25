@@ -500,8 +500,16 @@ function onTreeRootDrop() {
 // Pane-level keyboard navigation: arrows, Enter, Backspace, Delete, F2, Ctrl+N, etc.
 function onKeydownPane(event) {
   const target = event.target;
-  // Don't intercept when typing in an input/textarea/contenteditable
-  if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)) {
+  // Don't intercept when typing in an input/textarea/contenteditable, nor when
+  // the event came from inside an embedded Monaco editor (which routes input
+  // through its own dispatcher rather than a plain textarea target).
+  if (
+    target &&
+    (target.tagName === "INPUT" ||
+      target.tagName === "TEXTAREA" ||
+      target.isContentEditable ||
+      target.closest?.(".monaco-editor"))
+  ) {
     return;
   }
   // Don't fight with the diff modal.
