@@ -1,3 +1,4 @@
+/// <reference types="node" />
 /**
  * Provider workspace lifecycle management (Azure DevOps + GitHub).
  * Handles ensure/refresh/scheduling and review workspace metadata repair.
@@ -11,13 +12,42 @@ import { normalizeWorkspace, strideDataDir } from "./default-state.js";
 import { normalizeReviewRoot, shortPathKey } from "./azure-devops-manager.js";
 import { APP_CONFIG } from "../../config/app-config.js";
 import { getLogger } from "./logger.js";
+import type { AppState, WorkspaceState } from "../shared/types/state.js";
 
 const log = getLogger("runtime");
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type AnyManager = any;
+
+interface ProviderLifecycleCtx {
+  getState: () => AppState;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  store: any;
+  azure: AnyManager;
+  github: AnyManager;
+  git: AnyManager;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  azureReviewStore: any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  getAzureSettings: (state?: AppState) => any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  getAzureConnections: (state?: AppState) => any[];
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  getGitHubSettings: (state?: AppState) => any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  getGitHubConnections: (state?: AppState) => any[];
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  parseAzureReviewWorkspaceHint: (workspace: WorkspaceState) => any;
+  normalizeFsPath: (p: string) => string;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  createAzureWorkspaceReviewPanels: (templates: any[]) => any[];
+  findWorkspace: (state: AppState, workspaceId: string) => WorkspaceState | null;
+}
+
 /**
- * @param {object} ctx - Runtime context with shared references
+ * @param ctx - Runtime context with shared references
  */
-export function createProviderLifecycle(ctx) {
+export function createProviderLifecycle(ctx: ProviderLifecycleCtx) {
   const {
     getState,
     store,
@@ -37,7 +67,7 @@ export function createProviderLifecycle(ctx) {
 
   // --- Azure DevOps ---
 
-  function getAzureWorkspace(profileId = getState().activeProfileId || "default") {
+  function getAzureWorkspace(profileId = getState().activeProfileId || "default"): WorkspaceState | null {
     return (
       getState().workspaces.find(
         (workspace) => workspace.kind === "azure" && (workspace.profileId || "default") === profileId,
@@ -45,7 +75,7 @@ export function createProviderLifecycle(ctx) {
     );
   }
 
-  async function ensureAzureWorkspace(profileId = getState().activeProfileId || "default") {
+  async function ensureAzureWorkspace(profileId = getState().activeProfileId || "default"): Promise<WorkspaceState> {
     const existing = getAzureWorkspace(profileId);
     if (existing) {
       return existing;
@@ -65,16 +95,17 @@ export function createProviderLifecycle(ctx) {
       panels,
       activePanelId: panels[0]?.id || "",
     });
-    await store.mutate((draft) => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await store.mutate((draft: any) => {
       draft.workspaces.push(workspace);
       if (!draft.activeWorkspaceId) {
         draft.activeWorkspaceId = workspace.id;
       }
     });
-    return workspace;
+    return workspace as WorkspaceState;
   }
 
-  async function refreshAzure() {
+  async function refreshAzure(): Promise<unknown> {
     const state = getState();
     await azure.sync({
       connections: getAzureConnections(state),
@@ -102,9 +133,11 @@ export function createProviderLifecycle(ctx) {
     return azure.getSnapshot();
   }
 
-  async function repairAzureReviewWorkspaceMetadata(snapshot = azure.getSnapshot()) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  async function repairAzureReviewWorkspaceMetadata(snapshot: any = azure.getSnapshot()): Promise<boolean> {
     const state = getState();
-    const repairs = [];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const repairs: any[] = [];
     const summaries = Object.values(snapshot?.pullRequests || {});
     const trackedPullRequests = Object.values(azureReviewStore.getState().trackedPullRequests || {});
 
@@ -123,7 +156,8 @@ export function createProviderLifecycle(ctx) {
         continue;
       }
 
-      const match = summaries.find((summary) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const match = (summaries as any[]).find((summary) => {
         const paths = azure.buildManagedReviewPaths?.(summary, {
           profileId: workspace.profileId || "default",
           workspaces: state.workspaces,
@@ -162,14 +196,18 @@ export function createProviderLifecycle(ctx) {
       if (!hint.prId || !hint.connectionPathKey) {
         continue;
       }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const connection = getAzureConnections(state).find(
-        (entry) => shortPathKey(entry.id, "connection") === hint.connectionPathKey,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (entry: any) => shortPathKey(entry.id, "connection") === hint.connectionPathKey,
       );
       if (!connection) {
         continue;
       }
-      const tracked = trackedPullRequests.find(
-        (entry) => entry.connectionId === connection.id && Number(entry.pullRequestId) === hint.prId,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const tracked = (trackedPullRequests as any[]).find(
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (entry: any) => entry.connectionId === connection.id && Number(entry.pullRequestId) === hint.prId,
       );
       if (!tracked) {
         continue;
@@ -226,9 +264,11 @@ export function createProviderLifecycle(ctx) {
       return false;
     }
 
-    await store.mutate((draft) => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await store.mutate((draft: any) => {
       for (const repair of repairs) {
-        const workspace = draft.workspaces.find((entry) => entry.id === repair.workspaceId);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const workspace = draft.workspaces.find((entry: any) => entry.id === repair.workspaceId);
         if (workspace) {
           workspace.review = repair.review;
         }
@@ -242,9 +282,10 @@ export function createProviderLifecycle(ctx) {
     return true;
   }
 
-  function scheduleAzurePolling() {
+  function scheduleAzurePolling(): void {
     const settings = getAzureSettings();
-    const enabledConnections = getAzureConnections().filter((connection) => connection.enabled !== false);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const enabledConnections = getAzureConnections().filter((connection: any) => connection.enabled !== false);
     if (!settings.enabled || !enabledConnections.length) {
       azure.stopPolling();
       return;
@@ -253,8 +294,10 @@ export function createProviderLifecycle(ctx) {
     const pollSeconds = Math.max(
       15,
       Math.min(
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         ...enabledConnections.map(
-          (connection) => Number(connection.pollSeconds) || Number(settings.defaultPollSeconds) || 120,
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          (connection: any) => Number(connection.pollSeconds) || Number(settings.defaultPollSeconds) || 120,
         ),
       ),
     );
@@ -263,13 +306,13 @@ export function createProviderLifecycle(ctx) {
 
   // --- GitHub ---
 
-  function getGitHubWorkspace(profileId = getState().activeProfileId || "default") {
+  function getGitHubWorkspace(profileId = getState().activeProfileId || "default"): WorkspaceState | null {
     return (
       getState().workspaces.find((ws) => ws.kind === "github" && (ws.profileId || "default") === profileId) || null
     );
   }
 
-  async function ensureGitHubWorkspace(profileId = getState().activeProfileId || "default") {
+  async function ensureGitHubWorkspace(profileId = getState().activeProfileId || "default"): Promise<WorkspaceState> {
     const existing = getGitHubWorkspace(profileId);
     if (existing) return existing;
     const panels = createAzureWorkspaceReviewPanels(getState().tabTemplates || []);
@@ -285,14 +328,15 @@ export function createProviderLifecycle(ctx) {
       panels,
       activePanelId: panels[0]?.id || "",
     });
-    await store.mutate((draft) => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await store.mutate((draft: any) => {
       draft.workspaces.push(workspace);
       if (!draft.activeWorkspaceId) draft.activeWorkspaceId = workspace.id;
     });
-    return workspace;
+    return workspace as WorkspaceState;
   }
 
-  async function refreshGitHub() {
+  async function refreshGitHub(): Promise<unknown> {
     const state = getState();
     await github.sync({
       connections: getGitHubConnections(state),
@@ -319,16 +363,20 @@ export function createProviderLifecycle(ctx) {
     return github.getSnapshot();
   }
 
-  function scheduleGitHubPolling() {
+  function scheduleGitHubPolling(): void {
     const settings = getGitHubSettings();
-    const enabledConnections = getGitHubConnections().filter((c) => c.enabled !== false);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const enabledConnections = getGitHubConnections().filter((c: any) => c.enabled !== false);
     if (!settings.enabled || !enabledConnections.length) {
       github.stopPolling();
       return;
     }
     const pollSeconds = Math.max(
       15,
-      Math.min(...enabledConnections.map((c) => Number(c.pollSeconds) || Number(settings.defaultPollSeconds) || 120)),
+      Math.min(
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        ...enabledConnections.map((c: any) => Number(c.pollSeconds) || Number(settings.defaultPollSeconds) || 120),
+      ),
     );
     github.configurePolling(pollSeconds * 1000, refreshGitHub);
   }

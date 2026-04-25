@@ -8,7 +8,8 @@ import { createReviewBridgeHandlers } from "./runtime-review-bridge-handlers.js"
  * Thin combiner — each domain lives in its own module for modularity and testability.
  * Receives a context object with all runtime dependencies (same pattern as app-dialog-actions.js).
  */
-export function createProviderHandlers(ctx) {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function createProviderHandlers(ctx: any) {
   return {
     ...createAzureHandlers(ctx),
     ...createGitHubHandlers(ctx),

@@ -1,12 +1,47 @@
 import { randomUUID } from "node:crypto";
 import { findWorkspace } from "./runtime-utils.js";
 import { normalizeWorkspace } from "./default-state.js";
+import type { WorkspaceState, AppState } from "../shared/types/state.js";
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type AnyManager = any;
+
+interface GitHubHandlerCtx {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  log: any;
+  getState: () => AppState;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  store: any;
+  github: AnyManager;
+  git: AnyManager;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  sessions: any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  credentialStore: any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  githubAuditLogStore: any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  azureReviewStore: any;
+  getPayload: () => unknown;
+  broadcastState: () => void;
+  refreshGitHub: () => Promise<unknown>;
+  refreshGit: (workspaceId?: string | null) => Promise<void>;
+  ensureGitHubWorkspace: () => Promise<WorkspaceState>;
+  ensureVisibleSession: (workspaceId?: string) => string | null;
+  scheduleGitHubPolling: () => void;
+  resolveGitWorkspace: (workspaceId?: string, projectId?: string) => WorkspaceState;
+  resolveGitRootPath: (workspace: WorkspaceState, rawRootPath: string) => string | null;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  getGitHubSettings: (state?: AppState) => any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  getGitHubConnections: (state?: AppState) => any[];
+}
 
 /**
  * Factory for GitHub API handlers.
  * Extracted from runtime-provider-handlers.js for modularity.
  */
-export function createGitHubHandlers(ctx) {
+export function createGitHubHandlers(ctx: GitHubHandlerCtx) {
   const {
     log,
     getState,
@@ -30,7 +65,7 @@ export function createGitHubHandlers(ctx) {
     getGitHubConnections,
   } = ctx;
 
-  function resolveRootPath(workspace, rawRootPath) {
+  function resolveRootPath(workspace: WorkspaceState, rawRootPath: string): string {
     const resolved = resolveGitRootPath(workspace, rawRootPath || "");
     if (rawRootPath && !resolved) {
       throw new Error(`Root path not found in workspace gitRoots: ${rawRootPath}`);
@@ -39,10 +74,12 @@ export function createGitHubHandlers(ctx) {
   }
 
   return {
-    async verifyGitHubConnection(connection) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async verifyGitHubConnection(connection: any) {
       return github.verifyConnection(connection);
     },
-    async saveGitHubConnection(connection) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async saveGitHubConnection(connection: any) {
       const { normalizeConnectionInput: normalizeGH, deriveApiBaseUrl } = await import("./github-utils.js");
       const normalizedInput = normalizeGH(connection);
       const connectionId = normalizedInput.id || `gh-${randomUUID()}`;
@@ -71,10 +108,12 @@ export function createGitHubHandlers(ctx) {
       if (pat) {
         await credentialStore.setSecret(tokenRef, pat);
       }
-      await store.mutate((draft) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      await store.mutate((draft: any) => {
         const ghSettings = draft.settings.integrations.github;
         ghSettings.reviewRoot = normalizedConnection.reviewRoot || ghSettings.reviewRoot;
-        const index = ghSettings.connections.findIndex((c) => c.id === connectionId);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const index = ghSettings.connections.findIndex((c: any) => c.id === connectionId);
         if (index >= 0) {
           ghSettings.connections[index] = normalizedConnection;
         } else {
@@ -87,14 +126,17 @@ export function createGitHubHandlers(ctx) {
       broadcastState();
       return { payload: getPayload(), verification };
     },
-    async deleteGitHubConnection(connectionId) {
-      const connection = getGitHubConnections().find((c) => c.id === connectionId);
+    async deleteGitHubConnection(connectionId: string) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const connection = getGitHubConnections().find((c: any) => c.id === connectionId);
       if (connection?.tokenRef) {
         await credentialStore.deleteSecret(connection.tokenRef);
       }
-      await store.mutate((draft) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      await store.mutate((draft: any) => {
         draft.settings.integrations.github.connections = draft.settings.integrations.github.connections.filter(
-          (c) => c.id !== connectionId,
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          (c: any) => c.id !== connectionId,
         );
       });
       await refreshGitHub();
@@ -108,18 +150,22 @@ export function createGitHubHandlers(ctx) {
       await refreshGitHub();
       return getPayload();
     },
-    queryGitHubAuditLog(filters = {}) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    queryGitHubAuditLog(filters: any = {}) {
       return githubAuditLogStore.query(filters);
     },
-    getGitHubAuditStats(filters = {}) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    getGitHubAuditStats(filters: any = {}) {
       return githubAuditLogStore.getStats(filters);
     },
-    async markGitHubPullRequestSeen(prKey) {
+    async markGitHubPullRequestSeen(prKey: string) {
       await github.markPullRequestSeen(prKey);
       return getPayload();
     },
-    async openGitHubPullRequest(payload) {
-      let result;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async openGitHubPullRequest(payload: any) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      let result: any;
       try {
         result = await github.openReviewWorkspace({
           state: getState(),
@@ -127,13 +173,16 @@ export function createGitHubHandlers(ctx) {
           workspaceId: payload.workspaceId || "",
         });
       } catch (err) {
-        const message = err instanceof Error ? err.message : err?.stderr || err?.error?.message || String(err);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const message = err instanceof Error ? err.message : (err as any)?.stderr || (err as any)?.error?.message || String(err);
         log.warn("openGitHubPullRequest failed", { prKey: payload.prKey, err: message });
         throw new Error(message, { cause: err });
       }
-      await store.mutate((draft) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      await store.mutate((draft: any) => {
         const normalized = normalizeWorkspace(result.workspace);
-        const index = draft.workspaces.findIndex((ws) => ws.id === normalized.id);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const index = draft.workspaces.findIndex((ws: any) => ws.id === normalized.id);
         if (index >= 0) {
           draft.workspaces[index] = normalized;
         } else {
@@ -149,39 +198,45 @@ export function createGitHubHandlers(ctx) {
       broadcastState();
       return getPayload();
     },
-    async commentGitHubPullRequest(payload) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async commentGitHubPullRequest(payload: any) {
       await github.addPullRequestComment(payload);
       await refreshGitHub();
       return getPayload();
     },
-    async submitGitHubPullRequestReview(payload) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async submitGitHubPullRequestReview(payload: any) {
       await github.submitPullRequestReview(payload);
       await refreshGitHub();
       return getPayload();
     },
-    async rerunGitHubCheck(prKey, checkItem) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async rerunGitHubCheck(prKey: string, checkItem: any) {
       await github.rerunCheck(prKey, checkItem);
       broadcastState();
       return getPayload();
     },
-    async fetchGitHubReviewWorkspace(workspaceId) {
-      const workspace = findWorkspace(getState(), workspaceId);
+    async fetchGitHubReviewWorkspace(workspaceId: string) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const workspace = findWorkspace(getState() as any, workspaceId) as WorkspaceState | null;
       if (!workspace?.review) throw new Error("GitHub review workspace not found.");
       await github.fetchReviewWorkspace({ workspace });
       await refreshGit(workspaceId);
       broadcastState();
       return getPayload();
     },
-    async rebaseGitHubReviewWorkspace(workspaceId) {
-      const workspace = findWorkspace(getState(), workspaceId);
+    async rebaseGitHubReviewWorkspace(workspaceId: string) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const workspace = findWorkspace(getState() as any, workspaceId) as WorkspaceState | null;
       if (!workspace?.review) throw new Error("GitHub review workspace not found.");
       await github.rebaseReviewWorkspace({ workspace });
       await refreshGit(workspaceId);
       broadcastState();
       return getPayload();
     },
-    async pushGitHubReviewWorkspace(workspaceId, { force = false } = {}) {
-      const workspace = findWorkspace(getState(), workspaceId);
+    async pushGitHubReviewWorkspace(workspaceId: string, { force = false } = {}) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const workspace = findWorkspace(getState() as any, workspaceId) as WorkspaceState | null;
       if (!workspace?.review) throw new Error("GitHub review workspace not found.");
       const dirtyState = await git.getCachedWorktreeDirtyState(workspace.cwd);
       if (dirtyState.dirty) {
@@ -196,7 +251,8 @@ export function createGitHubHandlers(ctx) {
       await refreshGitHub();
       return getPayload();
     },
-    async githubListRemoteBranches(payload) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async githubListRemoteBranches(payload: any) {
       const workspace = resolveGitWorkspace(payload.workspaceId);
       const connectionId =
         workspace.connectionId || workspace.review?.connectionId || workspace.quickfix?.connectionId || "";
@@ -209,7 +265,8 @@ export function createGitHubHandlers(ctx) {
       const branches = await github.listRemoteBranches(connectionId, match[1], match[2]);
       return { branches };
     },
-    async githubCreatePullRequest(payload = {}) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async githubCreatePullRequest(payload: any = {}) {
       const workspace = resolveGitWorkspace(payload.workspaceId);
       const connectionId =
         workspace.connectionId || workspace.review?.connectionId || workspace.quickfix?.connectionId || "";
@@ -237,8 +294,10 @@ export function createGitHubHandlers(ctx) {
       if (workspace.quickfix && result.pullRequestNumber) {
         const { createPullRequestKey: ghPrKey } = await import("./github-utils.js");
         const prKey = ghPrKey(connectionId, owner, repo, result.pullRequestNumber);
-        await store.mutate((draft) => {
-          const ws = draft.workspaces.find((w) => w.id === workspace.id);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        await store.mutate((draft: any) => {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const ws = draft.workspaces.find((w: any) => w.id === workspace.id);
           if (ws) {
             ws.name = `${owner}/${repo} PR #${result.pullRequestNumber}`;
             ws.review = {
@@ -302,13 +361,16 @@ export function createGitHubHandlers(ctx) {
       broadcastState();
       return { result, payload: getPayload() };
     },
-    async githubQuickFixListRepos(payload) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async githubQuickFixListRepos(payload: any) {
       return { repositories: await github.listQuickFixRepositories(payload.connectionId) };
     },
-    async githubQuickFixListBranches(payload) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async githubQuickFixListBranches(payload: any) {
       return { branches: await github.listQuickFixBranches(payload.connectionId, payload.owner, payload.repo) };
     },
-    async githubQuickFixCreate(payload) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async githubQuickFixCreate(payload: any) {
       const result = await github.openQuickFixWorkspace({
         state: getState(),
         connectionId: payload.connectionId,
@@ -318,7 +380,8 @@ export function createGitHubHandlers(ctx) {
         baseBranch: payload.baseBranch,
         newBranchName: payload.newBranchName,
       });
-      await store.mutate((draft) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      await store.mutate((draft: any) => {
         const normalized = normalizeWorkspace(result.workspace);
         draft.workspaces.push(normalized);
         draft.activeWorkspaceId = normalized.id;

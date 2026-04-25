@@ -1,3 +1,85 @@
+import type { AppState, WorkspaceState, PanelState } from "../shared/types/state.js";
+import type { Logger } from "./logger.js";
+
+// Type returned by createSessionSignal in runtime-utils.ts
+type SessionSignal = ReturnType<typeof import("./runtime-utils.js").createSessionSignal>;
+
+interface ProjectAlertEntry {
+  projectId: string;
+  panelId: string;
+  sessionId: string;
+  title: string;
+  exitCode: number | null;
+  kind: string;
+  tier: number;
+  urgency: string;
+  detail: string;
+  at: string;
+}
+
+interface ProjectAlertBucket {
+  count: number;
+  latestAt: string | null;
+  alerts: ProjectAlertEntry[];
+}
+
+interface AttentionContext {
+  visibleSessionIds: Set<string>;
+  recentlyVisibleUntil: Map<string, number>;
+}
+
+interface SessionsManager {
+  ensureSession(state: AppState, sessionId: string): void;
+  resolveDefaultSessionId(state: AppState, workspaceId: string): string | null;
+}
+
+interface AppConfigShape {
+  runtime: { projectAlertLimit: number };
+  ui: { defaultPanelStartup: string };
+}
+
+interface RaiseAlertOptions {
+  sessionId: string;
+  projectId: string;
+  panelId: string;
+  title: string;
+  kind?: string;
+  tier?: number;
+  urgency?: string;
+  detail?: string;
+  exitCode?: number | null;
+}
+
+interface AddProjectAlertOptions {
+  projectId: string;
+  panelId: string;
+  sessionId: string;
+  title: string;
+  exitCode?: number | null;
+  kind?: string;
+  detail?: string;
+  tier?: number;
+  urgency?: string;
+}
+
+interface CreateRuntimeAttentionManagerOptions {
+  log: Logger;
+  getState: () => AppState;
+  sessions: SessionsManager;
+  createSessionId: (workspaceId: string, panelId: string) => string;
+  parseSessionId: (sessionId: string) => { workspaceId: string; panelId: string } | null;
+  getNotificationConfig: () => { debug?: boolean };
+  createSessionSignal: (sessionId: string) => SessionSignal;
+  adaptiveForget: (sessionId: string) => void;
+  metricsRecordAlert: (opts: { tier: number; kind: string; urgency: string; commandClass: string }) => void;
+  APP_CONFIG: AppConfigShape;
+  AGENT_NAME_RE: RegExp;
+  ATTENTION_VISIBILITY_GRACE_MS: number;
+  attentionContext: AttentionContext;
+  broadcastState: () => void;
+  isKnownPluginProject: (project: WorkspaceState) => boolean;
+}
+
 export function createRuntimeAttentionManager({
   log,
   getState,
@@ -14,20 +96,20 @@ export function createRuntimeAttentionManager({
   attentionContext,
   broadcastState,
   isKnownPluginProject,
-}) {
-  const projectAlerts = new Map();
-  const sessionSignals = new Map();
+}: CreateRuntimeAttentionManagerOptions) {
+  const projectAlerts = new Map<string, ProjectAlertBucket>();
+  const sessionSignals = new Map<string, SessionSignal>();
 
   function getAttentionSnapshot(state = getState()) {
     return {
       byWorkspace: Object.fromEntries(projectAlerts.entries()),
       byProject: Object.fromEntries(projectAlerts.entries()),
       activeWorkspace: projectAlerts.get(state.activeWorkspaceId) || null,
-      activeProject: projectAlerts.get(state.activeProjectId) || null,
+      activeProject: projectAlerts.get(state.activeProjectId || "") || null,
     };
   }
 
-  function cancelPromptTimer(signal) {
+  function cancelPromptTimer(signal: SessionSignal | undefined): void {
     if (!signal?.promptTimer) {
       return;
     }
@@ -35,7 +117,7 @@ export function createRuntimeAttentionManager({
     signal.promptTimer = null;
   }
 
-  function resetSessionSignal(sessionId) {
+  function resetSessionSignal(sessionId: string): void {
     const signal = sessionSignals.get(sessionId);
     if (!signal) {
       return;
@@ -53,7 +135,7 @@ export function createRuntimeAttentionManager({
     }
   }
 
-  function deleteSessionSignal(sessionId) {
+  function deleteSessionSignal(sessionId: string): void {
     const signal = sessionSignals.get(sessionId);
     cancelPromptTimer(signal);
     sessionSignals.delete(sessionId);
@@ -70,7 +152,7 @@ export function createRuntimeAttentionManager({
     detail = "",
     tier = 1,
     urgency = "normal",
-  }) {
+  }: AddProjectAlertOptions): void {
     log.debug("addProjectAlert", { projectId, panelId, sessionId, title, kind, tier, urgency, detail, exitCode });
     const current = projectAlerts.get(projectId) || {
       count: 0,
@@ -100,7 +182,7 @@ export function createRuntimeAttentionManager({
     });
   }
 
-  function clearProjectAlerts(projectId, panelId = null) {
+  function clearProjectAlerts(projectId: string, panelId: string | null = null): void {
     if (!projectId || !projectAlerts.has(projectId)) {
       return;
     }
@@ -112,7 +194,7 @@ export function createRuntimeAttentionManager({
     }
     log.trace("clearing alert", { projectId, panelId });
 
-    const current = projectAlerts.get(projectId);
+    const current = projectAlerts.get(projectId)!;
     const nextAlerts = current.alerts.filter((alert) => alert.panelId !== panelId);
     if (!nextAlerts.length) {
       projectAlerts.delete(projectId);
@@ -126,7 +208,7 @@ export function createRuntimeAttentionManager({
     });
   }
 
-  function clearAlertSession(sessionId) {
+  function clearAlertSession(sessionId: string): boolean {
     const descriptor = parseSessionId(sessionId);
     if (!descriptor) {
       return false;
@@ -142,7 +224,7 @@ export function createRuntimeAttentionManager({
     return true;
   }
 
-  function getSessionSignal(sessionId, project, panel) {
+  function getSessionSignal(sessionId: string, project: WorkspaceState | null, panel: PanelState | null): SessionSignal {
     const isNew = !sessionSignals.has(sessionId);
     const current = sessionSignals.get(sessionId) || createSessionSignal(sessionId);
     if (!current.agentLike) {
@@ -169,7 +251,7 @@ export function createRuntimeAttentionManager({
     urgency = "normal",
     detail = "",
     exitCode = null,
-  }) {
+  }: RaiseAlertOptions): boolean {
     const signal = sessionSignals.get(sessionId);
 
     if (kind === "waiting" && urgency !== "urgent" && signal?.waitingRaised) {
@@ -216,7 +298,21 @@ export function createRuntimeAttentionManager({
     return true;
   }
 
-  function raiseWaitingAlert({ sessionId, projectId, panelId, title, detail, urgency = "normal" }) {
+  function raiseWaitingAlert({
+    sessionId,
+    projectId,
+    panelId,
+    title,
+    detail,
+    urgency = "normal",
+  }: {
+    sessionId: string;
+    projectId: string;
+    panelId: string;
+    title: string;
+    detail?: string;
+    urgency?: string;
+  }): boolean {
     return raiseAlert({
       sessionId,
       projectId,
@@ -229,7 +325,7 @@ export function createRuntimeAttentionManager({
     });
   }
 
-  function ensureVisibleSession(workspaceId = getState().activeWorkspaceId) {
+  function ensureVisibleSession(workspaceId = getState().activeWorkspaceId): string | null {
     const state = getState();
     const workspace = state.workspaces.find((item) => item.id === workspaceId);
     if (!workspace || workspace.kind === "azure") return null;
@@ -241,7 +337,7 @@ export function createRuntimeAttentionManager({
     return sessions.resolveDefaultSessionId(state, workspaceId);
   }
 
-  function syncSessionSignalsWithState() {
+  function syncSessionSignalsWithState(): void {
     const validSessionIds = new Set(
       getState().workspaces.flatMap((workspace) =>
         workspace.panels.map((panel) => createSessionId(workspace.id, panel.id)),
@@ -254,18 +350,19 @@ export function createRuntimeAttentionManager({
     }
   }
 
-  function shouldTrackProjectAlert(project, panel) {
+  function shouldTrackProjectAlert(project: WorkspaceState | null, panel: PanelState | null): boolean {
     return Boolean(
       project &&
       panel &&
       (project.kind === "terminal" || project.kind === "task") &&
       !isKnownPluginProject(project) &&
       !panel.launch?.file &&
-      panel.shell !== false,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (panel as any).shell !== false,
     );
   }
 
-  function updateVisibleSessions(nextIds) {
+  function updateVisibleSessions(nextIds: string[]): void {
     const prev = attentionContext.visibleSessionIds;
     const next = new Set(nextIds);
     log.trace("updateVisibleSessions", { prev: [...prev], next: [...next] });
@@ -284,13 +381,13 @@ export function createRuntimeAttentionManager({
     attentionContext.visibleSessionIds = next;
   }
 
-  function isSessionVisible(sessionId) {
+  function isSessionVisible(sessionId: string): boolean {
     if (attentionContext.visibleSessionIds.has(sessionId)) return true;
     const until = attentionContext.recentlyVisibleUntil.get(sessionId);
     return until != null && Date.now() < until;
   }
 
-  function markSessionPromptInjected(sessionId) {
+  function markSessionPromptInjected(sessionId: string): void {
     const signal = sessionSignals.get(sessionId);
     if (!signal) {
       return;
@@ -300,7 +397,7 @@ export function createRuntimeAttentionManager({
     signal.waitingRaised = false;
   }
 
-  function clearAllAttention() {
+  function clearAllAttention(): void {
     projectAlerts.clear();
     for (const [, signal] of sessionSignals) {
       cancelPromptTimer(signal);

@@ -1,8 +1,32 @@
+import type { WorkspaceState } from "../shared/types/state.js";
+
+/**
+ * Runtime context subset consumed by git handlers.
+ * The full runtime ctx is typed as a structural interface so new fields
+ * can be added without breaking this module.
+ */
+interface GitHandlerCtx {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  git: any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  store: any;
+  getPayload: () => unknown;
+  resolveGitWorkspace: (workspaceId?: string, projectId?: string) => WorkspaceState;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  resolveGitConnection: (workspace: WorkspaceState) => any;
+  resolveGitRootPath: (workspace: WorkspaceState, rawRootPath: string) => string | null;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  runGitWorkspaceAction: (workspace: WorkspaceState, action: Promise<any>) => Promise<any>;
+  refreshGit: (projectId?: string | null) => Promise<void>;
+  broadcastState: () => void;
+  syncWorktrees: () => Promise<void>;
+}
+
 /**
  * Factory for Git operation API handlers.
  * Extracted from runtime.js to reduce file size.
  */
-export function createGitHandlers(ctx) {
+export function createGitHandlers(ctx: GitHandlerCtx) {
   const {
     git,
     store,
@@ -14,72 +38,83 @@ export function createGitHandlers(ctx) {
     syncWorktrees,
   } = ctx;
 
-  function resolveRootPath(workspace, rawRootPath) {
+  function resolveRootPath(workspace: WorkspaceState, rawRootPath: string): string {
     const validated = resolveGitRootPath(workspace, rawRootPath || "");
     if (rawRootPath && !validated) throw new Error(`Root path not found in workspace gitRoots: ${rawRootPath}`);
     return validated || "";
   }
 
   return {
-    async refreshGitState(projectId = null) {
+    async refreshGitState(projectId: string | null = null) {
       await ctx.refreshGit(projectId);
       ctx.broadcastState();
       return getPayload();
     },
-    async gitFetch(payload = {}) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async gitFetch(payload: any = {}) {
       const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId);
       const connection = resolveGitConnection(workspace);
       const rootPath = resolveRootPath(workspace, payload.rootPath);
       return runGitWorkspaceAction(workspace, git.fetch(workspace, { connection, rootPath }));
     },
-    async gitPull(payload = {}) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async gitPull(payload: any = {}) {
       const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId);
       const connection = resolveGitConnection(workspace);
       const rootPath = resolveRootPath(workspace, payload.rootPath);
       return runGitWorkspaceAction(workspace, git.pull(workspace, { connection, rootPath }));
     },
-    async gitPush(payload = {}) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async gitPush(payload: any = {}) {
       const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId);
       const connection = resolveGitConnection(workspace);
       const rootPath = resolveRootPath(workspace, payload.rootPath);
       return runGitWorkspaceAction(workspace, git.push(workspace, { connection, rootPath }));
     },
-    async gitCheckoutBranch(payload = {}) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async gitCheckoutBranch(payload: any = {}) {
       const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId);
       const rootPath = resolveRootPath(workspace, payload.rootPath);
       return runGitWorkspaceAction(workspace, git.checkoutBranch(workspace, { ...payload, rootPath }));
     },
-    async gitCreateBranch(payload = {}) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async gitCreateBranch(payload: any = {}) {
       const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId);
       const rootPath = resolveRootPath(workspace, payload.rootPath);
       return runGitWorkspaceAction(workspace, git.createBranch(workspace, { ...payload, rootPath }));
     },
-    async gitMergeIntoCurrent(payload = {}) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async gitMergeIntoCurrent(payload: any = {}) {
       const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId);
       const rootPath = resolveRootPath(workspace, payload.rootPath);
       return runGitWorkspaceAction(workspace, git.mergeIntoCurrent(workspace, { ...payload, rootPath }));
     },
-    async gitRebaseOnto(payload = {}) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async gitRebaseOnto(payload: any = {}) {
       const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId);
       const rootPath = resolveRootPath(workspace, payload.rootPath);
       return runGitWorkspaceAction(workspace, git.rebaseOnto(workspace, { ...payload, rootPath }));
     },
-    async gitContinueOperation(payload = {}) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async gitContinueOperation(payload: any = {}) {
       const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId);
       const rootPath = resolveRootPath(workspace, payload.rootPath);
       return runGitWorkspaceAction(workspace, git.continueOperation(workspace, { rootPath }));
     },
-    async gitAbortOperation(payload = {}) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async gitAbortOperation(payload: any = {}) {
       const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId);
       const rootPath = resolveRootPath(workspace, payload.rootPath);
       return runGitWorkspaceAction(workspace, git.abortOperation(workspace, { rootPath }));
     },
-    async gitDiffPreview(payload = {}) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async gitDiffPreview(payload: any = {}) {
       const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId);
       const rootPath = resolveRootPath(workspace, payload.rootPath);
       return git.diffPreview(workspace, { ...payload, rootPath });
     },
-    async gitMergeCurrentIntoBase(payload = {}) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async gitMergeCurrentIntoBase(payload: any = {}) {
       const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId);
       const rootPath = resolveRootPath(workspace, payload.rootPath);
       const actionResult = await runGitWorkspaceAction(
@@ -87,7 +122,7 @@ export function createGitHandlers(ctx) {
         git.mergeCurrentIntoBase(workspace, { ...payload, rootPath }),
       );
       if (actionResult.result?.ok) {
-        await store.mutate((draft) => {
+        await store.mutate((draft: { workspaces: Array<{ id: string; branchMerged?: boolean }> }) => {
           const ws = draft.workspaces.find((w) => w.id === workspace.id);
           if (ws) ws.branchMerged = true;
         });
@@ -95,68 +130,80 @@ export function createGitHandlers(ctx) {
       }
       return actionResult;
     },
-    async gitRemoveWorktree(payload = {}) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async gitRemoveWorktree(payload: any = {}) {
       const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId);
       const rootPath = resolveRootPath(workspace, payload.rootPath);
       const result = await git.removeWorktree(workspace, { ...payload, rootPath });
       await syncWorktrees();
       return { payload: getPayload(), result };
     },
-    async gitCommitAll(payload = {}) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async gitCommitAll(payload: any = {}) {
       const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId);
       const rootPath = resolveRootPath(workspace, payload.rootPath);
       return runGitWorkspaceAction(workspace, git.commitAll(workspace, { ...payload, rootPath }));
     },
-    async gitStash(payload = {}) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async gitStash(payload: any = {}) {
       const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId);
       const rootPath = resolveRootPath(workspace, payload.rootPath);
       return runGitWorkspaceAction(workspace, git.stash(workspace, { ...payload, rootPath }));
     },
-    async gitStashPop(payload = {}) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async gitStashPop(payload: any = {}) {
       const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId);
       const rootPath = resolveRootPath(workspace, payload.rootPath);
       return runGitWorkspaceAction(workspace, git.stashPop(workspace, { rootPath }));
     },
-    async gitCommitDiff(payload = {}) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async gitCommitDiff(payload: any = {}) {
       const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId);
       const rootPath = resolveRootPath(workspace, payload.rootPath);
       return git.commitDiff(workspace, { ...payload, rootPath });
     },
-    async gitListTags(payload = {}) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async gitListTags(payload: any = {}) {
       const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId);
       const connection = resolveGitConnection(workspace);
       const rootPath = resolveRootPath(workspace, payload.rootPath);
       return git.listTags(workspace, { connection, rootPath });
     },
-    async gitCreateTag(payload = {}) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async gitCreateTag(payload: any = {}) {
       const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId);
       const rootPath = resolveRootPath(workspace, payload.rootPath);
       return runGitWorkspaceAction(workspace, git.createTag(workspace, { ...payload, rootPath }));
     },
-    async gitDeleteTag(payload = {}) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async gitDeleteTag(payload: any = {}) {
       const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId);
       const rootPath = resolveRootPath(workspace, payload.rootPath);
       return runGitWorkspaceAction(workspace, git.deleteTag(workspace, { ...payload, rootPath }));
     },
-    async gitPushTag(payload = {}) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async gitPushTag(payload: any = {}) {
       const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId);
       const connection = resolveGitConnection(workspace);
       const rootPath = resolveRootPath(workspace, payload.rootPath);
       return runGitWorkspaceAction(workspace, git.pushTag(workspace, { ...payload, connection, rootPath }));
     },
-    async gitPushAllTags(payload = {}) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async gitPushAllTags(payload: any = {}) {
       const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId);
       const connection = resolveGitConnection(workspace);
       const rootPath = resolveRootPath(workspace, payload.rootPath);
       return runGitWorkspaceAction(workspace, git.pushAllTags(workspace, { connection, rootPath }));
     },
-    async gitDeleteRemoteTag(payload = {}) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async gitDeleteRemoteTag(payload: any = {}) {
       const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId);
       const connection = resolveGitConnection(workspace);
       const rootPath = resolveRootPath(workspace, payload.rootPath);
       return runGitWorkspaceAction(workspace, git.deleteRemoteTag(workspace, { ...payload, connection, rootPath }));
     },
-    async gitForcePushWithLease(payload = {}) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async gitForcePushWithLease(payload: any = {}) {
       const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId);
       const connection = resolveGitConnection(workspace);
       const rootPath = resolveRootPath(workspace, payload.rootPath);

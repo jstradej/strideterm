@@ -1,8 +1,26 @@
+import type { AppState } from "../shared/types/state.js";
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type AnyManager = any;
+
+interface ReviewBridgeHandlerCtx {
+  getState: () => AppState;
+  azure: AnyManager;
+  github: AnyManager;
+  git: AnyManager;
+  reviewBridgeStore: AnyManager;
+  getPayload: () => unknown;
+  broadcastState: () => void;
+  refreshAzure: () => Promise<unknown>;
+  refreshGitHub: () => Promise<unknown>;
+  refreshGit: (workspaceId?: string | null) => Promise<void>;
+}
+
 /**
  * Factory for Review Bridge API handlers (shared between Azure DevOps + GitHub).
  * Extracted from runtime-provider-handlers.js for modularity.
  */
-export function createReviewBridgeHandlers(ctx) {
+export function createReviewBridgeHandlers(ctx: ReviewBridgeHandlerCtx) {
   const {
     getState,
     azure,
@@ -17,27 +35,32 @@ export function createReviewBridgeHandlers(ctx) {
   } = ctx;
 
   return {
-    async createReviewBridgeDraftComment(payload) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async createReviewBridgeDraftComment(payload: any) {
       await reviewBridgeStore.createDraftComment(payload);
       broadcastState();
       return getPayload();
     },
-    async saveReviewBridgeDraft(payload) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async saveReviewBridgeDraft(payload: any) {
       await reviewBridgeStore.saveDraftResponse(payload);
       broadcastState();
       return getPayload();
     },
-    async queueReviewBridgeDraft(payload) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async queueReviewBridgeDraft(payload: any) {
       await reviewBridgeStore.queueDraftResponse(payload);
       broadcastState();
       return getPayload();
     },
-    async saveAgentPrompt(payload) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async saveAgentPrompt(payload: any) {
       reviewBridgeStore.saveAgentPrompt(payload);
       broadcastState();
       return getPayload();
     },
-    async deleteAgentPrompt(payload) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async deleteAgentPrompt(payload: any) {
       reviewBridgeStore.deleteAgentPrompt(payload.promptId);
       broadcastState();
       return getPayload();
@@ -47,29 +70,34 @@ export function createReviewBridgeHandlers(ctx) {
       broadcastState();
       return getPayload();
     },
-    async replyWithCodeChanges(payload) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async replyWithCodeChanges(payload: any) {
       await reviewBridgeStore.replyWithCodeChanges(payload);
       broadcastState();
       return getPayload();
     },
-    async deleteReviewBridgeComment(payload) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async deleteReviewBridgeComment(payload: any) {
       await reviewBridgeStore.deleteComment(payload);
       broadcastState();
       return getPayload();
     },
-    async deleteReviewBridgeDraft(payload) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async deleteReviewBridgeDraft(payload: any) {
       await reviewBridgeStore.deleteDraft(payload);
       broadcastState();
       return getPayload();
     },
-    async syncReviewBridgePullRequest(payload) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async syncReviewBridgePullRequest(payload: any) {
       const prKey = String(payload?.prKey || "").trim();
       if (!prKey) {
         throw new Error("Pull request key is required.");
       }
       const prData = reviewBridgeStore.getPullRequestContext?.(prKey);
       const isGitHub = prData?.provider === "github" || github.findSummary(prKey);
-      await reviewBridgeStore.syncPendingDrafts(prKey, async (entry) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      await reviewBridgeStore.syncPendingDrafts(prKey, async (entry: any) => {
         if (isGitHub) {
           await github.addPullRequestComment({ prKey, body: entry.body });
         } else {
@@ -93,7 +121,8 @@ export function createReviewBridgeHandlers(ctx) {
       broadcastState();
       return getPayload();
     },
-    async pushAndPublishReview(payload) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async pushAndPublishReview(payload: any) {
       const workspaceId = String(payload?.workspaceId || "").trim();
       if (!workspaceId) {
         throw new Error("Workspace ID is required.");
@@ -108,7 +137,7 @@ export function createReviewBridgeHandlers(ctx) {
         throw new Error("This workspace is not associated with a pull request.");
       }
       const sourceBranch = String(
-        workspace.review?.pullRequest?.sourceRefName || workspace.review?.pullRequest?.sourceBranch || "",
+        workspace.review?.pullRequest?.sourceRefName || (workspace.review?.pullRequest as unknown as { sourceBranch?: string })?.sourceBranch || "",
       ).replace(/^refs\/heads\//, "");
       const aheadResult = await git
         .execGit(workspace.cwd, ["rev-list", "--count", `refs/remotes/origin/${sourceBranch}..HEAD`])
@@ -130,7 +159,8 @@ export function createReviewBridgeHandlers(ctx) {
       let publishedCount = 0;
       let publishError = "";
       try {
-        await reviewBridgeStore.syncPendingDrafts(prKey, async (entry) => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        await reviewBridgeStore.syncPendingDrafts(prKey, async (entry: any) => {
           if (provider === "github") {
             await github.addPullRequestComment({ prKey, body: entry.body });
           } else {
@@ -157,7 +187,8 @@ export function createReviewBridgeHandlers(ctx) {
         await refreshAzure();
       }
       broadcastState();
-      const result = getPayload();
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const result = getPayload() as any;
       result.pushAndPublishResult = { commitCount, publishedCount, pushOk, publishError };
       return result;
     },

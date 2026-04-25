@@ -2,12 +2,48 @@ import { randomUUID } from "node:crypto";
 import { findWorkspace } from "./runtime-utils.js";
 import { normalizeWorkspace } from "./default-state.js";
 import { normalizeConnectionInput } from "./azure-devops-manager.js";
+import type { WorkspaceState, AppState } from "../shared/types/state.js";
+
+/**
+ * Runtime context subset consumed by Azure DevOps handlers.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type AnyManager = any;
+
+interface AzureHandlerCtx {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  log: any;
+  getState: () => AppState;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  store: any;
+  azure: AnyManager;
+  git: AnyManager;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  sessions: any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  credentialStore: any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  auditLogStore: any;
+  getPayload: () => unknown;
+  broadcastState: () => void;
+  refreshAzure: () => Promise<unknown>;
+  refreshGit: (workspaceId?: string | null) => Promise<void>;
+  ensureAzureWorkspace: () => Promise<WorkspaceState>;
+  ensureVisibleSession: (workspaceId?: string) => string | null;
+  scheduleAzurePolling: () => void;
+  resolveGitWorkspace: (workspaceId?: string, projectId?: string) => WorkspaceState;
+  resolveGitRootPath: (workspace: WorkspaceState, rawRootPath: string) => string | null;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  getAzureSettings: (state?: AppState) => any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  getAzureConnections: (state?: AppState) => any[];
+}
 
 /**
  * Factory for Azure DevOps API handlers.
  * Extracted from runtime-provider-handlers.js for modularity.
  */
-export function createAzureHandlers(ctx) {
+export function createAzureHandlers(ctx: AzureHandlerCtx) {
   const {
     log,
     getState,
@@ -30,7 +66,7 @@ export function createAzureHandlers(ctx) {
     getAzureConnections,
   } = ctx;
 
-  function resolveRootPath(workspace, rawRootPath) {
+  function resolveRootPath(workspace: WorkspaceState, rawRootPath: string): string {
     const resolved = resolveGitRootPath(workspace, rawRootPath || "");
     if (rawRootPath && !resolved) {
       throw new Error(`Root path not found in workspace gitRoots: ${rawRootPath}`);
@@ -39,10 +75,12 @@ export function createAzureHandlers(ctx) {
   }
 
   return {
-    async verifyAzureConnection(connection) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async verifyAzureConnection(connection: any) {
       return azure.verifyConnection(connection);
     },
-    async saveAzureConnection(connection) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async saveAzureConnection(connection: any) {
       const normalizedInput = normalizeConnectionInput(connection);
       const connectionId = normalizedInput.id || `ado-${randomUUID()}`;
       const tokenRef = connection.tokenRef || `cred:${connectionId}`;
@@ -74,10 +112,12 @@ export function createAzureHandlers(ctx) {
         await credentialStore.setSecret(tokenRef, pat);
       }
 
-      await store.mutate((draft) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      await store.mutate((draft: any) => {
         const azureSettings = draft.settings.integrations.azureDevops;
         azureSettings.reviewRoot = normalizedConnection.reviewRoot || azureSettings.reviewRoot;
-        const index = azureSettings.connections.findIndex((entry) => entry.id === connectionId);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const index = azureSettings.connections.findIndex((entry: any) => entry.id === connectionId);
         if (index >= 0) {
           azureSettings.connections[index] = normalizedConnection;
         } else {
@@ -94,14 +134,17 @@ export function createAzureHandlers(ctx) {
         verification,
       };
     },
-    async deleteAzureConnection(connectionId) {
-      const connection = getAzureConnections().find((entry) => entry.id === connectionId);
+    async deleteAzureConnection(connectionId: string) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const connection = getAzureConnections().find((entry: any) => entry.id === connectionId);
       if (connection?.tokenRef) {
         await credentialStore.deleteSecret(connection.tokenRef);
       }
-      await store.mutate((draft) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      await store.mutate((draft: any) => {
         draft.settings.integrations.azureDevops.connections =
-          draft.settings.integrations.azureDevops.connections.filter((entry) => entry.id !== connectionId);
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          draft.settings.integrations.azureDevops.connections.filter((entry: any) => entry.id !== connectionId);
       });
       await refreshAzure();
       scheduleAzurePolling();
@@ -114,18 +157,22 @@ export function createAzureHandlers(ctx) {
       await refreshAzure();
       return getPayload();
     },
-    queryAzureAuditLog(filters = {}) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    queryAzureAuditLog(filters: any = {}) {
       return auditLogStore.query(filters);
     },
-    getAzureAuditStats(filters = {}) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    getAzureAuditStats(filters: any = {}) {
       return auditLogStore.getStats(filters);
     },
-    async markAzurePullRequestSeen(prKey) {
+    async markAzurePullRequestSeen(prKey: string) {
       await azure.markPullRequestSeen(prKey);
       return getPayload();
     },
-    async openAzurePullRequest(payload) {
-      let result;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async openAzurePullRequest(payload: any) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      let result: any;
       try {
         result = await azure.openReviewWorkspace({
           state: getState(),
@@ -133,13 +180,16 @@ export function createAzureHandlers(ctx) {
           workspaceId: payload.workspaceId || "",
         });
       } catch (err) {
-        const message = err instanceof Error ? err.message : err?.stderr || err?.error?.message || String(err);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const message = err instanceof Error ? err.message : (err as any)?.stderr || (err as any)?.error?.message || String(err);
         log.warn("openAzurePullRequest failed", { prKey: payload.prKey, err: message });
         throw new Error(message, { cause: err });
       }
-      await store.mutate((draft) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      await store.mutate((draft: any) => {
         const normalized = normalizeWorkspace(result.workspace);
-        const index = draft.workspaces.findIndex((entry) => entry.id === normalized.id);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const index = draft.workspaces.findIndex((entry: any) => entry.id === normalized.id);
         if (index >= 0) {
           draft.workspaces[index] = normalized;
         } else {
@@ -155,28 +205,33 @@ export function createAzureHandlers(ctx) {
       broadcastState();
       return getPayload();
     },
-    async commentAzurePullRequest(payload) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async commentAzurePullRequest(payload: any) {
       await azure.addPullRequestComment(payload);
       await refreshAzure();
       return getPayload();
     },
-    async updateAzureThreadStatus(payload) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async updateAzureThreadStatus(payload: any) {
       await azure.updateThreadStatus(payload);
       await refreshAzure();
       return getPayload();
     },
-    async voteAzurePullRequest(payload) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async voteAzurePullRequest(payload: any) {
       await azure.setPullRequestVote(payload);
       await refreshAzure();
       return getPayload();
     },
-    async rerunAzureCheck(prKey, checkItem) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async rerunAzureCheck(prKey: string, checkItem: any) {
       await azure.rerunCheck(prKey, checkItem);
       broadcastState();
       return getPayload();
     },
-    async fetchAzureReviewWorkspace(workspaceId) {
-      const workspace = findWorkspace(getState(), workspaceId);
+    async fetchAzureReviewWorkspace(workspaceId: string) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const workspace = findWorkspace(getState() as any, workspaceId) as WorkspaceState | null;
       if (!workspace?.review) {
         throw new Error("Azure review workspace not found.");
       }
@@ -185,8 +240,9 @@ export function createAzureHandlers(ctx) {
       broadcastState();
       return getPayload();
     },
-    async rebaseAzureReviewWorkspace(workspaceId) {
-      const workspace = findWorkspace(getState(), workspaceId);
+    async rebaseAzureReviewWorkspace(workspaceId: string) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const workspace = findWorkspace(getState() as any, workspaceId) as WorkspaceState | null;
       if (!workspace?.review) {
         throw new Error("Azure review workspace not found.");
       }
@@ -195,8 +251,9 @@ export function createAzureHandlers(ctx) {
       broadcastState();
       return getPayload();
     },
-    async pushAzureReviewWorkspace(workspaceId, { force = false } = {}) {
-      const workspace = findWorkspace(getState(), workspaceId);
+    async pushAzureReviewWorkspace(workspaceId: string, { force = false } = {}) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const workspace = findWorkspace(getState() as any, workspaceId) as WorkspaceState | null;
       if (!workspace?.review) {
         throw new Error("Azure review workspace not found.");
       }
@@ -213,7 +270,8 @@ export function createAzureHandlers(ctx) {
       await refreshAzure();
       return getPayload();
     },
-    async azureCreatePullRequest(payload = {}) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async azureCreatePullRequest(payload: any = {}) {
       const workspace = resolveGitWorkspace(payload.workspaceId);
       const rootPath = resolveRootPath(workspace, payload.rootPath);
       const snapshot = git.getSnapshot(workspace.id, rootPath);
@@ -239,8 +297,10 @@ export function createAzureHandlers(ctx) {
       if (workspace.quickfix && result.pullRequestId) {
         const qf = workspace.quickfix;
         const prKey = azure.buildPrKey(qf.connectionId, qf.repositoryId, result.pullRequestId);
-        await store.mutate((draft) => {
-          const ws = draft.workspaces.find((w) => w.id === workspace.id);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        await store.mutate((draft: any) => {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const ws = draft.workspaces.find((w: any) => w.id === workspace.id);
           if (ws) {
             ws.name = `${qf.repositoryName} PR #${result.pullRequestId}`;
             ws.review = {
@@ -303,7 +363,8 @@ export function createAzureHandlers(ctx) {
       broadcastState();
       return { payload: getPayload(), result };
     },
-    async azureListRemoteBranches(payload = {}) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async azureListRemoteBranches(payload: any = {}) {
       const workspace = resolveGitWorkspace(payload.workspaceId);
       const rootPath = resolveRootPath(workspace, payload.rootPath);
       const snapshot = git.getSnapshot(workspace.id, rootPath);
@@ -315,19 +376,24 @@ export function createAzureHandlers(ctx) {
       const branches = await azure.listRemoteBranches(connection.id, remoteUrl);
       return { branches };
     },
-    async azureQuickFixListProjects(payload = {}) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async azureQuickFixListProjects(payload: any = {}) {
       return { projects: await azure.listQuickFixProjects(payload.connectionId) };
     },
-    async azureQuickFixListRepositories(payload = {}) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async azureQuickFixListRepositories(payload: any = {}) {
       return { repositories: await azure.listQuickFixRepositories(payload.connectionId, payload.projectName) };
     },
-    async azureQuickFixListBranches(payload = {}) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async azureQuickFixListBranches(payload: any = {}) {
       return {
         branches: await azure.listQuickFixBranches(payload.connectionId, payload.projectName, payload.repositoryId),
       };
     },
-    async azureQuickFixCreate(payload = {}) {
-      let result;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async azureQuickFixCreate(payload: any = {}) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      let result: any;
       try {
         result = await azure.openQuickFixWorkspace({
           state: getState(),
@@ -340,15 +406,18 @@ export function createAzureHandlers(ctx) {
           newBranchName: payload.newBranchName,
         });
       } catch (err) {
-        const message = err instanceof Error ? err.message : err?.stderr || err?.error?.message || String(err);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const message = err instanceof Error ? err.message : (err as any)?.stderr || (err as any)?.error?.message || String(err);
         log.warn("azureQuickFixCreate failed", { repositoryName: payload.repositoryName, err: message });
         throw new Error(message, { cause: err });
       }
-      await store.mutate((draft) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      await store.mutate((draft: any) => {
         const normalized = normalizeWorkspace(result.workspace);
         const parentId = result.parentWorkspaceId;
         if (parentId) {
-          let insertIdx = draft.workspaces.findIndex((ws) => ws.id === parentId);
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          let insertIdx = draft.workspaces.findIndex((ws: any) => ws.id === parentId);
           if (insertIdx >= 0) {
             insertIdx++;
             while (insertIdx < draft.workspaces.length) {

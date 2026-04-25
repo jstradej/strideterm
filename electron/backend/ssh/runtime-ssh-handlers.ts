@@ -1,3 +1,4 @@
+/// <reference types="node" />
 import { randomBytes } from "node:crypto";
 import {
   sshHostCreateSchema,
@@ -14,15 +15,27 @@ import {
 import { generateKey } from "./ssh-keygen.js";
 import { parseCertificate } from "./ssh-cert.js";
 
-function newId(prefix) {
+function newId(prefix: string): string {
   return `${prefix}${Date.now().toString(36)}-${randomBytes(3).toString("hex")}`;
 }
 
-export function createSshHandlers({ sshManager, store, credentialStore, broadcastState }) {
-  function countReferences(keyId) {
+interface SshHandlersCtx {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  sshManager: any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  store: any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  credentialStore: any;
+  broadcastState: () => void;
+}
+
+export function createSshHandlers({ sshManager, store, credentialStore, broadcastState }: SshHandlersCtx) {
+  function countReferences(keyId: string) {
     const state = store.getState();
-    const hosts = (state.ssh?.hosts || []).filter((h) => h.auth?.keyRef === keyId);
-    const certs = (state.ssh?.certificates || []).filter((c) => c.keyId === keyId);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const hosts = (state.ssh?.hosts || []).filter((h: any) => h.auth?.keyRef === keyId);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const certs = (state.ssh?.certificates || []).filter((c: any) => c.keyId === keyId);
     return { hosts, certs };
   }
 
@@ -31,31 +44,36 @@ export function createSshHandlers({ sshManager, store, credentialStore, broadcas
       return sshManager.listHosts();
     },
 
-    async "ssh:hosts:create"(payload) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async "ssh:hosts:create"(payload: any) {
       const parsed = sshHostCreateSchema.parse(payload);
       const host = await sshManager.createHost(parsed);
       broadcastState();
       return host;
     },
 
-    async "ssh:hosts:update"(payload) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async "ssh:hosts:update"(payload: any) {
       const parsed = sshHostUpdateSchema.parse(payload);
       const host = await sshManager.updateHost(parsed.id, parsed.patch);
       broadcastState();
       return host;
     },
 
-    async "ssh:hosts:delete"(payload) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async "ssh:hosts:delete"(payload: any) {
       const parsed = sshHostDeleteSchema.parse(payload);
       await sshManager.deleteHost(parsed.id);
       broadcastState();
       return { ok: true };
     },
 
-    async "ssh:hosts:duplicate"(payload) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async "ssh:hosts:duplicate"(payload: any) {
       const host = sshManager.getHost(payload?.id);
       if (!host) throw new Error("Host not found");
-      const copy = { ...host, name: `${host.name} (copy)` };
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const copy: any = { ...host, name: `${host.name} (copy)` };
       delete copy.id;
       delete copy.createdAt;
       delete copy.updatedAt;
@@ -65,7 +83,8 @@ export function createSshHandlers({ sshManager, store, credentialStore, broadcas
       return newHost;
     },
 
-    async "ssh:hosts:test"(payload) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async "ssh:hosts:test"(payload: any) {
       const host = sshManager.getHost(payload?.id);
       if (!host) throw new Error("Host not found");
 
@@ -80,7 +99,7 @@ export function createSshHandlers({ sshManager, store, credentialStore, broadcas
           onExit: () => {},
         });
       } catch (err) {
-        return { ok: false, error: err.message };
+        return { ok: false, error: (err as Error).message };
       }
 
       try {
@@ -95,7 +114,8 @@ export function createSshHandlers({ sshManager, store, credentialStore, broadcas
       return store.getState().ssh?.keys || [];
     },
 
-    async "ssh:keys:import"(payload) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async "ssh:keys:import"(payload: any) {
       const parsed = sshKeyImportSchema.parse(payload);
       const id = newId("ssh:key:");
       const keyMeta = {
@@ -111,7 +131,8 @@ export function createSshHandlers({ sshManager, store, credentialStore, broadcas
         await credentialStore.setSecret(`ssh:passphrase:${id}`, parsed.passphrase);
       }
 
-      await store.mutate((state) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      await store.mutate((state: any) => {
         if (!state.ssh) state.ssh = { hosts: [], keys: [], certificates: [], knownHosts: {}, settings: {} };
         if (!Array.isArray(state.ssh.keys)) state.ssh.keys = [];
         state.ssh.keys.push(keyMeta);
@@ -120,7 +141,8 @@ export function createSshHandlers({ sshManager, store, credentialStore, broadcas
       return keyMeta;
     },
 
-    async "ssh:keys:generate"(payload) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async "ssh:keys:generate"(payload: any) {
       const parsed = sshKeyGenerateSchema.parse(payload);
       const { privateKey, publicKey, source } = await generateKey({
         kind: parsed.kind,
@@ -144,7 +166,8 @@ export function createSshHandlers({ sshManager, store, credentialStore, broadcas
         await credentialStore.setSecret(`ssh:passphrase:${id}`, parsed.passphrase);
       }
 
-      await store.mutate((state) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      await store.mutate((state: any) => {
         if (!state.ssh) state.ssh = { hosts: [], keys: [], certificates: [], knownHosts: {}, settings: {} };
         if (!Array.isArray(state.ssh.keys)) state.ssh.keys = [];
         state.ssh.keys.push(keyMeta);
@@ -153,7 +176,8 @@ export function createSshHandlers({ sshManager, store, credentialStore, broadcas
       return keyMeta;
     },
 
-    async "ssh:keys:delete"(payload) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async "ssh:keys:delete"(payload: any) {
       const id = payload?.id;
       if (!id) throw new Error("Missing key id");
       const { hosts, certs } = countReferences(id);
@@ -163,19 +187,24 @@ export function createSshHandlers({ sshManager, store, credentialStore, broadcas
         return {
           ok: false,
           error: "in-use",
-          hosts: hosts.map((h) => ({ id: h.id, name: h.name })),
-          certs: certs.map((c) => ({ id: c.id, keyIdString: c.keyIdString || c.id })),
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          hosts: hosts.map((h: any) => ({ id: h.id, name: h.name })),
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          certs: certs.map((c: any) => ({ id: c.id, keyIdString: c.keyIdString || c.id })),
         };
       }
 
       await credentialStore.deleteSecret(id);
       await credentialStore.deleteSecret(`ssh:passphrase:${id}`);
 
-      await store.mutate((state) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      await store.mutate((state: any) => {
         if (!state.ssh) return;
-        state.ssh.keys = (state.ssh.keys || []).filter((k) => k.id !== id);
-        state.ssh.certificates = (state.ssh.certificates || []).filter((c) => c.keyId !== id);
-        state.ssh.hosts = (state.ssh.hosts || []).map((h) =>
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        state.ssh.keys = (state.ssh.keys || []).filter((k: any) => k.id !== id);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        state.ssh.certificates = (state.ssh.certificates || []).filter((c: any) => c.keyId !== id);
+        state.ssh.hosts = (state.ssh.hosts || []).map((h: any) =>
           h.auth?.keyRef === id ? { ...h, auth: { ...h.auth, keyRef: "", certRef: h.auth.certRef } } : h,
         );
       });
@@ -187,7 +216,8 @@ export function createSshHandlers({ sshManager, store, credentialStore, broadcas
       return store.getState().ssh?.certificates || [];
     },
 
-    async "ssh:certs:import"(payload) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async "ssh:certs:import"(payload: any) {
       const parsed = sshCertImportSchema.parse(payload);
       const decoded = parseCertificate(parsed.certificate);
       const id = newId("ssh:cert:");
@@ -199,7 +229,8 @@ export function createSshHandlers({ sshManager, store, credentialStore, broadcas
         ...decoded,
       };
       await credentialStore.setSecret(id, parsed.certificate);
-      await store.mutate((state) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      await store.mutate((state: any) => {
         if (!state.ssh) state.ssh = { hosts: [], keys: [], certificates: [], knownHosts: {}, settings: {} };
         if (!Array.isArray(state.ssh.certificates)) state.ssh.certificates = [];
         state.ssh.certificates.push(cert);
@@ -208,14 +239,17 @@ export function createSshHandlers({ sshManager, store, credentialStore, broadcas
       return cert;
     },
 
-    async "ssh:certs:delete"(payload) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async "ssh:certs:delete"(payload: any) {
       const id = payload?.id;
       if (!id) throw new Error("Missing cert id");
       await credentialStore.deleteSecret(id);
-      await store.mutate((state) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      await store.mutate((state: any) => {
         if (!state.ssh) return;
-        state.ssh.certificates = (state.ssh.certificates || []).filter((c) => c.id !== id);
-        state.ssh.hosts = (state.ssh.hosts || []).map((h) =>
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        state.ssh.certificates = (state.ssh.certificates || []).filter((c: any) => c.id !== id);
+        state.ssh.hosts = (state.ssh.hosts || []).map((h: any) =>
           h.auth?.certRef === id ? { ...h, auth: { ...h.auth, certRef: "" } } : h,
         );
       });
@@ -223,49 +257,57 @@ export function createSshHandlers({ sshManager, store, credentialStore, broadcas
       return { ok: true };
     },
 
-    async "ssh:auth:answer"(payload) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async "ssh:auth:answer"(payload: any) {
       const parsed = sshAuthAnswerSchema.parse(payload);
       sshManager.answerAuthPrompt(parsed.sessionId, parsed.answers);
       return { ok: true };
     },
 
-    async "ssh:auth:cancel"(payload) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async "ssh:auth:cancel"(payload: any) {
       const sessionId = payload?.sessionId;
       if (!sessionId) throw new Error("Missing sessionId");
       sshManager.cancelAuthPrompt(sessionId);
       return { ok: true };
     },
 
-    async "ssh:host-key:accept"(payload) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async "ssh:host-key:accept"(payload: any) {
       const parsed = sshAcceptHostKeySchema.parse(payload);
       await sshManager.acceptHostKey(parsed.sessionId, parsed.mode);
       return { ok: true };
     },
 
-    async "ssh:host-key:reject"(payload) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async "ssh:host-key:reject"(payload: any) {
       const sessionId = payload?.sessionId;
       if (!sessionId) throw new Error("Missing sessionId");
       sshManager.rejectHostKey(sessionId);
       return { ok: true };
     },
 
-    async "ssh:config:preview"(payload) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async "ssh:config:preview"(payload: any) {
       const { parseSshConfig } = await import("./ssh-config-parser.js");
       const parsed = sshConfigImportSchema.parse(payload || {});
       return parseSshConfig(parsed.path);
     },
 
-    async "ssh:config:import"(payload) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async "ssh:config:import"(payload: any) {
       const { parseSshConfig } = await import("./ssh-config-parser.js");
       const parsed = sshConfigImportSchema.parse(payload || {});
       const hosts = await parseSshConfig(parsed.path);
       const selected =
-        parsed.hostIds && parsed.hostIds.length > 0 ? hosts.filter((h) => parsed.hostIds.includes(h.name)) : hosts;
+        parsed.hostIds && parsed.hostIds.length > 0 ? hosts.filter((h) => parsed.hostIds!.includes(h.name)) : hosts;
 
-      const created = [];
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const created: any[] = [];
       for (const h of selected) {
         // Drop the parser's private _identityFile marker — it isn't valid state.
-        const clean = { ...h };
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const clean: any = { ...h };
         delete clean._identityFile;
         if (!clean.auth) clean.auth = { methods: ["publickey"], agent: "auto" };
         created.push(await sshManager.createHost(clean));
@@ -274,7 +316,8 @@ export function createSshHandlers({ sshManager, store, credentialStore, broadcas
       return created;
     },
 
-    async "ssh:known-hosts:import"(payload) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async "ssh:known-hosts:import"(payload: any) {
       // V1 scope: read-only scaffold — full parsing of ~/.ssh/known_hosts is
       // deferred to a follow-up PR. See plan §9 for the format details.
       sshKnownHostsImportSchema.parse(payload || {});
@@ -283,7 +326,7 @@ export function createSshHandlers({ sshManager, store, credentialStore, broadcas
   };
 }
 
-function inferKeyKind(pem) {
+function inferKeyKind(pem: string): string {
   if (!pem) return "unknown";
   const head = pem.slice(0, 512);
   if (/BEGIN OPENSSH PRIVATE KEY/.test(head)) return "openssh";
