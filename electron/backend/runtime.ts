@@ -9,7 +9,6 @@ import { readFile, writeFile, mkdir, readdir, access, rm } from "node:fs/promise
 import { EventEmitter } from "node:events";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
-// @ts-ignore — store.js will be migrated in a later phase
 import { createStore } from "./store.js";
 import { SessionManager } from "./session-manager.js";
 import { createAccessToken, createSessionId, normalizeWorkspace, parseSessionId } from "./default-state.js";

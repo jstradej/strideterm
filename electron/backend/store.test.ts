@@ -4,7 +4,7 @@ import fs from "node:fs/promises";
 import { afterEach, describe, expect, test } from "vitest";
 import { createStore } from "./store.js";
 
-const createdPaths = [];
+const createdPaths: string[] = [];
 
 async function createTempStatePath() {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-store-"));
