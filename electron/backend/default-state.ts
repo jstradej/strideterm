@@ -1,7 +1,9 @@
+/// <reference types="node" />
 import os from "node:os";
 import path from "node:path";
 import { randomBytes } from "node:crypto";
 import { APP_CONFIG } from "../../config/app-config.js";
+import type { AppState, WorkspaceState, Profile, TabTemplate } from "../shared/types/state.js";
 
 const UTF8_DECODER = (() => {
   try {
@@ -16,7 +18,7 @@ const WINDOWS_1250_ENCODER_MAP = (() => {
     const decoder = new TextDecoder("windows-1250");
     const bytes = Uint8Array.from({ length: 256 }, (_value, index) => index);
     const decoded = decoder.decode(bytes);
-    const map = new Map();
+    const map = new Map<string, number>();
     for (let index = 0; index < decoded.length; index += 1) {
       if (!map.has(decoded[index])) {
         map.set(decoded[index], index);
@@ -30,7 +32,7 @@ const WINDOWS_1250_ENCODER_MAP = (() => {
 
 const MOJIBAKE_MARKER_RE = /[ĂÂÄÅĹâđź]/u;
 
-function defaultCwd() {
+function defaultCwd(): string {
   return os.homedir();
 }
 
@@ -40,25 +42,25 @@ function defaultCwd() {
  * that falls back to a "default" path under strIDEterm's data dir picks up the
  * override consistently — otherwise dev instances bleed into ~/.strideterm.
  */
-export function strideDataDir() {
+export function strideDataDir(): string {
   return process.env.STRIDETERM_DATA_DIR
     ? path.resolve(process.env.STRIDETERM_DATA_DIR)
     : path.join(os.homedir(), ".strideterm");
 }
 
-function defaultAzureReviewRoot() {
+function defaultAzureReviewRoot(): string {
   return path.join(strideDataDir(), "azure-pr");
 }
 
-function defaultGitHubReviewRoot() {
+function defaultGitHubReviewRoot(): string {
   return path.join(strideDataDir(), "github-pr");
 }
 
-export function createAccessToken() {
+export function createAccessToken(): string {
   return randomBytes(18).toString("base64url");
 }
 
-function decodeUtf8Mojibake(value) {
+function decodeUtf8Mojibake(value: string): string {
   if (!value || !UTF8_DECODER || !WINDOWS_1250_ENCODER_MAP || !MOJIBAKE_MARKER_RE.test(value)) {
     return value;
   }
@@ -79,7 +81,7 @@ function decodeUtf8Mojibake(value) {
   }
 }
 
-function repairVisibleText(value, fallback = "") {
+function repairVisibleText(value: unknown, fallback = ""): string {
   let current = String(value ?? fallback);
   for (let attempt = 0; attempt < 2; attempt += 1) {
     const repaired = decodeUtf8Mojibake(current);
@@ -91,14 +93,15 @@ function repairVisibleText(value, fallback = "") {
   return current;
 }
 
-function normalizeLaunch(launch) {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function normalizeLaunch(launch: any): Record<string, unknown> | null {
   if (!launch) return null;
   // SSH launch: carries either a reference to a saved host or an inline ad-hoc
   // definition. We preserve both shapes faithfully so the panel survives
   // reload. Private material is NEVER stored here — only refs into the
   // credential store.
   if (launch.kind === "ssh") {
-    const normalized = { kind: "ssh" };
+    const normalized: Record<string, unknown> = { kind: "ssh" };
     if (launch.sshHostId) normalized.sshHostId = String(launch.sshHostId);
     if (launch.sshInline && typeof launch.sshInline === "object") {
       const inline = launch.sshInline;
@@ -134,7 +137,8 @@ function normalizeLaunch(launch) {
   };
 }
 
-function normalizePanel(panel, panelIndex = 0) {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function normalizePanel(panel: any, panelIndex = 0): any {
   return {
     id: panel.id || `panel-${panelIndex + 1}`,
     title: repairVisibleText(panel.title || `Panel ${panelIndex + 1}`),
@@ -158,11 +162,11 @@ const KNOWN_VIEW_PREFIXES = [
 ];
 const VALID_SPLIT_LAYOUTS = new Set(["cols", "rows", "top-split", "left-split", "grid"]);
 
-function isKnownPrefixViewId(viewId) {
+function isKnownPrefixViewId(viewId: unknown): boolean {
   return typeof viewId === "string" && KNOWN_VIEW_PREFIXES.some((prefix) => viewId.startsWith(prefix));
 }
 
-function isValidWorkspaceViewId(viewId, workspaceId, panels) {
+function isValidWorkspaceViewId(viewId: unknown, workspaceId: string, panels: Array<{ id: string }>): boolean {
   if (typeof viewId !== "string" || !viewId) return false;
   if (isKnownPrefixViewId(viewId)) return true;
   const sessionPrefix = `${workspaceId}:`;
@@ -171,7 +175,7 @@ function isValidWorkspaceViewId(viewId, workspaceId, panels) {
   return panels.some((panel) => panel.id === panelId);
 }
 
-function panelViewId(panel, workspaceId) {
+function panelViewId(panel: { id: string; command?: string } | null | undefined, workspaceId: string): string | null {
   if (!panel) return null;
   if (panel.command === "__task-dashboard__") return `task-dashboard:${panel.id}`;
   if (panel.command === "__files__") return `files:${panel.id}`;
@@ -183,7 +187,7 @@ function panelViewId(panel, workspaceId) {
 // form when it points to a non-terminal panel (dashboard/files/browser). Older
 // state files persisted the session-style id for dashboard panels, which then
 // failed to match splitGroup.viewIds and collapsed the layout to solo.
-function canonicalizeViewId(viewId, workspaceId, panels) {
+function canonicalizeViewId(viewId: string, workspaceId: string, panels: Array<{ id: string; command?: string }>): string {
   if (typeof viewId !== "string" || !viewId) return viewId;
   if (isKnownPrefixViewId(viewId)) return viewId;
   const sessionPrefix = `${workspaceId}:`;
@@ -191,10 +195,16 @@ function canonicalizeViewId(viewId, workspaceId, panels) {
   const panelId = viewId.slice(sessionPrefix.length);
   const panel = panels.find((p) => p.id === panelId);
   if (!panel) return viewId;
-  return panelViewId(panel, workspaceId);
+  return panelViewId(panel, workspaceId) ?? viewId;
 }
 
-function normalizeWorkspaceUIState(workspace, workspaceId, panels, activePanelId) {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function normalizeWorkspaceUIState(workspace: any, workspaceId: string, panels: Array<{ id: string; command?: string }>, activePanelId: string | null): {
+  activeViewId: string | null;
+  splitLayout: string | null;
+  splitViewIds: string[];
+  activeRootPath: string;
+} {
   const activePanel = activePanelId ? panels.find((p) => p.id === activePanelId) : null;
   const fallbackViewId = panelViewId(activePanel, workspaceId);
   const rawViewId = typeof workspace.activeViewId === "string" ? workspace.activeViewId : "";
@@ -202,7 +212,7 @@ function normalizeWorkspaceUIState(workspace, workspaceId, panels, activePanelId
   const activeViewId = isValidWorkspaceViewId(canonicalRaw, workspaceId, panels) ? canonicalRaw : fallbackViewId;
 
   const rawLayout = workspace.splitLayout;
-  const rawSplitIds = Array.isArray(workspace.splitViewIds) ? workspace.splitViewIds : [];
+  const rawSplitIds: string[] = Array.isArray(workspace.splitViewIds) ? (workspace.splitViewIds as string[]) : [];
   const canonicalSplitIds = rawSplitIds
     .map((id) => canonicalizeViewId(id, workspaceId, panels))
     .filter((id) => isValidWorkspaceViewId(id, workspaceId, panels));
@@ -217,16 +227,20 @@ function normalizeWorkspaceUIState(workspace, workspaceId, panels, activePanelId
   };
 }
 
-export function normalizeWorkspace(workspace, index = 0) {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function normalizeWorkspace(workspace: any, index = 0): WorkspaceState {
   const isDockerWorkspace = (workspace.id || "") === "docker" || workspace.kind === "docker";
   const isAzureWorkspace = workspace.kind === "azure";
   const isGitHubWorkspace = workspace.kind === "github";
   const isTaskWorkspace = workspace.kind === "task";
-  const rawPanels = isDockerWorkspace
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const rawPanels: any[] = isDockerWorkspace
     ? (workspace.panels || []).filter(
-        (panel) => !(panel.id === "lazydocker" && panel.command === "lazydocker" && !panel.launch),
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (panel: any) => !(panel.id === "lazydocker" && panel.command === "lazydocker" && !panel.launch),
       )
-    : (workspace.panels || []).filter((panel) => !(panel.id === "git" && !panel.command && !panel.launch));
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    : (workspace.panels || []).filter((panel: any) => !(panel.id === "git" && !panel.command && !panel.launch));
   const panels = rawPanels.map((panel, panelIndex) => normalizePanel(panel, panelIndex));
   const fallbackPanelId = panels[0]?.id || null;
   const activePanelId = panels.some((panel) => panel.id === workspace.activePanelId)
@@ -261,7 +275,7 @@ export function normalizeWorkspace(workspace, index = 0) {
       // Don't allow gitRoots on review workspaces or task workspaces that run in a worktree
       if (isAzureWorkspace || isGitHubWorkspace) return [];
       if (isTaskWorkspace && workspace.task?.worktreeBranch) return [];
-      const roots = Array.isArray(workspace.gitRoots) ? workspace.gitRoots.filter(Boolean) : [];
+      const roots: unknown[] = Array.isArray(workspace.gitRoots) ? (workspace.gitRoots as unknown[]).filter(Boolean) : [];
       return roots
         .map((r) => String(r).replace(/\\/g, "/").replace(/\/+$/, ""))
         .filter(Boolean)
@@ -374,7 +388,7 @@ export function normalizeWorkspace(workspace, index = 0) {
   };
 }
 
-export function createDefaultState() {
+export function createDefaultState(): AppState & { activeProjectId: string; projects: WorkspaceState[] } {
   const state = {
     activeWorkspaceId: "",
     activeProfileId: "default",
@@ -382,7 +396,7 @@ export function createDefaultState() {
       theme: APP_CONFIG.ui.defaultTheme,
       sidebarWidth: APP_CONFIG.ui.sidebarWidth,
       sidebarCollapsed: APP_CONFIG.ui.sidebarCollapsed,
-      logLevel: APP_CONFIG.logging.level,
+      logLevel: APP_CONFIG.logging.level as "error" | "warn" | "info" | "debug" | "trace",
       notifications: {
         promptQuietMs: APP_CONFIG.notifications.promptQuietMs,
         agentQuietMs: APP_CONFIG.notifications.agentQuietMs,
@@ -445,8 +459,8 @@ export function createDefaultState() {
       { id: "browser", title: "Browser", command: "https://", icon: "\u{1F310}" },
       { id: "files", title: "Files", command: "__files__", icon: "\u{1F4C2}" },
     ],
-    profiles: [{ id: "default", name: "Default", color: "#ffa424", workspaceIds: [] }],
-    workspaces: [],
+    profiles: [{ id: "default", name: "Default", color: "#ffa424", workspaceIds: [] as string[] }],
+    workspaces: [] as WorkspaceState[],
     ssh: {
       hosts: [],
       keys: [],
@@ -470,16 +484,17 @@ export function createDefaultState() {
   };
 }
 
-function normalizeProfiles(rawProfiles, defaults) {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function normalizeProfiles(rawProfiles: any, defaults: { profiles: Profile[] }): Profile[] {
   return Array.isArray(rawProfiles) && rawProfiles.length
-    ? rawProfiles.map((profile) => ({
-        id: profile.id || `profile-${Date.now()}`,
-        name: profile.name || "Unnamed",
-        color: profile.color || "#ffa424",
+    ? rawProfiles.map((profile: Record<string, unknown>) => ({
+        id: String(profile.id || `profile-${Date.now()}`),
+        name: String(profile.name || "Unnamed"),
+        color: String(profile.color || "#ffa424"),
         workspaceIds: Array.isArray(profile.workspaceIds)
-          ? profile.workspaceIds
+          ? (profile.workspaceIds as string[])
           : Array.isArray(profile.projectIds)
-            ? profile.projectIds
+            ? (profile.projectIds as string[])
             : [],
       }))
     : defaults.profiles;
@@ -488,20 +503,20 @@ function normalizeProfiles(rawProfiles, defaults) {
 /**
  * Ensure child workspaces are positioned right after their parent workspace.
  */
-function groupChildWorkspaces(workspaces) {
+function groupChildWorkspaces(workspaces: WorkspaceState[]): WorkspaceState[] {
   const byId = new Map(workspaces.map((workspace) => [workspace.id, workspace]));
-  const children = new Map(); // parentId -> [child workspaces]
-  const roots = [];
+  const children = new Map<string, WorkspaceState[]>(); // parentId -> [child workspaces]
+  const roots: WorkspaceState[] = [];
 
   // Index workspaces by cwd for fast parent lookup via directory path.
   // When multiple workspaces share the same cwd, prefer a same-profile match,
   // so build a Map<cwd, workspace[]> and resolve per-child below.
-  const byCwd = new Map();
+  const byCwd = new Map<string, WorkspaceState[]>();
   for (const workspace of workspaces) {
     if (!workspace.cwd) continue;
     const norm = workspace.cwd.replace(/\\/g, "/").replace(/\/+$/, "");
     if (!byCwd.has(norm)) byCwd.set(norm, []);
-    byCwd.get(norm).push(workspace);
+    byCwd.get(norm)!.push(workspace);
   }
 
   // Also index each workspace's gitRoots so worktree children of multi-repo parents can find their parent
@@ -511,11 +526,12 @@ function groupChildWorkspaces(workspaces) {
       if (!root) continue;
       const norm = root.replace(/\\/g, "/").replace(/\/+$/, "");
       if (!byCwd.has(norm)) byCwd.set(norm, []);
-      if (!byCwd.get(norm).includes(workspace)) byCwd.get(norm).push(workspace);
+      const entry = byCwd.get(norm)!;
+      if (!entry.includes(workspace)) entry.push(workspace);
     }
   }
 
-  function findParentByCwd(workspace) {
+  function findParentByCwd(workspace: WorkspaceState): WorkspaceState | null {
     const cwd = (workspace.cwd || "").replace(/\\/g, "/").replace(/\/+$/, "");
     const marker = "/.strideterm/tree/";
     const idx = cwd.lastIndexOf(marker);
@@ -525,7 +541,7 @@ function groupChildWorkspaces(workspaces) {
     if (!candidates) return null;
     const childProfile = workspace.profileId || "default";
     // Exclude task workspaces and other worktree children — only real root workspaces can be parents.
-    const isEligibleParent = (c) =>
+    const isEligibleParent = (c: WorkspaceState) =>
       c.id !== workspace.id && c.kind !== "task" && !(c.notes || "").startsWith("Worktree of ");
     return (
       candidates.find((c) => isEligibleParent(c) && (c.profileId || "default") === childProfile) ||
@@ -534,7 +550,7 @@ function groupChildWorkspaces(workspaces) {
     );
   }
 
-  function addChild(parentId, workspace) {
+  function addChild(parentId: string, workspace: WorkspaceState): void {
     if (!parentId) {
       roots.push(workspace);
       return;
@@ -542,7 +558,7 @@ function groupChildWorkspaces(workspaces) {
     if (!children.has(parentId)) {
       children.set(parentId, []);
     }
-    children.get(parentId).push(workspace);
+    children.get(parentId)!.push(workspace);
   }
 
   for (const workspace of workspaces) {
@@ -621,8 +637,8 @@ function groupChildWorkspaces(workspaces) {
     roots.push(workspace);
   }
 
-  const result = [];
-  const appendChildren = (parentId) => {
+  const result: WorkspaceState[] = [];
+  const appendChildren = (parentId: string): void => {
     const kids = children.get(parentId);
     if (!kids) {
       return;
@@ -645,7 +661,8 @@ function groupChildWorkspaces(workspaces) {
   return result;
 }
 
-export function normalizeState(rawState = {}) {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function normalizeState(rawState: any = {}): AppState & { activeProjectId: string; projects: WorkspaceState[] } {
   const defaults = createDefaultState();
   const rawWorkspaces = rawState.workspaces || rawState.projects || defaults.workspaces;
   const rawTemplates = rawState.tabTemplates;
@@ -666,12 +683,12 @@ export function normalizeState(rawState = {}) {
   // Platform-conditional shell migrations. Insert right after the "shell"
   // template so the shells stay grouped in the Tab picker dropdown.
   const shellIdx = tabTemplates.findIndex((t) => t.id === "shell");
-  const insertAfterShell = (tmpl) => {
+  const insertAfterShell = (tmpl: TabTemplate) => {
     if (shellIdx >= 0) tabTemplates.splice(shellIdx + 1, 0, tmpl);
     else tabTemplates.push(tmpl);
   };
   if (process.platform === "win32") {
-    const ensureWinShell = (spec, match) => {
+    const ensureWinShell = (spec: TabTemplate, match: (t: TabTemplate) => boolean) => {
       if (!tabTemplates.some(match)) insertAfterShell(spec);
     };
     ensureWinShell(
@@ -697,7 +714,7 @@ export function normalizeState(rawState = {}) {
       (t) => t.id === "wsl" || t.command === "wsl" || (typeof t.command === "string" && t.command.startsWith("wsl ")),
     );
   } else {
-    const ensurePosixShell = (spec, match) => {
+    const ensurePosixShell = (spec: TabTemplate, match: (t: TabTemplate) => boolean) => {
       if (!tabTemplates.some(match)) insertAfterShell(spec);
     };
     ensurePosixShell(
@@ -788,7 +805,8 @@ export function normalizeState(rawState = {}) {
         ...defaults.settings.integrations.azureDevops,
         ...(((rawState.settings || {}).integrations || {}).azureDevops || {}),
         connections: Array.isArray((((rawState.settings || {}).integrations || {}).azureDevops || {}).connections)
-          ? (((rawState.settings || {}).integrations || {}).azureDevops || {}).connections.map((connection, index) => ({
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          ? (((rawState.settings || {}).integrations || {}).azureDevops || {}).connections.map((connection: any, index: number) => ({
               id: connection.id || `ado-${index + 1}`,
               label: connection.label || connection.id || `Azure ${index + 1}`,
               orgUrl: connection.orgUrl || "",
@@ -808,7 +826,8 @@ export function normalizeState(rawState = {}) {
         ...defaults.settings.integrations.github,
         ...(((rawState.settings || {}).integrations || {}).github || {}),
         connections: Array.isArray((((rawState.settings || {}).integrations || {}).github || {}).connections)
-          ? (((rawState.settings || {}).integrations || {}).github || {}).connections.map((connection, index) => ({
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          ? (((rawState.settings || {}).integrations || {}).github || {}).connections.map((connection: any, index: number) => ({
               id: connection.id || `gh-${index + 1}`,
               label: connection.label || connection.id || `GitHub ${index + 1}`,
               hostUrl: connection.hostUrl || "https://github.com",
@@ -847,8 +866,9 @@ export function normalizeState(rawState = {}) {
     },
   };
   const workspaces = groupChildWorkspaces(
-    rawWorkspaces
-      .map((workspace, index) => normalizeWorkspace(workspace, index))
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (rawWorkspaces as any[])
+      .map((workspace: any, index: number) => normalizeWorkspace(workspace, index))
       .map((workspace) => {
         if (workspace.kind === "azure" && !String(workspace.cwd || "").trim()) {
           return {
@@ -878,10 +898,12 @@ export function normalizeState(rawState = {}) {
   // Migrate Azure connections without profileId: assign to the profile that owns
   // the Azure workspace, or fallback to the active profile.
   const azureConnections = normalizedSettings.integrations?.azureDevops?.connections || [];
-  const hasUntaggedConnections = azureConnections.some((c) => !c.profileId);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const hasUntaggedConnections = azureConnections.some((c: any) => !c.profileId);
   if (hasUntaggedConnections) {
     const azureWorkspaceProfile = workspaces.find((w) => w.kind === "azure")?.profileId || activeProfileId;
-    normalizedSettings.integrations.azureDevops.connections = azureConnections.map((c) =>
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    normalizedSettings.integrations.azureDevops.connections = azureConnections.map((c: any) =>
       c.profileId ? c : { ...c, profileId: azureWorkspaceProfile },
     );
   }
@@ -910,19 +932,19 @@ export function normalizeState(rawState = {}) {
   return {
     ...normalized,
     activeProjectId: normalized.activeWorkspaceId,
-    profiles: normalized.profiles.map((profile) => ({
+    profiles: (normalized.profiles as Profile[]).map((profile) => ({
       ...profile,
       projectIds: [...profile.workspaceIds],
     })),
-    projects: normalized.workspaces,
+    projects: normalized.workspaces as WorkspaceState[],
   };
 }
 
-export function createSessionId(workspaceId, panelId) {
+export function createSessionId(workspaceId: string, panelId: string): string {
   return `${workspaceId}:${panelId}`;
 }
 
-export function parseSessionId(sessionId) {
+export function parseSessionId(sessionId: string): { workspaceId: string; panelId: string } | null {
   const [workspaceId, panelId] = String(sessionId || "").split(":");
   if (!workspaceId || !panelId) {
     return null;

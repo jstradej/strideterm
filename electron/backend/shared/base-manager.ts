@@ -1,9 +1,87 @@
+/// <reference types="node" />
 import { EventEmitter } from "node:events";
 import { randomUUID } from "node:crypto";
 import { execFileText as defaultExecFileText } from "../process-utils.js";
 import { clone, createEmptySnapshot, stripRefsPrefix } from "./provider-utils.js";
 import { encodeAuthHeader, sanitizeGitEnvironment } from "./git-auth-utils.js";
+import type { Logger } from "../logger.js";
 import { getLogger } from "../logger.js";
+import type { CredentialStore } from "./credential-store.js";
+
+interface PrSummaryItem {
+  prKey: string;
+  lastRemoteActivityAt?: string;
+  reviewWorkspaceId?: string;
+  hasAttention?: boolean;
+  attentionReason?: string;
+  newCommentsCount?: number;
+  [key: string]: unknown;
+}
+
+interface SnapshotConnection {
+  id: string;
+  tokenRef?: string;
+  [key: string]: unknown;
+}
+
+interface ProviderSnapshot {
+  connections: SnapshotConnection[];
+  inbox: {
+    needsMyReview: PrSummaryItem[];
+    myPullRequests: PrSummaryItem[];
+    recentlyUpdated: PrSummaryItem[];
+    needsAttention: PrSummaryItem[];
+  };
+  trackedPullRequests: Record<string, Record<string, unknown>>;
+  pullRequests: Record<string, PrSummaryItem>;
+  reviewActivity: unknown[];
+  sync: {
+    running: boolean;
+    lastStartedAt: string | null;
+    lastCompletedAt: string | null;
+  };
+  [key: string]: unknown;
+}
+
+interface ReviewStore {
+  upsertTrackedPullRequest(prKey: string, data: { lastSeenActivityAt: string; reviewWorkspaceId: string }): Promise<void>;
+}
+
+interface ReviewBridgeStore {
+  markPullRequestSeen?(prKey: string, lastSeenActivityAt: string): Promise<void>;
+}
+
+interface AuditLogStore {
+  logEntry(entry: Record<string, unknown>): void;
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type ApiFactory = (fetchImpl: typeof globalThis.fetch, opts: { auditLogger: (raw: any) => void }) => Record<string, unknown>;
+
+interface BaseProviderManagerOptions {
+  credentialStore: CredentialStore;
+  reviewStore: ReviewStore;
+  reviewBridgeStore?: ReviewBridgeStore | null;
+  auditLogStore?: AuditLogStore | null;
+  fetchImpl?: typeof globalThis.fetch;
+  execFileTextImpl?: typeof defaultExecFileText;
+  now?: () => number;
+  createApi: ApiFactory;
+}
+
+interface RunGitOptions {
+  login?: string;
+  token?: string;
+}
+
+interface PanelTemplate {
+  id?: string;
+  title?: string;
+  command?: string;
+  shell?: boolean;
+  startup?: string;
+  launch?: { file?: string; args?: string[] } | null;
+}
 
 /**
  * Shared base class for Azure DevOps and GitHub provider managers.
@@ -18,6 +96,23 @@ import { getLogger } from "../logger.js";
  *   - `this.defaultGitLogin` — default git auth login (e.g. "" for Azure, "x-access-token" for GitHub)
  */
 export class BaseProviderManager extends EventEmitter {
+  credentialStore: CredentialStore;
+  reviewStore: ReviewStore;
+  reviewBridgeStore: ReviewBridgeStore | null;
+  auditLogStore: AuditLogStore | null;
+  fetchImpl: typeof globalThis.fetch;
+  execFileText: typeof defaultExecFileText;
+  now: () => number;
+  _auditConnectionId: string;
+  _auditUserInitiated: boolean;
+  api: Record<string, unknown>;
+  snapshot: ProviderSnapshot;
+  syncTimer: ReturnType<typeof setInterval> | null;
+  _seededConnections: Set<string>;
+  providerLabel: string;
+  defaultGitLogin: string;
+  _log: Logger | null;
+
   constructor({
     credentialStore,
     reviewStore,
@@ -27,7 +122,7 @@ export class BaseProviderManager extends EventEmitter {
     execFileTextImpl = defaultExecFileText,
     now = () => Date.now(),
     createApi,
-  } = {}) {
+  }: BaseProviderManagerOptions) {
     super();
     this.credentialStore = credentialStore;
     this.reviewStore = reviewStore;
@@ -41,7 +136,7 @@ export class BaseProviderManager extends EventEmitter {
     this._auditUserInitiated = false;
 
     this.api = createApi(fetchImpl, { auditLogger: (raw) => this._logAudit(raw) });
-    this.snapshot = createEmptySnapshot();
+    this.snapshot = createEmptySnapshot() as ProviderSnapshot;
     this.syncTimer = null;
 
     // Connections that have completed their first sync in this process.
@@ -55,39 +150,40 @@ export class BaseProviderManager extends EventEmitter {
   }
 
   // Subclasses must override this
-  _logAudit(_raw) {}
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  _logAudit(_raw: any): void {}
 
-  get log() {
+  get log(): Logger {
     if (!this._log) this._log = getLogger(this.providerLabel);
     return this._log;
   }
 
-  setAuditContext({ connectionId = "", userInitiated = false } = {}) {
+  setAuditContext({ connectionId = "", userInitiated = false }: { connectionId?: string; userInitiated?: boolean } = {}): void {
     this._auditConnectionId = connectionId;
     this._auditUserInitiated = userInitiated;
   }
 
-  getSnapshot() {
+  getSnapshot(): ProviderSnapshot {
     return clone(this.snapshot);
   }
 
-  emitUpdated() {
+  emitUpdated(): void {
     this.emit("updated", this.getSnapshot());
   }
 
-  setSnapshot(snapshot) {
+  setSnapshot(snapshot: ProviderSnapshot): void {
     this.snapshot = clone(snapshot);
     this.emitUpdated();
   }
 
-  stopPolling() {
+  stopPolling(): void {
     if (this.syncTimer) {
       clearInterval(this.syncTimer);
       this.syncTimer = null;
     }
   }
 
-  configurePolling(intervalMs, callback) {
+  configurePolling(intervalMs: number, callback: () => Promise<void>): void {
     this.stopPolling();
     if (intervalMs > 0 && typeof callback === "function") {
       this.syncTimer = setInterval(() => {
@@ -96,7 +192,7 @@ export class BaseProviderManager extends EventEmitter {
     }
   }
 
-  findSummary(prKey) {
+  findSummary(prKey: string): PrSummaryItem | null {
     const all = [
       ...this.snapshot.inbox.needsMyReview,
       ...this.snapshot.inbox.myPullRequests,
@@ -106,19 +202,19 @@ export class BaseProviderManager extends EventEmitter {
     return all.find((item) => item.prKey === prKey) || null;
   }
 
-  findConnection(connectionId) {
+  findConnection(connectionId: string): SnapshotConnection | null {
     return this.snapshot.connections.find((connection) => connection.id === connectionId) || null;
   }
 
-  resolveConnectionAndToken(connectionId) {
+  resolveConnectionAndToken(connectionId: string): { connection: SnapshotConnection; token: string } {
     const connection = this.findConnection(connectionId);
     if (!connection) throw new Error(`${this.providerLabel} connection was not found.`);
-    const token = this.credentialStore.getSecret(connection.tokenRef);
+    const token = this.credentialStore.getSecret(connection.tokenRef || "");
     if (!token) throw new Error("PAT is missing.");
     return { connection, token };
   }
 
-  async markPullRequestSeen(prKey) {
+  async markPullRequestSeen(prKey: string): Promise<ProviderSnapshot | undefined> {
     const summary = this.findSummary(prKey) || this.snapshot.pullRequests[prKey];
     if (!summary) {
       this.log.warn("markPullRequestSeen: PR not in snapshot, skipping", { prKey });
@@ -133,7 +229,7 @@ export class BaseProviderManager extends EventEmitter {
       try {
         await this.reviewBridgeStore.markPullRequestSeen(prKey, lastSeenActivityAt);
       } catch (error) {
-        this.log.warn("review bridge mark-seen failed", { prKey, err: error.message || String(error) });
+        this.log.warn("review bridge mark-seen failed", { prKey, err: (error as Error).message || String(error) });
       }
     }
 
@@ -145,7 +241,7 @@ export class BaseProviderManager extends EventEmitter {
       newCommentsCount: 0,
     };
 
-    const updateSummaryList = (items) =>
+    const updateSummaryList = (items: PrSummaryItem[]): PrSummaryItem[] =>
       items.map((item) =>
         item.prKey === prKey
           ? { ...item, lastSeenActivityAt, hasAttention: false, attentionReason: "", newCommentsCount: 0 }
@@ -169,7 +265,7 @@ export class BaseProviderManager extends EventEmitter {
     return this.getSnapshot();
   }
 
-  seedPullRequestSummary(prKey, summary) {
+  seedPullRequestSummary(prKey: string, summary: PrSummaryItem): void {
     if (this.snapshot.pullRequests[prKey] || this.findSummary(prKey)) return;
     this.setSnapshot({
       ...this.snapshot,
@@ -177,7 +273,7 @@ export class BaseProviderManager extends EventEmitter {
     });
   }
 
-  async listLocalChangedFiles(cwd, targetRefName) {
+  async listLocalChangedFiles(cwd: string, targetRefName: string): Promise<{ changeType: string; path: string }[]> {
     const targetBranch = stripRefsPrefix(targetRefName);
     const result = await this.execFileText("git", ["diff", "--name-status", `origin/${targetBranch}...HEAD`], { cwd });
     return result.stdout
@@ -190,8 +286,8 @@ export class BaseProviderManager extends EventEmitter {
       });
   }
 
-  async runGit(cwd, args, { login, token } = {}) {
-    const extraArgs = [];
+  async runGit(cwd: string, args: string[], { login, token }: RunGitOptions = {}): Promise<{ stdout: string; stderr: string }> {
+    const extraArgs: string[] = [];
     if (process.platform === "win32") {
       extraArgs.push("-c", "core.longpaths=true");
     }
@@ -208,19 +304,20 @@ export class BaseProviderManager extends EventEmitter {
       });
     } catch (error) {
       // Sanitize credentials from error output before re-throwing
-      const sanitize = (text) => {
+      const sanitize = (text: string | undefined): string | undefined => {
         if (!text) return text;
         return String(text).replace(/Basic\s+[A-Za-z0-9+/=]+/g, "Basic ***");
       };
       // execFileText rejects with a plain { error, stdout, stderr } object.
       // Electron IPC cannot serialize plain objects into error messages, so
       // convert to a proper Error with the stderr/message as the message.
-      const stderr = sanitize(error.stderr);
-      const innerMsg = sanitize(error.error?.message || error.message);
+      const err = error as { stderr?: string; stdout?: string; error?: { message?: string }; message?: string };
+      const stderr = sanitize(err.stderr);
+      const innerMsg = sanitize(err.error?.message || err.message);
       const msg = stderr || innerMsg || "Git command failed";
       this.log.warn(`git ${args[0]} failed`, { cwd, msg });
-      const wrapped = new Error(msg);
-      wrapped.stdout = sanitize(error.stdout);
+      const wrapped = new Error(msg) as Error & { stdout?: string; stderr?: string };
+      wrapped.stdout = sanitize(err.stdout);
       wrapped.stderr = stderr;
       throw wrapped;
     }
@@ -230,8 +327,18 @@ export class BaseProviderManager extends EventEmitter {
 /**
  * Build initial panel list for a review workspace from parent panels or tab templates.
  */
-export function createReviewWorkspacePanels(panelTemplates = [], tabTemplates = []) {
-  const selected = [];
+export function createReviewWorkspacePanels(
+  panelTemplates: PanelTemplate[] = [],
+  tabTemplates: PanelTemplate[] = [],
+): Array<{
+  id: string;
+  title: string;
+  command: string;
+  launch: { file: string; args: string[] } | null;
+  shell: boolean;
+  startup: string;
+}> {
+  const selected: PanelTemplate[] = [];
 
   if (Array.isArray(panelTemplates) && panelTemplates.length) {
     selected.push(...panelTemplates);

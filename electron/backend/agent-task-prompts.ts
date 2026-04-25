@@ -6,7 +6,6 @@
  */
 import path from "node:path";
 import { readFile } from "node:fs/promises";
-// @ts-ignore – logger.js is not yet migrated to TypeScript
 import { getLogger } from "./logger.js";
 import {
   TASK_FILE,

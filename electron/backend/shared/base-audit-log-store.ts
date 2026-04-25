@@ -1,3 +1,4 @@
+/// <reference types="node" />
 import { DatabaseSync } from "node:sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
@@ -8,7 +9,7 @@ const log = getLogger("audit-log");
 /**
  * Strip sensitive information (tokens) from a URL for safe storage.
  */
-function sanitizeUrl(url) {
+function sanitizeUrl(url: string): string {
   try {
     const u = new URL(url);
     u.searchParams.delete("access_token");
@@ -21,28 +22,58 @@ function sanitizeUrl(url) {
 
 const MAX_RETENTION_DAYS = 30;
 
+interface ProviderColumn {
+  name: string;
+  default: string;
+}
+
+interface AuditLogEntry {
+  timestamp?: string;
+  connectionId?: string;
+  operation?: string;
+  category?: string;
+  method?: string;
+  url?: string;
+  statusCode?: number | null;
+  success?: boolean;
+  errorMessage?: string | null;
+  durationMs?: number | null;
+  resourceType?: string;
+  resourceId?: string;
+  summary?: string;
+  userInitiated?: boolean;
+  [key: string]: unknown;
+}
+
+interface AuditLogFilters {
+  from?: string;
+  to?: string;
+  category?: string;
+  connectionId?: string;
+  success?: boolean;
+  operation?: string;
+  userInitiated?: boolean;
+  search?: string;
+  limit?: number;
+  offset?: number;
+}
+
+interface AuditLogStoreConfig {
+  tableName: string;
+  indexPrefix: string;
+  providerColumns: ProviderColumn[];
+  mapEntryToProviderValues: (entry: AuditLogEntry) => (string | number | null)[];
+  mapRowToProviderFields: (row: Record<string, unknown>) => Record<string, unknown>;
+  searchFields: string[];
+}
+
 /**
  * Generic audit-log store factory.
  *
  * Provider-specific stores (Azure DevOps, GitHub) call this with a config
  * that describes the table name, extra columns, and field mappings.
- *
- * @param {string} databasePath - Path to the SQLite database file
- * @param {object} config
- * @param {string} config.tableName - SQL table name (e.g. "azure_devops_audit_log")
- * @param {string} config.indexPrefix - Prefix for index names (e.g. "azure_audit")
- * @param {{ name: string, default: string }[]} config.providerColumns
- *    Extra columns between connection_id and operation.
- *    Each entry: { name: "project", default: "''" }
- * @param {(entry: object) => string[]} config.mapEntryToProviderValues
- *    Extract provider column values from a logEntry call argument.
- * @param {(row: object) => object} config.mapRowToProviderFields
- *    Map raw DB row to provider-specific output fields.
- * @param {string[]} config.searchFields
- *    Column names to include in the free-text search LIKE clause,
- *    in addition to the always-included operation, url, error_message.
  */
-export function createAuditLogStore(databasePath, config) {
+export function createAuditLogStore(databasePath: string, config: AuditLogStoreConfig) {
   const { tableName, indexPrefix, providerColumns, mapEntryToProviderValues, mapRowToProviderFields, searchFields } =
     config;
 
@@ -91,7 +122,7 @@ export function createAuditLogStore(databasePath, config) {
 
   const countStmt = db.prepare(`SELECT COUNT(*) as total FROM ${tableName}`);
 
-  function logEntry(entry) {
+  function logEntry(entry: AuditLogEntry): void {
     try {
       const providerValues = mapEntryToProviderValues(entry);
       insertStmt.run(
@@ -101,7 +132,7 @@ export function createAuditLogStore(databasePath, config) {
         entry.operation || "",
         entry.category || "read",
         entry.method || "GET",
-        sanitizeUrl(entry.url),
+        sanitizeUrl(String(entry.url || "")),
         entry.statusCode ?? null,
         entry.success !== false ? 1 : 0,
         entry.errorMessage || null,
@@ -112,13 +143,13 @@ export function createAuditLogStore(databasePath, config) {
         entry.userInitiated ? 1 : 0,
       );
     } catch (err) {
-      log.warn("failed to write entry", { err: err?.message || String(err) });
+      log.warn("failed to write entry", { err: (err as Error)?.message || String(err) });
     }
   }
 
-  function query(filters = {}) {
-    const conditions = [];
-    const params = [];
+  function query(filters: AuditLogFilters = {}) {
+    const conditions: string[] = [];
+    const params: (string | number)[] = [];
 
     if (filters.from) {
       conditions.push("timestamp >= ?");
@@ -162,8 +193,8 @@ export function createAuditLogStore(databasePath, config) {
     const countSql = `SELECT COUNT(*) as total FROM ${tableName} ${where}`;
     const querySql = `SELECT * FROM ${tableName} ${where} ORDER BY id DESC LIMIT ? OFFSET ?`;
 
-    const totalRow = db.prepare(countSql).get(...params);
-    const entries = db.prepare(querySql).all(...params, limit, offset);
+    const totalRow = db.prepare(countSql).get(...params) as { total?: number } | undefined;
+    const entries = db.prepare(querySql).all(...params, limit, offset) as Record<string, unknown>[];
 
     return {
       entries: entries.map(formatRow),
@@ -171,9 +202,9 @@ export function createAuditLogStore(databasePath, config) {
     };
   }
 
-  function getStats(filters = {}) {
-    const conditions = [];
-    const params = [];
+  function getStats(filters: Pick<AuditLogFilters, "from" | "connectionId"> = {}) {
+    const conditions: string[] = [];
+    const params: string[] = [];
 
     if (filters.from) {
       conditions.push("timestamp >= ?");
@@ -199,7 +230,7 @@ export function createAuditLogStore(databasePath, config) {
       FROM ${tableName} ${where}
     `,
       )
-      .get(...params);
+      .get(...params) as { total?: number; successCount?: number; errorCount?: number; readCount?: number; writeCount?: number; avgDurationMs?: number } | undefined;
 
     return {
       total: row?.total || 0,
@@ -211,23 +242,23 @@ export function createAuditLogStore(databasePath, config) {
     };
   }
 
-  function prune(maxAgeDays = MAX_RETENTION_DAYS) {
+  function prune(maxAgeDays = MAX_RETENTION_DAYS): void {
     const days = Math.max(1, Math.floor(maxAgeDays));
     const cutoff = new Date(Date.now() - days * 86_400_000).toISOString();
     db.prepare(`DELETE FROM ${tableName} WHERE timestamp < ?`).run(cutoff);
   }
 
-  function getEntryCount() {
-    return countStmt.get()?.total || 0;
+  function getEntryCount(): number {
+    return (countStmt.get() as { total?: number } | undefined)?.total || 0;
   }
 
-  function close() {
+  function close(): void {
     try {
       db.close();
     } catch {}
   }
 
-  function formatRow(row) {
+  function formatRow(row: Record<string, unknown>) {
     return {
       id: row.id,
       timestamp: row.timestamp,
@@ -252,7 +283,7 @@ export function createAuditLogStore(databasePath, config) {
   try {
     prune();
   } catch (err) {
-    log.warn("prune on startup failed", { err: err?.message || String(err) });
+    log.warn("prune on startup failed", { err: (err as Error)?.message || String(err) });
   }
 
   return { logEntry, query, getStats, prune, getEntryCount, close };

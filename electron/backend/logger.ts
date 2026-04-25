@@ -1,3 +1,4 @@
+/// <reference types="node" />
 import path from "node:path";
 import os from "node:os";
 import { mkdirSync } from "node:fs";
@@ -9,7 +10,7 @@ let LOG_DIR = path.join(os.homedir(), ".strideterm", "logs");
 /**
  * Override the log directory. Must be called before initLogger().
  */
-export function setLogDir(dir) {
+export function setLogDir(dir: string): void {
   LOG_DIR = dir;
 }
 
@@ -25,7 +26,8 @@ const CUSTOM_LEVELS = {
   },
 };
 
-const LOG_METHODS = Object.keys(CUSTOM_LEVELS.levels);
+type LogLevelName = keyof typeof CUSTOM_LEVELS.levels;
+const LOG_METHODS = Object.keys(CUSTOM_LEVELS.levels) as LogLevelName[];
 
 const TIMESTAMP_FORMAT = winston.format.timestamp({ format: "YYYY-MM-DD HH:mm:ss.SSS" });
 const PRINT_FORMAT = winston.format.printf(({ timestamp, level, label, message, ...rest }) => {
@@ -34,10 +36,26 @@ const PRINT_FORMAT = winston.format.printf(({ timestamp, level, label, message, 
   return `${timestamp} ${level.toUpperCase().padEnd(5)} ${tag} ${message}${extra}`;
 });
 
-let logger = null;
+type LogMethod = (message: string, meta?: Record<string, unknown>) => void;
 
-function resolveConfig(overrides = {}) {
-  const cfg = APP_CONFIG.logging || {};
+export interface Logger {
+  error: LogMethod;
+  warn: LogMethod;
+  info: LogMethod;
+  debug: LogMethod;
+  trace: LogMethod;
+}
+
+interface LogConfig {
+  level: string;
+  maxSizeMb: number;
+  maxFiles: number;
+}
+
+let logger: winston.Logger | null = null;
+
+function resolveConfig(overrides: Partial<LogConfig> = {}): LogConfig {
+  const cfg = (APP_CONFIG.logging || {}) as Partial<LogConfig>;
   return {
     level: overrides.level || cfg.level || "warn",
     maxSizeMb: overrides.maxSizeMb ?? cfg.maxSizeMb ?? 5,
@@ -45,7 +63,7 @@ function resolveConfig(overrides = {}) {
   };
 }
 
-function ensureLogDir() {
+function ensureLogDir(): void {
   try {
     mkdirSync(LOG_DIR, { recursive: true });
   } catch {
@@ -53,7 +71,7 @@ function ensureLogDir() {
   }
 }
 
-function createWinstonLogger({ level, maxSizeMb, maxFiles }) {
+function createWinstonLogger({ level, maxSizeMb, maxFiles }: LogConfig): winston.Logger {
   ensureLogDir();
 
   const instance = winston.createLogger({
@@ -102,7 +120,7 @@ function createWinstonLogger({ level, maxSizeMb, maxFiles }) {
  * Reads level/maxSizeMb/maxFiles from APP_CONFIG.logging (with env var
  * overrides) and applies any explicit `overrides` on top.
  */
-export function initLogger(overrides = {}) {
+export function initLogger(overrides: Partial<LogConfig> = {}): winston.Logger {
   const config = resolveConfig(overrides);
   logger = createWinstonLogger(config);
   return logger;
@@ -113,7 +131,7 @@ export function initLogger(overrides = {}) {
  * user settings from the store).  Child loggers obtained via getLogger()
  * are proxies — they automatically pick up the new instance.
  */
-export function reconfigureLogger(overrides = {}) {
+export function reconfigureLogger(overrides: Partial<LogConfig> = {}): winston.Logger {
   const config = resolveConfig(overrides);
   if (!logger) {
     return initLogger(overrides);
@@ -136,14 +154,17 @@ export function reconfigureLogger(overrides = {}) {
  *   log.trace("some detail");
  *   log.error("something broke", { err: error.message });
  */
-export function getLogger(label) {
+export function getLogger(label: string): Logger {
   if (!logger) {
     // Lazy-init with defaults if initLogger wasn't called yet (e.g. tests)
     initLogger();
   }
-  const proxy = {};
+  const proxy = {} as Logger;
   for (const method of LOG_METHODS) {
-    proxy[method] = (message, meta) => logger[method](message, meta ? { ...meta, label } : { label });
+    proxy[method] = (message, meta) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (logger! as any)[method](message, meta ? { ...meta, label } : { label });
+    };
   }
   return proxy;
 }
@@ -151,8 +172,8 @@ export function getLogger(label) {
 /**
  * Change the runtime log level without restart.
  */
-export function setLogLevel(level) {
-  if (logger && CUSTOM_LEVELS.levels[level] !== undefined) {
+export function setLogLevel(level: string): void {
+  if (logger && CUSTOM_LEVELS.levels[level as LogLevelName] !== undefined) {
     logger.level = level;
   }
 }
@@ -160,10 +181,10 @@ export function setLogLevel(level) {
 /**
  * Flush and close transports (call on app shutdown).
  */
-export async function shutdownLogger() {
+export async function shutdownLogger(): Promise<void> {
   if (!logger) return;
   return new Promise((resolve) => {
-    logger.on("finish", resolve);
-    logger.end();
+    logger!.on("finish", resolve);
+    logger!.end();
   });
 }
