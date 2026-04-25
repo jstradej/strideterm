@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer } from "electron";
+import type { StridetermAPI } from "./shared/ipc-bridge.js";
 
 contextBridge.exposeInMainWorld("strideterm", {
   openExternal: (url) => ipcRenderer.invoke("shell:open-external", url),
@@ -20,8 +21,8 @@ contextBridge.exposeInMainWorld("strideterm", {
   reorderWorkspaces: (workspaceIds) => ipcRenderer.invoke("workspace:reorder", workspaceIds),
   reorderProjects: (projectIds) => ipcRenderer.invoke("project:reorder", projectIds),
   updateSettings: async (settings) => {
-    const result = await ipcRenderer.invoke("settings:update", settings);
-    return result.payload || result;
+    const result = (await ipcRenderer.invoke("settings:update", settings)) as Record<string, unknown>;
+    return result["payload"] ?? result;
   },
   verifyAzureConnection: (connection) => ipcRenderer.invoke("azure:verify-connection", connection),
   saveAzureConnection: (connection) => ipcRenderer.invoke("azure:save-connection", connection),
@@ -199,4 +200,4 @@ contextBridge.exposeInMainWorld("strideterm", {
   sshConfigPreview: (payload) => ipcRenderer.invoke("ssh:config:preview", payload),
   sshConfigImport: (payload) => ipcRenderer.invoke("ssh:config:import", payload),
   sshKnownHostsImport: (payload) => ipcRenderer.invoke("ssh:known-hosts:import", payload),
-});
+} satisfies StridetermAPI);

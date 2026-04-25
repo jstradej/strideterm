@@ -1,10 +1,9 @@
+import type { StridetermAPI } from "../../electron/shared/ipc-bridge.js";
+
 declare global {
-  interface StridetermAPI {
-    [key: string]: unknown;
-  }
   interface Window {
     strideterm: StridetermAPI;
   }
 }
 
-export {};
+export type {};
