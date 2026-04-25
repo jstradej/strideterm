@@ -707,3 +707,107 @@ const LANG_BY_EXT = {
 function guessMonacoLanguage(extension) {
   return LANG_BY_EXT[extension] || "plaintext";
 }
+
+const COMMIT_STATUS_MAP = {
+  A: "staged",
+  M: "modified",
+  D: "modified",
+  R: "modified",
+  C: "modified",
+  T: "modified",
+  U: "conflict",
+};
+
+/**
+ * Return the list of files changed in a single commit (vs its first parent).
+ * Returns: { isRepo, hash, parentHash, files: [{ path, code, status }] }
+ */
+export async function getCommitFiles(rootPath, hash) {
+  const root = path.resolve(rootPath);
+  const top = await resolveGitToplevel(root);
+  if (!top) return { isRepo: false, hash, parentHash: "", files: [] };
+  if (!hash) return { isRepo: true, hash: "", parentHash: "", files: [] };
+
+  // Detect parent (handles initial commit by leaving parentHash empty).
+  let parentHash;
+  try {
+    const parentResult = await execFileText("git", ["rev-parse", `${hash}^`], { cwd: top });
+    parentHash = (parentResult.stdout || "").trim();
+  } catch {
+    parentHash = "";
+  }
+
+  let lines;
+  try {
+    const args = ["diff-tree", "--no-commit-id", "--name-status", "-r", "-M", "-C", hash];
+    const result = await execFileText("git", args, { cwd: top });
+    lines = (result.stdout || "").split(/\r?\n/).filter(Boolean);
+  } catch (err) {
+    return { isRepo: true, hash, parentHash, files: [], error: err?.error?.message || "git diff-tree failed" };
+  }
+
+  const files = [];
+  for (const line of lines) {
+    const parts = line.split("\t");
+    const code = (parts[0] || "").trim();
+    // For renames/copies, parts = [R100, oldPath, newPath]; we want newPath.
+    const repoRel = parts[parts.length - 1];
+    if (!repoRel) continue;
+    const fmRel = repoPathToFmRelative(root, top, repoRel);
+    if (!fmRel) continue;
+    files.push({
+      path: fmRel,
+      code: code[0] || "M",
+      status: COMMIT_STATUS_MAP[code[0]] || "modified",
+    });
+  }
+  return { isRepo: true, hash, parentHash, files };
+}
+
+/**
+ * Diff a file between a commit and its parent (or against an empty file when
+ * the commit has no parent / introduces a new file).
+ * Returns the same shape as computeFileDiff.
+ */
+export async function computeCommitFileDiff(rootPath, relativePath, hash) {
+  const ext = path.extname(relativePath).toLowerCase();
+  const language = guessMonacoLanguage(ext);
+  const root = path.resolve(rootPath);
+  const top = await resolveGitToplevel(root);
+  if (!top || !hash) {
+    return errorDiff("Not a git repository or missing commit hash", "commitRange");
+  }
+
+  const right = await readFileAtRevision(rootPath, relativePath, hash);
+  let left;
+  let leftLabel;
+  try {
+    const parentResult = await execFileText("git", ["rev-parse", `${hash}^`], { cwd: top });
+    const parent = (parentResult.stdout || "").trim();
+    if (parent) {
+      left = await readFileAtRevision(rootPath, relativePath, parent);
+      leftLabel = `commit ${parent.slice(0, 8)}`;
+    } else {
+      left = { ok: true, content: "", missing: true, revision: "" };
+      leftLabel = "(no parent)";
+    }
+  } catch {
+    left = { ok: true, content: "", missing: true, revision: "" };
+    leftLabel = "(no parent)";
+  }
+
+  return {
+    ok: !!(left && right),
+    leftContent: left.content || "",
+    rightContent: right.content || "",
+    leftLabel,
+    rightLabel: `commit ${hash.slice(0, 8)}`,
+    leftMissing: !!left.missing,
+    rightMissing: !!right.missing,
+    leftError: left.error || "",
+    rightError: right.error || "",
+    language,
+    revision: hash,
+    source: "commitRange",
+  };
+}

@@ -32,6 +32,8 @@ import {
   fileGitStatusSchema,
   fileGitRefsSchema,
   fileGitDiffSchema,
+  fileCommitFilesSchema,
+  fileCommitDiffSchema,
   gitPayloadSchema,
   gitDiffPreviewSchema,
   gitCommitSchema,
@@ -580,6 +582,16 @@ export function registerIpc(runtime, emitToRenderer, { includeStateGet = true } 
     });
   });
 
+  ipcMain.handle("file:commit-files", async (_event, payload) => {
+    const p = validateIpc(fileCommitFilesSchema, payload, "file:commit-files");
+    return fm.getCommitFiles(p.rootPath, p.hash);
+  });
+
+  ipcMain.handle("file:commit-diff", async (_event, payload) => {
+    const p = validateIpc(fileCommitDiffSchema, payload, "file:commit-diff");
+    return fm.computeCommitFileDiff(p.rootPath, p.relativePath, p.hash);
+  });
+
   ipcMain.handle("dialog:browse-directory", async (_event, defaultPath) => {
     const win = BrowserWindow.getFocusedWindow();
     const result = await dialog.showOpenDialog(win, {
@@ -777,6 +789,8 @@ export function registerIpc(runtime, emitToRenderer, { includeStateGet = true } 
     ipcMain.removeHandler("file:open-in-explorer");
     ipcMain.removeHandler("file:open-in-editor");
     ipcMain.removeHandler("file:info");
+    ipcMain.removeHandler("file:commit-files");
+    ipcMain.removeHandler("file:commit-diff");
     ipcMain.removeHandler("dialog:browse-directory");
     ipcMain.removeHandler("dialog:browse-file");
     ipcMain.removeHandler("shell:open-external");

@@ -802,6 +802,14 @@ async function handleApiRequest(runtime, request, response) {
       );
       return;
     }
+    if (request.method === "POST" && url.pathname === "/api/file/commit-files") {
+      json(response, 200, await fm.getCommitFiles(body.rootPath, body.hash));
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/api/file/commit-diff") {
+      json(response, 200, await fm.computeCommitFileDiff(body.rootPath, body.relativePath, body.hash));
+      return;
+    }
 
     // --- SSH (remote is read-only per plan §14) ---
     if (request.method === "POST" && url.pathname === "/api/ssh/hosts/list") {

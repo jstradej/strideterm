@@ -175,7 +175,7 @@
       <section
         role="tabpanel"
         :class="['git-view__panel', isSwitchingRepo && 'git-view__panel--busy']"
-        style="min-height: 0; overflow: auto; display: grid"
+        style="min-height: 0; overflow: auto; display: flex; flex-direction: column"
       >
         <div v-if="isSwitchingRepo" class="git-view__overlay" aria-hidden="true">
           <div class="git-view__spinner"></div>
@@ -421,93 +421,87 @@
         <!-- ===== Changes tab ===== -->
         <template v-else-if="activeTab === 'changes'">
           <div class="git-section git-section--changes">
-            <div class="git-section__files">
-              <article class="git-card">
-                <div class="section-head">
-                  <div>
-                    <p class="eyebrow">Changes</p>
-                    <h3>{{ snapshot.dirty ? "Working tree overview" : "No local changes" }}</h3>
+            <div class="git-changes__body">
+              <Splitpanes class="default-theme git-changes__splitpanes">
+                <Pane :size="40" :min-size="20">
+                  <div class="git-section__files git-section__files--split">
+                    <article class="git-card">
+                      <div class="section-head">
+                        <div>
+                          <p class="eyebrow">Changes</p>
+                          <h3>{{ snapshot.dirty ? "Working tree overview" : "No local changes" }}</h3>
+                        </div>
+                      </div>
+                      <!-- UC-6: detached HEAD banner -->
+                      <div
+                        v-if="isDetachedHead"
+                        class="git-info-banner git-info-banner--warn"
+                        style="margin-bottom: 8px"
+                      >
+                        <strong>Detached HEAD</strong>
+                        <p>You are on a detached HEAD. Commits will be lost unless you create a branch.</p>
+                        <button
+                          v-if="!isReviewWorkspace"
+                          type="button"
+                          class="button button--ghost button--small"
+                          @click="gitUiStore.gitCreateBranch(workspaceId, `branch-from-detached`)"
+                        >
+                          Create branch from HEAD
+                        </button>
+                      </div>
+                      <GitDiffStat :stat="snapshot.diffStat" />
+                      <GitChangeTree
+                        :files="allChangedFiles"
+                        :selected-path="gitUi.selectedDiff?.path || ''"
+                        :selected-scope="gitUi.selectedDiff?.scope || ''"
+                        @select="(p, s) => gitUiStore.gitSelectDiff(workspaceId, p, s)"
+                      />
+                      <div v-if="snapshot.dirty && !isReviewWorkspace" class="git-commit-form" style="margin-top: 12px">
+                        <input
+                          v-model="commitMessage"
+                          name="commit-message"
+                          type="text"
+                          placeholder="Commit message"
+                          :disabled="operation.inProgress"
+                          :title="!snapshot.staged?.length && snapshot.dirty ? 'Will stage and commit all changes' : ''"
+                          @keydown.enter="onCommitAll"
+                        />
+                        <button
+                          type="button"
+                          class="button"
+                          :disabled="
+                            !!gitUi.busyAction || !commitMessage.trim() || operation.inProgress || !!gitUi.pendingAction
+                          "
+                          title="Stage all changes and commit"
+                          @click="onCommitAll"
+                        >
+                          {{ gitUi.busyAction === "commit" ? "Committing\u2026" : "Commit all" }}
+                        </button>
+                      </div>
+                    </article>
                   </div>
-                </div>
-                <!-- UC-6: detached HEAD banner -->
-                <div v-if="isDetachedHead" class="git-info-banner git-info-banner--warn" style="margin-bottom: 8px">
-                  <strong>Detached HEAD</strong>
-                  <p>You are on a detached HEAD. Commits will be lost unless you create a branch.</p>
-                  <button
-                    v-if="!isReviewWorkspace"
-                    type="button"
-                    class="button button--ghost button--small"
-                    @click="gitUiStore.gitCreateBranch(workspaceId, `branch-from-detached`)"
-                  >
-                    Create branch from HEAD
-                  </button>
-                </div>
-                <GitDiffStat :stat="snapshot.diffStat" />
-                <GitChangeList
-                  title="Staged"
-                  scope="staged"
-                  :files="snapshot.staged || []"
-                  :selected-diff="gitUi.selectedDiff"
-                  :workspace-id="workspaceId"
-                  @select="(p, s) => gitUiStore.gitSelectDiff(workspaceId, p, s)"
-                  @open-editor="onOpenInEditor"
-                />
-                <GitChangeList
-                  title="Unstaged"
-                  scope="unstaged"
-                  :files="unstagedWithConflicts"
-                  :selected-diff="gitUi.selectedDiff"
-                  :workspace-id="workspaceId"
-                  @select="(p, s) => gitUiStore.gitSelectDiff(workspaceId, p, s)"
-                  @open-editor="onOpenInEditor"
-                />
-                <GitChangeList
-                  title="Untracked"
-                  scope="untracked"
-                  :files="snapshot.untracked || []"
-                  :selected-diff="gitUi.selectedDiff"
-                  :workspace-id="workspaceId"
-                  @select="(p, s) => gitUiStore.gitSelectDiff(workspaceId, p, s)"
-                  @open-editor="onOpenInEditor"
-                />
-                <div v-if="snapshot.dirty && !isReviewWorkspace" class="git-commit-form" style="margin-top: 12px">
-                  <input
-                    v-model="commitMessage"
-                    name="commit-message"
-                    type="text"
-                    placeholder="Commit message"
-                    :disabled="operation.inProgress"
-                    :title="!snapshot.staged?.length && snapshot.dirty ? 'Will stage and commit all changes' : ''"
-                    @keydown.enter="onCommitAll"
-                  />
-                  <button
-                    type="button"
-                    class="button"
-                    :disabled="
-                      !!gitUi.busyAction || !commitMessage.trim() || operation.inProgress || !!gitUi.pendingAction
-                    "
-                    title="Stage all changes and commit"
-                    @click="onCommitAll"
-                  >
-                    {{ gitUi.busyAction === "commit" ? "Committing\u2026" : "Commit all" }}
-                  </button>
-                </div>
-              </article>
-            </div>
-            <div class="git-section__preview">
-              <article class="git-card">
-                <div class="section-head">
-                  <div>
-                    <p class="eyebrow">Diff Preview</p>
-                    <h3>{{ gitUi.diffPreview?.path || "Select a file" }}</h3>
+                </Pane>
+                <Pane :size="60" :min-size="25">
+                  <div class="git-section__preview git-section__preview--diff">
+                    <article class="git-card git-card--diff">
+                      <div class="section-head">
+                        <div>
+                          <p class="eyebrow">Diff Preview</p>
+                          <h3>{{ gitUi.selectedDiff?.path || "Select a file" }}</h3>
+                        </div>
+                      </div>
+                      <div class="git-monaco-host">
+                        <MonacoDiffPanel
+                          v-if="gitUi.selectedDiff?.path"
+                          :payload="monacoDiffPayload"
+                          :loading="monacoDiffLoading"
+                        />
+                        <p v-else class="git-card__hint">Click a file to load a diff preview.</p>
+                      </div>
+                    </article>
                   </div>
-                </div>
-                <template v-if="gitUi.diffPreview">
-                  <p v-if="gitUi.diffPreview.summary" class="git-card__hint">{{ gitUi.diffPreview.summary }}</p>
-                  <DiffViewer :diff="gitUi.diffPreview.diff || ''" />
-                </template>
-                <p v-else class="git-card__hint">Click a file to load a diff preview.</p>
-              </article>
+                </Pane>
+              </Splitpanes>
             </div>
           </div>
         </template>
@@ -515,52 +509,68 @@
         <!-- ===== History tab ===== -->
         <template v-else-if="activeTab === 'history'">
           <div class="git-section git-section--history">
-            <div class="git-history__header">
-              <article class="git-card">
-                <div class="section-head">
-                  <div>
-                    <p class="eyebrow">Compare With Base</p>
-                    <h3>{{ effectiveBaseBranch || "No base branch" }}</h3>
-                  </div>
-                </div>
-                <!-- CTA when no base branch is selected (was just "No base branch" text before) -->
-                <template v-if="!effectiveBaseBranch">
-                  <p class="git-card__hint">Select a base branch to see which commits are unique to this branch.</p>
-                  <div class="git-detail-list" style="margin-top: 8px">
-                    <GitBaseBranchPicker
-                      :model-value="effectiveBaseBranch"
-                      :options="baseBranchOptions"
-                      @update:model-value="(v) => gitUiStore.gitSetBaseBranch(workspaceId, v)"
+            <div class="git-history__header git-history__header--compact">
+              <GitBaseBranchPicker
+                class="git-history__picker"
+                label="Compare with base"
+                :model-value="effectiveBaseBranch"
+                :options="baseBranchOptions"
+                @update:model-value="(v) => gitUiStore.gitSetBaseBranch(workspaceId, v)"
+              />
+              <template v-if="effectiveBaseBranch">
+                <GitDiffStat :stat="compare.diffStat" />
+                <span class="git-history__counter">
+                  <strong>{{ compare.aheadCount || 0 }}</strong> ahead
+                </span>
+                <span class="git-history__counter">
+                  <strong>{{ compare.behindCount || 0 }}</strong> behind
+                </span>
+              </template>
+            </div>
+            <div class="git-history__split">
+              <Splitpanes class="default-theme git-history__splitpanes">
+                <Pane :size="35" :min-size="20">
+                  <div class="git-history__log">
+                    <GitCommitLog
+                      :commits="allCommits"
+                      :selected-commit="gitUi.selectedCommit"
+                      :ahead-count="snapshot.aheadCount || 0"
+                      @select="(hash) => gitUiStore.gitSelectCommit(workspaceId, hash)"
                     />
                   </div>
-                </template>
-                <template v-else>
-                  <GitDiffStat :stat="compare.diffStat" />
-                  <div class="git-detail-list">
-                    <span><strong>Branch commits:</strong> {{ compare.aheadCount || 0 }}</span>
-                    <span><strong>Missing from base:</strong> {{ compare.behindCount || 0 }}</span>
-                  </div>
-                </template>
-              </article>
-            </div>
-            <div class="git-history__panels">
-              <div class="git-history__log">
-                <GitCommitLog
-                  :commits="allCommits"
-                  :selected-commit="gitUi.selectedCommit"
-                  :ahead-count="snapshot.aheadCount || 0"
-                  @select="(hash) => gitUiStore.gitSelectCommit(workspaceId, hash)"
-                />
-              </div>
-              <div class="git-history__detail">
-                <template v-if="gitUi.commitDiffPreview">
-                  <p v-if="gitUi.commitDiffPreview.summary" class="git-card__hint">
-                    {{ gitUi.commitDiffPreview.summary }}
-                  </p>
-                  <DiffViewer :diff="gitUi.commitDiffPreview.diff || ''" />
-                </template>
-                <p v-else class="git-card__hint">Select a commit to view its diff.</p>
-              </div>
+                </Pane>
+                <Pane :size="65" :min-size="30">
+                  <Splitpanes horizontal class="default-theme git-history__splitpanes">
+                    <Pane :size="40" :min-size="15">
+                      <div class="git-history__commit-files">
+                        <div v-if="!gitUi.selectedCommit" class="git-history__placeholder">
+                          Select a commit to see its files.
+                        </div>
+                        <div v-else-if="commitFilesLoading" class="git-history__placeholder">Loading…</div>
+                        <GitChangeTree
+                          v-else
+                          :files="commitFiles"
+                          :selected-path="selectedCommitFile"
+                          selected-scope="commit"
+                          @select="onSelectCommitFile"
+                        />
+                      </div>
+                    </Pane>
+                    <Pane :size="60" :min-size="20">
+                      <div class="git-history__commit-diff">
+                        <MonacoDiffPanel
+                          v-if="selectedCommitFile"
+                          :payload="commitDiffPayload"
+                          :loading="commitDiffLoading"
+                        />
+                        <div v-else class="git-history__placeholder">
+                          {{ gitUi.selectedCommit ? "Pick a file to view its diff." : "" }}
+                        </div>
+                      </div>
+                    </Pane>
+                  </Splitpanes>
+                </Pane>
+              </Splitpanes>
             </div>
           </div>
         </template>
@@ -735,13 +745,15 @@
 </template>
 
 <script setup>
-import { computed, ref, watch } from "vue";
+import { computed, defineAsyncComponent, ref, watch } from "vue";
 import { useAppStore } from "../../stores/app.js";
 import { useGitUiStore } from "../../stores/git-ui.js";
 import PaneShell from "../layout/PaneShell.vue";
-import DiffViewer from "./DiffViewer.vue";
 import GitDiffStat from "./git/GitDiffStat.vue";
-import GitChangeList from "./git/GitChangeList.vue";
+import GitChangeTree from "./git/GitChangeTree.vue";
+import { Splitpanes, Pane } from "splitpanes";
+import "splitpanes/dist/splitpanes.css";
+const MonacoDiffPanel = defineAsyncComponent(() => import("../shared/MonacoDiffPanel.vue"));
 import GitOperationCard from "./git/GitOperationCard.vue";
 import GitMergeBackCard from "./git/GitMergeBackCard.vue";
 import GitWorktreeList from "./git/GitWorktreeList.vue";
@@ -781,6 +793,145 @@ const operation = computed(() => snapshot.value?.operationState || {});
 const baseBranch = computed(() => snapshot.value?.baseBranch || snapshot.value?.compareWithBase?.baseBranch || "");
 const compare = computed(() => snapshot.value?.compareWithBase || {});
 const activeTab = computed(() => gitUi.value.activeTab || "branch");
+
+// Monaco-style diff payload for the Changes tab. Fetched separately from
+// the legacy unified-text gitDiffPreview the rest of the pane still uses.
+const monacoDiffPayload = ref(null);
+const monacoDiffLoading = ref(false);
+
+const allChangedFiles = computed(() => {
+  const out = [];
+  const seen = new Set();
+  const push = (f, scope) => {
+    const key = `${scope}:${f.path}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push({ ...f, scope });
+  };
+  for (const f of snapshot.value?.staged || []) push(f, "staged");
+  for (const f of snapshot.value?.unstaged || []) push(f, "unstaged");
+  for (const path of operation.value.conflicts || []) push({ path, code: "UU" }, "unstaged");
+  for (const f of snapshot.value?.untracked || []) push(f, "untracked");
+  return out;
+});
+
+function diffSourceForScope(scope) {
+  return scope === "staged" ? "staged" : "head";
+}
+
+async function loadMonacoDiff(path, scope) {
+  const root = activeRootPath.value;
+  if (!root || !path) {
+    monacoDiffPayload.value = null;
+    return;
+  }
+  monacoDiffLoading.value = true;
+  try {
+    const api = appStore.getApi();
+    const payload = await api.fileGitDiff({
+      rootPath: root,
+      relativePath: path,
+      source: diffSourceForScope(scope),
+      revisionRef: "",
+    });
+    monacoDiffPayload.value = payload;
+  } catch (err) {
+    monacoDiffPayload.value = {
+      ok: false,
+      leftError: err?.message || "Failed to load diff",
+      leftContent: "",
+      rightContent: "",
+      leftLabel: "",
+      rightLabel: "",
+      leftMissing: true,
+      rightMissing: true,
+      language: "plaintext",
+    };
+  } finally {
+    monacoDiffLoading.value = false;
+  }
+}
+
+watch(
+  () => gitUi.value.selectedDiff,
+  (sel) => {
+    if (!sel?.path) {
+      monacoDiffPayload.value = null;
+      return;
+    }
+    loadMonacoDiff(sel.path, sel.scope);
+  },
+  { deep: true },
+);
+
+// History tab: per-commit file list + per-file Monaco diff (vs commit's parent).
+const commitFiles = ref([]);
+const commitFilesLoading = ref(false);
+const selectedCommitFile = ref("");
+const commitDiffPayload = ref(null);
+const commitDiffLoading = ref(false);
+
+async function loadCommitFiles(hash) {
+  if (!hash) {
+    commitFiles.value = [];
+    return;
+  }
+  const root = activeRootPath.value;
+  if (!root) return;
+  commitFilesLoading.value = true;
+  try {
+    const api = appStore.getApi();
+    const result = await api.fileCommitFiles({ rootPath: root, hash });
+    commitFiles.value = (result?.files || []).map((f) => ({ ...f, scope: "commit" }));
+  } catch {
+    commitFiles.value = [];
+  } finally {
+    commitFilesLoading.value = false;
+  }
+}
+
+async function loadCommitFileDiff(hash, relativePath) {
+  if (!hash || !relativePath) {
+    commitDiffPayload.value = null;
+    return;
+  }
+  const root = activeRootPath.value;
+  if (!root) return;
+  commitDiffLoading.value = true;
+  try {
+    const api = appStore.getApi();
+    commitDiffPayload.value = await api.fileCommitDiff({ rootPath: root, relativePath, hash });
+  } catch (err) {
+    commitDiffPayload.value = {
+      ok: false,
+      leftError: err?.message || "Failed to load commit diff",
+      leftContent: "",
+      rightContent: "",
+      leftLabel: "",
+      rightLabel: "",
+      leftMissing: true,
+      rightMissing: true,
+      language: "plaintext",
+    };
+  } finally {
+    commitDiffLoading.value = false;
+  }
+}
+
+watch(
+  () => gitUi.value.selectedCommit,
+  (hash) => {
+    selectedCommitFile.value = "";
+    commitDiffPayload.value = null;
+    if (hash) loadCommitFiles(hash);
+    else commitFiles.value = [];
+  },
+);
+
+function onSelectCommitFile(path /* scope */) {
+  selectedCommitFile.value = path;
+  loadCommitFileDiff(gitUi.value.selectedCommit, path);
+}
 const showAllActions = computed(() => appStore.payload?.appState?.settings?.git?.ui?.showAllActions === true);
 
 // Effective base branch: override from UI, or auto-detected
@@ -1074,11 +1225,6 @@ const tabs = computed(() => {
   return list;
 });
 
-const unstagedWithConflicts = computed(() => [
-  ...(snapshot.value?.unstaged || []),
-  ...(operation.value.conflicts || []).map((entry) => ({ path: entry, code: "UU" })),
-]);
-
 const allCommits = computed(() => {
   const seen = new Set();
   const result = [];
@@ -1174,17 +1320,6 @@ async function onCreatePr() {
   }
 }
 
-function onOpenInEditor(filePath) {
-  const root = (snapshot.value?.worktreePath || snapshot.value?.root || "").replace(/\\/g, "/");
-  if (!root) return;
-  const absPath = root.endsWith("/") ? root + filePath : root + "/" + filePath;
-  const editor = appStore.payload?.appState?.settings?.externalEditor || "";
-  const api = appStore.getApi();
-  if (api?.fileOpenInEditor) {
-    api.fileOpenInEditor({ absPath, editor });
-  }
-}
-
 function openExternal(url) {
   if (window.strideterm?.openExternal) {
     window.strideterm.openExternal(url);
@@ -1248,5 +1383,213 @@ function openExternal(url) {
   to {
     transform: rotate(360deg);
   }
+}
+
+/* Changes & History tabs — Splitpanes drives the resizable layout. The section
+   becomes a flex column whose Splitpanes child fills remaining height. */
+.git-section--changes,
+.git-section--history {
+  display: flex !important;
+  flex-direction: column;
+  grid-template-columns: none !important;
+  grid-template-rows: none !important;
+  align-content: stretch;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.git-changes__body {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* Splitpanes default-theme has higher specificity (.default-theme.splitpanes
+   .splitpanes__pane = 3 classes) than our override, and its bg #f2f2f2 leaks
+   through unless we use !important. */
+:deep(.git-changes__splitpanes.splitpanes) {
+  background: transparent !important;
+}
+
+:deep(.git-changes__splitpanes.splitpanes > .splitpanes__pane) {
+  background: transparent !important;
+  overflow: hidden;
+}
+
+:deep(.git-changes__splitpanes.splitpanes > .splitpanes__splitter) {
+  background: var(--border) !important;
+  min-width: 3px;
+}
+
+:deep(.git-changes__splitpanes.splitpanes > .splitpanes__splitter:hover) {
+  background: var(--accent) !important;
+}
+
+.git-section__files--split {
+  height: 100%;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 6px;
+}
+
+/* Monaco diff host needs explicit flex sizing so the editor gets a real
+   height instead of collapsing inside the auto-overflow column. */
+.git-section__preview--diff {
+  display: flex !important;
+  flex-direction: column;
+  overflow: hidden;
+  min-height: 0;
+  height: 100%;
+}
+
+.git-card--diff {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  flex: 1;
+  overflow: hidden;
+}
+
+.git-monaco-host {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  position: relative;
+}
+
+.git-monaco-host > .git-card__hint {
+  margin: auto;
+  color: var(--muted);
+}
+
+/* History tab — compact horizontal header. */
+.git-history__header--compact {
+  display: flex !important;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 14px;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: rgba(var(--tint), 0.03);
+}
+
+.eyebrow--inline {
+  margin: 0;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--muted);
+}
+
+.git-history__base {
+  font-size: 13px;
+  color: var(--text);
+}
+
+.git-history__picker {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
+.git-history__picker :deep(strong) {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--muted);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.git-history__picker :deep(.custom-select) {
+  width: 220px;
+}
+
+.git-history__counter {
+  font-size: 12px;
+  color: var(--muted);
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.git-history__counter strong {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+/* History header is auto-height; the splitpanes wrapper takes the rest. */
+.git-history__header--compact {
+  flex: 0 0 auto;
+}
+
+.git-history__split {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.git-history__log,
+.git-history__commit-files,
+.git-history__commit-diff {
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: rgba(var(--tint), 0.03);
+}
+
+.git-history__log {
+  overflow: auto;
+}
+
+.git-history__commit-files {
+  overflow: hidden;
+}
+
+.git-history__commit-diff {
+  position: relative;
+}
+
+.git-history__commit-diff > * {
+  flex: 1;
+  min-height: 0;
+}
+
+.git-history__placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: var(--muted);
+  font-size: 12px;
+  font-style: italic;
+}
+
+/* Splitpanes default-theme paints panes light gray and the splitter white
+   (specificity (0,3,0) — higher than ours), so override with !important to
+   force our dark surface. */
+:deep(.git-history__splitpanes.splitpanes) {
+  background: transparent !important;
+}
+
+:deep(.git-history__splitpanes.splitpanes > .splitpanes__pane) {
+  background: transparent !important;
+  overflow: hidden;
+}
+
+:deep(.git-history__splitpanes.splitpanes > .splitpanes__splitter) {
+  background: var(--border) !important;
+  min-width: 3px;
+  min-height: 3px;
+}
+
+:deep(.git-history__splitpanes.splitpanes > .splitpanes__splitter:hover) {
+  background: var(--accent) !important;
 }
 </style>

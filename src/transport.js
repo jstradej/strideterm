@@ -341,6 +341,8 @@ function createRemoteTransport() {
     fileGitStatus: (p) => fetchJson("/api/file/git-status", p),
     fileGitRefs: (p) => fetchJson("/api/file/git-refs", p),
     fileGitDiff: (p) => fetchJson("/api/file/git-diff", p),
+    fileCommitFiles: (p) => fetchJson("/api/file/commit-files", p),
+    fileCommitDiff: (p) => fetchJson("/api/file/commit-diff", p),
 
     sshHostsList: () => fetchJson("/api/ssh/hosts/list", {}),
     sshHostsCreate: (payload) => fetchJson("/api/ssh/hosts/create", payload),

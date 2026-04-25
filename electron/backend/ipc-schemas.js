@@ -492,6 +492,17 @@ export const fileGitDiffSchema = z.object({
   revisionRef: z.string().optional(),
 });
 
+export const fileCommitFilesSchema = z.object({
+  rootPath: z.string().min(1),
+  hash: z.string().min(1),
+});
+
+export const fileCommitDiffSchema = z.object({
+  rootPath: z.string().min(1),
+  relativePath: z.string().min(1),
+  hash: z.string().min(1),
+});
+
 // --- SSH schemas ---
 
 export const sshHostCreateSchema = z.object({

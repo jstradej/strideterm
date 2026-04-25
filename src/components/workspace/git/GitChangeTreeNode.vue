@@ -1,0 +1,156 @@
+<template>
+  <li class="gct-node" role="treeitem" :aria-expanded="isDir ? (expanded ? 'true' : 'false') : undefined">
+    <div
+      :class="[
+        'gct-node__row',
+        node.kind === 'file' && isSelected && 'gct-node__row--selected',
+        node.kind === 'file' && `gct-node__row--git-${node.status}`,
+      ]"
+      :style="{ paddingLeft: depth * 14 + 6 + 'px' }"
+      :title="node.kind === 'file' ? `${statusTitle(node.status)}: ${node.path}` : node.path"
+      @click="onClick"
+    >
+      <span v-if="isDir" class="gct-node__chevron">{{ expanded ? "▾" : "▸" }}</span>
+      <span v-else class="gct-node__chevron gct-node__chevron--leaf"></span>
+      <span class="gct-node__icon" aria-hidden="true">{{ isDir ? "📁" : "📄" }}</span>
+      <span class="gct-node__name">{{ node.name }}</span>
+      <span
+        v-if="node.kind === 'file' && node.code"
+        class="gct-node__code"
+        :style="{ color: statusColor(node.status) }"
+        :title="statusTitle(node.status)"
+      >
+        {{ node.code }}
+      </span>
+    </div>
+    <ul v-if="isDir && expanded && node.children.length" class="gct-node__children">
+      <GitChangeTreeNode
+        v-for="(child, idx) in node.children"
+        :key="child.path + ':' + idx"
+        :node="child"
+        :depth="depth + 1"
+        :selected-path="selectedPath"
+        :selected-scope="selectedScope"
+        :expanded-set="expandedSet"
+        @toggle="(p) => $emit('toggle', p)"
+        @select="(file) => $emit('select', file)"
+      />
+    </ul>
+  </li>
+</template>
+
+<script setup>
+import { computed } from "vue";
+import { statusColor, statusTitle } from "../file-manager/git-status-helpers.js";
+
+const props = defineProps({
+  node: { type: Object, required: true },
+  depth: { type: Number, default: 0 },
+  selectedPath: { type: String, default: "" },
+  selectedScope: { type: String, default: "" },
+  expandedSet: { type: Set, required: true },
+});
+
+const emit = defineEmits(["toggle", "select"]);
+
+const isDir = computed(() => props.node.kind === "dir");
+const expanded = computed(() => props.expandedSet.has(props.node.path));
+const isSelected = computed(
+  () =>
+    props.node.kind === "file" && props.selectedPath === props.node.path && props.selectedScope === props.node.scope,
+);
+
+function onClick() {
+  if (isDir.value) emit("toggle", props.node.path);
+  else emit("select", props.node);
+}
+</script>
+
+<style scoped>
+.gct-node {
+  list-style: none;
+}
+
+.gct-node__row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px 2px 6px;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  border-radius: 3px;
+  margin: 0 2px;
+  position: relative;
+}
+
+.gct-node__row:hover {
+  background: var(--border);
+}
+
+.gct-node__row--selected {
+  background: rgba(255, 164, 36, 0.16);
+  color: var(--accent);
+}
+
+.gct-node__row--git-modified {
+  border-left: 3px solid var(--fm-status-modified, #d8a14b);
+  padding-left: 3px;
+}
+.gct-node__row--git-staged {
+  border-left: 3px solid var(--fm-status-staged, #6cb478);
+  padding-left: 3px;
+}
+.gct-node__row--git-untracked {
+  border-left: 3px solid var(--fm-status-untracked, #5e9bd6);
+  padding-left: 3px;
+}
+.gct-node__row--git-conflict {
+  border-left: 3px solid var(--fm-status-conflict, #e26b6b);
+  padding-left: 3px;
+}
+.gct-node__row--git-ignored {
+  opacity: 0.55;
+}
+
+.gct-node__chevron {
+  flex-shrink: 0;
+  width: 10px;
+  font-size: 10px;
+  color: var(--muted);
+  text-align: center;
+}
+
+.gct-node__chevron--leaf {
+  visibility: hidden;
+}
+
+.gct-node__icon {
+  flex-shrink: 0;
+  font-size: 11px;
+  opacity: 0.85;
+}
+
+.gct-node__name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.gct-node__code {
+  margin-left: auto;
+  flex-shrink: 0;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 0 4px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.06);
+  font-variant-numeric: tabular-nums;
+}
+
+.gct-node__children {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+</style>

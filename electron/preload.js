@@ -162,6 +162,8 @@ contextBridge.exposeInMainWorld("strideterm", {
   fileGitStatus: (p) => ipcRenderer.invoke("file:git-status", p),
   fileGitRefs: (p) => ipcRenderer.invoke("file:git-refs", p),
   fileGitDiff: (p) => ipcRenderer.invoke("file:git-diff", p),
+  fileCommitFiles: (p) => ipcRenderer.invoke("file:commit-files", p),
+  fileCommitDiff: (p) => ipcRenderer.invoke("file:commit-diff", p),
   browseDirectory: (defaultPath) => ipcRenderer.invoke("dialog:browse-directory", defaultPath),
   browseFile: (options) => ipcRenderer.invoke("dialog:browse-file", options),
   resizeTerminal: (sessionId, size) => ipcRenderer.send("terminal:resize", sessionId, size),
