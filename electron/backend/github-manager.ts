@@ -36,7 +36,109 @@ import {
   buildRepositoryRemoteUrl,
 } from "./github-utils.js";
 
+interface SyncConnection {
+  id: string;
+  enabled?: boolean;
+  tokenRef?: string;
+  currentUserLogin?: string;
+  ownerFilters?: string[];
+  repositoryFilters?: string[];
+  hostUrl?: string;
+  reviewRoot?: string;
+  [key: string]: unknown;
+}
+
+interface SyncWorkspace {
+  id: string;
+  cwd?: string;
+  kind?: string;
+  profileId?: string;
+  panels?: unknown[];
+  review?: {
+    provider?: string;
+    prKey?: string;
+    connectionId?: string;
+    repository?: { fullName?: string; owner?: string; name?: string; remoteUrl?: string };
+    pullRequest?: { number?: number; id?: number; sourceRefName?: string; targetRefName?: string; [key: string]: unknown } | null;
+    checkout?: { mode?: string; rootPath?: string; cacheRepoPath?: string };
+    parentWorkspaceId?: string;
+    [key: string]: unknown;
+  } | null;
+  [key: string]: unknown;
+}
+
+interface GitHubReviewStore {
+  getState(): {
+    connections?: Record<string, { status?: string; lastError?: string; lastSyncAt?: string | null; lastSuccessAt?: string | null }>;
+    trackedPullRequests?: Record<string, Record<string, unknown>>;
+  };
+  getTrackedPullRequest(key: string): Record<string, unknown> | null;
+  upsertTrackedPullRequest(key: string, patch: Record<string, unknown>): Promise<void>;
+  upsertConnectionState(connectionId: string, patch: { status: string; lastError?: string; lastSyncAt?: string; lastSuccessAt?: string }): Promise<void>;
+}
+
+interface SyncOptions {
+  connections?: SyncConnection[];
+  workspaces?: SyncWorkspace[];
+  gitSnapshots?: Record<string, unknown>;
+  activeProfileId?: string;
+}
+
+interface CheckItem {
+  kind?: string;
+  checkSuiteId?: string | number;
+  [key: string]: unknown;
+}
+
+interface EnsureCacheRepoOptions {
+  connection: SyncConnection;
+  token: string;
+  owner: string;
+  repo: string;
+  remoteUrl: string;
+  reviewRoot: string;
+}
+
+interface PrepareManagedReviewCheckoutOptions {
+  summary: Record<string, unknown>;
+  connection: SyncConnection;
+  token: string;
+  reviewRoot: string;
+}
+
+interface OpenReviewWorkspaceOptions {
+  state: {
+    workspaces: SyncWorkspace[];
+    activeProfileId?: string;
+    tabTemplates?: unknown[];
+  };
+  prKey: string;
+  workspaceId?: string;
+}
+
+interface OpenQuickFixWorkspaceOptions {
+  state: {
+    workspaces: SyncWorkspace[];
+    activeProfileId?: string;
+    tabTemplates?: unknown[];
+  };
+  connectionId: string;
+  owner: string;
+  repo: string;
+  remoteUrl: string;
+  baseBranch: string;
+  newBranchName: string;
+}
+
+interface DetectDeltasOptions {
+  tracked: Record<string, unknown>;
+  summary: Record<string, unknown>;
+  internals: Record<string, unknown>;
+  seedingConnection: boolean;
+}
+
 export class GitHubManager extends BaseProviderManager {
+  declare reviewStore: GitHubReviewStore;
   constructor({
     credentialStore,
     reviewStore,
@@ -45,7 +147,15 @@ export class GitHubManager extends BaseProviderManager {
     fetchImpl = globalThis.fetch,
     execFileTextImpl = execFileText,
     now = () => Date.now(),
-  } = {}) {
+  }: {
+    credentialStore: ConstructorParameters<typeof BaseProviderManager>[0]["credentialStore"];
+    reviewStore: GitHubReviewStore;
+    reviewBridgeStore?: ConstructorParameters<typeof BaseProviderManager>[0]["reviewBridgeStore"];
+    auditLogStore?: ConstructorParameters<typeof BaseProviderManager>[0]["auditLogStore"];
+    fetchImpl?: typeof globalThis.fetch;
+    execFileTextImpl?: typeof execFileText;
+    now?: () => number;
+  } = {} as never) {
     super({
       credentialStore,
       reviewStore,
@@ -60,7 +170,8 @@ export class GitHubManager extends BaseProviderManager {
     this.defaultGitLogin = "x-access-token";
   }
 
-  _logAudit(raw) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  override _logAudit(raw: any): void {
     if (!this.auditLogStore) return;
     const classification = classifyGitHubRequest(raw.method, raw.url);
     const urlInfo = parseGitHubUrl(raw.url);
@@ -84,15 +195,23 @@ export class GitHubManager extends BaseProviderManager {
   // Connection verification
   // ---------------------------------------------------------------------------
 
-  async verifyConnection(connectionInput) {
-    this.setAuditContext({ connectionId: connectionInput.id || "", userInitiated: true });
-    const connection = normalizeConnectionInput(connectionInput);
+  async verifyConnection(connectionInput: Record<string, unknown>): Promise<{
+    ok: boolean;
+    login: string;
+    name: string;
+    avatarUrl: string;
+    hostUrl: string;
+  }> {
+    this.setAuditContext({ connectionId: String(connectionInput.id || ""), userInitiated: true });
+    const connection = normalizeConnectionInput(connectionInput as Parameters<typeof normalizeConnectionInput>[0]);
     const token = String(connectionInput.pat || "").trim();
     if (!connection.hostUrl || !token) {
       throw new Error("Host URL and PAT are required.");
     }
 
-    const user = await this.api.getAuthenticatedUser(connection, token);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const api = this.api as any;
+    const user = await api.getAuthenticatedUser(connection, token);
     return {
       ok: true,
       login: user.login,
@@ -110,14 +229,14 @@ export class GitHubManager extends BaseProviderManager {
   // Sync (inbox polling)
   // ---------------------------------------------------------------------------
 
-  async sync({ connections = [], workspaces = [], gitSnapshots = {}, activeProfileId = "default" } = {}) {
+  async sync({ connections = [], workspaces = [], gitSnapshots = {}, activeProfileId = "default" }: SyncOptions = {}): Promise<Record<string, unknown>> {
     const reviewState = this.reviewStore.getState();
     const startedAt = new Date(this.now()).toISOString();
     const connectionsChanged =
       JSON.stringify(connections.map((c) => c.id).sort()) !==
       JSON.stringify((this.snapshot.connections || []).map((c) => c.id).sort());
     this.snapshot = {
-      ...(connectionsChanged ? createEmptySnapshot() : this.snapshot),
+      ...(connectionsChanged ? (createEmptySnapshot() as typeof this.snapshot) : this.snapshot),
       connections,
       sync: {
         ...this.snapshot.sync,
@@ -127,11 +246,14 @@ export class GitHubManager extends BaseProviderManager {
     };
     this.emitUpdated();
 
-    const connectionSnapshots = [];
-    const visibleSummaries = [];
-    const detailMap = { ...this.snapshot.pullRequests };
-    const trackedPullRequests = {};
-    const newActivityEvents = [];
+    const connectionSnapshots: Record<string, unknown>[] = [];
+    const visibleSummaries: Record<string, unknown>[] = [];
+    const detailMap: Record<string, Record<string, unknown>> = { ...this.snapshot.pullRequests };
+    const trackedPullRequests: Record<string, Record<string, unknown>> = {};
+    const newActivityEvents: unknown[] = [];
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const api = this.api as any;
 
     for (const connection of connections.filter((c) => c.enabled !== false)) {
       this.setAuditContext({ connectionId: connection.id, userInitiated: false });
@@ -141,7 +263,7 @@ export class GitHubManager extends BaseProviderManager {
       const seedingConnection = shouldSeedConnection(this._seededConnections, connection.id);
 
       try {
-        const token = this.credentialStore.getSecret(connection.tokenRef);
+        const token = this.credentialStore.getSecret(connection.tokenRef || "");
         if (!token) throw new Error("PAT is missing.");
 
         const login = connection.currentUserLogin;
@@ -163,12 +285,14 @@ export class GitHubManager extends BaseProviderManager {
           `is:pr is:open archived:false author:${login} ${scope}`.trim(),
         ];
 
-        const seenPrKeys = new Set();
+        const seenPrKeys = new Set<string>();
 
         for (const query of queries) {
-          const searchResults = await this.api.searchPullRequests(connection, token, query);
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const searchResults: any[] = await api.searchPullRequests(connection, token, query);
 
-          for (const item of searchResults) {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          for (const item of searchResults as any[]) {
             const prUrl = item.pull_request?.url;
             if (!prUrl) continue;
 
@@ -183,17 +307,17 @@ export class GitHubManager extends BaseProviderManager {
             seenPrKeys.add(prKey);
 
             // Fetch full PR detail
-            const pr = await this.api.getPullRequest(connection, token, prOwner, prRepo, pullNumber);
+            const pr = await api.getPullRequest(connection, token, prOwner, prRepo, pullNumber);
 
             // Fetch reviews, review comments, issue comments, requested reviewers
             const [reviews, reviewComments, issueCommentsList, requestedReviewers] = await Promise.all([
-              this.api.listReviews(connection, token, prOwner, prRepo, pullNumber).catch(() => []),
-              this.api.listReviewComments(connection, token, prOwner, prRepo, pullNumber).catch(() => []),
-              this.api.listIssueComments(connection, token, prOwner, prRepo, pullNumber).catch(() => []),
-              this.api.listRequestedReviewers(connection, token, prOwner, prRepo, pullNumber).catch(() => ({})),
+              api.listReviews(connection, token, prOwner, prRepo, pullNumber).catch(() => []),
+              api.listReviewComments(connection, token, prOwner, prRepo, pullNumber).catch(() => []),
+              api.listIssueComments(connection, token, prOwner, prRepo, pullNumber).catch(() => []),
+              api.listRequestedReviewers(connection, token, prOwner, prRepo, pullNumber).catch(() => ({})),
             ]);
 
-            const tracked = this.reviewStore.getTrackedPullRequest(prKey) || {};
+            const tracked: Record<string, unknown> = this.reviewStore.getTrackedPullRequest(prKey) || {};
             const { summary, internals } = buildPullRequestSummary({
               connection,
               pr,
@@ -217,11 +341,13 @@ export class GitHubManager extends BaseProviderManager {
             });
             newActivityEvents.push(...events);
 
-            if (this.reviewBridgeStore?.syncPullRequest) {
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const bridgeStore = this.reviewBridgeStore as any;
+            if (bridgeStore?.syncPullRequest) {
               try {
-                await this.reviewBridgeStore.syncPullRequest(summary);
+                await bridgeStore.syncPullRequest(summary);
               } catch (error) {
-                this.log.warn("review bridge sync failed", { prKey, err: error.message || String(error) });
+                this.log.warn("review bridge sync failed", { prKey, err: (error as Error).message || String(error) });
               }
             }
 
@@ -255,17 +381,17 @@ export class GitHubManager extends BaseProviderManager {
         await this.reviewStore.upsertConnectionState(connection.id, {
           status: "ok",
           lastError: "",
-          lastSyncAt: connectionSnapshot.lastSyncAt,
-          lastSuccessAt: connectionSnapshot.lastSuccessAt,
+          lastSyncAt: connectionSnapshot.lastSyncAt as string,
+          lastSuccessAt: connectionSnapshot.lastSuccessAt as string,
         });
       } catch (error) {
         connectionSnapshot.status = "error";
-        connectionSnapshot.lastError = error.message || "GitHub sync failed.";
+        connectionSnapshot.lastError = (error as Error).message || "GitHub sync failed.";
         connectionSnapshot.lastSyncAt = new Date(this.now()).toISOString();
         await this.reviewStore.upsertConnectionState(connection.id, {
           status: "error",
-          lastError: connectionSnapshot.lastError,
-          lastSyncAt: connectionSnapshot.lastSyncAt,
+          lastError: connectionSnapshot.lastError as string,
+          lastSyncAt: connectionSnapshot.lastSyncAt as string,
         });
       }
 
@@ -276,9 +402,9 @@ export class GitHubManager extends BaseProviderManager {
         provider: "github",
         connection,
         prevState: persistedState,
-        currentStatus: connectionSnapshot.status,
-        currentError: connectionSnapshot.lastError,
-        at: connectionSnapshot.lastSyncAt || new Date(this.now()).toISOString(),
+        currentStatus: connectionSnapshot.status as string,
+        currentError: connectionSnapshot.lastError as string,
+        at: (connectionSnapshot.lastSyncAt || new Date(this.now()).toISOString()) as string,
       });
       if (connectionErrorEvent) {
         newActivityEvents.push(connectionErrorEvent);
@@ -292,21 +418,21 @@ export class GitHubManager extends BaseProviderManager {
       const key = ws.review.prKey;
       if (trackedPullRequests[key]) continue; // still active
       const existing = detailMap[key];
-      if (existing && existing.pullRequest?.state !== "open") continue; // already resolved
-      const conn = connections.find((c) => c.id === ws.review.connectionId);
-      const token = conn && this.credentialStore.getSecret(conn.tokenRef);
+      if (existing && (existing.pullRequest as Record<string, unknown> | undefined)?.state !== "open") continue; // already resolved
+      const conn = connections.find((c) => c.id === ws.review?.connectionId);
+      const token = conn && this.credentialStore.getSecret(conn.tokenRef || "");
       if (!conn || !token) continue;
       const [owner, repo] = (ws.review.repository?.fullName || "").split("/");
       const pullNumber = ws.review.pullRequest?.number || ws.review.pullRequest?.id;
       if (!owner || !repo || !pullNumber) continue;
       try {
-        const pr = await this.api.getPullRequest(conn, token, owner, repo, pullNumber);
+        const pr = await api.getPullRequest(conn, token, owner, repo, pullNumber);
         detailMap[key] = {
           ...(existing || {}),
           connectionId: ws.review.connectionId,
           repository: ws.review.repository,
           pullRequest: {
-            ...(existing?.pullRequest || ws.review.pullRequest || {}),
+            ...((existing?.pullRequest as Record<string, unknown>) || ws.review.pullRequest || {}),
             state: pr.state || "closed",
             mergedAt: pr.merged_at || null,
             closedAt: pr.closed_at || null,
@@ -318,7 +444,7 @@ export class GitHubManager extends BaseProviderManager {
           connectionId: ws.review.connectionId,
           repository: ws.review.repository,
           pullRequest: {
-            ...(existing?.pullRequest || ws.review.pullRequest || {}),
+            ...((existing?.pullRequest as Record<string, unknown>) || ws.review.pullRequest || {}),
             state: "closed",
             mergedAt: null,
           },
@@ -355,7 +481,8 @@ export class GitHubManager extends BaseProviderManager {
           .sort((a, b) => parseDate(b.lastActivityAt) - parseDate(a.lastActivityAt)),
       },
       trackedPullRequests,
-      pullRequests: detailMap,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      pullRequests: detailMap as any,
       reviewActivity: appendReviewActivity(this.snapshot.reviewActivity, newActivityEvents),
       sync: {
         running: false,
@@ -363,7 +490,7 @@ export class GitHubManager extends BaseProviderManager {
         lastCompletedAt: new Date(this.now()).toISOString(),
       },
     };
-    this.setSnapshot(snapshot);
+    this.setSnapshot(snapshot as typeof this.snapshot);
     return this.getSnapshot();
   }
 
@@ -374,73 +501,88 @@ export class GitHubManager extends BaseProviderManager {
    * Mirror of AzureDevOpsManager._detectAzureReviewActivityDeltas — same
    * contract, GitHub-specific identity and vote logic.
    */
-  _detectGitHubReviewActivityDeltas({ tracked, summary, internals, seedingConnection }) {
+  _detectGitHubReviewActivityDeltas({ tracked, summary, internals, seedingConnection }: DetectDeltasOptions): {
+    events: unknown[];
+    lastNotifiedActivityAt: string;
+  } {
     const nowIso = new Date(this.now()).toISOString();
-    const events = [];
+    const events: unknown[] = [];
     const myLogin = String(internals.myLogin || "").toLowerCase();
-    const isSelfLogin = (login) => Boolean(myLogin) && String(login || "").toLowerCase() === myLogin;
+    const isSelfLogin = (login: unknown): boolean => Boolean(myLogin) && String(login || "").toLowerCase() === myLogin;
 
     if (seedingConnection) {
       return {
         events,
-        lastNotifiedActivityAt: seedNotifiedTimestamp(summary, nowIso),
+        lastNotifiedActivityAt: seedNotifiedTimestamp(summary as unknown as Parameters<typeof seedNotifiedTimestamp>[0], nowIso) || nowIso,
       };
     }
 
-    const prevNotifiedAt = tracked.lastNotifiedActivityAt || "";
+    const prevNotifiedAt = (tracked.lastNotifiedActivityAt as string) || "";
+    const summaryRepo = summary.repository as Record<string, unknown>;
+    const summaryPr = summary.pullRequest as Record<string, unknown>;
+    const summaryAuthor = summary.author as Record<string, unknown>;
 
     if (!prevNotifiedAt) {
       if (summary.role === "reviewer") {
         events.push(
           buildReviewActivityEvent({
             provider: "github",
-            summary,
+            summary: summary as unknown as Parameters<typeof buildReviewActivityEvent>[0]["summary"],
             kind: "pr-new",
-            at: summary.lastRemoteActivityAt || nowIso,
-            title: `Review requested: ${summary.repository.fullName} #${summary.pullRequest.number}`,
-            body: truncateBody(`${summary.author.displayName}: ${summary.pullRequest.title}`),
-            actor: { login: summary.author.login, displayName: summary.author.displayName },
+            at: (summary.lastRemoteActivityAt as string) || nowIso,
+            title: `Review requested: ${summaryRepo.fullName} #${summaryPr.number}`,
+            body: truncateBody(`${summaryAuthor.displayName}: ${summaryPr.title}`),
+            actor: { login: summaryAuthor.login as string, displayName: summaryAuthor.displayName as string },
           }),
         );
       }
       return {
         events,
-        lastNotifiedActivityAt: seedNotifiedTimestamp(summary, nowIso),
+        lastNotifiedActivityAt: seedNotifiedTimestamp(summary as unknown as Parameters<typeof seedNotifiedTimestamp>[0], nowIso) || nowIso,
       };
     }
 
     // 1) New issue + review comments from other users.
     const newIssue = filterNewComments({
-      comments: internals.otherIssueComments,
+      comments: internals.otherIssueComments as unknown[],
       sinceIsoString: prevNotifiedAt,
-      isSelf: (author) => isSelfLogin(author?.login),
-      getTimestamp: (comment) => comment.updated_at || comment.created_at,
-      getAuthor: (comment) => comment.user || {},
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      isSelf: (author: any) => isSelfLogin(author?.login),
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      getTimestamp: (comment: any) => comment.updated_at || comment.created_at,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      getAuthor: (comment: any) => comment.user || {},
     });
     const newReview = filterNewComments({
-      comments: internals.otherReviewComments,
+      comments: internals.otherReviewComments as unknown[],
       sinceIsoString: prevNotifiedAt,
-      isSelf: (author) => isSelfLogin(author?.login),
-      getTimestamp: (comment) => comment.updated_at || comment.created_at,
-      getAuthor: (comment) => comment.user || {},
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      isSelf: (author: any) => isSelfLogin(author?.login),
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      getTimestamp: (comment: any) => comment.updated_at || comment.created_at,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      getAuthor: (comment: any) => comment.user || {},
     });
-    const newComments = [...newIssue, ...newReview].sort(
-      (a, b) => parseDate(a.updated_at || a.created_at) - parseDate(b.updated_at || b.created_at),
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const newComments = ([...newIssue, ...newReview] as any[]).sort(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (a: any, b: any) => parseDate(a.updated_at || a.created_at) - parseDate(b.updated_at || b.created_at),
     );
     if (newComments.length > 0) {
-      const latest = newComments[newComments.length - 1];
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const latest: any = newComments[newComments.length - 1];
       const actor = {
         login: latest.user?.login || "",
         displayName: latest.user?.name || latest.user?.login || "Someone",
       };
       const title =
         newComments.length > 1
-          ? `${newComments.length} new comments on ${summary.repository.fullName} #${summary.pullRequest.number}`
-          : `New comment on ${summary.repository.fullName} #${summary.pullRequest.number}`;
+          ? `${newComments.length} new comments on ${summaryRepo.fullName} #${summaryPr.number}`
+          : `New comment on ${summaryRepo.fullName} #${summaryPr.number}`;
       events.push(
         buildReviewActivityEvent({
           provider: "github",
-          summary,
+          summary: summary as unknown as Parameters<typeof buildReviewActivityEvent>[0]["summary"],
           kind: "pr-new-comment",
           at: latest.updated_at || latest.created_at || nowIso,
           title,
@@ -452,14 +594,18 @@ export class GitHubManager extends BaseProviderManager {
 
     // 2) Review state change by somebody other than me.
     if (tracked.lastReviewStateSignature && tracked.lastReviewStateSignature !== internals.reviewStateSignature) {
-      const prevMap = parseGitHubReviewSignature(tracked.lastReviewStateSignature);
-      const currMap = parseGitHubReviewSignature(internals.reviewStateSignature);
+      const prevMap = parseGitHubReviewSignature(tracked.lastReviewStateSignature as string);
+      const currMap = parseGitHubReviewSignature(internals.reviewStateSignature as string);
       const changedLogins = diffSignatureKeys(prevMap, currMap, myLogin);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const reviewerMap = internals.reviewerMap as Map<string, any>;
       const changedReviewers = changedLogins
-        .map((login) => internals.reviewerMap.get(login))
-        .filter((reviewer) => reviewer && !isSelfLogin(reviewer.login));
+        .map((login) => reviewerMap.get(login))
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        .filter((reviewer: any) => reviewer && !isSelfLogin(reviewer.login));
       if (changedReviewers.length > 0) {
-        const reviewer = changedReviewers[0];
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const reviewer: any = changedReviewers[0];
         const verb =
           reviewer.state === "approved"
             ? "approved"
@@ -471,10 +617,10 @@ export class GitHubManager extends BaseProviderManager {
         events.push(
           buildReviewActivityEvent({
             provider: "github",
-            summary,
+            summary: summary as unknown as Parameters<typeof buildReviewActivityEvent>[0]["summary"],
             kind: "pr-vote-changed",
             at: nowIso,
-            title: `Review updated on ${summary.repository.fullName} #${summary.pullRequest.number}`,
+            title: `Review updated on ${summaryRepo.fullName} #${summaryPr.number}`,
             body: truncateBody(`${reviewer.displayName} ${verb}.`),
             actor: { login: reviewer.login, displayName: reviewer.displayName },
             urgency: reviewer.state === "changes_requested" ? "urgent" : "normal",
@@ -489,10 +635,10 @@ export class GitHubManager extends BaseProviderManager {
       events.push(
         buildReviewActivityEvent({
           provider: "github",
-          summary,
+          summary: summary as unknown as Parameters<typeof buildReviewActivityEvent>[0]["summary"],
           kind: "pr-source-updated",
-          at: summary.pullRequest.updatedAt || nowIso,
-          title: `${summary.repository.fullName} #${summary.pullRequest.number} has new commits`,
+          at: (summaryPr.updatedAt as string) || nowIso,
+          title: `${summaryRepo.fullName} #${summaryPr.number} has new commits`,
           body: "The source branch was updated.",
         }),
       );
@@ -503,15 +649,15 @@ export class GitHubManager extends BaseProviderManager {
       summary.role === "author" &&
       tracked.lastChecksSignature &&
       tracked.lastChecksSignature !== internals.checksSignature &&
-      internals.checksFailedCount > 0
+      (internals.checksFailedCount as number) > 0
     ) {
       events.push(
         buildReviewActivityEvent({
           provider: "github",
-          summary,
+          summary: summary as unknown as Parameters<typeof buildReviewActivityEvent>[0]["summary"],
           kind: "pr-checks-failed",
           at: nowIso,
-          title: `Checks failing on ${summary.repository.fullName} #${summary.pullRequest.number}`,
+          title: `Checks failing on ${summaryRepo.fullName} #${summaryPr.number}`,
           body: truncateBody(`${internals.checksFailedCount} check(s) failed.`),
           urgency: "urgent",
         }),
@@ -532,29 +678,36 @@ export class GitHubManager extends BaseProviderManager {
   // PR detail enrichment (checks, files)
   // ---------------------------------------------------------------------------
 
-  async ensurePullRequestDetail(prKey, { workspaces = [], force = false } = {}) {
+  async ensurePullRequestDetail(prKey: string, { workspaces = [], force = false }: { workspaces?: SyncWorkspace[]; force?: boolean } = {}): Promise<Record<string, unknown>> {
     const current = this.snapshot.pullRequests[prKey] || this.findSummary(prKey);
     if (!current) throw new Error("Pull request is not available in the current GitHub snapshot.");
-    if (!force && Array.isArray(current.changedFiles) && current.checks?.items) return current;
+    const currentRec = current as Record<string, unknown>;
+    if (!force && Array.isArray(currentRec.changedFiles) && (currentRec.checks as Record<string, unknown> | undefined)?.items) return currentRec;
 
-    this.setAuditContext({ connectionId: current.connectionId || "", userInitiated: true });
-    const connection = this.findConnection(current.connectionId);
+    this.setAuditContext({ connectionId: (currentRec.connectionId as string) || "", userInitiated: true });
+    const connection = this.findConnection(currentRec.connectionId as string);
     if (!connection) throw new Error("GitHub connection was not found.");
-    const token = this.credentialStore.getSecret(connection.tokenRef);
+    const token = this.credentialStore.getSecret(connection.tokenRef || "");
     if (!token) throw new Error("PAT is missing.");
 
-    const owner = current.repository.owner;
-    const repo = current.repository.name;
-    const pullNumber = current.pullRequest.number;
-    const headSha = current.pullRequest.headSha;
+    const repository = currentRec.repository as Record<string, unknown>;
+    const pullRequest = currentRec.pullRequest as Record<string, unknown>;
+    const owner = repository.owner as string;
+    const repo = repository.name as string;
+    const pullNumber = pullRequest.number as number;
+    const headSha = pullRequest.headSha as string | undefined;
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const api = this.api as any;
 
     const [files, checkRuns, combinedStatus] = await Promise.all([
-      this.api.listPullRequestFiles(connection, token, owner, repo, pullNumber).catch(() => []),
-      headSha ? this.api.listCheckRuns(connection, token, owner, repo, headSha).catch(() => []) : [],
-      headSha ? this.api.getCombinedStatus(connection, token, owner, repo, headSha).catch(() => null) : null,
+      api.listPullRequestFiles(connection, token, owner, repo, pullNumber).catch(() => []),
+      headSha ? api.listCheckRuns(connection, token, owner, repo, headSha).catch(() => []) : [],
+      headSha ? api.getCombinedStatus(connection, token, owner, repo, headSha).catch(() => null) : null,
     ]);
 
-    const changedFiles = files.map((f) => ({
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const changedFiles = (files as any[]).map((f: any) => ({
       path: f.filename || "",
       changeType: f.status || "modified",
       additions: f.additions || 0,
@@ -563,8 +716,9 @@ export class GitHubManager extends BaseProviderManager {
     }));
 
     // Inline check aggregation
-    const checks = { failedCount: 0, pendingCount: 0, passedCount: 0, items: [] };
-    for (const run of checkRuns) {
+    const checks: { failedCount: number; pendingCount: number; passedCount: number; items: Record<string, unknown>[] } = { failedCount: 0, pendingCount: 0, passedCount: 0, items: [] };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    for (const run of checkRuns as any[]) {
       const conclusion = String(run.conclusion || run.status || "").toLowerCase();
       let state = "unknown";
       if (["failure", "timed_out", "action_required", "cancelled"].includes(conclusion)) state = "failed";
@@ -582,8 +736,10 @@ export class GitHubManager extends BaseProviderManager {
       else if (state === "pending") checks.pendingCount++;
       else if (state === "succeeded") checks.passedCount++;
     }
-    if (combinedStatus?.statuses) {
-      for (const status of combinedStatus.statuses) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    if ((combinedStatus as any)?.statuses) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      for (const status of (combinedStatus as any).statuses as any[]) {
         const s = String(status.state || "").toLowerCase();
         let state = "unknown";
         if (["failure", "error"].includes(s)) state = "failed";
@@ -604,51 +760,60 @@ export class GitHubManager extends BaseProviderManager {
     }
 
     const workspace =
-      findWorkspaceForPullRequest(workspaces, prKey) ||
-      (current.existingWorkspaceId ? workspaces.find((ws) => ws.id === current.existingWorkspaceId) : null);
-    const localChanges = workspace?.cwd
-      ? await this.listLocalChangedFiles(workspace.cwd, stripRefsPrefix(current.pullRequest.targetRefName)).catch(
+      findWorkspaceForPullRequest(workspaces as Array<{ id: string; [key: string]: unknown }>, prKey) ||
+      (currentRec.existingWorkspaceId ? workspaces.find((ws) => ws.id === currentRec.existingWorkspaceId) : null);
+    const workspaceCwd = (workspace as SyncWorkspace | undefined)?.cwd;
+    const localChanges = workspaceCwd
+      ? await this.listLocalChangedFiles(workspaceCwd, stripRefsPrefix(pullRequest.targetRefName as string)).catch(
           () => [],
         )
       : [];
 
-    const next = {
-      ...current,
+    const next: Record<string, unknown> = {
+      ...currentRec,
       changedFiles,
       localChangedFiles: localChanges,
       checks,
-      existingWorkspaceId: workspace?.id || current.existingWorkspaceId || "",
-      reviewWorkspaceId: workspace?.review?.provider === "github" ? workspace.id : current.reviewWorkspaceId || "",
+      existingWorkspaceId: (workspace as SyncWorkspace | undefined)?.id || currentRec.existingWorkspaceId || "",
+      reviewWorkspaceId: (workspace as SyncWorkspace | undefined)?.review?.provider === "github" ? (workspace as SyncWorkspace).id : currentRec.reviewWorkspaceId || "",
     };
 
     this.setSnapshot({
       ...this.snapshot,
-      pullRequests: { ...this.snapshot.pullRequests, [prKey]: next },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      pullRequests: { ...this.snapshot.pullRequests, [prKey]: next as any },
     });
 
-    if (this.reviewBridgeStore?.syncPullRequest) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const bridgeStore = this.reviewBridgeStore as any;
+    if (bridgeStore?.syncPullRequest) {
       try {
-        await this.reviewBridgeStore.syncPullRequest(next);
+        await bridgeStore.syncPullRequest(next);
       } catch (error) {
-        this.log.warn("review bridge detail sync failed", { prKey, err: error.message || String(error) });
+        this.log.warn("review bridge detail sync failed", { prKey, err: (error as Error).message || String(error) });
       }
     }
     return next;
   }
 
-  async rerunCheck(prKey, checkItem) {
+  async rerunCheck(prKey: string, checkItem: CheckItem): Promise<Record<string, unknown>> {
     const current = this.snapshot.pullRequests?.[prKey];
     if (!current) throw new Error(`PR ${prKey} not found in snapshot`);
-    const connection = this.findConnection(current.connectionId);
+    const currentRec = current as Record<string, unknown>;
+    const connection = this.findConnection(currentRec.connectionId as string);
     if (!connection) throw new Error(`Connection not found for PR ${prKey}`);
-    const token = this.credentialStore.getSecret(connection.tokenRef);
+    const token = this.credentialStore.getSecret(connection.tokenRef || "");
     if (!token) throw new Error(`No credentials found for connection "${connection.label || connection.id}"`);
     this.setAuditContext({ connectionId: connection.id, userInitiated: true });
 
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const api = this.api as any;
+
     if (checkItem.kind === "check" && checkItem.checkSuiteId) {
-      const owner = current.repository?.owner;
-      const repo = current.repository?.name;
-      await this.api.rerunCheckSuite(connection, token, owner, repo, checkItem.checkSuiteId);
+      const repo = currentRec.repository as Record<string, unknown> | undefined;
+      const owner = repo?.owner as string;
+      const repoName = repo?.name as string;
+      await api.rerunCheckSuite(connection, token, owner, repoName, checkItem.checkSuiteId);
     } else {
       throw new Error("Cannot re-run this check type");
     }
@@ -660,7 +825,7 @@ export class GitHubManager extends BaseProviderManager {
   // Managed checkout (cache repo + worktree)
   // ---------------------------------------------------------------------------
 
-  async ensureCacheRepo({ connection, token, owner, repo, remoteUrl, reviewRoot }) {
+  async ensureCacheRepo({ connection, token, owner, repo, remoteUrl, reviewRoot }: EnsureCacheRepoOptions): Promise<string> {
     const repositoryRoot = path.join(
       normalizeReviewRoot(reviewRoot),
       "repos",
@@ -675,16 +840,24 @@ export class GitHubManager extends BaseProviderManager {
     return repositoryRoot;
   }
 
-  async prepareManagedReviewCheckout({ summary, connection, token, reviewRoot }) {
+  async prepareManagedReviewCheckout({ summary, connection, token, reviewRoot }: PrepareManagedReviewCheckoutOptions): Promise<{
+    mode: string;
+    rootPath: string;
+    cacheRepoPath: string;
+    sourceBranch: string;
+    targetBranch: string;
+  }> {
     try {
-      const owner = summary.repository.owner;
-      const repo = summary.repository.name;
-      const remoteUrl = summary.repository.remoteUrl || buildRepositoryRemoteUrl(connection.hostUrl, owner, repo);
+      const repository = summary.repository as Record<string, unknown>;
+      const pullRequest = summary.pullRequest as Record<string, unknown>;
+      const owner = repository.owner as string;
+      const repo = repository.name as string;
+      const remoteUrl = (repository.remoteUrl as string) || buildRepositoryRemoteUrl(connection.hostUrl, owner, repo);
       if (!remoteUrl) throw new Error("Pull request repository clone URL is missing.");
 
-      const sourceBranch = stripRefsPrefix(summary.pullRequest.sourceRefName);
+      const sourceBranch = stripRefsPrefix(pullRequest.sourceRefName as string);
       if (!sourceBranch) throw new Error("Pull request source branch is missing.");
-      const targetBranch = stripRefsPrefix(summary.pullRequest.targetRefName);
+      const targetBranch = stripRefsPrefix(pullRequest.targetRefName as string);
       if (!targetBranch) throw new Error("Pull request target branch is missing.");
 
       const cacheRepoPath = await this.ensureCacheRepo({ connection, token, owner, repo, remoteUrl, reviewRoot });
@@ -692,7 +865,7 @@ export class GitHubManager extends BaseProviderManager {
         normalizeReviewRoot(reviewRoot),
         "reviews",
         shortPathKey(connection.id, "connection"),
-        `pr-${summary.pullRequest.number}`,
+        `pr-${pullRequest.number}`,
       );
 
       await this.runGit(
@@ -708,7 +881,7 @@ export class GitHubManager extends BaseProviderManager {
 
       await mkdir(path.dirname(worktreePath), { recursive: true });
       const worktreeExists = await exists(path.join(worktreePath, ".git"));
-      const localBranch = `pr-${summary.pullRequest.number}-${sanitizePathSegment(sourceBranch)}`;
+      const localBranch = `pr-${pullRequest.number}-${sanitizePathSegment(sourceBranch)}`;
 
       if (!worktreeExists) {
         try {
@@ -765,15 +938,15 @@ export class GitHubManager extends BaseProviderManager {
     }
   }
 
-  buildReviewMetadata(summary, checkout, extra = {}) {
+  buildReviewMetadata(summary: Record<string, unknown>, checkout: Record<string, unknown>, extra: Record<string, unknown> = {}): Record<string, unknown> {
     return {
       provider: "github",
       prKey: summary.prKey,
       connectionId: summary.connectionId,
       hostUrl: summary.hostUrl,
       parentWorkspaceId: extra.parentWorkspaceId || "",
-      repository: clone(summary.repository),
-      pullRequest: clone(summary.pullRequest),
+      repository: clone(summary.repository as Record<string, unknown>),
+      pullRequest: clone(summary.pullRequest as Record<string, unknown>),
       role: summary.role,
       checkout: {
         mode: checkout.mode || "managed-worktree",
@@ -787,47 +960,52 @@ export class GitHubManager extends BaseProviderManager {
   // Open review workspace
   // ---------------------------------------------------------------------------
 
-  async openReviewWorkspace({ state, prKey, workspaceId = "" }) {
+  async openReviewWorkspace({ state, prKey, workspaceId = "" }: OpenReviewWorkspaceOptions): Promise<{
+    workspace: Record<string, unknown>;
+    created: boolean;
+    attached: boolean;
+  }> {
     const summary = await this.ensurePullRequestDetail(prKey, { workspaces: state.workspaces });
-    const connection = this.findConnection(summary.connectionId);
+    const connection = this.findConnection(summary.connectionId as string);
     if (!connection) throw new Error("GitHub connection was not found.");
-    const token = this.credentialStore.getSecret(connection.tokenRef);
+    const token = this.credentialStore.getSecret(connection.tokenRef || "");
     if (!token) throw new Error("PAT is missing.");
 
     const activeProfile = state.activeProfileId || "default";
     const profileWorkspaces = state.workspaces.filter((ws) => (ws.profileId || "default") === activeProfile);
     const existingWorkspace = workspaceId
       ? profileWorkspaces.find((ws) => ws.id === workspaceId)
-      : findWorkspaceForPullRequest(profileWorkspaces, prKey) ||
+      : findWorkspaceForPullRequest(profileWorkspaces as Array<{ id: string; [key: string]: unknown }>, prKey) ||
         (summary.role === "author" && summary.existingWorkspaceId
           ? profileWorkspaces.find((ws) => ws.id === summary.existingWorkspaceId)
           : null);
 
-    const reviewProfileId = existingWorkspace?.profileId || state.activeProfileId || "default";
+    const reviewProfileId = (existingWorkspace as SyncWorkspace | undefined)?.profileId || state.activeProfileId || "default";
     const parentGitHubWorkspace =
       state.workspaces.find((ws) => ws.kind === "github" && (ws.profileId || "default") === reviewProfileId) || null;
-    const parentWorkspaceId = parentGitHubWorkspace?.id || existingWorkspace?.review?.parentWorkspaceId || "";
+    const parentWorkspaceId = parentGitHubWorkspace?.id || (existingWorkspace as SyncWorkspace | undefined)?.review?.parentWorkspaceId || "";
 
     if (existingWorkspace) {
-      if (!String(existingWorkspace.cwd || "").trim()) {
+      const ew = existingWorkspace as SyncWorkspace;
+      if (!String(ew.cwd || "").trim()) {
         throw new Error(
-          `Matched workspace "${existingWorkspace.name || existingWorkspace.id}" does not have a working directory.`,
+          `Matched workspace "${ew.name || ew.id}" does not have a working directory.`,
         );
       }
-      const checkout = existingWorkspace.review?.checkout || {
-        mode: existingWorkspace.review?.provider === "github" ? "managed-worktree" : "linked-existing-workspace",
-        rootPath: existingWorkspace.cwd,
-        cacheRepoPath: existingWorkspace.review?.checkout?.cacheRepoPath || "",
+      const checkout = ew.review?.checkout || {
+        mode: ew.review?.provider === "github" ? "managed-worktree" : "linked-existing-workspace",
+        rootPath: ew.cwd,
+        cacheRepoPath: ew.review?.checkout?.cacheRepoPath || "",
       };
-      const workspace = {
-        ...existingWorkspace,
-        review: this.buildReviewMetadata(summary, checkout, {
+      const workspace: Record<string, unknown> = {
+        ...ew,
+        review: this.buildReviewMetadata(summary, checkout as Record<string, unknown>, {
           parentWorkspaceId: checkout.mode === "managed-worktree" ? parentWorkspaceId : "",
         }),
       };
       await this.reviewStore.upsertTrackedPullRequest(prKey, {
-        reviewWorkspaceId: workspace.id,
-        lastSeenActivityAt: summary.lastRemoteActivityAt || new Date(this.now()).toISOString(),
+        reviewWorkspaceId: workspace.id as string,
+        lastSeenActivityAt: (summary.lastRemoteActivityAt as string) || new Date(this.now()).toISOString(),
       });
       return { workspace, created: false, attached: checkout.mode === "linked-existing-workspace" };
     }
@@ -836,29 +1014,34 @@ export class GitHubManager extends BaseProviderManager {
       summary,
       connection,
       token,
-      reviewRoot: parentGitHubWorkspace?.cwd || connection.reviewRoot || getDefaultReviewRoot(),
+      reviewRoot: parentGitHubWorkspace?.cwd || (connection as Record<string, unknown>).reviewRoot as string || getDefaultReviewRoot(),
     });
-    const panels = createReviewWorkspacePanels(parentGitHubWorkspace?.panels || [], state.tabTemplates || []);
-    const workspace = {
+    const panels = createReviewWorkspacePanels(
+      (parentGitHubWorkspace?.panels || []) as Parameters<typeof createReviewWorkspacePanels>[0],
+      (state.tabTemplates || []) as Parameters<typeof createReviewWorkspacePanels>[1],
+    );
+    const summaryRepo = summary.repository as Record<string, unknown>;
+    const summaryPr = summary.pullRequest as Record<string, unknown>;
+    const workspace: Record<string, unknown> = {
       id: `workspace-${randomUUID()}`,
-      name: `${summary.repository.fullName} PR #${summary.pullRequest.number}`,
+      name: `${summaryRepo.fullName} PR #${summaryPr.number}`,
       icon: GITHUB_REVIEW_ICON,
       color: GITHUB_REVIEW_COLOR,
       kind: "terminal",
       source: "manual",
       pluginId: "",
       cwd: checkout.rootPath,
-      notes: `GitHub review workspace for ${summary.repository.fullName} PR #${summary.pullRequest.number}`,
+      notes: `GitHub review workspace for ${summaryRepo.fullName} PR #${summaryPr.number}`,
       profileId: state.activeProfileId || "default",
       activePanelId: panels[0]?.id || "",
       panels,
-      review: this.buildReviewMetadata(summary, checkout, {
+      review: this.buildReviewMetadata(summary, checkout as unknown as Record<string, unknown>, {
         parentWorkspaceId: parentWorkspaceId || "",
       }),
     };
     await this.reviewStore.upsertTrackedPullRequest(prKey, {
-      reviewWorkspaceId: workspace.id,
-      lastSeenActivityAt: summary.lastRemoteActivityAt || new Date(this.now()).toISOString(),
+      reviewWorkspaceId: workspace.id as string,
+      lastSeenActivityAt: (summary.lastRemoteActivityAt as string) || new Date(this.now()).toISOString(),
     });
     return { workspace, created: true, attached: false };
   }
@@ -867,39 +1050,47 @@ export class GitHubManager extends BaseProviderManager {
   // Write actions
   // ---------------------------------------------------------------------------
 
-  async addPullRequestComment({ prKey, body }) {
+  async addPullRequestComment({ prKey, body }: { prKey: string; body: string }): Promise<void> {
     const summary = await this.ensurePullRequestDetail(prKey);
-    this.setAuditContext({ connectionId: summary.connectionId || "", userInitiated: true });
-    const connection = this.findConnection(summary.connectionId);
+    this.setAuditContext({ connectionId: (summary.connectionId as string) || "", userInitiated: true });
+    const connection = this.findConnection(summary.connectionId as string);
     if (!connection) throw new Error("GitHub connection was not found.");
-    const token = this.credentialStore.getSecret(connection.tokenRef);
+    const token = this.credentialStore.getSecret(connection.tokenRef || "");
     if (!token) throw new Error("PAT is missing.");
 
-    await this.api.createIssueComment(
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const api = this.api as any;
+    const repository = summary.repository as Record<string, unknown>;
+    const pullRequest = summary.pullRequest as Record<string, unknown>;
+    await api.createIssueComment(
       connection,
       token,
-      summary.repository.owner,
-      summary.repository.name,
-      summary.pullRequest.number,
+      repository.owner,
+      repository.name,
+      pullRequest.number,
       body,
     );
   }
 
-  async submitPullRequestReview({ prKey, event, body = "" }) {
+  async submitPullRequestReview({ prKey, event, body = "" }: { prKey: string; event: string; body?: string }): Promise<void> {
     const summary = await this.ensurePullRequestDetail(prKey);
-    this.setAuditContext({ connectionId: summary.connectionId || "", userInitiated: true });
-    const connection = this.findConnection(summary.connectionId);
+    this.setAuditContext({ connectionId: (summary.connectionId as string) || "", userInitiated: true });
+    const connection = this.findConnection(summary.connectionId as string);
     if (!connection) throw new Error("GitHub connection was not found.");
-    const token = this.credentialStore.getSecret(connection.tokenRef);
+    const token = this.credentialStore.getSecret(connection.tokenRef || "");
     if (!token) throw new Error("PAT is missing.");
 
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const api = this.api as any;
+    const repository = summary.repository as Record<string, unknown>;
+    const pullRequest = summary.pullRequest as Record<string, unknown>;
     // event: APPROVE, REQUEST_CHANGES, COMMENT
-    await this.api.submitReview(
+    await api.submitReview(
       connection,
       token,
-      summary.repository.owner,
-      summary.repository.name,
-      summary.pullRequest.number,
+      repository.owner,
+      repository.name,
+      pullRequest.number,
       { event, body },
     );
   }
@@ -908,29 +1099,29 @@ export class GitHubManager extends BaseProviderManager {
   // Workspace git operations
   // ---------------------------------------------------------------------------
 
-  async fetchReviewWorkspace({ workspace }) {
-    const connection = this.findConnection(workspace.review?.connectionId);
+  async fetchReviewWorkspace({ workspace }: { workspace: SyncWorkspace }): Promise<void> {
+    const connection = this.findConnection(workspace.review?.connectionId || "");
     if (!connection) throw new Error("GitHub connection was not found.");
-    const token = this.credentialStore.getSecret(connection.tokenRef);
+    const token = this.credentialStore.getSecret(connection.tokenRef || "");
     if (!token) throw new Error("PAT is missing.");
     this.log.info("fetch review workspace", { workspaceId: workspace.id });
-    await this.runGit(workspace.cwd, ["fetch", "origin"], { token });
+    await this.runGit(workspace.cwd!, ["fetch", "origin"], { token });
   }
 
-  async rebaseReviewWorkspace({ workspace }) {
+  async rebaseReviewWorkspace({ workspace }: { workspace: SyncWorkspace }): Promise<void> {
     await this.fetchReviewWorkspace({ workspace });
-    const targetBranch = stripRefsPrefix(workspace.review?.pullRequest?.targetRefName);
+    const targetBranch = stripRefsPrefix((workspace.review?.pullRequest?.targetRefName as string) || "");
     this.log.info("rebase review workspace", { workspaceId: workspace.id, targetBranch });
-    await this.runGit(workspace.cwd, ["rebase", `origin/${targetBranch}`]);
+    await this.runGit(workspace.cwd!, ["rebase", `origin/${targetBranch}`]);
   }
 
-  async pushReviewWorkspace({ workspace, force = false, branch = "" }) {
-    const connection = this.findConnection(workspace.review?.connectionId);
+  async pushReviewWorkspace({ workspace, force = false, branch = "" }: { workspace: SyncWorkspace; force?: boolean; branch?: string }): Promise<void> {
+    const connection = this.findConnection(workspace.review?.connectionId || "");
     if (!connection) throw new Error("GitHub connection was not found.");
-    const token = this.credentialStore.getSecret(connection.tokenRef);
+    const token = this.credentialStore.getSecret(connection.tokenRef || "");
     if (!token) throw new Error("PAT is missing.");
 
-    const sourceBranch = stripRefsPrefix(workspace.review?.pullRequest?.sourceRefName) || branch;
+    const sourceBranch = stripRefsPrefix((workspace.review?.pullRequest?.sourceRefName as string) || "") || branch;
     if (!sourceBranch) throw new Error("Cannot determine branch name for push.");
 
     // Local branch may be named differently (e.g. pr-1-feature) so push HEAD to the remote branch name
@@ -938,14 +1129,17 @@ export class GitHubManager extends BaseProviderManager {
       ? ["push", "--force-with-lease", "-u", "origin", `HEAD:refs/heads/${sourceBranch}`]
       : ["push", "-u", "origin", `HEAD:refs/heads/${sourceBranch}`];
     this.log.info("push review workspace", { workspaceId: workspace.id, sourceBranch, force });
-    await this.runGit(workspace.cwd, pushArgs, { token });
+    await this.runGit(workspace.cwd!, pushArgs, { token });
   }
 
-  async listRemoteBranches(connectionId, owner, repo) {
+  async listRemoteBranches(connectionId: string, owner: string, repo: string): Promise<string[]> {
     this.setAuditContext({ connectionId, userInitiated: true });
     const { connection, token } = this.resolveConnectionAndToken(connectionId);
     // If owner/repo not provided, try to resolve from workspace git remote
-    const branches = await this.api.listBranches(connection, token, owner, repo);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const api = this.api as any;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const branches = await api.listBranches(connection, token, owner, repo) as any[];
     return branches.map((b) => b.name);
   }
 
@@ -958,10 +1152,21 @@ export class GitHubManager extends BaseProviderManager {
     title,
     description,
     isDraft = false,
-  }) {
+  }: {
+    connectionId: string;
+    owner: string;
+    repo: string;
+    sourceBranch: string;
+    targetBranch: string;
+    title: string;
+    description: string;
+    isDraft?: boolean;
+  }): Promise<{ pullRequestNumber: number; url: string; title: string }> {
     const { connection, token } = this.resolveConnectionAndToken(connectionId);
     this.setAuditContext({ connectionId, userInitiated: true });
-    const result = await this.api.createPullRequest(connection, token, owner, repo, {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const api = this.api as any;
+    const result = await api.createPullRequest(connection, token, owner, repo, {
       title,
       body: description,
       head: sourceBranch,
@@ -979,17 +1184,28 @@ export class GitHubManager extends BaseProviderManager {
   // Quick Fix — new branch workflow
   // ---------------------------------------------------------------------------
 
-  async listQuickFixRepositories(connectionId) {
+  async listQuickFixRepositories(connectionId: string): Promise<Array<{
+    id: unknown;
+    name: string;
+    fullName: string;
+    owner: string;
+    remoteUrl: string;
+    defaultBranch: string;
+  }>> {
     this.setAuditContext({ connectionId, userInitiated: true });
     const { connection, token } = this.resolveConnectionAndToken(connectionId);
-    const allRepos = await this.api.listUserRepos(connection, token);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const api = this.api as any;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const allRepos: any[] = await api.listUserRepos(connection, token);
     let repos = allRepos;
-    if (connection.ownerFilters?.length) {
-      const owners = new Set(connection.ownerFilters.map((o) => o.toLowerCase()));
+    const connRec = connection as Record<string, unknown>;
+    if ((connRec.ownerFilters as string[] | undefined)?.length) {
+      const owners = new Set((connRec.ownerFilters as string[]).map((o) => o.toLowerCase()));
       repos = repos.filter((r) => owners.has((r.owner?.login || "").toLowerCase()));
     }
-    if (connection.repositoryFilters?.length) {
-      const filters = new Set(connection.repositoryFilters.map((f) => f.toLowerCase()));
+    if ((connRec.repositoryFilters as string[] | undefined)?.length) {
+      const filters = new Set((connRec.repositoryFilters as string[]).map((f) => f.toLowerCase()));
       repos = repos.filter((r) => filters.has((r.full_name || "").toLowerCase()));
     }
     return repos.map((r) => ({
@@ -1002,20 +1218,27 @@ export class GitHubManager extends BaseProviderManager {
     }));
   }
 
-  async listQuickFixBranches(connectionId, owner, repo) {
+  async listQuickFixBranches(connectionId: string, owner: string, repo: string): Promise<string[]> {
     this.setAuditContext({ connectionId, userInitiated: true });
     const { connection, token } = this.resolveConnectionAndToken(connectionId);
-    const branches = await this.api.listBranches(connection, token, owner, repo);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const api = this.api as any;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const branches = await api.listBranches(connection, token, owner, repo) as any[];
     return branches.map((b) => b.name);
   }
 
-  async openQuickFixWorkspace({ state, connectionId, owner, repo, remoteUrl, baseBranch, newBranchName }) {
+  async openQuickFixWorkspace({ state, connectionId, owner, repo, remoteUrl, baseBranch, newBranchName }: OpenQuickFixWorkspaceOptions): Promise<{
+    workspace: Record<string, unknown>;
+    parentWorkspaceId: string;
+  }> {
     const { connection, token } = this.resolveConnectionAndToken(connectionId);
+    const connRec = connection as Record<string, unknown>;
 
     const activeProfile = state.activeProfileId || "default";
     const parentGitHubWorkspace =
       state.workspaces.find((ws) => ws.kind === "github" && (ws.profileId || "default") === activeProfile) || null;
-    const reviewRoot = parentGitHubWorkspace?.cwd || connection.reviewRoot || getDefaultReviewRoot();
+    const reviewRoot = parentGitHubWorkspace?.cwd || (connRec.reviewRoot as string) || getDefaultReviewRoot();
 
     const cacheRepoPath = await this.ensureCacheRepo({ connection, token, owner, repo, remoteUrl, reviewRoot });
 
@@ -1047,7 +1270,8 @@ export class GitHubManager extends BaseProviderManager {
           `refs/remotes/origin/${baseBranch}`,
         ]);
       } catch (err) {
-        const msg = String(err?.stderr || err?.message || err);
+        const errRec = err as Record<string, unknown>;
+        const msg = String(errRec?.stderr || (err as Error)?.message || err);
         if (msg.includes("already exists")) {
           throw new Error(`Branch "${newBranchName}" already exists. Choose a different name.`, { cause: err });
         }
@@ -1055,8 +1279,11 @@ export class GitHubManager extends BaseProviderManager {
       }
     }
 
-    const panels = createReviewWorkspacePanels(parentGitHubWorkspace?.panels || [], state.tabTemplates || []);
-    const workspace = {
+    const panels = createReviewWorkspacePanels(
+      (parentGitHubWorkspace?.panels || []) as Parameters<typeof createReviewWorkspacePanels>[0],
+      (state.tabTemplates || []) as Parameters<typeof createReviewWorkspacePanels>[1],
+    );
+    const workspace: Record<string, unknown> = {
       id: `workspace-${randomUUID()}`,
       name: newBranchName,
       icon: GITHUB_REVIEW_ICON,
@@ -1074,7 +1301,7 @@ export class GitHubManager extends BaseProviderManager {
         provider: "github",
         prKey: "",
         connectionId,
-        hostUrl: connection.hostUrl || "",
+        hostUrl: (connRec.hostUrl as string) || "",
         parentWorkspaceId: parentGitHubWorkspace?.id || "",
         repository: { owner, name: repo, fullName: `${owner}/${repo}`, remoteUrl },
         pullRequest: null,
