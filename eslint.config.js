@@ -2,11 +2,22 @@ import js from "@eslint/js";
 import vue from "eslint-plugin-vue";
 import prettier from "eslint-config-prettier";
 import globals from "globals";
+import tseslint from "typescript-eslint";
+
+const tsRules = {
+  "no-unused-vars": "off",
+  "@typescript-eslint/no-unused-vars": [
+    "warn",
+    { argsIgnorePattern: "^_", destructuredArrayIgnorePattern: "^_", caughtErrorsIgnorePattern: "^_" },
+  ],
+  "@typescript-eslint/no-explicit-any": "error",
+};
 
 export default [
   {
     ignores: [
       "dist/",
+      "dist-electron/",
       "release/",
       "out/",
       "node_modules/",
@@ -21,6 +32,50 @@ export default [
   js.configs.recommended,
   ...vue.configs["flat/recommended"],
   prettier,
+
+  // --- Frontend TS source files ---
+  {
+    files: ["src/**/*.ts", "src/**/*.d.ts"],
+    plugins: { "@typescript-eslint": tseslint.plugin },
+    languageOptions: {
+      parser: tseslint.parser,
+      parserOptions: { project: "./tsconfig.frontend.json" },
+    },
+    rules: tsRules,
+  },
+
+  // --- Backend TS files ---
+  {
+    files: ["electron/**/*.ts", "config/**/*.ts"],
+    plugins: { "@typescript-eslint": tseslint.plugin },
+    languageOptions: {
+      parser: tseslint.parser,
+      parserOptions: { project: "./tsconfig.backend.json" },
+    },
+    rules: tsRules,
+  },
+
+  // --- Test TS files ---
+  {
+    files: ["**/*.test.ts", "test/**/*.ts"],
+    plugins: { "@typescript-eslint": tseslint.plugin },
+    languageOptions: {
+      parser: tseslint.parser,
+      parserOptions: { project: "./tsconfig.tests.json" },
+    },
+    rules: tsRules,
+  },
+
+  // --- Scripts MTS files ---
+  {
+    files: ["scripts/**/*.mts"],
+    plugins: { "@typescript-eslint": tseslint.plugin },
+    languageOptions: {
+      parser: tseslint.parser,
+      parserOptions: { project: "./tsconfig.scripts.json" },
+    },
+    rules: tsRules,
+  },
 
   // --- Shared rules ---
   {
@@ -55,25 +110,25 @@ export default [
 
   // --- Frontend (Vue + browser) ---
   {
-    files: ["src/**/*.{js,vue}"],
+    files: ["src/**/*.{js,ts,vue}"],
     languageOptions: { globals: { ...globals.browser } },
   },
 
   // --- Backend (Node.js) ---
   {
-    files: ["electron/**/*.js", "config/**/*.js", "scripts/**/*.mjs"],
+    files: ["electron/**/*.{js,ts}", "config/**/*.{js,ts}", "scripts/**/*.{mjs,mts}"],
     languageOptions: { globals: { ...globals.node } },
   },
 
   // --- Tests ---
   {
-    files: ["**/*.test.js", "test/**/*.js"],
+    files: ["**/*.test.{js,ts}", "test/**/*.{js,ts}"],
     languageOptions: { globals: { ...globals.node, ...globals.browser } },
   },
 
   // --- Config files (Node) ---
   {
-    files: ["*.config.js", "*.config.mjs"],
+    files: ["*.config.{js,ts}", "*.config.{mjs,mts}"],
     languageOptions: { globals: { ...globals.node } },
   },
 ];
