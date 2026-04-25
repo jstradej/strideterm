@@ -102,6 +102,16 @@ export interface PanelLaunch {
   command?: string;
   args?: string[];
   env?: Record<string, string>;
+  /** Shell / binary override — when set the panel launches this file instead of the default shell */
+  file?: string;
+  /** SSH launch kind marker */
+  kind?: string;
+  /** Reference to a saved SSH host in the host book */
+  sshHostId?: string;
+  /** Inline ad-hoc SSH host config (quick-connect) */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  sshInline?: Record<string, any>;
+  skipCommandInjection?: boolean;
 }
 
 export interface PanelState {

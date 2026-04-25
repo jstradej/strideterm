@@ -1,13 +1,17 @@
-import { EventEmitter, once } from "node:events";
+/// <reference types="node" />
+import { EventEmitter } from "node:events";
 import os from "node:os";
 import { promises as fsp } from "node:fs";
 import crypto from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import pty from "node-pty";
+import type { IPty } from "node-pty";
 import { createSessionId, parseSessionId } from "./default-state.js";
+import type { AppState, WorkspaceState, PanelState } from "../shared/types/state.js";
 import { APP_CONFIG } from "../../config/app-config.js";
 import { getLogger } from "./logger.js";
+import type { SshManager } from "./ssh/ssh-manager.js";
 
 const log = getLogger("session-mgr");
 
@@ -16,7 +20,88 @@ const SHELL_INTEGRATION_DIR = path.resolve(
   "../../config/shell-integration",
 );
 
-function shellConfig() {
+// ------ Internal types -------
+
+type SessionStatus = "running" | "exited" | "idle";
+
+interface SessionBase {
+  id: string;
+  workspaceId: string;
+  panelId: string;
+  title: string;
+  command: string;
+  cols: number;
+  rows: number;
+  status: SessionStatus;
+}
+
+interface PtySession extends SessionBase {
+  kind?: string;
+  processHandle: IPty | null;
+  cleanupFn?: () => Promise<void>;
+  wslDistro?: string | null;
+}
+
+interface SshSession extends SessionBase {
+  kind: "ssh";
+  processHandle: null;
+  sshHostId: string | null;
+  sshInline: boolean;
+}
+
+type RuntimeSession = PtySession | SshSession;
+
+interface SessionEnvContext {
+  state: AppState;
+  workspace: WorkspaceState;
+  panel: PanelState;
+  sessionId: string;
+}
+
+interface SessionLaunchOverride {
+  file?: string;
+  args?: string[];
+  cwd?: string;
+  env?: Record<string, string>;
+  command?: string;
+  skipCommandInjection?: boolean;
+}
+
+interface SessionManagerOpts {
+  getSessionEnv?: ((ctx: SessionEnvContext) => Record<string, string>) | null;
+  getSessionLaunch?: ((ctx: SessionEnvContext) => SessionLaunchOverride | null) | null;
+  sshManager?: SshManager | null;
+}
+
+// Loosely-typed host record from ssh-manager (not exported from that module)
+interface HostRecord {
+  id: string;
+  host: string;
+  port?: number;
+  username?: string;
+  jump?: string[];
+  auth?: {
+    keyRef?: string;
+    [key: string]: unknown;
+  };
+  advanced?: {
+    command?: string;
+    launchVia?: string;
+    env?: Record<string, string>;
+    wsl?: {
+      distro?: string;
+      user?: string;
+      exec?: string;
+    };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    [key: string]: any;
+  };
+  hostKeyPolicy?: string;
+}
+
+// ------ Helper functions -------
+
+function shellConfig(): { file: string; args: string[] } {
   if (process.platform === "win32") {
     return {
       file: process.env.COMSPEC || APP_CONFIG.session.windowsShellFile,
@@ -30,7 +115,7 @@ function shellConfig() {
   };
 }
 
-function shellBasename(filePath) {
+function shellBasename(filePath: string): string {
   return path
     .basename(filePath || "")
     .toLowerCase()
@@ -42,7 +127,11 @@ function shellBasename(filePath) {
  * Returns an object of env vars to merge, or {} if integration is disabled
  * or the shell type is not recognized.
  */
-export function shellIntegrationEnv(launcherFile, enabled = true, currentEnv = process.env) {
+export function shellIntegrationEnv(
+  launcherFile: string,
+  enabled = true,
+  currentEnv: NodeJS.ProcessEnv = process.env,
+): Record<string, string> {
   if (!enabled) {
     return {};
   }
@@ -78,21 +167,35 @@ export function shellIntegrationEnv(launcherFile, enabled = true, currentEnv = p
   return {};
 }
 
-function findWorkspace(state, workspaceId) {
+function findWorkspace(state: AppState, workspaceId: string): WorkspaceState | null {
   const workspaces = state.workspaces || state.projects || [];
-  return workspaces.find((workspace) => workspace.id === workspaceId) || null;
+  return workspaces.find((workspace) => workspace.id === workspaceId) ?? null;
 }
 
-function findPanel(workspace, panelId) {
-  return workspace?.panels.find((panel) => panel.id === panelId) || null;
+function findPanel(workspace: WorkspaceState | null, panelId: string): PanelState | null {
+  return workspace?.panels.find((panel) => panel.id === panelId) ?? null;
 }
 
-function isBrowserPanel(panel) {
-  return panel && /^https?:\/\//i.test(panel.command || "");
+function isBrowserPanel(panel: PanelState | null): boolean {
+  return panel != null && /^https?:\/\//i.test(panel.command || "");
 }
 
-async function buildSystemSshArgs(host, credentialStore, { distro = null, sshManager = null } = {}) {
-  const args = [];
+interface BuildSshArgsOpts {
+  distro?: string | null;
+  sshManager?: SshManager | null;
+}
+
+interface BuildSshArgsResult {
+  args: string[];
+  cleanupFn: () => Promise<void>;
+}
+
+async function buildSystemSshArgs(
+  host: HostRecord,
+  credentialStore: SshManager["credentialStore"],
+  { distro = null, sshManager = null }: BuildSshArgsOpts = {},
+): Promise<BuildSshArgsResult> {
+  const args: string[] = [];
   if (host.port && host.port !== 22) args.push("-p", String(host.port));
   if (host.username) args.push("-l", host.username);
 
@@ -108,7 +211,7 @@ async function buildSystemSshArgs(host, credentialStore, { distro = null, sshMan
   // system ssh handles the chain itself. Only possible when we have a manager
   // to look up host entries; otherwise skip.
   if (sshManager && Array.isArray(host.jump) && host.jump.length > 0) {
-    const chain = [];
+    const chain: string[] = [];
     for (const jumpId of host.jump) {
       const j = sshManager.getHost(jumpId);
       if (!j) continue;
@@ -118,7 +221,7 @@ async function buildSystemSshArgs(host, credentialStore, { distro = null, sshMan
     if (chain.length) args.push("-J", chain.join(","));
   }
 
-  let cleanupFn = async () => {};
+  let cleanupFn: () => Promise<void> = async () => {};
 
   if (host.auth && host.auth.keyRef) {
     const privKey = credentialStore.getSecret(host.auth.keyRef);
@@ -157,8 +260,16 @@ async function buildSystemSshArgs(host, credentialStore, { distro = null, sshMan
   return { args, cleanupFn };
 }
 
+// ------ SessionManager -------
+
 export class SessionManager extends EventEmitter {
-  constructor({ getSessionEnv = null, getSessionLaunch = null, sshManager = null } = {}) {
+  sessions: Map<string, RuntimeSession>;
+  suppressedExits: Map<string, number>;
+  getSessionEnv: ((ctx: SessionEnvContext) => Record<string, string>) | null;
+  getSessionLaunch: ((ctx: SessionEnvContext) => SessionLaunchOverride | null) | null;
+  sshManager: SshManager | null;
+
+  constructor({ getSessionEnv = null, getSessionLaunch = null, sshManager = null }: SessionManagerOpts = {}) {
     super();
     this.sessions = new Map();
     this.suppressedExits = new Map();
@@ -167,11 +278,11 @@ export class SessionManager extends EventEmitter {
     this.sshManager = sshManager || null;
   }
 
-  suppressNextExit(sessionId) {
+  suppressNextExit(sessionId: string): void {
     this.suppressedExits.set(sessionId, (this.suppressedExits.get(sessionId) || 0) + 1);
   }
 
-  consumeSuppressedExit(sessionId) {
+  consumeSuppressedExit(sessionId: string): boolean {
     const current = this.suppressedExits.get(sessionId) || 0;
     if (current <= 0) {
       return false;
@@ -186,7 +297,22 @@ export class SessionManager extends EventEmitter {
     return true;
   }
 
-  getWorkspace(state, workspaceId = state.activeWorkspaceId || state.activeProjectId) {
+  getWorkspace(
+    state: AppState,
+    workspaceId: string = state.activeWorkspaceId || state.activeProjectId || "",
+  ): {
+    workspace: WorkspaceState;
+    project: WorkspaceState;
+    sessions: Array<{
+      sessionId: string;
+      panelId: string;
+      title: string;
+      command: string;
+      launch: PanelState["launch"];
+      startup: string | undefined;
+      status: SessionStatus | "idle";
+    }>;
+  } | null {
     const workspace = findWorkspace(state, workspaceId);
     if (!workspace) {
       return null;
@@ -212,7 +338,10 @@ export class SessionManager extends EventEmitter {
     };
   }
 
-  resolveDefaultSessionId(state, workspaceId = state.activeWorkspaceId || state.activeProjectId) {
+  resolveDefaultSessionId(
+    state: AppState,
+    workspaceId: string = state.activeWorkspaceId || state.activeProjectId || "",
+  ): string | null {
     const workspace = findWorkspace(state, workspaceId);
     if (!workspace) {
       return null;
@@ -225,7 +354,7 @@ export class SessionManager extends EventEmitter {
     return activePanelId ? createSessionId(workspace.id, activePanelId) : null;
   }
 
-  async ensureSession(state, sessionId) {
+  async ensureSession(state: AppState, sessionId: string): Promise<RuntimeSession | null> {
     const descriptor = parseSessionId(sessionId);
     if (!descriptor) {
       return null;
@@ -251,11 +380,11 @@ export class SessionManager extends EventEmitter {
       // Resolve to a host definition: saved host book entry OR the panel's
       // inline ad-hoc config. Inline wins if both are present (shouldn't
       // happen, but quick-connect editing could leave both temporarily).
-      let host;
+      let host: HostRecord | undefined;
       if (panel.launch.sshInline) {
-        host = { id: `inline:${key}`, jump: [], ...panel.launch.sshInline };
+        host = { id: `inline:${key}`, jump: [], ...panel.launch.sshInline } as unknown as HostRecord;
       } else if (panel.launch.sshHostId) {
-        host = this.sshManager.getHost(panel.launch.sshHostId);
+        host = this.sshManager.getHost(panel.launch.sshHostId) as HostRecord | undefined;
         if (!host) {
           log.warn("SSH host not found for panel", { sessionId: key, hostId: panel.launch.sshHostId });
           return null;
@@ -279,7 +408,7 @@ export class SessionManager extends EventEmitter {
         sessionId: key,
       }) || null;
 
-    const launcher = launchOverride?.file
+    const launcher: { file: string; args: string[] } = launchOverride?.file
       ? {
           file: launchOverride.file,
           args: [...(launchOverride.args || [])],
@@ -322,14 +451,14 @@ export class SessionManager extends EventEmitter {
       },
     });
 
-    const session = {
+    const session: PtySession = {
       id: key,
       workspaceId: workspace.id,
       panelId: panel.id,
       title: panel.title,
       command: panel.command,
-      cols: existing?.cols || APP_CONFIG.session.defaultCols,
-      rows: existing?.rows || APP_CONFIG.session.defaultRows,
+      cols: (existing as PtySession | undefined)?.cols || APP_CONFIG.session.defaultCols,
+      rows: (existing as PtySession | undefined)?.rows || APP_CONFIG.session.defaultRows,
       status: "running",
       processHandle,
     };
@@ -393,9 +522,15 @@ export class SessionManager extends EventEmitter {
     return session;
   }
 
-  async registerProcessSession(sessionId, workspace, panel, processHandle, meta) {
-    const existing = this.sessions.get(sessionId);
-    const session = {
+  async registerProcessSession(
+    sessionId: string,
+    workspace: WorkspaceState,
+    panel: PanelState,
+    processHandle: IPty,
+    meta: Partial<PtySession>,
+  ): Promise<PtySession> {
+    const existing = this.sessions.get(sessionId) as PtySession | undefined;
+    const session: PtySession = {
       id: sessionId,
       workspaceId: workspace.id,
       panelId: panel.id,
@@ -423,7 +558,9 @@ export class SessionManager extends EventEmitter {
         intentional,
       });
       if (meta.cleanupFn) {
-        meta.cleanupFn().catch((err) => log.warn("ssh key cleanup error", { err }));
+        meta.cleanupFn().catch((err: unknown) =>
+          log.warn("ssh key cleanup error", { err: (err as Error)?.message || String(err) }),
+        );
       }
     });
 
@@ -431,18 +568,24 @@ export class SessionManager extends EventEmitter {
     return session;
   }
 
-  async ensureSystemSshSession(state, workspace, panel, sessionId, host) {
+  async ensureSystemSshSession(
+    _state: AppState,
+    workspace: WorkspaceState,
+    panel: PanelState,
+    sessionId: string,
+    host: HostRecord,
+  ): Promise<RuntimeSession | null> {
     const existing = this.sessions.get(sessionId);
     if (existing && existing.status === "running") return existing;
 
-    const { args, cleanupFn } = await buildSystemSshArgs(host, this.sshManager.credentialStore, {
+    const { args, cleanupFn } = await buildSystemSshArgs(host, this.sshManager!.credentialStore, {
       sshManager: this.sshManager,
     });
     const sshExec = APP_CONFIG.ssh.systemSshPath || "ssh";
 
     log.debug("spawning system-ssh session", { sessionId, host: host.host, user: host.username });
 
-    let processHandle;
+    let processHandle: IPty;
     try {
       processHandle = pty.spawn(sshExec, args, {
         name: APP_CONFIG.session.termName,
@@ -451,8 +594,9 @@ export class SessionManager extends EventEmitter {
         cwd: os.homedir(),
         env: { ...process.env, ...(host.advanced?.env || {}) },
       });
-    } catch (err) {
-      log.warn("system-ssh spawn failed", { sessionId, exec: sshExec, error: err?.message || String(err) });
+    } catch (err: unknown) {
+      const msg = (err as Error)?.message || String(err);
+      log.warn("system-ssh spawn failed", { sessionId, exec: sshExec, error: msg });
       try {
         cleanupFn?.();
       } catch {
@@ -461,7 +605,7 @@ export class SessionManager extends EventEmitter {
       this.emit("terminal:data", {
         sessionId,
         data:
-          `\r\n\x1b[31m✗ Failed to launch system ssh (${sshExec}): ${err?.message || err}\x1b[0m\r\n` +
+          `\r\n\x1b[31m✗ Failed to launch system ssh (${sshExec}): ${msg}\x1b[0m\r\n` +
           `\x1b[90m  Check Settings → SSH → System SSH Binary Path, or install the OpenSSH client.\x1b[0m\r\n`,
       });
       return null;
@@ -473,7 +617,13 @@ export class SessionManager extends EventEmitter {
     });
   }
 
-  async ensureWslSshSession(state, workspace, panel, sessionId, host) {
+  async ensureWslSshSession(
+    _state: AppState,
+    workspace: WorkspaceState,
+    panel: PanelState,
+    sessionId: string,
+    host: HostRecord,
+  ): Promise<RuntimeSession | null> {
     const existing = this.sessions.get(sessionId);
     if (existing && existing.status === "running") return existing;
 
@@ -489,19 +639,19 @@ export class SessionManager extends EventEmitter {
     const wslUser = host.advanced?.wsl?.user;
     const innerExec = host.advanced?.wsl?.exec || APP_CONFIG.ssh.wslSshExec || "ssh";
 
-    const { args: sshArgs, cleanupFn } = await buildSystemSshArgs(host, this.sshManager.credentialStore, {
+    const { args: sshArgs, cleanupFn } = await buildSystemSshArgs(host, this.sshManager!.credentialStore, {
       distro,
       sshManager: this.sshManager,
     });
 
-    const args = [];
+    const args: string[] = [];
     if (distro) args.push("-d", distro);
     if (wslUser) args.push("-u", wslUser);
     args.push("--", innerExec, ...sshArgs);
 
     log.debug("spawning wsl ssh session", { sessionId, distro, host: host.host });
 
-    let processHandle;
+    let processHandle: IPty;
     try {
       processHandle = pty.spawn("wsl.exe", args, {
         name: APP_CONFIG.session.termName,
@@ -510,8 +660,9 @@ export class SessionManager extends EventEmitter {
         cwd: os.homedir(),
         env: { ...process.env, WSL_UTF8: "1" },
       });
-    } catch (err) {
-      log.warn("wsl ssh spawn failed", { sessionId, error: err?.message || String(err) });
+    } catch (err: unknown) {
+      const msg = (err as Error)?.message || String(err);
+      log.warn("wsl ssh spawn failed", { sessionId, error: msg });
       try {
         cleanupFn?.();
       } catch {
@@ -520,7 +671,7 @@ export class SessionManager extends EventEmitter {
       this.emit("terminal:data", {
         sessionId,
         data:
-          `\r\n\x1b[31m✗ Failed to launch wsl.exe: ${err?.message || err}\x1b[0m\r\n` +
+          `\r\n\x1b[31m✗ Failed to launch wsl.exe: ${msg}\x1b[0m\r\n` +
           `\x1b[90m  Is WSL installed? Run \`wsl --list\` to verify distributions.\x1b[0m\r\n`,
       });
       return null;
@@ -533,13 +684,19 @@ export class SessionManager extends EventEmitter {
     });
   }
 
-  async ensureSshSession(state, workspace, panel, sessionId, host) {
+  async ensureSshSession(
+    _state: AppState,
+    workspace: WorkspaceState,
+    panel: PanelState,
+    sessionId: string,
+    host: HostRecord,
+  ): Promise<RuntimeSession | null> {
     const existing = this.sessions.get(sessionId);
     if (existing && existing.status === "running") {
       return existing;
     }
 
-    const session = {
+    const session: SshSession = {
       id: sessionId,
       workspaceId: workspace.id,
       panelId: panel.id,
@@ -550,38 +707,39 @@ export class SessionManager extends EventEmitter {
       status: "running",
       kind: "ssh",
       processHandle: null,
-      sshHostId: panel.launch.sshHostId || null,
-      sshInline: Boolean(panel.launch.sshInline),
+      sshHostId: panel.launch?.sshHostId || null,
+      sshInline: Boolean(panel.launch?.sshInline),
     };
 
     // Pick the right argument shape for SshManager: saved host by id, or
     // caller-provided host object for inline ad-hoc.
-    const createArgs = {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const createArgs: any = {
       sessionId,
       cols: session.cols,
       rows: session.rows,
-      onData: (data) => this.emit("terminal:data", { sessionId, data }),
-      onExit: ({ exitCode }) => {
+      onData: (data: string) => this.emit("terminal:data", { sessionId, data }),
+      onExit: ({ exitCode }: { exitCode: number }) => {
         session.status = "exited";
         const intentional = this.consumeSuppressedExit(sessionId);
         this.emit("terminal:exit", { sessionId, exitCode, intentional });
       },
     };
-    if (panel.launch.sshInline) {
+    if (panel.launch?.sshInline) {
       createArgs.inlineHost = panel.launch.sshInline;
     } else {
-      createArgs.hostId = panel.launch.sshHostId;
+      createArgs.hostId = panel.launch?.sshHostId;
     }
 
     try {
-      await this.sshManager.createSession(createArgs);
-    } catch (err) {
+      await this.sshManager!.createSession(createArgs);
+    } catch (err: unknown) {
       // SshManager already surfaces the failure via the "ssh:connection-state"
       // event and an inline red banner in the terminal — no need to crash the
       // caller (which is frequently a fire-and-forget `ensureSession` from
       // workspace activation). Swallow the rejection here to prevent
       // UnhandledPromiseRejectionWarning while still logging for diagnostics.
-      log.warn("SSH session start failed", { sessionId, error: err?.message || String(err) });
+      log.warn("SSH session start failed", { sessionId, error: (err as Error)?.message || String(err) });
       return null;
     }
     // Quiet the unused-var lint — host is pre-resolved by ensureSession for
@@ -593,7 +751,7 @@ export class SessionManager extends EventEmitter {
     return session;
   }
 
-  resizeSession(sessionId, cols, rows) {
+  resizeSession(sessionId: string, cols: number, rows: number): void {
     const session = this.sessions.get(sessionId);
     if (!session || session.status !== "running") {
       return;
@@ -607,19 +765,20 @@ export class SessionManager extends EventEmitter {
       return;
     }
 
-    if (!session.processHandle) return;
+    const ptySession = session as PtySession;
+    if (!ptySession.processHandle) return;
 
     try {
-      session.processHandle.resize(
+      ptySession.processHandle.resize(
         Math.max(cols, APP_CONFIG.session.minCols),
         Math.max(rows, APP_CONFIG.session.minRows),
       );
-    } catch (error) {
-      log.warn("resize failure", { sessionId, err: error?.message || String(error) });
+    } catch (error: unknown) {
+      log.warn("resize failure", { sessionId, err: (error as Error)?.message || String(error) });
     }
   }
 
-  writeToSession(sessionId, data) {
+  writeToSession(sessionId: string, data: string): void {
     const session = this.sessions.get(sessionId);
     if (!session || session.status !== "running") {
       return;
@@ -630,27 +789,39 @@ export class SessionManager extends EventEmitter {
       return;
     }
 
-    if (!session.processHandle) return;
+    const ptySession = session as PtySession;
+    if (!ptySession.processHandle) return;
 
-    session.processHandle.write(data);
+    ptySession.processHandle.write(data);
   }
 
-  async restartSession(state, sessionId) {
+  async restartSession(state: AppState, sessionId: string): Promise<RuntimeSession | null> {
     const current = this.sessions.get(sessionId);
     if (current?.kind === "ssh") {
       await this.sshManager?.stop(sessionId);
-    } else if (current?.processHandle) {
-      const processHandle = current.processHandle;
-      this.suppressNextExit(sessionId);
-      processHandle.kill();
-      await once(processHandle, "exit").catch(() => {});
+    } else {
+      const ptySession = current as PtySession | undefined;
+      if (ptySession?.processHandle) {
+        const processHandle = ptySession.processHandle;
+        this.suppressNextExit(sessionId);
+        // IPty does not extend EventEmitter so we can't use `once()`.
+        // Register an onExit listener and wait; fall back on a 5 s timeout.
+        await new Promise<void>((resolve) => {
+          const timeout = setTimeout(resolve, 5000);
+          processHandle.onExit(() => {
+            clearTimeout(timeout);
+            resolve();
+          });
+          processHandle.kill();
+        }).catch(() => {});
+      }
     }
 
     this.sessions.delete(sessionId);
     return this.ensureSession(state, sessionId);
   }
 
-  removeSession(sessionId) {
+  removeSession(sessionId: string): void {
     const session = this.sessions.get(sessionId);
     if (!session) {
       return;
@@ -664,43 +835,50 @@ export class SessionManager extends EventEmitter {
         sessionId,
         data: "\r\n\x1b[90m── Disconnected by user\x1b[0m\r\n",
       });
-    } else if (session.processHandle) {
-      this.suppressNextExit(sessionId);
-      session.processHandle.kill();
+    } else {
+      const ptySession = session as PtySession;
+      if (ptySession.processHandle) {
+        this.suppressNextExit(sessionId);
+        ptySession.processHandle.kill();
+      }
     }
     this.sessions.delete(sessionId);
   }
 
-  removeWorkspaceSessions(workspaceId) {
-    const exitPromises = [];
+  removeWorkspaceSessions(workspaceId: string): Promise<void> {
+    const exitPromises: Promise<void>[] = [];
     for (const [sessionId, session] of this.sessions.entries()) {
       if (session.workspaceId !== workspaceId) {
         continue;
       }
 
       if (session.kind === "ssh") {
-        exitPromises.push(this.sshManager?.stop(sessionId).catch(() => {}));
-      } else if (session.processHandle) {
-        this.suppressNextExit(sessionId);
-        const handle = session.processHandle;
-        exitPromises.push(
-          new Promise((resolve) => {
-            const timeout = setTimeout(resolve, 5000);
-            handle.onExit(() => {
-              clearTimeout(timeout);
-              resolve();
-            });
-          }),
-        );
-        handle.kill();
+        const p = this.sshManager?.stop(sessionId).catch(() => {});
+        if (p) exitPromises.push(p);
+      } else {
+        const ptySession = session as PtySession;
+        if (ptySession.processHandle) {
+          this.suppressNextExit(sessionId);
+          const handle = ptySession.processHandle;
+          exitPromises.push(
+            new Promise<void>((resolve) => {
+              const timeout = setTimeout(resolve, 5000);
+              handle.onExit(() => {
+                clearTimeout(timeout);
+                resolve();
+              });
+            }),
+          );
+          handle.kill();
+        }
       }
       this.sessions.delete(sessionId);
     }
-    return exitPromises.length ? Promise.all(exitPromises) : Promise.resolve();
+    return exitPromises.length ? Promise.all(exitPromises).then(() => {}) : Promise.resolve();
   }
 
-  syncWithState(state) {
-    const validSessionIds = new Set();
+  syncWithState(state: AppState): void {
+    const validSessionIds = new Set<string>();
     for (const workspace of state.workspaces || state.projects || []) {
       for (const panel of workspace.panels) {
         validSessionIds.add(createSessionId(workspace.id, panel.id));
@@ -714,21 +892,27 @@ export class SessionManager extends EventEmitter {
 
       if (session.kind === "ssh") {
         this.sshManager?.stop(sessionId).catch(() => {});
-      } else if (session.processHandle) {
-        this.suppressNextExit(sessionId);
-        session.processHandle.kill();
+      } else {
+        const ptySession = session as PtySession;
+        if (ptySession.processHandle) {
+          this.suppressNextExit(sessionId);
+          ptySession.processHandle.kill();
+        }
       }
       this.sessions.delete(sessionId);
     }
   }
 
-  stopAll() {
+  stopAll(): void {
     for (const [sessionId, session] of this.sessions.entries()) {
       if (session.kind === "ssh") {
         this.sshManager?.stop(sessionId).catch(() => {});
-      } else if (session.processHandle) {
-        this.suppressNextExit(sessionId);
-        session.processHandle.kill();
+      } else {
+        const ptySession = session as PtySession;
+        if (ptySession.processHandle) {
+          this.suppressNextExit(sessionId);
+          ptySession.processHandle.kill();
+        }
       }
     }
     this.sessions.clear();
@@ -736,7 +920,7 @@ export class SessionManager extends EventEmitter {
   }
 
   // Backward-compatible alias while runtime migration completes.
-  removeProjectSessions(workspaceId) {
+  removeProjectSessions(workspaceId: string): void {
     this.removeWorkspaceSessions(workspaceId);
   }
 }

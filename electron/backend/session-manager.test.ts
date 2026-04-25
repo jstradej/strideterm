@@ -1,27 +1,25 @@
 import { beforeEach, describe, expect, test, vi } from "vitest";
 
-const handles = [];
-const spawnCalls = [];
+const handles: FakePtyHandle[] = [];
+const spawnCalls: Array<{ file: string; args: string[]; options: Record<string, unknown> }> = [];
 
 class FakePtyHandle {
-  constructor() {
-    this.dataHandlers = [];
-    this.exitHandlers = [];
-  }
+  dataHandlers: Array<(data: string) => void> = [];
+  exitHandlers: Array<(info: { exitCode: number }) => void> = [];
 
-  onData(handler) {
+  onData(handler: (data: string) => void): void {
     this.dataHandlers.push(handler);
   }
 
-  onExit(handler) {
+  onExit(handler: (info: { exitCode: number }) => void): void {
     this.exitHandlers.push(handler);
   }
 
-  resize() {}
+  resize(): void {}
 
-  write() {}
+  write(): void {}
 
-  kill(exitCode = 0) {
+  kill(exitCode = 0): void {
     queueMicrotask(() => {
       this.exitHandlers.forEach((handler) => handler({ exitCode }));
     });
@@ -30,7 +28,7 @@ class FakePtyHandle {
 
 vi.mock("node-pty", () => ({
   default: {
-    spawn: vi.fn((file, args, options) => {
+    spawn: vi.fn((file: string, args: string[], options: Record<string, unknown>) => {
       const handle = new FakePtyHandle();
       handles.push(handle);
       spawnCalls.push({ file, args, options });
@@ -70,11 +68,14 @@ describe("SessionManager", () => {
 
   test("hard restart spawns a fresh session and marks old exit as intentional", async () => {
     const manager = new SessionManager();
-    const exits = [];
+    const exits: unknown[] = [];
     manager.on("terminal:exit", (payload) => exits.push(payload));
 
-    manager.ensureSession(createState(), "workspace-a:shell");
-    const restarted = await manager.restartSession(createState(), "workspace-a:shell");
+    manager.ensureSession(createState() as Parameters<typeof manager.ensureSession>[0], "workspace-a:shell");
+    const restarted = await manager.restartSession(
+      createState() as Parameters<typeof manager.ensureSession>[0],
+      "workspace-a:shell",
+    );
 
     expect(exits).toHaveLength(1);
     expect(exits[0]).toMatchObject({
@@ -82,18 +83,18 @@ describe("SessionManager", () => {
       intentional: true,
     });
     expect(handles).toHaveLength(2);
-    expect(restarted.status).toBe("running");
+    expect(restarted?.status).toBe("running");
     expect(manager.sessions.get("workspace-a:shell")?.status).toBe("running");
   });
 
   test("marks unexpected exits as non-intentional", () => {
     const manager = new SessionManager();
-    const exits = [];
+    const exits: unknown[] = [];
     manager.on("terminal:exit", (payload) => exits.push(payload));
 
-    manager.ensureSession(createState(), "workspace-a:shell");
+    manager.ensureSession(createState() as Parameters<typeof manager.ensureSession>[0], "workspace-a:shell");
     handles[0].kill(7);
-    return new Promise((resolve) => queueMicrotask(resolve)).then(() => {
+    return new Promise<void>((resolve) => queueMicrotask(resolve)).then(() => {
       expect(exits).toHaveLength(1);
       expect(exits[0]).toMatchObject({
         sessionId: "workspace-a:shell",
@@ -111,11 +112,15 @@ describe("SessionManager", () => {
       }),
     });
 
-    manager.ensureSession(createState(), "workspace-a:shell");
+    manager.ensureSession(createState() as Parameters<typeof manager.ensureSession>[0], "workspace-a:shell");
 
     expect(spawnCalls).toHaveLength(1);
-    expect(spawnCalls[0].options.env.STRIDETERM_REVIEW_PR_KEY).toBe("workspace-a:shell:workspace-a:shell");
-    expect(spawnCalls[0].options.env.STRIDETERM_REVIEW_BRIEF_MD).toBe("/tmp/review/agent-brief.md");
+    expect((spawnCalls[0].options.env as Record<string, string>).STRIDETERM_REVIEW_PR_KEY).toBe(
+      "workspace-a:shell:workspace-a:shell",
+    );
+    expect((spawnCalls[0].options.env as Record<string, string>).STRIDETERM_REVIEW_BRIEF_MD).toBe(
+      "/tmp/review/agent-brief.md",
+    );
   });
 
   test("uses session launch overrides for review-aware agent sessions", () => {
@@ -131,19 +136,19 @@ describe("SessionManager", () => {
       }),
     });
 
-    manager.ensureSession(createState(), "workspace-a:shell");
+    manager.ensureSession(createState() as Parameters<typeof manager.ensureSession>[0], "workspace-a:shell");
 
     expect(spawnCalls).toHaveLength(1);
     expect(spawnCalls[0].file).toBe("claude");
     expect(spawnCalls[0].args).toEqual(["--mcp-config", '{"mcpServers":{}}']);
     expect(spawnCalls[0].options.cwd).toBe("/tmp/review-worktree");
-    expect(spawnCalls[0].options.env.STRIDETERM_REVIEW_MCP).toBe("1");
+    expect((spawnCalls[0].options.env as Record<string, string>).STRIDETERM_REVIEW_MCP).toBe("1");
   });
 
   test("ignores resize errors after a pty has already exited", () => {
     const manager = new SessionManager();
 
-    manager.ensureSession(createState(), "workspace-a:shell");
+    manager.ensureSession(createState() as Parameters<typeof manager.ensureSession>[0], "workspace-a:shell");
     handles[0].resize = vi.fn(() => {
       throw new Error("Cannot resize a pty that has already exited");
     });
@@ -153,27 +158,29 @@ describe("SessionManager", () => {
 
   test("injects shell integration env vars when enabled", () => {
     const manager = new SessionManager();
-    const state = createState();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const state: any = createState();
     state.settings = { notifications: { shellIntegration: true } };
     // Use an explicit launch config with a recognized shell
     state.workspaces[0].panels[0].launch = { file: "pwsh.exe", args: ["-NoLogo"] };
 
     manager.ensureSession(state, "workspace-a:shell");
 
-    const env = spawnCalls[0].options.env;
+    const env = spawnCalls[0].options.env as Record<string, string>;
     expect(env.STRIDETERM_SHELL_INTEGRATION).toBe("1");
     expect(env.STRIDETERM_SHELL_INTEGRATION_SCRIPT).toMatch(/pwsh\.ps1$/);
   });
 
   test("skips shell integration env when disabled in settings", () => {
     const manager = new SessionManager();
-    const state = createState();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const state: any = createState();
     state.settings = { notifications: { shellIntegration: false } };
     state.workspaces[0].panels[0].launch = { file: "pwsh.exe", args: ["-NoLogo"] };
 
     manager.ensureSession(state, "workspace-a:shell");
 
-    const env = spawnCalls[0].options.env;
+    const env = spawnCalls[0].options.env as Record<string, string>;
     expect(env.STRIDETERM_SHELL_INTEGRATION).toBeUndefined();
   });
 });
