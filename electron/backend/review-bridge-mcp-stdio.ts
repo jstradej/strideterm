@@ -1,3 +1,4 @@
+/// <reference types="node" />
 import { parseReviewBridgeMcpArgs, runReviewBridgeMcpServer } from "./review-bridge-mcp.js";
 
 const mcpMode = parseReviewBridgeMcpArgs(process.argv.slice(2));
