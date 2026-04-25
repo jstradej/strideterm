@@ -1,6 +1,8 @@
+/// <reference types="node" />
 import os from "node:os";
 import path from "node:path";
 import http from "node:http";
+import type { IncomingMessage, ServerResponse } from "node:http";
 import fs from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { WebSocketServer } from "ws";
@@ -10,7 +12,7 @@ import { getLogger } from "./logger.js";
 
 const log = getLogger("remote-server");
 
-const CONTENT_TYPES = {
+const CONTENT_TYPES: Record<string, string> = {
   ".css": "text/css; charset=utf-8",
   ".html": "text/html; charset=utf-8",
   ".js": "application/javascript; charset=utf-8",
@@ -18,18 +20,50 @@ const CONTENT_TYPES = {
   ".svg": "image/svg+xml",
 };
 
-function json(response, statusCode, body) {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type AnyFn = (...args: any[]) => any;
+
+/**
+ * Minimal Runtime interface covering the methods used in the remote server.
+ * The actual runtime object returned by createRuntime() satisfies this shape.
+ */
+interface Runtime {
+  getPayload(): {
+    appState: {
+      settings: {
+        remoteAccess: { enabled: boolean; host: string; port: number; token: string };
+      };
+    };
+  };
+  getInitialState(): Promise<unknown>;
+  setRemoteInfo(info: {
+    enabled: boolean;
+    urls?: string[];
+    port?: number;
+    host?: string;
+    error?: string;
+  }): void;
+  listRemoteUrls(): string[];
+  on(channel: string, handler: AnyFn): () => void;
+  writeToSession(sessionId: string, data: string): void;
+  resizeSession(sessionId: string, size: { cols: number; rows: number }): void;
+  // All other methods accessed dynamically via string keys
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  [key: string]: any;
+}
+
+function json(response: ServerResponse, statusCode: number, body: unknown): void {
   response.writeHead(statusCode, { "Content-Type": "application/json; charset=utf-8" });
   response.end(JSON.stringify(body));
 }
 
 const MAX_BODY_SIZE = 5 * 1024 * 1024; // 5 MB
 
-function readRequestBody(request) {
+function readRequestBody(request: IncomingMessage): Promise<Record<string, unknown>> {
   return new Promise((resolve, reject) => {
     let raw = "";
     let size = 0;
-    request.on("data", (chunk) => {
+    request.on("data", (chunk: Buffer) => {
       size += chunk.length;
       if (size > MAX_BODY_SIZE) {
         request.destroy();
@@ -45,7 +79,7 @@ function readRequestBody(request) {
       }
 
       try {
-        resolve(JSON.parse(raw));
+        resolve(JSON.parse(raw) as Record<string, unknown>);
       } catch (error) {
         reject(error);
       }
@@ -54,9 +88,9 @@ function readRequestBody(request) {
   });
 }
 
-function getTokenFromRequest(requestUrl, headers) {
+function getTokenFromRequest(requestUrl: string, headers: IncomingMessage["headers"]): string {
   const url = new URL(requestUrl, "http://localhost");
-  const header = headers.authorization || "";
+  const header = (headers.authorization as string) || "";
   if (header.toLowerCase().startsWith("bearer ")) {
     return header.slice(7);
   }
@@ -64,8 +98,8 @@ function getTokenFromRequest(requestUrl, headers) {
   return url.searchParams.get("token") || "";
 }
 
-function listRemoteUrls(host, port, token) {
-  const urls = [];
+function listRemoteUrls(host: string, port: number, token: string): string[] {
+  const urls: string[] = [];
   const interfaces = os.networkInterfaces();
 
   if (host === "0.0.0.0") {
@@ -83,7 +117,7 @@ function listRemoteUrls(host, port, token) {
   return urls;
 }
 
-async function serveStatic(staticRoot, requestUrl, response) {
+async function serveStatic(staticRoot: string, requestUrl: string, response: ServerResponse): Promise<void> {
   const url = new URL(requestUrl, "http://localhost");
   const pathname = url.pathname === "/" ? "/index.html" : url.pathname;
   const resolvedPath = path.normalize(path.join(staticRoot, pathname));
@@ -110,8 +144,8 @@ async function serveStatic(staticRoot, requestUrl, response) {
   }
 }
 
-async function handleApiRequest(runtime, request, response) {
-  const url = new URL(request.url, "http://localhost");
+async function handleApiRequest(runtime: Runtime, request: IncomingMessage, response: ServerResponse): Promise<void> {
+  const url = new URL(request.url!, "http://localhost");
 
   try {
     if (request.method === "GET" && url.pathname === "/api/state") {
@@ -125,7 +159,7 @@ async function handleApiRequest(runtime, request, response) {
       request.method === "POST" &&
       (url.pathname === "/api/workspace/activate" || url.pathname === "/api/project/activate")
     ) {
-      json(response, 200, await runtime.activateWorkspace(body.workspaceId || body.projectId));
+      json(response, 200, await runtime.activateWorkspace((body.workspaceId || body.projectId) as string));
       return;
     }
 
@@ -138,7 +172,7 @@ async function handleApiRequest(runtime, request, response) {
       request.method === "POST" &&
       (url.pathname === "/api/workspace/delete" || url.pathname === "/api/project/delete")
     ) {
-      json(response, 200, await runtime.deleteWorkspace(body.workspaceId || body.projectId, body));
+      json(response, 200, await runtime.deleteWorkspace((body.workspaceId || body.projectId) as string, body));
       return;
     }
 
@@ -146,7 +180,7 @@ async function handleApiRequest(runtime, request, response) {
       request.method === "POST" &&
       (url.pathname === "/api/workspace/reorder" || url.pathname === "/api/project/reorder")
     ) {
-      json(response, 200, await runtime.reorderWorkspaces(body.workspaceIds || body.projectIds || []));
+      json(response, 200, await runtime.reorderWorkspaces((body.workspaceIds || body.projectIds || []) as string[]));
       return;
     }
 
@@ -268,7 +302,7 @@ async function handleApiRequest(runtime, request, response) {
     }
 
     if (request.method === "POST" && url.pathname === "/api/azure/workspace/push") {
-      json(response, 200, await runtime.pushAzureReviewWorkspace(body.workspaceId, { force: Boolean(body.force) }));
+      json(response, 200, await runtime.pushAzureReviewWorkspace(body.workspaceId as string, { force: Boolean(body.force) }));
       return;
     }
 
@@ -726,47 +760,47 @@ async function handleApiRequest(runtime, request, response) {
 
     // --- File manager endpoints (read-only by default for remote) ---
     if (request.method === "POST" && url.pathname === "/api/file/list") {
-      json(response, 200, await fm.listDirectory(body.rootPath, body.relativePath));
+      json(response, 200, await fm.listDirectory(body.rootPath as string, body.relativePath as string));
       return;
     }
     if (request.method === "POST" && url.pathname === "/api/file/tree") {
-      json(response, 200, await fm.getDirectoryTree(body.rootPath, body.relativePath));
+      json(response, 200, await fm.getDirectoryTree(body.rootPath as string, body.relativePath as string));
       return;
     }
     if (request.method === "POST" && url.pathname === "/api/file/preview") {
-      json(response, 200, await fm.readFilePreview(body.rootPath, body.relativePath));
+      json(response, 200, await fm.readFilePreview(body.rootPath as string, body.relativePath as string));
       return;
     }
     if (request.method === "POST" && url.pathname === "/api/file/read") {
-      json(response, 200, await fm.readFileContent(body.rootPath, body.relativePath));
+      json(response, 200, await fm.readFileContent(body.rootPath as string, body.relativePath as string));
       return;
     }
     if (request.method === "POST" && url.pathname === "/api/file/write") {
-      json(response, 200, await fm.writeFileContent(body.rootPath, body.relativePath, body.content));
+      json(response, 200, await fm.writeFileContent(body.rootPath as string, body.relativePath as string, body.content as string));
       return;
     }
     if (request.method === "POST" && url.pathname === "/api/file/create-file") {
-      json(response, 200, await fm.createFile(body.rootPath, body.parentPath, body.name));
+      json(response, 200, await fm.createFile(body.rootPath as string, body.parentPath as string, body.name as string));
       return;
     }
     if (request.method === "POST" && url.pathname === "/api/file/create-dir") {
-      json(response, 200, await fm.createDirectory(body.rootPath, body.parentPath, body.name));
+      json(response, 200, await fm.createDirectory(body.rootPath as string, body.parentPath as string, body.name as string));
       return;
     }
     if (request.method === "POST" && url.pathname === "/api/file/rename") {
-      json(response, 200, await fm.renameEntry(body.rootPath, body.relativePath, body.newName));
+      json(response, 200, await fm.renameEntry(body.rootPath as string, body.relativePath as string, body.newName as string));
       return;
     }
     if (request.method === "POST" && url.pathname === "/api/file/delete") {
-      json(response, 200, await fm.deleteEntry(body.rootPath, body.relativePath));
+      json(response, 200, await fm.deleteEntry(body.rootPath as string, body.relativePath as string));
       return;
     }
     if (request.method === "POST" && url.pathname === "/api/file/move") {
-      json(response, 200, await fm.moveEntry(body.rootPath, body.fromPath, body.toPath));
+      json(response, 200, await fm.moveEntry(body.rootPath as string, body.fromPath as string, body.toPath as string));
       return;
     }
     if (request.method === "POST" && url.pathname === "/api/file/copy") {
-      json(response, 200, await fm.copyEntry(body.rootPath, body.fromPath, body.toPath));
+      json(response, 200, await fm.copyEntry(body.rootPath as string, body.fromPath as string, body.toPath as string));
       return;
     }
     if (request.method === "POST" && url.pathname === "/api/file/open-in-explorer") {
@@ -780,34 +814,34 @@ async function handleApiRequest(runtime, request, response) {
       return;
     }
     if (request.method === "POST" && url.pathname === "/api/file/info") {
-      json(response, 200, await fm.getFileInfo(body.rootPath, body.relativePath));
+      json(response, 200, await fm.getFileInfo(body.rootPath as string, body.relativePath as string));
       return;
     }
     if (request.method === "POST" && url.pathname === "/api/file/git-status") {
-      json(response, 200, await fm.getGitFileStatus(body.rootPath, { includeIgnored: !!body.includeIgnored }));
+      json(response, 200, await fm.getGitFileStatus(body.rootPath as string, { includeIgnored: !!body.includeIgnored }));
       return;
     }
     if (request.method === "POST" && url.pathname === "/api/file/git-refs") {
-      json(response, 200, await fm.getGitRefs(body.rootPath, body.relativePath || ""));
+      json(response, 200, await fm.getGitRefs(body.rootPath as string, (body.relativePath as string) || ""));
       return;
     }
     if (request.method === "POST" && url.pathname === "/api/file/git-diff") {
       json(
         response,
         200,
-        await fm.computeFileDiff(body.rootPath, body.relativePath, {
-          source: body.source || "head",
-          revisionRef: body.revisionRef || "",
+        await fm.computeFileDiff(body.rootPath as string, body.relativePath as string, {
+          source: (body.source as string) || "head",
+          revisionRef: (body.revisionRef as string) || "",
         }),
       );
       return;
     }
     if (request.method === "POST" && url.pathname === "/api/file/commit-files") {
-      json(response, 200, await fm.getCommitFiles(body.rootPath, body.hash));
+      json(response, 200, await fm.getCommitFiles(body.rootPath as string, body.hash as string));
       return;
     }
     if (request.method === "POST" && url.pathname === "/api/file/commit-diff") {
-      json(response, 200, await fm.computeCommitFileDiff(body.rootPath, body.relativePath, body.hash));
+      json(response, 200, await fm.computeCommitFileDiff(body.rootPath as string, body.relativePath as string, body.hash as string));
       return;
     }
 
@@ -870,11 +904,20 @@ async function handleApiRequest(runtime, request, response) {
 
     json(response, 404, { error: "Not found" });
   } catch (error) {
-    json(response, 500, { error: error.message || "Remote API failed" });
+    json(response, 500, { error: (error as Error).message || "Remote API failed" });
   }
 }
 
-export async function startRemoteServer({ runtime, staticRoot, logger: _logger = console }) {
+export async function startRemoteServer({
+  runtime,
+  staticRoot,
+  logger: _logger = console,
+}: {
+  runtime: Runtime;
+  staticRoot: string;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  logger?: any;
+}): Promise<{ close: () => Promise<void> }> {
   const { enabled, host, port, token } = runtime.getPayload().appState.settings.remoteAccess;
   if (!enabled) {
     runtime.setRemoteInfo({ enabled: false, urls: [], port, host });
@@ -902,9 +945,9 @@ export async function startRemoteServer({ runtime, staticRoot, logger: _logger =
   });
 
   const wss = new WebSocketServer({ noServer: true });
-  const sockets = new Set();
+  const sockets = new Set<import("ws").WebSocket>();
 
-  function broadcast(message) {
+  function broadcast(message: unknown): void {
     const payload = JSON.stringify(message);
     for (const socket of sockets) {
       if (socket.readyState === socket.OPEN) {
@@ -914,13 +957,13 @@ export async function startRemoteServer({ runtime, staticRoot, logger: _logger =
   }
 
   const unsubscribe = [
-    runtime.on("state:updated", (payload) => broadcast({ type: "state:updated", payload })),
-    runtime.on("terminal:data", (payload) => broadcast({ type: "terminal:data", payload })),
-    runtime.on("terminal:exit", (payload) => broadcast({ type: "terminal:exit", payload })),
-    runtime.on("ssh:auth-prompt", (payload) => broadcast({ type: "ssh:auth-prompt", payload })),
-    runtime.on("ssh:host-key-change", (payload) => broadcast({ type: "ssh:host-key-change", payload })),
-    runtime.on("ssh:state", (payload) => broadcast({ type: "ssh:state", payload })),
-    runtime.on("ssh:connection-state", (payload) => broadcast({ type: "ssh:connection-state", payload })),
+    runtime.on("state:updated", (payload: unknown) => broadcast({ type: "state:updated", payload })),
+    runtime.on("terminal:data", (payload: unknown) => broadcast({ type: "terminal:data", payload })),
+    runtime.on("terminal:exit", (payload: unknown) => broadcast({ type: "terminal:exit", payload })),
+    runtime.on("ssh:auth-prompt", (payload: unknown) => broadcast({ type: "ssh:auth-prompt", payload })),
+    runtime.on("ssh:host-key-change", (payload: unknown) => broadcast({ type: "ssh:host-key-change", payload })),
+    runtime.on("ssh:state", (payload: unknown) => broadcast({ type: "ssh:state", payload })),
+    runtime.on("ssh:connection-state", (payload: unknown) => broadcast({ type: "ssh:connection-state", payload })),
   ];
 
   server.on("upgrade", (request, socket, head) => {
@@ -936,9 +979,9 @@ export async function startRemoteServer({ runtime, staticRoot, logger: _logger =
       sockets.add(ws);
       ws.send(JSON.stringify({ type: "state:updated", payload: await runtime.getInitialState() }));
 
-      ws.on("message", (raw) => {
+      ws.on("message", (raw: Buffer) => {
         try {
-          const message = JSON.parse(raw.toString());
+          const message = JSON.parse(raw.toString()) as { type: string };
           if (message.type === "terminal:input") {
             const parsed = wsTerminalInputSchema.safeParse(message);
             if (parsed.success) {
@@ -962,8 +1005,8 @@ export async function startRemoteServer({ runtime, staticRoot, logger: _logger =
     });
   });
 
-  const listenResult = await new Promise((resolve) => {
-    server.once("error", (error) => {
+  const listenResult = await new Promise<{ ok: boolean; error?: Error }>((resolve) => {
+    server.once("error", (error: Error) => {
       log.warn("remote access server failed", { err: error.message });
       resolve({ ok: false, error });
     });
@@ -974,7 +1017,7 @@ export async function startRemoteServer({ runtime, staticRoot, logger: _logger =
     unsubscribe.forEach((dispose) => dispose());
     wss.close();
     server.close();
-    runtime.setRemoteInfo({ enabled: false, urls: [], port, host, error: listenResult.error.message });
+    runtime.setRemoteInfo({ enabled: false, urls: [], port, host, error: listenResult.error!.message });
     return { close: async () => {} };
   }
 
@@ -995,8 +1038,8 @@ export async function startRemoteServer({ runtime, staticRoot, logger: _logger =
       for (const socket of sockets) {
         socket.close();
       }
-      await new Promise((resolve) => wss.close(resolve));
-      await new Promise((resolve) => server.close(resolve));
+      await new Promise<void>((resolve) => wss.close(() => resolve()));
+      await new Promise<void>((resolve) => server.close(() => resolve()));
     },
   };
 }
