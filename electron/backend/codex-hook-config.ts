@@ -1,3 +1,4 @@
+/// <reference types="node" />
 import os from "node:os";
 import path from "node:path";
 import { readFile, writeFile, mkdir, rename, rm } from "node:fs/promises";
@@ -38,19 +39,19 @@ export const HOOKS_TO_REGISTER = Object.freeze(["Stop", "UserPromptSubmit"]);
 
 const HOOK_MARKERS = Object.freeze(["hooks/notify.mjs", "hooks\\notify.mjs"]);
 
-export function getCodexConfigPath() {
+export function getCodexConfigPath(): string {
   return path.join(os.homedir(), ".codex", "config.toml");
 }
 
-export function getCodexHooksPath() {
+export function getCodexHooksPath(): string {
   return path.join(os.homedir(), ".codex", "hooks.json");
 }
 
-function getNotifyScriptPath(userDataPath) {
+function getNotifyScriptPath(userDataPath: string): string {
   return path.join(userDataPath, "hooks", "notify.mjs");
 }
 
-function buildCodexHookEntry(notifyScriptPath, hookName) {
+function buildCodexHookEntry(notifyScriptPath: string, hookName: string) {
   const normalized = notifyScriptPath.replace(/\\/g, "/");
   return {
     matcher: "",
@@ -64,28 +65,30 @@ function buildCodexHookEntry(notifyScriptPath, hookName) {
   };
 }
 
-export function findExistingHook(settings, hookName) {
-  const entries = settings?.hooks?.[hookName];
-  if (!Array.isArray(entries)) return -1;
-  return entries.findIndex(
-    (entry) =>
-      Array.isArray(entry?.hooks) &&
-      entry.hooks.some((h) => typeof h?.command === "string" && HOOK_MARKERS.some((m) => h.command.includes(m))),
+export function findExistingHook(settings: Record<string, unknown>, hookName: string): number {
+  const hooksSection = (settings?.hooks as Record<string, unknown> | undefined)?.[hookName];
+  if (!Array.isArray(hooksSection)) return -1;
+  return hooksSection.findIndex(
+    (entry: unknown) =>
+      Array.isArray((entry as Record<string, unknown>)?.hooks) &&
+      ((entry as Record<string, unknown>).hooks as unknown[]).some(
+        (h: unknown) => typeof (h as Record<string, unknown>)?.command === "string" && HOOK_MARKERS.some((m) => ((h as Record<string, string>).command).includes(m)),
+      ),
   );
 }
 
-async function readHooksJson() {
+async function readHooksJson(): Promise<{ ok: boolean; data: Record<string, unknown> | null; path: string; error?: string }> {
   const hooksPath = getCodexHooksPath();
   try {
     const raw = await readFile(hooksPath, "utf8");
-    return { ok: true, data: JSON.parse(raw), path: hooksPath };
+    return { ok: true, data: JSON.parse(raw) as Record<string, unknown>, path: hooksPath };
   } catch (error) {
-    if (error.code === "ENOENT") return { ok: true, data: null, path: hooksPath };
-    return { ok: false, error: error.message, path: hooksPath };
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { ok: true, data: null, path: hooksPath };
+    return { ok: false, data: null, error: (error as NodeJS.ErrnoException).message, path: hooksPath };
   }
 }
 
-async function writeHooksJson(data) {
+async function writeHooksJson(data: Record<string, unknown>): Promise<{ ok: boolean; error?: string }> {
   const hooksPath = getCodexHooksPath();
   const dir = path.dirname(hooksPath);
   const tmpPath = hooksPath + ".strideterm-tmp";
@@ -96,7 +99,7 @@ async function writeHooksJson(data) {
     return { ok: true };
   } catch (error) {
     await rm(tmpPath, { force: true }).catch(() => {});
-    return { ok: false, error: error.message };
+    return { ok: false, error: (error as NodeJS.ErrnoException).message };
   }
 }
 
@@ -119,7 +122,7 @@ export async function ensureCodexHooksFeatureFlag() {
   try {
     raw = await readFile(configPath, "utf8");
   } catch (error) {
-    if (error.code !== "ENOENT") return { ok: false, error: error.message, path: configPath };
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") return { ok: false, error: (error as NodeJS.ErrnoException).message, path: configPath };
   }
 
   // Work with LF-normalized text for regex consistency; re-emit as UTF-8 LF.
@@ -151,7 +154,7 @@ export async function ensureCodexHooksFeatureFlag() {
     return { ok: true, changed: true, path: configPath };
   } catch (error) {
     await rm(tmpPath, { force: true }).catch(() => {});
-    return { ok: false, error: error.message, path: configPath };
+    return { ok: false, error: (error as NodeJS.ErrnoException).message, path: configPath };
   }
 }
 
@@ -159,7 +162,7 @@ export async function ensureCodexHooksFeatureFlag() {
  * Check if the codex_hooks feature flag is currently enabled in config.toml.
  * Returns true if `codex_hooks = true` is present anywhere in the file.
  */
-export async function isCodexHooksFeatureFlagEnabled() {
+export async function isCodexHooksFeatureFlagEnabled(): Promise<boolean> {
   try {
     const raw = await readFile(getCodexConfigPath(), "utf8");
     return /(^|\n)codex_hooks\s*=\s*true(\s|$)/.test(raw.replace(/\r\n/g, "\n"));
@@ -176,7 +179,7 @@ export async function isCodexHooksFeatureFlagEnabled() {
  * - Merges hook entries into ~/.codex/hooks.json (preserves user hooks)
  * - Idempotent: re-running replaces existing strIDEterm entries
  */
-export async function configureCodexHook(userDataPath) {
+export async function configureCodexHook(userDataPath: string) {
   const scriptResult = await ensureNotifyScript(userDataPath);
   if (!scriptResult.ok) {
     return {
@@ -205,15 +208,16 @@ export async function configureCodexHook(userDataPath) {
   }
 
   const hooks = readResult.data || {};
-  hooks.hooks = hooks.hooks || {};
+  if (!hooks.hooks || typeof hooks.hooks !== "object") hooks.hooks = {};
+  const hooksMap = hooks.hooks as Record<string, unknown[]>;
 
-  const registered = [];
+  const registered: string[] = [];
   for (const hookName of HOOKS_TO_REGISTER) {
-    hooks.hooks[hookName] = hooks.hooks[hookName] || [];
+    if (!Array.isArray(hooksMap[hookName])) hooksMap[hookName] = [];
     const entry = buildCodexHookEntry(scriptResult.path, hookName);
     const idx = findExistingHook(hooks, hookName);
-    if (idx >= 0) hooks.hooks[hookName][idx] = entry;
-    else hooks.hooks[hookName].push(entry);
+    if (idx >= 0) hooksMap[hookName][idx] = entry;
+    else hooksMap[hookName].push(entry);
     registered.push(hookName);
   }
 
@@ -259,22 +263,23 @@ export async function removeCodexHook() {
   }
 
   const hooks = readResult.data;
-  const removedFrom = [];
-  const hookKeys = new Set([...HOOKS_TO_REGISTER, ...Object.keys(hooks.hooks || {})]);
+  const removedFrom: string[] = [];
+  const hooksMap2 = (hooks.hooks || {}) as Record<string, unknown[]>;
+  const hookKeys = new Set([...HOOKS_TO_REGISTER, ...Object.keys(hooksMap2)]);
 
   for (const hookName of hookKeys) {
     const idx = findExistingHook(hooks, hookName);
     if (idx < 0) continue;
-    hooks.hooks[hookName].splice(idx, 1);
+    hooksMap2[hookName].splice(idx, 1);
     removedFrom.push(hookName);
-    if (hooks.hooks[hookName].length === 0) delete hooks.hooks[hookName];
+    if (hooksMap2[hookName].length === 0) delete hooksMap2[hookName];
   }
 
   if (removedFrom.length === 0) {
     log.debug("removeCodexHook: no strIDEterm hooks found in hooks.json");
     return { ok: true, removed: false };
   }
-  if (hooks.hooks && Object.keys(hooks.hooks).length === 0) delete hooks.hooks;
+  if (Object.keys(hooksMap2).length === 0) delete hooks.hooks;
 
   const writeResult = await writeHooksJson(hooks);
   if (!writeResult.ok) {
@@ -297,7 +302,7 @@ export async function removeCodexHook() {
  *   "not-configured" — no strIDEterm entries in hooks.json
  *   "error"          — could not read hooks.json (parse error etc.)
  */
-export async function detectCodexHookStatus(userDataPath) {
+export async function detectCodexHookStatus(userDataPath: string) {
   const configPath = getCodexConfigPath();
   const hooksPath = getCodexHooksPath();
   const scriptPath = getNotifyScriptPath(userDataPath);
@@ -311,8 +316,8 @@ export async function detectCodexHookStatus(userDataPath) {
     return { status: "not-configured", configPath, hooksPath, scriptPath };
   }
 
-  const registered = [];
-  const missing = [];
+  const registered: string[] = [];
+  const missing: string[] = [];
   for (const event of HOOKS_TO_REGISTER) {
     const idx = findExistingHook(readResult.data, event);
     if (idx >= 0) registered.push(event);

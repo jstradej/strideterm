@@ -1,10 +1,11 @@
+/// <reference types="node" />
 import { createAuditLogStore } from "./shared/base-audit-log-store.js";
 
 /**
  * Classify a GitHub API request by URL pattern and HTTP method.
  * Returns { operation, category, resourceType }.
  */
-export function classifyGitHubRequest(method, url) {
+export function classifyGitHubRequest(method: string | undefined | null, url: string | undefined | null): { operation: string; category: string; resourceType: string } {
   const m = method?.toUpperCase() || "GET";
   const p = url || "";
 
@@ -48,9 +49,9 @@ export function classifyGitHubRequest(method, url) {
 /**
  * Extract owner and repo from a GitHub API URL.
  */
-export function parseGitHubUrl(url) {
+export function parseGitHubUrl(url: string | undefined | null): { owner: string; repository: string } {
   try {
-    const u = new URL(url);
+    const u = new URL(url ?? "");
     const parts = u.pathname.split("/").filter(Boolean);
     // /repos/{owner}/{repo}/...
     const reposIndex = parts.indexOf("repos");
@@ -67,12 +68,12 @@ export function parseGitHubUrl(url) {
   }
 }
 
-export function createGitHubAuditLogStore(databasePath) {
+export function createGitHubAuditLogStore(databasePath: string) {
   return createAuditLogStore(databasePath, {
     tableName: "github_audit_log",
     indexPrefix: "github_audit",
-    providerColumns: [{ name: "owner" }, { name: "repository" }],
-    mapEntryToProviderValues: (entry) => [entry.owner || "", entry.repository || ""],
+    providerColumns: [{ name: "owner", default: "" }, { name: "repository", default: "" }],
+    mapEntryToProviderValues: (entry) => [String(entry.owner || ""), String(entry.repository || "")],
     mapRowToProviderFields: (row) => ({ owner: row.owner, repository: row.repository }),
     searchFields: ["owner", "repository"],
   });

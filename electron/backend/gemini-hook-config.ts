@@ -1,3 +1,4 @@
+/// <reference types="node" />
 import os from "node:os";
 import path from "node:path";
 import { readFile, writeFile, mkdir, rename, rm } from "node:fs/promises";
@@ -41,15 +42,15 @@ export const GEMINI_HOOK_MAP = Object.freeze({
 // them on upgrade without duplicating or touching the user's own hooks.
 const HOOK_MARKERS = Object.freeze(["hooks/notify.mjs", "hooks\\notify.mjs"]);
 
-export function getGeminiSettingsPath() {
+export function getGeminiSettingsPath(): string {
   return path.join(os.homedir(), ".gemini", "settings.json");
 }
 
-function getNotifyScriptPath(userDataPath) {
+function getNotifyScriptPath(userDataPath: string): string {
   return path.join(userDataPath, "hooks", "notify.mjs");
 }
 
-function buildGeminiHookEntry(notifyScriptPath, claudeAlias) {
+function buildGeminiHookEntry(notifyScriptPath: string, claudeAlias: string) {
   const normalized = notifyScriptPath.replace(/\\/g, "/");
   // Gemini CLI expects the Claude-compatible nested shape: matcher wrapper +
   // inner hooks array. AfterAgent only honors "*" for the matcher (all other
@@ -68,36 +69,37 @@ function buildGeminiHookEntry(notifyScriptPath, claudeAlias) {
   };
 }
 
-export function findExistingHook(settings, geminiEventName) {
-  const entries = settings?.hooks?.[geminiEventName];
-  if (!Array.isArray(entries)) return -1;
-  return entries.findIndex((entry) => {
+export function findExistingHook(settings: Record<string, unknown>, geminiEventName: string): number {
+  const hooksSection = (settings?.hooks as Record<string, unknown> | undefined)?.[geminiEventName];
+  if (!Array.isArray(hooksSection)) return -1;
+  return hooksSection.findIndex((entry: unknown) => {
+    const e = entry as Record<string, unknown>;
     // Current (nested) shape: { matcher, hooks: [{ command, ... }] }
-    if (Array.isArray(entry?.hooks)) {
-      return entry.hooks.some((h) => typeof h?.command === "string" && HOOK_MARKERS.some((m) => h.command.includes(m)));
+    if (Array.isArray(e?.hooks)) {
+      return (e.hooks as unknown[]).some((h: unknown) => typeof (h as Record<string, unknown>)?.command === "string" && HOOK_MARKERS.some((m) => ((h as Record<string, string>).command).includes(m)));
     }
     // Legacy (flat) shape from earlier strIDEterm versions that used the wrong
     // format. Detect so upgrade replaces the stale entry in place.
-    if (typeof entry?.command === "string") {
-      return HOOK_MARKERS.some((m) => entry.command.includes(m));
+    if (typeof e?.command === "string") {
+      return HOOK_MARKERS.some((m) => (e.command as string).includes(m));
     }
     return false;
   });
 }
 
-async function readGeminiSettings() {
+async function readGeminiSettings(): Promise<{ ok: boolean; data: Record<string, unknown> | null; path: string; error?: string }> {
   const settingsPath = getGeminiSettingsPath();
   try {
     const raw = await readFile(settingsPath, "utf8");
-    const data = JSON.parse(raw);
+    const data = JSON.parse(raw) as Record<string, unknown>;
     return { ok: true, data, path: settingsPath };
   } catch (error) {
-    if (error.code === "ENOENT") return { ok: true, data: null, path: settingsPath };
-    return { ok: false, error: error.message, path: settingsPath };
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { ok: true, data: null, path: settingsPath };
+    return { ok: false, data: null, error: (error as NodeJS.ErrnoException).message, path: settingsPath };
   }
 }
 
-async function writeGeminiSettings(data) {
+async function writeGeminiSettings(data: Record<string, unknown>): Promise<{ ok: boolean; error?: string }> {
   const settingsPath = getGeminiSettingsPath();
   const dir = path.dirname(settingsPath);
   const tmpPath = settingsPath + ".strideterm-tmp";
@@ -108,7 +110,7 @@ async function writeGeminiSettings(data) {
     return { ok: true };
   } catch (error) {
     await rm(tmpPath, { force: true }).catch(() => {});
-    return { ok: false, error: error.message };
+    return { ok: false, error: (error as NodeJS.ErrnoException).message };
   }
 }
 
@@ -121,7 +123,7 @@ async function writeGeminiSettings(data) {
  *
  * Returns { ok, error?, detail?, scriptPath?, settingsPath?, registered?: string[] }
  */
-export async function configureGeminiHook(userDataPath) {
+export async function configureGeminiHook(userDataPath: string) {
   const scriptResult = await ensureNotifyScript(userDataPath);
   if (!scriptResult.ok) {
     return {
@@ -141,15 +143,16 @@ export async function configureGeminiHook(userDataPath) {
   }
 
   const settings = readResult.data || {};
-  settings.hooks = settings.hooks || {};
+  if (!settings.hooks || typeof settings.hooks !== "object") settings.hooks = {};
+  const hooksMap = settings.hooks as Record<string, unknown[]>;
 
-  const registered = [];
+  const registered: string[] = [];
   for (const [geminiEvent, claudeAlias] of Object.entries(GEMINI_HOOK_MAP)) {
-    settings.hooks[geminiEvent] = settings.hooks[geminiEvent] || [];
+    if (!Array.isArray(hooksMap[geminiEvent])) hooksMap[geminiEvent] = [];
     const entry = buildGeminiHookEntry(scriptResult.path, claudeAlias);
     const idx = findExistingHook(settings, geminiEvent);
-    if (idx >= 0) settings.hooks[geminiEvent][idx] = entry;
-    else settings.hooks[geminiEvent].push(entry);
+    if (idx >= 0) hooksMap[geminiEvent][idx] = entry;
+    else hooksMap[geminiEvent].push(entry);
     registered.push(geminiEvent);
   }
 
@@ -191,15 +194,16 @@ export async function removeGeminiHook() {
   }
 
   const settings = readResult.data;
-  const removedFrom = [];
-  const hookKeys = new Set([...Object.keys(GEMINI_HOOK_MAP), ...Object.keys(settings.hooks || {})]);
+  const removedFrom: string[] = [];
+  const hooksMap2 = (settings.hooks || {}) as Record<string, unknown[]>;
+  const hookKeys = new Set([...Object.keys(GEMINI_HOOK_MAP), ...Object.keys(hooksMap2)]);
 
   for (const hookName of hookKeys) {
     const idx = findExistingHook(settings, hookName);
     if (idx < 0) continue;
-    settings.hooks[hookName].splice(idx, 1);
+    hooksMap2[hookName].splice(idx, 1);
     removedFrom.push(hookName);
-    if (settings.hooks[hookName].length === 0) delete settings.hooks[hookName];
+    if (hooksMap2[hookName].length === 0) delete hooksMap2[hookName];
   }
 
   if (removedFrom.length === 0) {
@@ -207,7 +211,7 @@ export async function removeGeminiHook() {
     return { ok: true, removed: false };
   }
 
-  if (settings.hooks && Object.keys(settings.hooks).length === 0) delete settings.hooks;
+  if (Object.keys(hooksMap2).length === 0) delete settings.hooks;
 
   const writeResult = await writeGeminiSettings(settings);
   if (!writeResult.ok) {
@@ -226,7 +230,7 @@ export async function removeGeminiHook() {
  *   status: "configured" | "partial" | "not-configured" | "script-missing" | "error"
  *   "partial" means some but not all events are registered (upgrade available).
  */
-export async function detectGeminiHookStatus(userDataPath) {
+export async function detectGeminiHookStatus(userDataPath: string) {
   const settingsPath = getGeminiSettingsPath();
   const scriptPath = getNotifyScriptPath(userDataPath);
   const scriptExists = existsSync(scriptPath);
@@ -240,8 +244,8 @@ export async function detectGeminiHookStatus(userDataPath) {
     return { status: "not-configured", settingsPath, scriptPath };
   }
 
-  const registered = [];
-  const missing = [];
+  const registered: string[] = [];
+  const missing: string[] = [];
   for (const event of Object.keys(GEMINI_HOOK_MAP)) {
     const idx = findExistingHook(readResult.data, event);
     if (idx >= 0) registered.push(event);

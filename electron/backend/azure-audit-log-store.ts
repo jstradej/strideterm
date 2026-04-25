@@ -1,10 +1,11 @@
+/// <reference types="node" />
 import { createAuditLogStore } from "./shared/base-audit-log-store.js";
 
 /**
  * Classify an Azure DevOps API request by URL pattern and HTTP method.
  * Returns { operation, category, resourceType }.
  */
-export function classifyAzureRequest(method, url) {
+export function classifyAzureRequest(method: string | undefined | null, url: string | undefined | null): { operation: string; category: string; resourceType: string } {
   const m = method?.toUpperCase() || "GET";
   const p = url || "";
 
@@ -45,9 +46,9 @@ export function classifyAzureRequest(method, url) {
 /**
  * Extract organization and project from an Azure DevOps API URL.
  */
-export function parseAzureUrl(url) {
+export function parseAzureUrl(url: string | undefined | null): { organization: string; project: string } {
   try {
-    const u = new URL(url);
+    const u = new URL(url ?? "");
     const parts = u.pathname.split("/").filter(Boolean);
     // dev.azure.com/{org}/{project}/_apis/...
     // or {org}.visualstudio.com/{project}/_apis/...
@@ -64,12 +65,12 @@ export function parseAzureUrl(url) {
   }
 }
 
-export function createAzureAuditLogStore(databasePath) {
+export function createAzureAuditLogStore(databasePath: string) {
   return createAuditLogStore(databasePath, {
     tableName: "azure_devops_audit_log",
     indexPrefix: "azure_audit",
-    providerColumns: [{ name: "organization" }, { name: "project" }],
-    mapEntryToProviderValues: (entry) => [entry.organization || "", entry.project || ""],
+    providerColumns: [{ name: "organization", default: "" }, { name: "project", default: "" }],
+    mapEntryToProviderValues: (entry) => [String(entry.organization || ""), String(entry.project || "")],
     mapRowToProviderFields: (row) => ({ organization: row.organization, project: row.project }),
     searchFields: ["project", "organization"],
   });

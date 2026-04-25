@@ -1,20 +1,21 @@
+/// <reference types="node" />
 import { createAuditLogStore } from "./shared/base-audit-log-store.js";
 
-export function createGitAuditLogStore(databasePath) {
+export function createGitAuditLogStore(databasePath: string) {
   return createAuditLogStore(databasePath, {
     tableName: "git_audit_log",
     indexPrefix: "git_audit",
     providerColumns: [
-      { name: "remote_url" },
-      { name: "expected_ref" },
-      { name: "previous_remote_ref" },
-      { name: "new_remote_ref" },
+      { name: "remote_url", default: "" },
+      { name: "expected_ref", default: "" },
+      { name: "previous_remote_ref", default: "" },
+      { name: "new_remote_ref", default: "" },
     ],
     mapEntryToProviderValues: (entry) => [
-      entry.remoteUrl || "",
-      entry.expectedRef || "",
-      entry.previousRemoteRef || "",
-      entry.newRemoteRef || "",
+      String(entry.remoteUrl || ""),
+      String(entry.expectedRef || ""),
+      String(entry.previousRemoteRef || ""),
+      String(entry.newRemoteRef || ""),
     ],
     mapRowToProviderFields: (row) => ({
       remoteUrl: row.remote_url,

@@ -1,3 +1,4 @@
+/// <reference types="node" />
 import fs from "node:fs/promises";
 import { DatabaseSync } from "node:sqlite";
 import path from "node:path";
@@ -20,22 +21,74 @@ import {
   toThreadExport,
 } from "./review-bridge-format.js";
 
-function toJson(value) {
+// SQLite rows returned by DatabaseSync are plain objects; we cast to this
+// record type throughout to avoid per-field casts.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type SqlRow = Record<string, any>;
+
+interface SyncSummary {
+  prKey: string;
+  provider?: string;
+  connectionId?: string;
+  existingWorkspaceId?: string;
+  reviewWorkspaceId?: string;
+  repository?: { id?: string; name?: string };
+  project?: { id?: string; name?: string };
+  pullRequest?: {
+    id?: string | number;
+    title?: string;
+    sourceRefName?: string;
+    targetRefName?: string;
+    status?: string;
+    webUrl?: string;
+    url?: string;
+    mergeStatus?: string;
+    creationDate?: string | null;
+  };
+  role?: string;
+  lastRemoteActivityAt?: string | null;
+  lastSeenActivityAt?: string | null;
+  changedFiles?: unknown[];
+  localChangedFiles?: unknown[];
+  attentionReason?: string;
+  myVote?: number;
+  checks?: unknown;
+  author?: unknown;
+  reviewerSummary?: unknown;
+  threads?: Record<string, unknown>[];
+  issueComments?: {
+    id?: string | number;
+    body?: string;
+    createdAt?: string | null;
+    updatedAt?: string | null;
+    author?: Record<string, unknown>;
+  }[];
+}
+
+interface AgentPromptInput {
+  promptId?: string;
+  title: string;
+  description?: string;
+  template: string;
+  sortOrder?: number;
+}
+
+function toJson(value: unknown): string {
   return JSON.stringify(value ?? null);
 }
 
-function fromJson(value, fallback) {
+function fromJson<T>(value: unknown, fallback: T): T {
   if (typeof value !== "string" || !value.trim()) {
     return fallback;
   }
   try {
-    return JSON.parse(value);
+    return JSON.parse(value) as T;
   } catch {
     return fallback;
   }
 }
 
-export async function createReviewBridgeStore(rootPath) {
+export async function createReviewBridgeStore(rootPath: string) {
   const normalizedRoot = path.resolve(rootPath);
   await fs.mkdir(normalizedRoot, { recursive: true });
   await fs.mkdir(path.join(normalizedRoot, "exports"), { recursive: true });
@@ -156,14 +209,14 @@ export async function createReviewBridgeStore(rootPath) {
   `);
 
   // --- Deterministic migrations using PRAGMA user_version ---
-  function tableExists(name) {
+  function tableExists(name: string): boolean {
     return db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(name) != null;
   }
-  function columnExists(table, column) {
+  function columnExists(table: string, column: string): boolean {
     return db
       .prepare(`PRAGMA table_info('${table}')`)
       .all()
-      .some((col) => col.name === column);
+      .some((col) => (col as Record<string, unknown>).name === column);
   }
 
   const MIGRATIONS = [
@@ -228,7 +281,7 @@ export async function createReviewBridgeStore(rootPath) {
     },
   ];
 
-  const currentVersion = db.prepare("PRAGMA user_version").get().user_version;
+  const currentVersion = (db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version;
   for (let i = currentVersion; i < MIGRATIONS.length; i++) {
     MIGRATIONS[i]();
     db.exec(`PRAGMA user_version = ${i + 1}`);
@@ -244,7 +297,7 @@ export async function createReviewBridgeStore(rootPath) {
   `);
 
   let closed = false;
-  let pending = Promise.resolve();
+  let pending: Promise<unknown> = Promise.resolve();
 
   const statements = {
     upsertPullRequest: db.prepare(`
@@ -449,19 +502,19 @@ export async function createReviewBridgeStore(rootPath) {
     `),
   };
 
-  function enqueue(operation) {
-    const next = pending.then(operation, operation);
+  function enqueue<T>(operation: () => Promise<T>): Promise<T> {
+    const next = pending.then(operation, operation) as Promise<T>;
     pending = next.catch(() => {});
     return next;
   }
 
-  function ensureOpen() {
+  function ensureOpen(): void {
     if (closed) {
       throw new Error("Review bridge store is already closed.");
     }
   }
 
-  function buildDismissMissingCommentsSql(threadIds) {
+  function buildDismissMissingCommentsSql(threadIds: number[]): string {
     return `
       UPDATE review_comments
       SET status = 'dismissed', updated_at = ?
@@ -469,25 +522,25 @@ export async function createReviewBridgeStore(rootPath) {
     `;
   }
 
-  function readContext(prKey) {
-    const prRow = statements.selectPullRequestContext.get(prKey);
+  function readContext(prKey: string) {
+    const prRow = statements.selectPullRequestContext.get(prKey) as SqlRow | undefined;
     if (!prRow) {
       return null;
     }
 
-    const threads = statements.selectThreadsForPr.all(prKey).map((threadRow) => ({
+    const threads = (statements.selectThreadsForPr.all(prKey) as SqlRow[]).map((threadRow) => ({
       id: threadRow.remote_thread_id,
-      status: threadRow.status || "unknown",
+      status: (threadRow.status as string) || "unknown",
       isDeleted: Boolean(threadRow.is_deleted),
-      filePath: threadRow.file_path || "",
-      lineStart: Number.isInteger(threadRow.line_start) ? threadRow.line_start : null,
-      lineEnd: Number.isInteger(threadRow.line_end) ? threadRow.line_end : null,
-      publishedDate: threadRow.published_at || null,
-      lastUpdatedDate: threadRow.updated_at || null,
-      comments: [],
+      filePath: (threadRow.file_path as string) || "",
+      lineStart: Number.isInteger(threadRow.line_start) ? (threadRow.line_start as number) : null,
+      lineEnd: Number.isInteger(threadRow.line_end) ? (threadRow.line_end as number) : null,
+      publishedDate: (threadRow.published_at as string) || null,
+      lastUpdatedDate: (threadRow.updated_at as string) || null,
+      comments: [] as SqlRow[],
     }));
     const threadMap = new Map(threads.map((thread) => [thread.id, thread]));
-    for (const commentRow of statements.selectThreadCommentsForPr.all(prKey)) {
+    for (const commentRow of statements.selectThreadCommentsForPr.all(prKey) as SqlRow[]) {
       const thread = threadMap.get(commentRow.remote_thread_id);
       if (!thread) {
         continue;
@@ -507,16 +560,16 @@ export async function createReviewBridgeStore(rootPath) {
       });
     }
 
-    const comments = statements.selectCommentsForPr.all(prKey).map((row, index) => ({
+    const comments = (statements.selectCommentsForPr.all(prKey) as SqlRow[]).map((row, index) => ({
       commentKey: row.comment_key,
       prKey: row.pr_key,
-      remoteThreadId: Number.isInteger(row.remote_thread_id) ? row.remote_thread_id : null,
-      commentKind: row.comment_kind || "answer-question",
+      remoteThreadId: Number.isInteger(row.remote_thread_id) ? (row.remote_thread_id as number) : null,
+      commentKind: (row.comment_kind as string) || "answer-question",
       displayIndex: index + 1,
-      title: row.title || "",
-      summary: row.summary || "",
-      status: row.status || "ready-for-agent",
-      priority: row.priority || "medium",
+      title: (row.title as string) || "",
+      summary: (row.summary as string) || "",
+      status: (row.status as string) || "ready-for-agent",
+      priority: (row.priority as string) || "medium",
       assignedAgent: row.assigned_agent || "",
       fixStatus: row.fix_status || null,
       fixSummary: row.fix_summary || null,
@@ -524,7 +577,7 @@ export async function createReviewBridgeStore(rootPath) {
       updatedAt: row.updated_at || null,
       payload: fromJson(row.payload_json, {}),
     }));
-    const drafts = statements.selectDraftsForPr.all(prKey).map((row) => ({
+    const drafts = (statements.selectDraftsForPr.all(prKey) as SqlRow[]).map((row) => ({
       draftId: row.draft_id,
       commentKey: row.comment_key,
       status: row.status || "draft",
@@ -536,7 +589,7 @@ export async function createReviewBridgeStore(rootPath) {
       updatedAt: row.updated_at || null,
       payload: fromJson(row.payload_json, {}),
     }));
-    const syncQueue = statements.selectQueueForPr.all(prKey).map((row) => ({
+    const syncQueue = (statements.selectQueueForPr.all(prKey) as SqlRow[]).map((row) => ({
       queueId: row.queue_id,
       commentKey: row.comment_key,
       operation: row.operation || "",
@@ -606,7 +659,7 @@ export async function createReviewBridgeStore(rootPath) {
 
   const signalPath = path.join(normalizedRoot, ".bridge-signal");
 
-  async function writeExports(context) {
+  async function writeExports(context: NonNullable<ReturnType<typeof readContext>>): Promise<void> {
     await fs.mkdir(context.exportDir, { recursive: true });
     const enrichedContext = {
       ...context,
@@ -638,12 +691,12 @@ export async function createReviewBridgeStore(rootPath) {
     await fs.writeFile(signalPath, Date.now().toString()).catch(() => {});
   }
 
-  function resolveCommentRow({ prKey, commentKey, threadId }) {
+  function resolveCommentRow({ prKey, commentKey, threadId }: { prKey?: string; commentKey?: string; threadId?: number | null }): SqlRow | null {
     if (commentKey) {
-      return statements.selectCommentByKey.get(commentKey) || null;
+      return (statements.selectCommentByKey.get(commentKey) as SqlRow) || null;
     }
     if (prKey && Number.isInteger(Number(threadId))) {
-      return statements.selectCommentByThread.get(prKey, Number(threadId)) || null;
+      return (statements.selectCommentByThread.get(prKey, Number(threadId)) as SqlRow) || null;
     }
     return null;
   }
@@ -655,20 +708,20 @@ export async function createReviewBridgeStore(rootPath) {
     getDatabasePath() {
       return databasePath;
     },
-    getPullRequestContext(prKey) {
+    getPullRequestContext(prKey: string) {
       if (closed || !prKey) {
         return null;
       }
       return readContext(prKey);
     },
-    getPrKeyByWorkspaceId(workspaceId) {
+    getPrKeyByWorkspaceId(workspaceId: string) {
       if (closed || !workspaceId) {
         return null;
       }
-      const row = statements.selectPrKeyByWorkspaceId.get(workspaceId);
+      const row = statements.selectPrKeyByWorkspaceId.get(workspaceId) as SqlRow | undefined;
       return row?.pr_key || null;
     },
-    async syncPullRequest(summary) {
+    async syncPullRequest(summary: SyncSummary) {
       ensureOpen();
       if (!summary?.prKey) {
         throw new Error("Pull request summary with prKey is required.");
@@ -692,7 +745,6 @@ export async function createReviewBridgeStore(rootPath) {
                 id: comment.id,
                 parentCommentId: 0,
                 content: comment.body || "",
-                body: comment.body || "",
                 publishedDate: comment.createdAt || null,
                 lastUpdatedDate: comment.updatedAt || null,
                 commentType: "text",
@@ -709,9 +761,8 @@ export async function createReviewBridgeStore(rootPath) {
           pullRequest: summary.pullRequest,
         });
         const existingCommentStatuses = new Map(
-          statements.selectCommentStatusesByPr
-            .all(summary.prKey)
-            .map((row) => [String(row.remote_thread_id), row.status || ""]),
+          (statements.selectCommentStatusesByPr.all(summary.prKey) as SqlRow[])
+            .map((row) => [String(row.remote_thread_id), String(row.status || "")]),
         );
 
         try {
@@ -798,9 +849,9 @@ export async function createReviewBridgeStore(rootPath) {
               lineEnd: Number.isInteger(thread.lineEnd) ? thread.lineEnd : null,
             };
             // Preserve existing display_index or assign next available
-            const existingComment = statements.selectCommentByKey.get(commentKey);
+            const existingComment = statements.selectCommentByKey.get(commentKey) as SqlRow | undefined;
             const displayIndex =
-              existingComment?.display_index ?? statements.nextDisplayIndex.get(summary.prKey).next_index;
+              existingComment?.display_index ?? (statements.nextDisplayIndex.get(summary.prKey) as SqlRow).next_index;
             statements.upsertComment.run(
               commentKey,
               summary.prKey,
@@ -830,7 +881,7 @@ export async function createReviewBridgeStore(rootPath) {
           // These are now represented as remote thread_comments — keeping them would cause duplicates.
           const syncedComments = db
             .prepare(`SELECT comment_key FROM review_comments WHERE pr_key = ? AND status = 'synced'`)
-            .all(summary.prKey);
+            .all(summary.prKey) as SqlRow[];
           for (const row of syncedComments) {
             db.prepare(`DELETE FROM draft_responses WHERE comment_key = ?`).run(row.comment_key);
             db.prepare(`DELETE FROM sync_queue WHERE comment_key = ?`).run(row.comment_key);
@@ -852,7 +903,7 @@ export async function createReviewBridgeStore(rootPath) {
         return context;
       });
     },
-    async markPullRequestSeen(prKey, lastSeenActivityAt) {
+    async markPullRequestSeen(prKey: string, lastSeenActivityAt?: string | null) {
       ensureOpen();
       if (!prKey) {
         throw new Error("Pull request key is required.");
@@ -876,6 +927,16 @@ export async function createReviewBridgeStore(rootPath) {
       authorAgent = "",
       threadId = null,
       autoQueue = false,
+    }: {
+      prKey?: string;
+      body?: string;
+      title?: string;
+      filePath?: string;
+      lineNumber?: number | null;
+      priority?: string;
+      authorAgent?: string;
+      threadId?: number | null;
+      autoQueue?: boolean;
     } = {}) {
       ensureOpen();
       if (!prKey) {
@@ -888,21 +949,21 @@ export async function createReviewBridgeStore(rootPath) {
         const now = new Date().toISOString();
         const normalizedBody = String(body || "").trim();
         const normalizedFilePath = String(filePath || "").trim();
-        const normalizedLine = Number.isInteger(lineNumber) && lineNumber > 0 ? lineNumber : null;
+        const normalizedLine = lineNumber !== null && Number.isInteger(lineNumber) && lineNumber > 0 ? lineNumber : null;
         const resolvedThreadId = Number.isInteger(threadId) ? threadId : null;
 
         // Reply to existing thread — reuse existing comment row
         if (resolvedThreadId !== null) {
-          const existingComment = statements.selectCommentByThread.get(prKey, resolvedThreadId);
+          const existingComment = statements.selectCommentByThread.get(prKey, resolvedThreadId) as SqlRow | undefined;
           if (!existingComment) {
             throw new Error(`No review comment found for thread ${resolvedThreadId}.`);
           }
-          const resolvedCommentKey = existingComment.comment_key;
-          const existingDraft = statements.selectLatestDraftByComment.get(resolvedCommentKey) || null;
+          const resolvedCommentKey = existingComment.comment_key as string;
+          const existingDraft = (statements.selectLatestDraftByComment.get(resolvedCommentKey) as SqlRow | undefined) || null;
           // Reuse existing draft only if it's still in editable "draft" state;
           // otherwise create a new one so multiple replies can be queued per thread.
           const canReuse = existingDraft && existingDraft.status === "draft";
-          const draftId = canReuse ? existingDraft.draft_id : `${resolvedCommentKey}:draft:${randomUUID()}`;
+          const draftId = canReuse ? (existingDraft.draft_id as string) : `${resolvedCommentKey}:draft:${randomUUID()}`;
           const draftPayload = { threadId: resolvedThreadId, source: "draft-comment" };
 
           try {
@@ -977,7 +1038,7 @@ export async function createReviewBridgeStore(rootPath) {
 
         try {
           db.exec("BEGIN IMMEDIATE TRANSACTION");
-          const displayIndex = statements.nextDisplayIndex.get(prKey).next_index;
+          const displayIndex = (statements.nextDisplayIndex.get(prKey) as SqlRow).next_index as number;
           statements.upsertComment.run(
             commentKey,
             prKey,
@@ -1048,6 +1109,14 @@ export async function createReviewBridgeStore(rootPath) {
       authorAgent = "",
       confidence = null,
       needsHumanApproval = true,
+    }: {
+      prKey?: string;
+      commentKey?: string;
+      threadId?: number | null;
+      body?: string;
+      authorAgent?: string;
+      confidence?: number | null;
+      needsHumanApproval?: boolean;
     } = {}) {
       ensureOpen();
       if (!prKey) {
@@ -1059,9 +1128,9 @@ export async function createReviewBridgeStore(rootPath) {
           throw new Error("Review comment was not found for this pull request.");
         }
         const now = new Date().toISOString();
-        const resolvedCommentKey = commentRow.comment_key;
-        const existingDraft = statements.selectLatestDraftByComment.get(resolvedCommentKey) || null;
-        const draftId = existingDraft?.draft_id || `${resolvedCommentKey}:draft`;
+        const resolvedCommentKey = commentRow.comment_key as string;
+        const existingDraft = (statements.selectLatestDraftByComment.get(resolvedCommentKey) as SqlRow | undefined) || null;
+        const draftId = (existingDraft?.draft_id as string | undefined) || `${resolvedCommentKey}:draft`;
         const draftPayload = {
           threadId: Number.isInteger(commentRow.remote_thread_id) ? commentRow.remote_thread_id : null,
           source: "local-bridge",
@@ -1098,7 +1167,7 @@ export async function createReviewBridgeStore(rootPath) {
         return context;
       });
     },
-    async queueDraftResponse({ prKey, draftId = "", commentKey = "", threadId = null } = {}) {
+    async queueDraftResponse({ prKey, draftId = "", commentKey = "", threadId = null }: { prKey?: string; draftId?: string; commentKey?: string; threadId?: number | null } = {}) {
       ensureOpen();
       if (!prKey) {
         throw new Error("Pull request key is required.");
@@ -1106,16 +1175,16 @@ export async function createReviewBridgeStore(rootPath) {
       return enqueue(async () => {
         const commentRow = resolveCommentRow({ prKey, commentKey, threadId });
         const resolvedDraft = draftId
-          ? statements.selectDraftById.get(draftId)
+          ? (statements.selectDraftById.get(draftId) as SqlRow | undefined)
           : commentRow
-            ? statements.selectLatestDraftByComment.get(commentRow.comment_key)
+            ? (statements.selectLatestDraftByComment.get(commentRow.comment_key) as SqlRow | undefined)
             : null;
         if (!resolvedDraft) {
           throw new Error("Draft response was not found.");
         }
 
         const now = new Date().toISOString();
-        const queueId = `sync:${resolvedDraft.draft_id}`;
+        const queueId = `sync:${resolvedDraft.draft_id as string}`;
         try {
           db.exec("BEGIN IMMEDIATE TRANSACTION");
           statements.upsertQueueItem.run(
@@ -1159,6 +1228,13 @@ export async function createReviewBridgeStore(rootPath) {
       body = "",
       authorAgent = "",
       autoQueue = true,
+    }: {
+      prKey?: string;
+      commentKey?: string;
+      threadId?: number | null;
+      body?: string;
+      authorAgent?: string;
+      autoQueue?: boolean;
     } = {}) {
       ensureOpen();
       if (!prKey) {
@@ -1170,14 +1246,14 @@ export async function createReviewBridgeStore(rootPath) {
           throw new Error("Review comment was not found for this pull request.");
         }
         const now = new Date().toISOString();
-        const resolvedCommentKey = commentRow.comment_key;
+        const resolvedCommentKey = commentRow.comment_key as string;
         const replyBody = collapseText(body) || "Done.";
 
         try {
           db.exec("BEGIN IMMEDIATE TRANSACTION");
           statements.updateCommentFixStatus.run("has-code-changes", replyBody, now, resolvedCommentKey);
           // Create a draft reply so it gets published to the Azure thread
-          const existingDraft = statements.selectLatestDraftByComment.get(resolvedCommentKey) || null;
+          const existingDraft = (statements.selectLatestDraftByComment.get(resolvedCommentKey) as SqlRow | undefined) || null;
           const canReuse = existingDraft && existingDraft.status === "draft";
           const draftId = canReuse ? existingDraft.draft_id : `${resolvedCommentKey}:reply-changes:${randomUUID()}`;
           const resolvedThreadId = Number.isInteger(commentRow.remote_thread_id) ? commentRow.remote_thread_id : null;
@@ -1229,7 +1305,7 @@ export async function createReviewBridgeStore(rootPath) {
         return context;
       });
     },
-    async deleteComment({ prKey, commentKey }) {
+    async deleteComment({ prKey, commentKey }: { prKey: string; commentKey: string }) {
       ensureOpen();
       if (!prKey || !commentKey) {
         throw new Error("prKey and commentKey are required.");
@@ -1254,7 +1330,7 @@ export async function createReviewBridgeStore(rootPath) {
         return context;
       });
     },
-    async deleteDraft({ prKey, draftId }) {
+    async deleteDraft({ prKey, draftId }: { prKey: string; draftId: string }) {
       ensureOpen();
       if (!prKey || !draftId) {
         throw new Error("prKey and draftId are required.");
@@ -1280,10 +1356,10 @@ export async function createReviewBridgeStore(rootPath) {
     },
     getAgentPrompts() {
       if (closed) return [];
-      const rows = statements.selectAllAgentPrompts.all();
+      const rows = statements.selectAllAgentPrompts.all() as SqlRow[];
       if (!rows.length) {
         this.seedDefaultAgentPrompts();
-        return statements.selectAllAgentPrompts.all().map((r) => ({
+        return (statements.selectAllAgentPrompts.all() as SqlRow[]).map((r) => ({
           promptId: r.prompt_id,
           title: r.title,
           description: r.description,
@@ -1301,14 +1377,14 @@ export async function createReviewBridgeStore(rootPath) {
         isDefault: Boolean(r.is_default),
       }));
     },
-    saveAgentPrompt({ promptId, title, description, template, sortOrder = 0 }) {
+    saveAgentPrompt({ promptId, title, description, template, sortOrder = 0 }: AgentPromptInput) {
       ensureOpen();
       const now = new Date().toISOString();
       const id = promptId || `prompt-${Date.now()}`;
       statements.upsertAgentPrompt.run(id, title, description || "", template, sortOrder, 0, now, now);
       return this.getAgentPrompts();
     },
-    deleteAgentPrompt(promptId) {
+    deleteAgentPrompt(promptId: string) {
       ensureOpen();
       statements.deleteAgentPrompt.run(promptId);
       return this.getAgentPrompts();
@@ -1377,7 +1453,7 @@ export async function createReviewBridgeStore(rootPath) {
         statements.upsertAgentPrompt.run(d.id, d.title, d.description, d.template, d.sort, 1, now, now);
       }
     },
-    async syncPendingDrafts(prKey, publishDraft) {
+    async syncPendingDrafts(prKey: string, publishDraft: (input: Record<string, unknown>) => Promise<void>) {
       ensureOpen();
       if (!prKey) {
         throw new Error("Pull request key is required.");
@@ -1386,14 +1462,15 @@ export async function createReviewBridgeStore(rootPath) {
         throw new Error("publishDraft callback is required.");
       }
       return enqueue(async () => {
-        const pendingEntries = statements.selectPendingQueueByPr.all(prKey);
+        const pendingEntries = statements.selectPendingQueueByPr.all(prKey) as SqlRow[];
         for (const queueEntry of pendingEntries) {
           const now = new Date().toISOString();
-          const queuePayload = fromJson(queueEntry.payload_json, {});
-          const draftRow = statements.selectDraftById.get(queuePayload.draftId || "");
-          const commentRow = queueEntry.comment_key ? statements.selectCommentByKey.get(queueEntry.comment_key) : null;
+          const queuePayload = fromJson<Record<string, unknown>>(queueEntry.payload_json, {});
+          const draftRow = (statements.selectDraftById.get((queuePayload.draftId as string) || "") as SqlRow | undefined) || null;
+          const commentRow = queueEntry.comment_key ? ((statements.selectCommentByKey.get(queueEntry.comment_key as string) as SqlRow | undefined) || null) : null;
           const context = readContext(prKey);
-          const thread = context?.threads.find((entry) => entry.id === commentRow?.remote_thread_id) || null;
+          const thread = context?.threads.find((entry) => entry.id === (commentRow as SqlRow | null)?.remote_thread_id) || null;
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
           const parentCommentId = Number((thread?.comments || []).at(-1)?.id || 0);
           if (!draftRow || !commentRow) {
             statements.updateQueueState.run(
@@ -1412,11 +1489,11 @@ export async function createReviewBridgeStore(rootPath) {
             queueId: queueEntry.queue_id,
             draftId: draftRow.draft_id,
             commentKey: commentRow.comment_key,
-            body: draftRow.body || "",
-            remoteThreadId: Number.isInteger(commentRow.remote_thread_id) ? commentRow.remote_thread_id : null,
+            body: (draftRow.body as string) || "",
+            remoteThreadId: Number.isInteger(commentRow.remote_thread_id) ? (commentRow.remote_thread_id as number) : null,
             parentCommentId,
-            comment: fromJson(commentRow.payload_json, {}),
-            draft: fromJson(draftRow.payload_json, {}),
+            comment: fromJson<Record<string, unknown>>(commentRow.payload_json, {}),
+            draft: fromJson<Record<string, unknown>>(draftRow.payload_json, {}),
           };
 
           statements.updateQueueState.run(
@@ -1482,7 +1559,7 @@ export async function createReviewBridgeStore(rootPath) {
     getDataVersion() {
       if (closed) return 0;
       try {
-        return db.prepare("PRAGMA data_version").get().data_version;
+        return (db.prepare("PRAGMA data_version").get() as { data_version: number }).data_version;
       } catch {
         return 0;
       }
