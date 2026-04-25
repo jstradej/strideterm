@@ -2,7 +2,7 @@
 // diff payloads) and the renderer (for editor highlighting). Keeping a
 // single source of truth prevents drift when adding new file types.
 
-export const LANG_BY_EXT = {
+export const LANG_BY_EXT: Record<string, string> = {
   ".js": "javascript",
   ".mjs": "javascript",
   ".cjs": "javascript",
@@ -42,23 +42,23 @@ export const LANG_BY_EXT = {
   ".dockerfile": "dockerfile",
 };
 
-export const SPECIAL_FILENAMES = {
+export const SPECIAL_FILENAMES: Record<string, string> = {
   dockerfile: "dockerfile",
   makefile: "makefile",
   cmakelists: "cmake",
 };
 
-export function guessMonacoLanguage(extension) {
+export function guessMonacoLanguage(extension: string | null | undefined): string {
   if (!extension) return "plaintext";
-  return LANG_BY_EXT[String(extension).toLowerCase()] || "plaintext";
+  return LANG_BY_EXT[String(extension).toLowerCase()] ?? "plaintext";
 }
 
-export function guessLanguageFromPath(nameOrPath) {
+export function guessLanguageFromPath(nameOrPath: string | null | undefined): string {
   if (!nameOrPath) return "plaintext";
-  const name = String(nameOrPath).split(/[\\/]/).pop().toLowerCase();
+  const name = String(nameOrPath).split(/[\\/]/).pop()?.toLowerCase() ?? "";
   const special = SPECIAL_FILENAMES[name];
   if (special) return special;
   const dot = name.lastIndexOf(".");
   if (dot < 0) return "plaintext";
-  return LANG_BY_EXT[name.slice(dot)] || "plaintext";
+  return LANG_BY_EXT[name.slice(dot)] ?? "plaintext";
 }

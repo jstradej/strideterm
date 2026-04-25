@@ -1,15 +1,17 @@
-function envString(name, fallback) {
-  const env = typeof process !== "undefined" ? process.env || {} : {};
+/// <reference types="node" />
+
+function envString(name: string, fallback: string): string {
+  const env = typeof process !== "undefined" ? process.env ?? {} : {};
   const value = env[name];
   return typeof value === "string" && value.length > 0 ? value : fallback;
 }
 
-function envNumber(name, fallback) {
+function envNumber(name: string, fallback: number): number {
   const value = Number.parseInt(envString(name, ""), 10);
   return Number.isFinite(value) ? value : fallback;
 }
 
-function envBoolean(name, fallback) {
+function envBoolean(name: string, fallback: boolean): boolean {
   const value = envString(name, "");
   if (!value) {
     return fallback;
@@ -47,22 +49,13 @@ export const APP_CONFIG = {
     projectAlertLimit: envNumber("STRIDETERM_PROJECT_ALERT_LIMIT", 6),
   },
   notifications: {
-    // Plan Phase 1 § 4.4–4.5: raised from 900ms / 20s.
-    // 2500ms gives plenty of time for the user to type a follow-up command
-    // before we think the shell has gone idle.
     promptQuietMs: envNumber("STRIDETERM_PROMPT_QUIET_MS", 2500),
-    // 45s for agents: covers long Claude thinking/tool-use cycles that
-    // previously misfired at 20s. hookCapable sessions skip this entirely.
     agentQuietMs: envNumber("STRIDETERM_AGENT_QUIET_MS", 45_000),
     agentQuietFastMs: envNumber("STRIDETERM_AGENT_QUIET_FAST_MS", 25_000),
     alertCooldownMs: envNumber("STRIDETERM_ALERT_COOLDOWN_MS", 15_000),
-    // Plan Phase 1 § 4.7: suppress silence alerts this long after user input.
     userInteractionGraceMs: envNumber("STRIDETERM_USER_INTERACTION_GRACE_MS", 10_000),
     shellIntegration: envBoolean("STRIDETERM_SHELL_INTEGRATION", true),
     agentHook: envBoolean("STRIDETERM_AGENT_HOOK", true),
-    // Phase 5 § 3.5: when true, notification detector logs every decision
-    // (which tier, which guards passed/failed) at `info` level instead of
-    // `trace`, so users can diagnose false positives without rebuilding.
     debug: envBoolean("STRIDETERM_NOTIFICATIONS_DEBUG", false),
   },
   logging: {
@@ -86,9 +79,9 @@ export const APP_CONFIG = {
     minRows: envNumber("STRIDETERM_TERM_MIN_ROWS", 8),
     shellLaunchDelayMs: envNumber("STRIDETERM_SHELL_LAUNCH_DELAY_MS", 50),
     windowsShellFile: envString("STRIDETERM_WINDOWS_SHELL", "pwsh.exe"),
-    windowsShellArgs: Object.freeze(["-NoLogo"]),
+    windowsShellArgs: Object.freeze(["-NoLogo"] as const),
     posixShellFile: envString("STRIDETERM_POSIX_SHELL", "/bin/bash"),
-    posixShellArgs: Object.freeze(["-l"]),
+    posixShellArgs: Object.freeze(["-l"] as const),
   },
   ssh: {
     defaultKeepaliveMs: envNumber("STRIDETERM_SSH_KEEPALIVE_MS", 30000),
@@ -140,6 +133,6 @@ export const APP_CONFIG = {
   },
 };
 
-export function getRendererDevUrl() {
+export function getRendererDevUrl(): string {
   return `http://${APP_CONFIG.renderer.devHost}:${APP_CONFIG.renderer.devPort}`;
 }
