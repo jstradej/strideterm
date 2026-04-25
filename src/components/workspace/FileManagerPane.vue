@@ -1,5 +1,5 @@
 <template>
-  <div class="workspace-pane__body workspace-pane__body--files">
+  <div class="workspace-pane__body workspace-pane__body--files" tabindex="0" @keydown="onKeydownPane">
     <PaneShell
       v-if="showHeader"
       :title="'Files'"
@@ -10,17 +10,21 @@
     <FileToolbar
       :show-hidden="store.showHidden"
       :view-mode="store.viewMode"
+      :filter-text="store.filterText"
+      :git-is-repo="store.gitIsRepo"
+      :dirty-count="store.dirtyCount"
       @create-file="onCreateFile"
       @create-dir="onCreateDir"
       @refresh="store.refresh()"
       @toggle-hidden="store.showHidden = !store.showHidden"
       @toggle-view="store.viewMode = store.viewMode === 'list' ? 'grid' : 'list'"
+      @filter="store.setFilter($event)"
     />
     <FileBreadcrumb :items="store.breadcrumbs" @navigate="store.navigate" />
     <div class="file-manager__body">
       <Splitpanes class="default-theme fm-splitpanes">
         <Pane :size="20" :min-size="10" :max-size="50">
-          <aside class="file-manager__tree">
+          <aside class="file-manager__tree" @dragover.prevent="onTreeRootDragOver" @drop.prevent="onTreeRootDrop">
             <FileTree />
           </aside>
         </Pane>
@@ -51,21 +55,61 @@
           v-if="fileContextMenu.entry.kind === 'file'"
           type="button"
           class="context-menu__item"
+          @click="onCtxOpen"
+        >
+          Open
+        </button>
+        <button
+          v-if="fileContextMenu.entry.kind === 'file' && isTextLikeEntry(fileContextMenu.entry)"
+          type="button"
+          class="context-menu__item"
           @click="onCtxEdit"
         >
-          &#x270E; Edit
+          ✎ Edit
         </button>
-        <button type="button" class="context-menu__item" @click="onCtxCopy">&#x2398; Copy</button>
+        <button
+          v-if="fileContextMenu.entry.kind === 'file'"
+          type="button"
+          class="context-menu__item"
+          @click="onCtxDiff"
+        >
+          ⇄ Diff vs HEAD / branch / commit…
+        </button>
+        <button
+          v-if="fileContextMenu.entry.kind === 'directory'"
+          type="button"
+          class="context-menu__item"
+          @click="onCtxOpenTerminal"
+        >
+          ▸ Open in Terminal
+        </button>
+        <button type="button" class="context-menu__item" @click="onCtxReveal">📂 Open in Explorer</button>
+        <div class="context-menu__divider"></div>
+        <button type="button" class="context-menu__item" @click="onCtxCopyPath">📋 Copy Absolute Path</button>
+        <button type="button" class="context-menu__item" @click="onCtxCopyRelativePath">📋 Copy Relative Path</button>
+        <div class="context-menu__divider"></div>
+        <button type="button" class="context-menu__item" @click="onCtxCopy">⎘ Copy</button>
+        <button type="button" class="context-menu__item" @click="onCtxCut">✂ Cut</button>
         <button v-if="store.clipboard" type="button" class="context-menu__item" @click="onCtxPaste">
-          &#x2399; Paste here
+          ⎘ Paste here
         </button>
-        <button type="button" class="context-menu__item" @click="onCtxRename">&#x270E; Rename</button>
-        <button type="button" class="context-menu__item" @click="onCtxReveal">&#x1F4C2; Open in Explorer</button>
+        <button type="button" class="context-menu__item" @click="onCtxRename">✎ Rename (F2)</button>
+        <div class="context-menu__divider"></div>
+        <button type="button" class="context-menu__item" @click="onCtxNewFile">+ New File…</button>
+        <button type="button" class="context-menu__item" @click="onCtxNewFolder">+ New Folder…</button>
         <div class="context-menu__divider"></div>
         <button type="button" class="context-menu__item context-menu__item--danger" @click="onCtxDelete">
-          &#x2715; Delete
+          ✕ Delete (Del)
         </button>
       </div>
+    </Teleport>
+
+    <!-- Diff modal -->
+    <FileDiff />
+
+    <!-- Toast for ephemeral feedback (copy path success, etc.) -->
+    <Teleport to="body">
+      <div v-if="toast" class="fm-toast">{{ toast }}</div>
     </Teleport>
 
     <!-- Create dialog -->
@@ -127,7 +171,7 @@
 </template>
 
 <script setup>
-import { ref, watch, onMounted, onBeforeUnmount, nextTick, provide } from "vue";
+import { ref, watch, onMounted, onBeforeUnmount, nextTick, provide, computed } from "vue";
 import { Splitpanes, Pane } from "splitpanes";
 import "splitpanes/dist/splitpanes.css";
 import { useAppStore } from "../../stores/app.js";
@@ -138,6 +182,7 @@ import FileBreadcrumb from "./file-manager/FileBreadcrumb.vue";
 import FileTree from "./file-manager/FileTree.vue";
 import FileList from "./file-manager/FileList.vue";
 import FilePreview from "./file-manager/FilePreview.vue";
+import FileDiff from "./file-manager/FileDiff.vue";
 
 const props = defineProps({
   workspaceId: { type: String, required: true },
@@ -158,23 +203,84 @@ const deleteDialog = ref(null);
 const fileContextMenu = ref(null); // { x, y, entry }
 const fileMenuRef = ref(null);
 
-const headerActions = [
-  { className: "workspace-pane__icon-btn", action: "refresh", title: "Refresh", label: "\u21bb" },
+// Drag-drop state shared via provide
+const fmDragState = ref(null);
+provide("fm-drag-state", fmDragState);
+
+// Toast for transient feedback
+const toast = ref("");
+let toastTimer = null;
+function showToast(message, ms = 1600) {
+  toast.value = message;
+  if (toastTimer) clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => {
+    toast.value = "";
+  }, ms);
+}
+
+const TEXT_LIKE_EXT = new Set([
+  ".js",
+  ".mjs",
+  ".cjs",
+  ".jsx",
+  ".ts",
+  ".tsx",
+  ".vue",
+  ".json",
+  ".md",
+  ".html",
+  ".css",
+  ".scss",
+  ".less",
+  ".py",
+  ".rb",
+  ".go",
+  ".rs",
+  ".java",
+  ".cs",
+  ".cpp",
+  ".c",
+  ".h",
+  ".php",
+  ".sh",
+  ".bash",
+  ".ps1",
+  ".yml",
+  ".yaml",
+  ".toml",
+  ".ini",
+  ".sql",
+  ".txt",
+  ".log",
+  ".env",
+  ".gitignore",
+  ".lock",
+  ".xml",
+]);
+
+function isTextLikeEntry(entry) {
+  if (!entry || entry.kind !== "file") return false;
+  if (!entry.extension) return true; // Allow editing extension-less files (Dockerfile, Makefile, etc.)
+  return TEXT_LIKE_EXT.has(entry.extension.toLowerCase());
+}
+
+const headerActions = computed(() => [
+  { className: "workspace-pane__icon-btn", action: "refresh", title: "Refresh", label: "↻" },
   {
     className: "workspace-pane__icon-btn",
     action: "select-tab",
     viewId: `files:${props.workspaceId}`,
     title: "Focus tab",
-    label: "\u25c9",
+    label: "◉",
   },
   {
     className: "workspace-pane__icon-btn workspace-pane__icon-btn--danger",
     action: "close-tab",
     viewId: `files:${props.workspaceId}`,
     title: "Close tab",
-    label: "\u00d7",
+    label: "×",
   },
-];
+]);
 
 // Provide context menu opener to children
 provide("fm-context-menu", (event, entry) => {
@@ -192,6 +298,7 @@ provide("fm-delete", (entry) => {
 
 provide("fm-create-file", () => onCreateFile());
 provide("fm-create-dir", () => onCreateDir());
+provide("fm-toast", showToast);
 
 // Viewport-clamp the context menu
 watch(
@@ -231,16 +338,72 @@ function dismissMenu() {
   fileContextMenu.value = null;
 }
 
+function onCtxOpen() {
+  const entry = fileContextMenu.value?.entry;
+  dismissMenu();
+  if (!entry) return;
+  if (entry.kind === "directory") store.navigate(entry.relativePath);
+  else store.selectEntry(entry);
+}
+
 function onCtxEdit() {
   const entry = fileContextMenu.value?.entry;
   dismissMenu();
   if (entry?.kind === "file") store.selectEntry(entry).then(() => store.startEdit());
 }
 
+function onCtxDiff() {
+  const entry = fileContextMenu.value?.entry;
+  dismissMenu();
+  if (entry?.kind === "file") store.openDiff(entry);
+}
+
+function absolutePathFor(entry) {
+  const root = store.rootPath.replace(/\\/g, "/");
+  return entry?.relativePath ? `${root}/${entry.relativePath}` : root;
+}
+
+function onCtxCopyPath() {
+  const entry = fileContextMenu.value?.entry;
+  dismissMenu();
+  if (!entry) return;
+  const path = absolutePathFor(entry);
+  copyText(path).then(() => showToast(`Copied: ${path}`));
+}
+
+function onCtxCopyRelativePath() {
+  const entry = fileContextMenu.value?.entry;
+  dismissMenu();
+  if (!entry) return;
+  copyText(entry.relativePath).then(() => showToast(`Copied: ${entry.relativePath}`));
+}
+
+function onCtxOpenTerminal() {
+  const entry = fileContextMenu.value?.entry;
+  dismissMenu();
+  if (!entry || entry.kind !== "directory") return;
+  const cwd = absolutePathFor(entry);
+  if (typeof appStore.quickAddTab === "function") {
+    appStore.quickAddTab(cwd);
+  }
+}
+
 function onCtxCopy() {
   const entry = fileContextMenu.value?.entry;
   dismissMenu();
-  if (entry) store.copyToClipboard(entry);
+  if (entry) {
+    store.copyToClipboard(entry);
+    showToast(`Copied "${entry.name}" to clipboard`);
+  }
+}
+
+function onCtxCut() {
+  const entry = fileContextMenu.value?.entry;
+  dismissMenu();
+  if (entry) {
+    store.cutToClipboard(entry);
+    showToast(`Cut "${entry.name}"`);
+  }
 }
 
 function onCtxPaste() {
@@ -269,6 +432,16 @@ function onCtxReveal() {
   const entry = fileContextMenu.value?.entry;
   dismissMenu();
   if (entry) store.openInExplorer(entry);
+}
+
+function onCtxNewFile() {
+  dismissMenu();
+  onCreateFile();
+}
+
+function onCtxNewFolder() {
+  dismissMenu();
+  onCreateDir();
 }
 
 function onHeaderAction(action) {
@@ -311,6 +484,142 @@ function onOpenEdit(entry) {
   store.selectEntry(entry).then(() => store.startEdit());
 }
 
+// Drop on tree root area = move to repo root
+function onTreeRootDragOver(event) {
+  if (!fmDragState.value) return;
+  event.dataTransfer.dropEffect = "move";
+}
+
+function onTreeRootDrop() {
+  const dragged = fmDragState.value;
+  if (!dragged) return;
+  store.moveEntryTo(dragged, "");
+  fmDragState.value = null;
+}
+
+// Pane-level keyboard navigation: arrows, Enter, Backspace, Delete, F2, Ctrl+N, etc.
+function onKeydownPane(event) {
+  const target = event.target;
+  // Don't intercept when typing in an input/textarea/contenteditable
+  if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)) {
+    return;
+  }
+  // Don't fight with the diff modal.
+  if (store.diffOpen) return;
+
+  if (event.key === "F5") {
+    event.preventDefault();
+    store.refresh();
+    return;
+  }
+  if (event.key === "F2") {
+    event.preventDefault();
+    if (store.selectedEntry) {
+      renameDialog.value = { entry: store.selectedEntry, newName: store.selectedEntry.name };
+      nextTick(() => renameInput.value?.focus());
+    }
+    return;
+  }
+  if (event.key === "Delete" && store.selectedEntry) {
+    event.preventDefault();
+    deleteDialog.value = { entry: store.selectedEntry };
+    return;
+  }
+  if (event.key === "Backspace") {
+    event.preventDefault();
+    const parts = store.currentPath.split("/").filter(Boolean);
+    parts.pop();
+    store.navigate(parts.join("/"));
+    return;
+  }
+  if (event.key === "Enter" && store.selectedEntry) {
+    event.preventDefault();
+    if (store.selectedEntry.kind === "directory") store.navigate(store.selectedEntry.relativePath);
+    else if (isTextLikeEntry(store.selectedEntry)) onOpenEdit(store.selectedEntry);
+    return;
+  }
+  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "n" && !event.shiftKey) {
+    event.preventDefault();
+    onCreateFile();
+    return;
+  }
+  if ((event.ctrlKey || event.metaKey) && event.shiftKey && event.key.toLowerCase() === "n") {
+    event.preventDefault();
+    onCreateDir();
+    return;
+  }
+  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "c" && store.selectedEntry) {
+    event.preventDefault();
+    store.copyToClipboard(store.selectedEntry);
+    showToast(`Copied "${store.selectedEntry.name}"`);
+    return;
+  }
+  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "x" && store.selectedEntry) {
+    event.preventDefault();
+    store.cutToClipboard(store.selectedEntry);
+    showToast(`Cut "${store.selectedEntry.name}"`);
+    return;
+  }
+  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "v" && store.clipboard) {
+    event.preventDefault();
+    store.pasteEntry(store.currentPath);
+    return;
+  }
+
+  // Arrow key navigation through visible entries
+  if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+    event.preventDefault();
+    const list = store.sortedEntries;
+    if (!list.length) return;
+    const currentIdx = list.findIndex((e) => e.relativePath === store.selectedEntry?.relativePath);
+    let nextIdx;
+    if (event.key === "ArrowDown") {
+      nextIdx = currentIdx < 0 ? 0 : Math.min(currentIdx + 1, list.length - 1);
+    } else {
+      nextIdx = currentIdx <= 0 ? 0 : currentIdx - 1;
+    }
+    const target = list[nextIdx];
+    if (target) store.selectEntry(target);
+    return;
+  }
+  if (event.key === "ArrowRight" && store.selectedEntry?.kind === "directory") {
+    event.preventDefault();
+    store.navigate(store.selectedEntry.relativePath);
+    return;
+  }
+  if (event.key === "ArrowLeft") {
+    event.preventDefault();
+    const parts = store.currentPath.split("/").filter(Boolean);
+    parts.pop();
+    store.navigate(parts.join("/"));
+    return;
+  }
+}
+
+async function copyText(text) {
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(text);
+      return;
+    }
+  } catch {
+    // fall through to legacy path
+  }
+  const el = document.createElement("textarea");
+  el.value = text;
+  el.setAttribute("readonly", "");
+  el.style.position = "fixed";
+  el.style.opacity = "0";
+  document.body.appendChild(el);
+  el.select();
+  try {
+    document.execCommand("copy");
+  } catch {
+    /* noop */
+  }
+  document.body.removeChild(el);
+}
+
 onMounted(() => {
   document.addEventListener("click", onDocClick);
   document.addEventListener("keydown", onKeydown);
@@ -325,6 +634,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
   document.removeEventListener("click", onDocClick);
   document.removeEventListener("keydown", onKeydown);
+  if (toastTimer) clearTimeout(toastTimer);
 });
 </script>
 
@@ -334,6 +644,7 @@ onBeforeUnmount(() => {
   flex-direction: column;
   height: 100%;
   overflow: hidden;
+  outline: none;
 }
 
 .file-manager__body {
@@ -429,5 +740,22 @@ onBeforeUnmount(() => {
   justify-content: flex-end;
   gap: 8px;
   margin-top: 12px;
+}
+
+.fm-toast {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--panel, #222);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 8px 16px;
+  border-radius: 6px;
+  font-size: 12px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+  z-index: 9100;
+  pointer-events: none;
+  opacity: 0.95;
 }
 </style>

@@ -783,6 +783,25 @@ async function handleApiRequest(runtime, request, response) {
       json(response, 200, await fm.getFileInfo(body.rootPath, body.relativePath));
       return;
     }
+    if (request.method === "POST" && url.pathname === "/api/file/git-status") {
+      json(response, 200, await fm.getGitFileStatus(body.rootPath, { includeIgnored: !!body.includeIgnored }));
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/api/file/git-refs") {
+      json(response, 200, await fm.getGitRefs(body.rootPath, body.relativePath || ""));
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/api/file/git-diff") {
+      json(
+        response,
+        200,
+        await fm.computeFileDiff(body.rootPath, body.relativePath, {
+          source: body.source || "head",
+          revisionRef: body.revisionRef || "",
+        }),
+      );
+      return;
+    }
 
     // --- SSH (remote is read-only per plan §14) ---
     if (request.method === "POST" && url.pathname === "/api/ssh/hosts/list") {

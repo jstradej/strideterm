@@ -29,6 +29,9 @@ import {
   fileRenameSchema,
   fileDeleteSchema,
   fileMoveSchema,
+  fileGitStatusSchema,
+  fileGitRefsSchema,
+  fileGitDiffSchema,
   gitPayloadSchema,
   gitDiffPreviewSchema,
   gitCommitSchema,
@@ -560,6 +563,21 @@ export function registerIpc(runtime, emitToRenderer, { includeStateGet = true } 
   ipcMain.handle("file:info", async (_event, payload) => {
     const p = validateIpc(fileReadSchema, payload, "file:info");
     return fm.getFileInfo(p.rootPath, p.relativePath);
+  });
+  ipcMain.handle("file:git-status", async (_event, payload) => {
+    const p = validateIpc(fileGitStatusSchema, payload, "file:git-status");
+    return fm.getGitFileStatus(p.rootPath, { includeIgnored: !!p.includeIgnored });
+  });
+  ipcMain.handle("file:git-refs", async (_event, payload) => {
+    const p = validateIpc(fileGitRefsSchema, payload, "file:git-refs");
+    return fm.getGitRefs(p.rootPath, p.relativePath || "");
+  });
+  ipcMain.handle("file:git-diff", async (_event, payload) => {
+    const p = validateIpc(fileGitDiffSchema, payload, "file:git-diff");
+    return fm.computeFileDiff(p.rootPath, p.relativePath, {
+      source: p.source,
+      revisionRef: p.revisionRef || "",
+    });
   });
 
   ipcMain.handle("dialog:browse-directory", async (_event, defaultPath) => {

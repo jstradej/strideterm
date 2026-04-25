@@ -475,6 +475,23 @@ export const fileMoveSchema = z.object({
   toPath: z.string().min(1),
 });
 
+export const fileGitStatusSchema = z.object({
+  rootPath: z.string().min(1),
+  includeIgnored: z.boolean().optional(),
+});
+
+export const fileGitRefsSchema = z.object({
+  rootPath: z.string().min(1),
+  relativePath: z.string().optional(),
+});
+
+export const fileGitDiffSchema = z.object({
+  rootPath: z.string().min(1),
+  relativePath: z.string().min(1),
+  source: z.enum(["head", "staged", "commit", "branch", "tag"]).default("head"),
+  revisionRef: z.string().optional(),
+});
+
 // --- SSH schemas ---
 
 export const sshHostCreateSchema = z.object({

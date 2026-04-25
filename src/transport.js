@@ -338,6 +338,9 @@ function createRemoteTransport() {
     fileOpenInExplorer: (absPath) => fetchJson("/api/file/open-in-explorer", { absPath }),
     fileOpenInEditor: (p) => fetchJson("/api/file/open-in-editor", p),
     fileInfo: (p) => fetchJson("/api/file/info", p),
+    fileGitStatus: (p) => fetchJson("/api/file/git-status", p),
+    fileGitRefs: (p) => fetchJson("/api/file/git-refs", p),
+    fileGitDiff: (p) => fetchJson("/api/file/git-diff", p),
 
     sshHostsList: () => fetchJson("/api/ssh/hosts/list", {}),
     sshHostsCreate: (payload) => fetchJson("/api/ssh/hosts/create", payload),

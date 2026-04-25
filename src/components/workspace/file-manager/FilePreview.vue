@@ -1,9 +1,28 @@
 <template>
   <div class="file-preview">
     <div class="file-preview__header">
-      <span class="file-preview__name">{{ entry.name }}</span>
-      <span class="file-preview__meta">{{ formatSize(entry.size) }} &middot; {{ formatDate(entry.modifiedAt) }}</span>
+      <span class="file-preview__name">
+        <span
+          v-if="gitStatus"
+          class="file-preview__status"
+          :style="{ background: statusColor(gitStatus), color: '#fff' }"
+          :title="statusTitle(gitStatus)"
+        >
+          {{ statusBadge(gitStatus) }} {{ statusLabel(gitStatus) }}
+        </span>
+        {{ entry.name }}
+      </span>
+      <span class="file-preview__meta">{{ formatSize(entry.size) }} · {{ formatDate(entry.modifiedAt) }}</span>
       <div class="file-preview__actions">
+        <button
+          v-if="gitStatus && entry?.kind === 'file'"
+          type="button"
+          class="button button--ghost file-preview__btn"
+          title="Show diff vs HEAD / branch / commit"
+          @click="store.openDiff(entry)"
+        >
+          Diff
+        </button>
         <button
           v-if="isEditable && !store.editMode"
           type="button"
@@ -31,7 +50,7 @@
       </div>
     </div>
 
-    <div class="file-preview__body">
+    <div class="file-preview__body" :class="gitStatus ? `file-preview__body--git-${gitStatus}` : ''">
       <!-- Text preview / editor -->
       <template v-if="preview?.kind === 'text'">
         <FileEditor v-if="store.editMode" />
@@ -46,7 +65,7 @@
       <!-- Binary fallback -->
       <template v-else-if="preview?.kind === 'binary'">
         <div class="file-preview__binary">
-          <p>Binary file &middot; {{ formatSize(entry.size) }}</p>
+          <p>Binary file · {{ formatSize(entry.size) }}</p>
           <button type="button" class="button button--ghost" @click="$emit('open-in-explorer')">Open externally</button>
         </div>
       </template>
@@ -78,6 +97,7 @@
 import { computed } from "vue";
 import { useFileManagerStore } from "../../../stores/file-manager.js";
 import FileEditor from "./FileEditor.vue";
+import { statusBadge, statusColor, statusLabel, statusTitle } from "./git-status-helpers.js";
 
 defineEmits(["open-in-explorer"]);
 
@@ -88,6 +108,13 @@ const preview = computed(() => store.preview);
 const isEditable = computed(() => {
   const kind = preview.value?.kind;
   return kind === "text" || kind === "empty";
+});
+
+const gitStatus = computed(() => {
+  if (!store.gitIsRepo) return null;
+  const rel = entry.value?.relativePath;
+  if (!rel) return null;
+  return store.getStatusFor(rel)?.status || null;
 });
 
 function formatSize(bytes) {
@@ -128,6 +155,17 @@ function formatDate(iso) {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.file-preview__status {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: 3px;
+  letter-spacing: 0.3px;
 }
 
 .file-preview__meta {
@@ -152,6 +190,33 @@ function formatDate(iso) {
   flex: 1;
   overflow: auto;
   min-height: 0;
+  position: relative;
+}
+
+.file-preview__body--git-modified::before,
+.file-preview__body--git-staged::before,
+.file-preview__body--git-untracked::before,
+.file-preview__body--git-conflict::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  pointer-events: none;
+}
+
+.file-preview__body--git-modified::before {
+  background: var(--fm-status-modified, #d8a14b);
+}
+.file-preview__body--git-staged::before {
+  background: var(--fm-status-staged, #6cb478);
+}
+.file-preview__body--git-untracked::before {
+  background: var(--fm-status-untracked, #5e9bd6);
+}
+.file-preview__body--git-conflict::before {
+  background: var(--fm-status-conflict, #e26b6b);
 }
 
 .file-preview__text {
