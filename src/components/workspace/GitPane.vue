@@ -181,503 +181,64 @@
           <div class="git-view__spinner"></div>
         </div>
         <!-- ===== Branch tab ===== -->
-        <template v-if="activeTab === 'branch'">
-          <div class="git-section">
-            <!-- UC-7: empty repo banner -->
-            <div v-if="isEmptyRepo" data-testid="empty-repo-banner" class="git-info-banner git-info-banner--warn">
-              <strong>No commits yet</strong>
-              <p>Make your first commit in the Changes tab to get started.</p>
-            </div>
-
-            <!-- UC-8: no remote banner -->
-            <div v-if="hasNoRemote && !showAllActions" data-testid="no-remote-banner" class="git-info-banner">
-              <strong>No remote configured</strong>
-              <p>This repo has no remote. Add a remote to enable fetch/pull/push.</p>
-            </div>
-
-            <!-- UC-3: diverged banner -->
-            <div v-if="isDiverged" data-testid="diverged-banner" class="git-diverged-banner">
-              <strong
-                >Upstream has diverged ({{ snapshot.aheadCount }} ahead, {{ snapshot.behindCount }} behind)</strong
-              >
-              <p>Pull or rebase if upstream has new work, or force-push if you intentionally rewrote local history.</p>
-              <div class="git-diverged-banner__actions">
-                <button
-                  type="button"
-                  class="button button--ghost"
-                  :disabled="!!gitUi.busyAction || operation.inProgress"
-                  title="Open Update Current Branch to pull/rebase"
-                  @click="gitUiStore.gitSwitchTab(workspaceId, 'branch')"
-                >
-                  Pull / Rebase
-                </button>
-                <button
-                  v-if="!isReviewWorkspace"
-                  type="button"
-                  data-testid="force-push-button"
-                  class="button button--ghost button--danger"
-                  :disabled="!!gitUi.busyAction || operation.inProgress || !!gitUi.pendingAction"
-                  title="Force-push with lease — aborts if remote was updated since your last fetch"
-                  @click="
-                    gitUiStore.confirmForcePushWithLease(
-                      workspaceId,
-                      {
-                        branch: snapshot.branch,
-                        remote: pushRemote,
-                        behindCount: snapshot.behindCount,
-                      },
-                      snapshot,
-                    )
-                  "
-                >
-                  Force push (with lease)
-                </button>
-              </div>
-            </div>
-
-            <GitOperationCard :snapshot="snapshot" :workspace-id="workspaceId" :git-ui="gitUi" />
-
-            <!-- UC-6: detached HEAD banner in Changes tab is handled there; here just info -->
-
-            <!-- Update current branch — hidden when current === base -->
-            <article v-if="showUpdateCurrentBranch" class="git-card" data-testid="update-current-branch-card">
-              <div class="section-head">
-                <div>
-                  <p class="eyebrow">Update Current Branch</p>
-                  <h3>{{ effectiveBaseBranch || "?" }} &rarr; {{ snapshot.branch }}</h3>
-                </div>
-              </div>
-              <div class="git-detail-list">
-                <span><strong>Current branch:</strong> {{ snapshot.branch }}</span>
-                <template v-if="isLinkedWorktree">
-                  <span class="git-detail-list__row">
-                    <strong>Base branch:</strong>
-                    {{ effectiveBaseBranch || "?" }}
-                  </span>
-                </template>
-                <GitBaseBranchPicker
-                  v-else
-                  :model-value="effectiveBaseBranch"
-                  :options="baseBranchOptions"
-                  @update:model-value="(v) => gitUiStore.gitSetBaseBranch(workspaceId, v)"
-                />
-                <span><strong>Upstream:</strong> {{ snapshot.upstream || "none" }}</span>
-                <span
-                  ><strong>Ahead/behind upstream:</strong> {{ snapshot.aheadCount || 0 }} /
-                  {{ snapshot.behindCount || 0 }}</span
-                >
-                <span><strong>Last fetch:</strong> {{ formatDateLabel(snapshot.lastFetchAt) }}</span>
-              </div>
-              <template v-if="effectiveBaseBranch">
-                <div v-if="!isReviewWorkspace" class="git-operation-actions">
-                  <button
-                    type="button"
-                    class="button"
-                    :disabled="!!(gitUi.busyAction || operation.inProgress || !!gitUi.pendingAction)"
-                    :title="`Rebase current branch onto local ${effectiveBaseBranch}`"
-                    @click="gitUiStore.gitRebaseBase(workspaceId, effectiveBaseBranch)"
-                  >
-                    {{ gitUi.busyAction === "rebase" ? "Rebasing…" : `Rebase onto ${effectiveBaseBranch}` }}
-                  </button>
-                  <button
-                    v-if="!isReviewWorkspace"
-                    type="button"
-                    class="button button--ghost"
-                    :disabled="!!(gitUi.busyAction || operation.inProgress || !!gitUi.pendingAction)"
-                    :title="`Merge local ${effectiveBaseBranch} into current branch`"
-                    @click="gitUiStore.gitMergeBase(workspaceId, effectiveBaseBranch)"
-                  >
-                    {{ gitUi.busyAction === "merge" ? "Merging…" : `Merge ${effectiveBaseBranch} in` }}
-                  </button>
-                </div>
-                <p class="git-card__hint">
-                  Operations use the local {{ effectiveBaseBranch }} branch. Fetch first to sync with remote.
-                </p>
-              </template>
-              <template v-else>
-                <p class="git-card__hint">Select a base branch above to enable rebase/merge operations.</p>
-                <p v-if="baseBranchOptions.length === 0" class="git-card__hint">
-                  No local branches found. Run Fetch to populate remote branches.
-                  <button
-                    type="button"
-                    class="button button--ghost button--small"
-                    style="margin-left: 6px"
-                    @click="gitUiStore.gitFetch(workspaceId)"
-                  >
-                    Fetch
-                  </button>
-                </p>
-              </template>
-            </article>
-
-            <!-- Stash card — hidden when clean and 0 stashes -->
-            <article v-if="showStashCard" data-testid="stash-card" class="git-card">
-              <div class="section-head">
-                <div>
-                  <p class="eyebrow">Stash</p>
-                  <h3>{{ snapshot.stashCount || 0 }} stash{{ (snapshot.stashCount || 0) !== 1 ? "es" : "" }}</h3>
-                </div>
-              </div>
-              <div class="git-operation-actions">
-                <button
-                  type="button"
-                  class="button"
-                  :disabled="!!(gitUi.busyAction || !snapshot.dirty || !!gitUi.pendingAction || operation.inProgress)"
-                  title="Save uncommitted changes to the stash"
-                  @click="gitUiStore.gitStash(workspaceId)"
-                >
-                  {{ gitUi.busyAction === "stash" ? "Stashing…" : "Stash" }}
-                </button>
-                <button
-                  type="button"
-                  class="button button--ghost"
-                  :disabled="
-                    !!(gitUi.busyAction || !(snapshot.stashCount > 0) || !!gitUi.pendingAction || operation.inProgress)
-                  "
-                  :title="
-                    snapshot.dirty ? 'Pop may conflict with local changes' : 'Restore the most recent stash entry'
-                  "
-                  @click="gitUiStore.gitStashPop(workspaceId)"
-                >
-                  {{ gitUi.busyAction === "stash-pop" ? "Popping…" : "Unstash (pop)" }}
-                </button>
-              </div>
-              <p class="git-card__hint">
-                Stash saves uncommitted changes. Unstash restores the most recent stash entry.
-              </p>
-            </article>
-
-            <!-- Switch / Create branch (main worktree only) -->
-            <article v-if="!isLinkedWorktree && !isReviewWorkspace" class="git-card">
-              <div class="section-head">
-                <div>
-                  <p class="eyebrow">Switch Branch</p>
-                  <h3>{{ snapshot.branch }}</h3>
-                </div>
-              </div>
-              <div v-if="snapshot.dirty" class="git-card__hint git-card__hint--warning" style="margin-bottom: 8px">
-                Working tree is dirty. Commit or stash changes before switching branches.
-              </div>
-              <template v-else>
-                <div class="git-detail-list" style="margin-bottom: 8px">
-                  <span class="git-detail-list__row">
-                    <strong>Checkout:</strong>
-                    <CustomSelect
-                      v-model="switchBranchTarget"
-                      class="git-branch-select"
-                      placeholder="-- select branch --"
-                      :options="switchBranchOptionsList"
-                    />
-                    <button
-                      type="button"
-                      class="button"
-                      :disabled="!switchBranchTarget || !!gitUi.busyAction"
-                      title="Checkout the selected branch"
-                      style="margin-left: 6px"
-                      @click="onCheckoutBranch"
-                    >
-                      {{ gitUi.busyAction === "checkout" ? "Switching…" : "Switch" }}
-                    </button>
-                  </span>
-                </div>
-                <div class="git-detail-list">
-                  <span class="git-detail-list__row">
-                    <strong>New branch:</strong>
-                    <input
-                      v-model="newBranchName"
-                      class="git-pr-form__input"
-                      type="text"
-                      placeholder="feature/my-branch"
-                      style="flex: 1; min-width: 120px"
-                    />
-                    <button
-                      type="button"
-                      class="button button--ghost"
-                      :disabled="!newBranchName.trim() || !!gitUi.busyAction"
-                      title="Create a new branch from the current one and switch to it"
-                      style="margin-left: 6px"
-                      @click="onCreateBranch"
-                    >
-                      {{ gitUi.busyAction === "create-branch" ? "Creating…" : "Create & switch" }}
-                    </button>
-                  </span>
-                </div>
-              </template>
-            </article>
-
-            <GitMergeBackCard
-              v-if="showMergeBack"
-              :snapshot="snapshot"
-              :workspace-id="workspaceId"
-              :workspaces="workspaces"
-              :git-ui="gitUi"
-              :effective-base-branch="effectiveBaseBranch"
-              :base-branch-options="baseBranchOptions"
-              :is-linked-worktree="isLinkedWorktree"
-            />
-          </div>
-        </template>
+        <GitBranchTab
+          v-if="activeTab === 'branch'"
+          :workspace-id="workspaceId"
+          :snapshot="snapshot"
+          :git-ui="gitUi"
+          :operation="operation"
+          :workspaces="workspaces"
+          :is-empty-repo="isEmptyRepo"
+          :has-no-remote="hasNoRemote"
+          :show-all-actions="showAllActions"
+          :is-diverged="isDiverged"
+          :is-review-workspace="isReviewWorkspace"
+          :is-linked-worktree="isLinkedWorktree"
+          :push-remote="pushRemote"
+          :show-update-current-branch="showUpdateCurrentBranch"
+          :show-stash-card="showStashCard"
+          :show-merge-back="showMergeBack"
+          :effective-base-branch="effectiveBaseBranch"
+          :base-branch-options="baseBranchOptions"
+          :switch-branch-options-list="switchBranchOptionsList"
+        />
 
         <!-- ===== Changes tab ===== -->
-        <template v-else-if="activeTab === 'changes'">
-          <div class="git-section git-section--changes">
-            <div class="git-changes__body">
-              <Splitpanes class="default-theme git-changes__splitpanes">
-                <Pane :size="40" :min-size="20">
-                  <div class="git-section__files git-section__files--split">
-                    <article class="git-card">
-                      <div class="section-head">
-                        <div>
-                          <p class="eyebrow">Changes</p>
-                          <h3>{{ snapshot.dirty ? "Working tree overview" : "No local changes" }}</h3>
-                        </div>
-                      </div>
-                      <!-- UC-6: detached HEAD banner -->
-                      <div
-                        v-if="isDetachedHead"
-                        class="git-info-banner git-info-banner--warn"
-                        style="margin-bottom: 8px"
-                      >
-                        <strong>Detached HEAD</strong>
-                        <p>You are on a detached HEAD. Commits will be lost unless you create a branch.</p>
-                        <button
-                          v-if="!isReviewWorkspace"
-                          type="button"
-                          class="button button--ghost button--small"
-                          @click="gitUiStore.gitCreateBranch(workspaceId, `branch-from-detached`)"
-                        >
-                          Create branch from HEAD
-                        </button>
-                      </div>
-                      <GitDiffStat :stat="snapshot.diffStat" />
-                      <GitChangeTree
-                        :files="allChangedFiles"
-                        :selected-path="gitUi.selectedDiff?.path || ''"
-                        :selected-scope="gitUi.selectedDiff?.scope || ''"
-                        @select="(p, s) => gitUiStore.gitSelectDiff(workspaceId, p, s)"
-                      />
-                      <div v-if="snapshot.dirty && !isReviewWorkspace" class="git-commit-form" style="margin-top: 12px">
-                        <input
-                          v-model="commitMessage"
-                          name="commit-message"
-                          type="text"
-                          placeholder="Commit message"
-                          :disabled="operation.inProgress"
-                          :title="!snapshot.staged?.length && snapshot.dirty ? 'Will stage and commit all changes' : ''"
-                          @keydown.enter="onCommitAll"
-                        />
-                        <button
-                          type="button"
-                          class="button"
-                          :disabled="
-                            !!gitUi.busyAction || !commitMessage.trim() || operation.inProgress || !!gitUi.pendingAction
-                          "
-                          title="Stage all changes and commit"
-                          @click="onCommitAll"
-                        >
-                          {{ gitUi.busyAction === "commit" ? "Committing\u2026" : "Commit all" }}
-                        </button>
-                      </div>
-                    </article>
-                  </div>
-                </Pane>
-                <Pane :size="60" :min-size="25">
-                  <div class="git-section__preview git-section__preview--diff">
-                    <article class="git-card git-card--diff">
-                      <div class="section-head">
-                        <div>
-                          <p class="eyebrow">Diff Preview</p>
-                          <h3>{{ gitUi.selectedDiff?.path || "Select a file" }}</h3>
-                        </div>
-                      </div>
-                      <div class="git-monaco-host">
-                        <MonacoDiffPanel
-                          v-if="gitUi.selectedDiff?.path"
-                          :payload="monacoDiffPayload"
-                          :loading="monacoDiffLoading"
-                        />
-                        <p v-else class="git-card__hint">Click a file to load a diff preview.</p>
-                      </div>
-                    </article>
-                  </div>
-                </Pane>
-              </Splitpanes>
-            </div>
-          </div>
-        </template>
+        <GitChangesTab
+          v-else-if="activeTab === 'changes'"
+          :workspace-id="workspaceId"
+          :snapshot="snapshot"
+          :git-ui="gitUi"
+          :operation="operation"
+          :active-root-path="activeRootPath"
+          :is-detached-head="isDetachedHead"
+          :is-review-workspace="isReviewWorkspace"
+        />
 
         <!-- ===== History tab ===== -->
-        <template v-else-if="activeTab === 'history'">
-          <div class="git-section git-section--history">
-            <div class="git-history__header git-history__header--compact">
-              <GitBaseBranchPicker
-                class="git-history__picker"
-                label="Compare with base"
-                :model-value="effectiveBaseBranch"
-                :options="baseBranchOptions"
-                @update:model-value="(v) => gitUiStore.gitSetBaseBranch(workspaceId, v)"
-              />
-              <template v-if="effectiveBaseBranch">
-                <GitDiffStat :stat="compare.diffStat" />
-                <span class="git-history__counter">
-                  <strong>{{ compare.aheadCount || 0 }}</strong> ahead
-                </span>
-                <span class="git-history__counter">
-                  <strong>{{ compare.behindCount || 0 }}</strong> behind
-                </span>
-              </template>
-            </div>
-            <div class="git-history__split">
-              <Splitpanes class="default-theme git-history__splitpanes">
-                <Pane :size="35" :min-size="20">
-                  <div class="git-history__log">
-                    <GitCommitLog
-                      :commits="allCommits"
-                      :selected-commit="gitUi.selectedCommit"
-                      :ahead-count="snapshot.aheadCount || 0"
-                      @select="(hash) => gitUiStore.gitSelectCommit(workspaceId, hash)"
-                    />
-                  </div>
-                </Pane>
-                <Pane :size="65" :min-size="30">
-                  <Splitpanes horizontal class="default-theme git-history__splitpanes">
-                    <Pane :size="40" :min-size="15">
-                      <div class="git-history__commit-files">
-                        <div v-if="!gitUi.selectedCommit" class="git-history__placeholder">
-                          Select a commit to see its files.
-                        </div>
-                        <div v-else-if="commitFilesLoading" class="git-history__placeholder">Loading…</div>
-                        <GitChangeTree
-                          v-else
-                          :files="commitFiles"
-                          :selected-path="selectedCommitFile"
-                          selected-scope="commit"
-                          @select="onSelectCommitFile"
-                        />
-                      </div>
-                    </Pane>
-                    <Pane :size="60" :min-size="20">
-                      <div class="git-history__commit-diff">
-                        <MonacoDiffPanel
-                          v-if="selectedCommitFile"
-                          :payload="commitDiffPayload"
-                          :loading="commitDiffLoading"
-                        />
-                        <div v-else class="git-history__placeholder">
-                          {{ gitUi.selectedCommit ? "Pick a file to view its diff." : "" }}
-                        </div>
-                      </div>
-                    </Pane>
-                  </Splitpanes>
-                </Pane>
-              </Splitpanes>
-            </div>
-          </div>
-        </template>
+        <GitHistoryTab
+          v-else-if="activeTab === 'history'"
+          :workspace-id="workspaceId"
+          :snapshot="snapshot"
+          :git-ui="gitUi"
+          :compare="compare"
+          :effective-base-branch="effectiveBaseBranch"
+          :base-branch-options="baseBranchOptions"
+          :active-root-path="activeRootPath"
+        />
 
         <!-- ===== Pull Request tab ===== -->
-        <template v-else-if="activeTab === 'pr'">
-          <div class="git-section" data-testid="pr-tab-panel">
-            <article class="git-card">
-              <div class="section-head">
-                <div>
-                  <p class="eyebrow">Create Pull Request</p>
-                  <h3>{{ snapshot.branch }} &rarr; {{ prTargetBranch || "?" }}</h3>
-                </div>
-              </div>
-              <!-- UC-8: no remote -->
-              <div v-if="hasNoRemote" class="git-card__hint git-card__hint--warning" style="margin-bottom: 8px">
-                This repo has no remote. Add a remote before connecting a PR provider.
-              </div>
-              <!-- No connection selected -->
-              <div
-                v-else-if="!activeConnectionId && !hasAzureConnection"
-                class="git-card__hint git-card__hint--warning"
-                style="margin-bottom: 8px"
-              >
-                Connect Azure DevOps or GitHub to create pull requests. Use the credentials dropdown in the toolbar.
-              </div>
-              <template v-else>
-                <p class="git-card__hint" style="margin-bottom: 8px">
-                  Using connection: <strong>{{ activeConnectionLabel }}</strong>
-                </p>
-                <div class="git-pr-form">
-                  <label class="git-pr-form__field">
-                    <span class="git-pr-form__label">Source branch</span>
-                    <input class="git-pr-form__input" type="text" :value="snapshot.branch" disabled />
-                  </label>
-                  <label class="git-pr-form__field">
-                    <span class="git-pr-form__label">Target branch</span>
-                    <CustomSelect
-                      v-model="prTargetBranch"
-                      class="git-branch-select"
-                      placeholder="-- select target --"
-                      :options="prTargetOptionsList"
-                    />
-                    <button
-                      v-if="!gitUi.remoteBranchesLoading"
-                      type="button"
-                      class="button button--ghost button--small"
-                      style="margin-left: 6px"
-                      @click="gitUiStore.azureListRemoteBranches(workspaceId)"
-                    >
-                      Load remote branches
-                    </button>
-                    <span v-else style="font-size: 12px; color: var(--muted); margin-left: 6px">Loading...</span>
-                  </label>
-                  <label class="git-pr-form__field">
-                    <span class="git-pr-form__label">Title</span>
-                    <input v-model="prTitle" class="git-pr-form__input" type="text" placeholder="Pull request title" />
-                  </label>
-                  <label class="git-pr-form__field">
-                    <span class="git-pr-form__label">Description</span>
-                    <textarea
-                      v-model="prDescription"
-                      class="git-pr-form__input git-pr-form__textarea"
-                      placeholder="Optional description"
-                      rows="4"
-                    ></textarea>
-                  </label>
-                  <div class="git-operation-actions">
-                    <button
-                      type="button"
-                      class="button"
-                      :disabled="
-                        !prCanSubmit ||
-                        !!gitUi.busyAction ||
-                        snapshot.aheadCount === 0 ||
-                        !snapshot.upstream ||
-                        snapshot.dirty
-                      "
-                      :title="
-                        !snapshot.upstream
-                          ? 'Publish the branch first before creating a PR'
-                          : snapshot.dirty
-                            ? 'Commit or stash changes before creating a PR'
-                            : snapshot.aheadCount === 0
-                              ? 'Nothing to PR — no commits ahead of upstream'
-                              : ''
-                      "
-                      @click="onCreatePr"
-                    >
-                      {{ gitUi.busyAction === "create-pr" ? "Creating…" : "Create Pull Request" }}
-                    </button>
-                  </div>
-                  <p v-if="prResult" :class="['git-card__hint', prResult.ok ? '' : 'git-card__hint--warning']">
-                    {{ prResult.summary || (prResult.ok ? "Pull request created." : "Failed to create pull request.") }}
-                    <a
-                      v-if="prResult.url"
-                      :href="prResult.url"
-                      style="color: var(--accent); text-decoration: underline"
-                      @click.prevent="openExternal(prResult.url)"
-                      >Open in browser</a
-                    >
-                  </p>
-                </div>
-              </template>
-            </article>
-          </div>
-        </template>
+        <GitPullRequestTab
+          v-else-if="activeTab === 'pr'"
+          :workspace-id="workspaceId"
+          :snapshot="snapshot"
+          :git-ui="gitUi"
+          :base-branch="baseBranch"
+          :has-no-remote="hasNoRemote"
+          :has-azure-connection="hasAzureConnection"
+          :active-connection-id="activeConnectionId"
+          :active-connection-label="activeConnectionLabel"
+        />
 
         <!-- ===== Tags tab ===== -->
         <template v-else-if="activeTab === 'tags'">
@@ -745,21 +306,16 @@
 </template>
 
 <script setup>
-import { computed, defineAsyncComponent, ref, watch } from "vue";
+import { computed, ref, watch } from "vue";
 import { useAppStore } from "../../stores/app.js";
 import { useGitUiStore } from "../../stores/git-ui.js";
 import PaneShell from "../layout/PaneShell.vue";
-import GitDiffStat from "./git/GitDiffStat.vue";
-import GitChangeTree from "./git/GitChangeTree.vue";
-import { Splitpanes, Pane } from "splitpanes";
-import "splitpanes/dist/splitpanes.css";
-const MonacoDiffPanel = defineAsyncComponent(() => import("../shared/MonacoDiffPanel.vue"));
-import GitOperationCard from "./git/GitOperationCard.vue";
-import GitMergeBackCard from "./git/GitMergeBackCard.vue";
+import GitBranchTab from "./git/GitBranchTab.vue";
+import GitChangesTab from "./git/GitChangesTab.vue";
+import GitHistoryTab from "./git/GitHistoryTab.vue";
+import GitPullRequestTab from "./git/GitPullRequestTab.vue";
 import GitWorktreeList from "./git/GitWorktreeList.vue";
 import GitTagList from "./git/GitTagList.vue";
-import GitCommitLog from "./git/GitCommitLog.vue";
-import GitBaseBranchPicker from "./git/GitBaseBranchPicker.vue";
 import BulkRepoTable from "./git/BulkRepoTable.vue";
 import CustomSelect from "../common/CustomSelect.vue";
 
@@ -794,144 +350,6 @@ const baseBranch = computed(() => snapshot.value?.baseBranch || snapshot.value?.
 const compare = computed(() => snapshot.value?.compareWithBase || {});
 const activeTab = computed(() => gitUi.value.activeTab || "branch");
 
-// Monaco-style diff payload for the Changes tab. Fetched separately from
-// the legacy unified-text gitDiffPreview the rest of the pane still uses.
-const monacoDiffPayload = ref(null);
-const monacoDiffLoading = ref(false);
-
-const allChangedFiles = computed(() => {
-  const out = [];
-  const seen = new Set();
-  const push = (f, scope) => {
-    const key = `${scope}:${f.path}`;
-    if (seen.has(key)) return;
-    seen.add(key);
-    out.push({ ...f, scope });
-  };
-  for (const f of snapshot.value?.staged || []) push(f, "staged");
-  for (const f of snapshot.value?.unstaged || []) push(f, "unstaged");
-  for (const path of operation.value.conflicts || []) push({ path, code: "UU" }, "unstaged");
-  for (const f of snapshot.value?.untracked || []) push(f, "untracked");
-  return out;
-});
-
-function diffSourceForScope(scope) {
-  return scope === "staged" ? "staged" : "head";
-}
-
-async function loadMonacoDiff(path, scope) {
-  const root = activeRootPath.value;
-  if (!root || !path) {
-    monacoDiffPayload.value = null;
-    return;
-  }
-  monacoDiffLoading.value = true;
-  try {
-    const api = appStore.getApi();
-    const payload = await api.fileGitDiff({
-      rootPath: root,
-      relativePath: path,
-      source: diffSourceForScope(scope),
-      revisionRef: "",
-    });
-    monacoDiffPayload.value = payload;
-  } catch (err) {
-    monacoDiffPayload.value = {
-      ok: false,
-      leftError: err?.message || "Failed to load diff",
-      leftContent: "",
-      rightContent: "",
-      leftLabel: "",
-      rightLabel: "",
-      leftMissing: true,
-      rightMissing: true,
-      language: "plaintext",
-    };
-  } finally {
-    monacoDiffLoading.value = false;
-  }
-}
-
-watch(
-  () => gitUi.value.selectedDiff,
-  (sel) => {
-    if (!sel?.path) {
-      monacoDiffPayload.value = null;
-      return;
-    }
-    loadMonacoDiff(sel.path, sel.scope);
-  },
-  { deep: true },
-);
-
-// History tab: per-commit file list + per-file Monaco diff (vs commit's parent).
-const commitFiles = ref([]);
-const commitFilesLoading = ref(false);
-const selectedCommitFile = ref("");
-const commitDiffPayload = ref(null);
-const commitDiffLoading = ref(false);
-
-async function loadCommitFiles(hash) {
-  if (!hash) {
-    commitFiles.value = [];
-    return;
-  }
-  const root = activeRootPath.value;
-  if (!root) return;
-  commitFilesLoading.value = true;
-  try {
-    const api = appStore.getApi();
-    const result = await api.fileCommitFiles({ rootPath: root, hash });
-    commitFiles.value = (result?.files || []).map((f) => ({ ...f, scope: "commit" }));
-  } catch {
-    commitFiles.value = [];
-  } finally {
-    commitFilesLoading.value = false;
-  }
-}
-
-async function loadCommitFileDiff(hash, relativePath) {
-  if (!hash || !relativePath) {
-    commitDiffPayload.value = null;
-    return;
-  }
-  const root = activeRootPath.value;
-  if (!root) return;
-  commitDiffLoading.value = true;
-  try {
-    const api = appStore.getApi();
-    commitDiffPayload.value = await api.fileCommitDiff({ rootPath: root, relativePath, hash });
-  } catch (err) {
-    commitDiffPayload.value = {
-      ok: false,
-      leftError: err?.message || "Failed to load commit diff",
-      leftContent: "",
-      rightContent: "",
-      leftLabel: "",
-      rightLabel: "",
-      leftMissing: true,
-      rightMissing: true,
-      language: "plaintext",
-    };
-  } finally {
-    commitDiffLoading.value = false;
-  }
-}
-
-watch(
-  () => gitUi.value.selectedCommit,
-  (hash) => {
-    selectedCommitFile.value = "";
-    commitDiffPayload.value = null;
-    if (hash) loadCommitFiles(hash);
-    else commitFiles.value = [];
-  },
-);
-
-function onSelectCommitFile(path /* scope */) {
-  selectedCommitFile.value = path;
-  loadCommitFileDiff(gitUi.value.selectedCommit, path);
-}
 const showAllActions = computed(() => appStore.payload?.appState?.settings?.git?.ui?.showAllActions === true);
 
 // Effective base branch: override from UI, or auto-detected
@@ -1071,15 +489,6 @@ const showMergeBack = computed(() => {
   return true;
 });
 
-// Commit form (Changes tab)
-const commitMessage = ref("");
-function onCommitAll() {
-  const msg = commitMessage.value.trim();
-  if (!msg) return;
-  gitUiStore.gitCommitAll(props.workspaceId, msg);
-  commitMessage.value = "";
-}
-
 // Multi-repo root picker
 const isSwitchingRepo = ref(false);
 async function onRootChange(newRoot) {
@@ -1150,54 +559,13 @@ const activeConnectionLabel = computed(() => {
   return found?.label || activeConnectionId.value;
 });
 
-// Branch switch/create state
-const switchBranchTarget = ref("");
-const newBranchName = ref("");
+// Branch switcher options (built here so the same data backs both the
+// Branch tab subcomponent and any external consumer).
 const switchBranchOptions = computed(() => {
   const names = snapshot.value?.branchNames || [];
   const current = snapshot.value?.branch || "";
   return names.filter((n) => n !== current);
 });
-
-// PR form state
-const prTitle = ref("");
-const prDescription = ref("");
-const prTargetBranch = ref("");
-const prResult = ref(null);
-
-// PR target branch options: local branch names + remote branches loaded from Azure
-const prTargetOptions = computed(() => {
-  const localBranches = (snapshot.value?.branchNames || []).filter(
-    (n) => !n.startsWith("origin/") && n !== snapshot.value?.branch,
-  );
-  const remoteBranches = (gitUi.value.remoteBranches || []).filter((n) => n !== snapshot.value?.branch);
-  const merged = [...new Set([...localBranches, ...remoteBranches])];
-  // Put common targets first
-  const priority = ["develop", "main", "master"];
-  merged.sort((a, b) => {
-    const aIdx = priority.indexOf(a);
-    const bIdx = priority.indexOf(b);
-    if (aIdx >= 0 && bIdx >= 0) return aIdx - bIdx;
-    if (aIdx >= 0) return -1;
-    if (bIdx >= 0) return 1;
-    return a.localeCompare(b);
-  });
-  return merged;
-});
-
-const prCanSubmit = computed(() => prTitle.value.trim() && prTargetBranch.value);
-
-// Initialize PR target from base branch
-watch(
-  baseBranch,
-  (val) => {
-    if (!prTargetBranch.value && val) {
-      const stripped = val.replace(/^origin\//, "");
-      prTargetBranch.value = stripped;
-    }
-  },
-  { immediate: true },
-);
 
 // UC-12: auto-dismiss stale pending confirm when snapshot state changes
 watch(snapshot, (newSnapshot) => {
@@ -1225,17 +593,6 @@ const tabs = computed(() => {
   return list;
 });
 
-const allCommits = computed(() => {
-  const seen = new Set();
-  const result = [];
-  for (const entry of [...(compare.value.commits || []), ...(snapshot.value?.log || [])]) {
-    if (!entry.shortHash || seen.has(entry.shortHash)) continue;
-    seen.add(entry.shortHash);
-    result.push(entry);
-  }
-  return result;
-});
-
 const headerTitle = computed(() => `Git: ${snapshot.value?.branch || props.workspaceId}`);
 const headerStatus = computed(() => (snapshot.value?.dirty ? `${snapshot.value.dirtyCount} dirty` : ""));
 const headerActions = computed(() => [
@@ -1255,15 +612,6 @@ const headerActions = computed(() => [
   },
 ]);
 
-function formatDateLabel(value) {
-  if (!value) return "Not fetched yet";
-  try {
-    return new Date(value).toLocaleString();
-  } catch {
-    return value;
-  }
-}
-
 function onHeaderAction(action) {
   if (action.action === "select-tab") appStore.activateView(action.viewId);
   else if (action.action === "close-tab") appStore.closeTab(action.viewId);
@@ -1271,21 +619,6 @@ function onHeaderAction(action) {
 
 function onCreateWorktree() {
   appStore.createWorktreeWithDialog(props.workspaceId, { preselectedRootPath: activeRootPath.value || "" });
-}
-
-function onCheckoutBranch() {
-  if (switchBranchTarget.value) {
-    gitUiStore.gitCheckoutBranch(props.workspaceId, switchBranchTarget.value);
-    switchBranchTarget.value = "";
-  }
-}
-
-function onCreateBranch() {
-  const name = newBranchName.value.trim();
-  if (name) {
-    gitUiStore.gitCreateBranch(props.workspaceId, name);
-    newBranchName.value = "";
-  }
 }
 
 function onConnectionChange(value) {
@@ -1301,32 +634,6 @@ const connectionOptions = computed(() => [
   ...availableConnections.value.map((c) => ({ value: c.id, label: c.label || c.id })),
 ]);
 const switchBranchOptionsList = computed(() => switchBranchOptions.value.map((b) => ({ value: b, label: b })));
-const prTargetOptionsList = computed(() => prTargetOptions.value.map((b) => ({ value: b, label: b })));
-
-async function onCreatePr() {
-  prResult.value = null;
-  await gitUiStore.azureCreatePullRequest(props.workspaceId, {
-    title: prTitle.value.trim(),
-    description: prDescription.value.trim(),
-    sourceBranch: snapshot.value?.branch || "",
-    targetBranch: prTargetBranch.value,
-    connectionId: activeConnectionId.value || "",
-  });
-  const result = gitUi.value.lastResult;
-  if (result?.ok) {
-    prResult.value = { ok: true, summary: `PR #${result.pullRequestId || ""} created.`, url: result.url || "" };
-  } else {
-    prResult.value = { ok: false, summary: result?.summary || "Failed to create pull request." };
-  }
-}
-
-function openExternal(url) {
-  if (window.strideterm?.openExternal) {
-    window.strideterm.openExternal(url);
-  } else {
-    window.open(url, "_blank");
-  }
-}
 </script>
 
 <style scoped>
@@ -1385,10 +692,10 @@ function openExternal(url) {
   }
 }
 
-/* Changes & History tabs — Splitpanes drives the resizable layout. The section
-   becomes a flex column whose Splitpanes child fills remaining height. */
-.git-section--changes,
-.git-section--history {
+/* Changes & History tab layout (the rest lives in the tab components
+   themselves so scoped styles target their inner DOM correctly). */
+:deep(.git-section--changes),
+:deep(.git-section--history) {
   display: flex !important;
   flex-direction: column;
   grid-template-columns: none !important;
@@ -1397,199 +704,5 @@ function openExternal(url) {
   flex: 1;
   min-height: 0;
   overflow: hidden;
-}
-
-.git-changes__body {
-  flex: 1;
-  min-height: 0;
-  overflow: hidden;
-}
-
-/* Splitpanes default-theme has higher specificity (.default-theme.splitpanes
-   .splitpanes__pane = 3 classes) than our override, and its bg #f2f2f2 leaks
-   through unless we use !important. */
-:deep(.git-changes__splitpanes.splitpanes) {
-  background: transparent !important;
-}
-
-:deep(.git-changes__splitpanes.splitpanes > .splitpanes__pane) {
-  background: transparent !important;
-  overflow: hidden;
-}
-
-:deep(.git-changes__splitpanes.splitpanes > .splitpanes__splitter) {
-  background: var(--border) !important;
-  min-width: 3px;
-}
-
-:deep(.git-changes__splitpanes.splitpanes > .splitpanes__splitter:hover) {
-  background: var(--accent) !important;
-}
-
-.git-section__files--split {
-  height: 100%;
-  min-height: 0;
-  overflow-y: auto;
-  padding-right: 6px;
-}
-
-/* Monaco diff host needs explicit flex sizing so the editor gets a real
-   height instead of collapsing inside the auto-overflow column. */
-.git-section__preview--diff {
-  display: flex !important;
-  flex-direction: column;
-  overflow: hidden;
-  min-height: 0;
-  height: 100%;
-}
-
-.git-card--diff {
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-  flex: 1;
-  overflow: hidden;
-}
-
-.git-monaco-host {
-  flex: 1;
-  min-height: 0;
-  display: flex;
-  position: relative;
-}
-
-.git-monaco-host > .git-card__hint {
-  margin: auto;
-  color: var(--muted);
-}
-
-/* History tab — compact horizontal header. */
-.git-history__header--compact {
-  display: flex !important;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px 14px;
-  padding: 6px 10px;
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  background: rgba(var(--tint), 0.03);
-}
-
-.eyebrow--inline {
-  margin: 0;
-  font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.6px;
-  color: var(--muted);
-}
-
-.git-history__base {
-  font-size: 13px;
-  color: var(--text);
-}
-
-.git-history__picker {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  flex: 0 0 auto;
-}
-
-.git-history__picker :deep(strong) {
-  font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.6px;
-  color: var(--muted);
-  font-weight: 600;
-  white-space: nowrap;
-}
-
-.git-history__picker :deep(.custom-select) {
-  width: 220px;
-}
-
-.git-history__counter {
-  font-size: 12px;
-  color: var(--muted);
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-}
-.git-history__counter strong {
-  color: var(--text);
-  font-variant-numeric: tabular-nums;
-}
-
-/* History header is auto-height; the splitpanes wrapper takes the rest. */
-.git-history__header--compact {
-  flex: 0 0 auto;
-}
-
-.git-history__split {
-  flex: 1;
-  min-height: 0;
-  overflow: hidden;
-}
-
-.git-history__log,
-.git-history__commit-files,
-.git-history__commit-diff {
-  height: 100%;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  background: rgba(var(--tint), 0.03);
-}
-
-.git-history__log {
-  overflow: auto;
-}
-
-.git-history__commit-files {
-  overflow: hidden;
-}
-
-.git-history__commit-diff {
-  position: relative;
-}
-
-.git-history__commit-diff > * {
-  flex: 1;
-  min-height: 0;
-}
-
-.git-history__placeholder {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  height: 100%;
-  color: var(--muted);
-  font-size: 12px;
-  font-style: italic;
-}
-
-/* Splitpanes default-theme paints panes light gray and the splitter white
-   (specificity (0,3,0) — higher than ours), so override with !important to
-   force our dark surface. */
-:deep(.git-history__splitpanes.splitpanes) {
-  background: transparent !important;
-}
-
-:deep(.git-history__splitpanes.splitpanes > .splitpanes__pane) {
-  background: transparent !important;
-  overflow: hidden;
-}
-
-:deep(.git-history__splitpanes.splitpanes > .splitpanes__splitter) {
-  background: var(--border) !important;
-  min-width: 3px;
-  min-height: 3px;
-}
-
-:deep(.git-history__splitpanes.splitpanes > .splitpanes__splitter:hover) {
-  background: var(--accent) !important;
 }
 </style>
