@@ -1,10 +1,11 @@
+/// <reference types="node" />
 import os from "node:os";
 import path from "node:path";
 import fs from "node:fs/promises";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { GitManager } from "./git-manager.js";
 
-const tempPaths = [];
+const tempPaths: string[] = [];
 
 afterEach(async () => {
   await Promise.all(tempPaths.splice(0).map((targetPath) => fs.rm(targetPath, { recursive: true, force: true })));
@@ -20,8 +21,8 @@ async function createGitFixture() {
   return { root, sibling };
 }
 
-function createExecMock(responses) {
-  return vi.fn(async (cwd, args) => {
+function createExecMock(responses: Record<string, { stdout: string; stderr: string } | Error>) {
+  return vi.fn(async (cwd: string, args: string[]) => {
     const key = `${cwd}::${args.join(" ")}`;
     if (!(key in responses)) {
       throw { stderr: `Unexpected git call: ${key}`, stdout: "" };
@@ -30,8 +31,10 @@ function createExecMock(responses) {
     if (value instanceof Error) {
       throw { stderr: value.message, stdout: "" };
     }
-    if (value && value.__reject) {
-      throw value.__reject;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    if (value && (value as any).__reject) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      throw (value as any).__reject;
     }
     return value;
   });
@@ -112,13 +115,13 @@ describe("GitManager", () => {
 
     expect(snapshot.available).toBe(true);
     expect(snapshot.branch).toBe("feature-x");
-    expect(snapshot.remotes.origin).toBe("https://dev.azure.com/acme/Platform/_git/web-app");
+    expect((snapshot.remotes as Record<string, string>).origin).toBe("https://dev.azure.com/acme/Platform/_git/web-app");
     expect(snapshot.baseBranch).toBe("main");
     expect(snapshot.aheadCount).toBe(2);
     expect(snapshot.behindCount).toBe(1);
-    expect(snapshot.staged.map((entry) => entry.path)).toEqual(["src/app.js"]);
-    expect(snapshot.unstaged.map((entry) => entry.path)).toEqual(["config/app.json"]);
-    expect(snapshot.untracked.map((entry) => entry.path)).toEqual(["docs/notes.md"]);
+    expect((snapshot.staged as Array<{ path: string }>).map((entry) => entry.path)).toEqual(["src/app.js"]);
+    expect((snapshot.unstaged as Array<{ path: string }>).map((entry) => entry.path)).toEqual(["config/app.json"]);
+    expect((snapshot.untracked as Array<{ path: string }>).map((entry) => entry.path)).toEqual(["docs/notes.md"]);
     expect(snapshot.diffStat).toMatchObject({
       files: 3,
       insertions: 5,
@@ -129,8 +132,8 @@ describe("GitManager", () => {
       aheadCount: 3,
       behindCount: 1,
     });
-    expect(snapshot.siblingWorktrees).toHaveLength(2);
-    expect(snapshot.siblingWorktrees[1]).toMatchObject({
+    expect(snapshot.siblingWorktrees as unknown[]).toHaveLength(2);
+    expect((snapshot.siblingWorktrees as Array<Record<string, unknown>>)[1]).toMatchObject({
       branch: "feature-y",
       dirty: true,
     });
@@ -208,9 +211,10 @@ describe("GitManager", () => {
 
     expect(snapshot.branch).toBe("feature-x");
     expect(snapshot.baseBranch).toBe("main");
-    const merged = snapshot.siblingWorktrees.find((e) => e.branch === "feature-merged");
-    const active = snapshot.siblingWorktrees.find((e) => e.branch === "feature-active");
-    const mainEntry = snapshot.siblingWorktrees.find((e) => e.branch === "main");
+    const siblings = snapshot.siblingWorktrees as Array<{ branch: string; branchMerged: boolean }>;
+    const merged = siblings.find((e) => e.branch === "feature-merged");
+    const active = siblings.find((e) => e.branch === "feature-active");
+    const mainEntry = siblings.find((e) => e.branch === "main");
     expect(merged?.branchMerged).toBe(true);
     expect(active?.branchMerged).toBe(false);
     expect(mainEntry?.branchMerged).toBe(false);
@@ -295,7 +299,7 @@ describe("GitManager", () => {
     const snapshot = await manager.inspectWorkspace({ id: "frontend", cwd: root, kind: "terminal" });
 
     expect(snapshot.baseBranch).toBe("origin/main");
-    expect(snapshot.compareWithBase.baseBranch).toBe("origin/main");
+    expect((snapshot.compareWithBase as { baseBranch: string }).baseBranch).toBe("origin/main");
   });
 
   test("mergeIntoCurrent refuses dirty workspace without explicit stash flow", async () => {
@@ -401,7 +405,7 @@ describe("GitManager", () => {
     await manager.inspectWorkspace({ id: "frontend", cwd: root, kind: "terminal" });
 
     expect(
-      execGitImpl.mock.calls.filter(([cwd, args]) => cwd === sibling && args.join(" ") === "status --short"),
+      execGitImpl.mock.calls.filter(([cwd, args]: [string, string[]]) => cwd === sibling && args.join(" ") === "status --short"),
     ).toHaveLength(1);
   });
 
@@ -471,7 +475,7 @@ describe("GitManager", () => {
 
   test("diffPreview returns a preview for untracked files", async () => {
     const { root } = await createGitFixture();
-    const execGitImpl = vi.fn(async (cwd, args) => {
+    const execGitImpl = vi.fn(async (cwd: string, args: string[]) => {
       if (cwd !== root) {
         throw { stderr: "unexpected cwd", stdout: "" };
       }
@@ -537,8 +541,8 @@ describe("GitManager", () => {
     const result = await manager.listTags({ id: "ws-1", cwd: root });
 
     expect(result.ok).toBe(true);
-    expect(result.tags).toHaveLength(2);
-    expect(result.tags[0]).toMatchObject({
+    expect(result.tags as unknown[]).toHaveLength(2);
+    expect((result.tags as Array<Record<string, unknown>>)[0]).toMatchObject({
       name: "v1.0.0",
       annotated: true,
       author: "Jaromir",
@@ -546,7 +550,7 @@ describe("GitManager", () => {
       pushed: true,
       local: true,
     });
-    expect(result.tags[1]).toMatchObject({
+    expect((result.tags as Array<Record<string, unknown>>)[1]).toMatchObject({
       name: "v0.9.0",
       annotated: false,
       pushed: false,
@@ -579,9 +583,9 @@ describe("GitManager", () => {
 
     const result = await manager.listTags({ id: "ws-1", cwd: root });
 
-    expect(result.tags).toHaveLength(2);
-    expect(result.tags[0]).toMatchObject({ name: "v1.0.0", local: true, pushed: true });
-    expect(result.tags[1]).toMatchObject({ name: "v2.0.0", local: false, pushed: true });
+    expect(result.tags as unknown[]).toHaveLength(2);
+    expect((result.tags as Array<Record<string, unknown>>)[0]).toMatchObject({ name: "v1.0.0", local: true, pushed: true });
+    expect((result.tags as Array<Record<string, unknown>>)[1]).toMatchObject({ name: "v2.0.0", local: false, pushed: true });
   });
 
   test("listTags returns empty array when no tags exist", async () => {
@@ -720,8 +724,8 @@ describe("GitManager", () => {
 
   // ─── execAuthGit login resolution ────────────────────────────────
 
-  function extractAuthCredentials(execMock) {
-    const args = execMock.mock.calls[0][1];
+  function extractAuthCredentials(execMock: ReturnType<typeof vi.fn>) {
+    const args = execMock.mock.calls[0][1] as string[];
     const headerArg = args.find((a) => typeof a === "string" && a.includes("http.extraheader="));
     if (!headerArg) return null;
     const base64 = headerArg.split("Basic ")[1];
@@ -942,9 +946,9 @@ describe("GitManager", () => {
 
     const snapshot = await manager.inspectWorkspace({ id: "ws-1", cwd: root, kind: "terminal" });
 
-    expect(snapshot.staged).toHaveLength(1);
-    expect(snapshot.unstaged).toHaveLength(1);
-    expect(snapshot.untracked).toHaveLength(0);
+    expect(snapshot.staged as unknown[]).toHaveLength(1);
+    expect(snapshot.unstaged as unknown[]).toHaveLength(1);
+    expect(snapshot.untracked as unknown[]).toHaveLength(0);
     expect(snapshot.dirtyCount).toBe(2);
     expect(snapshot.dirty).toBe(true);
   });
@@ -978,9 +982,9 @@ describe("GitManager", () => {
 
     const snapshot = await manager.inspectWorkspace({ id: "ws-1", cwd: root, kind: "terminal" });
 
-    expect(snapshot.staged).toHaveLength(0);
-    expect(snapshot.unstaged).toHaveLength(0);
-    expect(snapshot.untracked).toHaveLength(2);
+    expect(snapshot.staged as unknown[]).toHaveLength(0);
+    expect(snapshot.unstaged as unknown[]).toHaveLength(0);
+    expect(snapshot.untracked as unknown[]).toHaveLength(2);
     expect(snapshot.dirtyCount).toBe(2);
     expect(snapshot.dirty).toBe(true);
   });
@@ -1020,10 +1024,10 @@ describe("GitManager", () => {
     const snapshot = await manager.inspectWorkspace({ id: "ws-1", cwd: root, kind: "terminal" });
 
     // src/a.js appears in both staged and unstaged — must count once
-    expect(snapshot.staged.map((e) => e.path)).toContain("src/a.js");
-    expect(snapshot.unstaged.map((e) => e.path)).toContain("src/a.js");
-    expect(snapshot.unstaged.map((e) => e.path)).toContain("src/b.js");
-    expect(snapshot.untracked.map((e) => e.path)).toContain("new.txt");
+    expect((snapshot.staged as Array<{ path: string }>).map((e) => e.path)).toContain("src/a.js");
+    expect((snapshot.unstaged as Array<{ path: string }>).map((e) => e.path)).toContain("src/a.js");
+    expect((snapshot.unstaged as Array<{ path: string }>).map((e) => e.path)).toContain("src/b.js");
+    expect((snapshot.untracked as Array<{ path: string }>).map((e) => e.path)).toContain("new.txt");
     expect(snapshot.dirtyCount).toBe(3);
     expect(snapshot.dirty).toBe(true);
   });
@@ -1040,7 +1044,7 @@ describe("GitManager", () => {
 
       const subPath = path.join(root, "sub").replace(/\\/g, "/");
 
-      const execGitImpl = async (cwd, args) => {
+      const execGitImpl = async (cwd: string, args: string[]) => {
         if (args[0] === "rev-parse" && args[1] === "--show-toplevel") return { stdout: cwd + "\n", stderr: "" };
         if (args[0] === "rev-parse" && args[1] === "--abbrev-ref") return { stdout: "main\n", stderr: "" };
         if (args[0] === "remote") return { stdout: "", stderr: "" };
@@ -1068,7 +1072,7 @@ describe("GitManager", () => {
 
       const workspace = { id: "ws1", cwd: root.replace(/\\/g, "/"), gitRoots: [root.replace(/\\/g, "/"), subPath] };
 
-      let actionCwd = null;
+      let actionCwd: string | null = null;
       await mgr.runWriteAction(workspace, {
         type: "fetch",
         label: "Fetch",
@@ -1090,7 +1094,7 @@ describe("GitManager", () => {
 
       const normalizedRoot = root.replace(/\\/g, "/");
 
-      const execGitImpl = async (cwd, args) => {
+      const execGitImpl = async (cwd: string, args: string[]) => {
         if (args[0] === "rev-parse" && args[1] === "--show-toplevel") return { stdout: cwd + "\n", stderr: "" };
         if (args[0] === "rev-parse" && args[1] === "--abbrev-ref") return { stdout: "main\n", stderr: "" };
         if (args[0] === "remote") return { stdout: "", stderr: "" };
@@ -1113,7 +1117,7 @@ describe("GitManager", () => {
 
       const workspace = { id: "ws2", cwd: normalizedRoot };
 
-      let actionCwd = null;
+      let actionCwd: string | null = null;
       await mgr.runWriteAction(workspace, {
         type: "fetch",
         label: "Fetch",
@@ -1136,7 +1140,7 @@ describe("GitManager", () => {
       await fs.mkdir(path.join(root, "sub"), { recursive: true });
       await fs.mkdir(path.join(root, "sub", ".git"), { recursive: true });
 
-      const execGitImpl = async (cwd, args) => {
+      const execGitImpl = async (cwd: string, args: string[]) => {
         if (args[0] === "rev-parse" && args[1] === "--show-toplevel") return { stdout: cwd + "\n", stderr: "" };
         if (args[0] === "rev-parse" && args[1] === "--abbrev-ref") return { stdout: "main\n", stderr: "" };
         if (args[0] === "remote") return { stdout: "", stderr: "" };
@@ -1157,7 +1161,7 @@ describe("GitManager", () => {
       const mgr = new GitManager({ execGitImpl });
       mgr.detectLazygit = async () => ({ available: false, backend: null, error: "missing", launch: null });
 
-      const auditEntries = [];
+      const auditEntries: Array<Record<string, unknown>> = [];
       mgr._logGitAudit = (entry) => auditEntries.push(entry);
 
       const workspace = {
@@ -1176,7 +1180,7 @@ describe("GitManager", () => {
 
       const successEntry = auditEntries.find((e) => e.success === true);
       expect(successEntry).toBeTruthy();
-      expect(successEntry.extra?.rootPath).toBe(subPath);
+      expect((successEntry!.extra as Record<string, unknown>)?.rootPath).toBe(subPath);
     });
   });
 
@@ -1202,7 +1206,7 @@ describe("GitManager", () => {
 
     test("returns N snapshots for N gitRoots entries", async () => {
       const mgr = new GitManager({});
-      mgr._inspectRoot = vi.fn().mockImplementation(async (ws, rp) => ({
+      mgr._inspectRoot = vi.fn().mockImplementation(async (ws: WorkspaceRef, rp: string) => ({
         workspaceId: ws.id,
         rootPath: rp,
         available: true,
@@ -1217,7 +1221,7 @@ describe("GitManager", () => {
     test("refreshWorkspaces cache key isolates siblings", async () => {
       const mgr = new GitManager({});
       let inspectCount = 0;
-      mgr._inspectRoot = vi.fn().mockImplementation(async (ws, rp) => {
+      mgr._inspectRoot = vi.fn().mockImplementation(async (ws: WorkspaceRef, rp: string) => {
         inspectCount++;
         return { workspaceId: ws.id, rootPath: rp, available: true };
       });
@@ -1270,8 +1274,8 @@ describe("GitManager", () => {
 
   describe("stash rootPath routing", () => {
     test("stash uses rootPath as effective cwd when provided", async () => {
-      const calls = [];
-      const execGitImpl = vi.fn().mockImplementation(async (cwd, args) => {
+      const calls: Array<{ cwd: string; cmd: string }> = [];
+      const execGitImpl = vi.fn().mockImplementation(async (cwd: string, args: string[]) => {
         calls.push({ cwd, cmd: args[0] });
         return { stdout: "No local changes to save\n", stderr: "" };
       });
@@ -1282,8 +1286,8 @@ describe("GitManager", () => {
     });
 
     test("stash falls back to workspace.cwd when rootPath is empty", async () => {
-      const calls = [];
-      const execGitImpl = vi.fn().mockImplementation(async (cwd) => {
+      const calls: string[] = [];
+      const execGitImpl = vi.fn().mockImplementation(async (cwd: string) => {
         calls.push(cwd);
         return { stdout: "No local changes to save\n", stderr: "" };
       });
@@ -1293,8 +1297,8 @@ describe("GitManager", () => {
     });
 
     test("stashPop uses rootPath as effective cwd when provided", async () => {
-      const calls = [];
-      const execGitImpl = vi.fn().mockImplementation(async (cwd) => {
+      const calls: string[] = [];
+      const execGitImpl = vi.fn().mockImplementation(async (cwd: string) => {
         calls.push(cwd);
         return { stdout: "HEAD is now at abc main\n", stderr: "" };
       });

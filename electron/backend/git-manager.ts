@@ -1,3 +1,4 @@
+/// <reference types="node" />
 import path from "node:path";
 import { EventEmitter } from "node:events";
 import { existsSync, readdirSync } from "node:fs";
@@ -46,7 +47,101 @@ const log = getLogger("git");
 const WORKTREE_DIRTY_CACHE_TTL_MS = 1500;
 const SNAPSHOT_CACHE_TTL_MS = 8000;
 
+interface GitExecResult {
+  stdout: string;
+  stderr: string;
+}
+
+type ExecGitImpl = (cwd: string, args: string[]) => Promise<GitExecResult>;
+
+interface Connection {
+  id?: string;
+  tokenRef?: string;
+  login?: string;
+  currentUserLogin?: string;
+  orgUrl?: string;
+  baseUrl?: string;
+  label?: string;
+  provider?: string;
+  [key: string]: unknown;
+}
+
+interface AuditLogStore {
+  logEntry(entry: Record<string, unknown>): void;
+}
+
+interface CredentialStore {
+  getSecret(ref: string): string | null | undefined;
+}
+
+interface WorktreeDirtyCacheEntry {
+  at: number;
+  value: { dirty: boolean; dirtyCount: number };
+}
+
+interface SnapshotCacheEntry {
+  at: number;
+  snapshot: Record<string, unknown>;
+}
+
+interface GitManagerOptions {
+  execGitImpl?: ExecGitImpl | null;
+  now?: (() => Date) | null;
+  snapshotCacheTtlMs?: number;
+  credentialStore?: CredentialStore | null;
+  auditLogStore?: AuditLogStore | null;
+  gitAuditLogStore?: AuditLogStore | null;
+}
+
+interface WriteActionOptions {
+  type: string;
+  label: string;
+  baseBranch?: string;
+  stashDirty?: boolean;
+  allowDirty?: boolean;
+  skipPreflight?: boolean;
+  run: (cwd: string, resolvedBaseBranch: string) => Promise<GitExecResult>;
+  connection?: Connection | null;
+  extraAudit?: Record<string, unknown>;
+  rootPath?: string;
+}
+
+interface LogGitAuditOptions {
+  type: string;
+  connection: Connection | null | undefined;
+  success: boolean;
+  durationMs?: number;
+  errorMessage?: string;
+  workspaceId: string;
+  remoteUrl: string;
+  extra?: Record<string, unknown>;
+}
+
+interface WorkspaceRef {
+  id: string;
+  cwd?: string;
+  kind?: string;
+  gitRoots?: string[];
+  review?: {
+    pullRequest?: {
+      sourceRefName?: string;
+    } | null;
+  } | null;
+  branchMerged?: boolean;
+  [key: string]: unknown;
+}
+
 export class GitManager extends EventEmitter {
+  snapshots: Map<string, Record<string, unknown>>;
+  execGitImpl: ExecGitImpl | null;
+  now: () => Date;
+  worktreeDirtyCache: Map<string, WorktreeDirtyCacheEntry>;
+  snapshotCache: Map<string, SnapshotCacheEntry>;
+  snapshotCacheTtlMs: number;
+  credentialStore: CredentialStore | null;
+  auditLogStore: AuditLogStore | null;
+  gitAuditLogStore: AuditLogStore | null;
+
   constructor({
     execGitImpl = null,
     now = null,
@@ -54,20 +149,20 @@ export class GitManager extends EventEmitter {
     credentialStore = null,
     auditLogStore = null,
     gitAuditLogStore = null,
-  } = {}) {
+  }: GitManagerOptions = {}) {
     super();
     this.snapshots = new Map();
-    this.execGitImpl = execGitImpl;
+    this.execGitImpl = execGitImpl ?? null;
     this.now = now || (() => new Date());
     this.worktreeDirtyCache = new Map();
     this.snapshotCache = new Map();
     this.snapshotCacheTtlMs = snapshotCacheTtlMs;
-    this.credentialStore = credentialStore;
-    this.auditLogStore = auditLogStore;
-    this.gitAuditLogStore = gitAuditLogStore;
+    this.credentialStore = credentialStore ?? null;
+    this.auditLogStore = auditLogStore ?? null;
+    this.gitAuditLogStore = gitAuditLogStore ?? null;
   }
 
-  async execGit(cwd, args) {
+  async execGit(cwd: string, args: string[]): Promise<GitExecResult> {
     if (this.execGitImpl) {
       return this.execGitImpl(cwd, args);
     }
@@ -80,7 +175,7 @@ export class GitManager extends EventEmitter {
    * `git -c http.extraheader=…` so the operation is audited under the
    * correct Azure DevOps / provider identity.
    */
-  async execAuthGit(cwd, args, { connection = null } = {}) {
+  async execAuthGit(cwd: string, args: string[], { connection = null }: { connection?: Connection | null } = {}): Promise<GitExecResult> {
     if (!connection?.tokenRef || !this.credentialStore) {
       return this.execGit(cwd, args);
     }
@@ -90,12 +185,12 @@ export class GitManager extends EventEmitter {
       return this.execGit(cwd, args);
     }
 
-    const extraArgs = [];
+    const extraArgs: string[] = [];
     if (process.platform === "win32") {
       extraArgs.push("-c", "core.longpaths=true");
     }
     const login = connection.login || connection.currentUserLogin || "x-access-token";
-    extraArgs.push("-c", `http.extraheader=${encodeAuthHeader(login, token)}`);
+    extraArgs.push("-c", `http.extraheader=${encodeAuthHeader(String(login), token)}`);
 
     if (this.execGitImpl) {
       return this.execGitImpl(cwd, [...extraArgs, ...args]);
@@ -103,22 +198,22 @@ export class GitManager extends EventEmitter {
     return execFileText("git", [...extraArgs, ...args], { cwd, env: sanitizeGitEnvironment() });
   }
 
-  _cacheKey(workspaceId, rootPath) {
+  _cacheKey(workspaceId: string, rootPath: string | null): string {
     return rootPath ? `${workspaceId}:${path.resolve(rootPath)}` : workspaceId;
   }
 
-  getWorkspaceMap() {
+  getWorkspaceMap(): Record<string, unknown> {
     // Build { [workspaceId]: { primaryRoot, roots: { [rootPath]: snapshot } } }
     // Also duplicate primary snapshot fields at top level for back-compat.
-    const workspaceIds = new Set();
+    const workspaceIds = new Set<string>();
     for (const key of this.snapshots.keys()) {
       const colonIdx = key.indexOf(":");
       workspaceIds.add(colonIdx >= 0 ? key.slice(0, colonIdx) : key);
     }
 
-    const result = {};
+    const result: Record<string, unknown> = {};
     for (const workspaceId of workspaceIds) {
-      const snapshotEntries = [];
+      const snapshotEntries: Array<Record<string, unknown>> = [];
       for (const [key, snapshot] of this.snapshots.entries()) {
         const colonIdx = key.indexOf(":");
         const wid = colonIdx >= 0 ? key.slice(0, colonIdx) : key;
@@ -134,10 +229,10 @@ export class GitManager extends EventEmitter {
         result[workspaceId] = primarySnapshot;
       } else {
         // Multi-root: emit structured object
-        const roots = {};
+        const roots: Record<string, unknown> = {};
         let primaryRoot = "";
         for (const snap of snapshotEntries) {
-          const rp = snap?.rootPath || snap?.cwd || "";
+          const rp = String(snap?.rootPath || snap?.cwd || "");
           if (rp) {
             roots[rp] = snap;
             if (!primaryRoot) primaryRoot = rp;
@@ -153,19 +248,19 @@ export class GitManager extends EventEmitter {
     return result;
   }
 
-  getProjectMap() {
+  getProjectMap(): Record<string, unknown> {
     return this.getWorkspaceMap();
   }
 
-  getSnapshot(workspaceId, rootPath = null) {
+  getSnapshot(workspaceId: string, rootPath: string | null = null): Record<string, unknown> | null {
     if (rootPath) {
       return this.snapshots.get(this._cacheKey(workspaceId, rootPath)) || null;
     }
     return this.snapshots.get(workspaceId) || this.getSnapshots(workspaceId)[0] || null;
   }
 
-  getSnapshots(workspaceId) {
-    const result = [];
+  getSnapshots(workspaceId: string): Array<Record<string, unknown>> {
+    const result: Array<Record<string, unknown>> = [];
     for (const [key, value] of this.snapshots.entries()) {
       if (key === workspaceId || key.startsWith(`${workspaceId}:`)) {
         result.push(value);
@@ -174,7 +269,7 @@ export class GitManager extends EventEmitter {
     return result;
   }
 
-  async getCachedWorktreeDirtyState(worktreePath, fallbackDirty = false) {
+  async getCachedWorktreeDirtyState(worktreePath: string, fallbackDirty = false): Promise<{ dirty: boolean; dirtyCount: number }> {
     const cacheKey = path.resolve(worktreePath);
     const cached = this.worktreeDirtyCache.get(cacheKey);
     const now = this.now().getTime();
@@ -188,7 +283,7 @@ export class GitManager extends EventEmitter {
     return value;
   }
 
-  async detectLazygit(workspace, rootPath = null) {
+  async detectLazygit(workspace: WorkspaceRef, rootPath: string | null = null): Promise<Record<string, unknown>> {
     const cwd = rootPath || workspace.cwd;
     const hostBinary = this.resolveLazygitBinary();
     try {
@@ -206,7 +301,7 @@ export class GitManager extends EventEmitter {
       // Fall through to WSL detection.
     }
 
-    const wslCwd = toWslPath(cwd);
+    const wslCwd = toWslPath(cwd || "");
     if (!wslCwd) {
       return {
         available: false,
@@ -237,7 +332,7 @@ export class GitManager extends EventEmitter {
     }
   }
 
-  resolveLazygitBinary() {
+  resolveLazygitBinary(): string {
     const wingetRoot = path.join(process.env.LOCALAPPDATA || "", "Microsoft", "WinGet", "Packages");
     if (wingetRoot && existsSync(wingetRoot)) {
       const packageDir = readdirSync(wingetRoot, { withFileTypes: true }).find(
@@ -254,7 +349,7 @@ export class GitManager extends EventEmitter {
     return "lazygit";
   }
 
-  async _inspectRoot(workspace, rootPath) {
+  async _inspectRoot(workspace: WorkspaceRef, rootPath: string | null): Promise<Record<string, unknown>> {
     if (!workspace || workspace.kind === "docker" || !rootPath) {
       return createUnavailableSnapshot(
         workspace || { id: "", cwd: "" },
@@ -358,7 +453,7 @@ export class GitManager extends EventEmitter {
       // Per-sibling branchMerged detection: `git branch --merged <baseBranch>` lists
       // local branches whose tip is reachable from baseBranch (i.e. already merged in).
       // One extra subprocess per snapshot, covered by the 8 s cache.
-      let mergedBranchesSet = new Set();
+      let mergedBranchesSet = new Set<string>();
       if (baseBranch && worktrees.length > 1) {
         try {
           const mergedResult = await this.execGit(root, [
@@ -455,17 +550,17 @@ export class GitManager extends EventEmitter {
     }
   }
 
-  async inspectWorkspaceRoots(workspace) {
+  async inspectWorkspaceRoots(workspace: WorkspaceRef): Promise<{ roots: Array<Record<string, unknown>>; primaryRoot: string }> {
     if (!workspace || workspace.kind === "docker") {
       return { roots: [], primaryRoot: "" };
     }
-    const roots = (workspace.gitRoots?.length ? workspace.gitRoots : [workspace.cwd]).filter(Boolean);
+    const roots = (workspace.gitRoots?.length ? workspace.gitRoots : [workspace.cwd]).filter(Boolean) as string[];
     if (!roots.length) return { roots: [], primaryRoot: "" };
     const snapshots = await Promise.all(roots.map((root) => this._inspectRoot(workspace, root)));
     return { roots: snapshots, primaryRoot: roots[0] };
   }
 
-  async inspectWorkspace(workspace) {
+  async inspectWorkspace(workspace: WorkspaceRef): Promise<Record<string, unknown>> {
     if (!workspace || workspace.kind === "docker" || !workspace.cwd) {
       return createUnavailableSnapshot(
         workspace || { id: "", cwd: "" },
@@ -476,11 +571,11 @@ export class GitManager extends EventEmitter {
     return roots[0] || createUnavailableSnapshot(workspace, "No git roots detected.");
   }
 
-  async inspectProject(project) {
+  async inspectProject(project: WorkspaceRef): Promise<Record<string, unknown>> {
     return this.inspectWorkspace(project);
   }
 
-  async readUpstream(cwd) {
+  async readUpstream(cwd: string): Promise<string> {
     try {
       const result = await this.execGit(cwd, ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"]);
       return result.stdout.trim();
@@ -489,7 +584,7 @@ export class GitManager extends EventEmitter {
     }
   }
 
-  async readDiffStat(cwd, args) {
+  async readDiffStat(cwd: string, args: string[]): Promise<ReturnType<typeof parseDiffStatLine>> {
     try {
       const result = await this.execGit(cwd, args);
       return parseDiffStatLine(result.stdout.trim());
@@ -498,7 +593,7 @@ export class GitManager extends EventEmitter {
     }
   }
 
-  async readBaseComparison(cwd, baseBranch, currentBranch) {
+  async readBaseComparison(cwd: string, baseBranch: string, currentBranch: string): Promise<Record<string, unknown>> {
     if (!baseBranch) {
       return {
         baseBranch: "",
@@ -549,8 +644,8 @@ export class GitManager extends EventEmitter {
     const fileSummary = summarizeNameStatusEntries(files);
 
     const branchFilePaths = new Set(files.map((entry) => entry.path));
-    let potentialConflicts = [];
-    let baseChangedFiles = [];
+    let potentialConflicts: string[] = [];
+    let baseChangedFiles: string[] = [];
     try {
       const baseChangesResult = await this.execGit(cwd, ["diff", "--name-only", `HEAD...${compareTarget}`]);
       const baseFiles = String(baseChangesResult.stdout || "")
@@ -579,7 +674,7 @@ export class GitManager extends EventEmitter {
     };
   }
 
-  async inspectOperationState(cwd, { gitDir, gitCommonDir }) {
+  async inspectOperationState(cwd: string, { gitDir, gitCommonDir }: { gitDir: string; gitCommonDir: string }): Promise<{ kind: string; inProgress: boolean; conflicts: string[] }> {
     const mergeHeadPath = path.join(gitDir, "MERGE_HEAD");
     const cherryPickHeadPath = path.join(gitDir, "CHERRY_PICK_HEAD");
     const rebaseMergePath = path.join(gitDir, "rebase-merge");
@@ -603,7 +698,7 @@ export class GitManager extends EventEmitter {
     return { kind: "idle", inProgress: false, conflicts: [] };
   }
 
-  async readConflicts(cwd) {
+  async readConflicts(cwd: string): Promise<string[]> {
     try {
       const result = await this.execGit(cwd, ["diff", "--name-only", "--diff-filter=U"]);
       return String(result.stdout || "")
@@ -615,7 +710,7 @@ export class GitManager extends EventEmitter {
     }
   }
 
-  invalidateSnapshotCache(workspaceId = null, rootPath = null) {
+  invalidateSnapshotCache(workspaceId: string | null = null, rootPath: string | null = null): void {
     if (!workspaceId) {
       this.snapshotCache.clear();
       return;
@@ -632,13 +727,13 @@ export class GitManager extends EventEmitter {
     }
   }
 
-  async refreshWorkspaces(workspaces = []) {
+  async refreshWorkspaces(workspaces: WorkspaceRef[] = []): Promise<Record<string, unknown>> {
     const now = this.now().getTime();
-    const nextSnapshots = new Map();
+    const nextSnapshots = new Map<string, Record<string, unknown>>();
 
     await Promise.all(
       workspaces.map(async (workspace) => {
-        const roots = (workspace.gitRoots?.length ? workspace.gitRoots : [workspace.cwd]).filter(Boolean);
+        const roots = (workspace.gitRoots?.length ? workspace.gitRoots : [workspace.cwd]).filter(Boolean) as string[];
         if (!roots.length) {
           // Docker or cwd-less workspace
           const cacheKey = workspace.id;
@@ -647,7 +742,7 @@ export class GitManager extends EventEmitter {
             nextSnapshots.set(cacheKey, cached.snapshot);
             return;
           }
-          const snapshot = await this._inspectRoot(workspace, workspace.cwd);
+          const snapshot = await this._inspectRoot(workspace, workspace.cwd || null);
           this.snapshotCache.set(cacheKey, { at: this.now().getTime(), snapshot });
           nextSnapshots.set(cacheKey, snapshot);
           return;
@@ -676,18 +771,19 @@ export class GitManager extends EventEmitter {
     return this.getWorkspaceMap();
   }
 
-  async refreshProjects(projects = []) {
+  async refreshProjects(projects: WorkspaceRef[] = []): Promise<Record<string, unknown>> {
     return this.refreshWorkspaces(projects);
   }
 
-  createLazygitLaunch(workspaceId, rootPath = null) {
+  createLazygitLaunch(workspaceId: string, rootPath: string | null = null): { file: string; args: string[] } | null {
     const snapshot = this.getSnapshot(workspaceId, rootPath);
-    return snapshot?.lazygit?.launch
-      ? { file: snapshot.lazygit.launch.file, args: [...snapshot.lazygit.launch.args] }
+    const lazygit = snapshot?.lazygit as { launch?: { file: string; args: string[] } } | undefined;
+    return lazygit?.launch
+      ? { file: lazygit.launch.file, args: [...lazygit.launch.args] }
       : null;
   }
 
-  async fetch(workspace, { connection = null, rootPath = "" } = {}) {
+  async fetch(workspace: WorkspaceRef, { connection = null, rootPath = "" }: { connection?: Connection | null; rootPath?: string } = {}): Promise<Record<string, unknown>> {
     return this.runWriteAction(workspace, {
       type: "fetch",
       label: "Fetch",
@@ -698,7 +794,7 @@ export class GitManager extends EventEmitter {
     });
   }
 
-  async pull(workspace, { connection = null, rootPath = "" } = {}) {
+  async pull(workspace: WorkspaceRef, { connection = null, rootPath = "" }: { connection?: Connection | null; rootPath?: string } = {}): Promise<Record<string, unknown>> {
     return this.runWriteAction(workspace, {
       type: "pull",
       label: "Pull",
@@ -709,21 +805,21 @@ export class GitManager extends EventEmitter {
     });
   }
 
-  async push(workspace, { connection = null, rootPath = "" } = {}) {
+  async push(workspace: WorkspaceRef, { connection = null, rootPath = "" }: { connection?: Connection | null; rootPath?: string } = {}): Promise<Record<string, unknown>> {
     const snapshot = await (rootPath ? this._inspectRoot(workspace, rootPath) : this.inspectWorkspace(workspace));
     if (!snapshot.available) {
-      return createStructuredResult({ ok: false, summary: snapshot.error || "Git workspace is unavailable." });
+      return createStructuredResult({ ok: false, summary: String(snapshot.error || "Git workspace is unavailable.") });
     }
 
-    const branch = snapshot.branch;
+    const branch = String(snapshot.branch || "");
     if (!branch) {
       return createStructuredResult({ ok: false, summary: "Cannot push: no branch is checked out (detached HEAD)." });
     }
 
-    const upstream = snapshot.upstream || "";
+    const upstream = String(snapshot.upstream || "");
     // Extract remote name from upstream (e.g. "origin/feature-1" → "origin")
     // For worktrees or repos with non-"origin" remotes, this picks the right one.
-    const remoteNames = Object.keys(snapshot.remotes || {}).filter((k) => !k.includes(":"));
+    const remoteNames = Object.keys((snapshot.remotes as Record<string, unknown>) || {}).filter((k) => !k.includes(":"));
     const remote = remoteNames.find((r) => upstream.startsWith(`${r}/`)) || remoteNames[0] || "origin";
     const upstreamBranch = upstream.startsWith(`${remote}/`) ? upstream.slice(remote.length + 1) : "";
     const upstreamMatchesBranch = upstreamBranch === branch;
@@ -746,32 +842,32 @@ export class GitManager extends EventEmitter {
     });
   }
 
-  async forcePushWithLease(workspace, { connection = null, rootPath = "" } = {}) {
+  async forcePushWithLease(workspace: WorkspaceRef, { connection = null, rootPath = "" }: { connection?: Connection | null; rootPath?: string } = {}): Promise<Record<string, unknown>> {
     const snapshot = await (rootPath ? this._inspectRoot(workspace, rootPath) : this.inspectWorkspace(workspace));
     if (!snapshot.available) {
-      return createStructuredResult({ ok: false, summary: snapshot.error || "Git workspace is unavailable." });
+      return createStructuredResult({ ok: false, summary: String(snapshot.error || "Git workspace is unavailable.") });
     }
-    const branch = snapshot.branch;
+    const branch = String(snapshot.branch || "");
     if (!branch) {
       return createStructuredResult({
         ok: false,
         summary: "Cannot force-push: no branch is checked out (detached HEAD).",
       });
     }
-    if (!(snapshot.aheadCount > 0 && snapshot.behindCount > 0)) {
+    if (!(Number(snapshot.aheadCount) > 0 && Number(snapshot.behindCount) > 0)) {
       return createStructuredResult({
         ok: false,
         summary: "Force-push with lease is only available when the branch has diverged from upstream.",
       });
     }
-    const remoteNames = Object.keys(snapshot.remotes || {}).filter((k) => !k.includes(":"));
-    const upstream = snapshot.upstream || "";
+    const remoteNames = Object.keys((snapshot.remotes as Record<string, unknown>) || {}).filter((k) => !k.includes(":"));
+    const upstream = String(snapshot.upstream || "");
     const remote = remoteNames.find((r) => upstream.startsWith(`${r}/`)) || remoteNames[0] || "origin";
     const target = `${remote}/${branch}`;
-    const effectiveCwd = rootPath || workspace.cwd;
+    const effectiveCwd = rootPath || String(workspace.cwd || "");
 
     // Resolve expected ref hash (current remote tracking ref = what --force-with-lease checks)
-    const extraAudit = { expectedRef: "", previousRemoteRef: "", newRemoteRef: "" };
+    const extraAudit: Record<string, unknown> = { expectedRef: "", previousRemoteRef: "", newRemoteRef: "" };
     if (upstream) {
       try {
         const refResult = await this.execGit(effectiveCwd, ["rev-parse", upstream]);
@@ -808,7 +904,7 @@ export class GitManager extends EventEmitter {
     });
   }
 
-  async checkoutBranch(workspace, { branch, rootPath = "" } = {}) {
+  async checkoutBranch(workspace: WorkspaceRef, { branch, rootPath = "" }: { branch?: string; rootPath?: string } = {}): Promise<Record<string, unknown>> {
     const targetBranch = String(branch || "").trim();
     if (!targetBranch) {
       return createStructuredResult({ ok: false, summary: "Branch name is required." });
@@ -826,7 +922,7 @@ export class GitManager extends EventEmitter {
     });
   }
 
-  async createBranch(workspace, { branch, startPoint = "", rootPath = "" } = {}) {
+  async createBranch(workspace: WorkspaceRef, { branch, startPoint = "", rootPath = "" }: { branch?: string; startPoint?: string; rootPath?: string } = {}): Promise<Record<string, unknown>> {
     const newBranch = String(branch || "").trim();
     if (!newBranch) {
       return createStructuredResult({ ok: false, summary: "Branch name is required." });
@@ -852,7 +948,7 @@ export class GitManager extends EventEmitter {
     });
   }
 
-  async mergeIntoCurrent(workspace, { baseBranch, stashDirty = false, rootPath = "" } = {}) {
+  async mergeIntoCurrent(workspace: WorkspaceRef, { baseBranch, stashDirty = false, rootPath = "" }: { baseBranch?: string; stashDirty?: boolean; rootPath?: string } = {}): Promise<Record<string, unknown>> {
     return this.runWriteAction(workspace, {
       type: "merge",
       label: "Merge",
@@ -863,7 +959,7 @@ export class GitManager extends EventEmitter {
     });
   }
 
-  async rebaseOnto(workspace, { baseBranch, stashDirty = false, rootPath = "" } = {}) {
+  async rebaseOnto(workspace: WorkspaceRef, { baseBranch, stashDirty = false, rootPath = "" }: { baseBranch?: string; stashDirty?: boolean; rootPath?: string } = {}): Promise<Record<string, unknown>> {
     return this.runWriteAction(workspace, {
       type: "rebase",
       label: "Rebase",
@@ -874,16 +970,17 @@ export class GitManager extends EventEmitter {
     });
   }
 
-  async continueOperation(workspace, { rootPath = "" } = {}) {
+  async continueOperation(workspace: WorkspaceRef, { rootPath = "" }: { rootPath?: string } = {}): Promise<Record<string, unknown>> {
     const snapshot = await (rootPath ? this._inspectRoot(workspace, rootPath) : this.inspectWorkspace(workspace));
     if (!snapshot.available) {
       return createStructuredResult({
         ok: false,
-        summary: snapshot.error || "Git workspace is unavailable.",
+        summary: String(snapshot.error || "Git workspace is unavailable."),
       });
     }
 
-    const args = resolveContinueArgs(snapshot.operationState.kind);
+    const operationState = snapshot.operationState as { kind: string; inProgress: boolean; conflicts: string[] };
+    const args = resolveContinueArgs(operationState.kind);
     if (!args) {
       return createStructuredResult({
         ok: false,
@@ -892,7 +989,7 @@ export class GitManager extends EventEmitter {
     }
 
     return this.runWriteAction(workspace, {
-      type: snapshot.operationState.kind,
+      type: operationState.kind,
       label: "Continue",
       allowDirty: true,
       skipPreflight: true,
@@ -901,16 +998,17 @@ export class GitManager extends EventEmitter {
     });
   }
 
-  async abortOperation(workspace, { rootPath = "" } = {}) {
+  async abortOperation(workspace: WorkspaceRef, { rootPath = "" }: { rootPath?: string } = {}): Promise<Record<string, unknown>> {
     const snapshot = await (rootPath ? this._inspectRoot(workspace, rootPath) : this.inspectWorkspace(workspace));
     if (!snapshot.available) {
       return createStructuredResult({
         ok: false,
-        summary: snapshot.error || "Git workspace is unavailable.",
+        summary: String(snapshot.error || "Git workspace is unavailable."),
       });
     }
 
-    const args = resolveAbortArgs(snapshot.operationState.kind);
+    const operationState = snapshot.operationState as { kind: string; inProgress: boolean; conflicts: string[] };
+    const args = resolveAbortArgs(operationState.kind);
     if (!args) {
       return createStructuredResult({
         ok: false,
@@ -918,9 +1016,9 @@ export class GitManager extends EventEmitter {
       });
     }
 
-    const effectiveCwd = rootPath || workspace.cwd;
+    const effectiveCwd = rootPath || String(workspace.cwd || "");
     const result = await this.runWriteAction(workspace, {
-      type: snapshot.operationState.kind,
+      type: operationState.kind,
       label: "Abort",
       allowDirty: true,
       skipPreflight: true,
@@ -932,14 +1030,14 @@ export class GitManager extends EventEmitter {
       const stashRestore = await this.restoreStridetermStash(effectiveCwd);
       if (stashRestore) {
         result.rawOutput = joinRawOutput(result.rawOutput, stashRestore);
-        result.warnings.push("Restored previously stashed local changes.");
+        (result.warnings as string[]).push("Restored previously stashed local changes.");
       }
     }
 
     return result;
   }
 
-  async diffPreview(workspace, { path: targetPath, scope = "unstaged", baseBranch = "", rootPath = "" } = {}) {
+  async diffPreview(workspace: WorkspaceRef | null, { path: targetPath, scope = "unstaged", baseBranch = "", rootPath = "" }: { path?: string; scope?: string; baseBranch?: string; rootPath?: string } = {}): Promise<Record<string, unknown>> {
     const effectiveCwd = rootPath || workspace?.cwd;
     if (!effectiveCwd || !targetPath) {
       return {
@@ -983,17 +1081,18 @@ export class GitManager extends EventEmitter {
         summary: diff ? "" : "No diff output for the selected file.",
       };
     } catch (error) {
+      const err = error as { stdout?: string; stderr?: string };
       return {
         ok: false,
         scope: normalizedScope,
         path: targetPath,
-        diff: trimDiffPreview(error.stdout || error.stderr || ""),
+        diff: trimDiffPreview(err.stdout || err.stderr || ""),
         summary: extractErrorMessage(error),
       };
     }
   }
 
-  async commitDiff(workspace, { hash, rootPath = "" } = {}) {
+  async commitDiff(workspace: WorkspaceRef | null, { hash, rootPath = "" }: { hash?: string; rootPath?: string } = {}): Promise<Record<string, unknown>> {
     const effectiveCwd = rootPath || workspace?.cwd;
     if (!effectiveCwd || !hash) {
       return { ok: false, hash: hash || "", diff: "", summary: "Workspace cwd and commit hash are required." };
@@ -1018,7 +1117,7 @@ export class GitManager extends EventEmitter {
   }
 
   async runWriteAction(
-    workspace,
+    workspace: WorkspaceRef,
     {
       type,
       label,
@@ -1030,28 +1129,29 @@ export class GitManager extends EventEmitter {
       connection = null,
       extraAudit = {},
       rootPath = "",
-    },
-  ) {
+    }: WriteActionOptions,
+  ): Promise<Record<string, unknown>> {
     this.invalidateSnapshotCache(workspace.id, rootPath || null);
     const snapshot = await (rootPath ? this._inspectRoot(workspace, rootPath) : this.inspectWorkspace(workspace));
     if (!snapshot.available) {
       return createStructuredResult({
         ok: false,
-        summary: snapshot.error || "Git workspace is unavailable.",
+        summary: String(snapshot.error || "Git workspace is unavailable."),
       });
     }
 
+    const operationState = snapshot.operationState as { kind: string; inProgress: boolean; label?: string; conflicts: string[] };
     const resolvedBaseBranch = String(baseBranch || snapshot.baseBranch || snapshot.upstream || "").trim();
-    const warnings = createOperationWarnings(snapshot, { type, baseBranch: resolvedBaseBranch, stashDirty });
+    const warnings = createOperationWarnings(snapshot as Parameters<typeof createOperationWarnings>[0], { type, baseBranch: resolvedBaseBranch, stashDirty });
 
     if (!skipPreflight) {
-      if (snapshot.operationState.inProgress) {
+      if (operationState.inProgress) {
         return createStructuredResult({
           ok: false,
-          summary: `${snapshot.operationState.label}. Finish or abort it before starting another Git action.`,
+          summary: `${operationState.label}. Finish or abort it before starting another Git action.`,
           warnings,
-          conflicts: snapshot.operationState.conflicts,
-          operationState: snapshot.operationState,
+          conflicts: operationState.conflicts,
+          operationState: operationState as typeof DEFAULT_OPERATION_STATE,
         });
       }
 
@@ -1083,7 +1183,7 @@ export class GitManager extends EventEmitter {
     let stashLabel = "";
     let stashOutput = "";
 
-    const effectiveCwd = rootPath || workspace.cwd;
+    const effectiveCwd = rootPath || String(workspace.cwd || "");
     try {
       if (stashDirty && snapshot.dirty) {
         stashLabel = `strideterm-${type}-${this.now().toISOString()}`;
@@ -1106,7 +1206,7 @@ export class GitManager extends EventEmitter {
       }
       const durationMs = Date.now() - startTime;
       log.info("git action completed", { type, label, durationMs });
-      const remoteUrl = Object.values(snapshot.remotes || {})[0] || "";
+      const remoteUrl = String(Object.values((snapshot.remotes as Record<string, unknown>) || {})[0] || "");
       const auditExtra = rootPath ? { ...extraAudit, rootPath } : extraAudit;
       this._logGitAudit({
         type,
@@ -1126,8 +1226,9 @@ export class GitManager extends EventEmitter {
         rawOutput: joinRawOutput(stashOutput, actionResult.stdout, actionResult.stderr, restoreOutput),
       });
     } catch (error) {
+      const err = error as { stdout?: string; stderr?: string };
       log.warn("git action failed", { type, label, err: extractErrorMessage(error) });
-      const remoteUrlOnError = Object.values(snapshot.remotes || {})[0] || "";
+      const remoteUrlOnError = String(Object.values((snapshot.remotes as Record<string, unknown>) || {})[0] || "");
       const auditExtraOnError = rootPath ? { ...extraAudit, rootPath } : extraAudit;
       this._logGitAudit({
         type,
@@ -1141,29 +1242,29 @@ export class GitManager extends EventEmitter {
       const operationSnapshot = await (rootPath
         ? this._inspectRoot(workspace, rootPath)
         : this.inspectWorkspace(workspace));
+      const opState = operationSnapshot.operationState as { kind: string; inProgress: boolean; conflicts: string[] };
       let restoreOutput = "";
-      if (stashLabel && !operationSnapshot.operationState.inProgress) {
+      if (stashLabel && !opState.inProgress) {
         restoreOutput = await this.restoreStash(effectiveCwd);
       } else if (stashLabel) {
-        warnings.push("Stashed local changes were kept because the Git operation needs manual resolution.");
+        (warnings as string[]).push("Stashed local changes were kept because the Git operation needs manual resolution.");
       }
 
-      const hasConflictState =
-        operationSnapshot.operationState.inProgress || operationSnapshot.operationState.conflicts.length > 0;
+      const hasConflictState = opState.inProgress || opState.conflicts.length > 0;
       return createStructuredResult({
         ok: false,
         summary: hasConflictState
           ? `${label} stopped because Git reported conflicts or requires manual resolution.`
           : `${label} failed.`,
         warnings,
-        conflicts: operationSnapshot.operationState.conflicts,
-        rawOutput: joinRawOutput(stashOutput, error.stdout, error.stderr, restoreOutput),
-        operationState: operationSnapshot.operationState,
+        conflicts: opState.conflicts,
+        rawOutput: joinRawOutput(stashOutput, err.stdout, err.stderr, restoreOutput),
+        operationState: opState as typeof DEFAULT_OPERATION_STATE,
       });
     }
   }
 
-  _logGitAudit({ type, connection, success, durationMs, errorMessage, workspaceId, remoteUrl, extra = {} }) {
+  _logGitAudit({ type, connection, success, durationMs, errorMessage, workspaceId, remoteUrl, extra = {} }: LogGitAuditOptions): void {
     const REMOTE_OPS = new Set([
       "push",
       "pull",
@@ -1178,7 +1279,7 @@ export class GitManager extends EventEmitter {
 
     try {
       if (connection?.id && this.auditLogStore) {
-        const organization = connection.orgUrl || connection.baseUrl || connection.label || "";
+        const organization = String(connection.orgUrl || connection.baseUrl || connection.label || "");
         this.auditLogStore.logEntry({
           timestamp: new Date().toISOString(),
           connectionId: connection.id,
@@ -1223,34 +1324,36 @@ export class GitManager extends EventEmitter {
     }
   }
 
-  async restoreStash(cwd) {
+  async restoreStash(cwd: string): Promise<string> {
     try {
       const result = await this.execGit(cwd, ["stash", "pop"]);
       return joinRawOutput(result.stdout, result.stderr);
     } catch (error) {
-      return joinRawOutput(error.stdout, error.stderr);
+      const err = error as { stdout?: string; stderr?: string };
+      return joinRawOutput(err.stdout, err.stderr);
     }
   }
 
-  async mergeCurrentIntoBase(workspace, { baseBranch, rootPath = "" } = {}) {
+  async mergeCurrentIntoBase(workspace: WorkspaceRef, { baseBranch, rootPath = "" }: { baseBranch?: string; rootPath?: string } = {}): Promise<Record<string, unknown>> {
     const snapshot = await (rootPath ? this._inspectRoot(workspace, rootPath) : this.inspectWorkspace(workspace));
     if (!snapshot.available) {
-      return createStructuredResult({ ok: false, summary: snapshot.error || "Git workspace is unavailable." });
+      return createStructuredResult({ ok: false, summary: String(snapshot.error || "Git workspace is unavailable.") });
     }
 
-    const resolvedBase = baseBranch || snapshot.baseBranch;
+    const resolvedBase = baseBranch || String(snapshot.baseBranch || "");
     if (!resolvedBase) {
       return createStructuredResult({ ok: false, summary: "Base branch could not be determined." });
     }
 
-    if (normalizeBranchName(resolvedBase) === normalizeBranchName(snapshot.branch)) {
+    if (normalizeBranchName(resolvedBase) === normalizeBranchName(String(snapshot.branch || ""))) {
       return createStructuredResult({ ok: false, summary: "Current branch is already the base branch." });
     }
 
-    const mainWorktree = (snapshot.siblingWorktrees || []).find(
+    const siblingWorktrees = (snapshot.siblingWorktrees as Array<{ branch: string; path: string; isMainWorktree: boolean; isCurrent: boolean }>) || [];
+    const mainWorktree = siblingWorktrees.find(
       (entry) => entry.branch === resolvedBase || (entry.isMainWorktree && !entry.isCurrent),
     );
-    const targetCwd = mainWorktree?.path || snapshot.mainWorktreePath;
+    const targetCwd = mainWorktree?.path || String(snapshot.mainWorktreePath || "");
     if (!targetCwd) {
       return createStructuredResult({
         ok: false,
@@ -1267,16 +1370,17 @@ export class GitManager extends EventEmitter {
     }
 
     try {
-      const result = await this.execGit(targetCwd, ["merge", "--no-edit", snapshot.branch]);
+      const result = await this.execGit(targetCwd, ["merge", "--no-edit", String(snapshot.branch || "")]);
       return createStructuredResult({
         ok: true,
         summary: `Merged ${snapshot.branch} into ${resolvedBase}.`,
         rawOutput: joinRawOutput(result.stdout, result.stderr),
       });
     } catch (error) {
+      const err = error as { stdout?: string; stderr?: string };
       const postSnapshot = await this.inspectOperationState(targetCwd, {
         gitDir: path.join(targetCwd, ".git"),
-        gitCommonDir: snapshot.gitCommonDir || path.join(targetCwd, ".git"),
+        gitCommonDir: String(snapshot.gitCommonDir || path.join(targetCwd, ".git")),
       });
       return createStructuredResult({
         ok: false,
@@ -1284,13 +1388,13 @@ export class GitManager extends EventEmitter {
           ? `Merge stopped due to conflicts in the ${resolvedBase} worktree. Resolve them there.`
           : `Merge of ${snapshot.branch} into ${resolvedBase} failed.`,
         conflicts: postSnapshot.conflicts,
-        rawOutput: joinRawOutput(error.stdout, error.stderr),
+        rawOutput: joinRawOutput(err.stdout, err.stderr),
         operationState: postSnapshot.inProgress ? buildOperationState(postSnapshot) : undefined,
       });
     }
   }
 
-  async commitAll(workspace, { message, rootPath = "" } = {}) {
+  async commitAll(workspace: WorkspaceRef | null, { message, rootPath = "" }: { message?: string; rootPath?: string } = {}): Promise<Record<string, unknown>> {
     const commitMessage = String(message || "").trim();
     if (!commitMessage) {
       return createStructuredResult({ ok: false, summary: "Commit message is required." });
@@ -1310,15 +1414,16 @@ export class GitManager extends EventEmitter {
         rawOutput: joinRawOutput(result.stdout, result.stderr),
       });
     } catch (error) {
+      const err = error as { stdout?: string; stderr?: string };
       return createStructuredResult({
         ok: false,
         summary: "Commit failed.",
-        rawOutput: joinRawOutput(error.stdout, error.stderr),
+        rawOutput: joinRawOutput(err.stdout, err.stderr),
       });
     }
   }
 
-  async removeWorktree(workspace, { worktreePath, deleteBranch = false, rootPath = "" } = {}) {
+  async removeWorktree(workspace: WorkspaceRef | null, { worktreePath, deleteBranch = false, rootPath = "" }: { worktreePath?: string; deleteBranch?: boolean; rootPath?: string } = {}): Promise<Record<string, unknown>> {
     const effectiveCwd = rootPath || workspace?.cwd;
     if (!effectiveCwd || !worktreePath) {
       return createStructuredResult({ ok: false, summary: "Worktree path is required." });
@@ -1345,10 +1450,11 @@ export class GitManager extends EventEmitter {
     try {
       await this.execGit(effectiveCwd, ["worktree", "remove", "--force", resolvedPath]);
     } catch (error) {
+      const err = error as { stdout?: string; stderr?: string };
       return createStructuredResult({
         ok: false,
         summary: `Failed to remove worktree at ${resolvedPath}.`,
-        rawOutput: joinRawOutput(error.stdout, error.stderr),
+        rawOutput: joinRawOutput(err.stdout, err.stderr),
       });
     }
 
@@ -1358,7 +1464,8 @@ export class GitManager extends EventEmitter {
         const result = await this.execGit(effectiveCwd, ["branch", "-d", branchName]);
         branchOutput = joinRawOutput(result.stdout, result.stderr);
       } catch (error) {
-        branchOutput = `Branch ${branchName} could not be deleted (may not be fully merged): ${joinRawOutput(error.stdout, error.stderr)}`;
+        const err = error as { stdout?: string; stderr?: string };
+        branchOutput = `Branch ${branchName} could not be deleted (may not be fully merged): ${joinRawOutput(err.stdout, err.stderr)}`;
       }
     }
 
@@ -1369,7 +1476,7 @@ export class GitManager extends EventEmitter {
     });
   }
 
-  async detectBestBaseBranch(cwd, currentBranch, upstream, branchNames = []) {
+  async detectBestBaseBranch(cwd: string, currentBranch: string, upstream: string, branchNames: string[] = []): Promise<string> {
     const candidates = buildBaseBranchCandidates(currentBranch, upstream, branchNames);
     if (!candidates.length) {
       return preferBaseBranch(currentBranch, upstream, branchNames);
@@ -1394,7 +1501,7 @@ export class GitManager extends EventEmitter {
     return best.distance < Infinity ? best.candidate : preferBaseBranch(currentBranch, upstream, branchNames);
   }
 
-  async getStashCount(cwd) {
+  async getStashCount(cwd: string): Promise<number> {
     try {
       const result = await this.execGit(cwd, ["stash", "list"]);
       const lines = String(result.stdout || "")
@@ -1406,7 +1513,7 @@ export class GitManager extends EventEmitter {
     }
   }
 
-  async stash(workspace, { message = "", rootPath = "" } = {}) {
+  async stash(workspace: WorkspaceRef | null, { message = "", rootPath = "" }: { message?: string; rootPath?: string } = {}): Promise<Record<string, unknown>> {
     const effectiveCwd = rootPath || workspace?.cwd;
     if (!effectiveCwd) {
       return createStructuredResult({ ok: false, summary: "Workspace has no working directory." });
@@ -1429,15 +1536,16 @@ export class GitManager extends EventEmitter {
         rawOutput: combined,
       });
     } catch (error) {
+      const err = error as { stdout?: string; stderr?: string };
       return createStructuredResult({
         ok: false,
         summary: "Stash failed.",
-        rawOutput: joinRawOutput(error.stdout, error.stderr),
+        rawOutput: joinRawOutput(err.stdout, err.stderr),
       });
     }
   }
 
-  async stashPop(workspace, { rootPath = "" } = {}) {
+  async stashPop(workspace: WorkspaceRef | null, { rootPath = "" }: { rootPath?: string } = {}): Promise<Record<string, unknown>> {
     const effectiveCwd = rootPath || workspace?.cwd;
     if (!effectiveCwd) {
       return createStructuredResult({ ok: false, summary: "Workspace has no working directory." });
@@ -1450,17 +1558,18 @@ export class GitManager extends EventEmitter {
         rawOutput: joinRawOutput(result.stdout, result.stderr),
       });
     } catch (error) {
+      const err = error as { stdout?: string; stderr?: string };
       return createStructuredResult({
         ok: false,
         summary: "Stash pop failed.",
-        rawOutput: joinRawOutput(error.stdout, error.stderr),
+        rawOutput: joinRawOutput(err.stdout, err.stderr),
       });
     }
   }
 
   // ─── Tag operations ───────────────────────────────────────────────
 
-  async listTags(workspace, { connection = null, rootPath = "" } = {}) {
+  async listTags(workspace: WorkspaceRef | null, { connection = null, rootPath = "" }: { connection?: Connection | null; rootPath?: string } = {}): Promise<Record<string, unknown>> {
     const effectiveCwd = rootPath || workspace?.cwd;
     if (!effectiveCwd) {
       return { ok: false, tags: [], summary: "Workspace has no working directory." };
@@ -1484,7 +1593,7 @@ export class GitManager extends EventEmitter {
       const lines = String(result.stdout || "")
         .split(/\r?\n/)
         .filter(Boolean);
-      const tags = lines.map((line) => {
+      const tags: Array<Record<string, unknown>> = lines.map((line) => {
         const [name, type, date, author, message, hash] = line.split("\t");
         return {
           name: name || "",
@@ -1497,7 +1606,7 @@ export class GitManager extends EventEmitter {
       });
 
       // Check which tags exist on remote
-      const remoteTags = new Set();
+      const remoteTags = new Set<string>();
       try {
         const remoteResult = await this.execAuthGit(effectiveCwd, ["ls-remote", "--tags", "origin"], { connection });
         const remoteLines = String(remoteResult.stdout || "")
@@ -1512,9 +1621,9 @@ export class GitManager extends EventEmitter {
         // remote lookup failed — not fatal
       }
 
-      const localTagNames = new Set(tags.map((t) => t.name));
+      const localTagNames = new Set(tags.map((t) => String(t.name)));
       for (const tag of tags) {
-        tag.pushed = remoteTags.has(tag.name);
+        tag.pushed = remoteTags.has(String(tag.name));
         tag.local = true;
       }
 
@@ -1536,11 +1645,12 @@ export class GitManager extends EventEmitter {
 
       return { ok: true, tags, summary: `${tags.length} tag(s) found.` };
     } catch (error) {
-      return { ok: false, tags: [], summary: joinRawOutput(error.stdout, error.stderr) || "Failed to list tags." };
+      const err = error as { stdout?: string; stderr?: string };
+      return { ok: false, tags: [], summary: joinRawOutput(err.stdout, err.stderr) || "Failed to list tags." };
     }
   }
 
-  async createTag(workspace, { tagName, message = "", commit = "", rootPath = "" } = {}) {
+  async createTag(workspace: WorkspaceRef | null, { tagName, message = "", commit = "", rootPath = "" }: { tagName?: string; message?: string; commit?: string; rootPath?: string } = {}): Promise<Record<string, unknown>> {
     const name = String(tagName || "").trim();
     if (!name) {
       return createStructuredResult({ ok: false, summary: "Tag name is required." });
@@ -1559,15 +1669,16 @@ export class GitManager extends EventEmitter {
         rawOutput: joinRawOutput(result.stdout, result.stderr),
       });
     } catch (error) {
+      const err = error as { stdout?: string; stderr?: string };
       return createStructuredResult({
         ok: false,
         summary: `Failed to create tag '${name}'.`,
-        rawOutput: joinRawOutput(error.stdout, error.stderr),
+        rawOutput: joinRawOutput(err.stdout, err.stderr),
       });
     }
   }
 
-  async deleteTag(workspace, { tagName, rootPath = "" } = {}) {
+  async deleteTag(workspace: WorkspaceRef | null, { tagName, rootPath = "" }: { tagName?: string; rootPath?: string } = {}): Promise<Record<string, unknown>> {
     const name = String(tagName || "").trim();
     if (!name) {
       return createStructuredResult({ ok: false, summary: "Tag name is required." });
@@ -1584,15 +1695,16 @@ export class GitManager extends EventEmitter {
         rawOutput: joinRawOutput(result.stdout, result.stderr),
       });
     } catch (error) {
+      const err = error as { stdout?: string; stderr?: string };
       return createStructuredResult({
         ok: false,
         summary: `Failed to delete tag '${name}'.`,
-        rawOutput: joinRawOutput(error.stdout, error.stderr),
+        rawOutput: joinRawOutput(err.stdout, err.stderr),
       });
     }
   }
 
-  async pushTag(workspace, { tagName, connection = null, rootPath = "" } = {}) {
+  async pushTag(workspace: WorkspaceRef, { tagName, connection = null, rootPath = "" }: { tagName?: string; connection?: Connection | null; rootPath?: string } = {}): Promise<Record<string, unknown>> {
     const name = String(tagName || "").trim();
     if (!name) {
       return createStructuredResult({ ok: false, summary: "Tag name is required." });
@@ -1608,7 +1720,7 @@ export class GitManager extends EventEmitter {
     });
   }
 
-  async pushAllTags(workspace, { connection = null, rootPath = "" } = {}) {
+  async pushAllTags(workspace: WorkspaceRef, { connection = null, rootPath = "" }: { connection?: Connection | null; rootPath?: string } = {}): Promise<Record<string, unknown>> {
     return this.runWriteAction(workspace, {
       type: "push-all-tags",
       label: "Push all tags",
@@ -1620,7 +1732,7 @@ export class GitManager extends EventEmitter {
     });
   }
 
-  async deleteRemoteTag(workspace, { tagName, connection = null, rootPath = "" } = {}) {
+  async deleteRemoteTag(workspace: WorkspaceRef, { tagName, connection = null, rootPath = "" }: { tagName?: string; connection?: Connection | null; rootPath?: string } = {}): Promise<Record<string, unknown>> {
     const name = String(tagName || "").trim();
     if (!name) {
       return createStructuredResult({ ok: false, summary: "Tag name is required." });
@@ -1636,7 +1748,7 @@ export class GitManager extends EventEmitter {
     });
   }
 
-  async restoreStridetermStash(cwd) {
+  async restoreStridetermStash(cwd: string): Promise<string> {
     try {
       const result = await this.execGit(cwd, ["stash", "list"]);
       const lines = String(result.stdout || "")
@@ -1649,7 +1761,8 @@ export class GitManager extends EventEmitter {
       const popResult = await this.execGit(cwd, ["stash", "pop", `stash@{${index}}`]);
       return joinRawOutput(popResult.stdout, popResult.stderr);
     } catch (error) {
-      return joinRawOutput(error?.stdout, error?.stderr);
+      const err = error as { stdout?: string; stderr?: string } | null;
+      return joinRawOutput(err?.stdout, err?.stderr);
     }
   }
 }
