@@ -1,5 +1,7 @@
+/// <reference types="node" />
 import { ipcMain, dialog, BrowserWindow, shell, Notification, app } from "electron";
 import { join } from "node:path";
+import type { createRuntime } from "./runtime.js";
 import * as fm from "./file-manager.js";
 import {
   validateIpc,
@@ -68,15 +70,28 @@ import {
   taskRejectVerdictSchema,
 } from "./ipc-schemas.js";
 
-export function registerIpc(runtime, emitToRenderer, { includeStateGet = true } = {}) {
+type Runtime = Awaited<ReturnType<typeof createRuntime>>;
+
+export function registerIpc(
+  runtime: Runtime,
+  emitToRenderer: (channel: string, payload: unknown) => void,
+  { includeStateGet = true }: { includeStateGet?: boolean } = {},
+): () => void {
   const subscriptions = [
-    runtime.on("state:updated", (payload) => emitToRenderer("state:updated", payload)),
-    runtime.on("terminal:data", (payload) => emitToRenderer("terminal:data", payload)),
-    runtime.on("terminal:exit", (payload) => emitToRenderer("terminal:exit", payload)),
-    runtime.on("ssh:auth-prompt", (payload) => emitToRenderer("ssh:auth-prompt", payload)),
-    runtime.on("ssh:host-key-change", (payload) => emitToRenderer("ssh:host-key-change", payload)),
-    runtime.on("ssh:connection-state", (payload) => emitToRenderer("ssh:connection-state", payload)),
-    runtime.on("ssh:state", (payload) => emitToRenderer("ssh:state", payload)),
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    runtime.on("state:updated", (payload: any) => emitToRenderer("state:updated", payload)),
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    runtime.on("terminal:data", (payload: any) => emitToRenderer("terminal:data", payload)),
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    runtime.on("terminal:exit", (payload: any) => emitToRenderer("terminal:exit", payload)),
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    runtime.on("ssh:auth-prompt", (payload: any) => emitToRenderer("ssh:auth-prompt", payload)),
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    runtime.on("ssh:host-key-change", (payload: any) => emitToRenderer("ssh:host-key-change", payload)),
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    runtime.on("ssh:connection-state", (payload: any) => emitToRenderer("ssh:connection-state", payload)),
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    runtime.on("ssh:state", (payload: any) => emitToRenderer("ssh:state", payload)),
   ];
 
   if (includeStateGet) {
@@ -306,7 +321,8 @@ export function registerIpc(runtime, emitToRenderer, { includeStateGet = true } 
     return runtime.setWorkspaceUIState(parsed.workspaceId, parsed.uiState);
   });
   ipcMain.handle("attention:sync", async (_event, payload) =>
-    runtime.syncAttentionContext(validateIpc(attentionSyncSchema, payload || {}, "attention:sync")),
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    runtime.syncAttentionContext(validateIpc(attentionSyncSchema, payload || {}, "attention:sync") as any),
   );
   ipcMain.handle("attention:clear-all", async () => runtime.clearAllAttention());
   ipcMain.handle("attention:clear-session", async (_event, sessionId, options) =>
@@ -442,16 +458,20 @@ export function registerIpc(runtime, emitToRenderer, { includeStateGet = true } 
     return runtime.dockerAction(validated.action, validated.containerId);
   });
   ipcMain.handle("docker:open-session", async (_event, payload) =>
-    runtime.openDockerSession(validateIpc(dockerSessionSchema, payload, "docker:open-session")),
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    runtime.openDockerSession(validateIpc(dockerSessionSchema, payload, "docker:open-session") as any),
   );
   ipcMain.handle("docker:open-lazydocker", async (_event, payload) =>
-    runtime.openLazydockerSession(validateIpc(gitPayloadSchema, payload, "docker:open-lazydocker")),
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    runtime.openLazydockerSession(validateIpc(gitPayloadSchema, payload, "docker:open-lazydocker") as any),
   );
   ipcMain.handle("git:open-lazygit", async (_event, payload) =>
-    runtime.openLazygitSession(validateIpc(gitPayloadSchema, payload, "git:open-lazygit")),
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    runtime.openLazygitSession(validateIpc(gitPayloadSchema, payload, "git:open-lazygit") as any),
   );
   ipcMain.handle("git:create-worktree", async (_event, payload) =>
-    runtime.createWorktree(validateIpc(worktreeSchema, payload, "git:create-worktree")),
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    runtime.createWorktree(validateIpc(worktreeSchema, payload, "git:create-worktree") as any),
   );
   ipcMain.handle("plugins:list", async () => runtime.getPlugins());
   ipcMain.handle("plugins:workspace-template", async (_event, pluginId) =>
@@ -559,7 +579,7 @@ export function registerIpc(runtime, emitToRenderer, { includeStateGet = true } 
       }
       return { ok: true };
     } catch (err) {
-      return { ok: false, error: err.message };
+      return { ok: false, error: (err as Error).message };
     }
   });
   ipcMain.handle("file:info", async (_event, payload) => {
@@ -594,16 +614,18 @@ export function registerIpc(runtime, emitToRenderer, { includeStateGet = true } 
 
   ipcMain.handle("dialog:browse-directory", async (_event, defaultPath) => {
     const win = BrowserWindow.getFocusedWindow();
-    const result = await dialog.showOpenDialog(win, {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const result = await dialog.showOpenDialog(win as any, {
       properties: ["openDirectory"],
       defaultPath: defaultPath || undefined,
     });
     return result.canceled ? null : result.filePaths[0] || null;
   });
 
-  ipcMain.handle("dialog:browse-file", async (_event, options = {}) => {
+  ipcMain.handle("dialog:browse-file", async (_event, options: { defaultPath?: string; filters?: Electron.FileFilter[] } = {}) => {
     const win = BrowserWindow.getFocusedWindow();
-    const result = await dialog.showOpenDialog(win, {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const result = await dialog.showOpenDialog(win as any, {
       properties: ["openFile"],
       defaultPath: options.defaultPath || undefined,
       filters: options.filters || [],
