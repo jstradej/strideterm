@@ -71,9 +71,11 @@ export function clone<T>(value: T): T {
 }
 
 export function findWorkspace(
-  state: { workspaces: Array<{ id: string; [key: string]: unknown }> },
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  state: { workspaces: Array<any> },
   workspaceId: string,
-): { id: string; [key: string]: unknown } | null {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+): any {
   return state.workspaces.find((workspace) => workspace.id === workspaceId) || null;
 }
 

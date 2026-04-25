@@ -1,12 +1,15 @@
+/// <reference types="node" />
 import http from "node:http";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { watch, readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
+import type { FSWatcher } from "node:fs";
 import { readFile, writeFile, mkdir, readdir, access, rm } from "node:fs/promises";
 import { EventEmitter } from "node:events";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
+// @ts-ignore — store.js will be migrated in a later phase
 import { createStore } from "./store.js";
 import { SessionManager } from "./session-manager.js";
 import { createAccessToken, createSessionId, normalizeWorkspace, parseSessionId } from "./default-state.js";
@@ -82,9 +85,13 @@ import {
   ATTENTION_VISIBILITY_GRACE_MS,
 } from "./runtime-utils.js";
 import { APP_CONFIG } from "../../config/app-config.js";
+// @ts-ignore — version-checker.js will be migrated in a later phase
 import { createVersionChecker } from "./version-checker.js";
 import { initLogger, getLogger, setLogLevel, reconfigureLogger } from "./logger.js";
+import type { Logger } from "./logger.js";
 import { createRuntimeAttentionManager } from "./runtime-attention.js";
+import type { AppState, WorkspaceState } from "../shared/types/state.js";
+import type { NotifyServerHandle } from "./notify-server.js";
 
 const log = getLogger("runtime");
 
@@ -103,7 +110,7 @@ const reviewBridgeCliPath = fileURLToPath(new URL("./review-bridge-cli.js", impo
  * Used to decide whether a terminal write should pause a running task workspace.
  * Without this filter, clicking into a task panel to watch it would pause the task.
  */
-export function hasMeaningfulUserInput(data) {
+export function hasMeaningfulUserInput(data: string | Buffer | null | undefined): boolean {
   if (!data) return false;
   const str = typeof data === "string" ? data : data.toString("binary");
   // Strip all known passive escape sequences; if anything remains, it's real input.
@@ -119,7 +126,7 @@ export function hasMeaningfulUserInput(data) {
   return stripped.length > 0;
 }
 
-function createTunnelOriginUrl(remoteConfig = {}) {
+function createTunnelOriginUrl(remoteConfig: { host?: string; port?: number } = {}): string {
   const rawHost = String(remoteConfig.host || "").trim();
   const host =
     !rawHost || rawHost === "0.0.0.0" ? "127.0.0.1" : rawHost === "::" || rawHost === "[::]" ? "::1" : rawHost;
@@ -130,7 +137,7 @@ function createTunnelOriginUrl(remoteConfig = {}) {
 // Re-export for consumers that import from runtime.js
 export { detectTerminalEnvironmentImpl as detectTerminalEnvironment };
 
-function probeRemoteOrigin(originUrl, timeoutMs = 1200) {
+function probeRemoteOrigin(originUrl: string, timeoutMs = 1200): Promise<number> {
   const target = new URL(originUrl);
   return new Promise((resolve, reject) => {
     const request = http.request(
@@ -155,7 +162,7 @@ function probeRemoteOrigin(originUrl, timeoutMs = 1200) {
   });
 }
 
-async function checkRemoteOrigin(originUrl, { attempts = 16, delayMs = 250, timeoutMs = 1200 } = {}) {
+async function checkRemoteOrigin(originUrl: string, { attempts = 16, delayMs = 250, timeoutMs = 1200 } = {}): Promise<string> {
   let lastError = null;
 
   for (let attempt = 0; attempt < attempts; attempt += 1) {
@@ -171,8 +178,42 @@ async function checkRemoteOrigin(originUrl, { attempts = 16, delayMs = 250, time
   }
 
   throw new Error(
-    `Remote access origin ${originUrl} is not responding${lastError?.message ? ` (${lastError.message})` : ""}.`,
+    `Remote access origin ${originUrl} is not responding${(lastError as Error)?.message ? ` (${(lastError as Error).message})` : ""}.`,
   );
+}
+
+interface RuntimeDependencies {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  createStore?: (...args: any[]) => any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  createCredentialStore?: (...args: any[]) => any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  createAzureReviewStore?: (...args: any[]) => any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  createReviewBridgeStore?: (...args: any[]) => any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  SessionManager?: new (...args: any[]) => any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  DockerManager?: new (...args: any[]) => any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  GitManager?: new (...args: any[]) => any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  CloudflareTunnelManager?: new (...args: any[]) => any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  AzureDevOpsManager?: new (...args: any[]) => any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  GitHubManager?: new (...args: any[]) => any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  createPluginManager?: (...args: any[]) => any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  execFileText?: (...args: any[]) => any;
+  checkRemoteOrigin?: typeof checkRemoteOrigin;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  getTerminalEnvironment?: (...args: any[]) => any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  safeStorage?: any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  fetchImpl?: typeof fetch;
 }
 
 export async function createRuntime({
@@ -181,6 +222,12 @@ export async function createRuntime({
   getThemeSource,
   deferInitialRefresh = false,
   dependencies = {},
+}: {
+  userDataPath: string;
+  builtinPluginsDir?: string;
+  getThemeSource?: () => string;
+  deferInitialRefresh?: boolean;
+  dependencies?: RuntimeDependencies;
 }) {
   // Logger must init before anything else logs
   initLogger();
@@ -204,7 +251,7 @@ export async function createRuntime({
   // built-in `rd /s /q` operates at the filesystem driver level and is much
   // faster for large trees.  Falls back to fs.rm on other platforms and when
   // `rd` fails (e.g. path too long, permissions).
-  async function rmPath(dirPath) {
+  async function rmPath(dirPath: string): Promise<void> {
     // On Windows, try the fast native path first (once — if it fails due to
     // locked files, retrying it won't help; let the retry loop use fs.rm which
     // gives us proper EBUSY/EPERM error codes for the backoff logic).
@@ -223,7 +270,7 @@ export async function createRuntime({
         await rm(dirPath, { recursive: true, force: true });
         return;
       } catch (err) {
-        if (attempt < retryDelays.length && (err.code === "EBUSY" || err.code === "EPERM")) {
+        if (attempt < retryDelays.length && ((err as NodeJS.ErrnoException).code === "EBUSY" || (err as NodeJS.ErrnoException).code === "EPERM")) {
           await new Promise((resolve) => setTimeout(resolve, retryDelays[attempt]));
           continue;
         }
@@ -271,11 +318,11 @@ export async function createRuntime({
   // ---------------------------------------------------------------------------
   const notifyUrlsPath = path.join(userDataPath, "hooks", "notify-urls.json");
 
-  function normalizeCwd(cwd) {
+  function normalizeCwd(cwd: string): string {
     return cwd.replace(/\\/g, "/").toLowerCase();
   }
 
-  function getUrlPort(u) {
+  function getUrlPort(u: string): string {
     try {
       return new URL(u).port;
     } catch {
@@ -283,7 +330,7 @@ export async function createRuntime({
     }
   }
 
-  function getUrlSid(u) {
+  function getUrlSid(u: string): string {
     try {
       return new URL(u).searchParams.get("sid") || "";
     } catch {
@@ -292,22 +339,22 @@ export async function createRuntime({
   }
 
   /** Read the shared file, or return empty object on any error. */
-  function readNotifyUrls() {
+  function readNotifyUrls(): Record<string, string[]> {
     try {
-      return JSON.parse(readFileSync(notifyUrlsPath, "utf8"));
+      return JSON.parse(readFileSync(notifyUrlsPath, "utf8")) as Record<string, string[]>;
     } catch {
       return {};
     }
   }
 
   /** Write the shared file (not atomic — acceptable for this advisory data). */
-  function writeNotifyUrls(data) {
+  function writeNotifyUrls(data: Record<string, string[]>): void {
     const dir = path.dirname(notifyUrlsPath);
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
     writeFileSync(notifyUrlsPath, JSON.stringify(data, null, 2), "utf8");
   }
 
-  function registerNotifyUrl(cwd, url) {
+  function registerNotifyUrl(cwd: string, url: string): void {
     const key = normalizeCwd(cwd);
     const myPort = getUrlPort(url);
     const mySid = getUrlSid(url);
@@ -324,12 +371,12 @@ export async function createRuntime({
       writeNotifyUrls(data);
       log.debug("notify-urls.json updated", { cwd: key, urls: data[key].length, port: myPort });
     } catch (err) {
-      log.warn("failed to write notify-urls.json", { err: err.message });
+      log.warn("failed to write notify-urls.json", { err: (err as Error).message });
     }
   }
 
   /** Remove all URLs belonging to our notify server port (called on shutdown). */
-  function cleanupNotifyUrls(port) {
+  function cleanupNotifyUrls(port: number): void {
     try {
       const data = readNotifyUrls();
       const portStr = String(port);
@@ -345,7 +392,7 @@ export async function createRuntime({
         log.debug("notify-urls.json cleanup", { port: portStr, removed });
       }
     } catch (err) {
-      log.debug("notify-urls.json cleanup failed", { err: err.message });
+      log.debug("notify-urls.json cleanup failed", { err: (err as Error).message });
     }
   }
 
@@ -353,8 +400,8 @@ export async function createRuntime({
 
   const sessions = new SessionManagerImpl({
     sshManager,
-    getSessionEnv: ({ workspace, sessionId }) => {
-      const env = {};
+    getSessionEnv: ({ workspace, sessionId }: { workspace: WorkspaceState | null | undefined; sessionId: string | null | undefined }) => {
+      const env: Record<string, string> = {};
 
       // Set provider-specific environment variables for task workspace sessions.
       // CLAUDE_CODE_DISABLE_BACKGROUND_TASKS is Claude-specific — only inject it
@@ -366,8 +413,10 @@ export async function createRuntime({
           ? workspace.task.workerProviderConfig || { providerId: "claude" }
           : workspace.task.judgeProviderConfig || { providerId: "claude" };
         try {
-          const provider = getProvider(providerConfig.providerId);
-          Object.assign(env, provider.getEnvironment(providerConfig));
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const provider = getProvider(providerConfig.providerId as any);
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          Object.assign(env, provider.getEnvironment(providerConfig as any));
         } catch {
           // Unknown provider — fall back to Claude defaults for backward compat
           env.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS = "1";
@@ -388,18 +437,18 @@ export async function createRuntime({
         log.debug("STRIDETERM_NOTIFY_URL not injected (notify server not running)", { sessionId });
       }
 
-      if (!["azure-devops", "github"].includes(workspace?.review?.provider) || !workspace.review?.prKey) {
+      if (!["azure-devops", "github"].includes(workspace?.review?.provider ?? "") || !workspace?.review?.prKey) {
         return env;
       }
 
-      const context = reviewBridgeStore.getPullRequestContext?.(workspace.review.prKey);
+      const context = reviewBridgeStore.getPullRequestContext?.(workspace.review!.prKey!);
       if (!context) {
         return env;
       }
 
       return {
         ...env,
-        STRIDETERM_REVIEW_PROVIDER: context.provider || workspace.review.provider || "azure-devops",
+        STRIDETERM_REVIEW_PROVIDER: context.provider || workspace.review!.provider || "azure-devops",
         STRIDETERM_REVIEW_PR_KEY: context.prKey,
         STRIDETERM_REVIEW_ROOT: context.rootPath,
         STRIDETERM_REVIEW_DB: context.databasePath,
@@ -411,23 +460,24 @@ export async function createRuntime({
         STRIDETERM_REVIEW_WORKSPACE_ID: workspace.id,
       };
     },
-    getSessionLaunch: ({ workspace, panel }) => {
+    getSessionLaunch: ({ workspace, panel }: { workspace: WorkspaceState | null | undefined; panel: unknown }) => {
       // --- Review workspace: inject MCP bridge ---
-      if (!["azure-devops", "github"].includes(workspace?.review?.provider)) {
+      if (!["azure-devops", "github"].includes(workspace?.review?.provider ?? "")) {
         return null;
       }
 
-      let context = workspace.review.prKey ? reviewBridgeStore.getPullRequestContext?.(workspace.review.prKey) : null;
+      let context = workspace!.review!.prKey ? reviewBridgeStore.getPullRequestContext?.(workspace!.review!.prKey) : null;
 
       if (!context) {
         const rootPath = reviewBridgeStore.getRootPath?.() || "";
         if (!rootPath) return null;
-        context = { rootPath, workspaceId: workspace.id, prKey: "" };
+        context = { rootPath, workspaceId: workspace!.id, prKey: "" };
       }
 
       return buildReviewAgentLaunch({
-        workspace,
-        panel,
+        workspace: workspace as WorkspaceState,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        panel: panel as any,
         context,
         processInfo,
       });
@@ -466,30 +516,33 @@ export async function createRuntime({
     sshManager.on(channel, (payload) => events.emit(channel, payload));
   }
   const terminalEnvironment = getTerminalEnvironmentImpl();
-  let remoteInfo = null;
-  let dockerPoll = null;
-  let gitPoll = null;
+  let remoteInfo: Record<string, unknown> | null = null;
+  let dockerPoll: ReturnType<typeof setInterval> | null = null;
+  let gitPoll: ReturnType<typeof setInterval> | null = null;
   const attentionContext = createAttentionContext();
 
   // --- Claude CLI availability (persisted; only re-checked when not yet found) ---
-  let claudeAvailableCache = getState().settings?.claudeAvailable === true;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let claudeAvailableCache = (getState().settings as any)?.claudeAvailable === true;
   if (!claudeAvailableCache) {
     (async () => {
       try {
         await execFileTextImpl("claude", ["--version"], { timeout: 5000 });
         claudeAvailableCache = true;
-        await store.mutate((draft) => {
+        await store.mutate((draft: AppState) => {
           draft.settings = draft.settings || {};
-          draft.settings.claudeAvailable = true;
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          (draft.settings as any).claudeAvailable = true;
         });
       } catch {
         try {
           const which = process.platform === "win32" ? "where" : "which";
           await execFileTextImpl(which, ["claude"], { timeout: 5000 });
           claudeAvailableCache = true;
-          await store.mutate((draft) => {
+          await store.mutate((draft: AppState) => {
             draft.settings = draft.settings || {};
-            draft.settings.claudeAvailable = true;
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            (draft.settings as any).claudeAvailable = true;
           });
         } catch {
           claudeAvailableCache = false;
@@ -513,9 +566,10 @@ export async function createRuntime({
       }
     }
     if (claudeAvailableCache) {
-      await store.mutate((draft) => {
+      await store.mutate((draft: AppState) => {
         draft.settings = draft.settings || {};
-        draft.settings.claudeAvailable = true;
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (draft.settings as any).claudeAvailable = true;
       });
     }
     log.info("recheckClaudeAvailability", { available: claudeAvailableCache });
@@ -524,7 +578,7 @@ export async function createRuntime({
 
   // --- Agent notification hook server ---
   const notifySecret = generateNotifySecret();
-  let notifyServerHandle = null;
+  let notifyServerHandle: NotifyServerHandle | null = null;
   let notifyServerStarting = false;
 
   // --- Agent Task Runner ---
@@ -533,8 +587,8 @@ export async function createRuntime({
   // --- Broadcast coalescing ---
   let broadcastScheduled = false;
 
-  function getState() {
-    return store.getState();
+  function getState(): AppState {
+    return store.getState() as AppState;
   }
 
   function getNotificationConfig(state = getState()) {
@@ -561,7 +615,7 @@ export async function createRuntime({
    * Accepts the new shape {sessionId, hook, subtype, payload} plus the legacy
    * {sessionId, notificationType} for back-compat with the IPC helper.
    */
-  async function dispatchAgentHookEvent(event) {
+  async function dispatchAgentHookEvent(event: { sessionId?: string; hook?: string; subtype?: string; notificationType?: string; payload?: Record<string, unknown> } | null | undefined) {
     const sessionId = event?.sessionId || "";
     const hook = event?.hook || "Notification";
     const subtype = event?.subtype || event?.notificationType || "";
@@ -581,7 +635,7 @@ export async function createRuntime({
       try {
         resolve({ ok: true, sessionId, hook, subtype });
       } catch (err) {
-        log.warn("probe resolver threw", { err: err.message });
+        log.warn("probe resolver threw", { err: (err as Error).message });
       }
       return;
     }
@@ -599,7 +653,7 @@ export async function createRuntime({
 
     // --- 1. Record on signal (for hookCapable gating in detector) ---
     const state = getState();
-    const project = findWorkspace(state, descriptor.workspaceId);
+    const project = findWorkspace(state, descriptor.workspaceId) as WorkspaceState | null;
     const panel = project?.panels.find((p) => p.id === descriptor.panelId) || null;
     const signal = getSessionSignal(sessionId, project, panel);
     signal.hookCapable = true;
@@ -616,7 +670,7 @@ export async function createRuntime({
         return;
       }
     } catch (err) {
-      log.warn("taskRunner.onHookEvent threw", { sessionId, hook, subtype, err: err.message });
+      log.warn("taskRunner.onHookEvent threw", { sessionId, hook, subtype, err: (err as Error).message });
       // Fall through to user pipeline — task runner errors must not eat events.
     }
 
@@ -728,7 +782,8 @@ export async function createRuntime({
    * Side-effects applied to a session signal based on hook type.
    * Runs whether the event is user-facing or system-only.
    */
-  function applyHookSideEffects(signal, hook, subtype) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  function applyHookSideEffects(signal: any, hook: string, subtype: string) {
     if (!signal) return;
     if (hook === "UserPromptSubmit") {
       // User started new work — prior idle state is stale.
@@ -772,8 +827,8 @@ export async function createRuntime({
       log.info("notify server started", { port: notifyServerHandle.port });
     } catch (error) {
       log.warn("notify server failed to start (silence detection still active)", {
-        err: error.message,
-        stack: error.stack,
+        err: (error as Error).message,
+        stack: (error as Error).stack,
       });
       notifyServerHandle = null;
     } finally {
@@ -789,7 +844,7 @@ export async function createRuntime({
       try {
         await notifyServerHandle.close();
       } catch (error) {
-        log.warn("notify server close error", { err: error.message });
+        log.warn("notify server close error", { err: (error as Error).message });
       }
       notifyServerHandle = null;
     }
@@ -809,7 +864,8 @@ export async function createRuntime({
   function getAzureConnections(state = getState()) {
     const all = getAzureSettings(state).connections || [];
     const activeProfile = state.activeProfileId || "default";
-    return all.filter((c) => (c.profileId || "default") === activeProfile);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return all.filter((c: any) => (c.profileId || "default") === activeProfile);
   }
 
   function getGitHubSettings(state = getState()) {
@@ -826,7 +882,8 @@ export async function createRuntime({
   function getGitHubConnections(state = getState()) {
     const all = getGitHubSettings(state).connections || [];
     const activeProfile = state.activeProfileId || "default";
-    return all.filter((c) => (c.profileId || "default") === activeProfile);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return all.filter((c: any) => (c.profileId || "default") === activeProfile);
   }
 
   /**
@@ -837,7 +894,8 @@ export async function createRuntime({
    */
   function getAllProviderConnections(state = getState()) {
     const activeProfile = state.activeProfileId || "default";
-    const matchProfile = (c) => (c.profileId || "default") === activeProfile;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const matchProfile = (c: any) => (c.profileId || "default") === activeProfile;
 
     const azureConns = (getAzureSettings(state).connections || []).filter(matchProfile);
     const githubConns = (getGitHubSettings(state).connections || []).filter(matchProfile);
@@ -849,7 +907,8 @@ export async function createRuntime({
    * Returns `null` when the workspace has no connectionId assigned or the
    * connection cannot be found (falls back to system git credentials).
    */
-  function resolveGitConnection(workspace) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  function resolveGitConnection(workspace: any) {
     const connectionId =
       workspace?.connectionId || workspace?.review?.connectionId || workspace?.quickfix?.connectionId;
     if (!connectionId) {
@@ -859,12 +918,13 @@ export async function createRuntime({
     return connections.find((c) => c.id === connectionId && c.enabled !== false) || null;
   }
 
-  function normalizeFsPath(value) {
+  function normalizeFsPath(value: string): string {
     const resolved = path.resolve(String(value || "").trim() || ".");
     return process.platform === "win32" ? resolved.toLowerCase() : resolved;
   }
 
-  function parseAzureReviewWorkspaceHint(workspace) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  function parseAzureReviewWorkspaceHint(workspace: any) {
     const cwd = String(workspace?.cwd || "");
     const cwdMatch = cwd.match(/[\\/]pr-(\d+)(?:[\\/]|$)/i);
     const nameMatch = String(workspace?.name || "").match(/\bPR\s*#(\d+)\b/i);
@@ -884,12 +944,12 @@ export async function createRuntime({
         ...Object.keys(azure.getSnapshot().pullRequests || {}),
         ...Object.keys(github.getSnapshot().pullRequests || {}),
         ...(state.workspaces || [])
-          .map((workspace) =>
-            ["azure-devops", "github"].includes(workspace.review?.provider) ? workspace.review.prKey : "",
+          .map((workspace: WorkspaceState) =>
+            ["azure-devops", "github"].includes(workspace.review?.provider ?? "") ? workspace.review!.prKey : "",
           )
           .filter(Boolean),
       ]);
-      const pullRequests = {};
+      const pullRequests: Record<string, unknown> = {};
       const processInfo = {
         execPath: process.execPath,
         platform: process.platform,
@@ -921,9 +981,11 @@ export async function createRuntime({
     }
   }
 
-  function createAzureWorkspaceReviewPanels(tabTemplates = []) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  function createAzureWorkspaceReviewPanels(tabTemplates: any[] = []) {
     const preferredTemplates = ["shell", "claude", "codex"];
-    const selected = [];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const selected: any[] = [];
 
     for (const templateId of preferredTemplates) {
       const template = tabTemplates.find((entry) => entry.id === templateId);
@@ -965,8 +1027,9 @@ export async function createRuntime({
     getGitHubConnections,
     parseAzureReviewWorkspaceHint,
     normalizeFsPath,
-    createAzureWorkspaceReviewPanels,
-    findWorkspace,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    createAzureWorkspaceReviewPanels: createAzureWorkspaceReviewPanels as (templates: any[]) => any[],
+    findWorkspace: findWorkspace as unknown as (state: AppState, workspaceId: string) => WorkspaceState | null,
   });
   const {
     ensureAzureWorkspace,
@@ -1033,7 +1096,7 @@ export async function createRuntime({
   const ACTIVITY_FADE_MS = 3000;
   const activityFadeTimers = new Map();
 
-  function scheduleActivityFade(sessionId) {
+  function scheduleActivityFade(sessionId: string): void {
     const prior = activityFadeTimers.get(sessionId);
     if (prior) clearTimeout(prior);
     const timer = setTimeout(() => {
@@ -1048,7 +1111,7 @@ export async function createRuntime({
     activityFadeTimers.set(sessionId, timer);
   }
 
-  function clearActivityFade(sessionId) {
+  function clearActivityFade(sessionId: string): void {
     const prior = activityFadeTimers.get(sessionId);
     if (prior) {
       clearTimeout(prior);
@@ -1056,7 +1119,8 @@ export async function createRuntime({
     }
   }
 
-  function setSessionActivity(signal, activity, { exitCode = null } = {}) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  function setSessionActivity(signal: any, activity: string, { exitCode = null as number | null } = {}): void {
     if (!signal) return;
     if (signal.activity === activity && activity !== "done") return;
     signal.activity = activity;
@@ -1093,7 +1157,8 @@ export async function createRuntime({
       workspace: (() => {
         const ws = sessions.getWorkspace(state);
         if (ws?.sessions) {
-          ws.sessions = ws.sessions.map((s) => {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          ws.sessions = ws.sessions.map((s: any) => {
             const signal = sessionSignals.get(s.sessionId);
             if (!signal) return s;
             return {
@@ -1113,7 +1178,8 @@ export async function createRuntime({
         projects: git.getProjectMap(),
         activeWorkspace: git.getSnapshot(state.activeWorkspaceId),
         activeProject: git.getSnapshot(state.activeProjectId),
-        connections: getAllProviderConnections(state).map((c) => ({
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        connections: getAllProviderConnections(state).map((c: any) => ({
           id: c.id,
           label: c.label || c.id,
           provider: c.provider || "azure-devops",
@@ -1161,7 +1227,8 @@ export async function createRuntime({
     },
     getState,
     broadcastState,
-    raiseAlert({ projectId, panelId, sessionId, title, kind, detail, tier, urgency, exitCode }) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    raiseAlert({ projectId, panelId, sessionId, title, kind, detail, tier, urgency, exitCode }: any) {
       // Task runner completions/failures are authoritative — always T1.
       // `failed` variants are urgent so the user notices a broken task.
       const inferredUrgency = urgency || (kind === "waiting" || kind === "completed" ? "normal" : "urgent");
@@ -1184,7 +1251,7 @@ export async function createRuntime({
     },
   });
 
-  async function ensureRemoteOriginReady(remoteConfig) {
+  async function ensureRemoteOriginReady(remoteConfig: { host?: string; port?: number }): Promise<string> {
     const originUrl = createTunnelOriginUrl(remoteConfig);
     await checkRemoteOriginImpl(originUrl);
     return originUrl;
@@ -1196,7 +1263,8 @@ export async function createRuntime({
    * and basic backspace; ignores arrow keys / escape sequences (they don't
    * change the command text for classification purposes).
    */
-  function updateCommandClassFromInput(signal, data) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  function updateCommandClassFromInput(signal: any, data: any) {
     if (!signal || !data) return;
     for (const ch of String(data)) {
       if (ch === "\r" || ch === "\n") {
@@ -1231,13 +1299,15 @@ export async function createRuntime({
    * Used to suppress silence-based (T3) alerts — if the user interacted
    * seconds ago, they are obviously present and don't need a notification.
    */
-  function isInInteractionGrace(signal, notifConfig) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  function isInInteractionGrace(signal: any, notifConfig: any) {
     if (!signal?.lastUserInteractionAt) return false;
     const graceMs = notifConfig?.userInteractionGraceMs ?? 10_000;
     return Date.now() - signal.lastUserInteractionAt < graceMs;
   }
 
-  function isKnownPluginProject(project) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  function isKnownPluginProject(project: any) {
     if (!project) {
       return false;
     }
@@ -1245,7 +1315,8 @@ export async function createRuntime({
       return true;
     }
 
-    return pluginManager.getPlugins().some((plugin) => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return pluginManager.getPlugins().some((plugin: any) => {
       if (plugin.error || !plugin.workspaceDefaults) {
         return false;
       }
@@ -1259,7 +1330,7 @@ export async function createRuntime({
 
   // perf-3: per-workspace debounce map for git refresh triggered by OSC 133;D
   const gitRefreshDebounceMap = new Map();
-  function scheduleGitRefreshFromShell(workspaceId) {
+  function scheduleGitRefreshFromShell(workspaceId: string) {
     const existing = gitRefreshDebounceMap.get(workspaceId);
     if (existing) clearTimeout(existing);
     const timer = setTimeout(() => {
@@ -1270,11 +1341,13 @@ export async function createRuntime({
     gitRefreshDebounceMap.set(workspaceId, timer);
   }
 
-  sessions.on("terminal:data", (payload) => {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  sessions.on("terminal:data", (payload: any) => {
     const descriptor = parseSessionId(payload.sessionId);
     const state = getState();
-    const project = descriptor ? findWorkspace(state, descriptor.workspaceId) : null;
-    const panel = project?.panels.find((item) => item.id === descriptor?.panelId) || null;
+    const project = descriptor ? findWorkspace(state, descriptor.workspaceId) as WorkspaceState | null : null;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const panel = (project as any)?.panels?.find((item: any) => item.id === descriptor?.panelId) || null;
     if (descriptor && shouldTrackProjectAlert(project, panel)) {
       const signal = getSessionSignal(payload.sessionId, project, panel);
       const notifConfig = getNotificationConfig(state);
@@ -1433,7 +1506,8 @@ export async function createRuntime({
         if (
           signal.busy &&
           !signal.hookCapable &&
-          !signal._hookMissingWarned &&
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          !(signal as any)._hookMissingWarned &&
           signal.lastOutputAt > 0 &&
           Date.now() - signal.lastOutputAt < 30_000 &&
           signal.lastAlertAt > 0 &&
@@ -1443,7 +1517,8 @@ export async function createRuntime({
             sessionId: payload.sessionId,
             agentLike: signal.agentLike,
           });
-          signal._hookMissingWarned = true;
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          (signal as any)._hookMissingWarned = true;
         }
 
         if (hooksEnabled) {
@@ -1715,7 +1790,8 @@ export async function createRuntime({
     events.emit("terminal:data", payload);
   });
 
-  sessions.on("terminal:exit", (payload) => {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  sessions.on("terminal:exit", (payload: any) => {
     log.debug("terminal:exit", {
       sessionId: payload.sessionId,
       exitCode: payload.exitCode,
@@ -1725,8 +1801,9 @@ export async function createRuntime({
     taskRunner.onSessionExit(payload.sessionId);
     const descriptor = parseSessionId(payload.sessionId);
     const state = getState();
-    const project = descriptor ? findWorkspace(state, descriptor.workspaceId) : null;
-    const panel = project?.panels.find((item) => item.id === descriptor?.panelId) || null;
+    const project = descriptor ? findWorkspace(state, descriptor.workspaceId) as WorkspaceState | null : null;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const panel = (project as any)?.panels?.find((item: any) => item.id === descriptor?.panelId) || null;
     const signal = descriptor ? sessionSignals.get(payload.sessionId) : null;
     // Phase 2 § 3.2.4: exit alerts suppressed for shell class — shells exit
     // when the user types `exit` themselves; alerting is noise.
@@ -1779,8 +1856,8 @@ export async function createRuntime({
 
   // Detect external review bridge changes (MCP agents writing drafts).
   // Uses fs.watch for instant notification + PRAGMA data_version polling as reliable fallback.
-  let reviewBridgeWatcher = null;
-  let reviewBridgeDebounce = null;
+  let reviewBridgeWatcher: FSWatcher | null = null;
+  let reviewBridgeDebounce: ReturnType<typeof setTimeout> | null = null;
   let reviewBridgeDataVersion = reviewBridgeStore.getDataVersion?.() || 0;
 
   function onReviewBridgeChange() {
@@ -1805,7 +1882,7 @@ export async function createRuntime({
   }
 
   // 2. PRAGMA data_version polling — reliable fallback, catches anything the watcher misses
-  let reviewBridgePoll = setInterval(() => {
+  let reviewBridgePoll: ReturnType<typeof setInterval> | null = setInterval(() => {
     const currentVersion = reviewBridgeStore.getDataVersion?.() || 0;
     if (currentVersion !== reviewBridgeDataVersion) {
       onReviewBridgeChange();
@@ -1816,7 +1893,7 @@ export async function createRuntime({
     return docker.refresh();
   }
 
-  async function refreshGit(projectId = null) {
+  async function refreshGit(projectId: string | null = null) {
     git.invalidateSnapshotCache?.(projectId || null);
     const state = getState();
     const workspaces = state.workspaces.filter(
@@ -1825,16 +1902,16 @@ export async function createRuntime({
     return git.refreshWorkspaces ? git.refreshWorkspaces(workspaces) : git.refreshProjects(workspaces);
   }
 
-  function resolveGitWorkspace(workspaceId = null, projectId = null) {
+  function resolveGitWorkspace(workspaceId: string | null = null, projectId: string | null = null): WorkspaceState {
     const targetWorkspaceId = workspaceId || projectId || getState().activeWorkspaceId || getState().activeProjectId;
-    const workspace = findWorkspace(getState(), targetWorkspaceId);
+    const workspace = findWorkspace(getState(), targetWorkspaceId as string) as WorkspaceState | null;
     if (!workspace?.cwd) {
       throw new Error("Workspace not found or has no working directory.");
     }
     return workspace;
   }
 
-  function resolveGitRootPath(workspace, rootPath) {
+  function resolveGitRootPath(workspace: WorkspaceState, rootPath: string): string | null {
     const roots = workspace.gitRoots || [];
     if (!rootPath) {
       return roots[0] || "";
@@ -1843,12 +1920,13 @@ export async function createRuntime({
     if (roots.includes(rootPath)) return rootPath;
     // normalize comparison
     const normalized = rootPath.replace(/\\/g, "/").replace(/\/+$/, "");
-    const match = roots.find((r) => r.replace(/\\/g, "/").replace(/\/+$/, "") === normalized);
+    const match = roots.find((r: string) => r.replace(/\\/g, "/").replace(/\/+$/, "") === normalized);
     if (match) return match;
     return null; // rootPath not in gitRoots — reject
   }
 
-  async function runGitWorkspaceAction(workspace, actionPromise) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  async function runGitWorkspaceAction(workspace: WorkspaceState, actionPromise: Promise<any>) {
     const result = await actionPromise;
     await refreshGit(workspace.id);
     return {
@@ -1894,9 +1972,9 @@ export async function createRuntime({
       }
     }
 
-    const toAdd = [];
-    const toRemove = [];
-    const toRepair = []; // { id, profileId }
+    const toAdd: WorkspaceState[] = [];
+    const toRemove: string[] = [];
+    const toRepair: Array<{ id: string; profileId: string }> = [];
 
     // Discover new worktrees on disk
     for (const [treeDir, parent] of parentByTreeDir) {
@@ -1932,7 +2010,8 @@ export async function createRuntime({
             cwd: treePath,
             notes: `Worktree of ${parent.name}`,
             activePanelId: "",
-            panels: parent.panels.map((p) => ({
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            panels: parent.panels.map((p: any) => ({
               ...p,
               id: `panel-${randomUUID()}`,
             })),
@@ -1953,7 +2032,7 @@ export async function createRuntime({
 
     if (toAdd.length === 0 && toRemove.length === 0 && toRepair.length === 0) return false;
 
-    await store.mutate((draft) => {
+    await store.mutate((draft: AppState) => {
       if (toRemove.length > 0) {
         const removeSet = new Set(toRemove);
         draft.workspaces = draft.workspaces.filter((w) => !removeSet.has(w.id));
@@ -1999,7 +2078,7 @@ export async function createRuntime({
           broadcastState();
         }
       } catch (error) {
-        log.warn("worktree sync error", { err: error.message });
+        log.warn("worktree sync error", { err: (error as Error).message });
       }
     }, APP_CONFIG.runtime.gitPollMs);
   }
@@ -2009,9 +2088,9 @@ export async function createRuntime({
   const treeDirWatchers = new Map();
   const TREE_WATCH_DEBOUNCE_MS = 500;
 
-  function startTreeDirWatcher(treeDir) {
+  function startTreeDirWatcher(treeDir: string) {
     if (treeDirWatchers.has(treeDir)) return;
-    let debounceTimer = null;
+    let debounceTimer: ReturnType<typeof setTimeout> | null = null;
     try {
       const watcher = watch(treeDir, { persistent: false }, () => {
         if (debounceTimer) clearTimeout(debounceTimer);
@@ -2041,7 +2120,7 @@ export async function createRuntime({
     }
   }
 
-  function stopTreeDirWatcher(treeDir) {
+  function stopTreeDirWatcher(treeDir: string) {
     const entry = treeDirWatchers.get(treeDir);
     if (entry) {
       try {
@@ -2154,7 +2233,7 @@ export async function createRuntime({
     resolveGitConnection,
     resolveGitRootPath,
     runGitWorkspaceAction,
-    syncWorktrees,
+    syncWorktrees: async () => { await syncWorktrees(); },
   });
 
   const sshHandlers = createSshHandlers({ sshManager, store, credentialStore, broadcastState });
@@ -2194,7 +2273,8 @@ export async function createRuntime({
     ...providerHandlers,
     ...gitHandlers,
     ...sshHandlers,
-    on(channel, handler) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    on(channel: any, handler: any) {
       events.on(channel, handler);
       return () => events.off(channel, handler);
     },
@@ -2202,7 +2282,8 @@ export async function createRuntime({
     getRemoteInfo() {
       return remoteInfo;
     },
-    setRemoteInfo(nextRemoteInfo) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    setRemoteInfo(nextRemoteInfo: any) {
       remoteInfo = nextRemoteInfo;
       broadcastState();
     },
@@ -2218,12 +2299,13 @@ export async function createRuntime({
         log.info("initial state ready", { workspaceCount: payload.appState?.workspaces?.length ?? 0 });
         return payload;
       } catch (error) {
-        log.error("getInitialState failed", { err: error.message });
+        log.error("getInitialState failed", { err: (error as Error).message });
         throw error;
       }
     },
-    async activateWorkspace(workspaceId) {
-      await store.mutate((draft) => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async activateWorkspace(workspaceId: any) {
+      await store.mutate((draft: AppState) => {
         if (draft.workspaces.some((workspace) => workspace.id === workspaceId)) {
           draft.activeWorkspaceId = workspaceId;
         }
@@ -2235,7 +2317,7 @@ export async function createRuntime({
         updateVisibleSessions(
           workspace.kind === "azure" || workspace.kind === "github"
             ? []
-            : workspace.panels.map((panel) => createSessionId(workspaceId, panel.id)),
+            : workspace.panels.map((panel: any) => createSessionId(workspaceId, panel.id)),
         );
       }
       if (workspace?.kind === "docker") {
@@ -2246,23 +2328,26 @@ export async function createRuntime({
       broadcastState();
       return getPayload();
     },
-    async activateProject(projectId) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async activateProject(projectId: any) {
       return this.activateWorkspace(projectId);
     },
-    async activateSession(sessionId) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async activateSession(sessionId: any) {
       const descriptor = parseSessionId(sessionId);
       if (!descriptor) {
         return getPayload();
       }
 
-      await store.mutate((draft) => {
+      await store.mutate((draft: AppState) => {
         const workspace = findWorkspace(draft, descriptor.workspaceId);
         if (!workspace) {
           return;
         }
 
         draft.activeWorkspaceId = descriptor.workspaceId;
-        if (workspace.panels.some((panel) => panel.id === descriptor.panelId)) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        if ((workspace as any).panels?.some((panel: any) => panel.id === descriptor.panelId)) {
           workspace.activePanelId = descriptor.panelId;
           workspace.activeViewId = sessionId;
         }
@@ -2272,13 +2357,14 @@ export async function createRuntime({
       broadcastState();
       return getPayload();
     },
-    async setWorkspaceUIState(workspaceId, uiState) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async setWorkspaceUIState(workspaceId: any, uiState: any) {
       if (!workspaceId || !uiState || typeof uiState !== "object") {
         return getPayload();
       }
       const { activeViewId, splitLayout, splitViewIds, activeRootPath } = uiState;
       let changed = false;
-      await store.mutate((draft) => {
+      await store.mutate((draft: AppState) => {
         const workspace = findWorkspace(draft, workspaceId);
         if (!workspace) return;
         if (typeof activeViewId === "string") {
@@ -2286,7 +2372,8 @@ export async function createRuntime({
           const sessionPrefix = `${workspaceId}:`;
           if (activeViewId.startsWith(sessionPrefix)) {
             const panelId = activeViewId.slice(sessionPrefix.length);
-            if (workspace.panels.some((panel) => panel.id === panelId)) {
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            if ((workspace as any).panels?.some((panel: any) => panel.id === panelId)) {
               workspace.activePanelId = panelId;
             }
           }
@@ -2305,15 +2392,17 @@ export async function createRuntime({
       if (changed) broadcastState();
       return getPayload();
     },
-    async saveWorkspace(workspace) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async saveWorkspace(workspace: any) {
       // Ensure the working directory exists (create if needed)
       if (workspace.cwd && workspace.kind !== "docker") {
         await mkdir(workspace.cwd, { recursive: true }).catch(() => {});
       }
 
-      await store.mutate((draft) => {
+      await store.mutate((draft: AppState) => {
         const normalized = normalizeWorkspace(workspace);
-        const index = draft.workspaces.findIndex((item) => item.id === normalized.id);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const index = draft.workspaces.findIndex((item: any) => item.id === normalized.id);
         if (index >= 0) {
           draft.workspaces[index] = normalized;
         } else {
@@ -2353,10 +2442,12 @@ export async function createRuntime({
       refreshAzure().catch(() => {});
       return getPayload();
     },
-    async saveProject(project) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async saveProject(project: any) {
       return this.saveWorkspace(project);
     },
-    async deleteWorkspace(workspaceId, options = {}) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async deleteWorkspace(workspaceId: any, options: any = {}) {
       const state = getState();
       const workspace = findWorkspace(state, workspaceId);
 
@@ -2366,10 +2457,10 @@ export async function createRuntime({
         await taskRunner.cleanupTaskFiles(workspace.cwd, workspace.task.taskId);
       }
 
-      await store.mutate((draft) => {
+      await store.mutate((draft: AppState) => {
         draft.workspaces = draft.workspaces.filter((item) => item.id !== workspaceId);
         if (draft.activeWorkspaceId === workspaceId) {
-          draft.activeWorkspaceId = draft.workspaces[0]?.id || null;
+          draft.activeWorkspaceId = draft.workspaces[0]?.id || "";
         }
       });
 
@@ -2422,7 +2513,7 @@ export async function createRuntime({
               await rmPath(diskPath);
             }
           } catch (err) {
-            diskDeleteError = `Could not delete ${diskPath}: ${err?.message || err}`;
+            diskDeleteError = `Could not delete ${diskPath}: ${(err as any)?.message || err}`;
             log.warn("workspace disk delete failed", { diskPath, err: diskDeleteError });
           } finally {
             pendingWorktreeDeletions.delete(diskPath);
@@ -2433,31 +2524,38 @@ export async function createRuntime({
       await refreshGit();
       ensureVisibleSession();
       broadcastState();
-      const result = getPayload();
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const result: any = getPayload();
       if (diskDeleteError) {
         result.deleteWorkspaceError = diskDeleteError;
       }
       return result;
     },
-    async deleteProject(projectId) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async deleteProject(projectId: any) {
       return this.deleteWorkspace(projectId);
     },
-    async reorderWorkspaces(workspaceIds) {
-      await store.mutate((draft) => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async reorderWorkspaces(workspaceIds: any) {
+      await store.mutate((draft: AppState) => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         draft.workspaces = workspaceIds
-          .map((id) => draft.workspaces.find((workspace) => workspace.id === id))
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          .map((id: any) => draft.workspaces.find((workspace) => workspace.id === id))
           .filter(Boolean);
       });
 
       broadcastState();
       return getPayload();
     },
-    async reorderProjects(projectIds) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async reorderProjects(projectIds: any) {
       return this.reorderWorkspaces(projectIds);
     },
-    async updateSettings(settings) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async updateSettings(settings: any) {
       const previousConfig = getState().settings.remoteAccess;
-      await store.mutate((draft) => {
+      await store.mutate((draft: AppState) => {
         if (settings.tabTemplates) {
           draft.tabTemplates = settings.tabTemplates;
         }
@@ -2482,7 +2580,7 @@ export async function createRuntime({
           },
         };
         // Keep tabTemplates out of the settings object
-        delete draft.settings.tabTemplates;
+        delete (draft.settings as any).tabTemplates;
       });
 
       const nextConfig = getState().settings.remoteAccess;
@@ -2524,7 +2622,7 @@ export async function createRuntime({
     // Azure, GitHub, and Review Bridge handlers provided by providerHandlers (spread above)
 
     async regenerateRemoteToken() {
-      await store.mutate((draft) => {
+      await store.mutate((draft: AppState) => {
         draft.settings.remoteAccess.token = createAccessToken();
       });
 
@@ -2532,7 +2630,8 @@ export async function createRuntime({
       broadcastState();
       return getPayload();
     },
-    closeSession(sessionId) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    closeSession(sessionId: any) {
       clearAlertSession(sessionId);
       clearActivityFade(sessionId);
       deleteSessionSignal(sessionId);
@@ -2540,10 +2639,12 @@ export async function createRuntime({
       broadcastState();
       return getPayload();
     },
-    resizeSession(sessionId, size) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    resizeSession(sessionId: any, size: any) {
       sessions.resizeSession(sessionId, size.cols, size.rows);
     },
-    writeToSession(sessionId, data) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    writeToSession(sessionId: any, data: any) {
       resetSessionSignal(sessionId);
       const signal = sessionSignals.get(sessionId);
       if (signal && !signal.hasUserInput) {
@@ -2579,7 +2680,8 @@ export async function createRuntime({
       }
       sessions.writeToSession(sessionId, data);
     },
-    notifyAgentHook(sessionId, notificationType = "idle_prompt", hook = "Notification") {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    notifyAgentHook(sessionId: any, notificationType = "idle_prompt", hook = "Notification") {
       log.debug("notifyAgentHook called", { sessionId, hook, notificationType });
       dispatchAgentHookEvent({
         sessionId,
@@ -2643,7 +2745,8 @@ export async function createRuntime({
      * this helper just needs a detect/configure pair for the requested
      * provider.
      */
-    async runHookProbe({ detectStatus, configure }) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async runHookProbe({ detectStatus, configure }: { detectStatus: any; configure: any }) {
       const status = await detectStatus(userDataPath);
       if (status.status === "error") {
         return { ok: false, reason: "config-error", detail: status.error };
@@ -2674,7 +2777,7 @@ export async function createRuntime({
       // CLAUDE_PROJECT_DIR / notify-urls.json resolution.
       const scriptPath = path.join(userDataPath, "hooks", "notify.mjs");
       const startedAt = Date.now();
-      let spawnError = null;
+      let spawnError: Error | null = null;
       try {
         const child = spawn(process.execPath, [scriptPath, "Notification"], {
           env: {
@@ -2692,15 +2795,15 @@ export async function createRuntime({
         child.stdin.end();
       } catch (err) {
         hookProbeListeners.delete(probeId);
-        return { ok: false, reason: "spawn-failed", detail: err.message };
+        return { ok: false, reason: "spawn-failed", detail: (err as Error).message };
       }
 
-      const result = await receivedPromise;
+      const result = await receivedPromise as any;
       const elapsedMs = Date.now() - startedAt;
 
       if (result?.ok) return { ok: true, elapsedMs };
       if (spawnError) {
-        return { ok: false, reason: "spawn-error", detail: spawnError.message, elapsedMs };
+        return { ok: false, reason: "spawn-error", detail: (spawnError as Error).message, elapsedMs };
       }
 
       // Timeout — surface hook.log tail so the user can see what happened.
@@ -2741,7 +2844,8 @@ export async function createRuntime({
      *   false → user clicked "Jump" or alert auto-cleared. Treated as
      *           engagement — resets the adaptive dismiss counter.
      */
-    clearAlertForSession(sessionId, { dismissed = false } = {}) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    clearAlertForSession(sessionId: any, { dismissed = false } = {}) {
       if (!sessionId) return getPayload();
       const descriptor = parseSessionId(sessionId);
       if (!descriptor) return getPayload();
@@ -2807,9 +2911,10 @@ export async function createRuntime({
 
       return getPayload();
     },
-    async restartSession(sessionId) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async restartSession(sessionId: any) {
       const descriptor = parseSessionId(sessionId);
-      await store.mutate((draft) => {
+      await store.mutate((draft: AppState) => {
         if (!descriptor) {
           return;
         }
@@ -2854,7 +2959,8 @@ export async function createRuntime({
       await tunnel.stop({ preserveAvailability: true });
       return getPayload();
     },
-    async dockerAction(action, containerId) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async dockerAction(action: any, containerId: any) {
       const allowedActions = new Set(["start", "stop", "restart", "remove"]);
       if (!allowedActions.has(action)) {
         throw new Error(`Invalid Docker action: ${action}`);
@@ -2862,7 +2968,8 @@ export async function createRuntime({
       await docker.performAction(action, containerId);
       return getPayload();
     },
-    async openDockerSession({ workspaceId, projectId, containerId, mode }) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async openDockerSession({ workspaceId, projectId, containerId, mode }: { workspaceId: any; projectId: any; containerId: any; mode: any }) {
       const targetWorkspaceId = workspaceId || projectId;
       await refreshDocker();
       const container = docker.findContainer(containerId);
@@ -2880,13 +2987,14 @@ export async function createRuntime({
       const description =
         mode === "logs" ? `docker logs -f ${container.Names}` : `docker exec -it ${container.Names} sh`;
 
-      await store.mutate((draft) => {
+      await store.mutate((draft: AppState) => {
         const workspace = findWorkspace(draft, targetWorkspaceId);
         if (!workspace) {
           throw new Error("Docker workspace not found.");
         }
 
-        const existing = workspace.panels.find((panel) => panel.id === panelId);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const existing = (workspace as any).panels?.find((panel: any) => panel.id === panelId);
         const nextPanel = {
           id: panelId,
           title,
@@ -2899,7 +3007,8 @@ export async function createRuntime({
         if (existing) {
           Object.assign(existing, nextPanel);
         } else {
-          workspace.panels.push(nextPanel);
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          (workspace as any).panels?.push(nextPanel);
         }
 
         draft.activeWorkspaceId = targetWorkspaceId;
@@ -2912,7 +3021,8 @@ export async function createRuntime({
       broadcastState();
       return getPayload();
     },
-    async openLazydockerSession({ workspaceId, projectId }) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async openLazydockerSession({ workspaceId, projectId }: { workspaceId: any; projectId: any }) {
       const targetWorkspaceId = workspaceId || projectId;
       await refreshDocker();
       const launch = docker.createLazydockerLaunch();
@@ -2921,13 +3031,14 @@ export async function createRuntime({
       }
 
       const panelId = "lazydocker";
-      await store.mutate((draft) => {
+      await store.mutate((draft: AppState) => {
         const workspace = findWorkspace(draft, targetWorkspaceId);
         if (!workspace) {
           throw new Error("Docker workspace not found.");
         }
 
-        const existing = workspace.panels.find((panel) => panel.id === panelId);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const existing = (workspace as any).panels?.find((panel: any) => panel.id === panelId);
         const nextPanel = {
           id: panelId,
           title: "Lazydocker",
@@ -2940,7 +3051,8 @@ export async function createRuntime({
         if (existing) {
           Object.assign(existing, nextPanel);
         } else {
-          workspace.panels.push(nextPanel);
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          (workspace as any).panels?.push(nextPanel);
         }
 
         draft.activeWorkspaceId = targetWorkspaceId;
@@ -2953,7 +3065,8 @@ export async function createRuntime({
       broadcastState();
       return getPayload();
     },
-    async openLazygitSession({ workspaceId, projectId, rootPath }) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async openLazygitSession({ workspaceId, projectId, rootPath }: { workspaceId: any; projectId: any; rootPath: any }) {
       const targetWorkspaceId = workspaceId || projectId;
       await refreshGit(targetWorkspaceId);
       const launch = git.createLazygitLaunch(targetWorkspaceId, rootPath || null);
@@ -2962,13 +3075,14 @@ export async function createRuntime({
       }
 
       const panelId = "lazygit";
-      await store.mutate((draft) => {
+      await store.mutate((draft: AppState) => {
         const workspace = findWorkspace(draft, targetWorkspaceId);
         if (!workspace) {
           throw new Error("Workspace not found.");
         }
 
-        const existing = workspace.panels.find((panel) => panel.id === panelId);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const existing = (workspace as any).panels?.find((panel: any) => panel.id === panelId);
         const nextPanel = {
           id: panelId,
           title: "Lazygit",
@@ -2981,7 +3095,8 @@ export async function createRuntime({
         if (existing) {
           Object.assign(existing, nextPanel);
         } else {
-          workspace.panels.push(nextPanel);
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          (workspace as any).panels?.push(nextPanel);
         }
 
         draft.activeWorkspaceId = targetWorkspaceId;
@@ -2994,7 +3109,8 @@ export async function createRuntime({
       broadcastState();
       return getPayload();
     },
-    async createWorktree({ workspaceId, projectId, name, rootPath }) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async createWorktree({ workspaceId, projectId, name, rootPath }: { workspaceId: any; projectId: any; name: any; rootPath: any }) {
       const targetWorkspaceId = workspaceId || projectId;
       if (!name || !/^[a-zA-Z0-9._-]+$/.test(name)) {
         throw new Error("Worktree name must contain only alphanumeric characters, dots, hyphens, or underscores.");
@@ -3003,7 +3119,7 @@ export async function createRuntime({
       if (!project?.cwd) throw new Error("Workspace has no working directory");
 
       // Multi-repo: a rootPath must be chosen. Single-repo: fall back to workspace cwd.
-      const normalizePath = (p) =>
+      const normalizePath = (p: string) =>
         String(p || "")
           .replace(/\\/g, "/")
           .replace(/\/+$/, "");
@@ -3055,13 +3171,14 @@ export async function createRuntime({
         cwd: treePath,
         notes: `Worktree of ${project.name}`,
         activePanelId: "",
-        panels: project.panels.map((p) => ({
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        panels: (project as any).panels?.map((p: any) => ({
           ...p,
           id: `panel-${randomUUID()}`,
-        })),
+        })) || [],
       });
 
-      await store.mutate((draft) => {
+      await store.mutate((draft: AppState) => {
         // Insert worktree right after parent (and any existing sibling worktrees)
         const parentIndex = draft.workspaces.findIndex((w) => w.id === targetWorkspaceId);
         if (parentIndex >= 0) {
@@ -3088,8 +3205,9 @@ export async function createRuntime({
       refreshAzure().catch(() => {});
       return getPayload();
     },
-    async saveProfile(profile) {
-      await store.mutate((draft) => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async saveProfile(profile: any) {
+      await store.mutate((draft: AppState) => {
         const index = draft.profiles.findIndex((p) => p.id === profile.id);
         const normalized = {
           id: profile.id || `profile-${randomUUID()}`,
@@ -3110,11 +3228,12 @@ export async function createRuntime({
       broadcastState();
       return getPayload();
     },
-    async deleteProfile(profileId) {
-      await store.mutate((draft) => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async deleteProfile(profileId: any) {
+      await store.mutate((draft: AppState) => {
         draft.profiles = draft.profiles.filter((p) => p.id !== profileId);
         if (draft.profiles.length === 0) {
-          draft.profiles.push({ id: "default", name: "Default", workspaceIds: [] });
+          draft.profiles.push({ id: "default", name: "Default", color: "#6366f1", workspaceIds: [] });
         }
         if (draft.activeProfileId === profileId) {
           draft.activeProfileId = draft.profiles[0]?.id || "default";
@@ -3123,8 +3242,9 @@ export async function createRuntime({
       broadcastState();
       return getPayload();
     },
-    async activateProfile(profileId) {
-      await store.mutate((draft) => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async activateProfile(profileId: any) {
+      await store.mutate((draft: AppState) => {
         if (draft.profiles.some((p) => p.id === profileId)) {
           draft.activeProfileId = profileId;
           // Set activeWorkspaceId to first workspace in new profile (or null)
@@ -3145,7 +3265,8 @@ export async function createRuntime({
     getPlugins() {
       return pluginManager.getPlugins();
     },
-    getPluginWorkspaceTemplate(pluginId) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    getPluginWorkspaceTemplate(pluginId: any) {
       return pluginManager.getWorkspaceTemplate(pluginId);
     },
     async stop() {
@@ -3190,7 +3311,8 @@ export async function createRuntime({
     listRemoteUrls() {
       return remoteInfo?.urls || [];
     },
-    getSessionId(workspaceId, panelId) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    getSessionId(workspaceId: any, panelId: any) {
       return createSessionId(workspaceId, panelId);
     },
     async checkForUpdates() {
@@ -3198,13 +3320,15 @@ export async function createRuntime({
       broadcastState();
       return result;
     },
-    async checkCommand(command) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async checkCommand(command: any) {
       try {
         const cmd = process.platform === "win32" ? "where" : "which";
         await execFileText(cmd, [command], { timeout: 5000 });
         return true;
       } catch (err) {
-        log.debug("checkCommand: not found", { command, err: err.error?.message || err.message || "unknown" });
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        log.debug("checkCommand: not found", { command, err: (err as any)?.error?.message || (err as Error).message || "unknown" });
         return false;
       }
     },
@@ -3215,12 +3339,14 @@ export async function createRuntime({
       return { available, payload: getPayload() };
     },
     async checkProviders() {
-      const results = {};
+      const results: Record<string, unknown> = {};
       for (const ProviderClass of getAllProviders()) {
         try {
-          results[ProviderClass.id] = await new ProviderClass().checkAvailability();
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          results[(ProviderClass as any).id] = await new (ProviderClass as any)().checkAvailability();
         } catch (err) {
-          results[ProviderClass.id] = { available: false, error: err.message };
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          results[(ProviderClass as any).id] = { available: false, error: (err as Error).message };
         }
       }
       return results;
@@ -3229,27 +3355,31 @@ export async function createRuntime({
     // "Create in git worktree" makes sense for the chosen cwd. Treats any
     // failure (non-existent path, not a git repo, git CLI missing) as
     // "not a repo" — the caller just wants a boolean to gate the checkbox.
-    async checkIsGitRepo(cwd) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async checkIsGitRepo(cwd: any) {
       const trimmed = String(cwd || "").trim();
       if (!trimmed) return { isGitRepo: false, reason: "empty" };
       try {
         const { stdout } = await execFileTextImpl("git", ["rev-parse", "--is-inside-work-tree"], { cwd: trimmed });
         return { isGitRepo: stdout.trim() === "true" };
       } catch (err) {
-        const stderr = err?.stderr?.trim() || err?.error?.message || "";
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const stderr = (err as any)?.stderr?.trim() || (err as any)?.error?.message || "";
         if (stderr.includes("not a git repository")) return { isGitRepo: false, reason: "not-a-repo" };
         // Could not even run git — treat as "unknown" so the dialog stays
         // permissive rather than blocking based on a transient failure.
         return { isGitRepo: false, reason: "error", error: stderr || "unknown error" };
       }
     },
-    async probeDirectory(cwd) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async probeDirectory(cwd: any) {
       const trimmed = String(cwd || "").trim();
       if (!trimmed) return { path: "", isGitRepo: false, childRepos: [], scannedDepth: 0, truncated: false };
       const { probeDirectory: probe } = await import("./fs-probe.js");
       return probe(trimmed);
     },
-    async createTaskWorkspace(config) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async createTaskWorkspace(config: any) {
       log.info("createTaskWorkspace", {
         cwd: config.cwd,
         hasDescription: !!config.description,
@@ -3294,7 +3424,8 @@ export async function createRuntime({
           // execFileText rejects with { error, stdout, stderr } — the useful
           // message lives in stderr. err.message is undefined here, so don't
           // rely on it for either the branch-exists fallback or the user error.
-          const stderr = err.stderr?.trim() || err.error?.message || err.message || "";
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const stderr = (err as any)?.stderr?.trim() || (err as any)?.error?.message || (err as Error).message || "";
           if (stderr.includes("already exists")) {
             await execFileTextImpl("git", ["worktree", "add", treePath, branch], { cwd: config.cwd });
           } else if (stderr.includes("not a git repository")) {
@@ -3371,9 +3502,9 @@ export async function createRuntime({
         log.error("createTaskWorkspace: failed to write initial task files", {
           workspaceId: workspace.id,
           cwd: workspace.cwd,
-          err: err.message,
+          err: (err as Error).message,
         });
-        throw new Error(`Failed to create task files: ${err.message}`, { cause: err });
+        throw new Error(`Failed to create task files: ${(err as Error).message}`, { cause: err });
       }
       // saveWorkspace normalizes and persists
       await this.saveWorkspace(workspace);
@@ -3381,31 +3512,38 @@ export async function createRuntime({
       await this.activateWorkspace(workspace.id);
       return { workspaceId: workspace.id, cwdWarning, payload: getPayload() };
     },
-    async startTask(workspaceId) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async startTask(workspaceId: any) {
       const result = await taskRunner.startTask(workspaceId);
       return { ok: result, payload: getPayload() };
     },
-    stopTask(workspaceId) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    stopTask(workspaceId: any) {
       const result = taskRunner.stopTask(workspaceId);
       return { ok: result, payload: getPayload() };
     },
-    pauseTask(workspaceId) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    pauseTask(workspaceId: any) {
       const result = taskRunner.pauseTask(workspaceId);
       return { ok: result, payload: getPayload() };
     },
-    resumeTask(workspaceId) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    resumeTask(workspaceId: any) {
       const result = taskRunner.resumeTask(workspaceId);
       return { ok: result, payload: getPayload() };
     },
-    async resetTask(workspaceId) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async resetTask(workspaceId: any) {
       const result = await taskRunner.resetTask(workspaceId);
       return { ok: result, payload: getPayload() };
     },
-    async rejectTaskVerdict(workspaceId, feedback) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async rejectTaskVerdict(workspaceId: any, feedback: any) {
       const result = await taskRunner.rejectTaskVerdict(workspaceId, feedback);
       return { ok: result, payload: getPayload() };
     },
-    getTaskStatus(workspaceId) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    getTaskStatus(workspaceId: any) {
       return taskRunner.getTaskState(workspaceId);
     },
   };
