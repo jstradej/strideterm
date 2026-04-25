@@ -1,26 +1,44 @@
+import { BaseProvider } from "./base-provider.js";
+import type { ModelDescriptor } from "./base-provider.js";
 import { ClaudeProvider } from "./claude-provider.js";
 import { CodexProvider } from "./codex-provider.js";
 import { GeminiProvider } from "./gemini-provider.js";
 import { CopilotProvider } from "./copilot-provider.js";
 
-const providers = new Map();
+interface ProviderClass {
+  id: string;
+  displayName: string;
+  models: ModelDescriptor[];
+  new (): BaseProvider;
+}
 
-export function registerProvider(ProviderClass) {
+export interface ProviderChoice {
+  id: string;
+  name: string;
+  models: ModelDescriptor[];
+}
+
+export interface ParsedProviderConfig {
+  providerId: string;
+  model: string;
+}
+
+const providers = new Map<string, ProviderClass>();
+
+export function registerProvider(ProviderClass: ProviderClass): void {
   providers.set(ProviderClass.id, ProviderClass);
 }
 
 /**
  * Get a provider instance by ID.
- * @param {string} id
- * @returns {import("./base-provider.js").BaseProvider}
  */
-export function getProvider(id) {
+export function getProvider(id: string): BaseProvider {
   const Provider = providers.get(id);
   if (!Provider) throw new Error(`Unknown provider: ${id}`);
   return new Provider();
 }
 
-export function getAllProviders() {
+export function getAllProviders(): ProviderClass[] {
   return [...providers.values()];
 }
 
@@ -28,7 +46,7 @@ export function getAllProviders() {
  * Return serializable metadata for all registered providers.
  * Used by the frontend to populate provider/model dropdowns.
  */
-export function getProviderChoices() {
+export function getProviderChoices(): ProviderChoice[] {
   return [...providers.values()].map((P) => ({
     id: P.id,
     name: P.displayName,
@@ -40,7 +58,7 @@ export function getProviderChoices() {
  * Infer a provider config from a legacy command string.
  * Used to migrate task workspaces that predate multi-provider support.
  */
-export function parseProviderFromCommand(cmd) {
+export function parseProviderFromCommand(cmd: string | null | undefined): ParsedProviderConfig {
   if (!cmd) return { providerId: "claude", model: "sonnet" };
   const trimmed = cmd.trim();
   if (trimmed.startsWith("copilot")) {

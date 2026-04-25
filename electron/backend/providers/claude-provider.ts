@@ -1,9 +1,10 @@
 import { BaseProvider, checkBinaryOnPath } from "./base-provider.js";
+import type { ProviderConfig, BinaryCheckResult } from "./base-provider.js";
 
 export class ClaudeProvider extends BaseProvider {
-  static id = "claude";
-  static displayName = "Claude Code";
-  static models = [
+  static override id = "claude";
+  static override displayName = "Claude Code";
+  static override models = [
     { id: "sonnet", name: "Claude Sonnet 4.6", suggestedRole: "worker" },
     { id: "opus", name: "Claude Opus 4.6", suggestedRole: "judge" },
     { id: "haiku", name: "Claude Haiku 4.5", suggestedRole: null },
@@ -11,29 +12,29 @@ export class ClaudeProvider extends BaseProvider {
 
   static defaultSkipPermissions = true;
 
-  buildCommand({ model, extra, skipPermissions = true } = {}) {
+  override buildCommand({ model, extra, skipPermissions = true }: ProviderConfig = {}): string {
     const parts = ["claude"];
     if (skipPermissions) parts.push("--dangerously-skip-permissions");
     if (model) parts.push("--model", model);
-    if (extra?.mcpConfig) parts.push("--mcp-config", extra.mcpConfig);
+    if (extra?.mcpConfig) parts.push("--mcp-config", extra.mcpConfig as string);
     return parts.join(" ");
   }
 
-  getEnvironment() {
+  override getEnvironment(): Record<string, string> {
     // Prevents Claude Code from spawning autonomous background tasks that
     // would interfere with the worker/judge evaluation cycle.
     return { CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: "1" };
   }
 
-  get idleDetection() {
+  override get idleDetection(): string {
     return "osc133";
   }
 
-  get idleTimeoutMs() {
+  override get idleTimeoutMs(): number {
     return 2000;
   }
 
-  async checkAvailability() {
+  override async checkAvailability(): Promise<BinaryCheckResult> {
     return checkBinaryOnPath("claude");
   }
 }

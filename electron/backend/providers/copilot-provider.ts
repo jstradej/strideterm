@@ -1,12 +1,13 @@
 import { BaseProvider, checkBinaryOnPath } from "./base-provider.js";
+import type { ProviderConfig, BinaryCheckResult } from "./base-provider.js";
 
 export class CopilotProvider extends BaseProvider {
-  static id = "copilot";
-  static displayName = "GitHub Copilot";
+  static override id = "copilot";
+  static override displayName = "GitHub Copilot";
   // Curated subset of GitHub Copilot's model catalog. The full list changes
   // frequently as GitHub rotates model availability; keeping this short avoids
   // churn. Users can still override via --model in the command field.
-  static models = [
+  static override models = [
     { id: "claude-sonnet-4.6", name: "Claude Sonnet 4.6", suggestedRole: "worker" },
     { id: "claude-opus-4.7", name: "Claude Opus 4.7", suggestedRole: "judge" },
     { id: "gpt-5.4", name: "GPT-5.4", suggestedRole: "worker" },
@@ -16,24 +17,24 @@ export class CopilotProvider extends BaseProvider {
 
   static defaultSkipPermissions = true;
 
-  buildCommand({ model, skipPermissions = true } = {}) {
+  override buildCommand({ model, skipPermissions = true }: ProviderConfig = {}): string {
     const parts = ["copilot"];
     if (skipPermissions) parts.push("--allow-all-tools");
     if (model) parts.push("--model", model);
     return parts.join(" ");
   }
 
-  getEnvironment() {
+  override getEnvironment(): Record<string, string> {
     // Env equivalent of --allow-all-tools; belt-and-braces so PTY children that
     // re-exec copilot (rare) still inherit the permissive mode.
     return { COPILOT_ALLOW_ALL: "true" };
   }
 
-  get idleDetection() {
+  override get idleDetection(): string {
     return "silence";
   }
 
-  get idleTimeoutMs() {
+  override get idleTimeoutMs(): number {
     return 8000;
   }
 
@@ -49,16 +50,16 @@ export class CopilotProvider extends BaseProvider {
    * Cost: ~3s typing for a ~90-char "Read PROMPT.md and follow ..." directive.
    * Worth it — paste-style and longer paste-to-Enter delays both failed.
    */
-  get promptInjectionStyle() {
+  override get promptInjectionStyle(): string {
     return "type";
   }
 
-  get promptTypingGapMs() {
+  override get promptTypingGapMs(): number {
     return 30;
   }
 
   /** With "type" style the final Enter fires right after the last char. */
-  get promptSubmitDelayMs() {
+  override get promptSubmitDelayMs(): number {
     return 150;
   }
 
@@ -66,11 +67,11 @@ export class CopilotProvider extends BaseProvider {
    * Ink needs a moment to finish the `/clear` redraw before a new typed prompt
    * arrives, otherwise the next input can disappear into the refresh.
    */
-  get clearCommandSettleMs() {
+  override get clearCommandSettleMs(): number {
     return 1200;
   }
 
-  async checkAvailability() {
+  override async checkAvailability(): Promise<BinaryCheckResult> {
     return checkBinaryOnPath("copilot");
   }
 }

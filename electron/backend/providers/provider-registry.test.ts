@@ -57,7 +57,7 @@ describe("provider-registry", () => {
 
     test("claude models include opus and sonnet", () => {
       const choices = getProviderChoices();
-      const claude = choices.find((c) => c.id === "claude");
+      const claude = choices.find((c) => c.id === "claude")!;
       const ids = claude.models.map((m) => m.id);
       expect(ids).toContain("sonnet");
       expect(ids).toContain("opus");
@@ -122,7 +122,7 @@ describe("provider-registry", () => {
 });
 
 describe("ClaudeProvider", () => {
-  let provider;
+  let provider: ClaudeProvider;
   beforeEach(() => {
     provider = new ClaudeProvider();
   });
@@ -162,7 +162,7 @@ describe("ClaudeProvider", () => {
 });
 
 describe("CodexProvider", () => {
-  let provider;
+  let provider: CodexProvider;
   beforeEach(() => {
     provider = new CodexProvider();
   });
@@ -198,7 +198,7 @@ describe("CodexProvider", () => {
 });
 
 describe("GeminiProvider", () => {
-  let provider;
+  let provider: GeminiProvider;
   beforeEach(() => {
     provider = new GeminiProvider();
   });
@@ -229,7 +229,7 @@ describe("GeminiProvider", () => {
 });
 
 describe("CopilotProvider", () => {
-  let provider;
+  let provider: CopilotProvider;
   beforeEach(() => {
     provider = new CopilotProvider();
   });

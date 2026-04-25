@@ -1,4 +1,25 @@
+/// <reference types="node" />
 import { exec } from "node:child_process";
+
+export interface BinaryCheckResult {
+  available: boolean;
+  path?: string;
+  error?: string;
+}
+
+export interface ProviderConfig {
+  model?: string;
+  role?: "worker" | "judge";
+  cwd?: string;
+  skipPermissions?: boolean;
+  extra?: Record<string, unknown>;
+}
+
+export interface ModelDescriptor {
+  id: string;
+  name: string;
+  suggestedRole: string | null;
+}
 
 /**
  * Check if a binary is reachable on the system PATH.
@@ -6,7 +27,7 @@ import { exec } from "node:child_process";
  * than invoking the binary with --version (which can hang on first-run JS init
  * or auth prompts).
  */
-export function checkBinaryOnPath(binary) {
+export function checkBinaryOnPath(binary: string): Promise<BinaryCheckResult> {
   return new Promise((resolve) => {
     const cmd = process.platform === "win32" ? "where" : "which";
     exec(`${cmd} ${binary}`, { timeout: 5000 }, (err, stdout) => {
@@ -21,29 +42,24 @@ export function checkBinaryOnPath(binary) {
 export class BaseProvider {
   static id = "base";
   static displayName = "Base Provider";
-  /** @type {Array<{id: string, name: string, suggestedRole: string|null}>} */
-  static models = [];
+  static models: ModelDescriptor[] = [];
 
   /**
    * Build the CLI command string for launching this provider.
-   * @param {{model: string, role: "worker"|"judge", cwd: string, extra?: object}} config
-   * @returns {string}
    */
-  buildCommand(_config) {
+  buildCommand(_config: ProviderConfig = {}): string {
     throw new Error("not implemented");
   }
 
   /**
    * Return environment variables to set for the PTY session.
-   * @param {object} _config
-   * @returns {Record<string, string>}
    */
-  getEnvironment(_config) {
+  getEnvironment(_config: ProviderConfig = {}): Record<string, string> {
     return {};
   }
 
   /** How prompts are injected: "pty" (write to PTY stdin) — all providers use this. */
-  get injectionMethod() {
+  get injectionMethod(): string {
     return "pty";
   }
 
@@ -52,17 +68,17 @@ export class BaseProvider {
    *   "osc133"  — shell integration sequences (Claude Code)
    *   "silence" — silence timeout heuristic (Codex, Gemini)
    */
-  get idleDetection() {
+  get idleDetection(): string {
     return "silence";
   }
 
   /** Whether the provider supports file-based prompt injection ("Read X and follow it"). */
-  get supportsFileInjection() {
+  get supportsFileInjection(): boolean {
     return true;
   }
 
   /** Milliseconds of silence before the session is considered idle. */
-  get idleTimeoutMs() {
+  get idleTimeoutMs(): number {
     return 8000;
   }
 
@@ -72,7 +88,7 @@ export class BaseProvider {
    * keystroke if it arrives while the paste is still being processed. Claude
    * and Codex are fine at 200ms; GitHub Copilot's TUI needs longer.
    */
-  get promptSubmitDelayMs() {
+  get promptSubmitDelayMs(): number {
     return 200;
   }
 
@@ -86,12 +102,12 @@ export class BaseProvider {
    *             interpreting it as the Enter key.
    * GitHub Copilot needs "type" — plain paste never submits.
    */
-  get promptInjectionStyle() {
+  get promptInjectionStyle(): string {
     return "paste";
   }
 
   /** Milliseconds between characters when promptInjectionStyle === "type". */
-  get promptTypingGapMs() {
+  get promptTypingGapMs(): number {
     return 8;
   }
 
@@ -99,22 +115,20 @@ export class BaseProvider {
    * Milliseconds to wait after submitting `/clear` before sending the next
    * prompt. This gives the CLI time to finish resetting its UI/state.
    */
-  get clearCommandSettleMs() {
+  get clearCommandSettleMs(): number {
     return 800;
   }
 
   /**
    * Hook called before the first prompt is injected.
    * Providers can write config files here (e.g. Gemini yolo policy).
-   * @param {string} _cwd
    */
-  async beforeStart(_cwd) {}
+  async beforeStart(_cwd: string): Promise<void> {}
 
   /**
    * Check if the CLI binary is installed and reachable.
-   * @returns {Promise<{available: boolean, version?: string, error?: string}>}
    */
-  async checkAvailability() {
+  async checkAvailability(): Promise<BinaryCheckResult> {
     return { available: false, error: "not implemented" };
   }
 }

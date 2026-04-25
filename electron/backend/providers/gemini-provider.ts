@@ -1,11 +1,13 @@
+/// <reference types="node" />
 import { writeFile, readFile } from "node:fs/promises";
 import path from "node:path";
 import { BaseProvider, checkBinaryOnPath } from "./base-provider.js";
+import type { ProviderConfig, BinaryCheckResult } from "./base-provider.js";
 
 export class GeminiProvider extends BaseProvider {
-  static id = "gemini";
-  static displayName = "Gemini CLI";
-  static models = [
+  static override id = "gemini";
+  static override displayName = "Gemini CLI";
+  static override models = [
     { id: "gemini-3-pro-preview", name: "Gemini 3 Pro (preview)", suggestedRole: "judge" },
     { id: "gemini-3-flash-preview", name: "Gemini 3 Flash (preview)", suggestedRole: "worker" },
     { id: "gemini-2.5-pro", name: "Gemini 2.5 Pro", suggestedRole: null },
@@ -14,18 +16,18 @@ export class GeminiProvider extends BaseProvider {
 
   static defaultSkipPermissions = false;
 
-  buildCommand({ model, skipPermissions = false } = {}) {
+  override buildCommand({ model, skipPermissions = false }: ProviderConfig = {}): string {
     const parts = ["gemini"];
     if (skipPermissions) parts.push("--yolo");
     if (model) parts.push("-m", model);
     return parts.join(" ");
   }
 
-  get idleDetection() {
+  override get idleDetection(): string {
     return "silence";
   }
 
-  get idleTimeoutMs() {
+  override get idleTimeoutMs(): number {
     return 8000;
   }
 
@@ -38,11 +40,11 @@ export class GeminiProvider extends BaseProvider {
    * (see gemini-hook-config.js). Tool-approval skipping is handled by the
    * --yolo CLI flag when skipPermissions is on.
    */
-  async beforeStart(cwd) {
+  override async beforeStart(cwd: string): Promise<void> {
     await this.#ensureGitIgnore(cwd);
   }
 
-  async #ensureGitIgnore(cwd) {
+  async #ensureGitIgnore(cwd: string): Promise<void> {
     const gitignorePath = path.join(cwd, ".gitignore");
     const entry = ".gemini/";
     try {
@@ -51,13 +53,13 @@ export class GeminiProvider extends BaseProvider {
       const sep = content.endsWith("\n") ? "" : "\n";
       await writeFile(gitignorePath, content + sep + entry + "\n", "utf8");
     } catch (err) {
-      if (err.code === "ENOENT") {
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") {
         await writeFile(gitignorePath, entry + "\n", "utf8").catch(() => {});
       }
     }
   }
 
-  async checkAvailability() {
+  override async checkAvailability(): Promise<BinaryCheckResult> {
     return checkBinaryOnPath("gemini");
   }
 }
