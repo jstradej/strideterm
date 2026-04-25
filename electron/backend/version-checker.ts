@@ -1,3 +1,4 @@
+/// <reference types="node" />
 import path from "node:path";
 import fs from "node:fs/promises";
 import { getLogger } from "./logger.js";
@@ -7,11 +8,43 @@ const log = getLogger("version-check");
 const THROTTLE_MS = 24 * 60 * 60 * 1000; // 24 hours
 const MAX_NEWER_RELEASES = 20;
 
+interface ParsedVersion {
+  major: number;
+  minor: number;
+  patch: number;
+}
+
+interface CachedResult {
+  lastCheckAt: string;
+  etag: string;
+  latestVersion: string;
+  latestUrl: string;
+  versionsBehind: number;
+  releases: Array<{ tag: string; url: string; publishedAt: string }>;
+}
+
+interface GitHubRelease {
+  tag_name: string;
+  html_url: string;
+  published_at: string;
+  prerelease: boolean;
+  draft: boolean;
+}
+
+interface FetchResponse {
+  ok: boolean;
+  status: number;
+  headers: { get: (name: string) => string | null };
+  json: () => Promise<unknown>;
+}
+
+type FetchImpl = (url: string, opts: { headers: Record<string, string> }) => Promise<FetchResponse>;
+
 /**
  * Parse a version string like "v1.4.1" or "1.4.1" into { major, minor, patch }.
  * Returns null if the string is not a valid semver-like version.
  */
-export function parseVersion(tag) {
+export function parseVersion(tag: unknown): ParsedVersion | null {
   if (typeof tag !== "string") return null;
   const match = tag.match(/^v?(\d+)\.(\d+)\.(\d+)$/);
   if (!match) return null;
@@ -22,7 +55,7 @@ export function parseVersion(tag) {
  * Compare two version strings. Returns -1 (a < b), 0 (a === b), or 1 (a > b).
  * Returns 0 if either version is unparseable.
  */
-export function compareVersions(a, b) {
+export function compareVersions(a: string, b: string): -1 | 0 | 1 {
   const pa = parseVersion(a);
   const pb = parseVersion(b);
   if (!pa || !pb) return 0;
@@ -35,7 +68,7 @@ export function compareVersions(a, b) {
 /**
  * Extract owner and repo from a GitHub URL like "https://github.com/jstradej/strideterm".
  */
-function parseGitHubUrl(url) {
+function parseGitHubUrl(url: string): { owner: string; repo: string } | null {
   const match = url.match(/github\.com\/([^/]+)\/([^/.]+)/);
   if (!match) return null;
   return { owner: match[1], repo: match[2] };
@@ -44,22 +77,22 @@ function parseGitHubUrl(url) {
 /**
  * Atomic write: write to a temp file first, then rename over the target.
  */
-async function atomicWriteFile(filePath, data) {
+async function atomicWriteFile(filePath: string, data: string): Promise<void> {
   const tmpPath = `${filePath}.tmp-${process.pid}`;
   await fs.writeFile(tmpPath, data);
   await fs.rename(tmpPath, filePath);
 }
 
-async function loadCache(cachePath) {
+async function loadCache(cachePath: string): Promise<CachedResult | null> {
   try {
     const raw = await fs.readFile(cachePath, "utf8");
-    return JSON.parse(raw);
+    return JSON.parse(raw) as CachedResult;
   } catch {
     return null;
   }
 }
 
-async function saveCache(cachePath, data) {
+async function saveCache(cachePath: string, data: CachedResult): Promise<void> {
   try {
     await fs.mkdir(path.dirname(cachePath), { recursive: true });
     await atomicWriteFile(cachePath, JSON.stringify(data, null, 2));
@@ -70,36 +103,41 @@ async function saveCache(cachePath, data) {
 
 /**
  * Create a version checker instance.
- *
- * @param {object} options
- * @param {string} options.currentVersion - The app's current version (e.g. "1.4.1")
- * @param {string} options.repositoryUrl  - GitHub repository URL
- * @param {string} options.userDataPath   - Path to the user data directory (e.g. ~/.strideterm)
- * @param {function} [options.fetchImpl]  - Optional fetch override (for testing)
  */
-export function createVersionChecker({ currentVersion, repositoryUrl, userDataPath, fetchImpl }) {
-  const github = parseGitHubUrl(repositoryUrl);
-  if (!github) {
+export function createVersionChecker({
+  currentVersion,
+  repositoryUrl,
+  userDataPath,
+  fetchImpl,
+}: {
+  currentVersion: string;
+  repositoryUrl: string;
+  userDataPath: string;
+  fetchImpl?: FetchImpl;
+}) {
+  const githubParsed = parseGitHubUrl(repositoryUrl);
+  if (!githubParsed) {
     log.warn("cannot parse GitHub URL", { repositoryUrl });
-    return { checkForUpdates: async () => null, getCachedResult: () => null };
+    return { checkForUpdates: async (): Promise<null> => null, getCachedResult: (): null => null };
   }
+  const github: { owner: string; repo: string } = githubParsed;
 
   const cachePath = path.join(userDataPath, "version-check.json");
-  const doFetch = fetchImpl || globalThis.fetch;
-  let cachedResult = null;
+  const doFetch: FetchImpl = fetchImpl || (globalThis.fetch as unknown as FetchImpl);
+  let cachedResult: CachedResult | null = null;
   let loaded = false;
 
-  async function ensureLoaded() {
+  async function ensureLoaded(): Promise<void> {
     if (loaded) return;
     loaded = true;
     cachedResult = await loadCache(cachePath);
   }
 
-  function getCachedResult() {
+  function getCachedResult(): CachedResult | null {
     return cachedResult;
   }
 
-  async function checkForUpdates(force = false) {
+  async function checkForUpdates(force = false): Promise<CachedResult | null> {
     await ensureLoaded();
 
     // Throttle: skip if checked within the last 24 hours (unless forced).
@@ -111,12 +149,12 @@ export function createVersionChecker({ currentVersion, repositoryUrl, userDataPa
     }
 
     const apiUrl = `https://api.github.com/repos/${github.owner}/${github.repo}/releases?per_page=50`;
-    const headers = { Accept: "application/vnd.github+json" };
+    const headers: Record<string, string> = { Accept: "application/vnd.github+json" };
     if (cachedResult?.etag) {
       headers["If-None-Match"] = cachedResult.etag;
     }
 
-    let response;
+    let response: FetchResponse;
     try {
       response = await doFetch(apiUrl, { headers });
     } catch {
@@ -126,7 +164,7 @@ export function createVersionChecker({ currentVersion, repositoryUrl, userDataPa
 
     // 304 Not Modified — data unchanged, just update the timestamp.
     if (response.status === 304) {
-      cachedResult = { ...cachedResult, lastCheckAt: new Date().toISOString() };
+      cachedResult = { ...cachedResult!, lastCheckAt: new Date().toISOString() };
       await saveCache(cachePath, cachedResult);
       return cachedResult;
     }
@@ -136,9 +174,9 @@ export function createVersionChecker({ currentVersion, repositoryUrl, userDataPa
       return cachedResult;
     }
 
-    let releases;
+    let releases: GitHubRelease[];
     try {
-      releases = await response.json();
+      releases = (await response.json()) as GitHubRelease[];
     } catch {
       return cachedResult;
     }

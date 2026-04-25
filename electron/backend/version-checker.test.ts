@@ -4,7 +4,7 @@ import fs from "node:fs/promises";
 import { afterEach, describe, expect, test } from "vitest";
 import { createVersionChecker, parseVersion, compareVersions } from "./version-checker.js";
 
-const tempPaths = [];
+const tempPaths: string[] = [];
 
 async function createTempDir() {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-version-check-"));
