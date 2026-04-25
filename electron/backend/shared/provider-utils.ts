@@ -1,11 +1,12 @@
+/// <reference types="node" />
 import { createHash } from "node:crypto";
 import { access } from "node:fs/promises";
 
-export function clone(value) {
+export function clone<T>(value: T): T {
   return JSON.parse(JSON.stringify(value));
 }
 
-export function sanitizePathSegment(value, fallback = "unknown") {
+export function sanitizePathSegment(value: unknown, fallback = "unknown"): string {
   const normalized = String(value || "")
     .trim()
     .replace(/[<>:"/\\|?*\u0000-\u001F]+/g, "-")
@@ -15,34 +16,34 @@ export function sanitizePathSegment(value, fallback = "unknown") {
   return normalized || fallback;
 }
 
-export function trimTrailingSlash(value) {
+export function trimTrailingSlash(value: unknown): string {
   return String(value || "")
     .trim()
     .replace(/\/+$/, "");
 }
 
-export function normalizeReviewRoot(value, defaultRoot) {
+export function normalizeReviewRoot(value: unknown, defaultRoot: string): string {
   return trimTrailingSlash(value || defaultRoot);
 }
 
-export function stripRefsPrefix(value) {
+export function stripRefsPrefix(value: unknown): string {
   return String(value || "").replace(/^refs\/heads\//, "");
 }
 
-export function parseDate(value) {
-  const timestamp = new Date(value || 0).getTime();
+export function parseDate(value: unknown): number {
+  const timestamp = new Date((value as string | number | Date) || 0).getTime();
   return Number.isFinite(timestamp) ? timestamp : 0;
 }
 
-export function toIsoOrNull(timestamp) {
+export function toIsoOrNull(timestamp: number | null | undefined): string | null {
   return timestamp ? new Date(timestamp).toISOString() : null;
 }
 
-export function firstNonEmpty(...values) {
+export function firstNonEmpty(...values: unknown[]): string {
   return values.map((value) => String(value || "").trim()).find(Boolean) || "";
 }
 
-export function normalizeRemoteUrl(value) {
+export function normalizeRemoteUrl(value: unknown): string {
   return trimTrailingSlash(
     String(value || "")
       .trim()
@@ -50,7 +51,7 @@ export function normalizeRemoteUrl(value) {
   ).toLowerCase();
 }
 
-export function shortPathKey(value, fallback = "item") {
+export function shortPathKey(value: unknown, fallback = "item"): string {
   const normalized = sanitizePathSegment(value, fallback).toLowerCase();
   const digest = createHash("sha1")
     .update(String(value || fallback))
@@ -60,7 +61,7 @@ export function shortPathKey(value, fallback = "item") {
   return `${prefix}-${digest}`;
 }
 
-export async function exists(targetPath) {
+export async function exists(targetPath: string): Promise<boolean> {
   try {
     await access(targetPath);
     return true;
@@ -89,11 +90,12 @@ export function createEmptySnapshot() {
   };
 }
 
-export function extractErrorText(error) {
-  return firstNonEmpty(error?.stderr, error?.stdout, error?.error?.message, error?.message, String(error || ""));
+export function extractErrorText(error: unknown): string {
+  const e = error as { stderr?: unknown; stdout?: unknown; error?: { message?: unknown }; message?: unknown } | null | undefined;
+  return firstNonEmpty(e?.stderr, e?.stdout, e?.error?.message, e?.message, String(error || ""));
 }
 
-export function formatReviewWorkspaceError(error, reviewRoot, providerLabel = "connection") {
+export function formatReviewWorkspaceError(error: unknown, reviewRoot: string, providerLabel = "connection"): string {
   const text = extractErrorText(error);
   if (!text) return "";
 

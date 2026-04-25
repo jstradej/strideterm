@@ -1,5 +1,108 @@
 import path from "node:path";
 
+interface ReviewAuthor {
+  id?: string;
+  displayName?: string;
+  uniqueName?: string;
+}
+
+interface ReviewComment {
+  id?: string | number;
+  parentCommentId?: number;
+  content?: string;
+  publishedDate?: string | null;
+  lastUpdatedDate?: string | null;
+  commentType?: string;
+  author?: ReviewAuthor;
+}
+
+interface ReviewThread {
+  id?: string | number;
+  status?: string;
+  isDeleted?: boolean;
+  filePath?: string;
+  lineStart?: number | null;
+  lineEnd?: number | null;
+  publishedDate?: string | null;
+  lastUpdatedDate?: string | null;
+  comments?: ReviewComment[];
+}
+
+interface ReviewCommentEntry {
+  commentKey?: string;
+  commentKind?: string;
+  status?: string;
+  title?: string;
+  summary?: string;
+  payload?: { questionBody?: string };
+}
+
+interface ReviewDraft {
+  draftId?: string;
+  commentKey?: string;
+  status?: string;
+  authorAgent?: string;
+  body?: string;
+}
+
+interface ChangedFile {
+  changeType?: string;
+  path?: string;
+}
+
+interface SyncQueueItem {
+  queueId?: string;
+  operation?: string;
+  status?: string;
+}
+
+interface BriefContext {
+  provider: string;
+  prKey: string;
+  pullRequest: { id?: string | number; title?: string; sourceRefName?: string; targetRefName?: string };
+  repository: { name?: string; id?: string };
+  lastImportedAt?: string;
+  comments: ReviewCommentEntry[];
+  threads: ReviewThread[];
+  changedFiles: ChangedFile[];
+  localChangedFiles: ChangedFile[];
+}
+
+interface ThreadsContext {
+  threads: ReviewThread[];
+}
+
+interface DraftsContext {
+  drafts: ReviewDraft[];
+}
+
+interface SyncStatusContext {
+  lastImportedAt?: string;
+  lastSeenActivityAt?: string;
+  syncQueue: SyncQueueItem[];
+}
+
+interface AgentInstructionsContext {
+  provider?: string;
+  prKey?: string;
+  rootPath?: string;
+  databasePath?: string;
+  exportDir?: string;
+  briefMarkdownPath?: string;
+  briefJsonPath?: string;
+  threadsMarkdownPath?: string;
+  draftsMarkdownPath?: string;
+  syncStatusMarkdownPath?: string;
+  cliPath?: string;
+}
+
+interface PrExportSummary {
+  provider?: string;
+  connectionId?: string;
+  repository?: { id?: string; name?: string };
+  pullRequest?: { id?: string | number };
+}
+
 const ACTIVE_THREAD_STATUS = new Set(["active", "pending", "unknown"]);
 const COMMENT_STATUSES_TO_PRESERVE = new Set([
   "agent-working",
@@ -10,7 +113,7 @@ const COMMENT_STATUSES_TO_PRESERVE = new Set([
   "conflict",
 ]);
 
-function safeSegment(value, fallback = "unknown") {
+function safeSegment(value: unknown, fallback = "unknown"): string {
   const normalized = String(value || "")
     .trim()
     .replaceAll(/[<>:"/\\|?*\u0000-\u001F]+/g, "-")
@@ -21,13 +124,13 @@ function safeSegment(value, fallback = "unknown") {
   return normalized || fallback;
 }
 
-export function collapseText(value) {
+export function collapseText(value: unknown): string {
   return String(value || "")
     .replaceAll(/\s+/g, " ")
     .trim();
 }
 
-export function firstNonEmpty(...values) {
+export function firstNonEmpty(...values: unknown[]): string {
   for (const value of values) {
     const text = String(value || "").trim();
     if (text) {
@@ -37,11 +140,11 @@ export function firstNonEmpty(...values) {
   return "";
 }
 
-export function isActiveThread(thread) {
+export function isActiveThread(thread: ReviewThread | null | undefined): boolean {
   return ACTIVE_THREAD_STATUS.has(String(thread?.status || "").toLowerCase());
 }
 
-export function buildCommentTitle(thread) {
+export function buildCommentTitle(thread: ReviewThread): string {
   const filePath = String(thread?.filePath || "").trim();
   const line = Number.isInteger(thread?.lineStart) ? `:${thread.lineStart}` : "";
   if (filePath) {
@@ -50,25 +153,43 @@ export function buildCommentTitle(thread) {
   return `Review thread #${thread?.id ?? "unknown"}`;
 }
 
-export function buildCommentSummary(thread) {
+export function buildCommentSummary(thread: ReviewThread): string {
   const latestComment = [...(thread?.comments || [])]
     .filter((comment) => String(comment?.content || "").trim())
     .sort(
       (left, right) =>
-        Date.parse(right?.lastUpdatedDate || right?.publishedDate || 0) -
-        Date.parse(left?.lastUpdatedDate || left?.publishedDate || 0),
+        Date.parse(right?.lastUpdatedDate || right?.publishedDate || "") -
+        Date.parse(left?.lastUpdatedDate || left?.publishedDate || ""),
     )[0];
   return collapseText(latestComment?.content || "") || "Reviewer feedback imported from Azure DevOps.";
 }
 
-export function toThreadExport(thread) {
+export function toThreadExport(thread: ReviewThread): {
+  id: string | number | undefined;
+  status: string;
+  isDeleted: boolean;
+  filePath: string;
+  lineStart: number | null;
+  lineEnd: number | null;
+  publishedDate: string | null;
+  lastUpdatedDate: string | null;
+  comments: Array<{
+    id: string | number | undefined;
+    parentCommentId: number;
+    content: string;
+    publishedDate: string | null;
+    lastUpdatedDate: string | null;
+    commentType: string;
+    author: { id: string; displayName: string; uniqueName: string };
+  }>;
+} {
   return {
     id: thread.id,
     status: thread.status || "unknown",
     isDeleted: Boolean(thread.isDeleted),
     filePath: thread.filePath || "",
-    lineStart: Number.isInteger(thread.lineStart) ? thread.lineStart : null,
-    lineEnd: Number.isInteger(thread.lineEnd) ? thread.lineEnd : null,
+    lineStart: Number.isInteger(thread.lineStart) ? (thread.lineStart as number) : null,
+    lineEnd: Number.isInteger(thread.lineEnd) ? (thread.lineEnd as number) : null,
     publishedDate: thread.publishedDate || null,
     lastUpdatedDate: thread.lastUpdatedDate || null,
     comments: (thread.comments || []).map((comment) => ({
@@ -87,7 +208,7 @@ export function toThreadExport(thread) {
   };
 }
 
-export function buildPrExportDir(rootPath, summary) {
+export function buildPrExportDir(rootPath: string, summary: PrExportSummary): string {
   return path.join(
     rootPath,
     "exports",
@@ -98,7 +219,7 @@ export function buildPrExportDir(rootPath, summary) {
   );
 }
 
-export function buildCommentStatus(thread, existingStatus) {
+export function buildCommentStatus(thread: ReviewThread, existingStatus: string): string {
   if (!isActiveThread(thread)) {
     return "dismissed";
   }
@@ -108,7 +229,7 @@ export function buildCommentStatus(thread, existingStatus) {
   return existingStatus || "ready-for-agent";
 }
 
-export function buildLocalCommentTitle(body, fallback = "Local review comment") {
+export function buildLocalCommentTitle(body: unknown, fallback = "Local review comment"): string {
   const firstLine = String(body || "")
     .split(/\r?\n/u)
     .map((line) => collapseText(line))
@@ -116,11 +237,11 @@ export function buildLocalCommentTitle(body, fallback = "Local review comment") 
   return firstLine || fallback;
 }
 
-export function buildLocalCommentSummary(body) {
+export function buildLocalCommentSummary(body: unknown): string {
   return collapseText(body || "") || "Local follow-up question for this pull request.";
 }
 
-function buildThreadMarkdown(thread) {
+function buildThreadMarkdown(thread: ReviewThread): string {
   const headerParts = [
     `Thread #${thread.id}`,
     thread.status ? `[${thread.status}]` : "",
@@ -136,7 +257,7 @@ function buildThreadMarkdown(thread) {
   return `## ${headerParts.join(" ")}\n${body || "- No comments"}\n`;
 }
 
-export function buildBriefMarkdown(context) {
+export function buildBriefMarkdown(context: BriefContext): string {
   const activeComments = context.comments.filter((comment) => comment.status !== "dismissed");
   const lines = [
     "# Review Brief",
@@ -208,14 +329,14 @@ export function buildBriefMarkdown(context) {
     .trim()}\n`;
 }
 
-export function buildThreadsMarkdown(context) {
+export function buildThreadsMarkdown(context: ThreadsContext): string {
   if (!context.threads.length) {
     return "# Threads\n\nNo review threads imported.\n";
   }
   return `# Threads\n\n${context.threads.map((thread) => buildThreadMarkdown(thread)).join("\n")}`;
 }
 
-export function buildDraftsMarkdown(context) {
+export function buildDraftsMarkdown(context: DraftsContext): string {
   const lines = ["# Draft Responses", ""];
   if (!context.drafts.length) {
     lines.push("No draft responses yet.");
@@ -236,7 +357,7 @@ export function buildDraftsMarkdown(context) {
   return `${lines.join("\n").trim()}\n`;
 }
 
-export function buildSyncStatusMarkdown(context) {
+export function buildSyncStatusMarkdown(context: SyncStatusContext): string {
   const lines = [
     "# Sync Status",
     "",
@@ -254,7 +375,14 @@ export function buildSyncStatusMarkdown(context) {
   return `${lines.join("\n").trim()}\n`;
 }
 
-export function buildAgentInstructions(context) {
+export function buildAgentInstructions(context: AgentInstructionsContext): {
+  purpose: string;
+  mcp: { mode: string; tools: string[] };
+  whenAskedToProcessQuestions: string[];
+  naturalPrompts: string[];
+  files: Record<string, string>;
+  env: Record<string, string>;
+} {
   return {
     purpose:
       "Read review comments, prepare draft answers, create follow-up draft comments when needed, and never call Azure DevOps directly.",
@@ -286,23 +414,23 @@ export function buildAgentInstructions(context) {
       "zaloz novou lokalni otazku k edge case",
     ],
     files: {
-      briefMarkdown: context.briefMarkdownPath,
-      briefJson: context.briefJsonPath,
-      threadsMarkdown: context.threadsMarkdownPath,
-      draftsMarkdown: context.draftsMarkdownPath,
-      syncStatusMarkdown: context.syncStatusMarkdownPath,
-      database: context.databasePath,
+      briefMarkdown: context.briefMarkdownPath || "",
+      briefJson: context.briefJsonPath || "",
+      threadsMarkdown: context.threadsMarkdownPath || "",
+      draftsMarkdown: context.draftsMarkdownPath || "",
+      syncStatusMarkdown: context.syncStatusMarkdownPath || "",
+      database: context.databasePath || "",
       cli: context.cliPath || "",
     },
     env: {
       STRIDETERM_REVIEW_PROVIDER: context.provider || "azure-devops",
-      STRIDETERM_REVIEW_PR_KEY: context.prKey,
-      STRIDETERM_REVIEW_ROOT: context.rootPath,
-      STRIDETERM_REVIEW_DB: context.databasePath,
-      STRIDETERM_REVIEW_STORE_DIR: context.exportDir,
-      STRIDETERM_REVIEW_EXPORT_DIR: context.exportDir,
-      STRIDETERM_REVIEW_BRIEF_MD: context.briefMarkdownPath,
-      STRIDETERM_REVIEW_BRIEF_JSON: context.briefJsonPath,
+      STRIDETERM_REVIEW_PR_KEY: context.prKey || "",
+      STRIDETERM_REVIEW_ROOT: context.rootPath || "",
+      STRIDETERM_REVIEW_DB: context.databasePath || "",
+      STRIDETERM_REVIEW_STORE_DIR: context.exportDir || "",
+      STRIDETERM_REVIEW_EXPORT_DIR: context.exportDir || "",
+      STRIDETERM_REVIEW_BRIEF_MD: context.briefMarkdownPath || "",
+      STRIDETERM_REVIEW_BRIEF_JSON: context.briefJsonPath || "",
       STRIDETERM_REVIEW_CLI: context.cliPath || "",
     },
   };

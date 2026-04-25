@@ -46,11 +46,12 @@ const TUI_RE =
 const JOB_RE =
   /^\s*(?:npm\s+(?:install|ci|test|run\s+(?:build|test|lint|check|prepare|typecheck))|yarn\s+(?:install|test|build)|pnpm\s+(?:install|test|build|run\s+(?:build|test|lint))|cargo\s+(?:build|test|run|check|fmt|clippy)|go\s+(?:build|test|run|install|mod\s+tidy)|make(?:\s|$)|mvn(?:\s|$)|gradle(?:\s|$)|pytest(?:\s|$)|ruff|eslint|prettier|tsc(?:\s|$))(?:\s|$)/i;
 
+export type CommandClass = "agent" | "streaming" | "tui" | "job" | "shell";
+
 /**
- * @param {string} input  raw command line as typed by the user (prompt-stripped)
- * @returns {"agent"|"streaming"|"tui"|"job"|"shell"}
+ * @param input  raw command line as typed by the user (prompt-stripped)
  */
-export function classifyCommand(input) {
+export function classifyCommand(input: unknown): CommandClass {
   const s = String(input || "").trim();
   if (!s) return "shell";
 
@@ -65,7 +66,7 @@ export function classifyCommand(input) {
  * Whether a given command class should ever fire T3 (silence-based) alerts.
  * Plan § 3.2.4 policy matrix.
  */
-export function allowT3ForCommandClass(commandClass) {
+export function allowT3ForCommandClass(commandClass: string): boolean {
   switch (commandClass) {
     case "agent":
     case "shell":
@@ -82,7 +83,7 @@ export function allowT3ForCommandClass(commandClass) {
 /**
  * Whether to fire exit alerts (non-intentional session exit) for the class.
  */
-export function allowExitAlertForCommandClass(commandClass) {
+export function allowExitAlertForCommandClass(commandClass: string): boolean {
   // `shell` typically doesn't exit except when the user ran `exit` themselves,
   // so we suppress exit alerts there too.
   return commandClass !== "shell";

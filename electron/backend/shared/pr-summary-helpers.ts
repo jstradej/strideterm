@@ -1,9 +1,34 @@
 import { normalizeRemoteUrl, stripRefsPrefix } from "./provider-utils.js";
 
+interface WorkspaceEntry {
+  id: string;
+  cwd?: string;
+  kind?: string;
+  profileId?: string;
+  review?: { provider?: string; prKey?: string };
+  [key: string]: unknown;
+}
+
+export interface GitSnapshot {
+  branch?: string;
+  remotes?: Record<string, string>;
+  [key: string]: unknown;
+}
+
+interface PrMatchSummary {
+  repository?: { remoteUrl?: string };
+  pullRequest?: { sourceRefName?: string };
+  role?: string;
+}
+
 /**
  * Find a workspace that was created for a specific pull request.
  */
-export function findWorkspaceForPullRequest(workspaces, prKey, providerName) {
+export function findWorkspaceForPullRequest(
+  workspaces: WorkspaceEntry[],
+  prKey: string,
+  providerName: string,
+): WorkspaceEntry | null {
   return (
     (workspaces || []).find(
       (workspace) => workspace.review?.provider === providerName && workspace.review?.prKey === prKey,
@@ -14,7 +39,11 @@ export function findWorkspaceForPullRequest(workspaces, prKey, providerName) {
 /**
  * Find an existing workspace whose git remote and branch match a pull request summary.
  */
-export function findMatchingWorkspace(summary, workspaces = [], gitSnapshots = {}) {
+export function findMatchingWorkspace(
+  summary: PrMatchSummary,
+  workspaces: WorkspaceEntry[] = [],
+  gitSnapshots: Record<string, GitSnapshot> = {},
+): WorkspaceEntry | null {
   const targetRemote = normalizeRemoteUrl(summary.repository?.remoteUrl || "");
   const targetBranch = stripRefsPrefix(summary.pullRequest?.sourceRefName || "");
   return (

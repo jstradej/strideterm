@@ -1,10 +1,14 @@
-import { execFile } from "node:child_process";
+import { execFile, type ExecFileOptions } from "node:child_process";
 
-export function quotePosixArg(value) {
+export function quotePosixArg(value: unknown): string {
   return `'${String(value).replace(/'/g, `'\\''`)}'`;
 }
 
-export function execFileText(file, args, options = {}) {
+export function execFileText(
+  file: string,
+  args: string[],
+  options: ExecFileOptions = {},
+): Promise<{ stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
     execFile(file, args, { windowsHide: true, maxBuffer: 10 * 1024 * 1024, ...options }, (error, stdout, stderr) => {
       if (error) {
@@ -24,7 +28,7 @@ export function execFileText(file, args, options = {}) {
   });
 }
 
-export function parseJsonLines(rawText) {
+export function parseJsonLines(rawText: string): unknown[] {
   return rawText
     .split(/\r?\n/)
     .map((line) => line.trim())

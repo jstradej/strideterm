@@ -6,6 +6,7 @@
  */
 import path from "node:path";
 import { readFile } from "node:fs/promises";
+// @ts-ignore – logger.js is not yet migrated to TypeScript
 import { getLogger } from "./logger.js";
 import {
   TASK_FILE,
@@ -19,9 +20,39 @@ import {
   fenceUserInput,
 } from "./agent-task-utils.js";
 
+interface TaskData {
+  taskId: string;
+  description?: string;
+  currentRound?: number;
+  maxRounds?: number;
+  [key: string]: unknown;
+}
+
+interface RoundCheck {
+  label: string;
+  passed: boolean;
+  outputTail?: string;
+}
+
+interface RoundData {
+  checks: RoundCheck[];
+  [key: string]: unknown;
+}
+
+interface GitContext {
+  status?: string;
+  diffStat?: string;
+  diffNames?: string;
+}
+
+interface VerdictData {
+  reason?: string;
+  [key: string]: unknown;
+}
+
 const log = getLogger("task-runner");
 
-export function buildInitialWorkerPrompt(task) {
+export function buildInitialWorkerPrompt(task: TaskData): string {
   const dir = taskDirRel(task.taskId);
   return `You are the worker in a supervised coding loop.
 
@@ -83,7 +114,7 @@ diff), simply stop. The judge will verify independently. Do not announce
 completion in chat — just stop.`;
 }
 
-export function buildRePrompt(task, round) {
+export function buildRePrompt(task: TaskData, round: RoundData): string {
   const dir = taskDirRel(task.taskId);
   const lines = [
     `The task is not yet complete. Round ${task.currentRound}/${task.maxRounds}.`,
@@ -121,7 +152,12 @@ export function buildRePrompt(task, round) {
   return lines.join("\n");
 }
 
-export async function buildJudgePrompt(task, round, gitContext, cwd) {
+export async function buildJudgePrompt(
+  task: TaskData,
+  round: RoundData,
+  gitContext: GitContext | null | undefined,
+  cwd: string | null | undefined,
+): Promise<string> {
   const dir = taskDirRel(task.taskId);
   const checkSummary = round.checks.map((c) => `- ${c.label}: ${c.passed ? "PASSED" : "FAILED"}`).join("\n");
   const git = gitContext || { status: "(unavailable)", diffStat: "", diffNames: "" };
@@ -280,7 +316,7 @@ ${evaluationInstructions}
 ${verdictBlock}`;
 }
 
-export function buildJudgeFeedbackPrompt(task, verdict) {
+export function buildJudgeFeedbackPrompt(task: TaskData, verdict: VerdictData): string {
   const dir = taskDirRel(task.taskId);
   return `The judge evaluated your work and found it incomplete.
 
@@ -311,7 +347,7 @@ verifiable implementation. A few more minutes of work is cheaper than another
 rejected round.`;
 }
 
-export function buildUserFeedbackPrompt(task, feedback) {
+export function buildUserFeedbackPrompt(task: TaskData, feedback: string): string {
   const dir = taskDirRel(task.taskId);
   return `The user reviewed your work after you stopped and found something still
 missing. The user's verdict overrides the judge — the task is NOT complete.

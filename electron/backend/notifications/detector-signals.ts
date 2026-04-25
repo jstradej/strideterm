@@ -34,7 +34,7 @@ export const PROGRESS_RE = /\[[=> -]+\]|\b\d{1,3}%\b/;
  * The caller typically checks this right before firing a T3 alert —
  * if an animation is still going, we wait another round.
  */
-export function hasRecentAnimation(chunkText) {
+export function hasRecentAnimation(chunkText: string): boolean {
   if (!chunkText) return false;
   if (CURSOR_MOVEMENT_RE.test(chunkText)) return true;
   if (SPINNER_RE.test(chunkText)) return true;

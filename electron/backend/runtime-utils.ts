@@ -1,3 +1,4 @@
+/// <reference types="node" />
 import os from "node:os";
 
 /**
@@ -65,26 +66,32 @@ export const MAX_PATTERN_LINE_LENGTH = 80;
 
 // --- Helpers ---
 
-export function clone(value) {
+export function clone<T>(value: T): T {
   return structuredClone(value);
 }
 
-export function findWorkspace(state, workspaceId) {
+export function findWorkspace(
+  state: { workspaces: Array<{ id: string; [key: string]: unknown }> },
+  workspaceId: string,
+): { id: string; [key: string]: unknown } | null {
   return state.workspaces.find((workspace) => workspace.id === workspaceId) || null;
 }
 
-export function createAttentionContext() {
+export function createAttentionContext(): {
+  visibleSessionIds: Set<string>;
+  recentlyVisibleUntil: Map<string, number>;
+} {
   return {
     visibleSessionIds: new Set(),
     recentlyVisibleUntil: new Map(),
   };
 }
 
-export function stripAnsi(value) {
+export function stripAnsi(value: unknown): string {
   return String(value || "").replaceAll(ANSI_ESCAPE_RE, "");
 }
 
-export function lastNonEmptyLine(value) {
+export function lastNonEmptyLine(value: unknown): string {
   const lines = String(value || "")
     .replaceAll("\r", "\n")
     .split("\n");
@@ -99,7 +106,7 @@ export function lastNonEmptyLine(value) {
   return "";
 }
 
-export function matchesPrompt(line) {
+export function matchesPrompt(line: string): boolean {
   if (!line) return false;
   // Long lines are not prompts — they're output text that happens to match.
   if (line.length > MAX_PATTERN_LINE_LENGTH) return false;
@@ -113,19 +120,44 @@ export function matchesPrompt(line) {
 // is exactly `"> "` (greater-than + space). Trimming it away would match
 // lines that just happen to end with `>`, which is the loose behavior the
 // tightened patterns were designed to prevent.
-export function matchesAgentIdle(line) {
+export function matchesAgentIdle(line: string): boolean {
   if (!line) return false;
   if (line.length > MAX_PATTERN_LINE_LENGTH) return false;
   return AGENT_IDLE_PATTERNS.some((pattern) => pattern.test(line));
 }
 
-export function matchesWaitingPattern(line) {
+export function matchesWaitingPattern(line: string): boolean {
   if (!line) return false;
   if (line.length > MAX_PATTERN_LINE_LENGTH) return false;
   return WAITING_PATTERNS.some((pattern) => pattern.test(line));
 }
 
-export function createSessionSignal(sessionId) {
+export function createSessionSignal(sessionId: string): {
+  sessionId: string;
+  busy: boolean;
+  waitingRaised: boolean;
+  agentLike: boolean;
+  hasUserInput: boolean;
+  outputBursts: number;
+  promptTimer: ReturnType<typeof setTimeout> | null;
+  lastOutputAt: number;
+  lastOutputLine: string;
+  lastAlertAt: number;
+  lastHookAlertAt: number;
+  everAlerted: boolean;
+  hookCapable: boolean;
+  lastHookAt: number;
+  lastHookType: string;
+  lastPromptAt: number;
+  lastUserInteractionAt: number;
+  commandClass: string;
+  currentCommand: string;
+  inputBuffer: string;
+  lastAnimationAt: number;
+  activity: string;
+  lastExitCode: number | null;
+  lastCommandFinishedAt: number;
+} {
   return {
     sessionId,
     busy: false,
@@ -178,7 +210,7 @@ export function createSessionSignal(sessionId) {
 
 // --- Terminal environment detection ---
 
-function parseWindowsBuildNumber(release) {
+function parseWindowsBuildNumber(release: string): number | null {
   const normalized = String(release || "").trim();
   if (!normalized) {
     return null;
@@ -188,8 +220,10 @@ function parseWindowsBuildNumber(release) {
   return Number.isInteger(buildNumber) ? buildNumber : null;
 }
 
-export function detectTerminalEnvironment({ platform = process.platform, release = os.release() } = {}) {
-  const environment = { platform };
+export function detectTerminalEnvironment(
+  { platform = process.platform, release = os.release() }: { platform?: string; release?: string } = {},
+): { platform: string; windowsPty?: { backend: string; buildNumber: number } } {
+  const environment: { platform: string } = { platform };
   if (platform !== "win32") {
     return environment;
   }
@@ -200,8 +234,8 @@ export function detectTerminalEnvironment({ platform = process.platform, release
   return {
     ...environment,
     windowsPty: {
-      backend: buildNumber >= 18309 ? "conpty" : "winpty",
-      buildNumber,
+      backend: (buildNumber as number) >= 18309 ? "conpty" : "winpty",
+      buildNumber: buildNumber as number,
     },
   };
 }

@@ -11,23 +11,21 @@
  * Pure function — no side effects, safe to import anywhere and to unit-test.
  */
 
-/**
- * @typedef {Object} Classification
- * @property {boolean} userFacing  — true if the event should raise a user alert
- * @property {1|2|3} [tier]        — confidence tier for UI styling / metrics
- * @property {"normal"|"urgent"} [urgency]
- * @property {"waiting"|"completed"|"info"} [kind]
- * @property {string} [detail]     — free-form trace string, e.g. "hook:Notification:idle_prompt"
- */
+export interface Classification {
+  userFacing: boolean;
+  tier?: 1 | 2 | 3;
+  urgency?: "normal" | "urgent";
+  kind?: "waiting" | "completed" | "info";
+  detail?: string;
+}
 
-const SYSTEM_ONLY = Object.freeze({ userFacing: false });
+const SYSTEM_ONLY: Classification = Object.freeze({ userFacing: false });
 
 /**
- * @param {string} hook     — hook name (Notification, Stop, SubagentStop, UserPromptSubmit, ...)
- * @param {string} [subtype] — for Notification: idle_prompt / permission_prompt / etc.
- * @returns {Classification}
+ * @param hook     — hook name (Notification, Stop, SubagentStop, UserPromptSubmit, ...)
+ * @param subtype  — for Notification: idle_prompt / permission_prompt / etc.
  */
-export function classifyHookEvent(hook, subtype) {
+export function classifyHookEvent(hook: unknown, subtype?: unknown): Classification {
   const hookName = String(hook || "").trim();
   const sub = String(subtype || "").trim();
 

@@ -1,3 +1,5 @@
+/// <reference types="node" />
+
 /**
  * Provider-agnostic git authentication utilities.
  *
@@ -8,11 +10,8 @@
 
 /**
  * Build a Basic-auth header value suitable for `git -c http.extraheader=…`.
- * @param {string} login
- * @param {string} token
- * @returns {string}
  */
-export function encodeAuthHeader(login, token) {
+export function encodeAuthHeader(login: string, token: string): string {
   return `AUTHORIZATION: Basic ${Buffer.from(`${String(login || "").trim()}:${String(token || "")}`, "utf8").toString("base64")}`;
 }
 
@@ -20,9 +19,8 @@ export function encodeAuthHeader(login, token) {
  * Return a copy of `process.env` with git-internal variables removed.
  * This prevents an outer git context from leaking into a spawned git
  * command (e.g. when running inside a worktree or hook).
- * @returns {Record<string, string>}
  */
-export function sanitizeGitEnvironment() {
+export function sanitizeGitEnvironment(): Record<string, string | undefined> {
   const env = { ...process.env };
   delete env.GIT_DIR;
   delete env.GIT_WORK_TREE;

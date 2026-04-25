@@ -1,3 +1,4 @@
+/// <reference types="node" />
 import os from "node:os";
 import path from "node:path";
 
@@ -36,14 +37,14 @@ export function getDefaultReviewRoot() {
     : path.join(os.homedir(), ".strideterm", "github-pr");
 }
 
-export function normalizeReviewRoot(value) {
+export function normalizeReviewRoot(value: unknown): string {
   return baseNormalizeReviewRoot(value, getDefaultReviewRoot());
 }
 
 /**
  * Build a pull request key: connectionId:owner/repo:number
  */
-export function createPullRequestKey(connectionId, owner, repo, pullNumber) {
+export function createPullRequestKey(connectionId: string, owner: string, repo: string, pullNumber: number | string): string {
   return `${connectionId}:${owner}/${repo}:${pullNumber}`;
 }
 
@@ -51,7 +52,7 @@ export function createPullRequestKey(connectionId, owner, repo, pullNumber) {
  * Parse owner/repo from a full repository name or remote URL.
  * Returns { owner, repo } or null.
  */
-export function parseOwnerRepo(fullName) {
+export function parseOwnerRepo(fullName: unknown): { owner: string; repo: string } | null {
   if (!fullName) return null;
   // "owner/repo" format
   const slashParts = String(fullName).split("/").filter(Boolean);
@@ -66,7 +67,7 @@ export function parseOwnerRepo(fullName) {
  * github.com → https://api.github.com
  * GHES       → https://HOST/api/v3
  */
-export function deriveApiBaseUrl(hostUrl) {
+export function deriveApiBaseUrl(hostUrl: string | null | undefined): string {
   const host = trimTrailingSlash(hostUrl || "https://github.com");
   try {
     const u = new URL(host);
@@ -79,17 +80,17 @@ export function deriveApiBaseUrl(hostUrl) {
   }
 }
 
-export function buildRepositoryRemoteUrl(hostUrl, owner, repo) {
+export function buildRepositoryRemoteUrl(hostUrl: string | null | undefined, owner: string, repo: string): string {
   const host = trimTrailingSlash(hostUrl || "https://github.com");
   return `${host}/${owner}/${repo}`;
 }
 
-export function buildPullRequestWebUrl(hostUrl, owner, repo, pullNumber) {
+export function buildPullRequestWebUrl(hostUrl: string | null | undefined, owner: string, repo: string, pullNumber: number | string): string {
   const host = trimTrailingSlash(hostUrl || "https://github.com");
   return `${host}/${owner}/${repo}/pull/${pullNumber}`;
 }
 
-export function formatReviewWorkspaceError(error, reviewRoot) {
+export function formatReviewWorkspaceError(error: unknown, reviewRoot: string): string {
   return baseFormatReviewWorkspaceError(error, normalizeReviewRoot(reviewRoot), "GitHub connection");
 }
 
@@ -103,7 +104,14 @@ export function inferAttentionReason({
   reviewStateChanged,
   checksChanged,
   checksFailed,
-}) {
+}: {
+  role: string;
+  newCommentsCount: number;
+  sourceUpdated: boolean;
+  reviewStateChanged: boolean;
+  checksChanged: boolean;
+  checksFailed: boolean;
+}): string {
   if (newCommentsCount > 0) {
     return role === "author" ? "new comment on my PR" : "new comment";
   }
@@ -126,7 +134,7 @@ export function inferAttentionReason({
  * Normalize a GitHub review state to a simple label.
  * GitHub states: APPROVED, CHANGES_REQUESTED, COMMENTED, DISMISSED, PENDING
  */
-export function normalizeReviewState(state) {
+export function normalizeReviewState(state: unknown): string {
   const normalized = String(state || "").toUpperCase();
   if (normalized === "APPROVED") return "approved";
   if (normalized === "CHANGES_REQUESTED") return "changes_requested";
@@ -136,7 +144,7 @@ export function normalizeReviewState(state) {
   return "unknown";
 }
 
-export function normalizeCheckState(state) {
+export function normalizeCheckState(state: unknown): string {
   const normalized = String(state || "").toLowerCase();
   if (["failure", "timed_out", "action_required", "cancelled", "startup_failure"].includes(normalized)) return "failed";
   if (["queued", "in_progress", "waiting", "pending", "requested"].includes(normalized)) return "pending";
@@ -144,7 +152,10 @@ export function normalizeCheckState(state) {
   return "unknown";
 }
 
-export function createConnectionSnapshot(connection, persistedState = {}) {
+export function createConnectionSnapshot(
+  connection: { id: string; label?: string; hostUrl?: string; apiBaseUrl?: string; currentUserLogin?: string; tokenRef?: string; enabled?: boolean; ownerFilters?: string[]; repositoryFilters?: string[]; pollSeconds?: number; reviewRoot?: string },
+  persistedState: { status?: string; lastSyncAt?: string | null; lastSuccessAt?: string | null; lastError?: string } = {},
+): { id: string; label: string; hostUrl: string; apiBaseUrl: string; currentUserLogin: string; tokenRef: string; enabled: boolean; ownerFilters: string[]; repositoryFilters: string[]; pollSeconds: number; reviewRoot: string; status: string; lastSyncAt: string | null; lastSuccessAt: string | null; lastError: string } {
   return {
     id: connection.id,
     label: connection.label || connection.id,
@@ -164,7 +175,21 @@ export function createConnectionSnapshot(connection, persistedState = {}) {
   };
 }
 
-export function normalizeConnectionInput(connectionInput = {}) {
+export function normalizeConnectionInput(connectionInput: {
+  hostUrl?: string;
+  apiBaseUrl?: string;
+  currentUserLogin?: string;
+  ownerFilters?: unknown[];
+  repositoryFilters?: unknown[];
+  [key: string]: unknown;
+} = {}): {
+  hostUrl: string;
+  apiBaseUrl: string;
+  currentUserLogin: string;
+  ownerFilters: string[];
+  repositoryFilters: string[];
+  [key: string]: unknown;
+} {
   let hostUrl = trimTrailingSlash(connectionInput.hostUrl || "https://github.com");
   const ownerFilters = Array.isArray(connectionInput.ownerFilters)
     ? connectionInput.ownerFilters.map((v) => String(v || "").trim()).filter(Boolean)

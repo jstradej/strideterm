@@ -18,11 +18,32 @@
 
 import { parseDate } from "./provider-utils.js";
 
+interface ReviewSummaryRef {
+  prKey: string;
+  connectionId?: string;
+  role?: string;
+  repository?: { fullName?: string; name?: string };
+  pullRequest?: { number?: number; id?: number; title?: string; webUrl?: string };
+  reviewWorkspaceId?: string;
+  existingWorkspaceId?: string;
+  lastRemoteActivityAt?: string | null;
+}
+
+interface ConnectionRef {
+  id: string;
+  label?: string;
+}
+
+interface ConnectionState {
+  status?: string;
+  lastError?: string;
+}
+
 /** Maximum retained events in snapshot.reviewActivity (rolling window). */
 export const MAX_REVIEW_ACTIVITY = 100;
 
 /** Truncate comment text to a reasonable length for a notification body. */
-export function truncateBody(text, max = 140) {
+export function truncateBody(text: unknown, max = 140): string {
   const trimmed = String(text || "")
     .replace(/\s+/g, " ")
     .trim();
@@ -44,7 +65,34 @@ export function buildReviewActivityEvent({
   body,
   actor = null,
   urgency = "normal",
-}) {
+}: {
+  provider: string;
+  summary: ReviewSummaryRef;
+  kind: string;
+  at: string;
+  title: string;
+  body: string;
+  actor?: unknown;
+  urgency?: string;
+}): {
+  id: string;
+  prKey: string;
+  provider: string;
+  connectionId: string | undefined;
+  kind: string;
+  at: string;
+  title: string;
+  body: string;
+  role: string;
+  urgency: string;
+  repositoryName: string;
+  pullRequestNumber: number;
+  pullRequestTitle: string;
+  webUrl: string;
+  reviewWorkspaceId: string;
+  existingWorkspaceId: string;
+  actor: unknown;
+} {
   return {
     id: `${summary.prKey}:${kind}:${at}`,
     prKey: summary.prKey,
@@ -69,7 +117,7 @@ export function buildReviewActivityEvent({
 /**
  * Prepend new events to the rolling activity log and cap length.
  */
-export function appendReviewActivity(previous, newEvents) {
+export function appendReviewActivity(previous: unknown[] | undefined | null, newEvents: unknown[] | undefined | null): unknown[] {
   if (!newEvents || newEvents.length === 0) return previous || [];
   return [...newEvents, ...(previous || [])].slice(0, MAX_REVIEW_ACTIVITY);
 }
@@ -78,8 +126,8 @@ export function appendReviewActivity(previous, newEvents) {
  * Parse an Azure vote signature of shape "id:vote:declined|id:vote:declined|…"
  * into a Map<id, "vote:declined"> for per-reviewer diffing.
  */
-export function parseAzureVoteSignature(signature) {
-  const map = new Map();
+export function parseAzureVoteSignature(signature: string | null | undefined): Map<string, string> {
+  const map = new Map<string, string>();
   if (!signature) return map;
   for (const entry of String(signature).split("|")) {
     const [id, vote, declined] = entry.split(":");
@@ -93,8 +141,8 @@ export function parseAzureVoteSignature(signature) {
  * Parse a GitHub review state signature of shape
  * "login:state:isRequested|…" into Map<login, "state:requested">.
  */
-export function parseGitHubReviewSignature(signature) {
-  const map = new Map();
+export function parseGitHubReviewSignature(signature: string | null | undefined): Map<string, string> {
+  const map = new Map<string, string>();
   if (!signature) return map;
   for (const entry of String(signature).split("|")) {
     const [login, state, requested] = entry.split(":");
@@ -108,9 +156,9 @@ export function parseGitHubReviewSignature(signature) {
  * Diff two signature maps. Returns the list of keys whose entry differs,
  * optionally excluding a "self" key.
  */
-export function diffSignatureKeys(prevMap, currMap, selfKey = "") {
-  const changed = [];
-  const seen = new Set();
+export function diffSignatureKeys(prevMap: Map<string, string>, currMap: Map<string, string>, selfKey = ""): string[] {
+  const changed: string[] = [];
+  const seen = new Set<string>();
   for (const key of currMap.keys()) {
     seen.add(key);
     if (selfKey && key === selfKey) continue;
@@ -131,7 +179,7 @@ export function diffSignatureKeys(prevMap, currMap, selfKey = "") {
  *
  * `seededConnections` is a Set mutated in-place across sync calls.
  */
-export function shouldSeedConnection(seededConnections, connectionId) {
+export function shouldSeedConnection(seededConnections: Set<string>, connectionId: string): boolean {
   return !seededConnections.has(connectionId);
 }
 
@@ -140,7 +188,7 @@ export function shouldSeedConnection(seededConnections, connectionId) {
  * first time (either a brand-new PR on the remote, or the first sync of its
  * connection in this process run).
  */
-export function seedNotifiedTimestamp(summary, fallback) {
+export function seedNotifiedTimestamp(summary: ReviewSummaryRef, fallback: string | null): string | null {
   return summary.lastRemoteActivityAt || fallback;
 }
 
@@ -152,7 +200,19 @@ export function seedNotifiedTimestamp(summary, fallback) {
  * The `authorKey(author)` function lets the caller decide how to extract the
  * comparable identity (Azure uses identity object, GitHub uses login string).
  */
-export function filterNewComments({ comments, sinceIsoString, isSelf, getTimestamp, getAuthor }) {
+export function filterNewComments<TComment, TAuthor>({
+  comments,
+  sinceIsoString,
+  isSelf,
+  getTimestamp,
+  getAuthor,
+}: {
+  comments: TComment[];
+  sinceIsoString: string | null | undefined;
+  isSelf: (author: TAuthor) => boolean;
+  getTimestamp: (comment: TComment) => unknown;
+  getAuthor: (comment: TComment) => TAuthor;
+}): TComment[] {
   const sinceMs = parseDate(sinceIsoString);
   return comments.filter((comment) => {
     const ts = parseDate(getTimestamp(comment));
@@ -168,7 +228,39 @@ export function filterNewComments({ comments, sinceIsoString, isSelf, getTimesta
  * happens on startup with a pre-existing, unchanged error (we already told
  * the user last session) and on repeated polls with the same failure.
  */
-export function buildConnectionErrorEvent({ provider, connection, prevState, currentStatus, currentError, at }) {
+export function buildConnectionErrorEvent({
+  provider,
+  connection,
+  prevState,
+  currentStatus,
+  currentError,
+  at,
+}: {
+  provider: string;
+  connection: ConnectionRef;
+  prevState: ConnectionState | null | undefined;
+  currentStatus: string;
+  currentError: unknown;
+  at: string;
+}): {
+  id: string;
+  prKey: string;
+  provider: string;
+  connectionId: string;
+  kind: string;
+  at: string;
+  title: string;
+  body: string;
+  role: string;
+  urgency: string;
+  repositoryName: string;
+  pullRequestNumber: number;
+  pullRequestTitle: string;
+  webUrl: string;
+  reviewWorkspaceId: string;
+  existingWorkspaceId: string;
+  actor: null;
+} | null {
   if (currentStatus !== "error") return null;
   const prevStatus = prevState?.status || "idle";
   const prevError = prevState?.lastError || "";

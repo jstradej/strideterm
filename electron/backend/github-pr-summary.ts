@@ -12,9 +12,32 @@ import {
 import {
   findWorkspaceForPullRequest as baseFindWorkspace,
   findMatchingWorkspace,
+  type GitSnapshot,
 } from "./shared/pr-summary-helpers.js";
 
-export function findWorkspaceForPullRequest(workspaces, prKey) {
+interface GithubPR {
+  number?: number | string;
+  title?: string;
+  body?: string;
+  state?: string;
+  draft?: boolean;
+  url?: string;
+  html_url?: string;
+  created_at?: string;
+  updated_at?: string;
+  merged_at?: string | null;
+  closed_at?: string | null;
+  mergeable?: boolean | null;
+  mergeable_state?: string;
+  base?: {
+    repo?: { owner?: { login?: string }; name?: string; clone_url?: string; html_url?: string };
+    ref?: string;
+  };
+  head?: { sha?: string; ref?: string };
+  user?: { login?: string; name?: string; avatar_url?: string };
+}
+
+export function findWorkspaceForPullRequest(workspaces: Array<{ id: string; [key: string]: unknown }>, prKey: string): { id: string; [key: string]: unknown } | null {
   return baseFindWorkspace(workspaces, prKey, "github");
 }
 
@@ -24,10 +47,22 @@ export { findMatchingWorkspace };
  * Summarize reviewers from reviews list and requested_reviewers.
  * GitHub reviews are event-based: a user may have multiple reviews, we take the latest non-COMMENTED one.
  */
-function summarizeReviewers(reviews = [], requestedReviewers = [], currentUserLogin = "") {
+function summarizeReviewers(reviews: Array<Record<string, unknown>> = [], requestedReviewers: Record<string, unknown> | Array<Record<string, unknown>> = [], currentUserLogin = ""): {
+  myState: string;
+  myIsRequested: boolean;
+  approvedCount: number;
+  changesRequestedCount: number;
+  pendingCount: number;
+  totalCount: number;
+  reviewers: Array<{ login: string; displayName: string; avatarUrl: string; state: string; isRequested: boolean; isTeam?: boolean }>;
+} {
+  type GHUser = { login?: string; name?: string; avatar_url?: string; [key: string]: unknown };
+  type GHReview = { user?: GHUser; state?: unknown; submitted_at?: unknown; [key: string]: unknown };
+  type GHReviewerObj = { users?: GHUser[]; teams?: Array<{ slug?: string; name?: string }> };
+
   // Latest substantive review per user (skip COMMENTED — it's not a decision)
-  const latestByUser = new Map();
-  for (const review of reviews) {
+  const latestByUser = new Map<string, GHReview>();
+  for (const review of reviews as GHReview[]) {
     const login = review.user?.login || "";
     if (!login) continue;
     const state = normalizeReviewState(review.state);
@@ -41,7 +76,8 @@ function summarizeReviewers(reviews = [], requestedReviewers = [], currentUserLo
   const reviewerMap = new Map();
 
   // Requested reviewers (pending)
-  const users = requestedReviewers?.users || requestedReviewers || [];
+  const rrObj = requestedReviewers as GHReviewerObj;
+  const users = rrObj?.users || (Array.isArray(requestedReviewers) ? (requestedReviewers as GHUser[]) : []);
   for (const user of Array.isArray(users) ? users : []) {
     const login = user.login || "";
     if (!login) continue;
@@ -55,7 +91,7 @@ function summarizeReviewers(reviews = [], requestedReviewers = [], currentUserLo
   }
 
   // Requested teams
-  const teams = requestedReviewers?.teams || [];
+  const teams = rrObj?.teams || [];
   for (const team of Array.isArray(teams) ? teams : []) {
     const key = `team:${team.slug || team.name}`;
     reviewerMap.set(key, {
@@ -97,35 +133,43 @@ function summarizeReviewers(reviews = [], requestedReviewers = [], currentUserLo
 /**
  * Build check summary from check runs and combined status.
  */
-function buildCheckSummary(checkRuns = [], combinedStatus = null) {
-  const items = [];
+function buildCheckSummary(checkRuns: Array<Record<string, unknown>> = [], combinedStatus: Record<string, unknown> | null = null): {
+  failedCount: number;
+  pendingCount: number;
+  passedCount: number;
+  items: unknown[];
+} {
+  type CheckItem = { id: string; kind: string; checkSuiteId: unknown; name: string; description: string; state: string; stateLabel: string; url: string; startTime: unknown; finishTime: unknown };
+  const items: CheckItem[] = [];
 
   for (const run of checkRuns) {
+    const checkSuite = (run.check_suite || {}) as { id?: unknown };
+    const output = (run.output || {}) as { title?: string };
     const state = normalizeCheckState(run.conclusion || run.status);
     items.push({
       id: `check:${run.id}`,
       kind: "check",
-      checkSuiteId: run.check_suite?.id || null,
-      name: run.name || "Check",
-      description: run.output?.title || "",
+      checkSuiteId: checkSuite.id || null,
+      name: String(run.name || "Check"),
+      description: output.title || "",
       state,
       stateLabel:
         state === "failed" ? "failed" : state === "pending" ? "pending" : state === "succeeded" ? "passed" : "unknown",
-      url: run.html_url || run.details_url || "",
+      url: String(run.html_url || run.details_url || ""),
       startTime: run.started_at || null,
       finishTime: run.completed_at || null,
     });
   }
 
   if (combinedStatus?.statuses) {
-    for (const status of combinedStatus.statuses) {
+    for (const status of (combinedStatus.statuses as Array<Record<string, unknown>>)) {
       const state = normalizeCheckState(status.state);
       items.push({
         id: `status:${status.id || status.context}`,
         kind: "status",
         checkSuiteId: null,
-        name: status.context || "Status",
-        description: status.description || "",
+        name: String(status.context || "Status"),
+        description: String(status.description || ""),
         state,
         stateLabel:
           state === "failed"
@@ -135,17 +179,15 @@ function buildCheckSummary(checkRuns = [], combinedStatus = null) {
               : state === "succeeded"
                 ? "passed"
                 : "unknown",
-        url: status.target_url || "",
+        url: String(status.target_url || ""),
         startTime: status.created_at || null,
         finishTime: status.updated_at || null,
       });
     }
   }
 
-  items.sort((a, b) => {
-    const priority = { failed: 4, pending: 3, succeeded: 2, unknown: 1 };
-    return (priority[b.state] || 0) - (priority[a.state] || 0);
-  });
+  const priority: Record<string, number> = { failed: 4, pending: 3, succeeded: 2, unknown: 1 };
+  items.sort((a, b) => (priority[b.state] || 0) - (priority[a.state] || 0));
 
   return {
     failedCount: items.filter((i) => i.state === "failed").length,
@@ -158,7 +200,7 @@ function buildCheckSummary(checkRuns = [], combinedStatus = null) {
 /**
  * Group review comments into threads by in_reply_to_id.
  */
-function groupReviewCommentThreads(reviewComments = []) {
+function groupReviewCommentThreads(reviewComments: Array<Record<string, unknown>> = []): Array<Record<string, unknown>> {
   const rootMap = new Map();
   const childMap = new Map(); // parentId → [comments]
 
@@ -195,17 +237,20 @@ function groupReviewCommentThreads(reviewComments = []) {
       diffHunk: rootComment.diff_hunk || "",
       publishedDate: rootComment.created_at || null,
       lastUpdatedDate: allComments.at(-1)?.updated_at || allComments.at(-1)?.created_at || null,
-      comments: allComments.map((c) => ({
-        id: c.id,
-        body: c.body || "",
-        createdAt: c.created_at || null,
-        updatedAt: c.updated_at || null,
-        author: {
-          login: c.user?.login || "",
-          displayName: c.user?.name || c.user?.login || "",
-          avatarUrl: c.user?.avatar_url || "",
-        },
-      })),
+      comments: allComments.map((c) => {
+        const cu = (c.user || {}) as { login?: string; name?: string; avatar_url?: string };
+        return {
+          id: c.id,
+          body: c.body || "",
+          createdAt: c.created_at || null,
+          updatedAt: c.updated_at || null,
+          author: {
+            login: cu.login || "",
+            displayName: cu.name || cu.login || "",
+            avatarUrl: cu.avatar_url || "",
+          },
+        };
+      }),
     });
   }
 
@@ -226,13 +271,30 @@ export function buildPullRequestSummary({
   gitSnapshots = {},
   activeProfileId = "default",
   now: _now = () => Date.now(),
-}) {
-  const owner = pr.base?.repo?.owner?.login || "";
-  const repo = pr.base?.repo?.name || "";
-  const pullNumber = pr.number;
+}: {
+  connection: { id: string; label?: string; hostUrl?: string; currentUserLogin?: string };
+  pr: Record<string, unknown>;
+  reviews?: Array<Record<string, unknown>>;
+  reviewComments?: Array<Record<string, unknown>>;
+  issueComments?: Array<Record<string, unknown>>;
+  requestedReviewers?: Record<string, unknown> | Array<Record<string, unknown>>;
+  checkRuns?: Array<Record<string, unknown>>;
+  combinedStatus?: Record<string, unknown> | null;
+  tracked?: Record<string, unknown>;
+  workspaces?: Array<{ id: string; profileId?: string; [key: string]: unknown }>;
+  gitSnapshots?: Record<string, unknown>;
+  activeProfileId?: string;
+  now?: () => number;
+}): { summary: Record<string, unknown>; internals: Record<string, unknown> } {
+  type GHComment = { id?: unknown; body?: string; user?: { login?: string; name?: string; avatar_url?: string }; created_at?: string; updated_at?: string; [key: string]: unknown };
+  type GHReviewEntry = { id?: unknown; state?: string; body?: string; submitted_at?: string; user?: { login?: string; name?: string; avatar_url?: string }; [key: string]: unknown };
+  const p = pr as GithubPR;
+  const owner = p.base?.repo?.owner?.login || "";
+  const repo = p.base?.repo?.name || "";
+  const pullNumber = p.number ?? "";
   const prKey = createPullRequestKey(connection.id, owner, repo, pullNumber);
   const currentUserLogin = connection.currentUserLogin || "";
-  const isAuthor = (pr.user?.login || "").toLowerCase() === currentUserLogin.toLowerCase();
+  const isAuthor = (p.user?.login || "").toLowerCase() === currentUserLogin.toLowerCase();
   const reviewerInfo = summarizeReviewers(reviews, requestedReviewers, currentUserLogin);
   const isReviewer = !isAuthor && (reviewerInfo.myIsRequested || reviewerInfo.myState !== "");
   const role = isAuthor ? "author" : isReviewer ? "reviewer" : "observer";
@@ -246,16 +308,16 @@ export function buildPullRequestSummary({
     ...reviews.map((r) => parseDate(r.submitted_at)),
   ];
   const latestCommentAt = Math.max(...allCommentDates, 0);
-  const latestPushAt = parseDate(pr.updated_at);
-  const latestPrAt = parseDate(pr.created_at);
+  const latestPushAt = parseDate(p.updated_at);
+  const latestPrAt = parseDate(p.created_at);
   const lastRemoteActivityAt = toIsoOrNull(Math.max(latestCommentAt, latestPushAt, latestPrAt));
 
   // New comments since last seen
   const lastSeenAt = parseDate(tracked.lastSeenActivityAt);
-  const otherIssueComments = issueComments.filter(
+  const otherIssueComments = (issueComments as GHComment[]).filter(
     (c) => (c.user?.login || "").toLowerCase() !== currentUserLogin.toLowerCase(),
   );
-  const otherReviewComments = reviewComments.filter(
+  const otherReviewComments = (reviewComments as GHComment[]).filter(
     (c) => (c.user?.login || "").toLowerCase() !== currentUserLogin.toLowerCase(),
   );
   const newCommentsCount = [
@@ -273,7 +335,7 @@ export function buildPullRequestSummary({
   );
 
   // Source branch updated
-  const headSha = pr.head?.sha || "";
+  const headSha = p.head?.sha || "";
   const sourceUpdated = Boolean(tracked.lastHeadSha && tracked.lastHeadSha !== headSha);
 
   // Checks
@@ -296,12 +358,12 @@ export function buildPullRequestSummary({
   const reviewWorkspace = findWorkspaceForPullRequest(profileWorkspaces, prKey);
   const matchingWorkspace = findMatchingWorkspace(
     {
-      repository: { remoteUrl: pr.base?.repo?.clone_url || pr.base?.repo?.html_url || "" },
-      pullRequest: { sourceRefName: pr.head?.ref || "" },
+      repository: { remoteUrl: p.base?.repo?.clone_url || p.base?.repo?.html_url || "" },
+      pullRequest: { sourceRefName: p.head?.ref || "" },
       role,
     },
     profileWorkspaces,
-    gitSnapshots,
+    gitSnapshots as Record<string, GitSnapshot>,
   );
 
   const trackedReviewWsId = tracked.reviewWorkspaceId || "";
@@ -320,32 +382,32 @@ export function buildPullRequestSummary({
       name: repo,
       fullName: `${owner}/${repo}`,
       remoteUrl:
-        pr.base?.repo?.clone_url ||
+        p.base?.repo?.clone_url ||
         buildPullRequestWebUrl(hostUrl, owner, repo, pullNumber).replace(`/pull/${pullNumber}`, ""),
     },
     pullRequest: {
       id: pullNumber,
       number: pullNumber,
-      title: pr.title || `PR #${pullNumber}`,
-      body: pr.body || "",
-      state: pr.state || "open",
-      draft: Boolean(pr.draft),
-      url: pr.url || "",
-      webUrl: pr.html_url || buildPullRequestWebUrl(hostUrl, owner, repo, pullNumber),
-      sourceRefName: pr.head?.ref || "",
-      targetRefName: pr.base?.ref || "",
+      title: p.title || `PR #${pullNumber}`,
+      body: p.body || "",
+      state: p.state || "open",
+      draft: Boolean(p.draft),
+      url: p.url || "",
+      webUrl: p.html_url || buildPullRequestWebUrl(hostUrl, owner, repo, pullNumber),
+      sourceRefName: p.head?.ref || "",
+      targetRefName: p.base?.ref || "",
       headSha: headSha,
-      createdAt: pr.created_at || null,
-      updatedAt: pr.updated_at || null,
-      mergedAt: pr.merged_at || null,
-      closedAt: pr.closed_at || null,
-      mergeable: pr.mergeable ?? null,
-      mergeableState: pr.mergeable_state || "",
+      createdAt: p.created_at || null,
+      updatedAt: p.updated_at || null,
+      mergedAt: p.merged_at || null,
+      closedAt: p.closed_at || null,
+      mergeable: p.mergeable ?? null,
+      mergeableState: p.mergeable_state || "",
     },
     author: {
-      login: pr.user?.login || "",
-      displayName: pr.user?.name || pr.user?.login || "Unknown author",
-      avatarUrl: pr.user?.avatar_url || "",
+      login: p.user?.login || "",
+      displayName: p.user?.name || p.user?.login || "Unknown author",
+      avatarUrl: p.user?.avatar_url || "",
     },
     role,
     reviewerSummary: reviewerInfo,
@@ -358,7 +420,7 @@ export function buildPullRequestSummary({
     attentionReason,
     newCommentsCount,
     threads,
-    issueComments: issueComments.map((c) => ({
+    issueComments: (issueComments as GHComment[]).map((c) => ({
       id: c.id,
       body: c.body || "",
       createdAt: c.created_at || null,
@@ -369,7 +431,7 @@ export function buildPullRequestSummary({
         avatarUrl: c.user?.avatar_url || "",
       },
     })),
-    reviews: reviews
+    reviews: (reviews as GHReviewEntry[])
       .filter((r) => r.state !== "PENDING")
       .map((r) => ({
         id: r.id,
@@ -400,7 +462,7 @@ export function buildPullRequestSummary({
     reviewerMap: new Map(reviewerInfo.reviewers.map((reviewer) => [reviewer.login, reviewer])),
     myLogin: currentUserLogin,
     checksFailedCount: checks.failedCount,
-    mergeableState: pr.mergeable_state || "",
+    mergeableState: p.mergeable_state || "",
   };
 
   return { summary, internals };

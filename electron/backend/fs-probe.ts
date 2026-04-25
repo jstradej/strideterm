@@ -4,7 +4,15 @@ import path from "node:path";
 const PROBE_IGNORE = new Set(["node_modules", "dist", "build", "target", "vendor", "__pycache__", ".venv"]);
 const DEFAULT_BUDGET = { maxReaddir: 300, maxMs: 1500 };
 
-async function hasGitDir(dirPath) {
+interface ScanBudget {
+  readdir: number;
+  maxReaddir: number;
+  startMs: number;
+  maxMs: number;
+  truncated: boolean;
+}
+
+async function hasGitDir(dirPath: string): Promise<boolean> {
   try {
     await fs.access(path.join(dirPath, ".git"));
     return true;
@@ -13,7 +21,7 @@ async function hasGitDir(dirPath) {
   }
 }
 
-async function scanDir(dirPath, maxDepth, budget, childRepos) {
+async function scanDir(dirPath: string, maxDepth: number, budget: ScanBudget, childRepos: string[]): Promise<void> {
   if (budget.readdir >= budget.maxReaddir || Date.now() - budget.startMs > budget.maxMs) {
     budget.truncated = true;
     return;
@@ -46,11 +54,17 @@ async function scanDir(dirPath, maxDepth, budget, childRepos) {
 }
 
 export async function probeDirectory(
-  dirPath,
+  dirPath: string,
   { maxDepth = 2, maxReaddir = DEFAULT_BUDGET.maxReaddir, maxMs = DEFAULT_BUDGET.maxMs } = {},
-) {
+): Promise<{
+  path: string;
+  isGitRepo: boolean;
+  childRepos: string[];
+  scannedDepth: number;
+  truncated: boolean;
+}> {
   const resolved = path.resolve(dirPath || "");
-  const budget = { readdir: 0, maxReaddir, startMs: Date.now(), maxMs, truncated: false };
+  const budget: ScanBudget = { readdir: 0, maxReaddir, startMs: Date.now(), maxMs, truncated: false };
 
   const isGitRepo = await hasGitDir(resolved);
   let isInsideGitRepo = false;
@@ -58,7 +72,7 @@ export async function probeDirectory(
     isInsideGitRepo = true;
   }
 
-  const childRepos = [];
+  const childRepos: string[] = [];
   await scanDir(resolved, maxDepth, budget, childRepos);
 
   return {

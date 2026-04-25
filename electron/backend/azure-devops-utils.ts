@@ -1,3 +1,4 @@
+/// <reference types="node" />
 import os from "node:os";
 import path from "node:path";
 
@@ -38,12 +39,12 @@ export function getDefaultReviewRoot() {
     ? path.join(path.resolve(process.env.STRIDETERM_DATA_DIR), "azure-pr")
     : path.join(os.homedir(), ".strideterm", "azure-pr");
 }
-export const STATUS_PRIORITY = {
+export const STATUS_PRIORITY: Record<string, number> = {
   active: 2,
   pending: 1,
   fixed: 0,
 };
-export const CHECK_STATE_PRIORITY = {
+export const CHECK_STATE_PRIORITY: Record<string, number> = {
   failed: 4,
   pending: 3,
   succeeded: 2,
@@ -51,11 +52,11 @@ export const CHECK_STATE_PRIORITY = {
   unknown: 0,
 };
 
-export function normalizeReviewRoot(value) {
+export function normalizeReviewRoot(value: unknown): string {
   return baseNormalizeReviewRoot(value, getDefaultReviewRoot());
 }
 
-export function uniqueList(values = []) {
+export function uniqueList(values: unknown[] = []): string[] {
   const seen = new Set();
   const result = [];
   for (const value of values.map((entry) => String(entry || "").trim()).filter(Boolean)) {
@@ -69,17 +70,17 @@ export function uniqueList(values = []) {
   return result;
 }
 
-export function createPullRequestKey(connectionId, repositoryId, pullRequestId) {
+export function createPullRequestKey(connectionId: string, repositoryId: string, pullRequestId: string | number): string {
   return `${connectionId}:${repositoryId}:${pullRequestId}`;
 }
 
-export function normalizeIdentityValue(value) {
+export function normalizeIdentityValue(value: unknown): string {
   return String(value || "")
     .trim()
     .toLowerCase();
 }
 
-export function identityMatches(login, identity) {
+export function identityMatches(login: unknown, identity: { uniqueName?: string; mailAddress?: string; displayName?: string; id?: string } | null | undefined): boolean {
   const normalizedLogin = normalizeIdentityValue(login);
   if (!normalizedLogin || !identity) {
     return false;
@@ -90,7 +91,7 @@ export function identityMatches(login, identity) {
   );
 }
 
-export function extractComments(threads = []) {
+export function extractComments(threads: Array<{ id?: number; status?: string; comments?: Array<{ commentType?: string; [key: string]: unknown }> }> = []): Array<{ threadId?: number; threadStatus?: string; commentType?: string; [key: string]: unknown }> {
   return threads.flatMap((thread) =>
     Array.isArray(thread?.comments)
       ? thread.comments
@@ -100,7 +101,17 @@ export function extractComments(threads = []) {
   );
 }
 
-export function summarizeReviewers(reviewers = [], login = "") {
+export function summarizeReviewers(
+  reviewers: Array<{ id?: string; displayName?: string; uniqueName?: string; vote?: number; isRequired?: boolean; hasDeclined?: boolean; isContainer?: boolean }> = [],
+  login = "",
+): {
+  myVote: number;
+  myReviewerId: string;
+  approvedCount: number;
+  waitingCount: number;
+  totalCount: number;
+  reviewers: Array<{ id: string; displayName: string; uniqueName: string; vote: number; isRequired: boolean; hasDeclined: boolean; isContainer: boolean }>;
+} {
   const myReviewer = reviewers.find((reviewer) => identityMatches(login, reviewer));
   return {
     myVote: myReviewer?.vote ?? 0,
@@ -120,7 +131,7 @@ export function summarizeReviewers(reviewers = [], login = "") {
   };
 }
 
-export function buildRepositoryRemoteUrl(connection, projectName, repositoryName) {
+export function buildRepositoryRemoteUrl(connection: { orgUrl?: string } | null | undefined, projectName: string, repositoryName: string): string {
   const baseUrl = trimTrailingSlash(connection?.orgUrl);
   const project = String(projectName || "").trim();
   const repository = String(repositoryName || "").trim();
@@ -130,19 +141,19 @@ export function buildRepositoryRemoteUrl(connection, projectName, repositoryName
   return `${baseUrl}/${encodeURIComponent(project)}/_git/${encodeURIComponent(repository)}`;
 }
 
-export function formatReviewWorkspaceError(error, reviewRoot) {
+export function formatReviewWorkspaceError(error: unknown, reviewRoot: string): string {
   return baseFormatReviewWorkspaceError(error, normalizeReviewRoot(reviewRoot), "Azure connection");
 }
 
-export function computeThreadStatusCounts(threads = []) {
-  return threads.reduce((result, thread) => {
+export function computeThreadStatusCounts(threads: Array<{ status?: string }> = []): Record<string, number> {
+  return threads.reduce<Record<string, number>>((result, thread) => {
     const key = String(thread?.status || "unknown").toLowerCase();
     result[key] = (result[key] || 0) + 1;
     return result;
   }, {});
 }
 
-export function normalizeCheckState(value) {
+export function normalizeCheckState(value: unknown): string {
   const normalized = String(value || "")
     .trim()
     .toLowerCase();
@@ -164,7 +175,7 @@ export function normalizeCheckState(value) {
   return "unknown";
 }
 
-export function checkStateLabel(value) {
+export function checkStateLabel(value: unknown): string {
   const normalized = normalizeCheckState(value);
   if (normalized === "failed") {
     return "failed";
@@ -181,7 +192,7 @@ export function checkStateLabel(value) {
   return "unknown";
 }
 
-export function summarizePolicyContext(context = {}) {
+export function summarizePolicyContext(context: { errorMessage?: string; statusDescription?: string; buildDefinitionName?: string; buildNumber?: string; message?: string } = {}): string {
   return firstNonEmpty(
     context.errorMessage,
     context.statusDescription,
@@ -194,13 +205,19 @@ export function summarizePolicyContext(context = {}) {
   );
 }
 
-export function buildCheckSummary({ policyEvaluations = [], statuses = [], buildDetails = {} } = {}) {
+export function buildCheckSummary(
+  { policyEvaluations = [], statuses = [], buildDetails = {} }: {
+    policyEvaluations?: Array<{ evaluationId?: string | null; configuration?: { id?: string; settings?: Record<string, unknown>; type?: { displayName?: string }; isBlocking?: boolean }; type?: { displayName?: string }; context?: Record<string, unknown>; status?: string; _links?: { web?: { href?: string } } }>;
+    statuses?: Array<{ id?: string | number; state?: string; context?: { genre?: string; name?: string }; description?: string; targetUrl?: string; createdDate?: string; updatedDate?: string; _links?: { target?: { href?: string }; web?: { href?: string } } }>;
+    buildDetails?: Record<string, { startTime?: string | null; finishTime?: string | null; queueTime?: string | null }>;
+  } = {},
+): { failedCount: number; pendingCount: number; passedCount: number; optionalFailedCount: number; requiredFailedCount: number; items: unknown[] } {
   const items = [
     ...policyEvaluations.map((evaluation, index) => {
       const state = normalizeCheckState(evaluation?.status);
-      const settings = evaluation?.configuration?.settings || {};
-      const context = evaluation?.context || {};
-      const buildId = context.buildId || null;
+      const settings = (evaluation?.configuration?.settings || {}) as Record<string, unknown>;
+      const context = (evaluation?.context || {}) as Record<string, unknown>;
+      const buildId = (context.buildId as string | null | undefined) || null;
       const build = buildId ? buildDetails[buildId] : null;
       return {
         id: `policy:${evaluation?.evaluationId || evaluation?.configuration?.id || index}`,
@@ -278,7 +295,7 @@ export function buildCheckSummary({ policyEvaluations = [], statuses = [], build
   };
 }
 
-export function compareThreads(left, right) {
+export function compareThreads(left: { status?: string; lastUpdatedDate?: string; publishedDate?: string }, right: { status?: string; lastUpdatedDate?: string; publishedDate?: string }): number {
   const leftPriority = STATUS_PRIORITY[String(left?.status || "").toLowerCase()] || 0;
   const rightPriority = STATUS_PRIORITY[String(right?.status || "").toLowerCase()] || 0;
   if (leftPriority !== rightPriority) {
@@ -289,7 +306,10 @@ export function compareThreads(left, right) {
   );
 }
 
-export function createConnectionSnapshot(connection, persistedState = {}) {
+export function createConnectionSnapshot(
+  connection: { id: string; label?: string; orgUrl?: string; login?: string; tokenRef?: string; enabled?: boolean; projectFilters?: string[]; repositoryFilters?: string[]; pollSeconds?: number; reviewRoot?: string },
+  persistedState: { status?: string; lastSyncAt?: string | null; lastSuccessAt?: string | null; lastError?: string } = {},
+): { id: string; label: string; orgUrl: string; login: string; tokenRef: string; enabled: boolean; projectFilters: string[]; repositoryFilters: string[]; pollSeconds: number; reviewRoot: string; status: string; lastSyncAt: string | null; lastSuccessAt: string | null; lastError: string } {
   return {
     id: connection.id,
     label: connection.label || connection.id,
@@ -315,7 +335,14 @@ export function inferAttentionReason({
   voteChanged,
   mergeStatusChanged,
   mergeStatus,
-}) {
+}: {
+  role: string;
+  newCommentsCount: number;
+  sourceUpdated: boolean;
+  voteChanged: boolean;
+  mergeStatusChanged: boolean;
+  mergeStatus: string;
+}): string {
   if (newCommentsCount > 0) {
     return role === "author" ? "new comment on my PR" : "new comment";
   }
@@ -336,7 +363,19 @@ export function inferAttentionReason({
   return "";
 }
 
-export function normalizeConnectionInput(connectionInput = {}) {
+export function normalizeConnectionInput(connectionInput: {
+  orgUrl?: string;
+  login?: string;
+  projectFilters?: unknown[];
+  repositoryFilters?: unknown[];
+  [key: string]: unknown;
+} = {}): {
+  orgUrl: string;
+  login: string;
+  projectFilters: string[];
+  repositoryFilters: string[];
+  [key: string]: unknown;
+} {
   const initialProjectFilters = Array.isArray(connectionInput.projectFilters) ? connectionInput.projectFilters : [];
   const initialRepositoryFilters = Array.isArray(connectionInput.repositoryFilters)
     ? connectionInput.repositoryFilters

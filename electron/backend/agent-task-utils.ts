@@ -28,27 +28,27 @@ export const verdictSchema = z.object({
 /**
  * Returns the per-task directory path: .strideterm/tasks/{taskId}
  */
-export function taskDir(cwd, taskId) {
+export function taskDir(cwd: string, taskId: string): string {
   return path.join(cwd, TASK_ROOT, taskId);
 }
 
 /**
  * Returns the relative path from cwd for use in prompts shown to agents.
  */
-export function taskDirRel(taskId) {
+export function taskDirRel(taskId: string): string {
   return `${TASK_ROOT}/${taskId}`;
 }
 
 /**
  * Wrap user-provided text in XML fence for prompt injection mitigation.
  */
-export function fenceUserInput(text, tag = "user-task-description") {
+export function fenceUserInput(text: string, tag = "user-task-description"): string {
   if (!text) return "";
   const sanitized = text.replace(new RegExp(`</${tag}>`, "gi"), `</${tag} >`);
   return `<${tag}>\n${sanitized}\n</${tag}>`;
 }
 
-export function tailLines(text, maxLines) {
+export function tailLines(text: string, maxLines: number): string {
   if (!text) return "";
   const lines = text.split("\n");
   if (lines.length <= maxLines) return text;
@@ -59,8 +59,8 @@ export function tailLines(text, maxLines) {
  * Parse TODO.md into sections.
  * Returns { "In Progress": ["- [ ] item", ...], "Done": [...], ... }
  */
-export function parseTodoSections(text) {
-  const sections = {};
+export function parseTodoSections(text: string): Record<string, string[]> {
+  const sections: Record<string, string[]> = {};
   let current = "";
   for (const rawLine of String(text || "").split("\n")) {
     const line = rawLine.trimEnd();
@@ -79,7 +79,7 @@ export function parseTodoSections(text) {
 /**
  * Filter active (unchecked) items — anything NOT starting with "- [x]".
  */
-export function activeItems(lines) {
+export function activeItems(lines: string[]): string[] {
   return lines.filter((line) => !line.toLowerCase().startsWith("- [x]"));
 }
 
@@ -87,7 +87,7 @@ export function activeItems(lines) {
  * Format auto-detected verify commands as a markdown checklist
  * for inclusion in TASK.md's verification section.
  */
-export function formatVerifyChecklist(detected) {
+export function formatVerifyChecklist(detected: Array<{ command: string }>): string {
   if (!detected?.length) return "";
   return detected.map((cmd) => `- [ ] Run \`${cmd.command}\` — must pass`).join("\n");
 }
