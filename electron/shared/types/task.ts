@@ -25,7 +25,12 @@ export type TaskExecutionState =
   | "failed"
   | "stopped"
   | "evaluating"
-  | "showering";
+  | "showering"
+  // Additional states used by AgentTaskRunner
+  | "judge-evaluating"
+  | "refreshing"
+  | "completed"
+  | string; // extensible
 
 export interface TaskState {
   taskId: string;

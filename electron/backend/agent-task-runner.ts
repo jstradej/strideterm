@@ -1,8 +1,11 @@
+/// <reference types="node" />
 import { randomUUID } from "node:crypto";
 import { readFile, writeFile, rm } from "node:fs/promises";
 import path from "node:path";
 import { getLogger } from "./logger.js";
+import type { Logger } from "./logger.js";
 import { getProvider, parseProviderFromCommand } from "./providers/provider-registry.js";
+import type { ParsedProviderConfig } from "./providers/provider-registry.js";
 import {
   VERDICT_FILE,
   TASK_FILE,
@@ -28,6 +31,7 @@ import {
   buildUserFeedbackPrompt,
 } from "./agent-task-prompts.js";
 import { execCommand } from "./agent-task-exec.js";
+import type { ExecResult } from "./agent-task-exec.js";
 import {
   cleanupTaskFiles as cleanupTaskFilesImpl,
   clearVerdict,
@@ -38,28 +42,117 @@ import {
   writeTaskFiles,
 } from "./agent-task-files.js";
 import { ensureGitRepo, getGitContext } from "./agent-task-git.js";
+import type { AppState, WorkspaceState } from "../shared/types/state.js";
+import type { TaskState } from "../shared/types/task.js";
 
-const log = getLogger("task-runner");
+const log: Logger = getLogger("task-runner");
 const COPILOT_PROGRAMMATIC_JUDGE_PROMPT_FILE = "JUDGE_INPUT.md";
 const COPILOT_PROGRAMMATIC_JUDGE_TIMEOUT_MS = 180_000;
 
-function quoteShellArg(value, platform = process.platform) {
+// ------ Types -------
+
+/** Full task state as used internally (extends persisted TaskState with runtime fields) */
+interface RuntimeTaskState extends TaskState {
+  judgeNudged?: boolean;
+  // showerResumePrompt, pausedFromState, promptSent are already in TaskState
+  [key: string]: unknown; // index signature for TaskData compatibility in prompts
+}
+
+/** A workspace that has a task attached (narrowed from WorkspaceState) */
+interface TaskWorkspaceState extends WorkspaceState {
+  task: RuntimeTaskState;
+}
+
+type TaskStateKind =
+  | "idle"
+  | "running"
+  | "paused"
+  | "evaluating"
+  | "judge-evaluating"
+  | "refreshing"
+  | "completed"
+  | "failed";
+
+interface TaskRound {
+  round: number;
+  startedAt: string;
+  checks: CheckResult[];
+  judgeVerdict: string | null;
+  judgeReason: string;
+  action: string;
+  [key: string]: unknown;
+}
+
+interface CheckResult {
+  label: string;
+  passed: boolean;
+  exitCode?: number;
+  outputTail?: string;
+}
+
+interface RaiseAlertArgs {
+  projectId: string;
+  panelId: string;
+  sessionId: string;
+  title: string;
+  kind: string;
+  tier: number;
+  urgency: string;
+  detail: string;
+}
+
+interface InjectionStrategy {
+  style: string;
+  submitDelayMs: number;
+  typingGapMs: number;
+  clearSettleMs: number;
+}
+
+interface RuntimeDeps {
+  writeToSession: (sessionId: string, data: string) => void;
+  getState: () => AppState | null;
+  broadcastState: () => void;
+  raiseAlert: (alert: RaiseAlertArgs) => void;
+  restartSession: (sessionId: string) => Promise<void>;
+}
+
+// ------ Module-level pure helpers -------
+
+function quoteShellArg(value: unknown, platform: string = process.platform): string {
   const text = String(value ?? "");
   if (platform === "win32") return `"${text.replace(/"/g, '""')}"`;
   return `'${text.replace(/'/g, `'\\''`)}'`;
 }
 
-export function shouldUseProgrammaticCopilotJudge(providerConfig, platform = process.platform) {
+export function shouldUseProgrammaticCopilotJudge(
+  providerConfig: { providerId?: string } | null | undefined,
+  platform: string = process.platform,
+): boolean {
   return platform === "win32" && providerConfig?.providerId === "copilot";
 }
 
-export function buildProgrammaticCopilotJudgeCommand({ promptPath, cwd, model, platform = process.platform }) {
+export function buildProgrammaticCopilotJudgeCommand({
+  promptPath,
+  cwd,
+  model,
+  platform = process.platform,
+}: {
+  promptPath: string;
+  cwd?: string;
+  model?: string;
+  platform?: string;
+}): string {
   const source =
     platform === "win32" ? `type ${quoteShellArg(promptPath, platform)}` : `cat ${quoteShellArg(promptPath, platform)}`;
   const parts = ["copilot", "-s", "--no-ask-user", "--allow-all-tools"];
   if (cwd) parts.push("--add-dir", quoteShellArg(cwd, platform));
   if (model) parts.push("--model", quoteShellArg(model, platform));
   return `${source} | ${parts.join(" ")}`;
+}
+
+// Helper to narrow WorkspaceState to TaskWorkspaceState
+function isTaskWorkspace(workspace: WorkspaceState): workspace is TaskWorkspaceState {
+  return workspace.kind === "task" && workspace.task != null;
 }
 
 /**
@@ -71,25 +164,25 @@ export function buildProgrammaticCopilotJudgeCommand({ promptPath, cwd, model, p
  * and coordinates the worker–judge cycle.
  */
 export class AgentTaskRunner {
-  /** @type {Set<string>} workspaceIds currently being evaluated (re-entrance guard) */
-  #evaluating = new Set();
-  /** @type {Map<string, Promise>} per-cwd git init locks to prevent concurrent init */
-  #gitInitLocks = new Map();
-  /** @type {Set<string>} workspaceIds with a headless programmatic judge in flight */
-  #programmaticJudges = new Set();
+  /** workspaceIds currently being evaluated (re-entrance guard) */
+  #evaluating = new Set<string>();
+  /** per-cwd git init locks to prevent concurrent init */
+  #gitInitLocks = new Map<string, Promise<boolean>>();
+  /** workspaceIds with a headless programmatic judge in flight */
+  #programmaticJudges = new Set<string>();
 
   // Injected dependencies (set via init())
-  #writeToSession = null;
-  #getState = null;
-  #broadcastState = null;
-  #raiseAlert = null;
-  #restartSession = null;
+  #writeToSession: RuntimeDeps["writeToSession"] | null = null;
+  #getState: RuntimeDeps["getState"] | null = null;
+  #broadcastState: RuntimeDeps["broadcastState"] | null = null;
+  #raiseAlert: RuntimeDeps["raiseAlert"] | null = null;
+  #restartSession: RuntimeDeps["restartSession"] | null = null;
 
   /**
    * Late-init with runtime dependencies (avoids circular refs).
    * Called once from runtime.js after all closures are available.
    */
-  init({ writeToSession, getState, broadcastState, raiseAlert, restartSession }) {
+  init({ writeToSession, getState, broadcastState, raiseAlert, restartSession }: RuntimeDeps): void {
     this.#writeToSession = writeToSession;
     this.#getState = getState;
     this.#broadcastState = broadcastState;
@@ -103,15 +196,14 @@ export class AgentTaskRunner {
     this.#reconcileOnStartup();
   }
 
-  #reconcileOnStartup() {
-    const state = this.#getState();
+  #reconcileOnStartup(): void {
+    const state = this.#getState?.();
     if (!state?.workspaces) return;
 
     const ACTIVE = new Set(["running", "evaluating", "judge-evaluating", "refreshing"]);
-    let changed = false;
 
     for (const workspace of state.workspaces) {
-      if (workspace.kind !== "task" || !workspace.task) continue;
+      if (!isTaskWorkspace(workspace)) continue;
       if (!ACTIVE.has(workspace.task.state)) continue;
 
       log.info("reconcileOnStartup: pausing task left in active state", {
@@ -121,7 +213,6 @@ export class AgentTaskRunner {
       workspace.task.pausedFromState = "";
       this.#setTaskState(workspace.task, "paused");
       this.#logTaskEvent(workspace, "task-paused", `Paused on startup (was ${workspace.task.state})`);
-      changed = true;
     }
 
     // No broadcastState() here — runtime isn't fully initialized yet
@@ -150,7 +241,21 @@ export class AgentTaskRunner {
     judgeCommand,
     workerProvider,
     judgeProvider,
-  }) {
+  }: {
+    state: Pick<AppState, "activeProfileId">;
+    description: string;
+    cwd: string;
+    parentWorkspaceId: string;
+    maxRounds?: number;
+    name?: string;
+    icon?: string;
+    color?: string;
+    notes?: string;
+    workerCommand?: string;
+    judgeCommand?: string;
+    workerProvider?: ParsedProviderConfig;
+    judgeProvider?: ParsedProviderConfig;
+  }): TaskWorkspaceState {
     const workspaceId = `workspace-${randomUUID()}`;
     const dashboardPanelId = `panel-${randomUUID()}`;
     const workerPanelId = `panel-${randomUUID()}`;
@@ -163,36 +268,48 @@ export class AgentTaskRunner {
       : "Task workspace";
 
     // Resolve worker provider config: explicit workerProvider > parse workerCommand > Claude default
-    const workerProviderConfig =
+    const workerProviderConfig: ParsedProviderConfig =
       workerProvider ||
       (workerCommand ? parseProviderFromCommand(workerCommand) : { providerId: "claude", model: "sonnet" });
-    const judgeProviderConfig =
+    const judgeProviderConfig: ParsedProviderConfig =
       judgeProvider ||
       (judgeCommand ? parseProviderFromCommand(judgeCommand) : { providerId: "claude", model: "opus" });
 
     // Build panel commands from provider config, or use explicit command override
     const wp = getProvider(workerProviderConfig.providerId);
     const jp = getProvider(judgeProviderConfig.providerId);
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const wpCtor = (wp.constructor as any);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const jpCtor = (jp.constructor as any);
+
     const resolvedWorkerCmd =
       workerCommand?.trim() ||
       wp.buildCommand({
         model: workerProviderConfig.model,
         role: "worker",
-        extra: workerProviderConfig.extra,
-        skipPermissions: workerProviderConfig.skipPermissions ?? wp.constructor.defaultSkipPermissions ?? false,
+        extra: (workerProviderConfig as unknown as Record<string, unknown>).extra as Record<string, unknown>,
+        skipPermissions:
+          ((workerProviderConfig as unknown as Record<string, unknown>).skipPermissions as boolean | undefined) ??
+          wpCtor.defaultSkipPermissions ??
+          false,
       });
     const resolvedJudgeCmd =
       judgeCommand?.trim() ||
       jp.buildCommand({
         model: judgeProviderConfig.model,
         role: "judge",
-        extra: judgeProviderConfig.extra,
-        skipPermissions: judgeProviderConfig.skipPermissions ?? jp.constructor.defaultSkipPermissions ?? false,
+        extra: (judgeProviderConfig as unknown as Record<string, unknown>).extra as Record<string, unknown>,
+        skipPermissions:
+          ((judgeProviderConfig as unknown as Record<string, unknown>).skipPermissions as boolean | undefined) ??
+          jpCtor.defaultSkipPermissions ??
+          false,
       });
 
     // Panel titles include provider/model so the user can see at a glance
-    const workerTitle = `Worker (${wp.constructor.displayName} ${workerProviderConfig.model})`;
-    const judgeTitle = `Judge (${jp.constructor.displayName} ${judgeProviderConfig.model})`;
+    const workerTitle = `Worker (${wpCtor.displayName} ${workerProviderConfig.model})`;
+    const judgeTitle = `Judge (${jpCtor.displayName} ${judgeProviderConfig.model})`;
 
     return {
       id: workspaceId,
@@ -203,24 +320,33 @@ export class AgentTaskRunner {
       source: "manual",
       pluginId: "",
       cwd,
+      gitRoots: [],
+      activeRootPath: "",
       notes: notes?.trim() || "",
       profileId: state.activeProfileId || "default",
       connectionId: "",
       activePanelId: dashboardPanelId,
+      activeViewId: null,
+      splitLayout: null,
+      splitViewIds: [],
+      starred: false,
+      review: null,
+      quickfix: null,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       panels: [
-        { id: dashboardPanelId, title: "Dashboard", command: "__task-dashboard__", shell: false, startup: "none" },
+        { id: dashboardPanelId, title: "Dashboard", command: "__task-dashboard__", shell: false as unknown as string, startup: "none" },
         {
           id: workerPanelId,
           title: workerTitle,
           command: resolvedWorkerCmd,
-          shell: true,
+          shell: true as unknown as string,
           startup: "default",
         },
         {
           id: judgePanelId,
           title: judgeTitle,
           command: resolvedJudgeCmd,
-          shell: true,
+          shell: true as unknown as string,
           startup: "default",
         },
       ],
@@ -245,7 +371,10 @@ export class AgentTaskRunner {
         totalPausedMs: 0,
         pausedAt: null,
         finishedAt: null,
-      },
+        promptSent: false,
+        pausedFromState: "",
+        showerResumePrompt: "",
+      } as RuntimeTaskState,
     };
   }
 
@@ -253,7 +382,7 @@ export class AgentTaskRunner {
    * Write task control files to disk. Called at workspace creation time
    * so files are immediately available in the Dashboard/Files tab.
    */
-  async writeInitialFiles(cwd, task) {
+  async writeInitialFiles(cwd: string, task: RuntimeTaskState): Promise<void> {
     log.info("writing initial task files", {
       cwd,
       taskId: task.taskId,
@@ -271,10 +400,10 @@ export class AgentTaskRunner {
   /**
    * Start (or resume) the task — inject initial prompt into worker.
    */
-  async startTask(workspaceId) {
-    const state = this.#getState();
-    const workspace = state.workspaces.find((w) => w.id === workspaceId);
-    if (!workspace?.task) {
+  async startTask(workspaceId: string): Promise<boolean> {
+    const state = this.#getState?.();
+    const workspace = state?.workspaces.find((w) => w.id === workspaceId);
+    if (!workspace || !isTaskWorkspace(workspace)) {
       log.warn("startTask: workspace not found or not a task workspace", { workspaceId });
       return false;
     }
@@ -292,16 +421,19 @@ export class AgentTaskRunner {
 
     // Provider-specific setup (e.g. Gemini writes yolo policy file)
     try {
-      const workerProviderConfig = task.workerProviderConfig || { providerId: "claude" };
-      const judgeProviderConfig = task.judgeProviderConfig || { providerId: "claude" };
+      const workerProviderConfig = task.workerProviderConfig || { providerId: "claude", model: "sonnet" };
+      const judgeProviderConfig = task.judgeProviderConfig || { providerId: "claude", model: "opus" };
       const workerProv = getProvider(workerProviderConfig.providerId);
       await workerProv.beforeStart(workspace.cwd);
       if (judgeProviderConfig.providerId !== workerProviderConfig.providerId) {
         const judgeProv = getProvider(judgeProviderConfig.providerId);
         await judgeProv.beforeStart(workspace.cwd);
       }
-    } catch (err) {
-      log.warn("startTask: provider beforeStart failed (non-fatal)", { workspaceId, err: err.message });
+    } catch (err: unknown) {
+      log.warn("startTask: provider beforeStart failed (non-fatal)", {
+        workspaceId,
+        err: (err as Error)?.message,
+      });
     }
 
     this.#setTaskState(task, "running");
@@ -329,11 +461,11 @@ export class AgentTaskRunner {
     });
     this.#logTaskEvent(workspace, "task-started", detail);
 
-    this.#broadcastState();
+    this.#broadcastState!();
     return true;
   }
 
-  stopTask(workspaceId) {
+  stopTask(workspaceId: string): boolean {
     const workspace = this.#findTaskWorkspace(workspaceId);
     if (!workspace) return false;
 
@@ -341,11 +473,11 @@ export class AgentTaskRunner {
     this.#evaluating.delete(workspaceId);
     log.info("task stopped (paused)", { workspaceId });
     this.#logTaskEvent(workspace, "task-stopped");
-    this.#broadcastState();
+    this.#broadcastState!();
     return true;
   }
 
-  pauseTask(workspaceId) {
+  pauseTask(workspaceId: string): boolean {
     const workspace = this.#findTaskWorkspace(workspaceId);
     if (!workspace) return false;
     if (
@@ -360,11 +492,11 @@ export class AgentTaskRunner {
     this.#evaluating.delete(workspaceId);
     log.info("task paused", { workspaceId });
     this.#logTaskEvent(workspace, "task-paused");
-    this.#broadcastState();
+    this.#broadcastState!();
     return true;
   }
 
-  resumeTask(workspaceId) {
+  resumeTask(workspaceId: string): boolean {
     const workspace = this.#findTaskWorkspace(workspaceId);
     if (!workspace) return false;
     const resumable = new Set(["paused", "completed", "failed"]);
@@ -377,13 +509,13 @@ export class AgentTaskRunner {
     // verdict can be read.  If paused from evaluating/refreshing, fall back
     // to running (the evaluation was interrupted and needs to restart from
     // the next worker idle).
-    const resumeTo = task.pausedFromState === "judge-evaluating" ? "judge-evaluating" : "running";
+    const resumeTo: TaskStateKind = task.pausedFromState === "judge-evaluating" ? "judge-evaluating" : "running";
     task.pausedFromState = "";
 
     this.#setTaskState(task, resumeTo);
     log.info("task resumed", { workspaceId, previousState, resumeTo });
     this.#logTaskEvent(workspace, "task-resumed", `Resumed to ${resumeTo}`);
-    this.#broadcastState();
+    this.#broadcastState!();
 
     // If the initial prompt was never delivered (startTask ran with an empty
     // description under the old code path, or the user is resuming a state that
@@ -396,10 +528,10 @@ export class AgentTaskRunner {
         .then(() => {
           task.promptSent = true;
           this.#logTaskEvent(workspace, "prompt-sent", "Prompt delivered on resume");
-          this.#broadcastState();
+          this.#broadcastState!();
         })
-        .catch((err) => {
-          log.error("late-delivery prompt injection failed", { workspaceId, err: err.message });
+        .catch((err: unknown) => {
+          log.error("late-delivery prompt injection failed", { workspaceId, err: (err as Error)?.message });
         });
     }
 
@@ -408,8 +540,8 @@ export class AgentTaskRunner {
     // verdict — if the file exists, handle it; otherwise wait for the next hook.
     if (resumeTo === "judge-evaluating") {
       log.info("resumed to judge-evaluating, proactively checking verdict", { workspaceId });
-      this.#handleJudgeVerdict(workspace).catch((err) => {
-        log.error("proactive verdict check failed", { workspaceId, err: err.message });
+      this.#handleJudgeVerdict(workspace).catch((err: unknown) => {
+        log.error("proactive verdict check failed", { workspaceId, err: (err as Error)?.message });
       });
     }
 
@@ -420,7 +552,7 @@ export class AgentTaskRunner {
    * Reset a task to idle state — clears round history, recreates WORK_LOCK,
    * and returns to a clean starting point. Used for "Reset & Retry".
    */
-  async resetTask(workspaceId) {
+  async resetTask(workspaceId: string): Promise<boolean> {
     const workspace = this.#findTaskWorkspace(workspaceId);
     if (!workspace) return false;
     const resettable = new Set(["paused", "completed", "failed"]);
@@ -448,13 +580,13 @@ export class AgentTaskRunner {
         "utf8",
       );
       log.debug("WORK_LOCK recreated for reset", { workspaceId });
-    } catch (err) {
-      log.warn("failed to recreate WORK_LOCK during reset", { workspaceId, err: err.message });
+    } catch (err: unknown) {
+      log.warn("failed to recreate WORK_LOCK during reset", { workspaceId, err: (err as Error)?.message });
     }
 
     log.info("task reset", { workspaceId, previousState });
     this.#logTaskEvent(workspace, "task-reset", `Previous state: ${previousState}`);
-    this.#broadcastState();
+    this.#broadcastState!();
     return true;
   }
 
@@ -465,7 +597,7 @@ export class AgentTaskRunner {
    * injects a user-feedback prompt that tells the worker to re-run the full
    * self-audit and address the feedback plus any additional gaps.
    */
-  async rejectTaskVerdict(workspaceId, feedback) {
+  async rejectTaskVerdict(workspaceId: string, feedback: string): Promise<boolean> {
     const workspace = this.#findTaskWorkspace(workspaceId);
     if (!workspace) return false;
 
@@ -482,7 +614,7 @@ export class AgentTaskRunner {
     }
 
     const previousState = task.state;
-    const lastRound = task.rounds?.[task.rounds.length - 1];
+    const lastRound = (task.rounds as unknown as TaskRound[])?.[task.rounds.length - 1];
     if (lastRound) lastRound.action = "re-prompted";
 
     // Recreate WORK_LOCK so built-in checks behave as usual for the next round.
@@ -493,8 +625,8 @@ export class AgentTaskRunner {
         "Work remains. Remove this file only when the task is complete and all verification steps pass.\n",
         "utf8",
       );
-    } catch (err) {
-      log.warn("rejectTaskVerdict: failed to recreate WORK_LOCK", { workspaceId, err: err.message });
+    } catch (err: unknown) {
+      log.warn("rejectTaskVerdict: failed to recreate WORK_LOCK", { workspaceId, err: (err as Error)?.message });
     }
 
     // User override starts a fresh round. Increment currentRound so the new
@@ -515,16 +647,16 @@ export class AgentTaskRunner {
     const workerSessionId = `${workspaceId}:${task.workerPanelId}`;
     try {
       await this.#injectPrompt(workerSessionId, prompt, workspace);
-    } catch (err) {
-      log.error("rejectTaskVerdict: failed to inject prompt", { workspaceId, err: err.message });
-      this.#setTaskState(task, previousState);
-      this.#broadcastState();
+    } catch (err: unknown) {
+      log.error("rejectTaskVerdict: failed to inject prompt", { workspaceId, err: (err as Error)?.message });
+      this.#setTaskState(task, previousState as TaskStateKind);
+      this.#broadcastState!();
       return false;
     }
 
     log.info("task verdict rejected by user", { workspaceId, previousState, round: task.currentRound });
     this.#logTaskEvent(workspace, "verdict-rejected", `User feedback: ${trimmed}`);
-    this.#broadcastState();
+    this.#broadcastState!();
     return true;
   }
 
@@ -536,7 +668,7 @@ export class AgentTaskRunner {
    * Called when an agent session goes idle (hook, OSC 133, or silence fallback).
    * Returns true if this session belongs to a task workspace and was handled.
    */
-  onAgentIdle(sessionId, source = "unknown") {
+  onAgentIdle(sessionId: string, source = "unknown"): boolean {
     const parts = sessionId.split(":");
     if (parts.length < 2) return false;
 
@@ -590,16 +722,16 @@ export class AgentTaskRunner {
         // description-empty initial inject (idempotent vs. startTask) and the
         // post-shower case where the previous round ended as "shower".
         this.#ensureRunningRound(task);
-        this.#injectPrompt(`${workspaceId}:${task.workerPanelId}`, prompt, workspace).catch((err) => {
-          log.error("failed to inject prompt", { workspaceId, err: err.message });
+        this.#injectPrompt(`${workspaceId}:${task.workerPanelId}`, prompt, workspace).catch((err: unknown) => {
+          log.error("failed to inject prompt", { workspaceId, err: (err as Error)?.message });
         });
         task.promptSent = true;
         task.showerResumePrompt = ""; // Clear after use
-        this.#broadcastState();
+        this.#broadcastState!();
         return true;
       }
 
-      const elapsedMs = task.startedAt ? Date.now() - task.startedAt : 0;
+      const elapsedMs = task.startedAt ? Date.now() - (task.startedAt as unknown as number) : 0;
       log.info("worker idle detected, starting evaluation", {
         workspaceId,
         sessionId,
@@ -612,8 +744,8 @@ export class AgentTaskRunner {
         "worker-idle-detected",
         `Worker went idle via ${source} (${(elapsedMs / 1000).toFixed(1)}s since start). Starting checks…`,
       );
-      this.#evaluateWorker(workspace).catch((err) => {
-        log.error("evaluateWorker error", { workspaceId, err: err.message });
+      this.#evaluateWorker(workspace).catch((err: unknown) => {
+        log.error("evaluateWorker error", { workspaceId, err: (err as Error)?.message });
       });
       return true;
     }
@@ -625,8 +757,8 @@ export class AgentTaskRunner {
       }
       log.info("judge idle detected, reading verdict", { workspaceId, sessionId, source });
       this.#logTaskEvent(workspace, "judge-idle-detected", `Judge went idle via ${source}. Reading verdict…`);
-      this.#handleJudgeVerdict(workspace).catch((err) => {
-        log.error("handleJudgeVerdict error", { workspaceId, err: err.message });
+      this.#handleJudgeVerdict(workspace).catch((err: unknown) => {
+        log.error("handleJudgeVerdict error", { workspaceId, err: (err as Error)?.message });
       });
       return true;
     }
@@ -650,7 +782,7 @@ export class AgentTaskRunner {
   /**
    * Called when a session exits — if it's a worker session, pause the task.
    */
-  onSessionExit(sessionId) {
+  onSessionExit(sessionId: string): void {
     const parts = sessionId.split(":");
     if (parts.length < 2) return;
 
@@ -669,7 +801,7 @@ export class AgentTaskRunner {
       log.warn("worker session exited, task paused", { workspaceId, sessionId });
       this.#logTaskEvent(workspace, "worker-crashed", "Worker session exited unexpectedly, task paused");
       this.#raiseTaskAlert(workspace, "failed", "Worker session exited — task paused");
-      this.#broadcastState();
+      this.#broadcastState!();
     }
   }
 
@@ -684,7 +816,7 @@ export class AgentTaskRunner {
    * Delegates to onAgentIdle / onSubagentStop / onUserPromptSubmit based on
    * the hook name.  Unknown hooks are passed through (returns false).
    */
-  onHookEvent({ sessionId, hook, subtype }) {
+  onHookEvent({ sessionId, hook, subtype }: { sessionId?: string; hook?: string; subtype?: string }): boolean {
     if (!sessionId || !hook) return false;
 
     switch (hook) {
@@ -710,7 +842,7 @@ export class AgentTaskRunner {
    * (SubagentStop is classified system-only anyway, but this keeps the
    * task-workspace branch explicit).
    */
-  onSubagentStop(sessionId) {
+  onSubagentStop(sessionId: string): boolean {
     const parts = sessionId.split(":");
     if (parts.length < 2) return false;
     const workspaceId = parts.slice(0, -1).join(":");
@@ -728,7 +860,7 @@ export class AgentTaskRunner {
    * workspaces so the dispatcher skips the user alert (UserPromptSubmit is
    * classified system-only; this is belt-and-braces).
    */
-  onUserPromptSubmit(sessionId) {
+  onUserPromptSubmit(sessionId: string): boolean {
     const parts = sessionId.split(":");
     if (parts.length < 2) return false;
     const workspaceId = parts.slice(0, -1).join(":");
@@ -752,7 +884,7 @@ export class AgentTaskRunner {
    * This prevents accidental pauses from clicking on the idle panel
    * (e.g. focus events from xterm.js when switching between panels).
    */
-  onUserInput(sessionId) {
+  onUserInput(sessionId: string): void {
     const parts = sessionId.split(":");
     if (parts.length < 2) return;
 
@@ -779,7 +911,7 @@ export class AgentTaskRunner {
         panelId,
         pausedFromState: task.pausedFromState,
       });
-      this.#broadcastState();
+      this.#broadcastState!();
     }
   }
 
@@ -791,14 +923,14 @@ export class AgentTaskRunner {
    * Set task state with automatic timing tracking.
    * Tracks startedAt, pausedAt, totalPausedMs, finishedAt across all transitions.
    */
-  #setTaskState(task, newState) {
+  #setTaskState(task: RuntimeTaskState, newState: TaskStateKind): void {
     const ACTIVE = new Set(["running", "evaluating", "judge-evaluating", "refreshing"]);
     const prev = task.state;
     const now = Date.now();
 
     // Fresh start from idle
     if (prev === "idle" && ACTIVE.has(newState)) {
-      task.startedAt = now;
+      task.startedAt = now as unknown as string;
       task.totalPausedMs = 0;
       task.pausedAt = null;
       task.finishedAt = null;
@@ -806,15 +938,15 @@ export class AgentTaskRunner {
 
     // Active → non-active (paused/completed/failed): record pause start
     if (ACTIVE.has(prev) && !ACTIVE.has(newState) && newState !== "idle") {
-      task.pausedAt = now;
+      task.pausedAt = now as unknown as string;
       if (newState === "completed" || newState === "failed") {
-        task.finishedAt = now;
+        task.finishedAt = now as unknown as string;
       }
     }
 
     // Non-active → active (resume): accumulate paused time
     if (!ACTIVE.has(prev) && prev !== "idle" && ACTIVE.has(newState) && task.pausedAt) {
-      task.totalPausedMs = (task.totalPausedMs || 0) + (now - task.pausedAt);
+      task.totalPausedMs = (task.totalPausedMs || 0) + (now - (task.pausedAt as unknown as number));
       task.pausedAt = null;
       task.finishedAt = null;
     }
@@ -838,10 +970,11 @@ export class AgentTaskRunner {
    * judge sends the worker back (or the user rejects the verdict). Check
    * failures re-prompt within the same round, so no new chip is pushed.
    */
-  #ensureRunningRound(task) {
-    const last = task.rounds?.[task.rounds.length - 1];
+  #ensureRunningRound(task: RuntimeTaskState): TaskRound {
+    const rounds = task.rounds as unknown as TaskRound[];
+    const last = rounds?.[rounds.length - 1];
     if (last && last.action === "running") return last;
-    const round = {
+    const round: TaskRound = {
       round: task.currentRound || 1,
       startedAt: new Date().toISOString(),
       checks: [],
@@ -850,7 +983,7 @@ export class AgentTaskRunner {
       action: "running",
     };
     if (!Array.isArray(task.rounds)) task.rounds = [];
-    task.rounds.push(round);
+    (task.rounds as unknown as TaskRound[]).push(round);
     return round;
   }
 
@@ -858,7 +991,7 @@ export class AgentTaskRunner {
   // State queries
   // ---------------------------------------------------------------------------
 
-  getTaskState(workspaceId) {
+  getTaskState(workspaceId: string): RuntimeTaskState | null {
     const workspace = this.#findTaskWorkspace(workspaceId);
     return workspace?.task || null;
   }
@@ -867,7 +1000,7 @@ export class AgentTaskRunner {
    * Return the idle timeout (ms) for a given task session, based on the
    * provider configured for that panel (worker or judge).
    */
-  getIdleTimeout(sessionId) {
+  getIdleTimeout(sessionId: string): number | null {
     const parts = sessionId.split(":");
     if (parts.length < 2) return null;
     const workspaceId = parts.slice(0, -1).join(":");
@@ -888,34 +1021,35 @@ export class AgentTaskRunner {
   /**
    * Returns serializable snapshot of all task workspaces for payload broadcast.
    */
-  getTaskSnapshot() {
-    const state = this.#getState();
-    const result = {};
+  getTaskSnapshot(): Record<string, unknown> {
+    const state = this.#getState?.();
+    const result: Record<string, unknown> = {};
+    if (!state) return result;
     for (const workspace of state.workspaces) {
-      if (workspace.kind === "task" && workspace.task) {
-        result[workspace.id] = {
-          taskId: workspace.task.taskId,
-          description: workspace.task.description,
-          state: workspace.task.state,
-          currentRound: workspace.task.currentRound,
-          maxRounds: workspace.task.maxRounds,
-          showerInterval: workspace.task.showerInterval,
-          workerPanelId: workspace.task.workerPanelId,
-          judgePanelId: workspace.task.judgePanelId,
-          rounds: workspace.task.rounds,
-          lastShowerRound: workspace.task.lastShowerRound || 0,
-          workerProviderConfig: workspace.task.workerProviderConfig || null,
-          judgeProviderConfig: workspace.task.judgeProviderConfig || null,
-          judgeExecutionMode: shouldUseProgrammaticCopilotJudge(workspace.task.judgeProviderConfig)
-            ? "headless-copilot"
-            : "interactive",
-          judgeProgrammaticRunning: this.#programmaticJudges.has(workspace.id),
-          startedAt: workspace.task.startedAt || null,
-          totalPausedMs: workspace.task.totalPausedMs || 0,
-          pausedAt: workspace.task.pausedAt || null,
-          finishedAt: workspace.task.finishedAt || null,
-        };
-      }
+      if (!isTaskWorkspace(workspace)) continue;
+      const task = workspace.task;
+      result[workspace.id] = {
+        taskId: task.taskId,
+        description: task.description,
+        state: task.state,
+        currentRound: task.currentRound,
+        maxRounds: task.maxRounds,
+        showerInterval: task.showerInterval,
+        workerPanelId: task.workerPanelId,
+        judgePanelId: task.judgePanelId,
+        rounds: task.rounds,
+        lastShowerRound: task.lastShowerRound || 0,
+        workerProviderConfig: task.workerProviderConfig || null,
+        judgeProviderConfig: task.judgeProviderConfig || null,
+        judgeExecutionMode: shouldUseProgrammaticCopilotJudge(task.judgeProviderConfig)
+          ? "headless-copilot"
+          : "interactive",
+        judgeProgrammaticRunning: this.#programmaticJudges.has(workspace.id),
+        startedAt: task.startedAt || null,
+        totalPausedMs: task.totalPausedMs || 0,
+        pausedAt: task.pausedAt || null,
+        finishedAt: task.finishedAt || null,
+      };
     }
     return result;
   }
@@ -925,7 +1059,7 @@ export class AgentTaskRunner {
   // the user pauses, resets, or the session exits mid-evaluation.
   // ---------------------------------------------------------------------------
 
-  #wasInterrupted(workspaceId, expectedStates) {
+  #wasInterrupted(workspaceId: string, expectedStates: Set<string>): boolean {
     if (!this.#evaluating.has(workspaceId)) return true;
     const workspace = this.#findTaskWorkspace(workspaceId);
     if (!workspace) return true;
@@ -936,7 +1070,7 @@ export class AgentTaskRunner {
   // Worker evaluation
   // ---------------------------------------------------------------------------
 
-  async #evaluateWorker(workspace) {
+  async #evaluateWorker(workspace: TaskWorkspaceState): Promise<void> {
     const task = workspace.task;
     const workspaceId = workspace.id;
 
@@ -950,7 +1084,7 @@ export class AgentTaskRunner {
     try {
       const evalStart = Date.now();
       this.#setTaskState(task, "evaluating");
-      this.#broadcastState();
+      this.#broadcastState!();
 
       // A "running" round was pushed when the worker iteration began (by
       // startTask / onAgentIdle first inject / re-prompt / shower). Reuse it
@@ -964,8 +1098,8 @@ export class AgentTaskRunner {
 
       // Built-in checks: WORK_LOCK + TODO.md sections (always run, cheap)
       const builtInChecks = await runBuiltInChecks(workspace.cwd, task.taskId, { execCommand, log });
-      round.checks.push(...builtInChecks);
-      this.#broadcastState(); // Stream built-in results to UI
+      round.checks.push(...(builtInChecks as CheckResult[]));
+      this.#broadcastState!(); // Stream built-in results to UI
       for (const c of builtInChecks) {
         log.debug("built-in check", { workspaceId, check: c.label, passed: c.passed });
       }
@@ -1031,7 +1165,7 @@ export class AgentTaskRunner {
             "shower-started",
             "Refreshing Worker context (killing session, writing handoff)",
           );
-          this.#broadcastState();
+          this.#broadcastState!();
           const showerOk = await this.#performShower(workspace);
           if (showerOk) {
             this.#setTaskState(task, "running");
@@ -1076,7 +1210,7 @@ export class AgentTaskRunner {
         if (shouldUseProgrammaticCopilotJudge(task.judgeProviderConfig)) {
           this.#setTaskState(task, "judge-evaluating");
           this.#programmaticJudges.add(workspaceId);
-          this.#broadcastState();
+          this.#broadcastState!();
           this.#logTaskEvent(
             workspace,
             "judge-requested",
@@ -1124,12 +1258,12 @@ export class AgentTaskRunner {
         );
       }
 
-      this.#broadcastState();
-    } catch (err) {
-      log.error("evaluateWorker failed", { workspaceId, err: err.message });
+      this.#broadcastState!();
+    } catch (err: unknown) {
+      log.error("evaluateWorker failed", { workspaceId, err: (err as Error)?.message });
       task.pausedFromState = "";
       this.#setTaskState(task, "paused");
-      this.#broadcastState();
+      this.#broadcastState!();
     } finally {
       this.#programmaticJudges.delete(workspaceId);
       this.#evaluating.delete(workspaceId);
@@ -1140,7 +1274,7 @@ export class AgentTaskRunner {
   // Judge verdict handling
   // ---------------------------------------------------------------------------
 
-  async #handleJudgeVerdict(workspace) {
+  async #handleJudgeVerdict(workspace: TaskWorkspaceState): Promise<void> {
     const task = workspace.task;
     const workspaceId = workspace.id;
 
@@ -1157,14 +1291,14 @@ export class AgentTaskRunner {
         log.info("judge verdict file missing, sending nudge", { workspaceId });
         this.#logTaskEvent(workspace, "judge-nudged", "Verdict file missing — reminded Judge to write it");
         await this.#injectPrompt(judgeSessionId, nudge, workspace);
-        this.#broadcastState();
+        this.#broadcastState!();
         return; // Wait for next judge idle — will re-enter #handleJudgeVerdict
       }
 
       if (verdict.reason === "Judge did not produce a verdict file.") {
         log.warn("judge verdict file missing after nudge", { workspaceId, round: task.currentRound });
         this.#setTaskState(task, "paused");
-        this.#broadcastState();
+        this.#broadcastState!();
         this.#raiseTaskAlert(workspace, "failed", "Judge did not produce a verdict file");
         return;
       }
@@ -1180,7 +1314,8 @@ export class AgentTaskRunner {
         return;
       }
 
-      const lastRound = task.rounds[task.rounds.length - 1];
+      const rounds = task.rounds as unknown as TaskRound[];
+      const lastRound = rounds[rounds.length - 1];
       if (lastRound) {
         lastRound.judgeVerdict = verdict.verdict;
         lastRound.judgeReason = verdict.reason || "";
@@ -1214,7 +1349,8 @@ export class AgentTaskRunner {
           this.#notifyWorkerTaskEnded(workspace, "failed");
         } else {
           // Judge sent the worker back — this starts a new round.
-          const prompt = buildJudgeFeedbackPrompt(task, verdict);
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const prompt = buildJudgeFeedbackPrompt(task, verdict as any);
           const workerSessionId = `${workspaceId}:${task.workerPanelId}`;
           await this.#injectPrompt(workerSessionId, prompt, workspace);
           this.#setTaskState(task, "running");
@@ -1226,16 +1362,16 @@ export class AgentTaskRunner {
         }
       }
 
-      this.#broadcastState();
-    } catch (err) {
-      log.error("handleJudgeVerdict failed", { workspaceId, err: err.message });
+      this.#broadcastState!();
+    } catch (err: unknown) {
+      log.error("handleJudgeVerdict failed", { workspaceId, err: (err as Error)?.message });
       this.#setTaskState(task, "paused");
-      this.#broadcastState();
+      this.#broadcastState!();
     }
   }
 
-  async #runProgrammaticCopilotJudge(workspace, prompt) {
-    const task = workspace?.task;
+  async #runProgrammaticCopilotJudge(workspace: TaskWorkspaceState, prompt: string): Promise<ExecResult> {
+    const task = workspace.task;
     const promptPath = path.join(taskDir(workspace.cwd, task.taskId), COPILOT_PROGRAMMATIC_JUDGE_PROMPT_FILE);
     await writeFile(promptPath, prompt, "utf8");
     const command = buildProgrammaticCopilotJudgeCommand({
@@ -1255,7 +1391,7 @@ export class AgentTaskRunner {
   /**
    * Remove task files for a workspace. Called when a task workspace is deleted.
    */
-  async cleanupTaskFiles(cwd, taskId) {
+  async cleanupTaskFiles(cwd: string, taskId: string): Promise<void> {
     await cleanupTaskFilesImpl(cwd, taskId, log);
   }
 
@@ -1267,7 +1403,7 @@ export class AgentTaskRunner {
    * Check if the worker is due for a shower (context refresh).
    * Returns true when enough rounds have elapsed since last shower.
    */
-  #shouldShower(task) {
+  #shouldShower(task: RuntimeTaskState): boolean {
     const interval = task.showerInterval || DEFAULT_SHOWER_INTERVAL;
     if (interval <= 0) return false; // Disabled
     const roundsSinceShower = task.currentRound - (task.lastShowerRound || 0);
@@ -1288,7 +1424,7 @@ export class AgentTaskRunner {
    *  4. Kill worker session, restart fresh
    *  5. Inject resume prompt with handoff context + last judge instructions
    */
-  async #performShower(workspace) {
+  async #performShower(workspace: TaskWorkspaceState): Promise<boolean> {
     const task = workspace.task;
     const workspaceId = workspace.id;
     const workerSessionId = `${workspaceId}:${task.workerPanelId}`;
@@ -1321,16 +1457,16 @@ Do NOT continue working on the task — only write the handoff summary.`;
 
     try {
       await writeFile(handoffRequestPath, handoffRequest, "utf8");
-    } catch (err) {
-      log.error("shower mode: failed to write handoff request", { workspaceId, err: err.message });
+    } catch (err: unknown) {
+      log.error("shower mode: failed to write handoff request", { workspaceId, err: (err as Error)?.message });
       return false;
     }
 
     // Step 2: Inject short directive to worker
     const directive = `Read ${relDir}/SHOWER_REQUEST.md and follow it now. Write the handoff summary to ${relDir}/${HANDOFF_FILE}. After the file is written, stop and wait.`;
-    this.#writeToSession(workerSessionId, directive);
+    this.#writeToSession!(workerSessionId, directive);
     setTimeout(() => {
-      this.#writeToSession(workerSessionId, "\r");
+      this.#writeToSession!(workerSessionId, "\r");
     }, 200);
 
     log.debug("shower mode: handoff directive sent, waiting for handoff file", { workspaceId });
@@ -1356,8 +1492,8 @@ Do NOT continue working on the task — only write the handoff summary.`;
     try {
       await this.#restartSession(workerSessionId);
       log.info("shower mode: worker session restarted", { workspaceId });
-    } catch (err) {
-      log.error("shower mode: failed to restart worker session", { workspaceId, err: err.message });
+    } catch (err: unknown) {
+      log.error("shower mode: failed to restart worker session", { workspaceId, err: (err as Error)?.message });
       return false;
     }
 
@@ -1365,8 +1501,8 @@ Do NOT continue working on the task — only write the handoff summary.`;
     let handoffContent = "";
     try {
       handoffContent = await readFile(handoffPath, "utf8");
-    } catch (err) {
-      log.warn("shower mode: could not read handoff file after restart", { workspaceId, err: err.message });
+    } catch (err: unknown) {
+      log.warn("shower mode: could not read handoff file after restart", { workspaceId, err: (err as Error)?.message });
     }
 
     const resumePrompt = this.#buildShowerResumePrompt(task, handoffContent);
@@ -1377,8 +1513,8 @@ Do NOT continue working on the task — only write the handoff summary.`;
     try {
       await writeFile(promptFilePath, resumePrompt, "utf8");
       log.debug("shower mode: resume prompt written to file", { workspaceId, promptLength: resumePrompt.length });
-    } catch (err) {
-      log.warn("shower mode: failed to write resume prompt file", { workspaceId, err: err.message });
+    } catch (err: unknown) {
+      log.warn("shower mode: failed to write resume prompt file", { workspaceId, err: (err as Error)?.message });
     }
 
     // Wait briefly for the new session to be ready before injecting
@@ -1405,7 +1541,7 @@ Do NOT continue working on the task — only write the handoff summary.`;
    * Build the prompt for a worker session that was just restarted via shower mode.
    * Includes task description, handoff context, and last judge instructions.
    */
-  #buildShowerResumePrompt(task, handoffContent) {
+  #buildShowerResumePrompt(task: RuntimeTaskState, handoffContent: string): string {
     const dir = taskDirRel(task.taskId);
     const parts = [
       `You are the worker in a supervised coding loop (session refreshed for context clarity).`,
@@ -1442,10 +1578,11 @@ Do NOT continue working on the task — only write the handoff summary.`;
   // Helpers
   // ---------------------------------------------------------------------------
 
-  #findTaskWorkspace(workspaceId) {
-    const state = this.#getState();
+  #findTaskWorkspace(workspaceId: string): TaskWorkspaceState | null {
+    const state = this.#getState?.();
+    if (!state) return null;
     const workspace = state.workspaces.find((w) => w.id === workspaceId);
-    if (!workspace || workspace.kind !== "task" || !workspace.task) return null;
+    if (!workspace || !isTaskWorkspace(workspace)) return null;
     return workspace;
   }
 
@@ -1454,7 +1591,7 @@ Do NOT continue working on the task — only write the handoff summary.`;
    * Returns a promise that resolves after a short delay to allow the
    * command to be processed before injecting the next prompt.
    */
-  async #clearSessionContext(sessionId, workspace) {
+  async #clearSessionContext(sessionId: string, workspace: TaskWorkspaceState): Promise<void> {
     if (!this.#writeToSession) return;
     const strategy = this.#resolveInjectionStrategy(sessionId, workspace);
     log.debug("clearing session context", {
@@ -1476,7 +1613,7 @@ Do NOT continue working on the task — only write the handoff summary.`;
    * Inspired by codex-runner's pattern of writing prompts to files and injecting
    * "Read {file} and follow it now" directives via tmux send_keys.
    */
-  async #injectPrompt(sessionId, text, workspace) {
+  async #injectPrompt(sessionId: string, text: string, workspace: TaskWorkspaceState | null): Promise<void> {
     if (!this.#writeToSession) {
       log.warn("injectPrompt: writeToSession not available", { sessionId });
       return;
@@ -1496,12 +1633,12 @@ Do NOT continue working on the task — only write the handoff summary.`;
           promptPath: relPromptPath,
           originalLength: text.length,
         });
-      } catch (err) {
+      } catch (err: unknown) {
         // Fall back to direct paste if file write fails
         log.warn("failed to write prompt file, falling back to direct paste", {
           sessionId,
           promptPath,
-          err: err.message,
+          err: (err as Error)?.message,
         });
       }
     }
@@ -1532,19 +1669,23 @@ Do NOT continue working on the task — only write the handoff summary.`;
    * Stream a prompt character-by-character, then send Enter. Used for TUIs
    * that misclassify fast bulk writes as a paste event (Copilot).
    */
-  #typeAndSubmit(sessionId, text, { typingGapMs, submitDelayMs }) {
+  #typeAndSubmit(
+    sessionId: string,
+    text: string,
+    { typingGapMs, submitDelayMs }: { typingGapMs: number; submitDelayMs: number },
+  ): Promise<void> {
     return new Promise((resolve) => {
       let index = 0;
       const typeNext = () => {
         if (index >= text.length) {
           setTimeout(() => {
             log.trace("typeAndSubmit: sending Enter after type complete", { sessionId });
-            this.#writeToSession(sessionId, "\r");
+            this.#writeToSession!(sessionId, "\r");
             resolve();
           }, submitDelayMs);
           return;
         }
-        this.#writeToSession(sessionId, text[index]);
+        this.#writeToSession!(sessionId, text[index]);
         index += 1;
         setTimeout(typeNext, typingGapMs);
       };
@@ -1556,15 +1697,15 @@ Do NOT continue working on the task — only write the handoff summary.`;
    * Send text to a PTY using the provider's preferred strategy and resolve only
    * after the final Enter has been written.
    */
-  #writeAndSubmit(sessionId, text, strategy) {
+  #writeAndSubmit(sessionId: string, text: string, strategy: InjectionStrategy): Promise<void> {
     if (strategy.style === "type") {
       return this.#typeAndSubmit(sessionId, text, strategy);
     }
-    this.#writeToSession(sessionId, text);
+    this.#writeToSession!(sessionId, text);
     return new Promise((resolve) => {
       setTimeout(() => {
         log.trace("writeAndSubmit: sending Enter", { sessionId, submitDelay: strategy.submitDelayMs });
-        this.#writeToSession(sessionId, "\r");
+        this.#writeToSession!(sessionId, "\r");
         resolve();
       }, strategy.submitDelayMs);
     });
@@ -1575,11 +1716,11 @@ Do NOT continue working on the task — only write the handoff summary.`;
    * provider config by panel id and return its style + timings. Falls back
    * to sensible defaults for ad-hoc injections or unknown providers.
    */
-  #resolveInjectionStrategy(sessionId, workspace) {
-    const fallback = { style: "paste", submitDelayMs: 200, typingGapMs: 8, clearSettleMs: 800 };
+  #resolveInjectionStrategy(sessionId: string, workspace: TaskWorkspaceState | null): InjectionStrategy {
+    const fallback: InjectionStrategy = { style: "paste", submitDelayMs: 200, typingGapMs: 8, clearSettleMs: 800 };
     if (!workspace?.task) return fallback;
     const panelId = sessionId.split(":").slice(1).join(":");
-    let providerConfig = null;
+    let providerConfig: { providerId: string } | null = null;
     if (panelId === workspace.task.workerPanelId) providerConfig = workspace.task.workerProviderConfig;
     else if (panelId === workspace.task.judgePanelId) providerConfig = workspace.task.judgeProviderConfig;
     if (!providerConfig?.providerId) return fallback;
@@ -1604,7 +1745,7 @@ Do NOT continue working on the task — only write the handoff summary.`;
    * about what it did. Background/scheduled tasks are prevented by
    * CLAUDE_CODE_DISABLE_BACKGROUND_TASKS env var set at session startup.
    */
-  #notifyWorkerTaskEnded(workspace, kind) {
+  #notifyWorkerTaskEnded(workspace: TaskWorkspaceState, kind: "completed" | "failed"): void {
     if (!this.#writeToSession) return;
     const task = workspace.task;
     const workerSessionId = `${workspace.id}:${task.workerPanelId}`;
@@ -1621,10 +1762,10 @@ Do NOT continue working on the task — only write the handoff summary.`;
         : "The task runner has stopped (max rounds or error).";
     const message = `\nThe task has ended: ${reason} Do not start new work or continue the previous task. Wait for the user.`;
     setTimeout(() => {
-      this.#writeToSession(workerSessionId, message);
+      this.#writeToSession!(workerSessionId, message);
       // Send Enter separately after text is written (same pattern as #injectPrompt)
       setTimeout(() => {
-        this.#writeToSession(workerSessionId, "\r");
+        this.#writeToSession!(workerSessionId, "\r");
         log.debug("stop message sent to Worker", { workspaceId: workspace.id });
       }, 200);
     }, 2000);
@@ -1632,11 +1773,8 @@ Do NOT continue working on the task — only write the handoff summary.`;
 
   /**
    * Raise a user-visible alert for a task event.
-   * @param {object} workspace
-   * @param {"completed"|"failed"} kind
-   * @param {string} [reason] — human-readable context for the notification
    */
-  #raiseTaskAlert(workspace, kind, reason) {
+  #raiseTaskAlert(workspace: TaskWorkspaceState, kind: "completed" | "failed", reason?: string): void {
     if (!this.#raiseAlert) return;
     const task = workspace.task;
     const roundInfo = task.currentRound ? ` after ${task.currentRound} round${task.currentRound !== 1 ? "s" : ""}` : "";
@@ -1665,11 +1803,11 @@ Do NOT continue working on the task — only write the handoff summary.`;
    *
    * Each line is a JSON object: { ts, event, round?, detail? }
    */
-  async #logTaskEvent(workspace, event, detail) {
+  async #logTaskEvent(workspace: TaskWorkspaceState, event: string, detail?: string): Promise<void> {
     const task = workspace?.task;
     if (!workspace?.cwd || !task?.taskId) return;
 
-    const entry = {
+    const entry: Record<string, unknown> = {
       ts: new Date().toISOString(),
       event,
       round: task.currentRound || 0,
@@ -1679,8 +1817,8 @@ Do NOT continue working on the task — only write the handoff summary.`;
     const logPath = path.join(taskDir(workspace.cwd, task.taskId), TASK_LOG_FILE);
     try {
       await writeFile(logPath, JSON.stringify(entry) + "\n", { encoding: "utf8", flag: "a" });
-    } catch (err) {
-      log.debug("failed to write task event log", { logPath, err: err.message });
+    } catch (err: unknown) {
+      log.debug("failed to write task event log", { logPath, err: (err as Error)?.message });
     }
   }
 }
