@@ -1,7 +1,13 @@
 import { exec } from "node:child_process";
 
-export function execCommand(command, cwd, timeoutMs) {
-  const childPromise = new Promise((resolve) => {
+export interface ExecResult {
+  exitCode: number;
+  stdout: string;
+  stderr: string;
+}
+
+export function execCommand(command: string, cwd: string, timeoutMs: number): Promise<ExecResult> {
+  const childPromise = new Promise<ExecResult>((resolve) => {
     const child = exec(command, {
       cwd,
       timeout: timeoutMs,
@@ -13,10 +19,10 @@ export function execCommand(command, cwd, timeoutMs) {
     let stdout = "";
     let stderr = "";
 
-    child.stdout?.on("data", (chunk) => {
+    child.stdout?.on("data", (chunk: string) => {
       stdout += chunk;
     });
-    child.stderr?.on("data", (chunk) => {
+    child.stderr?.on("data", (chunk: string) => {
       stderr += chunk;
     });
     child.on("close", (code) => {
@@ -27,7 +33,7 @@ export function execCommand(command, cwd, timeoutMs) {
     });
   });
 
-  const hardTimeout = new Promise((resolve) => {
+  const hardTimeout = new Promise<ExecResult>((resolve) => {
     setTimeout(() => {
       resolve({ exitCode: 1, stdout: "", stderr: `Command timed out after ${timeoutMs}ms` });
     }, timeoutMs + 5000);

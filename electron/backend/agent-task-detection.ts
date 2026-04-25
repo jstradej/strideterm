@@ -11,26 +11,36 @@ import { getLogger } from "./logger.js";
 
 const log = getLogger("task-runner");
 
+export interface VerifyCommand {
+  label: string;
+  command: string;
+  timeoutMs: number;
+}
+
 /**
  * Auto-detect verification commands from project configuration files.
  * Scans for all known stacks (not mutually exclusive — a project can have
  * both package.json and a Makefile). The order within each stack is:
  * formatting -> lint -> compile/build -> tests (fast-to-slow).
  */
-export async function detectProjectVerifyCommands(cwd) {
-  const commands = [];
-  const has = (f) =>
+export async function detectProjectVerifyCommands(cwd: string): Promise<VerifyCommand[]> {
+  const commands: VerifyCommand[] = [];
+  const has = (f: string) =>
     access(path.join(cwd, f)).then(
       () => true,
       () => false,
     );
-  const tryRead = (f) => readFile(path.join(cwd, f), "utf8").catch(() => null);
+  const tryRead = (f: string) => readFile(path.join(cwd, f), "utf8").catch(() => null);
 
   // --- Node.js: package.json ---
   try {
     const raw = await tryRead("package.json");
     if (raw) {
-      const pkg = JSON.parse(raw);
+      const pkg = JSON.parse(raw) as {
+        scripts?: Record<string, string>;
+        devDependencies?: Record<string, string>;
+        dependencies?: Record<string, string>;
+      };
       const scripts = pkg.scripts || {};
       const devDeps = { ...pkg.devDependencies, ...pkg.dependencies };
       if (scripts.typecheck || scripts["type-check"]) {
@@ -195,20 +205,23 @@ export async function detectProjectVerifyCommands(cwd) {
  * These are included in JUDGE_PROMPT.md so the Judge knows what to look for
  * based on the specific technologies used.
  */
-export async function detectStackReviewHints(cwd) {
-  const hints = [];
-  const has = (f) =>
+export async function detectStackReviewHints(cwd: string): Promise<string[]> {
+  const hints: string[] = [];
+  const has = (f: string) =>
     access(path.join(cwd, f)).then(
       () => true,
       () => false,
     );
-  const tryRead = (f) => readFile(path.join(cwd, f), "utf8").catch(() => null);
+  const tryRead = (f: string) => readFile(path.join(cwd, f), "utf8").catch(() => null);
 
   // --- Node.js / JavaScript / TypeScript ---
   const pkgRaw = await tryRead("package.json");
   if (pkgRaw) {
     try {
-      const pkg = JSON.parse(pkgRaw);
+      const pkg = JSON.parse(pkgRaw) as {
+        dependencies?: Record<string, string>;
+        devDependencies?: Record<string, string>;
+      };
       const allDeps = { ...pkg.dependencies, ...pkg.devDependencies };
 
       if (allDeps.typescript || (await has("tsconfig.json"))) {

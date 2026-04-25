@@ -6,7 +6,18 @@
  * runtime.getNotificationMetrics() for the About dialog / diagnostics.
  */
 
-const counters = {
+interface Counters {
+  alertsTotal: number;
+  alertsByTier: Record<number, number>;
+  alertsByKind: Record<string, number>;
+  alertsByUrgency: Record<string, number>;
+  alertsByCommandClass: Record<string, number>;
+  hooksReceived: number;
+  hooksByName: Record<string, number>;
+  dismissedWithoutInteraction: number;
+}
+
+const counters: Counters = {
   alertsTotal: 0,
   alertsByTier: { 1: 0, 2: 0, 3: 0 },
   alertsByKind: { waiting: 0, completed: 0, info: 0 },
@@ -19,7 +30,14 @@ const counters = {
 
 const startedAt = Date.now();
 
-export function recordAlert({ tier = 1, kind = "waiting", urgency = "normal", commandClass = "" } = {}) {
+interface RecordAlertOptions {
+  tier?: number;
+  kind?: string;
+  urgency?: string;
+  commandClass?: string;
+}
+
+export function recordAlert({ tier = 1, kind = "waiting", urgency = "normal", commandClass = "" }: RecordAlertOptions = {}): void {
   counters.alertsTotal += 1;
   counters.alertsByTier[tier] = (counters.alertsByTier[tier] || 0) + 1;
   counters.alertsByKind[kind] = (counters.alertsByKind[kind] || 0) + 1;
@@ -29,18 +47,22 @@ export function recordAlert({ tier = 1, kind = "waiting", urgency = "normal", co
   }
 }
 
-export function recordHook(hookName) {
+export function recordHook(hookName: string): void {
   counters.hooksReceived += 1;
   if (hookName) {
     counters.hooksByName[hookName] = (counters.hooksByName[hookName] || 0) + 1;
   }
 }
 
-export function recordDismissedWithoutInteraction() {
+export function recordDismissedWithoutInteraction(): void {
   counters.dismissedWithoutInteraction += 1;
 }
 
-export function getMetrics() {
+export interface NotificationMetrics extends Counters {
+  uptimeMs: number;
+}
+
+export function getMetrics(): NotificationMetrics {
   return {
     uptimeMs: Date.now() - startedAt,
     ...counters,
@@ -53,7 +75,7 @@ export function getMetrics() {
   };
 }
 
-export function _resetForTests() {
+export function _resetForTests(): void {
   counters.alertsTotal = 0;
   counters.alertsByTier = { 1: 0, 2: 0, 3: 0 };
   counters.alertsByKind = { waiting: 0, completed: 0, info: 0 };

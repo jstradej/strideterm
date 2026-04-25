@@ -1,7 +1,26 @@
 import { access } from "node:fs/promises";
 import path from "node:path";
+import type { Logger } from "./logger.js";
+import type { ExecResult } from "./agent-task-exec.js";
 
-export async function ensureGitRepo(cwd, { execCommand, gitInitLocks, log }) {
+interface GitDeps {
+  execCommand: (command: string, cwd: string, timeoutMs: number) => Promise<ExecResult>;
+  gitInitLocks: Map<string, Promise<boolean>>;
+  log: Logger;
+}
+
+interface GitContextDeps {
+  execCommand: (command: string, cwd: string, timeoutMs: number) => Promise<ExecResult>;
+  log: Logger;
+}
+
+export interface GitContext {
+  status: string;
+  diffStat: string;
+  diffNames: string;
+}
+
+export async function ensureGitRepo(cwd: string, { execCommand, gitInitLocks, log }: GitDeps): Promise<boolean> {
   const gitDir = path.join(cwd, ".git");
   try {
     await access(gitDir);
@@ -10,7 +29,7 @@ export async function ensureGitRepo(cwd, { execCommand, gitInitLocks, log }) {
   } catch {
     if (gitInitLocks.has(cwd)) {
       log.debug("git init already in progress, waiting", { cwd });
-      return gitInitLocks.get(cwd);
+      return gitInitLocks.get(cwd)!;
     }
 
     const initPromise = doGitInit(cwd, { execCommand, log });
@@ -23,7 +42,7 @@ export async function ensureGitRepo(cwd, { execCommand, gitInitLocks, log }) {
   }
 }
 
-async function doGitInit(cwd, { execCommand, log }) {
+async function doGitInit(cwd: string, { execCommand, log }: GitContextDeps): Promise<boolean> {
   log.info("no git repo found, running git init", { cwd });
   try {
     try {
@@ -49,13 +68,14 @@ async function doGitInit(cwd, { execCommand, log }) {
     log.warn("git init failed", { cwd, exitCode: result.exitCode, stderr: result.stderr });
     return false;
   } catch (error) {
-    log.warn("git init error", { cwd, err: error.message });
+    const err = error as Error;
+    log.warn("git init error", { cwd, err: err.message });
     return false;
   }
 }
 
-export async function getGitContext(cwd, { execCommand, log }) {
-  const empty = { status: "Not a git repository.", diffStat: "", diffNames: "" };
+export async function getGitContext(cwd: string, { execCommand, log }: GitContextDeps): Promise<GitContext> {
+  const empty: GitContext = { status: "Not a git repository.", diffStat: "", diffNames: "" };
   const gitDir = path.join(cwd, ".git");
   try {
     await access(gitDir);
@@ -67,7 +87,7 @@ export async function getGitContext(cwd, { execCommand, log }) {
   const MAX_LINES = 80;
   const MAX_CHARS = 5000;
 
-  function clip(text, label = "output") {
+  function clip(text: string, label = "output"): string {
     if (!text) return "(clean)";
     const lines = text.split("\n");
     const totalLines = lines.length;
@@ -89,7 +109,7 @@ export async function getGitContext(cwd, { execCommand, log }) {
       execCommand("git diff --name-only", cwd, 10_000),
     ]);
 
-    const context = {
+    const context: GitContext = {
       status: clip(statusResult.stdout.trim(), "git status"),
       diffStat: clip(diffStatResult.stdout.trim(), "diff stat"),
       diffNames: clip(diffNamesResult.stdout.trim(), "changed files"),
@@ -103,7 +123,8 @@ export async function getGitContext(cwd, { execCommand, log }) {
 
     return context;
   } catch (error) {
-    log.warn("failed to gather git context", { cwd, err: error.message });
+    const err = error as Error;
+    log.warn("failed to gather git context", { cwd, err: err.message });
     return empty;
   }
 }

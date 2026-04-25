@@ -18,15 +18,20 @@
 const SOFT_LIMIT = 3; // double threshold
 const HARD_LIMIT = 6; // disable T3 entirely
 
+interface AdaptiveEntry {
+  dismissCount: number;
+  lastInteractionAt: number;
+}
+
 // sessionId → { dismissCount, lastInteractionAt }
-const state = new Map();
+const state = new Map<string, AdaptiveEntry>();
 
 /**
  * Record that an alert was dismissed/ignored without user interaction.
  * Should be called from the notification-center "dismiss" path or when
  * an alert disappears without having been clicked.
  */
-export function recordDismissed(sessionId) {
+export function recordDismissed(sessionId: string): void {
   if (!sessionId) return;
   const entry = state.get(sessionId) || { dismissCount: 0, lastInteractionAt: 0 };
   entry.dismissCount += 1;
@@ -37,7 +42,7 @@ export function recordDismissed(sessionId) {
  * User actually interacted with this session — reset the counter so the
  * session goes back to normal sensitivity.
  */
-export function recordInteraction(sessionId) {
+export function recordInteraction(sessionId: string): void {
   if (!sessionId) return;
   const entry = state.get(sessionId);
   if (!entry) return;
@@ -48,7 +53,7 @@ export function recordInteraction(sessionId) {
 /**
  * Called when a session is deleted (PTY exits) — free the slot.
  */
-export function forget(sessionId) {
+export function forget(sessionId: string): void {
   if (!sessionId) return;
   state.delete(sessionId);
 }
@@ -57,7 +62,7 @@ export function forget(sessionId) {
  * Returns a multiplier for the silence threshold (≥ 1.0).  Apply like:
  *   effectiveQuietMs = baseQuietMs * adaptiveMultiplier(sessionId)
  */
-export function adaptiveMultiplier(sessionId) {
+export function adaptiveMultiplier(sessionId: string): number {
   const entry = state.get(sessionId);
   if (!entry) return 1;
   if (entry.dismissCount >= SOFT_LIMIT) return 2;
@@ -68,19 +73,25 @@ export function adaptiveMultiplier(sessionId) {
  * Returns true if T3 is fully disabled for this session because the user
  * keeps ignoring the alerts.
  */
-export function isT3Disabled(sessionId) {
+export function isT3Disabled(sessionId: string): boolean {
   const entry = state.get(sessionId);
   if (!entry) return false;
   return entry.dismissCount >= HARD_LIMIT;
 }
 
+export interface AdaptiveSnapshot {
+  sessionId: string;
+  dismissCount: number;
+  lastInteractionAt: number;
+}
+
 /**
  * Exposed for tests / diagnostics.
  */
-export function snapshot() {
+export function snapshot(): AdaptiveSnapshot[] {
   return Array.from(state.entries()).map(([sid, entry]) => ({ sessionId: sid, ...entry }));
 }
 
-export function _resetForTests() {
+export function _resetForTests(): void {
   state.clear();
 }

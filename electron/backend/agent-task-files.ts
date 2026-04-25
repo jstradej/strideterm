@@ -17,10 +17,25 @@ import {
   verdictSchema,
 } from "./agent-task-utils.js";
 import { detectProjectVerifyCommands, detectStackReviewHints } from "./agent-task-detection.js";
+import type { Logger } from "./logger.js";
+import type { ExecResult } from "./agent-task-exec.js";
+import type { TaskState } from "../shared/types/task.js";
 
-export async function runBuiltInChecks(cwd, taskId, { execCommand, log }) {
+interface ExecDeps {
+  execCommand: (command: string, cwd: string, timeoutMs: number) => Promise<ExecResult>;
+  log: Logger;
+}
+
+interface CheckResult {
+  label: string;
+  passed: boolean;
+  exitCode: number;
+  outputTail: string;
+}
+
+export async function runBuiltInChecks(cwd: string, taskId: string, { execCommand, log }: ExecDeps): Promise<CheckResult[]> {
   const dir = taskDir(cwd, taskId);
-  const results = [];
+  const results: CheckResult[] = [];
 
   let lockExists = false;
   try {
@@ -72,7 +87,7 @@ export async function runBuiltInChecks(cwd, taskId, { execCommand, log }) {
   return results;
 }
 
-async function checkLockfileAudit(cwd, { execCommand, log }) {
+async function checkLockfileAudit(cwd: string, { execCommand, log }: ExecDeps): Promise<CheckResult | null> {
   try {
     await access(path.join(cwd, "package-lock.json"));
   } catch {
@@ -99,11 +114,16 @@ async function checkLockfileAudit(cwd, { execCommand, log }) {
   };
 }
 
-export async function readVerdict(cwd, taskId, log) {
+interface VerdictResult {
+  verdict: string;
+  reason: string;
+}
+
+export async function readVerdict(cwd: string, taskId: string, log: Logger): Promise<VerdictResult> {
   const verdictPath = path.join(taskDir(cwd, taskId), VERDICT_FILE);
   try {
     const raw = await readFile(verdictPath, "utf8");
-    const data = JSON.parse(raw);
+    const data = JSON.parse(raw) as unknown;
     const parsed = verdictSchema.safeParse(data);
     if (!parsed.success) {
       log.warn("verdict file failed schema validation", {
@@ -118,16 +138,17 @@ export async function readVerdict(cwd, taskId, log) {
     log.debug("verdict file parsed", { verdictPath, verdict: parsed.data.verdict });
     return { verdict: parsed.data.verdict, reason: parsed.data.reason };
   } catch (error) {
-    if (error.code === "ENOENT") {
+    const err = error as NodeJS.ErrnoException;
+    if (err.code === "ENOENT") {
       log.warn("verdict file missing — judge did not write it", { verdictPath });
       return { verdict: "continue", reason: "Judge did not produce a verdict file." };
     }
-    log.error("verdict file malformed or unreadable", { verdictPath, err: error.message });
-    return { verdict: "continue", reason: `Verdict file could not be parsed: ${error.message}` };
+    log.error("verdict file malformed or unreadable", { verdictPath, err: err.message });
+    return { verdict: "continue", reason: `Verdict file could not be parsed: ${err.message}` };
   }
 }
 
-export async function clearVerdict(cwd, taskId) {
+export async function clearVerdict(cwd: string, taskId: string): Promise<void> {
   const verdictPath = path.join(taskDir(cwd, taskId), VERDICT_FILE);
   try {
     await rm(verdictPath, { force: true });
@@ -136,7 +157,7 @@ export async function clearVerdict(cwd, taskId) {
   }
 }
 
-export async function writeTaskFiles(cwd, task, log) {
+export async function writeTaskFiles(cwd: string, task: TaskState, log: Logger): Promise<void> {
   const dir = taskDir(cwd, task.taskId);
   const relDir = taskDirRel(task.taskId);
   await mkdir(dir, { recursive: true });
@@ -284,7 +305,7 @@ ${stackSection}
   log.info("task files written", { dir, detectedCommands: detected.length });
 }
 
-export async function ensureGitIgnore(cwd, log) {
+export async function ensureGitIgnore(cwd: string, log: Logger): Promise<void> {
   const gitignorePath = path.join(cwd, ".gitignore");
   const entry = ".strideterm/";
   try {
@@ -297,20 +318,22 @@ export async function ensureGitIgnore(cwd, log) {
     await writeFile(gitignorePath, content + separator + entry + "\n", "utf8");
     log.debug("appended .strideterm/ to .gitignore", { cwd });
   } catch (error) {
-    if (error.code === "ENOENT") {
+    const err = error as NodeJS.ErrnoException;
+    if (err.code === "ENOENT") {
       try {
         await writeFile(gitignorePath, entry + "\n", "utf8");
         log.debug("created .gitignore with .strideterm/ entry", { cwd });
       } catch (writeError) {
-        log.warn("failed to create .gitignore", { cwd, err: writeError.message });
+        const wErr = writeError as Error;
+        log.warn("failed to create .gitignore", { cwd, err: wErr.message });
       }
     } else {
-      log.warn("failed to read .gitignore", { cwd, err: error.message });
+      log.warn("failed to read .gitignore", { cwd, err: err.message });
     }
   }
 }
 
-export async function cleanupTaskFiles(cwd, taskId, log) {
+export async function cleanupTaskFiles(cwd: string, taskId: string, log: Logger): Promise<void> {
   if (!cwd || !taskId) {
     log.warn("cleanupTaskFiles: missing cwd or taskId, skipping cleanup", {
       cwd: cwd || "(empty)",
@@ -323,11 +346,12 @@ export async function cleanupTaskFiles(cwd, taskId, log) {
     await rm(dir, { recursive: true, force: true });
     log.info("task files cleaned up", { dir });
   } catch (error) {
-    log.warn("failed to clean up task files", { dir, err: error.message });
+    const err = error as Error;
+    log.warn("failed to clean up task files", { dir, err: err.message });
   }
 }
 
-export async function waitForFile(filePath, timeoutMs = 120_000) {
+export async function waitForFile(filePath: string, timeoutMs = 120_000): Promise<boolean> {
   const start = Date.now();
   const pollInterval = 3000;
 
