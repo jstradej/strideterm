@@ -1,4 +1,6 @@
+/// <reference types="node" />
 import http from "node:http";
+import type { IncomingMessage, ServerResponse } from "node:http";
 import crypto from "node:crypto";
 import { getLogger } from "./logger.js";
 
@@ -32,17 +34,45 @@ const KNOWN_HOOK_NAMES = new Set([
   "PreCompact",
 ]);
 
-export function generateNotifySecret() {
+export interface NotifyPayload {
+  sessionId: string;
+  hook: string;
+  subtype: string;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  payload: Record<string, any>;
+  /** Back-compat fields */
+  notificationType: string;
+  message: string;
+  title: string;
+}
+
+export interface NotifyServerHandle {
+  port: number;
+  server: http.Server;
+  close(): Promise<void>;
+}
+
+export interface StartNotifyServerOptions {
+  onNotification: (n: NotifyPayload) => void;
+  secret: string;
+  logger?: unknown;
+}
+
+export function generateNotifySecret(): string {
   return crypto.randomUUID();
 }
 
-export function buildNotifyUrl(port, sessionId, secret) {
+export function buildNotifyUrl(port: number, sessionId: string, secret: string): string {
   return `http://127.0.0.1:${port}/notify?sid=${encodeURIComponent(sessionId)}&secret=${encodeURIComponent(secret)}`;
 }
 
-export function startNotifyServer({ onNotification, secret, logger: _logger = null }) {
+export function startNotifyServer({
+  onNotification,
+  secret,
+  logger: _logger = null,
+}: StartNotifyServerOptions): Promise<NotifyServerHandle> {
   return new Promise((resolve, reject) => {
-    const server = http.createServer((request, response) => {
+    const server = http.createServer((request: IncomingMessage, response: ServerResponse) => {
       if (request.method === "OPTIONS") {
         response.writeHead(204);
         response.end();
@@ -90,7 +120,7 @@ export function startNotifyServer({ onNotification, secret, logger: _logger = nu
       let size = 0;
       let aborted = false;
 
-      request.on("data", (chunk) => {
+      request.on("data", (chunk: Buffer) => {
         if (aborted) return;
         size += chunk.length;
         if (size > MAX_BODY_SIZE) {
@@ -106,10 +136,11 @@ export function startNotifyServer({ onNotification, secret, logger: _logger = nu
       request.on("end", () => {
         if (aborted) return;
 
-        let payload = {};
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        let payload: Record<string, any> = {};
         if (body.trim()) {
           try {
-            payload = JSON.parse(body);
+            payload = JSON.parse(body) as Record<string, unknown>;
           } catch {
             response.writeHead(400, { "Content-Type": "text/plain" });
             response.end("Bad Request");
@@ -150,7 +181,7 @@ export function startNotifyServer({ onNotification, secret, logger: _logger = nu
             title: String(payload.title || ""),
           });
         } catch (error) {
-          log.warn("onNotification error", { err: error.message });
+          log.warn("onNotification error", { err: (error as Error).message });
         }
 
         response.writeHead(200, { "Content-Type": "application/json" });
@@ -165,12 +196,12 @@ export function startNotifyServer({ onNotification, secret, logger: _logger = nu
       });
     });
 
-    server.on("error", (error) => {
+    server.on("error", (error: Error) => {
       reject(error);
     });
 
     server.listen(0, "127.0.0.1", () => {
-      const address = server.address();
+      const address = server.address() as { port: number };
       const port = address.port;
       log.info("listening", { host: "127.0.0.1", port });
 
@@ -178,7 +209,7 @@ export function startNotifyServer({ onNotification, secret, logger: _logger = nu
         port,
         server,
         async close() {
-          return new Promise((resolveClose) => {
+          return new Promise<void>((resolveClose) => {
             server.close(() => resolveClose());
           });
         },
