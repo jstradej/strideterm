@@ -1,9 +1,16 @@
 import { describe, expect, test, vi } from "vitest";
 import { createAzureApi } from "./azure-devops-api.js";
 
-function createMockFetch(responses = []) {
+interface MockResponse {
+  status: number;
+  statusText?: string;
+  headers?: Record<string, string>;
+  body: unknown;
+}
+
+function createMockFetch(responses: MockResponse[] = []) {
   let callIndex = 0;
-  return vi.fn(async (_url, _options) => {
+  return vi.fn(async (_url: unknown, _options: unknown) => {
     const response = responses[callIndex++] || { status: 200, body: {} };
     return {
       ok: response.status >= 200 && response.status < 300,
