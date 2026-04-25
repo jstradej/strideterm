@@ -1,3 +1,4 @@
+/// <reference types="node" />
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -6,13 +7,71 @@ const SUPPORTED_REVIEW_AGENTS = new Set(["claude", "codex", "copilot"]);
 const DEFAULT_APP_ENTRY = path.resolve(fileURLToPath(new URL("../../", import.meta.url)));
 const REVIEW_BRIDGE_STDIO_ENTRY = fileURLToPath(new URL("./review-bridge-mcp-stdio.js", import.meta.url));
 
-function normalizeText(value) {
+interface ReviewPanel {
+  id?: string;
+  title?: string;
+  command?: string;
+}
+
+interface ReviewRepository {
+  id?: string;
+  name?: string;
+}
+
+interface ReviewPullRequest {
+  id?: number;
+  title?: string;
+  sourceRefName?: string;
+  targetRefName?: string;
+}
+
+interface ReviewContext {
+  rootPath?: string;
+  prKey?: string;
+  workspaceId?: string;
+  reviewWorkspaceId?: string;
+  repository?: ReviewRepository;
+  pullRequest?: ReviewPullRequest;
+}
+
+interface ProcessInfo {
+  execPath?: string;
+  argv?: string[];
+  defaultApp?: boolean;
+  platform?: string;
+  pathEnv?: string;
+  commandLookup?: Record<string, string>;
+  pathExists?: (p: string) => boolean;
+}
+
+interface McpServerSpec {
+  command: string;
+  args: string[];
+  env?: Record<string, string>;
+}
+
+interface AgentLaunch {
+  file: string;
+  args: string[];
+  cwd: string;
+  env?: Record<string, string>;
+  skipCommandInjection: boolean;
+}
+
+interface BuildLaunchInput {
+  workspace?: { cwd?: string };
+  panel?: ReviewPanel;
+  context?: ReviewContext;
+  processInfo?: ProcessInfo;
+}
+
+function normalizeText(value: unknown): string {
   return String(value || "")
     .trim()
     .toLowerCase();
 }
 
-function firstCommandToken(command) {
+function firstCommandToken(command: unknown): string {
   const normalized = normalizeText(command);
   if (!normalized) {
     return "";
@@ -20,13 +79,13 @@ function firstCommandToken(command) {
   return normalized.split(/\s+/u)[0] || "";
 }
 
-function tokenizeCommand(command) {
+function tokenizeCommand(command: unknown): string[] {
   const input = String(command || "").trim();
   if (!input) {
     return [];
   }
 
-  const tokens = [];
+  const tokens: string[] = [];
   let current = "";
   let quote = "";
 
@@ -78,7 +137,7 @@ function tokenizeCommand(command) {
   return tokens;
 }
 
-function commandBasename(command) {
+function commandBasename(command: unknown): string {
   const token = firstCommandToken(command);
   if (!token) {
     return "";
@@ -86,12 +145,12 @@ function commandBasename(command) {
   return normalizeText(path.parse(token).name || token);
 }
 
-function inheritedPanelArgs(panel = {}) {
+function inheritedPanelArgs(panel: ReviewPanel = {}): string[] {
   const tokens = tokenizeCommand(panel.command);
   return tokens.length > 1 ? tokens.slice(1) : [];
 }
 
-function hasCodexSandboxOverride(args = []) {
+function hasCodexSandboxOverride(args: string[] = []): boolean {
   for (let index = 0; index < args.length; index += 1) {
     const value = String(args[index] || "").trim();
     if (!value) {
@@ -107,7 +166,7 @@ function hasCodexSandboxOverride(args = []) {
   return false;
 }
 
-function pushWorkspaceScope(args, workspaceCwd) {
+function pushWorkspaceScope(args: string[], workspaceCwd: unknown): void {
   const cwd = String(workspaceCwd || "").trim();
   if (!cwd) {
     return;
@@ -115,9 +174,9 @@ function pushWorkspaceScope(args, workspaceCwd) {
   args.push("--add-dir", cwd);
 }
 
-function buildReviewPrompt(context) {
+function buildReviewPrompt(context: ReviewContext | undefined): string {
   const repository = String(context?.repository?.name || context?.repository?.id || "the repository").trim();
-  const pullRequestId = Number.isInteger(context?.pullRequest?.id) ? `PR #${context.pullRequest.id}` : null;
+  const pullRequestId = Number.isInteger(context?.pullRequest?.id) ? `PR #${context!.pullRequest!.id}` : null;
   const title = String(context?.pullRequest?.title || "").trim();
 
   if (!pullRequestId) {
@@ -138,14 +197,14 @@ function buildReviewPrompt(context) {
   ].join(" ");
 }
 
-function windowsPathList(pathValue) {
+function windowsPathList(pathValue: unknown): string[] {
   return String(pathValue || "")
     .split(";")
     .map((segment) => segment.trim())
     .filter(Boolean);
 }
 
-function resolveWindowsCommandPath(commandName, processInfo = {}, preferredExtensions = []) {
+function resolveWindowsCommandPath(commandName: string, processInfo: ProcessInfo = {}, preferredExtensions: string[] = []): string {
   const overrides = processInfo.commandLookup || {};
   const explicit = String(overrides[commandName] || "").trim();
   if (explicit) {
@@ -181,7 +240,7 @@ function resolveWindowsCommandPath(commandName, processInfo = {}, preferredExten
   return "";
 }
 
-function resolveDefaultAppEntry(processInfo = {}) {
+function resolveDefaultAppEntry(processInfo: ProcessInfo = {}): string {
   const argv = Array.isArray(processInfo.argv) ? processInfo.argv : [];
   const explicitTarget = argv.slice(1).find((value) => {
     const text = String(value || "").trim();
@@ -196,7 +255,7 @@ function resolveDefaultAppEntry(processInfo = {}) {
   return path.resolve(DEFAULT_APP_ENTRY, explicitTarget);
 }
 
-function buildMcpServerSpec({ context, processInfo }) {
+function buildMcpServerSpec({ context, processInfo }: { context?: ReviewContext; processInfo?: ProcessInfo }): McpServerSpec {
   const command = String(processInfo?.execPath || process.execPath || "").trim();
   if (!command) {
     throw new Error("Review bridge MCP launch is missing an executable path.");
@@ -232,7 +291,7 @@ function buildMcpServerSpec({ context, processInfo }) {
   return { command, args };
 }
 
-function buildClaudeLaunch({ workspace, panel, context, processInfo }) {
+function buildClaudeLaunch({ workspace, panel, context, processInfo }: BuildLaunchInput): AgentLaunch {
   const mcp = buildMcpServerSpec({ context, processInfo });
   const platform = processInfo?.platform || process.platform;
   const args = [...inheritedPanelArgs(panel)];
@@ -282,7 +341,7 @@ function buildClaudeLaunch({ workspace, panel, context, processInfo }) {
   };
 }
 
-function buildCodexLaunch({ workspace, panel, context, processInfo }) {
+function buildCodexLaunch({ workspace, panel, context, processInfo }: BuildLaunchInput): AgentLaunch {
   const mcp = buildMcpServerSpec({ context, processInfo });
   const platform = processInfo?.platform || process.platform;
   const args = [...inheritedPanelArgs(panel)];
@@ -329,7 +388,7 @@ function buildCodexLaunch({ workspace, panel, context, processInfo }) {
   };
 }
 
-function buildCopilotLaunch({ workspace, panel, context, processInfo }) {
+function buildCopilotLaunch({ workspace, panel, context, processInfo }: BuildLaunchInput): AgentLaunch {
   const mcp = buildMcpServerSpec({ context, processInfo });
   const platform = processInfo?.platform || process.platform;
   const args = [...inheritedPanelArgs(panel)];
@@ -383,7 +442,7 @@ function buildCopilotLaunch({ workspace, panel, context, processInfo }) {
   };
 }
 
-export function detectReviewAgentPanel(panel = {}) {
+export function detectReviewAgentPanel(panel: ReviewPanel = {}): string | null {
   const commandToken = firstCommandToken(panel.command);
   if (SUPPORTED_REVIEW_AGENTS.has(commandToken)) {
     return commandToken;
@@ -415,7 +474,7 @@ export function detectReviewAgentPanel(panel = {}) {
 
 export { buildMcpServerSpec };
 
-export function buildReviewAgentLaunch({ workspace, panel, context, processInfo }) {
+export function buildReviewAgentLaunch({ workspace, panel, context, processInfo }: BuildLaunchInput): AgentLaunch | null {
   if (!context?.rootPath) {
     return null;
   }
