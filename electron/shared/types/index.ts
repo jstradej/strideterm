@@ -1,2 +1,5 @@
-// Placeholder — expanded in Phase 2 (shared type definitions)
-export {};
+export * from "./state.js";
+export * from "./ipc-results.js";
+export * from "./ssh.js";
+export * from "./notifications.js";
+export * from "./task.js";
