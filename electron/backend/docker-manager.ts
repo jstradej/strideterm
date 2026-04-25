@@ -1,10 +1,22 @@
 import { EventEmitter } from "node:events";
 import { execFileText, parseJsonLines, quotePosixArg } from "./process-utils.js";
 import { getLogger } from "./logger.js";
+import type { DockerState, DockerContainer } from "../shared/types/state.js";
 
 const log = getLogger("docker");
 
-function createUnavailableState(message = "Docker is unavailable.") {
+interface DockerBackend {
+  type: "host" | "wsl";
+  file: string;
+  argsPrefix: string[];
+}
+
+interface LaunchArgs {
+  file: string;
+  args: string[];
+}
+
+function createUnavailableState(message = "Docker is unavailable."): DockerState {
   return {
     available: false,
     backend: null,
@@ -21,6 +33,10 @@ function createUnavailableState(message = "Docker is unavailable.") {
 }
 
 export class DockerManager extends EventEmitter {
+  private snapshot: DockerState;
+  private backend: DockerBackend | null;
+  private lazydockerBackend: DockerBackend | null;
+
   constructor() {
     super();
     this.snapshot = createUnavailableState();
@@ -28,11 +44,11 @@ export class DockerManager extends EventEmitter {
     this.lazydockerBackend = null;
   }
 
-  getSnapshot() {
+  getSnapshot(): DockerState {
     return this.snapshot;
   }
 
-  async detectBackend() {
+  async detectBackend(): Promise<DockerBackend | null> {
     if (this.backend) {
       return this.backend;
     }
@@ -55,7 +71,7 @@ export class DockerManager extends EventEmitter {
     }
   }
 
-  async runDocker(args) {
+  async runDocker(args: string[]): Promise<{ stdout: string; stderr: string }> {
     const backend = await this.detectBackend();
     if (!backend) {
       throw new Error("Docker CLI was not found on Windows PATH or inside WSL.");
@@ -69,7 +85,7 @@ export class DockerManager extends EventEmitter {
     return execFileText(backend.file, [...backend.argsPrefix, command]);
   }
 
-  async detectLazydocker() {
+  async detectLazydocker(): Promise<DockerBackend | null> {
     if (this.lazydockerBackend) {
       return this.lazydockerBackend;
     }
@@ -101,7 +117,7 @@ export class DockerManager extends EventEmitter {
     }
   }
 
-  createLaunchArgs(args) {
+  createLaunchArgs(args: string[]): LaunchArgs | null {
     if (!this.backend) {
       return null;
     }
@@ -120,7 +136,7 @@ export class DockerManager extends EventEmitter {
     };
   }
 
-  createLazydockerLaunch() {
+  createLazydockerLaunch(): LaunchArgs | null {
     if (!this.lazydockerBackend) {
       return null;
     }
@@ -138,7 +154,7 @@ export class DockerManager extends EventEmitter {
     };
   }
 
-  async refresh() {
+  async refresh(): Promise<DockerState> {
     try {
       await this.detectBackend();
       await this.detectLazydocker();
@@ -151,7 +167,7 @@ export class DockerManager extends EventEmitter {
         available: true,
         backend: this.backend?.type || null,
         contexts: parseJsonLines(contextsResult.stdout),
-        containers: parseJsonLines(containersResult.stdout),
+        containers: parseJsonLines(containersResult.stdout) as DockerContainer[],
         lazydocker: {
           available: Boolean(this.lazydockerBackend),
           backend: this.lazydockerBackend?.type || null,
@@ -161,9 +177,10 @@ export class DockerManager extends EventEmitter {
         lastUpdatedAt: new Date().toISOString(),
       };
     } catch (error) {
-      log.debug("docker refresh failed", { err: error.stderr || error.error?.message || "Docker refresh failed." });
+      const err = error as { stderr?: string; error?: Error };
+      log.debug("docker refresh failed", { err: err.stderr || err.error?.message || "Docker refresh failed." });
       this.snapshot = {
-        ...createUnavailableState(error.stderr || error.error?.message || "Docker refresh failed."),
+        ...createUnavailableState(err.stderr || err.error?.message || "Docker refresh failed."),
         backend: this.backend?.type || null,
         lazydocker: {
           available: Boolean(this.lazydockerBackend),
@@ -177,13 +194,13 @@ export class DockerManager extends EventEmitter {
     return this.snapshot;
   }
 
-  async performAction(action, containerId) {
-    const command = {
+  async performAction(action: string, containerId: string): Promise<DockerState> {
+    const command = ({
       start: ["start", containerId],
       stop: ["stop", containerId],
       restart: ["restart", containerId],
       remove: ["rm", "-f", containerId],
-    }[action];
+    } as Record<string, string[]>)[action];
 
     if (!command) {
       throw new Error(`Unsupported Docker action: ${action}`);
@@ -193,16 +210,16 @@ export class DockerManager extends EventEmitter {
     return this.refresh();
   }
 
-  findContainer(containerId) {
+  findContainer(containerId: string): DockerContainer | null {
     return this.snapshot.containers.find((container) => container.ID === containerId) || null;
   }
 
-  createShellLaunch(containerId) {
+  createShellLaunch(containerId: string): LaunchArgs | null {
     const shellCommand = "command -v bash >/dev/null 2>&1 && exec bash || exec sh";
     return this.createLaunchArgs(["exec", "-it", containerId, "sh", "-lc", shellCommand]);
   }
 
-  createLogsLaunch(containerId) {
+  createLogsLaunch(containerId: string): LaunchArgs | null {
     return this.createLaunchArgs(["logs", "-f", containerId]);
   }
 }

@@ -1,24 +1,45 @@
 import { describe, expect, test } from "vitest";
 import { DockerManager } from "./docker-manager.js";
+import type { DockerState } from "../shared/types/state.js";
+
+interface DockerBackendDef {
+  type: "host" | "wsl";
+  file: string;
+  argsPrefix: string[];
+}
+
+interface FakeConstructorArgs {
+  backend: DockerBackendDef;
+  lazydockerBackend?: DockerBackendDef | null;
+  responses?: Record<string, { stdout: string; stderr: string } | Error>;
+}
 
 class FakeDockerManager extends DockerManager {
-  constructor({ backend, lazydockerBackend = null, responses = {} }) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  responses: Record<string, any>;
+  commands: string[][];
+
+  constructor({ backend, lazydockerBackend = null, responses = {} }: FakeConstructorArgs) {
     super();
+    // @ts-expect-error accessing private fields for test override
     this.backend = backend;
+    // @ts-expect-error accessing private fields for test override
     this.lazydockerBackend = lazydockerBackend;
     this.responses = responses;
     this.commands = [];
   }
 
-  async detectBackend() {
-    return this.backend;
+  override async detectBackend() {
+    // @ts-expect-error accessing private fields for test override
+    return this.backend as DockerBackendDef;
   }
 
-  async detectLazydocker() {
-    return this.lazydockerBackend;
+  override async detectLazydocker() {
+    // @ts-expect-error accessing private fields for test override
+    return this.lazydockerBackend as DockerBackendDef | null;
   }
 
-  async runDocker(args) {
+  override async runDocker(args: string[]): Promise<{ stdout: string; stderr: string }> {
     this.commands.push(args);
     const key = args.join(" ");
     if (this.responses[key] instanceof Error) {
@@ -65,11 +86,11 @@ describe("DockerManager", () => {
 
     const launch = manager.createShellLaunch("abc123");
 
-    expect(launch.file).toBe("wsl.exe");
-    expect(launch.args.slice(0, 3)).toEqual(["-e", "sh", "-lc"]);
-    expect(launch.args[3]).toContain("docker");
-    expect(launch.args[3]).toContain("exec");
-    expect(launch.args[3]).toContain("abc123");
+    expect(launch!.file).toBe("wsl.exe");
+    expect(launch!.args.slice(0, 3)).toEqual(["-e", "sh", "-lc"]);
+    expect(launch!.args[3]).toContain("docker");
+    expect(launch!.args[3]).toContain("exec");
+    expect(launch!.args[3]).toContain("abc123");
   });
 
   test("performAction maps remove to rm -f", async () => {
@@ -80,7 +101,7 @@ describe("DockerManager", () => {
       },
     });
 
-    manager.refresh = async () => manager.getSnapshot();
+    manager.refresh = async (): Promise<DockerState> => manager.getSnapshot();
     await manager.performAction("remove", "abc123");
 
     expect(manager.commands[0]).toEqual(["rm", "-f", "abc123"]);
@@ -94,7 +115,7 @@ describe("DockerManager", () => {
 
     const launch = manager.createLazydockerLaunch();
 
-    expect(launch.file).toBe("wsl.exe");
-    expect(launch.args).toEqual(["-e", "sh", "-lc", "lazydocker"]);
+    expect(launch!.file).toBe("wsl.exe");
+    expect(launch!.args).toEqual(["-e", "sh", "-lc", "lazydocker"]);
   });
 });
