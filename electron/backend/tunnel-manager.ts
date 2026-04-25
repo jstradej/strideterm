@@ -1,17 +1,29 @@
+/// <reference types="node" />
 import { EventEmitter } from "node:events";
 import { once } from "node:events";
 import { spawn } from "node:child_process";
+import type { ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
 import { execFileText } from "./process-utils.js";
 import { APP_CONFIG } from "../../config/app-config.js";
 
 const QUICK_TUNNEL_URL = /(https:\/\/[a-z0-9-]+\.trycloudflare\.com)/i;
 
-function clone(value) {
+interface TunnelSnapshot {
+  available: boolean;
+  status: string;
+  mode: string;
+  publicUrl: string;
+  localUrl: string;
+  error: string;
+  startedAt: string | null;
+}
+
+function clone<T>(value: T): T {
   return structuredClone(value);
 }
 
-function createSnapshot(overrides = {}) {
+function createSnapshot(overrides: Partial<TunnelSnapshot> = {}): TunnelSnapshot {
   return {
     available: false,
     status: "idle",
@@ -24,7 +36,7 @@ function createSnapshot(overrides = {}) {
   };
 }
 
-function resolveCloudflaredBinary(preferredBinary = "") {
+function resolveCloudflaredBinary(preferredBinary = ""): string {
   if (preferredBinary) {
     return preferredBinary;
   }
@@ -34,13 +46,19 @@ function resolveCloudflaredBinary(preferredBinary = "") {
   return candidates.find((candidate) => candidate === "cloudflared" || existsSync(candidate)) || "cloudflared";
 }
 
-export function extractQuickTunnelUrl(rawText) {
+export function extractQuickTunnelUrl(rawText: unknown): string {
   const match = String(rawText || "").match(QUICK_TUNNEL_URL);
   return match?.[1] || "";
 }
 
 export class CloudflareTunnelManager extends EventEmitter {
-  constructor({ binaryPath = "" } = {}) {
+  private snapshot: TunnelSnapshot;
+  private processHandle: ChildProcess | null;
+  private stopRequested: boolean;
+  private binaryPreference: string;
+  private binary: string;
+
+  constructor({ binaryPath = "" }: { binaryPath?: string } = {}) {
     super();
     this.snapshot = createSnapshot();
     this.processHandle = null;
@@ -49,16 +67,16 @@ export class CloudflareTunnelManager extends EventEmitter {
     this.binary = resolveCloudflaredBinary(this.binaryPreference);
   }
 
-  getSnapshot() {
+  getSnapshot(): TunnelSnapshot {
     return clone(this.snapshot);
   }
 
-  setBinaryPreference(binaryPath = "") {
+  setBinaryPreference(binaryPath = ""): void {
     this.binaryPreference = String(binaryPath || "").trim();
     this.binary = resolveCloudflaredBinary(this.binaryPreference);
   }
 
-  async refreshAvailability() {
+  async refreshAvailability(): Promise<TunnelSnapshot> {
     try {
       this.binary = resolveCloudflaredBinary(this.binaryPreference);
       await execFileText(this.binary, ["--version"]);
@@ -82,7 +100,7 @@ export class CloudflareTunnelManager extends EventEmitter {
     return this.getSnapshot();
   }
 
-  async startQuickTunnel(localUrl) {
+  async startQuickTunnel(localUrl: string): Promise<TunnelSnapshot> {
     await this.refreshAvailability();
     if (!this.snapshot.available) {
       throw new Error(this.snapshot.error || "cloudflared is unavailable.");
@@ -118,7 +136,7 @@ export class CloudflareTunnelManager extends EventEmitter {
         reject(new Error("Quick tunnel did not report a public URL."));
       }, APP_CONFIG.tunnel.connectTimeoutMs);
 
-      const handleOutput = (chunk) => {
+      const handleOutput = (chunk: Buffer | string) => {
         const url = extractQuickTunnelUrl(chunk.toString());
         if (!url || settled) {
           return;
@@ -138,7 +156,7 @@ export class CloudflareTunnelManager extends EventEmitter {
         resolve(this.getSnapshot());
       };
 
-      const handleExit = (code) => {
+      const handleExit = (code: number | null) => {
         this.processHandle = null;
         clearTimeout(timeout);
         const wasRequested = this.stopRequested;
@@ -169,10 +187,10 @@ export class CloudflareTunnelManager extends EventEmitter {
         }
       };
 
-      this.processHandle.stdout?.on("data", handleOutput);
-      this.processHandle.stderr?.on("data", handleOutput);
-      this.processHandle.once("exit", handleExit);
-      this.processHandle.once("error", (error) => {
+      this.processHandle!.stdout?.on("data", handleOutput);
+      this.processHandle!.stderr?.on("data", handleOutput);
+      this.processHandle!.once("exit", handleExit);
+      this.processHandle!.once("error", (error: Error) => {
         if (settled) {
           return;
         }
@@ -189,7 +207,7 @@ export class CloudflareTunnelManager extends EventEmitter {
     });
   }
 
-  async stop({ preserveAvailability = false, quiet = false } = {}) {
+  async stop({ preserveAvailability = false, quiet = false }: { preserveAvailability?: boolean; quiet?: boolean } = {}): Promise<TunnelSnapshot> {
     if (!this.processHandle) {
       this.snapshot = createSnapshot({
         available: preserveAvailability ? this.snapshot.available : false,
