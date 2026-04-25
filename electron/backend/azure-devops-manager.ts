@@ -1,9 +1,11 @@
+/// <reference types="node" />
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { mkdir } from "node:fs/promises";
 import { execFileText } from "./process-utils.js";
 import { createAzureApi } from "./azure-devops-api.js";
 import { BaseProviderManager, createReviewWorkspacePanels } from "./shared/base-manager.js";
+import type { CredentialStore } from "./shared/credential-store.js";
 import { classifyAzureRequest, parseAzureUrl } from "./azure-audit-log-store.js";
 import { buildPullRequestSummary, findWorkspaceForPullRequest } from "./azure-devops-pr-summary.js";
 import {
@@ -41,7 +43,240 @@ import {
   exists,
 } from "./azure-devops-utils.js";
 
+// ─── Local type aliases ──────────────────────────────────────────────────────
+
+interface AzureConnection {
+  id: string;
+  label?: string;
+  orgUrl: string;
+  login: string;
+  tokenRef: string;
+  enabled?: boolean;
+  projectFilters?: string[];
+  repositoryFilters?: string[];
+  pollSeconds?: number;
+  reviewRoot?: string;
+  [key: string]: unknown;
+}
+
+interface AzureConnectionInput {
+  id?: string;
+  orgUrl?: string;
+  login?: string;
+  pat?: string;
+  tokenRef?: string;
+  enabled?: boolean;
+  projectFilters?: string[];
+  repositoryFilters?: string[];
+  pollSeconds?: number;
+  reviewRoot?: string;
+  [key: string]: unknown;
+}
+
+interface AzureProject {
+  id: string;
+  name: string;
+  description?: string;
+  state?: string;
+  [key: string]: unknown;
+}
+
+interface AzurePrSummary {
+  prKey: string;
+  connectionId: string;
+  orgUrl?: string;
+  role?: string;
+  provider?: string;
+  project?: { id: string; name: string };
+  repository?: { id: string; name: string; remoteUrl?: string };
+  pullRequest?: {
+    id: string | number;
+    title?: string;
+    status?: string;
+    mergeStatus?: string;
+    sourceRefName?: string;
+    targetRefName?: string;
+    sourceCommitId?: string;
+    closedDate?: string;
+    webUrl?: string;
+  };
+  author?: { displayName?: string; uniqueName?: string };
+  myReviewerId?: string;
+  threads?: AzureThread[];
+  changedFiles?: unknown[];
+  localChangedFiles?: { changeType: string; path: string }[];
+  checks?: { items?: AzureCheckItem[]; failedCount?: number; pendingCount?: number; passedCount?: number; optionalFailedCount?: number; requiredFailedCount?: number };
+  hasAttention?: boolean;
+  attentionReason?: string;
+  newCommentsCount?: number;
+  unresolvedThreadCount?: number;
+  lastRemoteActivityAt?: string | null;
+  lastSeenActivityAt?: string | null;
+  lastActivityAt?: string | null;
+  reviewWorkspaceId?: string;
+  existingWorkspaceId?: string;
+  [key: string]: unknown;
+}
+
+interface AzureThread {
+  id?: number | string;
+  status?: string;
+  filePath?: string;
+  lineStart?: number;
+  lineEnd?: number;
+  publishedDate?: string;
+  lastUpdatedDate?: string;
+  comments?: AzureComment[];
+  [key: string]: unknown;
+}
+
+interface AzureComment {
+  id?: number | string;
+  content?: string;
+  parentCommentId?: number;
+  commentType?: string | number;
+  author?: { id?: string; displayName?: string; uniqueName?: string; mailAddress?: string };
+  publishedDate?: string;
+  lastUpdatedDate?: string;
+  threadId?: number | string;
+  threadStatus?: string;
+  [key: string]: unknown;
+}
+
+interface AzureCheckItem {
+  id?: string;
+  kind?: string;
+  evaluationId?: string | null;
+  name?: string;
+  state?: string;
+  buildId?: string | number | null;
+  errorMessage?: string;
+  [key: string]: unknown;
+}
+
+interface TrackedPullRequest {
+  key?: string;
+  connectionId?: string;
+  pullRequestId?: string | number;
+  repositoryId?: string;
+  projectName?: string;
+  repositoryName?: string;
+  reviewWorkspaceId?: string;
+  lastRemoteActivityAt?: string | null;
+  lastVoteSignature?: string | null;
+  lastMergeStatus?: string | null;
+  lastSourceCommitId?: string | null;
+  lastSeenActivityAt?: string | null;
+  lastNotifiedActivityAt?: string | null;
+  [key: string]: unknown;
+}
+
+interface AzureConnectionSnapshot {
+  id: string;
+  label: string;
+  orgUrl: string;
+  login: string;
+  tokenRef: string;
+  enabled: boolean;
+  projectFilters: string[];
+  repositoryFilters: string[];
+  pollSeconds: number;
+  reviewRoot: string;
+  status: string;
+  lastSyncAt: string | null;
+  lastSuccessAt: string | null;
+  lastError: string;
+  [key: string]: unknown;
+}
+
+interface AzureReviewStore {
+  getState(): {
+    connections?: Record<string, { status?: string; lastError?: string; lastSyncAt?: string | null; lastSuccessAt?: string | null }>;
+    trackedPullRequests?: Record<string, TrackedPullRequest>;
+  };
+  getTrackedPullRequest(key: string): TrackedPullRequest | null;
+  upsertTrackedPullRequest(key: string, patch: Partial<TrackedPullRequest>): Promise<void>;
+  upsertConnectionState(connectionId: string, patch: { status: string; lastError?: string; lastSyncAt?: string; lastSuccessAt?: string }): Promise<void>;
+}
+
+interface AzureReviewBridgeStore {
+  syncPullRequest?(summary: AzurePrSummary): Promise<void>;
+  markPullRequestSeen?(prKey: string, lastSeenActivityAt: string): Promise<void>;
+}
+
+interface AzureAuditLogStore {
+  logEntry(entry: Record<string, unknown>): void;
+}
+
+interface ReviewCheckout {
+  mode?: string;
+  rootPath: string;
+  cacheRepoPath?: string;
+}
+
+interface ReviewWorkspace {
+  id: string;
+  name?: string;
+  kind?: string;
+  profileId?: string;
+  cwd?: string;
+  panels?: unknown[];
+  review?: {
+    provider?: string;
+    prKey?: string;
+    connectionId?: string;
+    project?: { id?: string; name?: string };
+    repository?: { id?: string; name?: string; remoteUrl?: string };
+    pullRequest?: { sourceRefName?: string; targetRefName?: string; id?: string | number; title?: string; status?: string };
+    checkout?: ReviewCheckout;
+    parentWorkspaceId?: string;
+    role?: string;
+    orgUrl?: string;
+  };
+  quickfix?: Record<string, unknown>;
+  [key: string]: unknown;
+}
+
+interface AzureManagerOptions {
+  credentialStore: CredentialStore;
+  reviewStore: AzureReviewStore;
+  reviewBridgeStore?: AzureReviewBridgeStore | null;
+  auditLogStore?: AzureAuditLogStore | null;
+  fetchImpl?: typeof globalThis.fetch;
+  execFileTextImpl?: typeof execFileText;
+  now?: () => number;
+}
+
+interface AuditRaw {
+  method?: string;
+  url?: string;
+  statusCode?: number;
+  success?: boolean;
+  errorMessage?: string;
+  durationMs?: number;
+}
+
+// Typed return of createAzureApi (inferred from the factory)
+type AzureApi = ReturnType<typeof createAzureApi>;
+
 export class AzureDevOpsManager extends BaseProviderManager {
+  declare reviewStore: AzureReviewStore;
+  declare reviewBridgeStore: AzureReviewBridgeStore | null;
+  declare auditLogStore: AzureAuditLogStore | null;
+
+  get azureApi(): AzureApi {
+    return this.api as AzureApi;
+  }
+
+  findAzureConnection(connectionId: string): AzureConnection | null {
+    return this.findConnection(connectionId) as AzureConnection | null;
+  }
+
+  resolveAzureConnectionAndToken(connectionId: string): { connection: AzureConnection; token: string } {
+    const result = this.resolveConnectionAndToken(connectionId);
+    return { connection: result.connection as AzureConnection, token: result.token };
+  }
+
   constructor({
     credentialStore,
     reviewStore,
@@ -50,7 +285,7 @@ export class AzureDevOpsManager extends BaseProviderManager {
     fetchImpl = globalThis.fetch,
     execFileTextImpl = execFileText,
     now = () => Date.now(),
-  } = {}) {
+  }: AzureManagerOptions = {} as AzureManagerOptions) {
     super({
       credentialStore,
       reviewStore,
@@ -59,7 +294,8 @@ export class AzureDevOpsManager extends BaseProviderManager {
       fetchImpl,
       execFileTextImpl,
       now,
-      createApi: createAzureApi,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      createApi: createAzureApi as any,
     });
     this.providerLabel = "azure-devops";
     this.defaultGitLogin = "";
@@ -69,7 +305,7 @@ export class AzureDevOpsManager extends BaseProviderManager {
    * Log an Azure DevOps API call to the audit store.
    * Enriches raw request data with current audit context and URL classification.
    */
-  _logAudit(raw) {
+  override _logAudit(raw: AuditRaw): void {
     if (!this.auditLogStore) return;
     const classification = classifyAzureRequest(raw.method, raw.url);
     const urlInfo = parseAzureUrl(raw.url);
@@ -89,7 +325,7 @@ export class AzureDevOpsManager extends BaseProviderManager {
     });
   }
 
-  async verifyConnection(connectionInput) {
+  async verifyConnection(connectionInput: AzureConnectionInput): Promise<{ ok: boolean; organization: string; projectCount: number; projects: AzureProject[] }> {
     this.setAuditContext({ connectionId: connectionInput.id || "", userInitiated: true });
     const connection = normalizeConnectionInput(connectionInput);
     const token = String(connectionInput.pat || "").trim();
@@ -97,12 +333,12 @@ export class AzureDevOpsManager extends BaseProviderManager {
       throw new Error("Organization URL, login, and PAT are required.");
     }
 
-    const projects = await this.api.listProjects(connection, token);
+    const projects = await this.azureApi.listProjects(connection, token);
     return {
       ok: true,
       organization: connection.orgUrl,
       projectCount: projects.length,
-      projects: projects.map((project) => ({
+      projects: (projects as AzureProject[]).map((project) => ({
         id: project.id,
         name: project.name,
         description: project.description || "",
@@ -111,7 +347,7 @@ export class AzureDevOpsManager extends BaseProviderManager {
     };
   }
 
-  async sync({ connections = [], workspaces = [], gitSnapshots = {}, activeProfileId = "default" } = {}) {
+  async sync({ connections = [] as AzureConnection[], workspaces = [] as ReviewWorkspace[], gitSnapshots = {} as Record<string, unknown>, activeProfileId = "default" } = {}) {
     const reviewState = this.reviewStore.getState();
     const startedAt = new Date(this.now()).toISOString();
     // Immediately apply the new connections list so any intermediate broadcastState
@@ -119,9 +355,10 @@ export class AzureDevOpsManager extends BaseProviderManager {
     const connectionsChanged =
       JSON.stringify(connections.map((c) => c.id).sort()) !==
       JSON.stringify((this.snapshot.connections || []).map((c) => c.id).sort());
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     this.snapshot = {
       ...(connectionsChanged ? createEmptySnapshot() : this.snapshot),
-      connections,
+      connections: connections as unknown as typeof this.snapshot.connections,
       sync: {
         ...this.snapshot.sync,
         running: true,
@@ -130,11 +367,11 @@ export class AzureDevOpsManager extends BaseProviderManager {
     };
     this.emitUpdated();
 
-    const connectionSnapshots = [];
-    const visibleSummaries = [];
-    const detailMap = { ...this.snapshot.pullRequests };
-    const trackedPullRequests = {};
-    const newActivityEvents = [];
+    const connectionSnapshots: AzureConnectionSnapshot[] = [];
+    const visibleSummaries: AzurePrSummary[] = [];
+    const detailMap: Record<string, AzurePrSummary> = { ...this.snapshot.pullRequests } as Record<string, AzurePrSummary>;
+    const trackedPullRequests: Record<string, TrackedPullRequest> = {};
+    const newActivityEvents: unknown[] = [];
 
     for (const connection of connections.filter((entry) => entry.enabled !== false)) {
       this.setAuditContext({ connectionId: connection.id, userInitiated: false });
@@ -149,16 +386,20 @@ export class AzureDevOpsManager extends BaseProviderManager {
           throw new Error("PAT is missing.");
         }
 
-        const projects = await this.api.listProjects(connection, token);
+        const projects = (await this.azureApi.listProjects(connection, token)) as AzureProject[];
         const filteredProjects = connection.projectFilters?.length
           ? projects.filter(
               (project) =>
-                connection.projectFilters.includes(project.name) || connection.projectFilters.includes(project.id),
+                connection.projectFilters!.includes(project.name) || connection.projectFilters!.includes(project.id),
             )
           : projects;
 
         for (const project of filteredProjects) {
-          const pullRequests = await this.api.listPullRequestsByProject(connection, token, project.name);
+          const pullRequests = (await this.azureApi.listPullRequestsByProject(connection, token, project.name)) as Array<{
+            pullRequestId: string | number;
+            repository: { id: string; name: string };
+            [key: string]: unknown;
+          }>;
           for (const pr of pullRequests) {
             if (connection.repositoryFilters?.length) {
               const matchesRepository =
@@ -169,42 +410,44 @@ export class AzureDevOpsManager extends BaseProviderManager {
               }
             }
 
-            const threads = await this.api.listThreads(
+            const threads = (await this.azureApi.listThreads(
               connection,
               token,
               project.name,
               pr.repository.id,
               pr.pullRequestId,
-            );
+            )) as Array<Record<string, unknown>>;
             const prKey = createPullRequestKey(connection.id, pr.repository.id, pr.pullRequestId);
             const tracked = this.reviewStore.getTrackedPullRequest(prKey) || {};
             const { summary, internals } = buildPullRequestSummary({
               connection,
-              pr,
+              pr: pr as Record<string, unknown>,
               projectName: project.name,
               threads,
               tracked,
-              workspaces,
+              workspaces: workspaces as Array<{ id: string; profileId?: string; [key: string]: unknown }>,
               gitSnapshots,
               activeProfileId,
               now: this.now,
             });
-            visibleSummaries.push(summary);
+            const typedSummary = summary as AzurePrSummary;
+            const typedInternals = internals as Record<string, unknown>;
+            visibleSummaries.push(typedSummary);
 
             const { events, lastNotifiedActivityAt } = this._detectAzureReviewActivityDeltas({
               connection,
               tracked,
-              summary,
-              internals,
+              summary: typedSummary,
+              internals: typedInternals,
               seedingConnection,
             });
             newActivityEvents.push(...events);
 
             if (this.reviewBridgeStore?.syncPullRequest) {
               try {
-                await this.reviewBridgeStore.syncPullRequest(summary);
+                await this.reviewBridgeStore.syncPullRequest(typedSummary);
               } catch (error) {
-                this.log.warn("review bridge sync failed", { prKey, err: error.message || String(error) });
+                this.log.warn("review bridge sync failed", { prKey, err: (error as Error).message || String(error) });
               }
             }
             trackedPullRequests[prKey] = {
@@ -215,18 +458,18 @@ export class AzureDevOpsManager extends BaseProviderManager {
               repositoryId: pr.repository.id,
               projectName: project.name,
               repositoryName: pr.repository.name,
-              reviewWorkspaceId: summary.reviewWorkspaceId || tracked.reviewWorkspaceId || "",
-              lastRemoteActivityAt: summary.lastRemoteActivityAt,
-              lastVoteSignature: internals.voteSignature,
-              lastMergeStatus: summary.pullRequest.mergeStatus,
-              lastSourceCommitId: summary.pullRequest.sourceCommitId,
+              reviewWorkspaceId: typedSummary.reviewWorkspaceId || tracked.reviewWorkspaceId || "",
+              lastRemoteActivityAt: typedSummary.lastRemoteActivityAt,
+              lastVoteSignature: typedInternals.voteSignature as string | null,
+              lastMergeStatus: typedSummary.pullRequest?.mergeStatus,
+              lastSourceCommitId: typedSummary.pullRequest?.sourceCommitId,
               lastSeenActivityAt: tracked.lastSeenActivityAt || null,
-              lastNotifiedActivityAt,
+              lastNotifiedActivityAt: lastNotifiedActivityAt as string | null,
             };
             detailMap[prKey] = {
               ...(detailMap[prKey] || {}),
-              ...summary,
-              threads: summary.threads,
+              ...typedSummary,
+              threads: typedSummary.threads,
             };
           }
         }
@@ -240,11 +483,11 @@ export class AzureDevOpsManager extends BaseProviderManager {
           status: "ok",
           lastError: "",
           lastSyncAt: connectionSnapshot.lastSyncAt,
-          lastSuccessAt: connectionSnapshot.lastSuccessAt,
+          lastSuccessAt: connectionSnapshot.lastSuccessAt ?? undefined,
         });
       } catch (error) {
         connectionSnapshot.status = "error";
-        connectionSnapshot.lastError = error.message || "Azure sync failed.";
+        connectionSnapshot.lastError = (error as Error).message || "Azure sync failed.";
         connectionSnapshot.lastSyncAt = new Date(this.now()).toISOString();
         await this.reviewStore.upsertConnectionState(connection.id, {
           status: "error",
@@ -277,26 +520,28 @@ export class AzureDevOpsManager extends BaseProviderManager {
       if (trackedPullRequests[key]) continue; // still active
       const existing = detailMap[key];
       if (existing && existing.pullRequest?.status !== "active") continue; // already resolved
-      const conn = connections.find((c) => c.id === ws.review.connectionId);
+      const conn = connections.find((c) => c.id === ws.review!.connectionId);
       const token = conn && this.credentialStore.getSecret(conn.tokenRef);
       if (!conn || !token) continue;
       try {
-        const pr = await this.api.getPullRequestById(
+        const pr = (await this.azureApi.getPullRequestById(
           conn,
           token,
-          ws.review.project?.name || "",
-          ws.review.repository?.id || "",
-          ws.review.pullRequest?.id || "",
-        );
-        const resolved = {
+          ws.review!.project?.name || "",
+          ws.review!.repository?.id || "",
+          ws.review!.pullRequest?.id || "",
+        )) as { status?: string; closedDate?: string | null };
+        const resolved: AzurePrSummary = {
           ...(existing || {}),
-          connectionId: ws.review.connectionId,
-          project: ws.review.project,
-          repository: ws.review.repository,
+          connectionId: ws.review!.connectionId || "",
+          project: ws.review!.project as AzurePrSummary["project"],
+          repository: ws.review!.repository as AzurePrSummary["repository"],
+          prKey: key,
           pullRequest: {
-            ...(existing?.pullRequest || ws.review.pullRequest || {}),
+            ...((existing?.pullRequest || ws.review!.pullRequest || {}) as AzurePrSummary["pullRequest"]),
+            id: existing?.pullRequest?.id ?? "",
             status: pr.status || "completed",
-            closedDate: pr.closedDate || null,
+            closedDate: pr.closedDate ?? undefined,
           },
         };
         detailMap[key] = resolved;
@@ -304,11 +549,13 @@ export class AzureDevOpsManager extends BaseProviderManager {
         // API failed — mark as completed so we don't retry every poll
         detailMap[key] = {
           ...(existing || {}),
-          connectionId: ws.review.connectionId,
-          project: ws.review.project,
-          repository: ws.review.repository,
+          connectionId: ws.review!.connectionId || "",
+          project: ws.review!.project as AzurePrSummary["project"],
+          repository: ws.review!.repository as AzurePrSummary["repository"],
+          prKey: key,
           pullRequest: {
-            ...(existing?.pullRequest || ws.review.pullRequest || {}),
+            ...((existing?.pullRequest || ws.review!.pullRequest || {}) as AzurePrSummary["pullRequest"]),
+            id: existing?.pullRequest?.id ?? "",
             status: "completed",
           },
         };
@@ -323,7 +570,7 @@ export class AzureDevOpsManager extends BaseProviderManager {
       .slice()
       .sort((left, right) => parseDate(right.lastActivityAt) - parseDate(left.lastActivityAt));
     const snapshot = {
-      connections: connectionSnapshots,
+      connections: connectionSnapshots as unknown as typeof this.snapshot.connections,
       inbox: {
         needsMyReview: visibleSummaries
           .filter((summary) => summary.role === "reviewer")
@@ -355,7 +602,8 @@ export class AzureDevOpsManager extends BaseProviderManager {
         lastCompletedAt: new Date(this.now()).toISOString(),
       },
     };
-    this.setSnapshot(snapshot);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    this.setSnapshot(snapshot as any);
     return this.getSnapshot();
   }
 
@@ -369,9 +617,18 @@ export class AzureDevOpsManager extends BaseProviderManager {
    * On the connection's first sync (seedingConnection=true) we silently seed
    * every PR's marker to avoid a flood of "new" events at app startup.
    */
-  _detectAzureReviewActivityDeltas({ connection, tracked, summary, internals, seedingConnection }) {
+  _detectAzureReviewActivityDeltas({ connection, tracked, summary: summaryIn, internals, seedingConnection }: {
+    connection: AzureConnection;
+    tracked: TrackedPullRequest;
+    summary: AzurePrSummary;
+    internals: Record<string, unknown>;
+    seedingConnection: boolean;
+  }): { events: unknown[]; lastNotifiedActivityAt: string | null } {
+    // Cast to the ReviewSummaryRef shape expected by buildReviewActivityEvent
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const summary = summaryIn as any;
     const nowIso = new Date(this.now()).toISOString();
-    const events = [];
+    const events: unknown[] = [];
 
     if (seedingConnection) {
       return {
@@ -406,9 +663,9 @@ export class AzureDevOpsManager extends BaseProviderManager {
 
     // 1) New comments from other people.
     const newComments = filterNewComments({
-      comments: internals.commentsByOthers,
+      comments: internals.commentsByOthers as AzureComment[],
       sinceIsoString: prevNotifiedAt,
-      isSelf: (author) => identityMatches(connection.login, author),
+      isSelf: (author) => identityMatches(connection.login, author as { uniqueName?: string; mailAddress?: string; displayName?: string; id?: string }),
       getTimestamp: (comment) => comment.lastUpdatedDate || comment.publishedDate,
       getAuthor: (comment) => comment.author,
     });
@@ -436,15 +693,16 @@ export class AzureDevOpsManager extends BaseProviderManager {
     }
 
     // 2) Vote change by a reviewer other than the current user.
-    if (tracked.lastVoteSignature && tracked.lastVoteSignature !== internals.voteSignature) {
+    if (tracked.lastVoteSignature && tracked.lastVoteSignature !== (internals.voteSignature as string | undefined)) {
       const prevMap = parseAzureVoteSignature(tracked.lastVoteSignature);
-      const currMap = parseAzureVoteSignature(internals.voteSignature);
-      const changedIds = diffSignatureKeys(prevMap, currMap, internals.myReviewerId);
+      const currMap = parseAzureVoteSignature(internals.voteSignature as string | undefined);
+      const changedIds = diffSignatureKeys(prevMap, currMap, internals.myReviewerId as string | undefined);
+      const reviewerMap = internals.reviewerMap as Map<string, { id: string; displayName: string; uniqueName: string; vote: number; isRequired: boolean; hasDeclined: boolean; isContainer: boolean }>;
       const changedReviewers = changedIds
-        .map((id) => internals.reviewerMap.get(id))
+        .map((id) => reviewerMap.get(id))
         .filter((reviewer) => reviewer && !identityMatches(connection.login, reviewer));
       if (changedReviewers.length > 0) {
-        const reviewer = changedReviewers[0];
+        const reviewer = changedReviewers[0]!;
         const voteLabel =
           reviewer.vote >= 10
             ? "approved"
@@ -473,10 +731,11 @@ export class AzureDevOpsManager extends BaseProviderManager {
     // 3) Source branch updated — only notify when the pusher is someone else.
     if (
       tracked.lastSourceCommitId &&
-      tracked.lastSourceCommitId !== internals.sourceCommitId &&
+      tracked.lastSourceCommitId !== (internals.sourceCommitId as string | undefined) &&
       internals.sourceCommitId
     ) {
-      const pusher = internals.sourceCommitter || internals.sourceCommitAuthor || null;
+      type GitIdentity = { name?: string; email?: string; mailAddress?: string; uniqueName?: string; displayName?: string };
+      const pusher = (internals.sourceCommitter || internals.sourceCommitAuthor || null) as GitIdentity | null;
       // Azure git-commit identity uses `{ name, email }` while user identity
       // uses `{ uniqueName, mailAddress, displayName }` — normalize before
       // comparing so a push by the current user is correctly self-filtered.
@@ -494,7 +753,7 @@ export class AzureDevOpsManager extends BaseProviderManager {
             provider: "azure-devops",
             summary,
             kind: "pr-source-updated",
-            at: internals.latestCommitAt || nowIso,
+            at: (internals.latestCommitAt as string | undefined) || nowIso,
             title: `${summary.repository.name} #${summary.pullRequest.id} has new commits`,
             body: truncateBody(pusher?.name ? `${pusher.name} pushed updates.` : "New commits were pushed."),
             actor: pusher ? { login: pusher.email || "", displayName: pusher.name || "" } : null,
@@ -504,7 +763,7 @@ export class AzureDevOpsManager extends BaseProviderManager {
     }
 
     // 4) Merge status turned bad (conflicts, policy rejection) — urgent for the author.
-    if (summary.role === "author" && tracked.lastMergeStatus && tracked.lastMergeStatus !== internals.mergeStatus) {
+    if (summary.role === "author" && tracked.lastMergeStatus && tracked.lastMergeStatus !== (internals.mergeStatus as string | undefined)) {
       const normalized = String(internals.mergeStatus || "").toLowerCase();
       const isBad =
         normalized.includes("conflict") ||
@@ -532,8 +791,8 @@ export class AzureDevOpsManager extends BaseProviderManager {
     };
   }
 
-  async ensurePullRequestDetail(prKey, { workspaces = [], force = false } = {}) {
-    const current = this.snapshot.pullRequests[prKey] || this.findSummary(prKey);
+  async ensurePullRequestDetail(prKey: string, { workspaces = [] as ReviewWorkspace[], force = false } = {}): Promise<AzurePrSummary> {
+    const current = (this.snapshot.pullRequests[prKey] || this.findSummary(prKey)) as AzurePrSummary | null;
     if (!current) {
       throw new Error("Pull request is not available in the current Azure snapshot.");
     }
@@ -542,7 +801,7 @@ export class AzureDevOpsManager extends BaseProviderManager {
     }
 
     this.setAuditContext({ connectionId: current.connectionId || "", userInitiated: true });
-    const connection = this.findConnection(current.connectionId);
+    const connection = this.findConnection(current.connectionId) as AzureConnection | null;
     if (!connection) {
       throw new Error("Azure DevOps connection was not found.");
     }
@@ -552,101 +811,101 @@ export class AzureDevOpsManager extends BaseProviderManager {
     }
 
     const [changes, pullRequestStatuses, policyEvaluations] = await Promise.all([
-      this.api
-        .listIterationChanges(connection, token, current.project.name, current.repository.id, current.pullRequest.id)
+      this.azureApi
+        .listIterationChanges(connection, token, current.project!.name, current.repository!.id, current.pullRequest!.id)
         .catch(() => []),
-      this.api
-        .listPullRequestStatuses(connection, token, current.project.name, current.repository.id, current.pullRequest.id)
+      this.azureApi
+        .listPullRequestStatuses(connection, token, current.project!.name, current.repository!.id, current.pullRequest!.id)
         .catch(() => []),
-      this.api
-        .listPolicyEvaluations(connection, token, current.project.name, current.project.id, current.pullRequest.id)
+      this.azureApi
+        .listPolicyEvaluations(connection, token, current.project!.name, current.project!.id, current.pullRequest!.id)
         .catch(() => []),
     ]);
-    const workspace =
-      findWorkspaceForPullRequest(workspaces, prKey) ||
-      (current.existingWorkspaceId ? workspaces.find((entry) => entry.id === current.existingWorkspaceId) : null);
+    const workspace: ReviewWorkspace | undefined =
+      (findWorkspaceForPullRequest(workspaces as Array<{ id: string; [key: string]: unknown }>, prKey) as ReviewWorkspace | undefined) ||
+      (current.existingWorkspaceId ? (workspaces as ReviewWorkspace[]).find((entry) => entry.id === current.existingWorkspaceId) : undefined);
     const localChanges = workspace?.cwd
-      ? await this.listLocalChangedFiles(workspace.cwd, current.pullRequest.targetRefName).catch(() => [])
+      ? await this.listLocalChangedFiles(workspace.cwd, current.pullRequest!.targetRefName || "").catch(() => [])
       : [];
 
     const enrichedThreads = workspace?.cwd
       ? await this.readThreadCodeSnippets(
           workspace.cwd,
           current.threads || [],
-          current.pullRequest.targetRefName,
+          current.pullRequest!.targetRefName || "",
         ).catch(() => current.threads || [])
       : current.threads || [];
 
     // Fetch build details for timestamps (for all checks with buildId)
-    const buildIds = [...new Set(policyEvaluations.map((e) => e?.context?.buildId).filter(Boolean))];
-    const buildDetails = {};
+    type PolicyEval = { context?: { buildId?: string | number | null } };
+    const buildIds = [...new Set((policyEvaluations as PolicyEval[]).map((e) => e?.context?.buildId).filter(Boolean))] as Array<string | number>;
+    const buildDetails: Record<string, unknown> = {};
     if (buildIds.length) {
       const details = await Promise.all(
-        buildIds.map((id) => this.api.fetchBuildDetail(connection, token, current.project.name, id).catch(() => null)),
+        buildIds.map((id) => this.azureApi.fetchBuildDetail(connection, token, current.project!.name, id).catch(() => null)),
       );
-      for (const detail of details) {
-        if (detail?.id) buildDetails[detail.id] = detail;
+      for (const detail of details as Array<{ id?: string | number } | null>) {
+        if (detail?.id) buildDetails[String(detail.id)] = detail;
       }
     }
 
-    const checksResult = buildCheckSummary({
-      policyEvaluations,
-      statuses: pullRequestStatuses,
-      buildDetails,
-    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const checksResult = buildCheckSummary({ policyEvaluations: policyEvaluations as any, statuses: pullRequestStatuses as any, buildDetails: buildDetails as any });
 
     // Fetch build timeline errors for failed checks that have a buildId
-    const failedWithBuild = (checksResult.items || []).filter(
+    type CheckItem = { id?: string; state?: string; buildId?: string | number | null; errorMessage?: string; [key: string]: unknown };
+    const failedWithBuild = (checksResult.items as CheckItem[] || []).filter(
       (item) => item.state === "failed" && item.buildId && !item.errorMessage,
     );
     if (failedWithBuild.length) {
       const errorResults = await Promise.all(
         failedWithBuild.map((item) =>
-          this.api
-            .fetchBuildErrors(connection, token, current.project.name, item.buildId)
-            .then((msg) => ({ id: item.id, errorMessage: msg })),
+          this.azureApi
+            .fetchBuildErrors(connection, token, current.project!.name, item.buildId)
+            .then((msg) => ({ id: item.id, errorMessage: msg as string })),
         ),
       );
       const errorMap = new Map(errorResults.filter((e) => e.errorMessage).map((e) => [e.id, e.errorMessage]));
       if (errorMap.size) {
-        checksResult.items = checksResult.items.map((item) =>
+        checksResult.items = (checksResult.items as CheckItem[]).map((item) =>
           errorMap.has(item.id) ? { ...item, errorMessage: errorMap.get(item.id) } : item,
         );
       }
     }
 
-    const next = {
+    const next: AzurePrSummary = {
       ...current,
       changedFiles: changes,
       localChangedFiles: localChanges,
-      threads: enrichedThreads,
-      checks: checksResult,
+      threads: enrichedThreads as AzureThread[],
+      checks: checksResult as AzurePrSummary["checks"],
       existingWorkspaceId: workspace?.id || current.existingWorkspaceId || "",
       reviewWorkspaceId:
-        workspace?.review?.provider === "azure-devops" ? workspace.id : current.reviewWorkspaceId || "",
+        (workspace as ReviewWorkspace)?.review?.provider === "azure-devops" ? (workspace as ReviewWorkspace).id : current.reviewWorkspaceId || "",
     };
 
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     this.setSnapshot({
       ...this.snapshot,
       pullRequests: {
         ...this.snapshot.pullRequests,
-        [prKey]: next,
+        [prKey]: next as unknown as typeof this.snapshot.pullRequests[string],
       },
     });
     if (this.reviewBridgeStore?.syncPullRequest) {
       try {
         await this.reviewBridgeStore.syncPullRequest(next);
       } catch (error) {
-        this.log.warn("review bridge detail sync failed", { prKey, err: error.message || String(error) });
+        this.log.warn("review bridge detail sync failed", { prKey, err: (error as Error).message || String(error) });
       }
     }
     return next;
   }
 
-  async rerunCheck(prKey, checkItem) {
-    const current = this.snapshot.pullRequests?.[prKey];
+  async rerunCheck(prKey: string, checkItem: AzureCheckItem): Promise<AzurePrSummary> {
+    const current = this.snapshot.pullRequests?.[prKey] as AzurePrSummary | undefined;
     if (!current) throw new Error(`PR ${prKey} not found in snapshot`);
-    const connection = this.findConnection(current.connectionId);
+    const connection = this.findConnection(current.connectionId) as AzureConnection | null;
     if (!connection) throw new Error(`Connection not found for PR ${prKey}`);
     const token = this.credentialStore.getSecret(connection.tokenRef);
     if (!token) throw new Error(`No credentials found for connection "${connection.label || connection.id}"`);
@@ -654,11 +913,11 @@ export class AzureDevOpsManager extends BaseProviderManager {
 
     if (checkItem.kind === "policy" && checkItem.evaluationId) {
       this.log.info("re-evaluating policy", { evaluationId: checkItem.evaluationId, prKey });
-      await this.api.reEvaluatePolicy(
+      await this.azureApi.reEvaluatePolicy(
         connection,
         token,
-        current.project.name,
-        current.project.id,
+        current.project!.name,
+        current.project!.id,
         checkItem.evaluationId,
       );
     } else {
@@ -671,22 +930,22 @@ export class AzureDevOpsManager extends BaseProviderManager {
     return this.ensurePullRequestDetail(prKey, { force: true });
   }
 
-  async readThreadCodeSnippets(cwd, threads = [], targetRefName = "") {
+  async readThreadCodeSnippets(cwd: string, threads: AzureThread[] = [], targetRefName = ""): Promise<AzureThread[]> {
     if (!cwd || !threads.length) return threads;
     const targetBranch = stripRefsPrefix(targetRefName);
-    const filesNeeded = new Map();
+    const filesNeeded = new Map<string, AzureThread[]>();
     for (const thread of threads) {
       if (thread.filePath && thread.lineStart) {
         const key = thread.filePath;
         if (!filesNeeded.has(key)) {
           filesNeeded.set(key, []);
         }
-        filesNeeded.get(key).push(thread);
+        filesNeeded.get(key)!.push(thread);
       }
     }
     if (!filesNeeded.size) return threads;
 
-    const snippetMap = new Map();
+    const snippetMap = new Map<string, string>();
     for (const [filePath] of filesNeeded) {
       try {
         const normalizedPath = filePath.startsWith("/") ? filePath.slice(1) : filePath;
@@ -710,7 +969,7 @@ export class AzureDevOpsManager extends BaseProviderManager {
 
       // Extract the relevant hunk around the comment lines
       const lines = fullDiff.split(/\r?\n/);
-      const contextLines = [];
+      const contextLines: string[] = [];
       let inRelevantHunk = false;
       let currentNewLine = 0;
       const targetStart = Math.max(1, thread.lineStart - 2);
@@ -755,7 +1014,7 @@ export class AzureDevOpsManager extends BaseProviderManager {
     });
   }
 
-  async ensureCacheRepo({ connection, token, repository, reviewRoot }) {
+  async ensureCacheRepo({ connection, token, repository, reviewRoot }: { connection: AzureConnection; token: string; repository: { id?: string; name: string; remoteUrl?: string }; reviewRoot: string }): Promise<string> {
     const repositoryRoot = path.join(
       normalizeReviewRoot(reviewRoot),
       "repos",
@@ -765,7 +1024,7 @@ export class AzureDevOpsManager extends BaseProviderManager {
     const repositoryExists = await exists(path.join(repositoryRoot, ".git"));
     await mkdir(path.dirname(repositoryRoot), { recursive: true });
     if (!repositoryExists) {
-      await this.runGit(process.cwd(), ["clone", "--no-checkout", repository.remoteUrl, repositoryRoot], {
+      await this.runGit(process.cwd(), ["clone", "--no-checkout", repository.remoteUrl!, repositoryRoot], {
         login: connection.login,
         token,
       });
@@ -773,37 +1032,37 @@ export class AzureDevOpsManager extends BaseProviderManager {
     return repositoryRoot;
   }
 
-  async prepareManagedReviewCheckout({ summary, connection, token, reviewRoot }) {
+  async prepareManagedReviewCheckout({ summary, connection, token, reviewRoot }: { summary: AzurePrSummary; connection: AzureConnection; token: string; reviewRoot: string }): Promise<{ mode: string; rootPath: string; cacheRepoPath: string; sourceBranch: string; targetBranch: string }> {
     try {
       const remoteUrl = firstNonEmpty(
         summary.repository?.remoteUrl,
-        buildRepositoryRemoteUrl(connection, summary.project?.name, summary.repository?.name || summary.repository?.id),
+        buildRepositoryRemoteUrl(connection, summary.project?.name || "", summary.repository?.name || summary.repository?.id || ""),
       );
       if (!remoteUrl) {
         throw new Error("Pull request repository clone URL is missing.");
       }
 
-      const sourceBranch = stripRefsPrefix(summary.pullRequest.sourceRefName);
+      const sourceBranch = stripRefsPrefix(summary.pullRequest!.sourceRefName || "");
       if (!sourceBranch) {
         throw new Error("Pull request source branch is missing.");
       }
 
-      const targetBranch = stripRefsPrefix(summary.pullRequest.targetRefName);
+      const targetBranch = stripRefsPrefix(summary.pullRequest!.targetRefName || "");
       if (!targetBranch) {
         throw new Error("Pull request target branch is missing.");
       }
 
-      const repository = {
+      const repository: { id?: string; name: string; remoteUrl?: string } = {
         ...summary.repository,
+        name: summary.repository?.name || summary.repository?.id || "",
         remoteUrl,
-        project: summary.project,
       };
       const cacheRepoPath = await this.ensureCacheRepo({ connection, token, repository, reviewRoot });
       const worktreePath = path.join(
         normalizeReviewRoot(reviewRoot),
         "reviews",
         shortPathKey(connection.id, "connection"),
-        `pr-${summary.pullRequest.id}`,
+        `pr-${summary.pullRequest!.id}`,
       );
 
       await this.runGit(
@@ -811,8 +1070,8 @@ export class AzureDevOpsManager extends BaseProviderManager {
         [
           "fetch",
           "origin",
-          `+${summary.pullRequest.sourceRefName}:refs/remotes/origin/${sourceBranch}`,
-          `+${summary.pullRequest.targetRefName}:refs/remotes/origin/${targetBranch}`,
+          `+${summary.pullRequest!.sourceRefName}:refs/remotes/origin/${sourceBranch}`,
+          `+${summary.pullRequest!.targetRefName}:refs/remotes/origin/${targetBranch}`,
         ],
         {
           login: connection.login,
@@ -823,7 +1082,7 @@ export class AzureDevOpsManager extends BaseProviderManager {
       await mkdir(path.dirname(worktreePath), { recursive: true });
       await this.runGit(cacheRepoPath, ["worktree", "prune"]).catch(() => {});
       const worktreeExists = await exists(path.join(worktreePath, ".git"));
-      const localBranch = `pr-${summary.pullRequest.id}-${sanitizePathSegment(sourceBranch)}`;
+      const localBranch = `pr-${summary.pullRequest!.id}-${sanitizePathSegment(sourceBranch)}`;
 
       if (!worktreeExists) {
         const branchExists = await this.runGit(cacheRepoPath, [
@@ -891,7 +1150,7 @@ export class AzureDevOpsManager extends BaseProviderManager {
     }
   }
 
-  buildReviewMetadata(summary, checkout, mode = checkout.mode, extra = {}) {
+  buildReviewMetadata(summary: AzurePrSummary, checkout: ReviewCheckout, mode = checkout.mode, extra: { parentWorkspaceId?: string } = {}) {
     return {
       provider: "azure-devops",
       prKey: summary.prKey,
@@ -910,8 +1169,8 @@ export class AzureDevOpsManager extends BaseProviderManager {
     };
   }
 
-  buildManagedReviewPaths(summary, { profileId = "default", workspaces = [] } = {}) {
-    const connection = this.findConnection(summary?.connectionId);
+  buildManagedReviewPaths(summary: AzurePrSummary | null | undefined, { profileId = "default", workspaces = [] as ReviewWorkspace[] } = {}) {
+    const connection = this.findConnection(summary?.connectionId || "") as AzureConnection | null;
     if (!connection || !summary?.pullRequest?.id) {
       return null;
     }
@@ -940,11 +1199,11 @@ export class AzureDevOpsManager extends BaseProviderManager {
     };
   }
 
-  async openReviewWorkspace({ state, prKey, workspaceId = "" }) {
+  async openReviewWorkspace({ state, prKey, workspaceId = "" }: { state: { workspaces: ReviewWorkspace[]; activeProfileId?: string; tabTemplates?: unknown[] }; prKey: string; workspaceId?: string }) {
     const summary = await this.ensurePullRequestDetail(prKey, {
       workspaces: state.workspaces,
     });
-    const connection = this.findConnection(summary.connectionId);
+    const connection = this.findAzureConnection(summary.connectionId);
     if (!connection) {
       throw new Error("Azure DevOps connection was not found.");
     }
@@ -956,9 +1215,9 @@ export class AzureDevOpsManager extends BaseProviderManager {
 
     const activeProfile = state.activeProfileId || "default";
     const profileWorkspaces = state.workspaces.filter((ws) => (ws.profileId || "default") === activeProfile);
-    const existingWorkspace = workspaceId
+    const existingWorkspace: ReviewWorkspace | null | undefined = workspaceId
       ? profileWorkspaces.find((workspace) => workspace.id === workspaceId)
-      : findWorkspaceForPullRequest(profileWorkspaces, prKey) ||
+      : (findWorkspaceForPullRequest(profileWorkspaces, prKey) as ReviewWorkspace | undefined) ||
         (summary.role === "author" && summary.existingWorkspaceId
           ? profileWorkspaces.find((workspace) => workspace.id === summary.existingWorkspaceId)
           : null);
@@ -976,10 +1235,10 @@ export class AzureDevOpsManager extends BaseProviderManager {
           `Matched workspace "${existingWorkspace.name || existingWorkspace.id}" does not have a working directory.`,
         );
       }
-      const checkout = existingWorkspace.review?.checkout || {
+      const checkout: ReviewCheckout = existingWorkspace.review?.checkout || {
         mode: existingWorkspace.review?.provider === "azure-devops" ? "managed-worktree" : "linked-existing-workspace",
-        rootPath: existingWorkspace.cwd,
-        cacheRepoPath: existingWorkspace.review?.checkout?.cacheRepoPath || "",
+        rootPath: existingWorkspace.cwd || "",
+        cacheRepoPath: "",
       };
       const workspace = {
         ...existingWorkspace,
@@ -1004,17 +1263,18 @@ export class AzureDevOpsManager extends BaseProviderManager {
       token,
       reviewRoot: parentAzureWorkspace?.cwd || connection.reviewRoot || getDefaultReviewRoot(),
     });
-    const panels = createReviewWorkspacePanels(parentAzureWorkspace?.panels || [], state.tabTemplates || []);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const panels = createReviewWorkspacePanels((parentAzureWorkspace?.panels || []) as any[], (state.tabTemplates || []) as any[]);
     const workspace = {
       id: `workspace-${randomUUID()}`,
-      name: `${summary.repository.name} PR #${summary.pullRequest.id}`,
+      name: `${summary.repository?.name} PR #${summary.pullRequest?.id}`,
       icon: AZURE_REVIEW_ICON,
       color: AZURE_REVIEW_COLOR,
       kind: "terminal",
       source: "manual",
       pluginId: "",
       cwd: checkout.rootPath,
-      notes: `Azure DevOps review workspace for ${summary.repository.name} PR #${summary.pullRequest.id}`,
+      notes: `Azure DevOps review workspace for ${summary.repository?.name} PR #${summary.pullRequest?.id}`,
       profileId: state.activeProfileId || "default",
       activePanelId: panels[0]?.id || "",
       panels,
@@ -1033,10 +1293,10 @@ export class AzureDevOpsManager extends BaseProviderManager {
     };
   }
 
-  async addPullRequestComment({ prKey, content, threadId = null, parentCommentId = 0 }) {
+  async addPullRequestComment({ prKey, content, threadId = null as string | number | null, parentCommentId = 0 }: { prKey: string; content: string; threadId?: string | number | null; parentCommentId?: number }): Promise<void> {
     const summary = await this.ensurePullRequestDetail(prKey);
     this.setAuditContext({ connectionId: summary.connectionId || "", userInitiated: true });
-    const connection = this.findConnection(summary.connectionId);
+    const connection = this.findAzureConnection(summary.connectionId);
     if (!connection) {
       throw new Error("Azure DevOps connection was not found.");
     }
@@ -1061,15 +1321,15 @@ export class AzureDevOpsManager extends BaseProviderManager {
           status: "active",
         };
     const url = threadId
-      ? this.api.buildCreateCommentUrl(
+      ? this.azureApi.buildCreateCommentUrl(
           connection,
-          summary.project.name,
-          summary.repository.id,
-          summary.pullRequest.id,
+          summary.project!.name,
+          summary.repository!.id,
+          summary.pullRequest!.id,
           threadId,
         )
-      : this.api.buildCreateThreadUrl(connection, summary.project.name, summary.repository.id, summary.pullRequest.id);
-    await this.api.requestJson(url, {
+      : this.azureApi.buildCreateThreadUrl(connection, summary.project!.name, summary.repository!.id, summary.pullRequest!.id);
+    await this.azureApi.requestJson(url, {
       login: connection.login,
       token,
       method: "POST",
@@ -1077,10 +1337,10 @@ export class AzureDevOpsManager extends BaseProviderManager {
     });
   }
 
-  async updateThreadStatus({ prKey, threadId, status }) {
+  async updateThreadStatus({ prKey, threadId, status }: { prKey: string; threadId: string | number; status: string }): Promise<void> {
     const summary = await this.ensurePullRequestDetail(prKey);
     this.setAuditContext({ connectionId: summary.connectionId || "", userInitiated: true });
-    const connection = this.findConnection(summary.connectionId);
+    const connection = this.findAzureConnection(summary.connectionId);
     if (!connection) {
       throw new Error("Azure DevOps connection was not found.");
     }
@@ -1088,12 +1348,12 @@ export class AzureDevOpsManager extends BaseProviderManager {
     if (!token) {
       throw new Error("PAT is missing.");
     }
-    await this.api.requestJson(
-      this.api.buildUpdateThreadUrl(
+    await this.azureApi.requestJson(
+      this.azureApi.buildUpdateThreadUrl(
         connection,
-        summary.project.name,
-        summary.repository.id,
-        summary.pullRequest.id,
+        summary.project!.name,
+        summary.repository!.id,
+        summary.pullRequest!.id,
         threadId,
       ),
       {
@@ -1105,10 +1365,10 @@ export class AzureDevOpsManager extends BaseProviderManager {
     );
   }
 
-  async setPullRequestVote({ prKey, vote }) {
+  async setPullRequestVote({ prKey, vote }: { prKey: string; vote: number }): Promise<void> {
     const summary = await this.ensurePullRequestDetail(prKey);
     this.setAuditContext({ connectionId: summary.connectionId || "", userInitiated: true });
-    const connection = this.findConnection(summary.connectionId);
+    const connection = this.findAzureConnection(summary.connectionId);
     if (!connection) {
       throw new Error("Azure DevOps connection was not found.");
     }
@@ -1119,12 +1379,12 @@ export class AzureDevOpsManager extends BaseProviderManager {
     if (!token) {
       throw new Error("PAT is missing.");
     }
-    await this.api.requestJson(
-      this.api.buildReviewerUrl(
+    await this.azureApi.requestJson(
+      this.azureApi.buildReviewerUrl(
         connection,
-        summary.project.name,
-        summary.repository.id,
-        summary.pullRequest.id,
+        summary.project!.name,
+        summary.repository!.id,
+        summary.pullRequest!.id,
         summary.myReviewerId,
       ),
       {
@@ -1139,8 +1399,8 @@ export class AzureDevOpsManager extends BaseProviderManager {
     );
   }
 
-  async fetchReviewWorkspace({ workspace }) {
-    const connection = this.findConnection(workspace.review?.connectionId);
+  async fetchReviewWorkspace({ workspace }: { workspace: ReviewWorkspace }): Promise<void> {
+    const connection = this.findAzureConnection(workspace.review?.connectionId || "");
     if (!connection) {
       throw new Error("Azure DevOps connection was not found.");
     }
@@ -1149,23 +1409,23 @@ export class AzureDevOpsManager extends BaseProviderManager {
       throw new Error("PAT is missing.");
     }
     this.log.info("fetch review workspace", { workspaceId: workspace.id });
-    await this.runGit(workspace.cwd, ["fetch", "origin"], {
+    await this.runGit(workspace.cwd || "", ["fetch", "origin"], {
       login: connection.login,
       token,
     });
   }
 
-  async rebaseReviewWorkspace({ workspace }) {
+  async rebaseReviewWorkspace({ workspace }: { workspace: ReviewWorkspace }): Promise<void> {
     await this.fetchReviewWorkspace({ workspace });
-    const targetBranch = stripRefsPrefix(workspace.review?.pullRequest?.targetRefName);
+    const targetBranch = stripRefsPrefix(workspace.review?.pullRequest?.targetRefName || "");
     this.log.info("rebase review workspace", { workspaceId: workspace.id, targetBranch });
-    await this.runGit(workspace.cwd, ["rebase", `origin/${targetBranch}`]);
+    await this.runGit(workspace.cwd || "", ["rebase", `origin/${targetBranch}`]);
   }
 
-  findConnectionForRemote(remoteUrl) {
+  findConnectionForRemote(remoteUrl: string): AzureConnection | null {
     const normalized = normalizeRemoteUrl(remoteUrl);
     if (!normalized) return null;
-    for (const connection of this.snapshot.connections) {
+    for (const connection of this.snapshot.connections as AzureConnection[]) {
       if (!connection.enabled) continue;
       const orgNorm = normalizeRemoteUrl(connection.orgUrl);
       if (orgNorm && normalized.startsWith(orgNorm)) {
@@ -1175,22 +1435,22 @@ export class AzureDevOpsManager extends BaseProviderManager {
     return null;
   }
 
-  async resolveRepository(connectionId, remoteUrl) {
-    const connection = this.findConnection(connectionId);
+  async resolveRepository(connectionId: string, remoteUrl: string): Promise<{ connection: AzureConnection; token: string; projectName: string; repository: { id: string; name: string; remoteUrl?: string } }> {
+    const connection = this.findAzureConnection(connectionId);
     if (!connection) throw new Error("Azure DevOps connection not found.");
     const token = this.credentialStore.getSecret(connection.tokenRef);
     if (!token) throw new Error("PAT is missing.");
 
     const normalized = normalizeRemoteUrl(remoteUrl);
-    const projects = await this.api.listProjects(connection, token);
+    const projects = await this.azureApi.listProjects(connection, token) as Array<{ id: string; name: string }>;
     const filteredProjects = connection.projectFilters?.length
-      ? projects.filter((p) => connection.projectFilters.includes(p.name) || connection.projectFilters.includes(p.id))
+      ? projects.filter((p) => connection.projectFilters!.includes(p.name) || connection.projectFilters!.includes(p.id))
       : projects;
 
     for (const project of filteredProjects) {
-      const repos = await this.api.listRepositories(connection, token, project.name);
+      const repos = await this.azureApi.listRepositories(connection, token, project.name) as Array<{ id: string; name: string; remoteUrl?: string }>;
       for (const repo of repos) {
-        if (normalizeRemoteUrl(repo.remoteUrl) === normalized) {
+        if (normalizeRemoteUrl(repo.remoteUrl || "") === normalized) {
           return { connection, token, projectName: project.name, repository: repo };
         }
       }
@@ -1198,11 +1458,11 @@ export class AzureDevOpsManager extends BaseProviderManager {
     throw new Error("Could not find a matching Azure DevOps repository for this workspace.");
   }
 
-  async listRemoteBranches(connectionId, remoteUrl) {
+  async listRemoteBranches(connectionId: string, remoteUrl: string): Promise<string[]> {
     this.setAuditContext({ connectionId, userInitiated: true });
     const { connection, token, projectName, repository } = await this.resolveRepository(connectionId, remoteUrl);
-    const refs = await this.api.listRepositoryRefs(connection, token, projectName, repository.id, "heads");
-    return refs.map((ref) => stripRefsPrefix(ref.name));
+    const refs = await this.azureApi.listRepositoryRefs(connection, token, projectName, repository.id, "heads") as Array<{ name?: string }>;
+    return refs.map((ref) => stripRefsPrefix(ref.name || ""));
   }
 
   async createPullRequestForWorkspace({
@@ -1213,18 +1473,26 @@ export class AzureDevOpsManager extends BaseProviderManager {
     description,
     isDraft = false,
     connectionId = "",
-  }) {
-    const connection = (connectionId && this.findConnection(connectionId)) || this.findConnectionForRemote(remoteUrl);
+  }: {
+    remoteUrl: string;
+    sourceBranch: string;
+    targetBranch: string;
+    title: string;
+    description?: string;
+    isDraft?: boolean;
+    connectionId?: string;
+  }): Promise<{ pullRequestId: unknown; url: string; title: unknown }> {
+    const connection = (connectionId && this.findAzureConnection(connectionId)) || this.findConnectionForRemote(remoteUrl);
     if (!connection) throw new Error("No Azure DevOps connection found for this repository.");
     this.setAuditContext({ connectionId: connection.id, userInitiated: true });
     const { token, projectName, repository } = await this.resolveRepository(connection.id, remoteUrl);
-    const result = await this.api.createPullRequest(connection, token, projectName, repository.id, {
+    const result = await this.azureApi.createPullRequest(connection, token, projectName, repository.id, {
       title,
       description,
       sourceBranch,
       targetBranch,
       isDraft,
-    });
+    }) as { pullRequestId?: unknown; _links?: { web?: { href?: string } }; title?: unknown };
     return {
       pullRequestId: result.pullRequestId,
       url: result._links?.web?.href || "",
@@ -1232,8 +1500,8 @@ export class AzureDevOpsManager extends BaseProviderManager {
     };
   }
 
-  async pushReviewWorkspace({ workspace, force = false, branch = "" }) {
-    const connection = this.findConnection(workspace.review?.connectionId);
+  async pushReviewWorkspace({ workspace, force = false, branch = "" }: { workspace: ReviewWorkspace; force?: boolean; branch?: string }): Promise<void> {
+    const connection = this.findAzureConnection(workspace.review?.connectionId || "");
     if (!connection) {
       throw new Error("Azure DevOps connection was not found.");
     }
@@ -1241,7 +1509,7 @@ export class AzureDevOpsManager extends BaseProviderManager {
     if (!token) {
       throw new Error("PAT is missing.");
     }
-    const prRef = stripRefsPrefix(workspace.review?.pullRequest?.sourceRefName);
+    const prRef = stripRefsPrefix(workspace.review?.pullRequest?.sourceRefName || "");
     const sourceBranch = prRef || branch;
     if (!sourceBranch) {
       throw new Error("Cannot determine branch name for push.");
@@ -1251,7 +1519,7 @@ export class AzureDevOpsManager extends BaseProviderManager {
       ? ["push", "--force-with-lease", "-u", "origin", `HEAD:refs/heads/${sourceBranch}`]
       : ["push", "-u", "origin", `HEAD:refs/heads/${sourceBranch}`];
     this.log.info("push review workspace", { workspaceId: workspace.id, sourceBranch, force });
-    await this.runGit(workspace.cwd, pushArgs, {
+    await this.runGit(workspace.cwd || "", pushArgs, {
       login: connection.login,
       token,
     });
@@ -1261,40 +1529,40 @@ export class AzureDevOpsManager extends BaseProviderManager {
   // Quick Fix — forward flow: pick repo/branch → checkout → workspace → PR
   // ---------------------------------------------------------------------------
 
-  buildPrKey(connectionId, repositoryId, pullRequestId) {
+  buildPrKey(connectionId: string, repositoryId: string, pullRequestId: string | number): string {
     return createPullRequestKey(connectionId, repositoryId, pullRequestId);
   }
 
-  async listQuickFixProjects(connectionId) {
+  async listQuickFixProjects(connectionId: string): Promise<Array<{ id: string; name: string }>> {
     this.setAuditContext({ connectionId, userInitiated: true });
-    const { connection, token } = this.resolveConnectionAndToken(connectionId);
-    const projects = await this.api.listProjects(connection, token);
+    const { connection, token } = this.resolveAzureConnectionAndToken(connectionId);
+    const projects = await this.azureApi.listProjects(connection, token) as Array<{ id: string; name: string }>;
     const filtered = connection.projectFilters?.length
-      ? projects.filter((p) => connection.projectFilters.includes(p.name) || connection.projectFilters.includes(p.id))
+      ? projects.filter((p) => connection.projectFilters!.includes(p.name) || connection.projectFilters!.includes(p.id))
       : projects;
     return filtered.map((p) => ({ id: p.id, name: p.name }));
   }
 
-  async listQuickFixRepositories(connectionId, projectName) {
+  async listQuickFixRepositories(connectionId: string, projectName: string): Promise<Array<{ id: string; name: string; remoteUrl?: string }>> {
     this.setAuditContext({ connectionId, userInitiated: true });
-    const { connection, token } = this.resolveConnectionAndToken(connectionId);
-    const repos = await this.api.listRepositories(connection, token, projectName);
+    const { connection, token } = this.resolveAzureConnectionAndToken(connectionId);
+    const repos = await this.azureApi.listRepositories(connection, token, projectName) as Array<{ id: string; name: string; remoteUrl?: string }>;
     const filtered = connection.repositoryFilters?.length
       ? repos.filter(
-          (r) => connection.repositoryFilters.includes(r.id) || connection.repositoryFilters.includes(r.name),
+          (r) => connection.repositoryFilters!.includes(r.id) || connection.repositoryFilters!.includes(r.name),
         )
       : repos;
     return filtered.map((r) => ({ id: r.id, name: r.name, remoteUrl: r.remoteUrl }));
   }
 
-  async listQuickFixBranches(connectionId, projectName, repositoryId) {
+  async listQuickFixBranches(connectionId: string, projectName: string, repositoryId: string): Promise<string[]> {
     this.setAuditContext({ connectionId, userInitiated: true });
-    const { connection, token } = this.resolveConnectionAndToken(connectionId);
-    const refs = await this.api.listRepositoryRefs(connection, token, projectName, repositoryId, "heads");
-    return refs.map((ref) => stripRefsPrefix(ref.name));
+    const { connection, token } = this.resolveAzureConnectionAndToken(connectionId);
+    const refs = await this.azureApi.listRepositoryRefs(connection, token, projectName, repositoryId, "heads") as Array<{ name?: string }>;
+    return refs.map((ref) => stripRefsPrefix(ref.name || ""));
   }
 
-  async prepareQuickFixCheckout({ connection, token, repository, baseBranch, newBranchName, reviewRoot }) {
+  async prepareQuickFixCheckout({ connection, token, repository, baseBranch, newBranchName, reviewRoot }: { connection: AzureConnection; token: string; repository: { id?: string; name: string; remoteUrl?: string }; baseBranch: string; newBranchName: string; reviewRoot: string }): Promise<{ rootPath: string; cacheRepoPath: string; baseBranch: string; newBranchName: string }> {
     const cacheRepoPath = await this.ensureCacheRepo({ connection, token, repository, reviewRoot });
 
     await this.runGit(
@@ -1325,7 +1593,8 @@ export class AzureDevOpsManager extends BaseProviderManager {
           `refs/remotes/origin/${baseBranch}`,
         ]);
       } catch (err) {
-        const msg = String(err?.stderr || err?.message || err);
+        const e = err as { stderr?: string; message?: string };
+        const msg = String(e?.stderr || e?.message || err);
         if (msg.includes("already exists")) {
           throw new Error(`Branch "${newBranchName}" already exists. Choose a different name.`, { cause: err });
         }
@@ -1345,12 +1614,21 @@ export class AzureDevOpsManager extends BaseProviderManager {
     remoteUrl,
     baseBranch,
     newBranchName,
-  }) {
-    const { connection, token } = this.resolveConnectionAndToken(connectionId);
+  }: {
+    state: { workspaces: ReviewWorkspace[]; activeProfileId?: string; tabTemplates?: unknown[] };
+    connectionId: string;
+    projectName: string;
+    repositoryId: string;
+    repositoryName: string;
+    remoteUrl: string;
+    baseBranch: string;
+    newBranchName: string;
+  }): Promise<{ workspace: ReviewWorkspace; parentWorkspaceId: string }> {
+    const { connection, token } = this.resolveAzureConnectionAndToken(connectionId);
 
     const activeProfile = state.activeProfileId || "default";
-    const parentAzureWorkspace =
-      state.workspaces.find((ws) => ws.kind === "azure" && (ws.profileId || "default") === activeProfile) || null;
+    const parentAzureWorkspace: ReviewWorkspace | null =
+      state.workspaces.find((ws: ReviewWorkspace) => ws.kind === "azure" && (ws.profileId || "default") === activeProfile) || null;
     const reviewRoot = parentAzureWorkspace?.cwd || connection.reviewRoot || getDefaultReviewRoot();
 
     const repository = { id: repositoryId, name: repositoryName, remoteUrl };
@@ -1363,7 +1641,8 @@ export class AzureDevOpsManager extends BaseProviderManager {
       reviewRoot,
     });
 
-    const panels = createReviewWorkspacePanels(parentAzureWorkspace?.panels || [], state.tabTemplates || []);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const panels = createReviewWorkspacePanels((parentAzureWorkspace?.panels || []) as any[], (state.tabTemplates || []) as any[]);
     const workspace = {
       id: `workspace-${randomUUID()}`,
       name: newBranchName,
@@ -1383,9 +1662,9 @@ export class AzureDevOpsManager extends BaseProviderManager {
         connectionId,
         orgUrl: connection.orgUrl || "",
         parentWorkspaceId: parentAzureWorkspace?.id || "",
-        project: null,
+        project: undefined,
         repository: { id: repositoryId, name: repositoryName, remoteUrl },
-        pullRequest: null,
+        pullRequest: undefined,
         role: "author",
         checkout: {
           mode: "managed-worktree",
