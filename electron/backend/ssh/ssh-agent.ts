@@ -1,13 +1,14 @@
+/// <reference types="node" />
 import net from "node:net";
 import { existsSync } from "node:fs";
 
 const WINDOWS_OPENSSH_PIPE = "\\\\.\\pipe\\openssh-ssh-agent";
 
-function hasWindowsOpenSshAgent() {
+function hasWindowsOpenSshAgent(): Promise<boolean> {
   return new Promise((resolve) => {
     const sock = net.connect(WINDOWS_OPENSSH_PIPE);
     let resolved = false;
-    const once = (value) => {
+    const once = (value: boolean) => {
       if (resolved) return;
       resolved = true;
       try {
@@ -30,7 +31,7 @@ function hasWindowsOpenSshAgent() {
  * Returns either a socket path / pipe string, the literal "pageant" switch,
  * or undefined when no agent is available.
  */
-export async function resolveAgent(mode) {
+export async function resolveAgent(mode: string | null | undefined): Promise<string | undefined> {
   if (mode === "off") return undefined;
 
   if (process.platform === "win32") {

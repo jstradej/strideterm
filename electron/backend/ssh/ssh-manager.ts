@@ -2,10 +2,94 @@ import { EventEmitter } from "node:events";
 import { randomBytes } from "node:crypto";
 import { SshSession } from "./ssh-session.js";
 import { verifyHostKey, recordHostKey } from "./ssh-known-hosts.js";
+import type { Store as KnownHostsStore } from "./ssh-known-hosts.js";
 import { buildAuth } from "./ssh-auth.js";
+import type { CredentialStore } from "../shared/credential-store.js";
+import type { Logger } from "../logger.js";
+
+interface HostRecord {
+  id: string;
+  host: string;
+  port?: number;
+  username?: string;
+  name?: string;
+  jump?: string[];
+  auth?: {
+    methods?: string[];
+    passwordRef?: string;
+    keyRef?: string;
+    passphraseRef?: string;
+    certRef?: string;
+    agent?: string;
+  };
+  advanced?: {
+    command?: string;
+    keepaliveIntervalMs?: number;
+    keepaliveCountMax?: number;
+    compression?: boolean;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    algorithms?: any;
+    launchVia?: string;
+  };
+  hostKeyPolicy?: string;
+  createdAt?: string;
+  updatedAt?: string;
+  lastConnectedAt?: string | null;
+  tags?: string[];
+}
+
+interface AppState {
+  ssh?: {
+    hosts?: HostRecord[];
+    keys?: unknown[];
+    certificates?: unknown[];
+    knownHosts?: Record<string, unknown>;
+    settings?: Record<string, unknown>;
+  };
+}
+
+// Store is compatible with KnownHostsStore — the manager's AppState uses
+// HostRecord[] for hosts (more specific) but Record<string, unknown> for
+// knownHosts (less specific). Cast to KnownHostsStore when passing to
+// ssh-known-hosts functions.
+type Store = {
+  getState(): AppState;
+  mutate(mutator: (state: AppState) => void): Promise<unknown>;
+};
+
+interface PendingSession {
+  finishKeyboard: ((answers: string[]) => void) | null;
+  acceptHostKeyCb: ((accept: boolean) => void) | null;
+  hostKeyInfo: { fingerprint: string; keyType: string; previous: unknown } | null;
+  resolvePreAuth: ((pw: string) => void) | null;
+  rejectPreAuth: ((err: Error) => void) | null;
+}
+
+interface CreateSessionOpts {
+  sessionId: string;
+  hostId?: string;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  inlineHost?: any;
+  cols: number;
+  rows: number;
+  onData?: (data: string) => void;
+  onExit?: (exit: { exitCode: number; signal: string | null; error?: string }) => void;
+}
+
+interface SshManagerOpts {
+  store: Store;
+  credentialStore: CredentialStore;
+  logger?: Logger | Console;
+}
 
 export class SshManager extends EventEmitter {
-  constructor({ store, credentialStore, logger }) {
+  store: Store;
+  credentialStore: CredentialStore;
+  log: Logger | Console;
+  activeSessions: Map<string, SshSession>;
+  pendingPrompts: Map<string, PendingSession>;
+
+  constructor({ store, credentialStore, logger }: SshManagerOpts) {
     super();
     this.store = store;
     this.credentialStore = credentialStore;
@@ -17,18 +101,18 @@ export class SshManager extends EventEmitter {
 
   // ---- host book CRUD ----
 
-  listHosts() {
+  listHosts(): HostRecord[] {
     return this.store.getState().ssh?.hosts || [];
   }
 
-  getHost(id) {
+  getHost(id: string): HostRecord | undefined {
     return this.listHosts().find((h) => h.id === id);
   }
 
-  async createHost(partial) {
+  async createHost(partial: Omit<HostRecord, "id" | "createdAt" | "updatedAt" | "lastConnectedAt">): Promise<HostRecord> {
     const id = "h_" + randomBytes(6).toString("hex");
     const now = new Date().toISOString();
-    const newHost = {
+    const newHost: HostRecord = {
       ...partial,
       id,
       createdAt: now,
@@ -45,13 +129,13 @@ export class SshManager extends EventEmitter {
     return newHost;
   }
 
-  async updateHost(id, patch) {
-    let updated = null;
+  async updateHost(id: string, patch: Partial<HostRecord>): Promise<HostRecord | null> {
+    let updated: HostRecord | null = null;
     await this.store.mutate((state) => {
       if (!state.ssh || !Array.isArray(state.ssh.hosts)) return;
       const idx = state.ssh.hosts.findIndex((h) => h.id === id);
       if (idx === -1) return;
-      const next = { ...state.ssh.hosts[idx], ...patch, id, updatedAt: new Date().toISOString() };
+      const next: HostRecord = { ...state.ssh.hosts[idx]!, ...patch, id, updatedAt: new Date().toISOString() };
       state.ssh.hosts[idx] = next;
       updated = next;
     });
@@ -59,7 +143,7 @@ export class SshManager extends EventEmitter {
     return updated;
   }
 
-  async deleteHost(id) {
+  async deleteHost(id: string): Promise<void> {
     await this.store.mutate((state) => {
       if (!state.ssh) return;
       state.ssh.hosts = (state.ssh.hosts || []).filter((h) => h.id !== id);
@@ -83,23 +167,24 @@ export class SshManager extends EventEmitter {
    * Inline hosts get a synthetic id like `inline:<sessionId>` so logs and
    * jump-chain resolution don't have to special-case them.
    */
-  async createSession({ sessionId, hostId, inlineHost, cols, rows, onData, onExit }) {
-    let host;
+  async createSession({ sessionId, hostId, inlineHost, cols, rows, onData, onExit }: CreateSessionOpts): Promise<SshSession> {
+    let host: HostRecord;
     if (inlineHost) {
       host = {
         id: `inline:${sessionId}`,
         jump: [],
         ...inlineHost,
-      };
+      } as HostRecord;
     } else {
-      host = this.getHost(hostId);
-      if (!host) throw new Error(`SSH host not found: ${hostId}`);
+      const found = this.getHost(hostId!);
+      if (!found) throw new Error(`SSH host not found: ${hostId}`);
+      host = found;
     }
 
     const auth = await buildAuth(host, this.credentialStore);
 
     // Resolve jump chain: each hop needs its own auth built from its credential refs.
-    const jumps = [];
+    const jumps: { host: HostRecord; auth: typeof auth; verify: (args: { key: Buffer }) => ReturnType<typeof verifyHostKey> }[] = [];
     for (const jId of host.jump || []) {
       const jHost = this.getHost(jId);
       if (!jHost) throw new Error(`Jump host not found: ${jId}`);
@@ -107,11 +192,11 @@ export class SshManager extends EventEmitter {
       jumps.push({
         host: jHost,
         auth: jAuth,
-        verify: ({ key }) => verifyHostKey(this.store, jHost, { key }),
+        verify: ({ key }) => verifyHostKey(this.store as KnownHostsStore, jHost, { key }),
       });
     }
 
-    const pending = {
+    const pending: PendingSession = {
       finishKeyboard: null,
       acceptHostKeyCb: null,
       hostKeyInfo: null,
@@ -123,7 +208,7 @@ export class SshManager extends EventEmitter {
     // ANSI-colored status banner so the user always sees *something* in the
     // terminal, even while connecting / after a failure. ssh2's `connect()`
     // doesn't emit any data until "ready", so without this the pane is black.
-    const banner = (text, color = "90") => onData?.(`\r\n\x1b[${color}m${text}\x1b[0m\r\n`);
+    const banner = (text: string, color = "90") => onData?.(`\r\n\x1b[${color}m${text}\x1b[0m\r\n`);
     const hostLabel = `${host.username || "?"}@${host.host}${host.port && host.port !== 22 ? `:${host.port}` : ""}`;
     banner(`── Connecting to ${hostLabel} …`);
 
@@ -138,12 +223,12 @@ export class SshManager extends EventEmitter {
     //   - cfg.password = typed value (classic method, broadest server support)
     //   - cfg.tryKeyboard = true, and auto-respond to a single "Password:"
     //     prompt with the same value (works for kb-int too)
-    let cachedPassword = null;
+    let cachedPassword: string | null = null;
     const needsInteractivePassword =
       methods.includes("keyboard-interactive") && !auth.password && !auth.privateKey && !auth.agent;
     if (needsInteractivePassword) {
       try {
-        cachedPassword = await new Promise((resolve, reject) => {
+        cachedPassword = await new Promise<string>((resolve, reject) => {
           pending.resolvePreAuth = resolve;
           pending.rejectPreAuth = reject;
           this.emit("ssh:auth-prompt", {
@@ -181,7 +266,7 @@ export class SshManager extends EventEmitter {
       auth,
       jumps,
       dimensions: { cols, rows },
-      verify: ({ key }) => verifyHostKey(this.store, host, { key }),
+      verify: ({ key }) => verifyHostKey(this.store as KnownHostsStore, host, { key }),
       onData,
       onExit: (exit) => {
         this.activeSessions.delete(sessionId);
@@ -197,8 +282,8 @@ export class SshManager extends EventEmitter {
         if (
           cachedPassword &&
           prompts.length === 1 &&
-          !prompts[0].echo &&
-          /pass(word|phrase)?/i.test(prompts[0].prompt || "")
+          !prompts[0]!.echo &&
+          /pass(word|phrase)?/i.test(prompts[0]!.prompt || "")
         ) {
           finish([cachedPassword]);
           return;
@@ -224,15 +309,15 @@ export class SshManager extends EventEmitter {
         this.emit("ssh:connection-state", { sessionId, state: "ready" });
         // Persist fingerprint for first-time TOFU accept (mismatch acceptance
         // is persisted separately via acceptHostKey("permanent")).
-        const session = this.activeSessions.get(sessionId);
-        if (session?.verifiedHostKey?.first) {
-          recordHostKey(this.store, host, session.verifiedHostKey).catch(() => {});
+        const activeSession = this.activeSessions.get(sessionId);
+        if (activeSession?.verifiedHostKey?.first) {
+          recordHostKey(this.store as KnownHostsStore, host, activeSession.verifiedHostKey).catch(() => {});
         }
         // Fire-and-forget lastConnectedAt bump.
         this.store
           .mutate((state) => {
             const idx = (state.ssh?.hosts || []).findIndex((h) => h.id === host.id);
-            if (idx !== -1) state.ssh.hosts[idx].lastConnectedAt = new Date().toISOString();
+            if (idx !== -1) state.ssh!.hosts![idx]!.lastConnectedAt = new Date().toISOString();
           })
           .catch(() => {});
       },
@@ -247,21 +332,21 @@ export class SshManager extends EventEmitter {
     } catch (err) {
       this.activeSessions.delete(sessionId);
       this.pendingPrompts.delete(sessionId);
-      this.emit("ssh:connection-state", { sessionId, state: "disconnected", error: err.message });
-      banner(`✗ Connection failed: ${err.message}`, "31");
+      this.emit("ssh:connection-state", { sessionId, state: "disconnected", error: (err as Error).message });
+      banner(`✗ Connection failed: ${(err as Error).message}`, "31");
       throw err;
     }
   }
 
-  write(sessionId, data) {
+  write(sessionId: string, data: string): void {
     this.activeSessions.get(sessionId)?.write(data);
   }
 
-  resize(sessionId, cols, rows) {
+  resize(sessionId: string, cols: number, rows: number): void {
     this.activeSessions.get(sessionId)?.resize(cols, rows);
   }
 
-  async stop(sessionId) {
+  async stop(sessionId: string): Promise<void> {
     const s = this.activeSessions.get(sessionId);
     this.pendingPrompts.delete(sessionId);
     if (!s) return;
@@ -271,7 +356,7 @@ export class SshManager extends EventEmitter {
 
   // ---- prompts: keyboard-interactive (MFA) ----
 
-  answerAuthPrompt(sessionId, answers) {
+  answerAuthPrompt(sessionId: string, answers: string[]): void {
     const pending = this.pendingPrompts.get(sessionId);
     if (!pending) return;
     // Up-front password prompt (collected before session.start()) takes
@@ -287,7 +372,7 @@ export class SshManager extends EventEmitter {
       return;
     }
     if (!pending.finishKeyboard) {
-      this.log.warn?.("answerAuthPrompt called with no pending keyboard prompt", { sessionId });
+      (this.log as Logger).warn?.("answerAuthPrompt called with no pending keyboard prompt", { sessionId });
       return;
     }
     try {
@@ -297,7 +382,7 @@ export class SshManager extends EventEmitter {
     }
   }
 
-  cancelAuthPrompt(sessionId) {
+  cancelAuthPrompt(sessionId: string): void {
     const pending = this.pendingPrompts.get(sessionId);
     if (!pending) return;
     if (pending.rejectPreAuth) {
@@ -320,25 +405,25 @@ export class SshManager extends EventEmitter {
 
   // ---- prompts: host key TOFU mismatch ----
 
-  async acceptHostKey(sessionId, mode = "once") {
+  async acceptHostKey(sessionId: string, mode = "once"): Promise<void> {
     const pending = this.pendingPrompts.get(sessionId);
     if (!pending?.acceptHostKeyCb) {
-      this.log.warn?.("acceptHostKey called with no pending decision", { sessionId });
+      (this.log as Logger).warn?.("acceptHostKey called with no pending decision", { sessionId });
       return;
     }
     const cb = pending.acceptHostKeyCb;
     pending.acceptHostKeyCb = null;
 
     if (mode === "permanent" && pending.hostKeyInfo) {
-      const session = this.activeSessions.get(sessionId);
-      if (session?.host) {
-        await recordHostKey(this.store, session.host, pending.hostKeyInfo);
+      const activeSession = this.activeSessions.get(sessionId);
+      if (activeSession?.host) {
+        await recordHostKey(this.store as KnownHostsStore, activeSession.host, pending.hostKeyInfo as { fingerprint: string; keyType: string });
       }
     }
     cb(true);
   }
 
-  rejectHostKey(sessionId) {
+  rejectHostKey(sessionId: string): void {
     const pending = this.pendingPrompts.get(sessionId);
     if (!pending?.acceptHostKeyCb) return;
     const cb = pending.acceptHostKeyCb;

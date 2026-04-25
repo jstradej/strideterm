@@ -1,4 +1,27 @@
 import { resolveAgent } from "./ssh-agent.js";
+import type { CredentialStore } from "../shared/credential-store.js";
+
+interface HostAuth {
+  methods?: string[];
+  passwordRef?: string;
+  keyRef?: string;
+  passphraseRef?: string;
+  certRef?: string;
+  agent?: string;
+}
+
+interface HostLike {
+  auth?: HostAuth;
+}
+
+export interface AuthConfig {
+  password?: string;
+  privateKey?: string;
+  passphrase?: string;
+  publicKey?: string;
+  agent?: string;
+  tryKeyboard?: boolean;
+}
 
 /**
  * Build the ssh2 connection auth config from a host record. Multiple methods
@@ -12,9 +35,9 @@ import { resolveAgent } from "./ssh-agent.js";
  * block the whole connect, since the user may have overlapping methods like
  * agent + keyboard-interactive.
  */
-export async function buildAuth(host, credentialStore) {
+export async function buildAuth(host: HostLike, credentialStore: CredentialStore): Promise<AuthConfig> {
   const methods = host.auth?.methods || ["publickey"];
-  const cfg = {};
+  const cfg: AuthConfig = {};
 
   for (const method of methods) {
     if (method === "password") {

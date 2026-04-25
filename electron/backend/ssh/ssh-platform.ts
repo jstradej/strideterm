@@ -1,41 +1,77 @@
+/// <reference types="node" />
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { createRequire } from "node:module";
 import { resolveAgent } from "./ssh-agent.js";
 import { detectWslDistros } from "./ssh-wsl.js";
+import type { WslDistros } from "./ssh-wsl.js";
 
 const execFileAsync = promisify(execFile);
 const require = createRequire(import.meta.url);
 
-async function detectSshKeygenBinary() {
+interface SafeStorage {
+  isEncryptionAvailable?(): boolean;
+}
+
+interface AppConfigLike {
+  ssh?: {
+    allowSystemSshFallback?: boolean;
+  };
+}
+
+export interface PlatformCapabilities {
+  platform: string;
+  arch: string;
+  safeStorageAvailable: boolean;
+  sshKeygen: boolean;
+  systemSsh: boolean;
+  openSshAgent: boolean;
+  pageant: boolean;
+  wsl: WslDistros | null;
+}
+
+interface PreflightWarning {
+  level: string;
+  code: string;
+  message: string;
+  remedy?: string;
+}
+
+export interface PreflightResult {
+  capabilities: PlatformCapabilities;
+  warnings: PreflightWarning[];
+}
+
+async function detectSshKeygenBinary(): Promise<boolean> {
   try {
     await execFileAsync("ssh-keygen", ["-?"], { timeout: 1500 });
     return true;
   } catch (err) {
     // ssh-keygen with no args typically exits non-zero but prints usage, which
     // is still proof of existence. Only ENOENT means it's missing.
-    return err.code !== "ENOENT";
+    return (err as NodeJS.ErrnoException).code !== "ENOENT";
   }
 }
 
-async function detectSshBinary() {
+async function detectSshBinary(): Promise<boolean> {
   try {
     await execFileAsync("ssh", ["-V"], { timeout: 1500 });
     return true;
   } catch (err) {
-    return err.code !== "ENOENT";
+    return (err as NodeJS.ErrnoException).code !== "ENOENT";
   }
 }
 
-function loadSafeStorage() {
+function loadSafeStorage(): SafeStorage | null {
   try {
-    return require("electron").safeStorage;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return (require("electron") as any).safeStorage as SafeStorage;
   } catch {
     return null;
   }
 }
 
-export async function runPlatformPreflight(appConfig = { ssh: { allowSystemSshFallback: true } }) {
+export async function runPlatformPreflight(appConfig: AppConfigLike = { ssh: { allowSystemSshFallback: true } }): Promise<PreflightResult> {
   const safeStorage = loadSafeStorage();
 
   const wslCaps = await detectWslDistros();
@@ -43,7 +79,7 @@ export async function runPlatformPreflight(appConfig = { ssh: { allowSystemSshFa
   const sshKeygen = await detectSshKeygenBinary();
   const systemSsh = await detectSshBinary();
 
-  const caps = {
+  const caps: PlatformCapabilities = {
     platform: process.platform,
     arch: process.arch,
     safeStorageAvailable: !!(safeStorage && typeof safeStorage.isEncryptionAvailable === "function"
@@ -56,7 +92,7 @@ export async function runPlatformPreflight(appConfig = { ssh: { allowSystemSshFa
     wsl: wslCaps,
   };
 
-  const warnings = [];
+  const warnings: PreflightWarning[] = [];
   if (!caps.safeStorageAvailable) {
     warnings.push({
       level: "error",

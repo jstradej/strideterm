@@ -1,9 +1,17 @@
+/// <reference types="node" />
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 
-export async function detectWslDistros() {
+export interface WslDistros {
+  installed: boolean;
+  distros: string[];
+  default?: string;
+  error?: string;
+}
+
+export async function detectWslDistros(): Promise<WslDistros | null> {
   if (process.platform !== "win32") return null;
   try {
     const { stdout } = await execFileAsync("wsl.exe", ["-l", "-q"], {
@@ -16,15 +24,17 @@ export async function detectWslDistros() {
       .filter(Boolean);
     if (!distros.length) return { installed: false, distros: [] };
 
-    let defaultDistro = distros[0];
+    let defaultDistro = distros[0]!;
     try {
       const { stdout: defaultOut } = await execFileAsync("wsl.exe", ["-l", "-v"], {
         env: { ...process.env, WSL_UTF8: "1" },
         timeout: 5000,
       });
       const defaultMatch = defaultOut.match(/^\*\s+(\S+)/m);
-      if (defaultMatch) defaultDistro = defaultMatch[1].replace(/\0/g, "");
-    } catch {}
+      if (defaultMatch) defaultDistro = defaultMatch[1]!.replace(/\0/g, "");
+    } catch {
+      // best-effort
+    }
 
     return {
       installed: true,
@@ -32,6 +42,6 @@ export async function detectWslDistros() {
       default: defaultDistro,
     };
   } catch (err) {
-    return { installed: false, distros: [], error: err.message };
+    return { installed: false, distros: [], error: (err as Error).message };
   }
 }

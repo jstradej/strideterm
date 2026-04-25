@@ -1,3 +1,4 @@
+/// <reference types="node" />
 import os from "node:os";
 import path from "node:path";
 import fs from "node:fs/promises";
@@ -7,8 +8,9 @@ import { SshManager } from "./ssh-manager.js";
 import { verifyHostKey, recordHostKey } from "./ssh-known-hosts.js";
 import { buildAuth } from "./ssh-auth.js";
 import { normalizeState } from "../default-state.js";
+import type { CredentialStore } from "../shared/credential-store.js";
 
-const tempDirs = [];
+const tempDirs: string[] = [];
 
 async function freshStore() {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-ssh-test-"));
@@ -16,19 +18,19 @@ async function freshStore() {
   return createStore(path.join(dir, "state.json"));
 }
 
-function fakeCredentialStore(initial = {}) {
+function fakeCredentialStore(initial: Record<string, string> = {}): CredentialStore {
   const secrets = new Map(Object.entries(initial));
   return {
-    setSecret(ref, value) {
+    async setSecret(ref: string, value: string) {
       secrets.set(ref, value);
     },
-    getSecret(ref) {
+    getSecret(ref: string) {
       return secrets.get(ref) || "";
     },
-    hasSecret(ref) {
+    hasSecret(ref: string) {
       return secrets.has(ref);
     },
-    async deleteSecret(ref) {
+    async deleteSecret(ref: string) {
       secrets.delete(ref);
     },
     listRefs() {
@@ -247,7 +249,7 @@ describe("SshManager.createSession inline host", () => {
     });
 
     // Capture what buildAuth saw without actually starting ssh2.
-    let observed = null;
+    let observed: { id: string; host: string; auth: Record<string, unknown> } | null = null;
     const inlineHost = {
       host: "quick.example.com",
       port: 22,

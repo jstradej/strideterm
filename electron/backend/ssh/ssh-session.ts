@@ -1,11 +1,93 @@
 import { Client } from "ssh2";
+import type { ClientChannel, ConnectConfig, Prompt } from "ssh2";
+import type { AuthConfig } from "./ssh-auth.js";
+import type { HostKeyVerdict } from "./ssh-known-hosts.js";
 
 const KEEPALIVE_INTERVAL = 30000;
 const KEEPALIVE_MAX = 3;
 const READY_TIMEOUT = 20000;
 
+interface HostAdvanced {
+  command?: string;
+  keepaliveIntervalMs?: number;
+  keepaliveCountMax?: number;
+  compression?: boolean;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  algorithms?: any;
+}
+
+interface HostLike {
+  host: string;
+  port?: number;
+  username?: string;
+  advanced?: HostAdvanced;
+  hostKeyPolicy?: string;
+  name?: string;
+}
+
+export interface HostKeyInfo {
+  fingerprint: string;
+  keyType: string;
+  first?: boolean;
+}
+
+interface HostKeyMismatchInfo {
+  fingerprint: string;
+  keyType: string;
+  previous: { fingerprint: string; keyType: string; addedAt: string } | null;
+}
+
+interface JumpEntry {
+  host: HostLike;
+  auth: AuthConfig;
+  verify?: (args: { key: Buffer }) => HostKeyVerdict;
+}
+
+interface ExitInfo {
+  exitCode: number;
+  signal: string | null;
+  error?: string;
+}
+
+interface AuthPromptInfo {
+  name: string;
+  instructions: string;
+  prompts: Prompt[];
+  finish: (responses: string[]) => void;
+}
+
+interface SshSessionOpts {
+  host: HostLike;
+  auth?: AuthConfig;
+  jumps?: JumpEntry[];
+  dimensions?: { cols: number; rows: number };
+  verify?: (args: { key: Buffer }) => HostKeyVerdict;
+  onData?: (data: string) => void;
+  onExit?: (exit: ExitInfo) => void;
+  onAuthPrompt?: (info: AuthPromptInfo) => void;
+  onHostKeyDecision?: (info: HostKeyMismatchInfo, callback: (accept: boolean) => void) => void;
+  onReady?: () => void;
+}
+
 export class SshSession {
-  constructor(opts) {
+  host: HostLike;
+  auth: AuthConfig;
+  jumps: JumpEntry[];
+  dimensions: { cols: number; rows: number };
+  verify?: (args: { key: Buffer }) => HostKeyVerdict;
+  onData?: (data: string) => void;
+  onExit?: (exit: ExitInfo) => void;
+  onAuthPrompt?: (info: AuthPromptInfo) => void;
+  onHostKeyDecision?: (info: HostKeyMismatchInfo, callback: (accept: boolean) => void) => void;
+  onReady?: () => void;
+  client: Client | null;
+  stream: ClientChannel | null;
+  jumpClients: Client[];
+  ready: boolean;
+  ended: boolean;
+  verifiedHostKey: HostKeyInfo | null;
+
+  constructor(opts: SshSessionOpts) {
     this.host = opts.host;
     this.auth = opts.auth || {};
     this.jumps = opts.jumps || [];
@@ -26,15 +108,16 @@ export class SshSession {
     this.verifiedHostKey = null;
   }
 
-  async start() {
+  async start(): Promise<void> {
     const sock = await this._connectChain();
 
-    return new Promise((resolve, reject) => {
+    return new Promise<void>((resolve, reject) => {
       const client = new Client();
       this.client = client;
 
       let settled = false;
-      const finish = (fn, arg) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const finish = (fn: (arg?: any) => void, arg?: unknown) => {
         if (settled) return;
         settled = true;
         fn(arg);
@@ -55,9 +138,9 @@ export class SshSession {
                 return;
               }
               this.stream = stream;
-              stream.on("data", (buf) => this.onData?.(buf.toString("utf-8")));
-              stream.stderr.on("data", (buf) => this.onData?.(buf.toString("utf-8")));
-              stream.on("close", (code, signal) => {
+              stream.on("data", (buf: Buffer) => this.onData?.(buf.toString("utf-8")));
+              stream.stderr.on("data", (buf: Buffer) => this.onData?.(buf.toString("utf-8")));
+              stream.on("close", (code: number | null, signal: string | null) => {
                 if (this.ended) return;
                 this.ended = true;
                 this.onExit?.({ exitCode: typeof code === "number" ? code : 0, signal: signal || null });
@@ -74,11 +157,11 @@ export class SshSession {
             },
           );
         })
-        .on("keyboard-interactive", (name, instructions, _lang, prompts, finishPrompt) => {
+        .on("keyboard-interactive", (name: string, instructions: string, _lang: string, prompts: Prompt[], finishPrompt: (responses: string[]) => void) => {
           this.onAuthPrompt?.({ name, instructions, prompts, finish: finishPrompt });
         })
-        .on("banner", (msg) => this.onData?.(msg))
-        .on("error", (err) => {
+        .on("banner", (msg: string) => this.onData?.(msg))
+        .on("error", (err: Error) => {
           if (this.ready) {
             // Post-ready errors: treat as exit with nonzero code, not as start() reject.
             if (this.ended) return;
@@ -102,31 +185,32 @@ export class SshSession {
     });
   }
 
-  async _connectChain() {
+  async _connectChain(): Promise<ClientChannel | null> {
     if (this.jumps.length === 0) return null;
 
-    let currentSock = null;
+    let currentSock: ClientChannel | null = null;
     this.jumpClients = [];
 
     for (let i = 0; i < this.jumps.length; i += 1) {
-      const jump = this.jumps[i];
+      const jump = this.jumps[i]!;
       const jumpClient = new Client();
       this.jumpClients.push(jumpClient);
 
-      await new Promise((resolveConnect, rejectConnect) => {
+      await new Promise<void>((resolveConnect, rejectConnect) => {
         let settled = false;
-        const settle = (fn, arg) => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const settle = (fn: (arg?: any) => void, arg?: unknown) => {
           if (settled) return;
           settled = true;
           fn(arg);
         };
         jumpClient.on("ready", () => settle(resolveConnect));
-        jumpClient.on("error", (err) => settle(rejectConnect, err));
+        jumpClient.on("error", (err: Error) => settle(rejectConnect, err));
         jumpClient.on("close", () => {
           if (!settled) settle(rejectConnect, new Error("Jump connection closed"));
         });
 
-        const cfg = {
+        const cfg: ConnectConfig = {
           host: jump.host.host,
           port: jump.host.port || 22,
           username: jump.host.username,
@@ -138,10 +222,10 @@ export class SshSession {
         jumpClient.connect(cfg);
       });
 
-      const nextHost = i + 1 < this.jumps.length ? this.jumps[i + 1].host : this.host;
+      const nextHost = i + 1 < this.jumps.length ? this.jumps[i + 1]!.host : this.host;
       const nextPort = nextHost.port || 22;
 
-      currentSock = await new Promise((resolveForward, rejectForward) => {
+      currentSock = await new Promise<ClientChannel>((resolveForward, rejectForward) => {
         jumpClient.forwardOut("127.0.0.1", 0, nextHost.host, nextPort, (err, stream) => {
           if (err) rejectForward(err);
           else resolveForward(stream);
@@ -152,7 +236,11 @@ export class SshSession {
     return currentSock;
   }
 
-  _buildConnectConfig(sock) {
+  _buildConnectConfig(sock: ClientChannel | null): ConnectConfig {
+    // `compress` is a legacy top-level ConnectConfig option that is not present
+    // in the @types/ssh2 typings (it belongs in algorithms.compress) but ssh2
+    // at runtime accepts it directly. Cast through unknown to keep the logic.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const cfg = {
       host: this.host.host,
       port: this.host.port || 22,
@@ -166,7 +254,7 @@ export class SshSession {
       hostVerifier: this._makeHostVerifier(this.host, this.verify, (info) => {
         this.verifiedHostKey = info;
       }),
-    };
+    } as ConnectConfig;
     if (sock) cfg.sock = sock;
     return cfg;
   }
@@ -174,26 +262,32 @@ export class SshSession {
   // `hostVerifier` in ssh2 receives the raw host key Buffer (plus a callback
   // for async verdict). We compute the fingerprint ourselves, check the store,
   // and escalate to the user on mismatch via onHostKeyDecision.
-  _makeHostVerifier(host, verify, onAccepted) {
-    return (keyOrHash, callback) => {
+  _makeHostVerifier(
+    host: HostLike,
+    verify?: (args: { key: Buffer }) => HostKeyVerdict,
+    onAccepted?: (info: HostKeyInfo) => void,
+  ): (keyOrHash: Buffer, callback: (valid: boolean) => void) => boolean | undefined {
+    return (keyOrHash: Buffer, callback: (valid: boolean) => void): boolean | undefined => {
       try {
-        const result = verify ? verify({ key: keyOrHash }) : { ok: true };
+        const result: HostKeyVerdict | { ok: true } = verify ? verify({ key: keyOrHash }) : { ok: true };
         if (result && typeof result === "object") {
           if (result.ok === true) {
             // Capture fingerprint so the caller can persist it on successful
             // connect (handles first-time TOFU acceptance).
-            if (result.first && result.fingerprint && typeof onAccepted === "function") {
-              onAccepted({ fingerprint: result.fingerprint, keyType: result.keyType, first: true });
+            const r = result as { ok: true; first?: boolean; fingerprint?: string; keyType?: string };
+            if (r.first && r.fingerprint && typeof onAccepted === "function") {
+              onAccepted({ fingerprint: r.fingerprint, keyType: r.keyType || "", first: true });
             }
             if (typeof callback === "function") callback(true);
             return true;
           }
-          if (result.mismatch && this.onHostKeyDecision) {
+          const mismatch = result as { ok: false; mismatch?: boolean; fingerprint?: string; keyType?: string; previous?: { fingerprint: string; keyType: string; addedAt: string } | null };
+          if (mismatch.mismatch && this.onHostKeyDecision) {
             this.onHostKeyDecision(
-              { fingerprint: result.fingerprint, keyType: result.keyType, previous: result.previous },
+              { fingerprint: mismatch.fingerprint || "", keyType: mismatch.keyType || "", previous: mismatch.previous || null },
               (accept) => {
                 if (accept && typeof onAccepted === "function") {
-                  onAccepted({ fingerprint: result.fingerprint, keyType: result.keyType, first: false });
+                  onAccepted({ fingerprint: mismatch.fingerprint || "", keyType: mismatch.keyType || "", first: false });
                 }
                 if (typeof callback === "function") callback(!!accept);
               },
@@ -214,15 +308,15 @@ export class SshSession {
     };
   }
 
-  write(data) {
+  write(data: string): void {
     if (this.stream) this.stream.write(data);
   }
 
-  resize(cols, rows) {
+  resize(cols: number, rows: number): void {
     if (this.stream) this.stream.setWindow(rows, cols, 0, 0);
   }
 
-  async stop() {
+  async stop(): Promise<void> {
     try {
       if (this.stream) this.stream.end();
     } catch {
