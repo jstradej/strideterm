@@ -506,7 +506,7 @@ dt {
   flex-shrink: 0;
 }
 
-.remote-access--expanded .remote-card {
+.remote-card.remote-access--expanded {
   padding: 14px;
   max-height: min(84vh, 920px);
   overflow: auto;
