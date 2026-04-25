@@ -38,7 +38,13 @@ function execGit(cwd, args) {
 let tmpRoot;
 
 beforeAll(async () => {
-  tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-fm-test-"));
+  // On macOS os.tmpdir() returns a /var/... path that is a symlink to
+  // /private/var/...; git rev-parse --show-toplevel canonicalises to the
+  // real path, so path.relative(tmpRoot, top) starts with `..` and the
+  // file-manager filters every entry out. Resolve the real path up-front
+  // so root and top compare equal.
+  const created = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-fm-test-"));
+  tmpRoot = await fs.realpath(created);
 });
 
 afterAll(async () => {
