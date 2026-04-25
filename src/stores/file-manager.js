@@ -431,6 +431,14 @@ export const useFileManagerStore = defineStore("fileManager", () => {
     await runDiff();
   }
 
+  // Switch diff mode without fetching — used when the user opens a picker
+  // (branch / tag / commit) but hasn't selected a specific ref yet.
+  function selectDiffMode(source) {
+    diffSource.value = source;
+    diffRevisionRef.value = "";
+    diffPayload.value = null;
+  }
+
   async function runDiff() {
     if (!_api || !diffEntry.value) return;
     diffLoading.value = true;
@@ -528,6 +536,7 @@ export const useFileManagerStore = defineStore("fileManager", () => {
     getDirectoryStatusFor,
     openDiff,
     setDiffSource,
+    selectDiffMode,
     runDiff,
     closeDiff,
   };

@@ -116,9 +116,7 @@ function onSourceChange(value) {
     store.setDiffSource(value);
     return;
   }
-  store.diffSource = value;
-  store.diffRevisionRef = "";
-  store.diffPayload = null;
+  store.selectDiffMode(value);
 }
 
 function applyManualCommit() {

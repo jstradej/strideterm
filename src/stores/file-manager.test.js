@@ -124,6 +124,28 @@ describe("file-manager store", () => {
     expect(store.diffPayload).toBe(null);
   });
 
+  it("selectDiffMode switches mode and clears ref+payload without fetching", async () => {
+    const { api, calls } = makeFakeApi();
+    const store = useFileManagerStore();
+    store.setApi(api);
+    await store.init("/r");
+
+    const entry = { name: "x.js", relativePath: "x.js", kind: "file", extension: ".js" };
+    await store.openDiff(entry);
+    const callsBefore = calls.fileGitDiff.length;
+    expect(store.diffPayload).not.toBe(null);
+
+    store.selectDiffMode("branch");
+    expect(store.diffSource).toBe("branch");
+    expect(store.diffRevisionRef).toBe("");
+    expect(store.diffPayload).toBe(null);
+    expect(calls.fileGitDiff.length).toBe(callsBefore); // no extra fetch
+
+    store.selectDiffMode("tag");
+    expect(store.diffSource).toBe("tag");
+    expect(calls.fileGitDiff.length).toBe(callsBefore);
+  });
+
   it("moveEntryTo refuses moves into self / own subtree", async () => {
     let moveCalled = false;
     const { api } = makeFakeApi({
