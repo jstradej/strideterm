@@ -9,18 +9,70 @@
 
 const GITHUB_API_VERSION = "2022-11-28";
 
-export function createGitHubApi(fetchImpl, { auditLogger } = {}) {
-  const etagCache = new Map();
+interface Connection {
+  apiBaseUrl?: string;
+  [key: string]: unknown;
+}
+
+interface RequestJsonOptions {
+  token?: string;
+  method?: string;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  body?: any;
+  headers?: Record<string, string>;
+  accept?: string;
+}
+
+interface AuditEntry {
+  method: string;
+  url: string;
+  statusCode: number;
+  success: boolean;
+  durationMs: number;
+  errorMessage?: string;
+}
+
+interface ListUserReposOptions {
+  perPage?: number;
+  sort?: string;
+}
+
+interface ListBranchesOptions {
+  perPage?: number;
+}
+
+interface SubmitReviewOptions {
+  event: string;
+  body?: string;
+}
+
+interface CreatePullRequestOptions {
+  title: string;
+  body?: string;
+  head: string;
+  base: string;
+  draft?: boolean;
+}
+
+interface EtagCacheEntry {
+  etag: string;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  data: any;
+}
+
+export function createGitHubApi(
+  fetchImpl: typeof globalThis.fetch,
+  { auditLogger }: { auditLogger?: (entry: AuditEntry) => void } = {},
+) {
+  const etagCache = new Map<string, EtagCacheEntry>();
   const ETAG_CACHE_MAX_SIZE = 200;
 
-  async function requestJson(
-    url,
-    { token, method = "GET", body = null, headers = {}, accept = "application/vnd.github+json" } = {},
-  ) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  async function requestJson(url: string, { token, method = "GET", body = null, headers = {}, accept = "application/vnd.github+json" }: RequestJsonOptions = {}): Promise<any> {
     const startTime = Date.now();
     let statusCode = 0;
 
-    const requestHeaders = {
+    const requestHeaders: Record<string, string> = {
       Accept: accept,
       "Content-Type": "application/json",
       Authorization: `Bearer ${token}`,
@@ -76,14 +128,15 @@ export function createGitHubApi(fetchImpl, { auditLogger } = {}) {
         return null;
       }
 
-      const data = await response.json();
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const data: any = await response.json();
 
       if (method === "GET") {
         const etag = typeof response.headers?.get === "function" ? response.headers.get("etag") : null;
         if (etag) {
           if (etagCache.size >= ETAG_CACHE_MAX_SIZE) {
             const firstKey = etagCache.keys().next().value;
-            etagCache.delete(firstKey);
+            etagCache.delete(firstKey!);
           }
           etagCache.set(url, { etag, data });
         }
@@ -104,7 +157,7 @@ export function createGitHubApi(fetchImpl, { auditLogger } = {}) {
             url,
             statusCode,
             success: false,
-            errorMessage: err.message,
+            errorMessage: (err as Error).message,
             durationMs: Date.now() - startTime,
           });
         } catch {}
@@ -117,64 +170,64 @@ export function createGitHubApi(fetchImpl, { auditLogger } = {}) {
   // URL builders
   // ---------------------------------------------------------------------------
 
-  function buildApiBase(connection) {
-    return connection.apiBaseUrl || "https://api.github.com";
+  function buildApiBase(connection: Connection): string {
+    return (connection.apiBaseUrl as string) || "https://api.github.com";
   }
 
   // User
-  function buildGetUserUrl(connection) {
+  function buildGetUserUrl(connection: Connection): string {
     return `${buildApiBase(connection)}/user`;
   }
 
   // Search
-  function buildSearchIssuesUrl(connection, query, perPage = 100) {
+  function buildSearchIssuesUrl(connection: Connection, query: string, perPage = 100): string {
     return `${buildApiBase(connection)}/search/issues?q=${encodeURIComponent(query)}&per_page=${perPage}&sort=updated&order=desc`;
   }
 
   // Pulls
-  function buildPullRequestUrl(connection, owner, repo, pullNumber) {
+  function buildPullRequestUrl(connection: Connection, owner: string, repo: string, pullNumber: number | string): string {
     return `${buildApiBase(connection)}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/pulls/${pullNumber}`;
   }
 
-  function buildPullRequestFilesUrl(connection, owner, repo, pullNumber, perPage = 100) {
+  function buildPullRequestFilesUrl(connection: Connection, owner: string, repo: string, pullNumber: number | string, perPage = 100): string {
     return `${buildApiBase(connection)}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/pulls/${pullNumber}/files?per_page=${perPage}`;
   }
 
   // Reviews
-  function buildPullRequestReviewsUrl(connection, owner, repo, pullNumber) {
+  function buildPullRequestReviewsUrl(connection: Connection, owner: string, repo: string, pullNumber: number | string): string {
     return `${buildApiBase(connection)}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/pulls/${pullNumber}/reviews`;
   }
 
-  function buildSubmitReviewUrl(connection, owner, repo, pullNumber) {
+  function buildSubmitReviewUrl(connection: Connection, owner: string, repo: string, pullNumber: number | string): string {
     return `${buildApiBase(connection)}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/pulls/${pullNumber}/reviews`;
   }
 
   // Review comments (line-level)
-  function buildReviewCommentsUrl(connection, owner, repo, pullNumber, perPage = 100) {
+  function buildReviewCommentsUrl(connection: Connection, owner: string, repo: string, pullNumber: number | string, perPage = 100): string {
     return `${buildApiBase(connection)}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/pulls/${pullNumber}/comments?per_page=${perPage}&sort=created&direction=asc`;
   }
 
   // Issue comments (general conversation)
-  function buildIssueCommentsUrl(connection, owner, repo, pullNumber, perPage = 100) {
+  function buildIssueCommentsUrl(connection: Connection, owner: string, repo: string, pullNumber: number | string, perPage = 100): string {
     return `${buildApiBase(connection)}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/issues/${pullNumber}/comments?per_page=${perPage}`;
   }
 
-  function buildCreateIssueCommentUrl(connection, owner, repo, pullNumber) {
+  function buildCreateIssueCommentUrl(connection: Connection, owner: string, repo: string, pullNumber: number | string): string {
     return `${buildApiBase(connection)}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/issues/${pullNumber}/comments`;
   }
 
   // Check runs
-  function buildCheckRunsUrl(connection, owner, repo, ref, perPage = 100) {
+  function buildCheckRunsUrl(connection: Connection, owner: string, repo: string, ref: string, perPage = 100): string {
     return `${buildApiBase(connection)}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/commits/${ref}/check-runs?per_page=${perPage}`;
   }
 
   // Combined status
-  function buildCombinedStatusUrl(connection, owner, repo, ref) {
+  function buildCombinedStatusUrl(connection: Connection, owner: string, repo: string, ref: string): string {
     return `${buildApiBase(connection)}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/commits/${ref}/status`;
   }
 
   // Review requests
-  function buildRequestedReviewersUrl(connection, owner, repo, pullNumber) {
+  function buildRequestedReviewersUrl(connection: Connection, owner: string, repo: string, pullNumber: number | string): string {
     return `${buildApiBase(connection)}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/pulls/${pullNumber}/requested_reviewers`;
   }
 
@@ -182,21 +235,26 @@ export function createGitHubApi(fetchImpl, { auditLogger } = {}) {
   // High-level API methods
   // ---------------------------------------------------------------------------
 
-  async function getAuthenticatedUser(connection, token) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  async function getAuthenticatedUser(connection: Connection, token: string): Promise<any> {
     return requestJson(buildGetUserUrl(connection), { token });
   }
 
-  async function searchPullRequests(connection, token, query) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  async function searchPullRequests(connection: Connection, token: string, query: string): Promise<any[]> {
     const result = await requestJson(buildSearchIssuesUrl(connection, query), { token });
     return result?.items || [];
   }
 
-  async function getPullRequest(connection, token, owner, repo, pullNumber) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  async function getPullRequest(connection: Connection, token: string, owner: string, repo: string, pullNumber: number | string): Promise<any> {
     return requestJson(buildPullRequestUrl(connection, owner, repo, pullNumber), { token });
   }
 
-  async function listPullRequestFiles(connection, token, owner, repo, pullNumber) {
-    const files = [];
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  async function listPullRequestFiles(connection: Connection, token: string, owner: string, repo: string, pullNumber: number | string): Promise<any[]> {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const files: any[] = [];
     let page = 1;
     while (true) {
       const url = `${buildPullRequestFilesUrl(connection, owner, repo, pullNumber)}&page=${page}`;
@@ -209,13 +267,16 @@ export function createGitHubApi(fetchImpl, { auditLogger } = {}) {
     return files;
   }
 
-  async function listReviews(connection, token, owner, repo, pullNumber) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  async function listReviews(connection: Connection, token: string, owner: string, repo: string, pullNumber: number | string): Promise<any[]> {
     const result = await requestJson(buildPullRequestReviewsUrl(connection, owner, repo, pullNumber), { token });
     return Array.isArray(result) ? result : [];
   }
 
-  async function listReviewComments(connection, token, owner, repo, pullNumber) {
-    const comments = [];
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  async function listReviewComments(connection: Connection, token: string, owner: string, repo: string, pullNumber: number | string): Promise<any[]> {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const comments: any[] = [];
     let page = 1;
     while (true) {
       const url = `${buildReviewCommentsUrl(connection, owner, repo, pullNumber)}&page=${page}`;
@@ -228,8 +289,10 @@ export function createGitHubApi(fetchImpl, { auditLogger } = {}) {
     return comments;
   }
 
-  async function listIssueComments(connection, token, owner, repo, pullNumber) {
-    const comments = [];
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  async function listIssueComments(connection: Connection, token: string, owner: string, repo: string, pullNumber: number | string): Promise<any[]> {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const comments: any[] = [];
     let page = 1;
     while (true) {
       const url = `${buildIssueCommentsUrl(connection, owner, repo, pullNumber)}&page=${page}`;
@@ -242,25 +305,30 @@ export function createGitHubApi(fetchImpl, { auditLogger } = {}) {
     return comments;
   }
 
-  async function listCheckRuns(connection, token, owner, repo, ref) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  async function listCheckRuns(connection: Connection, token: string, owner: string, repo: string, ref: string): Promise<any[]> {
     const result = await requestJson(buildCheckRunsUrl(connection, owner, repo, ref), { token });
     return result?.check_runs || [];
   }
 
-  async function getCombinedStatus(connection, token, owner, repo, ref) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  async function getCombinedStatus(connection: Connection, token: string, owner: string, repo: string, ref: string): Promise<any> {
     return requestJson(buildCombinedStatusUrl(connection, owner, repo, ref), { token });
   }
 
-  async function rerunCheckSuite(connection, token, owner, repo, checkSuiteId) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  async function rerunCheckSuite(connection: Connection, token: string, owner: string, repo: string, checkSuiteId: string | number): Promise<any> {
     const url = `${buildApiBase(connection)}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/check-suites/${checkSuiteId}/rerequest`;
     return requestJson(url, { token, method: "POST" });
   }
 
-  async function listRequestedReviewers(connection, token, owner, repo, pullNumber) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  async function listRequestedReviewers(connection: Connection, token: string, owner: string, repo: string, pullNumber: number | string): Promise<any> {
     return requestJson(buildRequestedReviewersUrl(connection, owner, repo, pullNumber), { token });
   }
 
-  async function createIssueComment(connection, token, owner, repo, pullNumber, body) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  async function createIssueComment(connection: Connection, token: string, owner: string, repo: string, pullNumber: number | string, body: string): Promise<any> {
     return requestJson(buildCreateIssueCommentUrl(connection, owner, repo, pullNumber), {
       token,
       method: "POST",
@@ -268,8 +336,10 @@ export function createGitHubApi(fetchImpl, { auditLogger } = {}) {
     });
   }
 
-  async function listUserRepos(connection, token, { perPage = 100, sort = "pushed" } = {}) {
-    const repos = [];
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  async function listUserRepos(connection: Connection, token: string, { perPage = 100, sort = "pushed" }: ListUserReposOptions = {}): Promise<any[]> {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const repos: any[] = [];
     let page = 1;
     while (true) {
       const url = `${buildApiBase(connection)}/user/repos?per_page=${perPage}&sort=${sort}&direction=desc&page=${page}`;
@@ -282,8 +352,10 @@ export function createGitHubApi(fetchImpl, { auditLogger } = {}) {
     return repos;
   }
 
-  async function listBranches(connection, token, owner, repo, { perPage = 100 } = {}) {
-    const branches = [];
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  async function listBranches(connection: Connection, token: string, owner: string, repo: string, { perPage = 100 }: ListBranchesOptions = {}): Promise<any[]> {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const branches: any[] = [];
     let page = 1;
     while (true) {
       const url = `${buildApiBase(connection)}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/branches?per_page=${perPage}&page=${page}`;
@@ -296,7 +368,8 @@ export function createGitHubApi(fetchImpl, { auditLogger } = {}) {
     return branches;
   }
 
-  async function submitReview(connection, token, owner, repo, pullNumber, { event, body = "" }) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  async function submitReview(connection: Connection, token: string, owner: string, repo: string, pullNumber: number | string, { event, body = "" }: SubmitReviewOptions): Promise<any> {
     return requestJson(buildSubmitReviewUrl(connection, owner, repo, pullNumber), {
       token,
       method: "POST",
@@ -336,7 +409,8 @@ export function createGitHubApi(fetchImpl, { auditLogger } = {}) {
     submitReview,
     listUserRepos,
     listBranches,
-    createPullRequest: async (connection, token, owner, repo, { title, body = "", head, base, draft = false }) => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    createPullRequest: async (connection: Connection, token: string, owner: string, repo: string, { title, body = "", head, base, draft = false }: CreatePullRequestOptions): Promise<any> => {
       return requestJson(
         `${buildApiBase(connection)}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/pulls`,
         {
