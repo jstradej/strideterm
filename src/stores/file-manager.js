@@ -134,6 +134,9 @@ export const useFileManagerStore = defineStore("fileManager", () => {
       selectedEntry.value = null;
       preview.value = null;
       editMode.value = false;
+      // Keep dirty markers in sync with what the user just moved into.
+      // Run in the background so navigation isn't blocked.
+      refreshGitStatus().catch(() => {});
     } catch (err) {
       error.value = err.message || "Failed to list directory";
     } finally {
