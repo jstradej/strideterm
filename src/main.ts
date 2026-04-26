@@ -38,6 +38,7 @@ gitUiStore.init(api);
     canvas.width = size;
     canvas.height = size;
     const ctx = canvas.getContext("2d");
+    if (!ctx) return;
     const imageData = ctx.createImageData(size, size);
     const data = imageData.data;
     for (let i = 0; i < data.length; i += 4) {
