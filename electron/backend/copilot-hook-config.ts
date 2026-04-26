@@ -84,6 +84,50 @@ export function findExistingHook(config: Record<string, unknown>, copilotEventNa
   });
 }
 
+// Copilot's config.json is JSONC — it ships with `// User settings ...`
+// header comments and may pick up trailing commas. JSON.parse rejects both,
+// so we strip line/block comments outside strings before parsing. We do not
+// preserve comments on write; Copilot regenerates them as needed.
+function stripJsoncComments(input: string): string {
+  let out = "";
+  let i = 0;
+  let inString = false;
+  let stringChar = "";
+  let escape = false;
+  while (i < input.length) {
+    const ch = input[i];
+    const next = input[i + 1];
+    if (inString) {
+      out += ch;
+      if (escape) escape = false;
+      else if (ch === "\\") escape = true;
+      else if (ch === stringChar) inString = false;
+      i++;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      inString = true;
+      stringChar = ch;
+      out += ch;
+      i++;
+      continue;
+    }
+    if (ch === "/" && next === "/") {
+      while (i < input.length && input[i] !== "\n") i++;
+      continue;
+    }
+    if (ch === "/" && next === "*") {
+      i += 2;
+      while (i < input.length - 1 && !(input[i] === "*" && input[i + 1] === "/")) i++;
+      i += 2;
+      continue;
+    }
+    out += ch;
+    i++;
+  }
+  return out.replace(/,(\s*[}\]])/g, "$1");
+}
+
 async function readCopilotConfig(): Promise<{
   ok: boolean;
   data: Record<string, unknown> | null;
@@ -93,7 +137,7 @@ async function readCopilotConfig(): Promise<{
   const configPath = getCopilotConfigPath();
   try {
     const raw = await readFile(configPath, "utf8");
-    return { ok: true, data: JSON.parse(raw) as Record<string, unknown>, path: configPath };
+    return { ok: true, data: JSON.parse(stripJsoncComments(raw)) as Record<string, unknown>, path: configPath };
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return { ok: true, data: null, path: configPath };
     return { ok: false, data: null, error: (error as NodeJS.ErrnoException).message, path: configPath };
