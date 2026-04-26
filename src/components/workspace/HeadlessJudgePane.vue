@@ -74,14 +74,11 @@
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { computed } from "vue";
 import { useAppStore } from "../../stores/app.js";
 
-const props = defineProps({
-  sessionId: { type: String, required: true },
-  showHeader: { type: Boolean, default: false },
-});
+const props = withDefaults(defineProps<{ sessionId: string; showHeader?: boolean }>(), { showHeader: false });
 
 const store = useAppStore();
 
@@ -93,7 +90,9 @@ const workspaceId = computed(() =>
 );
 
 const workspace = computed(() => {
-  const active = store.payload?.workspace?.workspace || store.payload?.workspace?.project || null;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const ws = store.payload?.workspace as any;
+  const active = ws?.workspace || ws?.project || null;
   if (active?.id === workspaceId.value) return active;
   return (store.payload?.appState?.workspaces || []).find((entry) => entry.id === workspaceId.value) || null;
 });

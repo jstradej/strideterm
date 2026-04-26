@@ -35,21 +35,24 @@
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { computed, inject, ref } from "vue";
 import { useFileManagerStore } from "../../../stores/file-manager.js";
 import { statusBadge, statusColor, statusLabel, statusTitle } from "./git-status-helpers.js";
 
-const props = defineProps({
-  node: { type: Object, required: true },
-  depth: { type: Number, default: 0 },
-});
+const props = withDefaults(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  defineProps<{ node: Record<string, any>; depth?: number }>(),
+  { depth: 0 },
+);
 
 const store = useFileManagerStore();
-const fmContextMenu = inject("fm-context-menu", null);
-const fmDragState = inject("fm-drag-state", null);
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const fmContextMenu = inject<((event: MouseEvent, entry: any) => void) | null>("fm-context-menu", null);
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const fmDragState = inject<any>("fm-drag-state", null);
 
-const isDropTarget = ref(false);
+const isDropTarget = ref<boolean>(false);
 
 const isExpanded = computed(() => store.treeNodes.get(props.node.entry.relativePath)?.expanded || false);
 const isActive = computed(() => store.currentPath === props.node.entry.relativePath);
@@ -78,20 +81,22 @@ async function toggleAndNavigate() {
   store.navigate(path);
 }
 
-function showContextMenu(event) {
+function showContextMenu(event: MouseEvent) {
   if (fmContextMenu) fmContextMenu(event, props.node.entry);
 }
 
-function onDragStart(event) {
+function onDragStart(event: DragEvent) {
   if (fmDragState) fmDragState.value = props.node.entry;
-  event.dataTransfer.effectAllowed = "move";
-  event.dataTransfer.setData("text/plain", props.node.entry.relativePath);
+  if (event.dataTransfer) {
+    event.dataTransfer.effectAllowed = "move";
+    event.dataTransfer.setData("text/plain", props.node.entry.relativePath);
+  }
 }
 
-function onDragOver(event) {
+function onDragOver(event: DragEvent) {
   if (!fmDragState?.value) return;
   if (fmDragState.value.relativePath === props.node.entry.relativePath) return;
-  event.dataTransfer.dropEffect = "move";
+  if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
   isDropTarget.value = true;
 }
 
@@ -103,7 +108,8 @@ async function onDrop() {
   isDropTarget.value = false;
   const dragged = fmDragState?.value;
   if (!dragged) return;
-  await store.moveEntryTo(dragged, props.node.entry.relativePath);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  await store.moveEntryTo(dragged as any, props.node.entry.relativePath);
   if (fmDragState) fmDragState.value = null;
 }
 </script>

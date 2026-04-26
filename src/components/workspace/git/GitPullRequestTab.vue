@@ -95,34 +95,46 @@
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import { useGitUiStore } from "../../../stores/git-ui.js";
 import CustomSelect from "../../common/CustomSelect.vue";
 
-const props = defineProps({
-  workspaceId: { type: String, required: true },
-  snapshot: { type: Object, required: true },
-  gitUi: { type: Object, required: true },
-  baseBranch: { type: String, default: "" },
-  hasNoRemote: { type: Boolean, default: false },
-  hasAzureConnection: { type: Boolean, default: false },
-  activeConnectionId: { type: String, default: "" },
-  activeConnectionLabel: { type: String, default: "" },
-});
+const props = withDefaults(
+  defineProps<{
+    workspaceId: string;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    snapshot: Record<string, any>;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    gitUi: Record<string, any>;
+    baseBranch?: string;
+    hasNoRemote?: boolean;
+    hasAzureConnection?: boolean;
+    activeConnectionId?: string;
+    activeConnectionLabel?: string;
+  }>(),
+  {
+    baseBranch: "",
+    hasNoRemote: false,
+    hasAzureConnection: false,
+    activeConnectionId: "",
+    activeConnectionLabel: "",
+  },
+);
 
 const gitUiStore = useGitUiStore();
 
-const prTitle = ref("");
-const prDescription = ref("");
-const prTargetBranch = ref("");
-const prResult = ref(null);
+const prTitle = ref<string>("");
+const prDescription = ref<string>("");
+const prTargetBranch = ref<string>("");
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const prResult = ref<Record<string, any> | null>(null);
 
 const prTargetOptions = computed(() => {
   const localBranches = (props.snapshot?.branchNames || []).filter(
-    (n) => !n.startsWith("origin/") && n !== props.snapshot?.branch,
+    (n: string) => !n.startsWith("origin/") && n !== props.snapshot?.branch,
   );
-  const remoteBranches = (props.gitUi.remoteBranches || []).filter((n) => n !== props.snapshot?.branch);
+  const remoteBranches = (props.gitUi.remoteBranches || []).filter((n: string) => n !== props.snapshot?.branch);
   const merged = [...new Set([...localBranches, ...remoteBranches])];
   const priority = ["develop", "main", "master"];
   merged.sort((a, b) => {
@@ -166,7 +178,7 @@ async function onCreatePr() {
   }
 }
 
-function openExternal(url) {
+function openExternal(url: string) {
   if (window.strideterm?.openExternal) {
     window.strideterm.openExternal(url);
   } else {

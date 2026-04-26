@@ -12,23 +12,22 @@
   </span>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { computed } from "vue";
 import CustomSelect from "../../common/CustomSelect.vue";
 
-const props = defineProps({
-  modelValue: { type: String, default: "" },
-  options: { type: Array, default: () => [] },
-  label: { type: String, default: "Base branch" },
-});
+const props = withDefaults(
+  defineProps<{ modelValue?: string; options?: string[]; label?: string }>(),
+  { modelValue: "", options: () => [], label: "Base branch" },
+);
 
-const emit = defineEmits(["update:modelValue"]);
+const emit = defineEmits<{ (e: "update:modelValue", value: string): void }>();
 
 const PRIORITY = ["main", "develop", "master"];
 
 const sortedOptions = computed(() => {
   const out = [...props.options];
-  out.sort((a, b) => {
+  out.sort((a: string, b: string) => {
     const ai = PRIORITY.indexOf(a);
     const bi = PRIORITY.indexOf(b);
     if (ai >= 0 && bi >= 0) return ai - bi;
@@ -42,9 +41,9 @@ const sortedOptions = computed(() => {
   return out;
 });
 
-const optionList = computed(() => sortedOptions.value.map((b) => ({ value: b, label: b })));
+const optionList = computed(() => sortedOptions.value.map((b: string) => ({ value: b, label: b })));
 
-function onChange(value) {
-  emit("update:modelValue", value);
+function onChange(value: string | number) {
+  emit("update:modelValue", String(value));
 }
 </script>

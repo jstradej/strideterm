@@ -46,6 +46,9 @@
   </div>
 </template>
 
-<script setup>
-defineEmits(["new-workspace", "open-settings"]);
+<script setup lang="ts">
+defineEmits<{
+  (e: "new-workspace"): void;
+  (e: "open-settings"): void;
+}>();
 </script>

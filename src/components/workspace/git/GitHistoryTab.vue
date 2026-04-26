@@ -62,7 +62,7 @@
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { computed, defineAsyncComponent, ref, watch } from "vue";
 import { Splitpanes, Pane } from "splitpanes";
 import "splitpanes/dist/splitpanes.css";
@@ -75,23 +75,32 @@ import GitBaseBranchPicker from "./GitBaseBranchPicker.vue";
 
 const MonacoDiffPanel = defineAsyncComponent(() => import("../../shared/MonacoDiffPanel.vue"));
 
-const props = defineProps({
-  workspaceId: { type: String, required: true },
-  snapshot: { type: Object, required: true },
-  gitUi: { type: Object, required: true },
-  compare: { type: Object, default: () => ({}) },
-  effectiveBaseBranch: { type: String, default: "" },
-  baseBranchOptions: { type: Array, default: () => [] },
-  activeRootPath: { type: String, default: "" },
-});
+const props = withDefaults(
+  defineProps<{
+    workspaceId: string;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    snapshot: Record<string, any>;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    gitUi: Record<string, any>;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    compare?: Record<string, any>;
+    effectiveBaseBranch?: string;
+    baseBranchOptions?: string[];
+    activeRootPath?: string;
+  }>(),
+  { compare: () => ({}), effectiveBaseBranch: "", baseBranchOptions: () => [], activeRootPath: "" },
+);
 
 const appStore = useAppStore();
 const gitUiStore = useGitUiStore();
 
-const allCommits = computed(() => {
-  const seen = new Set();
-  const result = [];
-  for (const entry of [...(props.compare.commits || []), ...(props.snapshot?.log || [])]) {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const allCommits = computed<any[]>(() => {
+  const seen = new Set<string>();
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const result: any[] = [];
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  for (const entry of [...(props.compare.commits || []), ...(props.snapshot?.log || [])] as any[]) {
     if (!entry.shortHash || seen.has(entry.shortHash)) continue;
     seen.add(entry.shortHash);
     result.push(entry);
@@ -99,15 +108,17 @@ const allCommits = computed(() => {
   return result;
 });
 
-const commitFiles = ref([]);
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const commitFiles = ref<any[]>([]);
 const commitFilesLoading = ref(false);
 const selectedCommitFile = ref("");
-const commitDiffPayload = ref(null);
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const commitDiffPayload = ref<Record<string, any> | null>(null);
 const commitDiffLoading = ref(false);
 let commitFilesSeq = 0;
 let commitDiffSeq = 0;
 
-async function loadCommitFiles(hash) {
+async function loadCommitFiles(hash: string) {
   if (!hash) {
     commitFiles.value = [];
     return;
@@ -116,10 +127,13 @@ async function loadCommitFiles(hash) {
   const seq = ++commitFilesSeq;
   commitFilesLoading.value = true;
   try {
-    const api = appStore.getApi();
-    const result = await api.fileCommitFiles({ rootPath: props.activeRootPath, hash });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const api = appStore.getApi() as any;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const result = await api.fileCommitFiles({ rootPath: props.activeRootPath, hash }) as any;
     if (seq !== commitFilesSeq) return;
-    commitFiles.value = (result?.files || []).map((f) => ({ ...f, scope: "commit" }));
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    commitFiles.value = (result?.files || []).map((f: any) => ({ ...f, scope: "commit" }));
   } catch {
     if (seq !== commitFilesSeq) return;
     commitFiles.value = [];
@@ -128,7 +142,7 @@ async function loadCommitFiles(hash) {
   }
 }
 
-async function loadCommitFileDiff(hash, relativePath) {
+async function loadCommitFileDiff(hash: string, relativePath: string) {
   if (!hash || !relativePath) {
     commitDiffPayload.value = null;
     return;
@@ -137,15 +151,17 @@ async function loadCommitFileDiff(hash, relativePath) {
   const seq = ++commitDiffSeq;
   commitDiffLoading.value = true;
   try {
-    const api = appStore.getApi();
-    const payload = await api.fileCommitDiff({ rootPath: props.activeRootPath, relativePath, hash });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const api = appStore.getApi() as any;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const payload = await api.fileCommitDiff({ rootPath: props.activeRootPath, relativePath, hash }) as any;
     if (seq !== commitDiffSeq) return;
     commitDiffPayload.value = payload;
   } catch (err) {
     if (seq !== commitDiffSeq) return;
     commitDiffPayload.value = {
       ok: false,
-      leftError: err?.message || "Failed to load commit diff",
+      leftError: (err as Error)?.message || "Failed to load commit diff",
       leftContent: "",
       rightContent: "",
       leftLabel: "",
@@ -163,7 +179,7 @@ async function loadCommitFileDiff(hash, relativePath) {
 // commit. Without it the commit list stays empty until the user re-clicks.
 watch(
   () => props.gitUi.selectedCommit,
-  (hash) => {
+  (hash: string) => {
     selectedCommitFile.value = "";
     commitDiffPayload.value = null;
     if (hash) loadCommitFiles(hash);
@@ -172,7 +188,7 @@ watch(
   { immediate: true },
 );
 
-function onSelectCommitFile(path /* scope */) {
+function onSelectCommitFile(path: string /* scope */) {
   selectedCommitFile.value = path;
   loadCommitFileDiff(props.gitUi.selectedCommit, path);
 }

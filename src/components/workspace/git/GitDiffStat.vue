@@ -18,6 +18,10 @@
   </div>
 </template>
 
-<script setup>
-defineProps({ stat: { type: Object, default: null } });
+<script setup lang="ts">
+withDefaults(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  defineProps<{ stat?: Record<string, any> | null }>(),
+  { stat: null },
+);
 </script>

@@ -23,14 +23,15 @@
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { computed } from "vue";
 
-const props = defineProps({
-  pending: { type: Object, required: true },
-});
+const props = defineProps<{
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  pending: Record<string, any>;
+}>();
 
-defineEmits(["confirm", "cancel"]);
+defineEmits<{ (e: "confirm"): void; (e: "cancel"): void }>();
 
 const messageLines = computed(() => String(props.pending?.message || "").split("\n"));
 

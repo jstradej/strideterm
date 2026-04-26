@@ -598,7 +598,7 @@
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { computed, ref, inject, watch } from "vue";
 import { useAppStore } from "../../stores/app.js";
 import { useGitUiStore } from "../../stores/git-ui.js";
@@ -612,10 +612,7 @@ import ReviewAgentTab from "./azure/ReviewAgentTab.vue";
 import ReviewPipelinesTab from "./shared/ReviewPipelinesTab.vue";
 import CustomSelect from "../common/CustomSelect.vue";
 
-const props = defineProps({
-  workspaceId: { type: String, required: true },
-  showHeader: { type: Boolean, default: false },
-});
+const props = withDefaults(defineProps<{ workspaceId: string; showHeader?: boolean }>(), { showHeader: false });
 
 const appStore = useAppStore();
 const gitUiStore = useGitUiStore();
@@ -631,10 +628,12 @@ const detail = computed(() => {
   const key = prKey.value;
   if (!key) return null;
   if (isGitHub.value) {
-    const raw = appStore.payload?.github?.pullRequests?.[key] || null;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const raw = (appStore.payload?.github as any)?.pullRequests?.[key] || null;
     if (!raw) return null;
     // Merge issueComments into threads so useReviewComments sees them
-    const issueThreads = (raw.issueComments || []).map((c) => ({
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const issueThreads = (raw.issueComments || []).map((c: any) => ({
       id: c.id,
       status: "active",
       isDeleted: false,
@@ -657,7 +656,8 @@ const detail = computed(() => {
     }));
     return { ...raw, threads: [...(raw.threads || []), ...issueThreads] };
   }
-  return appStore.payload?.azureDevops?.pullRequests?.[key] || null;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return (appStore.payload?.azureDevops as any)?.pullRequests?.[key] || null;
 });
 const pullRequestRaw = computed(() => detail.value?.pullRequest || {});
 const pullRequest = computed(() => {
@@ -671,10 +671,12 @@ const pullRequest = computed(() => {
   }
   return pr;
 });
-const reviewBridgeRaw = computed(() => appStore.payload?.reviewBridge?.pullRequests?.[prKey.value] || {});
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const reviewBridgeRaw = computed(() => (appStore.payload?.reviewBridge as any)?.pullRequests?.[prKey.value] || {});
 const reviewBridge = computed(() => ({
   ...reviewBridgeRaw.value,
-  agentPrompts: appStore.payload?.reviewBridge?.agentPrompts || [],
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  agentPrompts: (appStore.payload?.reviewBridge as any)?.agentPrompts || [],
 }));
 const reviewUi = computed(() => gitUiStore.get(props.workspaceId));
 const checks = computed(() => detail.value?.checks || {});
@@ -697,12 +699,15 @@ const changedFiles = computed(() => {
   return files.length ? files : detail.value?.localChangedFiles || [];
 });
 const agentPrompts = computed(() => reviewBridge.value.agentPrompts || []);
-const gitSnapshot = computed(() => appStore.getGitSnapshot(props.workspaceId));
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const gitSnapshot = computed(() => appStore.getGitSnapshot(props.workspaceId) as Record<string, any> | null);
 const aheadCount = computed(() => gitSnapshot.value?.aheadCount || 0);
 
 // --- Pre-PR (new branch) state ---
 const isPrePrWorkspace = computed(
-  () => !workspace.value?.review?.prKey && ["azure-devops", "github"].includes(workspace.value?.review?.provider),
+  () =>
+    !workspace.value?.review?.prKey &&
+    ["azure-devops", "github"].includes(workspace.value?.review?.provider || ""),
 );
 const baseBranch = computed(() => workspace.value?.quickfix?.baseBranch || "");
 const hasDirtyOrCommits = computed(() => !!(gitSnapshot.value?.dirty || (gitSnapshot.value?.aheadCount || 0) > 0));
@@ -717,13 +722,13 @@ const aheadCommits = computed(() => {
   return log.slice(0, ahead);
 });
 
-const prFormTarget = ref("");
-const prFormTitle = ref("");
-const prFormDescription = ref("");
-const prFormBranches = ref([]);
+const prFormTarget = ref<string>("");
+const prFormTitle = ref<string>("");
+const prFormDescription = ref<string>("");
+const prFormBranches = ref<string[]>([]);
 const prFormLoadingBranches = ref(false);
 const prFormBusy = ref(false);
-const prFormResult = ref(null);
+const prFormResult = ref<{ ok: boolean; summary: string; url?: string } | null>(null);
 const prFormDraft = ref(false);
 let prFormAutoFilled = false;
 
@@ -731,7 +736,8 @@ const prFormCanSubmit = computed(() => prFormTarget.value && prFormTitle.value.t
 
 const prFormTargetOptions = computed(() => prFormBranches.value.map((b) => ({ value: b, label: b })));
 
-const api = inject("api");
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const api = inject<any>("api");
 
 function generatePrTitleAndDescription() {
   if (prFormAutoFilled) return;
@@ -747,7 +753,8 @@ function generatePrTitleAndDescription() {
     // Try to extract meaningful name from branch (e.g., "fix/MSP-12345-some-description" → "MSP-12345 some description")
     const branchSuffix = branch.includes("/") ? branch.split("/").slice(1).join("/") : branch;
     prFormTitle.value = branchSuffix.replace(/[-_]/g, " ").replace(/\s+/g, " ").trim();
-    prFormDescription.value = commits.map((c) => `- ${c.subject}`).join("\n");
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    prFormDescription.value = commits.map((c: any) => `- ${c.subject}`).join("\n");
   }
   prFormAutoFilled = true;
 }
@@ -828,13 +835,13 @@ async function handleCreatePr() {
       url: result.url,
     };
   } catch (err) {
-    prFormResult.value = { ok: false, summary: err?.message || "Failed to create pull request." };
+    prFormResult.value = { ok: false, summary: (err as Error)?.message || "Failed to create pull request." };
   } finally {
     prFormBusy.value = false;
   }
 }
 
-function openExternal(url) {
+function openExternal(url: string) {
   if (api?.openExternal) api.openExternal(url);
   else window.open(url, "_blank");
 }
@@ -855,9 +862,11 @@ const activeTab = computed(() => reviewUi.value.activeReviewTab || "summary");
 // Sync state
 const syncQueue = computed(() => reviewBridge.value.syncQueue || []);
 const pendingSyncCount = computed(
-  () => syncQueue.value.filter((item) => item.status === "pending" || item.status === "failed").length,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  () => syncQueue.value.filter((item: any) => item.status === "pending" || item.status === "failed").length,
 );
-const failedSyncItems = computed(() => syncQueue.value.filter((item) => item.status === "failed"));
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const failedSyncItems = computed(() => syncQueue.value.filter((item: any) => item.status === "failed"));
 const newCommentsCount = computed(() => detail.value?.newCommentsCount || 0);
 
 // Comments (extracted to composable)
@@ -938,7 +947,7 @@ const headerActions = computed(() => [
   },
 ]);
 
-function onHeaderAction(action) {
+function onHeaderAction(action: { action: string }) {
   if (action.action === "refresh-azure") appStore.refreshAzure();
   if (action.action === "refresh-github") appStore.refreshGitHub();
 }
@@ -961,7 +970,7 @@ watch(
 );
 
 // Busy state for async toolbar actions
-const busyAction = ref("");
+const busyAction = ref<string>("");
 
 async function handleRefresh() {
   busyAction.value = "refresh";
@@ -978,16 +987,17 @@ async function handleRefresh() {
   }
 }
 
-const toolbarError = ref("");
+const toolbarError = ref<string>("");
 
-const pushPublishSuccess = ref("");
+const pushPublishSuccess = ref<string>("");
 
 async function handlePushAndPublish() {
   busyAction.value = "pushPublish";
   toolbarError.value = "";
   pushPublishSuccess.value = "";
   try {
-    const result = await appStore.pushAndPublishReview(props.workspaceId);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const result: any = await appStore.pushAndPublishReview(props.workspaceId);
     const commits = result?.commitCount || 0;
     const published = result?.publishedCount || 0;
     const pubError = result?.publishError || "";
@@ -1002,7 +1012,7 @@ async function handlePushAndPublish() {
     }
   } catch (error) {
     // Push itself failed (before any publishing)
-    toolbarError.value = error?.message || String(error || "Push failed.");
+    toolbarError.value = (error as Error)?.message || String(error || "Push failed.");
   } finally {
     busyAction.value = "";
   }
@@ -1015,7 +1025,7 @@ async function handlePublish() {
   try {
     await appStore.syncReviewBridgePullRequest(prKey.value);
   } catch (error) {
-    toolbarError.value = error?.message || String(error || "Publish failed.");
+    toolbarError.value = (error as Error)?.message || String(error || "Publish failed.");
   } finally {
     busyAction.value = "";
   }
@@ -1027,7 +1037,8 @@ const fileTree = computed(() => {
   if (!files.length) return [];
 
   // Find common prefix to strip
-  const paths = files.map((f) =>
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const paths = files.map((f: any) =>
     String(f.path || "")
       .replace(/^\//, "")
       .split("/"),
@@ -1059,7 +1070,8 @@ const fileTree = computed(() => {
   }
 
   // Convert to array, collapsing single-child dirs
-  function toArray(map, pathPrefix = "") {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  function toArray(map: Map<string, any>, pathPrefix = ""): any[] {
     const result = [];
     for (const [name, value] of map) {
       if (value instanceof Map) {
@@ -1080,7 +1092,7 @@ const fileTree = computed(() => {
   return toArray(root);
 });
 
-function onSelectFile(filePath) {
+function onSelectFile(filePath: string) {
   // Strip leading / for git operations
   const normalized = String(filePath || "").replace(/^\//, "");
   // Pass the PR target branch so diff uses the correct base
@@ -1089,13 +1101,13 @@ function onSelectFile(filePath) {
 }
 
 // Helpers
-function stripRef(ref) {
+function stripRef(ref: unknown) {
   return String(ref || "").replace(/^refs\/heads\//, "");
 }
-function changeTypeClass(t) {
+function changeTypeClass(t: unknown) {
   return t === "add" ? "diff-add" : t === "delete" ? "diff-del" : "diff-meta";
 }
-function changeTypeLabel(t) {
+function changeTypeLabel(t: unknown) {
   return t === "add" ? "A" : t === "delete" ? "D" : "M";
 }
 
@@ -1111,7 +1123,8 @@ function openAzureComment() {
     label: "Comment",
     placeholder: "Write your review comment...",
     submitLabel: "Create & queue",
-    onSubmit: (content) => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    onSubmit: (content: any) => {
       appStore.createReviewBridgeDraftComment({
         prKey: prKey.value,
         body: content,

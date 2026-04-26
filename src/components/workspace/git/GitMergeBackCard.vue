@@ -218,21 +218,27 @@
   </article>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { computed, ref } from "vue";
 import { useAppStore } from "../../../stores/app.js";
 import { useGitUiStore } from "../../../stores/git-ui.js";
 import CustomSelect from "../../common/CustomSelect.vue";
 
-const props = defineProps({
-  snapshot: { type: Object, required: true },
-  workspaceId: { type: String, required: true },
-  workspaces: { type: Array, default: () => [] },
-  gitUi: { type: Object, default: () => ({}) },
-  effectiveBaseBranch: { type: String, default: "" },
-  baseBranchOptions: { type: Array, default: () => [] },
-  isLinkedWorktree: { type: Boolean, default: false },
-});
+const props = withDefaults(
+  defineProps<{
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    snapshot: Record<string, any>;
+    workspaceId: string;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    workspaces?: any[];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    gitUi?: Record<string, any>;
+    effectiveBaseBranch?: string;
+    baseBranchOptions?: string[];
+    isLinkedWorktree?: boolean;
+  }>(),
+  { workspaces: () => [], gitUi: () => ({}), effectiveBaseBranch: "", baseBranchOptions: () => [], isLinkedWorktree: false },
+);
 
 const appStore = useAppStore();
 const gitUiStore = useGitUiStore();
@@ -248,25 +254,28 @@ const isCleanupMode = computed(
   () => props.snapshot.branchMerged === true && (compare.value.aheadCount || 0) === 0 && props.isLinkedWorktree,
 );
 
-function onTargetChange(value) {
-  localOverride.value = value;
+function onTargetChange(value: string | number) {
+  localOverride.value = String(value);
 }
 
-const baseBranchOptionList = computed(() => props.baseBranchOptions.map((b) => ({ value: b, label: b })));
+const baseBranchOptionList = computed(() => props.baseBranchOptions.map((b: string) => ({ value: b, label: b })));
 const potentialConflicts = computed(() => compare.value.potentialConflicts || []);
 
 const workspaceIdsByPath = computed(
-  () => new Map(props.workspaces.map((ws) => [String(ws.cwd || "").toLowerCase(), ws.id])),
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  () => new Map(props.workspaces.map((ws: any) => [String(ws.cwd || "").toLowerCase(), ws.id])),
 );
 const mainWorktree = computed(() =>
-  (props.snapshot.siblingWorktrees || []).find((e) => e.isMainWorktree && !e.isCurrent),
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (props.snapshot.siblingWorktrees || []).find((e: any) => e.isMainWorktree && !e.isCurrent),
 );
 const mainWorktreeWorkspaceId = computed(() =>
   mainWorktree.value ? workspaceIdsByPath.value.get(String(mainWorktree.value.path || "").toLowerCase()) || "" : "",
 );
 
 const dirtyFiles = computed(() =>
-  [...(props.snapshot.staged || []), ...(props.snapshot.unstaged || [])].map((e) => e.path),
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  [...(props.snapshot.staged || []), ...(props.snapshot.unstaged || [])].map((e: any) => e.path),
 );
 const baseChangedFiles = computed(() => new Set(compare.value.baseChangedFiles || []));
 const dirtyConflicts = computed(() =>

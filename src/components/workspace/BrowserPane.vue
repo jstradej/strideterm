@@ -32,7 +32,7 @@
         type="text"
         class="browser-url-bar__input"
         :placeholder="homeUrl"
-        @focus="(e) => e.target.select()"
+        @focus="(e) => (e.target as HTMLInputElement)?.select()"
       />
       <button
         type="button"
@@ -61,14 +61,15 @@
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { ref, onMounted, computed } from "vue";
-const props = defineProps({
-  tab: { type: Object, required: true },
-  showHeader: { type: Boolean, default: false },
-});
+const props = withDefaults(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  defineProps<{ tab: Record<string, any>; showHeader?: boolean }>(),
+  { showHeader: false },
+);
 
-const embedContainerRef = ref(null);
+const embedContainerRef = ref<HTMLDivElement | null>(null);
 
 const homeUrl = computed(() => props.tab.url || "about:blank");
 const isElectron = !!window.strideterm;
@@ -78,9 +79,10 @@ const isValidUrl = computed(() => homeUrl.value.length > 10);
 
 const urlValue = ref(isValidUrl.value ? homeUrl.value : "");
 
-let embed = null;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let embed: any = null;
 
-function navigateTo(target) {
+function navigateTo(target: string) {
   if (!target) return;
   if (!/^https?:\/\//i.test(target)) target = "https://" + target;
   urlValue.value = target;
@@ -128,11 +130,13 @@ onMounted(() => {
     embed.setAttribute("src", isValidUrl.value ? homeUrl.value : "about:blank");
     embed.setAttribute("allowpopups", "");
     if (isDark) embed.setAttribute("webpreferences", "darkTheme=yes");
-    embed.addEventListener("did-navigate", (e) => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    embed.addEventListener("did-navigate", (e: any) => {
       urlValue.value = e.url;
       // Sync tab title in store's tab strip (best-effort)
     });
-    embed.addEventListener("did-navigate-in-page", (e) => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    embed.addEventListener("did-navigate-in-page", (e: any) => {
       if (e.isMainFrame) urlValue.value = e.url;
     });
   } else {

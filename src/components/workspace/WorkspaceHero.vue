@@ -87,22 +87,23 @@
   </section>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { computed, inject, ref } from "vue";
 import { useAppStore } from "../../stores/app.js";
 import { safeColor, attentionTitle, isFreshAttention, isContainerRunning } from "../../app/helpers.js";
 
-const api = inject("api");
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const api = inject<any>("api");
 const store = useAppStore();
 
 const pathCopied = ref(false);
-let pathCopiedTimer = null;
+let pathCopiedTimer: ReturnType<typeof setTimeout> | null = null;
 function copyPath() {
   const cwd = activeWorkspace.value?.cwd;
   if (!cwd) return;
   navigator.clipboard.writeText(cwd).then(() => {
     pathCopied.value = true;
-    clearTimeout(pathCopiedTimer);
+    if (pathCopiedTimer != null) clearTimeout(pathCopiedTimer);
     pathCopiedTimer = setTimeout(() => {
       pathCopied.value = false;
     }, 1200);
@@ -110,17 +111,36 @@ function copyPath() {
 }
 
 const isRemote = computed(() => api?.isRemote || false);
-const workspace = computed(() => store.payload?.workspace || null);
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const workspace = computed<Record<string, any> | null>(() => (store.payload as any)?.workspace || null);
 const activeWorkspace = computed(() => store.activeWorkspace);
-const gitSnapshot = computed(() => (activeWorkspace.value ? store.getGitSnapshot(activeWorkspace.value.id) : null));
-const attention = computed(() =>
-  activeWorkspace.value ? store.getWorkspaceAttentionForId(activeWorkspace.value.id) : null,
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const gitSnapshot = computed<Record<string, any> | null>(() =>
+  activeWorkspace.value ? (store.getGitSnapshot(activeWorkspace.value.id) as Record<string, any> | null) : null,
+);
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const attention = computed<Record<string, any> | null>(() =>
+  activeWorkspace.value
+    ? (store.getWorkspaceAttentionForId(activeWorkspace.value.id) as Record<string, any> | null)
+    : null,
 );
 const reviewTabCount = computed(() => activeWorkspace.value?.panels?.length || 0);
-const sessionCount = computed(() => workspace.value?.sessions?.length || 0);
-const runningCount = computed(() => (workspace.value?.sessions || []).filter((s) => s.status === "running").length);
-const dockerState = computed(() => (activeWorkspace.value?.kind === "docker" ? store.payload?.docker || {} : {}));
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const sessionCount = computed(() => (workspace.value?.sessions as any[] | undefined)?.length || 0);
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const runningCount = computed(() =>
+  ((workspace.value?.sessions as any[] | undefined) || []).filter(
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (s: any) => s.status === "running",
+  ).length,
+);
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const dockerState = computed<Record<string, any>>(() =>
+  activeWorkspace.value?.kind === "docker" ? (store.payload as any)?.docker || {} : {},
+);
 const dockerAvailable = computed(() => dockerState.value?.available);
-const dockerRunning = computed(() => (dockerState.value?.containers || []).filter(isContainerRunning).length);
-const dockerTotal = computed(() => (dockerState.value?.containers || []).length);
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const dockerRunning = computed(() => (dockerState.value?.containers as any[] || []).filter(isContainerRunning).length);
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const dockerTotal = computed(() => (dockerState.value?.containers as any[] || []).length);
 </script>

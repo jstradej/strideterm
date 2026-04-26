@@ -15,14 +15,12 @@
   </button>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { computed, ref, watch } from "vue";
 
 const MAX_LINES = 800;
 
-const props = defineProps({
-  diff: { type: String, default: "" },
-});
+const props = withDefaults(defineProps<{ diff?: string }>(), { diff: "" });
 
 const showAll = ref(false);
 // Reset expansion when a different diff is loaded
@@ -36,7 +34,7 @@ const lines = computed(() => (props.diff || "").split("\n"));
 const isTruncated = computed(() => !showAll.value && lines.value.length > MAX_LINES);
 const visibleLines = computed(() => (isTruncated.value ? lines.value.slice(0, MAX_LINES) : lines.value));
 
-function isMeta(line) {
+function isMeta(line: string) {
   return (
     line.startsWith("+++") ||
     line.startsWith("---") ||
@@ -48,13 +46,13 @@ function isMeta(line) {
     line.startsWith("rename ")
   );
 }
-function isHunk(line) {
+function isHunk(line: string) {
   return line.startsWith("@@");
 }
-function isAdd(line) {
+function isAdd(line: string) {
   return line.startsWith("+");
 }
-function isDel(line) {
+function isDel(line: string) {
   return line.startsWith("-");
 }
 </script>

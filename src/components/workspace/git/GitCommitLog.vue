@@ -49,16 +49,20 @@
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { ref, computed } from "vue";
 
-const props = defineProps({
-  commits: { type: Array, default: () => [] },
-  selectedCommit: { type: String, default: "" },
-  aheadCount: { type: Number, default: 0 },
-});
+const props = withDefaults(
+  defineProps<{
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    commits?: any[];
+    selectedCommit?: string;
+    aheadCount?: number;
+  }>(),
+  { commits: () => [], selectedCommit: "", aheadCount: 0 },
+);
 
-defineEmits(["select"]);
+defineEmits<{ (e: "select", hash: string): void }>();
 
 const columns = [
   { key: "hash", label: "Hash", field: "shortHash" },
@@ -68,10 +72,10 @@ const columns = [
 ];
 
 // --- Sorting ---
-const sortKey = ref("");
-const sortDir = ref("asc");
+const sortKey = ref<string>("");
+const sortDir = ref<string>("asc");
 
-function toggleSort(key) {
+function toggleSort(key: string) {
   if (sortKey.value === key) {
     sortDir.value = sortDir.value === "asc" ? "desc" : "asc";
   } else {
@@ -81,7 +85,8 @@ function toggleSort(key) {
 }
 
 // Tag each commit with its original index so we can identify unpushed commits after sorting
-const indexedCommits = computed(() => props.commits.map((entry, i) => ({ ...entry, _originalIndex: i })));
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const indexedCommits = computed(() => props.commits.map((entry: any, i: number) => ({ ...entry, _originalIndex: i })));
 
 const sortedCommits = computed(() => {
   if (!sortKey.value) return indexedCommits.value;
@@ -92,7 +97,8 @@ const sortedCommits = computed(() => {
   const field = col.field;
   const dir = sortDir.value === "asc" ? 1 : -1;
 
-  return [...indexedCommits.value].sort((a, b) => {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return [...indexedCommits.value].sort((a: any, b: any) => {
     const va = String(a[field] || "").toLowerCase();
     const vb = String(b[field] || "").toLowerCase();
     return va < vb ? -dir : va > vb ? dir : 0;

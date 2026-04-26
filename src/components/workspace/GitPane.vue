@@ -293,11 +293,11 @@
           <BulkRepoTable
             :roots-snapshots="allRootsSnapshots"
             :workspace-id="props.workspaceId"
-            :on-fetch-all="() => gitUiStore.bulkFetch(props.workspaceId)"
-            :on-pull-all="() => gitUiStore.bulkPull(props.workspaceId)"
-            :on-refresh-root="(rootPath) => gitUiStore.refreshRoot(props.workspaceId, rootPath)"
-            :on-pull-root="(rootPath) => gitUiStore.pullRoot(props.workspaceId, rootPath)"
-            :on-reveal-root="(rootPath) => gitUiStore.revealRoot(props.workspaceId, rootPath)"
+            :on-fetch-all="onBulkFetchAll"
+            :on-pull-all="onBulkPullAll"
+            :on-refresh-root="onBulkRefreshRoot"
+            :on-pull-root="onBulkPullRoot"
+            :on-reveal-root="onBulkRevealRoot"
           />
         </template>
       </section>
@@ -305,7 +305,7 @@
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import { useAppStore } from "../../stores/app.js";
 import { useGitUiStore } from "../../stores/git-ui.js";
@@ -319,15 +319,15 @@ import GitTagList from "./git/GitTagList.vue";
 import BulkRepoTable from "./git/BulkRepoTable.vue";
 import CustomSelect from "../common/CustomSelect.vue";
 
-const props = defineProps({
-  workspaceId: { type: String, required: true },
-  showHeader: { type: Boolean, default: false },
-});
+const props = withDefaults(defineProps<{ workspaceId: string; showHeader?: boolean }>(), { showHeader: false });
 
 const appStore = useAppStore();
 const gitUiStore = useGitUiStore();
 
-const snapshot = computed(() => appStore.getActiveGitSnapshot(props.workspaceId));
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const snapshot = computed<Record<string, any> | null>(() =>
+  appStore.getActiveGitSnapshot(props.workspaceId) as Record<string, any> | null,
+);
 const gitUi = computed(() => gitUiStore.get(props.workspaceId));
 const workspaces = computed(() => appStore.filteredWorkspaces);
 
@@ -340,9 +340,11 @@ const isMultiRepo = computed(() => gitRoots.value.length >= 2);
 const showRepoPicker = computed(() => isMultiRepo.value && !isReviewWorkspace.value);
 const activeRootPath = computed(() => gitUiStore.getActiveRoot(props.workspaceId) || snapshot.value?.rootPath || "");
 const allRootsSnapshots = computed(() => {
-  const entry = appStore.payload?.git?.workspaces?.[props.workspaceId];
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const entry = appStore.payload?.git?.workspaces?.[props.workspaceId] as any;
   if (!entry?.roots) return [];
-  return Object.entries(entry.roots).map(([rootPath, snap]) => ({ rootPath, ...snap }));
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return Object.entries(entry.roots).map(([rootPath, snap]: [string, any]) => ({ rootPath, ...snap }));
 });
 const isLinkedWorktree = computed(() => snapshot.value?.isWorktree && !snapshot.value?.isMainWorktree);
 const operation = computed(() => snapshot.value?.operationState || {});
@@ -491,10 +493,11 @@ const showMergeBack = computed(() => {
 
 // Multi-repo root picker
 const isSwitchingRepo = ref(false);
-async function onRootChange(newRoot) {
-  if (newRoot === activeRootPath.value) return;
+async function onRootChange(newRoot: string | number) {
+  const rootStr = String(newRoot);
+  if (rootStr === activeRootPath.value) return;
   isSwitchingRepo.value = true;
-  gitUiStore.setActiveRoot(props.workspaceId, newRoot);
+  gitUiStore.setActiveRoot(props.workspaceId, rootStr);
   try {
     await gitUiStore.refreshGit(props.workspaceId);
   } finally {
@@ -504,12 +507,12 @@ async function onRootChange(newRoot) {
   }
 }
 
-function formatRootLabel(rootPath) {
+function formatRootLabel(rootPath: string) {
   if (!rootPath) return "";
   const basename = rootPath.split(/[\\/]/).filter(Boolean).at(-1) || rootPath;
   // collision check: if two roots share the same basename, show parent/basename
-  const others = gitRoots.value.filter((r) => r !== rootPath);
-  const collision = others.some((r) => (r.split(/[\\/]/).filter(Boolean).at(-1) || r) === basename);
+  const others = gitRoots.value.filter((r: string) => r !== rootPath);
+  const collision = others.some((r: string) => (r.split(/[\\/]/).filter(Boolean).at(-1) || r) === basename);
   if (collision) {
     const parts = rootPath.split(/[\\/]/).filter(Boolean);
     return parts.length >= 2 ? `${parts.at(-2)}/${parts.at(-1)}` : basename;
@@ -519,7 +522,7 @@ function formatRootLabel(rootPath) {
 
 // Branch options for combo box
 const baseBranchOptions = computed(() => {
-  const names = snapshot.value?.branchNames || [];
+  const names: string[] = snapshot.value?.branchNames || [];
   const current = snapshot.value?.branch || "";
   const filtered = names.filter((n) => n !== current);
   // Put the detected base branch first if present
@@ -537,32 +540,40 @@ const baseBranchOptions = computed(() => {
 });
 
 // Azure DevOps connection detection
-const azureSnapshot = computed(() => appStore.payload?.azureDevops || {});
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const azureSnapshot = computed<Record<string, any>>(() => (appStore.payload?.azureDevops as any) || {});
 const hasAzureConnection = computed(() => {
   const remoteUrl = (snapshot.value?.remotes?.origin || "")
     .toLowerCase()
     .replace(/\.git$/i, "")
     .replace(/\/+$/, "");
   if (!remoteUrl) return false;
-  const connections = azureSnapshot.value.connections || [];
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const connections: any[] = azureSnapshot.value.connections || [];
   return connections.some(
-    (c) => c.enabled && remoteUrl.startsWith(c.orgUrl?.toLowerCase().replace(/\/+$/, "") || "---"),
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (c: any) => c.enabled && remoteUrl.startsWith(c.orgUrl?.toLowerCase().replace(/\/+$/, "") || "---"),
   );
 });
 
 // Connection selection for authenticated git operations (push/fetch/PR).
-const availableConnections = computed(() => (appStore.payload?.git?.connections || []).filter((c) => c.enabled));
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const availableConnections = computed(() =>
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  ((appStore.payload?.git as any)?.connections || []).filter((c: any) => c.enabled),
+);
 const activeConnectionId = computed(() => workspace.value?.connectionId || "");
 const activeConnectionLabel = computed(() => {
   if (!activeConnectionId.value) return "auto-detected";
-  const found = availableConnections.value.find((c) => c.id === activeConnectionId.value);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const found = availableConnections.value.find((c: any) => c.id === activeConnectionId.value);
   return found?.label || activeConnectionId.value;
 });
 
 // Branch switcher options (built here so the same data backs both the
 // Branch tab subcomponent and any external consumer).
 const switchBranchOptions = computed(() => {
-  const names = snapshot.value?.branchNames || [];
+  const names: string[] = snapshot.value?.branchNames || [];
   const current = snapshot.value?.branch || "";
   return names.filter((n) => n !== current);
 });
@@ -580,7 +591,7 @@ const tabs = computed(() => {
     {
       id: "changes",
       label: "Changes",
-      badge: (snapshot.value?.dirtyCount || 0) > 0 ? String(snapshot.value.dirtyCount) : "",
+      badge: (snapshot.value?.dirtyCount || 0) > 0 ? String(snapshot.value?.dirtyCount ?? 0) : "",
     },
     { id: "history", label: "History", badge: "" },
     { id: "pr", label: "Pull Request", badge: "" },
@@ -612,26 +623,36 @@ const headerActions = computed(() => [
   },
 ]);
 
-function onHeaderAction(action) {
-  if (action.action === "select-tab") appStore.activateView(action.viewId);
-  else if (action.action === "close-tab") appStore.closeTab(action.viewId);
+function onHeaderAction(action: { action: string; viewId?: string }) {
+  if (action.action === "select-tab") appStore.activateView(action.viewId || "");
+  else if (action.action === "close-tab") appStore.closeTab(action.viewId || "");
 }
 
 function onCreateWorktree() {
   appStore.createWorktreeWithDialog(props.workspaceId, { preselectedRootPath: activeRootPath.value || "" });
 }
 
-function onConnectionChange(value) {
+function onBulkFetchAll() { gitUiStore.bulkFetch(props.workspaceId); }
+function onBulkPullAll() { gitUiStore.bulkPull(props.workspaceId); }
+function onBulkRefreshRoot(rootPath: string) { gitUiStore.refreshRoot(props.workspaceId, rootPath); }
+function onBulkPullRoot(rootPath: string) { gitUiStore.pullRoot(props.workspaceId, rootPath); }
+function onBulkRevealRoot(rootPath: string) { gitUiStore.revealRoot(props.workspaceId, rootPath); }
+
+function onConnectionChange(value: string | number) {
   const existing = (appStore.payload?.appState?.workspaces || []).find((ws) => ws.id === props.workspaceId);
   if (existing) {
-    appStore.saveWorkspace({ ...existing, connectionId: value });
+    appStore.saveWorkspace({ ...existing, connectionId: String(value) });
   }
 }
 
-const repoPickerOptions = computed(() => gitRoots.value.map((root) => ({ value: root, label: formatRootLabel(root) })));
+const repoPickerOptions = computed(() =>
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (gitRoots.value as any[]).map((root: any) => ({ value: root, label: formatRootLabel(root) })),
+);
 const connectionOptions = computed(() => [
   { value: "", label: "System credentials" },
-  ...availableConnections.value.map((c) => ({ value: c.id, label: c.label || c.id })),
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  ...availableConnections.value.map((c: any) => ({ value: c.id, label: c.label || c.id })),
 ]);
 const switchBranchOptionsList = computed(() => switchBranchOptions.value.map((b) => ({ value: b, label: b })));
 </script>

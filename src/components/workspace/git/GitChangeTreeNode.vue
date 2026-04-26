@@ -39,29 +39,37 @@
   </li>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { computed } from "vue";
 import { statusColor, statusTitle } from "../file-manager/git-status-helpers.js";
 
-const props = defineProps({
-  node: { type: Object, required: true },
-  depth: { type: Number, default: 0 },
-  selectedPath: { type: String, default: "" },
-  selectedScope: { type: String, default: "" },
-  expandedSet: { type: Set, required: true },
-});
+const props = withDefaults(
+  defineProps<{
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    node: Record<string, any>;
+    depth?: number;
+    selectedPath?: string;
+    selectedScope?: string;
+    expandedSet: Set<string>;
+  }>(),
+  { depth: 0, selectedPath: "", selectedScope: "" },
+);
 
-const emit = defineEmits(["toggle", "select"]);
+const emit = defineEmits<{
+  (e: "toggle", path: string): void;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (e: "select", node: Record<string, any>): void;
+}>();
 
 const isDir = computed(() => props.node.kind === "dir");
-const expanded = computed(() => props.expandedSet.has(props.node.path));
+const expanded = computed(() => props.expandedSet.has(props.node.path as string));
 const isSelected = computed(
   () =>
     props.node.kind === "file" && props.selectedPath === props.node.path && props.selectedScope === props.node.scope,
 );
 
 function onClick() {
-  if (isDir.value) emit("toggle", props.node.path);
+  if (isDir.value) emit("toggle", props.node.path as string);
   else emit("select", props.node);
 }
 </script>

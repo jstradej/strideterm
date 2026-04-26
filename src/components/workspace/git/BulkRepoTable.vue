@@ -1,24 +1,41 @@
-<script setup>
+<script setup lang="ts">
 import { computed, ref } from "vue";
 
-const props = defineProps({
-  rootsSnapshots: { type: Array, default: () => [] },
-  workspaceId: { type: String, required: true },
-  onFetchAll: { type: Function, default: null },
-  onPullAll: { type: Function, default: null },
-  onRefreshRoot: { type: Function, default: null },
-  onPullRoot: { type: Function, default: null },
-  onRevealRoot: { type: Function, default: null },
-});
+const props = withDefaults(
+  defineProps<{
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    rootsSnapshots?: any[];
+    workspaceId: string;
+    onFetchAll?: (() => void) | null;
+    onPullAll?: (() => void) | null;
+    onRefreshRoot?: ((rootPath: string) => void) | null;
+    onPullRoot?: ((rootPath: string) => void) | null;
+    onRevealRoot?: ((rootPath: string) => void) | null;
+  }>(),
+  {
+    rootsSnapshots: () => [],
+    onFetchAll: null,
+    onPullAll: null,
+    onRefreshRoot: null,
+    onPullRoot: null,
+    onRevealRoot: null,
+  },
+);
 
-const emit = defineEmits(["fetch-all", "pull-all", "refresh-root", "pull-root", "reveal-root"]);
+const emit = defineEmits<{
+  (e: "fetch-all"): void;
+  (e: "pull-all"): void;
+  (e: "refresh-root", rootPath: string): void;
+  (e: "pull-root", rootPath: string): void;
+  (e: "reveal-root", rootPath: string): void;
+}>();
 
-function formatRootLabel(rootPath) {
+function formatRootLabel(rootPath: string) {
   if (!rootPath) return "";
   return rootPath.split(/[\\/]/).filter(Boolean).at(-1) || rootPath;
 }
 
-function formatDate(isoString) {
+function formatDate(isoString: string) {
   if (!isoString) return "—";
   try {
     const d = new Date(isoString);
@@ -28,19 +45,21 @@ function formatDate(isoString) {
   }
 }
 
-const anyDirty = computed(() => props.rootsSnapshots.some((s) => s.dirty));
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const anyDirty = computed(() => props.rootsSnapshots.some((s: any) => s.dirty));
 
 // Per-row in-flight state: { [rootPath]: "busy" | "ok" | "error" | null }
-const rowState = ref({});
+const rowState = ref<Record<string, string | null>>({});
 
 function pullAllTitle() {
-  const dirtyCount = props.rootsSnapshots.filter((s) => s.dirty).length;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const dirtyCount = props.rootsSnapshots.filter((s: any) => s.dirty).length;
   if (dirtyCount === 0) return "Pull all repositories (fast-forward only)";
   const total = props.rootsSnapshots.length;
   return `${dirtyCount} of ${total} repositories have uncommitted changes. Commit or stash them, or pull each clean repository individually.`;
 }
 
-async function runRowAction(rootPath, fn) {
+async function runRowAction(rootPath: string, fn: () => Promise<void> | void) {
   rowState.value = { ...rowState.value, [rootPath]: "busy" };
   try {
     await fn();
@@ -54,17 +73,17 @@ async function runRowAction(rootPath, fn) {
   }
 }
 
-async function onRefreshRow(rootPath) {
+async function onRefreshRow(rootPath: string) {
   const handler = props.onRefreshRoot || (() => emit("refresh-root", rootPath));
   await runRowAction(rootPath, () => handler(rootPath));
 }
 
-async function onPullRow(rootPath) {
+async function onPullRow(rootPath: string) {
   const handler = props.onPullRoot || (() => emit("pull-root", rootPath));
   await runRowAction(rootPath, () => handler(rootPath));
 }
 
-function onRevealRow(rootPath) {
+function onRevealRow(rootPath: string) {
   if (props.onRevealRoot) props.onRevealRoot(rootPath);
   else emit("reveal-root", rootPath);
 }

@@ -117,26 +117,40 @@
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { ref, inject, watch, computed, onUnmounted } from "vue";
 
-const props = defineProps({
-  checks: { type: Object, default: () => ({ items: [] }) },
-  refreshable: { type: Boolean, default: true },
-  refreshing: { type: Boolean, default: false },
-  prKey: { type: String, default: "" },
-  provider: { type: String, default: "" },
-});
+interface ChecksData {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  items?: Array<Record<string, any>>;
+  failedCount?: number;
+  pendingCount?: number;
+  passedCount?: number;
+}
 
-const emit = defineEmits(["refresh"]);
+const props = withDefaults(
+  defineProps<{
+    checks?: ChecksData;
+    refreshable?: boolean;
+    refreshing?: boolean;
+    prKey?: string;
+    provider?: string;
+  }>(),
+  { checks: () => ({ items: [] }), refreshable: true, refreshing: false, prKey: "", provider: "" },
+);
 
-const api = inject("api", null);
-const expandedId = ref(null);
-const rerunningId = ref(null);
-const rerunError = ref("");
+const emit = defineEmits<{ (e: "refresh"): void }>();
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const api = inject<any>("api", null);
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const expandedId = ref<any>(null);
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const rerunningId = ref<any>(null);
+const rerunError = ref<string>("");
 
 // Auto-poll while there are pending checks
-let pollTimer = null;
+let pollTimer: ReturnType<typeof setInterval> | null = null;
 const POLL_INTERVAL = 15_000;
 const polling = computed(() => pollTimer !== null);
 
@@ -157,7 +171,7 @@ function stopPolling() {
 watch(
   () => props.checks?.pendingCount,
   (pending) => {
-    if (pending > 0) startPolling();
+    if ((pending ?? 0) > 0) startPolling();
     else stopPolling();
   },
   { immediate: true },
@@ -165,11 +179,12 @@ watch(
 
 onUnmounted(stopPolling);
 
-function toggleExpand(item) {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function toggleExpand(item: Record<string, any>) {
   expandedId.value = expandedId.value === item.id ? null : item.id;
 }
 
-function stateIcon(state) {
+function stateIcon(state: unknown) {
   if (state === "succeeded") return "✓";
   if (state === "failed") return "✗";
   if (state === "pending") return "●";
@@ -177,13 +192,15 @@ function stateIcon(state) {
   return "?";
 }
 
-function canRerun(item) {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function canRerun(item: Record<string, any>) {
   if (props.provider === "azure-devops") return item.kind === "policy" && !!item.evaluationId;
   if (props.provider === "github") return item.kind === "check" && !!item.checkSuiteId;
   return false;
 }
 
-async function handleRerun(item) {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function handleRerun(item: Record<string, any>) {
   rerunningId.value = item.id;
   rerunError.value = "";
   try {
@@ -194,14 +211,14 @@ async function handleRerun(item) {
     }
     emit("refresh");
   } catch (err) {
-    rerunError.value = `Re-run failed: ${err?.message || "unknown error"}`;
+    rerunError.value = `Re-run failed: ${(err as Error)?.message || "unknown error"}`;
     emit("refresh");
   } finally {
     rerunningId.value = null;
   }
 }
 
-function openUrl(url) {
+function openUrl(url: string) {
   if (api?.openExternal) {
     api.openExternal(url);
   } else if (typeof window !== "undefined") {
@@ -209,7 +226,7 @@ function openUrl(url) {
   }
 }
 
-function formatRelative(dateStr) {
+function formatRelative(dateStr: string) {
   if (!dateStr) return "";
   const diff = Date.now() - new Date(dateStr).getTime();
   if (diff < 60_000) return "just now";
@@ -218,12 +235,12 @@ function formatRelative(dateStr) {
   return `${Math.floor(diff / 86_400_000)}d ago`;
 }
 
-function formatFull(dateStr) {
+function formatFull(dateStr: string) {
   if (!dateStr) return "";
   return new Date(dateStr).toLocaleString();
 }
 
-function formatDuration(startStr, endStr) {
+function formatDuration(startStr: string, endStr: string) {
   if (!startStr || !endStr) return "";
   const ms = new Date(endStr).getTime() - new Date(startStr).getTime();
   if (ms < 1000) return "<1s";

@@ -2,18 +2,16 @@
   <div class="markdown-content" v-html="rendered"></div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { computed } from "vue";
 
-const props = defineProps({
-  text: { type: String, default: "" },
-});
+const props = withDefaults(defineProps<{ text?: string }>(), { text: "" });
 
-function escapeHtml(str) {
+function escapeHtml(str: string) {
   return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 
-function renderMarkdownToHtml(text = "") {
+function renderMarkdownToHtml(text = ""): string {
   let out = escapeHtml(text);
   // Code blocks: ```...```
   out = out.replace(/```([\s\S]*?)```/g, "<pre><code>$1</code></pre>");

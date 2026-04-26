@@ -168,18 +168,21 @@ and `currentPage` in the response. Add integration tests.
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { ref } from "vue";
 
-defineProps({
-  taskId: { type: String, default: "" },
-});
+withDefaults(
+  defineProps<{
+    taskId?: string;
+  }>(),
+  { taskId: "" },
+);
 
-const exampleTask = ref(null);
-const exampleTodo = ref(null);
-const exampleCriteria = ref(null);
+const exampleTask = ref<HTMLElement | null>(null);
+const exampleTodo = ref<HTMLElement | null>(null);
+const exampleCriteria = ref<HTMLElement | null>(null);
 
-function copyExample(which) {
+function copyExample(which: string): void {
   const el = which === "task" ? exampleTask.value : which === "todo" ? exampleTodo.value : exampleCriteria.value;
   if (!el) return;
   const text = el.textContent || "";

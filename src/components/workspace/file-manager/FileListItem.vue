@@ -49,22 +49,27 @@
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { computed, inject, ref } from "vue";
 import { useFileManagerStore } from "../../../stores/file-manager.js";
 import { statusBadge, statusColor, statusLabel, statusTitle } from "./git-status-helpers.js";
 
-const props = defineProps({
-  entry: { type: Object, required: true },
-  selected: { type: Boolean, default: false },
-  viewMode: { type: String, default: "list" },
-});
+const props = withDefaults(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  defineProps<{ entry: Record<string, any>; selected?: boolean; viewMode?: string }>(),
+  { selected: false, viewMode: "list" },
+);
 
-defineEmits(["click", "dblclick", "contextmenu"]);
+defineEmits<{
+  (e: "click", event: MouseEvent): void;
+  (e: "dblclick", event: MouseEvent): void;
+  (e: "contextmenu", event: MouseEvent): void;
+}>();
 
 const store = useFileManagerStore();
-const fmDragState = inject("fm-drag-state", null);
-const isDropTarget = ref(false);
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const fmDragState = inject<any>("fm-drag-state", null);
+const isDropTarget = ref<boolean>(false);
 
 const FOLDER_ICONS = {
   node_modules: "📦",
@@ -99,9 +104,9 @@ const EXT_ICONS = {
 
 const icon = computed(() => {
   if (props.entry.kind === "directory") {
-    return FOLDER_ICONS[props.entry.name] || "📁";
+    return (FOLDER_ICONS as Record<string, string>)[props.entry.name as string] || "📁";
   }
-  return EXT_ICONS[props.entry.extension] || "📄";
+  return (EXT_ICONS as Record<string, string>)[props.entry.extension as string] || "📄";
 });
 
 const gitStatus = computed(() => {
@@ -113,14 +118,14 @@ const gitStatus = computed(() => {
   return store.getStatusFor(rel)?.status || null;
 });
 
-function formatSize(bytes) {
+function formatSize(bytes: number) {
   if (!bytes && bytes !== 0) return "";
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-function formatDate(iso) {
+function formatDate(iso: string) {
   if (!iso) return "";
   const d = new Date(iso);
   const month = String(d.getMonth() + 1).padStart(2, "0");
@@ -130,17 +135,19 @@ function formatDate(iso) {
   return `${month}-${day} ${hours}:${mins}`;
 }
 
-function onDragStart(event) {
+function onDragStart(event: DragEvent) {
   if (fmDragState) fmDragState.value = props.entry;
-  event.dataTransfer.effectAllowed = "move";
-  event.dataTransfer.setData("text/plain", props.entry.relativePath);
+  if (event.dataTransfer) {
+    event.dataTransfer.effectAllowed = "move";
+    event.dataTransfer.setData("text/plain", props.entry.relativePath);
+  }
 }
 
-function onDragOver(event) {
+function onDragOver(event: DragEvent) {
   if (!fmDragState?.value) return;
   if (props.entry.kind !== "directory") return;
   if (fmDragState.value.relativePath === props.entry.relativePath) return;
-  event.dataTransfer.dropEffect = "move";
+  if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
   isDropTarget.value = true;
 }
 
@@ -153,7 +160,8 @@ async function onDrop() {
   const dragged = fmDragState?.value;
   if (!dragged) return;
   if (props.entry.kind !== "directory") return;
-  await store.moveEntryTo(dragged, props.entry.relativePath);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  await store.moveEntryTo(dragged as any, props.entry.relativePath);
   if (fmDragState) fmDragState.value = null;
 }
 </script>

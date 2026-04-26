@@ -202,25 +202,23 @@
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { computed, ref } from "vue";
 import { useAppStore } from "../../stores/app.js";
 import PaneShell from "../layout/PaneShell.vue";
 import GitHubPrRow from "./github/GitHubPrRow.vue";
 import AuditLog from "./azure/AzureAuditLog.vue";
 
-defineProps({
-  workspaceId: { type: String, required: true },
-  showHeader: { type: Boolean, default: false },
-});
+withDefaults(defineProps<{ workspaceId: string; showHeader?: boolean }>(), { showHeader: false });
 
 const appStore = useAppStore();
 
-const busyAction = ref("");
-const activeTab = ref("all");
-const repoFilter = ref("");
+const busyAction = ref<string>("");
+const activeTab = ref<string>("all");
+const repoFilter = ref<string>("");
 
-const githubData = computed(() => appStore.payload?.github || {});
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const githubData = computed<Record<string, any>>(() => (appStore.payload?.github as any) || {});
 const connections = computed(() => githubData.value.connections || []);
 const inbox = computed(() => githubData.value.inbox || {});
 const reviewRoot = computed(() => appStore.payload?.appState?.settings?.integrations?.github?.reviewRoot || "");
@@ -258,7 +256,7 @@ const inboxTabs = computed(() => [
   { id: "activity", label: "Activity Log", count: null, alert: false },
 ]);
 
-function tabItems(tabId) {
+function tabItems(tabId: string) {
   if (tabId === "all") return inbox.value.recentlyUpdated || [];
   if (tabId === "attention") return inbox.value.needsAttention || [];
   if (tabId === "needs-review") return inbox.value.needsMyReview || [];
@@ -267,21 +265,26 @@ function tabItems(tabId) {
 }
 
 const repoNames = computed(() => {
-  const all = inbox.value.recentlyUpdated || [];
-  const names = [...new Set(all.map((item) => item.repository?.fullName || ""))];
+  const all: unknown[] = inbox.value.recentlyUpdated || [];
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const names = [...new Set(all.map((item: any) => item.repository?.fullName || ""))];
   return names.sort();
 });
 
 const activeGroupedItems = computed(() => {
-  let items = tabItems(activeTab.value);
+  let items: unknown[] = tabItems(activeTab.value);
   if (repoFilter.value) {
-    items = items.filter((item) => (item.repository?.fullName || "") === repoFilter.value);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    items = items.filter((item: any) => (item.repository?.fullName || "") === repoFilter.value);
   }
-  const groups = new Map();
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const groups = new Map<string, any[]>();
   for (const item of items) {
-    const repo = item.repository?.fullName || "";
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const anyItem = item as any;
+    const repo = anyItem.repository?.fullName || "";
     if (!groups.has(repo)) groups.set(repo, []);
-    groups.get(repo).push(item);
+    groups.get(repo)!.push(anyItem);
   }
   return [...groups.entries()].map(([repo, items]) => ({ repo, items }));
 });
@@ -300,7 +303,7 @@ async function handleRefresh() {
   }
 }
 
-async function handleDeleteConnection(connId) {
+async function handleDeleteConnection(connId: string) {
   busyAction.value = `delete-${connId}`;
   try {
     await appStore.deleteGitHubConnection(connId);
@@ -309,26 +312,26 @@ async function handleDeleteConnection(connId) {
   }
 }
 
-function onHeaderAction(action) {
+function onHeaderAction(action: { action: string }) {
   if (action.action === "refresh-github") handleRefresh();
 }
 
-const openError = ref("");
+const openError = ref<string>("");
 
-async function onOpenPr({ prKey, workspaceId }) {
+async function onOpenPr({ prKey, workspaceId }: { prKey: string; workspaceId: string }) {
   openError.value = "";
   try {
     await appStore.openGitHubPullRequest(prKey, workspaceId);
   } catch (err) {
-    openError.value = err?.message || "Failed to open review workspace.";
+    openError.value = (err as Error)?.message || "Failed to open review workspace.";
   }
 }
 
-function onOpenBrowser(url) {
+function onOpenBrowser(url: string) {
   if (url) window.open(url, "_blank", "noopener,noreferrer");
 }
 
-function onMarkSeen(prKey) {
+function onMarkSeen(prKey: string) {
   appStore.markGitHubPrSeen(prKey);
 }
 </script>

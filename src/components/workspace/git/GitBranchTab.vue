@@ -127,7 +127,7 @@
           class="button"
           :disabled="!!(gitUi.busyAction || !snapshot.dirty || !!gitUi.pendingAction || operation.inProgress)"
           title="Save uncommitted changes to the stash"
-          @click="gitUiStore.gitStash(workspaceId)"
+          @click="gitUiStore.gitStash(workspaceId, '')"
         >
           {{ gitUi.busyAction === "stash" ? "Stashing…" : "Stash" }}
         </button>
@@ -216,7 +216,7 @@
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { ref } from "vue";
 import { useGitUiStore } from "../../../stores/git-ui.js";
 import GitOperationCard from "./GitOperationCard.vue";
@@ -224,33 +224,56 @@ import GitMergeBackCard from "./GitMergeBackCard.vue";
 import GitBaseBranchPicker from "./GitBaseBranchPicker.vue";
 import CustomSelect from "../../common/CustomSelect.vue";
 
-const props = defineProps({
-  workspaceId: { type: String, required: true },
-  snapshot: { type: Object, required: true },
-  gitUi: { type: Object, required: true },
-  operation: { type: Object, required: true },
-  workspaces: { type: Array, default: () => [] },
-  isEmptyRepo: { type: Boolean, default: false },
-  hasNoRemote: { type: Boolean, default: false },
-  showAllActions: { type: Boolean, default: false },
-  isDiverged: { type: Boolean, default: false },
-  isReviewWorkspace: { type: Boolean, default: false },
-  isLinkedWorktree: { type: Boolean, default: false },
-  pushRemote: { type: String, default: "origin" },
-  showUpdateCurrentBranch: { type: Boolean, default: false },
-  showStashCard: { type: Boolean, default: false },
-  showMergeBack: { type: Boolean, default: false },
-  effectiveBaseBranch: { type: String, default: "" },
-  baseBranchOptions: { type: Array, default: () => [] },
-  switchBranchOptionsList: { type: Array, default: () => [] },
-});
+const props = withDefaults(
+  defineProps<{
+    workspaceId: string;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    snapshot: Record<string, any>;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    gitUi: Record<string, any>;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    operation: Record<string, any>;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    workspaces?: any[];
+    isEmptyRepo?: boolean;
+    hasNoRemote?: boolean;
+    showAllActions?: boolean;
+    isDiverged?: boolean;
+    isReviewWorkspace?: boolean;
+    isLinkedWorktree?: boolean;
+    pushRemote?: string;
+    showUpdateCurrentBranch?: boolean;
+    showStashCard?: boolean;
+    showMergeBack?: boolean;
+    effectiveBaseBranch?: string;
+    baseBranchOptions?: string[];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    switchBranchOptionsList?: any[];
+  }>(),
+  {
+    workspaces: () => [],
+    isEmptyRepo: false,
+    hasNoRemote: false,
+    showAllActions: false,
+    isDiverged: false,
+    isReviewWorkspace: false,
+    isLinkedWorktree: false,
+    pushRemote: "origin",
+    showUpdateCurrentBranch: false,
+    showStashCard: false,
+    showMergeBack: false,
+    effectiveBaseBranch: "",
+    baseBranchOptions: () => [],
+    switchBranchOptionsList: () => [],
+  },
+);
 
 const gitUiStore = useGitUiStore();
 
 const switchBranchTarget = ref("");
 const newBranchName = ref("");
 
-function formatDateLabel(value) {
+function formatDateLabel(value: string | undefined | null): string {
   if (!value) return "Not fetched yet";
   try {
     return new Date(value).toLocaleString();
@@ -269,7 +292,7 @@ function onCheckoutBranch() {
 function onCreateBranch() {
   const name = newBranchName.value.trim();
   if (name) {
-    gitUiStore.gitCreateBranch(props.workspaceId, name);
+    gitUiStore.gitCreateBranch(props.workspaceId, name, "");
     newBranchName.value = "";
   }
 }

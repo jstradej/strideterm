@@ -49,7 +49,7 @@
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { computed, watch, nextTick, defineAsyncComponent } from "vue";
 import { useAppStore } from "../../stores/app.js";
 import { useTerminalStore } from "../../stores/terminal.js";
@@ -110,14 +110,17 @@ const SLOT_BOXES = {
   ],
 };
 
-function boxCenter(box) {
+interface SlotBox { rMin: number; rMax: number; cMin: number; cMax: number; }
+interface Tab { id: string; type: string; title: string; status?: string; persistent?: boolean; url?: string; }
+
+function boxCenter(box: SlotBox) {
   return { r: (box.rMin + box.rMax) / 2, c: (box.cMin + box.cMax) / 2 };
 }
 
 // Direction from src → tgt. If the target's extent covers the source's
 // center on an axis, that axis contributes 0 (the target spans past me —
 // it's neither to my left nor right, or neither above nor below).
-function swapDirection(srcBox, tgtBox) {
+function swapDirection(srcBox: SlotBox, tgtBox: SlotBox) {
   const src = boxCenter(srcBox);
   let dr = 0;
   if (tgtBox.rMax < src.r) dr = -1;
@@ -128,7 +131,7 @@ function swapDirection(srcBox, tgtBox) {
   return [dr, dc];
 }
 
-function swapArrow(dr, dc) {
+function swapArrow(dr: number, dc: number) {
   if (dr < 0 && dc < 0) return "↖";
   if (dr < 0 && dc > 0) return "↗";
   if (dr > 0 && dc < 0) return "↙";
@@ -148,7 +151,7 @@ const visibleTabs = computed(() => store.visibleTabs);
 const currentLayout = computed(() => {
   const sg = store.splitGroup;
   if (!sg) return "solo";
-  return sg.viewIds.includes(store.activeViewId) ? sg.layout : "solo";
+  return sg.viewIds.includes(store.activeViewId || "") ? sg.layout : "solo";
 });
 
 const isSplit = computed(() => visibleTabs.value.length > 1);
@@ -158,14 +161,14 @@ const stageClasses = computed(() => ({
   [`terminal-stage--count-${visibleTabs.value.length}`]: true,
 }));
 
-function paneClasses(tab) {
+function paneClasses(tab: Tab) {
   return {
     "workspace-pane--active": tab.id === store.activeViewId,
     "workspace-pane--plain": !isSplit.value,
   };
 }
 
-function gridAreaStyle(index) {
+function gridAreaStyle(index: number) {
   if (!AREA_LAYOUTS.has(currentLayout.value)) return {};
   const area = AREA_NAMES[index];
   return area ? { gridArea: area } : {};
@@ -176,10 +179,11 @@ function gridAreaStyle(index) {
 // inline arrows hide on narrow panes via a CSS container query; a hamburger
 // sibling then gives access to the same swap targets through the context
 // menu's "Move to" section.
-function paneSwapActions(tab) {
+function paneSwapActions(tab: Tab) {
   const sg = store.splitGroup;
   if (!sg || !sg.viewIds.includes(tab.id)) return [];
-  const boxes = SLOT_BOXES[sg.layout];
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const boxes = (SLOT_BOXES as Record<string, any>)[sg.layout];
   if (!Array.isArray(boxes)) return [];
   const srcIdx = sg.viewIds.indexOf(tab.id);
   if (srcIdx < 0 || !boxes[srcIdx]) return [];
@@ -203,7 +207,7 @@ function paneSwapActions(tab) {
   return out;
 }
 
-function paneMenuAction(tab) {
+function paneMenuAction(tab: Tab) {
   return {
     className: "workspace-pane__icon-btn workspace-pane__icon-btn--menu",
     action: "pane-menu",
@@ -216,7 +220,8 @@ function paneMenuAction(tab) {
 // Wrap a list of existing pane actions with the swap row (+ divider) when
 // the tab is part of the split group. Also appends the hamburger menu
 // button, which the container query shows on narrow panes as a fallback.
-function withSwapAndMenu(tab, baseActions) {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function withSwapAndMenu(tab: Tab, baseActions: any[]) {
   const swaps = paneSwapActions(tab);
   const menu = paneMenuAction(tab);
   // Always append the hamburger — it's hidden on wide panes and exposes
@@ -226,7 +231,7 @@ function withSwapAndMenu(tab, baseActions) {
   return [...baseActions, { action: "divider" }, ...swaps, menu];
 }
 
-function terminalPaneActions(tab) {
+function terminalPaneActions(tab: Tab) {
   return withSwapAndMenu(tab, [
     { className: "workspace-pane__icon-btn", action: "select-tab", viewId: tab.id, title: "Focus tab", label: "◉" },
     ...(tab.persistent
@@ -271,11 +276,11 @@ function terminalPaneActions(tab) {
   ]);
 }
 
-function nonTerminalPaneActions(tab) {
+function nonTerminalPaneActions(tab: Tab) {
   return withSwapAndMenu(tab, nonTerminalPaneBaseActions(tab));
 }
 
-function nonTerminalPaneBaseActions(tab) {
+function nonTerminalPaneBaseActions(tab: Tab) {
   if (isGitViewId(tab.id)) {
     return [
       { className: "workspace-pane__icon-btn", action: "select-tab", viewId: tab.id, title: "Focus tab", label: "◉" },
@@ -364,11 +369,12 @@ const PANE_COMPONENTS = {
   "headless-judge": HeadlessJudgePane,
 };
 
-function paneComponent(type) {
-  return PANE_COMPONENTS[type] || null;
+function paneComponent(type: string) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return (PANE_COMPONENTS as Record<string, any>)[type] || null;
 }
 
-function paneProps(tab) {
+function paneProps(tab: Tab) {
   if (tab.type === "git") return { workspaceId: tab.id.replace(/^git:/, "") };
   if (tab.type === "docker") return { workspaceId: tab.id.replace(/^docker:/, "") };
   if (tab.type === "azure") return { workspaceId: tab.id.replace(/^azure:/, "") };
@@ -380,21 +386,23 @@ function paneProps(tab) {
   return { tab };
 }
 
-function onStageMousedown(event) {
-  const pane = event.target.closest(".workspace-pane");
+function onStageMousedown(event: MouseEvent) {
+  const pane = (event.target as HTMLElement | null)?.closest(".workspace-pane");
   if (!pane) {
     termStore.focusActiveTerminal();
     return;
   }
-  const viewId = pane.dataset.viewId;
+  const viewId = (pane as HTMLElement).dataset.viewId;
   if (!viewId) return;
-  const tab = visibleTabs.value.find((entry) => entry.id === viewId) || null;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const tab = visibleTabs.value.find((entry: any) => entry.id === viewId) || null;
   store.activeViewId = viewId;
   store.activeSessionId = tab?.type === "terminal" ? viewId : null;
   termStore.focusActiveTerminal();
 }
 
-function onPaneAction(action, tab, meta) {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function onPaneAction(action: Record<string, any>, tab: Tab, meta: { anchorRect?: DOMRect | null; event?: MouseEvent } | undefined) {
   switch (action.action) {
     case "select-tab":
       store.activateView(tab.id);

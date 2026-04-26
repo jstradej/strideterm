@@ -5,7 +5,7 @@
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { computed } from "vue";
 import { useFileManagerStore } from "../../../stores/file-manager.js";
 import FileTreeNode from "./FileTreeNode.vue";

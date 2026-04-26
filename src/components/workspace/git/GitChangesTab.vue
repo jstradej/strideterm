@@ -18,7 +18,7 @@
                   v-if="!isReviewWorkspace"
                   type="button"
                   class="button button--ghost button--small"
-                  @click="gitUiStore.gitCreateBranch(workspaceId, `branch-from-detached`)"
+                  @click="gitUiStore.gitCreateBranch(workspaceId, `branch-from-detached`, '')"
                 >
                   Create branch from HEAD
                 </button>
@@ -80,7 +80,7 @@
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { computed, defineAsyncComponent, ref, watch } from "vue";
 import { Splitpanes, Pane } from "splitpanes";
 import "splitpanes/dist/splitpanes.css";
@@ -91,23 +91,31 @@ import GitChangeTree from "./GitChangeTree.vue";
 
 const MonacoDiffPanel = defineAsyncComponent(() => import("../../shared/MonacoDiffPanel.vue"));
 
-const props = defineProps({
-  workspaceId: { type: String, required: true },
-  snapshot: { type: Object, required: true },
-  gitUi: { type: Object, required: true },
-  operation: { type: Object, required: true },
-  activeRootPath: { type: String, default: "" },
-  isDetachedHead: { type: Boolean, default: false },
-  isReviewWorkspace: { type: Boolean, default: false },
-});
+const props = withDefaults(
+  defineProps<{
+    workspaceId: string;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    snapshot: Record<string, any>;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    gitUi: Record<string, any>;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    operation: Record<string, any>;
+    activeRootPath?: string;
+    isDetachedHead?: boolean;
+    isReviewWorkspace?: boolean;
+  }>(),
+  { activeRootPath: "", isDetachedHead: false, isReviewWorkspace: false },
+);
 
 const appStore = useAppStore();
 const gitUiStore = useGitUiStore();
 
 const allChangedFiles = computed(() => {
-  const out = [];
-  const seen = new Set();
-  const push = (f, scope) => {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const out: any[] = [];
+  const seen = new Set<string>();
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const push = (f: any, scope: string) => {
     const key = `${scope}:${f.path}`;
     if (seen.has(key)) return;
     seen.add(key);
@@ -120,15 +128,16 @@ const allChangedFiles = computed(() => {
   return out;
 });
 
-const monacoDiffPayload = ref(null);
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const monacoDiffPayload = ref<Record<string, any> | null>(null);
 const monacoDiffLoading = ref(false);
 let monacoDiffSeq = 0;
 
-function diffSourceForScope(scope) {
+function diffSourceForScope(scope: string) {
   return scope === "staged" ? "staged" : "head";
 }
 
-async function loadMonacoDiff(path, scope) {
+async function loadMonacoDiff(path: string, scope: string) {
   if (!props.activeRootPath || !path) {
     monacoDiffPayload.value = null;
     return;
@@ -136,20 +145,23 @@ async function loadMonacoDiff(path, scope) {
   const seq = ++monacoDiffSeq;
   monacoDiffLoading.value = true;
   try {
-    const api = appStore.getApi();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const api = appStore.getApi() as any;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const payload = await api.fileGitDiff({
       rootPath: props.activeRootPath,
       relativePath: path,
       source: diffSourceForScope(scope),
       revisionRef: "",
-    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    }) as any;
     if (seq !== monacoDiffSeq) return;
     monacoDiffPayload.value = payload;
   } catch (err) {
     if (seq !== monacoDiffSeq) return;
     monacoDiffPayload.value = {
       ok: false,
-      leftError: err?.message || "Failed to load diff",
+      leftError: (err as Error)?.message || "Failed to load diff",
       leftContent: "",
       rightContent: "",
       leftLabel: "",

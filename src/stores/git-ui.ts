@@ -55,7 +55,8 @@ interface GitUiState {
   commentSearch?: string;
   agentSubTab?: string;
   reviewSelectedFile?: string;
-  reviewFileDiffPreview?: unknown;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  reviewFileDiffPreview?: Record<string, any>;
   [key: string]: unknown;
 }
 
@@ -866,14 +867,16 @@ export const useGitUiStore = defineStore("git-ui", () => {
     ui.reviewSelectedFile = filePath;
     ui.reviewFileDiffPreview = { ok: true, path: filePath, diff: "", summary: "Loading diff preview..." };
     try {
-      ui.reviewFileDiffPreview = await (
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      ui.reviewFileDiffPreview = (await (
         _api as Transport & { gitDiffPreview: (p: unknown) => Promise<unknown> }
       ).gitDiffPreview!({
         workspaceId,
         path: filePath,
         scope: "branch",
         baseBranch: resolvedBase.startsWith("origin/") ? resolvedBase : resolvedBase ? `origin/${resolvedBase}` : "",
-      });
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      })) as Record<string, any>;
     } catch (error) {
       ui.reviewFileDiffPreview = {
         ok: false,

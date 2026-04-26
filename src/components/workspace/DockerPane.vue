@@ -137,28 +137,27 @@
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { computed, ref } from "vue";
 import { useAppStore } from "../../stores/app.js";
 import { isContainerRunning, currentDockerContext } from "../../app/helpers.js";
+import type { DockerContainer } from "../../../electron/shared/types/state.js";
 import PaneShell from "../layout/PaneShell.vue";
 
-const props = defineProps({
-  workspaceId: { type: String, required: true },
-  showHeader: { type: Boolean, default: false },
-});
+const props = withDefaults(defineProps<{ workspaceId: string; showHeader?: boolean }>(), { showHeader: false });
 
 const appStore = useAppStore();
 
-const dockerState = computed(() => appStore.payload?.docker || {});
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const dockerState = computed<Record<string, any>>(() => (appStore.payload?.docker as any) || {});
 const containers = computed(() => dockerState.value.containers || []);
 const runningCount = computed(() => containers.value.filter(isContainerRunning).length);
 const activeContext = computed(() => currentDockerContext(dockerState.value.contexts || []));
 const lazydockerAvailable = computed(() => dockerState.value.lazydocker?.available || false);
 
-const busyAction = ref("");
+const busyAction = ref<string>("");
 
-async function handleDockerAction(action, containerId) {
+async function handleDockerAction(action: string, containerId: string) {
   busyAction.value = `${action}-${containerId}`;
   try {
     await appStore.dockerAction(action, props.workspaceId, containerId);
@@ -167,7 +166,7 @@ async function handleDockerAction(action, containerId) {
   }
 }
 
-async function handleDockerShell(containerId) {
+async function handleDockerShell(containerId: string) {
   busyAction.value = `shell-${containerId}`;
   try {
     await appStore.dockerShell(props.workspaceId, containerId);
@@ -176,7 +175,7 @@ async function handleDockerShell(containerId) {
   }
 }
 
-async function handleDockerLogs(containerId) {
+async function handleDockerLogs(containerId: string) {
   busyAction.value = `logs-${containerId}`;
   try {
     await appStore.dockerLogs(props.workspaceId, containerId);
@@ -213,13 +212,13 @@ const headerActions = computed(() => [
   },
 ]);
 
-function isRunning(container) {
+function isRunning(container: DockerContainer) {
   return isContainerRunning(container);
 }
 
-function onHeaderAction(action) {
+function onHeaderAction(action: { action: string; viewId?: string }) {
   if (action.action === "refresh-docker") handleRefresh();
-  else if (action.action === "select-tab") appStore.activateView(action.viewId);
-  else if (action.action === "close-tab") appStore.closeTab(action.viewId);
+  else if (action.action === "select-tab") appStore.activateView(action.viewId || "");
+  else if (action.action === "close-tab") appStore.closeTab(action.viewId || "");
 }
 </script>

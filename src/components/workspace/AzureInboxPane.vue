@@ -203,25 +203,23 @@
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { computed, ref } from "vue";
 import { useAppStore } from "../../stores/app.js";
 import PaneShell from "../layout/PaneShell.vue";
 import AzurePrRow from "./azure/AzurePrRow.vue";
 import AzureAuditLog from "./azure/AzureAuditLog.vue";
 
-defineProps({
-  workspaceId: { type: String, required: true },
-  showHeader: { type: Boolean, default: false },
-});
+withDefaults(defineProps<{ workspaceId: string; showHeader?: boolean }>(), { showHeader: false });
 
 const appStore = useAppStore();
 
-const busyAction = ref("");
-const activeTab = ref("all");
-const openError = ref("");
+const busyAction = ref<string>("");
+const activeTab = ref<string>("all");
+const openError = ref<string>("");
 
-const azureData = computed(() => appStore.payload?.azureDevops || {});
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const azureData = computed<Record<string, any>>(() => appStore.payload?.azureDevops || {});
 const connections = computed(() => azureData.value.connections || []);
 const inbox = computed(() => azureData.value.inbox || {});
 const reviewRoot = computed(() => appStore.payload?.appState?.settings?.integrations?.azureDevops?.reviewRoot || "");
@@ -259,9 +257,9 @@ const inboxTabs = computed(() => [
   { id: "activity", label: "Activity Log", count: null, alert: false },
 ]);
 
-const repoFilter = ref("");
+const repoFilter = ref<string>("");
 
-function tabItems(tabId) {
+function tabItems(tabId: string) {
   if (tabId === "all") return inbox.value.recentlyUpdated || [];
   if (tabId === "attention") return inbox.value.needsAttention || [];
   if (tabId === "needs-review") return inbox.value.needsMyReview || [];
@@ -271,22 +269,27 @@ function tabItems(tabId) {
 
 // All unique repo names across all PRs (for filter buttons)
 const repoNames = computed(() => {
-  const all = inbox.value.recentlyUpdated || [];
-  const names = [...new Set(all.map((item) => `${item.project?.name || ""}/${item.repository?.name || ""}`))];
+  const all: unknown[] = inbox.value.recentlyUpdated || [];
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const names = [...new Set(all.map((item: any) => `${item.project?.name || ""}/${item.repository?.name || ""}`))];
   return names.sort();
 });
 
 // Group items by project/repo for the active tab, cached as computed
 const activeGroupedItems = computed(() => {
-  let items = tabItems(activeTab.value);
+  let items: unknown[] = tabItems(activeTab.value);
   if (repoFilter.value) {
-    items = items.filter((item) => `${item.project?.name || ""}/${item.repository?.name || ""}` === repoFilter.value);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    items = items.filter((item: any) => `${item.project?.name || ""}/${item.repository?.name || ""}` === repoFilter.value);
   }
-  const groups = new Map();
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const groups = new Map<string, any[]>();
   for (const item of items) {
-    const repo = `${item.project?.name || ""}/${item.repository?.name || ""}`;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const anyItem = item as any;
+    const repo = `${anyItem.project?.name || ""}/${anyItem.repository?.name || ""}`;
     if (!groups.has(repo)) groups.set(repo, []);
-    groups.get(repo).push(item);
+    groups.get(repo)!.push(anyItem);
   }
   return [...groups.entries()].map(([repo, items]) => ({ repo, items }));
 });
@@ -305,7 +308,7 @@ async function handleRefresh() {
   }
 }
 
-async function handleDeleteConnection(connId) {
+async function handleDeleteConnection(connId: string) {
   busyAction.value = `delete-${connId}`;
   try {
     await appStore.deleteAzureConnection(connId);
@@ -314,24 +317,24 @@ async function handleDeleteConnection(connId) {
   }
 }
 
-function onHeaderAction(action) {
+function onHeaderAction(action: { action: string }) {
   if (action.action === "refresh-azure") handleRefresh();
 }
 
-async function onOpenPr({ prKey, workspaceId }) {
+async function onOpenPr({ prKey, workspaceId }: { prKey: string; workspaceId: string }) {
   openError.value = "";
   try {
     await appStore.openAzurePullRequest(prKey, workspaceId);
   } catch (err) {
-    openError.value = err?.message || "Failed to open review workspace.";
+    openError.value = (err as Error)?.message || "Failed to open review workspace.";
   }
 }
 
-function onOpenBrowser(url) {
+function onOpenBrowser(url: string) {
   if (url) window.open(url, "_blank", "noopener,noreferrer");
 }
 
-function onMarkSeen(prKey) {
+function onMarkSeen(prKey: string) {
   appStore.markAzurePrSeen(prKey);
 }
 </script>

@@ -40,18 +40,23 @@
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { computed, ref, inject, watch } from "vue";
 
-const props = defineProps({
-  taskState: { type: Object, default: null },
-  workspaceCwd: { type: String, default: "" },
-  taskId: { type: String, default: "" },
-});
+const props = withDefaults(
+  defineProps<{
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    taskState?: Record<string, any> | null;
+    workspaceCwd?: string;
+    taskId?: string;
+  }>(),
+  { taskState: null, workspaceCwd: "", taskId: "" },
+);
 
-const api = inject("api");
-const logRaw = ref("");
-const copyFeedback = ref("");
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const api = inject<any>("api");
+const logRaw = ref<string>("");
+const copyFeedback = ref<string>("");
 
 // ── Event log from TASK_LOG.jsonl ─────────────────────────────────
 async function loadLog() {
@@ -100,11 +105,11 @@ const EVENT_LABELS = {
   "worker-idle-detected": "Worker idle detected",
 };
 
-function eventLabel(event) {
-  return EVENT_LABELS[event] || event;
+function eventLabel(event: string): string {
+  return (EVENT_LABELS as Record<string, string>)[event] || event;
 }
 
-function eventCategory(event) {
+function eventCategory(event: string): string {
   if (event === "task-completed") return "success";
   if (event === "task-failed" || event === "shower-failed") return "error";
   if (event.startsWith("judge-")) return "judge";
@@ -130,7 +135,7 @@ watch(
 );
 
 // ── Helpers ───────────────────────────────────────────────────────
-function formatTime(iso) {
+function formatTime(iso: string | null | undefined): string {
   if (!iso) return "";
   try {
     return new Date(iso).toLocaleTimeString();

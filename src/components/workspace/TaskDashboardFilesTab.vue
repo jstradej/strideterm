@@ -42,35 +42,49 @@
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { defineAsyncComponent } from "vue";
 
 const MonacoEditor = defineAsyncComponent(() => import("../shared/MonacoEditor.vue"));
 
-defineProps({
-  taskFiles: { type: Array, required: true },
-  activeFile: { type: String, required: true },
-  activeFileContent: { type: String, required: true },
-  activeFileDirty: { type: Boolean, required: true },
-  editorLanguage: { type: String, required: true },
-  fileLoading: { type: Boolean, default: false },
-  fileError: { type: String, default: "" },
-  fileSaveStatus: { type: String, default: "" },
-});
+interface TaskFile {
+  name: string;
+  dirty?: boolean;
+}
 
-const emit = defineEmits(["switch-file", "mark-dirty", "save", "reload", "update:activeFileContent"]);
+withDefaults(
+  defineProps<{
+    taskFiles: TaskFile[];
+    activeFile: string;
+    activeFileContent: string;
+    activeFileDirty: boolean;
+    editorLanguage: string;
+    fileLoading?: boolean;
+    fileError?: string;
+    fileSaveStatus?: string;
+  }>(),
+  { fileLoading: false, fileError: "", fileSaveStatus: "" },
+);
 
-function switchFile(name) {
+const emit = defineEmits<{
+  (e: "switch-file", name: string): void;
+  (e: "mark-dirty"): void;
+  (e: "save"): void;
+  (e: "reload"): void;
+  (e: "update:activeFileContent", value: string): void;
+}>();
+
+function switchFile(name: string): void {
   emit("switch-file", name);
 }
-function onEditorChange(value) {
+function onEditorChange(value: string): void {
   emit("update:activeFileContent", value);
   emit("mark-dirty");
 }
-function saveActiveFile() {
+function saveActiveFile(): void {
   emit("save");
 }
-function reloadActiveFile() {
+function reloadActiveFile(): void {
   emit("reload");
 }
 </script>

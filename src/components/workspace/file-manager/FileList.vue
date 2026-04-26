@@ -46,17 +46,25 @@
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { inject } from "vue";
 import { useFileManagerStore } from "../../../stores/file-manager.js";
 import FileListItem from "./FileListItem.vue";
 
-const emit = defineEmits(["navigate", "select", "open-edit"]);
+const emit = defineEmits<{
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (e: "navigate", path: string): void;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (e: "select", entry: any): void;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (e: "open-edit", entry: any): void;
+}>();
 const store = useFileManagerStore();
 
-const fmContextMenu = inject("fm-context-menu", null);
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const fmContextMenu = inject<((event: MouseEvent, entry: any) => void) | null>("fm-context-menu", null);
 
-function sortIndicator(column) {
+function sortIndicator(column: string) {
   if (store.sortBy !== column) return "";
   return store.sortAsc ? "\u25b4" : "\u25be";
 }
@@ -67,7 +75,8 @@ function goUp() {
   emit("navigate", parts.join("/"));
 }
 
-function onEntryClick(entry) {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function onEntryClick(entry: any) {
   if (entry.kind === "directory") {
     emit("navigate", entry.relativePath);
   } else {
@@ -75,13 +84,15 @@ function onEntryClick(entry) {
   }
 }
 
-function onEntryDblClick(entry) {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function onEntryDblClick(entry: any) {
   if (entry.kind === "file") {
     emit("open-edit", entry);
   }
 }
 
-function onContextMenu(event, entry) {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function onContextMenu(event: MouseEvent, entry: any) {
   if (fmContextMenu) fmContextMenu(event, entry);
 }
 </script>

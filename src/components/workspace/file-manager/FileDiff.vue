@@ -30,7 +30,7 @@
                 :model-value="store.diffRevisionRef"
                 :options="branchOptions"
                 placeholder="— select —"
-                @update:model-value="(v) => store.setDiffSource('branch', v)"
+                @update:model-value="(v) => store.setDiffSource('branch', String(v))"
               />
             </div>
           </div>
@@ -42,7 +42,7 @@
                 :model-value="store.diffRevisionRef"
                 :options="tagOptions"
                 placeholder="— select —"
-                @update:model-value="(v) => store.setDiffSource('tag', v)"
+                @update:model-value="(v) => store.setDiffSource('tag', String(v))"
               />
             </div>
           </div>
@@ -54,7 +54,7 @@
                 :model-value="store.diffRevisionRef"
                 :options="commitOptions"
                 placeholder="— pick from log —"
-                @update:model-value="(v) => store.setDiffSource('commit', v)"
+                @update:model-value="(v) => store.setDiffSource('commit', String(v))"
               />
             </div>
             <input
@@ -62,7 +62,7 @@
               class="fm-diff__input"
               placeholder="…or paste commit hash"
               :value="manualCommit"
-              @input="manualCommit = $event.target.value"
+              @input="manualCommit = ($event.target as HTMLInputElement).value"
               @keydown.enter="applyManualCommit"
             />
           </div>
@@ -84,14 +84,14 @@
   </Teleport>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { useFileManagerStore } from "../../../stores/file-manager.js";
 import CustomSelect from "../../common/CustomSelect.vue";
 import MonacoDiffPanel from "../../shared/MonacoDiffPanel.vue";
 
 const store = useFileManagerStore();
-const manualCommit = ref("");
+const manualCommit = ref<string>("");
 
 const sourceOptions = [
   { value: "head", label: "HEAD (current commit)" },
@@ -101,22 +101,24 @@ const sourceOptions = [
   { value: "tag", label: "Tag…" },
 ];
 
-const branchOptions = computed(() => (store.diffRefs.branches || []).map((b) => ({ value: b, label: b })));
-const tagOptions = computed(() => (store.diffRefs.tags || []).map((t) => ({ value: t, label: t })));
+const branchOptions = computed(() => (store.diffRefs.branches || []).map((b: string) => ({ value: b, label: b })));
+const tagOptions = computed(() => (store.diffRefs.tags || []).map((t: string) => ({ value: t, label: t })));
 const commitOptions = computed(() =>
-  (store.diffRefs.commits || []).map((c) => ({
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (store.diffRefs.commits || []).map((c: any) => ({
     value: c.hash,
     label: `${c.shortHash} · ${c.subject} (${formatDate(c.date)})`,
   })),
 );
 
-function onSourceChange(value) {
+function onSourceChange(value: string | number) {
+  const v = String(value) as "head" | "staged" | "commit" | "branch" | "tag";
   manualCommit.value = "";
-  if (value === "head" || value === "staged") {
-    store.setDiffSource(value);
+  if (v === "head" || v === "staged") {
+    store.setDiffSource(v);
     return;
   }
-  store.selectDiffMode(value);
+  store.selectDiffMode(v);
 }
 
 function applyManualCommit() {
@@ -125,7 +127,7 @@ function applyManualCommit() {
   store.setDiffSource("commit", value);
 }
 
-function formatDate(iso) {
+function formatDate(iso: string) {
   if (!iso) return "";
   try {
     return new Date(iso).toLocaleDateString();
@@ -134,9 +136,9 @@ function formatDate(iso) {
   }
 }
 
-let escListener = null;
+let escListener: ((event: KeyboardEvent) => void) | null = null;
 onMounted(() => {
-  escListener = (event) => {
+  escListener = (event: KeyboardEvent) => {
     if (event.key === "Escape" && store.diffOpen) store.closeDiff();
   };
   document.addEventListener("keydown", escListener);

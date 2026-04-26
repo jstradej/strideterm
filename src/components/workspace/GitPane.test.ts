@@ -5,7 +5,7 @@ import GitPane from "./GitPane.vue";
 import { useAppStore } from "../../stores/app.js";
 import { useGitUiStore } from "../../stores/git-ui.js";
 
-function buildWorkspace(overrides = {}) {
+function buildWorkspace(overrides: Record<string, unknown> = {}) {
   return {
     id: "ws-test",
     name: "Test WS",
@@ -27,7 +27,7 @@ function buildWorkspace(overrides = {}) {
   };
 }
 
-function makeSnapshot(rootPath = "/ms/api") {
+function makeSnapshot(rootPath: string = "/ms/api") {
   return {
     available: true,
     branch: "main",
@@ -53,7 +53,8 @@ function makeSnapshot(rootPath = "/ms/api") {
   };
 }
 
-function mountPane(workspaceId, workspaces = []) {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function mountPane(workspaceId: string, workspaces: any[] = []) {
   const appStore = useAppStore();
   appStore.payload = {
     appState: {

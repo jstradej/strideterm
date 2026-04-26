@@ -58,47 +58,58 @@
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { computed } from "vue";
 import { useAppStore } from "../../../stores/app.js";
 import { useGitUiStore } from "../../../stores/git-ui.js";
 
-const props = defineProps({
-  snapshot: { type: Object, required: true },
-  workspaces: { type: Array, default: () => [] },
-  workspaceId: { type: String, default: "" },
-  gitUi: { type: Object, default: () => ({}) },
-  pushRemote: { type: String, default: "origin" },
-  isReviewWorkspace: { type: Boolean, default: false },
-});
+const props = withDefaults(
+  defineProps<{
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    snapshot: Record<string, any>;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    workspaces?: any[];
+    workspaceId?: string;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    gitUi?: Record<string, any>;
+    pushRemote?: string;
+    isReviewWorkspace?: boolean;
+  }>(),
+  { workspaces: () => [], workspaceId: "", gitUi: () => ({}), pushRemote: "origin", isReviewWorkspace: false },
+);
 
 const appStore = useAppStore();
 const gitUiStore = useGitUiStore();
 
 const siblings = computed(() => props.snapshot.siblingWorktrees || []);
 const workspaceIdsByPath = computed(
-  () => new Map(props.workspaces.map((ws) => [String(ws.cwd || "").toLowerCase(), ws.id])),
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  () => new Map(props.workspaces.map((ws: any) => [String(ws.cwd || "").toLowerCase(), ws.id])),
 );
 
-function getWorkspaceId(entry) {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function getWorkspaceId(entry: any) {
   return workspaceIdsByPath.value.get(String(entry.path || "").toLowerCase()) || "";
 }
 
-function canPushWorktree(entry) {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function canPushWorktree(entry: any) {
   // Gate same as toolbar Push: has remote, not detached, not review workspace
   if (!entry.branch || entry.detached) return false;
-  const remoteCount = Object.keys(props.snapshot.remotes || {}).filter((k) => !k.includes(":")).length;
+  const remoteCount = Object.keys(props.snapshot.remotes || {}).filter((k: string) => !k.includes(":")).length;
   return remoteCount > 0;
 }
 
-function onPushWorktree(entry) {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function onPushWorktree(entry: any) {
   const wsId = getWorkspaceId(entry);
   if (wsId) {
     gitUiStore.gitPush(wsId);
   }
 }
 
-function onDeleteWorktree(entry) {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function onDeleteWorktree(entry: any) {
   if (!props.workspaceId) return;
   gitUiStore.confirmRemoveWorktree(props.workspaceId, {
     worktreePath: entry.path,

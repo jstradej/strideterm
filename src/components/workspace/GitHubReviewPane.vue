@@ -123,28 +123,29 @@
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { ref, computed } from "vue";
 import { useAppStore } from "../../stores/app.js";
 import PaneShell from "../layout/PaneShell.vue";
 import ReviewPipelinesTab from "./shared/ReviewPipelinesTab.vue";
 
-const props = defineProps({
-  workspaceId: { type: String, default: "" },
-  showHeader: { type: Boolean, default: false },
+const props = withDefaults(defineProps<{ workspaceId?: string; showHeader?: boolean }>(), {
+  workspaceId: "",
+  showHeader: false,
 });
 
 const appStore = useAppStore();
-const reviewBody = ref("");
-const commentBody = ref("");
-const activeTab = ref("summary");
+const reviewBody = ref<string>("");
+const commentBody = ref<string>("");
+const activeTab = ref<string>("summary");
 const refreshingChecks = ref(false);
 
 const workspace = computed(() =>
   (appStore.payload?.appState?.workspaces || []).find((w) => w.id === props.workspaceId),
 );
 const prKey = computed(() => workspace.value?.review?.prKey || "");
-const summary = computed(() => appStore.payload?.github?.pullRequests?.[prKey.value] || null);
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const summary = computed(() => (appStore.payload?.github as any)?.pullRequests?.[prKey.value] || null);
 const checks = computed(() => summary.value?.checks || {});
 
 const reviewTabs = computed(() => [
@@ -168,13 +169,14 @@ const headerActions = computed(() => [
   { className: "workspace-pane__icon-btn", action: "refresh-github", title: "Refresh GitHub", label: "\u21BB" },
 ]);
 
-function onHeaderAction(action) {
+function onHeaderAction(action: { action: string }) {
   if (action.action === "refresh-github") appStore.refreshGitHub();
 }
 
 function openInBrowser() {
   const url = summary.value?.pullRequest?.webUrl;
-  if (url) appStore.openExternal(url);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  if (url) (appStore as any).openExternal(url);
 }
 
 async function handleFetch() {
@@ -195,7 +197,7 @@ async function handlePush() {
   } catch {}
 }
 
-async function submitReview(event) {
+async function submitReview(event: string) {
   if (!prKey.value) return;
   try {
     await appStore.githubSubmitReview(prKey.value, event, reviewBody.value.trim());
@@ -206,7 +208,7 @@ async function submitReview(event) {
 async function addComment() {
   if (!prKey.value || !commentBody.value.trim()) return;
   try {
-    await appStore.githubAddComment(prKey.value, commentBody.value.trim());
+    await appStore.githubComment(prKey.value, commentBody.value.trim());
     commentBody.value = "";
   } catch {}
 }

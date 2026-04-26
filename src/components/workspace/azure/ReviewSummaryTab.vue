@@ -220,27 +220,33 @@
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { ref, computed } from "vue";
 import { useAppStore } from "../../../stores/app.js";
 import { useGitUiStore } from "../../../stores/git-ui.js";
 
-const props = defineProps({
-  detail: { type: Object, default: null },
-  pullRequest: { type: Object, required: true },
-  reviewers: { type: Array, required: true },
-  checks: { type: Object, required: true },
-  changedFiles: { type: Array, required: true },
-  prKey: { type: String, required: true },
-  workspaceId: { type: String, required: true },
-});
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const props = defineProps<{
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  detail?: Record<string, any> | null;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  pullRequest: Record<string, any>;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  reviewers: Array<Record<string, any>>;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  checks: Record<string, any>;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  changedFiles: Array<Record<string, any>>;
+  prKey: string;
+  workspaceId: string;
+}>();
 
-defineEmits(["new-comment"]);
+defineEmits<{ (e: "new-comment"): void }>();
 
 const appStore = useAppStore();
 const gitUiStore = useGitUiStore();
 
-const busyAction = ref("");
+const busyAction = ref<string>("");
 
 const conflictInfo = computed(() => {
   const status = props.pullRequest.mergeStatus || "";
@@ -256,19 +262,19 @@ const conflictInfo = computed(() => {
   };
 });
 
-function checkIcon(state) {
+function checkIcon(state: unknown) {
   if (state === "passed" || state === "approved") return "✓";
   if (state === "failed" || state === "rejected") return "✗";
   return "●";
 }
 
-function voteClass(vote) {
-  if (vote > 0) return "approved";
-  if (vote < 0) return "rejected";
+function voteClass(vote: unknown): string {
+  if ((vote as number) > 0) return "approved";
+  if ((vote as number) < 0) return "rejected";
   return "none";
 }
 
-function voteLabel(vote) {
+function voteLabel(vote: unknown): string {
   if (vote === 10) return "Approved";
   if (vote === 5) return "Approved with suggestions";
   if (vote === -5) return "Waiting for author";
@@ -276,22 +282,22 @@ function voteLabel(vote) {
   return "No vote yet";
 }
 
-function formatDate(iso) {
+function formatDate(iso: unknown): string {
   if (!iso) return "";
-  const d = new Date(iso);
+  const d = new Date(iso as string);
   return d.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
 }
 
-async function handleVote(prKey, vote, _label) {
+async function handleVote(prKey: string, vote: number, _label: string) {
   busyAction.value = `vote-${vote}`;
   try {
-    await appStore.azureVote(prKey, vote);
+    await appStore.azureVote(prKey, String(vote));
   } finally {
     busyAction.value = "";
   }
 }
 
-async function handleFetch(workspaceId) {
+async function handleFetch(workspaceId: string) {
   busyAction.value = "fetch";
   try {
     await appStore.azureFetchReviewWorkspace(workspaceId);
@@ -300,7 +306,7 @@ async function handleFetch(workspaceId) {
   }
 }
 
-async function handleRebase(workspaceId) {
+async function handleRebase(workspaceId: string) {
   busyAction.value = "rebase";
   try {
     await appStore.azureRebaseReviewWorkspace(workspaceId);
@@ -309,33 +315,33 @@ async function handleRebase(workspaceId) {
   }
 }
 
-const pushError = ref("");
+const pushError = ref<string>("");
 
-async function handlePush(workspaceId) {
+async function handlePush(workspaceId: string) {
   busyAction.value = "push";
   pushError.value = "";
   try {
     await appStore.azurePushReviewWorkspace(workspaceId);
   } catch (error) {
-    pushError.value = error?.message || String(error || "Push failed.");
+    pushError.value = (error as Error)?.message || String(error || "Push failed.");
   } finally {
     busyAction.value = "";
   }
 }
 
-async function handleForcePush(workspaceId) {
+async function handleForcePush(workspaceId: string) {
   busyAction.value = "force-push";
   pushError.value = "";
   try {
     await appStore.azurePushReviewWorkspace(workspaceId, { force: true });
   } catch (error) {
-    pushError.value = error?.message || String(error || "Force push failed.");
+    pushError.value = (error as Error)?.message || String(error || "Force push failed.");
   } finally {
     busyAction.value = "";
   }
 }
 
-function stripRef(ref) {
+function stripRef(ref: unknown) {
   return String(ref || "").replace(/^refs\/heads\//, "");
 }
 </script>

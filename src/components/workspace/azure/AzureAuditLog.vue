@@ -175,7 +175,7 @@
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { ref, computed, watch, onMounted, reactive } from "vue";
 import { useAppStore } from "../../../stores/app.js";
 import CustomSelect from "../../common/CustomSelect.vue";
@@ -201,9 +201,7 @@ const filterRangeOptions = [
   { value: "30d", label: "Last 30 days" },
 ];
 
-const props = defineProps({
-  provider: { type: String, default: "azure" },
-});
+const props = withDefaults(defineProps<{ provider?: string }>(), { provider: "azure" });
 
 const appStore = useAppStore();
 function getApi() {
@@ -216,16 +214,17 @@ const filterSuccess = ref("");
 const filterSource = ref("");
 const filterRange = ref("24h");
 const searchText = ref("");
-let searchDebounce = null;
+let searchDebounce: ReturnType<typeof setTimeout> | null = null;
 const loading = ref(false);
-const entries = ref([]);
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const entries = ref<Record<string, any>[]>([]);
 const total = ref(0);
 const page = ref(0);
 const pageSize = 50;
-const expandedId = ref(null);
-const copiedId = ref(null);
+const expandedId = ref<unknown>(null);
+const copiedId = ref<unknown>(null);
 const sortKey = ref("id");
-const sortDir = ref("desc");
+const sortDir = ref<"asc" | "desc">("desc");
 const stats = ref({ total: 0, successCount: 0, errorCount: 0, readCount: 0, writeCount: 0, avgDurationMs: 0 });
 
 const columns = reactive([
@@ -239,7 +238,7 @@ const columns = reactive([
 ]);
 
 // --- Sorting ---
-function toggleSort(key) {
+function toggleSort(key: string) {
   if (sortKey.value === key) {
     sortDir.value = sortDir.value === "asc" ? "desc" : "asc";
   } else {
@@ -259,9 +258,9 @@ const sortedEntries = computed(() => {
     if (bv == null) return -1;
     if (typeof av === "boolean") {
       av = av ? 1 : 0;
-      bv = bv ? 1 : 0;
+      bv = (bv as boolean) ? 1 : 0;
     }
-    if (typeof av === "number") return (av - bv) * dir;
+    if (typeof av === "number") return (av - (bv as number)) * dir;
     return String(av).localeCompare(String(bv)) * dir;
   });
 });
@@ -271,7 +270,7 @@ let resizeCol = -1;
 let resizeStartX = 0;
 let resizeStartW = 0;
 
-function startResize(event, colIndex) {
+function startResize(event: MouseEvent, colIndex: number) {
   resizeCol = colIndex;
   resizeStartX = event.clientX;
   resizeStartW = columns[colIndex].width;
@@ -281,7 +280,7 @@ function startResize(event, colIndex) {
   document.body.style.userSelect = "none";
 }
 
-function onResizeMove(event) {
+function onResizeMove(event: MouseEvent) {
   if (resizeCol < 0) return;
   const delta = event.clientX - resizeStartX;
   columns[resizeCol].width = Math.max(columns[resizeCol].minWidth, resizeStartW + delta);
@@ -296,11 +295,12 @@ function onResizeEnd() {
 }
 
 // --- Detail expand + copy ---
-function toggleDetail(id) {
+function toggleDetail(id: unknown) {
   expandedId.value = expandedId.value === id ? null : id;
 }
 
-async function copyEntry(entry) {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function copyEntry(entry: Record<string, any>) {
   const text = [
     `Timestamp: ${entry.timestamp}`,
     `Operation: ${entry.operation} (${entry.category})`,
@@ -326,40 +326,44 @@ async function copyEntry(entry) {
 
 // --- Search debounce ---
 function onSearchInput() {
-  clearTimeout(searchDebounce);
+  if (searchDebounce != null) clearTimeout(searchDebounce);
   searchDebounce = setTimeout(() => loadData(), 300);
 }
 
 // --- Data loading ---
-function rangeToFrom(range) {
+function rangeToFrom(range: string): string {
   const now = new Date();
   if (range === "24h") return new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString();
   if (range === "7d") return new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000).toISOString();
   return new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000).toISOString();
 }
 
-function buildFilters() {
-  const f = { from: rangeToFrom(filterRange.value) };
-  if (filterCategory.value) f.category = filterCategory.value;
-  if (filterSuccess.value === "true") f.success = true;
-  else if (filterSuccess.value === "false") f.success = false;
-  if (filterSource.value === "user") f.userInitiated = true;
-  else if (filterSource.value === "sync") f.userInitiated = false;
-  if (searchText.value.trim()) f.search = searchText.value.trim();
+function buildFilters(): Record<string, unknown> {
+  const f: Record<string, unknown> = { from: rangeToFrom(filterRange.value) };
+  if (filterCategory.value) f["category"] = filterCategory.value;
+  if (filterSuccess.value === "true") f["success"] = true;
+  else if (filterSuccess.value === "false") f["success"] = false;
+  if (filterSource.value === "user") f["userInitiated"] = true;
+  else if (filterSource.value === "sync") f["userInitiated"] = false;
+  if (searchText.value.trim()) f["search"] = searchText.value.trim();
   return f;
 }
 
 async function loadEntries() {
   loading.value = true;
   try {
-    const queryFn = isGitHub.value ? getApi().queryGitHubAuditLog : getApi().queryAzureAuditLog;
-    const result = await queryFn({
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const queryFn: ((args: Record<string, unknown>) => Promise<any>) | undefined = isGitHub.value
+      ? getApi().queryGitHubAuditLog
+      : getApi().queryAzureAuditLog;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const result: any = await queryFn?.({
       ...buildFilters(),
       limit: pageSize,
       offset: page.value * pageSize,
     });
-    entries.value = result.entries || [];
-    total.value = result.total || 0;
+    entries.value = result?.entries || [];
+    total.value = result?.total || 0;
   } catch (err) {
     console.warn("Audit log query failed:", err);
   } finally {
@@ -369,8 +373,12 @@ async function loadEntries() {
 
 async function loadStats() {
   try {
-    const statsFn = isGitHub.value ? getApi().getGitHubAuditStats : getApi().getAzureAuditStats;
-    stats.value = await statsFn(buildFilters());
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const statsFn: ((args: Record<string, unknown>) => Promise<any>) | undefined = isGitHub.value
+      ? getApi().getGitHubAuditStats
+      : getApi().getAzureAuditStats;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    stats.value = await (statsFn as any)?.(buildFilters());
   } catch {}
 }
 
@@ -380,7 +388,7 @@ async function loadData() {
   await Promise.all([loadEntries(), loadStats()]);
 }
 
-function formatTime(iso) {
+function formatTime(iso: string) {
   if (!iso) return "\u2014";
   try {
     const d = new Date(iso);

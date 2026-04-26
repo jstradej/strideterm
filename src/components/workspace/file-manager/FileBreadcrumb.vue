@@ -18,17 +18,17 @@
   </nav>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { useFileManagerStore } from "../../../stores/file-manager.js";
 
-defineProps({
-  items: { type: Array, default: () => [] },
-});
-defineEmits(["navigate"]);
+interface BreadcrumbItem { name: string; path: string; }
+
+withDefaults(defineProps<{ items?: BreadcrumbItem[] }>(), { items: () => [] });
+defineEmits<{ (e: "navigate", path: string): void }>();
 
 const store = useFileManagerStore();
 
-function dirtyFor(itemPath) {
+function dirtyFor(itemPath: string) {
   if (!store.gitIsRepo) return null;
   if (!itemPath) {
     // Root crumb — surface "any dirty file" rollup

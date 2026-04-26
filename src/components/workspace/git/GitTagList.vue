@@ -148,31 +148,37 @@
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { computed, ref, onMounted, watch } from "vue";
 import { useGitUiStore } from "../../../stores/git-ui.js";
 
-const props = defineProps({
-  workspaceId: { type: String, required: true },
-  gitUi: { type: Object, required: true },
-  snapshot: { type: Object, default: () => ({}) },
-  isReviewWorkspace: { type: Boolean, default: false },
-});
+const props = withDefaults(
+  defineProps<{
+    workspaceId: string;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    gitUi: Record<string, any>;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    snapshot?: Record<string, any>;
+    isReviewWorkspace?: boolean;
+  }>(),
+  { snapshot: () => ({}), isReviewWorkspace: false },
+);
 
 const gitUiStore = useGitUiStore();
 
-const newTagName = ref("");
-const newTagMessage = ref("");
-const resultMessage = ref("");
-const resultDetail = ref("");
-const resultIsError = ref(false);
+const newTagName = ref<string>("");
+const newTagMessage = ref<string>("");
+const resultMessage = ref<string>("");
+const resultDetail = ref<string>("");
+const resultIsError = ref<boolean>(false);
 
 const tags = computed(() => props.gitUi.tags || []);
 
 // Watch lastResult for feedback from tag operations
 watch(
   () => props.gitUi.lastResult,
-  (result) => {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (result: any) => {
     if (result?.summary) {
       resultMessage.value = result.summary;
       resultDetail.value = result.rawOutput || "";
@@ -187,7 +193,7 @@ onMounted(() => {
   }
 });
 
-function formatDate(value) {
+function formatDate(value: string) {
   if (!value) return "";
   try {
     return new Date(value).toLocaleDateString();
@@ -211,7 +217,7 @@ function onCreate() {
   newTagMessage.value = "";
 }
 
-function onPushTag(tagName) {
+function onPushTag(tagName: string) {
   clearResult();
   gitUiStore.gitPushTag(props.workspaceId, tagName);
 }
@@ -221,12 +227,14 @@ function onPushAll() {
   gitUiStore.gitPushAllTags(props.workspaceId);
 }
 
-function onDelete(tag) {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function onDelete(tag: Record<string, any>) {
   clearResult();
   gitUiStore.confirmDeleteLocalTag(props.workspaceId, tag.name);
 }
 
-function onDeleteRemote(tag) {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function onDeleteRemote(tag: Record<string, any>) {
   clearResult();
   gitUiStore.confirmDeleteRemoteTag(props.workspaceId, tag.name);
 }

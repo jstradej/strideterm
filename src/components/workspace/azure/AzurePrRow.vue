@@ -38,21 +38,27 @@
   </article>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { computed } from "vue";
 
-const props = defineProps({
-  item: { type: Object, required: true },
-});
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const props = defineProps<{ item: Record<string, any> }>();
 
-defineEmits(["open", "browser", "seen"]);
+defineEmits<{
+  (e: "open", payload: { prKey: string; workspaceId: string }): void;
+  (e: "browser", url: string): void;
+  (e: "seen", prKey: string): void;
+}>();
 
 const pullRequest = computed(() => props.item.pullRequest || {});
-const authorName = computed(() => props.item.author?.displayName || "Unknown author");
+const authorName = computed(() => {
+  const author = props.item.author;
+  return (author?.displayName as string) || "Unknown author";
+});
 
 const openWorkspaceId = computed(() =>
   props.item.role === "author" && props.item.existingWorkspaceId && !props.item.reviewWorkspaceId
-    ? props.item.existingWorkspaceId
+    ? (props.item.existingWorkspaceId as string)
     : "",
 );
 
@@ -62,7 +68,7 @@ const actionLabel = computed(() => {
   return "Review";
 });
 
-function stripRef(ref) {
+function stripRef(ref: unknown) {
   return String(ref || "").replace(/^refs\/heads\//, "");
 }
 </script>

@@ -55,12 +55,7 @@
           {{ check.label }}
           <span v-if="!check.passed && check.exitCode != null" class="td__check-code">exit {{ check.exitCode }}</span>
         </div>
-        <pre v-if="selectedRoundData.checks.some((c) => !c.passed && c.outputTail)" class="td__output">{{
-          selectedRoundData.checks
-            .filter((c) => !c.passed && c.outputTail)
-            .map((c) => c.outputTail)
-            .join("\n")
-        }}</pre>
+        <pre v-if="selectedRoundHasFailedOutput" class="td__output">{{ selectedRoundFailedOutputText }}</pre>
       </div>
       <div v-if="selectedRoundData.judgeVerdict" class="td__verdict">
         Judge: <strong>{{ selectedRoundData.judgeVerdict }}</strong>
@@ -101,18 +96,23 @@
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { computed, ref, inject, watch } from "vue";
 
-const props = defineProps({
-  taskState: { type: Object, default: null },
-  workspaceCwd: { type: String, default: "" },
-  taskId: { type: String, default: "" },
-});
+const props = withDefaults(
+  defineProps<{
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    taskState?: Record<string, any> | null;
+    workspaceCwd?: string;
+    taskId?: string;
+  }>(),
+  { taskState: null, workspaceCwd: "", taskId: "" },
+);
 
-const api = inject("api");
-const selectedRound = ref(null);
-const logRaw = ref("");
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const api = inject<any>("api");
+const selectedRound = ref<number | null>(null);
+const logRaw = ref<string>("");
 
 // ── Rounds ────────────────────────────────────────────────────────
 const roundsChronological = computed(() => props.taskState?.rounds || []);
@@ -139,10 +139,27 @@ watch(
 
 const selectedRoundData = computed(() => {
   if (selectedRound.value == null) return null;
-  return roundsChronological.value.find((r) => r.round === selectedRound.value) || null;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return roundsChronological.value.find((r: any) => r.round === selectedRound.value) || null;
 });
 
-function roundStatus(round) {
+const selectedRoundHasFailedOutput = computed(() =>
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (selectedRoundData.value?.checks || []).some((c: any) => !c.passed && c.outputTail),
+);
+
+const selectedRoundFailedOutputText = computed(() =>
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (selectedRoundData.value?.checks || [])
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    .filter((c: any) => !c.passed && c.outputTail)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    .map((c: any) => c.outputTail)
+    .join("\n"),
+);
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function roundStatus(round: Record<string, any>): string {
   if (round.action === "completed") return "success";
   if (round.action === "failed") return "error";
   if (round.action === "re-prompted") return "warn";
@@ -151,11 +168,13 @@ function roundStatus(round) {
   return "neutral";
 }
 
-function roundTooltip(round) {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function roundTooltip(round: Record<string, any>): string {
   const parts = [`Round ${round.round}`];
   if (round.action) parts.push(round.action);
   if (round.checks?.length) {
-    const passed = round.checks.filter((c) => c.passed).length;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const passed = round.checks.filter((c: any) => c.passed).length;
     parts.push(`${passed}/${round.checks.length} checks passed`);
   }
   if (round.judgeVerdict) parts.push(`Judge: ${round.judgeVerdict}`);
@@ -166,7 +185,7 @@ function roundTooltip(round) {
 // ── Pipeline ──────────────────────────────────────────────────────
 const PIPELINE_ORDER = ["running", "evaluating", "judge-evaluating", "completed"];
 
-function pipelineStatus(stepState) {
+function pipelineStatus(stepState: string): string {
   const rawState = props.taskState?.state;
   const state = rawState === "refreshing" ? "running" : rawState;
   if (!state || state === "idle") return "waiting";
@@ -257,11 +276,11 @@ const EVENT_LABELS = {
   "verdict-rejected": "User rejected verdict",
 };
 
-function eventLabel(event) {
-  return EVENT_LABELS[event] || event;
+function eventLabel(event: string): string {
+  return (EVENT_LABELS as Record<string, string>)[event] || event;
 }
 
-function eventCategory(event) {
+function eventCategory(event: string): string {
   if (event === "task-completed") return "success";
   if (event === "task-failed" || event === "shower-failed") return "error";
   if (event.startsWith("judge-")) return "judge";
@@ -307,7 +326,8 @@ const selectedRoundEntries = computed(() => {
   const r = selectedRoundData.value;
   if (!r?.startedAt) return [];
   const rounds = roundsChronological.value;
-  const idx = rounds.findIndex((x) => x.round === r.round);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const idx = rounds.findIndex((x: any) => x.round === r.round);
   const startMs = Date.parse(r.startedAt);
   if (Number.isNaN(startMs)) return [];
   const next = rounds[idx + 1];
@@ -339,7 +359,7 @@ watch(
 );
 
 // ── Helpers ───────────────────────────────────────────────────────
-function formatTime(iso) {
+function formatTime(iso: string | null | undefined): string {
   if (!iso) return "";
   try {
     return new Date(iso).toLocaleTimeString();

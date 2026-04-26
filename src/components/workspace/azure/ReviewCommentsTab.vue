@@ -80,7 +80,7 @@
           placeholder="Search..."
           title="Filter comments by text in file paths or comment body"
           :value="searchTerm"
-          @input="gitUiStore.reviewSetCommentSearch(workspaceId, $event.target.value)"
+          @input="gitUiStore.reviewSetCommentSearch(workspaceId, ($event.target as HTMLInputElement).value)"
         />
       </div>
 
@@ -153,7 +153,7 @@
                 <span class="workspace-chip workspace-chip--fixed" style="font-size: 10px">queued</span>
               </div>
               <div class="review-comment__body" style="opacity: 0.85">
-                {{ threadFixStatus.get(String(thread.id)).fixSummary }}
+                {{ threadFixStatus.get(String(thread.id))?.fixSummary }}
               </div>
             </div>
 
@@ -360,64 +360,74 @@
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { ref } from "vue";
 import { useAppStore } from "../../../stores/app.js";
 import { useGitUiStore } from "../../../stores/git-ui.js";
 import MarkdownContent from "./MarkdownContent.vue";
 
-const props = defineProps({
-  prKey: { type: String, required: true },
-  workspaceId: { type: String, required: true },
-  filteredThreads: { type: Array, required: true },
-  filteredDraftComments: { type: Array, required: true },
-  draftsByThread: { type: Function, required: true },
-  draftsByComment: { type: Function, required: true },
-  threadIndex: { type: Function, required: true },
-  threadToCommentKey: { type: Map, required: true },
-  threadFixStatus: { type: Map, required: true },
-  filter: { type: String, required: true },
-  sort: { type: String, required: true },
-  sortDir: { type: String, required: true },
-  searchTerm: { type: String, required: true },
-  isFiltered: { type: Boolean, required: true },
-  allDrafts: { type: Array, required: true },
-  hasClearable: { type: Boolean, required: true },
-  sortOptions: { type: Array, required: true },
-  totalCommentCount: { type: Number, required: true },
-});
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const props = defineProps<{
+  prKey: string;
+  workspaceId: string;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  filteredThreads: Array<Record<string, any>>;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  filteredDraftComments: Array<Record<string, any>>;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  draftsByThread: (thread: Record<string, any>) => Array<Record<string, any>>;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  draftsByComment: (comment: Record<string, any>) => Array<Record<string, any>>;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  threadIndex: (thread: Record<string, any>) => number | null;
+  threadToCommentKey: Map<string, string>;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  threadFixStatus: Map<string, Record<string, any>>;
+  filter: string;
+  sort: string;
+  sortDir: string;
+  searchTerm: string;
+  isFiltered: boolean;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  allDrafts: Array<Record<string, any>>;
+  hasClearable: boolean;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  sortOptions: Array<Record<string, any>>;
+  totalCommentCount: number;
+}>();
 
 const appStore = useAppStore();
 const gitUiStore = useGitUiStore();
 
-const busyAction = ref("");
+const busyAction = ref<string>("");
 
 /* ── Avatar helpers ── */
-function isHumanAuthor(agent) {
+function isHumanAuthor(agent: unknown) {
   return !agent || agent === "human";
 }
 
-function displayAuthor(agent) {
+function displayAuthor(agent: unknown) {
   if (isHumanAuthor(agent)) return "You";
   return agent;
 }
 
-function avatarInitials(name) {
+function avatarInitials(name: unknown): string {
   if (isHumanAuthor(name)) return "ME";
-  const parts = (name || "?").split(/[\s,]+/).filter(Boolean);
-  return parts.length >= 2 ? (parts[0][0] + parts[1][0]).toUpperCase() : (name || "?").slice(0, 2).toUpperCase();
+  const n = String(name || "?");
+  const parts = n.split(/[\s,]+/).filter(Boolean);
+  return parts.length >= 2 ? (parts[0][0] + parts[1][0]).toUpperCase() : n.slice(0, 2).toUpperCase();
 }
 
-function avatarColor(name) {
+function avatarColor(name: unknown): string {
   if (isHumanAuthor(name)) return "hsl(210, 45%, 42%)";
   let hash = 0;
-  for (const ch of name || "") hash = ((hash << 5) - hash + ch.charCodeAt(0)) | 0;
+  for (const ch of String(name || "")) hash = ((hash << 5) - hash + ch.charCodeAt(0)) | 0;
   const hue = ((hash % 360) + 360) % 360;
   return `hsl(${hue}, 45%, 42%)`;
 }
 
 /* ── Relative time ── */
-function formatRelativeTime(dateStr) {
+function formatRelativeTime(dateStr: string) {
   if (!dateStr) return "";
   const diff = Date.now() - new Date(dateStr).getTime();
   const mins = Math.floor(diff / 60000);
@@ -432,25 +442,26 @@ function formatRelativeTime(dateStr) {
 }
 
 /* ── Thread helpers ── */
-function threadDate(thread) {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function threadDate(thread: Record<string, any>): string {
   const comments = thread.comments || [];
   return comments.at(-1)?.publishedDate || thread.lastUpdatedDate || thread.publishedDate || "";
 }
 
-function shortFilePath(filePath) {
+function shortFilePath(filePath: string) {
   if (!filePath) return "";
   const parts = filePath.replace(/^\//, "").split("/");
   if (parts.length <= 3) return filePath;
   return `.../${parts.slice(-2).join("/")}`;
 }
 
-function threadStatusLabel(status) {
-  const s = (status || "active").toLowerCase();
+function threadStatusLabel(status: unknown): string {
+  const s = String(status || "active").toLowerCase();
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
-function statusChipClass(status) {
-  const s = (status || "active").toLowerCase();
+function statusChipClass(status: unknown): string {
+  const s = String(status || "active").toLowerCase();
   if (s === "active") return "workspace-chip--active";
   if (s === "fixed" || s === "closed" || s === "wontfix" || s === "bydesign") return "workspace-chip--muted";
   return "";
@@ -465,7 +476,7 @@ async function handleDeleteAllDrafts() {
   }
 }
 
-async function handleDeleteDraft(draftId) {
+async function handleDeleteDraft(draftId: string) {
   busyAction.value = `delete-${draftId}`;
   try {
     await appStore.deleteReviewBridgeDraft(props.prKey, draftId);
@@ -474,25 +485,25 @@ async function handleDeleteDraft(draftId) {
   }
 }
 
-async function handleResolveThread(threadId) {
+async function handleResolveThread(threadId: number | string) {
   busyAction.value = `resolve-${threadId}`;
   try {
-    await appStore.azureResolveThread(props.prKey, threadId);
+    await appStore.azureResolveThread(props.prKey, String(threadId));
   } finally {
     busyAction.value = "";
   }
 }
 
-async function handleReactivateThread(threadId) {
+async function handleReactivateThread(threadId: number | string) {
   busyAction.value = `reactivate-${threadId}`;
   try {
-    await appStore.azureReactivateThread(props.prKey, threadId);
+    await appStore.azureReactivateThread(props.prKey, String(threadId));
   } finally {
     busyAction.value = "";
   }
 }
 
-async function handleDeleteComment(commentKey) {
+async function handleDeleteComment(commentKey: string) {
   busyAction.value = `deleteComment-${commentKey}`;
   try {
     await appStore.deleteReviewBridgeComment(props.prKey, commentKey);
@@ -509,7 +520,8 @@ function openNewDraftComment() {
     placeholder: "Write your review comment...",
     submitLabel: "Create & queue",
     onCancel: () => appStore.closeDialog(),
-    onSubmit: (content) => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    onSubmit: (content: any) => {
       appStore.createReviewBridgeDraftComment({
         prKey: props.prKey,
         body: content,
@@ -521,7 +533,8 @@ function openNewDraftComment() {
   });
 }
 
-function replyToThread(thread) {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function replyToThread(thread: Record<string, any>): void {
   appStore.openDialog("TextAreaDialog", {
     eyebrow: "Review Bridge",
     title: "Reply to thread",
@@ -529,7 +542,8 @@ function replyToThread(thread) {
     placeholder: "Write your reply...",
     submitLabel: "Create & queue",
     onCancel: () => appStore.closeDialog(),
-    onSubmit: (content) => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    onSubmit: (content: any) => {
       appStore.createReviewBridgeDraftComment({
         prKey: props.prKey,
         body: content,
@@ -542,7 +556,8 @@ function replyToThread(thread) {
   });
 }
 
-function editDraft(thread) {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function editDraft(thread: Record<string, any>): void {
   const drafts = props.draftsByThread(thread);
   const draft = drafts.find((d) => d.status !== "synced") || null;
   const commentKey = props.threadToCommentKey.get(String(thread.id)) || "";
@@ -554,15 +569,17 @@ function editDraft(thread) {
     placeholder: "Write the draft reply...",
     submitLabel: draft ? "Save draft" : "Create draft",
     onCancel: () => appStore.closeDialog(),
-    onSubmit: async (content) => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    onSubmit: async (content: any) => {
       await appStore.saveReviewBridgeDraft({ prKey: props.prKey, commentKey, body: content, authorAgent: "human" });
-      await appStore.queueReviewBridgeDraft(props.prKey, null, commentKey);
+      await appStore.queueReviewBridgeDraft(props.prKey, null as unknown as string, commentKey);
       appStore.closeDialog();
     },
   });
 }
 
-function editLocalDraft(comment) {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function editLocalDraft(comment: Record<string, any>): void {
   const drafts = props.draftsByComment(comment);
   const draft = drafts.find((d) => d.status !== "synced") || null;
   appStore.openDialog("TextAreaDialog", {
@@ -573,14 +590,15 @@ function editLocalDraft(comment) {
     placeholder: "Write the draft...",
     submitLabel: draft ? "Save draft" : "Create draft",
     onCancel: () => appStore.closeDialog(),
-    onSubmit: async (content) => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    onSubmit: async (content: any) => {
       await appStore.saveReviewBridgeDraft({
         prKey: props.prKey,
         commentKey: comment.commentKey,
         body: content,
         authorAgent: "human",
       });
-      await appStore.queueReviewBridgeDraft(props.prKey, null, comment.commentKey);
+      await appStore.queueReviewBridgeDraft(props.prKey, null as unknown as string, comment.commentKey);
       appStore.closeDialog();
     },
   });

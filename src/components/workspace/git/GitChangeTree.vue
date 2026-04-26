@@ -17,20 +17,24 @@
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import GitChangeTreeNode from "./GitChangeTreeNode.vue";
 
-const props = defineProps({
-  // [{ path, status, scope, code }]
-  files: { type: Array, default: () => [] },
-  selectedPath: { type: String, default: "" },
-  selectedScope: { type: String, default: "" },
-});
+const props = withDefaults(
+  defineProps<{
+    // [{ path, status, scope, code }]
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    files?: any[];
+    selectedPath?: string;
+    selectedScope?: string;
+  }>(),
+  { files: () => [], selectedPath: "", selectedScope: "" },
+);
 
-defineEmits(["select"]);
+defineEmits<{ (e: "select", path: string, scope: string): void }>();
 
-const expandedSet = ref(new Set());
+const expandedSet = ref(new Set<string>());
 
 const totalCount = computed(() => props.files.length);
 
@@ -41,22 +45,25 @@ const tree = computed(() => buildTree(props.files));
 watch(
   tree,
   (next) => {
-    const set = new Set();
-    walkDirs(next, (node) => set.add(node.path));
+    const set = new Set<string>();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    walkDirs(next, (node: any) => set.add(node.path as string));
     expandedSet.value = set;
   },
   { immediate: true },
 );
 
-function toggle(path) {
-  const set = new Set(expandedSet.value);
+function toggle(path: string) {
+  const set = new Set<string>(expandedSet.value);
   if (set.has(path)) set.delete(path);
   else set.add(path);
   expandedSet.value = set;
 }
 
-function buildTree(files) {
-  const root = { kind: "dir", name: "", path: "", children: [], childMap: new Map() };
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function buildTree(files: any[]) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const root: any = { kind: "dir", name: "", path: "", children: [], childMap: new Map() };
   for (const file of files || []) {
     const segments = String(file.path || "")
       .split("/")
@@ -90,7 +97,8 @@ function buildTree(files) {
 
 // IntelliJ-style: a directory with exactly one child directory and no file
 // children is merged with that child ("src" + "components" => "src/components").
-function collapseSingleChildDirs(node) {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function collapseSingleChildDirs(node: any) {
   if (node.kind !== "dir") return;
   for (const child of node.children) collapseSingleChildDirs(child);
   // Don't collapse the synthetic root.
@@ -111,23 +119,26 @@ function collapseSingleChildDirs(node) {
   }
 }
 
-function sortTree(node) {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function sortTree(node: any) {
   if (node.kind !== "dir") return;
-  node.children.sort((a, b) => {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  node.children.sort((a: any, b: any) => {
     if (a.kind !== b.kind) return a.kind === "dir" ? -1 : 1;
     return a.name.localeCompare(b.name, undefined, { sensitivity: "base" });
   });
   for (const child of node.children) sortTree(child);
 }
 
-function walkDirs(node, fn) {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function walkDirs(node: any, fn: (node: any) => void) {
   if (node.kind === "dir") {
     fn(node);
     for (const child of node.children) walkDirs(child, fn);
   }
 }
 
-function normaliseCode(code) {
+function normaliseCode(code: string) {
   if (!code) return "modified";
   const c = String(code).trim().toUpperCase();
   if (c === "??" || c === "?") return "untracked";

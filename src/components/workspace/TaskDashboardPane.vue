@@ -158,7 +158,7 @@
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { ref, computed, inject, watch, onUnmounted } from "vue";
 import { useAppStore } from "../../stores/app.js";
 import { useTaskFiles } from "../../composables/useTaskFiles.js";
@@ -167,14 +167,12 @@ import TaskDashboardStatusTab from "./TaskDashboardStatusTab.vue";
 import TaskDashboardFilesTab from "./TaskDashboardFilesTab.vue";
 import TaskDashboardLogTab from "./TaskDashboardLogTab.vue";
 
-defineProps({
-  workspaceId: { type: String, required: true },
-  showHeader: { type: Boolean, default: false },
-});
+withDefaults(defineProps<{ workspaceId: string; showHeader?: boolean }>(), { showHeader: false });
 
 const store = useAppStore();
-const api = inject("api");
-const activeTab = ref("status");
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const api = inject<any>("api");
+const activeTab = ref<string>("status");
 
 const tabs = [
   { id: "status", label: "Status" },
@@ -197,9 +195,10 @@ const PROVIDER_DISPLAY_NAMES = {
   copilot: "GitHub Copilot",
 };
 
-function providerLabel(config) {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function providerLabel(config: Record<string, any> | null | undefined) {
   if (!config) return "Claude Code (sonnet)";
-  const name = PROVIDER_DISPLAY_NAMES[config.providerId] || config.providerId;
+  const name = (PROVIDER_DISPLAY_NAMES as Record<string, string>)[config.providerId] || config.providerId;
   return config.model ? `${name} (${config.model})` : name;
 }
 
@@ -221,7 +220,7 @@ const stateLabel = computed(() => {
 // ── Elapsed timer ───────────────────────────────────────────────
 const ACTIVE_STATES = new Set(["running", "evaluating", "judge-evaluating", "refreshing"]);
 const elapsedMs = ref(0);
-let elapsedTimer = null;
+let elapsedTimer: ReturnType<typeof setInterval> | null = null;
 
 function updateElapsed() {
   const ts = taskState.value;
@@ -307,7 +306,7 @@ watch(activeTab, (tab) => {
   }
 });
 
-function wsId() {
+function wsId(): string | undefined {
   return workspace.value?.id;
 }
 
@@ -363,7 +362,8 @@ function onRejectVerdict() {
       "e.g. The CLAUDE.md section on git polling was not updated; UC-12 auto-dismiss is still not wired to the snapshot watcher.",
     submitLabel: "Send back",
     onCancel: () => store.closeDialog(),
-    onSubmit: async (feedback) => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    onSubmit: async (feedback: any) => {
       try {
         const r = await api.rejectTaskVerdict({ workspaceId: id, feedback });
         if (r?.payload) store.handleBroadcastPayload(r.payload);

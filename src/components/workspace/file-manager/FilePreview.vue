@@ -19,7 +19,7 @@
           type="button"
           class="button button--ghost file-preview__btn"
           title="Show diff vs HEAD / branch / commit"
-          @click="store.openDiff(entry)"
+          @click="store.openDiff(entry as any)"
         >
           Diff
         </button>
@@ -59,7 +59,8 @@
 
       <!-- Image preview -->
       <template v-else-if="preview?.kind === 'image'">
-        <img :src="preview.imageSrc" class="file-preview__image" />
+        <!-- eslint-disable-next-line @typescript-eslint/no-explicit-any -->
+        <img :src="(preview as any).imageSrc" class="file-preview__image" />
       </template>
 
       <!-- Binary fallback -->
@@ -93,16 +94,17 @@
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { computed } from "vue";
 import { useFileManagerStore } from "../../../stores/file-manager.js";
 import FileEditor from "./FileEditor.vue";
 import { statusBadge, statusColor, statusLabel, statusTitle } from "./git-status-helpers.js";
 
-defineEmits(["open-in-explorer"]);
+defineEmits<{ (e: "open-in-explorer"): void }>();
 
 const store = useFileManagerStore();
-const entry = computed(() => store.selectedEntry || {});
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const entry = computed<Record<string, any>>(() => store.selectedEntry || {});
 const preview = computed(() => store.preview);
 
 const isEditable = computed(() => {
@@ -112,19 +114,19 @@ const isEditable = computed(() => {
 
 const gitStatus = computed(() => {
   if (!store.gitIsRepo) return null;
-  const rel = entry.value?.relativePath;
+  const rel = entry.value?.relativePath as string | undefined;
   if (!rel) return null;
   return store.getStatusFor(rel)?.status || null;
 });
 
-function formatSize(bytes) {
+function formatSize(bytes: number) {
   if (!bytes && bytes !== 0) return "";
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-function formatDate(iso) {
+function formatDate(iso: string) {
   if (!iso) return "";
   const d = new Date(iso);
   return d.toLocaleDateString() + " " + d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });

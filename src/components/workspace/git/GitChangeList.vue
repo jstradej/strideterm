@@ -38,11 +38,11 @@
   </section>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { computed } from "vue";
 import { APP_CONFIG } from "../../../../config/app-config.js";
 
-const STATUS_LABELS = {
+const STATUS_LABELS: Record<string, string> = {
   M: "Modified",
   A: "Added",
   D: "Deleted",
@@ -55,33 +55,44 @@ const STATUS_LABELS = {
   T: "Type changed",
 };
 
-const props = defineProps({
-  title: { type: String, required: true },
-  scope: { type: String, required: true },
-  files: { type: Array, default: () => [] },
-  selectedDiff: { type: Object, default: null },
-  workspaceId: { type: String, required: true },
-});
+const props = withDefaults(
+  defineProps<{
+    title: string;
+    scope: string;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    files?: any[];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    selectedDiff?: Record<string, any> | null;
+    workspaceId: string;
+  }>(),
+  { files: () => [], selectedDiff: null },
+);
 
-defineEmits(["select", "open-editor"]);
+defineEmits<{
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (e: "select", path: string, scope: string): void;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (e: "open-editor", entry: any): void;
+}>();
 
 const visibleFiles = computed(() => props.files.slice(0, APP_CONFIG.ui.recentGitEntriesVisible));
 
-function statusTooltip(code) {
+function statusTooltip(code: string) {
   return STATUS_LABELS[code] || STATUS_LABELS[code?.[0]] || code || "Unknown";
 }
-function nameOf(path) {
+function nameOf(path: string) {
   return (
     String(path || "")
       .split("/")
       .pop() || path
   );
 }
-function dirOf(path) {
+function dirOf(path: string) {
   const n = nameOf(path);
   return path.slice(0, -(n.length || 0));
 }
-function isSelected(entry) {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function isSelected(entry: any) {
   return props.selectedDiff?.path === entry.path && props.selectedDiff?.scope === props.scope;
 }
 </script>

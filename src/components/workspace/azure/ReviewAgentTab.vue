@@ -117,24 +117,25 @@
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { ref } from "vue";
 import { useAppStore } from "../../../stores/app.js";
 import { useGitUiStore } from "../../../stores/git-ui.js";
 
-const props = defineProps({
-  prKey: { type: String, required: true },
-  workspaceId: { type: String, required: true },
-  pullRequest: { type: Object, required: true },
-  agentPrompts: { type: Array, required: true },
-  mcpCommandLine: { type: String, required: true },
-  reviewUi: { type: Object, required: true },
-});
+const props = defineProps<{
+  prKey: string;
+  workspaceId: string;
+  pullRequest: Record<string, unknown>;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  agentPrompts: Array<Record<string, any>>;
+  mcpCommandLine: string;
+  reviewUi: Record<string, unknown>;
+}>();
 
 const appStore = useAppStore();
 const gitUiStore = useGitUiStore();
 
-const busyAction = ref("");
+const busyAction = ref<string>("");
 
 async function handleResetPrompts() {
   if (!window.confirm("Reset all prompts to built-in defaults? Custom prompts will be lost.")) return;
@@ -146,7 +147,7 @@ async function handleResetPrompts() {
   }
 }
 
-async function handleDeletePrompt(promptId) {
+async function handleDeletePrompt(promptId: string): Promise<void> {
   busyAction.value = `delete-${promptId}`;
   try {
     await appStore.deleteAgentPrompt(promptId);
@@ -155,13 +156,15 @@ async function handleDeletePrompt(promptId) {
   }
 }
 
-function renderPrompt(prompt) {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function renderPrompt(prompt: Record<string, any>): string {
   const prId = String(props.pullRequest.id || "?");
-  const prTitle = props.pullRequest.title || "";
-  return (prompt.template || "").replace(/\{prId\}/g, prId).replace(/\{prTitle\}/g, prTitle);
+  const prTitle = String(props.pullRequest.title || "");
+  return String(prompt.template || "").replace(/\{prId\}/g, prId).replace(/\{prTitle\}/g, prTitle);
 }
 
-function editAgentPrompt(prompt) {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function editAgentPrompt(prompt: Record<string, any>): void {
   appStore.openDialog("TextAreaDialog", {
     eyebrow: "Agent Prompt",
     title: `Edit: ${prompt.title}`,
@@ -170,7 +173,8 @@ function editAgentPrompt(prompt) {
     placeholder: "Enter the prompt template...",
     submitLabel: "Save prompt",
     onCancel: () => appStore.closeDialog(),
-    onSubmit: (content) => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    onSubmit: (content: any) => {
       appStore.saveAgentPrompt({
         promptId: prompt.promptId,
         title: prompt.title,

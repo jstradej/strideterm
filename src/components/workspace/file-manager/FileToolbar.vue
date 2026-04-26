@@ -14,7 +14,7 @@
         :value="filterText"
         placeholder="Filter…"
         class="file-toolbar__search-input"
-        @input="$emit('filter', $event.target.value)"
+        @input="$emit('filter', ($event.target as HTMLInputElement).value)"
         @keydown.escape="$emit('filter', '')"
       />
     </div>
@@ -49,15 +49,25 @@
   </div>
 </template>
 
-<script setup>
-defineProps({
-  showHidden: { type: Boolean, default: false },
-  viewMode: { type: String, default: "list" },
-  filterText: { type: String, default: "" },
-  gitIsRepo: { type: Boolean, default: false },
-  dirtyCount: { type: Number, default: 0 },
-});
-defineEmits(["create-file", "create-dir", "refresh", "toggle-hidden", "toggle-view", "filter"]);
+<script setup lang="ts">
+withDefaults(
+  defineProps<{
+    showHidden?: boolean;
+    viewMode?: string;
+    filterText?: string;
+    gitIsRepo?: boolean;
+    dirtyCount?: number;
+  }>(),
+  { showHidden: false, viewMode: "list", filterText: "", gitIsRepo: false, dirtyCount: 0 },
+);
+defineEmits<{
+  (e: "create-file"): void;
+  (e: "create-dir"): void;
+  (e: "refresh"): void;
+  (e: "toggle-hidden"): void;
+  (e: "toggle-view"): void;
+  (e: "filter", value: string): void;
+}>();
 </script>
 
 <style scoped>

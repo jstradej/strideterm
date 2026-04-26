@@ -170,7 +170,7 @@
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { ref, watch, onMounted, onBeforeUnmount, nextTick, provide, computed } from "vue";
 import { Splitpanes, Pane } from "splitpanes";
 import "splitpanes/dist/splitpanes.css";
@@ -184,33 +184,34 @@ import FileList from "./file-manager/FileList.vue";
 import FilePreview from "./file-manager/FilePreview.vue";
 import FileDiff from "./file-manager/FileDiff.vue";
 
-const props = defineProps({
-  workspaceId: { type: String, required: true },
-  showHeader: { type: Boolean, default: false },
-});
+const props = withDefaults(defineProps<{ workspaceId: string; showHeader?: boolean }>(), { showHeader: false });
 
 const appStore = useAppStore();
 const store = useFileManagerStore();
 
 // Dialogs
-const createDialog = ref(null);
-const createInput = ref(null);
-const renameDialog = ref(null);
-const renameInput = ref(null);
-const deleteDialog = ref(null);
+const createDialog = ref<{ type: string; name: string } | null>(null);
+const createInput = ref<HTMLInputElement | null>(null);
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const renameDialog = ref<{ entry: Record<string, any>; newName: string } | null>(null);
+const renameInput = ref<HTMLInputElement | null>(null);
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const deleteDialog = ref<{ entry: Record<string, any> } | null>(null);
 
 // Context menu
-const fileContextMenu = ref(null); // { x, y, entry }
-const fileMenuRef = ref(null);
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const fileContextMenu = ref<{ x: number; y: number; entry: Record<string, any> } | null>(null);
+const fileMenuRef = ref<HTMLElement | null>(null);
 
 // Drag-drop state shared via provide
-const fmDragState = ref(null);
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const fmDragState = ref<Record<string, any> | null>(null);
 provide("fm-drag-state", fmDragState);
 
 // Toast for transient feedback
-const toast = ref("");
-let toastTimer = null;
-function showToast(message, ms = 1600) {
+const toast = ref<string>("");
+let toastTimer: ReturnType<typeof setTimeout> | null = null;
+function showToast(message: string, ms = 1600) {
   toast.value = message;
   if (toastTimer) clearTimeout(toastTimer);
   toastTimer = setTimeout(() => {
@@ -258,10 +259,11 @@ const TEXT_LIKE_EXT = new Set([
   ".xml",
 ]);
 
-function isTextLikeEntry(entry) {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function isTextLikeEntry(entry: Record<string, any> | null | undefined) {
   if (!entry || entry.kind !== "file") return false;
   if (!entry.extension) return true; // Allow editing extension-less files (Dockerfile, Makefile, etc.)
-  return TEXT_LIKE_EXT.has(entry.extension.toLowerCase());
+  return TEXT_LIKE_EXT.has((entry.extension as string).toLowerCase());
 }
 
 const headerActions = computed(() => [
@@ -283,16 +285,19 @@ const headerActions = computed(() => [
 ]);
 
 // Provide context menu opener to children
-provide("fm-context-menu", (event, entry) => {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+provide("fm-context-menu", (event: MouseEvent, entry: Record<string, any>) => {
   fileContextMenu.value = { x: event.clientX, y: event.clientY, entry };
 });
 
-provide("fm-rename", (entry) => {
-  renameDialog.value = { entry, newName: entry.name };
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+provide("fm-rename", (entry: Record<string, any>) => {
+  renameDialog.value = { entry, newName: entry.name as string };
   nextTick(() => renameInput.value?.focus());
 });
 
-provide("fm-delete", (entry) => {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+provide("fm-delete", (entry: Record<string, any>) => {
   deleteDialog.value = { entry };
 });
 
@@ -324,12 +329,12 @@ watch(
 );
 
 // Close context menu on outside click / Escape
-function onDocClick(e) {
-  if (fileMenuRef.value && !fileMenuRef.value.contains(e.target)) {
+function onDocClick(e: MouseEvent) {
+  if (fileMenuRef.value && !fileMenuRef.value.contains(e.target as Node)) {
     fileContextMenu.value = null;
   }
 }
-function onKeydown(e) {
+function onKeydown(e: KeyboardEvent) {
   if (e.key === "Escape") fileContextMenu.value = null;
 }
 
@@ -342,25 +347,30 @@ function onCtxOpen() {
   const entry = fileContextMenu.value?.entry;
   dismissMenu();
   if (!entry) return;
-  if (entry.kind === "directory") store.navigate(entry.relativePath);
-  else store.selectEntry(entry);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  if (entry.kind === "directory") store.navigate(entry.relativePath as string);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  else store.selectEntry(entry as any);
 }
 
 function onCtxEdit() {
   const entry = fileContextMenu.value?.entry;
   dismissMenu();
-  if (entry?.kind === "file") store.selectEntry(entry).then(() => store.startEdit());
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  if (entry?.kind === "file") store.selectEntry(entry as any).then(() => store.startEdit());
 }
 
 function onCtxDiff() {
   const entry = fileContextMenu.value?.entry;
   dismissMenu();
-  if (entry?.kind === "file") store.openDiff(entry);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  if (entry?.kind === "file") store.openDiff(entry as any);
 }
 
-function absolutePathFor(entry) {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function absolutePathFor(entry: Record<string, any> | null | undefined) {
   const root = store.rootPath.replace(/\\/g, "/");
-  return entry?.relativePath ? `${root}/${entry.relativePath}` : root;
+  return entry?.relativePath ? `${root}/${entry.relativePath as string}` : root;
 }
 
 function onCtxCopyPath() {
@@ -375,7 +385,8 @@ function onCtxCopyRelativePath() {
   const entry = fileContextMenu.value?.entry;
   dismissMenu();
   if (!entry) return;
-  copyText(entry.relativePath).then(() => showToast(`Copied: ${entry.relativePath}`));
+  const rel = entry.relativePath as string;
+  copyText(rel).then(() => showToast(`Copied: ${rel}`));
 }
 
 function onCtxOpenTerminal() {
@@ -392,8 +403,9 @@ function onCtxCopy() {
   const entry = fileContextMenu.value?.entry;
   dismissMenu();
   if (entry) {
-    store.copyToClipboard(entry);
-    showToast(`Copied "${entry.name}" to clipboard`);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    store.copyToClipboard(entry as any);
+    showToast(`Copied "${entry.name as string}" to clipboard`);
   }
 }
 
@@ -401,15 +413,16 @@ function onCtxCut() {
   const entry = fileContextMenu.value?.entry;
   dismissMenu();
   if (entry) {
-    store.cutToClipboard(entry);
-    showToast(`Cut "${entry.name}"`);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    store.cutToClipboard(entry as any);
+    showToast(`Cut "${entry.name as string}"`);
   }
 }
 
 function onCtxPaste() {
   const entry = fileContextMenu.value?.entry;
   dismissMenu();
-  const targetDir = entry?.kind === "directory" ? entry.relativePath : store.currentPath;
+  const targetDir = entry?.kind === "directory" ? (entry.relativePath as string) : store.currentPath;
   store.pasteEntry(targetDir);
 }
 
@@ -417,7 +430,7 @@ function onCtxRename() {
   const entry = fileContextMenu.value?.entry;
   dismissMenu();
   if (entry) {
-    renameDialog.value = { entry, newName: entry.name };
+    renameDialog.value = { entry, newName: entry.name as string };
     nextTick(() => renameInput.value?.focus());
   }
 }
@@ -431,7 +444,8 @@ function onCtxDelete() {
 function onCtxReveal() {
   const entry = fileContextMenu.value?.entry;
   dismissMenu();
-  if (entry) store.openInExplorer(entry);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  if (entry) store.openInExplorer(entry as any);
 }
 
 function onCtxNewFile() {
@@ -444,7 +458,7 @@ function onCtxNewFolder() {
   onCreateDir();
 }
 
-function onHeaderAction(action) {
+function onHeaderAction(action: { action: string }) {
   if (action.action === "refresh") store.refresh();
 }
 
@@ -470,36 +484,41 @@ async function confirmCreate() {
 
 async function confirmRename() {
   if (!renameDialog.value?.newName.trim()) return;
-  await store.renameEntry(renameDialog.value.entry, renameDialog.value.newName.trim());
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  await store.renameEntry(renameDialog.value.entry as any, renameDialog.value.newName.trim());
   renameDialog.value = null;
 }
 
 async function confirmDelete() {
   if (!deleteDialog.value) return;
-  await store.deleteEntry(deleteDialog.value.entry);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  await store.deleteEntry(deleteDialog.value.entry as any);
   deleteDialog.value = null;
 }
 
-function onOpenEdit(entry) {
-  store.selectEntry(entry).then(() => store.startEdit());
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function onOpenEdit(entry: Record<string, any>) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  store.selectEntry(entry as any).then(() => store.startEdit());
 }
 
 // Drop on tree root area = move to repo root
-function onTreeRootDragOver(event) {
+function onTreeRootDragOver(event: DragEvent) {
   if (!fmDragState.value) return;
-  event.dataTransfer.dropEffect = "move";
+  if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
 }
 
 function onTreeRootDrop() {
   const dragged = fmDragState.value;
   if (!dragged) return;
-  store.moveEntryTo(dragged, "");
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  store.moveEntryTo(dragged as any, "");
   fmDragState.value = null;
 }
 
 // Pane-level keyboard navigation: arrows, Enter, Backspace, Delete, F2, Ctrl+N, etc.
-function onKeydownPane(event) {
-  const target = event.target;
+function onKeydownPane(event: KeyboardEvent) {
+  const target = event.target as HTMLElement | null;
   // Don't intercept when typing in an input/textarea/contenteditable, nor when
   // the event came from inside an embedded Monaco editor (which routes input
   // through its own dispatcher rather than a plain textarea target).
@@ -604,7 +623,7 @@ function onKeydownPane(event) {
   }
 }
 
-async function copyText(text) {
+async function copyText(text: string) {
   try {
     if (navigator.clipboard && navigator.clipboard.writeText) {
       await navigator.clipboard.writeText(text);
@@ -633,7 +652,8 @@ onMounted(() => {
   document.addEventListener("keydown", onKeydown);
   const api = appStore.getApi();
   store.setApi(api);
-  const ws = appStore.payload?.workspace;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const ws = appStore.payload?.workspace as any;
   const activeWs = ws?.workspace || ws?.project || null;
   const cwd = activeWs?.cwd || "";
   if (cwd) store.init(cwd);

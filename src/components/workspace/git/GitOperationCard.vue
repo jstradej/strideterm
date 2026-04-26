@@ -64,16 +64,21 @@
   </article>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { computed } from "vue";
 import { useGitUiStore } from "../../../stores/git-ui.js";
 import ConfirmDialog from "./ConfirmDialog.vue";
 
-const props = defineProps({
-  snapshot: { type: Object, required: true },
-  workspaceId: { type: String, required: true },
-  gitUi: { type: Object, default: () => ({}) },
-});
+const props = withDefaults(
+  defineProps<{
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    snapshot: Record<string, any>;
+    workspaceId: string;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    gitUi?: Record<string, any>;
+  }>(),
+  { gitUi: () => ({}) },
+);
 
 const gitUiStore = useGitUiStore();
 
