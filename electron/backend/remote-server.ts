@@ -417,6 +417,25 @@ async function handleApiRequest(runtime: Runtime, request: IncomingMessage, resp
       return;
     }
 
+    // --- Telegram ---
+    if (request.method === "POST" && url.pathname === "/api/telegram/verify-connection") {
+      json(response, 200, await runtime.verifyTelegramConnection(body.connection || {}));
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/api/telegram/save-connection") {
+      const result = await runtime.saveTelegramConnection(body.connection || {});
+      json(response, 200, result.payload);
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/api/telegram/delete-connection") {
+      json(response, 200, await runtime.deleteTelegramConnection(body.connectionId));
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/api/telegram/refresh") {
+      json(response, 200, await runtime.refreshTelegramState());
+      return;
+    }
+
     if (request.method === "POST" && url.pathname === "/api/remote/token/regenerate") {
       json(response, 200, await runtime.regenerateRemoteToken());
       return;

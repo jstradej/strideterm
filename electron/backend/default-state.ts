@@ -445,6 +445,11 @@ export function createDefaultState(): AppState & { activeProjectId: string; proj
           defaultPollSeconds: 120,
           connections: [],
         },
+        telegram: {
+          enabled: true,
+          defaultPollSeconds: 5,
+          connections: [],
+        },
       },
       git: {
         ui: {
@@ -876,6 +881,25 @@ export function normalizeState(rawState: any = {}): AppState & { activeProjectId
                 repositoryFilters: Array.isArray(connection.repositoryFilters) ? [...connection.repositoryFilters] : [],
                 pollSeconds: Number(connection.pollSeconds) || defaults.settings.integrations.github.defaultPollSeconds,
                 reviewRoot: connection.reviewRoot || defaults.settings.integrations.github.reviewRoot,
+              }),
+            )
+          : [],
+      },
+      telegram: {
+        ...defaults.settings.integrations.telegram,
+        ...(((rawState.settings || {}).integrations || {}).telegram || {}),
+        connections: Array.isArray((((rawState.settings || {}).integrations || {}).telegram || {}).connections)
+          ? (((rawState.settings || {}).integrations || {}).telegram || {}).connections.map(
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: raw persisted state, no schema yet
+              (connection: any, index: number) => ({
+                id: connection.id || `tg-${index + 1}`,
+                label: connection.label || connection.id || `Telegram ${index + 1}`,
+                botTokenRef: connection.botTokenRef || "",
+                chatId: connection.chatId || "",
+                enabled: connection.enabled !== false,
+                pollSeconds:
+                  Number(connection.pollSeconds) || defaults.settings.integrations.telegram.defaultPollSeconds,
+                forwardKinds: Array.isArray(connection.forwardKinds) ? [...connection.forwardKinds] : [],
               }),
             )
           : [],

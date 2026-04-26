@@ -57,9 +57,27 @@ export interface GitHubIntegrationSettings {
   connections: GitHubConnection[];
 }
 
+export interface TelegramConnection {
+  id: string;
+  label: string;
+  botTokenRef: string;
+  chatId: string;
+  enabled: boolean;
+  pollSeconds: number;
+  /** Which notification kinds to forward (empty = all) */
+  forwardKinds: string[];
+}
+
+export interface TelegramIntegrationSettings {
+  enabled: boolean;
+  defaultPollSeconds: number;
+  connections: TelegramConnection[];
+}
+
 export interface IntegrationSettings {
   azureDevops: AzureIntegrationSettings;
   github: GitHubIntegrationSettings;
+  telegram: TelegramIntegrationSettings;
 }
 
 export interface GitUiSettings {

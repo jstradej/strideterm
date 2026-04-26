@@ -336,6 +336,20 @@ export const githubConnectionSchema = z
   .passthrough();
 export type GithubConnectionPayload = z.infer<typeof githubConnectionSchema>;
 
+export const telegramConnectionSchema = z
+  .object({
+    id: z.string().optional(),
+    label: z.string().optional(),
+    botToken: z.string().optional(),
+    botTokenRef: z.string().optional(),
+    chatId: z.string().optional(),
+    enabled: z.boolean().optional(),
+    pollSeconds: z.number().int().min(1).max(3600).optional(),
+    forwardKinds: z.array(z.string()).optional(),
+  })
+  .passthrough();
+export type TelegramConnectionPayload = z.infer<typeof telegramConnectionSchema>;
+
 export const githubCommentSchema = z.object({
   prKey: nonEmptyString,
   body: z.string().min(1),

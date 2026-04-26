@@ -43,6 +43,7 @@ import type {
   TaskRejectVerdict,
   ProfilePayload,
   NotificationShow,
+  TelegramConnectionPayload,
   RerunCheck,
   SshHostCreate,
   SshHostUpdate,
@@ -156,6 +157,12 @@ export interface StridetermAPI {
   githubQuickFixListRepos: (payload: GithubQuickFixListRepos) => Promise<unknown>;
   githubQuickFixListBranches: (payload: GithubQuickFixListBranches) => Promise<unknown>;
   githubQuickFixCreate: (payload: GithubQuickFixCreate) => Promise<unknown>;
+
+  // Telegram integration
+  verifyTelegramConnection: (connection: TelegramConnectionPayload) => Promise<unknown>;
+  saveTelegramConnection: (connection: TelegramConnectionPayload) => Promise<unknown>;
+  deleteTelegramConnection: (connectionId: string) => Promise<unknown>;
+  refreshTelegram: () => Promise<unknown>;
 
   // Review bridge
   createReviewBridgeDraftComment: (payload: ReviewBridgeDraftComment) => Promise<unknown>;

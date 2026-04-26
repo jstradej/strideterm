@@ -38,6 +38,10 @@
       <SettingsSshTab />
     </div>
 
+    <div v-else-if="activeTab === 'telegram'" class="settings-tab-content">
+      <SettingsTelegramTab :telegram-settings="settings.integrations?.telegram" />
+    </div>
+
     <div v-else-if="activeTab === 'about'" class="settings-tab-content">
       <SettingsAboutTab
         :api="api"
@@ -66,6 +70,7 @@ import SettingsAboutTab from "./settings/SettingsAboutTab.vue";
 import SettingsGeneralTab from "./settings/SettingsGeneralTab.vue";
 import SettingsGitTab from "./settings/SettingsGitTab.vue";
 import SettingsSshTab from "./settings/SettingsSshTab.vue";
+import SettingsTelegramTab from "./settings/SettingsTelegramTab.vue";
 import SettingsTemplatesTab from "./settings/SettingsTemplatesTab.vue";
 import { useAgentHookSettings } from "./settings/useAgentHookSettings.js";
 
@@ -74,11 +79,22 @@ const TABS = [
   { id: "templates", label: "Tab Templates" },
   { id: "git", label: "Git" },
   { id: "ssh", label: "SSH" },
+  { id: "telegram", label: "Telegram" },
   { id: "about", label: "About" },
 ];
 
 const THEMES = ["dark", "light", "system"];
 const LOG_LEVELS = ["error", "warn", "info", "debug", "trace"];
+
+interface TelegramConnectionSetting {
+  id: string;
+  label: string;
+  botTokenRef: string;
+  chatId: string;
+  enabled: boolean;
+  pollSeconds: number;
+  forwardKinds: string[];
+}
 
 interface SettingsObj {
   theme?: string;
@@ -104,6 +120,13 @@ interface SettingsObj {
     wslDefaultDistro?: string;
     systemSshPath?: string;
     requireEncryptedStorage?: boolean;
+  };
+  integrations?: {
+    telegram?: {
+      enabled?: boolean;
+      defaultPollSeconds?: number;
+      connections?: TelegramConnectionSetting[];
+    };
   };
 }
 

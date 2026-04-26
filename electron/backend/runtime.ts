@@ -26,6 +26,7 @@ import { buildReviewAgentLaunch, buildMcpServerSpec } from "./review-bridge-agen
 import { AzureDevOpsManager } from "./azure-devops-manager.js";
 import { GitHubManager } from "./github-manager.js";
 import { createGitHubAuditLogStore } from "./github-audit-log-store.js";
+import { TelegramManager } from "./telegram-manager.js";
 import { startNotifyServer, generateNotifySecret, buildNotifyUrl } from "./notify-server.js";
 import {
   ensureNotifyScript,
@@ -250,6 +251,11 @@ export async function createRuntime({
   // Logger must init before anything else logs
   initLogger();
   log.info("createRuntime starting", { userDataPath, deferInitialRefresh });
+
+  // Forward reference populated at the end of createRuntime() so async
+  // handlers (e.g. Telegram command dispatch) can call runtime methods.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let _rt: any = null;
 
   const createStoreImpl = dependencies.createStore || createStore;
   const createCredentialStoreImpl = dependencies.createCredentialStore || createCredentialStore;
@@ -605,6 +611,9 @@ export async function createRuntime({
     return claudeAvailableCache;
   }
 
+  // --- Telegram integration ---
+  const telegramManager = new TelegramManager({ credentialStore });
+
   // --- Agent notification hook server ---
   const notifySecret = generateNotifySecret();
   let notifyServerHandle: NotifyServerHandle | null = null;
@@ -945,6 +954,32 @@ export async function createRuntime({
     return all.filter((c: any) => (c.profileId || "default") === activeProfile);
   }
 
+  function getTelegramSettings(state = getState()) {
+    return (
+      state.settings?.integrations?.telegram || {
+        enabled: true,
+        defaultPollSeconds: 5,
+        connections: [],
+      }
+    );
+  }
+
+  function getTelegramConnections(state = getState()) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return (getTelegramSettings(state).connections || []) as any[];
+  }
+
+  function reconfigureTelegram(state = getState()) {
+    const settings = getTelegramSettings(state);
+    if (!settings.enabled) {
+      telegramManager.stop();
+      telegramManager.configure([]);
+      return;
+    }
+    telegramManager.configure(getTelegramConnections(state));
+    telegramManager.start();
+  }
+
   /**
    * Return all provider connections (Azure DevOps, GitHub, and future GitLab)
    * visible to the active profile.  Each provider stores connections under
@@ -1118,7 +1153,7 @@ export async function createRuntime({
     clearProjectAlerts,
     clearAlertSession,
     getSessionSignal,
-    raiseAlert,
+    raiseAlert: raiseAlertBase,
     raiseWaitingAlert,
     ensureVisibleSession,
     syncSessionSignalsWithState,
@@ -1143,6 +1178,31 @@ export async function createRuntime({
     broadcastState,
     isKnownPluginProject,
   });
+
+  // Wrap raiseAlert to forward to Telegram when configured.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  function raiseAlert(opts: any): boolean {
+    const raised = raiseAlertBase(opts);
+    if (raised) {
+      const state = getState();
+      const workspace = state.workspaces.find((w) => w.id === opts.projectId);
+      const panel = workspace?.panels.find((p) => p.id === opts.panelId);
+      telegramManager
+        .forwardAlert({
+          alertId: opts.sessionId || `${opts.projectId}:${opts.panelId}`,
+          workspaceId: opts.projectId || "",
+          panelId: opts.panelId || "",
+          workspaceName: workspace?.name || opts.projectId || "",
+          panelTitle: panel?.title || opts.panelId || "",
+          kind: opts.kind || "info",
+          urgency: opts.urgency || "normal",
+          title: opts.title || "",
+          detail: opts.detail || "",
+        })
+        .catch(() => {});
+    }
+    return raised;
+  }
 
   // --- Tab activity chip state ----------------------------------------
   // Drives the small status label on each tab. Independent from signal.busy
@@ -1247,6 +1307,7 @@ export async function createRuntime({
       },
       azureDevops: azure.getSnapshot(),
       github: github.getSnapshot(),
+      telegram: telegramManager.getSnapshot(),
       reviewBridge: getReviewBridgeSnapshot(state),
       plugins: pluginManager ? pluginManager.getPlugins() : [],
       environment: { ...terminalEnvironment, claudeAvailable: claudeAvailableCache },
@@ -1268,6 +1329,66 @@ export async function createRuntime({
     };
   }
 
+  // Track which PR keys have already been forwarded to Telegram to avoid duplicates.
+  const telegramForwardedPrKeys = new Set<string>();
+
+  function checkAndForwardPrNotificationsToTelegram(): void {
+    if (telegramManager.getSnapshot().connections.length === 0) return;
+    const state = getState();
+    const azureSnapshot = azure.getSnapshot();
+    const githubSnapshot = github.getSnapshot();
+
+    // Check Azure PRs with attention
+    for (const [prKey, summary] of Object.entries(azureSnapshot?.pullRequests || {})) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pr = summary as any;
+      if (!pr?.hasAttention || telegramForwardedPrKeys.has(prKey)) continue;
+      telegramForwardedPrKeys.add(prKey);
+      const azureWorkspace = state.workspaces.find((w) => w.kind === "azure");
+      telegramManager
+        .forwardAlert({
+          alertId: prKey,
+          workspaceId: azureWorkspace?.id || "azure",
+          panelId: "inbox",
+          workspaceName: azureWorkspace?.name || "Azure DevOps",
+          panelTitle: "Inbox",
+          kind: "review",
+          urgency: "normal",
+          title: `PR Review: ${pr?.pullRequest?.title || prKey}`,
+          detail: pr?.attentionReason || "Needs review",
+          prKey,
+          provider: "azure-devops",
+          connectionId: pr?.connectionId || "",
+        })
+        .catch(() => {});
+    }
+
+    // Check GitHub PRs with attention
+    for (const [prKey, summary] of Object.entries(githubSnapshot?.pullRequests || {})) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pr = summary as any;
+      if (!pr?.hasAttention || telegramForwardedPrKeys.has(prKey)) continue;
+      telegramForwardedPrKeys.add(prKey);
+      const githubWorkspace = state.workspaces.find((w) => w.kind === "github");
+      telegramManager
+        .forwardAlert({
+          alertId: prKey,
+          workspaceId: githubWorkspace?.id || "github",
+          panelId: "inbox",
+          workspaceName: githubWorkspace?.name || "GitHub",
+          panelTitle: "Inbox",
+          kind: "review",
+          urgency: "normal",
+          title: `PR Review: ${pr?.pullRequest?.title || prKey}`,
+          detail: pr?.attentionReason || "Needs review",
+          prKey,
+          provider: "github",
+          connectionId: pr?.connectionId || "",
+        })
+        .catch(() => {});
+    }
+  }
+
   function broadcastState() {
     if (broadcastScheduled) return;
     broadcastScheduled = true;
@@ -1275,8 +1396,49 @@ export async function createRuntime({
       broadcastScheduled = false;
       const payload = getPayload();
       events.emit("state:updated", payload);
+      checkAndForwardPrNotificationsToTelegram();
     });
   }
+
+  // --- Telegram command dispatch ---
+  // _rt is populated at the end of createRuntime(); commands always fire
+  // asynchronously (after first Telegram poll), so _rt is guaranteed set.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  telegramManager.on("command", async (cmd: any) => {
+    try {
+      if (cmd.type === "start-task" && cmd.taskDescription && cmd.workspaceId) {
+        const state = getState();
+        const parentWorkspace = findWorkspace(state, cmd.workspaceId);
+        if (parentWorkspace?.cwd) {
+          log.info("telegram: creating task workspace from command", {
+            workspaceId: cmd.workspaceId,
+            description: cmd.taskDescription?.slice(0, 80),
+          });
+          const result = await _rt?.createTaskWorkspace({
+            cwd: parentWorkspace.cwd,
+            description: cmd.taskDescription,
+            parentWorkspaceId: cmd.workspaceId,
+          });
+          if (result) {
+            await _rt?.startTask({ workspaceId: result.activeWorkspaceId || cmd.workspaceId });
+          }
+        }
+      } else if (cmd.type === "open-pr-review" && cmd.prKey && cmd.provider) {
+        log.info("telegram: opening PR review from command", { prKey: cmd.prKey, provider: cmd.provider });
+        if (cmd.provider === "github") {
+          await _rt?.openGitHubPullRequest({ prKey: cmd.prKey });
+        } else {
+          await _rt?.openAzurePullRequest({ prKey: cmd.prKey });
+        }
+      } else if (cmd.type === "dismiss" && cmd.workspaceId && cmd.panelId) {
+        const sessionId = createSessionId(cmd.workspaceId, cmd.panelId);
+        clearAlertSession(sessionId);
+        broadcastState();
+      }
+    } catch (err) {
+      log.warn("telegram: command dispatch error", { type: cmd.type, err: (err as Error).message });
+    }
+  });
 
   // --- Task runner init (needs broadcastState and sessions) ---
   taskRunner.init({
@@ -2463,6 +2625,7 @@ export async function createRuntime({
   ensureDockerPolling();
   ensureGitPolling();
   syncTreeDirWatchers();
+  reconfigureTelegram();
   if (deferInitialRefresh) {
     scheduleAzurePolling();
     scheduleGitHubPolling();
@@ -2536,7 +2699,7 @@ export async function createRuntime({
     getGitHubConnections,
   });
 
-  return {
+  const returnObj = {
     ...providerHandlers,
     ...gitHandlers,
     ...sshHandlers,
@@ -2883,9 +3046,99 @@ export async function createRuntime({
         await stopAgentNotifyServer();
       }
 
+      // Reconfigure Telegram if integrations changed
+      reconfigureTelegram(getState());
+
       broadcastState();
       return { payload: getPayload(), remoteAccessChanged };
     },
+
+    // --- Telegram integration handlers ---
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async verifyTelegramConnection(connection: any) {
+      const botToken = connection.botToken || "";
+      const chatId = String(connection.chatId || "").trim();
+      if (!botToken || !chatId) {
+        throw new Error("Bot token and chat ID are required.");
+      }
+      return telegramManager.verifyConnection({ botToken, chatId });
+    },
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async saveTelegramConnection(connection: any) {
+      const connectionId = connection.id || `tg-${randomUUID()}`;
+      const botTokenRef = connection.botTokenRef || `cred:${connectionId}`;
+      const botToken = connection.botToken || credentialStore.getSecret(botTokenRef);
+      const chatId = String(connection.chatId || "").trim();
+
+      if (!chatId) throw new Error("Chat ID is required.");
+      if (!botToken && !credentialStore.hasSecret(botTokenRef)) {
+        throw new Error("Bot token is required.");
+      }
+
+      // Verify the connection works
+      const verification = await telegramManager.verifyConnection({
+        botToken: botToken || credentialStore.getSecret(botTokenRef),
+        chatId,
+      });
+
+      if (botToken) {
+        await credentialStore.setSecret(botTokenRef, botToken);
+      }
+
+      const normalizedConnection = {
+        id: connectionId,
+        label: String(connection.label || `Telegram ${connectionId}`).trim(),
+        botTokenRef,
+        chatId,
+        enabled: connection.enabled !== false,
+        pollSeconds: Number(connection.pollSeconds) || getTelegramSettings().defaultPollSeconds || 5,
+        forwardKinds: Array.isArray(connection.forwardKinds) ? [...connection.forwardKinds] : [],
+      };
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      await store.mutate((draft: any) => {
+        if (!draft.settings.integrations.telegram) {
+          draft.settings.integrations.telegram = { enabled: true, defaultPollSeconds: 5, connections: [] };
+        }
+        const connections = draft.settings.integrations.telegram.connections;
+        const index = connections.findIndex((c: any) => c.id === connectionId); // eslint-disable-line @typescript-eslint/no-explicit-any
+        if (index >= 0) {
+          connections[index] = normalizedConnection;
+        } else {
+          connections.push(normalizedConnection);
+        }
+      });
+
+      reconfigureTelegram(getState());
+      broadcastState();
+      return { payload: getPayload(), verification };
+    },
+
+    async deleteTelegramConnection(connectionId: string) {
+      const conn = getTelegramConnections().find((c: any) => c.id === connectionId); // eslint-disable-line @typescript-eslint/no-explicit-any
+      if (conn?.botTokenRef) {
+        await credentialStore.deleteSecret(conn.botTokenRef).catch(() => {});
+      }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      await store.mutate((draft: any) => {
+        if (!draft.settings.integrations.telegram) return;
+        draft.settings.integrations.telegram.connections =
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          draft.settings.integrations.telegram.connections.filter((c: any) => c.id !== connectionId);
+      });
+      reconfigureTelegram(getState());
+      broadcastState();
+      return getPayload();
+    },
+
+    async refreshTelegramState() {
+      reconfigureTelegram(getState());
+      broadcastState();
+      return getPayload();
+    },
+
     // Azure, GitHub, and Review Bridge handlers provided by providerHandlers (spread above)
 
     async regenerateRemoteToken() {
@@ -3605,6 +3858,7 @@ export async function createRuntime({
       }
       azure.stopPolling();
       github.stopPolling();
+      telegramManager.stop();
       await tunnel.stop({ preserveAvailability: true, quiet: true });
       await pluginManager.stopAll();
       sessions.stopAll();
@@ -3858,4 +4112,6 @@ export async function createRuntime({
       return taskRunner.getTaskState(workspaceId);
     },
   };
+  _rt = returnObj;
+  return returnObj;
 }

@@ -69,6 +69,7 @@ import {
   taskWorkspaceCreateSchema,
   taskWorkspaceActionSchema,
   taskRejectVerdictSchema,
+  telegramConnectionSchema,
 } from "./ipc-schemas.js";
 
 type Runtime = Awaited<ReturnType<typeof createRuntime>>;
@@ -486,6 +487,25 @@ export function registerIpc(
     withOperationPromise({ opId: "github:quickfix:create" }, () =>
       runtime.githubQuickFixCreate(validateIpc(githubQuickFixCreateSchema, payload, "github:quickfix:create")),
     ),
+  );
+
+  ipcMain.handle("telegram:verify-connection", async (_event, connection) =>
+    withOperationPromise({ opId: "telegram:verify-connection" }, () =>
+      runtime.verifyTelegramConnection(validateIpc(telegramConnectionSchema, connection, "telegram:verify-connection")),
+    ),
+  );
+  ipcMain.handle("telegram:save-connection", async (_event, connection) =>
+    withOperationPromise({ opId: "telegram:save-connection" }, () =>
+      runtime.saveTelegramConnection(validateIpc(telegramConnectionSchema, connection, "telegram:save-connection")),
+    ),
+  );
+  ipcMain.handle("telegram:delete-connection", async (_event, connectionId) =>
+    withOperationPromise({ opId: "telegram:delete-connection" }, () =>
+      runtime.deleteTelegramConnection(String(connectionId || "")),
+    ),
+  );
+  ipcMain.handle("telegram:refresh", async () =>
+    withOperationPromise({ opId: "telegram:refresh" }, () => runtime.refreshTelegramState()),
   );
 
   ipcMain.handle("session:activate", async (_event, sessionId) =>
@@ -1124,6 +1144,10 @@ export function registerIpc(
     ipcMain.removeHandler("github:quickfix:list-repos");
     ipcMain.removeHandler("github:quickfix:list-branches");
     ipcMain.removeHandler("github:quickfix:create");
+    ipcMain.removeHandler("telegram:verify-connection");
+    ipcMain.removeHandler("telegram:save-connection");
+    ipcMain.removeHandler("telegram:delete-connection");
+    ipcMain.removeHandler("telegram:refresh");
     ipcMain.removeHandler("session:activate");
     ipcMain.removeHandler("workspace:set-ui-state");
     ipcMain.removeHandler("attention:sync");
