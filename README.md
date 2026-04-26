@@ -196,6 +196,7 @@ See [Plugin Development Guide](docs/plugin-development.md) for details.
 
 ```bash
 npm run lint        # ESLint + Prettier check
+npm run typecheck   # TypeScript type-check (frontend + backend)
 npm test            # Unit tests (UI + backend)
 npm run test:e2e    # E2E tests (Playwright + mock server fixtures)
 npm run smoke       # Startup smoke test
@@ -205,8 +206,8 @@ npm run smoke       # Startup smoke test
 
 The app is split into:
 
-- **Electron backend** (`electron/`) - runtime, session manager, store, Docker/Git managers, Azure DevOps & GitHub PR review, Agent Task Runner, MCP bridge, structured logging
-- **Renderer** (`src/`) - Vue 3 + Pinia single-page application with Composition API
+- **Electron backend** (`electron/`) - runtime, session manager, store, Docker/Git managers, Azure DevOps & GitHub PR review, Agent Task Runner, MCP bridge, structured logging (all TypeScript)
+- **Renderer** (`src/`) - Vue 3 + Pinia single-page application with Composition API (TypeScript + Vue SFCs)
 - **Shared config** (`config/`) - app-wide configuration and shell integration scripts
 
 See [Architecture](docs/architecture.md) for details.

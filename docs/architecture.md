@@ -19,6 +19,7 @@ The important shift is:
 ## Core Stack
 
 - `Electron` for the desktop shell
+- `TypeScript` for all source files (frontend: vue-tsc; backend: tsc)
 - `Vite` for the renderer build pipeline
 - `node-pty` for PTY-backed terminal sessions
 - `xterm.js` for terminal rendering
@@ -32,10 +33,10 @@ The important shift is:
 
 Files:
 
-- `electron/backend/runtime.js`
-- `electron/backend/store.js`
-- `electron/backend/session-manager.js`
-- `electron/backend/default-state.js`
+- `electron/backend/runtime.ts`
+- `electron/backend/store.ts`
+- `electron/backend/session-manager.ts`
+- `electron/backend/default-state.ts`
 
 Responsibilities:
 
@@ -49,9 +50,9 @@ Responsibilities:
 
 Files:
 
-- `electron/main.js`
-- `electron/backend/ipc.js`
-- `electron/preload.js`
+- `electron/main.ts`
+- `electron/backend/ipc.ts`
+- `electron/preload.ts`
 
 Responsibilities:
 
@@ -64,7 +65,7 @@ Responsibilities:
 
 File:
 
-- `electron/backend/remote-server.js`
+- `electron/backend/remote-server.ts`
 
 Responsibilities:
 
@@ -83,9 +84,9 @@ Current model:
 
 Files:
 
-- `src/main.js` — Vue app mount, Pinia init, transport provide
+- `src/main.ts` — Vue app mount, Pinia init, transport provide
 - `src/App.vue` — root component (sidebar, workspace, dialogs)
-- `src/transport.js` — Electron IPC / WebSocket remote transport
+- `src/transport.ts` — Electron IPC / WebSocket remote transport
 - `src/stores/` — Pinia stores (app, git-ui, terminal + action modules)
 - `src/components/` — Vue single-file components
 - `src/composables/` — reusable Composition API hooks
@@ -105,9 +106,9 @@ Renderer design:
 
 - Vue 3 Composition API with `<script setup>` single-file components
 - Pinia store for centralized state (`payload` as `shallowRef` for performance)
-- Store split into focused modules: `app.js` (core), `app-dialog-actions.js`, `app-workspace-actions.js`, `app-api-actions.js`
+- Store split into focused modules: `app.ts` (core), `app-dialog-actions.ts`, `app-workspace-actions.ts`, `app-api-actions.ts`
 - Composables for reusable logic: `useTerminal`, `useDragDrop`, `useSidebarResize`, `useReviewComments`, etc.
-- `xterm.js` lifecycle stays imperative in `src/app/terminal-controller.js`
+- `xterm.js` lifecycle stays imperative in `src/app/terminal-controller.ts`
 - Terminal data flows outside Vue reactivity for performance (direct controller calls)
 
 ## Runtime Model
@@ -143,9 +144,9 @@ This split lets the UI reconnect to the same logical workspace without serializi
 
 Files:
 
-- `electron/backend/git-manager.js`
-- `electron/backend/fs-probe.js`
-- `electron/backend/runtime-git-handlers.js`
+- `electron/backend/git-manager.ts`
+- `electron/backend/fs-probe.ts`
+- `electron/backend/runtime-git-handlers.ts`
 
 Responsibilities:
 
@@ -165,7 +166,7 @@ Current behavior:
 
 Detection flow for multi-repo workspaces:
 
-- `fs-probe.js#probeDirectory(path)` walks up to two directory levels under a candidate parent, ignores `.git`, `node_modules`, dotfiles, and a small denylist, and stops at each detected repo boundary
+- `fs-probe.ts#probeDirectory(path)` walks up to two directory levels under a candidate parent, ignores `.git`, `node_modules`, dotfiles, and a small denylist, and stops at each detected repo boundary
 - pure filesystem — no git subprocess calls during the probe
 - hard budget caps runtime (`readdir` count + wall-clock); on exhaustion returns `truncated: true` so the Workspace dialog can warn
 
@@ -173,8 +174,8 @@ Detection flow for multi-repo workspaces:
 
 Files:
 
-- `electron/backend/docker-manager.js`
-- `electron/backend/process-utils.js`
+- `electron/backend/docker-manager.ts`
+- `electron/backend/process-utils.ts`
 
 Responsibilities:
 
@@ -194,17 +195,15 @@ Current behavior:
 
 Relevant files:
 
-- `electron/backend/azure-devops-manager.js`
-- `electron/backend/azure-devops-api.js`
-- `electron/backend/azure-devops-pr-summary.js`
-- `electron/backend/azure-devops-utils.js`
-- `electron/backend/credential-store.js`
-- `electron/backend/azure-review-store.js`
-- `electron/backend/azure-audit-log-store.js`
-- `electron/backend/review-bridge-store.js`
-- `electron/backend/review-bridge-mcp.js`
-- `src/app/pane-markup.js`
-- `src/app/workspace-ui-controller.js`
+- `electron/backend/azure-devops-manager.ts`
+- `electron/backend/azure-devops-api.ts`
+- `electron/backend/azure-devops-pr-summary.ts`
+- `electron/backend/azure-devops-utils.ts`
+- `electron/backend/credential-store.ts`
+- `electron/backend/azure-review-store.ts`
+- `electron/backend/azure-audit-log-store.ts`
+- `electron/backend/review-bridge-store.ts`
+- `electron/backend/review-bridge-mcp.ts`
 
 Responsibilities:
 

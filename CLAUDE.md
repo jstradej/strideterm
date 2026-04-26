@@ -9,27 +9,29 @@ strIDEterm — multi-workspace Electron terminal app (Vue 3, Pinia, xterm.js) wi
 ## Commands
 
 ```bash
-npm run dev              # Concurrent Vite + Electron dev (hot reload)
+npm run dev              # Concurrent Vite + TS backend watch + Electron dev (hot reload)
 npm run dev:web          # Vite dev server only (port 1420)
+npm run dev:backend      # TypeScript backend watch (tsc -p tsconfig.backend.json --watch)
 npm run dev:electron     # Electron only (connects to Vite dev server)
 npm start                # Build + run packaged Electron app
 
 npm run lint             # ESLint + Prettier check
 npm run lint:fix         # Auto-fix lint + formatting issues
+npm run typecheck        # Type-check all TS/Vue files (frontend + backend + tests + scripts)
 npm test                 # All tests (UI + backend)
-npm run test:ui          # Vitest jsdom — src/**/*.test.js
-npm run test:backend     # Vitest node  — electron/backend/**/*.test.js
+npm run test:ui          # Vitest jsdom — src/**/*.test.ts
+npm run test:backend     # Vitest node  — electron/backend/**/*.test.ts
 npm run test:e2e         # Playwright E2E — mock server + fixture data
 
-npm run build            # Vite production build → dist/
+npm run build            # vue-tsc + Vite + tsc backend → dist/ + dist-electron/
 npm run dist             # Build + electron-builder (all platforms)
 npm run smoke            # Build + headless startup test
 npm run perf             # Node GC profiling
 ```
 
-Single test file: `npx vitest run --config vite.config.js src/stores/notifications.test.js`
+Single test file: `npx vitest run --config vite.config.ts src/stores/notifications.test.ts`
 
-Backend single test: `npx vitest run --config vitest.backend.config.js electron/backend/store.test.js`
+Backend single test: `npx vitest run --config vitest.backend.config.ts electron/backend/store.test.ts`
 
 ## Starting Dev Servers (important)
 
@@ -68,39 +70,39 @@ If port 1420 is already in use, kill the old node.exe process holding it before 
 
 The core — no Electron dependency. Can be driven by Electron IPC or the remote HTTP/WS server.
 
-- **runtime.js** — orchestrator: owns all state, broadcasts events, delegates to managers
-- **session-manager.js** — PTY lifecycle (spawn/resize/kill via node-pty), shell integration injection
-- **store.js** — atomic JSON persistence (~/.strideterm/strideterm-state.json, write-to-tmp-then-rename)
-- **ipc.js** — registers all `ipcMain.handle()` handlers; returns cleanup function
-- **ipc-schemas.js** — Zod validation for every IPC payload
-- **remote-server.js** — HTTP + WebSocket server for remote/LAN access (token auth)
-- **git-manager.js** — event-driven `inspectWorkspace` (~10 git subprocesses per call, 8 s snapshot cache); triggered on user actions, workspace switch, and OSC 133;D shell signal. The `gitPoll` loop in `runtime.js` only calls `syncWorktrees()` (filesystem stat, no git subprocesses) every 60 s as a backstop for externally-added/removed worktrees. Full git snapshot is **never** polled periodically.
-- **docker-manager.js** — polling (15s), container list, start/stop/restart/remove/shell/logs
-- **azure-devops-manager.js** — Azure DevOps PR inbox polling, review workspace creation, audit logging
-- **github-manager.js** — GitHub PR inbox polling, review workspace creation, audit logging (same architecture as Azure DevOps)
-- **review-bridge-mcp.js** — MCP server exposing review context to AI agents (provider-agnostic, works with both Azure DevOps and GitHub)
-- **plugin-loader.js** — manifest validation, capability whitelist, safe script execution
-- **file-manager.js** — file tree, read/write/rename/delete/move/copy operations
+- **runtime.ts** — orchestrator: owns all state, broadcasts events, delegates to managers
+- **session-manager.ts** — PTY lifecycle (spawn/resize/kill via node-pty), shell integration injection
+- **store.ts** — atomic JSON persistence (~/.strideterm/strideterm-state.json, write-to-tmp-then-rename)
+- **ipc.ts** — registers all `ipcMain.handle()` handlers; returns cleanup function
+- **ipc-schemas.ts** — Zod validation for every IPC payload
+- **remote-server.ts** — HTTP + WebSocket server for remote/LAN access (token auth)
+- **git-manager.ts** — event-driven `inspectWorkspace` (~10 git subprocesses per call, 8 s snapshot cache); triggered on user actions, workspace switch, and OSC 133;D shell signal. The `gitPoll` loop in `runtime.ts` only calls `syncWorktrees()` (filesystem stat, no git subprocesses) every 60 s as a backstop for externally-added/removed worktrees. Full git snapshot is **never** polled periodically.
+- **docker-manager.ts** — polling (15s), container list, start/stop/restart/remove/shell/logs
+- **azure-devops-manager.ts** — Azure DevOps PR inbox polling, review workspace creation, audit logging
+- **github-manager.ts** — GitHub PR inbox polling, review workspace creation, audit logging (same architecture as Azure DevOps)
+- **review-bridge-mcp.ts** — MCP server exposing review context to AI agents (provider-agnostic, works with both Azure DevOps and GitHub)
+- **plugin-loader.ts** — manifest validation, capability whitelist, safe script execution
+- **file-manager.ts** — file tree, read/write/rename/delete/move/copy operations
 
-### 2. Electron Adapter (`electron/main.js`, `electron/preload.js`)
+### 2. Electron Adapter (`electron/main.ts`, `electron/preload.ts`)
 
 Thin shell: creates BrowserWindow, wires IPC, manages native attention (overlay icon, taskbar flash, badge count, system notifications). Preload exposes `window.strideterm` via contextBridge.
 
 ### 3. Vue Renderer (`src/`)
 
-- **transport.js** — abstracts Electron IPC vs Remote HTTP/WS. All stores use this, never raw IPC.
-- **stores/app.js** — main Pinia store: `payload` (shallowRef of full server state), active workspace/tab/session, split layout, overlay/dialog state. Uses memoized computed to avoid unnecessary rerenders.
-- **stores/app-*-actions.js** — modular action groups (dialog, workspace, api) mixed into the app store
-- **stores/terminal.js** — xterm.js controller instances, mount/unmount lifecycle
-- **stores/git-ui.js** — git snapshot cache, diff preview state
-- **stores/file-manager.js** — file browser tree, preview, edit state
-- **stores/notifications.js** — notification queue with localStorage persistence
+- **transport.ts** — abstracts Electron IPC vs Remote HTTP/WS. All stores use this, never raw IPC.
+- **stores/app.ts** — main Pinia store: `payload` (shallowRef of full server state), active workspace/tab/session, split layout, overlay/dialog state. Uses memoized computed to avoid unnecessary rerenders.
+- **stores/app-*-actions.ts** — modular action groups (dialog, workspace, api) mixed into the app store
+- **stores/terminal.ts** — xterm.js controller instances, mount/unmount lifecycle
+- **stores/git-ui.ts** — git snapshot cache, diff preview state
+- **stores/file-manager.ts** — file browser tree, preview, edit state
+- **stores/notifications.ts** — notification queue with localStorage persistence
 - **composables/** — reusable hooks (useTerminal, useNotificationCapture, useNotificationSound, useAttentionSync, useDragDrop, etc.)
-- **app/terminal-controller.js** — imperative xterm.js lifecycle management (attach/detach/dispose)
+- **app/terminal-controller.ts** — imperative xterm.js lifecycle management (attach/detach/dispose)
 
 ## Key Patterns
 
-- **Profile-aware lookups** — workspaces can exist in multiple profiles with the same name/cwd. Any lookup by cwd or name (parent detection, grouping, auto-fill) **must** filter by the active profile first. Forgetting this causes cross-profile mismatches (e.g. a task workspace parented to the wrong "strideterm" in another profile). Key locations: `findParentByCwd` in `default-state.js`, parent auto-detection in `app-dialog-actions.js`.
+- **Profile-aware lookups** — workspaces can exist in multiple profiles with the same name/cwd. Any lookup by cwd or name (parent detection, grouping, auto-fill) **must** filter by the active profile first. Forgetting this causes cross-profile mismatches (e.g. a task workspace parented to the wrong "strideterm" in another profile). Key locations: `findParentByCwd` in `default-state.ts`, parent auto-detection in `app-dialog-actions.ts`.
 - **Session ID** = `workspaceId:panelId`. This composite key is used everywhere.
 - **shallowRef for payload** — the server state blob is large; shallowRef avoids deep reactivity overhead. Computed properties derive slices.
 - **Workspace payload cache** — on workspace switch-away, the current payload is cached; on switch-back it restores instantly while the server catches up.
@@ -114,7 +116,7 @@ All state lives in `~/.strideterm/strideterm-state.json`: workspaces, projects, 
 
 ## Configuration
 
-`config/app-config.js` — central config with env var overrides for ports, hosts, terminal defaults, polling intervals, theme, and command paths.
+`config/app-config.ts` — central config with env var overrides for ports, hosts, terminal defaults, polling intervals, theme, and command paths.
 
 ### Notification Timing
 
@@ -130,12 +132,12 @@ Configurable via `settings.notifications` (persisted per user) or env vars:
 
 ### Shell Integration
 
-`config/shell-integration/` contains scripts (bash.sh, zsh.sh, pwsh.ps1) that emit OSC 133 escape sequences for command boundary detection. When `shellIntegration` is enabled, `session-manager.js` auto-injects these into PTY sessions. OSC 133;D gives instant, zero-false-positive command completion detection.
+`config/shell-integration/` contains scripts (bash.sh, zsh.sh, pwsh.ps1) that emit OSC 133 escape sequences for command boundary detection. When `shellIntegration` is enabled, `session-manager.ts` auto-injects these into PTY sessions. OSC 133;D gives instant, zero-false-positive command completion detection.
 
 For agent sessions (Claude Code, Codex, etc.), a silence-based heuristic is used instead, with a secondary check (`matchesAgentIdle`) verifying the last output line looks like an idle prompt before raising an alert.
 
 ## Testing
 
-- UI tests (`src/**/*.test.js`): jsdom environment, import Vue components and Pinia stores directly
-- Backend tests (`electron/backend/**/*.test.js`): node environment, test runtime/managers in isolation
+- UI tests (`src/**/*.test.ts`): jsdom environment, import Vue components and Pinia stores directly
+- Backend tests (`electron/backend/**/*.test.ts`): node environment, test runtime/managers in isolation
 - Both use Vitest. No E2E framework — `npm run smoke` does a basic startup check.
