@@ -866,8 +866,9 @@ export function normalizeState(rawState: any = {}): AppState & { activeProjectId
     },
   };
   const workspaces = groupChildWorkspaces(
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: raw JSON from disk has unknown workspace shape
     (rawWorkspaces as any[])
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: same raw JSON workspace
       .map((workspace: any, index: number) => normalizeWorkspace(workspace, index))
       .map((workspace) => {
         if (workspace.kind === "azure" && !String(workspace.cwd || "").trim()) {

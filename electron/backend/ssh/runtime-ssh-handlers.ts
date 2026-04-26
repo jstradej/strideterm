@@ -202,8 +202,9 @@ export function createSshHandlers({ sshManager, store, credentialStore, broadcas
         if (!state.ssh) return;
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         state.ssh.keys = (state.ssh.keys || []).filter((k: any) => k.id !== id);
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: store mutate draft has unknown ssh sub-schema
         state.ssh.certificates = (state.ssh.certificates || []).filter((c: any) => c.keyId !== id);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: same store mutate draft
         state.ssh.hosts = (state.ssh.hosts || []).map((h: any) =>
           h.auth?.keyRef === id ? { ...h, auth: { ...h.auth, keyRef: "", certRef: h.auth.certRef } } : h,
         );
@@ -247,8 +248,9 @@ export function createSshHandlers({ sshManager, store, credentialStore, broadcas
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       await store.mutate((state: any) => {
         if (!state.ssh) return;
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: store mutate draft unknown sub-schema
         state.ssh.certificates = (state.ssh.certificates || []).filter((c: any) => c.id !== id);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: same store mutate draft
         state.ssh.hosts = (state.ssh.hosts || []).map((h: any) =>
           h.auth?.certRef === id ? { ...h, auth: { ...h.auth, certRef: "" } } : h,
         );

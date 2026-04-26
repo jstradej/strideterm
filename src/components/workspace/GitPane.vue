@@ -324,9 +324,9 @@ const props = withDefaults(defineProps<{ workspaceId: string; showHeader?: boole
 const appStore = useAppStore();
 const gitUiStore = useGitUiStore();
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: git snapshot is an open-ended server JSON blob; typed in shared types but indexed dynamically here
 const snapshot = computed<Record<string, any> | null>(() =>
-  appStore.getActiveGitSnapshot(props.workspaceId) as Record<string, any> | null,
+  appStore.getActiveGitSnapshot(props.workspaceId) as Record<string, any> | null, // eslint-disable-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT
 );
 const gitUi = computed(() => gitUiStore.get(props.workspaceId));
 const workspaces = computed(() => appStore.filteredWorkspaces);

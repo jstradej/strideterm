@@ -243,6 +243,7 @@ describe("file-manager commit history", () => {
     await fs.writeFile(path.join(repo, "beta.txt"), "beta v1\n");
     await execGit(repo, ["add", "."]);
     await execGit(repo, ["commit", "-q", "-m", "first"]);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: execGit return type not narrowed in test helper
     firstCommit = ((await execGit(repo, ["rev-parse", "HEAD"])) as any).stdout.trim();
     // Second commit — modifies alpha, deletes beta, adds gamma.
     await fs.writeFile(path.join(repo, "alpha.txt"), "alpha v2\n");
@@ -250,6 +251,7 @@ describe("file-manager commit history", () => {
     await fs.writeFile(path.join(repo, "gamma.txt"), "gamma v1\n");
     await execGit(repo, ["add", "-A"]);
     await execGit(repo, ["commit", "-q", "-m", "second"]);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: execGit return type not narrowed in test helper
     secondCommit = ((await execGit(repo, ["rev-parse", "HEAD"])) as any).stdout.trim();
   });
 

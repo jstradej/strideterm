@@ -281,11 +281,11 @@ describe("AzureDevOpsManager", () => {
       },
     });
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const snapshot = (await manager.sync({
       connections: [connection],
       workspaces: [],
       gitSnapshots: {},
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: test assertion cast on untyped manager result
     })) as any;
 
     expect(snapshot.inbox.needsMyReview).toHaveLength(1);
@@ -356,6 +356,7 @@ describe("AzureDevOpsManager", () => {
           },
         },
       ],
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: test assertion cast on untyped manager result
     })) as any;
 
     expect(detail.changedFiles[0].path).toBe("/src/auth.js");
@@ -415,6 +416,7 @@ describe("AzureDevOpsManager", () => {
         ],
       },
       prKey: createPullRequestKey("ado-main", "repo-1", 123),
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: test assertion cast on untyped manager result
     })) as any;
 
     expect(result.created).toBe(true);
@@ -461,6 +463,7 @@ describe("AzureDevOpsManager", () => {
         ],
       },
       prKey: createPullRequestKey("ado-main", "repo-1", 123),
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: test assertion cast on untyped manager result
     })) as any;
 
     expect(result.workspace.panels).toHaveLength(3);
@@ -626,6 +629,7 @@ describe("AzureDevOpsManager", () => {
         workspaces: [],
       },
       prKey: createPullRequestKey("ado-main", "repo-1", 123),
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: test assertion cast on untyped manager result
     })) as any;
 
     const cloneCall = execFileTextImpl.mock.calls.find((call) => call[1].includes("clone"));

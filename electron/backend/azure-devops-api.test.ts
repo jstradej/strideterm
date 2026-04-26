@@ -44,12 +44,16 @@ describe("Azure DevOps API - ETag caching", () => {
     const authOpts = { login: "user", token: "pat" };
 
     // First call — no etag
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: test assertion on untyped API response
     const result1 = (await api.requestJson(api.buildProjectsUrl(connection), authOpts)) as any;
     expect(result1.value).toHaveLength(1);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: test assertion on mock call args
     expect((fetchImpl.mock.calls[0][1] as any).headers["If-None-Match"]).toBeUndefined();
 
     // Second call — should send If-None-Match and return cached data on 304
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: test assertion on untyped API response
     const result2 = (await api.requestJson(api.buildProjectsUrl(connection), authOpts)) as any;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: test assertion on mock call args
     expect((fetchImpl.mock.calls[1][1] as any).headers["If-None-Match"]).toBe('"abc123"');
     expect(result2.value).toHaveLength(1);
   });
@@ -71,6 +75,7 @@ describe("Azure DevOps API - ETag caching", () => {
       body: { content: "hello" },
     });
 
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: test assertion on mock call args
     expect((fetchImpl.mock.calls[0][1] as any).headers["If-None-Match"]).toBeUndefined();
   });
 
@@ -92,9 +97,11 @@ describe("Azure DevOps API - ETag caching", () => {
     const url = "https://dev.azure.com/org/proj/_apis/git/pullrequests";
     const auth = { login: "user", token: "pat" };
 
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: test assertion on untyped API response
     const result1 = (await api.requestJson(url, auth)) as any;
     expect(result1.value).toHaveLength(1);
 
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: test assertion on untyped API response
     const result2 = (await api.requestJson(url, auth)) as any;
     expect(result2.value).toHaveLength(2);
   });

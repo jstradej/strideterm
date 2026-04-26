@@ -111,32 +111,32 @@ function copyPath() {
 }
 
 const isRemote = computed(() => api?.isRemote || false);
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const workspace = computed<Record<string, any> | null>(() => (store.payload as any)?.workspace || null);
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: payload is shallowRef of server JSON blob; typed view is derived in stores
+const workspace = computed<Record<string, any> | null>(() => (store.payload as any)?.workspace || null); // eslint-disable-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT
 const activeWorkspace = computed(() => store.activeWorkspace);
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: git snapshot is open-ended server JSON
 const gitSnapshot = computed<Record<string, any> | null>(() =>
-  activeWorkspace.value ? (store.getGitSnapshot(activeWorkspace.value.id) as Record<string, any> | null) : null,
+  activeWorkspace.value ? (store.getGitSnapshot(activeWorkspace.value.id) as Record<string, any> | null) : null, // eslint-disable-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT
 );
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: attention blob is open-ended server JSON
 const attention = computed<Record<string, any> | null>(() =>
   activeWorkspace.value
-    ? (store.getWorkspaceAttentionForId(activeWorkspace.value.id) as Record<string, any> | null)
+    ? (store.getWorkspaceAttentionForId(activeWorkspace.value.id) as Record<string, any> | null) // eslint-disable-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT
     : null,
 );
 const reviewTabCount = computed(() => activeWorkspace.value?.panels?.length || 0);
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: sessions sub-array from server JSON
 const sessionCount = computed(() => (workspace.value?.sessions as any[] | undefined)?.length || 0);
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: sessions sub-array from server JSON
 const runningCount = computed(() =>
-  ((workspace.value?.sessions as any[] | undefined) || []).filter(
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  ((workspace.value?.sessions as any[] | undefined) || []).filter( // eslint-disable-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: session item from server JSON
     (s: any) => s.status === "running",
   ).length,
 );
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: docker state is open-ended server JSON blob
 const dockerState = computed<Record<string, any>>(() =>
-  activeWorkspace.value?.kind === "docker" ? (store.payload as any)?.docker || {} : {},
+  activeWorkspace.value?.kind === "docker" ? (store.payload as any)?.docker || {} : {}, // eslint-disable-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT
 );
 const dockerAvailable = computed(() => dockerState.value?.available);
 // eslint-disable-next-line @typescript-eslint/no-explicit-any

@@ -5,6 +5,8 @@ import globals from "globals";
 import tseslint from "typescript-eslint";
 
 const tsRules = {
+  // TypeScript handles undefined references better than ESLint's no-undef.
+  "no-undef": "off",
   "no-unused-vars": "off",
   "@typescript-eslint/no-unused-vars": [
     "warn",
@@ -32,6 +34,22 @@ export default [
   js.configs.recommended,
   ...vue.configs["flat/recommended"],
   prettier,
+
+  // --- Vue SFCs with TypeScript script blocks ---
+  // eslint-plugin-vue handles the .vue file structure; we delegate the
+  // <script setup lang="ts"> block to the TS parser via parserOptions.parser.
+  {
+    files: ["src/**/*.vue"],
+    plugins: { "@typescript-eslint": tseslint.plugin },
+    languageOptions: {
+      parserOptions: {
+        parser: tseslint.parser,
+        project: "./tsconfig.frontend.json",
+        extraFileExtensions: [".vue"],
+      },
+    },
+    rules: tsRules,
+  },
 
   // --- Frontend TS source files ---
   {

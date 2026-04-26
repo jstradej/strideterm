@@ -1122,8 +1122,7 @@ export class AgentTaskRunner {
     const task = workspace.task;
     const workspaceId = workspace.id;
 
-    try {
-      const evalStart = Date.now();
+    const evalStart = Date.now();
       this.#setTaskState(task, "evaluating");
       this.#broadcastState!();
 
@@ -1300,12 +1299,6 @@ export class AgentTaskRunner {
       }
 
       this.#broadcastState!();
-    } catch (err: unknown) {
-      // Re-throw so the outer #evaluateWorker Effect catch handler can log and
-      // set the paused state.  The #evaluating / #programmaticJudges cleanup
-      // is handled by Effect.acquireRelease in the outer method.
-      throw err;
-    }
   }
 
   // ---------------------------------------------------------------------------

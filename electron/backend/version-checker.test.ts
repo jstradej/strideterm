@@ -292,6 +292,7 @@ describe("createVersionChecker", () => {
 
   test("sends ETag in request when cached", async () => {
     const dir = await createTempDir();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: test local variable capturing untyped fetch headers
     let capturedHeaders: any;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const capturingFetch = async (url: any, opts: any) => {

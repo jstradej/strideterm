@@ -294,8 +294,8 @@ function handleToggleStar(ws: any): void {
   } as StatePayload;
 
   // Persist in background
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   api
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: partial workspace update cast; full type requires all fields
     .saveWorkspace?.({ ...allWs[idx], starred: nextStarred } as any)
     .then((result) => {
       if (result) store.handleBroadcastPayload(result as StatePayload);

@@ -21,7 +21,7 @@ export class Logger extends Context.Service<Logger, LoggerShape>()("strideterm/L
 export const makeLoggerLive = (winstonLike: Record<LogLevel, (msg: string, meta?: Record<string, unknown>) => void>): Layer.Layer<Logger> =>
   Layer.effect(
     Logger,
-    Effect.gen(function* () {
+    Effect.sync(() => {
       const makeLogFn = (level: LogLevel): LogMethod =>
         (message, meta) =>
           Effect.gen(function* () {

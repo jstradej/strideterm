@@ -2316,7 +2316,8 @@ export async function createRuntime({
         updateVisibleSessions(
           workspace.kind === "azure" || workspace.kind === "github"
             ? []
-            : workspace.panels.map((panel: any) => createSessionId(workspaceId, panel.id)),
+            : // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: panel type is widened in this workspace variant
+              workspace.panels.map((panel: any) => createSessionId(workspaceId, panel.id)),
         );
       }
       if (workspace?.kind === "docker") {
@@ -2512,7 +2513,7 @@ export async function createRuntime({
               await rmPath(diskPath);
             }
           } catch (err) {
-            diskDeleteError = `Could not delete ${diskPath}: ${(err as any)?.message || err}`;
+            diskDeleteError = `Could not delete ${diskPath}: ${(err as any)?.message || err}`; // eslint-disable-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: unknown catch shape
             log.warn("workspace disk delete failed", { diskPath, err: diskDeleteError });
           } finally {
             pendingWorktreeDeletions.delete(diskPath);
@@ -2579,7 +2580,7 @@ export async function createRuntime({
           },
         };
         // Keep tabTemplates out of the settings object
-        delete (draft.settings as any).tabTemplates;
+        delete (draft.settings as any).tabTemplates; // eslint-disable-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: immer draft index signature
       });
 
       const nextConfig = getState().settings.remoteAccess;
@@ -2797,6 +2798,7 @@ export async function createRuntime({
         return { ok: false, reason: "spawn-failed", detail: (err as Error).message };
       }
 
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: untyped probe result from dynamic hook spawn
       const result = await receivedPromise as any;
       const elapsedMs = Date.now() - startedAt;
 

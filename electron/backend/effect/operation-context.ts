@@ -28,6 +28,7 @@ export const withOperation = <A, E, R>(
       opId: ctx.opId ?? crypto.randomUUID(),
     };
     return yield* effect.pipe(Effect.provideService(OperationContextRef, next));
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: cast needed; provideService narrowing strips R but can't verify it
   }) as any as Effect.Effect<A, E, R>;
 
 // Yield the current OperationContext in Effect.gen code.

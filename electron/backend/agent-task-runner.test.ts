@@ -612,6 +612,7 @@ describe("formatVerifyChecklist", () => {
       [
         { label: "Tests", command: "npm test", timeoutMs: 60_000 },
         { label: "Lint", command: "npm run lint", timeoutMs: 60_000 },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: test helper cast to bypass partial CheckConfig shape
       ] as any,
     );
     expect(result).toBe("- [ ] Run `npm test` — must pass\n- [ ] Run `npm run lint` — must pass");

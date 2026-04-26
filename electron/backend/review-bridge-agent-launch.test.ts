@@ -113,8 +113,9 @@ describe("review bridge agent launch", () => {
     expect(launch.args).toContain("--add-dir");
     expect(launch.args).toContain("C:/reviews/pr-123");
 
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: test assertion on untyped launch args array
     const configValues = (launch.args as any[])
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: test assertion on untyped launch args
       .map((value: any, index: any) => (launch.args[index - 1] === "-c" ? value : null))
       .filter(Boolean);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any

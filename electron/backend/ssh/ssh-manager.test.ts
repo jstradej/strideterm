@@ -12,6 +12,7 @@ import type { CredentialStore } from "../shared/credential-store.js";
 
 const tempDirs: string[] = [];
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: store return type not narrowed for test helper
 async function freshStore(): Promise<any> {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-ssh-test-"));
   tempDirs.push(dir);
