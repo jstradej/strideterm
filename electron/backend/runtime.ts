@@ -95,7 +95,21 @@ import type { NotifyServerHandle } from "./notify-server.js";
 const log = getLogger("runtime");
 
 const require = createRequire(import.meta.url);
-const { version: packageVersion = "0.0.0" } = require("../../package.json");
+// Walk up from this file to the nearest package.json. The relative depth differs
+// between the TS source (electron/backend/) and the compiled output
+// (dist-electron/electron/backend/), so a fixed "../../package.json" only works
+// in one of those layouts.
+function resolvePackageJsonPath(): string {
+  let dir = path.dirname(fileURLToPath(import.meta.url));
+  while (true) {
+    const candidate = path.join(dir, "package.json");
+    if (existsSync(candidate)) return candidate;
+    const parent = path.dirname(dir);
+    if (parent === dir) throw new Error("Could not locate package.json from runtime.ts");
+    dir = parent;
+  }
+}
+const { version: packageVersion = "0.0.0" } = require(resolvePackageJsonPath());
 const reviewBridgeCliPath = fileURLToPath(new URL("./review-bridge-cli.js", import.meta.url));
 
 // Utilities imported from runtime-utils.js
