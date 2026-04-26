@@ -38,7 +38,7 @@ function defaultCwd(): string {
 
 /**
  * Returns the strIDEterm user-data directory, honoring the STRIDETERM_DATA_DIR
- * env var used by dev1.ps1 and --data-dir. Centralized here so every module
+ * env var used by dev.ps1 and --data-dir. Centralized here so every module
  * that falls back to a "default" path under strIDEterm's data dir picks up the
  * override consistently — otherwise dev instances bleed into ~/.strideterm.
  */

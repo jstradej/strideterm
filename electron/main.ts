@@ -456,7 +456,7 @@ async function loadBootstrapPayload(): Promise<Record<string, unknown>> {
 
   runtimeState.bootstrapPayload = (async () => {
     // MUST use userDataPath — hardcoding ~/.strideterm here was the root cause
-    // of dev instances ("dev1.ps1" / --data-dir) briefly showing prod workspaces
+    // of dev instances ("dev.ps1" / --data-dir) briefly showing prod workspaces
     // in the renderer before the runtime came up.
     const statePath = path.join(userDataPath, "strideterm-state.json");
     let appState: AppState = createDefaultState() as AppState;

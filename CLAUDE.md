@@ -41,7 +41,7 @@ The preferred way to start the dev environment is `dev.ps1` in the project root:
 .\dev.ps1                # PowerShell — recommended
 ```
 
-This script handles everything: kills stale Electron/Node processes, clears Electron cache, frees port 1420, starts Vite, waits until it's listening, starts Electron, auto-restarts Vite if it crashes, and cleans up on Ctrl+C. It requires an interactive PowerShell session — **do not run it from Claude Code's Bash tool** (background process management won't work).
+This script handles everything: kills stale Electron/Node processes, clears Electron cache, frees port 1420, starts Vite, starts the backend `tsc --watch` and waits for `dist-electron/electron/main.js`, starts Electron, auto-restarts Vite if it crashes, and cleans up on Ctrl+C. It requires an interactive PowerShell session — **do not run it from Claude Code's Bash tool** (background process management won't work).
 
 If `dev.ps1` is not an option (e.g. non-Windows), fall back to manual startup:
 

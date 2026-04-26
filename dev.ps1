@@ -1,17 +1,18 @@
 <#
 .SYNOPSIS
-    Start strIDEterm dev environment against an isolated "dev" data directory.
+    Start strIDEterm dev environment against an isolated dev data directory.
 .DESCRIPTION
-    Same orchestration as dev.ps1 (port cleanup, stale process kill, Vite + Electron,
-    graceful Ctrl+C), but forces Electron to use `C:\Users\strad\.strideterm-dev` as
-    its data directory via STRIDETERM_DATA_DIR.
+    Same orchestration as production runs (port cleanup, stale process kill,
+    Vite + backend tsc watch + Electron, graceful Ctrl+C), but forces Electron
+    to use ~/.strideterm-dev as its data directory via STRIDETERM_DATA_DIR.
 
-    This makes state, credentials, logs, electron session data, and the single-instance
-    lock separate from the default `~/.strideterm` install — so dev1 can run side-by-side
-    with a production strIDEterm without clobbering state.
+    This makes state, credentials, logs, electron session data, and the
+    single-instance lock separate from the default ~/.strideterm install — so
+    dev can run side-by-side with a production strIDEterm without clobbering
+    state.
 
-    Run from the project root:  .\dev1.ps1
-    Stop with Ctrl+C - both Vite and Electron will be terminated.
+    Run from the project root:  .\dev.ps1
+    Stop with Ctrl+C - Vite, backend watcher, and Electron will all be terminated.
 #>
 
 param(
@@ -24,6 +25,7 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
 $script:viteProc = $null
+$script:backendProc = $null
 $script:electronProc = $null
 $script:exiting = $false
 
@@ -68,6 +70,7 @@ function Test-PortOpen([int]$portNum) {
 }
 
 function Kill-PortOwner([int]$portNum) {
+    # Method 1: PowerShell API
     $blocker = Get-PortProcess $portNum
     if ($blocker) {
         Write-Warn "Port $portNum held by $($blocker.ProcessName) (PID $($blocker.Id)) - killing..."
@@ -76,6 +79,7 @@ function Kill-PortOwner([int]$portNum) {
         return
     }
 
+    # Method 2: netstat fallback (catches cases Get-NetTCPConnection misses)
     if (Test-PortOpen $portNum) {
         Write-Warn "Port $portNum is responding but owner not found via API - using netstat..."
         $lines = netstat -ano | Select-String ":$portNum\s" | Select-String 'LISTENING'
@@ -104,14 +108,17 @@ function Cleanup {
         Stop-ProcessTree $script:electronProc.Id
     }
 
+    if ($script:backendProc -and !$script:backendProc.HasExited) {
+        Write-Step 'Stopping backend tsc watch...'
+        Stop-ProcessTree $script:backendProc.Id
+    }
+
     if ($script:viteProc -and !$script:viteProc.HasExited) {
         Write-Step 'Stopping Vite...'
         Stop-ProcessTree $script:viteProc.Id
     }
 
-    # Kill any orphaned electron processes spawned via this dev1 dataDir.
-    # (We can't filter by command line from Get-Process, so we match all electron.exe
-    #  — safe in a dev workflow where we want a clean slate anyway.)
+    # Kill any orphaned electron processes
     $orphanedElectron = Get-Process -Name electron -ErrorAction SilentlyContinue
     if ($orphanedElectron) {
         Write-Warn "Killing $($orphanedElectron.Count) orphaned electron process(es)..."
@@ -119,6 +126,7 @@ function Cleanup {
         Start-Sleep -Milliseconds 500
     }
 
+    # Final check - kill anything still on the port
     $leftover = Get-PortProcess $Port
     if ($leftover) {
         Write-Warn "Killing leftover process on port $Port (PID $($leftover.Id), $($leftover.ProcessName))"
@@ -136,7 +144,7 @@ try {
 
 # --- Step 0: Configure isolated data dir ----------------------------------
 
-# electron/main.js reads STRIDETERM_DATA_DIR (or --data-dir) and:
+# electron/main.ts reads STRIDETERM_DATA_DIR (or --data-dir) and:
 #   - sets state/credentials/logs under $DataDir
 #   - sets Electron userData to $DataDir\electron-data (isolates cache + single-instance lock)
 #   - renames app to strideterm-<basename($DataDir)> so it does NOT fight prod for the lock
@@ -158,7 +166,7 @@ if ($staleElectron) {
 }
 
 # Clear Electron disk cache under the isolated data dir
-# (main.js maps userData -> $DataDir\electron-data when STRIDETERM_DATA_DIR is set).
+# (main.ts maps userData -> $DataDir\electron-data when STRIDETERM_DATA_DIR is set).
 $electronDataDir = Join-Path $DataDir 'electron-data'
 foreach ($cacheName in @('Cache', 'GPUCache', 'DawnGraphiteCache', 'DawnWebGPUCache', 'Code Cache')) {
     $dir = Join-Path $electronDataDir $cacheName
@@ -217,6 +225,46 @@ if (-not $ready) {
 }
 Write-Ok "Vite is ready on http://127.0.0.1:$Port"
 
+# --- Step 4b: Start backend TS watcher and wait for compiled main.js ------
+
+$mainEntry = Join-Path $PSScriptRoot 'dist-electron/electron/main.js'
+
+Write-Step 'Starting backend TypeScript watcher...'
+$script:backendProc = Start-Process -FilePath 'cmd.exe' -ArgumentList '/c','npm run dev:backend' `
+    -WorkingDirectory $PSScriptRoot `
+    -PassThru -NoNewWindow
+
+if (!$script:backendProc -or $script:backendProc.HasExited) {
+    Write-Err 'Failed to start backend watcher. Aborting.'
+    Cleanup
+    exit 1
+}
+Write-Ok "Backend watcher started (PID $($script:backendProc.Id))."
+
+$backendTimeout = 60
+Write-Step "Waiting for backend build output (timeout ${backendTimeout}s)..."
+$deadline = (Get-Date).AddSeconds($backendTimeout)
+$compiled = $false
+while ((Get-Date) -lt $deadline) {
+    if ($script:backendProc.HasExited) {
+        Write-Err "Backend watcher exited unexpectedly with code $($script:backendProc.ExitCode)."
+        Cleanup
+        exit 1
+    }
+    if (Test-Path $mainEntry) {
+        $compiled = $true
+        break
+    }
+    Start-Sleep -Milliseconds 500
+}
+
+if (-not $compiled) {
+    Write-Err "Backend did not produce $mainEntry within ${backendTimeout}s. Aborting."
+    Cleanup
+    exit 1
+}
+Write-Ok 'Backend compiled (dist-electron/ ready).'
+
 # --- Step 5: Start Electron -----------------------------------------------
 
 Write-Step 'Starting Electron...'
@@ -233,14 +281,20 @@ Write-Ok "Electron started (PID $($script:electronProc.Id))."
 Write-Host ''
 Write-Ok '=== Dev environment is running (isolated data dir) ==='
 Write-Host "    Vite:     http://127.0.0.1:$Port  (PID $($script:viteProc.Id))" -ForegroundColor Gray
+Write-Host "    Backend:  tsc --watch  (PID $($script:backendProc.Id))" -ForegroundColor Gray
 Write-Host "    Electron: PID $($script:electronProc.Id)" -ForegroundColor Gray
 Write-Host "    Data:     $DataDir" -ForegroundColor Gray
-Write-Host '    Press Ctrl+C to stop both.' -ForegroundColor Gray
+Write-Host '    Press Ctrl+C to stop all.' -ForegroundColor Gray
 Write-Host ''
 
 # --- Step 6: Wait for Electron to exit ------------------------------------
 
+$backendWarned = $false
 while (-not $script:electronProc.HasExited) {
+    if ($script:backendProc.HasExited -and -not $backendWarned) {
+        Write-Warn "Backend tsc watch exited (code $($script:backendProc.ExitCode)) — TypeScript changes won't recompile."
+        $backendWarned = $true
+    }
     if ($script:viteProc.HasExited) {
         Write-Warn 'Vite crashed! Restarting...'
         $script:viteProc = Start-Process -FilePath 'cmd.exe' -ArgumentList '/c','npm run dev:web' `

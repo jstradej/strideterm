@@ -42,7 +42,7 @@ const HOOK_MARKERS = ["STRIDETERM_NOTIFY_URL", "hooks/notify.mjs", "hooks\\notif
 // URLs are resolved from a file written by strideterm's runtime.
 //
 // Paths resolve from `import.meta.url` so each installed script points at its
-// own <userDataPath> — critical for dev instances (dev1.ps1 / --data-dir) whose
+// own <userDataPath> — critical for dev instances (dev.ps1 / --data-dir) whose
 // runtime writes notify-urls.json under ~/.strideterm-dev. Using os.homedir()
 // here would route every hook back to ~/.strideterm regardless of instance.
 //

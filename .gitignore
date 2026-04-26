@@ -64,6 +64,4 @@ strideterm-session*.log
 termhub-state.json
 termhub-state.*.json
 
-# Local dev helper
-dev.ps1
 .gemini/
