@@ -613,6 +613,16 @@ export async function createRuntime({
 
   // --- Telegram integration ---
   const telegramManager = new TelegramManager({ credentialStore });
+  telegramManager.setWorkspacesGetter(() =>
+    getState().workspaces.map((ws: WorkspaceState) => ({
+      id: ws.id,
+      name: ws.name,
+      cwd: ws.cwd || "",
+      kind: ws.kind || "workspace",
+      panels: (ws.panels || []).map((p) => ({ id: p.id, title: p.title || p.id })),
+      task: ws.task ? { state: ws.task.state || "unknown", description: ws.task.description || "" } : null,
+    })),
+  );
 
   // --- Agent notification hook server ---
   const notifySecret = generateNotifySecret();

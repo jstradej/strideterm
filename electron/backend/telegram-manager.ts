@@ -115,9 +115,19 @@ interface TgSendMessageResult {
   description?: string;
 }
 
+/** Minimal workspace info the manager needs for status/task commands */
+export interface TelegramWorkspaceInfo {
+  id: string;
+  name: string;
+  cwd: string;
+  kind: string;
+  panels: Array<{ id: string; title: string }>;
+  task?: { state: string; description: string } | null;
+}
+
 // State machine for pending user input
 interface PendingRequest {
-  type: "task-description" | "confirm-action";
+  type: "task-description" | "confirm-action" | "workspace-selection";
   workspaceId: string;
   panelId: string;
   alertId?: string;
@@ -126,6 +136,8 @@ interface PendingRequest {
   agentCommand?: string;
   /** For confirm-action: the command to emit on confirm */
   pendingCmd?: TelegramCommandEvent;
+  /** For workspace-selection: ordered list of choices shown to the user */
+  workspaceChoices?: TelegramWorkspaceInfo[];
 }
 
 // ---------------------------------------------------------------------------
@@ -150,9 +162,17 @@ export class TelegramManager extends EventEmitter {
   /** Pending text input requests (awaiting user's next message in chat) */
   private pendingRequests: Map<string, PendingRequest> = new Map(); // chatId → PendingRequest
 
+  /** Runtime-provided getter for current workspace list — used by /status and /task commands */
+  private getWorkspaces: (() => TelegramWorkspaceInfo[]) | null = null;
+
   constructor({ credentialStore }: { credentialStore: CredentialStore }) {
     super();
     this.credentialStore = credentialStore;
+  }
+
+  /** Called by the runtime during setup so TelegramManager can query workspace state */
+  setWorkspacesGetter(fn: () => TelegramWorkspaceInfo[]): void {
+    this.getWorkspaces = fn;
   }
 
   configure(connections: TelegramConnectionConfig[]): void {
@@ -443,10 +463,72 @@ export class TelegramManager extends EventEmitter {
 
     log.debug("telegram message received", { messageId: msg.message_id, chatId });
 
-    // Check for pending request (bot is expecting a text reply)
+    // --- Global commands (handled before pending-state check) ---
+    const lower = text.toLowerCase();
+    if (lower === "/status" || lower === "status") {
+      await this._handleStatusCommand(chatId, token);
+      return;
+    }
+    if (lower === "/workspaces" || lower === "workspaces") {
+      await this._handleWorkspacesCommand(chatId, token);
+      return;
+    }
+    if (lower === "/task" || lower === "task") {
+      await this._handleTaskCommand(chatId, token, conn);
+      return;
+    }
+    if (lower === "/help" || lower === "help") {
+      await this._sendText(
+        token,
+        chatId,
+        [
+          "📖 *Příkazy strIDEterm bota:*",
+          "",
+          "`/status` — stav všech task agentů",
+          "`/workspaces` — přehled workspace",
+          "`/task` — spustit nový task agent \\(výběr workspace\\)",
+          "",
+          "Nebo odpovinej na konkrétní notifikaci pomocí Telegram Reply a stiskni inline tlačítka\\.",
+        ].join("\n"),
+        true,
+      );
+      return;
+    }
+
+    // --- Pending-state handler ---
     const pending = this.pendingRequests.get(chatId);
     if (pending && Date.now() - pending.createdAt < PENDING_TIMEOUT_MS) {
       this.pendingRequests.delete(chatId);
+
+      if (pending.type === "workspace-selection") {
+        // User replied with a number to pick a workspace
+        const idx = parseInt(text.trim(), 10) - 1;
+        const choices = pending.workspaceChoices || [];
+        const chosen = choices[idx];
+        if (!chosen) {
+          await this._sendText(
+            token,
+            chatId,
+            `⚠️ Neplatná volba\\. Zadej číslo 1–${escapeMarkdown(String(choices.length))}\\. Nebo spusť /task znovu\\.`,
+          );
+          return;
+        }
+        // Transition to task-description for the chosen workspace
+        this.pendingRequests.set(chatId, {
+          type: "task-description",
+          workspaceId: chosen.id,
+          panelId: chosen.panels[0]?.id || "",
+          createdAt: Date.now(),
+          agentCommand: conn.agentCommand || undefined,
+        });
+        await this._sendText(
+          token,
+          chatId,
+          `📝 Workspace *${escapeMarkdown(chosen.name)}*\n📁 \`${escapeMarkdown(chosen.cwd)}\`\n\nNapiš popis úkolu:`,
+          true,
+        );
+        return;
+      }
 
       if (pending.type === "task-description") {
         log.info("telegram: requesting confirmation for start-task from pending request", {
@@ -461,7 +543,8 @@ export class TelegramManager extends EventEmitter {
           alertId: pending.alertId,
           agentCommand: pending.agentCommand || undefined,
         };
-        // Store as confirm-action and ask for confirmation
+        const ws = this.getWorkspaces?.().find((w) => w.id === pending.workspaceId);
+        const confirmText = this._buildStartTaskConfirmText(text, ws);
         this.pendingRequests.set(chatId, {
           type: "confirm-action",
           workspaceId: pending.workspaceId,
@@ -470,12 +553,12 @@ export class TelegramManager extends EventEmitter {
           createdAt: Date.now(),
           pendingCmd: cmd,
         });
-        await this._sendConfirmation(token, chatId, `🚀 Start task: _${escapeMarkdown(text.slice(0, 200))}_`);
+        await this._sendConfirmation(token, chatId, confirmText);
         return;
       }
     }
 
-    // Check if this is a reply to a known notification
+    // --- Reply to a known notification ---
     if (msg.reply_to_message?.message_id) {
       const entry = this.contextByMessageId.get(msg.reply_to_message.message_id);
       if (entry) {
@@ -489,8 +572,111 @@ export class TelegramManager extends EventEmitter {
     await this._sendText(
       token,
       chatId,
-      "ℹ️ Reply to a strIDEterm notification to interact with it, or press the inline buttons\\.",
+      "ℹ️ Odpovicej na notifikaci pomocí Reply, nebo napiš /help pro přehled příkazů\\.",
     );
+  }
+
+  // --- Command handlers ---
+
+  private async _handleStatusCommand(chatId: string, token: string): Promise<void> {
+    const workspaces = this.getWorkspaces?.() ?? [];
+    const taskWs = workspaces.filter((w) => w.kind === "task" && w.task);
+
+    if (taskWs.length === 0) {
+      await this._sendText(token, chatId, "📊 Žádné task agenty momentálně neběží\\.");
+      return;
+    }
+
+    const lines = ["📊 *Stav task agentů:*", ""];
+    for (const ws of taskWs) {
+      const state = ws.task?.state || "unknown";
+      const icon = this._taskStateIcon(state);
+      lines.push(`${icon} *${escapeMarkdown(ws.name)}* \\(${escapeMarkdown(state)}\\)`);
+      if (ws.cwd) lines.push(`   📁 \`${escapeMarkdown(ws.cwd)}\``);
+      if (ws.task?.description) lines.push(`   📝 ${escapeMarkdown(ws.task.description.slice(0, 100))}`);
+      lines.push("");
+    }
+
+    await this._sendText(token, chatId, lines.join("\n").trimEnd(), true);
+  }
+
+  private async _handleWorkspacesCommand(chatId: string, token: string): Promise<void> {
+    const workspaces = this.getWorkspaces?.() ?? [];
+    if (workspaces.length === 0) {
+      await this._sendText(token, chatId, "🗂 Žádné workspace není otevřeno\\.");
+      return;
+    }
+
+    const lines = ["🗂 *Workspace:*", ""];
+    for (let i = 0; i < workspaces.length; i++) {
+      const ws = workspaces[i];
+      const kindLabel = ws.task ? `task: ${ws.task.state}` : ws.kind;
+      lines.push(`${i + 1}\\. *${escapeMarkdown(ws.name)}* \\(${escapeMarkdown(kindLabel)}\\)`);
+      if (ws.cwd) lines.push(`   📁 \`${escapeMarkdown(ws.cwd)}\``);
+    }
+
+    await this._sendText(token, chatId, lines.join("\n"), true);
+  }
+
+  private async _handleTaskCommand(chatId: string, token: string, conn: TelegramConnectionConfig): Promise<void> {
+    const workspaces = this.getWorkspaces?.() ?? [];
+    // Show non-task, non-review workspaces as candidates; task workspaces can also be used as parents
+    const candidates = workspaces.filter((w) => w.kind !== "azure" && w.kind !== "github");
+
+    if (candidates.length === 0) {
+      await this._sendText(token, chatId, "⚠️ Žádné workspace není k dispozici\\.");
+      return;
+    }
+
+    const lines = ["🗂 *Vyber workspace pro nový task:*", ""];
+    for (let i = 0; i < candidates.length; i++) {
+      const ws = candidates[i];
+      lines.push(`${i + 1}\\. *${escapeMarkdown(ws.name)}*`);
+      if (ws.cwd) lines.push(`   📁 \`${escapeMarkdown(ws.cwd)}\``);
+    }
+    lines.push("");
+    lines.push("Odpověz číslem \\(např\\. `1`\\)\\.");
+
+    this.pendingRequests.set(chatId, {
+      type: "workspace-selection",
+      workspaceId: "",
+      panelId: "",
+      createdAt: Date.now(),
+      agentCommand: conn.agentCommand || undefined,
+      workspaceChoices: candidates,
+    });
+
+    await this._sendText(token, chatId, lines.join("\n"), true);
+  }
+
+  private _buildStartTaskConfirmText(taskDescription: string, ws?: TelegramWorkspaceInfo): string {
+    const lines = [`🚀 Spustit task: _${escapeMarkdown(taskDescription.slice(0, 200))}_`];
+    if (ws) {
+      lines.push(`\n🗂 Workspace: *${escapeMarkdown(ws.name)}*`);
+      if (ws.cwd) lines.push(`📁 Adresář: \`${escapeMarkdown(ws.cwd)}\``);
+    }
+    return lines.join("\n");
+  }
+
+  private _taskStateIcon(state: string): string {
+    switch (state) {
+      case "running":
+        return "🔄";
+      case "evaluating":
+      case "judge-evaluating":
+        return "🔍";
+      case "completed":
+      case "done":
+        return "✅";
+      case "failed":
+        return "❌";
+      case "paused":
+        return "⏸";
+      case "stopped":
+        return "⏹";
+      default:
+        return "⏳";
+    }
   }
 
   private async _dispatchTextReply(
@@ -553,7 +739,8 @@ export class TelegramManager extends EventEmitter {
         createdAt: Date.now(),
         pendingCmd: cmd,
       });
-      await this._sendConfirmation(token, chatId, `🚀 Start task: _${escapeMarkdown(text.slice(0, 200))}_`);
+      const ws = this.getWorkspaces?.().find((w) => w.id === ctx.workspaceId);
+      await this._sendConfirmation(token, chatId, this._buildStartTaskConfirmText(text, ws));
       return;
     }
 
