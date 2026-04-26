@@ -48,6 +48,13 @@
           <span>Command</span>
           <input v-model="panel.command" placeholder="optional boot command" maxlength="500" />
         </label>
+        <label
+          class="panel-card__toggle"
+          title="Force notifications on for this panel even when 'Notify only from AI agents' is enabled globally. Useful for shell tabs where you do want the 'command finished' ping (e.g. long-running build scripts)."
+        >
+          <input v-model="panel.alertsForceOn" type="checkbox" />
+          <span>Always notify on this panel (override global agents-only)</span>
+        </label>
       </article>
     </div>
   </section>
@@ -121,6 +128,7 @@ interface PanelEntry {
   command: string;
   shell?: boolean;
   startup?: string;
+  alertsForceOn?: boolean;
 }
 
 interface TabTemplate {

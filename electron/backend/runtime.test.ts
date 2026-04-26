@@ -1069,7 +1069,17 @@ describe("runtime integration", () => {
             activePanelId: "shell",
             panels: [
               { id: "shell", title: "Shell", command: "", shell: true, startup: "default" },
-              { id: "tests", title: "Tests", command: "npm test", shell: true, startup: "manual" },
+              // alertsForceOn: shell-completion alerts are globally suppressed by
+              // notifications.agentsOnly (default true). This panel opts back in
+              // explicitly because the test asserts the exit-alert fires.
+              {
+                id: "tests",
+                title: "Tests",
+                command: "npm test",
+                shell: true,
+                startup: "manual",
+                alertsForceOn: true,
+              },
             ],
           },
         ],
@@ -1117,6 +1127,64 @@ describe("runtime integration", () => {
     } finally {
       Date.now = originalNow;
     }
+  });
+
+  test("agentsOnly suppresses shell-exit alert (default behaviour)", async () => {
+    // No alertsForceOn on the panel; default settings have agentsOnly=true.
+    // A non-agent shell session that exits should NOT raise a project alert.
+    const fixture = await createFixture({
+      initialState: {
+        activeProjectId: "frontend",
+        projects: [
+          {
+            id: "backend",
+            name: "Backend",
+            kind: "terminal",
+            cwd: "/tmp/backend",
+            activePanelId: "tests",
+            panels: [{ id: "tests", title: "Tests", command: "npm test", shell: true, startup: "manual" }],
+          },
+        ],
+      },
+    });
+    fixtures.push(fixture);
+
+    await fixture.runtime.syncAttentionContext({ visibleSessionIds: [] });
+
+    // Mark session as user-interactive (alerts only fire for sessions the user touched).
+    fixture.sessionManager.emit("terminal:data", { sessionId: "backend:tests", data: "$ " });
+    fixture.runtime.writeToSession("backend:tests", "npm test\r");
+    fixture.sessionManager.emit("terminal:exit", { sessionId: "backend:tests", exitCode: 1, intentional: false });
+
+    expect(fixture.runtime.getPayload().attention.byProject.backend).toBeUndefined();
+  });
+
+  test("agentsOnly=false (legacy) still raises shell-exit alert", async () => {
+    const fixture = await createFixture({
+      initialState: {
+        activeProjectId: "frontend",
+        settings: { notifications: { agentsOnly: false } },
+        projects: [
+          {
+            id: "backend",
+            name: "Backend",
+            kind: "terminal",
+            cwd: "/tmp/backend",
+            activePanelId: "tests",
+            panels: [{ id: "tests", title: "Tests", command: "npm test", shell: true, startup: "manual" }],
+          },
+        ],
+      },
+    });
+    fixtures.push(fixture);
+
+    await fixture.runtime.syncAttentionContext({ visibleSessionIds: [] });
+
+    fixture.sessionManager.emit("terminal:data", { sessionId: "backend:tests", data: "$ " });
+    fixture.runtime.writeToSession("backend:tests", "npm test\r");
+    fixture.sessionManager.emit("terminal:exit", { sessionId: "backend:tests", exitCode: 1, intentional: false });
+
+    expect(fixture.runtime.getPayload().attention.byProject.backend).toMatchObject({ count: 1 });
   });
 
   test("does not raise exit alerts for sessions without user input", async () => {

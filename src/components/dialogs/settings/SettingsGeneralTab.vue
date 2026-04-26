@@ -124,6 +124,19 @@
 
       <div
         class="settings-check"
+        title="Suppress 'command finished' alerts from plain shell sessions. AI agent sessions (Claude Code, Codex, Gemini, Copilot) still alert. Override per-panel in the panel editor for shell tabs where you do want the ping (e.g. long builds)."
+      >
+        <label class="settings-check__row">
+          <input v-model="form.notifications.agentsOnly" type="checkbox" />
+          <span>Notify only from AI agents</span>
+        </label>
+        <small class="settings-check__help">
+          Hide shell-completion pings globally. Per-panel override available in the panel editor.
+        </small>
+      </div>
+
+      <div
+        class="settings-check"
         title="Inject bash/zsh/PowerShell OSC 133 escape sequences into every PTY so strIDEterm can detect command completion instantly (zero false positives) instead of relying on silence timers."
       >
         <label class="settings-check__row">

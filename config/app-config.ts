@@ -57,6 +57,9 @@ export const APP_CONFIG = {
     shellIntegration: envBoolean("STRIDETERM_SHELL_INTEGRATION", true),
     agentHook: envBoolean("STRIDETERM_AGENT_HOOK", true),
     debug: envBoolean("STRIDETERM_NOTIFICATIONS_DEBUG", false),
+    // Suppress shell-completion alerts globally, leaving agent alerts on.
+    // Users opt back in per-panel via PanelState.alertsForceOn.
+    agentsOnly: envBoolean("STRIDETERM_NOTIFY_AGENTS_ONLY", true),
   },
   logging: {
     level: envString("STRIDETERM_LOG_LEVEL", "warn"),

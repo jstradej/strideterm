@@ -147,6 +147,7 @@ function normalizePanel(panel: any, panelIndex = 0): any {
     shell: panel.shell !== false,
     startup: panel.startup || (panelIndex === 0 ? APP_CONFIG.ui.defaultPanelStartup : APP_CONFIG.ui.manualPanelStartup),
     cwd: panel.cwd || "",
+    alertsForceOn: panel.alertsForceOn === true,
   };
 }
 
@@ -417,6 +418,7 @@ export function createDefaultState(): AppState & { activeProjectId: string; proj
         shellIntegration: APP_CONFIG.notifications.shellIntegration,
         agentHook: APP_CONFIG.notifications.agentHook,
         debug: APP_CONFIG.notifications.debug,
+        agentsOnly: APP_CONFIG.notifications.agentsOnly,
       },
       remoteAccess: {
         enabled: APP_CONFIG.remoteAccess.enabled,
@@ -799,6 +801,10 @@ export function normalizeState(rawState: any = {}): AppState & { activeProjectId
           : defaults.settings.notifications.agentHook,
       debug:
         typeof rawNotifications.debug === "boolean" ? rawNotifications.debug : defaults.settings.notifications.debug,
+      agentsOnly:
+        typeof rawNotifications.agentsOnly === "boolean"
+          ? rawNotifications.agentsOnly
+          : defaults.settings.notifications.agentsOnly,
     },
     remoteAccess: {
       ...defaults.settings.remoteAccess,

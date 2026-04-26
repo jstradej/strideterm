@@ -623,6 +623,25 @@ export async function createRuntime({
     return state.settings?.notifications || APP_CONFIG.notifications;
   }
 
+  /**
+   * Decide whether a shell-completion alert (OSC 133;D, prompt-pattern, shell
+   * exit) should reach the user. Agent sessions always pass — this gate only
+   * filters non-agent paths. The user can opt back in per-panel via
+   * `panel.alertsForceOn` for cases like a long-running build script in a
+   * shell tab where they DO want the "command finished" ping.
+   */
+  function isShellAlertAllowed(
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    signal: { agentLike?: boolean } | null | undefined,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    panel: { alertsForceOn?: boolean } | null | undefined,
+    state = getState(),
+  ): boolean {
+    if (signal?.agentLike) return true;
+    if (panel?.alertsForceOn) return true;
+    return !getNotificationConfig(state).agentsOnly;
+  }
+
   // One-shot listeners used by testClaudeHook() to confirm end-to-end
   // round-trip: notify.mjs → notify-server → dispatcher.
   // Key = probe_id, value = resolve callback.  Cleared on resolution or timeout.
@@ -1464,6 +1483,11 @@ export async function createRuntime({
             if (isSessionVisible(payload.sessionId)) {
               log.trace("OSC 133;D: session visible, resetting", { sessionId: payload.sessionId });
               resetSessionSignal(payload.sessionId);
+            } else if (!isShellAlertAllowed(signal, panel, state)) {
+              log.trace("OSC 133;D: shell-only alert suppressed by agentsOnly setting", {
+                sessionId: payload.sessionId,
+              });
+              cancelPromptTimer(signal);
             } else {
               log.debug("OSC 133;D triggering alert", { sessionId: payload.sessionId });
               raiseWaitingAlert({
@@ -1750,6 +1774,16 @@ export async function createRuntime({
             }
           }
         }
+      } else if (!isShellAlertAllowed(signal, panel, state)) {
+        // --- Non-agent shell session, agentsOnly suppresses ---
+        // Skip prompt-pattern / WAITING_PATTERNS detection entirely. The user
+        // doesn't want shell-completion pings on this panel. Still track
+        // busy/output bookkeeping so exit-alert gating works correctly —
+        // only alert raising is gated.
+        if (cleanText.trim()) {
+          signal.busy = true;
+          cancelPromptTimer(signal);
+        }
       } else {
         // --- Non-agent sessions: prompt-pattern detection ---
         // Plan Phase 1 § 4.1: end-of-line anchored WAITING_PATTERNS only.
@@ -1862,7 +1896,8 @@ export async function createRuntime({
       shouldTrackProjectAlert(project, panel) &&
       signal?.hasUserInput &&
       !isSessionVisible(payload.sessionId) &&
-      classAllowsExit;
+      classAllowsExit &&
+      isShellAlertAllowed(signal, panel, state);
     if (shouldRaiseAlert) {
       raiseAlert({
         projectId: descriptor.workspaceId,

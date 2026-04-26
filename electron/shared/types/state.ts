@@ -16,6 +16,12 @@ export interface NotificationSettings {
   shellIntegration: boolean;
   agentHook: boolean;
   debug: boolean;
+  /**
+   * When true (default), shell-completion alerts (OSC 133;D, prompt-pattern,
+   * shell exit) are suppressed — only AI agent sessions raise alerts. Users
+   * can opt back in on a specific panel via PanelState.alertsForceOn.
+   */
+  agentsOnly: boolean;
 }
 
 export interface RemoteAccessSettings {
@@ -122,6 +128,13 @@ export interface PanelState {
   shell?: string;
   startup?: string;
   cwd?: string;
+  /**
+   * Per-panel override that re-enables alerts when the global
+   * `notifications.agentsOnly` is on. Useful for shell tabs where the user
+   * does want the "command finished" ping (e.g. a long build script).
+   * Default false → panel inherits the global setting.
+   */
+  alertsForceOn?: boolean;
 }
 
 export interface ReviewPrInfo {
