@@ -20,6 +20,146 @@ export const AGENT_OUTPUT_RE =
   /\b(claude code|openai codex|codex|claude|gemini|aider|opencode|github copilot|copilot)\b/i;
 export const AGENT_OUTPUT_BURST_THRESHOLD = 10;
 
+// ----------------------------------------------------------------------
+// Rate-limit detection
+//
+// Different agents surface "you're rate-limited" in very different ways:
+//
+//   - Claude Code (plan/session limit): renders an interactive
+//     `/rate-limit-options` dialog (Stop and wait / Upgrade your plan) with
+//     option 1 highlighted by default. Session stays alive — pressing Enter
+//     accepts the default. After the wait, Claude Code does NOT auto-resume;
+//     the user (or us) must send a `continue`-style prompt.
+//   - Codex CLI: prints "Rate limit reached for ..." and exits.
+//   - Gemini CLI: prints "Quota exceeded ..." / "Please retry in Ns" and
+//     exits or fails the request.
+//   - GitHub Copilot CLI: prints "Sorry, you've hit a rate limit ... try
+//     again in 2 hours." and exits.
+//
+// Each detector reports whether a confirm keypress is needed (Claude only)
+// and a reset time when one can be parsed. When the agent has exited
+// (`needsConfirm: false`), the runner restarts the session before resuming.
+// When the reset time is unknown (`resetAt: null`), the runner uses an
+// exponential fallback delay.
+// ----------------------------------------------------------------------
+
+export interface RateLimitMatch {
+  /** When the rate-limit window resets, or null if not parseable. */
+  resetAt: Date | null;
+  /** True if the agent is paused at a confirm prompt (Claude Code dialog). */
+  needsConfirm: boolean;
+  /** Provider hint for logging — not authoritative. */
+  providerHint: "claude" | "codex" | "gemini" | "copilot" | "generic";
+}
+
+type RateLimitDetector = (text: string, now: Date) => RateLimitMatch | null;
+
+/** Parse "HH:MM(am|pm)?" → next occurrence in local time. */
+function parseClockTime(hh: string, mm: string, meridiem: string | undefined, now: Date): Date | null {
+  let hours = Number(hh);
+  const minutes = Number(mm);
+  const m = (meridiem || "").toLowerCase();
+  if (!Number.isFinite(hours) || !Number.isFinite(minutes) || minutes < 0 || minutes > 59) return null;
+  if (m === "pm" && hours < 12) hours += 12;
+  if (m === "am" && hours === 12) hours = 0;
+  if (hours < 0 || hours > 23) return null;
+  const target = new Date(now);
+  target.setHours(hours, minutes, 0, 0);
+  if (target.getTime() <= now.getTime()) target.setDate(target.getDate() + 1);
+  return target;
+}
+
+// Claude Code's "/rate-limit-options" dialog. The notice line precedes the
+// menu and includes a wall-clock reset, e.g. "resets 5:50am (Europe/Prague)".
+// The TZ suffix is intentionally ignored — Claude Code displays the user's
+// local zone, which matches the host clock.
+const claudeCodePromptDetector: RateLimitDetector = (text, now) => {
+  const m = text.match(/You['’]ve hit your limit\s*[·.]?\s*resets\s+(\d{1,2})[:.](\d{2})\s*(am|pm)?/i);
+  if (!m) return null;
+  return {
+    resetAt: parseClockTime(m[1]!, m[2]!, m[3], now),
+    needsConfirm: true,
+    providerHint: "claude",
+  };
+};
+
+// Codex CLI exits with "Rate limit reached for <model> ... Limit X, Used Y,
+// Requested Z" or wraps an OpenAI `rate_limit_exceeded` error. There's no
+// reset time in the console output, so the runner falls back to a delay.
+const codexDetector: RateLimitDetector = (_text, _now) => {
+  if (!/\b(?:rate[\s_-]?limit(?:ed|exceeded| reached)?\b.{0,40}\bfor\b|rate_limit_exceeded)\b/i.test(_text))
+    return null;
+  return { resetAt: null, needsConfirm: false, providerHint: "codex" };
+};
+
+// Gemini CLI / Code Assist surfaces 429s with a "retryDelay"-derived hint
+// like "Please retry in 15.002s". Sometimes only a generic "Quota exceeded"
+// is shown; in that case the runner uses a fallback delay.
+const geminiDetector: RateLimitDetector = (text, now) => {
+  const retry = text.match(/Please retry in\s+(\d+(?:\.\d+)?)\s*s/i);
+  if (retry) {
+    const seconds = Number(retry[1]);
+    if (Number.isFinite(seconds) && seconds >= 0) {
+      return {
+        resetAt: new Date(now.getTime() + Math.ceil(seconds * 1000)),
+        needsConfirm: false,
+        providerHint: "gemini",
+      };
+    }
+  }
+  if (/\b(?:Quota exceeded for|exceeded your current quota|generate_content_free_tier)\b/i.test(text)) {
+    return { resetAt: null, needsConfirm: false, providerHint: "gemini" };
+  }
+  return null;
+};
+
+// GitHub Copilot CLI: "Sorry, you've hit a rate limit ... Please try again in
+// 2 hours." Optional "N hours M minutes" form observed in the wild.
+const copilotDetector: RateLimitDetector = (text, now) => {
+  const wait = text.match(/try again in\s+(\d+)\s*hours?(?:\s+(\d+)\s*minutes?)?/i);
+  if (wait) {
+    const hours = Number(wait[1]) || 0;
+    const minutes = wait[2] ? Number(wait[2]) || 0 : 0;
+    return {
+      resetAt: new Date(now.getTime() + (hours * 60 + minutes) * 60_000),
+      needsConfirm: false,
+      providerHint: "copilot",
+    };
+  }
+  if (/Sorry,?\s+you['’]ve hit a rate limit|exceeded your Copilot token usage|user_weekly_rate_limited/i.test(text)) {
+    return { resetAt: null, needsConfirm: false, providerHint: "copilot" };
+  }
+  return null;
+};
+
+// Catch-all so an unfamiliar agent / locale still triggers the wait-and-retry
+// path. Anchored on common English keywords to avoid matching e.g. docs that
+// merely mention rate limiting.
+const genericFallbackDetector: RateLimitDetector = (text, _now) => {
+  if (!/\b(?:rate[-\s]?limit(?:ed|s|ing)?|quota exceeded|too many requests|429)\b/i.test(text)) return null;
+  return { resetAt: null, needsConfirm: false, providerHint: "generic" };
+};
+
+const RATE_LIMIT_DETECTORS: RateLimitDetector[] = [
+  claudeCodePromptDetector,
+  codexDetector,
+  geminiDetector,
+  copilotDetector,
+  genericFallbackDetector,
+];
+
+/**
+ * Run all detectors in order; first match wins. Returns null if no detector
+ * recognised a rate-limit signal in `text`.
+ */
+export function detectRateLimit(text: string, now: Date = new Date()): RateLimitMatch | null {
+  for (const detector of RATE_LIMIT_DETECTORS) {
+    const match = detector(text, now);
+    if (match) return match;
+  }
+  return null;
+}
+
 // When hooks are active, bell/silence detection is suppressed. If no hook
 // arrives and the terminal is silent for this long, raise an alert anyway.
 export const HOOK_FALLBACK_SILENCE_MS = 120_000; // 2 minutes

@@ -56,6 +56,11 @@ export interface TaskState {
   totalPausedMs: number;
   pausedAt: string | null;
   finishedAt: string | null;
+  // ISO timestamp at which a worker rate-limit (Claude Code "You've hit your
+  // limit · resets HH:MM") expires. While set in the future, onAgentIdle for
+  // the worker is suppressed so the runner doesn't try to evaluate or re-prompt
+  // a paused worker. The runner schedules a resume nudge for this time + grace.
+  rateLimitedUntil: string | null;
 }
 
 export interface TaskWorkspace {

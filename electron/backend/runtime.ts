@@ -79,6 +79,7 @@ import {
   AGENT_NAME_RE,
   AGENT_OUTPUT_RE,
   AGENT_OUTPUT_BURST_THRESHOLD,
+  detectRateLimit,
   HOOK_FALLBACK_SILENCE_MS,
   ATTENTION_MIN_DISPLAY_MS,
   ATTENTION_VISIBILITY_GRACE_MS,
@@ -1395,6 +1396,15 @@ export async function createRuntime({
 
       if (AGENT_OUTPUT_RE.test(cleanText)) {
         signal.agentLike = true;
+      }
+
+      // Rate-limit hold: hand off to the task runner so it can auto-confirm
+      // (Claude prompt-limit dialog) or restart-and-resume (CLI exits). Done
+      // before the OSC 133 / hook branches because the worker is paused at a
+      // confirm prompt or already exited and won't emit normal idle signals.
+      const rateLimitMatch = detectRateLimit(cleanText);
+      if (rateLimitMatch) {
+        taskRunner.onWorkerRateLimited(payload.sessionId, rateLimitMatch, "output-detect");
       }
 
       // Phase 2 § 3.2.7 bullet 1: if the session has been genuinely silent

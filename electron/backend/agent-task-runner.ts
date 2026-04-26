@@ -9,6 +9,7 @@ import { runEffect } from "./effect/runtime.js";
 import { TaskFileError } from "./effect/errors/task-errors.js";
 import { getProvider, parseProviderFromCommand } from "./providers/provider-registry.js";
 import type { ParsedProviderConfig } from "./providers/provider-registry.js";
+import type { RateLimitMatch } from "./runtime-utils.js";
 import {
   VERDICT_FILE,
   TASK_FILE,
@@ -173,6 +174,10 @@ export class AgentTaskRunner {
   #gitInitLocks = new Map<string, Promise<boolean>>();
   /** workspaceIds with a headless programmatic judge in flight */
   #programmaticJudges = new Set<string>();
+  /** scheduled wakeup timers for workspaces in rate-limit hold */
+  #rateLimitTimers = new Map<string, NodeJS.Timeout>();
+  /** per-workspace runtime context for the active rate-limit cycle */
+  #rateLimitCtx = new Map<string, { needsRestart: boolean; retries: number }>();
 
   // Injected dependencies (set via init())
   #writeToSession: RuntimeDeps["writeToSession"] | null = null;
@@ -380,6 +385,7 @@ export class AgentTaskRunner {
         totalPausedMs: 0,
         pausedAt: null,
         finishedAt: null,
+        rateLimitedUntil: null,
         promptSent: false,
         pausedFromState: "",
         showerResumePrompt: "",
@@ -733,6 +739,22 @@ export class AgentTaskRunner {
       return false;
     }
 
+    // Rate-limit hold: if the worker hit its quota and we're waiting for the
+    // reset, don't try to evaluate or re-prompt — the worker can't act yet.
+    // The scheduled timer in #scheduleRateLimitResume nudges it when the
+    // window expires; if the marker is stale, clear it and proceed normally.
+    if (task.rateLimitedUntil) {
+      const until = Date.parse(task.rateLimitedUntil);
+      if (Number.isFinite(until) && until > Date.now()) {
+        log.debug("onAgentIdle: worker is rate-limited, suppressing", {
+          sessionId,
+          rateLimitedUntil: task.rateLimitedUntil,
+        });
+        return true;
+      }
+      task.rateLimitedUntil = null;
+    }
+
     if (isWorker && task.state === "running") {
       // First idle after start: agent is ready — send the task prompt
       // (like codex-runner's send_keys after detecting idle)
@@ -800,6 +822,211 @@ export class AgentTaskRunner {
       isJudge,
     });
     return true;
+  }
+
+  /**
+   * Called when worker output matches a known rate-limit pattern (Claude
+   * Code's `/rate-limit-options` dialog, Codex/Gemini/Copilot exit messages,
+   * or a generic keyword). Behaviour:
+   *
+   *   - Claude Code prompt-limit (`needsConfirm: true`): session is alive and
+   *     waiting at the dialog. We press Enter to accept the highlighted
+   *     "Stop and wait" default. At resume time we send `continue` (matches
+   *     autoclaude / claude-auto-retry; Claude Code does NOT auto-resume on
+   *     its own — see anthropics/claude-code#18980, #26789).
+   *   - CLI-exit providers (`needsConfirm: false`): the worker process is
+   *     dead. We schedule a `restartSession()` at resume time and let
+   *     `onAgentIdle` re-inject the task prompt fresh.
+   *
+   * Retry safety: per-task counter capped at MAX_RETRIES; over the cap we
+   * pause the task instead of looping. Each event sends `continue` exactly
+   * once — if Claude is still rate-limited after that send, the detector
+   * fires again and the cycle reschedules naturally (no separate poll loop,
+   * no exponential spam — claude-code#22758 cautions against retry storms).
+   *
+   * Same-window dedup: redrawn dialogs (UI repaints) won't restack timers.
+   */
+  onWorkerRateLimited(sessionId: string, match: RateLimitMatch, source = "unknown"): boolean {
+    const parts = sessionId.split(":");
+    if (parts.length < 2) return false;
+    const workspaceId = parts.slice(0, -1).join(":");
+    const panelId = parts[parts.length - 1];
+    const workspace = this.#findTaskWorkspace(workspaceId);
+    if (!workspace) return false;
+    const task = workspace.task;
+    if (panelId !== task.workerPanelId) return false;
+
+    const ctx = this.#rateLimitCtx.get(workspaceId) ?? { needsRestart: false, retries: 0 };
+    const isFirstHit = !this.#rateLimitTimers.has(workspaceId);
+
+    // Resolve resetAt: provider-supplied, or exponential fallback by retry
+    // count (30 → 60 → 120 min). Hard ceiling protects against parsing typos
+    // ("83 hours") and runaway loops.
+    const resetAt = match.resetAt ?? this.#fallbackRateLimitReset(ctx.retries);
+    const waitMs = resetAt.getTime() - Date.now();
+    if (waitMs > AgentTaskRunner.RATE_LIMIT_HARD_STOP_MS) {
+      log.error("rate-limit reset > hard stop, pausing task", { workspaceId, waitMs });
+      this.#logTaskEvent(
+        workspace,
+        "worker-rate-limit-failed",
+        `Rate-limit reset is ${(waitMs / 3_600_000).toFixed(1)}h away (over 12h limit). Pausing task.`,
+      );
+      this.#pauseFromRateLimit(workspace, "reset > 12h");
+      return true;
+    }
+
+    // Same-window dedup: existing timer for this exact reset → keep it.
+    const existing = task.rateLimitedUntil ? Date.parse(task.rateLimitedUntil) : 0;
+    if (
+      this.#rateLimitTimers.has(workspaceId) &&
+      Number.isFinite(existing) &&
+      Math.abs(existing - resetAt.getTime()) < 60_000
+    ) {
+      log.trace("onWorkerRateLimited: already scheduled for this window", { workspaceId, source });
+      return true;
+    }
+
+    if (isFirstHit) ctx.retries += 1;
+    ctx.needsRestart = !match.needsConfirm;
+    if (ctx.retries > AgentTaskRunner.MAX_RATE_LIMIT_RETRIES) {
+      log.error("rate-limit retry cap exceeded, pausing task", { workspaceId, retries: ctx.retries });
+      this.#logTaskEvent(
+        workspace,
+        "worker-rate-limit-failed",
+        `Worker rate-limited ${ctx.retries} times in a row — pausing task. Resume manually when usage frees up.`,
+      );
+      this.#pauseFromRateLimit(workspace, "retry cap");
+      return true;
+    }
+    this.#rateLimitCtx.set(workspaceId, ctx);
+
+    log.warn("worker rate-limited, scheduling resume", {
+      workspaceId,
+      sessionId,
+      source,
+      providerHint: match.providerHint,
+      needsConfirm: match.needsConfirm,
+      retries: ctx.retries,
+      resetAt: resetAt.toISOString(),
+      waitMs,
+    });
+    task.rateLimitedUntil = resetAt.toISOString();
+    this.#logTaskEvent(
+      workspace,
+      "worker-rate-limited",
+      `Worker hit its rate limit (${match.providerHint}, retry ${ctx.retries}/${AgentTaskRunner.MAX_RATE_LIMIT_RETRIES}). Resuming after ${resetAt.toLocaleTimeString()}.`,
+    );
+    this.#broadcastState!();
+
+    // Confirm prompt (Claude Code only): Enter selects the highlighted
+    // default option ("1. Stop and wait for limit to reset").
+    if (match.needsConfirm && this.#writeToSession) {
+      this.#writeToSession(sessionId, "\r");
+    }
+
+    this.#scheduleRateLimitResume(workspaceId, resetAt);
+    return true;
+  }
+
+  /** Static-ish constants attached to the class for easy override in tests. */
+  static MAX_RATE_LIMIT_RETRIES = 5;
+  static RATE_LIMIT_HARD_STOP_MS = 12 * 60 * 60_000;
+  static RATE_LIMIT_RESUME_MARGIN_MS = 60_000;
+  static RATE_LIMIT_FALLBACK_DELAYS_MS = [30 * 60_000, 60 * 60_000, 120 * 60_000];
+
+  #fallbackRateLimitReset(retriesSoFar: number): Date {
+    const ladder = AgentTaskRunner.RATE_LIMIT_FALLBACK_DELAYS_MS;
+    const idx = Math.min(Math.max(retriesSoFar, 0), ladder.length - 1);
+    return new Date(Date.now() + ladder[idx]!);
+  }
+
+  #scheduleRateLimitResume(workspaceId: string, resetAt: Date): void {
+    const prev = this.#rateLimitTimers.get(workspaceId);
+    if (prev) clearTimeout(prev);
+    // Wait until the reset wall-clock plus margin; never less than the
+    // margin even if parsing put the target in the past.
+    const margin = AgentTaskRunner.RATE_LIMIT_RESUME_MARGIN_MS;
+    const waitMs = Math.max(margin, resetAt.getTime() - Date.now() + margin);
+    const timer = setTimeout(() => {
+      this.#rateLimitTimers.delete(workspaceId);
+      this.#resumeFromRateLimit(workspaceId).catch((err: unknown) => {
+        log.error("rate-limit resume failed", { workspaceId, err: (err as Error)?.message });
+      });
+    }, waitMs);
+    this.#rateLimitTimers.set(workspaceId, timer);
+  }
+
+  #pauseFromRateLimit(workspace: TaskWorkspaceState, reason: string): void {
+    const prev = this.#rateLimitTimers.get(workspace.id);
+    if (prev) clearTimeout(prev);
+    this.#rateLimitTimers.delete(workspace.id);
+    this.#rateLimitCtx.delete(workspace.id);
+    workspace.task.rateLimitedUntil = null;
+    workspace.task.pausedFromState = workspace.task.state;
+    this.#setTaskState(workspace.task, "paused");
+    this.#raiseTaskAlert(workspace, "failed", `Rate-limit handling gave up (${reason}) — task paused.`);
+    this.#broadcastState!();
+  }
+
+  async #resumeFromRateLimit(workspaceId: string): Promise<void> {
+    const workspace = this.#findTaskWorkspace(workspaceId);
+    if (!workspace) return;
+    const task = workspace.task;
+    if (!task.rateLimitedUntil) return;
+
+    const ctx = this.#rateLimitCtx.get(workspaceId);
+    task.rateLimitedUntil = null;
+    log.info("rate-limit window expired, resuming worker", {
+      workspaceId,
+      taskState: task.state,
+      needsRestart: ctx?.needsRestart,
+      retries: ctx?.retries,
+    });
+    this.#logTaskEvent(workspace, "worker-rate-limit-resumed", "Rate-limit window expired. Resuming worker…");
+    this.#broadcastState!();
+
+    if (task.state !== "running") return;
+    const sessionId = `${workspaceId}:${task.workerPanelId}`;
+
+    if (ctx?.needsRestart) {
+      // CLI-exit providers (Codex / Gemini / Copilot): respawn the worker
+      // and let onAgentIdle re-inject the initial task prompt when the new
+      // session settles.
+      if (!this.#restartSession) {
+        log.warn("cannot restart session: no restartSession dep", { workspaceId });
+        return;
+      }
+      try {
+        await this.#restartSession(sessionId);
+        task.promptSent = false;
+        this.#broadcastState!();
+      } catch (err) {
+        log.error("failed to restart worker session after rate-limit", {
+          workspaceId,
+          err: (err as Error)?.message,
+        });
+      }
+      return;
+    }
+
+    // Claude prompt-limit: session is alive, idle at the post-dialog prompt.
+    // Send a `continue` resume message (matches autoclaude /
+    // claude-auto-retry behaviour; one-shot — if Claude is still rate-limited
+    // the detector re-fires and we reschedule).
+    const resumePrompt = "continue where you left off. The previous attempt was rate limited.";
+    try {
+      await this.#injectPrompt(sessionId, resumePrompt, workspace);
+    } catch (err) {
+      log.error("failed to inject continue prompt after rate-limit", {
+        workspaceId,
+        err: (err as Error)?.message,
+      });
+    }
+  }
+
+  /** Clear the per-workspace retry counter once the worker makes progress. */
+  #clearRateLimitCtx(workspaceId: string): void {
+    this.#rateLimitCtx.delete(workspaceId);
   }
 
   /**
@@ -1102,6 +1329,11 @@ export class AgentTaskRunner {
       log.debug("evaluation already in progress", { workspaceId });
       return;
     }
+
+    // Reaching evaluation means the worker produced output — the rate-limit
+    // cycle (if any) is over. Clear the retry counter so the next limit hit
+    // starts fresh, not accumulating retries from earlier rounds.
+    this.#clearRateLimitCtx(workspaceId);
 
     // Effect.acquireRelease ensures #evaluating is always cleared even on
     // unexpected errors — replaces the manual try/finally pattern.

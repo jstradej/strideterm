@@ -329,6 +329,205 @@ describe("AgentTaskRunner", () => {
       const result = runner.onAgentIdle(sessionId);
       expect(result).toBe(false);
     });
+
+    test("consumes idle when worker is in rate-limit hold (future rateLimitedUntil)", () => {
+      // Worker hit a rate limit; runner is waiting for the reset window. We
+      // must NOT try to evaluate the worker — its output is stale.
+      workspace.task.state = "running";
+      workspace.task.rateLimitedUntil = new Date(Date.now() + 60 * 60_000).toISOString();
+      const sessionId = `${workspace.id}:${workspace.task.workerPanelId}`;
+      const result = runner.onAgentIdle(sessionId);
+      expect(result).toBe(true);
+      // Marker untouched — only the resume timer should clear it.
+      expect(workspace.task.rateLimitedUntil).not.toBeNull();
+    });
+
+    test("clears stale rateLimitedUntil and proceeds normally", () => {
+      // App was sleeping or the timer never fired; the marker is in the past.
+      // Don't keep blocking forever — clear it and let the runner re-evaluate.
+      workspace.task.state = "running";
+      workspace.task.promptSent = true; // skip the initial-inject branch
+      workspace.task.rateLimitedUntil = new Date(Date.now() - 1_000).toISOString();
+      const sessionId = `${workspace.id}:${workspace.task.workerPanelId}`;
+      runner.onAgentIdle(sessionId);
+      expect(workspace.task.rateLimitedUntil).toBeNull();
+    });
+  });
+
+  describe("onWorkerRateLimited", () => {
+    function makeMatch(overrides: Partial<{ resetAt: Date | null; needsConfirm: boolean; providerHint: string }> = {}) {
+      return {
+        resetAt: overrides.resetAt ?? null,
+        needsConfirm: overrides.needsConfirm ?? false,
+        providerHint: (overrides.providerHint ?? "generic") as "claude" | "codex" | "gemini" | "copilot" | "generic",
+      };
+    }
+
+    test("returns false for non-task session", () => {
+      const result = runner.onWorkerRateLimited(
+        "ghost:panel",
+        makeMatch({ needsConfirm: true, providerHint: "claude" }),
+      );
+      expect(result).toBe(false);
+    });
+
+    test("returns false for judge panel (worker only)", () => {
+      workspace.task.state = "running";
+      const judgeSid = `${workspace.id}:${workspace.task.judgePanelId}`;
+      const result = runner.onWorkerRateLimited(judgeSid, makeMatch({ needsConfirm: true, providerHint: "claude" }));
+      expect(result).toBe(false);
+    });
+
+    test("Claude prompt-limit: presses Enter and stores rateLimitedUntil", () => {
+      workspace.task.state = "running";
+      const sessionId = `${workspace.id}:${workspace.task.workerPanelId}`;
+      const resetAt = new Date(Date.now() + 60 * 60_000); // 1h
+      const result = runner.onWorkerRateLimited(
+        sessionId,
+        makeMatch({ resetAt, needsConfirm: true, providerHint: "claude" }),
+      );
+      expect(result).toBe(true);
+      expect(workspace.task.rateLimitedUntil).toBe(resetAt.toISOString());
+      // Enter selects highlighted "1. Stop and wait for limit to reset"
+      expect(deps.written).toContainEqual({ sessionId, data: "\r" });
+    });
+
+    test("CLI-exit (no resetAt, needsConfirm=false): falls back to 30 min and does NOT press Enter", () => {
+      workspace.task.state = "running";
+      const sessionId = `${workspace.id}:${workspace.task.workerPanelId}`;
+      const before = Date.now();
+      const result = runner.onWorkerRateLimited(
+        sessionId,
+        makeMatch({ resetAt: null, needsConfirm: false, providerHint: "codex" }),
+      );
+      expect(result).toBe(true);
+      // No raw Enter — Codex CLI exited, there's nothing to confirm.
+      expect(deps.written).toHaveLength(0);
+      // First-tier fallback delay is 30 min (allow ±60s tolerance).
+      const until = Date.parse(workspace.task.rateLimitedUntil!);
+      expect(until - before).toBeGreaterThanOrEqual(30 * 60_000 - 60_000);
+      expect(until - before).toBeLessThanOrEqual(30 * 60_000 + 60_000);
+    });
+
+    test("hard-stop ceiling: pauses task when reset is more than 12h away", () => {
+      workspace.task.state = "running";
+      const sessionId = `${workspace.id}:${workspace.task.workerPanelId}`;
+      const resetAt = new Date(Date.now() + 13 * 60 * 60_000); // 13h
+      const result = runner.onWorkerRateLimited(
+        sessionId,
+        makeMatch({ resetAt, needsConfirm: false, providerHint: "copilot" }),
+      );
+      expect(result).toBe(true);
+      expect(workspace.task.state).toBe("paused");
+      // Task-failed alert raised so the user notices. raiseTaskAlert maps
+      // failed → kind="waiting" (urgent) with detail starting "task-failed:".
+      const failedAlert = deps.alerts.find(
+        (a: { kind: string; detail: string; urgency: string }) =>
+          a.urgency === "urgent" && typeof a.detail === "string" && a.detail.startsWith("task-failed"),
+      );
+      expect(failedAlert).toBeDefined();
+    });
+
+    test("same-window dedup: redrawn dialog does not stack timers or re-press Enter", () => {
+      workspace.task.state = "running";
+      const sessionId = `${workspace.id}:${workspace.task.workerPanelId}`;
+      const resetAt = new Date(Date.now() + 60 * 60_000);
+      const match = makeMatch({ resetAt, needsConfirm: true, providerHint: "claude" });
+
+      runner.onWorkerRateLimited(sessionId, match);
+      const writesAfterFirst = deps.writeToSession.mock.calls.length;
+      runner.onWorkerRateLimited(sessionId, match);
+      // No additional writes — the second call is consumed by dedup.
+      expect(deps.writeToSession.mock.calls.length).toBe(writesAfterFirst);
+    });
+  });
+
+  describe("rate-limit retry cap and resume", () => {
+    test("retry cap: pauses task after MAX_RATE_LIMIT_RETRIES consecutive hits", async () => {
+      vi.useFakeTimers();
+      try {
+        workspace.task.state = "running";
+        const sessionId = `${workspace.id}:${workspace.task.workerPanelId}`;
+        // Each iteration: schedule a hit, fire its timer to clear, then loop.
+        // The 6th call (retries=6) trips the cap (MAX=5).
+        for (let i = 1; i <= AgentTaskRunner.MAX_RATE_LIMIT_RETRIES + 1; i++) {
+          // 1-second windows + 60s margin keep the test fast.
+          const resetAt = new Date(Date.now() + 1_000);
+          runner.onWorkerRateLimited(sessionId, {
+            resetAt,
+            needsConfirm: true,
+            providerHint: "claude" as const,
+          });
+          if (workspace.task.state === "paused") break;
+          // Fire the resume timer so the next call counts as a fresh hit.
+          // 1s reset + 60s margin + 200ms inject submit delay = ~62s.
+          await vi.advanceTimersByTimeAsync(62_500);
+        }
+        expect(workspace.task.state).toBe("paused");
+        // raiseTaskAlert maps failed → kind="waiting" with detail "task-failed: ...".
+        const failed = deps.alerts.find(
+          (a: { detail: string; urgency: string }) =>
+            a.urgency === "urgent" && typeof a.detail === "string" && a.detail.startsWith("task-failed"),
+        );
+        expect(failed).toBeDefined();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    test("Claude resume: at the scheduled time, sends 'continue' via inject (not raw \\r)", async () => {
+      vi.useFakeTimers();
+      try {
+        workspace.task.state = "running";
+        const sessionId = `${workspace.id}:${workspace.task.workerPanelId}`;
+        const resetAt = new Date(Date.now() + 1_000); // 1s window, fast test
+        runner.onWorkerRateLimited(sessionId, {
+          resetAt,
+          needsConfirm: true,
+          providerHint: "claude" as const,
+        });
+        // At submission, Enter was sent immediately; clear so we can assert
+        // about the resume-time "continue" payload only.
+        deps.writeToSession.mockClear();
+
+        // Advance past resetAt + 60s margin + 200ms inject submit delay.
+        await vi.advanceTimersByTimeAsync(62_500);
+
+        // The resume injects "continue where you left off..." then \r.
+        const writes = deps.writeToSession.mock.calls.map((c: [string, string]) => c[1]);
+        const joined = writes.join("");
+        expect(joined).toContain("continue where you left off");
+        // And rateLimitedUntil cleared by the resume.
+        expect(workspace.task.rateLimitedUntil).toBeNull();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    test("CLI-exit resume: at the scheduled time, calls restartSession and resets promptSent", async () => {
+      vi.useFakeTimers();
+      try {
+        workspace.task.state = "running";
+        workspace.task.promptSent = true; // simulate prior round
+        const sessionId = `${workspace.id}:${workspace.task.workerPanelId}`;
+        const resetAt = new Date(Date.now() + 1_000);
+        runner.onWorkerRateLimited(sessionId, {
+          resetAt,
+          needsConfirm: false,
+          providerHint: "codex" as const,
+        });
+
+        await vi.advanceTimersByTimeAsync(62_500);
+
+        // Codex / Gemini / Copilot exited — must restart the worker session.
+        expect(deps.restartSession).toHaveBeenCalledWith(sessionId);
+        // promptSent cleared so the next idle re-injects the task prompt.
+        expect(workspace.task.promptSent).toBe(false);
+        expect(workspace.task.rateLimitedUntil).toBeNull();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
   });
 
   describe("onHookEvent", () => {

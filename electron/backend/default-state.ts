@@ -393,6 +393,7 @@ export function normalizeWorkspace(workspace: any, index = 0): WorkspaceState {
           totalPausedMs: workspace.task.totalPausedMs || 0,
           pausedAt: workspace.task.pausedAt || null,
           finishedAt: workspace.task.finishedAt || null,
+          rateLimitedUntil: workspace.task.rateLimitedUntil || null,
         }
       : null,
   };
