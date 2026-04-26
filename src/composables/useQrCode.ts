@@ -1,4 +1,5 @@
 import { ref, watch } from "vue";
+import type { Ref } from "vue";
 import QRCode from "qrcode";
 import { APP_CONFIG } from "../../config/app-config.js";
 
@@ -7,11 +8,11 @@ import { APP_CONFIG } from "../../config/app-config.js";
  * Caches the last generated URL to avoid redundant re-generation.
  * When targetUrl changes, re-generates asynchronously.
  */
-export function useQrCode(targetUrl) {
+export function useQrCode(targetUrl: Ref<string>) {
   const qrDataUrl = ref("");
   let currentKey = "";
 
-  async function generate(url) {
+  async function generate(url: string) {
     const key = url || "";
     if (currentKey === key) return;
     currentKey = key;

@@ -1,4 +1,5 @@
 import { watch } from "vue";
+import type { Ref } from "vue";
 import { useAppStore } from "../stores/app.js";
 import { useNotificationStore } from "../stores/notifications.js";
 import { fireNotificationAlert } from "./useNotificationSound.js";
@@ -18,30 +19,36 @@ import { fireNotificationAlert } from "./useNotificationSound.js";
 
 const STARTUP_GRACE_MS = 5_000;
 
-function displayWorkspaceName(event) {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function displayWorkspaceName(event: any): string {
   const repo = event.repositoryName || "Pull request";
   const num = event.pullRequestNumber ? `#${event.pullRequestNumber}` : "";
   return `${repo} ${num}`.trim();
 }
 
-function eventAlertTitle(event) {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function eventAlertTitle(event: any): string {
   return event.title || "Pull request update";
 }
 
-function eventAlertBody(event) {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function eventAlertBody(event: any): string {
   return event.body || event.pullRequestTitle || "";
 }
 
-export function useReviewNotifications(latestToastRef = null) {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function useReviewNotifications(latestToastRef: Ref<any> | null = null) {
   const appStore = useAppStore();
   const notifStore = useNotificationStore();
 
-  const seenEventIds = new Set();
+  const seenEventIds = new Set<string>();
   const startupAt = Date.now();
 
   function seedFromPayload() {
-    const azure = appStore.payload?.azureDevops?.reviewActivity || [];
-    const github = appStore.payload?.github?.reviewActivity || [];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const azure = (appStore.payload?.azureDevops as any)?.reviewActivity || [];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const github = (appStore.payload?.github as any)?.reviewActivity || [];
     for (const ev of [...azure, ...github]) {
       if (ev?.id) seenEventIds.add(ev.id);
     }
@@ -49,7 +56,8 @@ export function useReviewNotifications(latestToastRef = null) {
 
   seedFromPayload();
 
-  function processEvents(events, provider) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  function processEvents(events: any[], provider: string) {
     if (!Array.isArray(events) || events.length === 0) return;
     const inStartupGrace = Date.now() - startupAt < STARTUP_GRACE_MS;
 
@@ -111,14 +119,16 @@ export function useReviewNotifications(latestToastRef = null) {
   }
 
   watch(
-    () => appStore.payload?.azureDevops?.reviewActivity,
-    (events) => processEvents(events, "azure-devops"),
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    () => (appStore.payload?.azureDevops as any)?.reviewActivity,
+    (events) => processEvents(events || [], "azure-devops"),
     { deep: false },
   );
 
   watch(
-    () => appStore.payload?.github?.reviewActivity,
-    (events) => processEvents(events, "github"),
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    () => (appStore.payload?.github as any)?.reviewActivity,
+    (events) => processEvents(events || [], "github"),
     { deep: false },
   );
 }

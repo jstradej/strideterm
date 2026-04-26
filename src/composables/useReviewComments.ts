@@ -1,4 +1,5 @@
 import { computed } from "vue";
+import type { Ref } from "vue";
 
 const sortOptions = [
   { id: "index", label: "#N" },
@@ -11,13 +12,16 @@ const sortOptions = [
  * Extracts comment/thread/draft filtering and sorting logic
  * from AzureReviewPane into a reusable composable.
  */
-export function useReviewComments(detail, reviewBridge, reviewUi, pullRequest) {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function useReviewComments(detail: Ref<any>, reviewBridge: Ref<any>, reviewUi: Ref<any>, pullRequest: Ref<any>) {
   // Comments state
   const allThreads = computed(() =>
-    (detail.value?.threads || []).filter((t) => String(t.status || "").toLowerCase() !== "unknown" && !t.isDeleted),
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ((detail.value?.threads || []) as any[]).filter((t: any) => String(t.status || "").toLowerCase() !== "unknown" && !t.isDeleted),
   );
   const draftComments = computed(() =>
-    (reviewBridge.value.comments || []).filter((c) => c.commentKind === "draft" || c.commentKind === "local-comment"),
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ((reviewBridge.value.comments || []) as any[]).filter((c: any) => c.commentKind === "draft" || c.commentKind === "local-comment"),
   );
   const draftMap = computed(() => {
     const map = new Map();
@@ -73,14 +77,17 @@ export function useReviewComments(detail, reviewBridge, reviewUi, pullRequest) {
     return map;
   });
 
-  function threadIndex(thread) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  function threadIndex(thread: any): number {
     return threadToIndex.value.get(String(thread.id)) || 0;
   }
-  function draftsByThread(thread) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  function draftsByThread(thread: any): any[] {
     const commentKey = threadToCommentKey.value.get(String(thread.id));
     return commentKey ? draftMap.value.get(commentKey) || [] : [];
   }
-  function draftsByComment(comment) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  function draftsByComment(comment: any): any[] {
     return draftMap.value.get(comment.commentKey) || [];
   }
 
@@ -91,7 +98,8 @@ export function useReviewComments(detail, reviewBridge, reviewUi, pullRequest) {
   const searchTerm = computed(() => (reviewUi.value.commentSearch || "").toLowerCase().trim());
 
   const filteredThreads = computed(() => {
-    let threads = allThreads.value;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let threads: any[] = allThreads.value;
     const myName = pullRequest.value.createdBy?.displayName || "";
     const threadsWithDraft = new Set();
     for (const [threadId] of threadToCommentKey.value) {
@@ -107,20 +115,22 @@ export function useReviewComments(detail, reviewBridge, reviewUi, pullRequest) {
       threads = threads.filter((t) => threadFixStatus.value.has(String(t.id)));
     } else if (filter.value === "mine") {
       threads = threads.filter((t) => {
-        const authors = (t.comments || []).map((c) => c.author?.displayName || "");
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const authors = ((t.comments || []) as any[]).map((c: any) => c.author?.displayName || "");
         return authors.includes(myName) || threadsWithDraft.has(String(t.id));
       });
     }
 
     if (searchTerm.value) {
       threads = threads.filter((t) => {
-        const texts = [t.filePath || "", ...(t.comments || []).map((c) => c.content || "")];
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const texts = [t.filePath || "", ...((t.comments || []) as any[]).map((c: any) => c.content || "")];
         return texts.some((text) => text.toLowerCase().includes(searchTerm.value));
       });
     }
 
     const dir = sortDir.value === "desc" ? -1 : 1;
-    const statusOrder = { active: 0, pending: 1, "": 2, fixed: 3, closed: 4, wontfix: 5, bydesign: 6 };
+    const statusOrder: Record<string, number> = { active: 0, pending: 1, "": 2, fixed: 3, closed: 4, wontfix: 5, bydesign: 6 };
     if (sort.value === "newest") {
       return [...threads].sort((a, b) => {
         const lastA = (a.comments || []).at(-1)?.publishedDate || "";
@@ -141,7 +151,8 @@ export function useReviewComments(detail, reviewBridge, reviewUi, pullRequest) {
   });
 
   const filteredDraftComments = computed(() => {
-    let comments = draftComments.value;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let comments: any[] = draftComments.value;
     if (filter.value === "has-draft") {
       comments = comments.filter((c) => draftMap.value.has(c.commentKey));
     }
@@ -161,10 +172,12 @@ export function useReviewComments(detail, reviewBridge, reviewUi, pullRequest) {
   const totalCommentCount = computed(() => allThreads.value.length + draftComments.value.length);
   const activeCommentCount = computed(
     () =>
-      allThreads.value.filter((t) => String(t.status || "").toLowerCase() === "active").length +
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (allThreads.value as any[]).filter((t: any) => String(t.status || "").toLowerCase() === "active").length +
       draftComments.value.length,
   );
-  const allDrafts = computed(() => (reviewBridge.value.drafts || []).filter((d) => d.status === "draft"));
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const allDrafts = computed(() => ((reviewBridge.value.drafts || []) as any[]).filter((d: any) => d.status === "draft"));
   const hasClearable = computed(() => allDrafts.value.length > 0 || draftComments.value.length > 0);
 
   return {

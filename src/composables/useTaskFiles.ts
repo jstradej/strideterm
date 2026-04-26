@@ -1,4 +1,8 @@
 import { ref, computed } from "vue";
+import type { Ref } from "vue";
+import type { Transport } from "../transport.js";
+import type { WorkspaceState } from "../../electron/shared/types/state.js";
+import type { TaskState } from "../../electron/shared/types/task.js";
 
 const TASK_FILES = ["TASK.md", "TODO.md", "JUDGE_PROMPT.md", "JUDGE_TODO.md", "TASK_LOG.jsonl"];
 
@@ -7,10 +11,10 @@ const TASK_FILES = ["TASK.md", "TODO.md", "JUDGE_PROMPT.md", "JUDGE_TODO.md", "T
  * Encapsulates file loading, switching, saving, and dirty tracking —
  * moves I/O out of the component into a reusable hook.
  */
-export function useTaskFiles(api, workspace, taskState) {
+export function useTaskFiles(api: Transport, workspace: Ref<WorkspaceState | null | undefined>, taskState: Ref<TaskState | null | undefined>) {
   const activeFile = ref("TASK.md");
-  const fileContents = ref({}); // { "TASK.md": "...", ... }
-  const fileDirtyFlags = ref({}); // { "TASK.md": true, ... }
+  const fileContents = ref<Record<string, string>>({}); // { "TASK.md": "...", ... }
+  const fileDirtyFlags = ref<Record<string, boolean>>({}); // { "TASK.md": true, ... }
   const activeFileContent = ref("");
   const fileLoading = ref(false);
   const fileError = ref("");
@@ -41,8 +45,8 @@ export function useTaskFiles(api, workspace, taskState) {
     return "plaintext";
   });
 
-  async function loadFile(name) {
-    if (!api || !taskDir.value || !workspace.value?.cwd) return;
+  async function loadFile(name: string) {
+    if (!api || !api.fileRead || !taskDir.value || !workspace.value?.cwd) return;
     fileLoading.value = true;
     fileError.value = "";
     try {
@@ -50,7 +54,8 @@ export function useTaskFiles(api, workspace, taskState) {
         rootPath: workspace.value.cwd,
         relativePath: `${taskDir.value}/${name}`,
       });
-      const content = result?.content ?? "";
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const content = ((result as any)?.content ?? "") as string;
       fileContents.value[name] = content;
       fileDirtyFlags.value[name] = false;
       if (activeFile.value === name) {
@@ -67,7 +72,7 @@ export function useTaskFiles(api, workspace, taskState) {
     }
   }
 
-  function switchFile(name) {
+  function switchFile(name: string) {
     if (activeFile.value) {
       fileContents.value[activeFile.value] = activeFileContent.value;
     }
@@ -89,7 +94,7 @@ export function useTaskFiles(api, workspace, taskState) {
   }
 
   async function saveActiveFile() {
-    if (!api || !taskDir.value || !workspace.value?.cwd) return;
+    if (!api || !api.fileWrite || !taskDir.value || !workspace.value?.cwd) return;
     if (saving.value) return; // Guard against double-save
     saving.value = true;
     fileSaveStatus.value = "Saving...";

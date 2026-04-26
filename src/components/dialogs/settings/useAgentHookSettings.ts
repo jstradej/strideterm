@@ -1,4 +1,31 @@
 import { onBeforeUnmount, onMounted, reactive, ref } from "vue";
+import type { Transport } from "../../../transport.js";
+
+interface HookProviderConfig {
+  id: string;
+  title: string;
+  statusMethod: string;
+  configureMethod: string;
+  removeMethod: string;
+  testMethod: string;
+  configureLabel: string;
+  configureTitle: string;
+  removeTitle: string;
+  testTitle: string;
+  configJson: string;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  manual: Record<string, any>;
+  infoText?: string;
+  warningStatus?: string;
+  warningText?: string;
+  refreshAfterConfigure?: boolean;
+}
+
+interface TestResult {
+  ok: boolean;
+  reason?: string;
+  detail?: string;
+}
 
 const HOOK_STATUS_LABELS = {
   configured: "Configured",
@@ -11,7 +38,8 @@ const HOOK_STATUS_LABELS = {
   unknown: "Checking...",
 };
 
-function createHookProvider(api, config) {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function createHookProvider(api: any, config: HookProviderConfig) {
   const provider = reactive({
     id: config.id,
     title: config.title,
@@ -28,7 +56,7 @@ function createHookProvider(api, config) {
     error: "",
     busy: false,
     testing: false,
-    testResult: null,
+    testResult: null as TestResult | null,
     copied: false,
     refresh: async () => {},
     configure: async () => {},
@@ -38,7 +66,7 @@ function createHookProvider(api, config) {
     dispose: () => {},
   });
 
-  let copiedTimer = null;
+  let copiedTimer: ReturnType<typeof setTimeout> | undefined;
 
   provider.refresh = async () => {
     if (!api?.[config.statusMethod]) {
@@ -69,7 +97,7 @@ function createHookProvider(api, config) {
         provider.status = "error";
       }
     } catch (error) {
-      provider.error = error?.message || "Unexpected error during configuration.";
+      provider.error = (error instanceof Error ? error.message : null) || "Unexpected error during configuration.";
       provider.status = "error";
     } finally {
       provider.busy = false;
@@ -88,7 +116,7 @@ function createHookProvider(api, config) {
         provider.error = result.error || "Removal failed.";
       }
     } catch (error) {
-      provider.error = error?.message || "Unexpected error during removal.";
+      provider.error = (error instanceof Error ? error.message : null) || "Unexpected error during removal.";
     } finally {
       provider.busy = false;
     }
@@ -108,7 +136,7 @@ function createHookProvider(api, config) {
       provider.testResult = {
         ok: false,
         reason: "exception",
-        detail: error?.message || String(error),
+        detail: (error instanceof Error ? error.message : null) || String(error),
       };
     } finally {
       provider.testing = false;
@@ -124,7 +152,7 @@ function createHookProvider(api, config) {
       }
       copiedTimer = setTimeout(() => {
         provider.copied = false;
-        copiedTimer = null;
+        copiedTimer = undefined;
       }, 2000);
     } catch {
       // Clipboard API not available.
@@ -134,14 +162,14 @@ function createHookProvider(api, config) {
   provider.dispose = () => {
     if (copiedTimer) {
       clearTimeout(copiedTimer);
-      copiedTimer = null;
+      copiedTimer = undefined;
     }
   };
 
   return provider;
 }
 
-function hookTestFailLabel(reason) {
+function hookTestFailLabel(reason: string | undefined): string {
   switch (reason) {
     case "timeout":
       return "Hook did not arrive within 2s";
@@ -161,7 +189,7 @@ function hookTestFailLabel(reason) {
   }
 }
 
-function formatMetricsUptime(ms) {
+function formatMetricsUptime(ms: number): string {
   const sec = Math.floor((ms || 0) / 1000);
   if (sec < 60) return `${sec}s`;
   const min = Math.floor(sec / 60);
@@ -171,9 +199,11 @@ function formatMetricsUptime(ms) {
   return remMin > 0 ? `${hrs}h ${remMin}m` : `${hrs}h`;
 }
 
-export function useAgentHookSettings(api) {
-  const metricsSnapshot = ref(null);
-  let metricsTimer = null;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function useAgentHookSettings(api: any) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const metricsSnapshot = ref<any>(null);
+  let metricsTimer: ReturnType<typeof setInterval> | undefined;
 
   async function refreshMetrics() {
     try {
@@ -397,7 +427,7 @@ export function useAgentHookSettings(api) {
   onBeforeUnmount(() => {
     if (metricsTimer) {
       clearInterval(metricsTimer);
-      metricsTimer = null;
+      metricsTimer = undefined;
     }
     for (const provider of providers) {
       provider.dispose();

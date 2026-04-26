@@ -11,7 +11,7 @@
  *   urgency "normal"    → single tone ding
  */
 
-let audioCtx = null;
+let audioCtx: AudioContext | null = null;
 
 function getAudioContext() {
   if (!audioCtx) audioCtx = new AudioContext();
@@ -55,7 +55,7 @@ export function playUrgentDing() {
     if (ctx.state === "suspended") ctx.resume();
     const now = ctx.currentTime;
 
-    function tone(startOffset, freq, dur) {
+    function tone(startOffset: number, freq: number, dur: number) {
       const osc = ctx.createOscillator();
       const gain = ctx.createGain();
       osc.type = "sine";
@@ -80,7 +80,7 @@ export function playUrgentDing() {
  * Electron → IPC to main process (Electron.Notification).
  * Browser  → Web Notification API (remote mode).
  */
-export function showSystemNotification(title, body, options = {}) {
+export function showSystemNotification(title: string, body: string, options: { urgency?: string } = {}) {
   const urgent = options?.urgency === "urgent";
 
   // Electron mode
@@ -96,7 +96,7 @@ export function showSystemNotification(title, body, options = {}) {
 
   // Remote / browser fallback
   if ("Notification" in window) {
-    const browserOpts = { body };
+    const browserOpts: NotificationOptions = { body };
     if (urgent) browserOpts.requireInteraction = true;
     if (Notification.permission === "granted") {
       new Notification(title, browserOpts);
@@ -110,30 +110,31 @@ export function showSystemNotification(title, body, options = {}) {
 
 // Plan § 3.3.6: coalesce — don't play more than one ding per session per 5s.
 // Map: sessionKey → timestamp of last ding.
-const lastDingAt = new Map();
+const lastDingAt = new Map<string, number>();
 const COALESCE_WINDOW_MS = 5_000;
 
-function shouldCoalesce(sessionKey) {
+function shouldCoalesce(sessionKey: string): boolean {
   if (!sessionKey) return false;
   const last = lastDingAt.get(sessionKey) || 0;
   return Date.now() - last < COALESCE_WINDOW_MS;
 }
 
-function recordDing(sessionKey) {
+function recordDing(sessionKey: string): void {
   if (sessionKey) lastDingAt.set(sessionKey, Date.now());
 }
 
 /**
  * Fire the right alert based on window focus and tier/urgency.
  *
- * @param {string} title
- * @param {string} body
- * @param {Object} [meta]
- * @param {1|2|3} [meta.tier=1]
- * @param {"normal"|"urgent"} [meta.urgency="normal"]
- * @param {string} [meta.sessionKey]  — used for per-session sound coalescing
+ * @param title
+ * @param body
+ * @param meta
  */
-export function fireNotificationAlert(title, body, meta = {}) {
+export function fireNotificationAlert(
+  title: string,
+  body: string,
+  meta: { tier?: number; urgency?: string; sessionKey?: string } = {},
+) {
   const tier = meta?.tier || 1;
   const urgency = meta?.urgency === "urgent" ? "urgent" : "normal";
   const sessionKey = meta?.sessionKey || "";

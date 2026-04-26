@@ -1,6 +1,8 @@
 // Shared helpers for surfacing git status across the file manager UI.
 // Status keys: "modified" | "staged" | "untracked" | "conflict" | "ignored".
 
+export type GitStatusKey = "modified" | "staged" | "untracked" | "conflict" | "ignored";
+
 export const STATUS_LABEL = {
   modified: "Modified",
   staged: "Staged",
@@ -35,18 +37,18 @@ export const STATUS_TITLE = {
   ignored: "Ignored by .gitignore",
 };
 
-export function statusLabel(status) {
-  return STATUS_LABEL[status] || "";
+export function statusLabel(status: string): string {
+  return STATUS_LABEL[status as GitStatusKey] || "";
 }
 
-export function statusBadge(status) {
-  return STATUS_BADGE[status] || "";
+export function statusBadge(status: string): string {
+  return STATUS_BADGE[status as GitStatusKey] || "";
 }
 
-export function statusColor(status) {
-  return STATUS_COLOR[status] || "transparent";
+export function statusColor(status: string): string {
+  return STATUS_COLOR[status as GitStatusKey] || "transparent";
 }
 
-export function statusTitle(status) {
-  return STATUS_TITLE[status] || "";
+export function statusTitle(status: string): string {
+  return STATUS_TITLE[status as GitStatusKey] || "";
 }

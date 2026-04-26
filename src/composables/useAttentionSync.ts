@@ -1,12 +1,13 @@
 import { watch, onScopeDispose } from "vue";
 import { useAppStore } from "../stores/app.js";
+import type { Transport } from "../transport.js";
 
-export function useAttentionSync(api) {
+export function useAttentionSync(api: Transport) {
   const appStore = useAppStore();
   const documentTitleBase = document.title || "strIDEterm";
   let browserBadgeKey = "";
-  let resyncTimer = null;
-  let syncDebounce = null;
+  let resyncTimer: ReturnType<typeof setTimeout> | undefined;
+  let syncDebounce: ReturnType<typeof setTimeout> | undefined;
   let lastSyncKey = "";
   let windowFocused = typeof document !== "undefined" ? document.hasFocus() : true;
 
@@ -34,7 +35,8 @@ export function useAttentionSync(api) {
     const base = documentTitleBase + profileLabel;
     document.title = count > 0 ? `(${count}) ${base}` : base;
 
-    const visibleSessionIds = appStore.visibleTabs.filter((tab) => tab.type === "terminal").map((tab) => tab.id);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const visibleSessionIds = (appStore.visibleTabs as any[]).filter((tab) => tab.type === "terminal").map((tab: any) => tab.id as string);
 
     // Deduplicate: skip API call if nothing changed
     const syncKey = `${count}:${waitingCount}:${profile.id}:${visibleSessionIds.join(",")}:${windowFocused}`;
@@ -56,8 +58,9 @@ export function useAttentionSync(api) {
     // If any visible tab still has an attention alert, schedule a re-sync
     // so the backend clears it once ATTENTION_MIN_DISPLAY_MS (3s) elapses.
     clearTimeout(resyncTimer);
-    const hasVisibleAlert = appStore.visibleTabs.some((tab) =>
-      appStore.getTabAttentionForView(appStore.activeWorkspace?.id || "", tab.id),
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const hasVisibleAlert = (appStore.visibleTabs as any[]).some((tab: any) =>
+      appStore.getTabAttentionForView(appStore.activeWorkspace?.id || "", tab.id as string),
     );
     if (hasVisibleAlert) {
       resyncTimer = setTimeout(() => {

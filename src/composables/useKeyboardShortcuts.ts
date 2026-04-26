@@ -2,8 +2,10 @@ import { onMounted, onUnmounted } from "vue";
 import { useAppStore } from "../stores/app.js";
 import { useTerminalStore } from "../stores/terminal.js";
 import { useNotificationStore } from "../stores/notifications.js";
+import type { Transport } from "../transport.js";
+import type { StatePayload } from "../../electron/shared/types/state.js";
 
-function shortcutTabDirection(event) {
+function shortcutTabDirection(event: KeyboardEvent): number {
   const key = String(event?.key || "");
   const code = String(event?.code || "");
   if (key === "PageDown" || key === "Next" || code === "PageDown") return 1;
@@ -11,12 +13,12 @@ function shortcutTabDirection(event) {
   return 0;
 }
 
-export function useKeyboardShortcuts(api, { onNewWorkspace } = {}) {
+export function useKeyboardShortcuts(api: Transport, { onNewWorkspace }: { onNewWorkspace?: () => void } = {}) {
   const appStore = useAppStore();
   const termStore = useTerminalStore();
   const notifStore = useNotificationStore();
 
-  async function handleKeydown(event) {
+  async function handleKeydown(event: KeyboardEvent) {
     if ((event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey) {
       const digitMatch = event.code?.match(/^Digit([1-9])$/);
       if (digitMatch) {
@@ -55,7 +57,7 @@ export function useKeyboardShortcuts(api, { onNewWorkspace } = {}) {
     if (event.key.toLowerCase() === "r" && appStore.activeSessionId) {
       event.preventDefault();
       const nextPayload = await api.restartTerminal(appStore.activeSessionId);
-      appStore.payload = nextPayload;
+      appStore.payload = nextPayload as StatePayload;
       termStore.focusActiveTerminal();
       return;
     }

@@ -1,6 +1,11 @@
 import { useAppStore } from "../stores/app.js";
+import type { Ref } from "vue";
+import type { WorkspaceState } from "../../electron/shared/types/state.js";
 
-function getParentWorkspaceId(ws) {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type WsLike = WorkspaceState & { review?: any; quickfix?: any };
+
+function getParentWorkspaceId(ws: WsLike): string | null {
   // Azure review or quickfix children reference their parent explicitly
   if (ws.review?.checkout?.mode === "managed-worktree" && ws.review?.parentWorkspaceId)
     return ws.review.parentWorkspaceId;
@@ -14,13 +19,13 @@ function getParentWorkspaceId(ws) {
   return null;
 }
 
-function isChildOf(child, parentId) {
+function isChildOf(child: WsLike, parentId: string): boolean {
   const explicitParent = getParentWorkspaceId(child);
   if (explicitParent) return explicitParent === parentId;
   return false;
 }
 
-function getWorktreeGroup(workspaceId, workspaces) {
+function getWorktreeGroup(workspaceId: string, workspaces: WsLike[]): string[] {
   const ws = workspaces.find((w) => w.id === workspaceId);
   if (!ws) return [workspaceId];
 
@@ -43,7 +48,7 @@ function getWorktreeGroup(workspaceId, workspaces) {
   return groupIds;
 }
 
-function collectDescendants(parentId, parentName, workspaces, result) {
+function collectDescendants(parentId: string, parentName: string, workspaces: WsLike[], result: string[]): void {
   const prefix = parentName + " / ";
   for (const w of workspaces) {
     if (result.includes(w.id)) continue;
@@ -59,7 +64,7 @@ function collectDescendants(parentId, parentName, workspaces, result) {
 /**
  * Workspace drag-drop for the sidebar workspace list.
  */
-export function useWorkspaceDragDrop(workspaceListRef) {
+export function useWorkspaceDragDrop(workspaceListRef: Ref<HTMLElement | null | undefined>) {
   const store = useAppStore();
 
   function clearDragIndicators() {
@@ -70,17 +75,17 @@ export function useWorkspaceDragDrop(workspaceListRef) {
       });
   }
 
-  function onDragstart(event) {
-    const card = event.target.closest(".workspace-card");
+  function onDragstart(event: DragEvent) {
+    const card = (event.target as Element | null)?.closest<HTMLElement>(".workspace-card");
     if (!card) return;
-    event.dataTransfer.effectAllowed = "move";
-    const workspaceId = card.dataset.workspaceId;
-    event.dataTransfer.setData("text/plain", workspaceId);
-    const workspaces = store.payload?.appState?.workspaces || [];
+    event.dataTransfer!.effectAllowed = "move";
+    const workspaceId = card.dataset.workspaceId!;
+    event.dataTransfer!.setData("text/plain", workspaceId);
+    const workspaces = (store.payload?.appState?.workspaces || []) as WsLike[];
     const groupIds = getWorktreeGroup(workspaceId, workspaces);
     requestAnimationFrame(() => {
-      workspaceListRef.value?.querySelectorAll(".workspace-card").forEach((c) => {
-        if (groupIds.includes(c.dataset.workspaceId)) c.classList.add("workspace-card--dragging");
+      workspaceListRef.value?.querySelectorAll<HTMLElement>(".workspace-card").forEach((c) => {
+        if (groupIds.includes(c.dataset.workspaceId!)) c.classList.add("workspace-card--dragging");
       });
     });
   }
@@ -92,10 +97,10 @@ export function useWorkspaceDragDrop(workspaceListRef) {
    *   - hovering bottom half → show indicator after the group's last card
    * Returns { card, before } or null if drop is not allowed here.
    */
-  function resolveDropTarget(targetCard, clientY) {
+  function resolveDropTarget(targetCard: HTMLElement | null, clientY: number) {
     if (!targetCard || targetCard.classList.contains("workspace-card--dragging")) return null;
-    const targetId = targetCard.dataset.workspaceId;
-    const workspaces = store.payload?.appState?.workspaces || [];
+    const targetId = targetCard.dataset.workspaceId!;
+    const workspaces = (store.payload?.appState?.workspaces || []) as WsLike[];
     const targetGroup = getWorktreeGroup(targetId, workspaces);
 
     // Single workspace or the parent itself — allow drop directly
@@ -105,7 +110,7 @@ export function useWorkspaceDragDrop(workspaceListRef) {
     }
 
     // Target is a child inside a group — snap to group boundary
-    const cards = Array.from(workspaceListRef.value?.querySelectorAll(".workspace-card") || []);
+    const cards = Array.from(workspaceListRef.value?.querySelectorAll<HTMLElement>(".workspace-card") || []);
     const rect = targetCard.getBoundingClientRect();
     const before = clientY < rect.top + rect.height / 2;
 
@@ -120,35 +125,35 @@ export function useWorkspaceDragDrop(workspaceListRef) {
     return lastCard ? { card: lastCard, before: false } : null;
   }
 
-  function onDragover(event) {
+  function onDragover(event: DragEvent) {
     event.preventDefault();
-    event.dataTransfer.dropEffect = "move";
+    event.dataTransfer!.dropEffect = "move";
     clearDragIndicators();
-    const targetCard = event.target.closest(".workspace-card");
+    const targetCard = (event.target as Element | null)?.closest<HTMLElement>(".workspace-card") || null;
     const resolved = resolveDropTarget(targetCard, event.clientY);
     if (resolved) {
       resolved.card.classList.add(resolved.before ? "workspace-card--drag-before" : "workspace-card--drag-after");
     }
   }
 
-  function onDragleave(event) {
-    if (!workspaceListRef.value?.contains(event.relatedTarget)) clearDragIndicators();
+  function onDragleave(event: DragEvent) {
+    if (!workspaceListRef.value?.contains(event.relatedTarget as Node | null)) clearDragIndicators();
   }
 
-  async function onDrop(event) {
+  async function onDrop(event: DragEvent) {
     event.preventDefault();
-    const draggedId = event.dataTransfer.getData("text/plain");
+    const draggedId = event.dataTransfer!.getData("text/plain");
     clearDragIndicators();
-    const targetCard = event.target.closest(".workspace-card");
+    const targetCard = (event.target as Element | null)?.closest<HTMLElement>(".workspace-card") || null;
     const resolved = resolveDropTarget(targetCard, event.clientY);
     if (!resolved) return;
     const dropId = resolved.card.dataset.workspaceId;
     if (dropId === draggedId) return;
-    const workspaces = store.payload?.appState?.workspaces || [];
+    const workspaces = (store.payload?.appState?.workspaces || []) as WsLike[];
     const allIds = workspaces.map((w) => w.id);
     const groupIds = getWorktreeGroup(draggedId, workspaces);
     const remaining = allIds.filter((id) => !groupIds.includes(id));
-    let toIndex = remaining.indexOf(dropId);
+    let toIndex = remaining.indexOf(dropId!);
     if (toIndex < 0) return;
     if (!resolved.before) toIndex++;
     remaining.splice(toIndex, 0, ...groupIds);
@@ -165,7 +170,7 @@ export function useWorkspaceDragDrop(workspaceListRef) {
 /**
  * Tab drag-drop for the tab strip.
  */
-export function useTabDragDrop(tabStripRef) {
+export function useTabDragDrop(tabStripRef: Ref<HTMLElement | null | undefined>) {
   const store = useAppStore();
 
   function clearTabDragIndicators() {
@@ -174,50 +179,50 @@ export function useTabDragDrop(tabStripRef) {
     });
   }
 
-  function onDragstart(event) {
-    const tab = event.target.closest(".tab");
+  function onDragstart(event: DragEvent) {
+    const tab = (event.target as Element | null)?.closest<HTMLElement>(".tab");
     if (!tab || tab.dataset.persistent !== "true") return;
-    event.dataTransfer.effectAllowed = "move";
-    event.dataTransfer.setData("text/plain", tab.dataset.viewId);
+    event.dataTransfer!.effectAllowed = "move";
+    event.dataTransfer!.setData("text/plain", tab.dataset.viewId!);
     requestAnimationFrame(() => tab.classList.add("tab--dragging"));
   }
 
-  function onDragover(event) {
+  function onDragover(event: DragEvent) {
     event.preventDefault();
-    event.dataTransfer.dropEffect = "move";
+    event.dataTransfer!.dropEffect = "move";
     clearTabDragIndicators();
-    const tab = event.target.closest(".tab");
+    const tab = (event.target as Element | null)?.closest<HTMLElement>(".tab");
     if (tab && !tab.classList.contains("tab--dragging")) {
       const rect = tab.getBoundingClientRect();
       const before = event.clientX < rect.left + rect.width / 2;
       tab.classList.add(before ? "tab--drag-before" : "tab--drag-after");
     } else if (!tab) {
-      const tabs = Array.from(tabStripRef.value?.querySelectorAll(".tab:not(.tab--dragging)") || []);
+      const tabs = Array.from(tabStripRef.value?.querySelectorAll<HTMLElement>(".tab:not(.tab--dragging)") || []);
       if (tabs.length) tabs[tabs.length - 1].classList.add("tab--drag-after");
     }
   }
 
-  function onDragleave(event) {
-    if (!tabStripRef.value?.contains(event.relatedTarget)) clearTabDragIndicators();
+  function onDragleave(event: DragEvent) {
+    if (!tabStripRef.value?.contains(event.relatedTarget as Node | null)) clearTabDragIndicators();
   }
 
-  async function onDrop(event) {
+  async function onDrop(event: DragEvent) {
     event.preventDefault();
-    const draggedId = event.dataTransfer.getData("text/plain");
+    const draggedId = event.dataTransfer!.getData("text/plain");
     clearTabDragIndicators();
-    const tab = event.target.closest(".tab");
+    const tab = (event.target as Element | null)?.closest<HTMLElement>(".tab");
     if (tab && tab.dataset.viewId !== draggedId && tab.dataset.persistent === "true") {
       const rect = tab.getBoundingClientRect();
       const insertBefore = event.clientX < rect.left + rect.width / 2;
-      await store.reorderPanels(draggedId, tab.dataset.viewId, insertBefore);
+      await store.reorderPanels(draggedId, tab.dataset.viewId!, insertBefore);
       return;
     }
     // Dropped on empty space — move to end
-    const allTabs = Array.from(tabStripRef.value?.querySelectorAll(".tab[data-persistent='true']") || []);
+    const allTabs = Array.from(tabStripRef.value?.querySelectorAll<HTMLElement>(".tab[data-persistent='true']") || []);
     if (allTabs.length) {
       const lastTab = allTabs[allTabs.length - 1];
       if (lastTab.dataset.viewId !== draggedId) {
-        await store.reorderPanels(draggedId, lastTab.dataset.viewId, false);
+        await store.reorderPanels(draggedId, lastTab.dataset.viewId!, false);
       }
     }
   }

@@ -4,6 +4,24 @@ import { useAppStore } from "../stores/app.js";
 import { useNotificationStore } from "../stores/notifications.js";
 import { fireNotificationAlert } from "./useNotificationSound.js";
 
+interface AttentionAlertEntry {
+  panelId?: string;
+  sessionId?: string;
+  title?: string;
+  detail?: string;
+  kind?: string;
+  exitCode?: number | null;
+  tier?: number;
+  urgency?: string;
+}
+
+interface AttentionAlertBucket {
+  alerts?: AttentionAlertEntry[];
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type AttentionByWs = Record<string, AttentionAlertBucket | any>;
+
 /**
  * Watches the attention payload for new alerts and converts them into
  * persistent notifications + toast triggers.
@@ -25,20 +43,20 @@ export function useNotificationCapture() {
   const { latestToast } = storeToRefs(notifStore);
 
   // Track alert IDs we have already seen so we only fire once per alert.
-  const seenAlertKeys = new Set();
+  const seenAlertKeys = new Set<string>();
 
   // Track viewIds that currently have active alerts (for auto-read on disappear).
-  let activeAlertViewIds = new Set();
+  let activeAlertViewIds = new Set<string>();
 
   // Build a stable key for an alert to detect duplicates.
   // Uses panelId only (no timestamp) so repeated alerts for the same tab are suppressed.
-  function alertKey(workspaceId, alert) {
+  function alertKey(workspaceId: string, alert: AttentionAlertEntry): string {
     return `${workspaceId}:${alert.panelId || alert.sessionId}`;
   }
 
   // Collect all viewIds that currently have active alerts.
-  function collectActiveViewIds(byWs) {
-    const ids = new Set();
+  function collectActiveViewIds(byWs: AttentionByWs): Set<string> {
+    const ids = new Set<string>();
     for (const entry of Object.values(byWs)) {
       for (const alert of entry?.alerts || []) {
         if (alert.sessionId) ids.add(alert.sessionId);
@@ -49,8 +67,9 @@ export function useNotificationCapture() {
 
   // Seed seen keys from current payload so startup alerts don't fire notifications.
   function seedSeen() {
-    const attention = appStore.payload?.attention;
-    const byWs = attention?.byWorkspace || attention?.byProject || {};
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const attention = appStore.payload?.attention as any;
+    const byWs: AttentionByWs = attention?.byWorkspace || attention?.byProject || {};
     for (const [wsId, entry] of Object.entries(byWs)) {
       for (const alert of entry?.alerts || []) {
         seenAlertKeys.add(alertKey(wsId, alert));
@@ -70,12 +89,13 @@ export function useNotificationCapture() {
     (attention) => {
       if (!attention) return;
       const inStartupGrace = Date.now() - startupAt < STARTUP_GRACE_MS;
-      const byWs = attention.byWorkspace || attention.byProject || {};
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const byWs: AttentionByWs = (attention as any).byWorkspace || (attention as any).byProject || {};
       const workspaces = appStore.payload?.appState?.workspaces || [];
       const wsMap = new Map(workspaces.map((ws) => [ws.id, ws]));
 
       // --- Phase 1: Detect NEW alerts and create notifications ---
-      for (const [wsId, entry] of Object.entries(byWs)) {
+      for (const [wsId, entry] of Object.entries(byWs) as [string, AttentionAlertBucket][]) {
         for (const alert of entry?.alerts || []) {
           const key = alertKey(wsId, alert);
           if (seenAlertKeys.has(key)) continue;
@@ -94,15 +114,16 @@ export function useNotificationCapture() {
           if (hasUnread) continue;
 
           // Detect task-specific alerts (detail starts with "task-")
-          const isTaskAlert = typeof alert.detail === "string" && alert.detail.startsWith("task-");
-          const taskDetail = isTaskAlert ? alert.detail.replace(/^task-\w+:\s*/, "") : "";
+          const alertDetail = alert.detail as string | undefined;
+          const isTaskAlert = typeof alertDetail === "string" && alertDetail.startsWith("task-");
+          const taskDetail = isTaskAlert ? (alertDetail as string).replace(/^task-\w+:\s*/, "") : "";
 
-          let title;
-          let body;
-          if (isTaskAlert && alert.detail.startsWith("task-completed")) {
+          let title: string;
+          let body: string;
+          if (isTaskAlert && (alertDetail as string).startsWith("task-completed")) {
             title = "Task completed";
             body = taskDetail ? `${wsName}: ${taskDetail}` : `${wsName} task finished successfully.`;
-          } else if (isTaskAlert && alert.detail.startsWith("task-failed")) {
+          } else if (isTaskAlert && (alertDetail as string).startsWith("task-failed")) {
             title = "Task failed";
             body = taskDetail ? `${wsName}: ${taskDetail}` : `${wsName} task failed.`;
           } else if (alert.kind === "waiting") {
@@ -161,8 +182,8 @@ export function useNotificationCapture() {
       activeAlertViewIds = nextActiveViewIds;
 
       // Prune seen keys that no longer have active alerts so they can re-trigger
-      const currentKeys = new Set();
-      for (const [wsId, wsEntry] of Object.entries(byWs)) {
+      const currentKeys = new Set<string>();
+      for (const [wsId, wsEntry] of Object.entries(byWs) as [string, AttentionAlertBucket][]) {
         for (const alert of wsEntry?.alerts || []) {
           currentKeys.add(alertKey(wsId, alert));
         }

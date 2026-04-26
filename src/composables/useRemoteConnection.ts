@@ -2,24 +2,29 @@ import { computed } from "vue";
 import { useAppStore } from "../stores/app.js";
 import { preferredRemoteUrl, withRemoteToken, normalizeAbsoluteUrl, summarizeRemoteHost } from "../app/helpers.js";
 
+// The runtime remote-access shape differs from the typed RemoteAccessSettings/RemoteAccessState;
+// use a loose record to avoid having to cast every field access.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type AnyRecord = Record<string, any>;
+
 /**
  * Provides computed remote connection state derived from the app store.
  */
 export function useRemoteConnection() {
   const store = useAppStore();
 
-  const remoteConfig = computed(() => store.payload?.appState?.settings?.remoteAccess || {});
-  const runtimeRemote = computed(() => store.payload?.remoteAccess || {});
-  const tunnel = computed(() => runtimeRemote.value.tunnel || {});
+  const remoteConfig = computed<AnyRecord>(() => store.payload?.appState?.settings?.remoteAccess || {});
+  const runtimeRemote = computed<AnyRecord>(() => (store.payload as AnyRecord)?.remoteAccess || {});
+  const tunnel = computed<AnyRecord>(() => runtimeRemote.value.tunnel || {});
 
-  const urls = computed(() => runtimeRemote.value.urls || []);
-  const token = computed(() => remoteConfig.value.token || "");
+  const urls = computed<string[]>(() => runtimeRemote.value.urls || []);
+  const token = computed<string>(() => remoteConfig.value.token || "");
 
   const lanUrl = computed(() => preferredRemoteUrl({ urls: urls.value }) || "");
   const tunnelUrl = computed(() => tunnel.value.publicUrl || "");
   const customPublicUrl = computed(() => remoteConfig.value.customPublicUrl || "");
 
-  const allLanShareUrls = computed(() => urls.value.map((url) => withRemoteToken(url, token.value)));
+  const allLanShareUrls = computed(() => urls.value.map((url: string) => withRemoteToken(url, token.value)));
 
   const lanShareUrl = computed(() => {
     const sel = store.selectedLanUrl;
@@ -53,7 +58,7 @@ export function useRemoteConnection() {
 
   const lanUrlButtons = computed(() =>
     urls.value.length > 1
-      ? urls.value.map((url) => ({
+      ? urls.value.map((url: string) => ({
           host: summarizeRemoteHost(url),
           shareUrl: withRemoteToken(url, token.value),
           active: lanShareUrl.value === withRemoteToken(url, token.value),

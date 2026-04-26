@@ -1,4 +1,5 @@
 import { onMounted, onBeforeUnmount } from "vue";
+import type { Ref } from "vue";
 import { writeSidebarWidth } from "../app/helpers.js";
 import { useAppStore } from "../stores/app.js";
 
@@ -13,15 +14,15 @@ function effectiveMax() {
   return Math.min(SIDEBAR_MAX_PX, Math.floor(vw * MAX_VIEWPORT_RATIO));
 }
 
-export function useSidebarResize(frameRef, sidebarRef) {
+export function useSidebarResize(frameRef: Ref<HTMLElement | null | undefined>, sidebarRef: Ref<HTMLElement | null | undefined>) {
   const store = useAppStore();
 
   let resizing = false;
   let startX = 0;
   let startWidth = 0;
 
-  function onMousedown(event) {
-    const handle = event.target.closest('[data-role="sidebar-resize-handle"]');
+  function onMousedown(event: MouseEvent) {
+    const handle = (event.target as Element | null)?.closest('[data-role="sidebar-resize-handle"]');
     if (!handle) return;
     event.preventDefault();
     resizing = true;
@@ -29,13 +30,13 @@ export function useSidebarResize(frameRef, sidebarRef) {
     const frame = frameRef.value;
     const sidebar = sidebarRef.value;
     startWidth = store.sidebarCollapsed
-      ? Number.parseFloat(getComputedStyle(frame).getPropertyValue("--sidebar-collapsed-width")) || 84
+      ? Number.parseFloat(frame ? getComputedStyle(frame).getPropertyValue("--sidebar-collapsed-width") : "") || 84
       : sidebar?.getBoundingClientRect().width || SIDEBAR_DEFAULT;
     frame?.classList.add("frame--resizing");
     handle.classList.add("sidebar-resize-handle--active");
   }
 
-  function onMousemove(event) {
+  function onMousemove(event: MouseEvent) {
     if (!resizing) return;
     const delta = event.clientX - startX;
     const rawWidth = startWidth + delta;
@@ -64,8 +65,8 @@ export function useSidebarResize(frameRef, sidebarRef) {
     }
   }
 
-  function onDoubleClick(event) {
-    const handle = event.target.closest('[data-role="sidebar-resize-handle"]');
+  function onDoubleClick(event: MouseEvent) {
+    const handle = (event.target as Element | null)?.closest('[data-role="sidebar-resize-handle"]');
     if (!handle) return;
     event.preventDefault();
     if (store.sidebarCollapsed) store.sidebarCollapsed = false;

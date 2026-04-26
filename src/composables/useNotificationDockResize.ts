@@ -1,4 +1,5 @@
 import { onMounted, onBeforeUnmount, watch } from "vue";
+import type { Ref } from "vue";
 import { writeNotificationDockWidth, readNotificationDockWidth } from "../app/helpers.js";
 import { useNotificationStore } from "../stores/notifications.js";
 
@@ -12,7 +13,7 @@ function effectiveMax() {
   return Math.min(DOCK_MAX_PX, Math.floor(vw * MAX_VIEWPORT_RATIO));
 }
 
-export function useNotificationDockResize(frameRef) {
+export function useNotificationDockResize(frameRef: Ref<HTMLElement | null | undefined>) {
   const notifStore = useNotificationStore();
 
   let resizing = false;
@@ -23,8 +24,8 @@ export function useNotificationDockResize(frameRef) {
     return document.querySelector(".notification-center--pinned");
   }
 
-  function onMousedown(event) {
-    const handle = event.target.closest('[data-role="notif-dock-resize-handle"]');
+  function onMousedown(event: MouseEvent) {
+    const handle = (event.target as Element | null)?.closest('[data-role="notif-dock-resize-handle"]');
     if (!handle) return;
     if (!notifStore.pinned) return;
     event.preventDefault();
@@ -36,7 +37,7 @@ export function useNotificationDockResize(frameRef) {
     handle.classList.add("notif-dock-resize-handle--active");
   }
 
-  function onMousemove(event) {
+  function onMousemove(event: MouseEvent) {
     if (!resizing) return;
     // Dragging LEFT grows the right dock, so invert the delta.
     const delta = startX - event.clientX;
@@ -58,8 +59,8 @@ export function useNotificationDockResize(frameRef) {
     }
   }
 
-  function onDoubleClick(event) {
-    const handle = event.target.closest('[data-role="notif-dock-resize-handle"]');
+  function onDoubleClick(event: MouseEvent) {
+    const handle = (event.target as Element | null)?.closest('[data-role="notif-dock-resize-handle"]');
     if (!handle) return;
     event.preventDefault();
     frameRef.value?.style.setProperty("--notif-dock-width", `${DOCK_DEFAULT}px`);

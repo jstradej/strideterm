@@ -15,7 +15,7 @@ export function useGlobalEvents() {
   function handleVisualViewportResize() {
     cancelAnimationFrame(viewportTimer);
     viewportTimer = requestAnimationFrame(() => {
-      document.documentElement.style.height = `${window.visualViewport.height}px`;
+      document.documentElement.style.height = `${window.visualViewport!.height}px`;
       if (termStore.views.size > 0) {
         termStore.scheduleAllVisibleResize();
       }
