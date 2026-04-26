@@ -122,6 +122,8 @@ interface PendingRequest {
   panelId: string;
   alertId?: string;
   createdAt: number;
+  /** Carried from the connection that started this request so the user-defined agent command survives the chat-keyed flow */
+  agentCommand?: string;
   /** For confirm-action: the command to emit on confirm */
   pendingCmd?: TelegramCommandEvent;
 }
@@ -457,6 +459,7 @@ export class TelegramManager extends EventEmitter {
           panelId: pending.panelId,
           taskDescription: text,
           alertId: pending.alertId,
+          agentCommand: pending.agentCommand || undefined,
         };
         // Store as confirm-action and ask for confirmation
         this.pendingRequests.set(chatId, {
@@ -630,6 +633,7 @@ export class TelegramManager extends EventEmitter {
         workspaceId,
         panelId,
         createdAt: Date.now(),
+        agentCommand: conn.agentCommand || undefined,
       });
       await this._answerText(
         token,
