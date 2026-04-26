@@ -23,9 +23,12 @@ describe("review-activity helpers", () => {
     const prev = Array.from({ length: MAX_REVIEW_ACTIVITY }, (_, i) => ({ id: `old-${i}` }));
     const next = appendReviewActivity(prev, [{ id: "new-1" }, { id: "new-2" }]);
     expect(next).toHaveLength(MAX_REVIEW_ACTIVITY);
-    expect(next[0].id).toBe("new-1");
-    expect(next[1].id).toBe("new-2");
-    expect(next.at(-1).id).not.toBe(prev.at(-1).id);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect((next[0] as any).id).toBe("new-1");
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect((next[1] as any).id).toBe("new-2");
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect((next.at(-1) as any).id).not.toBe(prev.at(-1)?.id);
   });
 
   test("appendReviewActivity returns previous list when no new events", () => {
@@ -72,7 +75,7 @@ describe("review-activity helpers", () => {
   });
 
   test("shouldSeedConnection is true until the Set records the connection", () => {
-    const set = new Set();
+    const set = new Set<string>();
     expect(shouldSeedConnection(set, "conn-1")).toBe(true);
     set.add("conn-1");
     expect(shouldSeedConnection(set, "conn-1")).toBe(false);
@@ -88,7 +91,8 @@ describe("review-activity helpers", () => {
     const result = filterNewComments({
       comments,
       sinceIsoString: "2026-03-17T09:30:00.000Z",
-      isSelf: (a) => a?.login === "me",
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      isSelf: (a: any) => a?.login === "me",
       getTimestamp: (c) => c.at,
       getAuthor: (c) => c.author,
     });
@@ -115,7 +119,7 @@ describe("review-activity helpers", () => {
         prKey: "connection:conn-1",
         title: "Acme: connection error",
       });
-      expect(event.body).toContain("401");
+      expect(event!.body).toContain("401");
     });
 
     test("emits on first sync (idle → error)", () => {
@@ -152,7 +156,7 @@ describe("review-activity helpers", () => {
         at,
       });
       expect(event).toBeTruthy();
-      expect(event.body).toContain("PAT expired");
+      expect(event!.body).toContain("PAT expired");
     });
 
     test("stays silent when status is ok", () => {

@@ -15,10 +15,11 @@ import {
   HOOKS_TO_REGISTER,
 } from "./codex-hook-config.js";
 
-let tempDir;
-let mockHomedir;
-let userDataPath;
-let originalHomedir;
+let tempDir: string;
+let mockHomedir: string;
+let userDataPath: string;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let originalHomedir: any;
 
 beforeEach(async () => {
   tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-codex-hook-"));
@@ -140,7 +141,7 @@ describe("configureCodexHook", () => {
     expect(result.registered).toEqual([...HOOKS_TO_REGISTER]);
     expect(existsSync(getCodexConfigPath())).toBe(true);
     expect(existsSync(getCodexHooksPath())).toBe(true);
-    expect(existsSync(result.scriptPath)).toBe(true);
+    expect(existsSync(result.scriptPath!)).toBe(true);
 
     const hooks = JSON.parse(await fs.readFile(getCodexHooksPath(), "utf8"));
     for (const event of HOOKS_TO_REGISTER) {

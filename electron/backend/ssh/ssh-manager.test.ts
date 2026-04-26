@@ -12,7 +12,7 @@ import type { CredentialStore } from "../shared/credential-store.js";
 
 const tempDirs: string[] = [];
 
-async function freshStore() {
+async function freshStore(): Promise<any> {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-ssh-test-"));
   tempDirs.push(dir);
   return createStore(path.join(dir, "state.json"));
@@ -110,7 +110,8 @@ describe("verifyHostKey TOFU logic", () => {
 
   test("returns ok+first for a brand-new host under accept-new/warn policy", async () => {
     const store = await freshStore();
-    const result = verifyHostKey(store, host, { key: keyBlob });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const result = verifyHostKey(store, host, { key: keyBlob }) as any;
     expect(result.ok).toBe(true);
     expect(result.first).toBe(true);
     expect(result.fingerprint).toMatch(/^SHA256:/);
@@ -118,7 +119,8 @@ describe("verifyHostKey TOFU logic", () => {
 
   test("rejects an unknown host under strict policy", async () => {
     const store = await freshStore();
-    const result = verifyHostKey(store, { ...host, hostKeyPolicy: "strict" }, { key: keyBlob });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const result = verifyHostKey(store, { ...host, hostKeyPolicy: "strict" }, { key: keyBlob }) as any;
     expect(result.ok).toBe(false);
     expect(result.mismatch).toBe(false);
   });
@@ -126,7 +128,8 @@ describe("verifyHostKey TOFU logic", () => {
   test("flags mismatch when fingerprint changed", async () => {
     const store = await freshStore();
     await recordHostKey(store, host, { fingerprint: "SHA256:old", keyType: "ssh-ed25519" });
-    const result = verifyHostKey(store, host, { key: keyBlob });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const result = verifyHostKey(store, host, { key: keyBlob }) as any;
     expect(result.ok).toBe(false);
     expect(result.mismatch).toBe(true);
     expect(result.previous.fingerprint).toBe("SHA256:old");
@@ -134,9 +137,11 @@ describe("verifyHostKey TOFU logic", () => {
 
   test("accepts a matching fingerprint", async () => {
     const store = await freshStore();
-    const first = verifyHostKey(store, host, { key: keyBlob });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const first = verifyHostKey(store, host, { key: keyBlob }) as any;
     await recordHostKey(store, host, first);
-    const second = verifyHostKey(store, host, { key: keyBlob });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const second = verifyHostKey(store, host, { key: keyBlob }) as any;
     expect(second.ok).toBe(true);
     expect(second.first).toBeUndefined();
   });
@@ -196,7 +201,8 @@ describe("normalizeState preserves SSH launch data", () => {
       ],
     };
     const normalized = normalizeState(raw);
-    const inline = normalized.workspaces[0].panels[0].launch.sshInline;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const inline: any = normalized.workspaces[0].panels[0].launch!.sshInline;
     expect(inline.host).toBe("bastion.example.com");
     expect(inline.port).toBe(2222);
     expect(inline.username).toBe("alice");
@@ -231,7 +237,8 @@ describe("normalizeState preserves SSH launch data", () => {
       ],
     };
     const normalized = normalizeState(raw);
-    const inline = normalized.workspaces[0].panels[0].launch.sshInline;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const inline: any = normalized.workspaces[0].panels[0].launch!.sshInline;
     expect(inline.port).toBe(22);
     expect(inline.advanced.launchVia).toBe("ssh2");
     expect(inline.auth.methods).toEqual(["publickey"]);
@@ -249,7 +256,8 @@ describe("SshManager.createSession inline host", () => {
     });
 
     // Capture what buildAuth saw without actually starting ssh2.
-    let observed: { id: string; host: string; auth: Record<string, unknown> } | null = null;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let observed: any = null;
     const inlineHost = {
       host: "quick.example.com",
       port: 22,
@@ -262,8 +270,10 @@ describe("SshManager.createSession inline host", () => {
     // Stub SshSession.start to capture the host passed in without touching TCP.
     const { SshSession } = await import("./ssh-session.js");
     const origStart = SshSession.prototype.start;
-    SshSession.prototype.start = async function mockStart() {
-      observed = { id: this.host.id, host: this.host.host, auth: this.auth };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    SshSession.prototype.start = async function mockStart(this: any) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      observed = { id: this.host.id, host: this.host.host, auth: this.auth as any };
       // Simulate successful ready so the caller's promise resolves.
       setTimeout(() => this.onExit?.({ exitCode: 0, signal: null }), 0);
       return undefined;
@@ -282,9 +292,9 @@ describe("SshManager.createSession inline host", () => {
       SshSession.prototype.start = origStart;
     }
 
-    expect(observed.host).toBe("quick.example.com");
-    expect(observed.id).toBe("inline:w1:p1");
-    expect(observed.auth.privateKey).toBe("priv");
+    expect(observed!.host).toBe("quick.example.com");
+    expect(observed!.id).toBe("inline:w1:p1");
+    expect(observed!.auth.privateKey).toBe("priv");
   });
 });
 

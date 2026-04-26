@@ -65,7 +65,8 @@ function createContext() {
 
 describe("review bridge mcp handlers", () => {
   test("lists only active comments in order", () => {
-    const store = {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const store: any = {
       getPullRequestContext: vi.fn(() => createContext()),
     };
     const handlers = createReviewBridgeMcpHandlers({
@@ -75,19 +76,23 @@ describe("review bridge mcp handlers", () => {
 
     const result = handlers.listReviewComments();
 
-    expect(result.structuredContent.comments).toHaveLength(2);
-    expect(result.structuredContent.comments[0]).toMatchObject({
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect((result as any).structuredContent.comments).toHaveLength(2);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect((result as any).structuredContent.comments[0]).toMatchObject({
       index: 1,
       commentKey: "ado-main:repo-1:123:thread:10",
     });
-    expect(result.structuredContent.comments[1]).toMatchObject({
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect((result as any).structuredContent.comments[1]).toMatchObject({
       index: 2,
       commentKey: "ado-main:repo-1:123:local:1",
     });
   });
 
   test("resolves comment details by ordered index", () => {
-    const store = {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const store: any = {
       getPullRequestContext: vi.fn(() => createContext()),
     };
     const handlers = createReviewBridgeMcpHandlers({
@@ -97,13 +102,16 @@ describe("review bridge mcp handlers", () => {
 
     const result = handlers.getReviewComment({ index: 2 });
 
-    expect(result.structuredContent.comment).toMatchObject({
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect((result as any).structuredContent.comment).toMatchObject({
       index: 2,
       commentKey: "ado-main:repo-1:123:local:1",
       commentKind: "local-comment",
     });
-    expect(result.content[0].text).toContain("Comment #2:");
-    expect(result.content[0].text).toContain("Local question");
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect(((result as any).content[0] as any).text).toContain("Comment #2:");
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect(((result as any).content[0] as any).text).toContain("Local question");
   });
 
   test("saves drafts through the store using resolved comment keys", async () => {
@@ -122,7 +130,8 @@ describe("review bridge mcp handlers", () => {
         },
       ],
     };
-    const store = {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const store: any = {
       getPullRequestContext: vi.fn(() => createContext()),
       saveDraftResponse: vi.fn().mockResolvedValue(nextContext),
       queueDraftResponse: vi.fn().mockResolvedValue(nextContext),
@@ -146,7 +155,8 @@ describe("review bridge mcp handlers", () => {
       confidence: null,
       needsHumanApproval: true,
     });
-    expect(result.structuredContent.draft).toMatchObject({
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect((result as any).structuredContent.draft).toMatchObject({
       draftId: "draft-1",
       commentKey: "ado-main:repo-1:123:thread:10",
     });

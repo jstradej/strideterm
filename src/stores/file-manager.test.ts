@@ -2,18 +2,27 @@ import { describe, it, expect, beforeEach } from "vitest";
 import { setActivePinia, createPinia } from "pinia";
 import { useFileManagerStore } from "./file-manager.js";
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type AnyObj = Record<string, any>;
+
 function makeFakeApi(overrides = {}) {
-  const calls = { fileList: [], fileTree: [], fileGitStatus: [], fileGitDiff: [], fileGitRefs: [] };
+  const calls: { fileList: AnyObj[]; fileTree: AnyObj[]; fileGitStatus: AnyObj[]; fileGitDiff: AnyObj[]; fileGitRefs: AnyObj[] } = {
+    fileList: [],
+    fileTree: [],
+    fileGitStatus: [],
+    fileGitDiff: [],
+    fileGitRefs: [],
+  };
   const api = {
-    fileList: async (p) => {
+    fileList: async (p: AnyObj) => {
       calls.fileList.push(p);
       return { entries: [], path: p.relativePath };
     },
-    fileTree: async (p) => {
+    fileTree: async (p: AnyObj) => {
       calls.fileTree.push(p);
       return { entries: [] };
     },
-    fileGitStatus: async (p) => {
+    fileGitStatus: async (p: AnyObj) => {
       calls.fileGitStatus.push(p);
       return {
         isRepo: true,
@@ -22,7 +31,7 @@ function makeFakeApi(overrides = {}) {
         directories: { src: "modified" },
       };
     },
-    fileGitDiff: async (p) => {
+    fileGitDiff: async (p: AnyObj) => {
       calls.fileGitDiff.push(p);
       return {
         ok: true,
@@ -37,7 +46,7 @@ function makeFakeApi(overrides = {}) {
         source: p.source || "head",
       };
     },
-    fileGitRefs: async (p) => {
+    fileGitRefs: async (p: AnyObj) => {
       calls.fileGitRefs.push(p);
       return { isRepo: true, branches: ["main", "feature"], tags: [], commits: [], currentBranch: "main" };
     },
@@ -70,10 +79,10 @@ describe("file-manager store", () => {
 
   it("sortedEntries respects filterText and showHidden flags", async () => {
     const items = [
-      { name: ".hidden", relativePath: ".hidden", kind: "file", isHidden: true, extension: "" },
-      { name: "alpha.js", relativePath: "alpha.js", kind: "file", isHidden: false, extension: ".js" },
-      { name: "beta.js", relativePath: "beta.js", kind: "file", isHidden: false, extension: ".js" },
-      { name: "node_modules", relativePath: "node_modules", kind: "directory", isHidden: false, extension: "" },
+      { name: ".hidden", relativePath: ".hidden", kind: "file" as const, isHidden: true, extension: "" },
+      { name: "alpha.js", relativePath: "alpha.js", kind: "file" as const, isHidden: false, extension: ".js" },
+      { name: "beta.js", relativePath: "beta.js", kind: "file" as const, isHidden: false, extension: ".js" },
+      { name: "node_modules", relativePath: "node_modules", kind: "directory" as const, isHidden: false, extension: "" },
     ];
     const { api } = makeFakeApi({
       fileList: async () => ({ entries: items, path: "" }),
@@ -101,13 +110,14 @@ describe("file-manager store", () => {
     store.setApi(api);
     await store.init("/r");
 
-    const entry = { name: "x.js", relativePath: "x.js", kind: "file", extension: ".js" };
+    const entry = { name: "x.js", relativePath: "x.js", kind: "file" as const, extension: ".js" };
     await store.openDiff(entry);
     expect(store.diffOpen).toBe(true);
     expect(store.diffEntry).toEqual(entry);
     expect(store.diffSource).toBe("head");
     expect(store.diffPayload?.ok).toBe(true);
-    expect(store.diffPayload.leftContent).toBe("old");
+    const payload = store.diffPayload!;
+    expect(payload.leftContent).toBe("old");
     expect(calls.fileGitRefs[0].relativePath).toBe("x.js");
     expect(calls.fileGitDiff[0].source).toBe("head");
 
@@ -130,7 +140,7 @@ describe("file-manager store", () => {
     store.setApi(api);
     await store.init("/r");
 
-    const entry = { name: "x.js", relativePath: "x.js", kind: "file", extension: ".js" };
+    const entry = { name: "x.js", relativePath: "x.js", kind: "file" as const, extension: ".js" };
     await store.openDiff(entry);
     const callsBefore = calls.fileGitDiff.length;
     expect(store.diffPayload).not.toBe(null);
@@ -158,7 +168,7 @@ describe("file-manager store", () => {
     store.setApi(api);
     await store.init("/r");
 
-    const dir = { name: "src", relativePath: "src", kind: "directory" };
+    const dir = { name: "src", relativePath: "src", kind: "directory" as const };
     await store.moveEntryTo(dir, "src");
     expect(moveCalled).toBe(false);
     await store.moveEntryTo(dir, "src/nested");
@@ -166,7 +176,7 @@ describe("file-manager store", () => {
   });
 
   it("expandTreeNode preserves child entry identity across re-expansion of parent", async () => {
-    const treeResponses = {
+    const treeResponses: Record<string, Array<{ name: string; relativePath: string; kind: "file" | "directory"; isHidden: boolean }>> = {
       "": [
         { name: "src", relativePath: "src", kind: "directory", isHidden: false },
         { name: "lib", relativePath: "lib", kind: "directory", isHidden: false },
@@ -174,7 +184,7 @@ describe("file-manager store", () => {
       src: [{ name: "components", relativePath: "src/components", kind: "directory", isHidden: false }],
     };
     const { api } = makeFakeApi({
-      fileTree: async (p) => ({ entries: treeResponses[p.relativePath] || [] }),
+      fileTree: async (p: AnyObj) => ({ entries: treeResponses[p.relativePath as string] || [] }),
     });
     const store = useFileManagerStore();
     store.setApi(api);
@@ -185,11 +195,12 @@ describe("file-manager store", () => {
     await store.expandTreeNode("");
 
     const root = store.treeNodes.get("");
-    const srcChild = root.children.find((c) => c.entry.name === "src");
+    expect(root).toBeDefined();
+    const srcChild = root!.children!.find((c) => c.entry.name === "src");
     expect(srcChild).toBeDefined();
-    expect(srcChild.entry.relativePath).toBe("src");
+    expect(srcChild!.entry.relativePath).toBe("src");
     // No child should accidentally take on the root's empty relativePath.
-    for (const child of root.children) {
+    for (const child of root!.children!) {
       expect(child.entry.relativePath).not.toBe("");
     }
   });
@@ -200,7 +211,7 @@ describe("file-manager store", () => {
     store.setApi(api);
     await store.init("/r");
 
-    const entry = { name: "f.txt", relativePath: "f.txt", kind: "file" };
+    const entry = { name: "f.txt", relativePath: "f.txt", kind: "file" as const };
     store.cutToClipboard(entry);
     expect(store.clipboard?.op).toBe("cut");
     await store.pasteEntry("dest");

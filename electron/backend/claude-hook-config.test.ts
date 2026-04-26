@@ -13,9 +13,10 @@ import {
   HOOKS_TO_REGISTER,
 } from "./claude-hook-config.js";
 
-let tempDir;
-let mockHomedir;
-let originalHomedir;
+let tempDir: string;
+let mockHomedir: string;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let originalHomedir: any;
 
 beforeEach(async () => {
   tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-hook-test-"));
@@ -141,7 +142,7 @@ describe("configureClaudeHook", () => {
     expect(result.settingsPath).toContain("settings.json");
 
     // Verify the settings file was created
-    const settings = JSON.parse(await fs.readFile(result.settingsPath, "utf8"));
+    const settings = JSON.parse(await fs.readFile(result.settingsPath!, "utf8"));
     expect(settings.hooks).toBeDefined();
     expect(settings.hooks.Notification).toHaveLength(1);
     expect(settings.hooks.Notification[0].hooks[0].type).toBe("command");
@@ -217,7 +218,7 @@ describe("configureClaudeHook", () => {
     const result2 = await configureClaudeHook(userDataPath);
     expect(result2.ok).toBe(true);
 
-    const settings = JSON.parse(await fs.readFile(result2.settingsPath, "utf8"));
+    const settings = JSON.parse(await fs.readFile(result2.settingsPath!, "utf8"));
     expect(settings.hooks.Notification).toHaveLength(1); // Not 2
   });
 
@@ -243,7 +244,7 @@ describe("configureClaudeHook", () => {
     const result = await configureClaudeHook(userDataPath);
     expect(result.ok).toBe(true);
 
-    const settings = JSON.parse(await fs.readFile(result.settingsPath, "utf8"));
+    const settings = JSON.parse(await fs.readFile(result.settingsPath!, "utf8"));
     const command = settings.hooks.Notification[0].hooks[0].command;
 
     // Should not contain backslashes (Windows path separators)
@@ -259,7 +260,7 @@ describe("configureClaudeHook", () => {
     expect(result.ok).toBe(true);
     expect(result.registered).toEqual(HOOKS_TO_REGISTER);
 
-    const settings = JSON.parse(await fs.readFile(result.settingsPath, "utf8"));
+    const settings = JSON.parse(await fs.readFile(result.settingsPath!, "utf8"));
     for (const hookName of HOOKS_TO_REGISTER) {
       expect(settings.hooks[hookName]).toHaveLength(1);
       expect(settings.hooks[hookName][0].hooks[0].command).toContain("notify.mjs");
@@ -317,7 +318,7 @@ describe("configureClaudeHook", () => {
     const result = await configureClaudeHook(userDataPath);
     expect(result.ok).toBe(true);
 
-    const settings = JSON.parse(await fs.readFile(result.settingsPath, "utf8"));
+    const settings = JSON.parse(await fs.readFile(result.settingsPath!, "utf8"));
     expect(settings.hooks.Stop).toHaveLength(2);
     expect(settings.hooks.Stop[0].hooks[0].command).toBe("echo user-stop");
     expect(settings.hooks.Stop[1].hooks[0].command).toContain("notify.mjs");

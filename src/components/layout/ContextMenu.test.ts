@@ -21,7 +21,7 @@ describe("ContextMenu", () => {
     const wrapper = mount(ContextMenu, { attachTo: document.body });
     const menu = document.querySelector(".context-menu");
     expect(menu).not.toBeNull();
-    const buttons = menu.querySelectorAll("button");
+    const buttons = (menu as Element).querySelectorAll("button");
     const texts = Array.from(buttons).map((b) => b.textContent);
     expect(texts.some((t) => t.includes("Restart"))).toBe(true);
     wrapper.unmount();
@@ -34,7 +34,7 @@ describe("ContextMenu", () => {
     const wrapper = mount(ContextMenu, { attachTo: document.body });
     const menu = document.querySelector(".context-menu");
     expect(menu).not.toBeNull();
-    const text = menu.textContent;
+    const text = (menu as Element).textContent;
     expect(text).toContain("Remove from split");
     expect(text).toContain("Disband split");
     wrapper.unmount();

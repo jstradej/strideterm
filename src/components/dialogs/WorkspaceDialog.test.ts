@@ -126,11 +126,11 @@ describe("WorkspaceDialog", () => {
       // instead of the DOM because the option list is teleported and only rendered when open.
       const customSelects = wrapper.findAllComponents({ name: "CustomSelect" });
       const providerSelects = customSelects.filter((c) => {
-        const opts = c.props("options") || [];
+        const opts: Array<{ value: string; label: string }> = c.props("options") || [];
         return opts.some((o) => o.value === "claude");
       });
       expect(providerSelects.length).toBeGreaterThanOrEqual(1);
-      const options = providerSelects[0].props("options");
+      const options: Array<{ value: string; label: string }> = providerSelects[0].props("options");
       const ids = options.map((o) => o.value);
       expect(ids).toContain("claude");
       expect(ids).toContain("codex");

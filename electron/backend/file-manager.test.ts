@@ -23,7 +23,8 @@ import {
   computeCommitFileDiff,
 } from "./file-manager.js";
 
-function execGit(cwd, args) {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function execGit(cwd: string, args: string[]) {
   return new Promise((resolve, reject) => {
     execFile("git", args, { cwd, windowsHide: true }, (err, stdout, stderr) => {
       if (err) {
@@ -35,7 +36,7 @@ function execGit(cwd, args) {
   });
 }
 
-let tmpRoot;
+let tmpRoot: string;
 
 beforeAll(async () => {
   // On macOS os.tmpdir() returns a /var/... path that is a symlink to
@@ -115,8 +116,8 @@ describe("file-manager core", () => {
 });
 
 describe("file-manager git integration", () => {
-  let repo;
-  let initialCommit;
+  let repo: string;
+  let initialCommit: string;
 
   beforeAll(async () => {
     repo = path.join(tmpRoot, "git-test");
@@ -131,7 +132,8 @@ describe("file-manager git integration", () => {
     await fs.writeFile(path.join(repo, "src", "index.js"), "export const a = 1;\n");
     await execGit(repo, ["add", "."]);
     await execGit(repo, ["commit", "-q", "-m", "initial"]);
-    const log = await execGit(repo, ["rev-parse", "HEAD"]);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const log = (await execGit(repo, ["rev-parse", "HEAD"])) as any;
     initialCommit = log.stdout.trim();
     // Make some changes for status checks
     await fs.writeFile(path.join(repo, "README.md"), "# Initial\nChanged\n");
@@ -156,7 +158,7 @@ describe("file-manager git integration", () => {
     expect(status.entries["untracked.txt"]?.status).toBe("untracked");
     expect(status.entries["src/index.js"]?.status).toBe("modified");
     // Directory rollup picks up nested changes
-    expect(status.directories["src"]).toBe("modified");
+    expect(status.directories!["src"]).toBe("modified");
   });
 
   test("getGitFileStatus respects subdirectory rootPath", async () => {
@@ -225,9 +227,9 @@ describe("file-manager git integration", () => {
 });
 
 describe("file-manager commit history", () => {
-  let repo;
-  let firstCommit;
-  let secondCommit;
+  let repo: string;
+  let firstCommit: string;
+  let secondCommit: string;
 
   beforeAll(async () => {
     repo = path.join(tmpRoot, "git-history-test");
@@ -241,14 +243,14 @@ describe("file-manager commit history", () => {
     await fs.writeFile(path.join(repo, "beta.txt"), "beta v1\n");
     await execGit(repo, ["add", "."]);
     await execGit(repo, ["commit", "-q", "-m", "first"]);
-    firstCommit = (await execGit(repo, ["rev-parse", "HEAD"])).stdout.trim();
+    firstCommit = ((await execGit(repo, ["rev-parse", "HEAD"])) as any).stdout.trim();
     // Second commit — modifies alpha, deletes beta, adds gamma.
     await fs.writeFile(path.join(repo, "alpha.txt"), "alpha v2\n");
     await fs.rm(path.join(repo, "beta.txt"));
     await fs.writeFile(path.join(repo, "gamma.txt"), "gamma v1\n");
     await execGit(repo, ["add", "-A"]);
     await execGit(repo, ["commit", "-q", "-m", "second"]);
-    secondCommit = (await execGit(repo, ["rev-parse", "HEAD"])).stdout.trim();
+    secondCommit = ((await execGit(repo, ["rev-parse", "HEAD"])) as any).stdout.trim();
   });
 
   test("getCommitFiles on initial commit lists adds with no parent", async () => {

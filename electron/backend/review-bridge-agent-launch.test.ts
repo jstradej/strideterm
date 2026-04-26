@@ -1,6 +1,12 @@
 import path from "node:path";
 import { describe, expect, test } from "vitest";
-import { buildReviewAgentLaunch, detectReviewAgentPanel } from "./review-bridge-agent-launch.js";
+import {
+  buildReviewAgentLaunch as _buildReviewAgentLaunch,
+  detectReviewAgentPanel,
+} from "./review-bridge-agent-launch.js";
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const buildReviewAgentLaunch = _buildReviewAgentLaunch as (...args: any[]) => any;
 
 function createContext() {
   return {
@@ -107,11 +113,14 @@ describe("review bridge agent launch", () => {
     expect(launch.args).toContain("--add-dir");
     expect(launch.args).toContain("C:/reviews/pr-123");
 
-    const configValues = launch.args
-      .map((value, index) => (launch.args[index - 1] === "-c" ? value : null))
+    const configValues = (launch.args as any[])
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      .map((value: any, index: any) => (launch.args[index - 1] === "-c" ? value : null))
       .filter(Boolean);
-    const commandConfig = configValues.find((value) => value.startsWith("mcp_servers.review.command="));
-    const argsConfig = configValues.find((value) => value.startsWith("mcp_servers.review.args="));
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const commandConfig = configValues.find((value: any) => value.startsWith("mcp_servers.review.command="));
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const argsConfig = configValues.find((value: any) => value.startsWith("mcp_servers.review.args="));
     expect(commandConfig).toBe('mcp_servers.review.command="C:/Program Files/strIDEterm/strIDEterm.exe"');
     expect(argsConfig).toContain("mcp_servers.review.args=");
     expect(argsConfig).toContain("--review-bridge-mcp");
@@ -243,7 +252,8 @@ describe("review bridge agent launch", () => {
       },
     });
 
-    const allowCount = launch.args.filter((arg) => arg === "--allow-all-tools").length;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const allowCount = (launch.args as any[]).filter((arg: any) => arg === "--allow-all-tools").length;
     expect(allowCount).toBe(1);
   });
 

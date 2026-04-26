@@ -2,7 +2,8 @@ import http from "node:http";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { startNotifyServer, generateNotifySecret, buildNotifyUrl } from "./notify-server.js";
 
-function postJson(url, body = {}) {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function postJson(url: string, body: any = {}): Promise<any> {
   return new Promise((resolve, reject) => {
     const parsed = new URL(url);
     const data = JSON.stringify(body);
@@ -27,7 +28,8 @@ function postJson(url, body = {}) {
   });
 }
 
-function httpRequest(url, method = "GET") {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function httpRequest(url: string, method = "GET"): Promise<any> {
   return new Promise((resolve, reject) => {
     const parsed = new URL(url);
     const req = http.request(
@@ -50,9 +52,11 @@ function httpRequest(url, method = "GET") {
   });
 }
 
-const servers = [];
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const servers: any[] = [];
 
-async function createServer(options = {}) {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function createServer(options: any = {}) {
   const secret = options.secret || generateNotifySecret();
   const onNotification = options.onNotification || vi.fn();
   const handle = await startNotifyServer({ secret, onNotification, logger: null });
@@ -333,7 +337,8 @@ describe("error handling", () => {
     const { handle, secret } = await createServer();
     const url = `http://127.0.0.1:${handle.port}/notify?sid=ws1:p1&secret=${secret}`;
 
-    const res = await new Promise((resolve, reject) => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const res = await new Promise<any>((resolve, reject) => {
       const parsed = new URL(url);
       const data = "{invalid json";
       const req = http.request(
@@ -439,7 +444,8 @@ describe("concurrent requests", () => {
     expect(results.every((r) => r.status === 200)).toBe(true);
     expect(onNotification).toHaveBeenCalledTimes(10);
 
-    const sessionIds = onNotification.mock.calls.map((c) => c[0].sessionId).sort();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const sessionIds = onNotification.mock.calls.map((c: any) => c[0].sessionId).sort();
     expect(sessionIds).toEqual(Array.from({ length: 10 }, (_, i) => `ws${i}:p${i}`).sort());
   });
 });

@@ -1,5 +1,6 @@
 import { describe, expect, test } from "vitest";
 import { getWorkspacePanelByViewId, getWorkspaceTabs } from "./selectors.js";
+import type { StatePayload, WorkspaceState } from "../../electron/shared/types/state.js";
 
 describe("workspace selectors", () => {
   test("returns an Azure inbox tab for azure workspaces", () => {
@@ -9,7 +10,7 @@ describe("workspace selectors", () => {
           id: "azure-1",
           kind: "azure",
           panels: [],
-        },
+        } as unknown as WorkspaceState,
         sessions: [],
       },
       payload: {
@@ -19,9 +20,8 @@ describe("workspace selectors", () => {
             needsAttention: [],
           },
         },
-      },
+      } as unknown as StatePayload,
       hiddenViewIds: new Set(),
-      statusTone: (status) => status,
       isContainerRunning: () => false,
     });
 
@@ -46,7 +46,7 @@ describe("workspace selectors", () => {
             },
           },
           panels: [{ id: "shell", title: "Shell", command: "" }],
-        },
+        } as unknown as WorkspaceState,
         sessions: [
           {
             sessionId: "review-1:shell",
@@ -58,9 +58,8 @@ describe("workspace selectors", () => {
       },
       payload: {
         git: { workspaces: {} },
-      },
+      } as unknown as StatePayload,
       hiddenViewIds: new Set(),
-      statusTone: () => "running",
       isContainerRunning: () => false,
     });
 
@@ -80,8 +79,8 @@ describe("workspace selectors", () => {
       {
         workspace: {
           id: "review-1",
-          panels: [{ id: "shell", title: "Shell" }],
-        },
+          panels: [{ id: "shell", title: "Shell", command: "" }],
+        } as unknown as WorkspaceState,
         sessions: [],
       },
       {
@@ -111,7 +110,7 @@ describe("workspace selectors", () => {
             { id: "worker", title: "Worker", command: "claude" },
             { id: "judge", title: "Judge", command: "copilot --allow-all-tools --model gpt-5.4-mini" },
           ],
-        },
+        } as unknown as WorkspaceState,
         sessions: [
           { sessionId: "task-1:worker", panelId: "worker", title: "Worker", status: "running" },
           { sessionId: "task-1:judge", panelId: "judge", title: "Judge", status: "running" },
@@ -126,9 +125,8 @@ describe("workspace selectors", () => {
             state: "judge-evaluating",
           },
         },
-      },
+      } as unknown as StatePayload,
       hiddenViewIds: new Set(),
-      statusTone: (status) => status,
       isContainerRunning: () => false,
     });
 

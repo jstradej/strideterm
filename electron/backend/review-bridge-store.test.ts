@@ -4,7 +4,7 @@ import fs from "node:fs/promises";
 import { afterEach, describe, expect, test } from "vitest";
 import { createReviewBridgeStore } from "./review-bridge-store.js";
 
-const tempPaths = [];
+const tempPaths: string[] = [];
 
 afterEach(async () => {
   await Promise.all(tempPaths.splice(0).map((targetPath) => fs.rm(targetPath, { recursive: true, force: true })));
@@ -72,8 +72,8 @@ describe("review bridge store", () => {
       title: "Review thread in /src/auth.js:42",
     });
 
-    const briefJson = JSON.parse(await fs.readFile(context.briefJsonPath, "utf8"));
-    const briefMarkdown = await fs.readFile(context.briefMarkdownPath, "utf8");
+    const briefJson = JSON.parse(await fs.readFile(context!.briefJsonPath, "utf8"));
+    const briefMarkdown = await fs.readFile(context!.briefMarkdownPath, "utf8");
 
     expect(briefJson.pullRequest.title).toBe("Fix login redirect");
     expect(briefJson.threads[0].comments[0].content).toContain("clarify");
@@ -106,7 +106,8 @@ describe("review bridge store", () => {
     expect(queuedContext?.syncQueue).toHaveLength(1);
     expect(queuedContext?.syncQueue[0].status).toBe("pending");
 
-    const syncedContext = await store.syncPendingDrafts("ado-main:repo-1:123", async (entry) => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const syncedContext = await store.syncPendingDrafts("ado-main:repo-1:123", async (entry: any) => {
       expect(entry.remoteThreadId).toBe(10);
       expect(entry.parentCommentId).toBe(100);
       expect(entry.body).toContain("guard clause");
@@ -114,8 +115,8 @@ describe("review bridge store", () => {
     });
     // After successful publish, the draft, local comment, and queue entry
     // are removed so the DB stays 1:1 with remote state.
-    expect(syncedContext?.drafts.filter((d) => d.commentKey === queuedContext.drafts[0]?.commentKey)).toHaveLength(0);
-    expect(syncedContext?.comments.filter((c) => c.commentKey === queuedContext.comments[0]?.commentKey)).toHaveLength(
+    expect(syncedContext?.drafts.filter((d) => d.commentKey === queuedContext!.drafts[0]?.commentKey)).toHaveLength(0);
+    expect(syncedContext?.comments.filter((c) => c.commentKey === queuedContext!.comments[0]?.commentKey)).toHaveLength(
       0,
     );
     expect(syncedContext?.syncQueue.filter((q) => q.status === "synced")).toHaveLength(0);
@@ -131,7 +132,8 @@ describe("review bridge store", () => {
       status: "draft-ready",
       commentKind: "draft",
     });
-    expect(draftComment?.payload?.questionBody).toContain("loading-state test");
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect((draftComment?.payload as any)?.questionBody).toContain("loading-state test");
 
     // createDraftComment auto-creates a draft
     const autoDraft = draftCommentContext?.drafts.find((draft) => draft.commentKey === draftComment?.commentKey);
@@ -212,7 +214,8 @@ describe("review bridge store", () => {
     expect(pendingQueue).toHaveLength(1);
 
     // Publish pipeline works with auto-queued reply
-    const publishedContext = await store.syncPendingDrafts("ado-main:repo-1:200", async (entry) => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const publishedContext = await store.syncPendingDrafts("ado-main:repo-1:200", async (entry: any) => {
       expect(entry.remoteThreadId).toBe(50);
       expect(entry.body).toContain("added them already");
       return { remoteCommentId: 501 };

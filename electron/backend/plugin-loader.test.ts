@@ -4,9 +4,9 @@ import fs from "node:fs/promises";
 import { afterEach, describe, expect, test } from "vitest";
 import { createPluginManager } from "./plugin-loader.js";
 
-const createdPaths = [];
+const createdPaths: string[] = [];
 
-async function createTempDir(prefix) {
+async function createTempDir(prefix: string) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
   createdPaths.push(directory);
   return directory;
@@ -38,7 +38,7 @@ describe("plugin-loader", () => {
     expect(plugins).toHaveLength(1);
     expect(plugins[0].id).toBe("test-plugin");
     expect(plugins[0].name).toBe("Test Plugin");
-    expect(plugins[0].workspaceDefaults.icon).toBe("TP");
+    expect(plugins[0].workspaceDefaults!.icon).toBe("TP");
   });
 
   test("rejects plugin with disallowed capability", async () => {
@@ -80,8 +80,8 @@ describe("plugin-loader", () => {
     const template = manager.getWorkspaceTemplate("tmpl-plugin");
 
     expect(template).not.toBeNull();
-    expect(template.name).toBe("My Workspace");
-    expect(template.icon).toBe("MP");
+    expect(template!.name).toBe("My Workspace");
+    expect(template!.icon).toBe("MP");
   });
 
   test("platform script runner applies shell quoting to paths", async () => {
@@ -121,7 +121,7 @@ describe("plugin-loader", () => {
     const panel = plugins[0].workspaceDefaults?.panels?.[0];
     expect(panel).toBeTruthy();
     // The command should contain proper quoting (single or double quotes depending on platform)
-    expect(panel.command).toMatch(/bash\s+['"].*monitor\.sh['"]/);
+    expect(panel!.command).toMatch(/bash\s+['"].*monitor\.sh['"]/);
   });
 
   test("discovers builtin plugins from builtinPluginsDir", async () => {

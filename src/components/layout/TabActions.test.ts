@@ -3,6 +3,7 @@ import { mount } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import TabActions from "./TabActions.vue";
 import { useAppStore } from "../../stores/app.js";
+import type { StatePayload } from "../../../electron/shared/types/state.js";
 
 beforeEach(() => {
   setActivePinia(createPinia());
@@ -19,7 +20,7 @@ describe("TabActions", () => {
     store.payload = {
       workspace: { workspace: { id: "az1", kind: "azure", panels: [] } },
       appState: { workspaces: [] },
-    };
+    } as unknown as StatePayload;
     const wrapper = mount(TabActions);
     expect(wrapper.find('[class*="button"]').text()).not.toContain("+ Tab");
   });

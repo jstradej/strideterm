@@ -9,7 +9,8 @@ describe("notification store (session-grouped)", () => {
     window.localStorage.removeItem("strideterm-notifications-v2");
   });
 
-  function addUnique(store, overrides = {}) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  function addUnique(store: any, overrides = {}) {
     return store.add({
       title: "Test",
       body: "Body",
@@ -123,7 +124,7 @@ describe("notification store (session-grouped)", () => {
   it("persists to localStorage v2", () => {
     const store = useNotificationStore();
     store.add({ title: "Saved", kind: "waiting", workspaceId: "ws1", viewId: "v1" });
-    const raw = JSON.parse(window.localStorage.getItem("strideterm-notifications-v2"));
+    const raw = JSON.parse(window.localStorage.getItem("strideterm-notifications-v2") ?? "null");
     expect(raw).toHaveLength(1);
     expect(raw[0].events[0].title).toBe("Saved");
     expect(raw[0].state).toBe("waiting");

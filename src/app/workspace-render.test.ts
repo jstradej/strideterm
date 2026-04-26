@@ -1,5 +1,6 @@
 import { describe, expect, test } from "vitest";
 import { buildWorkspaceCards, buildTabStripModel } from "./workspace-render.js";
+import type { WorkspaceState } from "../../electron/shared/types/state.js";
 
 describe("buildWorkspaceCards", () => {
   test("marks managed Azure review workspaces as child cards", () => {
@@ -12,20 +13,20 @@ describe("buildWorkspaceCards", () => {
           color: "#0078d4",
           icon: "AZ",
           cwd: "C:/reviews",
-          panels: [{ id: "shell" }],
-        },
+          panels: [{ id: "shell", title: "", command: "" }],
+        } as unknown as WorkspaceState,
         {
           id: "review-1",
           name: "web-app PR #123",
           kind: "terminal",
           color: "#0078d4",
           icon: "AZ",
-          panels: [{ id: "shell" }],
+          panels: [{ id: "shell", title: "", command: "" }],
           review: {
             provider: "azure-devops",
-            checkout: { mode: "managed-worktree" },
+            checkout: { mode: "managed-worktree", rootPath: "", cacheRepoPath: "" },
           },
-        },
+        } as unknown as WorkspaceState,
       ],
       activeWorkspaceId: "azure-root",
       getGitSnapshot: () => null,
@@ -38,7 +39,9 @@ describe("buildWorkspaceCards", () => {
 
   test("builds docker workspace card with Docker summary", () => {
     const [card] = buildWorkspaceCards({
-      workspaces: [{ id: "d1", name: "Docker", kind: "docker", color: "#0db7ed", icon: "D", panels: [] }],
+      workspaces: [
+        { id: "d1", name: "Docker", kind: "docker", color: "#0db7ed", icon: "D", panels: [] } as unknown as WorkspaceState,
+      ],
       activeWorkspaceId: "d1",
       getGitSnapshot: () => null,
       getWorkspaceAttention: () => null,

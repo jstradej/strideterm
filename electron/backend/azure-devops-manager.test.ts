@@ -10,33 +10,40 @@ import {
 } from "./azure-devops-manager.js";
 import { buildPullRequestSummary } from "./azure-devops-pr-summary.js";
 
-function createCredentialStore(secrets = {}) {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function createCredentialStore(secrets: Record<string, string> = {}) {
   return {
-    getSecret(ref) {
+    getSecret(ref: string) {
       return secrets[ref] || "";
     },
   };
 }
 
-function createReviewStore(initial = {}) {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function createReviewStore(initial: any = {}) {
   const state = {
-    trackedPullRequests: initial.trackedPullRequests || {},
-    connections: initial.connections || {},
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    trackedPullRequests: initial.trackedPullRequests || {} as Record<string, any>,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    connections: initial.connections || {} as Record<string, any>,
   };
   return {
     getState() {
       return state;
     },
-    getTrackedPullRequest(key) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    getTrackedPullRequest(key: any) {
       return state.trackedPullRequests[key] || null;
     },
-    async upsertTrackedPullRequest(key, patch) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async upsertTrackedPullRequest(key: any, patch: any) {
       state.trackedPullRequests[key] = {
         ...(state.trackedPullRequests[key] || {}),
         ...patch,
       };
     },
-    async upsertConnectionState(connectionId, patch) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async upsertConnectionState(connectionId: any, patch: any) {
       state.connections[connectionId] = {
         ...(state.connections[connectionId] || {}),
         ...patch,
@@ -222,10 +229,13 @@ function createManager({
   const reviewStore = createReviewStore({ trackedPullRequests });
   const fetchImpl = createFetchStub();
   const manager = new AzureDevOpsManager({
-    credentialStore: createCredentialStore(secrets),
-    reviewStore,
-    reviewBridgeStore,
-    fetchImpl,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    credentialStore: createCredentialStore(secrets) as any,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    reviewStore: reviewStore as any,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    reviewBridgeStore: reviewBridgeStore as any,
+    fetchImpl: fetchImpl as unknown as typeof fetch,
     execFileTextImpl,
     now: () => new Date("2026-03-17T10:00:00.000Z").getTime(),
   });
@@ -271,11 +281,12 @@ describe("AzureDevOpsManager", () => {
       },
     });
 
-    const snapshot = await manager.sync({
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const snapshot = (await manager.sync({
       connections: [connection],
       workspaces: [],
       gitSnapshots: {},
-    });
+    })) as any;
 
     expect(snapshot.inbox.needsMyReview).toHaveLength(1);
     expect(snapshot.inbox.needsMyReview[0]).toMatchObject({
@@ -307,7 +318,8 @@ describe("AzureDevOpsManager", () => {
     });
 
     const prKey = createPullRequestKey("ado-main", "repo-1", 123);
-    const snapshot = await manager.markPullRequestSeen(prKey);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const snapshot = (await manager.markPullRequestSeen(prKey)) as any;
 
     expect(snapshot.pullRequests[prKey].hasAttention).toBe(false);
     expect(snapshot.inbox.needsAttention).toEqual([]);
@@ -332,7 +344,8 @@ describe("AzureDevOpsManager", () => {
       gitSnapshots: {},
     });
 
-    const detail = await manager.ensurePullRequestDetail(createPullRequestKey("ado-main", "repo-1", 123), {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const detail = (await manager.ensurePullRequestDetail(createPullRequestKey("ado-main", "repo-1", 123), {
       workspaces: [
         {
           id: "workspace-1",
@@ -343,7 +356,7 @@ describe("AzureDevOpsManager", () => {
           },
         },
       ],
-    });
+    })) as any;
 
     expect(detail.changedFiles[0].path).toBe("/src/auth.js");
     expect(detail.localChangedFiles[0]).toEqual({
@@ -379,7 +392,8 @@ describe("AzureDevOpsManager", () => {
       gitSnapshots: {},
     });
 
-    const result = await manager.openReviewWorkspace({
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const result = (await manager.openReviewWorkspace({
       state: {
         activeProfileId: "default",
         tabTemplates: [
@@ -401,7 +415,7 @@ describe("AzureDevOpsManager", () => {
         ],
       },
       prKey: createPullRequestKey("ado-main", "repo-1", 123),
-    });
+    })) as any;
 
     expect(result.created).toBe(true);
     expect(result.workspace.review.provider).toBe("azure-devops");
@@ -423,7 +437,8 @@ describe("AzureDevOpsManager", () => {
       gitSnapshots: {},
     });
 
-    const result = await manager.openReviewWorkspace({
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const result = (await manager.openReviewWorkspace({
       state: {
         activeProfileId: "default",
         tabTemplates: [],
@@ -446,7 +461,7 @@ describe("AzureDevOpsManager", () => {
         ],
       },
       prKey: createPullRequestKey("ado-main", "repo-1", 123),
-    });
+    })) as any;
 
     expect(result.workspace.panels).toHaveLength(3);
     expect(result.workspace.panels[1]).toMatchObject({
@@ -475,7 +490,9 @@ describe("AzureDevOpsManager", () => {
       gitSnapshots: {},
     });
 
-    const summary = manager.getSnapshot().pullRequests[createPullRequestKey("ado-main", "repo-1", 123)];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const summary = manager.getSnapshot().pullRequests[createPullRequestKey("ado-main", "repo-1", 123)] as any;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const paths = manager.buildManagedReviewPaths(summary, {
       profileId: "default",
       workspaces: [
@@ -487,20 +504,22 @@ describe("AzureDevOpsManager", () => {
           panels: [],
         },
       ],
-    });
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    }) as any;
 
     expect(paths).toMatchObject({
       parentWorkspaceId: "azure-root",
     });
-    expect(paths.rootPath).toContain(path.join("reviews", "ado-main"));
-    expect(paths.rootPath).toContain("pr-123");
-    expect(paths.cacheRepoPath).toContain(path.join("repos", "ado-main"));
-    expect(paths.cacheRepoPath).toContain("repo-1");
+    expect(paths!.rootPath).toContain(path.join("reviews", "ado-main"));
+    expect(paths!.rootPath).toContain("pr-123");
+    expect(paths!.cacheRepoPath).toContain(path.join("repos", "ado-main"));
+    expect(paths!.cacheRepoPath).toContain("repo-1");
   });
 
   test("derives a clone URL when Azure omits repository.remoteUrl", async () => {
     const execFileTextImpl = vi.fn().mockResolvedValue({ stdout: "", stderr: "" });
     const { manager } = createManager({ execFileTextImpl });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     manager.setSnapshot({
       connections: [connection],
       inbox: {
@@ -531,7 +550,8 @@ describe("AzureDevOpsManager", () => {
         lastStartedAt: null,
         lastCompletedAt: null,
       },
-    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any);
 
     await manager.openReviewWorkspace({
       state: {
@@ -598,14 +618,15 @@ describe("AzureDevOpsManager", () => {
       gitSnapshots: {},
     });
 
-    const result = await manager.openReviewWorkspace({
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const result = (await manager.openReviewWorkspace({
       state: {
         activeProfileId: "default",
         tabTemplates: [],
         workspaces: [],
       },
       prKey: createPullRequestKey("ado-main", "repo-1", 123),
-    });
+    })) as any;
 
     const cloneCall = execFileTextImpl.mock.calls.find((call) => call[1].includes("clone"));
     const worktreeCall = execFileTextImpl.mock.calls.find(
@@ -710,6 +731,7 @@ describe("AzureDevOpsManager", () => {
 
   test("fails clearly when a matched workspace has no cwd", async () => {
     const { manager } = createManager();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     manager.setSnapshot({
       connections: [connection],
       inbox: {
@@ -741,7 +763,8 @@ describe("AzureDevOpsManager", () => {
         lastStartedAt: null,
         lastCompletedAt: null,
       },
-    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any);
 
     await expect(
       manager.openReviewWorkspace({

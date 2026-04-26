@@ -18,7 +18,8 @@ afterEach(async () => {
 
 // -- Helpers for mock fetch --
 
-function mockRelease(tag, { prerelease = false, draft = false } = {}) {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function mockRelease(tag: any, { prerelease = false, draft = false } = {}) {
   return {
     tag_name: tag,
     html_url: `https://github.com/test/repo/releases/tag/${tag}`,
@@ -28,11 +29,14 @@ function mockRelease(tag, { prerelease = false, draft = false } = {}) {
   };
 }
 
-function createMockFetch(releases, { etag = '"abc"', status = 200 } = {}) {
-  return async (_url, _opts) => ({
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function createMockFetch(releases: any, { etag = '"abc"', status = 200 } = {}) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return async (_url: any, _opts: any) => ({
     ok: status >= 200 && status < 300,
     status,
-    headers: { get: (name) => (name === "etag" ? etag : null) },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    headers: { get: (name: any) => (name === "etag" ? etag : null) },
     json: async () => releases,
   });
 }
@@ -44,7 +48,8 @@ function createFailingFetch() {
 }
 
 function create304Fetch() {
-  return async () => ({
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return async (): Promise<any> => ({
     ok: false,
     status: 304,
     headers: { get: () => null },
@@ -126,11 +131,11 @@ describe("createVersionChecker", () => {
 
     const result = await checker.checkForUpdates();
 
-    expect(result.latestVersion).toBe("1.6.0");
-    expect(result.versionsBehind).toBe(2);
-    expect(result.releases).toHaveLength(2);
-    expect(result.releases[0].tag).toBe("v1.6.0");
-    expect(result.releases[1].tag).toBe("v1.5.0");
+    expect(result!.latestVersion).toBe("1.6.0");
+    expect(result!.versionsBehind).toBe(2);
+    expect(result!.releases).toHaveLength(2);
+    expect(result!.releases[0].tag).toBe("v1.6.0");
+    expect(result!.releases[1].tag).toBe("v1.5.0");
   });
 
   test("filters out nightly, prerelease, and draft", async () => {
@@ -151,8 +156,8 @@ describe("createVersionChecker", () => {
 
     const result = await checker.checkForUpdates();
 
-    expect(result.versionsBehind).toBe(2);
-    expect(result.releases.map((r) => r.tag)).toEqual(["v2.0.0", "v1.5.0"]);
+    expect(result!.versionsBehind).toBe(2);
+    expect(result!.releases.map((r) => r.tag)).toEqual(["v2.0.0", "v1.5.0"]);
   });
 
   test("returns 0 versions behind when up to date", async () => {
@@ -167,9 +172,9 @@ describe("createVersionChecker", () => {
 
     const result = await checker.checkForUpdates();
 
-    expect(result.versionsBehind).toBe(0);
-    expect(result.releases).toHaveLength(0);
-    expect(result.latestVersion).toBe("1.4.1");
+    expect(result!.versionsBehind).toBe(0);
+    expect(result!.releases).toHaveLength(0);
+    expect(result!.latestVersion).toBe("1.4.1");
   });
 
   test("handles network error gracefully, returns null on first check", async () => {
@@ -196,7 +201,7 @@ describe("createVersionChecker", () => {
       fetchImpl: createMockFetch([mockRelease("v1.5.0")]),
     });
     const first = await checker.checkForUpdates();
-    expect(first.versionsBehind).toBe(1);
+    expect(first!.versionsBehind).toBe(1);
 
     // Second: network error — should return the cached first result
     const checker2 = createVersionChecker({
@@ -206,7 +211,7 @@ describe("createVersionChecker", () => {
       fetchImpl: createFailingFetch(),
     });
     const second = await checker2.checkForUpdates(true);
-    expect(second.versionsBehind).toBe(1);
+    expect(second!.versionsBehind).toBe(1);
   });
 
   test("304 Not Modified returns cached data with updated timestamp", async () => {
@@ -235,14 +240,15 @@ describe("createVersionChecker", () => {
     });
     const second = await checker2.checkForUpdates(true);
 
-    expect(second.versionsBehind).toBe(1);
-    expect(second.lastCheckAt).not.toBe("2020-01-01T00:00:00.000Z");
+    expect(second!.versionsBehind).toBe(1);
+    expect(second!.lastCheckAt).not.toBe("2020-01-01T00:00:00.000Z");
   });
 
   test("throttle: second call within 24h returns cache without fetching", async () => {
     const dir = await createTempDir();
     let fetchCount = 0;
-    const countingFetch = async (url, opts) => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const countingFetch = async (url: any, opts: any) => {
       fetchCount++;
       return createMockFetch([mockRelease("v1.5.0")])(url, opts);
     };
@@ -264,7 +270,8 @@ describe("createVersionChecker", () => {
   test("force bypasses throttle", async () => {
     const dir = await createTempDir();
     let fetchCount = 0;
-    const countingFetch = async (url, opts) => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const countingFetch = async (url: any, opts: any) => {
       fetchCount++;
       return createMockFetch([mockRelease("v1.5.0")])(url, opts);
     };
@@ -285,8 +292,9 @@ describe("createVersionChecker", () => {
 
   test("sends ETag in request when cached", async () => {
     const dir = await createTempDir();
-    let capturedHeaders;
-    const capturingFetch = async (url, opts) => {
+    let capturedHeaders: any;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const capturingFetch = async (url: any, opts: any) => {
       capturedHeaders = opts.headers;
       return createMockFetch([mockRelease("v1.5.0")], { etag: '"etag-value"' })(url, opts);
     };
@@ -332,7 +340,7 @@ describe("createVersionChecker", () => {
     const cached = checker.getCachedResult();
 
     expect(cached).not.toBeNull();
-    expect(cached.versionsBehind).toBe(1);
+    expect(cached!.versionsBehind).toBe(1);
   });
 
   test("invalid repository URL returns no-op checker", async () => {
@@ -366,7 +374,7 @@ describe("createVersionChecker", () => {
     });
     // Throttle will kick in since lastCheckAt is fresh
     const result = await checker2.checkForUpdates();
-    expect(result.versionsBehind).toBe(2);
+    expect(result!.versionsBehind).toBe(2);
   });
 
   test("handles non-OK response (rate limit) gracefully", async () => {
@@ -375,7 +383,8 @@ describe("createVersionChecker", () => {
       currentVersion: "1.4.1",
       repositoryUrl: "https://github.com/test/repo",
       userDataPath: dir,
-      fetchImpl: async () => ({ ok: false, status: 403, headers: { get: () => null } }),
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      fetchImpl: async (): Promise<any> => ({ ok: false, status: 403, headers: { get: () => null } }),
     });
 
     const result = await checker.checkForUpdates();

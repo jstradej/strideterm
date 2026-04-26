@@ -72,7 +72,7 @@ describe("default state", () => {
 
     const copilot = state.tabTemplates.find((tpl) => tpl.id === "copilot");
     expect(copilot).toMatchObject({ title: "GitHub Copilot", command: "copilot" });
-    expect(copilot.icon).toBeTruthy();
+    expect(copilot!.icon).toBeTruthy();
   });
 
   test("default tab templates include PowerShell right after Shell", () => {
@@ -156,8 +156,8 @@ describe("default state", () => {
     });
 
     const logsPanel = workspace.panels.find((panel) => panel.id === "logs");
-    expect(logsPanel.launch.file).toBe("wsl.exe");
-    expect(logsPanel.launch.args[3]).toContain("docker logs -f api");
+    expect(logsPanel!.launch!.file).toBe("wsl.exe");
+    expect(logsPanel!.launch!.args![3]).toContain("docker logs -f api");
   });
 
   test("normalizeWorkspace preserves plugin workspace metadata", () => {
@@ -219,9 +219,9 @@ describe("default state", () => {
       },
     });
 
-    expect(workspace.review.prKey).toBe("ado-main:repo-1:123");
-    expect(workspace.review.parentWorkspaceId).toBe("azure-root");
-    expect(workspace.review.checkout.cacheRepoPath).toBe("C:/cache/repo");
+    expect(workspace.review!.prKey).toBe("ado-main:repo-1:123");
+    expect(workspace.review!.parentWorkspaceId).toBe("azure-root");
+    expect(workspace.review!.checkout!.cacheRepoPath).toBe("C:/cache/repo");
   });
 
   test("normalizeState preserves Azure connection config", () => {
@@ -452,9 +452,9 @@ describe("default state", () => {
       },
     });
 
-    expect(workspace.task.promptSent).toBe(true);
-    expect(workspace.task.pausedFromState).toBe("evaluating");
-    expect(workspace.task.showerResumePrompt).toBe("Resume: continue working on the task");
+    expect(workspace.task!.promptSent).toBe(true);
+    expect(workspace.task!.pausedFromState).toBe("evaluating");
+    expect(workspace.task!.showerResumePrompt).toBe("Resume: continue working on the task");
   });
 
   test("normalizeWorkspace defaults task runtime properties to safe values", () => {
@@ -469,9 +469,9 @@ describe("default state", () => {
       },
     });
 
-    expect(workspace.task.promptSent).toBe(false);
-    expect(workspace.task.pausedFromState).toBe("");
-    expect(workspace.task.showerResumePrompt).toBe("");
+    expect(workspace.task!.promptSent).toBe(false);
+    expect(workspace.task!.pausedFromState).toBe("");
+    expect(workspace.task!.showerResumePrompt).toBe("");
   });
 
   test("workspace with gitRoots round-trips through normalize", () => {
@@ -523,8 +523,8 @@ describe("default state", () => {
 
     const apiPanel = workspace.panels.find((p) => p.id === "api");
     const webPanel = workspace.panels.find((p) => p.id === "web");
-    expect(apiPanel.cwd).toBe("C:/work/parent/api");
-    expect(webPanel.cwd).toBe("");
+    expect(apiPanel!.cwd).toBe("C:/work/parent/api");
+    expect(webPanel!.cwd).toBe("");
   });
 
   test("activeRootPath is preserved in workspace uiState", () => {

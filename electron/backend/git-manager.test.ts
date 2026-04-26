@@ -1162,7 +1162,8 @@ describe("GitManager", () => {
       mgr.detectLazygit = async () => ({ available: false, backend: null, error: "missing", launch: null });
 
       const auditEntries: Array<Record<string, unknown>> = [];
-      mgr._logGitAudit = (entry) => auditEntries.push(entry);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mgr._logGitAudit = (entry: any) => auditEntries.push(entry);
 
       const workspace = {
         id: "ws-audit",
@@ -1206,7 +1207,8 @@ describe("GitManager", () => {
 
     test("returns N snapshots for N gitRoots entries", async () => {
       const mgr = new GitManager({});
-      mgr._inspectRoot = vi.fn().mockImplementation(async (ws: WorkspaceRef, rp: string) => ({
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mgr._inspectRoot = vi.fn().mockImplementation(async (ws: any, rp: string) => ({
         workspaceId: ws.id,
         rootPath: rp,
         available: true,
@@ -1221,7 +1223,8 @@ describe("GitManager", () => {
     test("refreshWorkspaces cache key isolates siblings", async () => {
       const mgr = new GitManager({});
       let inspectCount = 0;
-      mgr._inspectRoot = vi.fn().mockImplementation(async (ws: WorkspaceRef, rp: string) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mgr._inspectRoot = vi.fn().mockImplementation(async (ws: any, rp: string) => {
         inspectCount++;
         return { workspaceId: ws.id, rootPath: rp, available: true };
       });

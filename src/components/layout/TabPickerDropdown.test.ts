@@ -3,6 +3,7 @@ import { mount } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import TabPickerDropdown from "./TabPickerDropdown.vue";
 import { useAppStore } from "../../stores/app.js";
+import type { StatePayload } from "../../../electron/shared/types/state.js";
 
 beforeEach(() => {
   setActivePinia(createPinia());
@@ -27,11 +28,11 @@ describe("TabPickerDropdown", () => {
     });
     const dropdown = document.querySelector(".tab-picker-dropdown");
     expect(dropdown).not.toBeNull();
-    const buttons = dropdown.querySelectorAll("button");
+    const buttons = (dropdown as Element).querySelectorAll("button");
     // Without meta.platform set, platform-specific templates are NOT filtered out
     // (7 fallback + 1 SSH + 1 custom).
     expect(buttons.length).toBe(9);
-    const texts = Array.from(buttons).map((b) => b.textContent.trim());
+    const texts = Array.from(buttons).map((b) => b.textContent!.trim());
     expect(texts.some((t) => t.includes("Shell"))).toBe(true);
     expect(texts.some((t) => t.includes("SSH"))).toBe(true);
     expect(texts.some((t) => t.includes("Custom"))).toBe(true);
@@ -40,13 +41,13 @@ describe("TabPickerDropdown", () => {
 
   test("filters fallback templates by platform when meta.platform is set (win32)", () => {
     const store = useAppStore();
-    store.payload = { meta: { platform: "win32" } };
+    store.payload = { meta: { platform: "win32" } } as unknown as StatePayload;
     const wrapper = mount(TabPickerDropdown, {
       props: { anchorRect: ANCHOR },
       attachTo: document.body,
     });
     const dropdown = document.querySelector(".tab-picker-dropdown");
-    const texts = Array.from(dropdown.querySelectorAll("button")).map((b) => b.textContent.trim());
+    const texts = Array.from((dropdown as Element).querySelectorAll("button")).map((b) => b.textContent!.trim());
     expect(texts.some((t) => t.includes("PowerShell"))).toBe(true);
     expect(texts.some((t) => t.includes("Bash"))).toBe(false);
     expect(texts.some((t) => t.includes("Zsh"))).toBe(false);
@@ -55,13 +56,13 @@ describe("TabPickerDropdown", () => {
 
   test("filters fallback templates by platform when meta.platform is set (linux)", () => {
     const store = useAppStore();
-    store.payload = { meta: { platform: "linux" } };
+    store.payload = { meta: { platform: "linux" } } as unknown as StatePayload;
     const wrapper = mount(TabPickerDropdown, {
       props: { anchorRect: ANCHOR },
       attachTo: document.body,
     });
     const dropdown = document.querySelector(".tab-picker-dropdown");
-    const texts = Array.from(dropdown.querySelectorAll("button")).map((b) => b.textContent.trim());
+    const texts = Array.from((dropdown as Element).querySelectorAll("button")).map((b) => b.textContent!.trim());
     expect(texts.some((t) => t.includes("Bash"))).toBe(true);
     expect(texts.some((t) => t.includes("Zsh"))).toBe(true);
     expect(texts.some((t) => t.includes("PowerShell"))).toBe(false);
@@ -73,19 +74,19 @@ describe("TabPickerDropdown", () => {
     store.payload = {
       appState: {
         tabTemplates: [
-          { title: "Dev Server", command: "npm run dev", icon: "\u{1F680}" },
-          { title: "Tests", command: "npm test", icon: "\u2705" },
+          { id: "tmpl-1", title: "Dev Server", command: "npm run dev", icon: "\u{1F680}" },
+          { id: "tmpl-2", title: "Tests", command: "npm test", icon: "✅" },
         ],
       },
-    };
+    } as unknown as StatePayload;
     const wrapper = mount(TabPickerDropdown, {
       props: { anchorRect: ANCHOR },
       attachTo: document.body,
     });
     const dropdown = document.querySelector(".tab-picker-dropdown");
-    const texts = Array.from(dropdown.querySelectorAll("button")).map((b) => b.textContent);
-    expect(texts.some((t) => t.includes("Dev Server"))).toBe(true);
-    expect(texts.some((t) => t.includes("Tests"))).toBe(true);
+    const texts = Array.from((dropdown as Element).querySelectorAll("button")).map((b) => b.textContent);
+    expect(texts.some((t) => t!.includes("Dev Server"))).toBe(true);
+    expect(texts.some((t) => t!.includes("Tests"))).toBe(true);
     wrapper.unmount();
   });
 });

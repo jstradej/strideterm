@@ -6,12 +6,14 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 import { createRuntime, detectTerminalEnvironment, hasMeaningfulUserInput } from "./runtime.js";
 import { createSessionId, normalizeState } from "./default-state.js";
 
-function createMemoryStore(initialState) {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function createMemoryStore(initialState?: any) {
   let state = normalizeState(initialState);
   let pending = Promise.resolve();
   let saveCalls = 0;
 
-  function enqueue(operation) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  function enqueue(operation: any) {
     const next = pending.then(operation, operation);
     pending = next.catch(() => {});
     return next;
@@ -21,13 +23,15 @@ function createMemoryStore(initialState) {
     getState() {
       return state;
     },
-    async replace(nextState) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async replace(nextState: any) {
       return enqueue(async () => {
         state = normalizeState(nextState);
         return state;
       });
     },
-    async mutate(mutator) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async mutate(mutator: any) {
       return enqueue(async () => {
         const draft = structuredClone(state);
         const result = await mutator(draft);
@@ -48,7 +52,24 @@ function createMemoryStore(initialState) {
 }
 
 class FakeSessionManager extends EventEmitter {
-  constructor({ getSessionEnv } = {}) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  declare sessions: Map<any, any>;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  declare syncedStates: any[];
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  declare removedProjects: any[];
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  declare closedSessions: any[];
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  declare resizeCalls: any[];
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  declare writeCalls: any[];
+  declare stopped: boolean;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  declare getSessionEnv: any;
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  constructor({ getSessionEnv }: any = {}) {
     super();
     this.sessions = new Map();
     this.syncedStates = [];
@@ -60,15 +81,18 @@ class FakeSessionManager extends EventEmitter {
     this.getSessionEnv = typeof getSessionEnv === "function" ? getSessionEnv : null;
   }
 
-  getWorkspace(state, projectId = state.activeProjectId) {
-    const project = state.projects.find((item) => item.id === projectId) || null;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  getWorkspace(state: any, projectId = state.activeProjectId) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const project = state.projects.find((item: any) => item.id === projectId) || null;
     if (!project) {
       return null;
     }
 
     return {
       project,
-      sessions: project.panels.map((panel) => ({
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      sessions: project.panels.map((panel: any) => ({
         sessionId: createSessionId(project.id, panel.id),
         panelId: panel.id,
         title: panel.title,
@@ -80,8 +104,10 @@ class FakeSessionManager extends EventEmitter {
     };
   }
 
-  resolveDefaultSessionId(state, projectId = state.activeProjectId) {
-    const project = state.projects.find((item) => item.id === projectId) || null;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  resolveDefaultSessionId(state: any, projectId = state.activeProjectId) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const project = state.projects.find((item: any) => item.id === projectId) || null;
     if (!project) {
       return null;
     }
@@ -90,10 +116,13 @@ class FakeSessionManager extends EventEmitter {
     return activePanelId ? createSessionId(project.id, activePanelId) : null;
   }
 
-  ensureSession(state, sessionId) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  ensureSession(state: any, sessionId: any) {
     const [projectId, panelId] = String(sessionId).split(":");
-    const project = state.projects.find((item) => item.id === projectId);
-    const panel = project?.panels.find((item) => item.id === panelId);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const project = state.projects.find((item: any) => item.id === projectId);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const panel = project?.panels.find((item: any) => item.id === panelId);
     if (!project || !panel) {
       return null;
     }
@@ -110,18 +139,21 @@ class FakeSessionManager extends EventEmitter {
     return session;
   }
 
-  async restartSession(state, sessionId) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  async restartSession(state: any, sessionId: any) {
     this.sessions.delete(sessionId);
     this.emit("terminal:exit", { sessionId, exitCode: 0, intentional: true });
     return this.ensureSession(state, sessionId);
   }
 
-  removeSession(sessionId) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  removeSession(sessionId: any) {
     this.closedSessions.push(sessionId);
     this.sessions.delete(sessionId);
   }
 
-  removeProjectSessions(projectId) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  removeProjectSessions(projectId: any) {
     this.removedProjects.push(projectId);
     for (const sessionId of [...this.sessions.keys()]) {
       if (sessionId.startsWith(`${projectId}:`)) {
@@ -130,18 +162,22 @@ class FakeSessionManager extends EventEmitter {
     }
   }
 
-  resizeSession(sessionId, cols, rows) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  resizeSession(sessionId: any, cols: any, rows: any) {
     this.resizeCalls.push({ sessionId, cols, rows });
   }
 
-  writeToSession(sessionId, data) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  writeToSession(sessionId: any, data: any) {
     this.writeCalls.push({ sessionId, data });
   }
 
-  syncWithState(state) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  syncWithState(state: any) {
     this.syncedStates.push(structuredClone(state));
     const validIds = new Set(
-      state.projects.flatMap((project) => project.panels.map((panel) => createSessionId(project.id, panel.id))),
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      state.projects.flatMap((project: any) => project.panels.map((panel: any) => createSessionId(project.id, panel.id))),
     );
     for (const sessionId of [...this.sessions.keys()]) {
       if (!validIds.has(sessionId)) {
@@ -157,6 +193,12 @@ class FakeSessionManager extends EventEmitter {
 }
 
 class FakeDockerManager extends EventEmitter {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  declare snapshot: any;
+  declare refreshCount: number;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  declare actions: any[];
+
   constructor() {
     super();
     this.snapshot = {
@@ -183,20 +225,25 @@ class FakeDockerManager extends EventEmitter {
     return this.snapshot;
   }
 
-  async performAction(action, containerId) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  async performAction(action: any, containerId: any) {
     this.actions.push({ action, containerId });
     return this.refresh();
   }
 
-  findContainer(containerId) {
-    return this.snapshot.containers.find((item) => item.ID === containerId) || null;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  findContainer(containerId: any) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return this.snapshot.containers.find((item: any) => item.ID === containerId) || null;
   }
 
-  createShellLaunch(containerId) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  createShellLaunch(containerId: any) {
     return { file: "docker", args: ["exec", "-it", containerId, "sh"] };
   }
 
-  createLogsLaunch(containerId) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  createLogsLaunch(containerId: any) {
     return { file: "docker", args: ["logs", "-f", containerId] };
   }
 
@@ -206,6 +253,13 @@ class FakeDockerManager extends EventEmitter {
 }
 
 class FakeGitManager extends EventEmitter {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  declare snapshots: Map<any, any>;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  declare refreshArgs: any[];
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  declare actions: any[];
+
   constructor() {
     super();
     this.snapshots = new Map();
@@ -217,14 +271,17 @@ class FakeGitManager extends EventEmitter {
     return Object.fromEntries(this.snapshots.entries());
   }
 
-  getSnapshot(projectId) {
+  getSnapshot(projectId: string) {
     return this.snapshots.get(projectId) || null;
   }
 
-  async refreshProjects(projects = []) {
-    this.refreshArgs.push(projects.map((project) => project.id));
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  async refreshProjects(projects: any[] = []) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    this.refreshArgs.push(projects.map((project: any) => project.id));
     this.snapshots = new Map(
-      projects.map((project) => [
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      projects.map((project: any) => [
         project.id,
         {
           projectId: project.id,
@@ -301,7 +358,8 @@ class FakeGitManager extends EventEmitter {
     return this.getProjectMap();
   }
 
-  async fetch(workspace) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  async fetch(workspace: any) {
     this.actions.push({ kind: "fetch", workspaceId: workspace.id });
     return {
       ok: true,
@@ -321,7 +379,8 @@ class FakeGitManager extends EventEmitter {
     };
   }
 
-  async mergeIntoCurrent(workspace, payload) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  async mergeIntoCurrent(workspace: any, payload: any) {
     this.actions.push({ kind: "merge", workspaceId: workspace.id, payload });
     return {
       ok: true,
@@ -341,7 +400,8 @@ class FakeGitManager extends EventEmitter {
     };
   }
 
-  async rebaseOnto(workspace, payload) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  async rebaseOnto(workspace: any, payload: any) {
     this.actions.push({ kind: "rebase", workspaceId: workspace.id, payload });
     return {
       ok: true,
@@ -361,7 +421,8 @@ class FakeGitManager extends EventEmitter {
     };
   }
 
-  async continueOperation(workspace) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  async continueOperation(workspace: any) {
     this.actions.push({ kind: "continue", workspaceId: workspace.id });
     return {
       ok: true,
@@ -381,7 +442,8 @@ class FakeGitManager extends EventEmitter {
     };
   }
 
-  async abortOperation(workspace) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  async abortOperation(workspace: any) {
     this.actions.push({ kind: "abort", workspaceId: workspace.id });
     return {
       ok: true,
@@ -401,7 +463,8 @@ class FakeGitManager extends EventEmitter {
     };
   }
 
-  async diffPreview(workspace, payload) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  async diffPreview(workspace: any, payload: any) {
     this.actions.push({ kind: "diff", workspaceId: workspace.id, payload });
     return {
       ok: true,
@@ -412,13 +475,22 @@ class FakeGitManager extends EventEmitter {
     };
   }
 
-  createLazygitLaunch(projectId) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  createLazygitLaunch(projectId: any) {
     const launch = this.snapshots.get(projectId)?.lazygit?.launch;
     return launch ? { file: launch.file, args: [...launch.args] } : null;
   }
 }
 
 class FakeTunnelManager extends EventEmitter {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  declare snapshot: any;
+  declare refreshCount: number;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  declare startCalls: any[];
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  declare stopCalls: any[];
+
   constructor() {
     super();
     this.snapshot = {
@@ -446,7 +518,8 @@ class FakeTunnelManager extends EventEmitter {
     return this.getSnapshot();
   }
 
-  async startQuickTunnel(localUrl) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  async startQuickTunnel(localUrl: any) {
     this.startCalls.push(localUrl);
     this.snapshot = {
       ...this.snapshot,
@@ -501,7 +574,8 @@ function createPluginManagerStub() {
   });
 }
 
-async function createFixture({ initialState, execFileTextImpl, dependencies = {} } = {}) {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function createFixture({ initialState, execFileTextImpl, dependencies = {} }: { initialState?: any; execFileTextImpl?: any; dependencies?: any } = {}) {
   const userDataPath = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-runtime-"));
   const store = createMemoryStore(initialState);
   const sessionManager = new FakeSessionManager();
@@ -520,28 +594,34 @@ async function createFixture({ initialState, execFileTextImpl, dependencies = {}
 
   const runtime = await createRuntime({
     userDataPath,
-    builtinPluginsDir: null,
+    builtinPluginsDir: null as unknown as string,
     getThemeSource: () => "light",
     dependencies: {
       createStore: async () => store,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       SessionManager: class extends FakeSessionManager {
-        constructor(opts) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        constructor(opts: any) {
+          super();
           sessionManager.getSessionEnv = typeof opts?.getSessionEnv === "function" ? opts.getSessionEnv : null;
           return sessionManager;
         }
       },
       DockerManager: class extends FakeDockerManager {
         constructor() {
+          super();
           return docker;
         }
       },
       GitManager: class extends FakeGitManager {
         constructor() {
+          super();
           return git;
         }
       },
       CloudflareTunnelManager: class extends FakeTunnelManager {
         constructor() {
+          super();
           return tunnel;
         }
       },
@@ -567,8 +647,9 @@ async function createFixture({ initialState, execFileTextImpl, dependencies = {}
   };
 }
 
-const fixtures = [];
-const tempPaths = [];
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const fixtures: any[] = [];
+const tempPaths: string[] = [];
 
 afterEach(async () => {
   await Promise.all(
@@ -692,7 +773,8 @@ describe("runtime integration", () => {
       },
     });
     fixtures.push(fixture);
-    fixture.reviewBridgeStore.getPullRequestContext.mockReturnValue({
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (fixture.reviewBridgeStore.getPullRequestContext as any).mockReturnValue({
       prKey: "ado-main:repo-1:123",
       briefMarkdownPath: "/tmp/review/agent-brief.md",
       databasePath: "/tmp/review/review-bridge.db",
@@ -711,6 +793,9 @@ describe("runtime integration", () => {
 
   test("repairs persisted azure review workspaces that lost review metadata", async () => {
     class FakeAzureManager extends EventEmitter {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      declare snapshot: any;
+
       constructor() {
         super();
         this.snapshot = {
@@ -772,7 +857,8 @@ describe("runtime integration", () => {
         };
       }
 
-      buildReviewMetadata(summary, checkout, mode, extra = {}) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      buildReviewMetadata(summary: any, checkout: any, mode: any, extra: any = {}) {
         return {
           provider: "azure-devops",
           prKey: summary.prKey,
@@ -844,6 +930,9 @@ describe("runtime integration", () => {
 
   test("repairs persisted inactive azure review workspaces from tracked pull requests", async () => {
     class FakeAzureManager extends EventEmitter {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      declare snapshot: any;
+
       constructor() {
         super();
         this.snapshot = {
@@ -1710,8 +1799,10 @@ describe("runtime integration", () => {
   test("restarts cloudflare tunnel and emits remote config changes when settings change", async () => {
     const fixture = await createFixture();
     fixtures.push(fixture);
-    const configChanges = [];
-    fixture.runtime.on("remote:config-changed", (payload) => configChanges.push(payload));
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const configChanges: any[] = [];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    fixture.runtime.on("remote:config-changed", (payload: any) => configChanges.push(payload));
 
     fixture.tunnel.snapshot.status = "connected";
     const result = await fixture.runtime.updateSettings({
@@ -1784,7 +1875,8 @@ describe("runtime integration", () => {
 
     expect(payload.appState.activeProjectId).toBe("docker");
     expect(payload.workspace.project.activePanelId).toBe("logs-abc123");
-    expect(payload.workspace.project.panels.some((panel) => panel.id === "logs-abc123")).toBe(true);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect(payload.workspace.project.panels.some((panel: any) => panel.id === "logs-abc123")).toBe(true);
     expect(fixture.sessionManager.sessions.has("docker:logs-abc123")).toBe(true);
     expect(fixture.sessionManager.syncedStates).not.toHaveLength(0);
   });
@@ -1826,7 +1918,7 @@ describe("runtime integration", () => {
     );
     const gitignore = await fs.readFile(path.join(projectRoot, ".gitignore"), "utf8");
     expect(gitignore).toContain(".strideterm/");
-    const projectWorkspaces = payload.appState.projects.filter((project) => project.kind !== "azure");
+    const projectWorkspaces = payload.appState.projects!.filter((project) => project.kind !== "azure");
     expect(projectWorkspaces).toHaveLength(2);
     expect(payload.appState.activeProjectId).toBe(projectWorkspaces[1].id);
     expect(projectWorkspaces[1].cwd).toBe(path.join(projectRoot, ".strideterm", "tree", "feature-x"));
@@ -1881,7 +1973,7 @@ describe("runtime integration", () => {
     );
     const gitignore = await fs.readFile(path.join(repoA, ".gitignore"), "utf8");
     expect(gitignore).toContain(".strideterm/");
-    const child = payload.appState.projects.find((p) => p.name === "Stack / feature-x");
+    const child = payload.appState.projects!.find((p) => p.name === "Stack / feature-x");
     expect(child?.cwd).toBe(path.join(repoA, ".strideterm", "tree", "feature-x"));
     // Child inherits nothing from multi-repo — it's a single-repo worktree
     expect(child?.gitRoots || []).toHaveLength(0);

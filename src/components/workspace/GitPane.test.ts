@@ -4,6 +4,7 @@ import { createPinia, setActivePinia } from "pinia";
 import GitPane from "./GitPane.vue";
 import { useAppStore } from "../../stores/app.js";
 import { useGitUiStore } from "../../stores/git-ui.js";
+import type { StatePayload, GitSnapshot } from "../../../electron/shared/types/state.js";
 
 function buildWorkspace(overrides: Record<string, unknown> = {}) {
   return {
@@ -27,7 +28,7 @@ function buildWorkspace(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function makeSnapshot(rootPath: string = "/ms/api") {
+function makeSnapshot(rootPath: string = "/ms/api"): GitSnapshot {
   return {
     available: true,
     branch: "main",
@@ -41,16 +42,37 @@ function makeSnapshot(rootPath: string = "/ms/api") {
     unstaged: [],
     untracked: [],
     remotes: {},
-    operationState: { kind: "idle", inProgress: false, conflicts: [] },
-    compareWithBase: null,
-    upstream: null,
+    operationState: { kind: "idle", inProgress: false, conflicts: [], label: "", details: "", canContinue: false, canAbort: false },
+    compareWithBase: null as unknown as GitSnapshot["compareWithBase"],
+    upstream: "",
     commitCount: 1,
-    recentLog: [],
     stashCount: 0,
-    lazygit: { available: false },
+    lazygit: { available: false, backend: null, error: "" },
     rootPath,
     workspaceId: "ws-test",
-  };
+    // required GitSnapshot fields
+    cwd: rootPath,
+    root: rootPath,
+    repository: "repo",
+    status: [],
+    changes: {
+      staged: { name: "staged", files: [], diffStat: { files: 0, insertions: 0, deletions: 0, renames: 0, deletes: 0 } },
+      unstaged: { name: "unstaged", files: [], diffStat: { files: 0, insertions: 0, deletions: 0, renames: 0, deletes: 0 } },
+      untracked: { name: "untracked", files: [], diffStat: { files: 0, insertions: 0, deletions: 0, renames: 0, deletes: 0 } },
+    },
+    diffStat: { files: 0, insertions: 0, deletions: 0, renames: 0, deletes: 0 },
+    log: [],
+    gitDir: "",
+    gitCommonDir: "",
+    worktreePath: rootPath,
+    mainWorktreePath: rootPath,
+    siblingWorktrees: [],
+    baseBranch: "",
+    branchNames: [],
+    lastFetchAt: null,
+    error: "",
+    lastUpdatedAt: new Date().toISOString(),
+  } as unknown as GitSnapshot;
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -67,7 +89,7 @@ function mountPane(workspaceId: string, workspaces: any[] = []) {
         [workspaceId]: makeSnapshot(),
       },
     },
-  };
+  } as unknown as StatePayload;
   return shallowMount(GitPane, {
     props: { workspaceId },
   });
@@ -116,7 +138,11 @@ describe("GitPane repo picker", () => {
     expect(gitUiStore.getActiveRoot("ws-tabs")).toBe("/ms/api");
 
     // Switch sub-tab
-    gitUiStore.gitSwitchTab?.("ws-tabs", "changes") || (gitUiStore.get("ws-tabs").activeTab = "changes");
+    if (gitUiStore.gitSwitchTab) {
+      gitUiStore.gitSwitchTab("ws-tabs", "changes");
+    } else {
+      gitUiStore.get("ws-tabs").activeTab = "changes";
+    }
 
     // Root should be unchanged
     expect(gitUiStore.getActiveRoot("ws-tabs")).toBe("/ms/api");

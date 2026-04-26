@@ -1,7 +1,8 @@
 import { describe, expect, test } from "vitest";
 import { shouldRenderActiveWorkspace } from "./runtime-bindings.js";
+import type { StatePayload } from "../../electron/shared/types/state.js";
 
-function createPayload(overrides = {}) {
+function createPayload(overrides = {}): StatePayload {
   return {
     appState: {
       activeWorkspaceId: "workspace-1",
@@ -40,7 +41,7 @@ function createPayload(overrides = {}) {
       pullRequests: {},
     },
     ...overrides,
-  };
+  } as unknown as StatePayload;
 }
 
 describe("shouldRenderActiveWorkspace", () => {

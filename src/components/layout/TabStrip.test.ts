@@ -3,12 +3,26 @@ import { mount } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import TabStrip from "./TabStrip.vue";
 import { useAppStore } from "../../stores/app.js";
+import type { StatePayload } from "../../../electron/shared/types/state.js";
 
 beforeEach(() => {
   setActivePinia(createPinia());
 });
 
-function makePayload(sessions) {
+interface SessionInput {
+  id: string;
+  panelId?: string;
+  title: string;
+  status?: string;
+  tone?: string;
+  activity?: string;
+  lastExitCode?: number | null;
+  lastCommandFinishedAt?: number;
+  persistent?: boolean;
+  closable?: boolean;
+}
+
+function makePayload(sessions: SessionInput[]): StatePayload {
   return {
     workspace: {
       workspace: {
@@ -33,7 +47,7 @@ function makePayload(sessions) {
       workspaces: [{ id: "ws1", kind: "terminal", panels: [], profileId: "default", activeProfileId: "default" }],
       activeProfileId: "default",
     },
-  };
+  } as unknown as StatePayload;
 }
 
 describe("TabStrip", () => {

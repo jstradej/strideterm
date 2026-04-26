@@ -14,11 +14,12 @@ import {
   HOOKS_TO_REGISTER,
 } from "./copilot-hook-config.js";
 
-let tempDir;
-let mockHomedir;
-let userDataPath;
-let originalHomedir;
-let originalCopilotHome;
+let tempDir: string;
+let mockHomedir: string;
+let userDataPath: string;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let originalHomedir: any;
+let originalCopilotHome: string | undefined;
 
 beforeEach(async () => {
   tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-copilot-hook-"));
@@ -49,7 +50,7 @@ describe("configureCopilotHook", () => {
     expect(result.configPath).toBe(path.join(mockHomedir, ".copilot", "config.json"));
     expect(result.scriptPath).toBe(path.join(userDataPath, "hooks", "notify.mjs"));
 
-    expect(existsSync(result.scriptPath)).toBe(true);
+    expect(existsSync(result.scriptPath!)).toBe(true);
 
     const config = JSON.parse(await fs.readFile(getCopilotConfigPath(), "utf8"));
     for (const [copilotEvent, canonicalName] of Object.entries(COPILOT_HOOK_MAP)) {

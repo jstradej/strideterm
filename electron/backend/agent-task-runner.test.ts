@@ -9,16 +9,21 @@ import {
 } from "./agent-task-runner.js";
 import { TODO_FILE, WORK_LOCK_FILE, formatVerifyChecklist, taskDir } from "./agent-task-utils.js";
 
-function createMockDeps(workspaces = []) {
-  const written = [];
-  const alerts = [];
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function createMockDeps(workspaces: any[] = []): any {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const written: any[] = [];
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const alerts: any[] = [];
   let broadcastCount = 0;
 
   return {
-    writeToSession: vi.fn((sessionId, data) => written.push({ sessionId, data })),
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    writeToSession: vi.fn((sessionId: any, data: any) => written.push({ sessionId, data })),
     getState: () => ({ workspaces, activeProfileId: "default" }),
     broadcastState: vi.fn(() => broadcastCount++),
-    raiseAlert: vi.fn((alert) => alerts.push(alert)),
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    raiseAlert: vi.fn((alert: any) => alerts.push(alert)),
     restartSession: vi.fn(async () => {}),
     written,
     alerts,
@@ -28,7 +33,8 @@ function createMockDeps(workspaces = []) {
   };
 }
 
-function createTaskWorkspace(runner, overrides = {}) {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function createTaskWorkspace(runner: any, overrides: any = {}) {
   const ws = runner.createTaskWorkspace({
     state: { activeProfileId: "default" },
     description: overrides.description || "Implement feature X",
@@ -40,9 +46,12 @@ function createTaskWorkspace(runner, overrides = {}) {
 }
 
 describe("AgentTaskRunner", () => {
-  let runner;
-  let deps;
-  let workspace;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let runner: any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let deps: any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let workspace: any;
 
   beforeEach(() => {
     runner = new AgentTaskRunner();
@@ -484,7 +493,8 @@ describe("AgentTaskRunner", () => {
       const sessionId = `${workspace.id}:${workspace.task.workerPanelId}`;
       runner.onSessionExit(sessionId); // triggers task-failed (urgent)
 
-      expect(deps.alerts.some((a) => a.urgency === "urgent" && /^task-failed/.test(a.detail))).toBe(true);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      expect(deps.alerts.some((a: any) => a.urgency === "urgent" && /^task-failed/.test(a.detail))).toBe(true);
     });
 
     test("max-rounds failure routes through raiseAlert with urgent urgency", () => {
@@ -572,7 +582,8 @@ describe("AgentTaskRunner", () => {
       const runner2 = new AgentTaskRunner();
       runner2.init(createMockDeps([ws]));
 
-      const snapshot = runner2.getTaskSnapshot();
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const snapshot = runner2.getTaskSnapshot() as Record<string, any>;
       expect(snapshot[ws.id].judgeExecutionMode).toBe(
         process.platform === "win32" ? "headless-copilot" : "interactive",
       );
@@ -596,10 +607,13 @@ describe("AgentTaskRunner", () => {
 
 describe("formatVerifyChecklist", () => {
   test("formats detected commands as markdown checklist", () => {
-    const result = formatVerifyChecklist([
-      { label: "Tests", command: "npm test", timeoutMs: 60_000 },
-      { label: "Lint", command: "npm run lint", timeoutMs: 60_000 },
-    ]);
+    const result = formatVerifyChecklist(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      [
+        { label: "Tests", command: "npm test", timeoutMs: 60_000 },
+        { label: "Lint", command: "npm run lint", timeoutMs: 60_000 },
+      ] as any,
+    );
     expect(result).toBe("- [ ] Run `npm test` — must pass\n- [ ] Run `npm run lint` — must pass");
   });
 
@@ -608,8 +622,10 @@ describe("formatVerifyChecklist", () => {
   });
 
   test("returns empty string for null/undefined", () => {
-    expect(formatVerifyChecklist(null)).toBe("");
-    expect(formatVerifyChecklist(undefined)).toBe("");
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect(formatVerifyChecklist(null as any)).toBe("");
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect(formatVerifyChecklist(undefined as any)).toBe("");
   });
 });
 
@@ -702,7 +718,8 @@ describe("startTask - prompt sent tracking", () => {
     expect(ws.task.state).toBe("running");
     // Worker panel should have received the prompt string (pasted via writeToSession)
     const workerSessionId = `${ws.id}:${ws.task.workerPanelId}`;
-    const written = deps.written.filter((w) => w.sessionId === workerSessionId);
+    const written = deps.written// eslint-disable-next-line @typescript-eslint/no-explicit-any
+    .filter((w: any) => w.sessionId === workerSessionId);
     expect(written.length).toBeGreaterThan(0);
   });
 });
@@ -743,7 +760,8 @@ describe("resumeTask - late prompt delivery", () => {
       await new Promise((resolve) => setTimeout(resolve, 10));
     }
 
-    const written = deps.written.filter((w) => w.sessionId === workerSessionId);
+    const written = deps.written// eslint-disable-next-line @typescript-eslint/no-explicit-any
+    .filter((w: any) => w.sessionId === workerSessionId);
     expect(written.length).toBeGreaterThan(0);
     expect(ws.task.promptSent).toBe(true);
   });
@@ -783,20 +801,25 @@ describe("resumeTask - late prompt delivery", () => {
     // gap is 30ms × ~90 chars + 150ms enter ≈ 2.9s; give the loop 6s headroom.
     const deadline = Date.now() + 6000;
     while (Date.now() < deadline) {
-      if (deps.written.some((w) => w.sessionId === sessionId && w.data === "\r")) break;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      if (deps.written.some((w: any) => w.sessionId === sessionId && w.data === "\r")) break;
       await new Promise((resolve) => setTimeout(resolve, 20));
     }
 
-    const writes = deps.written.filter((w) => w.sessionId === sessionId);
+    const writes = deps.written// eslint-disable-next-line @typescript-eslint/no-explicit-any
+    .filter((w: any) => w.sessionId === sessionId);
 
     // Many separate writes (one per char), NOT a single bulk write of the prompt.
     expect(writes.length).toBeGreaterThan(10);
-    const bulkWrite = writes.find((w) => w.data && w.data.length > 5);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const bulkWrite = writes.find((w: any) => w.data && w.data.length > 5);
     expect(bulkWrite).toBeUndefined();
 
     // Final Enter must be present and come AFTER the last text char.
-    expect(writes.some((w) => w.data === "\r")).toBe(true);
-    const dataSeq = writes.map((w) => w.data);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect(writes.some((w: any) => w.data === "\r")).toBe(true);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const dataSeq = writes.map((w: any) => w.data);
     const lastEnterIdx = dataSeq.lastIndexOf("\r");
     expect(lastEnterIdx).toBe(dataSeq.length - 1);
 
@@ -823,11 +846,13 @@ describe("resumeTask - late prompt delivery", () => {
     const sessionId = `${ws.id}:${ws.task.workerPanelId}`;
     const deadline = Date.now() + 2000;
     while (Date.now() < deadline) {
-      if (deps.written.filter((w) => w.sessionId === sessionId).length >= 2) break;
+      if (deps.written// eslint-disable-next-line @typescript-eslint/no-explicit-any
+    .filter((w: any) => w.sessionId === sessionId).length >= 2) break;
       await new Promise((resolve) => setTimeout(resolve, 20));
     }
 
-    const writes = deps.written.filter((w) => w.sessionId === sessionId);
+    const writes = deps.written// eslint-disable-next-line @typescript-eslint/no-explicit-any
+    .filter((w: any) => w.sessionId === sessionId);
 
     // Claude should get ONE bulk text write + ONE \r (two writes total).
     expect(writes.length).toBe(2);
@@ -874,7 +899,8 @@ describe("resumeTask - late prompt delivery", () => {
     await new Promise((resolve) => setTimeout(resolve, 50));
 
     const workerSessionId = `${ws.id}:${ws.task.workerPanelId}`;
-    const written = deps.written.filter((w) => w.sessionId === workerSessionId);
+    const written = deps.written// eslint-disable-next-line @typescript-eslint/no-explicit-any
+    .filter((w: any) => w.sessionId === workerSessionId);
     expect(written.length).toBe(0);
   });
 });

@@ -3,29 +3,36 @@ import os from "node:os";
 import { describe, expect, test, vi } from "vitest";
 import { AzureDevOpsManager, createPullRequestKey } from "./azure-devops-manager.js";
 
-function createCredentialStore(secrets = {}) {
-  return { getSecret: (ref) => secrets[ref] || "" };
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function createCredentialStore(secrets: Record<string, string> = {}) {
+  return { getSecret: (ref: string) => secrets[ref] || "" };
 }
 
-function createReviewStore(initial = {}) {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function createReviewStore(initial: any = {}) {
   const state = {
-    trackedPullRequests: initial.trackedPullRequests || {},
-    connections: initial.connections || {},
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    trackedPullRequests: initial.trackedPullRequests || {} as Record<string, any>,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    connections: initial.connections || {} as Record<string, any>,
   };
   return {
     getState() {
       return state;
     },
-    getTrackedPullRequest(key) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    getTrackedPullRequest(key: any) {
       return state.trackedPullRequests[key] || null;
     },
-    async upsertTrackedPullRequest(key, patch) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async upsertTrackedPullRequest(key: any, patch: any) {
       state.trackedPullRequests[key] = {
         ...(state.trackedPullRequests[key] || {}),
         ...patch,
       };
     },
-    async upsertConnectionState(connectionId, patch) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async upsertConnectionState(connectionId: any, patch: any) {
       state.connections[connectionId] = {
         ...(state.connections[connectionId] || {}),
         ...patch,
@@ -39,7 +46,8 @@ function createReviewStore(initial = {}) {
  * alter PR state (comments, reviewers, commit id, merge status) between sync
  * calls and observe the resulting reviewActivity deltas.
  */
-function createWorldFetch(world) {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function createWorldFetch(world: any) {
   return vi.fn(async (url) => {
     const href = String(url);
     if (href.includes("/_apis/projects")) {
@@ -125,7 +133,8 @@ function basePullRequest(overrides = {}) {
   };
 }
 
-function commentFrom({ id, author, content, at }) {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function commentFrom({ id, author, content, at }: any) {
   return {
     id,
     parentCommentId: 0,
@@ -137,13 +146,16 @@ function commentFrom({ id, author, content, at }) {
   };
 }
 
-function makeManager(world, trackedPullRequests = {}) {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function makeManager(world: any, trackedPullRequests: any = {}) {
   const reviewStore = createReviewStore({ trackedPullRequests });
   const fetchImpl = createWorldFetch(world);
   const manager = new AzureDevOpsManager({
-    credentialStore: createCredentialStore({ "cred:ado-main": "pat-123" }),
-    reviewStore,
-    fetchImpl,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    credentialStore: createCredentialStore({ "cred:ado-main": "pat-123" }) as any,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    reviewStore: reviewStore as any,
+    fetchImpl: fetchImpl as unknown as typeof fetch,
     execFileTextImpl: vi.fn().mockResolvedValue({ stdout: "", stderr: "" }),
     now: () => new Date(world.nowIso).getTime(),
   });
@@ -167,7 +179,8 @@ describe("AzureDevOpsManager review-activity deltas", () => {
       ],
     };
     const { manager, reviewStore } = makeManager(world);
-    const snapshot = await manager.sync({ connections: [connection], workspaces: [], gitSnapshots: {} });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const snapshot = (await manager.sync({ connections: [connection], workspaces: [], gitSnapshots: {} })) as any;
 
     expect(snapshot.reviewActivity).toEqual([]);
     expect(reviewStore.getTrackedPullRequest(prKey).lastNotifiedActivityAt).toBeTruthy();
@@ -199,7 +212,8 @@ describe("AzureDevOpsManager review-activity deltas", () => {
       }),
     );
 
-    const snapshot = await manager.sync({ connections: [connection], workspaces: [], gitSnapshots: {} });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const snapshot = (await manager.sync({ connections: [connection], workspaces: [], gitSnapshots: {} })) as any;
     expect(snapshot.reviewActivity).toHaveLength(1);
     expect(snapshot.reviewActivity[0]).toMatchObject({
       prKey,
@@ -211,7 +225,8 @@ describe("AzureDevOpsManager review-activity deltas", () => {
   });
 
   test("second sync ignores comments authored by the current user", async () => {
-    const world = {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const world: any = {
       nowIso: "2026-03-17T10:00:00.000Z",
       pullRequests: [basePullRequest()],
       comments: [],
@@ -229,7 +244,8 @@ describe("AzureDevOpsManager review-activity deltas", () => {
       }),
     );
 
-    const snapshot = await manager.sync({ connections: [connection], workspaces: [], gitSnapshots: {} });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const snapshot = (await manager.sync({ connections: [connection], workspaces: [], gitSnapshots: {} })) as any;
     expect(snapshot.reviewActivity).toEqual([]);
   });
 
@@ -253,8 +269,10 @@ describe("AzureDevOpsManager review-activity deltas", () => {
       }),
     ];
 
-    const snapshot = await manager.sync({ connections: [connection], workspaces: [], gitSnapshots: {} });
-    const voteEvents = snapshot.reviewActivity.filter((ev) => ev.kind === "pr-vote-changed");
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const snapshot = (await manager.sync({ connections: [connection], workspaces: [], gitSnapshots: {} })) as any;
+    const voteEvents = snapshot.reviewActivity// eslint-disable-next-line @typescript-eslint/no-explicit-any
+    .filter((ev: any) => ev.kind === "pr-vote-changed");
     expect(voteEvents).toHaveLength(1);
     expect(voteEvents[0].body).toContain("Bob");
     expect(voteEvents[0].body).toContain("rejected");
@@ -280,8 +298,10 @@ describe("AzureDevOpsManager review-activity deltas", () => {
       }),
     ];
 
-    const snapshot = await manager.sync({ connections: [connection], workspaces: [], gitSnapshots: {} });
-    const pushEvents = snapshot.reviewActivity.filter((ev) => ev.kind === "pr-source-updated");
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const snapshot = (await manager.sync({ connections: [connection], workspaces: [], gitSnapshots: {} })) as any;
+    const pushEvents = snapshot.reviewActivity// eslint-disable-next-line @typescript-eslint/no-explicit-any
+    .filter((ev: any) => ev.kind === "pr-source-updated");
     expect(pushEvents).toHaveLength(1);
     expect(pushEvents[0].body).toContain("Bob");
   });
@@ -305,8 +325,10 @@ describe("AzureDevOpsManager review-activity deltas", () => {
       }),
     ];
 
-    const snapshot = await manager.sync({ connections: [connection], workspaces: [], gitSnapshots: {} });
-    expect(snapshot.reviewActivity.filter((ev) => ev.kind === "pr-source-updated")).toEqual([]);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const snapshot = (await manager.sync({ connections: [connection], workspaces: [], gitSnapshots: {} })) as any;
+    expect(snapshot.reviewActivity// eslint-disable-next-line @typescript-eslint/no-explicit-any
+    .filter((ev: any) => ev.kind === "pr-source-updated")).toEqual([]);
   });
 
   test("brand-new PR discovered on second sync emits pr-new for reviewer role", async () => {
@@ -335,8 +357,10 @@ describe("AzureDevOpsManager review-activity deltas", () => {
       }),
     ];
 
-    const snapshot = await manager.sync({ connections: [connection], workspaces: [], gitSnapshots: {} });
-    const newEvents = snapshot.reviewActivity.filter((ev) => ev.kind === "pr-new");
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const snapshot = (await manager.sync({ connections: [connection], workspaces: [], gitSnapshots: {} })) as any;
+    const newEvents = snapshot.reviewActivity// eslint-disable-next-line @typescript-eslint/no-explicit-any
+    .filter((ev: any) => ev.kind === "pr-new");
     expect(newEvents).toHaveLength(1);
     expect(newEvents[0].pullRequestNumber).toBe(456);
     expect(newEvents[0].body).toContain("feature X");
@@ -351,24 +375,30 @@ describe("AzureDevOpsManager review-activity deltas", () => {
     };
     const reviewStore = createReviewStore({});
     const manager = new AzureDevOpsManager({
-      credentialStore: createCredentialStore({}), // no secret → "PAT is missing."
-      reviewStore,
-      fetchImpl: createWorldFetch(world),
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      credentialStore: createCredentialStore({}) as any, // no secret → "PAT is missing."
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      reviewStore: reviewStore as any,
+      fetchImpl: createWorldFetch(world) as unknown as typeof fetch,
       execFileTextImpl: vi.fn().mockResolvedValue({ stdout: "", stderr: "" }),
       now: () => new Date(world.nowIso).getTime(),
     });
 
     // First sync: idle → error → emits one connection-error event.
-    const first = await manager.sync({ connections: [connection], workspaces: [], gitSnapshots: {} });
-    const firstErrors = first.reviewActivity.filter((ev) => ev.kind === "connection-error");
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const first = (await manager.sync({ connections: [connection], workspaces: [], gitSnapshots: {} })) as any;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const firstErrors = first.reviewActivity.filter((ev: any) => ev.kind === "connection-error");
     expect(firstErrors).toHaveLength(1);
     expect(firstErrors[0].body).toContain("PAT is missing");
     expect(firstErrors[0].prKey).toBe("connection:ado-main");
 
     // Second sync, still failing identically: no new event.
     world.nowIso = "2026-03-17T10:05:00.000Z";
-    const second = await manager.sync({ connections: [connection], workspaces: [], gitSnapshots: {} });
-    const secondErrors = second.reviewActivity.filter((ev) => ev.kind === "connection-error");
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const second = (await manager.sync({ connections: [connection], workspaces: [], gitSnapshots: {} })) as any;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const secondErrors = second.reviewActivity.filter((ev: any) => ev.kind === "connection-error");
     // appendReviewActivity keeps the first event in the rolling log; there
     // should not be a *new* one with a later timestamp.
     expect(secondErrors).toHaveLength(1);
@@ -389,16 +419,20 @@ describe("AzureDevOpsManager review-activity deltas", () => {
       },
     };
     const manager = new AzureDevOpsManager({
-      credentialStore,
-      reviewStore,
-      fetchImpl: createWorldFetch(world),
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      credentialStore: credentialStore as any,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      reviewStore: reviewStore as any,
+      fetchImpl: createWorldFetch(world) as unknown as typeof fetch,
       execFileTextImpl: vi.fn().mockResolvedValue({ stdout: "", stderr: "" }),
       now: () => new Date(world.nowIso).getTime(),
     });
 
     // 1st sync — "PAT is missing."
-    const first = await manager.sync({ connections: [connection], workspaces: [], gitSnapshots: {} });
-    expect(first.reviewActivity.filter((ev) => ev.kind === "connection-error")).toHaveLength(1);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const first = (await manager.sync({ connections: [connection], workspaces: [], gitSnapshots: {} })) as any;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect(first.reviewActivity.filter((ev: any) => ev.kind === "connection-error")).toHaveLength(1);
 
     // 2nd sync — different error (401 from the API). Swap the fetch stub.
     world.nowIso = "2026-03-17T10:05:00.000Z";
@@ -413,8 +447,10 @@ describe("AzureDevOpsManager review-activity deltas", () => {
     manager.api.listProjects = async () => {
       throw new Error("HTTP 401 Unauthorized");
     };
-    const second = await manager.sync({ connections: [connection], workspaces: [], gitSnapshots: {} });
-    const secondErrors = second.reviewActivity.filter((ev) => ev.kind === "connection-error");
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const second = (await manager.sync({ connections: [connection], workspaces: [], gitSnapshots: {} })) as any;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const secondErrors = second.reviewActivity.filter((ev: any) => ev.kind === "connection-error");
     expect(secondErrors).toHaveLength(2); // old + new
     expect(secondErrors[0].body).toContain("401");
   });
@@ -432,8 +468,10 @@ describe("AzureDevOpsManager review-activity deltas", () => {
 
     world.nowIso = "2026-03-17T10:05:00.000Z";
     world.pullRequests = [basePullRequest({ mergeStatus: "conflicts" })];
-    const snapshot = await manager.sync({ connections: [worldConnection], workspaces: [], gitSnapshots: {} });
-    const mergeEvents = snapshot.reviewActivity.filter((ev) => ev.kind === "pr-merge-status-changed");
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const snapshot = (await manager.sync({ connections: [worldConnection], workspaces: [], gitSnapshots: {} })) as any;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const mergeEvents = snapshot.reviewActivity.filter((ev: any) => ev.kind === "pr-merge-status-changed");
     expect(mergeEvents).toHaveLength(1);
     expect(mergeEvents[0].urgency).toBe("urgent");
   });

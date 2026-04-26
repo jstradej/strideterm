@@ -4,17 +4,17 @@ import path from "node:path";
 import os from "node:os";
 import { probeDirectory } from "./fs-probe.js";
 
-async function makeDir(base, ...parts) {
+async function makeDir(base: string, ...parts: string[]) {
   const dir = path.join(base, ...parts);
   await fs.mkdir(dir, { recursive: true });
   return dir;
 }
 
-async function initGit(dir) {
+async function initGit(dir: string) {
   await fs.mkdir(path.join(dir, ".git"), { recursive: true });
 }
 
-let tmpRoot;
+let tmpRoot: string;
 
 beforeEach(async () => {
   tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "fs-probe-test-"));

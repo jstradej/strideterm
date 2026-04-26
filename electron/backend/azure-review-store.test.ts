@@ -4,7 +4,7 @@ import fs from "node:fs/promises";
 import { afterEach, describe, expect, test } from "vitest";
 import { createAzureReviewStore } from "./azure-review-store.js";
 
-const tempPaths = [];
+const tempPaths: string[] = [];
 
 async function createTempPath() {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-azure-review-"));

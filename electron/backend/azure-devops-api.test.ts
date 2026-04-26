@@ -38,18 +38,19 @@ describe("Azure DevOps API - ETag caching", () => {
       },
     ]);
 
-    const api = createAzureApi(fetchImpl);
-    const connection = { orgUrl: "https://dev.azure.com/org" };
+    const api = createAzureApi(fetchImpl as unknown as typeof fetch);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const connection = { orgUrl: "https://dev.azure.com/org" } as any;
     const authOpts = { login: "user", token: "pat" };
 
     // First call — no etag
-    const result1 = await api.requestJson(api.buildProjectsUrl(connection), authOpts);
+    const result1 = (await api.requestJson(api.buildProjectsUrl(connection), authOpts)) as any;
     expect(result1.value).toHaveLength(1);
-    expect(fetchImpl.mock.calls[0][1].headers["If-None-Match"]).toBeUndefined();
+    expect((fetchImpl.mock.calls[0][1] as any).headers["If-None-Match"]).toBeUndefined();
 
     // Second call — should send If-None-Match and return cached data on 304
-    const result2 = await api.requestJson(api.buildProjectsUrl(connection), authOpts);
-    expect(fetchImpl.mock.calls[1][1].headers["If-None-Match"]).toBe('"abc123"');
+    const result2 = (await api.requestJson(api.buildProjectsUrl(connection), authOpts)) as any;
+    expect((fetchImpl.mock.calls[1][1] as any).headers["If-None-Match"]).toBe('"abc123"');
     expect(result2.value).toHaveLength(1);
   });
 
@@ -62,7 +63,7 @@ describe("Azure DevOps API - ETag caching", () => {
       },
     ]);
 
-    const api = createAzureApi(fetchImpl);
+    const api = createAzureApi(fetchImpl as unknown as typeof fetch);
     await api.requestJson("https://example.com/api", {
       login: "user",
       token: "pat",
@@ -70,7 +71,7 @@ describe("Azure DevOps API - ETag caching", () => {
       body: { content: "hello" },
     });
 
-    expect(fetchImpl.mock.calls[0][1].headers["If-None-Match"]).toBeUndefined();
+    expect((fetchImpl.mock.calls[0][1] as any).headers["If-None-Match"]).toBeUndefined();
   });
 
   test("refreshes cached data when server returns new etag", async () => {
@@ -87,14 +88,14 @@ describe("Azure DevOps API - ETag caching", () => {
       },
     ]);
 
-    const api = createAzureApi(fetchImpl);
+    const api = createAzureApi(fetchImpl as unknown as typeof fetch);
     const url = "https://dev.azure.com/org/proj/_apis/git/pullrequests";
     const auth = { login: "user", token: "pat" };
 
-    const result1 = await api.requestJson(url, auth);
+    const result1 = (await api.requestJson(url, auth)) as any;
     expect(result1.value).toHaveLength(1);
 
-    const result2 = await api.requestJson(url, auth);
+    const result2 = (await api.requestJson(url, auth)) as any;
     expect(result2.value).toHaveLength(2);
   });
 });

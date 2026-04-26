@@ -12,10 +12,11 @@ import {
   GEMINI_HOOK_MAP,
 } from "./gemini-hook-config.js";
 
-let tempDir;
-let mockHomedir;
-let userDataPath;
-let originalHomedir;
+let tempDir: string;
+let mockHomedir: string;
+let userDataPath: string;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let originalHomedir: any;
 
 beforeEach(async () => {
   tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-gemini-hook-"));
@@ -43,7 +44,7 @@ describe("configureGeminiHook", () => {
     expect(result.scriptPath).toBe(path.join(userDataPath, "hooks", "notify.mjs"));
 
     // notify.mjs must exist at the reported path
-    expect(existsSync(result.scriptPath)).toBe(true);
+    expect(existsSync(result.scriptPath!)).toBe(true);
 
     const settings = JSON.parse(await fs.readFile(getGeminiSettingsPath(), "utf8"));
     for (const [geminiEvent, claudeAlias] of Object.entries(GEMINI_HOOK_MAP)) {

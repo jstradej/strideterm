@@ -4,7 +4,7 @@ import fs from "node:fs/promises";
 import { afterEach, describe, expect, test } from "vitest";
 import { createCredentialStore } from "./credential-store.js";
 
-const tempPaths = [];
+const tempPaths: string[] = [];
 
 async function createTempPath() {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-credentials-"));
@@ -31,10 +31,12 @@ describe("credential store", () => {
       isEncryptionAvailable() {
         return true;
       },
-      encryptString(value) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      encryptString(value: any) {
         return Buffer.from(`encrypted:${value}`, "utf8");
       },
-      decryptString(value) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      decryptString(value: any) {
         return Buffer.from(value)
           .toString("utf8")
           .replace(/^encrypted:/, "");

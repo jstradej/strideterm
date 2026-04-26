@@ -287,7 +287,7 @@ export async function createRuntime({
   const processInfo = {
     execPath: process.execPath,
     argv: process.argv,
-    defaultApp: process.defaultApp,
+    defaultApp: (process as NodeJS.Process & { defaultApp?: boolean }).defaultApp,
   };
   const pluginsDir = path.join(userDataPath, "plugins");
   const [store, credentialStore, azureReviewStore, reviewBridgeStore] = await Promise.all([
@@ -952,7 +952,7 @@ export async function createRuntime({
       const processInfo = {
         execPath: process.execPath,
         platform: process.platform,
-        defaultApp: Boolean(process.defaultApp),
+        defaultApp: Boolean((process as NodeJS.Process & { defaultApp?: boolean }).defaultApp),
       };
       for (const prKey of prKeys) {
         const context = reviewBridgeStore.getPullRequestContext?.(prKey);
@@ -2874,7 +2874,7 @@ export async function createRuntime({
       broadcastState();
       return getPayload();
     },
-    syncAttentionContext({ visibleSessionIds = [], windowFocused = true } = {}) {
+    syncAttentionContext({ visibleSessionIds = [], windowFocused = true }: { visibleSessionIds?: string[]; windowFocused?: boolean } = {}) {
       const nextIds = (Array.isArray(visibleSessionIds) ? visibleSessionIds : [])
         .map((sessionId) => String(sessionId || "").trim())
         .filter(Boolean);
@@ -2968,7 +2968,7 @@ export async function createRuntime({
       return getPayload();
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    async openDockerSession({ workspaceId, projectId, containerId, mode }: { workspaceId: any; projectId: any; containerId: any; mode: any }) {
+    async openDockerSession({ workspaceId, projectId, containerId, mode }: { workspaceId?: any; projectId: any; containerId: any; mode: any }) {
       const targetWorkspaceId = workspaceId || projectId;
       await refreshDocker();
       const container = docker.findContainer(containerId);
@@ -3021,7 +3021,7 @@ export async function createRuntime({
       return getPayload();
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    async openLazydockerSession({ workspaceId, projectId }: { workspaceId: any; projectId: any }) {
+    async openLazydockerSession({ workspaceId, projectId }: { workspaceId?: any; projectId: any }) {
       const targetWorkspaceId = workspaceId || projectId;
       await refreshDocker();
       const launch = docker.createLazydockerLaunch();
@@ -3065,7 +3065,7 @@ export async function createRuntime({
       return getPayload();
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    async openLazygitSession({ workspaceId, projectId, rootPath }: { workspaceId: any; projectId: any; rootPath: any }) {
+    async openLazygitSession({ workspaceId, projectId, rootPath }: { workspaceId?: any; projectId: any; rootPath: any }) {
       const targetWorkspaceId = workspaceId || projectId;
       await refreshGit(targetWorkspaceId);
       const launch = git.createLazygitLaunch(targetWorkspaceId, rootPath || null);
@@ -3109,7 +3109,7 @@ export async function createRuntime({
       return getPayload();
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    async createWorktree({ workspaceId, projectId, name, rootPath }: { workspaceId: any; projectId: any; name: any; rootPath: any }) {
+    async createWorktree({ workspaceId, projectId, name, rootPath }: { workspaceId?: any; projectId: any; name: any; rootPath?: any }) {
       const targetWorkspaceId = workspaceId || projectId;
       if (!name || !/^[a-zA-Z0-9._-]+$/.test(name)) {
         throw new Error("Worktree name must contain only alphanumeric characters, dots, hyphens, or underscores.");

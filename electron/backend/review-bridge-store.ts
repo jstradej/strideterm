@@ -1453,7 +1453,7 @@ export async function createReviewBridgeStore(rootPath: string) {
         statements.upsertAgentPrompt.run(d.id, d.title, d.description, d.template, d.sort, 1, now, now);
       }
     },
-    async syncPendingDrafts(prKey: string, publishDraft: (input: Record<string, unknown>) => Promise<void>) {
+    async syncPendingDrafts(prKey: string, publishDraft: (input: Record<string, unknown>) => Promise<unknown>) {
       ensureOpen();
       if (!prKey) {
         throw new Error("Pull request key is required.");

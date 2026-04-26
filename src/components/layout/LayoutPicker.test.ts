@@ -17,11 +17,21 @@ describe("LayoutPicker", () => {
 
   test("renders layout buttons with SVG thumbnails when anchor is set", () => {
     const store = useAppStore();
-    store.layoutPickerAnchor = { top: 40, bottom: 60, left: 100, right: 200, width: 100, height: 20 };
+    store.layoutPickerAnchor = {
+      top: 40,
+      bottom: 60,
+      left: 100,
+      right: 200,
+      width: 100,
+      height: 20,
+      x: 100,
+      y: 40,
+      toJSON: () => ({}),
+    } as DOMRect;
     const wrapper = mount(LayoutPicker, { attachTo: document.body });
     const picker = document.querySelector(".layout-picker");
     expect(picker).not.toBeNull();
-    const buttons = picker.querySelectorAll("button");
+    const buttons = (picker as Element).querySelectorAll("button");
     // 5 non-solo layouts
     expect(buttons.length).toBe(5);
     // Each button has an SVG thumbnail

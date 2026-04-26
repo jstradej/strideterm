@@ -1,6 +1,7 @@
 import { describe, expect, test, beforeEach, vi } from "vitest";
 import { setActivePinia, createPinia } from "pinia";
 import { useGitUiStore } from "./git-ui.js";
+import type { Transport } from "../transport.js";
 
 beforeEach(() => {
   setActivePinia(createPinia());
@@ -39,7 +40,7 @@ describe("git-ui store", () => {
     test("calls setWorkspaceUIState with correct arguments after init", () => {
       const mockApi = {
         setWorkspaceUIState: vi.fn().mockResolvedValue(null),
-      };
+      } as unknown as Transport;
       const store = useGitUiStore();
       store.init(mockApi);
       store.setActiveRoot("ws1", "/repo/b");
@@ -56,7 +57,7 @@ describe("git-ui store", () => {
     test("passes empty string to setWorkspaceUIState when root is cleared", () => {
       const mockApi = {
         setWorkspaceUIState: vi.fn().mockResolvedValue(null),
-      };
+      } as unknown as Transport;
       const store = useGitUiStore();
       store.init(mockApi);
       store.setActiveRoot("ws1", "");
@@ -77,7 +78,7 @@ describe("git-ui store", () => {
     test("azureCreatePullRequest includes the active rootPath", async () => {
       const mockApi = {
         azureCreatePullRequest: vi.fn().mockResolvedValue({ result: { ok: true, pullRequestId: 123 }, payload: null }),
-      };
+      } as unknown as Transport;
       const store = useGitUiStore();
       store.init(mockApi);
       store.setActiveRoot("ws1", "/repo/b");
@@ -104,7 +105,7 @@ describe("git-ui store", () => {
     test("azureListRemoteBranches includes the active rootPath", async () => {
       const mockApi = {
         azureListRemoteBranches: vi.fn().mockResolvedValue({ branches: ["main", "develop"] }),
-      };
+      } as unknown as Transport;
       const store = useGitUiStore();
       store.init(mockApi);
       store.setActiveRoot("ws1", "/repo/b");
