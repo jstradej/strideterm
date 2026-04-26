@@ -27,6 +27,12 @@ None so far.
 
 None so far.
 
+## Required path adjustments
+
+- `review-bridge-agent-launch.ts` `DEFAULT_APP_ENTRY` depth increased by one level (`../../` → `../../../`) to account for the `dist-electron/` prefix in compiled output layout. Without this, the resolved app root would be one level too deep inside `dist-electron/`.
+- `electron/main.ts` preload path updated: `path.join(app.getAppPath(), "electron", "preload.js")` → `path.join(app.getAppPath(), "dist-electron", "electron", "preload.js")` to match the compiled output location.
+- `electron/main.ts` version loading replaced: `require("../package.json")` → `app.getVersion()` to avoid path resolution issues after compilation to `dist-electron/`.
+
 ## Discovered pre-existing issues
 
 - `scripts/perf-test.mjs` missing — `npm run perf` is broken pre-migration.
@@ -34,6 +40,10 @@ None so far.
 ## Test failures during migration
 
 None so far.
+
+## Phase 8: typecheck status
+
+Phase 8 introduces 0 new typecheck errors. The 1094 errors reported by `npm run typecheck` are all pre-existing from prior migration phases (primarily in `*.test.ts` files and `runtime.ts`). The plan requires 0 errors for Phase 8 files specifically; `electron/main.ts`, all migrated scripts, `vite.config.ts`, and `vitest.backend.config.ts` are error-free.
 
 ## Effect adoption
 

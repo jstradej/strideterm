@@ -1,9 +1,10 @@
+/// <reference types="node" />
 import { spawn } from "node:child_process";
 import electronPath from "electron";
 
 const forceDist = process.argv.includes("--dist");
 
-const child = spawn(electronPath, ["."], {
+const child = spawn(electronPath as unknown as string, ["."], {
   cwd: process.cwd(),
   env: {
     ...process.env,
@@ -12,6 +13,6 @@ const child = spawn(electronPath, ["."], {
   stdio: "inherit",
 });
 
-child.on("exit", (code) => {
+child.on("exit", (code: number | null) => {
   process.exit(code ?? 0);
 });

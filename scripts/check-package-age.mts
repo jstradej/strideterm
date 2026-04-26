@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+/// <reference types="node" />
 /**
  * check-package-age.mjs — reject recently-published npm packages.
  *
@@ -62,18 +63,26 @@ if (!dirty) {
 
 // --- Find changed packages ---
 
-let oldLock;
+interface LockPackage {
+  version?: string;
+}
+
+interface LockFile {
+  packages?: Record<string, LockPackage>;
+}
+
+let oldLock: LockFile;
 try {
-  oldLock = JSON.parse(execSync("git show HEAD:package-lock.json", { cwd, encoding: "utf8" }));
+  oldLock = JSON.parse(execSync("git show HEAD:package-lock.json", { cwd, encoding: "utf8" })) as LockFile;
 } catch {
   // No prior lockfile (first install) — skip
   console.log("No prior lockfile in git — skipping age check.");
   process.exit(0);
 }
 
-const newLock = JSON.parse(readFileSync(join(cwd, "package-lock.json"), "utf8"));
+const newLock = JSON.parse(readFileSync(join(cwd, "package-lock.json"), "utf8")) as LockFile;
 
-const changed = [];
+const changed: Array<{ name: string; version: string }> = [];
 for (const [pkgPath, pkg] of Object.entries(newLock.packages || {})) {
   if (!pkgPath || pkgPath === "") continue;
   const oldPkg = oldLock.packages?.[pkgPath];
@@ -92,7 +101,7 @@ console.log(`Checking publish age of ${changed.length} changed package(s)...`);
 
 // --- Query publish dates ---
 
-async function getPublishDate(name, version) {
+async function getPublishDate(name: string, version: string): Promise<Date | null> {
   // npm view — respects .npmrc, private registries
   try {
     const out = execSync(`npm view "${name}" time --json`, {
@@ -101,7 +110,7 @@ async function getPublishDate(name, version) {
       timeout: 15_000,
       stdio: ["pipe", "pipe", "pipe"],
     });
-    const timeObj = JSON.parse(out);
+    const timeObj = JSON.parse(out) as Record<string, string>;
     if (typeof timeObj === "object" && timeObj[version]) {
       return new Date(timeObj[version]);
     }
@@ -115,7 +124,7 @@ async function getPublishDate(name, version) {
       signal: AbortSignal.timeout(10_000),
     });
     if (resp.ok) {
-      const data = await resp.json();
+      const data = (await resp.json()) as { time?: Record<string, string> };
       if (data.time?.[version]) return new Date(data.time[version]);
     }
   } catch {
@@ -126,7 +135,7 @@ async function getPublishDate(name, version) {
 }
 
 const now = Date.now();
-const tooNew = [];
+const tooNew: Array<{ name: string; version: string; ageDays: number; published: string }> = [];
 
 // Process in batches of 5 to avoid hammering the registry
 for (let i = 0; i < changed.length; i += 5) {

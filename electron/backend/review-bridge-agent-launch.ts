@@ -4,7 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const SUPPORTED_REVIEW_AGENTS = new Set(["claude", "codex", "copilot"]);
-const DEFAULT_APP_ENTRY = path.resolve(fileURLToPath(new URL("../../", import.meta.url)));
+const DEFAULT_APP_ENTRY = path.resolve(fileURLToPath(new URL("../../../", import.meta.url)));
 const REVIEW_BRIDGE_STDIO_ENTRY = fileURLToPath(new URL("./review-bridge-mcp-stdio.js", import.meta.url));
 
 interface ReviewPanel {

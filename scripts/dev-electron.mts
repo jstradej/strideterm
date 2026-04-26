@@ -1,13 +1,14 @@
+/// <reference types="node" />
 import net from "node:net";
 import { spawn } from "node:child_process";
 import electronPath from "electron";
 import { APP_CONFIG } from "../config/app-config.js";
 
-function wait(delayMs) {
+function wait(delayMs: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, delayMs));
 }
 
-function canConnect(host, port) {
+function canConnect(host: string, port: number): Promise<boolean> {
   return new Promise((resolve) => {
     const socket = net.createConnection({ host, port });
     socket.once("connect", () => {
@@ -37,7 +38,7 @@ async function waitForRenderer() {
 
 await waitForRenderer();
 
-const child = spawn(electronPath, ["."], {
+const child = spawn(electronPath as unknown as string, ["."], {
   cwd: process.cwd(),
   env: {
     ...process.env,
@@ -45,6 +46,6 @@ const child = spawn(electronPath, ["."], {
   stdio: "inherit",
 });
 
-child.on("exit", (code) => {
+child.on("exit", (code: number | null) => {
   process.exit(code ?? 0);
 });

@@ -1,8 +1,9 @@
+/// <reference types="node" />
 import { spawn } from "node:child_process";
 import electronPath from "electron";
 import { APP_CONFIG } from "../config/app-config.js";
 
-const child = spawn(electronPath, ["."], {
+const child = spawn(electronPath as unknown as string, ["."], {
   cwd: process.cwd(),
   env: {
     ...process.env,
@@ -16,11 +17,11 @@ let stderr = "";
 let stdout = "";
 let settled = false;
 
-child.stdout.on("data", (chunk) => {
+child.stdout.on("data", (chunk: Buffer) => {
   stdout += chunk.toString();
 });
 
-child.stderr.on("data", (chunk) => {
+child.stderr.on("data", (chunk: Buffer) => {
   stderr += chunk.toString();
 });
 
@@ -34,7 +35,7 @@ const timeout = setTimeout(() => {
   process.exit(0);
 }, APP_CONFIG.electron.smokeAliveMs);
 
-child.on("exit", (code) => {
+child.on("exit", (code: number | null) => {
   if (settled) {
     return;
   }

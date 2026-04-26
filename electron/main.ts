@@ -2,7 +2,6 @@ import { app, BrowserWindow, ipcMain, nativeImage, nativeTheme, safeStorage } fr
 import os from "node:os";
 import path from "node:path";
 import { readFile } from "node:fs/promises";
-import { createRequire } from "node:module";
 import { createRuntime } from "./backend/runtime.js";
 import { registerIpc } from "./backend/ipc.js";
 import { startRemoteServer } from "./backend/remote-server.js";
@@ -12,7 +11,7 @@ import { APP_CONFIG, getRendererDevUrl } from "../config/app-config.js";
 import { getLogger, setLogDir, shutdownLogger } from "./backend/logger.js";
 
 // --- Custom data directory (--data-dir <path> or STRIDETERM_DATA_DIR env) ---
-function resolveDataDir() {
+function resolveDataDir(): string {
   const args = process.argv.slice(1);
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--data-dir" && args[i + 1]) return path.resolve(args[i + 1]);
@@ -42,11 +41,12 @@ if (customDataDir) {
 }
 
 const log = getLogger("main");
-const require = createRequire(import.meta.url);
-const { version: packageVersion = "0.0.0" } = require("../package.json");
+// Use app.getVersion() instead of require("../package.json") to avoid
+// path resolution issues after compilation to dist-electron/.
+const packageVersion = app.getVersion();
 
 // Suppress EPIPE errors that occur when the renderer disconnects during dev reload
-process.on("uncaughtException", (error) => {
+process.on("uncaughtException", (error: NodeJS.ErrnoException) => {
   if (error?.code === "EPIPE" || error?.message?.includes("EPIPE")) {
     return;
   }
@@ -58,7 +58,25 @@ const isDev = !app.isPackaged;
 const rendererUrl = getRendererDevUrl();
 const forceDist = process.env.STRIDETERM_FORCE_DIST === "1" || process.env.STRIDETERM_SMOKE_TEST === "1";
 
-const runtimeState = {
+interface RuntimeState {
+  window: BrowserWindow | null;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  runtime: any;
+  runtimeReady: Promise<void>;
+  runtimeInteractive: boolean;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  bootstrapPayload: any;
+  desiredWorkspaceId: string;
+  desiredSessionId: string;
+  disposeIpc: (() => void) | null;
+  remoteServer: { close?: () => Promise<void> } | null;
+  remoteServerRestart: Promise<void>;
+  unsubscribeRemoteConfig: (() => void) | null;
+  unsubscribeStateUpdated: (() => void) | null;
+  lastAttentionCount: number;
+}
+
+const runtimeState: RuntimeState = {
   window: null,
   runtime: null,
   runtimeReady: Promise.resolve(),
@@ -77,14 +95,16 @@ const runtimeState = {
 const mcpMode = parseReviewBridgeMcpArgs(process.argv.slice(1));
 const gotSingleInstanceLock = !mcpMode && app.requestSingleInstanceLock();
 
-function summarizeAttention(payload) {
-  const alerts = Object.values(payload?.attention?.byProject || {}).flatMap((entry) => entry?.alerts || []);
+function summarizeAttention(payload: Record<string, unknown>): { count: number; waitingCount: number } {
+  const attention = payload?.attention as Record<string, unknown> | undefined;
+  const byProject = (attention?.byProject || {}) as Record<string, { alerts?: Array<{ kind: string }> }>;
+  const alerts = Object.values(byProject).flatMap((entry) => entry?.alerts || []);
   const count = alerts.length;
   const waitingCount = alerts.filter((alert) => alert.kind === "waiting").length;
   return { count, waitingCount };
 }
 
-function createOverlayIcon(count, waitingCount) {
+function createOverlayIcon(count: number, waitingCount: number): Electron.NativeImage {
   const label = count > 9 ? "9+" : String(count);
   const fill = waitingCount > 0 ? "#ff6f8d" : "#ffb347";
   const fontSize = count > 9 ? 15 : 18;
@@ -105,10 +125,13 @@ function createOverlayIcon(count, waitingCount) {
   return nativeImage.createFromDataURL(`data:image/svg+xml;base64,${Buffer.from(svg).toString("base64")}`);
 }
 
-function updateNativeAttention(payload) {
+function updateNativeAttention(payload: Record<string, unknown> | null | undefined): void {
+  if (!payload) return;
   const { count, waitingCount } = summarizeAttention(payload);
-  const activeProfileId = payload?.appState?.activeProfileId || "default";
-  const activeProfile = (payload?.appState?.profiles || []).find((p) => p.id === activeProfileId);
+  const appState = payload.appState as Record<string, unknown> | undefined;
+  const activeProfileId = (appState?.activeProfileId as string | undefined) || "default";
+  const profiles = (appState?.profiles as Array<{ id: string; name: string }> | undefined) || [];
+  const activeProfile = profiles.find((p) => p.id === activeProfileId);
   const profileSuffix = activeProfile && activeProfileId !== "default" ? ` [${activeProfile.name}]` : "";
   const dataDirSuffix = customDataDir ? ` (${path.basename(customDataDir)})` : "";
   const baseTitle = APP_CONFIG.electron.title + profileSuffix + dataDirSuffix;
@@ -148,7 +171,7 @@ function updateNativeAttention(payload) {
   runtimeState.lastAttentionCount = count;
 }
 
-function syncTitleBarTheme() {
+function syncTitleBarTheme(): void {
   if (!runtimeState.window || runtimeState.window.isDestroyed() || process.platform === "darwin") return;
   const isDark = nativeTheme.shouldUseDarkColors;
   runtimeState.window.setTitleBarOverlay({
@@ -157,7 +180,7 @@ function syncTitleBarTheme() {
   });
 }
 
-function createWindow() {
+function createWindow(): void {
   const windowIconPath =
     process.platform === "win32"
       ? path.join(app.getAppPath(), "assets", "icon.ico")
@@ -179,7 +202,7 @@ function createWindow() {
       height: 32,
     },
     webPreferences: {
-      preload: path.join(app.getAppPath(), "electron", "preload.js"),
+      preload: path.join(app.getAppPath(), "dist-electron", "electron", "preload.js"),
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: false,
@@ -190,7 +213,7 @@ function createWindow() {
   // Show window as soon as the DOM is ready (splash screen HTML is visible),
   // rather than waiting for ready-to-show which includes JS module loading.
   runtimeState.window.webContents.once("dom-ready", () => {
-    runtimeState.window.show();
+    runtimeState.window!.show();
   });
 
   runtimeState.window.on("focus", () => {
@@ -209,7 +232,9 @@ function createWindow() {
         input.code?.match(/^Digit([1-9])$/)?.[1] || (input.key >= "1" && input.key <= "9" ? input.key : null);
       if (digit) {
         event.preventDefault();
-        const appState = runtimeState.runtime?.getPayload()?.appState;
+        const appState = runtimeState.runtime?.getPayload?.()?.appState as
+          | { activeProfileId?: string; workspaces?: Array<{ id: string; profileId?: string }> }
+          | undefined;
         const activeProfileId = appState?.activeProfileId || "default";
         const workspaces = (appState?.workspaces || []).filter((w) => (w.profileId || "default") === activeProfileId);
         const workspace = workspaces[parseInt(digit, 10) - 1];
@@ -221,7 +246,7 @@ function createWindow() {
     }
   });
 
-  updateNativeAttention(runtimeState.runtime?.getPayload?.());
+  updateNativeAttention(runtimeState.runtime?.getPayload?.() as Record<string, unknown> | undefined);
 
   if (process.env.STRIDETERM_SMOKE_TEST === "1") {
     runtimeState.window.webContents.once("did-finish-load", () => {
@@ -243,7 +268,7 @@ function createWindow() {
 
         fellBackToDist = true;
         console.warn(`Renderer URL failed (${errorCode}: ${errorDescription}). Falling back to dist build.`);
-        runtimeState.window.loadFile(distIndexPath);
+        runtimeState.window!.loadFile(distIndexPath);
       },
     );
 
@@ -255,26 +280,51 @@ function createWindow() {
   runtimeState.window.loadFile(distIndexPath);
 }
 
-function emitToRenderer(channel, payload) {
+function emitToRenderer(channel: string, payload: unknown): void {
   if (!runtimeState.window || runtimeState.window.isDestroyed()) {
     return;
   }
 
   try {
     runtimeState.window.webContents.send(channel, payload);
-  } catch (error) {
-    if (error?.code === "EPIPE" || error?.message?.includes("EPIPE")) {
+  } catch (error: unknown) {
+    const err = error as { code?: string; message?: string };
+    if (err?.code === "EPIPE" || err?.message?.includes("EPIPE")) {
       return;
     }
     throw error;
   }
 }
 
-function isBrowserPanel(panel = {}) {
+interface Panel {
+  id?: string;
+  title?: string;
+  command?: string;
+  launch?: unknown;
+  startup?: unknown;
+}
+
+interface Workspace {
+  id: string;
+  panels?: Panel[];
+  activePanelId?: string;
+}
+
+interface AppState {
+  workspaces?: Workspace[];
+  activeWorkspaceId?: string;
+  activeProjectId?: string;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  settings?: any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  profiles?: any[];
+}
+
+function isBrowserPanel(panel: Panel = {}): boolean {
   return /^https?:\/\//i.test(String(panel.command || "").trim());
 }
 
-function createBootstrapWorkspacePayload(appState) {
+function createBootstrapWorkspacePayload(appState: AppState): Record<string, unknown> | null {
   const workspace = (appState.workspaces || []).find((entry) => entry.id === appState.activeWorkspaceId) || null;
   if (!workspace) {
     return null;
@@ -297,12 +347,15 @@ function createBootstrapWorkspacePayload(appState) {
   };
 }
 
-function updateBootstrapWorkspaceSelection(workspaceId, { sessionId = "" } = {}) {
+function updateBootstrapWorkspaceSelection(
+  workspaceId: string,
+  { sessionId = "" }: { sessionId?: string } = {},
+): Record<string, unknown> | null {
   if (!runtimeState.bootstrapPayload?.appState) {
     return null;
   }
 
-  const appState = runtimeState.bootstrapPayload.appState;
+  const appState = runtimeState.bootstrapPayload.appState as AppState;
   const workspace = (appState.workspaces || []).find((entry) => entry.id === workspaceId) || null;
   if (!workspace) {
     return null;
@@ -325,10 +378,10 @@ function updateBootstrapWorkspaceSelection(workspaceId, { sessionId = "" } = {})
     appState,
     workspace: createBootstrapWorkspacePayload(appState),
   };
-  return runtimeState.bootstrapPayload;
+  return runtimeState.bootstrapPayload as Record<string, unknown>;
 }
 
-async function invokeRuntimeMethod(methodName, ...args) {
+async function invokeRuntimeMethod(methodName: string, ...args: unknown[]): Promise<unknown> {
   await runtimeState.runtimeReady;
   if (!runtimeState.runtime || typeof runtimeState.runtime[methodName] !== "function") {
     throw new Error(`Runtime method '${methodName}' is not available.`);
@@ -336,14 +389,14 @@ async function invokeRuntimeMethod(methodName, ...args) {
   return runtimeState.runtime[methodName](...args);
 }
 
-function registerBootstrapIpcHandlers() {
+function registerBootstrapIpcHandlers(): void {
   ipcMain.handle("state:get", async () => {
     if (runtimeState.runtimeInteractive && runtimeState.runtime) {
       return runtimeState.runtime.getInitialState();
     }
     return loadBootstrapPayload();
   });
-  ipcMain.handle("workspace:activate", async (_event, workspaceId) => {
+  ipcMain.handle("workspace:activate", async (_event, workspaceId: string) => {
     if (runtimeState.runtimeInteractive && runtimeState.runtime) {
       return invokeRuntimeMethod("activateWorkspace", workspaceId);
     }
@@ -355,7 +408,7 @@ function registerBootstrapIpcHandlers() {
     }
     return runtimeState.bootstrapPayload;
   });
-  ipcMain.handle("project:activate", async (_event, projectId) => {
+  ipcMain.handle("project:activate", async (_event, projectId: string) => {
     if (runtimeState.runtimeInteractive && runtimeState.runtime) {
       return invokeRuntimeMethod("activateProject", projectId);
     }
@@ -367,7 +420,7 @@ function registerBootstrapIpcHandlers() {
     }
     return runtimeState.bootstrapPayload;
   });
-  ipcMain.handle("session:activate", async (_event, sessionId) => {
+  ipcMain.handle("session:activate", async (_event, sessionId: string) => {
     if (runtimeState.runtimeInteractive && runtimeState.runtime) {
       return invokeRuntimeMethod("activateSession", sessionId);
     }
@@ -388,7 +441,7 @@ function registerBootstrapIpcHandlers() {
   });
 }
 
-function unregisterBootstrapIpcHandlers() {
+function unregisterBootstrapIpcHandlers(): void {
   ipcMain.removeHandler("state:get");
   ipcMain.removeHandler("workspace:activate");
   ipcMain.removeHandler("project:activate");
@@ -396,9 +449,9 @@ function unregisterBootstrapIpcHandlers() {
   ipcMain.removeHandler("attention:sync");
 }
 
-async function loadBootstrapPayload() {
+async function loadBootstrapPayload(): Promise<Record<string, unknown>> {
   if (runtimeState.bootstrapPayload) {
-    return runtimeState.bootstrapPayload;
+    return runtimeState.bootstrapPayload as Promise<Record<string, unknown>>;
   }
 
   runtimeState.bootstrapPayload = (async () => {
@@ -406,12 +459,12 @@ async function loadBootstrapPayload() {
     // of dev instances ("dev1.ps1" / --data-dir) briefly showing prod workspaces
     // in the renderer before the runtime came up.
     const statePath = path.join(userDataPath, "strideterm-state.json");
-    let appState = createDefaultState();
+    let appState: AppState = createDefaultState() as AppState;
 
     try {
       const raw = await readFile(statePath, "utf8");
       if (raw.trim()) {
-        appState = normalizeState(JSON.parse(raw));
+        appState = normalizeState(JSON.parse(raw)) as AppState;
       }
     } catch {
       // Fall back to defaults when the state file is missing or temporarily unreadable.
@@ -460,8 +513,8 @@ async function loadBootstrapPayload() {
       themeSource: nativeTheme.shouldUseDarkColors ? "dark" : "light",
       remoteAccess: {
         enabled: Boolean(appState.settings?.remoteAccess?.enabled),
-        host: appState.settings?.remoteAccess?.host || "0.0.0.0",
-        port: appState.settings?.remoteAccess?.port || 43123,
+        host: (appState.settings?.remoteAccess?.host as string | undefined) || "0.0.0.0",
+        port: (appState.settings?.remoteAccess?.port as number | undefined) || 43123,
         urls: [],
         tunnel: {
           status: "idle",
@@ -471,10 +524,10 @@ async function loadBootstrapPayload() {
     };
   })();
 
-  return runtimeState.bootstrapPayload;
+  return runtimeState.bootstrapPayload as Promise<Record<string, unknown>>;
 }
 
-async function restartRemoteServer() {
+async function restartRemoteServer(): Promise<void> {
   runtimeState.remoteServerRestart = runtimeState.remoteServerRestart
     .catch(() => {})
     .then(async () => {
@@ -488,7 +541,7 @@ async function restartRemoteServer() {
   await runtimeState.remoteServerRestart;
 }
 
-async function startServices() {
+async function startServices(): Promise<void> {
   runtimeState.runtimeInteractive = false;
   runtimeState.runtime = await createRuntime({
     userDataPath,
@@ -503,21 +556,26 @@ async function startServices() {
   unregisterBootstrapIpcHandlers();
   runtimeState.disposeIpc = registerIpc(runtimeState.runtime, emitToRenderer, { includeStateGet: true });
   runtimeState.unsubscribeRemoteConfig = runtimeState.runtime.on("remote:config-changed", async () => {
-    await restartRemoteServer().catch((error) => {
+    await restartRemoteServer().catch((error: Error) => {
       console.warn(`Remote access server restart failed: ${error.message}`);
     });
   });
-  runtimeState.unsubscribeStateUpdated = runtimeState.runtime.on("state:updated", (payload) => {
-    const themeSetting = payload?.appState?.settings?.theme || "dark";
-    nativeTheme.themeSource = themeSetting === "system" ? "system" : themeSetting;
+  runtimeState.unsubscribeStateUpdated = runtimeState.runtime.on("state:updated", (payload: Record<string, unknown>) => {
+    const themeSetting =
+      ((payload?.appState as Record<string, unknown> | undefined)?.settings as Record<string, unknown> | undefined)
+        ?.theme || "dark";
+    nativeTheme.themeSource = (themeSetting === "system" ? "system" : themeSetting) as "system" | "dark" | "light";
     updateNativeAttention(payload);
     syncTitleBarTheme();
   });
   nativeTheme.on("updated", () => syncTitleBarTheme());
   await restartRemoteServer();
   const desiredWorkspaceId =
-    runtimeState.desiredWorkspaceId || runtimeState.bootstrapPayload?.appState?.activeWorkspaceId || "";
-  const runtimeWorkspaceId = runtimeState.runtime.getPayload()?.appState?.activeWorkspaceId || "";
+    runtimeState.desiredWorkspaceId ||
+    (runtimeState.bootstrapPayload?.appState as AppState | undefined)?.activeWorkspaceId ||
+    "";
+  const runtimeWorkspaceId =
+    (runtimeState.runtime.getPayload?.()?.appState as AppState | undefined)?.activeWorkspaceId || "";
   if (desiredWorkspaceId && desiredWorkspaceId !== runtimeWorkspaceId) {
     await runtimeState.runtime.activateWorkspace(desiredWorkspaceId).catch(() => {});
   }
@@ -531,7 +589,7 @@ async function startServices() {
 if (mcpMode) {
   runReviewBridgeMcpServer(mcpMode)
     .then(() => process.exit(0))
-    .catch((error) => {
+    .catch((error: unknown) => {
       process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
       process.exit(1);
     });
@@ -552,8 +610,8 @@ if (mcpMode) {
   });
 
   app.whenReady().then(async () => {
-    runtimeState.runtimeReady = startServices().catch((error) => {
-      console.error(`Startup services failed: ${error?.message || error}`);
+    runtimeState.runtimeReady = startServices().catch((error: unknown) => {
+      console.error(`Startup services failed: ${(error as Error)?.message || error}`);
     });
     createWindow();
 
@@ -577,6 +635,6 @@ app.on("before-quit", async () => {
   runtimeState.unsubscribeRemoteConfig?.();
   runtimeState.disposeIpc?.();
   await runtimeState.remoteServer?.close?.();
-  await runtimeState.runtime?.stop?.();
+  await runtimeState.runtime?.stop?.() as Promise<void>;
   await shutdownLogger();
 });
