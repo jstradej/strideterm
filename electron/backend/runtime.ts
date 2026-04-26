@@ -1399,6 +1399,54 @@ export async function createRuntime({
     gitRefreshDebounceMap.set(workspaceId, timer);
   }
 
+  // Per-session dedup for rate-limit alerts. The same banner can scroll
+  // multiple times in the agent's output and we only want one alert per
+  // window. Also covers redrawn TUIs (Claude's prompt-limit dialog repaints).
+  const lastRateLimitAlertAt = new Map<string, number>();
+  const RATE_LIMIT_ALERT_DEDUP_MS = 60_000;
+
+  /**
+   * Raise an urgent waiting-alert when ANY agent (task worker or plain
+   * terminal) hits its provider's rate limit. The detail string format
+   * `rate-limited:<provider>[, resumes <time>]` is what the frontend
+   * notification capture parses to render the user-facing message.
+   */
+  function raiseRateLimitAlert(
+    sessionId: string,
+    workspaceId: string,
+    panelId: string,
+    panelTitle: string,
+    match: import("./runtime-utils.js").RateLimitMatch,
+  ): void {
+    const now = Date.now();
+    const last = lastRateLimitAlertAt.get(sessionId) || 0;
+    if (now - last < RATE_LIMIT_ALERT_DEDUP_MS) return;
+    lastRateLimitAlertAt.set(sessionId, now);
+
+    const resetSuffix = match.resetAt ? `, resumes ${match.resetAt.toLocaleTimeString()}` : "";
+    const detail = `rate-limited:${match.providerHint}${resetSuffix}`;
+
+    log.warn("rate-limit alert raised", {
+      sessionId,
+      workspaceId,
+      providerHint: match.providerHint,
+      needsConfirm: match.needsConfirm,
+      resetAt: match.resetAt?.toISOString() || null,
+    });
+
+    raiseAlert({
+      sessionId,
+      projectId: workspaceId,
+      panelId,
+      title: panelTitle,
+      kind: "waiting",
+      tier: 1,
+      urgency: "urgent",
+      detail,
+      exitCode: null,
+    });
+  }
+
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   sessions.on("terminal:data", (payload: any) => {
     const descriptor = parseSessionId(payload.sessionId);
@@ -1406,24 +1454,35 @@ export async function createRuntime({
     const project = descriptor ? (findWorkspace(state, descriptor.workspaceId) as WorkspaceState | null) : null;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const panel = (project as any)?.panels?.find((item: any) => item.id === descriptor?.panelId) || null;
+    const rawText = String(payload.data || "");
+    const cleanText = rawText ? stripAnsi(rawText) : "";
+
+    // Rate-limit detection runs for ANY agent in ANY tab — Docker shells,
+    // plugin panels, plain terminals, task workers. Hitting a provider limit
+    // is a user-visible event regardless of where the agent is running, and
+    // the existing `shouldTrackProjectAlert` gate (further down) excludes
+    // some of those panel kinds. Detection happens before the gate so all
+    // sessions are covered.
+    if (descriptor && project && panel && cleanText) {
+      const rateLimitMatch = detectRateLimit(cleanText);
+      if (rateLimitMatch) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const panelTitle = ((panel as any).title as string) || descriptor.panelId;
+        raiseRateLimitAlert(payload.sessionId, descriptor.workspaceId, descriptor.panelId, panelTitle, rateLimitMatch);
+        // Hand off to the task runner — no-op for non-task sessions; for
+        // task workers it auto-confirms Claude's prompt-limit dialog or
+        // schedules restart-and-resume for CLI-exit providers.
+        taskRunner.onWorkerRateLimited(payload.sessionId, rateLimitMatch, "output-detect");
+      }
+    }
+
     if (descriptor && shouldTrackProjectAlert(project, panel)) {
       const signal = getSessionSignal(payload.sessionId, project, panel);
       const notifConfig = getNotificationConfig(state);
-      const rawText = String(payload.data || "");
-      const cleanText = stripAnsi(rawText);
       const lastLine = lastNonEmptyLine(cleanText);
 
       if (AGENT_OUTPUT_RE.test(cleanText)) {
         signal.agentLike = true;
-      }
-
-      // Rate-limit hold: hand off to the task runner so it can auto-confirm
-      // (Claude prompt-limit dialog) or restart-and-resume (CLI exits). Done
-      // before the OSC 133 / hook branches because the worker is paused at a
-      // confirm prompt or already exited and won't emit normal idle signals.
-      const rateLimitMatch = detectRateLimit(cleanText);
-      if (rateLimitMatch) {
-        taskRunner.onWorkerRateLimited(payload.sessionId, rateLimitMatch, "output-detect");
       }
 
       // Phase 2 § 3.2.7 bullet 1: if the session has been genuinely silent
@@ -1913,6 +1972,7 @@ export async function createRuntime({
     }
     clearActivityFade(payload.sessionId);
     deleteSessionSignal(payload.sessionId);
+    lastRateLimitAlertAt.delete(payload.sessionId);
     events.emit("terminal:exit", payload);
     broadcastState();
   });

@@ -453,6 +453,10 @@ function relativeTime(isoString: string): string {
 function sessionIcon(s: NotificationSession): string {
   if (s.urgency === "urgent") return "🚨";
   if (s.category === "error") return "❌";
+  // Rate-limit hits surface with the heavy-exclamation glyph so they read as
+  // "stop and look" in the history list (the toast already shows 🚨 for the
+  // matching urgent urgency).
+  if (s.category === "rate-limit") return "❗";
   // Connection-level failures carry a distinct icon so they aren't mistaken
   // for a PR comment (both sit in the "review" category).
   if (s.category === "review" && s.meta?.kind === "connection-error") return "🔌";

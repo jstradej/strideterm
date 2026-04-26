@@ -117,10 +117,18 @@ export function useNotificationCapture() {
           const alertDetail = alert.detail as string | undefined;
           const isTaskAlert = typeof alertDetail === "string" && alertDetail.startsWith("task-");
           const taskDetail = isTaskAlert ? (alertDetail as string).replace(/^task-\w+:\s*/, "") : "";
+          // Rate-limit alerts: backend emits detail like "rate-limited:claude, resumes 5:50am".
+          // Surface them with an exclamation in the title so they stand out from regular
+          // waiting alerts — the user wanted to be jolted when an agent gets blocked.
+          const isRateLimitAlert = typeof alertDetail === "string" && alertDetail.startsWith("rate-limited");
 
           let title: string;
           let body: string;
-          if (isTaskAlert && (alertDetail as string).startsWith("task-completed")) {
+          if (isRateLimitAlert) {
+            title = "Rate limit hit!";
+            const detailRest = (alertDetail as string).replace(/^rate-limited:\s*/, "");
+            body = `${tabName} in ${wsName} — ${detailRest}`;
+          } else if (isTaskAlert && (alertDetail as string).startsWith("task-completed")) {
             title = "Task completed";
             body = taskDetail ? `${wsName}: ${taskDetail}` : `${wsName} task finished successfully.`;
           } else if (isTaskAlert && (alertDetail as string).startsWith("task-failed")) {
@@ -135,7 +143,7 @@ export function useNotificationCapture() {
             body = `${tabName} in ${wsName} finished${exitInfo}.`;
           }
 
-          const category = isTaskAlert ? "task" : "terminal";
+          const category = isRateLimitAlert ? "rate-limit" : isTaskAlert ? "task" : "terminal";
           const entry = notifStore.add({
             title,
             body,
