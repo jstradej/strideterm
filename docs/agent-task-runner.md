@@ -112,7 +112,7 @@ connections are removed after disconnect.
 
 - Detailed specifications are welcome — the Worker reads TASK.md from a file, so length is not a problem. You can paste full design docs, API specs, or requirement documents into TASK.md
 - Shower mode (context refresh) ensures the Worker stays effective even on long tasks that span many rounds
-- If you have an external specification, paste it directly into the task description or into TASK.md via the Files tab
+- If you have an external specification, paste it directly into the task description or into the Task brief in the Assignment tab
 
 **Anti-patterns to avoid:**
 
@@ -123,21 +123,23 @@ connections are removed after disconnect.
 
 All task state lives in `.strideterm/tasks/<taskId>/` inside your project directory. These files are auto-gitignored.
 
-| File                | Purpose                                         | Who writes it                    |
-| ------------------- | ----------------------------------------------- | -------------------------------- |
-| **TASK.md**         | Task description, verification checklist, rules | Auto-generated, you can edit     |
-| **TODO.md**         | Kanban board (To Do / In Progress / Done)       | Worker updates, you can pre-fill |
-| **JUDGE_PROMPT.md** | Customizable Judge evaluation instructions      | Auto-generated, you can edit     |
-| **WORK_LOCK**       | Signal file: "work remains"                     | Worker deletes when done         |
-| **JUDGE_TODO.md**   | Judge's evaluation scratchpad                   | Judge only (you can read)        |
-| **verdict.json**    | Judge's completion verdict                      | Judge only                       |
+| File                | Purpose                                         | Who writes it                | In Assignment tab |
+| ------------------- | ----------------------------------------------- | ---------------------------- | ----------------- |
+| **TASK.md**         | Task description, verification checklist, rules | Auto-generated, you can edit | Yes ("Task")      |
+| **JUDGE_PROMPT.md** | Customizable Judge evaluation instructions      | Auto-generated, you can edit | Yes ("Judge")     |
+| **TODO.md**         | Kanban board (To Do / In Progress / Done)       | Worker maintains             | No                |
+| **WORK_LOCK**       | Signal file: "work remains"                     | Worker deletes when done     | No                |
+| **JUDGE_TODO.md**   | Judge's evaluation scratchpad                   | Judge only                   | No                |
+| **verdict.json**    | Judge's completion verdict                      | Judge only                   | No                |
 
 ### Editing Control Files
 
-Switch to the **Files** tab in the Dashboard to edit any control file. Common edits:
+The **Assignment** tab in the Dashboard exposes the two files you actually write — the **Task** brief (TASK.md) and the **Judge** instructions (JUDGE_PROMPT.md). The other files are managed by the agents and aren't shown in the UI to keep editing focused on inputs. If you need to inspect or hand-edit them (rare — typically only after a Reset), open `.strideterm/tasks/<taskId>/` directly in your file system.
 
-- **TASK.md** — Refine the task description, add/remove verification steps, adjust rules
-- **TODO.md** — Pre-fill specific to-do items before starting
+Common edits:
+
+- **Task** brief — refine the description, add/remove verification steps, adjust rules
+- **Judge** instructions — see "Customizing the Judge" below
 
 ### Verification Checklist
 
@@ -179,7 +181,7 @@ If the Judge finds issues, it sends the Worker back with specific feedback. The 
 
 ### Customizing the Judge
 
-The Judge's evaluation behavior is defined in **JUDGE_PROMPT.md**. By default it runs the verification checklist, does a requirements check (point by point), and a code review (bugs, edge cases, quality). You can customize this in the Files tab before or during task execution.
+The Judge's evaluation behavior is defined in **JUDGE_PROMPT.md** (the **Judge** sub-tab in the Assignment tab). By default it runs the verification checklist, does a requirements check (point by point), and a code review (bugs, edge cases, quality). You can customize this before or during task execution.
 
 **Examples of customization:**
 
@@ -279,19 +281,23 @@ The `.strideterm/` directory is auto-added to `.gitignore`, so worktree director
 
 ## Dashboard
 
-The Dashboard is the first tab in a task workspace. It has four sections:
+The Dashboard is the first tab in a task workspace. It has five sections:
 
 ### Status Tab
 
-Shows the execution pipeline (Worker -> Checks -> Judge -> Done) and a history of evaluation rounds with pass/fail details for each check.
+Shows the execution pipeline (Worker -> Checks -> Judge -> Done) and a history of evaluation rounds with pass/fail details for each check. Auto-selected as the active tab when a task starts running so you can watch the run from the moment you press Start.
 
-### Files Tab
+### Assignment Tab
 
-Built-in editor for task control files. Edit TASK.md, TODO.md, or JUDGE_PROMPT.md directly without leaving the workspace.
+Editor for the two files you actually write: the **Task** brief (TASK.md) and the **Judge** instructions (JUDGE_PROMPT.md). The Worker's TODO board, the Judge's audit notes, and the event log are not editable here — they're agent-managed and surfaced in Status / Log instead.
 
 ### Config Tab
 
-Shows the task configuration (description, max rounds) with a link to edit verification steps in TASK.md.
+Shows the task configuration (description, max rounds, selected providers) with a link that jumps you to the Task brief to edit verification steps.
+
+### Log Tab
+
+Full event log of every round (TASK_LOG.jsonl rendered as a table). Includes copy/save buttons for sharing.
 
 ### Help Tab
 
@@ -325,10 +331,10 @@ After stopping, completing, or failing a task, you'll see **Continue** and **Res
 
 1. Press **Pause** to pause the task (or wait for it to complete/fail)
 2. Press **Reset** — clears rounds, returns to idle
-3. Switch to the **Files** tab and edit what you need:
-   - **TASK.md** — change the assignment, update the verification checklist, or refine the description
-   - **TODO.md** — rewrite the to-do list for the next run
-4. Press **Start** to run the task again with your updated files
+3. Switch to the **Assignment** tab and refine your inputs:
+   - **Task** — change the assignment, update the verification checklist, or refine the description
+   - **Judge** — adjust how strictly the work should be evaluated
+4. Press **Start** to run the task again with your updated inputs
 
 The Worker and Judge terminals stay open — only the round state is cleared. The Judge's last feedback (`lastJudgeInstructions`) is also preserved, so if you resume without editing files the next run benefits from prior context.
 
@@ -337,7 +343,7 @@ This makes the task workspace reusable: create it once, then reset and re-run as
 ## Tips
 
 - **Start small**: Test with a well-defined task on a project with good tests before attempting large refactors
-- **Pre-fill TODO.md**: If you know the subtasks, write them before pressing Start — it guides the Worker
+- **Customize the Judge**: If you have stricter standards (extra code-review rules, domain-specific checks), edit the Judge instructions in the Assignment tab before pressing Start
 - **Watch the first round**: Monitor the Worker's approach in round 1 and Pause if it's going in the wrong direction
 - **Use the terminal**: You can always type directly into the Worker or Judge terminal for course correction
 - **Review the verification checklist**: The auto-detected commands may not be perfect — review and adjust in TASK.md before starting

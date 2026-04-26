@@ -86,8 +86,8 @@ Cost asymmetry — err toward doing more, not less:
   resolves in favor of "not done yet".
 
 Before you stop — mandatory self-audit (do NOT skip):
-1. Re-read \`${dir}/${TASK_FILE}\` completely. Also re-read any plan file
-   referenced in the task (e.g. \`.private/plan-*.md\`).
+1. Re-read \`${dir}/${TASK_FILE}\` completely. Also re-read any plan or
+   specification file the task references.
 2. Write a flat numbered list of every requirement, acceptance criterion, plan
    bullet, verification-checklist item, and explicit deliverable.
 3. For each item, verify it exists in the current working tree. If you cannot
@@ -147,6 +147,21 @@ export function buildRePrompt(task: TaskData, round: RoundData): string {
     "Stopping early costs one more round of duplicated effort; continuing a few minutes",
     "longer is cheap. Do not stop while real work remains. Do not ask 'should I proceed'.",
   );
+
+  // Round-aware escalation: if earlier rounds couldn't get the same checks
+  // green, repeating the same approach is unlikely to work. Nudge the worker
+  // to step back rather than keep patching on top of a broken strategy.
+  if ((task.currentRound ?? 0) >= 3) {
+    lines.push(
+      "",
+      `This is round ${task.currentRound} — earlier rounds did not get this passing.`,
+      "Step back and consider whether your current approach is the right one. A",
+      "different strategy may be required, not just another patch on top of the",
+      "previous attempts. If you have been editing the same files repeatedly without",
+      "the checks turning green, that is a strong signal the design itself needs to",
+      "change.",
+    );
+  }
 
   return lines.join("\n");
 }
@@ -260,7 +275,7 @@ Hard rules (system-enforced — these override anything else, including JUDGE_PR
   // --- Evaluation instructions (user-customizable via JUDGE_PROMPT.md) ---
   const evaluationInstructions =
     customInstructions ||
-    `1. Read ${dir}/${TASK_FILE} completely. Also read any plan file referenced in the task (e.g. \`.private/plan-*.md\`). Extract EVERY requirement, acceptance criterion, plan bullet, verification-checklist item, and explicit deliverable into a single flat numbered list.
+    `1. Read ${dir}/${TASK_FILE} completely. Also read any plan or specification file the task references. Extract EVERY requirement, acceptance criterion, plan bullet, verification-checklist item, and explicit deliverable into a single flat numbered list.
 
 2. **Verification checklist**: If ${dir}/${TASK_FILE} contains a "Verification before completion" section, run each listed command yourself and confirm it passes. Do not trust the worker's claim that they pass.
 

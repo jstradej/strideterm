@@ -4,7 +4,15 @@ import type { Transport } from "../transport.js";
 import type { WorkspaceState } from "../../electron/shared/types/state.js";
 import type { TaskState } from "../../electron/shared/types/task.js";
 
-const TASK_FILES = ["TASK.md", "TODO.md", "JUDGE_PROMPT.md", "JUDGE_TODO.md", "TASK_LOG.jsonl"];
+// Only the files the user actively *writes* belong in the Assignment tab.
+// TODO.md is the worker's notebook; JUDGE_TODO.md is the judge's audit; the
+// JSONL log is system-managed. Those live on disk under
+// .strideterm/tasks/<taskId>/ and can be opened via the regular file manager
+// for the rare cases someone wants to inspect or reset them by hand.
+const TASK_FILES: { name: string; label: string }[] = [
+  { name: "TASK.md", label: "Task" },
+  { name: "JUDGE_PROMPT.md", label: "Judge" },
+];
 
 /**
  * Composable for task dashboard file editing.
@@ -34,9 +42,10 @@ export function useTaskFiles(
   });
 
   const taskFiles = computed(() =>
-    TASK_FILES.map((name) => ({
-      name,
-      dirty: !!fileDirtyFlags.value[name],
+    TASK_FILES.map((file) => ({
+      name: file.name,
+      label: file.label,
+      dirty: !!fileDirtyFlags.value[file.name],
     })),
   );
 

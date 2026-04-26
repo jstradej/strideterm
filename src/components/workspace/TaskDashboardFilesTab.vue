@@ -6,9 +6,10 @@
         :key="f.name"
         class="td__file-tab"
         :class="{ 'td__file-tab--active': activeFile === f.name }"
+        :title="f.name"
         @click="switchFile(f.name)"
       >
-        {{ f.name }}
+        {{ f.label || f.name }}
         <span v-if="f.dirty" class="td__file-dirty">*</span>
       </button>
       <div class="td__editor-actions">
@@ -49,6 +50,7 @@ const MonacoEditor = defineAsyncComponent(() => import("../shared/MonacoEditor.v
 
 interface TaskFile {
   name: string;
+  label?: string;
   dirty?: boolean;
 }
 

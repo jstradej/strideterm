@@ -27,31 +27,27 @@
       </li>
       <li>The loop repeats until the Judge approves or max rounds are reached.</li>
     </ol>
-    <h4>Control files</h4>
+    <h4>Your inputs</h4>
     <p class="td__help-intro">
-      All task state lives in <code>.strideterm/tasks/{{ taskId || "&lt;taskId&gt;" }}/</code> inside your project. You
-      can edit these files in the <strong>Files</strong> tab.
+      The <strong>Assignment</strong> tab is where you tell the agents what to do. Two files, both optional &mdash;
+      changes save to disk and take effect on the next Start/Continue.
     </p>
     <ul class="td__help-list">
       <li>
-        <strong>TASK.md</strong> &mdash; The full task description, verification checklist, and rules. Both the Worker
-        and Judge read this file. Verification commands (tests, lint, etc.) are auto-detected and pre-filled here
-        &mdash; edit freely.
+        <strong>Task</strong> &mdash; the full task description, verification checklist, and rules. Both the Worker and
+        Judge read this. Verification commands (tests, lint, etc.) are auto-detected and pre-filled &mdash; edit freely.
       </li>
       <li>
-        <strong>TODO.md</strong> &mdash; Kanban-style board with To Do / In Progress / Done sections. The Worker updates
-        this as it makes progress. You can pre-fill items here before starting.
+        <strong>Judge</strong> &mdash; customizable instructions for the Judge. Edit this to make the Judge stricter,
+        add domain-specific criteria, or replace the evaluation logic entirely. Leave empty to use the default.
       </li>
-      <li>
-        <strong>WORK_LOCK</strong> &mdash; Simple signal file: "work remains". The Worker must delete it when genuinely
-        done. Task Runner checks its absence for completion.
-      </li>
-      <li>
-        <strong>JUDGE_PROMPT.md</strong> &mdash; Customizable instructions for the Judge. Edit this to change how the
-        Judge evaluates: stricter code review, domain-specific criteria, or entirely custom evaluation logic.
-      </li>
-      <li><strong>JUDGE_TODO.md</strong> &mdash; Tiny scratchpad for the Judge's evaluation notes (read-only).</li>
     </ul>
+    <p class="td__help-intro">
+      Other files (worker progress, judge audit, event log, work-lock signal) live on disk in
+      <code>.strideterm/tasks/{{ taskId || "&lt;taskId&gt;" }}/</code> and are managed by the agents. The Status and Log
+      tabs surface what you usually want to see; if you need to inspect or hand-edit those files, open them through your
+      file system.
+    </p>
 
     <h4>Example: TASK.md <button class="td__copy-btn" @click="copyExample('task')">copy</button></h4>
     <pre ref="exampleTask" class="td__example">
@@ -112,10 +108,10 @@ and `currentPage` in the response. Add integration tests.
       <li>Press <strong>Pause</strong> to pause the task (or wait for it to complete/fail).</li>
       <li>Press <strong>Reset</strong> &mdash; clears rounds, returns to idle.</li>
       <li>
-        Switch to <strong>Files</strong> and edit what you need &mdash; change <strong>TASK.md</strong> (including the
-        verification checklist) or rewrite <strong>TODO.md</strong>.
+        Open the <strong>Assignment</strong> tab and refine the <strong>Task</strong> brief (including the verification
+        checklist) or tweak the <strong>Judge</strong> instructions.
       </li>
-      <li>Press <strong>Start</strong> to run the task again with your updated files.</li>
+      <li>Press <strong>Start</strong> to run the task again with your updated inputs.</li>
     </ol>
     <p class="td__help-intro">
       The workspace is fully reusable: create once, then reset and re-run as many times as you need.
@@ -158,8 +154,8 @@ and `currentPage` in the response. Add integration tests.
       <li>Use the <strong>Pause/Resume</strong> buttons to take manual control.</li>
       <li>Verification commands run in the project directory, not inside the agent's terminal.</li>
       <li>
-        Edit <strong>TASK.md</strong> in the Files tab before pressing Start to refine the task description, or leave it
-        empty and instruct the Worker directly in the terminal.
+        Edit the <strong>Task</strong> brief in the Assignment tab before pressing Start to refine the description, or
+        leave it empty and instruct the Worker directly in the terminal.
       </li>
       <li>
         Use <strong>worktree mode</strong> when you want to run tasks in parallel or keep your main checkout clean.

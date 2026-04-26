@@ -140,7 +140,8 @@
           <label class="td__field">
             <span>Verification</span>
             <div class="td__value">
-              Defined in the &ldquo;Verification before completion&rdquo; section of <strong>TASK.md</strong> &mdash;
+              Defined in the &ldquo;Verification before completion&rdquo; section of the <strong>Task</strong> brief
+              &mdash;
               <button
                 class="td__link-btn"
                 @click="
@@ -148,7 +149,7 @@
                   files.switchFile('TASK.md');
                 "
               >
-                edit in Files tab
+                edit in Assignment tab
               </button>
             </div>
           </label>
@@ -176,7 +177,7 @@ const activeTab = ref<string>("status");
 
 const tabs = [
   { id: "status", label: "Status" },
-  { id: "files", label: "Files" },
+  { id: "files", label: "Assignment" },
   { id: "config", label: "Config" },
   { id: "log", label: "Log" },
   { id: "help", label: "Help" },
