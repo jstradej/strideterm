@@ -1,4 +1,5 @@
 dist/
+dist-electron/
 release/
 out/
 node_modules/

@@ -61,7 +61,7 @@ Phase 8 introduces 0 new typecheck errors. The 1094 errors reported by `npm run 
 **Effect version installed:** `4.0.0-beta.57` (2026-04-26)
 **@effect/platform-node:** `4.0.0-beta.57`
 **@effect/vitest:** `4.0.0-beta.57`
-**@effect/language-service:** Not installed — `4.0.0-beta.57` does not exist on npm. Latest available is `0.85.1` (v3 series), incompatible with Effect v4. Omitting tsconfig plugin; will add when v4-compatible release appears.
+**@effect/language-service:** `0.85.1` — §10.10 fallback applied. Verified via `npm show @effect/language-service versions --json`: no `4.0.0-beta.X` versions exist on npm (package follows independent `0.x` versioning; latest is `0.85.1`). Per §10.10, installed the highest available version (`0.85.1`) with exact pin. Plugin entry restored to `tsconfig.base.json` `compilerOptions.plugins`. The v3 language service provides partial IDE support; full v4 feature parity will require a future `@effect/language-service` release.
 
 ### Migrated modules (full / selective)
 
