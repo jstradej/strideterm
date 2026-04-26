@@ -132,8 +132,8 @@ describe("detectRateLimit", () => {
     });
   });
 
-  describe("generic fallback", () => {
-    test("matches '429 too many requests'", () => {
+  describe("generic fallback (tight error-shape only)", () => {
+    test("matches HTTP 429 status line", () => {
       const m = detectRateLimit("HTTP 429: too many requests");
       expect(m).not.toBeNull();
       // Either copilot/gemini/generic could pick this up; in this case the
@@ -141,11 +141,30 @@ describe("detectRateLimit", () => {
       expect(["generic", "copilot", "gemini"]).toContain(m!.providerHint);
     });
 
-    test("matches plain 'rate-limited'", () => {
-      const m = detectRateLimit("the runner was rate-limited and gave up");
-      expect(m).not.toBeNull();
-      expect(m!.resetAt).toBeNull();
-      expect(m!.needsConfirm).toBe(false);
+    test("matches status-code framings", () => {
+      expect(detectRateLimit("API responded with status 429")!.providerHint).toBe("generic");
+      expect(detectRateLimit("HTTP status: 429 Too Many Requests")!.providerHint).toBe("generic");
+      expect(detectRateLimit("status_code = 429")!.providerHint).toBe("generic");
+    });
+
+    test("matches JSON error codes", () => {
+      // codex detector also catches rate_limit_exceeded; whichever fires
+      // first is fine — the point is that a real JSON error gets handled.
+      expect(detectRateLimit('{"error":{"code":"too_many_requests"}}')).not.toBeNull();
+    });
+
+    test("does NOT match narrative mentions of rate-limit (regression: false-positive blocked judge)", () => {
+      // Worker output that *talks about* rate-limit handling — diff lines,
+      // test names, code comments, status messages — must NOT trigger a hold.
+      // A real-world bug had the worker editing rate-limit detector code, its
+      // own diff scrolled "the runner was rate-limited" through stdout, and
+      // the loose generic detector tripped, which set task.rateLimitedUntil
+      // and silently blocked the judge from ever running.
+      expect(detectRateLimit("the runner was rate-limited and gave up")).toBeNull();
+      expect(detectRateLimit("// rate-limit detection runs for any agent")).toBeNull();
+      expect(detectRateLimit("test 'rate-limit retry cap and resume'")).toBeNull();
+      expect(detectRateLimit("rate-limited fallback at 30 minutes")).toBeNull();
+      expect(detectRateLimit("too many requests in flight, throttling to 5/s")).toBeNull();
     });
 
     test("returns null for unrelated build output", () => {

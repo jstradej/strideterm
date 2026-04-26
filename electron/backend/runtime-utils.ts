@@ -86,9 +86,14 @@ const claudeCodePromptDetector: RateLimitDetector = (text, now) => {
 // Codex CLI exits with "Rate limit reached for <model> ... Limit X, Used Y,
 // Requested Z" or wraps an OpenAI `rate_limit_exceeded` error. There's no
 // reset time in the console output, so the runner falls back to a delay.
+//
+// Pattern is intentionally tight: the verb "reached" or "exceeded" must come
+// between "rate limit" and "for", followed by a model-name token. Earlier
+// looser variants matched any "rate-limit ... for ..." within 40 chars and
+// false-positived on narrative mentions like "// rate-limit detection runs
+// for any agent" — that locked up the worker via task.rateLimitedUntil.
 const codexDetector: RateLimitDetector = (_text, _now) => {
-  if (!/\b(?:rate[\s_-]?limit(?:ed|exceeded| reached)?\b.{0,40}\bfor\b|rate_limit_exceeded)\b/i.test(_text))
-    return null;
+  if (!/(?:rate[\s_-]?limit\s+(?:reached|exceeded)\s+for\s+[\w.-]+|rate_limit_exceeded)/i.test(_text)) return null;
   return { resetAt: null, needsConfirm: false, providerHint: "codex" };
 };
 
@@ -132,11 +137,24 @@ const copilotDetector: RateLimitDetector = (text, now) => {
   return null;
 };
 
-// Catch-all so an unfamiliar agent / locale still triggers the wait-and-retry
-// path. Anchored on common English keywords to avoid matching e.g. docs that
-// merely mention rate limiting.
+// Catch-all for unfamiliar agents — but anchored only on tight error-shape
+// patterns. Loose mentions like "the runner was rate-limited", "// rate-limit
+// handling", or "test rate-limit retry cap" appear constantly in source code,
+// test output, and agent narration of rate-limit-related work, and a false
+// positive locks up the worker via task.rateLimitedUntil (which then makes
+// onAgentIdle consume idle events and the judge never runs).
+//
+// Required signal shapes:
+//   - HTTP/status framing: "HTTP 429", "status 429", "status_code = 429".
+//   - Recognized JSON error codes: "rate_limit_exceeded", "too_many_requests".
+//
+// If a future provider surfaces rate limits in a different shape that these
+// don't catch, add a dedicated detector for it (like the four above) rather
+// than loosening this one.
 const genericFallbackDetector: RateLimitDetector = (text, _now) => {
-  if (!/\b(?:rate[-\s]?limit(?:ed|s|ing)?|quota exceeded|too many requests|429)\b/i.test(text)) return null;
+  const isHttpStatus = /\b(?:HTTP\s+429|status(?:[\s_]code)?\s*[:=]?\s*429)\b/i.test(text);
+  const isJsonError = /"(?:rate_limit_exceeded|too_many_requests)"/i.test(text);
+  if (!isHttpStatus && !isJsonError) return null;
   return { resetAt: null, needsConfirm: false, providerHint: "generic" };
 };
 
