@@ -4,7 +4,17 @@ This file is updated throughout the TypeScript migration (Phases 1–10). It tra
 
 ## MIGRATION-EXEMPT `any` usages
 
-None so far.
+All `no-explicit-any` suppressions are marked inline with `// eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: <reason>` or `// eslint-disable-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT`. Categories:
+
+| Category | Files | Reason |
+|----------|-------|--------|
+| Server state JSON blob | `WorkspaceHero.vue`, `SidebarPanel.vue`, `runtime.ts`, `default-state.ts` | `payload` is a `shallowRef` of the full server state blob; deriving typed slices is done in stores, not inline |
+| Git/attention/docker open-ended JSON | `GitPane.vue`, `WorkspaceHero.vue` | Git snapshot and attention objects are open-ended server JSON; indexed dynamically |
+| Test assertions on untyped API/manager results | `azure-devops-api.test.ts`, `azure-devops-manager.test.ts`, `agent-task-runner.test.ts`, `file-manager.test.ts`, `review-bridge-agent-launch.test.ts`, `version-checker.test.ts`, `ssh-manager.test.ts` | Test helpers cast return values that haven't been fully typed; acceptable in test scope |
+| Fixture JSON (mock server) | `test/mock-server.ts` | Fixture JSON payloads are untyped server state blobs; typing them fully would require duplicating all server state types |
+| Store/immer draft mutation | `runtime.ts`, `ssh/runtime-ssh-handlers.ts` | Immer draft types lack index signatures for sub-schema mutations; narrowing to `any` is the accepted pattern |
+| Effect operation context cast | `effect/operation-context.ts` | `provideService` narrowing strips `R` but TypeScript can't verify it statically |
+| Unknown catch shape | `runtime.ts` | Standard `(err as any)?.message` pattern for error objects in catch blocks |
 
 ## Decisions outside plan
 

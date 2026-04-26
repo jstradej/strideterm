@@ -15,13 +15,13 @@
 import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
-import { WebSocketServer } from "ws";
+import { WebSocketServer, WebSocket } from "ws";
 import { fileURLToPath } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const VITE_ORIGIN = "http://127.0.0.1:1420";
 
-function parseArgs(argv) {
+function parseArgs(argv: string[]): { fixture: string; port: number } {
   let fixture = "empty-state";
   let port = 3999;
   for (let i = 2; i < argv.length; i++) {
@@ -35,15 +35,29 @@ function parseArgs(argv) {
   return { fixture, port };
 }
 
-export function loadFixture(name) {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: fixture JSON is untyped server state blob
+export function loadFixture(name: string): any {
   const filePath = path.join(__dirname, "fixtures", `${name}.json`);
   return JSON.parse(fs.readFileSync(filePath, "utf-8"));
 }
 
-export async function startMockServer({ fixture = "empty-state", port = 0 } = {}) {
-  const payload = JSON.parse(JSON.stringify(loadFixture(fixture)));
+export interface MockServerHandle {
+  port: number;
+  token: string;
+  url: string;
+  wsUrl: string;
+  browserUrl: string;
+  close(): Promise<void>;
+}
+
+export async function startMockServer({
+  fixture = "empty-state",
+  port = 0,
+}: { fixture?: string; port?: number } = {}): Promise<MockServerHandle> {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: fixture JSON is untyped server state blob
+  const payload: any = JSON.parse(JSON.stringify(loadFixture(fixture)));
   const TOKEN = "test-token";
-  const sockets = new Set();
+  const sockets = new Set<WebSocket>();
 
   const server = http.createServer((req, res) => {
     const url = new URL(req.url || "/", "http://localhost");
@@ -68,14 +82,15 @@ export async function startMockServer({ fixture = "empty-state", port = 0 } = {}
     // Stateful POST handler — apply basic mutations and broadcast via WS
     if (req.method === "POST" && url.pathname.startsWith("/api/")) {
       let raw = "";
-      req.on("data", (chunk) => {
+      req.on("data", (chunk: Buffer) => {
         raw += chunk;
       });
       req.on("error", () => {
         res.destroy();
       });
       req.on("end", () => {
-        const body = raw ? JSON.parse(raw) : {};
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: fixture JSON is untyped server state blob
+        const body: any = raw ? JSON.parse(raw) : {};
 
         // Workspace activation — switch active workspace and rebuild workspace view
         if (url.pathname.endsWith("/workspace/activate") || url.pathname.endsWith("/project/activate")) {
@@ -83,12 +98,14 @@ export async function startMockServer({ fixture = "empty-state", port = 0 } = {}
           if (wsId) {
             payload.appState.activeWorkspaceId = wsId;
             payload.appState.activeProjectId = wsId;
-            const ws = payload.appState.workspaces.find((w) => w.id === wsId);
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: fixture JSON is untyped server state blob
+            const ws = payload.appState.workspaces.find((w: any) => w.id === wsId);
             if (ws) {
               payload.workspace = {
                 workspace: ws,
                 project: ws,
-                sessions: (ws.panels || []).map((p) => ({
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: fixture JSON is untyped server state blob
+                sessions: (ws.panels || []).map((p: any) => ({
                   sessionId: `${ws.id}:${p.id}`,
                   panelId: p.id,
                   title: p.title,
@@ -123,7 +140,7 @@ export async function startMockServer({ fixture = "empty-state", port = 0 } = {}
         headers: { ...req.headers, host: new URL(VITE_ORIGIN).host },
       },
       (proxyRes) => {
-        res.writeHead(proxyRes.statusCode, proxyRes.headers);
+        res.writeHead(proxyRes.statusCode!, proxyRes.headers);
         proxyRes.pipe(res);
       },
     );
@@ -137,17 +154,17 @@ export async function startMockServer({ fixture = "empty-state", port = 0 } = {}
   // WebSocket — send initial state on connection
   const wss = new WebSocketServer({ noServer: true });
 
-  function broadcast(message) {
+  function broadcast(message: unknown): void {
     const data = JSON.stringify(message);
     for (const ws of sockets) {
-      if (ws.readyState === ws.OPEN) ws.send(data);
+      if (ws.readyState === WebSocket.OPEN) ws.send(data);
     }
   }
 
   server.on("upgrade", (req, socket, head) => {
     const url = new URL(req.url || "/", "http://localhost");
     if (url.pathname === "/ws") {
-      wss.handleUpgrade(req, socket, head, (ws) => {
+      wss.handleUpgrade(req, socket as import("node:net").Socket, head, (ws) => {
         sockets.add(ws);
         ws.on("close", () => sockets.delete(ws));
         ws.send(JSON.stringify({ type: "state:updated", payload }));
@@ -172,8 +189,8 @@ export async function startMockServer({ fixture = "empty-state", port = 0 } = {}
           "\r\n\r\n",
       );
       if (proxyHead.length) socket.write(proxyHead);
-      proxySocket.pipe(socket);
-      socket.pipe(proxySocket);
+      (proxySocket as NodeJS.ReadWriteStream).pipe(socket as unknown as NodeJS.WritableStream);
+      (socket as NodeJS.ReadableStream).pipe(proxySocket as unknown as NodeJS.WritableStream);
     });
     proxyReq.on("error", () => {
       socket.write("HTTP/1.1 502 Bad Gateway\r\n\r\n");
@@ -182,7 +199,7 @@ export async function startMockServer({ fixture = "empty-state", port = 0 } = {}
     proxyReq.end();
   });
 
-  await new Promise((resolve, reject) => {
+  await new Promise<void>((resolve, reject) => {
     server.once("error", reject);
     server.listen(port, "127.0.0.1", () => {
       server.removeListener("error", reject);
@@ -190,7 +207,7 @@ export async function startMockServer({ fixture = "empty-state", port = 0 } = {}
     });
   });
 
-  const actualPort = server.address().port;
+  const actualPort = (server.address() as import("node:net").AddressInfo).port;
   return {
     port: actualPort,
     token: TOKEN,
@@ -199,9 +216,9 @@ export async function startMockServer({ fixture = "empty-state", port = 0 } = {}
     browserUrl: `http://127.0.0.1:${actualPort}/?token=${TOKEN}`,
     async close() {
       for (const ws of wss.clients) ws.terminate();
-      await new Promise((resolve) => wss.close(resolve));
+      await new Promise<void>((resolve) => wss.close(() => resolve()));
       server.closeAllConnections();
-      await new Promise((resolve) => server.close(resolve));
+      await new Promise<void>((resolve) => server.close(() => resolve()));
     },
   };
 }

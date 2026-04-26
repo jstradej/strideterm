@@ -15,7 +15,7 @@ const snapshots = [
   },
 ];
 
-function mountTable(props = {}) {
+function mountTable(props: Record<string, unknown> = {}) {
   return mount(BulkRepoTable, {
     props: {
       workspaceId: "ws-test",

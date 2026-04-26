@@ -7,7 +7,7 @@ import { openApp, assertNoErrors } from "./helpers.js";
  */
 
 test.describe("Empty state", () => {
-  let mock;
+  let mock: Awaited<ReturnType<typeof startMockServer>>;
   test.beforeAll(async () => {
     mock = await startMockServer({ fixture: "empty-state" });
   });
@@ -49,7 +49,7 @@ test.describe("Empty state", () => {
 });
 
 test.describe("Multi-workspace state", () => {
-  let mock;
+  let mock: Awaited<ReturnType<typeof startMockServer>>;
   test.beforeAll(async () => {
     mock = await startMockServer({ fixture: "multi-workspace" });
   });

@@ -8,7 +8,7 @@ import { openApp, assertNoErrors } from "./helpers.js";
  */
 
 test.describe("Docker workspace", () => {
-  let mock;
+  let mock: Awaited<ReturnType<typeof startMockServer>>;
   test.beforeAll(async () => {
     mock = await startMockServer({ fixture: "docker-containers" });
   });
@@ -27,7 +27,7 @@ test.describe("Docker workspace", () => {
 });
 
 test.describe("Git merge conflict workspace", () => {
-  let mock;
+  let mock: Awaited<ReturnType<typeof startMockServer>>;
   test.beforeAll(async () => {
     mock = await startMockServer({ fixture: "git-merge-conflict" });
   });
@@ -45,7 +45,7 @@ test.describe("Git merge conflict workspace", () => {
 });
 
 test.describe("GitHub PR inbox workspace", () => {
-  let mock;
+  let mock: Awaited<ReturnType<typeof startMockServer>>;
   test.beforeAll(async () => {
     mock = await startMockServer({ fixture: "github-pr-inbox" });
   });

@@ -25,7 +25,7 @@
     "dev:backend": "tsc -p tsconfig.backend.json --watch --preserveWatchOutput",
     "dev:electron": "tsx scripts/dev-electron.mts",
     "start": "npm run build && tsx scripts/start-electron.mts --dist",
-    "build": "vue-tsc --noEmit -p tsconfig.frontend.json && vite build && tsc -p tsconfig.backend.json && node scripts/copy-shell-integration.mjs",
+    "build": "vue-tsc --noEmit -p tsconfig.frontend.json && vite build && tsc -p tsconfig.backend.json && tsx scripts/copy-shell-integration.mts",
     "dist": "npm run build && electron-builder",
     "dist:win": "npm run build && electron-builder --win",
     "dist:mac": "npm run build && electron-builder --mac",

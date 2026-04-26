@@ -14,7 +14,7 @@ import { openApp, assertNoErrors } from "./helpers.js";
 // Workspace switching — verifies both appearance AND disappearance of elements
 // ---------------------------------------------------------------------------
 test.describe("Workspace switching", () => {
-  let mock;
+  let mock: Awaited<ReturnType<typeof startMockServer>>;
   test.beforeAll(async () => {
     mock = await startMockServer({ fixture: "multi-workspace" });
   });
@@ -73,7 +73,7 @@ test.describe("Workspace switching", () => {
 // Tab picker (+Tab button)
 // ---------------------------------------------------------------------------
 test.describe("Tab picker", () => {
-  let mock;
+  let mock: Awaited<ReturnType<typeof startMockServer>>;
   test.beforeAll(async () => {
     mock = await startMockServer({ fixture: "multi-workspace" });
   });
@@ -110,7 +110,7 @@ test.describe("Tab picker", () => {
 // Layout picker (Split)
 // ---------------------------------------------------------------------------
 test.describe("Layout picker", () => {
-  let mock;
+  let mock: Awaited<ReturnType<typeof startMockServer>>;
   test.beforeAll(async () => {
     mock = await startMockServer({ fixture: "multi-workspace" });
   });
@@ -130,7 +130,7 @@ test.describe("Layout picker", () => {
 // Settings dialog — tab navigation and content verification
 // ---------------------------------------------------------------------------
 test.describe("Settings dialog", () => {
-  let mock;
+  let mock: Awaited<ReturnType<typeof startMockServer>>;
   test.beforeAll(async () => {
     mock = await startMockServer({ fixture: "multi-workspace" });
   });
@@ -198,7 +198,7 @@ test.describe("Settings dialog", () => {
 // Profile selector
 // ---------------------------------------------------------------------------
 test.describe("Profile selector", () => {
-  let mock;
+  let mock: Awaited<ReturnType<typeof startMockServer>>;
   test.beforeAll(async () => {
     mock = await startMockServer({ fixture: "multi-workspace" });
   });
@@ -218,7 +218,7 @@ test.describe("Profile selector", () => {
 // Add workspace dialog
 // ---------------------------------------------------------------------------
 test.describe("Add workspace", () => {
-  let mock;
+  let mock: Awaited<ReturnType<typeof startMockServer>>;
   test.beforeAll(async () => {
     mock = await startMockServer({ fixture: "multi-workspace" });
   });
@@ -238,7 +238,7 @@ test.describe("Add workspace", () => {
 // Help dialog
 // ---------------------------------------------------------------------------
 test.describe("Help dialog", () => {
-  let mock;
+  let mock: Awaited<ReturnType<typeof startMockServer>>;
   test.beforeAll(async () => {
     mock = await startMockServer({ fixture: "multi-workspace" });
   });
@@ -260,7 +260,7 @@ test.describe("Help dialog", () => {
 // Collapse sidebar
 // ---------------------------------------------------------------------------
 test.describe("Sidebar collapse", () => {
-  let mock;
+  let mock: Awaited<ReturnType<typeof startMockServer>>;
   test.beforeAll(async () => {
     mock = await startMockServer({ fixture: "multi-workspace" });
   });
@@ -283,7 +283,7 @@ test.describe("Sidebar collapse", () => {
 // Keyboard shortcut — Ctrl+N opens new workspace dialog
 // ---------------------------------------------------------------------------
 test.describe("Keyboard shortcuts", () => {
-  let mock;
+  let mock: Awaited<ReturnType<typeof startMockServer>>;
   test.beforeAll(async () => {
     mock = await startMockServer({ fixture: "multi-workspace" });
   });
@@ -303,7 +303,7 @@ test.describe("Keyboard shortcuts", () => {
 // Visual regression screenshots (platform-dependent — may need --update-snapshots on new OS)
 // ---------------------------------------------------------------------------
 test.describe("Visual regression @visual", () => {
-  let mock;
+  let mock: Awaited<ReturnType<typeof startMockServer>>;
   test.beforeAll(async () => {
     mock = await startMockServer({ fixture: "multi-workspace" });
   });
@@ -351,7 +351,7 @@ test.describe("Visual regression @visual", () => {
 
 // Empty state screenshot — separate describe to avoid mock server conflicts
 test.describe("Visual regression — empty state @visual", () => {
-  let mock;
+  let mock: Awaited<ReturnType<typeof startMockServer>>;
   test.beforeAll(async () => {
     mock = await startMockServer({ fixture: "empty-state" });
   });
