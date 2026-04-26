@@ -12,12 +12,14 @@
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { computed } from "vue";
 import { useAppStore } from "../../stores/app.js";
 
 const store = useAppStore();
 const profile = computed(() => store.activeProfile);
 
-defineEmits(["click"]);
+defineEmits<{
+  (e: "click"): void;
+}>();
 </script>

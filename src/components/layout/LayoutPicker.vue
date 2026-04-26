@@ -46,8 +46,8 @@
   </Teleport>
 </template>
 
-<script setup>
-import { ref, computed, watch, nextTick, onMounted, onBeforeUnmount } from "vue";
+<script setup lang="ts">
+import { ref, computed, watch, nextTick, onMounted, onBeforeUnmount, type CSSProperties } from "vue";
 import { useAppStore } from "../../stores/app.js";
 
 const LAYOUTS = {
@@ -60,13 +60,13 @@ const LAYOUTS = {
 };
 
 const store = useAppStore();
-const pickerRef = ref(null);
+const pickerRef = ref<HTMLElement | null>(null);
 
 const nonSoloLayouts = computed(() => Object.entries(LAYOUTS).filter(([key]) => key !== "solo"));
 
 const currentLayout = computed(() => store.splitGroup?.layout || "solo");
 
-const pickerStyle = ref({ position: "fixed", top: "0px", right: "0px", zIndex: 9999 });
+const pickerStyle = ref<CSSProperties>({ position: "fixed", top: "0px", right: "0px", zIndex: 9999 });
 
 watch(
   () => store.layoutPickerAnchor,
@@ -89,20 +89,20 @@ watch(
   },
 );
 
-function pickLayout(key) {
+function pickLayout(key: string): void {
   store.pickLayout(key);
   store.hideLayoutPicker();
 }
 
-function onDocumentClick(e) {
+function onDocumentClick(e: MouseEvent): void {
   // Ignore clicks on the Split button itself (it triggers showLayoutPicker)
-  if (e.target.closest("[data-role='tab-actions']")) return;
-  if (pickerRef.value && !pickerRef.value.contains(e.target)) {
+  if ((e.target as Element).closest("[data-role='tab-actions']")) return;
+  if (pickerRef.value && !pickerRef.value.contains(e.target as Node)) {
     store.hideLayoutPicker();
   }
 }
 
-function onKeydown(e) {
+function onKeydown(e: KeyboardEvent): void {
   if (e.key === "Escape") store.hideLayoutPicker();
 }
 

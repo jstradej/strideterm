@@ -59,8 +59,9 @@
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { computed, inject, provide, reactive, ref, toRaw } from "vue";
+import type { Transport } from "../../transport.js";
 import SettingsAboutTab from "./settings/SettingsAboutTab.vue";
 import SettingsGeneralTab from "./settings/SettingsGeneralTab.vue";
 import SettingsGitTab from "./settings/SettingsGitTab.vue";
@@ -79,18 +80,64 @@ const TABS = [
 const THEMES = ["dark", "light", "system"];
 const LOG_LEVELS = ["error", "warn", "info", "debug", "trace"];
 
-const props = defineProps({
-  settings: { type: Object, default: () => ({}) },
-  tabTemplates: { type: Array, default: () => [] },
-  appVersion: { type: String, default: "" },
-  repositoryUrl: { type: String, default: "" },
-  versionCheck: { type: Object, default: null },
-  saveError: { type: String, default: "" },
+interface SettingsObj {
+  theme?: string;
+  logLevel?: string;
+  externalEditor?: string;
+  remoteAccess?: { cloudflaredPath?: string };
+  notifications?: {
+    promptQuietMs?: number;
+    agentQuietMs?: number;
+    agentQuietFastMs?: number;
+    alertCooldownMs?: number;
+    shellIntegration?: boolean;
+    agentHook?: boolean;
+    debug?: boolean;
+  };
+  git?: { ui?: { showAllActions?: boolean } };
+  ssh?: {
+    preferAgent?: boolean;
+    agentPath?: string;
+    allowSystemSshFallback?: boolean;
+    certExpiryWarnHours?: number;
+    defaultLaunchVia?: string;
+    wslDefaultDistro?: string;
+    systemSshPath?: string;
+    requireEncryptedStorage?: boolean;
+  };
+}
+
+interface TabTemplate {
+  id?: string;
+  title?: string;
+  command?: string;
+  icon?: string;
+}
+
+interface Props {
+  settings?: SettingsObj;
+  tabTemplates?: TabTemplate[];
+  appVersion?: string;
+  repositoryUrl?: string;
+  versionCheck?: { versionsBehind: number; latestVersion: string; latestUrl: string } | null;
+  saveError?: string;
+}
+
+const props = withDefaults(defineProps<Props>(), {
+  settings: () => ({}),
+  tabTemplates: () => [],
+  appVersion: "",
+  repositoryUrl: "",
+  versionCheck: null,
+  saveError: "",
 });
 
-const emit = defineEmits(["cancel", "save"]);
+const emit = defineEmits<{
+  cancel: [];
+  save: [settings: unknown];
+}>();
 
-const api = inject("api");
+const api = inject<Transport>("api");
 const hookSettings = reactive(useAgentHookSettings(api));
 
 const activeTab = ref("general");
@@ -129,10 +176,10 @@ const form = reactive({
 
 // -- Version check --
 const checkingUpdate = ref(false);
-const manualCheckResult = ref(null);
+const manualCheckResult = ref<unknown>(null);
 
 const updateInfo = computed(() => {
-  const check = manualCheckResult.value || props.versionCheck;
+  const check = (manualCheckResult.value || props.versionCheck) as { versionsBehind: number; latestVersion: string; latestUrl: string } | null | undefined;
   if (!check) return null;
   if (check.versionsBehind === 0) {
     return { kind: "update-banner--current", message: "You are on the latest version.", url: "" };
@@ -161,7 +208,7 @@ const templates = reactive((Array.isArray(props.tabTemplates) ? props.tabTemplat
 provide("settingsForm", form);
 provide("settingsTemplates", templates);
 
-function switchTab(tabId) {
+function switchTab(tabId: string) {
   activeTab.value = tabId;
 }
 

@@ -64,7 +64,7 @@
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { computed } from "vue";
 import { useAppStore } from "../../stores/app.js";
 
@@ -83,24 +83,24 @@ const workspaceKind = computed(() => store.activeWorkspace?.kind || "terminal");
 const gitAvailable = computed(() => {
   const wsId = store.payload?.appState?.activeWorkspaceId;
   if (!wsId) return false;
-  return !!store.getGitSnapshot(wsId)?.available;
+  return !!(store.getGitSnapshot(wsId) as { available?: boolean } | null | undefined)?.available;
 });
-const layouts = LAYOUTS;
+const layouts = LAYOUTS as Record<string, { slots: number; label: string } | undefined>;
 
 const currentLayout = computed(() => {
   const sg = store.splitGroup;
   if (!sg) return "solo";
-  return sg.viewIds.includes(store.activeViewId) ? sg.layout : "solo";
+  return store.activeViewId && sg.viewIds.includes(store.activeViewId) ? sg.layout : "solo";
 });
 
-defineEmits([
-  "toggle-tab-picker",
-  "disband-split",
-  "open-layout-picker",
-  "quick-fix",
-  "create-worktree",
-  "create-task",
-  "edit-workspace",
-  "delete-workspace",
-]);
+defineEmits<{
+  (e: "toggle-tab-picker", event: MouseEvent): void;
+  (e: "disband-split"): void;
+  (e: "open-layout-picker", event: MouseEvent): void;
+  (e: "quick-fix"): void;
+  (e: "create-worktree"): void;
+  (e: "create-task"): void;
+  (e: "edit-workspace"): void;
+  (e: "delete-workspace"): void;
+}>();
 </script>

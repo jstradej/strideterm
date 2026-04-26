@@ -75,8 +75,8 @@
   </Teleport>
 </template>
 
-<script setup>
-import { ref, computed, watch, nextTick, onMounted, onBeforeUnmount } from "vue";
+<script setup lang="ts">
+import { ref, computed, watch, nextTick, onMounted, onBeforeUnmount, type CSSProperties } from "vue";
 import { useAppStore } from "../../stores/app.js";
 import { useTerminalStore } from "../../stores/terminal.js";
 import { useSshStore } from "../../stores/ssh.js";
@@ -94,7 +94,7 @@ import {
 const store = useAppStore();
 const termStore = useTerminalStore();
 const sshStore = useSshStore();
-const menuRef = ref(null);
+const menuRef = ref<HTMLElement | null>(null);
 const LAYOUTS = {
   solo: { slots: 1 },
   cols: { slots: 2 },
@@ -131,7 +131,7 @@ const hasPersistentPanel = computed(() => {
 });
 
 const isSshPanel = computed(() => {
-  const target = store.getPanelByViewId(viewId.value);
+  const target = store.getPanelByViewId(viewId.value) as { panel?: { launch?: { kind?: string } } } | undefined;
   return target?.panel?.launch?.kind === "ssh";
 });
 
@@ -150,14 +150,14 @@ const refreshKind = computed(() => {
   return "";
 });
 
-const refreshLabel = computed(
-  () =>
-    ({
-      docker: "Docker",
-      azure: "Azure DevOps",
-      github: "GitHub",
-    })[refreshKind.value] || "",
-);
+const refreshLabel = computed(() => {
+  const labels: Record<string, string> = {
+    docker: "Docker",
+    azure: "Azure DevOps",
+    github: "GitHub",
+  };
+  return labels[refreshKind.value] || "";
+});
 
 const inGroup = computed(() => Boolean(store.splitGroup?.viewIds.includes(viewId.value)));
 
@@ -193,11 +193,13 @@ const SLOT_BOXES = {
   ],
 };
 
-function boxCenter(box) {
+interface SlotBox { rMin: number; rMax: number; cMin: number; cMax: number; }
+
+function boxCenter(box: SlotBox): { r: number; c: number } {
   return { r: (box.rMin + box.rMax) / 2, c: (box.cMin + box.cMax) / 2 };
 }
 
-function arrowFor(srcBox, tgtBox) {
+function arrowFor(srcBox: SlotBox, tgtBox: SlotBox): string {
   const src = boxCenter(srcBox);
   let dr = 0;
   if (tgtBox.rMax < src.r) dr = -1;
@@ -222,7 +224,7 @@ function arrowFor(srcBox, tgtBox) {
 const moveTargets = computed(() => {
   const sg = store.splitGroup;
   if (!sg || !inGroup.value) return [];
-  const boxes = SLOT_BOXES[sg.layout];
+  const boxes = (SLOT_BOXES as Record<string, { rMin: number; rMax: number; cMin: number; cMax: number }[] | undefined>)[sg.layout];
   if (!Array.isArray(boxes)) return [];
   const srcIdx = sg.viewIds.indexOf(viewId.value);
   if (srcIdx < 0 || !boxes[srcIdx]) return [];
@@ -243,14 +245,14 @@ const moveTargets = computed(() => {
 
 const canAddToSplit = computed(() => {
   if (inGroup.value || !store.splitGroup) return false;
-  const slots = LAYOUTS[store.splitGroup.layout]?.slots || 2;
+  const slots = (LAYOUTS as Record<string, { slots: number } | undefined>)[store.splitGroup.layout]?.slots || 2;
   return store.splitGroup.viewIds.length < slots;
 });
 
 const adjustedX = ref(rawX.value);
 const adjustedY = ref(rawY.value);
 
-const menuStyle = computed(() => ({
+const menuStyle = computed((): CSSProperties => ({
   position: "fixed",
   left: `${adjustedX.value}px`,
   top: `${adjustedY.value}px`,
@@ -295,7 +297,7 @@ function onEdit() {
 function onEditSshHost() {
   const id = viewId.value;
   store.hideContextMenu();
-  const target = store.getPanelByViewId(id);
+  const target = store.getPanelByViewId(id) as { panel?: { launch?: { sshHostId?: string } } } | undefined;
   const hostId = target?.panel?.launch?.sshHostId;
   const host = sshStore.hosts.find((h) => h.id === hostId);
   if (host && store.openSshHostEditor) {
@@ -351,7 +353,7 @@ function onRemoveFromGroup() {
   store.ctxRemoveFromGroup(id);
 }
 
-function onSwapWith(targetId) {
+function onSwapWith(targetId: string): void {
   const id = viewId.value;
   store.hideContextMenu();
   store.swapInSplit(id, targetId);
@@ -367,13 +369,13 @@ function onAddToGroup() {
   store.hideContextMenu();
 }
 
-function onDocumentClick(e) {
-  if (menuRef.value && !menuRef.value.contains(e.target)) {
+function onDocumentClick(e: MouseEvent): void {
+  if (menuRef.value && !menuRef.value.contains(e.target as Node)) {
     store.hideContextMenu();
   }
 }
 
-function onKeydown(e) {
+function onKeydown(e: KeyboardEvent): void {
   if (e.key === "Escape") store.hideContextMenu();
 }
 

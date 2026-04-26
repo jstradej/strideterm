@@ -86,18 +86,61 @@
   </Teleport>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { computed, ref, inject, watch, nextTick, onMounted, onBeforeUnmount } from "vue";
 import { useAppStore } from "../../stores/app.js";
 import { useWorkspaceDragDrop } from "../../composables/useDragDrop.js";
 import { buildWorkspaceCards } from "../../app/workspace-render.js";
+import type { Transport } from "../../transport.js";
+import type { GitSnapshot, StatePayload } from "../../../electron/shared/types/state.js";
 import WorkspaceCard from "./WorkspaceCard.vue";
 
+interface LiveTask {
+  state?: string;
+  currentRound?: number;
+  maxRounds?: number;
+}
+
+interface AttentionLike {
+  count?: number;
+  alerts?: Array<{ title?: string; kind?: string; exitCode?: number; at?: string }>;
+  latestAt?: string;
+}
+
+interface PrEntry {
+  pullRequest?: { status?: string; closedDate?: string; mergedAt?: string; closedAt?: string; updatedAt?: string; state?: string };
+  checks?: { failedCount?: number; pendingCount?: number; passedCount?: number };
+}
+
+interface AzureDevopsWithPrs {
+  pullRequests?: Record<string, PrEntry>;
+}
+
+interface WorkspaceCardData {
+  id: string;
+  active: boolean;
+  attentionCount: number;
+  attentionFresh: boolean;
+  depth: number;
+  name: string;
+  [key: string]: unknown;
+}
+
+interface PluginEntry {
+  id: string;
+  name: string;
+  color: string;
+  icon: string;
+  error?: unknown;
+  workspaceDefaults?: { name?: string };
+}
+
 const store = useAppStore();
-const listRef = ref(null);
+const listRef = ref<HTMLElement | null>(null);
 const dragDrop = useWorkspaceDragDrop(listRef);
 
-function resolveParentId(ws, allWs) {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function resolveParentId(ws: any, allWs: any[]): string | null {
   if (ws.review?.checkout?.mode === "managed-worktree" && ws.review?.parentWorkspaceId)
     return ws.review.parentWorkspaceId;
   if (ws.quickfix?.parentWorkspaceId) return ws.quickfix.parentWorkspaceId;
@@ -114,21 +157,23 @@ function resolveParentId(ws, allWs) {
   return null;
 }
 
-const workspaceCards = computed(() => {
+const workspaceCards = computed((): WorkspaceCardData[] => {
   const payload = store.payload;
   if (!payload) return [];
+  const azureDevops = payload.azureDevops as AzureDevopsWithPrs | undefined;
+  const github = payload.github as AzureDevopsWithPrs | undefined;
   return buildWorkspaceCards({
     workspaces: store.filteredWorkspaces,
     activeWorkspaceId: payload.appState?.activeWorkspaceId || "",
-    getGitSnapshot: (id) => store.getGitSnapshot(id),
-    getWorkspaceAttention: (id) => store.getWorkspaceAttentionForId(id),
-    taskRunnerSnapshot: payload.taskRunner || null,
+    getGitSnapshot: (id) => store.getGitSnapshot(id) as GitSnapshot | null | undefined,
+    getWorkspaceAttention: (id) => store.getWorkspaceAttentionForId(id) as AttentionLike | null | undefined,
+    taskRunnerSnapshot: (payload.taskRunner as Record<string, LiveTask>) || null,
     getChecks: (workspace) => {
       const prKey = workspace.review?.prKey;
       if (!prKey) return null;
       const provider = workspace.review?.provider;
-      if (provider === "azure-devops") return payload.azureDevops?.pullRequests?.[prKey]?.checks || null;
-      if (provider === "github") return payload.github?.pullRequests?.[prKey]?.checks || null;
+      if (provider === "azure-devops") return azureDevops?.pullRequests?.[prKey]?.checks || null;
+      if (provider === "github") return github?.pullRequests?.[prKey]?.checks || null;
       return null;
     },
     getPrStatus: (workspace) => {
@@ -136,21 +181,21 @@ const workspaceCards = computed(() => {
       if (!prKey) return null;
       const provider = workspace.review?.provider;
       if (provider === "azure-devops") {
-        const prData = payload.azureDevops?.pullRequests?.[prKey]?.pullRequest;
+        const prData = azureDevops?.pullRequests?.[prKey]?.pullRequest;
         const status = prData?.status;
-        if (status === "completed") return { status: "completed", closedDate: prData.closedDate || null };
-        if (status === "abandoned") return { status: "abandoned", closedDate: prData.closedDate || null };
+        if (status === "completed") return { status: "completed", closedDate: prData?.closedDate || undefined };
+        if (status === "abandoned") return { status: "abandoned", closedDate: prData?.closedDate || undefined };
         return { status: "active" };
       }
       if (provider === "github") {
-        const pr = payload.github?.pullRequests?.[prKey]?.pullRequest;
+        const pr = github?.pullRequests?.[prKey]?.pullRequest;
         if (pr?.mergedAt) return { status: "completed", closedDate: pr.mergedAt };
-        if (pr && pr.state !== "open") return { status: "abandoned", closedDate: pr.closedAt || pr.updatedAt || null };
+        if (pr && pr.state !== "open") return { status: "abandoned", closedDate: pr.closedAt || pr.updatedAt || undefined };
         return { status: "active" };
       }
       return null;
     },
-  });
+  }) as WorkspaceCardData[];
 });
 
 const hasAnyStarred = computed(() => store.filteredWorkspaces.some((ws) => ws.starred));
@@ -175,7 +220,7 @@ const displayedCards = computed(() => {
     }
   }
   // Recursively collect all descendants of a workspace
-  function addDescendants(id) {
+  function addDescendants(id: string): void {
     const kids = childrenOf.get(id);
     if (!kids) return;
     for (const kid of kids) {
@@ -184,7 +229,7 @@ const displayedCards = computed(() => {
     }
   }
   // Walk up to the root ancestor
-  function addAncestors(id) {
+  function addAncestors(id: string): void {
     const pid = parentOf.get(id);
     if (pid) {
       visible.add(pid);
@@ -205,30 +250,34 @@ const displayedCards = computed(() => {
 const suggestions = computed(() => {
   const payload = store.payload;
   if (!payload) return [];
-  const plugins = (payload.plugins || []).filter((p) => p.workspaceDefaults && !p.error);
+  const plugins = (payload.plugins || []).filter((p) => {
+    const pe = p as PluginEntry;
+    return pe.workspaceDefaults && !pe.error;
+  }) as PluginEntry[];
   const existingNames = new Set(store.filteredWorkspaces.map((ws) => ws.name.toLowerCase()));
   return plugins
-    .filter((p) => !existingNames.has((p.workspaceDefaults.name || p.name).toLowerCase()))
-    .map((p) => ({ id: p.id, color: p.color, icon: p.icon, name: p.workspaceDefaults.name || p.name }));
+    .filter((p) => !existingNames.has((p.workspaceDefaults?.name || p.name).toLowerCase()))
+    .map((p) => ({ id: p.id, color: p.color, icon: p.icon, name: p.workspaceDefaults?.name || p.name }));
 });
 
-const emit = defineEmits([
-  "create-worktree",
-  "edit-workspace",
-  "delete-workspace",
-  "add-plugin-workspace",
-  "activate",
-  "create-task",
-]);
+const emit = defineEmits<{
+  (e: "create-worktree", id: string): void;
+  (e: "edit-workspace", id: string): void;
+  (e: "delete-workspace", id: string): void;
+  (e: "add-plugin-workspace", id: string): void;
+  (e: "activate", id: string): void;
+  (e: "create-task"): void;
+}>();
 
-function onActivate(workspaceId) {
+function onActivate(workspaceId: string): void {
   store.activateWorkspace(workspaceId);
   emit("activate", workspaceId);
 }
 
-const api = inject("api");
+const api = inject<Transport>("api");
 
-function handleToggleStar(ws) {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function handleToggleStar(ws: any): void {
   if (!api) return;
   const allWs = store.payload?.appState?.workspaces;
   if (!allWs) return;
@@ -241,21 +290,23 @@ function handleToggleStar(ws) {
   nextWorkspaces[idx] = { ...nextWorkspaces[idx], starred: nextStarred };
   store.payload = {
     ...store.payload,
-    appState: { ...store.payload.appState, workspaces: nextWorkspaces },
-  };
+    appState: { ...store.payload!.appState, workspaces: nextWorkspaces },
+  } as StatePayload;
 
   // Persist in background
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   api
-    .saveWorkspace({ ...allWs[idx], starred: nextStarred })
+    .saveWorkspace?.({ ...allWs[idx], starred: nextStarred } as any)
     .then((result) => {
-      if (result) store.handleBroadcastPayload(result);
+      if (result) store.handleBroadcastPayload(result as StatePayload);
     })
     .catch((err) => {
       console.error("[sidebar] toggle star failed:", err);
     });
 }
 
-async function handleTaskToggle(ws) {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function handleTaskToggle(ws: any): Promise<void> {
   if (!api) return;
   const taskState = ws.taskState;
   try {
@@ -265,10 +316,10 @@ async function handleTaskToggle(ws) {
       taskState === "judge-evaluating" ||
       taskState === "refreshing"
     ) {
-      const result = await api.pauseTask({ workspaceId: ws.id });
+      const result = await api.pauseTask?.({ workspaceId: ws.id }) as { payload?: StatePayload } | undefined;
       if (result?.payload) store.handleBroadcastPayload(result.payload);
     } else if (taskState === "paused") {
-      const result = await api.resumeTask({ workspaceId: ws.id });
+      const result = await api.resumeTask?.({ workspaceId: ws.id }) as { payload?: StatePayload } | undefined;
       if (result?.payload) store.handleBroadcastPayload(result.payload);
     } else {
       await store.startTaskWithHookCheck(ws.id);
@@ -278,10 +329,11 @@ async function handleTaskToggle(ws) {
   }
 }
 
-async function handleTaskStop(ws) {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function handleTaskStop(ws: any): Promise<void> {
   if (!api) return;
   try {
-    const result = await api.stopTask({ workspaceId: ws.id });
+    const result = await api.stopTask?.({ workspaceId: ws.id }) as { payload?: StatePayload } | undefined;
     if (result?.payload) store.handleBroadcastPayload(result.payload);
   } catch (err) {
     console.error("[sidebar] task stop failed:", err);
@@ -290,11 +342,12 @@ async function handleTaskStop(ws) {
 
 // --- Workspace actions menu ---
 
-const wsMenu = ref(null); // { x, y, ws }
-const wsMenuRef = ref(null);
+interface WsMenuState { x: number; y: number; ws: Record<string, unknown>; }
+const wsMenu = ref<WsMenuState | null>(null);
+const wsMenuRef = ref<HTMLElement | null>(null);
 
-function onOpenMenu(event, ws) {
-  const btn = event.target.closest("button");
+function onOpenMenu(event: MouseEvent, ws: Record<string, unknown>): void {
+  const btn = (event.target as Element).closest("button");
   if (btn) {
     const rect = btn.getBoundingClientRect();
     wsMenu.value = { x: rect.right + 4, y: rect.top, ws };
@@ -303,11 +356,11 @@ function onOpenMenu(event, ws) {
   }
 }
 
-function dismissMenu() {
+function dismissMenu(): void {
   wsMenu.value = null;
 }
 
-function onMenuAction(action) {
+function onMenuAction(action: string): void {
   const ws = wsMenu.value?.ws;
   dismissMenu();
   if (!ws) return;
@@ -315,13 +368,13 @@ function onMenuAction(action) {
     if (ws.kind === "github") store.openGitHubQuickFixWizard();
     else store.openQuickFixWizard();
   } else if (action === "create-worktree") {
-    emit("create-worktree", ws.id);
+    emit("create-worktree", ws.id as string);
   } else if (action === "create-task") {
     emit("create-task");
   } else if (action === "edit") {
-    emit("edit-workspace", ws.id);
+    emit("edit-workspace", ws.id as string);
   } else if (action === "delete") {
-    emit("delete-workspace", ws.id);
+    emit("delete-workspace", ws.id as string);
   }
 }
 
@@ -348,10 +401,10 @@ watch(
   { flush: "post" },
 );
 
-function onDocClick(e) {
-  if (wsMenuRef.value && !wsMenuRef.value.contains(e.target)) dismissMenu();
+function onDocClick(e: MouseEvent): void {
+  if (wsMenuRef.value && !wsMenuRef.value.contains(e.target as Node)) dismissMenu();
 }
-function onKeydown(e) {
+function onKeydown(e: KeyboardEvent): void {
   if (e.key === "Escape") dismissMenu();
 }
 

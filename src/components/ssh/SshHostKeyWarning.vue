@@ -42,16 +42,27 @@
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { computed } from "vue";
 import { useSshStore } from "../../stores/ssh.js";
 
-const props = defineProps({
-  warning: { type: Object, default: null },
+interface HostKeyWarning {
+  sessionId: string;
+  host?: { name?: string; host?: string; port?: number };
+  previous?: { keyType?: string; fingerprint?: string };
+  keyType?: string;
+  fingerprint?: string;
+}
+
+const props = withDefaults(defineProps<{
+  warning?: HostKeyWarning | null;
+}>(), {
+  warning: null,
 });
 
 const sshStore = useSshStore();
-const data = computed(() => props.warning || sshStore.hostKeyWarning);
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const data = computed(() => props.warning || (sshStore.hostKeyWarning as any) as HostKeyWarning | null);
 
 async function reject() {
   if (!data.value?.sessionId) return;

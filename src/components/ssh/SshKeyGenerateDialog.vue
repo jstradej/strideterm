@@ -29,12 +29,14 @@
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { ref, reactive } from "vue";
 import { useSshStore } from "../../stores/ssh.js";
 import CustomSelect from "../common/CustomSelect.vue";
 
-const emit = defineEmits(["cancel"]);
+const emit = defineEmits<{
+  (e: "cancel"): void;
+}>();
 const sshStore = useSshStore();
 const busy = ref(false);
 const error = ref("");
@@ -62,7 +64,7 @@ async function generate() {
     });
     emit("cancel");
   } catch (e) {
-    error.value = e.message || "Failed to generate key.";
+    error.value = (e as Error).message || "Failed to generate key.";
   } finally {
     busy.value = false;
   }

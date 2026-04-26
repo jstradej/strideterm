@@ -16,23 +16,24 @@
   </section>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { ref, inject } from "vue";
+import type { Transport } from "../../transport.js";
 
-defineProps({
-  message: { type: String, required: true },
-});
+defineProps<{
+  message: string;
+}>();
 
-const api = inject("api");
+const api = inject<Transport>("api");
 const isRemote = api?.isRemote || false;
 const tokenInput = ref(api?.getRemoteToken?.() || "");
 
-function handleTokenSubmit() {
+function handleTokenSubmit(): void {
   const token = tokenInput.value.trim();
   if (token) api?.setRemoteToken?.(token);
 }
 
-function retry() {
+function retry(): void {
   window.location.reload();
 }
 </script>

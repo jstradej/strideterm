@@ -7,7 +7,7 @@
       <div v-for="(p, i) in promptData.prompts" :key="i" class="prompt-field">
         <label>{{ p.prompt }}</label>
         <input
-          :ref="(el) => (inputs[i] = el)"
+          :ref="(el) => (inputs[i] = el as HTMLInputElement)"
           v-model="answers[i]"
           :type="p.echo ? 'text' : 'password'"
           class="input"
@@ -23,19 +23,31 @@
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { computed, nextTick, ref, watch } from "vue";
 import { useSshStore } from "../../stores/ssh.js";
 
-const props = defineProps({
-  prompt: { type: Object, default: null },
+interface SshAuthPromptPayload {
+  sessionId: string;
+  prompt?: {
+    name?: string;
+    instructions?: string;
+    prompts?: { prompt: string; echo: boolean }[];
+  };
+}
+
+const props = withDefaults(defineProps<{
+  prompt?: SshAuthPromptPayload | null;
+}>(), {
+  prompt: null,
 });
 
 const sshStore = useSshStore();
-const payload = computed(() => props.prompt || sshStore.authPrompt);
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const payload = computed(() => props.prompt || (sshStore.authPrompt as any) as SshAuthPromptPayload | null);
 const promptData = computed(() => payload.value?.prompt || {});
-const answers = ref([]);
-const inputs = ref([]);
+const answers = ref<string[]>([]);
+const inputs = ref<HTMLInputElement[]>([]);
 
 watch(
   payload,

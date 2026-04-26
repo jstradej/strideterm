@@ -53,7 +53,7 @@
   </section>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { ref, computed } from "vue";
 import { APP_CONFIG } from "../../../config/app-config.js";
 
@@ -115,33 +115,54 @@ const DEFAULT_TAB_TEMPLATES = [
   { title: "Files", command: "__files__", icon: "\u{1F4C2}" },
 ];
 
-const props = defineProps({
-  panels: { type: Array, required: true },
-  tabTemplates: { type: Array, default: () => [] },
-  heading: { type: String, default: "Terminal tabs" },
+interface PanelEntry {
+  id: string;
+  title: string;
+  command: string;
+  shell?: boolean;
+  startup?: string;
+}
+
+interface TabTemplate {
+  title: string;
+  command: string;
+  icon?: string;
+}
+
+interface Props {
+  panels: PanelEntry[];
+  tabTemplates?: TabTemplate[];
+  heading?: string;
+}
+
+const props = withDefaults(defineProps<Props>(), {
+  tabTemplates: () => [],
+  heading: "Terminal tabs",
 });
 
-const emit = defineEmits(["update:panels"]);
+const emit = defineEmits<{
+  "update:panels": [panels: PanelEntry[]];
+}>();
 
-const panelIconPickerOpen = ref(new Set());
+const panelIconPickerOpen = ref(new Set<string>());
 
 const resolvedTemplates = computed(() =>
   Array.isArray(props.tabTemplates) && props.tabTemplates.length ? props.tabTemplates : DEFAULT_TAB_TEMPLATES,
 );
 
-function panelIconValue(title) {
+function panelIconValue(title: string) {
   const match = String(title || "").match(/^([\p{Emoji}\p{S}])\s*/u);
   return match ? match[1] : "";
 }
 
-function togglePanelIconPicker(panelId) {
+function togglePanelIconPicker(panelId: string) {
   const next = new Set(panelIconPickerOpen.value);
   if (next.has(panelId)) next.delete(panelId);
   else next.add(panelId);
   panelIconPickerOpen.value = next;
 }
 
-function pickPanelIcon(panel, icon) {
+function pickPanelIcon(panel: PanelEntry, icon: string) {
   panel.title = icon + " " + panel.title.replace(/^[\p{Emoji}\p{S}]\s*/u, "");
   const next = new Set(panelIconPickerOpen.value);
   next.delete(panel.id);
@@ -161,7 +182,7 @@ function addPanel() {
   ]);
 }
 
-function addPanelFromTemplate(tmpl) {
+function addPanelFromTemplate(tmpl: TabTemplate) {
   emit("update:panels", [
     ...props.panels,
     {
@@ -174,7 +195,7 @@ function addPanelFromTemplate(tmpl) {
   ]);
 }
 
-function removePanel(panelId) {
+function removePanel(panelId: string) {
   emit(
     "update:panels",
     props.panels.filter((p) => p.id !== panelId),

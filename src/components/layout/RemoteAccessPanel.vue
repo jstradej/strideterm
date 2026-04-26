@@ -265,13 +265,14 @@
   </Teleport>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { ref, computed, inject } from "vue";
 import { useAppStore } from "../../stores/app.js";
 import { useRemoteConnection } from "../../composables/useRemoteConnection.js";
 import { useQrCode } from "../../composables/useQrCode.js";
+import type { Transport } from "../../transport.js";
 
-const api = inject("api");
+const api = inject<Transport>("api");
 const store = useAppStore();
 const isRemote = api?.isRemote || false;
 
@@ -309,26 +310,28 @@ const lanPort = computed(() => String(runtimeRemote.value.port || remoteConfig.v
 const cloudflaredPathInput = ref(remoteConfig.value.cloudflaredPath || "");
 const customUrlInput = ref(customPublicUrl.value);
 
-function copyActiveUrl() {
+function copyActiveUrl(): void {
   const url = activeShareUrl.value;
   if (url) store.copyText(url);
 }
 
-function copyModeUrl() {
+function copyModeUrl(): void {
   const url = modeShareUrl.value;
   if (url) store.copyText(url);
 }
 
-async function browseCloudflared() {
-  if (!api?.browseFile) return;
-  const selected = await api.browseFile({ defaultPath: cloudflaredPathInput.value });
+async function browseCloudflared(): Promise<void> {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const apiBrowse = (api as any)?.browseFile;
+  if (!apiBrowse) return;
+  const selected = await apiBrowse({ defaultPath: cloudflaredPathInput.value });
   if (selected) {
     cloudflaredPathInput.value = selected;
     await store.updateSettings({ remoteAccess: { cloudflaredPath: selected } });
   }
 }
 
-function saveCustomUrl() {
+function saveCustomUrl(): void {
   store.saveCustomPublicUrl(customUrlInput.value.trim());
 }
 </script>

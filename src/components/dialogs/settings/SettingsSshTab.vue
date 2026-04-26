@@ -92,12 +92,13 @@
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { computed, inject } from "vue";
 import { useAppStore } from "../../../stores/app.js";
 import CustomSelect from "../../common/CustomSelect.vue";
 
-const form = inject("settingsForm");
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const form = inject<Record<string, any>>("settingsForm")!
 const store = useAppStore();
 
 const ua = navigator.userAgent.toLowerCase();

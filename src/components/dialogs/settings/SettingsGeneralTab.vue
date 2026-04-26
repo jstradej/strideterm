@@ -220,19 +220,26 @@
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { computed, inject } from "vue";
+import type { Transport } from "../../../transport.js";
 import SettingsHookProviderSection from "./SettingsHookProviderSection.vue";
 import CustomSelect from "../../common/CustomSelect.vue";
 
-const props = defineProps({
-  api: { type: Object, default: null },
-  themes: { type: Array, required: true },
-  logLevels: { type: Array, required: true },
-  hookSettings: { type: Object, required: true },
+interface Props {
+  api?: Transport | null;
+  themes: string[];
+  logLevels: string[];
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  hookSettings: Record<string, any>;
+}
+
+const props = withDefaults(defineProps<Props>(), {
+  api: null,
 });
 
-const form = inject("settingsForm");
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const form = inject<Record<string, any>>("settingsForm")!
 
 const logLevelOptions = computed(() => props.logLevels.map((level) => ({ value: level, label: level })));
 

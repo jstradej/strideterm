@@ -15,10 +15,11 @@
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { inject } from "vue";
 
-const form = inject("settingsForm");
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const form = inject<Record<string, any>>("settingsForm")!
 </script>
 
 <style scoped>

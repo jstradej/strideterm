@@ -2,22 +2,31 @@
   <div ref="container" class="monaco-editor-container" />
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { ref, onMounted, onBeforeUnmount, watch } from "vue";
 import "../../app/monaco-setup.js";
 import * as monaco from "monaco-editor";
 
-const props = defineProps({
-  modelValue: { type: String, default: "" },
-  language: { type: String, default: "markdown" },
-  readOnly: { type: Boolean, default: false },
+interface Props {
+  modelValue?: string;
+  language?: string;
+  readOnly?: boolean;
+}
+
+const props = withDefaults(defineProps<Props>(), {
+  modelValue: "",
+  language: "markdown",
+  readOnly: false,
 });
 
-const emit = defineEmits(["update:modelValue", "save"]);
+const emit = defineEmits<{
+  "update:modelValue": [value: string];
+  save: [];
+}>();
 
-const container = ref(null);
-let editor = null;
-let resizeObserver = null;
+const container = ref<HTMLDivElement | null>(null);
+let editor: monaco.editor.IStandaloneCodeEditor | null = null;
+let resizeObserver: ResizeObserver | null = null;
 
 onMounted(() => {
   if (!container.value) return;
@@ -59,8 +68,8 @@ onMounted(() => {
       const w = Math.floor(rect.width);
       const h = Math.floor(rect.height);
       if (w > 0 && h > 0) {
-        container.value.style.width = `${w}px`;
-        container.value.style.height = `${h}px`;
+        container.value!.style.width = `${w}px`;
+        container.value!.style.height = `${h}px`;
         editor?.layout({ width: w, height: h });
       }
     };
@@ -71,7 +80,7 @@ onMounted(() => {
 
   // Emit changes
   editor.onDidChangeModelContent(() => {
-    emit("update:modelValue", editor.getValue());
+    emit("update:modelValue", editor!.getValue());
   });
 
   // Ctrl+S to save

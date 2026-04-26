@@ -8,7 +8,7 @@
   </Transition>
 </template>
 
-<script setup>
+<script setup lang="ts">
 /**
  * Plan § 3.3.4. When the window regains focus after >30s unfocused AND there
  * are sessions still in "waiting" state, surface a transient banner at the
@@ -20,7 +20,7 @@ import { useNotificationStore } from "../../stores/notifications.js";
 const notifStore = useNotificationStore();
 const visible = ref(false);
 let blurAt = 0;
-let hideTimer = null;
+let hideTimer: ReturnType<typeof setTimeout> | undefined;
 
 const waitingCount = computed(() => notifStore.waitingSessions.length);
 

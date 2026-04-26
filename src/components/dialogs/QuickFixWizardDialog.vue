@@ -168,20 +168,50 @@
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { ref, computed, inject, onMounted, nextTick, useAttrs } from "vue";
+import type { Transport } from "../../transport.js";
 
 defineOptions({ inheritAttrs: false });
 
-const props = defineProps({
-  connections: { type: Array, default: () => [] },
-  provider: { type: String, default: "azure" }, // "azure" | "github"
+interface Connection {
+  id: string;
+  label?: string;
+  orgUrl?: string;
+  hostUrl?: string;
+  currentUserLogin?: string;
+}
+
+interface ProjectEntry {
+  id: string;
+  name: string;
+}
+
+interface RepositoryEntry {
+  id?: string;
+  name: string;
+  fullName?: string;
+  owner?: string;
+  remoteUrl?: string;
+  defaultBranch?: string;
+}
+
+interface Props {
+  connections?: Connection[];
+  provider?: "azure" | "github";
+}
+
+const props = withDefaults(defineProps<Props>(), {
+  connections: () => [],
+  provider: "azure",
 });
 
-const emit = defineEmits(["cancel"]);
+const emit = defineEmits<{
+  cancel: [];
+}>();
 const attrs = useAttrs();
 
-const api = inject("api");
+const api = inject<Transport>("api");
 
 const isAzure = computed(() => props.provider === "azure");
 const providerLabel = computed(() => (isAzure.value ? "Azure DevOps" : "GitHub"));
@@ -197,14 +227,14 @@ const busy = ref(false);
 const errorMessage = ref("");
 const repoSearch = ref("");
 
-const projects = ref([]);
-const repositories = ref([]);
-const branches = ref([]);
+const projects = ref<ProjectEntry[]>([]);
+const repositories = ref<RepositoryEntry[]>([]);
+const branches = ref<string[]>([]);
 
 const branchPrefix = ref(loadPrefixPreference());
 const branchSuffix = ref("");
-const branchNameRef = ref(null);
-const baseBranchInputRef = ref(null);
+const branchNameRef = ref<HTMLInputElement | null>(null);
+const baseBranchInputRef = ref<HTMLInputElement | null>(null);
 const baseBranchSearch = ref("");
 const branchDropdownOpen = ref(false);
 
@@ -276,7 +306,7 @@ const filteredBranches = computed(() => {
   return sorted.filter((b) => b.toLowerCase().includes(query));
 });
 
-function selectBaseBranch(name) {
+function selectBaseBranch(name: string) {
   selected.value.baseBranch = name;
   baseBranchSearch.value = "";
   branchDropdownOpen.value = false;
@@ -311,9 +341,9 @@ function goBack() {
   }
 }
 
-async function selectConnection(conn) {
+async function selectConnection(conn: Connection) {
   selected.value.connectionId = conn.id;
-  selected.value.connectionLabel = conn.label || conn.orgUrl || conn.hostUrl;
+  selected.value.connectionLabel = conn.label || conn.orgUrl || conn.hostUrl || "";
   errorMessage.value = "";
   if (isAzure.value) {
     await loadProjects();
@@ -327,20 +357,20 @@ async function loadProjects() {
   loading.value = true;
   currentStep.value = "project";
   try {
-    const result = await api.azureQuickFixListProjects({ connectionId: selected.value.connectionId });
-    projects.value = result.projects || [];
+    const result = await api?.azureQuickFixListProjects?.({ connectionId: selected.value.connectionId }) as { projects?: ProjectEntry[] } | undefined;
+    projects.value = result?.projects || [];
     if (projects.value.length === 1) {
       await selectProject(projects.value[0]);
       return;
     }
   } catch (err) {
-    errorMessage.value = err?.message || "Failed to load projects.";
+    errorMessage.value = (err as Error)?.message || "Failed to load projects.";
   } finally {
     loading.value = false;
   }
 }
 
-async function selectProject(proj) {
+async function selectProject(proj: ProjectEntry) {
   selected.value.projectName = proj.name;
   errorMessage.value = "";
   await loadRepositories();
@@ -351,62 +381,62 @@ async function loadRepositories() {
   loading.value = true;
   currentStep.value = "repo";
   try {
-    let result;
+    let result: { repositories?: RepositoryEntry[] } | undefined;
     if (isAzure.value) {
-      result = await api.azureQuickFixListRepositories({
+      result = await api?.azureQuickFixListRepositories?.({
         connectionId: selected.value.connectionId,
         projectName: selected.value.projectName,
-      });
+      }) as { repositories?: RepositoryEntry[] } | undefined;
     } else {
-      result = await api.githubQuickFixListRepos({ connectionId: selected.value.connectionId });
+      result = await api?.githubQuickFixListRepos?.({ connectionId: selected.value.connectionId }) as { repositories?: RepositoryEntry[] } | undefined;
     }
-    repositories.value = result.repositories || [];
+    repositories.value = result?.repositories || [];
     if (repositories.value.length === 1) {
       await selectRepository(repositories.value[0]);
       return;
     }
   } catch (err) {
-    errorMessage.value = err?.message || "Failed to load repositories.";
+    errorMessage.value = (err as Error)?.message || "Failed to load repositories.";
   } finally {
     loading.value = false;
   }
 }
 
-async function selectRepository(repo) {
+async function selectRepository(repo: RepositoryEntry) {
   if (isAzure.value) {
-    selected.value.repositoryId = repo.id;
+    selected.value.repositoryId = repo.id ?? "";
     selected.value.repositoryName = repo.name;
-    selected.value.remoteUrl = repo.remoteUrl;
+    selected.value.remoteUrl = repo.remoteUrl ?? "";
   } else {
-    selected.value.owner = repo.owner;
+    selected.value.owner = repo.owner ?? "";
     selected.value.repo = repo.name;
-    selected.value.fullName = repo.fullName;
-    selected.value.remoteUrl = repo.remoteUrl;
+    selected.value.fullName = repo.fullName ?? "";
+    selected.value.remoteUrl = repo.remoteUrl ?? "";
   }
   errorMessage.value = "";
-  await loadBranches(repo.defaultBranch);
+  await loadBranches(repo.defaultBranch ?? "");
 }
 
 // --- Branch step ---
-async function loadBranches(defaultBranch = "") {
+async function loadBranches(defaultBranch = ""): Promise<void> {
   loading.value = true;
   currentStep.value = "branch";
   try {
-    let result;
+    let result: { branches?: string[] } | undefined;
     if (isAzure.value) {
-      result = await api.azureQuickFixListBranches({
+      result = await api?.azureQuickFixListBranches?.({
         connectionId: selected.value.connectionId,
         projectName: selected.value.projectName,
         repositoryId: selected.value.repositoryId,
-      });
+      }) as { branches?: string[] } | undefined;
     } else {
-      result = await api.githubQuickFixListBranches({
+      result = await api?.githubQuickFixListBranches?.({
         connectionId: selected.value.connectionId,
         owner: selected.value.owner,
         repo: selected.value.repo,
-      });
+      }) as { branches?: string[] } | undefined;
     }
-    branches.value = result.branches || [];
+    branches.value = result?.branches || [];
     const preferred =
       (defaultBranch && branches.value.find((b) => b === defaultBranch)) ||
       branches.value.find((b) => b === "develop") ||
@@ -416,7 +446,7 @@ async function loadBranches(defaultBranch = "") {
       "";
     selected.value.baseBranch = preferred;
   } catch (err) {
-    errorMessage.value = err?.message || "Failed to load branches.";
+    errorMessage.value = (err as Error)?.message || "Failed to load branches.";
   } finally {
     loading.value = false;
     await nextTick();
@@ -430,9 +460,9 @@ async function handleCreate() {
   busy.value = true;
   errorMessage.value = "";
   try {
-    let result;
+    let result: unknown;
     if (isAzure.value) {
-      result = await api.azureQuickFixCreate({
+      result = await api?.azureQuickFixCreate?.({
         connectionId: selected.value.connectionId,
         projectName: selected.value.projectName,
         repositoryId: selected.value.repositoryId,
@@ -442,7 +472,7 @@ async function handleCreate() {
         newBranchName: fullBranchName.value,
       });
     } else {
-      result = await api.githubQuickFixCreate({
+      result = await api?.githubQuickFixCreate?.({
         connectionId: selected.value.connectionId,
         owner: selected.value.owner,
         repo: selected.value.repo,
@@ -451,9 +481,9 @@ async function handleCreate() {
         newBranchName: fullBranchName.value,
       });
     }
-    attrs.onCreate?.(result);
+    (attrs.onCreate as ((result: unknown) => void) | undefined)?.(result);
   } catch (err) {
-    errorMessage.value = err?.message || "Failed to create workspace.";
+    errorMessage.value = (err as Error)?.message || "Failed to create workspace.";
     busy.value = false;
   }
 }

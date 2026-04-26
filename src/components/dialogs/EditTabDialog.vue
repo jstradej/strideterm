@@ -166,7 +166,7 @@
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { computed, onMounted, reactive, ref, watch } from "vue";
 import { useSshStore } from "../../stores/ssh.js";
 import { useAppStore } from "../../stores/app.js";
@@ -223,25 +223,46 @@ const BADGE_ICONS = [
   "\u{1F5D1}",
 ];
 
-const props = defineProps({
-  eyebrow: { type: String, default: "Workspace" },
-  title: { type: String, default: "" },
-  command: { type: String, default: "" },
-  mode: { type: String, default: "edit" },
-  presetTabType: { type: String, default: "local" },
-  presetSshMode: { type: String, default: "saved" },
-  presetSshHostId: { type: String, default: "" },
-  onEditSshHost: { type: Function, default: null },
+interface SshHostState {
+  title: string;
+  command: string;
+  sshMode: string;
+  sshHostId: string;
+}
+
+interface Props {
+  eyebrow?: string;
+  title?: string;
+  command?: string;
+  mode?: string;
+  presetTabType?: string;
+  presetSshMode?: string;
+  presetSshHostId?: string;
+  onEditSshHost?: ((host: unknown, state: SshHostState) => void) | null;
+}
+
+const props = withDefaults(defineProps<Props>(), {
+  eyebrow: "Workspace",
+  title: "",
+  command: "",
+  mode: "edit",
+  presetTabType: "local",
+  presetSshMode: "saved",
+  presetSshHostId: "",
+  onEditSshHost: null,
 });
 
-const emit = defineEmits(["cancel", "submit"]);
+const emit = defineEmits<{
+  cancel: [];
+  submit: [payload: unknown];
+}>();
 
 const sshStore = useSshStore();
 const appStore = useAppStore();
 const sshHosts = computed(() => sshStore.hosts || []);
 const sshKeys = computed(() => sshStore.keys || []);
 
-const hostOptions = computed(() => sshHosts.value.map((h) => ({ value: h.id, label: `${h.name} (${h.host})` })));
+const hostOptions = computed(() => sshHosts.value.map((h) => ({ value: h.id, label: `${h.label ?? h.host} (${h.host})` })));
 
 const authMethodOptions = computed(() => [
   { value: "agent", label: "SSH Agent (recommended)" },
@@ -274,7 +295,7 @@ function editSelectedHost() {
   appStore.openSshHostEditor(host);
 }
 
-const titleRef = ref(null);
+const titleRef = ref<HTMLInputElement | null>(null);
 const titleInput = ref(props.title);
 const commandInput = ref(props.command);
 const showIconPicker = ref(false);
@@ -311,7 +332,7 @@ watch(tabType, (next, prev) => {
 
 function onHostSelected() {
   const host = sshHosts.value.find((h) => h.id === selectedSshHostId.value);
-  if (host) titleInput.value = `\u{1F310} ${host.name}`;
+  if (host) titleInput.value = `\u{1F310} ${host.label ?? host.host}`;
 }
 
 function autofillTitle() {
@@ -329,7 +350,7 @@ const currentIcon = computed(() => {
   return match ? match[1] : "";
 });
 
-function pickIcon(icon) {
+function pickIcon(icon: string) {
   const rest = String(titleInput.value || "").replace(/^[\p{Emoji}\p{S}]\s*/u, "");
   titleInput.value = `${icon} ${rest}`.trimEnd();
   showIconPicker.value = false;
@@ -409,7 +430,7 @@ async function handleSubmit() {
       const name = savedHostName.value.trim() || `${quick.username}@${quick.host}`;
       const inline = buildInlineHost();
       const newHost = {
-        name,
+        label: name,
         host: inline.host,
         port: inline.port,
         username: inline.username,
@@ -419,9 +440,9 @@ async function handleSubmit() {
         advanced: inline.advanced,
         tags: [],
       };
-      await sshStore.saveHost(newHost);
+      await sshStore.saveHost(newHost as unknown as Parameters<typeof sshStore.saveHost>[0]);
       await sshStore.load();
-      const saved = sshStore.hosts.find((h) => h.name === name);
+      const saved = sshStore.hosts.find((h) => h.label === name);
       if (!saved) {
         quick.error = "Failed to save host to book.";
         return;
@@ -442,7 +463,7 @@ async function handleSubmit() {
       sshInline: buildInlineHost(),
     });
   } catch (err) {
-    quick.error = err.message || "Failed to create tab";
+    quick.error = (err as Error).message || "Failed to create tab";
   } finally {
     submitting.value = false;
   }

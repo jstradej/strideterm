@@ -31,12 +31,22 @@
   </div>
 </template>
 
-<script setup>
-defineProps({
-  needsSettingEnable: { type: Boolean, default: false },
-  providerDisplayName: { type: String, default: "Claude Code" },
+<script setup lang="ts">
+interface Props {
+  needsSettingEnable?: boolean;
+  providerDisplayName?: string;
+}
+
+withDefaults(defineProps<Props>(), {
+  needsSettingEnable: false,
+  providerDisplayName: "Claude Code",
 });
-const emit = defineEmits(["cancel", "skip", "configure"]);
+
+const emit = defineEmits<{
+  cancel: [];
+  skip: [];
+  configure: [];
+}>();
 </script>
 
 <style scoped>

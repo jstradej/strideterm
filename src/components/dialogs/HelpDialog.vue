@@ -101,6 +101,8 @@
   </div>
 </template>
 
-<script setup>
-const emit = defineEmits(["close"]);
+<script setup lang="ts">
+const emit = defineEmits<{
+  close: [];
+}>();
 </script>

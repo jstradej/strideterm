@@ -117,16 +117,40 @@
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { ref, computed, reactive, onMounted } from "vue";
 import { useSshStore } from "../../stores/ssh.js";
 import CustomSelect from "../common/CustomSelect.vue";
+import type { SshHost as BaseSshHost } from "../../../electron/shared/types/ssh.js";
 
-const props = defineProps({
-  host: { type: Object, default: null },
+// Extended host type with UI-only fields
+interface SshHost extends BaseSshHost {
+  name?: string;
+  tags?: string[];
+  advanced?: {
+    launchVia?: string;
+    keepaliveIntervalMs?: number;
+    command?: string;
+    agentForward?: boolean;
+  };
+}
+
+// Extended cert type — backend returns extra fields
+interface SshCertExtended {
+  id: string;
+  keyIdString?: string;
+}
+
+const props = withDefaults(defineProps<{
+  host?: SshHost | null;
+}>(), {
+  host: null,
 });
 
-const emit = defineEmits(["cancel", "save"]);
+const emit = defineEmits<{
+  (e: "cancel"): void;
+  (e: "save"): void;
+}>();
 const sshStore = useSshStore();
 
 const isNew = !props.host;
@@ -138,7 +162,8 @@ const keyOptions = computed(() => [
 ]);
 const certOptions = computed(() => [
   { value: "", label: "(None)" },
-  ...sshStore.certificates.map((c) => ({ value: c.id, label: c.keyIdString || c.id })),
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  ...(sshStore.certificates as any[]).map((c: SshCertExtended) => ({ value: c.id, label: c.keyIdString || c.id })),
 ]);
 const agentOptions = [
   { value: "auto", label: "Auto" },
@@ -159,7 +184,7 @@ const form = reactive({
   port: 22,
   username: "",
   auth: {
-    methods: ["publickey"],
+    methods: ["publickey"] as string[],
     keyRef: "",
     certRef: "",
     agent: "auto",
@@ -170,7 +195,7 @@ const form = reactive({
     command: "",
     agentForward: false,
   },
-  tags: [],
+  tags: [] as string[],
 });
 
 const tagsString = computed({

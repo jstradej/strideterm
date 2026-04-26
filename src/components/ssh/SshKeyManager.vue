@@ -17,7 +17,7 @@
         </div>
       </div>
 
-      <div v-if="sshStore.keys.length === 0" class="empty-state empty-state--detailed">
+      <div v-if="keys.length === 0" class="empty-state empty-state--detailed">
         <p class="empty-state__title">No keys imported into strideterm yet.</p>
         <p class="empty-state__note">
           strideterm does <strong>not</strong> read your <code>{{ sshDirPath }}</code> directory automatically. Imported
@@ -42,7 +42,7 @@
         </ol>
       </div>
       <div v-else class="card-list">
-        <div v-for="key in sshStore.keys" :key="key.id" class="card">
+        <div v-for="key in keys" :key="key.id" class="card">
           <div class="card__info">
             <strong>{{ key.label || "Unnamed key" }}</strong>
             <span class="muted">{{ key.kind || "unknown" }}{{ key.hasPassphrase ? " · encrypted" : "" }}</span>
@@ -65,7 +65,7 @@
         </div>
       </div>
 
-      <div v-if="sshStore.certificates.length === 0" class="empty-state empty-state--detailed">
+      <div v-if="certificates.length === 0" class="empty-state empty-state--detailed">
         <p class="empty-state__title">No certificates imported.</p>
         <p class="empty-state__note">
           OpenSSH certificates (files typically named <code>&lt;key&gt;-cert.pub</code> in <code>{{ sshDirPath }}</code
@@ -79,7 +79,7 @@
         </p>
       </div>
       <div v-else class="card-list">
-        <div v-for="cert in sshStore.certificates" :key="cert.id" class="card">
+        <div v-for="cert in certificates" :key="cert.id" class="card">
           <div class="card__info">
             <strong>{{ cert.keyIdString || cert.id }}</strong>
             <span v-if="cert.validAfter || cert.validBefore" class="muted">
@@ -96,14 +96,32 @@
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { computed, onMounted } from "vue";
 import { useSshStore } from "../../stores/ssh.js";
 import { useAppStore } from "../../stores/app.js";
+import type { SshKey as BaseSshKey, SshCert as BaseSshCert } from "../../../electron/shared/types/ssh.js";
 
-const emit = defineEmits(["cancel"]);
+// Extended runtime types — backend returns additional fields not in the base types
+interface SshKey extends BaseSshKey {
+  kind?: string;
+  publicKey?: string;
+}
+
+interface SshCert extends BaseSshCert {
+  keyIdString?: string;
+  principals?: string[];
+}
+
+const emit = defineEmits<{
+  (e: "cancel"): void;
+}>();
 const sshStore = useSshStore();
 const store = useAppStore();
+
+// Cast to extended types that include runtime-only fields not present in shared types
+const keys = computed(() => sshStore.keys as SshKey[]);
+const certificates = computed(() => sshStore.certificates as SshCert[]);
 
 const platform = computed(() => {
   const ua = navigator.userAgent.toLowerCase();
@@ -124,12 +142,12 @@ onMounted(() => {
   sshStore.load();
 });
 
-function formatDate(isoString) {
+function formatDate(isoString: string | undefined): string {
   if (!isoString) return "forever";
   return new Date(isoString).toLocaleString();
 }
 
-async function pasteKey() {
+async function pasteKey(): Promise<void> {
   const pem = window.prompt("Paste the full private key (PEM or OpenSSH format). The key never leaves your machine.");
   if (!pem || !pem.trim()) return;
   const label = window.prompt("Label this key (e.g. 'laptop-ed25519'):") || "Imported key";
@@ -137,11 +155,11 @@ async function pasteKey() {
   try {
     await sshStore.importKey(pem.trim(), label.trim(), passphrase);
   } catch (err) {
-    window.alert(`Import failed: ${err.message}`);
+    window.alert(`Import failed: ${(err as Error).message}`);
   }
 }
 
-async function pasteCert() {
+async function pasteCert(): Promise<void> {
   if (sshStore.keys.length === 0) {
     window.alert("Import a private key before adding a certificate.");
     return;
@@ -152,27 +170,30 @@ async function pasteCert() {
   try {
     await sshStore.importCertificate(keyId, cert.trim());
   } catch (err) {
-    window.alert(`Import failed: ${err.message}`);
+    window.alert(`Import failed: ${(err as Error).message}`);
   }
 }
 
-async function deleteKey(key) {
+async function deleteKey(key: SshKey): Promise<void> {
   if (!window.confirm(`Delete key "${key.label}"?`)) return;
   try {
-    const res = await sshStore.deleteKey(key.id);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const res = await (sshStore as any).deleteKey(key.id);
     if (res?.ok === false && res?.error === "in-use") {
-      const names = res.hosts.map((h) => h.name).join(", ") || "(none)";
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const names = res.hosts.map((h: any) => h.name).join(", ") || "(none)";
       const force = window.confirm(
         `This key is used by host(s): ${names}.\n\nOK = delete anyway and clear references, Cancel = keep key.`,
       );
-      if (force) await sshStore.deleteKey(key.id, { cascade: true });
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      if (force) await (sshStore as any).deleteKey(key.id, { cascade: true });
     }
   } catch (err) {
-    window.alert(`Delete failed: ${err.message}`);
+    window.alert(`Delete failed: ${(err as Error).message}`);
   }
 }
 
-async function deleteCertificate(cert) {
+async function deleteCertificate(cert: SshCert): Promise<void> {
   if (!window.confirm(`Delete certificate "${cert.keyIdString || cert.id}"?`)) return;
   await sshStore.deleteCertificate(cert.id);
 }

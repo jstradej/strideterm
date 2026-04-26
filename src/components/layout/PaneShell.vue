@@ -23,20 +23,37 @@
   </header>
 </template>
 
-<script setup>
-defineProps({
-  title: { type: String, default: "" },
-  status: { type: String, default: "" },
-  actions: { type: Array, default: () => [] },
+<script setup lang="ts">
+interface PaneAction {
+  action: string;
+  viewId?: string;
+  sessionId?: string;
+  className?: string;
+  disabled?: boolean;
+  title?: string;
+  label?: string;
+}
+
+withDefaults(defineProps<{
+  title?: string;
+  status?: string;
+  actions?: PaneAction[];
+}>(), {
+  title: "",
+  status: "",
+  actions: () => [],
 });
-const emit = defineEmits(["action"]);
+
+const emit = defineEmits<{
+  (e: "action", action: PaneAction, meta: { anchorRect: DOMRect | null; event: MouseEvent }): void;
+}>();
 
 // Capture the button element synchronously on click — event.currentTarget
 // is only reliable during the dispatched event lifecycle, so we snapshot
 // it into the emitted payload for callers that need to position menus
 // relative to the clicked button.
-function onActionClick(event, action) {
-  const anchorRect = event?.currentTarget?.getBoundingClientRect?.() || null;
+function onActionClick(event: MouseEvent, action: PaneAction): void {
+  const anchorRect = (event?.currentTarget as Element)?.getBoundingClientRect?.() || null;
   emit("action", action, { anchorRect, event });
 }
 </script>

@@ -37,12 +37,21 @@
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { computed, onMounted, ref } from "vue";
 import { useSshStore } from "../../stores/ssh.js";
 import { useAppStore } from "../../stores/app.js";
+import type { SshHost as BaseSshHost } from "../../../electron/shared/types/ssh.js";
 
-const emit = defineEmits(["cancel"]);
+// Extended host type — backend returns additional UI fields
+interface SshHost extends BaseSshHost {
+  name?: string;
+  tags?: string[];
+}
+
+const emit = defineEmits<{
+  (e: "cancel"): void;
+}>();
 
 const sshStore = useSshStore();
 const store = useAppStore();
@@ -52,27 +61,28 @@ onMounted(() => {
   sshStore.load();
 });
 
-const filteredHosts = computed(() => {
+const filteredHosts = computed((): SshHost[] => {
   const query = searchQuery.value.toLowerCase();
-  return sshStore.hosts.filter(
-    (h) =>
-      h.name.toLowerCase().includes(query) ||
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return (sshStore.hosts as any[]).filter(
+    (h: SshHost) =>
+      (h.name || "").toLowerCase().includes(query) ||
       h.host.toLowerCase().includes(query) ||
       (h.tags || []).some((t) => t.toLowerCase().includes(query)),
-  );
+  ) as SshHost[];
 });
 
-async function deleteHost(host) {
+async function deleteHost(host: SshHost): Promise<void> {
   if (confirm(`Delete SSH host '${host.name}'?`)) {
     await sshStore.deleteHost(host.id);
   }
 }
 
-async function connectHost(host) {
+async function connectHost(host: SshHost): Promise<void> {
   // To connect, we open a new tab with kind=ssh and this host id
   // This requires app logic to handle adding a tab template equivalent
   emit("cancel");
-  await store.quickAddTemplateTab("", host.name || host.host, "", { kind: "ssh", sshHostId: host.id });
+  await store.quickAddTemplateTab("", host.name || host.host || "", "", { kind: "ssh", sshHostId: host.id });
 }
 </script>
 

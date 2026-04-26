@@ -11,19 +11,32 @@
   </Transition>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { ref, watch, computed, onUnmounted } from "vue";
 import { useNotificationStore } from "../../stores/notifications.js";
 
-const props = defineProps({
-  toast: { type: Object, default: null },
+interface Toast {
+  urgency?: string;
+  kind?: string;
+  category?: string;
+  meta?: { kind?: string; provider?: string };
+  title?: string;
+  body?: string;
+}
+
+const props = withDefaults(defineProps<{
+  toast?: Toast | null;
+}>(), {
+  toast: null,
 });
 
-const emit = defineEmits(["dismissed"]);
+const emit = defineEmits<{
+  (e: "dismissed"): void;
+}>();
 const notifStore = useNotificationStore();
 
 const visible = ref(false);
-let hideTimer = null;
+let hideTimer: ReturnType<typeof setTimeout> | undefined;
 
 const kindIcon = computed(() => {
   if (!props.toast) return "";

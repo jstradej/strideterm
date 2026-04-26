@@ -157,15 +157,33 @@
   </Transition>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, nextTick, watch } from "vue";
 import { useNotificationStore } from "../../stores/notifications.js";
 import { useAppStore } from "../../stores/app.js";
 
+interface NotificationSession {
+  id: string;
+  workspaceId: string;
+  workspaceName: string;
+  tabName: string;
+  viewId: string;
+  state: string;
+  tier: number;
+  urgency: string;
+  category: string;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  meta: Record<string, any> | null;
+  firstAt: string;
+  latestAt: string;
+  events: Array<{ title?: string; body?: string }>;
+  snoozedUntil: number;
+}
+
 const notifStore = useNotificationStore();
 const appStore = useAppStore();
-const bodyRef = ref(null);
-const panelRef = ref(null);
+const bodyRef = ref<HTMLElement | null>(null);
+const panelRef = ref<HTMLElement | null>(null);
 const selectedIndex = ref(0);
 // Selection outline is only shown when the user is actively driving the list
 // with the keyboard. Mouse interaction resets it so the panel doesn't look
@@ -175,7 +193,7 @@ const keyboardActive = ref(false);
 // Items flashing (newly arrived — stay highlighted until the user hovers
 // them, so they're still findable on return to the app). Safety timeout
 // ensures nothing stays glowing forever if the user ignores it.
-const flashingIds = ref(new Set());
+const flashingIds = ref(new Set<string>());
 const FLASH_SAFETY_MS = 30_000;
 
 // Scroll-state tracking — when the user is scrolled down reading older
@@ -185,7 +203,7 @@ const NEAR_TOP_PX = 100;
 const isNearTop = ref(true);
 const unseenCount = ref(0);
 
-function onBodyScroll() {
+function onBodyScroll(): void {
   if (!bodyRef.value) return;
   const atTop = bodyRef.value.scrollTop < NEAR_TOP_PX;
   isNearTop.value = atTop;
@@ -198,8 +216,8 @@ function scrollToTopAndClear() {
   unseenCount.value = 0;
 }
 
-let tickTimer = null;
-let snoozeTimer = null;
+let tickTimer: ReturnType<typeof setInterval> | undefined;
+let snoozeTimer: ReturnType<typeof setInterval> | undefined;
 const tick = ref(0);
 // Snooze gate — hide sessions whose snoozedUntil hasn't elapsed.
 const now = ref(Date.now());
@@ -218,8 +236,8 @@ onUnmounted(() => {
   clearInterval(snoozeTimer);
 });
 
-function isSnoozed(s) {
-  return s.snoozedUntil && s.snoozedUntil > now.value;
+function isSnoozed(s: NotificationSession): boolean {
+  return !!(s.snoozedUntil && s.snoozedUntil > now.value);
 }
 
 // Flat chronological list — all non-snoozed sessions, newest first.
@@ -234,7 +252,7 @@ const visibleSessions = computed(() => {
 
 // Day-band label — "Today" / "Yesterday" / weekday name (this week) /
 // locale date (older). Used as the separator key + label.
-function dayBandKey(d) {
+function dayBandKey(d: Date): string {
   const now = new Date();
   const today = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
   const target = new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
@@ -245,7 +263,7 @@ function dayBandKey(d) {
   return `date-${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
 }
 
-function dayBandLabel(d) {
+function dayBandLabel(d: Date): string {
   const now = new Date();
   const today = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
   const target = new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
@@ -256,11 +274,15 @@ function dayBandLabel(d) {
   return d.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
 }
 
+type TimelineRow =
+  | { kind: "separator"; key: string; label: string; session?: undefined }
+  | { kind: "item"; key: string; session: NotificationSession };
+
 // Interleave sessions with day-band separator rows. Re-runs whenever the
 // underlying list changes — cheap for <=50 items.
-const timeline = computed(() => {
+const timeline = computed((): TimelineRow[] => {
   void tick.value;
-  const rows = [];
+  const rows: TimelineRow[] = [];
   let lastBand = "";
   for (const s of visibleSessions.value) {
     const d = new Date(s.latestAt);
@@ -269,7 +291,7 @@ const timeline = computed(() => {
       rows.push({ kind: "separator", key: `sep-${band}`, label: dayBandLabel(d) });
       lastBand = band;
     }
-    rows.push({ kind: "item", key: s.id, session: s });
+    rows.push({ kind: "item", key: s.id, session: s as NotificationSession });
   }
   return rows;
 });
@@ -336,11 +358,11 @@ watch(allVisible, (list) => {
 // If the app window is not focused when the event arrives, we queue the id
 // into `pendingFlashIds` and promote them on focus — so flashes aren't
 // missed while the user is in another app.
-const seenLatestAt = new Map(); // sessionId → latestAt (ISO)
-const pendingFlashIds = new Set();
+const seenLatestAt = new Map<string, string>(); // sessionId → latestAt (ISO)
+const pendingFlashIds = new Set<string>();
 let flashSeeded = false;
 
-function triggerFlash(id) {
+function triggerFlash(id: string): void {
   flashingIds.value.add(id);
   // Force reactivity on the Set (Vue doesn't track Set.add mutations).
   flashingIds.value = new Set(flashingIds.value);
@@ -352,7 +374,7 @@ function triggerFlash(id) {
   // wipe a flash the instant the list re-ordered under a stationary cursor.
 }
 
-function clearFlash(id) {
+function clearFlash(id: string): void {
   if (!flashingIds.value.has(id)) return;
   flashingIds.value.delete(id);
   flashingIds.value = new Set(flashingIds.value);
@@ -370,7 +392,7 @@ function smoothScrollToTop() {
 //    and items below slide down naturally
 //  - user is scrolled down reading → flash + increment unseenCount so the
 //    "N new ↑" pill surfaces; don't yank their scroll position
-function surfaceNewItem(id) {
+function surfaceNewItem(id: string): void {
   const panelVisible = notifStore.pinned || notifStore.panelOpen;
   if (!panelVisible) return;
   triggerFlash(id);
@@ -416,7 +438,7 @@ function onWindowFocus() {
 onMounted(() => window.addEventListener("focus", onWindowFocus));
 onUnmounted(() => window.removeEventListener("focus", onWindowFocus));
 
-function relativeTime(isoString) {
+function relativeTime(isoString: string): string {
   void tick.value;
   const diff = Date.now() - new Date(isoString).getTime();
   if (diff < 60_000) return "just now";
@@ -428,7 +450,7 @@ function relativeTime(isoString) {
   return `${days}d ago`;
 }
 
-function sessionIcon(s) {
+function sessionIcon(s: NotificationSession): string {
   if (s.urgency === "urgent") return "🚨";
   if (s.category === "error") return "❌";
   // Connection-level failures carry a distinct icon so they aren't mistaken
@@ -443,12 +465,12 @@ function sessionIcon(s) {
   return "🔔";
 }
 
-function sessionTitle(s) {
+function sessionTitle(s: NotificationSession): string {
   if (s.category === "review") {
     // The latest event title already reads "New comment on repo #123" etc.,
     // so prefer it over the workspace › tab composition used for terminal
     // notifications (those are nameless per-tab alerts).
-    const latest = s.events[0];
+    const latest = s.events?.[0];
     return latest?.title || s.workspaceName || "Pull request";
   }
   const wsName = s.workspaceName || s.workspaceId || "Workspace";
@@ -456,14 +478,15 @@ function sessionTitle(s) {
   return `${wsName} › ${tab}`;
 }
 
-function sessionBody(s) {
-  const latest = s.events[0];
+function sessionBody(s: NotificationSession): string {
+  const latest = s.events?.[0];
   if (!latest) return "";
   return latest.body || latest.title || "";
 }
 
-function itemClass(s) {
-  const flatIdx = visibleSessions.value.indexOf(s);
+function itemClass(s: NotificationSession): Record<string, boolean> {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const flatIdx = (visibleSessions.value as any[]).indexOf(s);
   const provider = s.meta?.provider || "";
   const providerSuffix = provider === "azure-devops" ? "azure" : provider === "github" ? "github" : "";
   // Flash (warm pulse + icon shake) is meant to draw the eye to something new.
@@ -471,15 +494,18 @@ function itemClass(s) {
   // the row goes grey and any ongoing flash should stop — otherwise the shake
   // keeps running on an item the user already handled.
   const shouldFlash = s.state !== "resolved" && flashingIds.value.has(s.id);
-  return {
+  const cls: Record<string, boolean> = {
     "notification-item--urgent": s.urgency === "urgent",
     "notification-item--unread": s.state === "waiting",
     "notification-item--selected": keyboardActive.value && flatIdx === selectedIndex.value,
     "notification-item--review": s.category === "review",
-    [`notification-item--review-${providerSuffix}`]: s.category === "review" && providerSuffix,
     [`notification-item--${s.state}`]: true,
     "notification-item--flash": shouldFlash,
   };
+  if (s.category === "review" && providerSuffix) {
+    cls[`notification-item--review-${providerSuffix}`] = true;
+  }
+  return cls;
 }
 
 // Build the backend sessionId for a notification session row. `viewId` is the
@@ -487,11 +513,11 @@ function itemClass(s) {
 // `alert.sessionId` — use it directly. Prepending `workspaceId` again produced
 // a malformed `workspaceId:workspaceId:panelId`, which parseSessionId
 // split wrong and caused clearProjectAlerts / resetSessionSignal to no-op.
-function backendSessionId(s) {
+function backendSessionId(s: NotificationSession): string {
   return s.viewId || s.id;
 }
 
-function resolveJumpTarget(s) {
+function resolveJumpTarget(s: NotificationSession): { workspaceId: string; viewId: string } {
   if (s.category !== "review") {
     return { workspaceId: s.workspaceId || "", viewId: s.viewId || "" };
   }
@@ -506,7 +532,7 @@ function resolveJumpTarget(s) {
   return { workspaceId: inbox?.id || "", viewId: "" };
 }
 
-async function jump(s) {
+async function jump(s: NotificationSession): Promise<void> {
   // Jump = user engaged with this session → dismissed=false (resets adaptive counter).
   // Terminal alerts have a backend counterpart to clear; review events don't.
   if (s.category !== "review") {
@@ -528,7 +554,7 @@ async function jump(s) {
   if (!notifStore.pinned) notifStore.closePanel();
 }
 
-async function dismiss(s) {
+async function dismiss(s: NotificationSession): Promise<void> {
   // Dismiss = user silenced the alert WITHOUT engaging → dismissed=true.
   // Feeds adaptive suppression for terminal alerts; review events don't
   // use adaptive suppression, so skip the backend call.
@@ -538,15 +564,15 @@ async function dismiss(s) {
   notifStore.setState(s.id, "resolved");
 }
 
-function snooze(s) {
+function snooze(s: NotificationSession): void {
   notifStore.snooze(s.id, 600_000);
 }
 
-function onClickSession(s) {
+function onClickSession(s: NotificationSession): void {
   jump(s);
 }
 
-function onKeydown(ev) {
+function onKeydown(ev: KeyboardEvent): void {
   const list = allVisible.value;
   if (list.length === 0) return;
   const current = list[selectedIndex.value];
@@ -590,12 +616,13 @@ function onKeydown(ev) {
   }
 }
 
-function onClickOutside(event) {
+function onClickOutside(event: PointerEvent): void {
   if (notifStore.pinned) return;
+  const target = event.target as Element | null;
   if (
     notifStore.panelOpen &&
-    !event.target.closest(".notification-center") &&
-    !event.target.closest("[data-role='notification-bell']")
+    !target?.closest(".notification-center") &&
+    !target?.closest("[data-role='notification-bell']")
   ) {
     notifStore.closePanel();
   }

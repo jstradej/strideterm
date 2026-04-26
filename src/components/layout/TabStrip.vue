@@ -38,16 +38,31 @@
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { computed, ref, nextTick } from "vue";
 import { useAppStore } from "../../stores/app.js";
 import { useTerminalStore } from "../../stores/terminal.js";
 import { useTabDragDrop } from "../../composables/useDragDrop.js";
 import { isFreshAlert, tabAttentionTitle } from "../../app/helpers.js";
 
+interface TaskRunnerState {
+  workerPanelId?: string;
+  judgePanelId?: string;
+  state?: string;
+  currentRound?: number;
+  maxRounds?: number;
+}
+
+interface AttentionAlert {
+  title?: string;
+  kind?: string;
+  exitCode?: number;
+  at?: string;
+}
+
 const store = useAppStore();
 const termStore = useTerminalStore();
-const stripRef = ref(null);
+const stripRef = ref<HTMLElement | null>(null);
 const dragDrop = useTabDragDrop(stripRef);
 
 const tabModels = computed(() => {
@@ -56,10 +71,10 @@ const tabModels = computed(() => {
   const splitGroup = store.splitGroup;
 
   const workspace = store.activeWorkspace;
-  const taskState = store.payload?.taskRunner?.[workspace?.id];
+  const taskState = store.payload?.taskRunner?.[workspace?.id] as TaskRunnerState | undefined;
 
   return tabs.map((tab) => {
-    const tabAttention = store.getTabAttentionForView(workspace?.id || "", tab.id);
+    const tabAttention = store.getTabAttentionForView(workspace?.id || "", tab.id) as AttentionAlert | null | undefined;
 
     // Task runner badge for worker/judge panels
     let taskBadge = "";
@@ -109,10 +124,14 @@ const tabModels = computed(() => {
   });
 });
 
-const emit = defineEmits(["edit-tab", "contextmenu-tab", "menu-tab"]);
+const emit = defineEmits<{
+  (e: "edit-tab", viewId: string): void;
+  (e: "contextmenu-tab", payload: { x: number; y: number; viewId: string }): void;
+  (e: "menu-tab", payload: { x: number; y: number; viewId: string }): void;
+}>();
 
-function onMenuClick(event, viewId) {
-  const btn = event.currentTarget || event.target;
+function onMenuClick(event: MouseEvent, viewId: string): void {
+  const btn = (event.currentTarget || event.target) as Element;
   const rect = btn.getBoundingClientRect();
   emit("menu-tab", { x: rect.left, y: rect.bottom + 4, viewId });
 }

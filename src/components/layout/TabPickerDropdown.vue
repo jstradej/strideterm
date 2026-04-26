@@ -20,12 +20,24 @@
   </Teleport>
 </template>
 
-<script setup>
-import { ref, computed, watch, onBeforeUnmount } from "vue";
+<script setup lang="ts">
+import { ref, computed, watch, onBeforeUnmount, type CSSProperties } from "vue";
 import { useAppStore } from "../../stores/app.js";
 import CustomSelect from "../common/CustomSelect.vue";
 
-const FALLBACK_TEMPLATES = [
+interface TabTemplate {
+  title?: string;
+  command?: string;
+  icon?: string;
+  platforms?: string[];
+}
+
+interface AnchorRect {
+  bottom: number;
+  right: number;
+}
+
+const FALLBACK_TEMPLATES: TabTemplate[] = [
   { title: "Shell", command: "", icon: "\u{1F4BB}" },
   { title: "PowerShell", command: "powershell", icon: "\u{1F537}", platforms: ["win32"] },
   { title: "Bash", command: "bash", icon: "\u{1F41A}", platforms: ["darwin", "linux"] },
@@ -35,14 +47,18 @@ const FALLBACK_TEMPLATES = [
   { title: "Files", command: "__files__", icon: "\u{1F4C2}" },
 ];
 
-const props = defineProps({
-  anchorRect: { type: Object, default: null },
+const props = withDefaults(defineProps<{
+  anchorRect?: AnchorRect | null;
+}>(), {
+  anchorRect: null,
 });
 
-const emit = defineEmits(["close"]);
+const emit = defineEmits<{
+  (e: "close"): void;
+}>();
 
 const store = useAppStore();
-const dropdownRef = ref(null);
+const dropdownRef = ref<HTMLElement | null>(null);
 const visible = computed(() => Boolean(props.anchorRect));
 const selectedCwd = ref("");
 
@@ -54,8 +70,7 @@ const templates = computed(() => {
 });
 
 const activeWorkspace = computed(() => {
-  const ws = store.payload?.workspace;
-  return ws?.workspace || ws?.project || null;
+  return store.payload?.workspace || null;
 });
 
 const gitRoots = computed(() => {
@@ -67,15 +82,15 @@ const showCwdPicker = computed(() => gitRoots.value.length >= 2);
 
 const cwdOptions = computed(() => [
   { value: "", label: "Workspace default" },
-  ...gitRoots.value.map((root) => ({ value: root, label: formatRootLabel(root) })),
+  ...gitRoots.value.map((root: string) => ({ value: root, label: formatRootLabel(root) })),
 ]);
 
-function formatRootLabel(rootPath) {
+function formatRootLabel(rootPath: string): string {
   if (!rootPath) return "";
   return rootPath.split(/[\\/]/).filter(Boolean).at(-1) || rootPath;
 }
 
-const dropdownStyle = computed(() => {
+const dropdownStyle = computed((): CSSProperties => {
   if (!props.anchorRect) return {};
   const anchor = props.anchorRect;
   return {
@@ -86,7 +101,7 @@ const dropdownStyle = computed(() => {
   };
 });
 
-function addTemplateTab(tmpl) {
+function addTemplateTab(tmpl: TabTemplate): void {
   emit("close");
   const title = `${tmpl.icon || ""} ${tmpl.title || "Shell"}`.trim();
   store.openNewTabDialog(selectedCwd.value, title, tmpl.command || "");
@@ -102,8 +117,8 @@ function addSshTab() {
   store.openNewTabDialog(selectedCwd.value, "", "", { tabType: "ssh" });
 }
 
-function onDocumentClick(e) {
-  if (dropdownRef.value && !dropdownRef.value.contains(e.target)) {
+function onDocumentClick(e: MouseEvent): void {
+  if (dropdownRef.value && !dropdownRef.value.contains(e.target as Node)) {
     emit("close");
   }
 }

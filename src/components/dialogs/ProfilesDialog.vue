@@ -25,7 +25,7 @@
               maxlength="40"
               @click.stop
               @blur="onRenameProfile(profile)"
-              @keydown.enter="(e) => e.target.blur()"
+              @keydown.enter="(e: Event) => (e.target as HTMLInputElement).blur()"
             />
             <span v-if="profile.id === activeProfileId" class="profile-active-badge">(active)</span>
             <div class="profile-card__actions">
@@ -55,7 +55,7 @@
               :value="profile.color || '#ffa424'"
               class="profile-color-input"
               title="Profile color"
-              @input="(e) => onProfileColorChange(profile, e.target.value)"
+              @input="(e) => onProfileColorChange(profile, (e.target as HTMLInputElement).value)"
             />
           </div>
         </article>
@@ -79,25 +79,45 @@
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { ref, reactive, useAttrs } from "vue";
 
 defineOptions({ inheritAttrs: false });
 
-const props = defineProps({
-  profiles: { type: Array, default: () => [] },
-  activeProfileId: { type: String, default: "default" },
-  workspaces: { type: Array, default: () => [] },
+interface Profile {
+  id: string;
+  name: string;
+  color?: string;
+  workspaceIds?: string[];
+}
+
+interface WorkspaceEntry {
+  id: string;
+  profileId?: string;
+}
+
+interface Props {
+  profiles?: Profile[];
+  activeProfileId?: string;
+  workspaces?: WorkspaceEntry[];
+}
+
+const props = withDefaults(defineProps<Props>(), {
+  profiles: () => [],
+  activeProfileId: "default",
+  workspaces: () => [],
 });
 
-const emit = defineEmits(["cancel"]);
+const emit = defineEmits<{
+  cancel: [];
+}>();
 const attrs = useAttrs();
 
 const localProfiles = reactive(props.profiles.map((p) => ({ ...p })));
 const newProfileName = ref("");
 const errorMessage = ref("");
 
-function workspaceCount(profileId) {
+function workspaceCount(profileId: string) {
   return props.workspaces.filter((ws) => (ws.profileId || "default") === profileId).length;
 }
 
@@ -105,49 +125,49 @@ function workspaceCount(profileId) {
 // forwards it into Electron IPC). Nested `workspaceIds` is a reactive array
 // proxy — structuredClone can't serialize it and throws "An object could
 // not be cloned", which silently killed the save without feedback.
-function plainProfile(profile) {
+function plainProfile(profile: Profile) {
   return JSON.parse(JSON.stringify(profile));
 }
 
-function handleError(err) {
-  const raw = err?.message || String(err || "Unknown error");
+function handleError(err: unknown) {
+  const raw = (err as Error)?.message || String(err || "Unknown error");
   errorMessage.value = raw.replace(/^Error invoking remote method '[^']+':\s*/, "").replace(/^Error:\s*/, "");
 }
 
-async function onRenameProfile(profile) {
+async function onRenameProfile(profile: Profile) {
   const name = profile.name.trim();
   if (!name) return;
   errorMessage.value = "";
   try {
-    await attrs.onSave?.(plainProfile({ ...profile, name }));
+    await (attrs.onSave as ((profile: unknown) => Promise<void>) | undefined)?.(plainProfile({ ...profile, name }));
   } catch (err) {
     handleError(err);
   }
 }
 
-async function onProfileColorChange(profile, color) {
+async function onProfileColorChange(profile: Profile, color: string) {
   profile.color = color;
   errorMessage.value = "";
   try {
-    await attrs.onSave?.(plainProfile(profile));
+    await (attrs.onSave as ((profile: unknown) => Promise<void>) | undefined)?.(plainProfile(profile));
   } catch (err) {
     handleError(err);
   }
 }
 
-async function handleActivate(profileId) {
+async function handleActivate(profileId: string) {
   errorMessage.value = "";
   try {
-    await attrs.onActivate?.(profileId);
+    await (attrs.onActivate as ((id: string) => Promise<void>) | undefined)?.(profileId);
   } catch (err) {
     handleError(err);
   }
 }
 
-async function handleDelete(profileId) {
+async function handleDelete(profileId: string) {
   errorMessage.value = "";
   try {
-    await attrs.onDelete?.(profileId);
+    await (attrs.onDelete as ((id: string) => Promise<void>) | undefined)?.(profileId);
     const idx = localProfiles.findIndex((p) => p.id === profileId);
     if (idx >= 0) localProfiles.splice(idx, 1);
   } catch (err) {
@@ -162,7 +182,7 @@ async function addProfile() {
   const newProfile = { id: `profile-${crypto.randomUUID()}`, name, color: "#ffa424", workspaceIds: [] };
   errorMessage.value = "";
   try {
-    await attrs.onSave?.(plainProfile(newProfile));
+    await (attrs.onSave as ((profile: unknown) => Promise<void>) | undefined)?.(plainProfile(newProfile));
     localProfiles.push(newProfile);
     newProfileName.value = "";
   } catch (err) {

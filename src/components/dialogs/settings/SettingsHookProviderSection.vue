@@ -87,13 +87,53 @@
   </div>
 </template>
 
-<script setup>
-defineProps({
-  provider: { type: Object, required: true },
-  statusLabels: { type: Object, required: true },
-  hookTestFailLabel: { type: Function, required: true },
-  api: { type: Object, default: null },
-  spaced: { type: Boolean, default: false },
+<script setup lang="ts">
+import type { Transport } from "../../../transport.js";
+
+interface TestResult {
+  ok: boolean;
+  reason?: string;
+  detail?: string;
+  elapsedMs?: number;
+  logTail?: string;
+}
+
+interface HookProvider {
+  id: string;
+  title: string;
+  status: string;
+  warningStatus?: string;
+  warningText?: string;
+  infoText?: string;
+  busy?: boolean;
+  testing?: boolean;
+  testResult?: TestResult | null;
+  error?: string;
+  configureLabel: string;
+  configureTitle: string;
+  removeTitle: string;
+  testTitle: string;
+  configJson: string;
+  copied?: boolean;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  manual: Record<string, any>;
+  configure: () => void;
+  remove: () => void;
+  test: () => void;
+  copyConfig: () => void;
+}
+
+interface Props {
+  provider: HookProvider;
+  statusLabels: Record<string, string>;
+  hookTestFailLabel: (reason?: string) => string;
+  api?: Transport | null;
+  spaced?: boolean;
+}
+
+withDefaults(defineProps<Props>(), {
+  api: null,
+  spaced: false,
 });
 </script>
 

@@ -6,10 +6,15 @@
   </div>
 </template>
 
-<script setup>
-defineProps({
-  message: { type: String, default: "Please wait…" },
-  detail: { type: String, default: "" },
+<script setup lang="ts">
+interface Props {
+  message?: string;
+  detail?: string;
+}
+
+withDefaults(defineProps<Props>(), {
+  message: "Please wait…",
+  detail: "",
 });
 </script>
 

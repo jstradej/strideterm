@@ -11,7 +11,7 @@
   </Teleport>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { computed, defineAsyncComponent, watch, nextTick } from "vue";
 import { useAppStore } from "../../stores/app.js";
 
@@ -40,7 +40,9 @@ const DIALOGS = {
 
 const store = useAppStore();
 
-const dialogComponent = computed(() => DIALOGS[store.overlay] || null);
+const dialogComponent = computed(() =>
+  store.overlay ? (DIALOGS as Record<string, ReturnType<typeof defineAsyncComponent> | undefined>)[store.overlay] ?? null : null,
+);
 
 // When a dialog opens, blur the active terminal so xterm.js releases keyboard capture
 watch(
@@ -49,7 +51,7 @@ watch(
     if (overlay) {
       // Blur xterm's hidden textarea to release keyboard events
       const xtermTextarea = document.querySelector(".xterm-helper-textarea");
-      if (xtermTextarea) xtermTextarea.blur();
+      if (xtermTextarea) (xtermTextarea as HTMLElement).blur();
       // After the dialog component mounts, focus the first visible input/textarea.
       // Use a rAF retry loop instead of a fixed timeout — works reliably on slow machines
       // where async dialog components take variable time to mount.
@@ -60,7 +62,7 @@ watch(
           if (dialog) {
             const focusable = dialog.querySelector("input:not([type=hidden]), textarea, select, [autofocus]");
             if (focusable) {
-              focusable.focus();
+              (focusable as HTMLElement).focus();
               return;
             }
           }
@@ -74,7 +76,8 @@ watch(
 
 function handleBackdropClick() {
   if (store.overlay === "BusyOverlay") return; // busy overlay cannot be dismissed
-  const cb = store.overlayProps?.onCancel || store.overlayProps?.onClose;
+  const props = store.overlayProps as Record<string, unknown> | undefined;
+  const cb = (props?.["onCancel"] || props?.["onClose"]) as (() => void) | undefined;
   if (cb) cb();
   else store.closeDialog();
 }

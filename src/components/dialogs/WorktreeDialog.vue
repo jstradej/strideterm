@@ -27,18 +27,31 @@
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { ref, computed, onMounted } from "vue";
 import CustomSelect from "../common/CustomSelect.vue";
 
-const props = defineProps({
-  repoChoices: { type: Array, default: () => [] },
-  preselectedRootPath: { type: String, default: "" },
+interface RepoChoice {
+  value: string;
+  label: string;
+}
+
+interface Props {
+  repoChoices?: RepoChoice[];
+  preselectedRootPath?: string;
+}
+
+const props = withDefaults(defineProps<Props>(), {
+  repoChoices: () => [],
+  preselectedRootPath: "",
 });
 
-const emit = defineEmits(["cancel", "submit"]);
+const emit = defineEmits<{
+  cancel: [];
+  submit: [payload: { name: string; rootPath: string }];
+}>();
 
-const inputRef = ref(null);
+const inputRef = ref<HTMLInputElement | null>(null);
 const branchName = ref("");
 const selectedRoot = ref(props.preselectedRootPath || props.repoChoices[0]?.value || "");
 

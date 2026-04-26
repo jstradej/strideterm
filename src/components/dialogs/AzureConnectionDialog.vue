@@ -103,21 +103,41 @@
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { ref, reactive, inject, onMounted, useAttrs } from "vue";
+import type { Transport } from "../../transport.js";
 
 defineOptions({ inheritAttrs: false });
 
-const props = defineProps({
-  connection: { type: Object, default: null },
-  defaultReviewRoot: { type: String, default: "" },
+interface AzureConnection {
+  id?: string;
+  label?: string;
+  orgUrl?: string;
+  login?: string;
+  reviewRoot?: string;
+  projectFilters?: string[];
+  repositoryFilters?: string[];
+  pollSeconds?: number;
+  enabled?: boolean;
+}
+
+interface Props {
+  connection?: AzureConnection | null;
+  defaultReviewRoot?: string;
+}
+
+const props = withDefaults(defineProps<Props>(), {
+  connection: null,
+  defaultReviewRoot: "",
 });
 
-const emit = defineEmits(["cancel"]);
+const emit = defineEmits<{
+  cancel: [];
+}>();
 const attrs = useAttrs();
 
-const api = inject("api");
-const labelRef = ref(null);
+const api = inject<Transport>("api");
+const labelRef = ref<HTMLInputElement | null>(null);
 
 const draft = reactive({
   id: props.connection?.id || "",
@@ -134,13 +154,13 @@ const draft = reactive({
 
 const busy = ref(false);
 const errorMessage = ref("");
-const verification = ref(null);
+const verification = ref<{ projectCount: number; projects: { name: string }[] } | null>(null);
 
 onMounted(() => labelRef.value?.focus());
 
 async function browseReviewRoot() {
   if (!api?.browseDirectory) return;
-  const selected = await api.browseDirectory(draft.reviewRoot || props.defaultReviewRoot || "");
+  const selected = await api.browseDirectory(draft.reviewRoot || props.defaultReviewRoot || "") as string | null;
   if (selected) draft.reviewRoot = selected;
 }
 
@@ -170,9 +190,9 @@ async function testConnection() {
   errorMessage.value = "";
   verification.value = null;
   try {
-    verification.value = await api.verifyAzureConnection(buildDraftPayload());
+    verification.value = await api?.verifyAzureConnection?.(buildDraftPayload()) as { projectCount: number; projects: { name: string }[] } | null;
   } catch (err) {
-    errorMessage.value = err?.message || "Azure DevOps connection test failed.";
+    errorMessage.value = (err as Error)?.message || "Azure DevOps connection test failed.";
   } finally {
     busy.value = false;
   }
@@ -182,9 +202,9 @@ async function handleSubmit() {
   busy.value = true;
   errorMessage.value = "";
   try {
-    await attrs.onSave?.(buildDraftPayload());
+    await (attrs.onSave as ((payload: unknown) => Promise<void>) | undefined)?.(buildDraftPayload());
   } catch (err) {
-    errorMessage.value = err?.message || "Saving Azure DevOps connection failed.";
+    errorMessage.value = (err as Error)?.message || "Saving Azure DevOps connection failed.";
     busy.value = false;
   }
 }

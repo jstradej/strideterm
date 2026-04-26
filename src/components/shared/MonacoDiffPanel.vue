@@ -51,22 +51,41 @@
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch, nextTick } from "vue";
 import "../../app/monaco-setup.js";
 import * as monaco from "monaco-editor";
 
-const props = defineProps({
-  payload: { type: Object, default: null },
-  loading: { type: Boolean, default: false },
-  hideLabels: { type: Boolean, default: false },
-  hideToolbar: { type: Boolean, default: false },
+interface DiffPayload {
+  leftLabel?: string;
+  rightLabel?: string;
+  leftMissing?: boolean;
+  rightMissing?: boolean;
+  leftContent?: string;
+  rightContent?: string;
+  language?: string;
+  ok?: boolean;
+  leftError?: string;
+}
+
+interface Props {
+  payload?: DiffPayload | null;
+  loading?: boolean;
+  hideLabels?: boolean;
+  hideToolbar?: boolean;
+}
+
+const props = withDefaults(defineProps<Props>(), {
+  payload: null,
+  loading: false,
+  hideLabels: false,
+  hideToolbar: false,
 });
 
-const containerRef = ref(null);
-const bodyRef = ref(null);
+const containerRef = ref<HTMLDivElement | null>(null);
+const bodyRef = ref<HTMLDivElement | null>(null);
 const sideBySide = ref(true);
-const changes = ref([]);
+const changes = ref<monaco.editor.ILineChange[]>([]);
 const currentChangeIndex = ref(-1);
 const changeCount = computed(() => changes.value.length);
 const errorMessage = computed(() => {
@@ -76,10 +95,10 @@ const errorMessage = computed(() => {
   return "";
 });
 
-let diffEditor = null;
-let resizeObserver = null;
-let updateDiffDisposable = null;
-let keyListener = null;
+let diffEditor: monaco.editor.IStandaloneDiffEditor | null = null;
+let resizeObserver: ResizeObserver | null = null;
+let updateDiffDisposable: monaco.IDisposable | null = null;
+let keyListener: ((event: KeyboardEvent) => void) | null = null;
 
 function ensureEditor() {
   if (!containerRef.value || diffEditor) return;
@@ -147,7 +166,7 @@ function refreshChangeList() {
   currentChangeIndex.value = list.length ? 0 : -1;
 }
 
-function goToChange(direction) {
+function goToChange(direction: number) {
   if (!diffEditor || !changes.value.length) return;
   const total = changes.value.length;
   const next = (currentChangeIndex.value + direction + total) % total;

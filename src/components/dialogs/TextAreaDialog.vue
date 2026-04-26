@@ -23,22 +23,34 @@
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { ref, onMounted } from "vue";
 
-const props = defineProps({
-  eyebrow: { type: String, default: "Workspace" },
-  title: { type: String, required: true },
-  label: { type: String, required: true },
-  value: { type: String, default: "" },
-  placeholder: { type: String, default: "" },
-  submitLabel: { type: String, default: "Save" },
-  secondarySubmitLabel: { type: String, default: "" },
+interface Props {
+  eyebrow?: string;
+  title: string;
+  label: string;
+  value?: string;
+  placeholder?: string;
+  submitLabel?: string;
+  secondarySubmitLabel?: string;
+}
+
+const props = withDefaults(defineProps<Props>(), {
+  eyebrow: "Workspace",
+  value: "",
+  placeholder: "",
+  submitLabel: "Save",
+  secondarySubmitLabel: "",
 });
 
-const emit = defineEmits(["cancel", "submit", "secondary-submit"]);
+const emit = defineEmits<{
+  cancel: [];
+  submit: [value: string];
+  "secondary-submit": [value: string];
+}>();
 
-const textareaRef = ref(null);
+const textareaRef = ref<HTMLTextAreaElement | null>(null);
 const textValue = ref(props.value);
 
 onMounted(() => requestAnimationFrame(() => textareaRef.value?.focus()));

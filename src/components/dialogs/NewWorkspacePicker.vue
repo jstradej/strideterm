@@ -51,14 +51,33 @@
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { computed } from "vue";
 
-const props = defineProps({
-  plugins: { type: Array, default: () => [] },
+interface PluginEntry {
+  id: string;
+  name: string;
+  icon?: string;
+  color?: string;
+  description?: string;
+  workspaceDefaults?: unknown;
+  error?: unknown;
+}
+
+interface Props {
+  plugins?: PluginEntry[];
+}
+
+const props = withDefaults(defineProps<Props>(), {
+  plugins: () => [],
 });
 
-const emit = defineEmits(["pick-empty", "pick-plugin", "pick-task", "cancel"]);
+const emit = defineEmits<{
+  "pick-empty": [];
+  "pick-plugin": [id: string];
+  "pick-task": [];
+  cancel: [];
+}>();
 
 const pluginsWithTemplates = computed(() => props.plugins.filter((p) => p.workspaceDefaults && !p.error));
 </script>

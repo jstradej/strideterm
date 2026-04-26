@@ -31,16 +31,34 @@
   </div>
 </template>
 
-<script setup>
-defineProps({
-  api: { type: Object, default: null },
-  appVersion: { type: String, default: "" },
-  repositoryUrl: { type: String, default: "" },
-  checkingUpdate: { type: Boolean, default: false },
-  updateInfo: { type: Object, default: null },
+<script setup lang="ts">
+import type { Transport } from "../../../transport.js";
+
+interface UpdateInfo {
+  kind: string;
+  message: string;
+  url: string;
+}
+
+interface Props {
+  api?: Transport | null;
+  appVersion?: string;
+  repositoryUrl?: string;
+  checkingUpdate?: boolean;
+  updateInfo?: UpdateInfo | null;
+}
+
+withDefaults(defineProps<Props>(), {
+  api: null,
+  appVersion: "",
+  repositoryUrl: "",
+  checkingUpdate: false,
+  updateInfo: null,
 });
 
-const emit = defineEmits(["check-updates"]);
+const emit = defineEmits<{
+  "check-updates": [];
+}>();
 </script>
 
 <style scoped>

@@ -15,10 +15,17 @@
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { inject } from "vue";
 
-const templates = inject("settingsTemplates");
+interface TabTemplate {
+  id?: string;
+  title?: string;
+  command?: string;
+  icon?: string;
+}
+
+const templates = inject<TabTemplate[]>("settingsTemplates")!;
 
 function addTemplate() {
   templates.push({ id: `tmpl-${Date.now()}`, title: "", command: "", icon: "\u{1F4BB}" });

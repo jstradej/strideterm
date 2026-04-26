@@ -116,9 +116,39 @@
   </div>
 </template>
 
-<script setup>
-defineProps({
-  workspace: { type: Object, required: true },
-});
-defineEmits(["activate", "open-menu", "dragstart", "dragover", "drop", "toggle-star", "task-toggle", "task-stop"]);
+<script setup lang="ts">
+interface WorkspaceCardData {
+  active: boolean;
+  attentionCount: number;
+  attentionFresh: boolean;
+  attentionTooltip?: string;
+  depth: number;
+  prStatus?: string;
+  color?: string;
+  index?: number | string;
+  icon?: string;
+  kind?: string;
+  taskState?: string;
+  starred?: boolean;
+  checksState?: string;
+  name: string;
+  summary?: string;
+  title?: string;
+  id: string;
+}
+
+defineProps<{
+  workspace: WorkspaceCardData;
+}>();
+
+defineEmits<{
+  (e: "activate"): void;
+  (e: "open-menu", event: MouseEvent): void;
+  (e: "dragstart", event: DragEvent): void;
+  (e: "dragover", event: DragEvent): void;
+  (e: "drop", event: DragEvent): void;
+  (e: "toggle-star"): void;
+  (e: "task-toggle"): void;
+  (e: "task-stop"): void;
+}>();
 </script>

@@ -7,7 +7,7 @@ beforeEach(() => {
   setActivePinia(createPinia());
 });
 
-function buildTaskDraft(overrides = {}) {
+function buildTaskDraft(overrides: Record<string, unknown> = {}) {
   const workerPanelId = "panel-worker";
   const judgePanelId = "panel-judge";
   return {

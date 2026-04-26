@@ -303,7 +303,7 @@
           </button>
         </div>
         <label class="multi-repo-toggle">
-          <input type="checkbox" :checked="enableMultiRepo" @change="enableMultiRepo = $event.target.checked" />
+          <input type="checkbox" :checked="enableMultiRepo" @change="enableMultiRepo = ($event.target as HTMLInputElement).checked" />
           Treat as multi-repo workspace
         </label>
         <template v-if="enableMultiRepo">
@@ -311,7 +311,7 @@
             <input
               type="checkbox"
               :checked="includeParentAsRepo"
-              @change="includeParentAsRepo = $event.target.checked"
+              @change="includeParentAsRepo = ($event.target as HTMLInputElement).checked"
             />
             Include parent directory as a repository
           </label>
@@ -323,8 +323,8 @@
                   type="checkbox"
                   :checked="draft.gitRoots?.includes(repo)"
                   @change="
-                    (e) => {
-                      if (e.target.checked) {
+                    (e: Event) => {
+                      if ((e.target as HTMLInputElement).checked) {
                         draft.gitRoots = [...(draft.gitRoots || []), repo].sort((a, b) =>
                           a.localeCompare(b, undefined, { sensitivity: 'accent' }),
                         );
@@ -364,8 +364,9 @@
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { reactive, computed, inject, ref, watch, onMounted, useAttrs } from "vue";
+import type { Transport } from "../../transport.js";
 import { cloneWorkspace, createEmptyWorkspace } from "../../workspace-state.js";
 import { APP_CONFIG } from "../../../config/app-config.js";
 import { safeColor } from "../../app/helpers.js";
@@ -424,7 +425,7 @@ const PROVIDER_CHOICES = [
   },
 ];
 
-function buildProviderCommand({ providerId, model, skipPermissions }) {
+function buildProviderCommand({ providerId, model, skipPermissions }: ProviderConfig) {
   if (providerId === "claude") {
     const parts = ["claude"];
     if (skipPermissions) parts.push("--dangerously-skip-permissions");
@@ -505,40 +506,115 @@ const BADGE_ICONS = [
 
 defineOptions({ inheritAttrs: false });
 
-const props = defineProps({
-  workspace: { type: Object, default: null },
-  tabTemplates: { type: Array, default: () => [] },
-  creating: { type: Boolean, default: false },
-  providerAvailabilityRef: { type: Object, default: null },
+interface ProviderConfig {
+  providerId: string;
+  model: string;
+  skipPermissions?: boolean;
+}
+
+interface TaskConfig {
+  description?: string;
+  maxRounds?: number;
+  workerPanelId?: string;
+  judgePanelId?: string;
+}
+
+interface PanelEntry {
+  id: string;
+  title: string;
+  command: string;
+  shell: boolean;
+  startup: string;
+}
+
+interface GitRootEntry {
+  childRepos?: string[];
+  truncated?: boolean;
+}
+
+interface WorkspaceDraft {
+  id: string;
+  name: string;
+  icon: string;
+  color: string;
+  kind: string;
+  source: string;
+  pluginId: string;
+  cwd: string;
+  notes: string;
+  activePanelId: string;
+  panels: PanelEntry[];
+  // task-specific (always initialized before use)
+  useWorktree?: boolean;
+  worktreeBranch?: string;
+  repositoryForWorktree?: string;
+  task: TaskConfig;
+  workerProvider: ProviderConfig;
+  judgeProvider: ProviderConfig;
+  workerCommandOverride: boolean;
+  judgeCommandOverride: boolean;
+  // multi-repo
+  gitRoots?: string[];
+  // review workspace
+  review?: { prKey?: string };
+  // parent workspace reference (set during submit for task workspaces)
+  parentWorkspaceId?: string;
+  // index for dynamic property access in backward-compat code
+  [key: string]: unknown;
+}
+
+interface TabTemplate {
+  title: string;
+  command: string;
+  icon?: string;
+}
+
+interface Props {
+  workspace?: Record<string, unknown> | null;
+  tabTemplates?: TabTemplate[];
+  creating?: boolean;
+  providerAvailabilityRef?: { value: Record<string, { available?: boolean }> } | null;
+}
+
+const props = withDefaults(defineProps<Props>(), {
+  workspace: null,
+  tabTemplates: () => [],
+  creating: false,
+  providerAvailabilityRef: null,
 });
 
 // Intentionally NOT declaring "submit" in defineEmits — Vue strips declared
 // events from $attrs, which would make attrs.onSubmit undefined and silently
 // swallow any rejection from the parent's async submit handler. Treating
 // onSubmit as a regular callback prop via useAttrs lets us await + catch.
-const emit = defineEmits(["cancel"]);
+const emit = defineEmits<{
+  cancel: [];
+}>();
 const attrs = useAttrs();
 
-const api = inject("api");
+const api = inject<Transport>("api");
 
 const cwdPlaceholder = APP_CONFIG.ui.defaultProjectCwdPlaceholder;
 
 // Build a mutable reactive draft
-const rawDraft = props.workspace ? cloneWorkspace(props.workspace) : createEmptyWorkspace();
+const rawDraft = (props.workspace ? cloneWorkspace(props.workspace) : createEmptyWorkspace()) as WorkspaceDraft;
 rawDraft.color = safeColor(rawDraft.color);
-// Ensure provider fields are present for task drafts (backward compat with old workspaces)
+// Ensure provider/task fields are always present (required by WorkspaceDraft)
+if (!rawDraft.task) rawDraft.task = { description: "", maxRounds: 10 };
+if (!rawDraft.workerProvider) rawDraft.workerProvider = { providerId: "claude", model: "sonnet" };
+if (!rawDraft.judgeProvider) rawDraft.judgeProvider = { providerId: "claude", model: "opus" };
+// Backward compat with old workspaces: ensure skipPermissions default
 if (rawDraft.kind === "task" || props.creating) {
-  if (!rawDraft.workerProvider) rawDraft.workerProvider = { providerId: "claude", model: "sonnet" };
-  if (!rawDraft.judgeProvider) rawDraft.judgeProvider = { providerId: "claude", model: "opus" };
-  for (const key of ["workerProvider", "judgeProvider"]) {
-    if (rawDraft[key].skipPermissions === undefined) {
-      const p = PROVIDER_CHOICES.find((c) => c.id === rawDraft[key].providerId);
-      rawDraft[key].skipPermissions = p?.defaultSkipPermissions ?? false;
+  for (const key of ["workerProvider", "judgeProvider"] as const) {
+    const provider = rawDraft[key];
+    if (provider.skipPermissions === undefined) {
+      const p = PROVIDER_CHOICES.find((c) => c.id === provider.providerId);
+      provider.skipPermissions = p?.defaultSkipPermissions ?? false;
     }
   }
-  if (rawDraft.workerCommandOverride === undefined) rawDraft.workerCommandOverride = false;
-  if (rawDraft.judgeCommandOverride === undefined) rawDraft.judgeCommandOverride = false;
 }
+if (rawDraft.workerCommandOverride === undefined) rawDraft.workerCommandOverride = false;
+if (rawDraft.judgeCommandOverride === undefined) rawDraft.judgeCommandOverride = false;
 if (!("gitRoots" in rawDraft)) rawDraft.gitRoots = [];
 if (!("repositoryForWorktree" in rawDraft)) rawDraft.repositoryForWorktree = "";
 const draft = reactive(rawDraft);
@@ -560,14 +636,15 @@ const errorMessage = ref("");
 // or API unavailable), true = git repo, false = plain directory. Used to
 // gate the "Create in git worktree" checkbox so the user can't pick an
 // impossible path that would fail at submit time.
-const cwdIsGitRepo = ref(null);
-const cwdProbeResult = ref(null); // { isGitRepo, childRepos, truncated }
+const cwdIsGitRepo = ref<boolean | null>(null);
+interface ProbeResult { isGitRepo?: boolean; childRepos?: string[]; truncated?: boolean; prKey?: string; [key: string]: unknown; }
+const cwdProbeResult = ref<ProbeResult | null>(null); // { isGitRepo, childRepos, truncated }
 const rescanning = ref(false);
 // Track whether the user has edited the Name field — once they have, we
 // stop overwriting it with the auto-filled "{folder} · {branch}" pattern.
 const nameAutoGenerated = ref(!(draft.name || "").trim());
 
-function basenameOf(p) {
+function basenameOf(p: string) {
   const trimmed = String(p || "")
     .trim()
     .replace(/[\\/]+$/, "");
@@ -609,7 +686,7 @@ watch(
 
 // Probe whether the cwd is a git repo and detect child repos for multi-root.
 // Debounced so typing into the path field doesn't spam the backend.
-let gitProbeTimer = null;
+let gitProbeTimer: ReturnType<typeof setTimeout> | null = null;
 watch(
   () => draft.cwd,
   (cwd) => {
@@ -630,14 +707,16 @@ watch(
           api?.checkIsGitRepo ? api.checkIsGitRepo(trimmed) : null,
           api?.probeDirectory ? api.probeDirectory(trimmed).catch(() => null) : null,
         ]);
+        const typedRepoResult = repoResult as { isGitRepo?: boolean } | null;
+        const typedProbeResult = probeResult as ProbeResult | null;
         if ((draft.cwd || "").trim() !== trimmed) return;
-        if (repoResult !== null) {
-          cwdIsGitRepo.value = !!repoResult?.isGitRepo;
-          if (isCreatingTask.value && !repoResult?.isGitRepo && draft.useWorktree) {
+        if (typedRepoResult !== null) {
+          cwdIsGitRepo.value = !!typedRepoResult?.isGitRepo;
+          if (isCreatingTask.value && !typedRepoResult?.isGitRepo && draft.useWorktree) {
             draft.useWorktree = false;
           }
         }
-        cwdProbeResult.value = probeResult;
+        cwdProbeResult.value = typedProbeResult;
       } catch {
         // On probe failure, stay permissive — don't block on a transient error.
         cwdIsGitRepo.value = null;
@@ -711,14 +790,15 @@ const includeParentAsRepo = computed({
 });
 
 // Provider availability — populated asynchronously from checkProviders()
-const providerAvailability = ref({});
+const providerAvailability = ref<Record<string, { available?: boolean }>>({});
 
 onMounted(async () => {
   // If the parent passed a ref, poll it once resolved
   if (props.providerAvailabilityRef) {
     // Check the ref at a short interval until it has data
+    const availRef = props.providerAvailabilityRef;
     const poll = setInterval(() => {
-      const data = props.providerAvailabilityRef.value;
+      const data = availRef.value;
       if (data && Object.keys(data).length > 0) {
         providerAvailability.value = data;
         clearInterval(poll);
@@ -729,7 +809,7 @@ onMounted(async () => {
   // Also try a direct call if api is available
   if (api?.checkProviders) {
     try {
-      const result = await api.checkProviders();
+      const result = await api.checkProviders?.() as Record<string, { available?: boolean }> | undefined;
       if (result) providerAvailability.value = result;
     } catch {}
   }
@@ -759,7 +839,7 @@ const providerOptions = computed(() =>
 );
 
 const repositoryForWorktreeOptions = computed(() =>
-  parentGitRoots.value.map((root) => ({
+  parentGitRoots.value.map((root: string) => ({
     value: root,
     label: `${root.split(/[\\/]/).filter(Boolean).at(-1)} — ${root}`,
   })),
@@ -814,7 +894,7 @@ const judgePanel = computed(
 // --- Worktree branch auto-generation (task creation only) ---
 const branchAutoGenerated = ref(true);
 
-function slugifyBranch(text) {
+function slugifyBranch(text: string) {
   if (!text) return "";
   return (
     "task/" +
@@ -832,7 +912,7 @@ watch(
   () => draft.task?.description,
   (desc) => {
     if (!isCreatingTask.value || !draft.useWorktree || !branchAutoGenerated.value) return;
-    draft.worktreeBranch = slugifyBranch(desc);
+    draft.worktreeBranch = slugifyBranch(desc ?? "");
   },
 );
 watch(
@@ -867,7 +947,7 @@ const canSubmit = computed(() => {
 
 async function browseCwd() {
   if (!api?.browseDirectory) return;
-  const selected = await api.browseDirectory(draft.cwd || "");
+  const selected = await api.browseDirectory(draft.cwd || "") as string | null;
   if (!selected) return;
   draft.cwd = selected;
   if (!draft.name.trim() || draft.name === APP_CONFIG.ui.defaultPanelTitle) {
@@ -884,7 +964,7 @@ async function rescanDirectory() {
   if (!trimmed || !api?.probeDirectory) return;
   rescanning.value = true;
   try {
-    cwdProbeResult.value = await api.probeDirectory(trimmed).catch(() => null);
+    cwdProbeResult.value = await (api.probeDirectory?.(trimmed).catch(() => null) ?? null) as ProbeResult | null;
   } finally {
     rescanning.value = false;
   }
@@ -945,7 +1025,7 @@ async function handleSubmit() {
       ];
     }
     if (!result.panels.some((p) => p.id === result.activePanelId)) {
-      result.activePanelId = result.panels[0]?.id || null;
+      result.activePanelId = result.panels[0]?.id || "";
     }
   }
 
@@ -956,7 +1036,7 @@ async function handleSubmit() {
     // emit so we can await the async handler and catch its rejection —
     // emit is fire-and-forget and would swallow backend errors, leaving
     // the dialog open with no feedback about what went wrong.
-    await attrs.onSubmit?.(result);
+    await (attrs.onSubmit as ((result: unknown) => Promise<void>) | undefined)?.(result);
   } catch (err) {
     errorMessage.value = extractErrorMessage(err);
   } finally {
@@ -968,8 +1048,8 @@ async function handleSubmit() {
 // or a thrown Error from the parent handler. Strip the leading "Error:
 // Error invoking remote method '…': Error:" prefix that Electron wraps
 // around remote rejections — it's noise for end users.
-function extractErrorMessage(err) {
-  const raw = err?.message || String(err || "Unknown error");
+function extractErrorMessage(err: unknown): string {
+  const raw = (err as Error)?.message || String(err || "Unknown error");
   return raw.replace(/^Error invoking remote method '[^']+':\s*/, "").replace(/^Error:\s*/, "");
 }
 </script>

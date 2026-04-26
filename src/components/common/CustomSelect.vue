@@ -49,26 +49,42 @@
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { ref, computed, onMounted, onBeforeUnmount, nextTick, watch } from "vue";
 
-const props = defineProps({
-  modelValue: { type: [String, Number, null], default: "" },
-  // [{ value, label, disabled? }]
-  options: { type: Array, default: () => [] },
-  placeholder: { type: String, default: "Select…" },
-  disabled: { type: Boolean, default: false },
-  buttonClass: { type: [String, Array, Object], default: "" },
+interface SelectOption {
+  value: string | number;
+  label: string;
+  disabled?: boolean;
+}
+
+interface Props {
+  modelValue?: string | number | null;
+  options?: SelectOption[];
+  placeholder?: string;
+  disabled?: boolean;
+  buttonClass?: string | string[] | Record<string, boolean>;
+}
+
+const props = withDefaults(defineProps<Props>(), {
+  modelValue: "",
+  options: () => [],
+  placeholder: "Select…",
+  disabled: false,
+  buttonClass: "",
 });
 
-const emit = defineEmits(["update:modelValue", "change"]);
+const emit = defineEmits<{
+  "update:modelValue": [value: string | number];
+  change: [value: string | number];
+}>();
 
 const open = ref(false);
 const activeIndex = ref(-1);
-const rootRef = ref(null);
-const buttonRef = ref(null);
-const listRef = ref(null);
-const listStyle = ref({});
+const rootRef = ref<HTMLElement | null>(null);
+const buttonRef = ref<HTMLButtonElement | null>(null);
+const listRef = ref<HTMLUListElement | null>(null);
+const listStyle = ref<Record<string, string>>({});
 
 const MAX_LIST_HEIGHT = 260;
 
@@ -126,14 +142,14 @@ function toggle() {
   else openList();
 }
 
-function select(value) {
+function select(value: string | number) {
   emit("update:modelValue", value);
   emit("change", value);
   closeList();
   buttonRef.value?.focus();
 }
 
-function moveActive(dir) {
+function moveActive(dir: number) {
   if (props.options.length === 0) return;
   const start = activeIndex.value < 0 ? (dir > 0 ? -1 : 0) : activeIndex.value;
   activeIndex.value = firstEnabledIndex(start + dir, dir);
@@ -146,7 +162,7 @@ function scrollActiveIntoView() {
   if (el?.scrollIntoView) el.scrollIntoView({ block: "nearest" });
 }
 
-function onButtonKeydown(e) {
+function onButtonKeydown(e: KeyboardEvent) {
   if (e.key === "ArrowDown" || e.key === "ArrowUp") {
     e.preventDefault();
     if (!open.value) openList();
@@ -171,24 +187,24 @@ function onButtonKeydown(e) {
   }
 }
 
-function onListKeydown(e) {
+function onListKeydown(e: KeyboardEvent) {
   onButtonKeydown(e);
 }
 
-function onOptionMousedown(opt) {
+function onOptionMousedown(opt: SelectOption) {
   if (opt.disabled) return;
   select(opt.value);
 }
 
-function onOptionMouseenter(idx, opt) {
+function onOptionMouseenter(idx: number, opt: SelectOption) {
   if (opt.disabled) return;
   activeIndex.value = idx;
 }
 
-function onDocumentMousedown(e) {
+function onDocumentMousedown(e: MouseEvent) {
   if (!open.value) return;
-  const inRoot = rootRef.value && rootRef.value.contains(e.target);
-  const inList = listRef.value && listRef.value.contains(e.target);
+  const inRoot = rootRef.value && rootRef.value.contains(e.target as Node);
+  const inList = listRef.value && listRef.value.contains(e.target as Node);
   if (!inRoot && !inList) closeList();
 }
 
