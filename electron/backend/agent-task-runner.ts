@@ -40,6 +40,7 @@ import {
   cleanupTaskFiles as cleanupTaskFilesImpl,
   clearVerdict,
   ensureGitIgnore,
+  readTaskDescription,
   readVerdict,
   runBuiltInChecks,
   waitForFile,
@@ -477,6 +478,27 @@ export class AgentTaskRunner {
     task.rounds = [];
     this.#ensureRunningRound(task);
 
+    // Refresh task.description from TASK.md so manual edits via the Assignment
+    // tab take effect on the next Start. Without this, the user can press
+    // Reset, rewrite the brief, press Start — and the worker still gets the
+    // original description because the in-memory copy never updates.
+    try {
+      const fresh = await readTaskDescription(workspace.cwd, task.taskId);
+      if (fresh !== null && fresh !== task.description) {
+        log.info("startTask: refreshed description from TASK.md", {
+          workspaceId,
+          previousLength: (task.description || "").length,
+          newLength: fresh.length,
+        });
+        task.description = fresh;
+      }
+    } catch (err: unknown) {
+      log.warn("startTask: failed to refresh description from disk (using stale)", {
+        workspaceId,
+        err: (err as Error)?.message,
+      });
+    }
+
     // Claude Code is already running (started with the workspace).
     // Send the task prompt now — agent is ready and waiting for input.
     //
@@ -616,18 +638,7 @@ export class AgentTaskRunner {
     }
     this.#rateLimitCtx.delete(workspaceId);
 
-    // Recreate WORK_LOCK so the next run starts clean
-    try {
-      const dir = taskDir(workspace.cwd, task.taskId);
-      await writeFile(
-        path.join(dir, WORK_LOCK_FILE),
-        "Work remains. Remove this file only when the task is complete and all verification steps pass.\n",
-        "utf8",
-      );
-      log.debug("WORK_LOCK recreated for reset", { workspaceId });
-    } catch (err: unknown) {
-      log.warn("failed to recreate WORK_LOCK during reset", { workspaceId, err: (err as Error)?.message });
-    }
+    await this.#recreateWorkLock(workspace, "reset");
 
     log.info("task reset", { workspaceId, previousState });
     this.#logTaskEvent(workspace, "task-reset", `Previous state: ${previousState}`);
@@ -662,17 +673,7 @@ export class AgentTaskRunner {
     const lastRound = (task.rounds as unknown as TaskRound[])?.[task.rounds.length - 1];
     if (lastRound) lastRound.action = "re-prompted";
 
-    // Recreate WORK_LOCK so built-in checks behave as usual for the next round.
-    try {
-      const dir = taskDir(workspace.cwd, task.taskId);
-      await writeFile(
-        path.join(dir, WORK_LOCK_FILE),
-        "Work remains. Remove this file only when the task is complete and all verification steps pass.\n",
-        "utf8",
-      );
-    } catch (err: unknown) {
-      log.warn("rejectTaskVerdict: failed to recreate WORK_LOCK", { workspaceId, err: (err as Error)?.message });
-    }
+    await this.#recreateWorkLock(workspace, "rejectVerdict");
 
     // User override starts a fresh round. Increment currentRound so the new
     // chip (pushed by ensureRunningRound below) gets the next number. If we
@@ -1093,6 +1094,34 @@ export class AgentTaskRunner {
       return false; // lock present => worker still has work
     } catch {
       return true; // ENOENT => worker signaled done
+    }
+  }
+
+  /**
+   * Recreate WORK_LOCK before re-prompting the worker for another round.
+   *
+   * The protocol is: WORK_LOCK present == work remains; worker deletes it ONLY
+   * when verification passes. Because the worker removed the file at the end of
+   * the previous round, the runtime must put it back before the next round
+   * starts — otherwise the worker reads an absent lock at round 2 start and
+   * concludes the task is already done. Runtime-owned (not worker-owned) so the
+   * "WORK_LOCK absent" check stays a meaningful completion signal.
+   */
+  async #recreateWorkLock(workspace: TaskWorkspaceState, context: string): Promise<void> {
+    try {
+      const dir = taskDir(workspace.cwd, workspace.task.taskId);
+      await writeFile(
+        path.join(dir, WORK_LOCK_FILE),
+        "Work remains. Remove this file only when the task is complete and all verification steps pass.\n",
+        "utf8",
+      );
+      log.debug("WORK_LOCK recreated", { workspaceId: workspace.id, context });
+    } catch (err: unknown) {
+      log.warn("failed to recreate WORK_LOCK", {
+        workspaceId: workspace.id,
+        context,
+        err: (err as Error)?.message,
+      });
     }
   }
 
@@ -1787,7 +1816,13 @@ export class AgentTaskRunner {
           this.#raiseTaskAlert(workspace, "failed", `Max rounds reached. Judge: ${verdict.reason || "incomplete"}`);
           this.#notifyWorkerTaskEnded(workspace, "failed");
         } else {
-          // Judge sent the worker back — this starts a new round.
+          // Judge sent the worker back — this starts a new round. The worker
+          // removed WORK_LOCK at the end of the previous round (that's how it
+          // signaled completion), so put it back BEFORE injecting the prompt.
+          // Otherwise the worker reads an absent lock and mistakes the next
+          // round for "task already done", refusing to do further work.
+          await this.#recreateWorkLock(workspace, "judgeVerdict-continue");
+
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           const prompt = buildJudgeFeedbackPrompt(task, verdict as any);
           const workerSessionId = `${workspaceId}:${task.workerPanelId}`;

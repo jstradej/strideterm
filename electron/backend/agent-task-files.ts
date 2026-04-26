@@ -9,6 +9,7 @@ import {
   VERDICT_FILE,
   WORK_LOCK_FILE,
   activeItems,
+  extractTaskDescription,
   formatVerifyChecklist,
   parseTodoSections,
   tailLines,
@@ -158,6 +159,21 @@ export async function clearVerdict(cwd: string, taskId: string): Promise<void> {
     await rm(verdictPath, { force: true });
   } catch {
     // Ignore.
+  }
+}
+
+/**
+ * Read TASK.md and extract the user-authored description block.
+ * Returns null when the file is missing or unreadable so callers can keep the
+ * existing in-memory description; returns "" when the file has no description.
+ */
+export async function readTaskDescription(cwd: string, taskId: string): Promise<string | null> {
+  const taskMdPath = path.join(taskDir(cwd, taskId), TASK_FILE);
+  try {
+    const content = await readFile(taskMdPath, "utf8");
+    return extractTaskDescription(content);
+  } catch {
+    return null;
   }
 }
 

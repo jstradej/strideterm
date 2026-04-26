@@ -180,7 +180,8 @@
     "wait-on": "^9.0.5"
   },
   "overrides": {
-    "dompurify": "3.4.0"
+    "dompurify": "3.4.0",
+    "uuid": "^14.0.0"
   },
   "lint-staged": {
     "*.{js,ts,vue,mts}": [

@@ -91,3 +91,42 @@ export function formatVerifyChecklist(detected: Array<{ command: string }>): str
   if (!detected?.length) return "";
   return detected.map((cmd) => `- [ ] Run \`${cmd.command}\` — must pass`).join("\n");
 }
+
+/**
+ * Extract the user-authored description block from a TASK.md file.
+ *
+ * TASK.md is generated as: `# Task` heading, `> Created: ...` blockquote,
+ * description, then system-generated sections (`## Verification before completion`,
+ * `## Rules`, etc). This pulls just the description so the prompt picks up
+ * manual edits the user made in the Assignment tab.
+ *
+ * Returns "" for the auto-generated "No task description provided" placeholder
+ * so an unedited TASK.md doesn't masquerade as a real description.
+ */
+export function extractTaskDescription(taskMd: string): string {
+  if (!taskMd) return "";
+
+  const lines = taskMd.split("\n");
+  const endMarkers = new Set(["## Verification before completion", "## Rules", "## Technology-specific checks"]);
+
+  let start = 0;
+  for (; start < lines.length; start++) {
+    const line = lines[start].trim();
+    if (!line) continue;
+    if (line.startsWith("# ")) continue;
+    if (line.startsWith("> Created:")) continue;
+    break;
+  }
+
+  let end = lines.length;
+  for (let i = start; i < lines.length; i++) {
+    if (endMarkers.has(lines[i].trim())) {
+      end = i;
+      break;
+    }
+  }
+
+  const desc = lines.slice(start, end).join("\n").trim();
+  if (desc.startsWith("> No task description provided.")) return "";
+  return desc;
+}

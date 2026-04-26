@@ -7,7 +7,13 @@ import {
   buildProgrammaticCopilotJudgeCommand,
   shouldUseProgrammaticCopilotJudge,
 } from "./agent-task-runner.js";
-import { TODO_FILE, WORK_LOCK_FILE, formatVerifyChecklist, taskDir } from "./agent-task-utils.js";
+import {
+  TASK_FILE,
+  WORK_LOCK_FILE,
+  extractTaskDescription,
+  formatVerifyChecklist,
+  taskDir,
+} from "./agent-task-utils.js";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function createMockDeps(workspaces: any[] = []): any {
@@ -1277,5 +1283,241 @@ describe("reconcileOnStartup", () => {
     expect(completed.task.state).toBe("completed");
     expect(failed.task.state).toBe("failed");
     expect(deps.broadcastState).not.toHaveBeenCalled();
+  });
+});
+
+describe("extractTaskDescription", () => {
+  test("extracts description between header and Verification section", () => {
+    const md = `# Task
+
+> Created: 2026-04-26 12:00:00 | Project: /tmp/x
+
+Build the user login form.
+
+Make sure errors are inline.
+
+## Verification before completion
+
+> Auto-detected from your project.
+
+- [ ] Run \`npm test\` — must pass
+
+## Rules
+
+- Commit your work
+`;
+    expect(extractTaskDescription(md)).toBe("Build the user login form.\n\nMake sure errors are inline.");
+  });
+
+  test("returns empty string for the no-description placeholder", () => {
+    const md = `# Task
+
+> Created: 2026-04-26 12:00:00 | Project: /tmp/x
+
+> No task description provided. Instruct the Worker directly in the terminal,
+> or write your task here and press Start.
+
+## Verification before completion
+
+> ...
+`;
+    expect(extractTaskDescription(md)).toBe("");
+  });
+
+  test("falls back to Rules marker when Verification section is removed", () => {
+    const md = `# Task
+
+> Created: 2026-04-26 12:00:00 | Project: /tmp/x
+
+Direct task body without verification section.
+
+## Rules
+
+- Commit your work
+`;
+    expect(extractTaskDescription(md)).toBe("Direct task body without verification section.");
+  });
+
+  test("returns full body when no system markers are present", () => {
+    const md = `# Task
+
+> Created: 2026-04-26 12:00:00 | Project: /tmp/x
+
+Just the description, nothing else.`;
+    expect(extractTaskDescription(md)).toBe("Just the description, nothing else.");
+  });
+
+  test("returns empty string for empty input", () => {
+    expect(extractTaskDescription("")).toBe("");
+  });
+});
+
+describe("startTask refreshes description from TASK.md", () => {
+  test("uses the on-disk description when the user edits TASK.md after Reset", async () => {
+    // Regression: pressing Reset → editing the Assignment tab → pressing Start
+    // sent the worker the ORIGINAL description because task.description in
+    // memory never picked up the file edit. The fix re-reads TASK.md and
+    // updates task.description before building the prompt.
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-start-refresh-"));
+    try {
+      // Pre-create .git so ensureGitRepo skips real git operations
+      await fs.mkdir(path.join(tmp, ".git"), { recursive: true });
+
+      const localRunner = new AgentTaskRunner();
+      const ws = createTaskWorkspace(localRunner, { cwd: tmp, description: "Original task description" });
+
+      const dir = taskDir(tmp, ws.task.taskId);
+      await fs.mkdir(dir, { recursive: true });
+      // Simulate the user rewriting TASK.md via the Assignment tab.
+      const newTaskMd = `# Task
+
+> Created: 2026-04-26 12:00:00 | Project: ${tmp}
+
+Brand new task — implement feature Y instead.
+
+## Verification before completion
+
+- [ ] Run \`npm test\` — must pass
+
+## Rules
+
+- Commit your work
+`;
+      await fs.writeFile(path.join(dir, TASK_FILE), newTaskMd, "utf8");
+
+      const localDeps = createMockDeps([ws]);
+      localRunner.init(localDeps);
+
+      // Idle → start
+      ws.task.state = "idle";
+
+      const result = await localRunner.startTask(ws.id);
+      expect(result).toBe(true);
+      expect(ws.task.description).toBe("Brand new task — implement feature Y instead.");
+    } finally {
+      await fs.rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test("keeps in-memory description when TASK.md is missing", async () => {
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-start-no-task-"));
+    try {
+      await fs.mkdir(path.join(tmp, ".git"), { recursive: true });
+
+      const localRunner = new AgentTaskRunner();
+      const ws = createTaskWorkspace(localRunner, { cwd: tmp, description: "Original task description" });
+
+      // No task dir, no TASK.md
+      const localDeps = createMockDeps([ws]);
+      localRunner.init(localDeps);
+
+      ws.task.state = "idle";
+      const result = await localRunner.startTask(ws.id);
+      expect(result).toBe(true);
+      // Stale description preserved — better than wiping it to empty.
+      expect(ws.task.description).toBe("Original task description");
+    } finally {
+      await fs.rm(tmp, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("WORK_LOCK lifecycle across rounds", () => {
+  test("recreates WORK_LOCK before re-prompting worker on judge 'continue' verdict", async () => {
+    // Regression: when judge says "continue", the runtime re-prompts the
+    // worker for round 2 — but the worker had removed WORK_LOCK at the end of
+    // round 1 (that's how it signaled completion). Without recreating it,
+    // the worker reads an absent lock at round 2 start and concludes the task
+    // is already done. Runtime owns the lock between rounds.
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-worklock-continue-"));
+    try {
+      await fs.mkdir(path.join(tmp, ".git"), { recursive: true });
+
+      const localRunner = new AgentTaskRunner();
+      const ws = createTaskWorkspace(localRunner, { cwd: tmp });
+
+      const dir = taskDir(tmp, ws.task.taskId);
+      await fs.mkdir(dir, { recursive: true });
+      // Worker finished round 1: WORK_LOCK removed.
+      // Judge wrote a "continue" verdict.
+      await fs.writeFile(
+        path.join(dir, "verdict.json"),
+        JSON.stringify({ verdict: "continue", reason: "Missing test for edge case" }),
+        "utf8",
+      );
+
+      const localDeps = createMockDeps([ws]);
+      localRunner.init(localDeps);
+
+      // Set up state as if worker just stopped and judge just finished writing verdict.
+      ws.task.state = "paused";
+      ws.task.pausedFromState = "judge-evaluating";
+      ws.task.currentRound = 1;
+      ws.task.promptSent = true;
+      ws.task.rounds = [
+        { round: 1, startedAt: new Date().toISOString(), checks: [], judgeVerdict: null, judgeReason: "", action: "" },
+      ];
+
+      // resumeTask transitions to judge-evaluating and proactively reads the
+      // verdict — which routes through #handleJudgeVerdict's continue path.
+      const result = localRunner.resumeTask(ws.id);
+      expect(result).toBe(true);
+
+      // #handleJudgeVerdict is fire-and-forget; wait for it to finish.
+      await new Promise((resolve) => setTimeout(resolve, 200));
+
+      // WORK_LOCK must exist — round 2's worker reads it as the "work remains" signal.
+      const lockExists = await fs
+        .access(path.join(dir, WORK_LOCK_FILE))
+        .then(() => true)
+        .catch(() => false);
+      expect(lockExists).toBe(true);
+
+      expect(ws.task.currentRound).toBe(2);
+      expect(ws.task.state).toBe("running");
+    } finally {
+      await fs.rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test("does NOT recreate WORK_LOCK on judge 'complete' verdict", async () => {
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-worklock-complete-"));
+    try {
+      await fs.mkdir(path.join(tmp, ".git"), { recursive: true });
+
+      const localRunner = new AgentTaskRunner();
+      const ws = createTaskWorkspace(localRunner, { cwd: tmp });
+
+      const dir = taskDir(tmp, ws.task.taskId);
+      await fs.mkdir(dir, { recursive: true });
+      await fs.writeFile(
+        path.join(dir, "verdict.json"),
+        JSON.stringify({ verdict: "complete", reason: "All requirements met" }),
+        "utf8",
+      );
+
+      const localDeps = createMockDeps([ws]);
+      localRunner.init(localDeps);
+
+      ws.task.state = "paused";
+      ws.task.pausedFromState = "judge-evaluating";
+      ws.task.currentRound = 1;
+      ws.task.promptSent = true;
+      ws.task.rounds = [
+        { round: 1, startedAt: new Date().toISOString(), checks: [], judgeVerdict: null, judgeReason: "", action: "" },
+      ];
+
+      localRunner.resumeTask(ws.id);
+      await new Promise((resolve) => setTimeout(resolve, 200));
+
+      const lockExists = await fs
+        .access(path.join(dir, WORK_LOCK_FILE))
+        .then(() => true)
+        .catch(() => false);
+      expect(lockExists).toBe(false);
+      expect(ws.task.state).toBe("completed");
+    } finally {
+      await fs.rm(tmp, { recursive: true, force: true });
+    }
   });
 });
