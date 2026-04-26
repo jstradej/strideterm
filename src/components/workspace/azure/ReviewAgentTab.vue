@@ -160,7 +160,9 @@ async function handleDeletePrompt(promptId: string): Promise<void> {
 function renderPrompt(prompt: Record<string, any>): string {
   const prId = String(props.pullRequest.id || "?");
   const prTitle = String(props.pullRequest.title || "");
-  return String(prompt.template || "").replace(/\{prId\}/g, prId).replace(/\{prTitle\}/g, prTitle);
+  return String(prompt.template || "")
+    .replace(/\{prId\}/g, prId)
+    .replace(/\{prTitle\}/g, prTitle);
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any

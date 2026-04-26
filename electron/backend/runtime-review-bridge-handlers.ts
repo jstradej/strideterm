@@ -137,7 +137,9 @@ export function createReviewBridgeHandlers(ctx: ReviewBridgeHandlerCtx) {
         throw new Error("This workspace is not associated with a pull request.");
       }
       const sourceBranch = String(
-        workspace.review?.pullRequest?.sourceRefName || (workspace.review?.pullRequest as unknown as { sourceBranch?: string })?.sourceBranch || "",
+        workspace.review?.pullRequest?.sourceRefName ||
+          (workspace.review?.pullRequest as unknown as { sourceBranch?: string })?.sourceBranch ||
+          "",
       ).replace(/^refs\/heads\//, "");
       const aheadResult = await git
         .execGit(workspace.cwd, ["rev-list", "--count", `refs/remotes/origin/${sourceBranch}..HEAD`])

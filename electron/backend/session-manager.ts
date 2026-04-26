@@ -208,7 +208,9 @@ function acquireSshKeyFile(privKey: string, distro: string | null) {
   }
   const tmpPath = path.join(os.tmpdir(), `strideterm-ssh-${randomId}`);
   return Effect.acquireRelease(
-    Effect.promise(() => fsp.writeFile(tmpPath, privKey, { mode: 0o600 }).then(() => ({ tmpPath, posixPath: tmpPath }))),
+    Effect.promise(() =>
+      fsp.writeFile(tmpPath, privKey, { mode: 0o600 }).then(() => ({ tmpPath, posixPath: tmpPath })),
+    ),
     ({ tmpPath: p }) => Effect.promise(() => fsp.unlink(p).catch(() => {})),
   );
 }
@@ -569,9 +571,9 @@ export class SessionManager extends EventEmitter {
         intentional,
       });
       if (meta.cleanupFn) {
-        meta.cleanupFn().catch((err: unknown) =>
-          log.warn("ssh key cleanup error", { err: (err as Error)?.message || String(err) }),
-        );
+        meta
+          .cleanupFn()
+          .catch((err: unknown) => log.warn("ssh key cleanup error", { err: (err as Error)?.message || String(err) }));
       }
     });
 

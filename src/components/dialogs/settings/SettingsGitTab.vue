@@ -19,7 +19,7 @@
 import { inject } from "vue";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-const form = inject<Record<string, any>>("settingsForm")!
+const form = inject<Record<string, any>>("settingsForm")!;
 </script>
 
 <style scoped>

@@ -44,7 +44,12 @@ export function normalizeReviewRoot(value: unknown): string {
 /**
  * Build a pull request key: connectionId:owner/repo:number
  */
-export function createPullRequestKey(connectionId: string, owner: string, repo: string, pullNumber: number | string): string {
+export function createPullRequestKey(
+  connectionId: string,
+  owner: string,
+  repo: string,
+  pullNumber: number | string,
+): string {
   return `${connectionId}:${owner}/${repo}:${pullNumber}`;
 }
 
@@ -85,7 +90,12 @@ export function buildRepositoryRemoteUrl(hostUrl: string | null | undefined, own
   return `${host}/${owner}/${repo}`;
 }
 
-export function buildPullRequestWebUrl(hostUrl: string | null | undefined, owner: string, repo: string, pullNumber: number | string): string {
+export function buildPullRequestWebUrl(
+  hostUrl: string | null | undefined,
+  owner: string,
+  repo: string,
+  pullNumber: number | string,
+): string {
   const host = trimTrailingSlash(hostUrl || "https://github.com");
   return `${host}/${owner}/${repo}/pull/${pullNumber}`;
 }
@@ -153,9 +163,42 @@ export function normalizeCheckState(state: unknown): string {
 }
 
 export function createConnectionSnapshot(
-  connection: { id: string; label?: string; hostUrl?: string; apiBaseUrl?: string; currentUserLogin?: string; tokenRef?: string; enabled?: boolean; ownerFilters?: string[]; repositoryFilters?: string[]; pollSeconds?: number; reviewRoot?: string },
-  persistedState: { status?: string; lastSyncAt?: string | null; lastSuccessAt?: string | null; lastError?: string } = {},
-): { id: string; label: string; hostUrl: string; apiBaseUrl: string; currentUserLogin: string; tokenRef: string; enabled: boolean; ownerFilters: string[]; repositoryFilters: string[]; pollSeconds: number; reviewRoot: string; status: string; lastSyncAt: string | null; lastSuccessAt: string | null; lastError: string } {
+  connection: {
+    id: string;
+    label?: string;
+    hostUrl?: string;
+    apiBaseUrl?: string;
+    currentUserLogin?: string;
+    tokenRef?: string;
+    enabled?: boolean;
+    ownerFilters?: string[];
+    repositoryFilters?: string[];
+    pollSeconds?: number;
+    reviewRoot?: string;
+  },
+  persistedState: {
+    status?: string;
+    lastSyncAt?: string | null;
+    lastSuccessAt?: string | null;
+    lastError?: string;
+  } = {},
+): {
+  id: string;
+  label: string;
+  hostUrl: string;
+  apiBaseUrl: string;
+  currentUserLogin: string;
+  tokenRef: string;
+  enabled: boolean;
+  ownerFilters: string[];
+  repositoryFilters: string[];
+  pollSeconds: number;
+  reviewRoot: string;
+  status: string;
+  lastSyncAt: string | null;
+  lastSuccessAt: string | null;
+  lastError: string;
+} {
   return {
     id: connection.id,
     label: connection.label || connection.id,
@@ -175,14 +218,16 @@ export function createConnectionSnapshot(
   };
 }
 
-export function normalizeConnectionInput(connectionInput: {
-  hostUrl?: string;
-  apiBaseUrl?: string;
-  currentUserLogin?: string;
-  ownerFilters?: unknown[];
-  repositoryFilters?: unknown[];
-  [key: string]: unknown;
-} = {}): {
+export function normalizeConnectionInput(
+  connectionInput: {
+    hostUrl?: string;
+    apiBaseUrl?: string;
+    currentUserLogin?: string;
+    ownerFilters?: unknown[];
+    repositoryFilters?: unknown[];
+    [key: string]: unknown;
+  } = {},
+): {
   hostUrl: string;
   apiBaseUrl: string;
   currentUserLogin: string;

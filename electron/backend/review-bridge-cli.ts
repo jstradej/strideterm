@@ -113,7 +113,10 @@ interface ReviewContext {
   threads?: ReviewThreadEntry[];
 }
 
-function selectComment(context: ReviewContext, options: Record<string, string | boolean>): { comment: ReviewCommentEntry; index: number } {
+function selectComment(
+  context: ReviewContext,
+  options: Record<string, string | boolean>,
+): { comment: ReviewCommentEntry; index: number } {
   const comments = context.comments || [];
   const commentKey = String(options["comment-key"] || "").trim();
   if (commentKey) {

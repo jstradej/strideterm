@@ -124,11 +124,7 @@ export function createApiActions(ctx: ApiActionsCtx) {
     ctx.payload.value = (await (ctx.getApi() as AnyApi).deleteReviewBridgeDraft({ prKey, draftId })) as StatePayload;
   }
 
-  async function queueReviewBridgeDraft(
-    prKey: string,
-    draftId: string,
-    commentKey: string,
-  ): Promise<void> {
+  async function queueReviewBridgeDraft(prKey: string, draftId: string, commentKey: string): Promise<void> {
     if (!prKey || (!draftId && !commentKey)) return;
     ctx.payload.value = (await (ctx.getApi() as AnyApi).queueReviewBridgeDraft({
       prKey,
@@ -403,7 +399,9 @@ export function createApiActions(ctx: ApiActionsCtx) {
   // --- Profile / settings ----------------------------------------------
 
   async function saveProfile(profile: unknown): Promise<void> {
-    ctx.payload.value = (await ctx.getApi().saveProfile(profile as Parameters<Transport["saveProfile"]>[0])) as StatePayload;
+    ctx.payload.value = (await ctx
+      .getApi()
+      .saveProfile(profile as Parameters<Transport["saveProfile"]>[0])) as StatePayload;
   }
 
   async function deleteProfile(profileId: string): Promise<void> {

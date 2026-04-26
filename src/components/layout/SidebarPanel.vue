@@ -108,7 +108,14 @@ interface AttentionLike {
 }
 
 interface PrEntry {
-  pullRequest?: { status?: string; closedDate?: string; mergedAt?: string; closedAt?: string; updatedAt?: string; state?: string };
+  pullRequest?: {
+    status?: string;
+    closedDate?: string;
+    mergedAt?: string;
+    closedAt?: string;
+    updatedAt?: string;
+    state?: string;
+  };
   checks?: { failedCount?: number; pendingCount?: number; passedCount?: number };
 }
 
@@ -190,7 +197,8 @@ const workspaceCards = computed((): WorkspaceCardData[] => {
       if (provider === "github") {
         const pr = github?.pullRequests?.[prKey]?.pullRequest;
         if (pr?.mergedAt) return { status: "completed", closedDate: pr.mergedAt };
-        if (pr && pr.state !== "open") return { status: "abandoned", closedDate: pr.closedAt || pr.updatedAt || undefined };
+        if (pr && pr.state !== "open")
+          return { status: "abandoned", closedDate: pr.closedAt || pr.updatedAt || undefined };
         return { status: "active" };
       }
       return null;
@@ -316,10 +324,10 @@ async function handleTaskToggle(ws: any): Promise<void> {
       taskState === "judge-evaluating" ||
       taskState === "refreshing"
     ) {
-      const result = await api.pauseTask?.({ workspaceId: ws.id }) as { payload?: StatePayload } | undefined;
+      const result = (await api.pauseTask?.({ workspaceId: ws.id })) as { payload?: StatePayload } | undefined;
       if (result?.payload) store.handleBroadcastPayload(result.payload);
     } else if (taskState === "paused") {
-      const result = await api.resumeTask?.({ workspaceId: ws.id }) as { payload?: StatePayload } | undefined;
+      const result = (await api.resumeTask?.({ workspaceId: ws.id })) as { payload?: StatePayload } | undefined;
       if (result?.payload) store.handleBroadcastPayload(result.payload);
     } else {
       await store.startTaskWithHookCheck(ws.id);
@@ -333,7 +341,7 @@ async function handleTaskToggle(ws: any): Promise<void> {
 async function handleTaskStop(ws: any): Promise<void> {
   if (!api) return;
   try {
-    const result = await api.stopTask?.({ workspaceId: ws.id }) as { payload?: StatePayload } | undefined;
+    const result = (await api.stopTask?.({ workspaceId: ws.id })) as { payload?: StatePayload } | undefined;
     if (result?.payload) store.handleBroadcastPayload(result.payload);
   } catch (err) {
     console.error("[sidebar] task stop failed:", err);
@@ -342,7 +350,11 @@ async function handleTaskStop(ws: any): Promise<void> {
 
 // --- Workspace actions menu ---
 
-interface WsMenuState { x: number; y: number; ws: Record<string, unknown>; }
+interface WsMenuState {
+  x: number;
+  y: number;
+  ws: Record<string, unknown>;
+}
 const wsMenu = ref<WsMenuState | null>(null);
 const wsMenuRef = ref<HTMLElement | null>(null);
 

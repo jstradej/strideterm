@@ -5,7 +5,10 @@ import { createAuditLogStore } from "./shared/base-audit-log-store.js";
  * Classify an Azure DevOps API request by URL pattern and HTTP method.
  * Returns { operation, category, resourceType }.
  */
-export function classifyAzureRequest(method: string | undefined | null, url: string | undefined | null): { operation: string; category: string; resourceType: string } {
+export function classifyAzureRequest(
+  method: string | undefined | null,
+  url: string | undefined | null,
+): { operation: string; category: string; resourceType: string } {
   const m = method?.toUpperCase() || "GET";
   const p = url || "";
 
@@ -69,7 +72,10 @@ export function createAzureAuditLogStore(databasePath: string) {
   return createAuditLogStore(databasePath, {
     tableName: "azure_devops_audit_log",
     indexPrefix: "azure_audit",
-    providerColumns: [{ name: "organization", default: "" }, { name: "project", default: "" }],
+    providerColumns: [
+      { name: "organization", default: "" },
+      { name: "project", default: "" },
+    ],
     mapEntryToProviderValues: (entry) => [String(entry.organization || ""), String(entry.project || "")],
     mapRowToProviderFields: (row) => ({ organization: row.organization, project: row.project }),
     searchFields: ["project", "organization"],

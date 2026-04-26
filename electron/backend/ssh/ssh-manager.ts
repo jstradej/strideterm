@@ -109,7 +109,9 @@ export class SshManager extends EventEmitter {
     return this.listHosts().find((h) => h.id === id);
   }
 
-  async createHost(partial: Omit<HostRecord, "id" | "createdAt" | "updatedAt" | "lastConnectedAt">): Promise<HostRecord> {
+  async createHost(
+    partial: Omit<HostRecord, "id" | "createdAt" | "updatedAt" | "lastConnectedAt">,
+  ): Promise<HostRecord> {
     const id = "h_" + randomBytes(6).toString("hex");
     const now = new Date().toISOString();
     const newHost: HostRecord = {
@@ -167,7 +169,15 @@ export class SshManager extends EventEmitter {
    * Inline hosts get a synthetic id like `inline:<sessionId>` so logs and
    * jump-chain resolution don't have to special-case them.
    */
-  async createSession({ sessionId, hostId, inlineHost, cols, rows, onData, onExit }: CreateSessionOpts): Promise<SshSession> {
+  async createSession({
+    sessionId,
+    hostId,
+    inlineHost,
+    cols,
+    rows,
+    onData,
+    onExit,
+  }: CreateSessionOpts): Promise<SshSession> {
     let host: HostRecord;
     if (inlineHost) {
       host = {
@@ -184,7 +194,11 @@ export class SshManager extends EventEmitter {
     const auth = await buildAuth(host, this.credentialStore);
 
     // Resolve jump chain: each hop needs its own auth built from its credential refs.
-    const jumps: { host: HostRecord; auth: typeof auth; verify: (args: { key: Buffer }) => ReturnType<typeof verifyHostKey> }[] = [];
+    const jumps: {
+      host: HostRecord;
+      auth: typeof auth;
+      verify: (args: { key: Buffer }) => ReturnType<typeof verifyHostKey>;
+    }[] = [];
     for (const jId of host.jump || []) {
       const jHost = this.getHost(jId);
       if (!jHost) throw new Error(`Jump host not found: ${jId}`);
@@ -417,7 +431,11 @@ export class SshManager extends EventEmitter {
     if (mode === "permanent" && pending.hostKeyInfo) {
       const activeSession = this.activeSessions.get(sessionId);
       if (activeSession?.host) {
-        await recordHostKey(this.store as KnownHostsStore, activeSession.host, pending.hostKeyInfo as { fingerprint: string; keyType: string });
+        await recordHostKey(
+          this.store as KnownHostsStore,
+          activeSession.host,
+          pending.hostKeyInfo as { fingerprint: string; keyType: string },
+        );
       }
     }
     cb(true);

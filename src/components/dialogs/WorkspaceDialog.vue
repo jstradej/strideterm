@@ -303,7 +303,11 @@
           </button>
         </div>
         <label class="multi-repo-toggle">
-          <input type="checkbox" :checked="enableMultiRepo" @change="enableMultiRepo = ($event.target as HTMLInputElement).checked" />
+          <input
+            type="checkbox"
+            :checked="enableMultiRepo"
+            @change="enableMultiRepo = ($event.target as HTMLInputElement).checked"
+          />
           Treat as multi-repo workspace
         </label>
         <template v-if="enableMultiRepo">
@@ -637,7 +641,13 @@ const errorMessage = ref("");
 // gate the "Create in git worktree" checkbox so the user can't pick an
 // impossible path that would fail at submit time.
 const cwdIsGitRepo = ref<boolean | null>(null);
-interface ProbeResult { isGitRepo?: boolean; childRepos?: string[]; truncated?: boolean; prKey?: string; [key: string]: unknown; }
+interface ProbeResult {
+  isGitRepo?: boolean;
+  childRepos?: string[];
+  truncated?: boolean;
+  prKey?: string;
+  [key: string]: unknown;
+}
 const cwdProbeResult = ref<ProbeResult | null>(null); // { isGitRepo, childRepos, truncated }
 const rescanning = ref(false);
 // Track whether the user has edited the Name field — once they have, we
@@ -809,7 +819,7 @@ onMounted(async () => {
   // Also try a direct call if api is available
   if (api?.checkProviders) {
     try {
-      const result = await api.checkProviders?.() as Record<string, { available?: boolean }> | undefined;
+      const result = (await api.checkProviders?.()) as Record<string, { available?: boolean }> | undefined;
       if (result) providerAvailability.value = result;
     } catch {}
   }
@@ -947,7 +957,7 @@ const canSubmit = computed(() => {
 
 async function browseCwd() {
   if (!api?.browseDirectory) return;
-  const selected = await api.browseDirectory(draft.cwd || "") as string | null;
+  const selected = (await api.browseDirectory(draft.cwd || "")) as string | null;
   if (!selected) return;
   draft.cwd = selected;
   if (!draft.name.trim() || draft.name === APP_CONFIG.ui.defaultPanelTitle) {
@@ -964,7 +974,7 @@ async function rescanDirectory() {
   if (!trimmed || !api?.probeDirectory) return;
   rescanning.value = true;
   try {
-    cwdProbeResult.value = await (api.probeDirectory?.(trimmed).catch(() => null) ?? null) as ProbeResult | null;
+    cwdProbeResult.value = (await (api.probeDirectory?.(trimmed).catch(() => null) ?? null)) as ProbeResult | null;
   } finally {
     rescanning.value = false;
   }

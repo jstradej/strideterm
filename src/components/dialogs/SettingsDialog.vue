@@ -179,7 +179,10 @@ const checkingUpdate = ref(false);
 const manualCheckResult = ref<unknown>(null);
 
 const updateInfo = computed(() => {
-  const check = (manualCheckResult.value || props.versionCheck) as { versionsBehind: number; latestVersion: string; latestUrl: string } | null | undefined;
+  const check = (manualCheckResult.value || props.versionCheck) as
+    | { versionsBehind: number; latestVersion: string; latestUrl: string }
+    | null
+    | undefined;
   if (!check) return null;
   if (check.versionsBehind === 0) {
     return { kind: "update-banner--current", message: "You are on the latest version.", url: "" };

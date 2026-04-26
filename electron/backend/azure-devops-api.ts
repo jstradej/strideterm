@@ -39,7 +39,10 @@ export function createAzureApi(fetchImpl: typeof globalThis.fetch, { auditLogger
   const etagCache = new Map<string, EtagEntry>();
   const ETAG_CACHE_MAX_SIZE = 200;
 
-  async function requestJson(url: string, { login, token, method = "GET", body = null, headers = {} }: RequestOptions = {}) {
+  async function requestJson(
+    url: string,
+    { login, token, method = "GET", body = null, headers = {} }: RequestOptions = {},
+  ) {
     const startTime = Date.now();
     let statusCode = 0;
 
@@ -99,7 +102,7 @@ export function createAzureApi(fetchImpl: typeof globalThis.fetch, { auditLogger
           // Evict oldest entries if cache grows too large
           if (etagCache.size >= ETAG_CACHE_MAX_SIZE) {
             const firstKey = etagCache.keys().next().value;
-             
+
             etagCache.delete(firstKey!);
           }
           etagCache.set(url, { etag, data });
@@ -138,43 +141,98 @@ export function createAzureApi(fetchImpl: typeof globalThis.fetch, { auditLogger
     return `${trimTrailingSlash(connection.orgUrl)}/${encodeURIComponent(projectName)}/_apis/git/pullrequests?searchCriteria.status=active&api-version=${API_VERSION}&$top=200`;
   }
 
-  function buildPullRequestUrl(connection: AzureConnection, projectName: string, repositoryId: string, pullRequestId: string | number) {
+  function buildPullRequestUrl(
+    connection: AzureConnection,
+    projectName: string,
+    repositoryId: string,
+    pullRequestId: string | number,
+  ) {
     return `${trimTrailingSlash(connection.orgUrl)}/${encodeURIComponent(projectName)}/_apis/git/repositories/${repositoryId}/pullRequests/${pullRequestId}?api-version=${API_VERSION}`;
   }
 
-  function buildThreadsUrl(connection: AzureConnection, projectName: string, repositoryId: string, pullRequestId: string | number) {
+  function buildThreadsUrl(
+    connection: AzureConnection,
+    projectName: string,
+    repositoryId: string,
+    pullRequestId: string | number,
+  ) {
     return `${trimTrailingSlash(connection.orgUrl)}/${encodeURIComponent(projectName)}/_apis/git/repositories/${repositoryId}/pullRequests/${pullRequestId}/threads?api-version=${API_VERSION}&$top=200`;
   }
 
-  function buildIterationsUrl(connection: AzureConnection, projectName: string, repositoryId: string, pullRequestId: string | number) {
+  function buildIterationsUrl(
+    connection: AzureConnection,
+    projectName: string,
+    repositoryId: string,
+    pullRequestId: string | number,
+  ) {
     return `${trimTrailingSlash(connection.orgUrl)}/${encodeURIComponent(projectName)}/_apis/git/repositories/${repositoryId}/pullRequests/${pullRequestId}/iterations?api-version=${API_VERSION}&$top=200`;
   }
 
-  function buildIterationChangesUrl(connection: AzureConnection, projectName: string, repositoryId: string, pullRequestId: string | number, iterationId: string | number, skip = 0) {
+  function buildIterationChangesUrl(
+    connection: AzureConnection,
+    projectName: string,
+    repositoryId: string,
+    pullRequestId: string | number,
+    iterationId: string | number,
+    skip = 0,
+  ) {
     return `${trimTrailingSlash(connection.orgUrl)}/${encodeURIComponent(projectName)}/_apis/git/repositories/${repositoryId}/pullRequests/${pullRequestId}/iterations/${iterationId}/changes?api-version=${API_VERSION}&$top=2000&$skip=${skip}`;
   }
 
-  function buildCreateThreadUrl(connection: AzureConnection, projectName: string, repositoryId: string, pullRequestId: string | number) {
+  function buildCreateThreadUrl(
+    connection: AzureConnection,
+    projectName: string,
+    repositoryId: string,
+    pullRequestId: string | number,
+  ) {
     return `${trimTrailingSlash(connection.orgUrl)}/${encodeURIComponent(projectName)}/_apis/git/repositories/${repositoryId}/pullRequests/${pullRequestId}/threads?api-version=${API_VERSION}`;
   }
 
-  function buildCreateCommentUrl(connection: AzureConnection, projectName: string, repositoryId: string, pullRequestId: string | number, threadId: string | number) {
+  function buildCreateCommentUrl(
+    connection: AzureConnection,
+    projectName: string,
+    repositoryId: string,
+    pullRequestId: string | number,
+    threadId: string | number,
+  ) {
     return `${trimTrailingSlash(connection.orgUrl)}/${encodeURIComponent(projectName)}/_apis/git/repositories/${repositoryId}/pullRequests/${pullRequestId}/threads/${threadId}/comments?api-version=${API_VERSION}`;
   }
 
-  function buildUpdateThreadUrl(connection: AzureConnection, projectName: string, repositoryId: string, pullRequestId: string | number, threadId: string | number) {
+  function buildUpdateThreadUrl(
+    connection: AzureConnection,
+    projectName: string,
+    repositoryId: string,
+    pullRequestId: string | number,
+    threadId: string | number,
+  ) {
     return `${trimTrailingSlash(connection.orgUrl)}/${encodeURIComponent(projectName)}/_apis/git/repositories/${repositoryId}/pullRequests/${pullRequestId}/threads/${threadId}?api-version=${API_VERSION}`;
   }
 
-  function buildReviewerUrl(connection: AzureConnection, projectName: string, repositoryId: string, pullRequestId: string | number, reviewerId: string) {
+  function buildReviewerUrl(
+    connection: AzureConnection,
+    projectName: string,
+    repositoryId: string,
+    pullRequestId: string | number,
+    reviewerId: string,
+  ) {
     return `${trimTrailingSlash(connection.orgUrl)}/${encodeURIComponent(projectName)}/_apis/git/repositories/${repositoryId}/pullRequests/${pullRequestId}/reviewers/${reviewerId}?api-version=${API_VERSION}`;
   }
 
-  function buildPullRequestStatusesUrl(connection: AzureConnection, projectName: string, repositoryId: string, pullRequestId: string | number) {
+  function buildPullRequestStatusesUrl(
+    connection: AzureConnection,
+    projectName: string,
+    repositoryId: string,
+    pullRequestId: string | number,
+  ) {
     return `${trimTrailingSlash(connection.orgUrl)}/${encodeURIComponent(projectName)}/_apis/git/repositories/${repositoryId}/pullRequests/${pullRequestId}/statuses?api-version=${API_VERSION}`;
   }
 
-  function buildPolicyEvaluationsUrl(connection: AzureConnection, projectName: string, projectId: string, pullRequestId: string | number) {
+  function buildPolicyEvaluationsUrl(
+    connection: AzureConnection,
+    projectName: string,
+    projectId: string,
+    pullRequestId: string | number,
+  ) {
     const artifactId = `vstfs:///CodeReview/CodeReviewId/${projectId}/${pullRequestId}`;
     return `${trimTrailingSlash(connection.orgUrl)}/${encodeURIComponent(projectName)}/_apis/policy/evaluations?artifactId=${encodeURIComponent(artifactId)}&includeNotApplicable=true&api-version=${POLICY_API_VERSION}`;
   }
@@ -183,13 +241,18 @@ export function createAzureApi(fetchImpl: typeof globalThis.fetch, { auditLogger
     return `${trimTrailingSlash(connection.orgUrl)}/${encodeURIComponent(projectName)}/_apis/build/builds/${buildId}/timeline?api-version=${API_VERSION}`;
   }
 
-  async function fetchBuildErrors(connection: AzureConnection, token: string, projectName: string, buildId: string | number | null | undefined) {
+  async function fetchBuildErrors(
+    connection: AzureConnection,
+    token: string,
+    projectName: string,
+    buildId: string | number | null | undefined,
+  ) {
     if (!buildId) return "";
     try {
-      const timeline = await requestJson(buildBuildTimelineUrl(connection, projectName, buildId), {
+      const timeline = (await requestJson(buildBuildTimelineUrl(connection, projectName, buildId), {
         login: connection.login,
         token,
-      }) as { records?: Array<{ result?: string; issues?: Array<{ type?: string; message?: string }> }> };
+      })) as { records?: Array<{ result?: string; issues?: Array<{ type?: string; message?: string }> }> };
       const records = timeline.records || [];
       const errors: string[] = [];
       for (const record of records) {
@@ -209,63 +272,98 @@ export function createAzureApi(fetchImpl: typeof globalThis.fetch, { auditLogger
   }
 
   async function listProjects(connection: AzureConnection, token: string) {
-    const result = await requestJson(buildProjectsUrl(connection), {
+    const result = (await requestJson(buildProjectsUrl(connection), {
       login: connection.login,
       token,
-    }) as { value?: unknown[] };
+    })) as { value?: unknown[] };
     return result.value || [];
   }
 
   async function listPullRequestsByProject(connection: AzureConnection, token: string, projectName: string) {
-    const result = await requestJson(buildProjectPullRequestsUrl(connection, projectName), {
+    const result = (await requestJson(buildProjectPullRequestsUrl(connection, projectName), {
       login: connection.login,
       token,
-    }) as { value?: unknown[] };
+    })) as { value?: unknown[] };
     return result.value || [];
   }
 
-  async function getPullRequestById(connection: AzureConnection, token: string, projectName: string, repositoryId: string, pullRequestId: string | number) {
+  async function getPullRequestById(
+    connection: AzureConnection,
+    token: string,
+    projectName: string,
+    repositoryId: string,
+    pullRequestId: string | number,
+  ) {
     return requestJson(buildPullRequestUrl(connection, projectName, repositoryId, pullRequestId), {
       login: connection.login,
       token,
     });
   }
 
-  async function listThreads(connection: AzureConnection, token: string, projectName: string, repositoryId: string, pullRequestId: string | number) {
-    const result = await requestJson(buildThreadsUrl(connection, projectName, repositoryId, pullRequestId), {
+  async function listThreads(
+    connection: AzureConnection,
+    token: string,
+    projectName: string,
+    repositoryId: string,
+    pullRequestId: string | number,
+  ) {
+    const result = (await requestJson(buildThreadsUrl(connection, projectName, repositoryId, pullRequestId), {
       login: connection.login,
       token,
-    }) as { value?: unknown[] };
+    })) as { value?: unknown[] };
     return result.value || [];
   }
 
-  async function listPullRequestStatuses(connection: AzureConnection, token: string, projectName: string, repositoryId: string, pullRequestId: string | number) {
-    const result = await requestJson(
+  async function listPullRequestStatuses(
+    connection: AzureConnection,
+    token: string,
+    projectName: string,
+    repositoryId: string,
+    pullRequestId: string | number,
+  ) {
+    const result = (await requestJson(
       buildPullRequestStatusesUrl(connection, projectName, repositoryId, pullRequestId),
       {
         login: connection.login,
         token,
       },
-    ) as { value?: unknown[] };
+    )) as { value?: unknown[] };
     return result.value || [];
   }
 
-  async function listPolicyEvaluations(connection: AzureConnection, token: string, projectName: string, projectId: string, pullRequestId: string | number) {
+  async function listPolicyEvaluations(
+    connection: AzureConnection,
+    token: string,
+    projectName: string,
+    projectId: string,
+    pullRequestId: string | number,
+  ) {
     if (!projectId) {
       return [];
     }
-    const result = await requestJson(buildPolicyEvaluationsUrl(connection, projectName, projectId, pullRequestId), {
+    const result = (await requestJson(buildPolicyEvaluationsUrl(connection, projectName, projectId, pullRequestId), {
       login: connection.login,
       token,
-    }) as { value?: unknown[] };
+    })) as { value?: unknown[] };
     return result.value || [];
   }
 
-  function buildReEvaluatePolicyUrl(connection: AzureConnection, projectName: string, _projectId: string, evaluationId: string) {
+  function buildReEvaluatePolicyUrl(
+    connection: AzureConnection,
+    projectName: string,
+    _projectId: string,
+    evaluationId: string,
+  ) {
     return `${trimTrailingSlash(connection.orgUrl)}/${encodeURIComponent(projectName)}/_apis/policy/evaluations/${encodeURIComponent(evaluationId)}?api-version=${POLICY_API_VERSION}`;
   }
 
-  async function reEvaluatePolicy(connection: AzureConnection, token: string, projectName: string, projectId: string, evaluationId: string) {
+  async function reEvaluatePolicy(
+    connection: AzureConnection,
+    token: string,
+    projectName: string,
+    projectId: string,
+    evaluationId: string,
+  ) {
     return requestJson(buildReEvaluatePolicyUrl(connection, projectName, projectId, evaluationId), {
       login: connection.login,
       token,
@@ -278,7 +376,12 @@ export function createAzureApi(fetchImpl: typeof globalThis.fetch, { auditLogger
     return `${trimTrailingSlash(connection.orgUrl)}/${encodeURIComponent(projectName)}/_apis/build/builds/${buildId}?api-version=${API_VERSION}`;
   }
 
-  async function fetchBuildDetail(connection: AzureConnection, token: string, projectName: string, buildId: string | number | null | undefined) {
+  async function fetchBuildDetail(
+    connection: AzureConnection,
+    token: string,
+    projectName: string,
+    buildId: string | number | null | undefined,
+  ) {
     if (!buildId) return null;
     try {
       return await requestJson(buildBuildDetailUrl(connection, projectName, buildId), {
@@ -290,14 +393,20 @@ export function createAzureApi(fetchImpl: typeof globalThis.fetch, { auditLogger
     }
   }
 
-  async function listIterationChanges(connection: AzureConnection, token: string, projectName: string, repositoryId: string, pullRequestId: string | number) {
-    const iterationsResult = await requestJson(
+  async function listIterationChanges(
+    connection: AzureConnection,
+    token: string,
+    projectName: string,
+    repositoryId: string,
+    pullRequestId: string | number,
+  ) {
+    const iterationsResult = (await requestJson(
       buildIterationsUrl(connection, projectName, repositoryId, pullRequestId),
       {
         login: connection.login,
         token,
       },
-    ) as { value?: Array<{ id?: string | number }> };
+    )) as { value?: Array<{ id?: string | number }> };
     const iterations = iterationsResult.value || [];
     const latestIteration = iterations.at(-1);
     if (!latestIteration?.id) {
@@ -307,13 +416,13 @@ export function createAzureApi(fetchImpl: typeof globalThis.fetch, { auditLogger
     const changes: unknown[] = [];
     let skip = 0;
     while (true) {
-      const result = await requestJson(
+      const result = (await requestJson(
         buildIterationChangesUrl(connection, projectName, repositoryId, pullRequestId, latestIteration.id, skip),
         {
           login: connection.login,
           token,
         },
-      ) as { changeEntries?: unknown[]; value?: unknown[] };
+      )) as { changeEntries?: unknown[]; value?: unknown[] };
       const batch = result.changeEntries || result.value || [];
       changes.push(...batch);
       if (!batch.length || batch.length < 2000) {
@@ -352,18 +461,24 @@ export function createAzureApi(fetchImpl: typeof globalThis.fetch, { auditLogger
   }
 
   async function listRepositories(connection: AzureConnection, token: string, projectName: string) {
-    const result = await requestJson(buildListRepositoriesUrl(connection, projectName), {
+    const result = (await requestJson(buildListRepositoriesUrl(connection, projectName), {
       login: connection.login,
       token,
-    }) as { value?: unknown[] };
+    })) as { value?: unknown[] };
     return result.value || [];
   }
 
-  async function listRepositoryRefs(connection: AzureConnection, token: string, projectName: string, repositoryId: string, filter = "heads") {
-    const result = await requestJson(buildListRefsUrl(connection, projectName, repositoryId, filter), {
+  async function listRepositoryRefs(
+    connection: AzureConnection,
+    token: string,
+    projectName: string,
+    repositoryId: string,
+    filter = "heads",
+  ) {
+    const result = (await requestJson(buildListRefsUrl(connection, projectName, repositoryId, filter), {
       login: connection.login,
       token,
-    }) as { value?: unknown[] };
+    })) as { value?: unknown[] };
     return result.value || [];
   }
 
@@ -372,7 +487,13 @@ export function createAzureApi(fetchImpl: typeof globalThis.fetch, { auditLogger
     token: string,
     projectName: string,
     repositoryId: string,
-    { title, description, sourceBranch, targetBranch, isDraft = false }: {
+    {
+      title,
+      description,
+      sourceBranch,
+      targetBranch,
+      isDraft = false,
+    }: {
       title: string;
       description?: string;
       sourceBranch: string;

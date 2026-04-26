@@ -283,9 +283,9 @@ export class AgentTaskRunner {
     const jp = getProvider(judgeProviderConfig.providerId);
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const wpCtor = (wp.constructor as any);
+    const wpCtor = wp.constructor as any;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const jpCtor = (jp.constructor as any);
+    const jpCtor = jp.constructor as any;
 
     const resolvedWorkerCmd =
       workerCommand?.trim() ||
@@ -335,9 +335,15 @@ export class AgentTaskRunner {
       starred: false,
       review: null,
       quickfix: null,
-       
+
       panels: [
-        { id: dashboardPanelId, title: "Dashboard", command: "__task-dashboard__", shell: false as unknown as string, startup: "none" },
+        {
+          id: dashboardPanelId,
+          title: "Dashboard",
+          command: "__task-dashboard__",
+          shell: false as unknown as string,
+          startup: "none",
+        },
         {
           id: workerPanelId,
           title: workerTitle,
@@ -1102,13 +1108,16 @@ export class AgentTaskRunner {
     await runEffect(
       Effect.scoped(
         Effect.acquireRelease(
-          Effect.sync(() => { this.#evaluating.add(workspaceId); return workspaceId; }),
-          (id) => Effect.sync(() => { this.#evaluating.delete(id); this.#programmaticJudges.delete(id); }),
-        ).pipe(
-          Effect.flatMap(() =>
-            Effect.promise(() => this.#evaluateWorkerBody(workspace)),
-          ),
-        ),
+          Effect.sync(() => {
+            this.#evaluating.add(workspaceId);
+            return workspaceId;
+          }),
+          (id) =>
+            Effect.sync(() => {
+              this.#evaluating.delete(id);
+              this.#programmaticJudges.delete(id);
+            }),
+        ).pipe(Effect.flatMap(() => Effect.promise(() => this.#evaluateWorkerBody(workspace)))),
       ),
     ).catch((err: unknown) => {
       log.error("evaluateWorker failed", { workspaceId, err: (err as Error)?.message });
@@ -1123,182 +1132,178 @@ export class AgentTaskRunner {
     const workspaceId = workspace.id;
 
     const evalStart = Date.now();
-      this.#setTaskState(task, "evaluating");
-      this.#broadcastState!();
+    this.#setTaskState(task, "evaluating");
+    this.#broadcastState!();
 
-      // A "running" round was pushed when the worker iteration began (by
-      // startTask / onAgentIdle first inject / re-prompt / shower). Reuse it
-      // so the chip's identity doesn't change between "currently working" and
-      // "being evaluated" — only the action label updates.
-      const round = this.#ensureRunningRound(task);
-      round.action = "evaluating";
-      round.checks = [];
-      round.judgeVerdict = null;
-      round.judgeReason = "";
+    // A "running" round was pushed when the worker iteration began (by
+    // startTask / onAgentIdle first inject / re-prompt / shower). Reuse it
+    // so the chip's identity doesn't change between "currently working" and
+    // "being evaluated" — only the action label updates.
+    const round = this.#ensureRunningRound(task);
+    round.action = "evaluating";
+    round.checks = [];
+    round.judgeVerdict = null;
+    round.judgeReason = "";
 
-      // Built-in checks: WORK_LOCK + TODO.md sections (always run, cheap)
-      const builtInChecks = await runBuiltInChecks(workspace.cwd, task.taskId, { execCommand, log });
-      round.checks.push(...(builtInChecks as CheckResult[]));
-      this.#broadcastState!(); // Stream built-in results to UI
-      for (const c of builtInChecks) {
-        log.debug("built-in check", { workspaceId, check: c.label, passed: c.passed });
-      }
+    // Built-in checks: WORK_LOCK + TODO.md sections (always run, cheap)
+    const builtInChecks = await runBuiltInChecks(workspace.cwd, task.taskId, { execCommand, log });
+    round.checks.push(...(builtInChecks as CheckResult[]));
+    this.#broadcastState!(); // Stream built-in results to UI
+    for (const c of builtInChecks) {
+      log.debug("built-in check", { workspaceId, check: c.label, passed: c.passed });
+    }
 
-      // Bail out if user paused/reset during built-in checks
-      if (this.#wasInterrupted(workspaceId, new Set(["evaluating"]))) {
-        log.info("evaluation interrupted after built-in checks", { workspaceId });
-        return;
-      }
+    // Bail out if user paused/reset during built-in checks
+    if (this.#wasInterrupted(workspaceId, new Set(["evaluating"]))) {
+      log.info("evaluation interrupted after built-in checks", { workspaceId });
+      return;
+    }
 
-      // If built-in checks fail (WORK_LOCK present, active TODO items),
-      // re-prompt the worker immediately — no need to invoke the judge.
-      const allPassed = builtInChecks.every((c) => c.passed);
-      if (!allPassed) {
-        log.info("built-in checks failed, skipping judge (short-circuit)", {
-          workspaceId,
-          round: round.round,
-          failedChecks: builtInChecks.filter((c) => !c.passed).map((c) => c.label),
-        });
-      }
-
-      const passedCount = round.checks.filter((c) => c.passed).length;
-      const failedCount = round.checks.filter((c) => !c.passed).length;
-      const evalMs = Date.now() - evalStart;
-      log.info("evaluation round complete", {
+    // If built-in checks fail (WORK_LOCK present, active TODO items),
+    // re-prompt the worker immediately — no need to invoke the judge.
+    const allPassed = builtInChecks.every((c) => c.passed);
+    if (!allPassed) {
+      log.info("built-in checks failed, skipping judge (short-circuit)", {
         workspaceId,
         round: round.round,
-        totalChecks: round.checks.length,
-        passed: passedCount,
-        failed: failedCount,
-        allPassed,
-        evalMs,
+        failedChecks: builtInChecks.filter((c) => !c.passed).map((c) => c.label),
       });
-      const checkSummary = round.checks.map((c) => `${c.passed ? "PASS" : "FAIL"} ${c.label}`).join(", ");
-      this.#logTaskEvent(
-        workspace,
-        "evaluation-complete",
-        `${passedCount}/${round.checks.length} passed (${evalMs}ms). ${checkSummary}`,
-      );
+    }
 
-      // Final interruption check before acting on results
-      if (this.#wasInterrupted(workspaceId, new Set(["evaluating"]))) {
-        log.info("evaluation interrupted before acting on results", { workspaceId });
-        return;
-      }
+    const passedCount = round.checks.filter((c) => c.passed).length;
+    const failedCount = round.checks.filter((c) => !c.passed).length;
+    const evalMs = Date.now() - evalStart;
+    log.info("evaluation round complete", {
+      workspaceId,
+      round: round.round,
+      totalChecks: round.checks.length,
+      passed: passedCount,
+      failed: failedCount,
+      allPassed,
+      evalMs,
+    });
+    const checkSummary = round.checks.map((c) => `${c.passed ? "PASS" : "FAIL"} ${c.label}`).join(", ");
+    this.#logTaskEvent(
+      workspace,
+      "evaluation-complete",
+      `${passedCount}/${round.checks.length} passed (${evalMs}ms). ${checkSummary}`,
+    );
 
-      if (!allPassed) {
-        // Re-prompt worker with failure details — stays WITHIN the same round.
-        // A round only advances when the judge sends the worker back; check
-        // failures are just another worker attempt in the current round, so we
-        // keep the same chip (action flips back to "running" so subsequent
-        // #ensureRunningRound calls reuse this entry).
-        if (this.#shouldShower(task)) {
-          log.info("shower mode triggered before re-prompt", {
-            workspaceId,
-            round: task.currentRound,
-            lastShower: task.lastShowerRound || 0,
-          });
-          round.action = "shower";
-          this.#setTaskState(task, "refreshing");
-          this.#logTaskEvent(
-            workspace,
-            "shower-started",
-            "Refreshing Worker context (killing session, writing handoff)",
-          );
-          this.#broadcastState!();
-          const showerOk = await this.#performShower(workspace);
-          if (showerOk) {
-            this.#setTaskState(task, "running");
-            round.action = "running";
-            log.info("shower completed, waiting for refreshed worker", { workspaceId });
-            this.#logTaskEvent(workspace, "shower-completed", "Worker session restarted with fresh context");
-          } else {
-            log.warn("shower failed, falling back to normal re-prompt", { workspaceId });
-            this.#logTaskEvent(workspace, "shower-failed", "Handoff not written in time, falling back to re-prompt");
-            const prompt = buildRePrompt(task, round);
-            const workerSessionId = `${workspaceId}:${task.workerPanelId}`;
-            await this.#injectPrompt(workerSessionId, prompt, workspace);
-            this.#setTaskState(task, "running");
-            round.action = "running";
-          }
+    // Final interruption check before acting on results
+    if (this.#wasInterrupted(workspaceId, new Set(["evaluating"]))) {
+      log.info("evaluation interrupted before acting on results", { workspaceId });
+      return;
+    }
+
+    if (!allPassed) {
+      // Re-prompt worker with failure details — stays WITHIN the same round.
+      // A round only advances when the judge sends the worker back; check
+      // failures are just another worker attempt in the current round, so we
+      // keep the same chip (action flips back to "running" so subsequent
+      // #ensureRunningRound calls reuse this entry).
+      if (this.#shouldShower(task)) {
+        log.info("shower mode triggered before re-prompt", {
+          workspaceId,
+          round: task.currentRound,
+          lastShower: task.lastShowerRound || 0,
+        });
+        round.action = "shower";
+        this.#setTaskState(task, "refreshing");
+        this.#logTaskEvent(workspace, "shower-started", "Refreshing Worker context (killing session, writing handoff)");
+        this.#broadcastState!();
+        const showerOk = await this.#performShower(workspace);
+        if (showerOk) {
+          this.#setTaskState(task, "running");
+          round.action = "running";
+          log.info("shower completed, waiting for refreshed worker", { workspaceId });
+          this.#logTaskEvent(workspace, "shower-completed", "Worker session restarted with fresh context");
         } else {
+          log.warn("shower failed, falling back to normal re-prompt", { workspaceId });
+          this.#logTaskEvent(workspace, "shower-failed", "Handoff not written in time, falling back to re-prompt");
           const prompt = buildRePrompt(task, round);
           const workerSessionId = `${workspaceId}:${task.workerPanelId}`;
           await this.#injectPrompt(workerSessionId, prompt, workspace);
           this.#setTaskState(task, "running");
           round.action = "running";
-          log.info("worker re-prompted", { workspaceId, round: task.currentRound });
-          this.#logTaskEvent(workspace, "worker-reprompted", "Checks failed, Worker re-prompted with failure details");
         }
       } else {
-        // All checks passed — invoke judge (still within the current round;
-        // currentRound only advances when the judge says "continue").
-        round.action = "judge-requested";
+        const prompt = buildRePrompt(task, round);
+        const workerSessionId = `${workspaceId}:${task.workerPanelId}`;
+        await this.#injectPrompt(workerSessionId, prompt, workspace);
+        this.#setTaskState(task, "running");
+        round.action = "running";
+        log.info("worker re-prompted", { workspaceId, round: task.currentRound });
+        this.#logTaskEvent(workspace, "worker-reprompted", "Checks failed, Worker re-prompted with failure details");
+      }
+    } else {
+      // All checks passed — invoke judge (still within the current round;
+      // currentRound only advances when the judge says "continue").
+      round.action = "judge-requested";
 
-        const judgeSetupStart = Date.now();
+      const judgeSetupStart = Date.now();
 
-        // Clear old verdict and nudge flag for fresh judge evaluation
-        await clearVerdict(workspace.cwd, task.taskId);
-        task.judgeNudged = false;
+      // Clear old verdict and nudge flag for fresh judge evaluation
+      await clearVerdict(workspace.cwd, task.taskId);
+      task.judgeNudged = false;
 
-        // Gather git context so the judge can see actual repo changes
-        const gitContext = await getGitContext(workspace.cwd, { execCommand, log });
-        const gitContextMs = Date.now() - judgeSetupStart;
+      // Gather git context so the judge can see actual repo changes
+      const gitContext = await getGitContext(workspace.cwd, { execCommand, log });
+      const gitContextMs = Date.now() - judgeSetupStart;
 
-        const judgeSessionId = `${workspaceId}:${task.judgePanelId}`;
-        const judgePrompt = await buildJudgePrompt(task, round, gitContext, workspace.cwd);
-        if (shouldUseProgrammaticCopilotJudge(task.judgeProviderConfig)) {
-          this.#setTaskState(task, "judge-evaluating");
-          this.#programmaticJudges.add(workspaceId);
-          this.#broadcastState!();
-          this.#logTaskEvent(
-            workspace,
-            "judge-requested",
-            `All checks passed. Running Copilot judge in programmatic mode on Windows (git: ${gitContextMs}ms)`,
-          );
-          const judgeResult = await this.#runProgrammaticCopilotJudge(workspace, judgePrompt);
-          const totalJudgeMs = Date.now() - judgeSetupStart;
-          const judgeSummaryTail = tailLines(judgeResult.stderr || judgeResult.stdout, MAX_OUTPUT_TAIL);
-          if (judgeResult.exitCode !== 0) {
-            log.warn("programmatic Copilot judge exited non-zero", {
-              workspaceId,
-              exitCode: judgeResult.exitCode,
-              stderr: judgeSummaryTail,
-            });
-          } else {
-            log.info("programmatic Copilot judge completed", { workspaceId, round: task.currentRound, totalJudgeMs });
-          }
-          this.#logTaskEvent(
-            workspace,
-            "judge-programmatic-finished",
-            `Copilot judge finished in programmatic mode (${totalJudgeMs}ms, exit ${judgeResult.exitCode})${
-              judgeResult.exitCode !== 0 && judgeSummaryTail ? ` — ${judgeSummaryTail}` : ""
-            }`,
-          );
-          if (this.#wasInterrupted(workspaceId, new Set(["judge-evaluating"]))) {
-            log.info("programmatic judge interrupted before verdict handling", { workspaceId });
-            return;
-          }
-          task.judgeNudged = true;
-          await this.#handleJudgeVerdict(workspace);
-          this.#programmaticJudges.delete(workspaceId);
-          return;
-        }
-
-        // Clear judge context for independent evaluation, then inject prompt
-        await this.#clearSessionContext(judgeSessionId, workspace);
-        await this.#injectPrompt(judgeSessionId, judgePrompt, workspace);
-        const totalSetupMs = Date.now() - judgeSetupStart;
+      const judgeSessionId = `${workspaceId}:${task.judgePanelId}`;
+      const judgePrompt = await buildJudgePrompt(task, round, gitContext, workspace.cwd);
+      if (shouldUseProgrammaticCopilotJudge(task.judgeProviderConfig)) {
         this.#setTaskState(task, "judge-evaluating");
-        log.info("judge evaluation requested", { workspaceId, round: task.currentRound, gitContextMs, totalSetupMs });
+        this.#programmaticJudges.add(workspaceId);
+        this.#broadcastState!();
         this.#logTaskEvent(
           workspace,
           "judge-requested",
-          `All checks passed. Judge prompt injected (git: ${gitContextMs}ms, total setup: ${totalSetupMs}ms)`,
+          `All checks passed. Running Copilot judge in programmatic mode on Windows (git: ${gitContextMs}ms)`,
         );
+        const judgeResult = await this.#runProgrammaticCopilotJudge(workspace, judgePrompt);
+        const totalJudgeMs = Date.now() - judgeSetupStart;
+        const judgeSummaryTail = tailLines(judgeResult.stderr || judgeResult.stdout, MAX_OUTPUT_TAIL);
+        if (judgeResult.exitCode !== 0) {
+          log.warn("programmatic Copilot judge exited non-zero", {
+            workspaceId,
+            exitCode: judgeResult.exitCode,
+            stderr: judgeSummaryTail,
+          });
+        } else {
+          log.info("programmatic Copilot judge completed", { workspaceId, round: task.currentRound, totalJudgeMs });
+        }
+        this.#logTaskEvent(
+          workspace,
+          "judge-programmatic-finished",
+          `Copilot judge finished in programmatic mode (${totalJudgeMs}ms, exit ${judgeResult.exitCode})${
+            judgeResult.exitCode !== 0 && judgeSummaryTail ? ` — ${judgeSummaryTail}` : ""
+          }`,
+        );
+        if (this.#wasInterrupted(workspaceId, new Set(["judge-evaluating"]))) {
+          log.info("programmatic judge interrupted before verdict handling", { workspaceId });
+          return;
+        }
+        task.judgeNudged = true;
+        await this.#handleJudgeVerdict(workspace);
+        this.#programmaticJudges.delete(workspaceId);
+        return;
       }
 
-      this.#broadcastState!();
+      // Clear judge context for independent evaluation, then inject prompt
+      await this.#clearSessionContext(judgeSessionId, workspace);
+      await this.#injectPrompt(judgeSessionId, judgePrompt, workspace);
+      const totalSetupMs = Date.now() - judgeSetupStart;
+      this.#setTaskState(task, "judge-evaluating");
+      log.info("judge evaluation requested", { workspaceId, round: task.currentRound, gitContextMs, totalSetupMs });
+      this.#logTaskEvent(
+        workspace,
+        "judge-requested",
+        `All checks passed. Judge prompt injected (git: ${gitContextMs}ms, total setup: ${totalSetupMs}ms)`,
+      );
+    }
+
+    this.#broadcastState!();
   }
 
   // ---------------------------------------------------------------------------

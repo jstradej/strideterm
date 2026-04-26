@@ -54,15 +54,18 @@ interface HostKeyWarning {
   fingerprint?: string;
 }
 
-const props = withDefaults(defineProps<{
-  warning?: HostKeyWarning | null;
-}>(), {
-  warning: null,
-});
+const props = withDefaults(
+  defineProps<{
+    warning?: HostKeyWarning | null;
+  }>(),
+  {
+    warning: null,
+  },
+);
 
 const sshStore = useSshStore();
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-const data = computed(() => props.warning || (sshStore.hostKeyWarning as any) as HostKeyWarning | null);
+const data = computed(() => props.warning || (sshStore.hostKeyWarning as any as HostKeyWarning | null));
 
 async function reject() {
   if (!data.value?.sessionId) return;

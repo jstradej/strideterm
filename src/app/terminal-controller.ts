@@ -162,7 +162,7 @@ export function createTerminalController({
     mount.className = "terminal-host";
     mount.dataset.sessionId = sessionId;
     const windowsPty = getWindowsPtyOptions(getPayload());
-    const term = new Terminal(({
+    const term = new Terminal({
       fontFamily:
         '"JetBrainsMono NFM", "CaskaydiaCove NFM", "MesloLGS NF", "FiraCode NFM", "Cascadia Mono NF", "Cascadia Code PL", "Cascadia Mono", "JetBrains Mono", "Fira Code", "Consolas", monospace',
       fontSize: 13,
@@ -179,8 +179,8 @@ export function createTerminalController({
         allowNonHttpProtocols: false,
       },
       theme: resolveTerminalTheme(appConfig),
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    }) as any);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any);
     const fitAddon = new FitAddon();
     const webLinksAddon = new WebLinksAddon(openTerminalLink);
     term.loadAddon(fitAddon);

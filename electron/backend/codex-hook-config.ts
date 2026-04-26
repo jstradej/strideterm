@@ -72,12 +72,19 @@ export function findExistingHook(settings: Record<string, unknown>, hookName: st
     (entry: unknown) =>
       Array.isArray((entry as Record<string, unknown>)?.hooks) &&
       ((entry as Record<string, unknown>).hooks as unknown[]).some(
-        (h: unknown) => typeof (h as Record<string, unknown>)?.command === "string" && HOOK_MARKERS.some((m) => ((h as Record<string, string>).command).includes(m)),
+        (h: unknown) =>
+          typeof (h as Record<string, unknown>)?.command === "string" &&
+          HOOK_MARKERS.some((m) => (h as Record<string, string>).command.includes(m)),
       ),
   );
 }
 
-async function readHooksJson(): Promise<{ ok: boolean; data: Record<string, unknown> | null; path: string; error?: string }> {
+async function readHooksJson(): Promise<{
+  ok: boolean;
+  data: Record<string, unknown> | null;
+  path: string;
+  error?: string;
+}> {
   const hooksPath = getCodexHooksPath();
   try {
     const raw = await readFile(hooksPath, "utf8");
@@ -122,7 +129,8 @@ export async function ensureCodexHooksFeatureFlag() {
   try {
     raw = await readFile(configPath, "utf8");
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") return { ok: false, error: (error as NodeJS.ErrnoException).message, path: configPath };
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT")
+      return { ok: false, error: (error as NodeJS.ErrnoException).message, path: configPath };
   }
 
   // Work with LF-normalized text for regex consistency; re-emit as UTF-8 LF.

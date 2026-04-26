@@ -133,8 +133,11 @@ export const useAppStore = defineStore("app", () => {
   const activeProfile = computed(() => {
     const profiles = payload.value?.appState?.profiles || [];
     const activeId = payload.value?.appState?.activeProfileId || "default";
-    const found =
-      profiles.find((p: AnyApi) => p.id === activeId) || { id: "default", name: "Default", color: "#ffa424" };
+    const found = profiles.find((p: AnyApi) => p.id === activeId) || {
+      id: "default",
+      name: "Default",
+      color: "#ffa424",
+    };
     const key = `${(found as AnyApi).id}:${(found as AnyApi).name}:${(found as AnyApi).color}`;
     if (key === _prevProfileKey && _prevProfile) return _prevProfile;
     _prevProfileKey = key;
@@ -340,11 +343,7 @@ export const useAppStore = defineStore("app", () => {
     return null;
   }
 
-  function applyWorkspaceUIStateFromEntry(
-    wsEntry: AnyApi,
-    workspaceId: string,
-    { optimisticOnly = false } = {},
-  ): void {
+  function applyWorkspaceUIStateFromEntry(wsEntry: AnyApi, workspaceId: string, { optimisticOnly = false } = {}): void {
     if (!workspaceId) return;
     const nextSplit = resolveSplitForWorkspace(wsEntry, workspaceId);
     splitGroup.value = nextSplit;
@@ -422,8 +421,7 @@ export const useAppStore = defineStore("app", () => {
     clearRemoteConnectionIssue();
 
     const workspaceChanged =
-      (nextPayload as AnyApi)?.appState?.activeWorkspaceId !==
-      (payload.value as AnyApi)?.appState?.activeWorkspaceId;
+      (nextPayload as AnyApi)?.appState?.activeWorkspaceId !== (payload.value as AnyApi)?.appState?.activeWorkspaceId;
     if (workspaceChanged || completingActivation) {
       // activateWorkspace() already cached the outgoing workspace's split
       // BEFORE optimistic activation swapped splitGroup.value. Caching here

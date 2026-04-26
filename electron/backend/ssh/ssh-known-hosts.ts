@@ -33,7 +33,13 @@ export type HostKeyVerdict =
   | { ok: true; first: true; fingerprint: string; keyType: string }
   | { ok: true; fingerprint: string; keyType: string }
   | { ok: false; mismatch: false; fingerprint: string; keyType: string; previous: null }
-  | { ok: false; mismatch: true; fingerprint: string; keyType: string; previous: { fingerprint: string; keyType: string; addedAt: string } };
+  | {
+      ok: false;
+      mismatch: true;
+      fingerprint: string;
+      keyType: string;
+      previous: { fingerprint: string; keyType: string; addedAt: string };
+    };
 
 // SHA-256 base64 without padding — matches `ssh-keygen -lf`.
 function fingerprintOf(keyBuf: Buffer): string {
@@ -54,12 +60,17 @@ function hostKey(host: HostLike): string {
  * Does NOT mutate the store; recording is caller's responsibility after the
  * connection is confirmed.
  */
-export function verifyHostKey(store: Store, host: HostLike, { key }: { key: Buffer | { type?: string } }): HostKeyVerdict {
+export function verifyHostKey(
+  store: Store,
+  host: HostLike,
+  { key }: { key: Buffer | { type?: string } },
+): HostKeyVerdict {
   const state = store.getState();
   const known = state.ssh?.knownHosts?.[hostKey(host)] || null;
   const keyBuf = Buffer.isBuffer(key) ? key : null;
   const incomingFp = keyBuf ? fingerprintOf(keyBuf) : "";
-  const keyType = keyBuf && keyBuf.length >= 4 ? inferKeyType(keyBuf) : (!Buffer.isBuffer(key) && key && key.type) || "";
+  const keyType =
+    keyBuf && keyBuf.length >= 4 ? inferKeyType(keyBuf) : (!Buffer.isBuffer(key) && key && key.type) || "";
 
   if (!known) {
     // Brand-new host.
@@ -86,7 +97,11 @@ export function verifyHostKey(store: Store, host: HostLike, { key }: { key: Buff
 /**
  * Persist (or overwrite) a fingerprint for a host after a successful connect.
  */
-export async function recordHostKey(store: Store, host: HostLike, { fingerprint, keyType }: { fingerprint?: string; keyType?: string }): Promise<void> {
+export async function recordHostKey(
+  store: Store,
+  host: HostLike,
+  { fingerprint, keyType }: { fingerprint?: string; keyType?: string },
+): Promise<void> {
   if (!fingerprint) return;
   await store.mutate((state) => {
     if (!state.ssh) state.ssh = { hosts: [], keys: [], certificates: [], knownHosts: {}, settings: {} };

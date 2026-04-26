@@ -47,11 +47,14 @@ const FALLBACK_TEMPLATES: TabTemplate[] = [
   { title: "Files", command: "__files__", icon: "\u{1F4C2}" },
 ];
 
-const props = withDefaults(defineProps<{
-  anchorRect?: AnchorRect | null;
-}>(), {
-  anchorRect: null,
-});
+const props = withDefaults(
+  defineProps<{
+    anchorRect?: AnchorRect | null;
+  }>(),
+  {
+    anchorRect: null,
+  },
+);
 
 const emit = defineEmits<{
   (e: "close"): void;

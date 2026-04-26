@@ -47,7 +47,10 @@ import {
   type GitSnapshot,
 } from "./shared/pr-summary-helpers.js";
 
-export function findWorkspaceForPullRequest(workspaces: Array<{ id: string; [key: string]: unknown }>, prKey: string): { id: string; [key: string]: unknown } | null {
+export function findWorkspaceForPullRequest(
+  workspaces: Array<{ id: string; [key: string]: unknown }>,
+  prKey: string,
+): { id: string; [key: string]: unknown } | null {
   return baseFindWorkspace(workspaces, prKey, "azure-devops");
 }
 
@@ -78,7 +81,15 @@ export function buildPullRequestSummary({
   const repositoryId = p.repository?.id || "";
   const prKey = createPullRequestKey(connection.id, repositoryId, p.pullRequestId ?? "");
   const comments = extractComments(threads);
-  type AzureReviewer = { id?: string; displayName?: string; uniqueName?: string; vote?: number; isRequired?: boolean; hasDeclined?: boolean; isContainer?: boolean };
+  type AzureReviewer = {
+    id?: string;
+    displayName?: string;
+    uniqueName?: string;
+    vote?: number;
+    isRequired?: boolean;
+    hasDeclined?: boolean;
+    isContainer?: boolean;
+  };
   const reviewerInfo = summarizeReviewers((p.reviewers || []) as AzureReviewer[], connection.login);
   const isAuthor = identityMatches(connection.login, p.createdBy ?? null);
   const isReviewer =
@@ -94,7 +105,9 @@ export function buildPullRequestSummary({
   const lastRemoteActivityAt = toIsoOrNull(Math.max(latestCommentAt, latestCommitAt, latestPrAt));
   const lastSeenAt = parseDate(tracked.lastSeenActivityAt);
   type AzureIdentity = { uniqueName?: string; mailAddress?: string; displayName?: string; id?: string };
-  const commentsByOthers = comments.filter((comment) => !identityMatches(connection.login, comment.author as AzureIdentity | null | undefined));
+  const commentsByOthers = comments.filter(
+    (comment) => !identityMatches(connection.login, comment.author as AzureIdentity | null | undefined),
+  );
   const newCommentsCount = commentsByOthers.filter(
     (comment) => parseDate(comment.lastUpdatedDate || comment.publishedDate) > lastSeenAt,
   ).length;
@@ -198,9 +211,24 @@ export function buildPullRequestSummary({
       .slice()
       .sort(compareThreads)
       .map((thread) => {
-        type ThreadCtx = { filePath?: string; rightFileStart?: { line?: number }; leftFileStart?: { line?: number }; rightFileEnd?: { line?: number }; leftFileEnd?: { line?: number } };
+        type ThreadCtx = {
+          filePath?: string;
+          rightFileStart?: { line?: number };
+          leftFileStart?: { line?: number };
+          rightFileEnd?: { line?: number };
+          leftFileEnd?: { line?: number };
+        };
         const tc = (thread.threadContext || {}) as ThreadCtx;
-        type ThreadComment = { id?: unknown; parentCommentId?: number; isDeleted?: boolean; content?: string; publishedDate?: string | null; lastUpdatedDate?: string | null; commentType?: string; author?: { id?: string; displayName?: string; uniqueName?: string } };
+        type ThreadComment = {
+          id?: unknown;
+          parentCommentId?: number;
+          isDeleted?: boolean;
+          content?: string;
+          publishedDate?: string | null;
+          lastUpdatedDate?: string | null;
+          commentType?: string;
+          author?: { id?: string; displayName?: string; uniqueName?: string };
+        };
         const threadComments = (thread.comments || []) as ThreadComment[];
         return {
           id: thread.id,

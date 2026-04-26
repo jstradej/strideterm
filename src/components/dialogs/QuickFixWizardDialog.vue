@@ -357,7 +357,9 @@ async function loadProjects() {
   loading.value = true;
   currentStep.value = "project";
   try {
-    const result = await api?.azureQuickFixListProjects?.({ connectionId: selected.value.connectionId }) as { projects?: ProjectEntry[] } | undefined;
+    const result = (await api?.azureQuickFixListProjects?.({ connectionId: selected.value.connectionId })) as
+      | { projects?: ProjectEntry[] }
+      | undefined;
     projects.value = result?.projects || [];
     if (projects.value.length === 1) {
       await selectProject(projects.value[0]);
@@ -383,12 +385,14 @@ async function loadRepositories() {
   try {
     let result: { repositories?: RepositoryEntry[] } | undefined;
     if (isAzure.value) {
-      result = await api?.azureQuickFixListRepositories?.({
+      result = (await api?.azureQuickFixListRepositories?.({
         connectionId: selected.value.connectionId,
         projectName: selected.value.projectName,
-      }) as { repositories?: RepositoryEntry[] } | undefined;
+      })) as { repositories?: RepositoryEntry[] } | undefined;
     } else {
-      result = await api?.githubQuickFixListRepos?.({ connectionId: selected.value.connectionId }) as { repositories?: RepositoryEntry[] } | undefined;
+      result = (await api?.githubQuickFixListRepos?.({ connectionId: selected.value.connectionId })) as
+        | { repositories?: RepositoryEntry[] }
+        | undefined;
     }
     repositories.value = result?.repositories || [];
     if (repositories.value.length === 1) {
@@ -424,17 +428,17 @@ async function loadBranches(defaultBranch = ""): Promise<void> {
   try {
     let result: { branches?: string[] } | undefined;
     if (isAzure.value) {
-      result = await api?.azureQuickFixListBranches?.({
+      result = (await api?.azureQuickFixListBranches?.({
         connectionId: selected.value.connectionId,
         projectName: selected.value.projectName,
         repositoryId: selected.value.repositoryId,
-      }) as { branches?: string[] } | undefined;
+      })) as { branches?: string[] } | undefined;
     } else {
-      result = await api?.githubQuickFixListBranches?.({
+      result = (await api?.githubQuickFixListBranches?.({
         connectionId: selected.value.connectionId,
         owner: selected.value.owner,
         repo: selected.value.repo,
-      }) as { branches?: string[] } | undefined;
+      })) as { branches?: string[] } | undefined;
     }
     branches.value = result?.branches || [];
     const preferred =

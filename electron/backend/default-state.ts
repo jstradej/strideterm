@@ -187,7 +187,11 @@ function panelViewId(panel: { id: string; command?: string } | null | undefined,
 // form when it points to a non-terminal panel (dashboard/files/browser). Older
 // state files persisted the session-style id for dashboard panels, which then
 // failed to match splitGroup.viewIds and collapsed the layout to solo.
-function canonicalizeViewId(viewId: string, workspaceId: string, panels: Array<{ id: string; command?: string }>): string {
+function canonicalizeViewId(
+  viewId: string,
+  workspaceId: string,
+  panels: Array<{ id: string; command?: string }>,
+): string {
   if (typeof viewId !== "string" || !viewId) return viewId;
   if (isKnownPrefixViewId(viewId)) return viewId;
   const sessionPrefix = `${workspaceId}:`;
@@ -198,8 +202,12 @@ function canonicalizeViewId(viewId: string, workspaceId: string, panels: Array<{
   return panelViewId(panel, workspaceId) ?? viewId;
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function normalizeWorkspaceUIState(workspace: any, workspaceId: string, panels: Array<{ id: string; command?: string }>, activePanelId: string | null): {
+function normalizeWorkspaceUIState(
+  workspace: any, // eslint-disable-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: legacy raw state JSON, typed migration pending
+  workspaceId: string,
+  panels: Array<{ id: string; command?: string }>,
+  activePanelId: string | null,
+): {
   activeViewId: string | null;
   splitLayout: string | null;
   splitViewIds: string[];
@@ -239,8 +247,8 @@ export function normalizeWorkspace(workspace: any, index = 0): WorkspaceState {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         (panel: any) => !(panel.id === "lazydocker" && panel.command === "lazydocker" && !panel.launch),
       )
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    : (workspace.panels || []).filter((panel: any) => !(panel.id === "git" && !panel.command && !panel.launch));
+    : // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (workspace.panels || []).filter((panel: any) => !(panel.id === "git" && !panel.command && !panel.launch));
   const panels = rawPanels.map((panel, panelIndex) => normalizePanel(panel, panelIndex));
   const fallbackPanelId = panels[0]?.id || null;
   const activePanelId = panels.some((panel) => panel.id === workspace.activePanelId)
@@ -275,7 +283,9 @@ export function normalizeWorkspace(workspace: any, index = 0): WorkspaceState {
       // Don't allow gitRoots on review workspaces or task workspaces that run in a worktree
       if (isAzureWorkspace || isGitHubWorkspace) return [];
       if (isTaskWorkspace && workspace.task?.worktreeBranch) return [];
-      const roots: unknown[] = Array.isArray(workspace.gitRoots) ? (workspace.gitRoots as unknown[]).filter(Boolean) : [];
+      const roots: unknown[] = Array.isArray(workspace.gitRoots)
+        ? (workspace.gitRoots as unknown[]).filter(Boolean)
+        : [];
       return roots
         .map((r) => String(r).replace(/\\/g, "/").replace(/\/+$/, ""))
         .filter(Boolean)
@@ -805,42 +815,46 @@ export function normalizeState(rawState: any = {}): AppState & { activeProjectId
         ...defaults.settings.integrations.azureDevops,
         ...(((rawState.settings || {}).integrations || {}).azureDevops || {}),
         connections: Array.isArray((((rawState.settings || {}).integrations || {}).azureDevops || {}).connections)
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          ? (((rawState.settings || {}).integrations || {}).azureDevops || {}).connections.map((connection: any, index: number) => ({
-              id: connection.id || `ado-${index + 1}`,
-              label: connection.label || connection.id || `Azure ${index + 1}`,
-              orgUrl: connection.orgUrl || "",
-              login: connection.login || "",
-              tokenRef: connection.tokenRef || "",
-              enabled: connection.enabled !== false,
-              profileId: connection.profileId || "",
-              projectFilters: Array.isArray(connection.projectFilters) ? [...connection.projectFilters] : [],
-              repositoryFilters: Array.isArray(connection.repositoryFilters) ? [...connection.repositoryFilters] : [],
-              pollSeconds:
-                Number(connection.pollSeconds) || defaults.settings.integrations.azureDevops.defaultPollSeconds,
-              reviewRoot: connection.reviewRoot || defaults.settings.integrations.azureDevops.reviewRoot,
-            }))
+          ? (((rawState.settings || {}).integrations || {}).azureDevops || {}).connections.map(
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: raw persisted state, no schema yet
+              (connection: any, index: number) => ({
+                id: connection.id || `ado-${index + 1}`,
+                label: connection.label || connection.id || `Azure ${index + 1}`,
+                orgUrl: connection.orgUrl || "",
+                login: connection.login || "",
+                tokenRef: connection.tokenRef || "",
+                enabled: connection.enabled !== false,
+                profileId: connection.profileId || "",
+                projectFilters: Array.isArray(connection.projectFilters) ? [...connection.projectFilters] : [],
+                repositoryFilters: Array.isArray(connection.repositoryFilters) ? [...connection.repositoryFilters] : [],
+                pollSeconds:
+                  Number(connection.pollSeconds) || defaults.settings.integrations.azureDevops.defaultPollSeconds,
+                reviewRoot: connection.reviewRoot || defaults.settings.integrations.azureDevops.reviewRoot,
+              }),
+            )
           : [],
       },
       github: {
         ...defaults.settings.integrations.github,
         ...(((rawState.settings || {}).integrations || {}).github || {}),
         connections: Array.isArray((((rawState.settings || {}).integrations || {}).github || {}).connections)
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          ? (((rawState.settings || {}).integrations || {}).github || {}).connections.map((connection: any, index: number) => ({
-              id: connection.id || `gh-${index + 1}`,
-              label: connection.label || connection.id || `GitHub ${index + 1}`,
-              hostUrl: connection.hostUrl || "https://github.com",
-              apiBaseUrl: connection.apiBaseUrl || "",
-              currentUserLogin: connection.currentUserLogin || "",
-              tokenRef: connection.tokenRef || "",
-              enabled: connection.enabled !== false,
-              profileId: connection.profileId || "",
-              ownerFilters: Array.isArray(connection.ownerFilters) ? [...connection.ownerFilters] : [],
-              repositoryFilters: Array.isArray(connection.repositoryFilters) ? [...connection.repositoryFilters] : [],
-              pollSeconds: Number(connection.pollSeconds) || defaults.settings.integrations.github.defaultPollSeconds,
-              reviewRoot: connection.reviewRoot || defaults.settings.integrations.github.reviewRoot,
-            }))
+          ? (((rawState.settings || {}).integrations || {}).github || {}).connections.map(
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: raw persisted state, no schema yet
+              (connection: any, index: number) => ({
+                id: connection.id || `gh-${index + 1}`,
+                label: connection.label || connection.id || `GitHub ${index + 1}`,
+                hostUrl: connection.hostUrl || "https://github.com",
+                apiBaseUrl: connection.apiBaseUrl || "",
+                currentUserLogin: connection.currentUserLogin || "",
+                tokenRef: connection.tokenRef || "",
+                enabled: connection.enabled !== false,
+                profileId: connection.profileId || "",
+                ownerFilters: Array.isArray(connection.ownerFilters) ? [...connection.ownerFilters] : [],
+                repositoryFilters: Array.isArray(connection.repositoryFilters) ? [...connection.repositoryFilters] : [],
+                pollSeconds: Number(connection.pollSeconds) || defaults.settings.integrations.github.defaultPollSeconds,
+                reviewRoot: connection.reviewRoot || defaults.settings.integrations.github.reviewRoot,
+              }),
+            )
           : [],
       },
     },

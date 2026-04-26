@@ -23,7 +23,6 @@ import {
   computeCommitFileDiff,
 } from "./file-manager.js";
 
- 
 function execGit(cwd: string, args: string[]) {
   return new Promise((resolve, reject) => {
     execFile("git", args, { cwd, windowsHide: true }, (err, stdout, stderr) => {

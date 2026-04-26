@@ -325,8 +325,8 @@ const appStore = useAppStore();
 const gitUiStore = useGitUiStore();
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: git snapshot is an open-ended server JSON blob; typed in shared types but indexed dynamically here
-const snapshot = computed<Record<string, any> | null>(() =>
-  appStore.getActiveGitSnapshot(props.workspaceId) as Record<string, any> | null, // eslint-disable-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT
+const snapshot = computed<Record<string, any> | null>(
+  () => appStore.getActiveGitSnapshot(props.workspaceId) as Record<string, any> | null, // eslint-disable-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT
 );
 const gitUi = computed(() => gitUiStore.get(props.workspaceId));
 const workspaces = computed(() => appStore.filteredWorkspaces);
@@ -557,7 +557,6 @@ const hasAzureConnection = computed(() => {
 });
 
 // Connection selection for authenticated git operations (push/fetch/PR).
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 const availableConnections = computed(() =>
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   ((appStore.payload?.git as any)?.connections || []).filter((c: any) => c.enabled),
@@ -632,11 +631,21 @@ function onCreateWorktree() {
   appStore.createWorktreeWithDialog(props.workspaceId, { preselectedRootPath: activeRootPath.value || "" });
 }
 
-function onBulkFetchAll() { gitUiStore.bulkFetch(props.workspaceId); }
-function onBulkPullAll() { gitUiStore.bulkPull(props.workspaceId); }
-function onBulkRefreshRoot(rootPath: string) { gitUiStore.refreshRoot(props.workspaceId, rootPath); }
-function onBulkPullRoot(rootPath: string) { gitUiStore.pullRoot(props.workspaceId, rootPath); }
-function onBulkRevealRoot(rootPath: string) { gitUiStore.revealRoot(props.workspaceId, rootPath); }
+function onBulkFetchAll() {
+  gitUiStore.bulkFetch(props.workspaceId);
+}
+function onBulkPullAll() {
+  gitUiStore.bulkPull(props.workspaceId);
+}
+function onBulkRefreshRoot(rootPath: string) {
+  gitUiStore.refreshRoot(props.workspaceId, rootPath);
+}
+function onBulkPullRoot(rootPath: string) {
+  gitUiStore.pullRoot(props.workspaceId, rootPath);
+}
+function onBulkRevealRoot(rootPath: string) {
+  gitUiStore.revealRoot(props.workspaceId, rootPath);
+}
 
 function onConnectionChange(value: string | number) {
   const existing = (appStore.payload?.appState?.workspaces || []).find((ws) => ws.id === props.workspaceId);

@@ -36,15 +36,18 @@ interface SshAuthPromptPayload {
   };
 }
 
-const props = withDefaults(defineProps<{
-  prompt?: SshAuthPromptPayload | null;
-}>(), {
-  prompt: null,
-});
+const props = withDefaults(
+  defineProps<{
+    prompt?: SshAuthPromptPayload | null;
+  }>(),
+  {
+    prompt: null,
+  },
+);
 
 const sshStore = useSshStore();
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-const payload = computed(() => props.prompt || (sshStore.authPrompt as any) as SshAuthPromptPayload | null);
+const payload = computed(() => props.prompt || (sshStore.authPrompt as any as SshAuthPromptPayload | null));
 const promptData = computed(() => payload.value?.prompt || {});
 const answers = ref<string[]>([]);
 const inputs = ref<HTMLInputElement[]>([]);

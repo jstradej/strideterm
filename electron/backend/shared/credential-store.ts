@@ -75,9 +75,7 @@ async function loadState(filePath: string): Promise<CredentialState> {
     return {
       version: 1,
       secrets:
-        typeof parsed?.secrets === "object" && parsed.secrets
-          ? (parsed.secrets as Record<string, SecretEntry>)
-          : {},
+        typeof parsed?.secrets === "object" && parsed.secrets ? (parsed.secrets as Record<string, SecretEntry>) : {},
     };
   } catch {
     return createDefaultState();

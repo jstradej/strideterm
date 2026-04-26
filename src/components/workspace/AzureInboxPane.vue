@@ -279,8 +279,9 @@ const repoNames = computed(() => {
 const activeGroupedItems = computed(() => {
   let items: unknown[] = tabItems(activeTab.value);
   if (repoFilter.value) {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    items = items.filter((item: any) => `${item.project?.name || ""}/${item.repository?.name || ""}` === repoFilter.value);
+    items = items.filter(
+      (item: any) => `${item.project?.name || ""}/${item.repository?.name || ""}` === repoFilter.value, // eslint-disable-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: inbox item is open-ended server JSON
+    );
   }
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const groups = new Map<string, any[]>();

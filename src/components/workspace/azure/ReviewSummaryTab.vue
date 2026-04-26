@@ -225,7 +225,6 @@ import { ref, computed } from "vue";
 import { useAppStore } from "../../../stores/app.js";
 import { useGitUiStore } from "../../../stores/git-ui.js";
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 const props = defineProps<{
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   detail?: Record<string, any> | null;

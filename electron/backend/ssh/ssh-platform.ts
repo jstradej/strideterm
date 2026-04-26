@@ -71,7 +71,9 @@ function loadSafeStorage(): SafeStorage | null {
   }
 }
 
-export async function runPlatformPreflight(appConfig: AppConfigLike = { ssh: { allowSystemSshFallback: true } }): Promise<PreflightResult> {
+export async function runPlatformPreflight(
+  appConfig: AppConfigLike = { ssh: { allowSystemSshFallback: true } },
+): Promise<PreflightResult> {
   const safeStorage = loadSafeStorage();
 
   const wslCaps = await detectWslDistros();

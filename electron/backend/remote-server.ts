@@ -36,13 +36,7 @@ interface Runtime {
     };
   };
   getInitialState(): Promise<unknown>;
-  setRemoteInfo(info: {
-    enabled: boolean;
-    urls?: string[];
-    port?: number;
-    host?: string;
-    error?: string;
-  }): void;
+  setRemoteInfo(info: { enabled: boolean; urls?: string[]; port?: number; host?: string; error?: string }): void;
   listRemoteUrls(): string[];
   on(channel: string, handler: AnyFn): () => void;
   writeToSession(sessionId: string, data: string): void;
@@ -302,7 +296,11 @@ async function handleApiRequest(runtime: Runtime, request: IncomingMessage, resp
     }
 
     if (request.method === "POST" && url.pathname === "/api/azure/workspace/push") {
-      json(response, 200, await runtime.pushAzureReviewWorkspace(body.workspaceId as string, { force: Boolean(body.force) }));
+      json(
+        response,
+        200,
+        await runtime.pushAzureReviewWorkspace(body.workspaceId as string, { force: Boolean(body.force) }),
+      );
       return;
     }
 
@@ -776,7 +774,11 @@ async function handleApiRequest(runtime: Runtime, request: IncomingMessage, resp
       return;
     }
     if (request.method === "POST" && url.pathname === "/api/file/write") {
-      json(response, 200, await fm.writeFileContent(body.rootPath as string, body.relativePath as string, body.content as string));
+      json(
+        response,
+        200,
+        await fm.writeFileContent(body.rootPath as string, body.relativePath as string, body.content as string),
+      );
       return;
     }
     if (request.method === "POST" && url.pathname === "/api/file/create-file") {
@@ -784,11 +786,19 @@ async function handleApiRequest(runtime: Runtime, request: IncomingMessage, resp
       return;
     }
     if (request.method === "POST" && url.pathname === "/api/file/create-dir") {
-      json(response, 200, await fm.createDirectory(body.rootPath as string, body.parentPath as string, body.name as string));
+      json(
+        response,
+        200,
+        await fm.createDirectory(body.rootPath as string, body.parentPath as string, body.name as string),
+      );
       return;
     }
     if (request.method === "POST" && url.pathname === "/api/file/rename") {
-      json(response, 200, await fm.renameEntry(body.rootPath as string, body.relativePath as string, body.newName as string));
+      json(
+        response,
+        200,
+        await fm.renameEntry(body.rootPath as string, body.relativePath as string, body.newName as string),
+      );
       return;
     }
     if (request.method === "POST" && url.pathname === "/api/file/delete") {
@@ -818,7 +828,11 @@ async function handleApiRequest(runtime: Runtime, request: IncomingMessage, resp
       return;
     }
     if (request.method === "POST" && url.pathname === "/api/file/git-status") {
-      json(response, 200, await fm.getGitFileStatus(body.rootPath as string, { includeIgnored: !!body.includeIgnored }));
+      json(
+        response,
+        200,
+        await fm.getGitFileStatus(body.rootPath as string, { includeIgnored: !!body.includeIgnored }),
+      );
       return;
     }
     if (request.method === "POST" && url.pathname === "/api/file/git-refs") {
@@ -841,7 +855,11 @@ async function handleApiRequest(runtime: Runtime, request: IncomingMessage, resp
       return;
     }
     if (request.method === "POST" && url.pathname === "/api/file/commit-diff") {
-      json(response, 200, await fm.computeCommitFileDiff(body.rootPath as string, body.relativePath as string, body.hash as string));
+      json(
+        response,
+        200,
+        await fm.computeCommitFileDiff(body.rootPath as string, body.relativePath as string, body.hash as string),
+      );
       return;
     }
 

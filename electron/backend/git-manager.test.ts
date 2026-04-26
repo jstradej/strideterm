@@ -115,7 +115,9 @@ describe("GitManager", () => {
 
     expect(snapshot.available).toBe(true);
     expect(snapshot.branch).toBe("feature-x");
-    expect((snapshot.remotes as Record<string, string>).origin).toBe("https://dev.azure.com/acme/Platform/_git/web-app");
+    expect((snapshot.remotes as Record<string, string>).origin).toBe(
+      "https://dev.azure.com/acme/Platform/_git/web-app",
+    );
     expect(snapshot.baseBranch).toBe("main");
     expect(snapshot.aheadCount).toBe(2);
     expect(snapshot.behindCount).toBe(1);
@@ -405,7 +407,9 @@ describe("GitManager", () => {
     await manager.inspectWorkspace({ id: "frontend", cwd: root, kind: "terminal" });
 
     expect(
-      execGitImpl.mock.calls.filter(([cwd, args]: [string, string[]]) => cwd === sibling && args.join(" ") === "status --short"),
+      execGitImpl.mock.calls.filter(
+        ([cwd, args]: [string, string[]]) => cwd === sibling && args.join(" ") === "status --short",
+      ),
     ).toHaveLength(1);
   });
 
@@ -584,8 +588,16 @@ describe("GitManager", () => {
     const result = await manager.listTags({ id: "ws-1", cwd: root });
 
     expect(result.tags as unknown[]).toHaveLength(2);
-    expect((result.tags as Array<Record<string, unknown>>)[0]).toMatchObject({ name: "v1.0.0", local: true, pushed: true });
-    expect((result.tags as Array<Record<string, unknown>>)[1]).toMatchObject({ name: "v2.0.0", local: false, pushed: true });
+    expect((result.tags as Array<Record<string, unknown>>)[0]).toMatchObject({
+      name: "v1.0.0",
+      local: true,
+      pushed: true,
+    });
+    expect((result.tags as Array<Record<string, unknown>>)[1]).toMatchObject({
+      name: "v2.0.0",
+      local: false,
+      pushed: true,
+    });
   });
 
   test("listTags returns empty array when no tags exist", async () => {

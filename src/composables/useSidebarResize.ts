@@ -14,7 +14,10 @@ function effectiveMax() {
   return Math.min(SIDEBAR_MAX_PX, Math.floor(vw * MAX_VIEWPORT_RATIO));
 }
 
-export function useSidebarResize(frameRef: Ref<HTMLElement | null | undefined>, sidebarRef: Ref<HTMLElement | null | undefined>) {
+export function useSidebarResize(
+  frameRef: Ref<HTMLElement | null | undefined>,
+  sidebarRef: Ref<HTMLElement | null | undefined>,
+) {
   const store = useAppStore();
 
   let resizing = false;

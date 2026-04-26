@@ -41,7 +41,9 @@ const DIALOGS = {
 const store = useAppStore();
 
 const dialogComponent = computed(() =>
-  store.overlay ? (DIALOGS as Record<string, ReturnType<typeof defineAsyncComponent> | undefined>)[store.overlay] ?? null : null,
+  store.overlay
+    ? ((DIALOGS as Record<string, ReturnType<typeof defineAsyncComponent> | undefined>)[store.overlay] ?? null)
+    : null,
 );
 
 // When a dialog opens, blur the active terminal so xterm.js releases keyboard capture

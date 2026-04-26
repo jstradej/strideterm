@@ -207,7 +207,10 @@ export class CloudflareTunnelManager extends EventEmitter {
     });
   }
 
-  async stop({ preserveAvailability = false, quiet = false }: { preserveAvailability?: boolean; quiet?: boolean } = {}): Promise<TunnelSnapshot> {
+  async stop({
+    preserveAvailability = false,
+    quiet = false,
+  }: { preserveAvailability?: boolean; quiet?: boolean } = {}): Promise<TunnelSnapshot> {
     if (!this.processHandle) {
       this.snapshot = createSnapshot({
         available: preserveAvailability ? this.snapshot.available : false,

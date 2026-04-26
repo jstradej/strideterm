@@ -160,7 +160,7 @@ onMounted(() => labelRef.value?.focus());
 
 async function browseReviewRoot() {
   if (!api?.browseDirectory) return;
-  const selected = await api.browseDirectory(draft.reviewRoot || props.defaultReviewRoot || "") as string | null;
+  const selected = (await api.browseDirectory(draft.reviewRoot || props.defaultReviewRoot || "")) as string | null;
   if (selected) draft.reviewRoot = selected;
 }
 
@@ -190,7 +190,10 @@ async function testConnection() {
   errorMessage.value = "";
   verification.value = null;
   try {
-    verification.value = await api?.verifyAzureConnection?.(buildDraftPayload()) as { projectCount: number; projects: { name: string }[] } | null;
+    verification.value = (await api?.verifyAzureConnection?.(buildDraftPayload())) as {
+      projectCount: number;
+      projects: { name: string }[];
+    } | null;
   } catch (err) {
     errorMessage.value = (err as Error)?.message || "Azure DevOps connection test failed.";
   } finally {

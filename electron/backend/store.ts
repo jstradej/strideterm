@@ -56,7 +56,11 @@ async function loadState(statePath: string): Promise<{ state: AppState; isDefaul
     }
   }
 
-  log.error("all load attempts failed", { statePath, retries: LOAD_RETRIES, err: (lastError as Error | undefined)?.message });
+  log.error("all load attempts failed", {
+    statePath,
+    retries: LOAD_RETRIES,
+    err: (lastError as Error | undefined)?.message,
+  });
   throw new Error(
     `State file at ${statePath} could not be loaded after ${LOAD_RETRIES} attempts. ` +
       "Existing file was left untouched to avoid overwriting user data.",

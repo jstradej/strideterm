@@ -49,11 +49,7 @@ export function normalizeAbsoluteUrl(value: unknown): string {
   }
 }
 
-export function preferredRemoteUrl({
-  urls = [] as string[],
-  tunnelUrl = "",
-  customPublicUrl = "",
-} = {}): string {
+export function preferredRemoteUrl({ urls = [] as string[], tunnelUrl = "", customPublicUrl = "" } = {}): string {
   const normalizedCustom = normalizeAbsoluteUrl(customPublicUrl);
   if (normalizedCustom) {
     return normalizedCustom;

@@ -11,7 +11,11 @@ const TASK_FILES = ["TASK.md", "TODO.md", "JUDGE_PROMPT.md", "JUDGE_TODO.md", "T
  * Encapsulates file loading, switching, saving, and dirty tracking —
  * moves I/O out of the component into a reusable hook.
  */
-export function useTaskFiles(api: Transport, workspace: Ref<WorkspaceState | null | undefined>, taskState: Ref<TaskState | null | undefined>) {
+export function useTaskFiles(
+  api: Transport,
+  workspace: Ref<WorkspaceState | null | undefined>,
+  taskState: Ref<TaskState | null | undefined>,
+) {
   const activeFile = ref("TASK.md");
   const fileContents = ref<Record<string, string>>({}); // { "TASK.md": "...", ... }
   const fileDirtyFlags = ref<Record<string, boolean>>({}); // { "TASK.md": true, ... }

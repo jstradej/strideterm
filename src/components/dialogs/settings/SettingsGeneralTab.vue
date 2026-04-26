@@ -239,7 +239,7 @@ const props = withDefaults(defineProps<Props>(), {
 });
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-const form = inject<Record<string, any>>("settingsForm")!
+const form = inject<Record<string, any>>("settingsForm")!;
 
 const logLevelOptions = computed(() => props.logLevels.map((level) => ({ value: level, label: level })));
 

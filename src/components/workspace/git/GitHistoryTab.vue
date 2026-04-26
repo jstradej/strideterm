@@ -130,7 +130,7 @@ async function loadCommitFiles(hash: string) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const api = appStore.getApi() as any;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const result = await api.fileCommitFiles({ rootPath: props.activeRootPath, hash }) as any;
+    const result = (await api.fileCommitFiles({ rootPath: props.activeRootPath, hash })) as any;
     if (seq !== commitFilesSeq) return;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     commitFiles.value = (result?.files || []).map((f: any) => ({ ...f, scope: "commit" }));
@@ -154,7 +154,7 @@ async function loadCommitFileDiff(hash: string, relativePath: string) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const api = appStore.getApi() as any;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const payload = await api.fileCommitDiff({ rootPath: props.activeRootPath, relativePath, hash }) as any;
+    const payload = (await api.fileCommitDiff({ rootPath: props.activeRootPath, relativePath, hash })) as any;
     if (seq !== commitDiffSeq) return;
     commitDiffPayload.value = payload;
   } catch (err) {

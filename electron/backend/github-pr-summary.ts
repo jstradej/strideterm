@@ -37,7 +37,10 @@ interface GithubPR {
   user?: { login?: string; name?: string; avatar_url?: string };
 }
 
-export function findWorkspaceForPullRequest(workspaces: Array<{ id: string; [key: string]: unknown }>, prKey: string): { id: string; [key: string]: unknown } | null {
+export function findWorkspaceForPullRequest(
+  workspaces: Array<{ id: string; [key: string]: unknown }>,
+  prKey: string,
+): { id: string; [key: string]: unknown } | null {
   return baseFindWorkspace(workspaces, prKey, "github");
 }
 
@@ -47,14 +50,25 @@ export { findMatchingWorkspace };
  * Summarize reviewers from reviews list and requested_reviewers.
  * GitHub reviews are event-based: a user may have multiple reviews, we take the latest non-COMMENTED one.
  */
-function summarizeReviewers(reviews: Array<Record<string, unknown>> = [], requestedReviewers: Record<string, unknown> | Array<Record<string, unknown>> = [], currentUserLogin = ""): {
+function summarizeReviewers(
+  reviews: Array<Record<string, unknown>> = [],
+  requestedReviewers: Record<string, unknown> | Array<Record<string, unknown>> = [],
+  currentUserLogin = "",
+): {
   myState: string;
   myIsRequested: boolean;
   approvedCount: number;
   changesRequestedCount: number;
   pendingCount: number;
   totalCount: number;
-  reviewers: Array<{ login: string; displayName: string; avatarUrl: string; state: string; isRequested: boolean; isTeam?: boolean }>;
+  reviewers: Array<{
+    login: string;
+    displayName: string;
+    avatarUrl: string;
+    state: string;
+    isRequested: boolean;
+    isTeam?: boolean;
+  }>;
 } {
   type GHUser = { login?: string; name?: string; avatar_url?: string; [key: string]: unknown };
   type GHReview = { user?: GHUser; state?: unknown; submitted_at?: unknown; [key: string]: unknown };
@@ -133,13 +147,27 @@ function summarizeReviewers(reviews: Array<Record<string, unknown>> = [], reques
 /**
  * Build check summary from check runs and combined status.
  */
-function buildCheckSummary(checkRuns: Array<Record<string, unknown>> = [], combinedStatus: Record<string, unknown> | null = null): {
+function buildCheckSummary(
+  checkRuns: Array<Record<string, unknown>> = [],
+  combinedStatus: Record<string, unknown> | null = null,
+): {
   failedCount: number;
   pendingCount: number;
   passedCount: number;
   items: unknown[];
 } {
-  type CheckItem = { id: string; kind: string; checkSuiteId: unknown; name: string; description: string; state: string; stateLabel: string; url: string; startTime: unknown; finishTime: unknown };
+  type CheckItem = {
+    id: string;
+    kind: string;
+    checkSuiteId: unknown;
+    name: string;
+    description: string;
+    state: string;
+    stateLabel: string;
+    url: string;
+    startTime: unknown;
+    finishTime: unknown;
+  };
   const items: CheckItem[] = [];
 
   for (const run of checkRuns) {
@@ -162,7 +190,7 @@ function buildCheckSummary(checkRuns: Array<Record<string, unknown>> = [], combi
   }
 
   if (combinedStatus?.statuses) {
-    for (const status of (combinedStatus.statuses as Array<Record<string, unknown>>)) {
+    for (const status of combinedStatus.statuses as Array<Record<string, unknown>>) {
       const state = normalizeCheckState(status.state);
       items.push({
         id: `status:${status.id || status.context}`,
@@ -200,7 +228,9 @@ function buildCheckSummary(checkRuns: Array<Record<string, unknown>> = [], combi
 /**
  * Group review comments into threads by in_reply_to_id.
  */
-function groupReviewCommentThreads(reviewComments: Array<Record<string, unknown>> = []): Array<Record<string, unknown>> {
+function groupReviewCommentThreads(
+  reviewComments: Array<Record<string, unknown>> = [],
+): Array<Record<string, unknown>> {
   const rootMap = new Map();
   const childMap = new Map(); // parentId → [comments]
 
@@ -286,8 +316,22 @@ export function buildPullRequestSummary({
   activeProfileId?: string;
   now?: () => number;
 }): { summary: Record<string, unknown>; internals: Record<string, unknown> } {
-  type GHComment = { id?: unknown; body?: string; user?: { login?: string; name?: string; avatar_url?: string }; created_at?: string; updated_at?: string; [key: string]: unknown };
-  type GHReviewEntry = { id?: unknown; state?: string; body?: string; submitted_at?: string; user?: { login?: string; name?: string; avatar_url?: string }; [key: string]: unknown };
+  type GHComment = {
+    id?: unknown;
+    body?: string;
+    user?: { login?: string; name?: string; avatar_url?: string };
+    created_at?: string;
+    updated_at?: string;
+    [key: string]: unknown;
+  };
+  type GHReviewEntry = {
+    id?: unknown;
+    state?: string;
+    body?: string;
+    submitted_at?: string;
+    user?: { login?: string; name?: string; avatar_url?: string };
+    [key: string]: unknown;
+  };
   const p = pr as GithubPR;
   const owner = p.base?.repo?.owner?.login || "";
   const repo = p.base?.repo?.name || "";

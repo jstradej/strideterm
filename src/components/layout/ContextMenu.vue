@@ -193,7 +193,12 @@ const SLOT_BOXES = {
   ],
 };
 
-interface SlotBox { rMin: number; rMax: number; cMin: number; cMax: number; }
+interface SlotBox {
+  rMin: number;
+  rMax: number;
+  cMin: number;
+  cMax: number;
+}
 
 function boxCenter(box: SlotBox): { r: number; c: number } {
   return { r: (box.rMin + box.rMax) / 2, c: (box.cMin + box.cMax) / 2 };
@@ -224,7 +229,9 @@ function arrowFor(srcBox: SlotBox, tgtBox: SlotBox): string {
 const moveTargets = computed(() => {
   const sg = store.splitGroup;
   if (!sg || !inGroup.value) return [];
-  const boxes = (SLOT_BOXES as Record<string, { rMin: number; rMax: number; cMin: number; cMax: number }[] | undefined>)[sg.layout];
+  const boxes = (
+    SLOT_BOXES as Record<string, { rMin: number; rMax: number; cMin: number; cMax: number }[] | undefined>
+  )[sg.layout];
   if (!Array.isArray(boxes)) return [];
   const srcIdx = sg.viewIds.indexOf(viewId.value);
   if (srcIdx < 0 || !boxes[srcIdx]) return [];
@@ -252,12 +259,14 @@ const canAddToSplit = computed(() => {
 const adjustedX = ref(rawX.value);
 const adjustedY = ref(rawY.value);
 
-const menuStyle = computed((): CSSProperties => ({
-  position: "fixed",
-  left: `${adjustedX.value}px`,
-  top: `${adjustedY.value}px`,
-  zIndex: 9999,
-}));
+const menuStyle = computed(
+  (): CSSProperties => ({
+    position: "fixed",
+    left: `${adjustedX.value}px`,
+    top: `${adjustedY.value}px`,
+    zIndex: 9999,
+  }),
+);
 
 watch(
   () => store.contextMenu,

@@ -78,12 +78,18 @@ export function findExistingHook(config: Record<string, unknown>, copilotEventNa
   return hooksSection.findIndex((entry: unknown) => {
     const e = entry as Record<string, unknown>;
     if (typeof e?.bash === "string" && HOOK_MARKERS.some((m) => (e.bash as string).includes(m))) return true;
-    if (typeof e?.powershell === "string" && HOOK_MARKERS.some((m) => (e.powershell as string).includes(m))) return true;
+    if (typeof e?.powershell === "string" && HOOK_MARKERS.some((m) => (e.powershell as string).includes(m)))
+      return true;
     return false;
   });
 }
 
-async function readCopilotConfig(): Promise<{ ok: boolean; data: Record<string, unknown> | null; path: string; error?: string }> {
+async function readCopilotConfig(): Promise<{
+  ok: boolean;
+  data: Record<string, unknown> | null;
+  path: string;
+  error?: string;
+}> {
   const configPath = getCopilotConfigPath();
   try {
     const raw = await readFile(configPath, "utf8");

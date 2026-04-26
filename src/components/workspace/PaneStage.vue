@@ -110,8 +110,20 @@ const SLOT_BOXES = {
   ],
 };
 
-interface SlotBox { rMin: number; rMax: number; cMin: number; cMax: number; }
-interface Tab { id: string; type: string; title: string; status?: string; persistent?: boolean; url?: string; }
+interface SlotBox {
+  rMin: number;
+  rMax: number;
+  cMin: number;
+  cMax: number;
+}
+interface Tab {
+  id: string;
+  type: string;
+  title: string;
+  status?: string;
+  persistent?: boolean;
+  url?: string;
+}
 
 function boxCenter(box: SlotBox) {
   return { r: (box.rMin + box.rMax) / 2, c: (box.cMin + box.cMax) / 2 };
@@ -401,8 +413,11 @@ function onStageMousedown(event: MouseEvent) {
   termStore.focusActiveTerminal();
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function onPaneAction(action: Record<string, any>, tab: Tab, meta: { anchorRect?: DOMRect | null; event?: MouseEvent } | undefined) {
+function onPaneAction(
+  action: Record<string, any>, // eslint-disable-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: pane action payload is open-ended, typed migration pending
+  tab: Tab,
+  meta: { anchorRect?: DOMRect | null; event?: MouseEvent } | undefined,
+) {
   switch (action.action) {
     case "select-tab":
       store.activateView(tab.id);

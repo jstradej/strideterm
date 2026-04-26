@@ -179,9 +179,9 @@ export const useGitUiStore = defineStore("git-ui", () => {
     const ui = ensure(workspaceId);
     ui.activeRootPath = rootPath || "";
     if (_api?.setWorkspaceUIState) {
-      (
-        _api.setWorkspaceUIState as (id: string, patch: Record<string, unknown>) => Promise<unknown>
-      )(workspaceId, { activeRootPath: rootPath || "" }).catch(() => {});
+      (_api.setWorkspaceUIState as (id: string, patch: Record<string, unknown>) => Promise<unknown>)(workspaceId, {
+        activeRootPath: rootPath || "",
+      }).catch(() => {});
     }
   }
 
@@ -212,17 +212,14 @@ export const useGitUiStore = defineStore("git-ui", () => {
       if (ui.selectedDiff?.path) {
         const rootPath = getActiveRoot(workspaceId);
         const snapshot = appStore.getGitSnapshot(workspaceId, rootPath) as GitSnapshot | null;
-        const preview = await (
-          _api as Transport & { gitDiffPreview: (p: unknown) => Promise<unknown> }
-        )
+        const preview = await (_api as Transport & { gitDiffPreview: (p: unknown) => Promise<unknown> })
           .gitDiffPreview!({
-            workspaceId,
-            path: ui.selectedDiff.path,
-            scope: ui.selectedDiff.scope,
-            baseBranch: snapshot?.baseBranch || snapshot?.compareWithBase?.baseBranch || "",
-            rootPath,
-          })
-          .catch(() => null);
+          workspaceId,
+          path: ui.selectedDiff.path,
+          scope: ui.selectedDiff.scope,
+          baseBranch: snapshot?.baseBranch || snapshot?.compareWithBase?.baseBranch || "",
+          rootPath,
+        }).catch(() => null);
         if (preview) ui.diffPreview = preview;
       }
 
@@ -248,9 +245,9 @@ export const useGitUiStore = defineStore("git-ui", () => {
 
   async function refreshGit(workspaceId: string): Promise<void> {
     await runGitAction(workspaceId, "refresh", async () => {
-      const payload = await (
-        _api as Transport & { refreshGit: (id: string) => Promise<unknown> }
-      ).refreshGit!(workspaceId);
+      const payload = await (_api as Transport & { refreshGit: (id: string) => Promise<unknown> }).refreshGit!(
+        workspaceId,
+      );
       return { payload };
     });
   }
@@ -334,11 +331,7 @@ export const useGitUiStore = defineStore("git-ui", () => {
 
   function setPendingGitAction(
     workspaceId: string,
-    {
-      type,
-      baseBranch,
-      snapshot,
-    }: { type: string; baseBranch: string; snapshot: GitSnapshot | null },
+    { type, baseBranch, snapshot }: { type: string; baseBranch: string; snapshot: GitSnapshot | null },
   ): void {
     const ui = ensure(workspaceId);
     ui.pendingAction = {
@@ -418,9 +411,7 @@ export const useGitUiStore = defineStore("git-ui", () => {
           api.gitRemoveWorktree({ workspaceId, worktreePath: p!.worktreePath, deleteBranch: true }),
         );
       } else if (action === "forcePushWithLease") {
-        await runGitAction(workspaceId, "force-push", () =>
-          api.gitForcePushWithLease({ workspaceId, rootPath }),
-        );
+        await runGitAction(workspaceId, "force-push", () => api.gitForcePushWithLease({ workspaceId, rootPath }));
       }
       return;
     }
@@ -473,11 +464,7 @@ export const useGitUiStore = defineStore("git-ui", () => {
 
   function confirmRemoveWorktree(
     workspaceId: string,
-    {
-      worktreePath,
-      branch,
-      branchMerged,
-    }: { worktreePath: string; branch: string; branchMerged: boolean },
+    { worktreePath, branch, branchMerged }: { worktreePath: string; branch: string; branchMerged: boolean },
     snapshot: GitSnapshot | null = null,
   ): void {
     const severity = branchMerged ? "warn" : "danger";
@@ -500,11 +487,7 @@ export const useGitUiStore = defineStore("git-ui", () => {
 
   function confirmRemoveWorktreeDeleteBranch(
     workspaceId: string,
-    {
-      worktreePath,
-      branch,
-      branchMerged,
-    }: { worktreePath: string; branch: string; branchMerged: boolean },
+    { worktreePath, branch, branchMerged }: { worktreePath: string; branch: string; branchMerged: boolean },
     snapshot: GitSnapshot | null = null,
   ): void {
     const severity = branchMerged ? "warn" : "danger";
@@ -527,11 +510,7 @@ export const useGitUiStore = defineStore("git-ui", () => {
 
   function confirmForcePushWithLease(
     workspaceId: string,
-    {
-      branch,
-      remote,
-      behindCount,
-    }: { branch: string; remote: string; behindCount: number },
+    { branch, remote, behindCount }: { branch: string; remote: string; behindCount: number },
     snapshot: GitSnapshot | null = null,
   ): void {
     setPendingDestructiveAction(
@@ -553,9 +532,10 @@ export const useGitUiStore = defineStore("git-ui", () => {
   async function gitContinue(workspaceId: string): Promise<void> {
     const rootPath = getActiveRoot(workspaceId);
     await runGitAction(workspaceId, "continue", () =>
-      (
-        _api as Transport & { gitContinueOperation: (p: unknown) => Promise<unknown> }
-      ).gitContinueOperation!({ workspaceId, rootPath }),
+      (_api as Transport & { gitContinueOperation: (p: unknown) => Promise<unknown> }).gitContinueOperation!({
+        workspaceId,
+        rootPath,
+      }),
     );
   }
 
@@ -594,15 +574,13 @@ export const useGitUiStore = defineStore("git-ui", () => {
     setPendingGitAction(workspaceId, { type: "merge-into-base", snapshot, baseBranch });
   }
 
-  async function gitRemoveWorktree(
-    workspaceId: string,
-    worktreePath: string,
-    deleteBranch: boolean,
-  ): Promise<void> {
+  async function gitRemoveWorktree(workspaceId: string, worktreePath: string, deleteBranch: boolean): Promise<void> {
     await runGitAction(workspaceId, "remove-worktree", () =>
-      (
-        _api as Transport & { gitRemoveWorktree: (p: unknown) => Promise<unknown> }
-      ).gitRemoveWorktree!({ workspaceId, worktreePath, deleteBranch }),
+      (_api as Transport & { gitRemoveWorktree: (p: unknown) => Promise<unknown> }).gitRemoveWorktree!({
+        workspaceId,
+        worktreePath,
+        deleteBranch,
+      }),
     );
   }
 
@@ -610,9 +588,11 @@ export const useGitUiStore = defineStore("git-ui", () => {
     if (!message) return;
     const rootPath = getActiveRoot(workspaceId);
     await runGitAction(workspaceId, "commit", () =>
-      (
-        _api as Transport & { gitCommitAll: (p: unknown) => Promise<unknown> }
-      ).gitCommitAll!({ workspaceId, message, rootPath }),
+      (_api as Transport & { gitCommitAll: (p: unknown) => Promise<unknown> }).gitCommitAll!({
+        workspaceId,
+        message,
+        rootPath,
+      }),
     );
   }
 
@@ -622,9 +602,8 @@ export const useGitUiStore = defineStore("git-ui", () => {
     ui.selectedCommit = hash;
     ui.commitDiffPreview = { ok: true, hash, diff: "", summary: "Loading..." };
     try {
-      ui.commitDiffPreview = await (
-        _api as Transport & { gitCommitDiff: (p: unknown) => Promise<unknown> }
-      ).gitCommitDiff!({ workspaceId, hash });
+      ui.commitDiffPreview = await (_api as Transport & { gitCommitDiff: (p: unknown) => Promise<unknown> })
+        .gitCommitDiff!({ workspaceId, hash });
     } catch (error) {
       ui.commitDiffPreview = {
         ok: false,
@@ -645,15 +624,15 @@ export const useGitUiStore = defineStore("git-ui", () => {
     ui.selectedDiff = { path, scope };
     ui.diffPreview = { ok: true, path, scope, diff: "", summary: "Loading diff preview..." };
     try {
-      ui.diffPreview = await (
-        _api as Transport & { gitDiffPreview: (p: unknown) => Promise<unknown> }
-      ).gitDiffPreview!({
-        workspaceId,
-        path,
-        scope,
-        baseBranch: snapshot?.baseBranch || snapshot?.compareWithBase?.baseBranch || "",
-        rootPath,
-      });
+      ui.diffPreview = await (_api as Transport & { gitDiffPreview: (p: unknown) => Promise<unknown> }).gitDiffPreview!(
+        {
+          workspaceId,
+          path,
+          scope,
+          baseBranch: snapshot?.baseBranch || snapshot?.compareWithBase?.baseBranch || "",
+          rootPath,
+        },
+      );
     } catch (error) {
       ui.diffPreview = {
         ok: false,
@@ -676,18 +655,18 @@ export const useGitUiStore = defineStore("git-ui", () => {
   async function gitStash(workspaceId: string, message: string): Promise<void> {
     const rootPath = getActiveRoot(workspaceId);
     await runGitAction(workspaceId, "stash", () =>
-      (
-        _api as Transport & { gitStash: (p: unknown) => Promise<unknown> }
-      ).gitStash!({ workspaceId, message: message || "", rootPath }),
+      (_api as Transport & { gitStash: (p: unknown) => Promise<unknown> }).gitStash!({
+        workspaceId,
+        message: message || "",
+        rootPath,
+      }),
     );
   }
 
   async function gitStashPop(workspaceId: string): Promise<void> {
     const rootPath = getActiveRoot(workspaceId);
     await runGitAction(workspaceId, "stash-pop", () =>
-      (
-        _api as Transport & { gitStashPop: (p: unknown) => Promise<unknown> }
-      ).gitStashPop!({ workspaceId, rootPath }),
+      (_api as Transport & { gitStashPop: (p: unknown) => Promise<unknown> }).gitStashPop!({ workspaceId, rootPath }),
     );
   }
 
@@ -713,9 +692,12 @@ export const useGitUiStore = defineStore("git-ui", () => {
   async function gitCreateTag(workspaceId: string, tagName: string, message: string): Promise<void> {
     const rootPath = getActiveRoot(workspaceId);
     await runGitAction(workspaceId, "create-tag", () =>
-      (
-        _api as Transport & { gitCreateTag: (p: unknown) => Promise<unknown> }
-      ).gitCreateTag!({ workspaceId, tagName, message: message || "", rootPath }),
+      (_api as Transport & { gitCreateTag: (p: unknown) => Promise<unknown> }).gitCreateTag!({
+        workspaceId,
+        tagName,
+        message: message || "",
+        rootPath,
+      }),
     );
     await gitListTags(workspaceId);
   }
@@ -723,9 +705,11 @@ export const useGitUiStore = defineStore("git-ui", () => {
   async function gitDeleteTag(workspaceId: string, tagName: string): Promise<void> {
     const rootPath = getActiveRoot(workspaceId);
     await runGitAction(workspaceId, "delete-tag", () =>
-      (
-        _api as Transport & { gitDeleteTag: (p: unknown) => Promise<unknown> }
-      ).gitDeleteTag!({ workspaceId, tagName, rootPath }),
+      (_api as Transport & { gitDeleteTag: (p: unknown) => Promise<unknown> }).gitDeleteTag!({
+        workspaceId,
+        tagName,
+        rootPath,
+      }),
     );
     await gitListTags(workspaceId);
   }
@@ -733,9 +717,11 @@ export const useGitUiStore = defineStore("git-ui", () => {
   async function gitPushTag(workspaceId: string, tagName: string): Promise<void> {
     const rootPath = getActiveRoot(workspaceId);
     await runGitAction(workspaceId, "push-tag", () =>
-      (
-        _api as Transport & { gitPushTag: (p: unknown) => Promise<unknown> }
-      ).gitPushTag!({ workspaceId, tagName, rootPath }),
+      (_api as Transport & { gitPushTag: (p: unknown) => Promise<unknown> }).gitPushTag!({
+        workspaceId,
+        tagName,
+        rootPath,
+      }),
     );
     await gitListTags(workspaceId);
   }
@@ -743,9 +729,10 @@ export const useGitUiStore = defineStore("git-ui", () => {
   async function gitPushAllTags(workspaceId: string): Promise<void> {
     const rootPath = getActiveRoot(workspaceId);
     await runGitAction(workspaceId, "push-all-tags", () =>
-      (
-        _api as Transport & { gitPushAllTags: (p: unknown) => Promise<unknown> }
-      ).gitPushAllTags!({ workspaceId, rootPath }),
+      (_api as Transport & { gitPushAllTags: (p: unknown) => Promise<unknown> }).gitPushAllTags!({
+        workspaceId,
+        rootPath,
+      }),
     );
     await gitListTags(workspaceId);
   }
@@ -753,9 +740,11 @@ export const useGitUiStore = defineStore("git-ui", () => {
   async function gitDeleteRemoteTag(workspaceId: string, tagName: string): Promise<void> {
     const rootPath = getActiveRoot(workspaceId);
     await runGitAction(workspaceId, "delete-remote-tag", () =>
-      (
-        _api as Transport & { gitDeleteRemoteTag: (p: unknown) => Promise<unknown> }
-      ).gitDeleteRemoteTag!({ workspaceId, tagName, rootPath }),
+      (_api as Transport & { gitDeleteRemoteTag: (p: unknown) => Promise<unknown> }).gitDeleteRemoteTag!({
+        workspaceId,
+        tagName,
+        rootPath,
+      }),
     );
     await gitListTags(workspaceId);
   }
@@ -783,9 +772,7 @@ export const useGitUiStore = defineStore("git-ui", () => {
   ): Promise<unknown> {
     const rootPath = getActiveRoot(workspaceId);
     return runGitAction(workspaceId, "create-pr", () =>
-      (
-        _api as Transport & { azureCreatePullRequest: (p: unknown) => Promise<unknown> }
-      ).azureCreatePullRequest!({
+      (_api as Transport & { azureCreatePullRequest: (p: unknown) => Promise<unknown> }).azureCreatePullRequest!({
         workspaceId,
         title,
         description,
@@ -852,11 +839,7 @@ export const useGitUiStore = defineStore("git-ui", () => {
     ensure(workspaceId).agentSubTab = subtab || "prompts";
   }
 
-  async function reviewSelectFileDiff(
-    workspaceId: string,
-    filePath: string,
-    baseBranch?: string,
-  ): Promise<void> {
+  async function reviewSelectFileDiff(workspaceId: string, filePath: string, baseBranch?: string): Promise<void> {
     if (!workspaceId || !filePath) return;
     const { useAppStore } = await import("./app.js");
     const appStore = useAppStore();
@@ -867,15 +850,13 @@ export const useGitUiStore = defineStore("git-ui", () => {
     ui.reviewSelectedFile = filePath;
     ui.reviewFileDiffPreview = { ok: true, path: filePath, diff: "", summary: "Loading diff preview..." };
     try {
-       
-      ui.reviewFileDiffPreview = (await (
-        _api as Transport & { gitDiffPreview: (p: unknown) => Promise<unknown> }
-      ).gitDiffPreview!({
+      ui.reviewFileDiffPreview = (await (_api as Transport & { gitDiffPreview: (p: unknown) => Promise<unknown> })
+        .gitDiffPreview!({
         workspaceId,
         path: filePath,
         scope: "branch",
         baseBranch: resolvedBase.startsWith("origin/") ? resolvedBase : resolvedBase ? `origin/${resolvedBase}` : "",
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       })) as Record<string, any>;
     } catch (error) {
       ui.reviewFileDiffPreview = {
@@ -889,9 +870,9 @@ export const useGitUiStore = defineStore("git-ui", () => {
 
   async function refreshRoot(workspaceId: string, rootPath: string): Promise<void> {
     await runGitAction(workspaceId, `refresh:${rootPath}`, async () => {
-      const payload = await (
-        _api as Transport & { refreshGit: (id: string) => Promise<unknown> }
-      ).refreshGit!(workspaceId);
+      const payload = await (_api as Transport & { refreshGit: (id: string) => Promise<unknown> }).refreshGit!(
+        workspaceId,
+      );
       return { payload };
     });
   }

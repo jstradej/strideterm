@@ -705,9 +705,7 @@ const aheadCount = computed(() => gitSnapshot.value?.aheadCount || 0);
 
 // --- Pre-PR (new branch) state ---
 const isPrePrWorkspace = computed(
-  () =>
-    !workspace.value?.review?.prKey &&
-    ["azure-devops", "github"].includes(workspace.value?.review?.provider || ""),
+  () => !workspace.value?.review?.prKey && ["azure-devops", "github"].includes(workspace.value?.review?.provider || ""),
 );
 const baseBranch = computed(() => workspace.value?.quickfix?.baseBranch || "");
 const hasDirtyOrCommits = computed(() => !!(gitSnapshot.value?.dirty || (gitSnapshot.value?.aheadCount || 0) > 0));

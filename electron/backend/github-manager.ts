@@ -59,7 +59,13 @@ interface SyncWorkspace {
     prKey?: string;
     connectionId?: string;
     repository?: { fullName?: string; owner?: string; name?: string; remoteUrl?: string };
-    pullRequest?: { number?: number; id?: number; sourceRefName?: string; targetRefName?: string; [key: string]: unknown } | null;
+    pullRequest?: {
+      number?: number;
+      id?: number;
+      sourceRefName?: string;
+      targetRefName?: string;
+      [key: string]: unknown;
+    } | null;
     checkout?: { mode?: string; rootPath?: string; cacheRepoPath?: string };
     parentWorkspaceId?: string;
     [key: string]: unknown;
@@ -69,12 +75,18 @@ interface SyncWorkspace {
 
 interface GitHubReviewStore {
   getState(): {
-    connections?: Record<string, { status?: string; lastError?: string; lastSyncAt?: string | null; lastSuccessAt?: string | null }>;
+    connections?: Record<
+      string,
+      { status?: string; lastError?: string; lastSyncAt?: string | null; lastSuccessAt?: string | null }
+    >;
     trackedPullRequests?: Record<string, Record<string, unknown>>;
   };
   getTrackedPullRequest(key: string): Record<string, unknown> | null;
   upsertTrackedPullRequest(key: string, patch: Record<string, unknown>): Promise<void>;
-  upsertConnectionState(connectionId: string, patch: { status: string; lastError?: string; lastSyncAt?: string; lastSuccessAt?: string }): Promise<void>;
+  upsertConnectionState(
+    connectionId: string,
+    patch: { status: string; lastError?: string; lastSyncAt?: string; lastSuccessAt?: string },
+  ): Promise<void>;
 }
 
 interface SyncOptions {
@@ -139,23 +151,25 @@ interface DetectDeltasOptions {
 
 export class GitHubManager extends BaseProviderManager {
   declare reviewStore: GitHubReviewStore;
-  constructor({
-    credentialStore,
-    reviewStore,
-    reviewBridgeStore = null,
-    auditLogStore = null,
-    fetchImpl = globalThis.fetch,
-    execFileTextImpl = execFileText,
-    now = () => Date.now(),
-  }: {
-    credentialStore: ConstructorParameters<typeof BaseProviderManager>[0]["credentialStore"];
-    reviewStore: GitHubReviewStore;
-    reviewBridgeStore?: ConstructorParameters<typeof BaseProviderManager>[0]["reviewBridgeStore"];
-    auditLogStore?: ConstructorParameters<typeof BaseProviderManager>[0]["auditLogStore"];
-    fetchImpl?: typeof globalThis.fetch;
-    execFileTextImpl?: typeof execFileText;
-    now?: () => number;
-  } = {} as never) {
+  constructor(
+    {
+      credentialStore,
+      reviewStore,
+      reviewBridgeStore = null,
+      auditLogStore = null,
+      fetchImpl = globalThis.fetch,
+      execFileTextImpl = execFileText,
+      now = () => Date.now(),
+    }: {
+      credentialStore: ConstructorParameters<typeof BaseProviderManager>[0]["credentialStore"];
+      reviewStore: GitHubReviewStore;
+      reviewBridgeStore?: ConstructorParameters<typeof BaseProviderManager>[0]["reviewBridgeStore"];
+      auditLogStore?: ConstructorParameters<typeof BaseProviderManager>[0]["auditLogStore"];
+      fetchImpl?: typeof globalThis.fetch;
+      execFileTextImpl?: typeof execFileText;
+      now?: () => number;
+    } = {} as never,
+  ) {
     super({
       credentialStore,
       reviewStore,
@@ -229,7 +243,12 @@ export class GitHubManager extends BaseProviderManager {
   // Sync (inbox polling)
   // ---------------------------------------------------------------------------
 
-  async sync({ connections = [], workspaces = [], gitSnapshots = {}, activeProfileId = "default" }: SyncOptions = {}): Promise<Record<string, unknown>> {
+  async sync({
+    connections = [],
+    workspaces = [],
+    gitSnapshots = {},
+    activeProfileId = "default",
+  }: SyncOptions = {}): Promise<Record<string, unknown>> {
     const reviewState = this.reviewStore.getState();
     const startedAt = new Date(this.now()).toISOString();
     const connectionsChanged =
@@ -513,7 +532,8 @@ export class GitHubManager extends BaseProviderManager {
     if (seedingConnection) {
       return {
         events,
-        lastNotifiedActivityAt: seedNotifiedTimestamp(summary as unknown as Parameters<typeof seedNotifiedTimestamp>[0], nowIso) || nowIso,
+        lastNotifiedActivityAt:
+          seedNotifiedTimestamp(summary as unknown as Parameters<typeof seedNotifiedTimestamp>[0], nowIso) || nowIso,
       };
     }
 
@@ -538,7 +558,8 @@ export class GitHubManager extends BaseProviderManager {
       }
       return {
         events,
-        lastNotifiedActivityAt: seedNotifiedTimestamp(summary as unknown as Parameters<typeof seedNotifiedTimestamp>[0], nowIso) || nowIso,
+        lastNotifiedActivityAt:
+          seedNotifiedTimestamp(summary as unknown as Parameters<typeof seedNotifiedTimestamp>[0], nowIso) || nowIso,
       };
     }
 
@@ -678,11 +699,19 @@ export class GitHubManager extends BaseProviderManager {
   // PR detail enrichment (checks, files)
   // ---------------------------------------------------------------------------
 
-  async ensurePullRequestDetail(prKey: string, { workspaces = [], force = false }: { workspaces?: SyncWorkspace[]; force?: boolean } = {}): Promise<Record<string, unknown>> {
+  async ensurePullRequestDetail(
+    prKey: string,
+    { workspaces = [], force = false }: { workspaces?: SyncWorkspace[]; force?: boolean } = {},
+  ): Promise<Record<string, unknown>> {
     const current = this.snapshot.pullRequests[prKey] || this.findSummary(prKey);
     if (!current) throw new Error("Pull request is not available in the current GitHub snapshot.");
     const currentRec = current as Record<string, unknown>;
-    if (!force && Array.isArray(currentRec.changedFiles) && (currentRec.checks as Record<string, unknown> | undefined)?.items) return currentRec;
+    if (
+      !force &&
+      Array.isArray(currentRec.changedFiles) &&
+      (currentRec.checks as Record<string, unknown> | undefined)?.items
+    )
+      return currentRec;
 
     this.setAuditContext({ connectionId: (currentRec.connectionId as string) || "", userInitiated: true });
     const connection = this.findConnection(currentRec.connectionId as string);
@@ -716,7 +745,8 @@ export class GitHubManager extends BaseProviderManager {
     }));
 
     // Inline check aggregation
-    const checks: { failedCount: number; pendingCount: number; passedCount: number; items: Record<string, unknown>[] } = { failedCount: 0, pendingCount: 0, passedCount: 0, items: [] };
+    const checks: { failedCount: number; pendingCount: number; passedCount: number; items: Record<string, unknown>[] } =
+      { failedCount: 0, pendingCount: 0, passedCount: 0, items: [] };
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     for (const run of checkRuns as any[]) {
       const conclusion = String(run.conclusion || run.status || "").toLowerCase();
@@ -775,7 +805,10 @@ export class GitHubManager extends BaseProviderManager {
       localChangedFiles: localChanges,
       checks,
       existingWorkspaceId: (workspace as SyncWorkspace | undefined)?.id || currentRec.existingWorkspaceId || "",
-      reviewWorkspaceId: (workspace as SyncWorkspace | undefined)?.review?.provider === "github" ? (workspace as SyncWorkspace).id : currentRec.reviewWorkspaceId || "",
+      reviewWorkspaceId:
+        (workspace as SyncWorkspace | undefined)?.review?.provider === "github"
+          ? (workspace as SyncWorkspace).id
+          : currentRec.reviewWorkspaceId || "",
     };
 
     this.setSnapshot({
@@ -825,7 +858,14 @@ export class GitHubManager extends BaseProviderManager {
   // Managed checkout (cache repo + worktree)
   // ---------------------------------------------------------------------------
 
-  async ensureCacheRepo({ connection, token, owner, repo, remoteUrl, reviewRoot }: EnsureCacheRepoOptions): Promise<string> {
+  async ensureCacheRepo({
+    connection,
+    token,
+    owner,
+    repo,
+    remoteUrl,
+    reviewRoot,
+  }: EnsureCacheRepoOptions): Promise<string> {
     const repositoryRoot = path.join(
       normalizeReviewRoot(reviewRoot),
       "repos",
@@ -840,7 +880,12 @@ export class GitHubManager extends BaseProviderManager {
     return repositoryRoot;
   }
 
-  async prepareManagedReviewCheckout({ summary, connection, token, reviewRoot }: PrepareManagedReviewCheckoutOptions): Promise<{
+  async prepareManagedReviewCheckout({
+    summary,
+    connection,
+    token,
+    reviewRoot,
+  }: PrepareManagedReviewCheckoutOptions): Promise<{
     mode: string;
     rootPath: string;
     cacheRepoPath: string;
@@ -938,7 +983,11 @@ export class GitHubManager extends BaseProviderManager {
     }
   }
 
-  buildReviewMetadata(summary: Record<string, unknown>, checkout: Record<string, unknown>, extra: Record<string, unknown> = {}): Record<string, unknown> {
+  buildReviewMetadata(
+    summary: Record<string, unknown>,
+    checkout: Record<string, unknown>,
+    extra: Record<string, unknown> = {},
+  ): Record<string, unknown> {
     return {
       provider: "github",
       prKey: summary.prKey,
@@ -980,17 +1029,17 @@ export class GitHubManager extends BaseProviderManager {
           ? profileWorkspaces.find((ws) => ws.id === summary.existingWorkspaceId)
           : null);
 
-    const reviewProfileId = (existingWorkspace as SyncWorkspace | undefined)?.profileId || state.activeProfileId || "default";
+    const reviewProfileId =
+      (existingWorkspace as SyncWorkspace | undefined)?.profileId || state.activeProfileId || "default";
     const parentGitHubWorkspace =
       state.workspaces.find((ws) => ws.kind === "github" && (ws.profileId || "default") === reviewProfileId) || null;
-    const parentWorkspaceId = parentGitHubWorkspace?.id || (existingWorkspace as SyncWorkspace | undefined)?.review?.parentWorkspaceId || "";
+    const parentWorkspaceId =
+      parentGitHubWorkspace?.id || (existingWorkspace as SyncWorkspace | undefined)?.review?.parentWorkspaceId || "";
 
     if (existingWorkspace) {
       const ew = existingWorkspace as SyncWorkspace;
       if (!String(ew.cwd || "").trim()) {
-        throw new Error(
-          `Matched workspace "${ew.name || ew.id}" does not have a working directory.`,
-        );
+        throw new Error(`Matched workspace "${ew.name || ew.id}" does not have a working directory.`);
       }
       const checkout = ew.review?.checkout || {
         mode: ew.review?.provider === "github" ? "managed-worktree" : "linked-existing-workspace",
@@ -1014,7 +1063,10 @@ export class GitHubManager extends BaseProviderManager {
       summary,
       connection,
       token,
-      reviewRoot: parentGitHubWorkspace?.cwd || (connection as Record<string, unknown>).reviewRoot as string || getDefaultReviewRoot(),
+      reviewRoot:
+        parentGitHubWorkspace?.cwd ||
+        ((connection as Record<string, unknown>).reviewRoot as string) ||
+        getDefaultReviewRoot(),
     });
     const panels = createReviewWorkspacePanels(
       (parentGitHubWorkspace?.panels || []) as Parameters<typeof createReviewWorkspacePanels>[0],
@@ -1062,17 +1114,18 @@ export class GitHubManager extends BaseProviderManager {
     const api = this.api as any;
     const repository = summary.repository as Record<string, unknown>;
     const pullRequest = summary.pullRequest as Record<string, unknown>;
-    await api.createIssueComment(
-      connection,
-      token,
-      repository.owner,
-      repository.name,
-      pullRequest.number,
-      body,
-    );
+    await api.createIssueComment(connection, token, repository.owner, repository.name, pullRequest.number, body);
   }
 
-  async submitPullRequestReview({ prKey, event, body = "" }: { prKey: string; event: string; body?: string }): Promise<void> {
+  async submitPullRequestReview({
+    prKey,
+    event,
+    body = "",
+  }: {
+    prKey: string;
+    event: string;
+    body?: string;
+  }): Promise<void> {
     const summary = await this.ensurePullRequestDetail(prKey);
     this.setAuditContext({ connectionId: (summary.connectionId as string) || "", userInitiated: true });
     const connection = this.findConnection(summary.connectionId as string);
@@ -1085,14 +1138,7 @@ export class GitHubManager extends BaseProviderManager {
     const repository = summary.repository as Record<string, unknown>;
     const pullRequest = summary.pullRequest as Record<string, unknown>;
     // event: APPROVE, REQUEST_CHANGES, COMMENT
-    await api.submitReview(
-      connection,
-      token,
-      repository.owner,
-      repository.name,
-      pullRequest.number,
-      { event, body },
-    );
+    await api.submitReview(connection, token, repository.owner, repository.name, pullRequest.number, { event, body });
   }
 
   // ---------------------------------------------------------------------------
@@ -1115,7 +1161,15 @@ export class GitHubManager extends BaseProviderManager {
     await this.runGit(workspace.cwd!, ["rebase", `origin/${targetBranch}`]);
   }
 
-  async pushReviewWorkspace({ workspace, force = false, branch = "" }: { workspace: SyncWorkspace; force?: boolean; branch?: string }): Promise<void> {
+  async pushReviewWorkspace({
+    workspace,
+    force = false,
+    branch = "",
+  }: {
+    workspace: SyncWorkspace;
+    force?: boolean;
+    branch?: string;
+  }): Promise<void> {
     const connection = this.findConnection(workspace.review?.connectionId || "");
     if (!connection) throw new Error("GitHub connection was not found.");
     const token = this.credentialStore.getSecret(connection.tokenRef || "");
@@ -1139,7 +1193,7 @@ export class GitHubManager extends BaseProviderManager {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const api = this.api as any;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const branches = await api.listBranches(connection, token, owner, repo) as any[];
+    const branches = (await api.listBranches(connection, token, owner, repo)) as any[];
     return branches.map((b) => b.name);
   }
 
@@ -1184,14 +1238,16 @@ export class GitHubManager extends BaseProviderManager {
   // Quick Fix — new branch workflow
   // ---------------------------------------------------------------------------
 
-  async listQuickFixRepositories(connectionId: string): Promise<Array<{
-    id: unknown;
-    name: string;
-    fullName: string;
-    owner: string;
-    remoteUrl: string;
-    defaultBranch: string;
-  }>> {
+  async listQuickFixRepositories(connectionId: string): Promise<
+    Array<{
+      id: unknown;
+      name: string;
+      fullName: string;
+      owner: string;
+      remoteUrl: string;
+      defaultBranch: string;
+    }>
+  > {
     this.setAuditContext({ connectionId, userInitiated: true });
     const { connection, token } = this.resolveConnectionAndToken(connectionId);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -1224,11 +1280,19 @@ export class GitHubManager extends BaseProviderManager {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const api = this.api as any;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const branches = await api.listBranches(connection, token, owner, repo) as any[];
+    const branches = (await api.listBranches(connection, token, owner, repo)) as any[];
     return branches.map((b) => b.name);
   }
 
-  async openQuickFixWorkspace({ state, connectionId, owner, repo, remoteUrl, baseBranch, newBranchName }: OpenQuickFixWorkspaceOptions): Promise<{
+  async openQuickFixWorkspace({
+    state,
+    connectionId,
+    owner,
+    repo,
+    remoteUrl,
+    baseBranch,
+    newBranchName,
+  }: OpenQuickFixWorkspaceOptions): Promise<{
     workspace: Record<string, unknown>;
     parentWorkspaceId: string;
   }> {

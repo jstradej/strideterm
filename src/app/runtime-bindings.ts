@@ -48,26 +48,17 @@ interface TerminalControllerLike {
 
 // ---------------------------------------------------------------------------
 
-function readActiveAttention(
-  payload: StatePayload | null | undefined,
-  workspaceId: string,
-): unknown {
+function readActiveAttention(payload: StatePayload | null | undefined, workspaceId: string): unknown {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const att = payload?.attention as any;
   return att?.byWorkspace?.[workspaceId] || att?.byProject?.[workspaceId] || null;
 }
 
-function readActiveGitSnapshot(
-  payload: StatePayload | null | undefined,
-  workspaceId: string,
-): unknown {
+function readActiveGitSnapshot(payload: StatePayload | null | undefined, workspaceId: string): unknown {
   return payload?.git?.workspaces?.[workspaceId] || payload?.git?.projects?.[workspaceId] || null;
 }
 
-function readActiveReviewBridge(
-  payload: StatePayload | null | undefined,
-  reviewPrKey: string,
-): unknown {
+function readActiveReviewBridge(payload: StatePayload | null | undefined, reviewPrKey: string): unknown {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const pullRequests = (payload?.reviewBridge as any)?.pullRequests as Record<string, any> | undefined;
   const context: Record<string, unknown> | null = reviewPrKey ? pullRequests?.[reviewPrKey] || null : null;
@@ -130,9 +121,7 @@ function selectActiveWorkspaceRenderState(payload: StatePayload | null | undefin
   const activeWorkspace =
     (payload?.appState?.workspaces || []).find((workspace) => workspace.id === activeWorkspaceId) || null;
   const reviewProvider = activeWorkspace?.review?.provider || "";
-  const reviewPrKey = ["azure-devops", "github"].includes(reviewProvider)
-    ? (activeWorkspace?.review?.prKey ?? "")
-    : "";
+  const reviewPrKey = ["azure-devops", "github"].includes(reviewProvider) ? (activeWorkspace?.review?.prKey ?? "") : "";
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const azureDevops = payload?.azureDevops as any;
@@ -149,11 +138,8 @@ function selectActiveWorkspaceRenderState(payload: StatePayload | null | undefin
     azureInbox: activeWorkspace?.kind === "azure" ? payload?.azureDevops || null : null,
     githubInbox: activeWorkspace?.kind === "github" ? payload?.github || null : null,
     azureReview:
-      reviewProvider === "azure-devops" && reviewPrKey
-        ? azureDevops?.pullRequests?.[reviewPrKey] || null
-        : null,
-    githubReview:
-      reviewProvider === "github" && reviewPrKey ? github?.pullRequests?.[reviewPrKey] || null : null,
+      reviewProvider === "azure-devops" && reviewPrKey ? azureDevops?.pullRequests?.[reviewPrKey] || null : null,
+    githubReview: reviewProvider === "github" && reviewPrKey ? github?.pullRequests?.[reviewPrKey] || null : null,
     reviewBridge: readActiveReviewBridge(payload, reviewPrKey),
   };
 }

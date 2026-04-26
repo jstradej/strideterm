@@ -347,7 +347,6 @@ function onCtxOpen() {
   const entry = fileContextMenu.value?.entry;
   dismissMenu();
   if (!entry) return;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   if (entry.kind === "directory") store.navigate(entry.relativePath as string);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   else store.selectEntry(entry as any);

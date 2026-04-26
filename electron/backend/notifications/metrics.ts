@@ -37,7 +37,12 @@ interface RecordAlertOptions {
   commandClass?: string;
 }
 
-export function recordAlert({ tier = 1, kind = "waiting", urgency = "normal", commandClass = "" }: RecordAlertOptions = {}): void {
+export function recordAlert({
+  tier = 1,
+  kind = "waiting",
+  urgency = "normal",
+  commandClass = "",
+}: RecordAlertOptions = {}): void {
   counters.alertsTotal += 1;
   counters.alertsByTier[tier] = (counters.alertsByTier[tier] || 0) + 1;
   counters.alertsByKind[kind] = (counters.alertsByKind[kind] || 0) + 1;

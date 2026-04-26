@@ -21,7 +21,10 @@
 <script setup lang="ts">
 import { useFileManagerStore } from "../../../stores/file-manager.js";
 
-interface BreadcrumbItem { name: string; path: string; }
+interface BreadcrumbItem {
+  name: string;
+  path: string;
+}
 
 withDefaults(defineProps<{ items?: BreadcrumbItem[] }>(), { items: () => [] });
 defineEmits<{ (e: "navigate", path: string): void }>();

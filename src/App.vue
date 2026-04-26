@@ -380,8 +380,10 @@ onMounted(() => {
 });
 
 onErrorCaptured((err, instance: ComponentPublicInstance | null, info) => {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  console.error(`[ErrorBoundary] Unhandled error in ${(instance as any)?.$options?.name || "component"} (${info}):`, err);
+  console.error(
+    `[ErrorBoundary] Unhandled error in ${(instance as any)?.$options?.name || "component"} (${info}):`, // eslint-disable-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: Vue internal $options is not fully typed
+    err,
+  );
   return false;
 });
 

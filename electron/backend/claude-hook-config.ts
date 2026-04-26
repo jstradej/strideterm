@@ -192,7 +192,12 @@ export async function ensureNotifyScript(userDataPath: string): Promise<{ ok: bo
  * Reads and parses ~/.claude/settings.json.
  * Returns { ok, data, error } — data is null if file doesn't exist.
  */
-async function readClaudeSettings(): Promise<{ ok: boolean; data: Record<string, unknown> | null; path: string; error?: string }> {
+async function readClaudeSettings(): Promise<{
+  ok: boolean;
+  data: Record<string, unknown> | null;
+  path: string;
+  error?: string;
+}> {
   const settingsPath = getClaudeSettingsPath();
   try {
     const raw = await fs.readFile(settingsPath, "utf8");
@@ -261,7 +266,9 @@ export function findExistingHook(settings: Record<string, unknown>, hookName = "
     (entry: unknown) =>
       Array.isArray((entry as Record<string, unknown>)?.hooks) &&
       ((entry as Record<string, unknown>).hooks as unknown[]).some(
-        (h: unknown) => typeof (h as Record<string, unknown>)?.command === "string" && HOOK_MARKERS.some((marker) => ((h as Record<string, string>).command).includes(marker)),
+        (h: unknown) =>
+          typeof (h as Record<string, unknown>)?.command === "string" &&
+          HOOK_MARKERS.some((marker) => (h as Record<string, string>).command.includes(marker)),
       ),
   );
 }

@@ -52,7 +52,6 @@ import { useFileManagerStore } from "../../../stores/file-manager.js";
 import FileListItem from "./FileListItem.vue";
 
 const emit = defineEmits<{
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (e: "navigate", path: string): void;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (e: "select", entry: any): void;

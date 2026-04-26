@@ -145,16 +145,14 @@ async function loadMonacoDiff(path: string, scope: string) {
   const seq = ++monacoDiffSeq;
   monacoDiffLoading.value = true;
   try {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const api = appStore.getApi() as any;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const payload = await api.fileGitDiff({
+    const api = appStore.getApi() as any; // eslint-disable-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: getApi() returns untyped API object
+    const payload = (await api.fileGitDiff({
       rootPath: props.activeRootPath,
       relativePath: path,
       source: diffSourceForScope(scope),
       revisionRef: "",
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    }) as any;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    })) as any;
     if (seq !== monacoDiffSeq) return;
     monacoDiffPayload.value = payload;
   } catch (err) {

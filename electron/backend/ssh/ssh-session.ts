@@ -157,9 +157,18 @@ export class SshSession {
             },
           );
         })
-        .on("keyboard-interactive", (name: string, instructions: string, _lang: string, prompts: Prompt[], finishPrompt: (responses: string[]) => void) => {
-          this.onAuthPrompt?.({ name, instructions, prompts, finish: finishPrompt });
-        })
+        .on(
+          "keyboard-interactive",
+          (
+            name: string,
+            instructions: string,
+            _lang: string,
+            prompts: Prompt[],
+            finishPrompt: (responses: string[]) => void,
+          ) => {
+            this.onAuthPrompt?.({ name, instructions, prompts, finish: finishPrompt });
+          },
+        )
         .on("banner", (msg: string) => this.onData?.(msg))
         .on("error", (err: Error) => {
           if (this.ready) {
@@ -240,7 +249,7 @@ export class SshSession {
     // `compress` is a legacy top-level ConnectConfig option that is not present
     // in the @types/ssh2 typings (it belongs in algorithms.compress) but ssh2
     // at runtime accepts it directly. Cast through unknown to keep the logic.
-     
+
     const cfg = {
       host: this.host.host,
       port: this.host.port || 22,
@@ -281,13 +290,27 @@ export class SshSession {
             if (typeof callback === "function") callback(true);
             return true;
           }
-          const mismatch = result as { ok: false; mismatch?: boolean; fingerprint?: string; keyType?: string; previous?: { fingerprint: string; keyType: string; addedAt: string } | null };
+          const mismatch = result as {
+            ok: false;
+            mismatch?: boolean;
+            fingerprint?: string;
+            keyType?: string;
+            previous?: { fingerprint: string; keyType: string; addedAt: string } | null;
+          };
           if (mismatch.mismatch && this.onHostKeyDecision) {
             this.onHostKeyDecision(
-              { fingerprint: mismatch.fingerprint || "", keyType: mismatch.keyType || "", previous: mismatch.previous || null },
+              {
+                fingerprint: mismatch.fingerprint || "",
+                keyType: mismatch.keyType || "",
+                previous: mismatch.previous || null,
+              },
               (accept) => {
                 if (accept && typeof onAccepted === "function") {
-                  onAccepted({ fingerprint: mismatch.fingerprint || "", keyType: mismatch.keyType || "", first: false });
+                  onAccepted({
+                    fingerprint: mismatch.fingerprint || "",
+                    keyType: mismatch.keyType || "",
+                    first: false,
+                  });
                 }
                 if (typeof callback === "function") callback(!!accept);
               },

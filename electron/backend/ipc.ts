@@ -161,9 +161,7 @@ export function registerIpc(
     ),
   );
   ipcMain.handle("azure:delete-connection", async (_event, connectionId) =>
-    withOperationPromise({ opId: "azure:delete-connection" }, () =>
-      runtime.deleteAzureConnection(connectionId),
-    ),
+    withOperationPromise({ opId: "azure:delete-connection" }, () => runtime.deleteAzureConnection(connectionId)),
   );
   ipcMain.handle("azure:refresh", async () =>
     withOperationPromise({ opId: "azure:refresh" }, () => runtime.refreshAzureState()),
@@ -243,9 +241,7 @@ export function registerIpc(
   );
   ipcMain.handle("review-bridge:agent-prompt:delete", async (_event, payload) =>
     withOperationPromise({ opId: "review-bridge:agent-prompt:delete" }, () =>
-      runtime.deleteAgentPrompt(
-        validateIpc(agentPromptDeleteSchema, payload, "review-bridge:agent-prompt:delete"),
-      ),
+      runtime.deleteAgentPrompt(validateIpc(agentPromptDeleteSchema, payload, "review-bridge:agent-prompt:delete")),
     ),
   );
   ipcMain.handle("review-bridge:agent-prompt:reset", async () =>
@@ -405,9 +401,7 @@ export function registerIpc(
     ),
   );
   ipcMain.handle("github:delete-connection", async (_event, connectionId) =>
-    withOperationPromise({ opId: "github:delete-connection" }, () =>
-      runtime.deleteGitHubConnection(connectionId),
-    ),
+    withOperationPromise({ opId: "github:delete-connection" }, () => runtime.deleteGitHubConnection(connectionId)),
   );
   ipcMain.handle("github:refresh", async () =>
     withOperationPromise({ opId: "github:refresh" }, () => runtime.refreshGitHubState()),
@@ -437,9 +431,7 @@ export function registerIpc(
   );
   ipcMain.handle("github:pull-request:review", async (_event, payload) =>
     withOperationPromise({ opId: "github:pull-request:review" }, () =>
-      runtime.submitGitHubPullRequestReview(
-        validateIpc(githubReviewSchema, payload, "github:pull-request:review"),
-      ),
+      runtime.submitGitHubPullRequestReview(validateIpc(githubReviewSchema, payload, "github:pull-request:review")),
     ),
   );
   ipcMain.handle("github:rerun-check", async (_event, prKey, checkItem) =>
@@ -702,9 +694,7 @@ export function registerIpc(
   });
   ipcMain.handle("git:abort", async (_event, payload) => {
     const p = validateIpc(gitPayloadSchema, payload, "git:abort");
-    return withOperationPromise({ workspaceId: p.workspaceId, opId: "git:abort" }, () =>
-      runtime.gitAbortOperation(p),
-    );
+    return withOperationPromise({ workspaceId: p.workspaceId, opId: "git:abort" }, () => runtime.gitAbortOperation(p));
   });
   ipcMain.handle("git:diff-preview", async (_event, payload) =>
     withOperationPromise({ opId: "git:diff-preview" }, () =>
@@ -734,9 +724,7 @@ export function registerIpc(
   });
   ipcMain.handle("git:stash-pop", async (_event, payload) => {
     const p = validateIpc(gitPayloadSchema, payload, "git:stash-pop");
-    return withOperationPromise({ workspaceId: p.workspaceId, opId: "git:stash-pop" }, () =>
-      runtime.gitStashPop(p),
-    );
+    return withOperationPromise({ workspaceId: p.workspaceId, opId: "git:stash-pop" }, () => runtime.gitStashPop(p));
   });
   ipcMain.handle("git:commit-diff", async (_event, payload) =>
     withOperationPromise({ opId: "git:commit-diff" }, () =>
@@ -745,27 +733,19 @@ export function registerIpc(
   );
   ipcMain.handle("git:list-tags", async (_event, payload) => {
     const p = validateIpc(gitPayloadSchema, payload, "git:list-tags");
-    return withOperationPromise({ workspaceId: p.workspaceId, opId: "git:list-tags" }, () =>
-      runtime.gitListTags(p),
-    );
+    return withOperationPromise({ workspaceId: p.workspaceId, opId: "git:list-tags" }, () => runtime.gitListTags(p));
   });
   ipcMain.handle("git:create-tag", async (_event, payload) => {
     const p = validateIpc(gitTagSchema, payload, "git:create-tag");
-    return withOperationPromise({ workspaceId: p.workspaceId, opId: "git:create-tag" }, () =>
-      runtime.gitCreateTag(p),
-    );
+    return withOperationPromise({ workspaceId: p.workspaceId, opId: "git:create-tag" }, () => runtime.gitCreateTag(p));
   });
   ipcMain.handle("git:delete-tag", async (_event, payload) => {
     const p = validateIpc(gitTagSchema, payload, "git:delete-tag");
-    return withOperationPromise({ workspaceId: p.workspaceId, opId: "git:delete-tag" }, () =>
-      runtime.gitDeleteTag(p),
-    );
+    return withOperationPromise({ workspaceId: p.workspaceId, opId: "git:delete-tag" }, () => runtime.gitDeleteTag(p));
   });
   ipcMain.handle("git:push-tag", async (_event, payload) => {
     const p = validateIpc(gitTagSchema, payload, "git:push-tag");
-    return withOperationPromise({ workspaceId: p.workspaceId, opId: "git:push-tag" }, () =>
-      runtime.gitPushTag(p),
-    );
+    return withOperationPromise({ workspaceId: p.workspaceId, opId: "git:push-tag" }, () => runtime.gitPushTag(p));
   });
   ipcMain.handle("git:push-all-tags", async (_event, payload) => {
     const p = validateIpc(gitPayloadSchema, payload, "git:push-all-tags");
@@ -819,9 +799,7 @@ export function registerIpc(
     withOperationPromise({ opId: "plugins:list" }, () => runtime.getPlugins()),
   );
   ipcMain.handle("plugins:workspace-template", async (_event, pluginId) =>
-    withOperationPromise({ opId: "plugins:workspace-template" }, () =>
-      runtime.getPluginWorkspaceTemplate(pluginId),
-    ),
+    withOperationPromise({ opId: "plugins:workspace-template" }, () => runtime.getPluginWorkspaceTemplate(pluginId)),
   );
   ipcMain.handle("profile:save", async (_event, profile) =>
     withOperationPromise({ opId: "profile:save" }, () =>
@@ -1022,10 +1000,7 @@ export function registerIpc(
 
   ipcMain.handle(
     "dialog:browse-file",
-    async (
-      _event,
-      options: { defaultPath?: string; filters?: Electron.FileFilter[] } = {},
-    ) =>
+    async (_event, options: { defaultPath?: string; filters?: Electron.FileFilter[] } = {}) =>
       withOperationPromise({ opId: "dialog:browse-file" }, async () => {
         const win = BrowserWindow.getFocusedWindow();
         // eslint-disable-next-line @typescript-eslint/no-explicit-any

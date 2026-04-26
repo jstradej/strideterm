@@ -175,10 +175,13 @@ class FakeSessionManager extends EventEmitter {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   syncWithState(state: any) {
     this.syncedStates.push(structuredClone(state));
+    /* eslint-disable @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: test mock state is untyped */
     const validIds = new Set(
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      state.projects.flatMap((project: any) => project.panels.map((panel: any) => createSessionId(project.id, panel.id))),
+      state.projects.flatMap((project: any) =>
+        project.panels.map((panel: any) => createSessionId(project.id, panel.id)),
+      ),
     );
+    /* eslint-enable @typescript-eslint/no-explicit-any */
     for (const sessionId of [...this.sessions.keys()]) {
       if (!validIds.has(sessionId)) {
         this.sessions.delete(sessionId);
@@ -574,8 +577,12 @@ function createPluginManagerStub() {
   });
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function createFixture({ initialState, execFileTextImpl, dependencies = {} }: { initialState?: any; execFileTextImpl?: any; dependencies?: any } = {}) {
+async function createFixture({
+  initialState,
+  execFileTextImpl,
+  dependencies = {},
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: test fixture accepts open-ended initial state and dependencies
+}: { initialState?: any; execFileTextImpl?: any; dependencies?: any } = {}) {
   const userDataPath = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-runtime-"));
   const store = createMemoryStore(initialState);
   const sessionManager = new FakeSessionManager();
@@ -598,7 +605,7 @@ async function createFixture({ initialState, execFileTextImpl, dependencies = {}
     getThemeSource: () => "light",
     dependencies: {
       createStore: async () => store,
-       
+
       SessionManager: class extends FakeSessionManager {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         constructor(opts: any) {

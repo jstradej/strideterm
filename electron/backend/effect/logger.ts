@@ -18,11 +18,14 @@ export class Logger extends Context.Service<Logger, LoggerShape>()("strideterm/L
 
 // Build a live implementation from any object that has the five log methods.
 // The caller (main.ts wiring) passes the existing winston logger proxy.
-export const makeLoggerLive = (winstonLike: Record<LogLevel, (msg: string, meta?: Record<string, unknown>) => void>): Layer.Layer<Logger> =>
+export const makeLoggerLive = (
+  winstonLike: Record<LogLevel, (msg: string, meta?: Record<string, unknown>) => void>,
+): Layer.Layer<Logger> =>
   Layer.effect(
     Logger,
     Effect.sync(() => {
-      const makeLogFn = (level: LogLevel): LogMethod =>
+      const makeLogFn =
+        (level: LogLevel): LogMethod =>
         (message, meta) =>
           Effect.gen(function* () {
             const ctx = yield* getOperation;

@@ -33,7 +33,11 @@ interface CheckResult {
   outputTail: string;
 }
 
-export async function runBuiltInChecks(cwd: string, taskId: string, { execCommand, log }: ExecDeps): Promise<CheckResult[]> {
+export async function runBuiltInChecks(
+  cwd: string,
+  taskId: string,
+  { execCommand, log }: ExecDeps,
+): Promise<CheckResult[]> {
   const dir = taskDir(cwd, taskId);
   const results: CheckResult[] = [];
 

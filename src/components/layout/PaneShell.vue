@@ -34,15 +34,18 @@ interface PaneAction {
   label?: string;
 }
 
-withDefaults(defineProps<{
-  title?: string;
-  status?: string;
-  actions?: PaneAction[];
-}>(), {
-  title: "",
-  status: "",
-  actions: () => [],
-});
+withDefaults(
+  defineProps<{
+    title?: string;
+    status?: string;
+    actions?: PaneAction[];
+  }>(),
+  {
+    title: "",
+    status: "",
+    actions: () => [],
+  },
+);
 
 const emit = defineEmits<{
   (e: "action", action: PaneAction, meta: { anchorRect: DOMRect | null; event: MouseEvent }): void;

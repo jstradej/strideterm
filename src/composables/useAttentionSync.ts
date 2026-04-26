@@ -35,8 +35,9 @@ export function useAttentionSync(api: Transport) {
     const base = documentTitleBase + profileLabel;
     document.title = count > 0 ? `(${count}) ${base}` : base;
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const visibleSessionIds = (appStore.visibleTabs as any[]).filter((tab) => tab.type === "terminal").map((tab: any) => tab.id as string);
+    const visibleSessionIds = (appStore.visibleTabs as any[]) // eslint-disable-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: visibleTabs is open-ended server JSON
+      .filter((tab) => tab.type === "terminal")
+      .map((tab: any) => tab.id as string); // eslint-disable-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: tab item is open-ended server JSON
 
     // Deduplicate: skip API call if nothing changed
     const syncKey = `${count}:${waitingCount}:${profile.id}:${visibleSessionIds.join(",")}:${windowFocused}`;

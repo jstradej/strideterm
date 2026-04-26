@@ -224,7 +224,11 @@ export function createRuntimeAttentionManager({
     return true;
   }
 
-  function getSessionSignal(sessionId: string, project: WorkspaceState | null, panel: PanelState | null): SessionSignal {
+  function getSessionSignal(
+    sessionId: string,
+    project: WorkspaceState | null,
+    panel: PanelState | null,
+  ): SessionSignal {
     const isNew = !sessionSignals.has(sessionId);
     const current = sessionSignals.get(sessionId) || createSessionSignal(sessionId);
     if (!current.agentLike) {

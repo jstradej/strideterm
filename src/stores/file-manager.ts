@@ -395,7 +395,10 @@ export const useFileManagerStore = defineStore("fileManager", () => {
     if (!_api) return;
     const absPath = rootPath.value.replace(/\\/g, "/") + "/" + (entry?.relativePath || currentPath.value);
     try {
-      await _api.fileOpenInExplorer({ rootPath: rootPath.value, relativePath: entry?.relativePath || currentPath.value });
+      await _api.fileOpenInExplorer({
+        rootPath: rootPath.value,
+        relativePath: entry?.relativePath || currentPath.value,
+      });
     } catch {
       // silently fail
     }
@@ -466,7 +469,11 @@ export const useFileManagerStore = defineStore("fileManager", () => {
 
   // -------------------- Diff modal --------------------
 
-  async function openDiff(entry: FileEntry | null, source: "head" | "staged" | "commit" | "branch" | "tag" = "head", revisionRef = ""): Promise<void> {
+  async function openDiff(
+    entry: FileEntry | null,
+    source: "head" | "staged" | "commit" | "branch" | "tag" = "head",
+    revisionRef = "",
+  ): Promise<void> {
     if (!entry || entry.kind !== "file") return;
     diffEntry.value = entry;
     diffSource.value = source;
@@ -498,7 +505,10 @@ export const useFileManagerStore = defineStore("fileManager", () => {
     }
   }
 
-  async function setDiffSource(source: "head" | "staged" | "commit" | "branch" | "tag", revisionRef = ""): Promise<void> {
+  async function setDiffSource(
+    source: "head" | "staged" | "commit" | "branch" | "tag",
+    revisionRef = "",
+  ): Promise<void> {
     diffSource.value = source;
     diffRevisionRef.value = revisionRef;
     await runDiff();

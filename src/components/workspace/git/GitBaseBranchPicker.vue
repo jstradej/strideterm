@@ -16,10 +16,11 @@
 import { computed } from "vue";
 import CustomSelect from "../../common/CustomSelect.vue";
 
-const props = withDefaults(
-  defineProps<{ modelValue?: string; options?: string[]; label?: string }>(),
-  { modelValue: "", options: () => [], label: "Base branch" },
-);
+const props = withDefaults(defineProps<{ modelValue?: string; options?: string[]; label?: string }>(), {
+  modelValue: "",
+  options: () => [],
+  label: "Base branch",
+});
 
 const emit = defineEmits<{ (e: "update:modelValue", value: string): void }>();
 

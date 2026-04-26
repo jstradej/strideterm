@@ -50,7 +50,15 @@ export const DEFAULT_DIFF_STAT: Readonly<DiffStat> = Object.freeze({
   deletes: 0,
 });
 
-export const DEFAULT_OPERATION_STATE: Readonly<{ kind: string; inProgress: boolean; label: string; details: string; conflicts: string[]; canContinue: boolean; canAbort: boolean }> = Object.freeze({
+export const DEFAULT_OPERATION_STATE: Readonly<{
+  kind: string;
+  inProgress: boolean;
+  label: string;
+  details: string;
+  conflicts: string[];
+  canContinue: boolean;
+  canAbort: boolean;
+}> = Object.freeze({
   kind: "idle",
   inProgress: false,
   label: "",
@@ -68,7 +76,10 @@ export function createGitChangeBucket(name: string): { name: string; files: Name
   };
 }
 
-export function createUnavailableSnapshot(workspace: { id: string; cwd?: string }, error = ""): Record<string, unknown> {
+export function createUnavailableSnapshot(
+  workspace: { id: string; cwd?: string },
+  error = "",
+): Record<string, unknown> {
   return {
     workspaceId: workspace.id,
     projectId: workspace.id,
@@ -216,7 +227,9 @@ export function summarizeNameStatusEntries(entries: Array<Partial<NameStatusEntr
   return stat;
 }
 
-export function parseGitLog(rawText: string): Array<{ shortHash: string; relativeDate: string; author: string; refs: string; subject: string }> {
+export function parseGitLog(
+  rawText: string,
+): Array<{ shortHash: string; relativeDate: string; author: string; refs: string; subject: string }> {
   return rawText
     .split(/\r?\n/)
     .map((line) => line.trim())
@@ -291,13 +304,61 @@ export function parsePorcelainV2(rawText: string): {
   upstream: string;
   aheadCount: number;
   behindCount: number;
-  staged: Array<{ path: string; previousPath: string; code: string; stagedStatus: string; unstagedStatus: string; kind: string; label: string }>;
-  unstaged: Array<{ path: string; previousPath: string; code: string; stagedStatus: string; unstagedStatus: string; kind: string; label: string }>;
-  untracked: Array<{ path: string; code: string; stagedStatus: string; unstagedStatus: string; kind: string; label: string; previousPath: string }>;
-  conflicts: Array<{ path: string; previousPath: string; code: string; stagedStatus: string; unstagedStatus: string; kind: string; label: string }>;
+  staged: Array<{
+    path: string;
+    previousPath: string;
+    code: string;
+    stagedStatus: string;
+    unstagedStatus: string;
+    kind: string;
+    label: string;
+  }>;
+  unstaged: Array<{
+    path: string;
+    previousPath: string;
+    code: string;
+    stagedStatus: string;
+    unstagedStatus: string;
+    kind: string;
+    label: string;
+  }>;
+  untracked: Array<{
+    path: string;
+    code: string;
+    stagedStatus: string;
+    unstagedStatus: string;
+    kind: string;
+    label: string;
+    previousPath: string;
+  }>;
+  conflicts: Array<{
+    path: string;
+    previousPath: string;
+    code: string;
+    stagedStatus: string;
+    unstagedStatus: string;
+    kind: string;
+    label: string;
+  }>;
 } {
-  type PorcelainEntry = { path: string; previousPath: string; code: string; stagedStatus: string; unstagedStatus: string; kind: string; label: string };
-  type UntrackedEntry = { path: string; code: string; stagedStatus: string; unstagedStatus: string; kind: string; label: string; previousPath: string };
+  type PorcelainEntry = {
+    path: string;
+    previousPath: string;
+    code: string;
+    stagedStatus: string;
+    unstagedStatus: string;
+    kind: string;
+    label: string;
+  };
+  type UntrackedEntry = {
+    path: string;
+    code: string;
+    stagedStatus: string;
+    unstagedStatus: string;
+    kind: string;
+    label: string;
+    previousPath: string;
+  };
   const summary: {
     branch: string;
     upstream: string;
@@ -489,7 +550,11 @@ export function preferBaseBranch(currentBranch: string, upstream: string, branch
   return "";
 }
 
-export function buildBaseBranchCandidates(currentBranch: string, upstream: string, branchNames: string[] = []): string[] {
+export function buildBaseBranchCandidates(
+  currentBranch: string,
+  upstream: string,
+  branchNames: string[] = [],
+): string[] {
   const normalizedCurrent = normalizeBranchName(currentBranch);
   const seen = new Set<string>();
   const candidates: string[] = [];
@@ -589,7 +654,14 @@ export function createStructuredResult({
   conflicts?: string[];
   rawOutput?: string;
   operationState?: typeof DEFAULT_OPERATION_STATE;
-}): { ok: boolean; summary: string; warnings: string[]; conflicts: string[]; rawOutput: string; operationState: typeof DEFAULT_OPERATION_STATE } {
+}): {
+  ok: boolean;
+  summary: string;
+  warnings: string[];
+  conflicts: string[];
+  rawOutput: string;
+  operationState: typeof DEFAULT_OPERATION_STATE;
+} {
   return {
     ok,
     summary,
@@ -644,7 +716,9 @@ export function joinRawOutput(...chunks: unknown[]): string {
     .join("\n\n");
 }
 
-export function uniqueByPath(entries: Array<{ path: string; previousPath?: string; code?: string }> = []): Array<{ path: string; previousPath?: string; code?: string }> {
+export function uniqueByPath(
+  entries: Array<{ path: string; previousPath?: string; code?: string }> = [],
+): Array<{ path: string; previousPath?: string; code?: string }> {
   const seen = new Set<string>();
   return entries.filter((entry) => {
     const key = `${entry.path}:${entry.previousPath || ""}:${entry.code || ""}`;

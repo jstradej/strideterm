@@ -560,14 +560,17 @@ async function startServices(): Promise<void> {
       console.warn(`Remote access server restart failed: ${error.message}`);
     });
   });
-  runtimeState.unsubscribeStateUpdated = runtimeState.runtime.on("state:updated", (payload: Record<string, unknown>) => {
-    const themeSetting =
-      ((payload?.appState as Record<string, unknown> | undefined)?.settings as Record<string, unknown> | undefined)
-        ?.theme || "dark";
-    nativeTheme.themeSource = (themeSetting === "system" ? "system" : themeSetting) as "system" | "dark" | "light";
-    updateNativeAttention(payload);
-    syncTitleBarTheme();
-  });
+  runtimeState.unsubscribeStateUpdated = runtimeState.runtime.on(
+    "state:updated",
+    (payload: Record<string, unknown>) => {
+      const themeSetting =
+        ((payload?.appState as Record<string, unknown> | undefined)?.settings as Record<string, unknown> | undefined)
+          ?.theme || "dark";
+      nativeTheme.themeSource = (themeSetting === "system" ? "system" : themeSetting) as "system" | "dark" | "light";
+      updateNativeAttention(payload);
+      syncTitleBarTheme();
+    },
+  );
   nativeTheme.on("updated", () => syncTitleBarTheme());
   await restartRemoteServer();
   const desiredWorkspaceId =
@@ -635,6 +638,6 @@ app.on("before-quit", async () => {
   runtimeState.unsubscribeRemoteConfig?.();
   runtimeState.disposeIpc?.();
   await runtimeState.remoteServer?.close?.();
-  await runtimeState.runtime?.stop?.() as Promise<void>;
+  (await runtimeState.runtime?.stop?.()) as Promise<void>;
   await shutdownLogger();
 });

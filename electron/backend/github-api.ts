@@ -67,8 +67,17 @@ export function createGitHubApi(
   const etagCache = new Map<string, EtagCacheEntry>();
   const ETAG_CACHE_MAX_SIZE = 200;
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  async function requestJson(url: string, { token, method = "GET", body = null, headers = {}, accept = "application/vnd.github+json" }: RequestJsonOptions = {}): Promise<any> {
+  async function requestJson(
+    url: string,
+    {
+      token,
+      method = "GET",
+      body = null,
+      headers = {},
+      accept = "application/vnd.github+json",
+    }: RequestJsonOptions = {},
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: GitHub API returns open-ended JSON, typed later
+  ): Promise<any> {
     const startTime = Date.now();
     let statusCode = 0;
 
@@ -185,34 +194,72 @@ export function createGitHubApi(
   }
 
   // Pulls
-  function buildPullRequestUrl(connection: Connection, owner: string, repo: string, pullNumber: number | string): string {
+  function buildPullRequestUrl(
+    connection: Connection,
+    owner: string,
+    repo: string,
+    pullNumber: number | string,
+  ): string {
     return `${buildApiBase(connection)}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/pulls/${pullNumber}`;
   }
 
-  function buildPullRequestFilesUrl(connection: Connection, owner: string, repo: string, pullNumber: number | string, perPage = 100): string {
+  function buildPullRequestFilesUrl(
+    connection: Connection,
+    owner: string,
+    repo: string,
+    pullNumber: number | string,
+    perPage = 100,
+  ): string {
     return `${buildApiBase(connection)}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/pulls/${pullNumber}/files?per_page=${perPage}`;
   }
 
   // Reviews
-  function buildPullRequestReviewsUrl(connection: Connection, owner: string, repo: string, pullNumber: number | string): string {
+  function buildPullRequestReviewsUrl(
+    connection: Connection,
+    owner: string,
+    repo: string,
+    pullNumber: number | string,
+  ): string {
     return `${buildApiBase(connection)}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/pulls/${pullNumber}/reviews`;
   }
 
-  function buildSubmitReviewUrl(connection: Connection, owner: string, repo: string, pullNumber: number | string): string {
+  function buildSubmitReviewUrl(
+    connection: Connection,
+    owner: string,
+    repo: string,
+    pullNumber: number | string,
+  ): string {
     return `${buildApiBase(connection)}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/pulls/${pullNumber}/reviews`;
   }
 
   // Review comments (line-level)
-  function buildReviewCommentsUrl(connection: Connection, owner: string, repo: string, pullNumber: number | string, perPage = 100): string {
+  function buildReviewCommentsUrl(
+    connection: Connection,
+    owner: string,
+    repo: string,
+    pullNumber: number | string,
+    perPage = 100,
+  ): string {
     return `${buildApiBase(connection)}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/pulls/${pullNumber}/comments?per_page=${perPage}&sort=created&direction=asc`;
   }
 
   // Issue comments (general conversation)
-  function buildIssueCommentsUrl(connection: Connection, owner: string, repo: string, pullNumber: number | string, perPage = 100): string {
+  function buildIssueCommentsUrl(
+    connection: Connection,
+    owner: string,
+    repo: string,
+    pullNumber: number | string,
+    perPage = 100,
+  ): string {
     return `${buildApiBase(connection)}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/issues/${pullNumber}/comments?per_page=${perPage}`;
   }
 
-  function buildCreateIssueCommentUrl(connection: Connection, owner: string, repo: string, pullNumber: number | string): string {
+  function buildCreateIssueCommentUrl(
+    connection: Connection,
+    owner: string,
+    repo: string,
+    pullNumber: number | string,
+  ): string {
     return `${buildApiBase(connection)}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/issues/${pullNumber}/comments`;
   }
 
@@ -227,7 +274,12 @@ export function createGitHubApi(
   }
 
   // Review requests
-  function buildRequestedReviewersUrl(connection: Connection, owner: string, repo: string, pullNumber: number | string): string {
+  function buildRequestedReviewersUrl(
+    connection: Connection,
+    owner: string,
+    repo: string,
+    pullNumber: number | string,
+  ): string {
     return `${buildApiBase(connection)}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/pulls/${pullNumber}/requested_reviewers`;
   }
 
@@ -246,15 +298,26 @@ export function createGitHubApi(
     return result?.items || [];
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  async function getPullRequest(connection: Connection, token: string, owner: string, repo: string, pullNumber: number | string): Promise<any> {
+  async function getPullRequest(
+    connection: Connection,
+    token: string,
+    owner: string,
+    repo: string,
+    pullNumber: number | string,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: GitHub API returns open-ended JSON
+  ): Promise<any> {
     return requestJson(buildPullRequestUrl(connection, owner, repo, pullNumber), { token });
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  async function listPullRequestFiles(connection: Connection, token: string, owner: string, repo: string, pullNumber: number | string): Promise<any[]> {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const files: any[] = [];
+  async function listPullRequestFiles(
+    connection: Connection,
+    token: string,
+    owner: string,
+    repo: string,
+    pullNumber: number | string,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: GitHub API returns open-ended JSON array
+  ): Promise<any[]> {
+    const files: any[] = []; // eslint-disable-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: accumulator for open-ended API JSON
     let page = 1;
     while (true) {
       const url = `${buildPullRequestFilesUrl(connection, owner, repo, pullNumber)}&page=${page}`;
@@ -267,16 +330,27 @@ export function createGitHubApi(
     return files;
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  async function listReviews(connection: Connection, token: string, owner: string, repo: string, pullNumber: number | string): Promise<any[]> {
+  async function listReviews(
+    connection: Connection,
+    token: string,
+    owner: string,
+    repo: string,
+    pullNumber: number | string,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: GitHub API returns open-ended JSON array
+  ): Promise<any[]> {
     const result = await requestJson(buildPullRequestReviewsUrl(connection, owner, repo, pullNumber), { token });
     return Array.isArray(result) ? result : [];
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  async function listReviewComments(connection: Connection, token: string, owner: string, repo: string, pullNumber: number | string): Promise<any[]> {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const comments: any[] = [];
+  async function listReviewComments(
+    connection: Connection,
+    token: string,
+    owner: string,
+    repo: string,
+    pullNumber: number | string,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: GitHub API returns open-ended JSON array
+  ): Promise<any[]> {
+    const comments: any[] = []; // eslint-disable-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: accumulator for open-ended API JSON
     let page = 1;
     while (true) {
       const url = `${buildReviewCommentsUrl(connection, owner, repo, pullNumber)}&page=${page}`;
@@ -289,10 +363,15 @@ export function createGitHubApi(
     return comments;
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  async function listIssueComments(connection: Connection, token: string, owner: string, repo: string, pullNumber: number | string): Promise<any[]> {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const comments: any[] = [];
+  async function listIssueComments(
+    connection: Connection,
+    token: string,
+    owner: string,
+    repo: string,
+    pullNumber: number | string,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: GitHub API returns open-ended JSON array
+  ): Promise<any[]> {
+    const comments: any[] = []; // eslint-disable-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: accumulator for open-ended API JSON
     let page = 1;
     while (true) {
       const url = `${buildIssueCommentsUrl(connection, owner, repo, pullNumber)}&page=${page}`;
@@ -305,30 +384,61 @@ export function createGitHubApi(
     return comments;
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  async function listCheckRuns(connection: Connection, token: string, owner: string, repo: string, ref: string): Promise<any[]> {
+  async function listCheckRuns(
+    connection: Connection,
+    token: string,
+    owner: string,
+    repo: string,
+    ref: string,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: GitHub API returns open-ended JSON array
+  ): Promise<any[]> {
     const result = await requestJson(buildCheckRunsUrl(connection, owner, repo, ref), { token });
     return result?.check_runs || [];
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  async function getCombinedStatus(connection: Connection, token: string, owner: string, repo: string, ref: string): Promise<any> {
+  async function getCombinedStatus(
+    connection: Connection,
+    token: string,
+    owner: string,
+    repo: string,
+    ref: string,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: GitHub API returns open-ended JSON
+  ): Promise<any> {
     return requestJson(buildCombinedStatusUrl(connection, owner, repo, ref), { token });
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  async function rerunCheckSuite(connection: Connection, token: string, owner: string, repo: string, checkSuiteId: string | number): Promise<any> {
+  async function rerunCheckSuite(
+    connection: Connection,
+    token: string,
+    owner: string,
+    repo: string,
+    checkSuiteId: string | number,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: GitHub API returns open-ended JSON
+  ): Promise<any> {
     const url = `${buildApiBase(connection)}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/check-suites/${checkSuiteId}/rerequest`;
     return requestJson(url, { token, method: "POST" });
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  async function listRequestedReviewers(connection: Connection, token: string, owner: string, repo: string, pullNumber: number | string): Promise<any> {
+  async function listRequestedReviewers(
+    connection: Connection,
+    token: string,
+    owner: string,
+    repo: string,
+    pullNumber: number | string,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: GitHub API returns open-ended JSON
+  ): Promise<any> {
     return requestJson(buildRequestedReviewersUrl(connection, owner, repo, pullNumber), { token });
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  async function createIssueComment(connection: Connection, token: string, owner: string, repo: string, pullNumber: number | string, body: string): Promise<any> {
+  async function createIssueComment(
+    connection: Connection,
+    token: string,
+    owner: string,
+    repo: string,
+    pullNumber: number | string,
+    body: string,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: GitHub API returns open-ended JSON
+  ): Promise<any> {
     return requestJson(buildCreateIssueCommentUrl(connection, owner, repo, pullNumber), {
       token,
       method: "POST",
@@ -336,10 +446,13 @@ export function createGitHubApi(
     });
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  async function listUserRepos(connection: Connection, token: string, { perPage = 100, sort = "pushed" }: ListUserReposOptions = {}): Promise<any[]> {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const repos: any[] = [];
+  async function listUserRepos(
+    connection: Connection,
+    token: string,
+    { perPage = 100, sort = "pushed" }: ListUserReposOptions = {},
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: GitHub API returns open-ended JSON array
+  ): Promise<any[]> {
+    const repos: any[] = []; // eslint-disable-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: accumulator for open-ended API JSON
     let page = 1;
     while (true) {
       const url = `${buildApiBase(connection)}/user/repos?per_page=${perPage}&sort=${sort}&direction=desc&page=${page}`;
@@ -352,10 +465,15 @@ export function createGitHubApi(
     return repos;
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  async function listBranches(connection: Connection, token: string, owner: string, repo: string, { perPage = 100 }: ListBranchesOptions = {}): Promise<any[]> {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const branches: any[] = [];
+  async function listBranches(
+    connection: Connection,
+    token: string,
+    owner: string,
+    repo: string,
+    { perPage = 100 }: ListBranchesOptions = {},
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: GitHub API returns open-ended JSON array
+  ): Promise<any[]> {
+    const branches: any[] = []; // eslint-disable-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: accumulator for open-ended API JSON
     let page = 1;
     while (true) {
       const url = `${buildApiBase(connection)}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/branches?per_page=${perPage}&page=${page}`;
@@ -368,8 +486,15 @@ export function createGitHubApi(
     return branches;
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  async function submitReview(connection: Connection, token: string, owner: string, repo: string, pullNumber: number | string, { event, body = "" }: SubmitReviewOptions): Promise<any> {
+  async function submitReview(
+    connection: Connection,
+    token: string,
+    owner: string,
+    repo: string,
+    pullNumber: number | string,
+    { event, body = "" }: SubmitReviewOptions,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: GitHub API returns open-ended JSON
+  ): Promise<any> {
     return requestJson(buildSubmitReviewUrl(connection, owner, repo, pullNumber), {
       token,
       method: "POST",
@@ -409,8 +534,14 @@ export function createGitHubApi(
     submitReview,
     listUserRepos,
     listBranches,
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    createPullRequest: async (connection: Connection, token: string, owner: string, repo: string, { title, body = "", head, base, draft = false }: CreatePullRequestOptions): Promise<any> => {
+    createPullRequest: async (
+      connection: Connection,
+      token: string,
+      owner: string,
+      repo: string,
+      { title, body = "", head, base, draft = false }: CreatePullRequestOptions,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: GitHub API returns open-ended JSON
+    ): Promise<any> => {
       return requestJson(
         `${buildApiBase(connection)}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/pulls`,
         {

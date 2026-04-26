@@ -141,11 +141,14 @@ interface SshCertExtended {
   keyIdString?: string;
 }
 
-const props = withDefaults(defineProps<{
-  host?: SshHost | null;
-}>(), {
-  host: null,
-});
+const props = withDefaults(
+  defineProps<{
+    host?: SshHost | null;
+  }>(),
+  {
+    host: null,
+  },
+);
 
 const emit = defineEmits<{
   (e: "cancel"): void;

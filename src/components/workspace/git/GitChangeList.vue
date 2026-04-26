@@ -69,7 +69,6 @@ const props = withDefaults(
 );
 
 defineEmits<{
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (e: "select", path: string, scope: string): void;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (e: "open-editor", entry: any): void;

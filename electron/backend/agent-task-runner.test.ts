@@ -607,14 +607,11 @@ describe("AgentTaskRunner", () => {
 
 describe("formatVerifyChecklist", () => {
   test("formats detected commands as markdown checklist", () => {
-    const result = formatVerifyChecklist(
-       
-      [
-        { label: "Tests", command: "npm test", timeoutMs: 60_000 },
-        { label: "Lint", command: "npm run lint", timeoutMs: 60_000 },
+    const result = formatVerifyChecklist([
+      { label: "Tests", command: "npm test", timeoutMs: 60_000 },
+      { label: "Lint", command: "npm run lint", timeoutMs: 60_000 },
       // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: test helper cast to bypass partial CheckConfig shape
-      ] as any,
-    );
+    ] as any);
     expect(result).toBe("- [ ] Run `npm test` — must pass\n- [ ] Run `npm run lint` — must pass");
   });
 
@@ -719,8 +716,8 @@ describe("startTask - prompt sent tracking", () => {
     expect(ws.task.state).toBe("running");
     // Worker panel should have received the prompt string (pasted via writeToSession)
     const workerSessionId = `${ws.id}:${ws.task.workerPanelId}`;
-    const written = deps.written// eslint-disable-next-line @typescript-eslint/no-explicit-any
-    .filter((w: any) => w.sessionId === workerSessionId);
+    const written = deps.written // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      .filter((w: any) => w.sessionId === workerSessionId);
     expect(written.length).toBeGreaterThan(0);
   });
 });
@@ -761,8 +758,8 @@ describe("resumeTask - late prompt delivery", () => {
       await new Promise((resolve) => setTimeout(resolve, 10));
     }
 
-    const written = deps.written// eslint-disable-next-line @typescript-eslint/no-explicit-any
-    .filter((w: any) => w.sessionId === workerSessionId);
+    const written = deps.written // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      .filter((w: any) => w.sessionId === workerSessionId);
     expect(written.length).toBeGreaterThan(0);
     expect(ws.task.promptSent).toBe(true);
   });
@@ -807,8 +804,8 @@ describe("resumeTask - late prompt delivery", () => {
       await new Promise((resolve) => setTimeout(resolve, 20));
     }
 
-    const writes = deps.written// eslint-disable-next-line @typescript-eslint/no-explicit-any
-    .filter((w: any) => w.sessionId === sessionId);
+    const writes = deps.written // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      .filter((w: any) => w.sessionId === sessionId);
 
     // Many separate writes (one per char), NOT a single bulk write of the prompt.
     expect(writes.length).toBeGreaterThan(10);
@@ -847,13 +844,16 @@ describe("resumeTask - late prompt delivery", () => {
     const sessionId = `${ws.id}:${ws.task.workerPanelId}`;
     const deadline = Date.now() + 2000;
     while (Date.now() < deadline) {
-      if (deps.written// eslint-disable-next-line @typescript-eslint/no-explicit-any
-    .filter((w: any) => w.sessionId === sessionId).length >= 2) break;
+      if (
+        deps.written // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          .filter((w: any) => w.sessionId === sessionId).length >= 2
+      )
+        break;
       await new Promise((resolve) => setTimeout(resolve, 20));
     }
 
-    const writes = deps.written// eslint-disable-next-line @typescript-eslint/no-explicit-any
-    .filter((w: any) => w.sessionId === sessionId);
+    const writes = deps.written // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      .filter((w: any) => w.sessionId === sessionId);
 
     // Claude should get ONE bulk text write + ONE \r (two writes total).
     expect(writes.length).toBe(2);
@@ -900,8 +900,8 @@ describe("resumeTask - late prompt delivery", () => {
     await new Promise((resolve) => setTimeout(resolve, 50));
 
     const workerSessionId = `${ws.id}:${ws.task.workerPanelId}`;
-    const written = deps.written// eslint-disable-next-line @typescript-eslint/no-explicit-any
-    .filter((w: any) => w.sessionId === workerSessionId);
+    const written = deps.written // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      .filter((w: any) => w.sessionId === workerSessionId);
     expect(written.length).toBe(0);
   });
 });

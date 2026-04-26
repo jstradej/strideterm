@@ -42,7 +42,11 @@ export const useTerminalStore = defineStore("terminal", () => {
 
   let controller: ReturnType<typeof createTerminalController> | null = null;
 
-  function init(api: Transport, appConfig: AppConfig, { getActiveSessionId, getOverlay, getPayload }: InitOptions): void {
+  function init(
+    api: Transport,
+    appConfig: AppConfig,
+    { getActiveSessionId, getOverlay, getPayload }: InitOptions,
+  ): void {
     controller = createTerminalController({
       views,
       buffers,

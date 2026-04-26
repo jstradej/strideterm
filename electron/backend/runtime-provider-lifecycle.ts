@@ -196,7 +196,7 @@ export function createProviderLifecycle(ctx: ProviderLifecycleCtx) {
       if (!hint.prId || !hint.connectionPathKey) {
         continue;
       }
-       
+
       const connection = getAzureConnections(state).find(
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         (entry: any) => shortPathKey(entry.id, "connection") === hint.connectionPathKey,
@@ -294,7 +294,6 @@ export function createProviderLifecycle(ctx: ProviderLifecycleCtx) {
     const pollSeconds = Math.max(
       15,
       Math.min(
-         
         ...enabledConnections.map(
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           (connection: any) => Number(connection.pollSeconds) || Number(settings.defaultPollSeconds) || 120,

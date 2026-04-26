@@ -18,7 +18,9 @@ const MonacoEditor = defineAsyncComponent(() => import("../../shared/MonacoEdito
 
 const store = useFileManagerStore();
 
-const language = computed(() => guessLanguageFromPath(store.selectedEntry?.name || store.selectedEntry?.relativePath || ""));
+const language = computed(() =>
+  guessLanguageFromPath(store.selectedEntry?.name || store.selectedEntry?.relativePath || ""),
+);
 
 function onChange(value: string) {
   store.editContent = value;

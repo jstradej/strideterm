@@ -262,7 +262,9 @@ const appStore = useAppStore();
 const sshHosts = computed(() => sshStore.hosts || []);
 const sshKeys = computed(() => sshStore.keys || []);
 
-const hostOptions = computed(() => sshHosts.value.map((h) => ({ value: h.id, label: `${h.label ?? h.host} (${h.host})` })));
+const hostOptions = computed(() =>
+  sshHosts.value.map((h) => ({ value: h.id, label: `${h.label ?? h.host} (${h.host})` })),
+);
 
 const authMethodOptions = computed(() => [
   { value: "agent", label: "SSH Agent (recommended)" },

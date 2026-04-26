@@ -70,7 +70,11 @@ export function uniqueList(values: unknown[] = []): string[] {
   return result;
 }
 
-export function createPullRequestKey(connectionId: string, repositoryId: string, pullRequestId: string | number): string {
+export function createPullRequestKey(
+  connectionId: string,
+  repositoryId: string,
+  pullRequestId: string | number,
+): string {
   return `${connectionId}:${repositoryId}:${pullRequestId}`;
 }
 
@@ -80,7 +84,10 @@ export function normalizeIdentityValue(value: unknown): string {
     .toLowerCase();
 }
 
-export function identityMatches(login: unknown, identity: { uniqueName?: string; mailAddress?: string; displayName?: string; id?: string } | null | undefined): boolean {
+export function identityMatches(
+  login: unknown,
+  identity: { uniqueName?: string; mailAddress?: string; displayName?: string; id?: string } | null | undefined,
+): boolean {
   const normalizedLogin = normalizeIdentityValue(login);
   if (!normalizedLogin || !identity) {
     return false;
@@ -91,7 +98,13 @@ export function identityMatches(login: unknown, identity: { uniqueName?: string;
   );
 }
 
-export function extractComments(threads: Array<{ id?: number; status?: string; comments?: Array<{ commentType?: string; [key: string]: unknown }> }> = []): Array<{ threadId?: number; threadStatus?: string; commentType?: string; [key: string]: unknown }> {
+export function extractComments(
+  threads: Array<{
+    id?: number;
+    status?: string;
+    comments?: Array<{ commentType?: string; [key: string]: unknown }>;
+  }> = [],
+): Array<{ threadId?: number; threadStatus?: string; commentType?: string; [key: string]: unknown }> {
   return threads.flatMap((thread) =>
     Array.isArray(thread?.comments)
       ? thread.comments
@@ -102,7 +115,15 @@ export function extractComments(threads: Array<{ id?: number; status?: string; c
 }
 
 export function summarizeReviewers(
-  reviewers: Array<{ id?: string; displayName?: string; uniqueName?: string; vote?: number; isRequired?: boolean; hasDeclined?: boolean; isContainer?: boolean }> = [],
+  reviewers: Array<{
+    id?: string;
+    displayName?: string;
+    uniqueName?: string;
+    vote?: number;
+    isRequired?: boolean;
+    hasDeclined?: boolean;
+    isContainer?: boolean;
+  }> = [],
   login = "",
 ): {
   myVote: number;
@@ -110,7 +131,15 @@ export function summarizeReviewers(
   approvedCount: number;
   waitingCount: number;
   totalCount: number;
-  reviewers: Array<{ id: string; displayName: string; uniqueName: string; vote: number; isRequired: boolean; hasDeclined: boolean; isContainer: boolean }>;
+  reviewers: Array<{
+    id: string;
+    displayName: string;
+    uniqueName: string;
+    vote: number;
+    isRequired: boolean;
+    hasDeclined: boolean;
+    isContainer: boolean;
+  }>;
 } {
   const myReviewer = reviewers.find((reviewer) => identityMatches(login, reviewer));
   return {
@@ -131,7 +160,11 @@ export function summarizeReviewers(
   };
 }
 
-export function buildRepositoryRemoteUrl(connection: { orgUrl?: string } | null | undefined, projectName: string, repositoryName: string): string {
+export function buildRepositoryRemoteUrl(
+  connection: { orgUrl?: string } | null | undefined,
+  projectName: string,
+  repositoryName: string,
+): string {
   const baseUrl = trimTrailingSlash(connection?.orgUrl);
   const project = String(projectName || "").trim();
   const repository = String(repositoryName || "").trim();
@@ -192,7 +225,15 @@ export function checkStateLabel(value: unknown): string {
   return "unknown";
 }
 
-export function summarizePolicyContext(context: { errorMessage?: string; statusDescription?: string; buildDefinitionName?: string; buildNumber?: string; message?: string } = {}): string {
+export function summarizePolicyContext(
+  context: {
+    errorMessage?: string;
+    statusDescription?: string;
+    buildDefinitionName?: string;
+    buildNumber?: string;
+    message?: string;
+  } = {},
+): string {
   return firstNonEmpty(
     context.errorMessage,
     context.statusDescription,
@@ -205,13 +246,43 @@ export function summarizePolicyContext(context: { errorMessage?: string; statusD
   );
 }
 
-export function buildCheckSummary(
-  { policyEvaluations = [], statuses = [], buildDetails = {} }: {
-    policyEvaluations?: Array<{ evaluationId?: string | null; configuration?: { id?: string; settings?: Record<string, unknown>; type?: { displayName?: string }; isBlocking?: boolean }; type?: { displayName?: string }; context?: Record<string, unknown>; status?: string; _links?: { web?: { href?: string } } }>;
-    statuses?: Array<{ id?: string | number; state?: string; context?: { genre?: string; name?: string }; description?: string; targetUrl?: string; createdDate?: string; updatedDate?: string; _links?: { target?: { href?: string }; web?: { href?: string } } }>;
-    buildDetails?: Record<string, { startTime?: string | null; finishTime?: string | null; queueTime?: string | null }>;
-  } = {},
-): { failedCount: number; pendingCount: number; passedCount: number; optionalFailedCount: number; requiredFailedCount: number; items: unknown[] } {
+export function buildCheckSummary({
+  policyEvaluations = [],
+  statuses = [],
+  buildDetails = {},
+}: {
+  policyEvaluations?: Array<{
+    evaluationId?: string | null;
+    configuration?: {
+      id?: string;
+      settings?: Record<string, unknown>;
+      type?: { displayName?: string };
+      isBlocking?: boolean;
+    };
+    type?: { displayName?: string };
+    context?: Record<string, unknown>;
+    status?: string;
+    _links?: { web?: { href?: string } };
+  }>;
+  statuses?: Array<{
+    id?: string | number;
+    state?: string;
+    context?: { genre?: string; name?: string };
+    description?: string;
+    targetUrl?: string;
+    createdDate?: string;
+    updatedDate?: string;
+    _links?: { target?: { href?: string }; web?: { href?: string } };
+  }>;
+  buildDetails?: Record<string, { startTime?: string | null; finishTime?: string | null; queueTime?: string | null }>;
+} = {}): {
+  failedCount: number;
+  pendingCount: number;
+  passedCount: number;
+  optionalFailedCount: number;
+  requiredFailedCount: number;
+  items: unknown[];
+} {
   const items = [
     ...policyEvaluations.map((evaluation, index) => {
       const state = normalizeCheckState(evaluation?.status);
@@ -295,7 +366,10 @@ export function buildCheckSummary(
   };
 }
 
-export function compareThreads(left: { status?: string; lastUpdatedDate?: string; publishedDate?: string }, right: { status?: string; lastUpdatedDate?: string; publishedDate?: string }): number {
+export function compareThreads(
+  left: { status?: string; lastUpdatedDate?: string; publishedDate?: string },
+  right: { status?: string; lastUpdatedDate?: string; publishedDate?: string },
+): number {
   const leftPriority = STATUS_PRIORITY[String(left?.status || "").toLowerCase()] || 0;
   const rightPriority = STATUS_PRIORITY[String(right?.status || "").toLowerCase()] || 0;
   if (leftPriority !== rightPriority) {
@@ -307,9 +381,40 @@ export function compareThreads(left: { status?: string; lastUpdatedDate?: string
 }
 
 export function createConnectionSnapshot(
-  connection: { id: string; label?: string; orgUrl?: string; login?: string; tokenRef?: string; enabled?: boolean; projectFilters?: string[]; repositoryFilters?: string[]; pollSeconds?: number; reviewRoot?: string },
-  persistedState: { status?: string; lastSyncAt?: string | null; lastSuccessAt?: string | null; lastError?: string } = {},
-): { id: string; label: string; orgUrl: string; login: string; tokenRef: string; enabled: boolean; projectFilters: string[]; repositoryFilters: string[]; pollSeconds: number; reviewRoot: string; status: string; lastSyncAt: string | null; lastSuccessAt: string | null; lastError: string } {
+  connection: {
+    id: string;
+    label?: string;
+    orgUrl?: string;
+    login?: string;
+    tokenRef?: string;
+    enabled?: boolean;
+    projectFilters?: string[];
+    repositoryFilters?: string[];
+    pollSeconds?: number;
+    reviewRoot?: string;
+  },
+  persistedState: {
+    status?: string;
+    lastSyncAt?: string | null;
+    lastSuccessAt?: string | null;
+    lastError?: string;
+  } = {},
+): {
+  id: string;
+  label: string;
+  orgUrl: string;
+  login: string;
+  tokenRef: string;
+  enabled: boolean;
+  projectFilters: string[];
+  repositoryFilters: string[];
+  pollSeconds: number;
+  reviewRoot: string;
+  status: string;
+  lastSyncAt: string | null;
+  lastSuccessAt: string | null;
+  lastError: string;
+} {
   return {
     id: connection.id,
     label: connection.label || connection.id,
@@ -363,13 +468,15 @@ export function inferAttentionReason({
   return "";
 }
 
-export function normalizeConnectionInput(connectionInput: {
-  orgUrl?: string;
-  login?: string;
-  projectFilters?: unknown[];
-  repositoryFilters?: unknown[];
-  [key: string]: unknown;
-} = {}): {
+export function normalizeConnectionInput(
+  connectionInput: {
+    orgUrl?: string;
+    login?: string;
+    projectFilters?: unknown[];
+    repositoryFilters?: unknown[];
+    [key: string]: unknown;
+  } = {},
+): {
   orgUrl: string;
   login: string;
   projectFilters: string[];

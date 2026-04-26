@@ -149,7 +149,6 @@ const selectedRoundHasFailedOutput = computed(() =>
 );
 
 const selectedRoundFailedOutputText = computed(() =>
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (selectedRoundData.value?.checks || [])
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     .filter((c: any) => !c.passed && c.outputTail)

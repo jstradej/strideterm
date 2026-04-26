@@ -228,12 +228,14 @@ export class DockerManager extends EventEmitter {
   }
 
   async performAction(action: string, containerId: string): Promise<DockerState> {
-    const command = ({
-      start: ["start", containerId],
-      stop: ["stop", containerId],
-      restart: ["restart", containerId],
-      remove: ["rm", "-f", containerId],
-    } as Record<string, string[]>)[action];
+    const command = (
+      {
+        start: ["start", containerId],
+        stop: ["stop", containerId],
+        restart: ["restart", containerId],
+        remove: ["rm", "-f", containerId],
+      } as Record<string, string[]>
+    )[action];
 
     if (!command) {
       throw new Error(`Unsupported Docker action: ${action}`);

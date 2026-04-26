@@ -222,9 +222,13 @@ function parseWindowsBuildNumber(release: string): number | null {
   return Number.isInteger(buildNumber) ? buildNumber : null;
 }
 
-export function detectTerminalEnvironment(
-  { platform = process.platform, release = os.release() }: { platform?: string; release?: string } = {},
-): { platform: string; windowsPty?: { backend: string; buildNumber: number } } {
+export function detectTerminalEnvironment({
+  platform = process.platform,
+  release = os.release(),
+}: { platform?: string; release?: string } = {}): {
+  platform: string;
+  windowsPty?: { backend: string; buildNumber: number };
+} {
   const environment: { platform: string } = { platform };
   if (platform !== "win32") {
     return environment;

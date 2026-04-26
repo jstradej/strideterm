@@ -230,7 +230,16 @@ export function createAuditLogStore(databasePath: string, config: AuditLogStoreC
       FROM ${tableName} ${where}
     `,
       )
-      .get(...params) as { total?: number; successCount?: number; errorCount?: number; readCount?: number; writeCount?: number; avgDurationMs?: number } | undefined;
+      .get(...params) as
+      | {
+          total?: number;
+          successCount?: number;
+          errorCount?: number;
+          readCount?: number;
+          writeCount?: number;
+          avgDurationMs?: number;
+        }
+      | undefined;
 
     return {
       total: row?.total || 0,

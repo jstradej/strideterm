@@ -204,7 +204,11 @@ function windowsPathList(pathValue: unknown): string[] {
     .filter(Boolean);
 }
 
-function resolveWindowsCommandPath(commandName: string, processInfo: ProcessInfo = {}, preferredExtensions: string[] = []): string {
+function resolveWindowsCommandPath(
+  commandName: string,
+  processInfo: ProcessInfo = {},
+  preferredExtensions: string[] = [],
+): string {
   const overrides = processInfo.commandLookup || {};
   const explicit = String(overrides[commandName] || "").trim();
   if (explicit) {
@@ -255,7 +259,13 @@ function resolveDefaultAppEntry(processInfo: ProcessInfo = {}): string {
   return path.resolve(DEFAULT_APP_ENTRY, explicitTarget);
 }
 
-function buildMcpServerSpec({ context, processInfo }: { context?: ReviewContext; processInfo?: ProcessInfo }): McpServerSpec {
+function buildMcpServerSpec({
+  context,
+  processInfo,
+}: {
+  context?: ReviewContext;
+  processInfo?: ProcessInfo;
+}): McpServerSpec {
   const command = String(processInfo?.execPath || process.execPath || "").trim();
   if (!command) {
     throw new Error("Review bridge MCP launch is missing an executable path.");
@@ -474,7 +484,12 @@ export function detectReviewAgentPanel(panel: ReviewPanel = {}): string | null {
 
 export { buildMcpServerSpec };
 
-export function buildReviewAgentLaunch({ workspace, panel, context, processInfo }: BuildLaunchInput): AgentLaunch | null {
+export function buildReviewAgentLaunch({
+  workspace,
+  panel,
+  context,
+  processInfo,
+}: BuildLaunchInput): AgentLaunch | null {
   if (!context?.rootPath) {
     return null;
   }

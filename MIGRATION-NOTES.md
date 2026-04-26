@@ -6,15 +6,15 @@ This file is updated throughout the TypeScript migration (Phases 1–10). It tra
 
 All `no-explicit-any` suppressions are marked inline with `// eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: <reason>` or `// eslint-disable-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT`. Categories:
 
-| Category | Files | Reason |
-|----------|-------|--------|
-| Server state JSON blob | `WorkspaceHero.vue`, `SidebarPanel.vue`, `runtime.ts`, `default-state.ts` | `payload` is a `shallowRef` of the full server state blob; deriving typed slices is done in stores, not inline |
-| Git/attention/docker open-ended JSON | `GitPane.vue`, `WorkspaceHero.vue` | Git snapshot and attention objects are open-ended server JSON; indexed dynamically |
-| Test assertions on untyped API/manager results | `azure-devops-api.test.ts`, `azure-devops-manager.test.ts`, `agent-task-runner.test.ts`, `file-manager.test.ts`, `review-bridge-agent-launch.test.ts`, `version-checker.test.ts`, `ssh-manager.test.ts` | Test helpers cast return values that haven't been fully typed; acceptable in test scope |
-| Fixture JSON (mock server) | `test/mock-server.ts` | Fixture JSON payloads are untyped server state blobs; typing them fully would require duplicating all server state types |
-| Store/immer draft mutation | `runtime.ts`, `ssh/runtime-ssh-handlers.ts` | Immer draft types lack index signatures for sub-schema mutations; narrowing to `any` is the accepted pattern |
-| Effect operation context cast | `effect/operation-context.ts` | `provideService` narrowing strips `R` but TypeScript can't verify it statically |
-| Unknown catch shape | `runtime.ts` | Standard `(err as any)?.message` pattern for error objects in catch blocks |
+| Category                                       | Files                                                                                                                                                                                                   | Reason                                                                                                                   |
+| ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| Server state JSON blob                         | `WorkspaceHero.vue`, `SidebarPanel.vue`, `runtime.ts`, `default-state.ts`                                                                                                                               | `payload` is a `shallowRef` of the full server state blob; deriving typed slices is done in stores, not inline           |
+| Git/attention/docker open-ended JSON           | `GitPane.vue`, `WorkspaceHero.vue`                                                                                                                                                                      | Git snapshot and attention objects are open-ended server JSON; indexed dynamically                                       |
+| Test assertions on untyped API/manager results | `azure-devops-api.test.ts`, `azure-devops-manager.test.ts`, `agent-task-runner.test.ts`, `file-manager.test.ts`, `review-bridge-agent-launch.test.ts`, `version-checker.test.ts`, `ssh-manager.test.ts` | Test helpers cast return values that haven't been fully typed; acceptable in test scope                                  |
+| Fixture JSON (mock server)                     | `test/mock-server.ts`                                                                                                                                                                                   | Fixture JSON payloads are untyped server state blobs; typing them fully would require duplicating all server state types |
+| Store/immer draft mutation                     | `runtime.ts`, `ssh/runtime-ssh-handlers.ts`                                                                                                                                                             | Immer draft types lack index signatures for sub-schema mutations; narrowing to `any` is the accepted pattern             |
+| Effect operation context cast                  | `effect/operation-context.ts`                                                                                                                                                                           | `provideService` narrowing strips `R` but TypeScript can't verify it statically                                          |
+| Unknown catch shape                            | `runtime.ts`                                                                                                                                                                                            | Standard `(err as any)?.message` pattern for error objects in catch blocks                                               |
 
 ## Decisions outside plan
 
@@ -22,10 +22,11 @@ All `no-explicit-any` suppressions are marked inline with `// eslint-disable-nex
 
 **Context:** `tsc` fails with TS18003 when a tsconfig's `include` paths match no files.
 **Choice:** Created placeholder `.ts`/`.mts` files for the three tsconfig domains that have no TS files in Phase 1:
+
 - `electron/shared/types/index.ts` (satisfies `tsconfig.backend.json`)
 - `test/types/index.ts` (satisfies `tsconfig.tests.json`)
 - `scripts/placeholder.mts` (satisfies `tsconfig.scripts.json`)
-**Reason:** Plan requires `npm run typecheck` to pass in Phase 1. These placeholders will be superseded by real content in Phases 2, 6, and 8 respectively.
+  **Reason:** Plan requires `npm run typecheck` to pass in Phase 1. These placeholders will be superseded by real content in Phases 2, 6, and 8 respectively.
 
 ### Phase 1: ESLint TS-eslint scoped to TS files only
 
@@ -64,26 +65,27 @@ Phase 8 introduces 0 new typecheck errors. The 1094 errors reported by `npm run 
 
 ### Migrated modules (full / selective)
 
-| Module | Status |
-|--------|--------|
-| `electron/backend/effect/runtime.ts` | Full — ManagedRuntime foundation |
-| `electron/backend/effect/operation-context.ts` | Full — Context.Reference for request context |
-| `electron/backend/effect/logger.ts` | Full — Logger as Context.Service |
-| `electron/backend/effect/scope-helpers.ts` | Full — PTY acquireRelease |
-| `electron/backend/effect/schedules.ts` | Full — retry schedules |
-| `electron/backend/effect/wiring.ts` | Full — shutdown hook |
-| `electron/backend/effect/errors/git-errors.ts` | Full |
-| `electron/backend/effect/errors/docker-errors.ts` | Full |
-| `electron/backend/effect/errors/session-errors.ts` | Full |
-| `electron/backend/effect/errors/task-errors.ts` | Full |
-| `electron/backend/agent-task-runner.ts` | Selective — `writeInitialFiles` uses `Effect.all` for parallel file ops; `#evaluateWorker` uses `Effect.acquireRelease` for `#evaluating` Set guard |
-| `electron/backend/session-manager.ts` | Selective — SSH key temp files use `Effect.acquireRelease` via `Scope.make`; PTY spawn uses `Effect.tryPromise` with `PtySpawnError` |
-| `electron/backend/git-manager.ts` | Selective — fetch/pull/push/merge/rebase in Effect |
-| `electron/backend/docker-manager.ts` | Selective — parallel refresh in Effect |
+| Module                                             | Status                                                                                                                                              |
+| -------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `electron/backend/effect/runtime.ts`               | Full — ManagedRuntime foundation                                                                                                                    |
+| `electron/backend/effect/operation-context.ts`     | Full — Context.Reference for request context                                                                                                        |
+| `electron/backend/effect/logger.ts`                | Full — Logger as Context.Service                                                                                                                    |
+| `electron/backend/effect/scope-helpers.ts`         | Full — PTY acquireRelease                                                                                                                           |
+| `electron/backend/effect/schedules.ts`             | Full — retry schedules                                                                                                                              |
+| `electron/backend/effect/wiring.ts`                | Full — shutdown hook                                                                                                                                |
+| `electron/backend/effect/errors/git-errors.ts`     | Full                                                                                                                                                |
+| `electron/backend/effect/errors/docker-errors.ts`  | Full                                                                                                                                                |
+| `electron/backend/effect/errors/session-errors.ts` | Full                                                                                                                                                |
+| `electron/backend/effect/errors/task-errors.ts`    | Full                                                                                                                                                |
+| `electron/backend/agent-task-runner.ts`            | Selective — `writeInitialFiles` uses `Effect.all` for parallel file ops; `#evaluateWorker` uses `Effect.acquireRelease` for `#evaluating` Set guard |
+| `electron/backend/session-manager.ts`              | Selective — SSH key temp files use `Effect.acquireRelease` via `Scope.make`; PTY spawn uses `Effect.tryPromise` with `PtySpawnError`                |
+| `electron/backend/git-manager.ts`                  | Selective — fetch/pull/push/merge/rebase in Effect                                                                                                  |
+| `electron/backend/docker-manager.ts`               | Selective — parallel refresh in Effect                                                                                                              |
 
 ### v4 API adaptations (FiberRef → Context.Reference)
 
 The plan uses `FiberRef.unsafeMake` / `FiberRef.unsafeGet` from Effect v3. These were removed in v4. Adaptations:
+
 - `FiberRef.unsafeMake<T>(default)` → `Context.Reference<T>(id, { defaultValue: () => default })`
 - `yield* FiberRef.get(ref)` → `yield* ref` (Reference is directly yieldable)
 - `Effect.locallyWith(ref, fn)(effect)` → `Effect.gen(function*() { const cur = yield* ref; return yield* effect.pipe(Effect.provideService(ref, fn(cur))); })`
@@ -108,6 +110,7 @@ The plan references `NodeContext.layer` from `@effect/platform-node`. In v4, thi
 ### Off-ramp playbook
 
 If downgrade to `effect@3` LTS is required:
+
 - `Context.Service<Self, Shape>()(id)` → `Context.Tag<Service>(id)` class syntax
 - `Context.Reference<T>(id, { defaultValue })` → `FiberRef.unsafeMake<T>(defaultValue)` + `FiberRef.currentFoo`
 - `Schema.TaggedErrorClass` → `Data.TaggedError` (already used in this plan)

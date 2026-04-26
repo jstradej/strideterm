@@ -40,7 +40,6 @@ interface SerializedDraft {
   updatedAt: string | null;
 }
 
-
 function resolvePrKey(store: ReviewBridgeStore, { prKey, workspaceId }: KeySpec): string | null {
   if (prKey) return prKey;
   if (workspaceId) {
@@ -134,7 +133,10 @@ function formatCommentList(context: ReviewContext): { text: string; comments: Se
   return { text, comments: activeComments };
 }
 
-function resolveComment(context: ReviewContext, { index = null, commentKey = "" }: { index?: number | null; commentKey?: string } = {}): { comment: ReviewContext["comments"][number] } {
+function resolveComment(
+  context: ReviewContext,
+  { index = null, commentKey = "" }: { index?: number | null; commentKey?: string } = {},
+): { comment: ReviewContext["comments"][number] } {
   const activeComments = getActiveComments(context);
   if (commentKey) {
     const comment = activeComments.find((entry) => entry.commentKey === commentKey) || null;
@@ -218,7 +220,15 @@ function toolResult(text: string, structuredContent?: Record<string, unknown>): 
   };
 }
 
-export function createReviewBridgeMcpHandlers({ store, prKey, workspaceId }: { store: ReviewBridgeStore; prKey?: string; workspaceId?: string }) {
+export function createReviewBridgeMcpHandlers({
+  store,
+  prKey,
+  workspaceId,
+}: {
+  store: ReviewBridgeStore;
+  prKey?: string;
+  workspaceId?: string;
+}) {
   const keySpec: KeySpec = { prKey, workspaceId };
   return {
     listReviewComments() {
@@ -275,7 +285,8 @@ export function createReviewBridgeMcpHandlers({ store, prKey, workspaceId }: { s
           )
           .sort(
             (left, right) =>
-              Date.parse(right.updatedAt || right.createdAt || "0") - Date.parse(left.updatedAt || left.createdAt || "0"),
+              Date.parse(right.updatedAt || right.createdAt || "0") -
+              Date.parse(left.updatedAt || left.createdAt || "0"),
           )[0] || null;
       const comment = latestComment && latestComment.displayIndex ? serializeComment(latestComment) : null;
       const latestDraft = comment
@@ -341,7 +352,12 @@ export function createReviewBridgeMcpHandlers({ store, prKey, workspaceId }: { s
         draft: latestDraft ? serializeDraft(latestDraft) : null,
       });
     },
-    async replyWithCodeChanges({ index = null, commentKey = "", body = "", authorAgent = "" }: { index?: number | null; commentKey?: string; body?: string; authorAgent?: string } = {}) {
+    async replyWithCodeChanges({
+      index = null,
+      commentKey = "",
+      body = "",
+      authorAgent = "",
+    }: { index?: number | null; commentKey?: string; body?: string; authorAgent?: string } = {}) {
       const baseContext = readContextOrThrow(store, keySpec);
       const selection = resolveComment(baseContext, { index, commentKey });
       const context = await store.replyWithCodeChanges({

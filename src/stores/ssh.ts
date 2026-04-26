@@ -33,11 +33,7 @@ export const useSshStore = defineStore("ssh", {
 
   actions: {
     async load(): Promise<void> {
-      const [hosts, keys, certs] = await Promise.all([
-        t.sshHostsList(),
-        t.sshKeysList(),
-        t.sshCertsList(),
-      ]);
+      const [hosts, keys, certs] = await Promise.all([t.sshHostsList(), t.sshKeysList(), t.sshCertsList()]);
       this.hosts = (hosts as SshHost[]) || [];
       this.keys = (keys as SshKey[]) || [];
       this.certificates = (certs as SshCert[]) || [];
@@ -62,7 +58,15 @@ export const useSshStore = defineStore("ssh", {
       await this.load();
     },
 
-    async generateKey({ kind, comment, passphrase }: { kind: string; comment: string; passphrase: string }): Promise<void> {
+    async generateKey({
+      kind,
+      comment,
+      passphrase,
+    }: {
+      kind: string;
+      comment: string;
+      passphrase: string;
+    }): Promise<void> {
       await t.sshKeysGenerate({ kind, comment, passphrase });
       await this.load();
     },

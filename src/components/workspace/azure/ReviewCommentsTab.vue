@@ -366,7 +366,6 @@ import { useAppStore } from "../../../stores/app.js";
 import { useGitUiStore } from "../../../stores/git-ui.js";
 import MarkdownContent from "./MarkdownContent.vue";
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 const props = defineProps<{
   prKey: string;
   workspaceId: string;

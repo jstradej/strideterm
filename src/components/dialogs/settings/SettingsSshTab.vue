@@ -98,7 +98,7 @@ import { useAppStore } from "../../../stores/app.js";
 import CustomSelect from "../../common/CustomSelect.vue";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-const form = inject<Record<string, any>>("settingsForm")!
+const form = inject<Record<string, any>>("settingsForm")!;
 const store = useAppStore();
 
 const ua = navigator.userAgent.toLowerCase();

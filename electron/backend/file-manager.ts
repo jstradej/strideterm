@@ -374,11 +374,7 @@ export async function readFileContent(rootPath: string, relativePath: string): P
   return { content, size: Buffer.byteLength(content, "utf-8"), encoding: "utf-8" };
 }
 
-export async function writeFileContent(
-  rootPath: string,
-  relativePath: string,
-  content: string,
-): Promise<WriteResult> {
+export async function writeFileContent(rootPath: string, relativePath: string, content: string): Promise<WriteResult> {
   const absFile = safePath(rootPath, relativePath);
   await fs.writeFile(absFile, content, "utf-8");
   const stat = await fs.stat(absFile);
@@ -890,11 +886,7 @@ export async function getCommitFiles(rootPath: string, hash: string): Promise<Co
  * the commit has no parent / introduces a new file).
  * Returns the same shape as computeFileDiff.
  */
-export async function computeCommitFileDiff(
-  rootPath: string,
-  relativePath: string,
-  hash: string,
-): Promise<DiffResult> {
+export async function computeCommitFileDiff(rootPath: string, relativePath: string, hash: string): Promise<DiffResult> {
   const language = guessLanguageFromPath(relativePath);
   const root = path.resolve(rootPath);
   const top = await resolveGitToplevel(root);

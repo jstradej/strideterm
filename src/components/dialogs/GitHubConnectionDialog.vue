@@ -151,7 +151,7 @@ onMounted(() => labelRef.value?.focus());
 
 async function browseReviewRoot() {
   if (!api?.browseDirectory) return;
-  const selected = await api.browseDirectory(draft.reviewRoot || props.defaultReviewRoot || "") as string | null;
+  const selected = (await api.browseDirectory(draft.reviewRoot || props.defaultReviewRoot || "")) as string | null;
   if (selected) draft.reviewRoot = selected;
 }
 
@@ -180,7 +180,10 @@ async function testConnection() {
   errorMessage.value = "";
   verification.value = null;
   try {
-    verification.value = await api?.verifyGitHubConnection?.(buildDraftPayload()) as { login: string; name?: string } | null;
+    verification.value = (await api?.verifyGitHubConnection?.(buildDraftPayload())) as {
+      login: string;
+      name?: string;
+    } | null;
   } catch (err) {
     errorMessage.value = (err as Error)?.message || "GitHub connection test failed.";
   } finally {

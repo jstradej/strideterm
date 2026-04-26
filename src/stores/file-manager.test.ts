@@ -6,7 +6,13 @@ import { useFileManagerStore } from "./file-manager.js";
 type AnyObj = Record<string, any>;
 
 function makeFakeApi(overrides = {}) {
-  const calls: { fileList: AnyObj[]; fileTree: AnyObj[]; fileGitStatus: AnyObj[]; fileGitDiff: AnyObj[]; fileGitRefs: AnyObj[] } = {
+  const calls: {
+    fileList: AnyObj[];
+    fileTree: AnyObj[];
+    fileGitStatus: AnyObj[];
+    fileGitDiff: AnyObj[];
+    fileGitRefs: AnyObj[];
+  } = {
     fileList: [],
     fileTree: [],
     fileGitStatus: [],
@@ -82,7 +88,13 @@ describe("file-manager store", () => {
       { name: ".hidden", relativePath: ".hidden", kind: "file" as const, isHidden: true, extension: "" },
       { name: "alpha.js", relativePath: "alpha.js", kind: "file" as const, isHidden: false, extension: ".js" },
       { name: "beta.js", relativePath: "beta.js", kind: "file" as const, isHidden: false, extension: ".js" },
-      { name: "node_modules", relativePath: "node_modules", kind: "directory" as const, isHidden: false, extension: "" },
+      {
+        name: "node_modules",
+        relativePath: "node_modules",
+        kind: "directory" as const,
+        isHidden: false,
+        extension: "",
+      },
     ];
     const { api } = makeFakeApi({
       fileList: async () => ({ entries: items, path: "" }),
@@ -176,7 +188,10 @@ describe("file-manager store", () => {
   });
 
   it("expandTreeNode preserves child entry identity across re-expansion of parent", async () => {
-    const treeResponses: Record<string, Array<{ name: string; relativePath: string; kind: "file" | "directory"; isHidden: boolean }>> = {
+    const treeResponses: Record<
+      string,
+      Array<{ name: string; relativePath: string; kind: "file" | "directory"; isHidden: boolean }>
+    > = {
       "": [
         { name: "src", relativePath: "src", kind: "directory", isHidden: false },
         { name: "lib", relativePath: "lib", kind: "directory", isHidden: false },

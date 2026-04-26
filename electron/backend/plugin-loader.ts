@@ -205,7 +205,10 @@ function validateManifest(manifest: unknown, pluginDir: string): ValidationResul
  * - `command`: a plain shell command (no file references). Allowed only for
  *   well-known CLI tools, not arbitrary code execution.
  */
-function resolvePlatformPanels(panels: RawPanel[] | undefined | null, pluginDir: string): RawPanel[] | undefined | null {
+function resolvePlatformPanels(
+  panels: RawPanel[] | undefined | null,
+  pluginDir: string,
+): RawPanel[] | undefined | null {
   if (!panels) return panels;
   const platform = process.platform; // "win32", "linux", "darwin"
 
@@ -376,9 +379,10 @@ export async function createPluginManager({
     getWorkspaceTemplate(pluginId: string): { panels?: RawPanel[]; [key: string]: unknown } | null {
       const plugin = allPlugins.find((p) => (p.manifest as ValidatedManifest).id === pluginId);
       if (!plugin || !(plugin.manifest as ValidatedManifest).workspaceDefaults) return null;
-      const template = JSON.parse(
-        JSON.stringify((plugin.manifest as ValidatedManifest).workspaceDefaults),
-      ) as { panels?: RawPanel[]; [key: string]: unknown };
+      const template = JSON.parse(JSON.stringify((plugin.manifest as ValidatedManifest).workspaceDefaults)) as {
+        panels?: RawPanel[];
+        [key: string]: unknown;
+      };
       if (template.panels) {
         template.panels = resolvePlatformPanels(template.panels, plugin.directory) ?? [];
       }

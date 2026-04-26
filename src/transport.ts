@@ -1,6 +1,12 @@
-﻿import type { StridetermAPI, StatePayload, TerminalSize, TerminalDataPayload, TerminalExitPayload } from '../electron/shared/ipc-bridge.js';
-import type { ProfilePayload } from '../electron/backend/ipc-schemas.js';
-import type { SshAuthRequest, SshConnectionState } from '../electron/shared/types/ssh.js';
+﻿import type {
+  StridetermAPI,
+  StatePayload,
+  TerminalSize,
+  TerminalDataPayload,
+  TerminalExitPayload,
+} from "../electron/shared/ipc-bridge.js";
+import type { ProfilePayload } from "../electron/backend/ipc-schemas.js";
+import type { SshAuthRequest, SshConnectionState } from "../electron/shared/types/ssh.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -30,7 +36,9 @@ interface EventHub {
  *  Electron-only methods (browseDirectory, showSystemNotification, etc.) are
  *  not present in the remote transport and are therefore excluded.
  */
-export interface Transport extends Partial<Omit<StridetermAPI, 'onConnectionState' | 'onSwitchWorkspace' | 'onSwitchProject' | 'onSwitchTab'>> {
+export interface Transport extends Partial<
+  Omit<StridetermAPI, "onConnectionState" | "onSwitchWorkspace" | "onSwitchProject" | "onSwitchTab">
+> {
   isRemote: boolean;
   getRemoteToken: () => string;
   setRemoteToken: (token: string) => void;
@@ -71,7 +79,7 @@ function bindElectronTransport(): Transport {
   return {
     ...window.strideterm,
     isRemote: false,
-    getRemoteToken: () => '',
+    getRemoteToken: () => "",
     setRemoteToken: () => {},
     regenerateRemoteToken: () => window.strideterm.regenerateRemoteToken(),
     saveProfile: (profile: ProfilePayload) => window.strideterm.saveProfile(profile),
@@ -84,20 +92,20 @@ function bindElectronTransport(): Transport {
 function createRemoteTransport(): Transport {
   const listeners = createEventHub();
   const query = new URLSearchParams(window.location.search);
-  let token = query.get('token') || window.sessionStorage.getItem('strideterm-token') || '';
+  let token = query.get("token") || window.sessionStorage.getItem("strideterm-token") || "";
 
   function persistToken(nextToken: string): void {
-    token = String(nextToken || '').trim();
+    token = String(nextToken || "").trim();
     if (token) {
-      window.sessionStorage.setItem('strideterm-token', token);
-      query.set('token', token);
-      window.history.replaceState({}, '', `${window.location.pathname}?${query.toString()}`);
+      window.sessionStorage.setItem("strideterm-token", token);
+      query.set("token", token);
+      window.history.replaceState({}, "", `${window.location.pathname}?${query.toString()}`);
       return;
     }
 
-    window.sessionStorage.removeItem('strideterm-token');
-    query.delete('token');
-    window.history.replaceState({}, '', window.location.pathname);
+    window.sessionStorage.removeItem("strideterm-token");
+    query.delete("token");
+    window.history.replaceState({}, "", window.location.pathname);
   }
 
   if (token) {
@@ -126,99 +134,99 @@ function createRemoteTransport(): Transport {
   function createRemoteIssue({
     kind,
     statusCode = 0,
-    rawMessage = '',
+    rawMessage = "",
     recoverable = true,
   }: RemoteIssueOptions = {}): RemoteError {
-    const normalizedMessage = String(rawMessage || '').trim();
+    const normalizedMessage = String(rawMessage || "").trim();
     let message = normalizedMessage;
 
     if (statusCode === 401) {
-      message = 'Remote token is missing or invalid.';
+      message = "Remote token is missing or invalid.";
     } else if (statusCode === 530 || /origin has been unregistered from argo tunnel/i.test(normalizedMessage)) {
       message =
-        'Cloudflare tunnel is no longer connected to the desktop app. Recreate the tunnel from the desktop app.';
+        "Cloudflare tunnel is no longer connected to the desktop app. Recreate the tunnel from the desktop app.";
     } else if ([502, 503, 504].includes(statusCode)) {
-      message = 'Remote workspace is temporarily unavailable. The desktop app or its local server may be restarting.';
-    } else if (kind === 'ws-closed' || kind === 'ws-error') {
-      message = 'Remote connection was lost. The desktop app or tunnel may have stopped.';
+      message = "Remote workspace is temporarily unavailable. The desktop app or its local server may be restarting.";
+    } else if (kind === "ws-closed" || kind === "ws-error") {
+      message = "Remote connection was lost. The desktop app or tunnel may have stopped.";
     } else if (!message) {
-      message = 'Remote connection failed.';
+      message = "Remote connection failed.";
     }
 
     const error = new Error(message) as RemoteError;
     error.isRemoteTransport = true;
     error.statusCode = statusCode;
-    error.kind = kind || 'request-failed';
+    error.kind = kind || "request-failed";
     error.recoverable = recoverable;
     error.rawMessage = normalizedMessage;
     return error;
   }
 
-  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
   const ws = new WebSocket(`${protocol}//${window.location.host}/ws?token=${encodeURIComponent(token)}`);
 
-  ws.addEventListener('open', () => {
-    emitConnectionState({ connected: true, message: '' });
+  ws.addEventListener("open", () => {
+    emitConnectionState({ connected: true, message: "" });
   });
 
-  ws.addEventListener('message', (event: MessageEvent) => {
+  ws.addEventListener("message", (event: MessageEvent) => {
     const message = JSON.parse(event.data as string) as { type: string; payload: unknown };
-    if (message.type === 'state:updated') {
-      emitConnectionState({ connected: true, message: '' });
+    if (message.type === "state:updated") {
+      emitConnectionState({ connected: true, message: "" });
       listeners.stateUpdated.forEach((handler) => handler(message.payload as StatePayload));
     }
-    if (message.type === 'terminal:data') {
+    if (message.type === "terminal:data") {
       listeners.terminalData.forEach((handler) => handler(message.payload as TerminalDataPayload));
     }
-    if (message.type === 'terminal:exit') {
+    if (message.type === "terminal:exit") {
       listeners.terminalExit.forEach((handler) => handler(message.payload as TerminalExitPayload));
     }
-    if (message.type === 'ssh:auth-prompt') {
+    if (message.type === "ssh:auth-prompt") {
       listeners.sshAuthPrompt.forEach((handler) => handler(message.payload as SshAuthRequest));
     }
-    if (message.type === 'ssh:host-key-change') {
+    if (message.type === "ssh:host-key-change") {
       listeners.sshHostKeyChange.forEach((handler) => handler(message.payload as Record<string, unknown>));
     }
-    if (message.type === 'ssh:state') {
+    if (message.type === "ssh:state") {
       listeners.sshState.forEach((handler) => handler(message.payload as Record<string, unknown>));
     }
-    if (message.type === 'ssh:connection-state') {
+    if (message.type === "ssh:connection-state") {
       listeners.sshConnectionState.forEach((handler) => handler(message.payload as SshConnectionState));
     }
   });
 
-  ws.addEventListener('close', (event: CloseEvent) => {
+  ws.addEventListener("close", (event: CloseEvent) => {
     const error = createRemoteIssue({
-      kind: 'ws-closed',
-      rawMessage: event.reason || '',
+      kind: "ws-closed",
+      rawMessage: event.reason || "",
     });
     emitConnectionState({ connected: false, message: error.message, code: event.code || 0 });
   });
 
-  ws.addEventListener('error', () => {
-    const error = createRemoteIssue({ kind: 'ws-error' });
+  ws.addEventListener("error", () => {
+    const error = createRemoteIssue({ kind: "ws-error" });
     emitConnectionState({ connected: false, message: error.message, code: 0 });
   });
 
   async function fetchJson(pathname: string, payload?: unknown): Promise<unknown> {
     if (!token) {
-      throw new Error('Remote access token is required.');
+      throw new Error("Remote access token is required.");
     }
 
     let response: Response;
     try {
       response = await fetch(pathname, {
-        method: payload ? 'POST' : 'GET',
+        method: payload ? "POST" : "GET",
         headers: {
-          'Content-Type': 'application/json',
+          "Content-Type": "application/json",
           Authorization: `Bearer ${token}`,
         },
         body: payload ? JSON.stringify(payload) : undefined,
       });
     } catch (cause) {
       const error = createRemoteIssue({
-        kind: 'network',
-        rawMessage: (cause as { message?: string })?.message || '',
+        kind: "network",
+        rawMessage: (cause as { message?: string })?.message || "",
       });
       emitConnectionState({ connected: false, message: error.message, code: 0 });
       throw error;
@@ -226,7 +234,7 @@ function createRemoteTransport(): Transport {
 
     if (!response.ok) {
       const error = createRemoteIssue({
-        kind: 'http',
+        kind: "http",
         statusCode: response.status,
         rawMessage: await response.text(),
       });
@@ -234,7 +242,7 @@ function createRemoteTransport(): Transport {
       throw error;
     }
 
-    emitConnectionState({ connected: true, message: '' });
+    emitConnectionState({ connected: true, message: "" });
     return response.json() as Promise<unknown>;
   }
 
@@ -253,7 +261,7 @@ function createRemoteTransport(): Transport {
     }
 
     ws.addEventListener(
-      'open',
+      "open",
       () => {
         ws.send(JSON.stringify(message));
       },
@@ -264,194 +272,195 @@ function createRemoteTransport(): Transport {
   return {
     isRemote: true,
     openExternal: (url: string) => {
-      const nextUrl = String(url || '').trim();
+      const nextUrl = String(url || "").trim();
       if (!nextUrl) {
         return Promise.resolve();
       }
-      window.open(nextUrl, '_blank', 'noopener,noreferrer');
+      window.open(nextUrl, "_blank", "noopener,noreferrer");
       return Promise.resolve();
     },
-    getState: () => fetchJson('/api/state') as Promise<StatePayload>,
-    activateWorkspace: (workspaceId) => fetchJson('/api/workspace/activate', { workspaceId }),
-    activateProject: (projectId) => fetchJson('/api/project/activate', { projectId }),
-    activateSession: (sessionId) => fetchJson('/api/session/activate', { sessionId }),
-    setWorkspaceUIState: (workspaceId, uiState) => fetchJson('/api/workspace/set-ui-state', { workspaceId, uiState }),
-    syncAttentionContext: (payload) => fetchJson('/api/attention/sync', payload),
-    clearAllAttention: () => fetchJson('/api/attention/clear-all', {}),
+    getState: () => fetchJson("/api/state") as Promise<StatePayload>,
+    activateWorkspace: (workspaceId) => fetchJson("/api/workspace/activate", { workspaceId }),
+    activateProject: (projectId) => fetchJson("/api/project/activate", { projectId }),
+    activateSession: (sessionId) => fetchJson("/api/session/activate", { sessionId }),
+    setWorkspaceUIState: (workspaceId, uiState) => fetchJson("/api/workspace/set-ui-state", { workspaceId, uiState }),
+    syncAttentionContext: (payload) => fetchJson("/api/attention/sync", payload),
+    clearAllAttention: () => fetchJson("/api/attention/clear-all", {}),
     clearAlertForSession: (sessionId, options) =>
-      fetchJson('/api/attention/clear-session', {
+      fetchJson("/api/attention/clear-session", {
         sessionId,
         dismissed: options?.dismissed === true,
       }),
-    saveWorkspace: (workspace) => fetchJson('/api/workspace/save', { workspace }),
-    saveProject: (project) => fetchJson('/api/project/save', { project }),
-    deleteWorkspace: (workspaceId, options) => fetchJson('/api/workspace/delete', { workspaceId, ...options }),
-    deleteProject: (projectId) => fetchJson('/api/project/delete', { projectId }),
-    reorderWorkspaces: (workspaceIds) => fetchJson('/api/workspace/reorder', { workspaceIds }),
-    reorderProjects: (projectIds) => fetchJson('/api/project/reorder', { projectIds }),
-    updateSettings: (settings) => fetchJson('/api/settings/update', { settings }),
-    configureClaudeHook: () => fetchJson('/api/claude-hook/configure', {}),
-    removeClaudeHook: () => fetchJson('/api/claude-hook/remove', {}),
-    getClaudeHookStatus: () => fetchJson('/api/claude-hook/status', {}),
-    testClaudeHook: () => fetchJson('/api/claude-hook/test', {}),
-    configureGeminiHook: () => fetchJson('/api/gemini-hook/configure', {}),
-    removeGeminiHook: () => fetchJson('/api/gemini-hook/remove', {}),
-    getGeminiHookStatus: () => fetchJson('/api/gemini-hook/status', {}),
-    testGeminiHook: () => fetchJson('/api/gemini-hook/test', {}),
-    configureCodexHook: () => fetchJson('/api/codex-hook/configure', {}),
-    removeCodexHook: () => fetchJson('/api/codex-hook/remove', {}),
-    getCodexHookStatus: () => fetchJson('/api/codex-hook/status', {}),
-    testCodexHook: () => fetchJson('/api/codex-hook/test', {}),
-    configureCopilotHook: () => fetchJson('/api/copilot-hook/configure', {}),
-    removeCopilotHook: () => fetchJson('/api/copilot-hook/remove', {}),
-    getCopilotHookStatus: () => fetchJson('/api/copilot-hook/status', {}),
-    testCopilotHook: () => fetchJson('/api/copilot-hook/test', {}),
-    checkCommand: (command) => fetchJson('/api/check-command', { command }),
+    saveWorkspace: (workspace) => fetchJson("/api/workspace/save", { workspace }),
+    saveProject: (project) => fetchJson("/api/project/save", { project }),
+    deleteWorkspace: (workspaceId, options) => fetchJson("/api/workspace/delete", { workspaceId, ...options }),
+    deleteProject: (projectId) => fetchJson("/api/project/delete", { projectId }),
+    reorderWorkspaces: (workspaceIds) => fetchJson("/api/workspace/reorder", { workspaceIds }),
+    reorderProjects: (projectIds) => fetchJson("/api/project/reorder", { projectIds }),
+    updateSettings: (settings) => fetchJson("/api/settings/update", { settings }),
+    configureClaudeHook: () => fetchJson("/api/claude-hook/configure", {}),
+    removeClaudeHook: () => fetchJson("/api/claude-hook/remove", {}),
+    getClaudeHookStatus: () => fetchJson("/api/claude-hook/status", {}),
+    testClaudeHook: () => fetchJson("/api/claude-hook/test", {}),
+    configureGeminiHook: () => fetchJson("/api/gemini-hook/configure", {}),
+    removeGeminiHook: () => fetchJson("/api/gemini-hook/remove", {}),
+    getGeminiHookStatus: () => fetchJson("/api/gemini-hook/status", {}),
+    testGeminiHook: () => fetchJson("/api/gemini-hook/test", {}),
+    configureCodexHook: () => fetchJson("/api/codex-hook/configure", {}),
+    removeCodexHook: () => fetchJson("/api/codex-hook/remove", {}),
+    getCodexHookStatus: () => fetchJson("/api/codex-hook/status", {}),
+    testCodexHook: () => fetchJson("/api/codex-hook/test", {}),
+    configureCopilotHook: () => fetchJson("/api/copilot-hook/configure", {}),
+    removeCopilotHook: () => fetchJson("/api/copilot-hook/remove", {}),
+    getCopilotHookStatus: () => fetchJson("/api/copilot-hook/status", {}),
+    testCopilotHook: () => fetchJson("/api/copilot-hook/test", {}),
+    checkCommand: (command) => fetchJson("/api/check-command", { command }),
     // Task runner
-    recheckClaude: () => fetchJson('/api/task/recheck-claude', {}),
-    checkProviders: () => fetchJson('/api/task/check-providers', {}),
-    checkIsGitRepo: (cwd) => fetchJson('/api/task/check-git-repo', { cwd }),
-    probeDirectory: (cwd) => fetchJson('/api/fs/probe-directory', { cwd }),
-    createTaskWorkspace: (payload) => fetchJson('/api/task/create', payload),
-    startTask: (payload) => fetchJson('/api/task/start', payload),
-    stopTask: (payload) => fetchJson('/api/task/stop', payload),
-    pauseTask: (payload) => fetchJson('/api/task/pause', payload),
-    resumeTask: (payload) => fetchJson('/api/task/resume', payload),
-    resetTask: (payload) => fetchJson('/api/task/reset', payload),
-    rejectTaskVerdict: (payload) => fetchJson('/api/task/reject-verdict', payload),
-    getTaskStatus: (workspaceId) => fetchJson('/api/task/status', { workspaceId }),
-    verifyAzureConnection: (connection) => fetchJson('/api/azure/verify-connection', { connection }),
-    saveAzureConnection: (connection) => fetchJson('/api/azure/save-connection', { connection }),
-    deleteAzureConnection: (connectionId) => fetchJson('/api/azure/delete-connection', { connectionId }),
-    refreshAzure: () => fetchJson('/api/azure/refresh', {}),
-    queryAzureAuditLog: (filters) => fetchJson('/api/azure/audit-log/query', filters),
-    getAzureAuditStats: (filters) => fetchJson('/api/azure/audit-log/stats', filters),
-    markAzurePullRequestSeen: (prKey) => fetchJson('/api/azure/pull-request/seen', { prKey }),
-    openAzurePullRequest: (payload) => fetchJson('/api/azure/pull-request/open', payload),
-    commentAzurePullRequest: (payload) => fetchJson('/api/azure/pull-request/comment', payload),
-    createReviewBridgeDraftComment: (payload) => fetchJson('/api/review-bridge/draft-comment/create', payload),
-    saveReviewBridgeDraft: (payload) => fetchJson('/api/review-bridge/draft/save', payload),
-    deleteReviewBridgeDraft: (payload) => fetchJson('/api/review-bridge/draft/delete', payload),
-    queueReviewBridgeDraft: (payload) => fetchJson('/api/review-bridge/draft/queue', payload),
-    deleteReviewBridgeComment: (payload) => fetchJson('/api/review-bridge/comment/delete', payload),
-    replyWithCodeChanges: (payload) => fetchJson('/api/review-bridge/comment/reply-with-changes', payload),
-    resetAgentPrompts: () => fetchJson('/api/review-bridge/agent-prompt/reset', {}),
-    syncReviewBridgePullRequest: (payload) => fetchJson('/api/review-bridge/pull-request/sync', payload),
-    pushAndPublishReview: (payload) => fetchJson('/api/review-bridge/pull-request/push-and-publish', payload),
-    updateAzureThreadStatus: (payload) => fetchJson('/api/azure/pull-request/thread-status', payload),
-    voteAzurePullRequest: (payload) => fetchJson('/api/azure/pull-request/vote', payload),
-    fetchAzureReviewWorkspace: (workspaceId) => fetchJson('/api/azure/workspace/fetch', { workspaceId }),
-    rebaseAzureReviewWorkspace: (workspaceId) => fetchJson('/api/azure/workspace/rebase', { workspaceId }),
+    recheckClaude: () => fetchJson("/api/task/recheck-claude", {}),
+    checkProviders: () => fetchJson("/api/task/check-providers", {}),
+    checkIsGitRepo: (cwd) => fetchJson("/api/task/check-git-repo", { cwd }),
+    probeDirectory: (cwd) => fetchJson("/api/fs/probe-directory", { cwd }),
+    createTaskWorkspace: (payload) => fetchJson("/api/task/create", payload),
+    startTask: (payload) => fetchJson("/api/task/start", payload),
+    stopTask: (payload) => fetchJson("/api/task/stop", payload),
+    pauseTask: (payload) => fetchJson("/api/task/pause", payload),
+    resumeTask: (payload) => fetchJson("/api/task/resume", payload),
+    resetTask: (payload) => fetchJson("/api/task/reset", payload),
+    rejectTaskVerdict: (payload) => fetchJson("/api/task/reject-verdict", payload),
+    getTaskStatus: (workspaceId) => fetchJson("/api/task/status", { workspaceId }),
+    verifyAzureConnection: (connection) => fetchJson("/api/azure/verify-connection", { connection }),
+    saveAzureConnection: (connection) => fetchJson("/api/azure/save-connection", { connection }),
+    deleteAzureConnection: (connectionId) => fetchJson("/api/azure/delete-connection", { connectionId }),
+    refreshAzure: () => fetchJson("/api/azure/refresh", {}),
+    queryAzureAuditLog: (filters) => fetchJson("/api/azure/audit-log/query", filters),
+    getAzureAuditStats: (filters) => fetchJson("/api/azure/audit-log/stats", filters),
+    markAzurePullRequestSeen: (prKey) => fetchJson("/api/azure/pull-request/seen", { prKey }),
+    openAzurePullRequest: (payload) => fetchJson("/api/azure/pull-request/open", payload),
+    commentAzurePullRequest: (payload) => fetchJson("/api/azure/pull-request/comment", payload),
+    createReviewBridgeDraftComment: (payload) => fetchJson("/api/review-bridge/draft-comment/create", payload),
+    saveReviewBridgeDraft: (payload) => fetchJson("/api/review-bridge/draft/save", payload),
+    deleteReviewBridgeDraft: (payload) => fetchJson("/api/review-bridge/draft/delete", payload),
+    queueReviewBridgeDraft: (payload) => fetchJson("/api/review-bridge/draft/queue", payload),
+    deleteReviewBridgeComment: (payload) => fetchJson("/api/review-bridge/comment/delete", payload),
+    replyWithCodeChanges: (payload) => fetchJson("/api/review-bridge/comment/reply-with-changes", payload),
+    resetAgentPrompts: () => fetchJson("/api/review-bridge/agent-prompt/reset", {}),
+    syncReviewBridgePullRequest: (payload) => fetchJson("/api/review-bridge/pull-request/sync", payload),
+    pushAndPublishReview: (payload) => fetchJson("/api/review-bridge/pull-request/push-and-publish", payload),
+    updateAzureThreadStatus: (payload) => fetchJson("/api/azure/pull-request/thread-status", payload),
+    voteAzurePullRequest: (payload) => fetchJson("/api/azure/pull-request/vote", payload),
+    fetchAzureReviewWorkspace: (workspaceId) => fetchJson("/api/azure/workspace/fetch", { workspaceId }),
+    rebaseAzureReviewWorkspace: (workspaceId) => fetchJson("/api/azure/workspace/rebase", { workspaceId }),
     pushAzureReviewWorkspace: (workspaceId, options) =>
-      fetchJson('/api/azure/workspace/push', { workspaceId, ...options }),
-    azureCreatePullRequest: (payload) => fetchJson('/api/azure/create-pull-request', payload),
-    azureListRemoteBranches: (payload) => fetchJson('/api/azure/list-remote-branches', payload),
-    azureQuickFixListProjects: (payload) => fetchJson('/api/azure/quickfix/list-projects', payload),
-    azureQuickFixListRepositories: (payload) => fetchJson('/api/azure/quickfix/list-repositories', payload),
-    azureQuickFixListBranches: (payload) => fetchJson('/api/azure/quickfix/list-branches', payload),
-    azureQuickFixCreate: (payload) => fetchJson('/api/azure/quickfix/create', payload),
-    rerunAzureCheck: (prKey, checkItem) => fetchJson('/api/azure/rerun-check', { prKey, checkItem }),
-    verifyGitHubConnection: (connection) => fetchJson('/api/github/verify-connection', { connection }),
-    saveGitHubConnection: (connection) => fetchJson('/api/github/save-connection', { connection }),
-    deleteGitHubConnection: (connectionId) => fetchJson('/api/github/delete-connection', { connectionId }),
-    refreshGitHub: () => fetchJson('/api/github/refresh', {}),
-    queryGitHubAuditLog: (filters) => fetchJson('/api/github/audit-log/query', filters),
-    getGitHubAuditStats: (filters) => fetchJson('/api/github/audit-log/stats', filters),
-    markGitHubPullRequestSeen: (prKey) => fetchJson('/api/github/pull-request/seen', { prKey }),
-    openGitHubPullRequest: (payload) => fetchJson('/api/github/pull-request/open', payload),
-    commentGitHubPullRequest: (payload) => fetchJson('/api/github/pull-request/comment', payload),
-    submitGitHubPullRequestReview: (payload) => fetchJson('/api/github/pull-request/review', payload),
-    rerunGitHubCheck: (prKey, checkItem) => fetchJson('/api/github/rerun-check', { prKey, checkItem }),
-    fetchGitHubReviewWorkspace: (workspaceId) => fetchJson('/api/github/workspace/fetch', { workspaceId }),
-    rebaseGitHubReviewWorkspace: (workspaceId) => fetchJson('/api/github/workspace/rebase', { workspaceId }),
+      fetchJson("/api/azure/workspace/push", { workspaceId, ...options }),
+    azureCreatePullRequest: (payload) => fetchJson("/api/azure/create-pull-request", payload),
+    azureListRemoteBranches: (payload) => fetchJson("/api/azure/list-remote-branches", payload),
+    azureQuickFixListProjects: (payload) => fetchJson("/api/azure/quickfix/list-projects", payload),
+    azureQuickFixListRepositories: (payload) => fetchJson("/api/azure/quickfix/list-repositories", payload),
+    azureQuickFixListBranches: (payload) => fetchJson("/api/azure/quickfix/list-branches", payload),
+    azureQuickFixCreate: (payload) => fetchJson("/api/azure/quickfix/create", payload),
+    rerunAzureCheck: (prKey, checkItem) => fetchJson("/api/azure/rerun-check", { prKey, checkItem }),
+    verifyGitHubConnection: (connection) => fetchJson("/api/github/verify-connection", { connection }),
+    saveGitHubConnection: (connection) => fetchJson("/api/github/save-connection", { connection }),
+    deleteGitHubConnection: (connectionId) => fetchJson("/api/github/delete-connection", { connectionId }),
+    refreshGitHub: () => fetchJson("/api/github/refresh", {}),
+    queryGitHubAuditLog: (filters) => fetchJson("/api/github/audit-log/query", filters),
+    getGitHubAuditStats: (filters) => fetchJson("/api/github/audit-log/stats", filters),
+    markGitHubPullRequestSeen: (prKey) => fetchJson("/api/github/pull-request/seen", { prKey }),
+    openGitHubPullRequest: (payload) => fetchJson("/api/github/pull-request/open", payload),
+    commentGitHubPullRequest: (payload) => fetchJson("/api/github/pull-request/comment", payload),
+    submitGitHubPullRequestReview: (payload) => fetchJson("/api/github/pull-request/review", payload),
+    rerunGitHubCheck: (prKey, checkItem) => fetchJson("/api/github/rerun-check", { prKey, checkItem }),
+    fetchGitHubReviewWorkspace: (workspaceId) => fetchJson("/api/github/workspace/fetch", { workspaceId }),
+    rebaseGitHubReviewWorkspace: (workspaceId) => fetchJson("/api/github/workspace/rebase", { workspaceId }),
     pushGitHubReviewWorkspace: (workspaceId, options) =>
-      fetchJson('/api/github/workspace/push', { workspaceId, ...options }),
-    githubListRemoteBranches: (payload) => fetchJson('/api/github/list-remote-branches', payload),
-    githubCreatePullRequest: (payload) => fetchJson('/api/github/create-pull-request', payload),
-    githubQuickFixListRepos: (payload) => fetchJson('/api/github/quickfix/list-repos', payload),
-    githubQuickFixListBranches: (payload) => fetchJson('/api/github/quickfix/list-branches', payload),
-    githubQuickFixCreate: (payload) => fetchJson('/api/github/quickfix/create', payload),
-    regenerateRemoteToken: () => fetchJson('/api/remote/token/regenerate', {}),
-    refreshTunnel: () => fetchJson('/api/tunnel/refresh', {}),
-    createCloudflareTunnel: () => fetchJson('/api/tunnel/create', {}),
-    stopCloudflareTunnel: () => fetchJson('/api/tunnel/stop', {}),
-    restartTerminal: (sessionId) => fetchJson('/api/terminal/restart', { sessionId }),
-    refreshDocker: () => fetchJson('/api/docker/refresh', {}),
-    refreshGit: (projectId) => fetchJson('/api/git/refresh', { projectId }),
-    gitFetch: (payload) => fetchJson('/api/git/fetch', payload),
-    gitPull: (payload) => fetchJson('/api/git/pull', payload),
-    gitPush: (payload) => fetchJson('/api/git/push', payload),
-    gitCheckoutBranch: (payload) => fetchJson('/api/git/checkout-branch', payload),
-    gitCreateBranch: (payload) => fetchJson('/api/git/create-branch', payload),
-    gitMergeIntoCurrent: (payload) => fetchJson('/api/git/merge-into-current', payload),
-    gitRebaseOnto: (payload) => fetchJson('/api/git/rebase-onto', payload),
-    gitContinueOperation: (payload) => fetchJson('/api/git/continue', payload),
-    gitAbortOperation: (payload) => fetchJson('/api/git/abort', payload),
-    gitDiffPreview: (payload) => fetchJson('/api/git/diff-preview', payload),
-    gitMergeCurrentIntoBase: (payload) => fetchJson('/api/git/merge-into-base', payload),
-    gitRemoveWorktree: (payload) => fetchJson('/api/git/remove-worktree', payload),
-    gitCommitAll: (payload) => fetchJson('/api/git/commit-all', payload),
-    gitStash: (payload) => fetchJson('/api/git/stash', payload),
-    gitStashPop: (payload) => fetchJson('/api/git/stash-pop', payload),
-    gitCommitDiff: (payload) => fetchJson('/api/git/commit-diff', payload),
-    gitListTags: (payload) => fetchJson('/api/git/list-tags', payload),
-    gitCreateTag: (payload) => fetchJson('/api/git/create-tag', payload),
-    gitDeleteTag: (payload) => fetchJson('/api/git/delete-tag', payload),
-    gitPushTag: (payload) => fetchJson('/api/git/push-tag', payload),
-    gitPushAllTags: (payload) => fetchJson('/api/git/push-all-tags', payload),
-    gitDeleteRemoteTag: (payload) => fetchJson('/api/git/delete-remote-tag', payload),
-    gitForcePushWithLease: (payload) => fetchJson('/api/git/force-push-with-lease', payload),
-    dockerAction: (action, containerId) => fetchJson('/api/docker/action', { action, containerId }),
-    openDockerSession: (payload) => fetchJson('/api/docker/open-session', payload),
-    openLazydockerSession: (payload) => fetchJson('/api/docker/open-lazydocker', payload),
-    openLazygitSession: (payload) => fetchJson('/api/git/open-lazygit', payload),
-    createWorktree: (payload) => fetchJson('/api/git/create-worktree', payload),
-    saveProfile: (profile) => fetchJson('/api/profile/save', { profile }),
-    deleteProfile: (profileId) => fetchJson('/api/profile/delete', { profileId }),
-    activateProfile: (profileId) => fetchJson('/api/profile/activate', { profileId }),
-    fileList: (p) => fetchJson('/api/file/list', p),
-    fileTree: (p) => fetchJson('/api/file/tree', p),
-    filePreview: (p) => fetchJson('/api/file/preview', p),
-    fileRead: (p) => fetchJson('/api/file/read', p),
-    fileWrite: (p) => fetchJson('/api/file/write', p),
-    fileCreateFile: (p) => fetchJson('/api/file/create-file', p),
-    fileCreateDir: (p) => fetchJson('/api/file/create-dir', p),
-    fileRename: (p) => fetchJson('/api/file/rename', p),
-    fileDelete: (p) => fetchJson('/api/file/delete', p),
-    fileMove: (p) => fetchJson('/api/file/move', p),
-    fileCopy: (p) => fetchJson('/api/file/copy', p),
-    fileOpenInExplorer: (absPath) => fetchJson('/api/file/open-in-explorer', { absPath }),
-    fileOpenInEditor: (p) => fetchJson('/api/file/open-in-editor', p),
-    fileInfo: (p) => fetchJson('/api/file/info', p),
-    fileGitStatus: (p) => fetchJson('/api/file/git-status', p),
-    fileGitRefs: (p) => fetchJson('/api/file/git-refs', p),
-    fileGitDiff: (p) => fetchJson('/api/file/git-diff', p),
-    fileCommitFiles: (p) => fetchJson('/api/file/commit-files', p),
-    fileCommitDiff: (p) => fetchJson('/api/file/commit-diff', p),
+      fetchJson("/api/github/workspace/push", { workspaceId, ...options }),
+    githubListRemoteBranches: (payload) => fetchJson("/api/github/list-remote-branches", payload),
+    githubCreatePullRequest: (payload) => fetchJson("/api/github/create-pull-request", payload),
+    githubQuickFixListRepos: (payload) => fetchJson("/api/github/quickfix/list-repos", payload),
+    githubQuickFixListBranches: (payload) => fetchJson("/api/github/quickfix/list-branches", payload),
+    githubQuickFixCreate: (payload) => fetchJson("/api/github/quickfix/create", payload),
+    regenerateRemoteToken: () => fetchJson("/api/remote/token/regenerate", {}),
+    refreshTunnel: () => fetchJson("/api/tunnel/refresh", {}),
+    createCloudflareTunnel: () => fetchJson("/api/tunnel/create", {}),
+    stopCloudflareTunnel: () => fetchJson("/api/tunnel/stop", {}),
+    restartTerminal: (sessionId) => fetchJson("/api/terminal/restart", { sessionId }),
+    refreshDocker: () => fetchJson("/api/docker/refresh", {}),
+    refreshGit: (projectId) => fetchJson("/api/git/refresh", { projectId }),
+    gitFetch: (payload) => fetchJson("/api/git/fetch", payload),
+    gitPull: (payload) => fetchJson("/api/git/pull", payload),
+    gitPush: (payload) => fetchJson("/api/git/push", payload),
+    gitCheckoutBranch: (payload) => fetchJson("/api/git/checkout-branch", payload),
+    gitCreateBranch: (payload) => fetchJson("/api/git/create-branch", payload),
+    gitMergeIntoCurrent: (payload) => fetchJson("/api/git/merge-into-current", payload),
+    gitRebaseOnto: (payload) => fetchJson("/api/git/rebase-onto", payload),
+    gitContinueOperation: (payload) => fetchJson("/api/git/continue", payload),
+    gitAbortOperation: (payload) => fetchJson("/api/git/abort", payload),
+    gitDiffPreview: (payload) => fetchJson("/api/git/diff-preview", payload),
+    gitMergeCurrentIntoBase: (payload) => fetchJson("/api/git/merge-into-base", payload),
+    gitRemoveWorktree: (payload) => fetchJson("/api/git/remove-worktree", payload),
+    gitCommitAll: (payload) => fetchJson("/api/git/commit-all", payload),
+    gitStash: (payload) => fetchJson("/api/git/stash", payload),
+    gitStashPop: (payload) => fetchJson("/api/git/stash-pop", payload),
+    gitCommitDiff: (payload) => fetchJson("/api/git/commit-diff", payload),
+    gitListTags: (payload) => fetchJson("/api/git/list-tags", payload),
+    gitCreateTag: (payload) => fetchJson("/api/git/create-tag", payload),
+    gitDeleteTag: (payload) => fetchJson("/api/git/delete-tag", payload),
+    gitPushTag: (payload) => fetchJson("/api/git/push-tag", payload),
+    gitPushAllTags: (payload) => fetchJson("/api/git/push-all-tags", payload),
+    gitDeleteRemoteTag: (payload) => fetchJson("/api/git/delete-remote-tag", payload),
+    gitForcePushWithLease: (payload) => fetchJson("/api/git/force-push-with-lease", payload),
+    dockerAction: (action, containerId) => fetchJson("/api/docker/action", { action, containerId }),
+    openDockerSession: (payload) => fetchJson("/api/docker/open-session", payload),
+    openLazydockerSession: (payload) => fetchJson("/api/docker/open-lazydocker", payload),
+    openLazygitSession: (payload) => fetchJson("/api/git/open-lazygit", payload),
+    createWorktree: (payload) => fetchJson("/api/git/create-worktree", payload),
+    saveProfile: (profile) => fetchJson("/api/profile/save", { profile }),
+    deleteProfile: (profileId) => fetchJson("/api/profile/delete", { profileId }),
+    activateProfile: (profileId) => fetchJson("/api/profile/activate", { profileId }),
+    fileList: (p) => fetchJson("/api/file/list", p),
+    fileTree: (p) => fetchJson("/api/file/tree", p),
+    filePreview: (p) => fetchJson("/api/file/preview", p),
+    fileRead: (p) => fetchJson("/api/file/read", p),
+    fileWrite: (p) => fetchJson("/api/file/write", p),
+    fileCreateFile: (p) => fetchJson("/api/file/create-file", p),
+    fileCreateDir: (p) => fetchJson("/api/file/create-dir", p),
+    fileRename: (p) => fetchJson("/api/file/rename", p),
+    fileDelete: (p) => fetchJson("/api/file/delete", p),
+    fileMove: (p) => fetchJson("/api/file/move", p),
+    fileCopy: (p) => fetchJson("/api/file/copy", p),
+    fileOpenInExplorer: (absPath) => fetchJson("/api/file/open-in-explorer", { absPath }),
+    fileOpenInEditor: (p) => fetchJson("/api/file/open-in-editor", p),
+    fileInfo: (p) => fetchJson("/api/file/info", p),
+    fileGitStatus: (p) => fetchJson("/api/file/git-status", p),
+    fileGitRefs: (p) => fetchJson("/api/file/git-refs", p),
+    fileGitDiff: (p) => fetchJson("/api/file/git-diff", p),
+    fileCommitFiles: (p) => fetchJson("/api/file/commit-files", p),
+    fileCommitDiff: (p) => fetchJson("/api/file/commit-diff", p),
 
-    sshHostsList: () => fetchJson('/api/ssh/hosts/list', {}),
-    sshHostsCreate: (payload) => fetchJson('/api/ssh/hosts/create', payload),
-    sshHostsUpdate: (payload) => fetchJson('/api/ssh/hosts/update', payload),
-    sshHostsDelete: (payload) => fetchJson('/api/ssh/hosts/delete', payload),
-    sshHostsDuplicate: (payload) => fetchJson('/api/ssh/hosts/duplicate', payload),
-    sshHostsTest: (payload) => fetchJson('/api/ssh/hosts/test', payload),
-    sshKeysList: () => fetchJson('/api/ssh/keys/list', {}),
-    sshKeysImport: (payload) => fetchJson('/api/ssh/keys/import', payload),
-    sshKeysGenerate: (payload) => fetchJson('/api/ssh/keys/generate', payload),
-    sshKeysDelete: (payload) => fetchJson('/api/ssh/keys/delete', payload),
-    sshCertsList: () => fetchJson('/api/ssh/certs/list', {}),
-    sshCertsImport: (payload) => fetchJson('/api/ssh/certs/import', payload),
-    sshCertsDelete: (payload) => fetchJson('/api/ssh/certs/delete', payload),
-    sshAuthAnswer: (payload) => fetchJson('/api/ssh/auth/answer', payload),
-    sshAuthCancel: (payload) => fetchJson('/api/ssh/auth/cancel', payload),
-    sshHostKeyAccept: (payload) => fetchJson('/api/ssh/host-key/accept', payload),
-    sshHostKeyReject: (payload) => fetchJson('/api/ssh/host-key/reject', payload),
-    sshConfigPreview: (payload) => fetchJson('/api/ssh/config/preview', payload),
-    sshConfigImport: (payload) => fetchJson('/api/ssh/config/import', payload),
-    sshKnownHostsImport: (payload) => fetchJson('/api/ssh/known-hosts/import', payload),
+    sshHostsList: () => fetchJson("/api/ssh/hosts/list", {}),
+    sshHostsCreate: (payload) => fetchJson("/api/ssh/hosts/create", payload),
+    sshHostsUpdate: (payload) => fetchJson("/api/ssh/hosts/update", payload),
+    sshHostsDelete: (payload) => fetchJson("/api/ssh/hosts/delete", payload),
+    sshHostsDuplicate: (payload) => fetchJson("/api/ssh/hosts/duplicate", payload),
+    sshHostsTest: (payload) => fetchJson("/api/ssh/hosts/test", payload),
+    sshKeysList: () => fetchJson("/api/ssh/keys/list", {}),
+    sshKeysImport: (payload) => fetchJson("/api/ssh/keys/import", payload),
+    sshKeysGenerate: (payload) => fetchJson("/api/ssh/keys/generate", payload),
+    sshKeysDelete: (payload) => fetchJson("/api/ssh/keys/delete", payload),
+    sshCertsList: () => fetchJson("/api/ssh/certs/list", {}),
+    sshCertsImport: (payload) => fetchJson("/api/ssh/certs/import", payload),
+    sshCertsDelete: (payload) => fetchJson("/api/ssh/certs/delete", payload),
+    sshAuthAnswer: (payload) => fetchJson("/api/ssh/auth/answer", payload),
+    sshAuthCancel: (payload) => fetchJson("/api/ssh/auth/cancel", payload),
+    sshHostKeyAccept: (payload) => fetchJson("/api/ssh/host-key/accept", payload),
+    sshHostKeyReject: (payload) => fetchJson("/api/ssh/host-key/reject", payload),
+    sshConfigPreview: (payload) => fetchJson("/api/ssh/config/preview", payload),
+    sshConfigImport: (payload) => fetchJson("/api/ssh/config/import", payload),
+    sshKnownHostsImport: (payload) => fetchJson("/api/ssh/known-hosts/import", payload),
 
-    resizeTerminal: (sessionId: string, size: TerminalSize) => send({ type: 'terminal:resize', sessionId, cols: size.cols, rows: size.rows }),
-    writeTerminal: (sessionId: string, data: string) => send({ type: 'terminal:input', sessionId, data }),
+    resizeTerminal: (sessionId: string, size: TerminalSize) =>
+      send({ type: "terminal:resize", sessionId, cols: size.cols, rows: size.rows }),
+    writeTerminal: (sessionId: string, data: string) => send({ type: "terminal:input", sessionId, data }),
     onStateUpdated: (handler: Handler<StatePayload>) => listeners.stateUpdated.add(handler),
     onTerminalData: (handler: Handler<TerminalDataPayload>) => listeners.terminalData.add(handler),
     onTerminalExit: (handler: Handler<TerminalExitPayload>) => listeners.terminalExit.add(handler),

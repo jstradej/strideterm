@@ -237,7 +237,13 @@ const props = withDefaults(
     baseBranchOptions?: string[];
     isLinkedWorktree?: boolean;
   }>(),
-  { workspaces: () => [], gitUi: () => ({}), effectiveBaseBranch: "", baseBranchOptions: () => [], isLinkedWorktree: false },
+  {
+    workspaces: () => [],
+    gitUi: () => ({}),
+    effectiveBaseBranch: "",
+    baseBranchOptions: () => [],
+    isLinkedWorktree: false,
+  },
 );
 
 const appStore = useAppStore();

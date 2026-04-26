@@ -295,7 +295,7 @@ export function getWorkspaceTabs({
   if (activeWorkspace.kind === "docker") {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const dockerState = (payload?.docker as any) || {};
-     
+
     const containers: unknown[] = (dockerState.containers as unknown[] | undefined) || [];
     const runningCount = containers.filter(isContainerRunning).length;
     tabs.push({
@@ -366,7 +366,9 @@ export function getVisibleTabs({
   return {
     activeViewId: next.activeViewId,
     splitGroup: next.splitGroup,
-    visibleTabs: visibleIds.map((viewId) => tabs.find((tab) => tab.id === viewId)).filter((t): t is WorkspaceTab => Boolean(t)),
+    visibleTabs: visibleIds
+      .map((viewId) => tabs.find((tab) => tab.id === viewId))
+      .filter((t): t is WorkspaceTab => Boolean(t)),
   };
 }
 

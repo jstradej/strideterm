@@ -1,7 +1,7 @@
 /// <reference types="node" />
 
 function envString(name: string, fallback: string): string {
-  const env = typeof process !== "undefined" ? process.env ?? {} : {};
+  const env = typeof process !== "undefined" ? (process.env ?? {}) : {};
   const value = env[name];
   return typeof value === "string" && value.length > 0 ? value : fallback;
 }

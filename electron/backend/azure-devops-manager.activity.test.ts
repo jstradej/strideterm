@@ -3,7 +3,6 @@ import os from "node:os";
 import { describe, expect, test, vi } from "vitest";
 import { AzureDevOpsManager, createPullRequestKey } from "./azure-devops-manager.js";
 
- 
 function createCredentialStore(secrets: Record<string, string> = {}) {
   return { getSecret: (ref: string) => secrets[ref] || "" };
 }
@@ -12,9 +11,9 @@ function createCredentialStore(secrets: Record<string, string> = {}) {
 function createReviewStore(initial: any = {}) {
   const state = {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    trackedPullRequests: initial.trackedPullRequests || {} as Record<string, any>,
+    trackedPullRequests: initial.trackedPullRequests || ({} as Record<string, any>),
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    connections: initial.connections || {} as Record<string, any>,
+    connections: initial.connections || ({} as Record<string, any>),
   };
   return {
     getState() {
@@ -271,8 +270,8 @@ describe("AzureDevOpsManager review-activity deltas", () => {
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const snapshot = (await manager.sync({ connections: [connection], workspaces: [], gitSnapshots: {} })) as any;
-    const voteEvents = snapshot.reviewActivity// eslint-disable-next-line @typescript-eslint/no-explicit-any
-    .filter((ev: any) => ev.kind === "pr-vote-changed");
+    const voteEvents = snapshot.reviewActivity // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      .filter((ev: any) => ev.kind === "pr-vote-changed");
     expect(voteEvents).toHaveLength(1);
     expect(voteEvents[0].body).toContain("Bob");
     expect(voteEvents[0].body).toContain("rejected");
@@ -300,8 +299,8 @@ describe("AzureDevOpsManager review-activity deltas", () => {
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const snapshot = (await manager.sync({ connections: [connection], workspaces: [], gitSnapshots: {} })) as any;
-    const pushEvents = snapshot.reviewActivity// eslint-disable-next-line @typescript-eslint/no-explicit-any
-    .filter((ev: any) => ev.kind === "pr-source-updated");
+    const pushEvents = snapshot.reviewActivity // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      .filter((ev: any) => ev.kind === "pr-source-updated");
     expect(pushEvents).toHaveLength(1);
     expect(pushEvents[0].body).toContain("Bob");
   });
@@ -327,8 +326,10 @@ describe("AzureDevOpsManager review-activity deltas", () => {
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const snapshot = (await manager.sync({ connections: [connection], workspaces: [], gitSnapshots: {} })) as any;
-    expect(snapshot.reviewActivity// eslint-disable-next-line @typescript-eslint/no-explicit-any
-    .filter((ev: any) => ev.kind === "pr-source-updated")).toEqual([]);
+    expect(
+      snapshot.reviewActivity // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        .filter((ev: any) => ev.kind === "pr-source-updated"),
+    ).toEqual([]);
   });
 
   test("brand-new PR discovered on second sync emits pr-new for reviewer role", async () => {
@@ -359,8 +360,8 @@ describe("AzureDevOpsManager review-activity deltas", () => {
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const snapshot = (await manager.sync({ connections: [connection], workspaces: [], gitSnapshots: {} })) as any;
-    const newEvents = snapshot.reviewActivity// eslint-disable-next-line @typescript-eslint/no-explicit-any
-    .filter((ev: any) => ev.kind === "pr-new");
+    const newEvents = snapshot.reviewActivity // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      .filter((ev: any) => ev.kind === "pr-new");
     expect(newEvents).toHaveLength(1);
     expect(newEvents[0].pullRequestNumber).toBe(456);
     expect(newEvents[0].body).toContain("feature X");

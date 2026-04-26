@@ -91,7 +91,10 @@ export function createEmptySnapshot() {
 }
 
 export function extractErrorText(error: unknown): string {
-  const e = error as { stderr?: unknown; stdout?: unknown; error?: { message?: unknown }; message?: unknown } | null | undefined;
+  const e = error as
+    | { stderr?: unknown; stdout?: unknown; error?: { message?: unknown }; message?: unknown }
+    | null
+    | undefined;
   return firstNonEmpty(e?.stderr, e?.stdout, e?.error?.message, e?.message, String(error || ""));
 }
 

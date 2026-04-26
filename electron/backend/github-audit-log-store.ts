@@ -5,7 +5,10 @@ import { createAuditLogStore } from "./shared/base-audit-log-store.js";
  * Classify a GitHub API request by URL pattern and HTTP method.
  * Returns { operation, category, resourceType }.
  */
-export function classifyGitHubRequest(method: string | undefined | null, url: string | undefined | null): { operation: string; category: string; resourceType: string } {
+export function classifyGitHubRequest(
+  method: string | undefined | null,
+  url: string | undefined | null,
+): { operation: string; category: string; resourceType: string } {
   const m = method?.toUpperCase() || "GET";
   const p = url || "";
 
@@ -72,7 +75,10 @@ export function createGitHubAuditLogStore(databasePath: string) {
   return createAuditLogStore(databasePath, {
     tableName: "github_audit_log",
     indexPrefix: "github_audit",
-    providerColumns: [{ name: "owner", default: "" }, { name: "repository", default: "" }],
+    providerColumns: [
+      { name: "owner", default: "" },
+      { name: "repository", default: "" },
+    ],
     mapEntryToProviderValues: (entry) => [String(entry.owner || ""), String(entry.repository || "")],
     mapRowToProviderFields: (row) => ({ owner: row.owner, repository: row.repository }),
     searchFields: ["owner", "repository"],

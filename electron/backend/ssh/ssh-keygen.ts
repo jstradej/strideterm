@@ -29,7 +29,11 @@ export async function detectSshKeygen(): Promise<boolean> {
   return keygenAvailable;
 }
 
-export async function generateKey({ kind = "ed25519", comment = "", passphrase = "" }: { kind?: string; comment?: string; passphrase?: string } = {}): Promise<GeneratedKey> {
+export async function generateKey({
+  kind = "ed25519",
+  comment = "",
+  passphrase = "",
+}: { kind?: string; comment?: string; passphrase?: string } = {}): Promise<GeneratedKey> {
   if (await detectSshKeygen()) {
     return generateViaKeygen({ kind, comment, passphrase });
   }
@@ -37,7 +41,15 @@ export async function generateKey({ kind = "ed25519", comment = "", passphrase =
   return generateViaSshpk({ kind, comment, passphrase });
 }
 
-async function generateViaKeygen({ kind, comment, passphrase }: { kind: string; comment: string; passphrase: string }): Promise<GeneratedKey> {
+async function generateViaKeygen({
+  kind,
+  comment,
+  passphrase,
+}: {
+  kind: string;
+  comment: string;
+  passphrase: string;
+}): Promise<GeneratedKey> {
   const dir = await mkdtemp(path.join(tmpdir(), "strideterm-sshkey-"));
   const file = path.join(dir, "id");
   try {
@@ -55,7 +67,15 @@ async function generateViaKeygen({ kind, comment, passphrase }: { kind: string; 
   }
 }
 
-async function generateViaSshpk({ kind, comment, passphrase }: { kind: string; comment: string; passphrase: string }): Promise<GeneratedKey> {
+async function generateViaSshpk({
+  kind,
+  comment,
+  passphrase,
+}: {
+  kind: string;
+  comment: string;
+  passphrase: string;
+}): Promise<GeneratedKey> {
   const { generateKeyPairSync } = await import("node:crypto");
   const sshpk = await import("sshpk");
 
@@ -71,7 +91,10 @@ async function generateViaSshpk({ kind, comment, passphrase }: { kind: string; c
     pair = generateKeyPairSync("ed25519");
   }
 
-  const { publicKey: pubRaw, privateKey: privRaw } = pair as { publicKey: { export(opts: object): string }; privateKey: { export(opts: object): string } };
+  const { publicKey: pubRaw, privateKey: privRaw } = pair as {
+    publicKey: { export(opts: object): string };
+    privateKey: { export(opts: object): string };
+  };
 
   const pubPem = pubRaw.export({ type: "spki", format: "pem" });
   const privKeyType = kind === "rsa" ? "pkcs1" : "pkcs8";

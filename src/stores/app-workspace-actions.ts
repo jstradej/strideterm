@@ -196,7 +196,13 @@ export function createWorkspaceActions(ctx: WorkspaceActionsCtx) {
   async function quickAddTab(cwdOverride = ""): Promise<void> {
     const workspace = (ctx.payload.value as AnyApi)?.workspace;
     const activeWs = workspace?.workspace || workspace?.project;
-    if (!activeWs || (activeWs as AnyApi).kind === "docker" || (activeWs as AnyApi).kind === "azure" || (activeWs as AnyApi).kind === "github") return;
+    if (
+      !activeWs ||
+      (activeWs as AnyApi).kind === "docker" ||
+      (activeWs as AnyApi).kind === "azure" ||
+      (activeWs as AnyApi).kind === "github"
+    )
+      return;
 
     const nextWorkspace = cloneWorkspace(activeWs as AnyApi);
     const panelId = `panel-${crypto.randomUUID()}`;
@@ -224,7 +230,13 @@ export function createWorkspaceActions(ctx: WorkspaceActionsCtx) {
   ): Promise<void> {
     const workspace = (ctx.payload.value as AnyApi)?.workspace;
     const activeWs = workspace?.workspace || workspace?.project;
-    if (!activeWs || (activeWs as AnyApi).kind === "docker" || (activeWs as AnyApi).kind === "azure" || (activeWs as AnyApi).kind === "github") return;
+    if (
+      !activeWs ||
+      (activeWs as AnyApi).kind === "docker" ||
+      (activeWs as AnyApi).kind === "azure" ||
+      (activeWs as AnyApi).kind === "github"
+    )
+      return;
 
     const nextWorkspace = cloneWorkspace(activeWs as AnyApi);
     const panelId = `panel-${crypto.randomUUID()}`;
@@ -288,10 +300,7 @@ export function createWorkspaceActions(ctx: WorkspaceActionsCtx) {
   function ctxAddToGroup(viewId: string): void {
     if (!ctx.splitGroup.value) return;
     const slots = LAYOUTS[ctx.splitGroup.value.layout]?.slots || 2;
-    if (
-      ctx.splitGroup.value.viewIds.length < slots &&
-      !ctx.splitGroup.value.viewIds.includes(viewId)
-    ) {
+    if (ctx.splitGroup.value.viewIds.length < slots && !ctx.splitGroup.value.viewIds.includes(viewId)) {
       ctx.splitGroup.value = { ...ctx.splitGroup.value, viewIds: [...ctx.splitGroup.value.viewIds, viewId] };
     }
   }
@@ -317,19 +326,11 @@ export function createWorkspaceActions(ctx: WorkspaceActionsCtx) {
     ctx.activeViewId.value = sessionId;
   }
 
-  async function reorderPanels(
-    draggedViewId: string,
-    dropViewId: string,
-    insertBefore: boolean,
-  ): Promise<void> {
+  async function reorderPanels(draggedViewId: string, dropViewId: string, insertBefore: boolean): Promise<void> {
     const workspace = (ctx.payload.value as AnyApi)?.workspace;
     const draggedTarget = getWorkspacePanelByViewId(draggedViewId, workspace, viewIdHelpers);
     const dropTarget = getWorkspacePanelByViewId(dropViewId, workspace, viewIdHelpers);
-    if (
-      !draggedTarget ||
-      !dropTarget ||
-      (draggedTarget as AnyApi).workspace.id !== (dropTarget as AnyApi).workspace.id
-    )
+    if (!draggedTarget || !dropTarget || (draggedTarget as AnyApi).workspace.id !== (dropTarget as AnyApi).workspace.id)
       return;
 
     const nextWorkspace = cloneWorkspace((draggedTarget as AnyApi).workspace);

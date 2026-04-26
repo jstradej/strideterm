@@ -16,12 +16,18 @@ const sortOptions = [
 export function useReviewComments(detail: Ref<any>, reviewBridge: Ref<any>, reviewUi: Ref<any>, pullRequest: Ref<any>) {
   // Comments state
   const allThreads = computed(() =>
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    ((detail.value?.threads || []) as any[]).filter((t: any) => String(t.status || "").toLowerCase() !== "unknown" && !t.isDeleted),
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: review thread shape is open-ended server JSON
+    ((detail.value?.threads || []) as any[]).filter(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: review thread item is open-ended server JSON
+      (t: any) => String(t.status || "").toLowerCase() !== "unknown" && !t.isDeleted,
+    ),
   );
   const draftComments = computed(() =>
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    ((reviewBridge.value.comments || []) as any[]).filter((c: any) => c.commentKind === "draft" || c.commentKind === "local-comment"),
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: review comment shape is open-ended server JSON
+    ((reviewBridge.value.comments || []) as any[]).filter(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: review comment item is open-ended server JSON
+      (c: any) => c.commentKind === "draft" || c.commentKind === "local-comment",
+    ),
   );
   const draftMap = computed(() => {
     const map = new Map();
@@ -130,7 +136,15 @@ export function useReviewComments(detail: Ref<any>, reviewBridge: Ref<any>, revi
     }
 
     const dir = sortDir.value === "desc" ? -1 : 1;
-    const statusOrder: Record<string, number> = { active: 0, pending: 1, "": 2, fixed: 3, closed: 4, wontfix: 5, bydesign: 6 };
+    const statusOrder: Record<string, number> = {
+      active: 0,
+      pending: 1,
+      "": 2,
+      fixed: 3,
+      closed: 4,
+      wontfix: 5,
+      bydesign: 6,
+    };
     if (sort.value === "newest") {
       return [...threads].sort((a, b) => {
         const lastA = (a.comments || []).at(-1)?.publishedDate || "";
@@ -176,8 +190,9 @@ export function useReviewComments(detail: Ref<any>, reviewBridge: Ref<any>, revi
       (allThreads.value as any[]).filter((t: any) => String(t.status || "").toLowerCase() === "active").length +
       draftComments.value.length,
   );
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const allDrafts = computed(() => ((reviewBridge.value.drafts || []) as any[]).filter((d: any) => d.status === "draft"));
+  const allDrafts = computed(
+    () => ((reviewBridge.value.drafts || []) as any[]).filter((d: any) => d.status === "draft"), // eslint-disable-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: review draft shape is open-ended server JSON
+  );
   const hasClearable = computed(() => allDrafts.value.length > 0 || draftComments.value.length > 0);
 
   return {

@@ -38,8 +38,13 @@ async function loadState(filePath: string): Promise<AzureReviewState> {
     return {
       version: 1,
       trackedPullRequests:
-        typeof parsed?.trackedPullRequests === "object" && parsed.trackedPullRequests ? parsed.trackedPullRequests as Record<string, TrackedPullRequest> : {},
-      connections: typeof parsed?.connections === "object" && parsed.connections ? parsed.connections as Record<string, ConnectionState> : {},
+        typeof parsed?.trackedPullRequests === "object" && parsed.trackedPullRequests
+          ? (parsed.trackedPullRequests as Record<string, TrackedPullRequest>)
+          : {},
+      connections:
+        typeof parsed?.connections === "object" && parsed.connections
+          ? (parsed.connections as Record<string, ConnectionState>)
+          : {},
     };
   } catch {
     return createDefaultState();

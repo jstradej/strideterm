@@ -161,7 +161,10 @@ function probeRemoteOrigin(originUrl: string, timeoutMs = 1200): Promise<number>
   });
 }
 
-async function checkRemoteOrigin(originUrl: string, { attempts = 16, delayMs = 250, timeoutMs = 1200 } = {}): Promise<string> {
+async function checkRemoteOrigin(
+  originUrl: string,
+  { attempts = 16, delayMs = 250, timeoutMs = 1200 } = {},
+): Promise<string> {
   let lastError = null;
 
   for (let attempt = 0; attempt < attempts; attempt += 1) {
@@ -211,7 +214,7 @@ interface RuntimeDependencies {
   getTerminalEnvironment?: (...args: any[]) => any;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   safeStorage?: any;
-   
+
   fetchImpl?: typeof fetch;
 }
 
@@ -269,7 +272,10 @@ export async function createRuntime({
         await rm(dirPath, { recursive: true, force: true });
         return;
       } catch (err) {
-        if (attempt < retryDelays.length && ((err as NodeJS.ErrnoException).code === "EBUSY" || (err as NodeJS.ErrnoException).code === "EPERM")) {
+        if (
+          attempt < retryDelays.length &&
+          ((err as NodeJS.ErrnoException).code === "EBUSY" || (err as NodeJS.ErrnoException).code === "EPERM")
+        ) {
           await new Promise((resolve) => setTimeout(resolve, retryDelays[attempt]));
           continue;
         }
@@ -399,7 +405,13 @@ export async function createRuntime({
 
   const sessions = new SessionManagerImpl({
     sshManager,
-    getSessionEnv: ({ workspace, sessionId }: { workspace: WorkspaceState | null | undefined; sessionId: string | null | undefined }) => {
+    getSessionEnv: ({
+      workspace,
+      sessionId,
+    }: {
+      workspace: WorkspaceState | null | undefined;
+      sessionId: string | null | undefined;
+    }) => {
       const env: Record<string, string> = {};
 
       // Set provider-specific environment variables for task workspace sessions.
@@ -465,7 +477,9 @@ export async function createRuntime({
         return null;
       }
 
-      let context = workspace!.review!.prKey ? reviewBridgeStore.getPullRequestContext?.(workspace!.review!.prKey) : null;
+      let context = workspace!.review!.prKey
+        ? reviewBridgeStore.getPullRequestContext?.(workspace!.review!.prKey)
+        : null;
 
       if (!context) {
         const rootPath = reviewBridgeStore.getRootPath?.() || "";
@@ -614,7 +628,18 @@ export async function createRuntime({
    * Accepts the new shape {sessionId, hook, subtype, payload} plus the legacy
    * {sessionId, notificationType} for back-compat with the IPC helper.
    */
-  async function dispatchAgentHookEvent(event: { sessionId?: string; hook?: string; subtype?: string; notificationType?: string; payload?: Record<string, unknown> } | null | undefined) {
+  async function dispatchAgentHookEvent(
+    event:
+      | {
+          sessionId?: string;
+          hook?: string;
+          subtype?: string;
+          notificationType?: string;
+          payload?: Record<string, unknown>;
+        }
+      | null
+      | undefined,
+  ) {
     const sessionId = event?.sessionId || "";
     const hook = event?.hook || "Notification";
     const subtype = event?.subtype || event?.notificationType || "";
@@ -1344,7 +1369,7 @@ export async function createRuntime({
   sessions.on("terminal:data", (payload: any) => {
     const descriptor = parseSessionId(payload.sessionId);
     const state = getState();
-    const project = descriptor ? findWorkspace(state, descriptor.workspaceId) as WorkspaceState | null : null;
+    const project = descriptor ? (findWorkspace(state, descriptor.workspaceId) as WorkspaceState | null) : null;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const panel = (project as any)?.panels?.find((item: any) => item.id === descriptor?.panelId) || null;
     if (descriptor && shouldTrackProjectAlert(project, panel)) {
@@ -1800,7 +1825,7 @@ export async function createRuntime({
     taskRunner.onSessionExit(payload.sessionId);
     const descriptor = parseSessionId(payload.sessionId);
     const state = getState();
-    const project = descriptor ? findWorkspace(state, descriptor.workspaceId) as WorkspaceState | null : null;
+    const project = descriptor ? (findWorkspace(state, descriptor.workspaceId) as WorkspaceState | null) : null;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const panel = (project as any)?.panels?.find((item: any) => item.id === descriptor?.panelId) || null;
     const signal = descriptor ? sessionSignals.get(payload.sessionId) : null;
@@ -2232,7 +2257,9 @@ export async function createRuntime({
     resolveGitConnection,
     resolveGitRootPath,
     runGitWorkspaceAction,
-    syncWorktrees: async () => { await syncWorktrees(); },
+    syncWorktrees: async () => {
+      await syncWorktrees();
+    },
   });
 
   const sshHandlers = createSshHandlers({ sshManager, store, credentialStore, broadcastState });
@@ -2538,7 +2565,6 @@ export async function createRuntime({
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async reorderWorkspaces(workspaceIds: any) {
       await store.mutate((draft: AppState) => {
-         
         draft.workspaces = workspaceIds
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           .map((id: any) => draft.workspaces.find((workspace) => workspace.id === id))
@@ -2799,7 +2825,7 @@ export async function createRuntime({
       }
 
       // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: untyped probe result from dynamic hook spawn
-      const result = await receivedPromise as any;
+      const result = (await receivedPromise) as any;
       const elapsedMs = Date.now() - startedAt;
 
       if (result?.ok) return { ok: true, elapsedMs };
@@ -2876,7 +2902,10 @@ export async function createRuntime({
       broadcastState();
       return getPayload();
     },
-    syncAttentionContext({ visibleSessionIds = [], windowFocused = true }: { visibleSessionIds?: string[]; windowFocused?: boolean } = {}) {
+    syncAttentionContext({
+      visibleSessionIds = [],
+      windowFocused = true,
+    }: { visibleSessionIds?: string[]; windowFocused?: boolean } = {}) {
       const nextIds = (Array.isArray(visibleSessionIds) ? visibleSessionIds : [])
         .map((sessionId) => String(sessionId || "").trim())
         .filter(Boolean);
@@ -2969,8 +2998,17 @@ export async function createRuntime({
       await docker.performAction(action, containerId);
       return getPayload();
     },
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    async openDockerSession({ workspaceId, projectId, containerId, mode }: { workspaceId?: any; projectId: any; containerId: any; mode: any }) {
+    async openDockerSession({
+      workspaceId,
+      projectId,
+      containerId,
+      mode,
+    }: {
+      workspaceId?: any; // eslint-disable-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: IPC payload, typed migration pending
+      projectId: any; // eslint-disable-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: IPC payload, typed migration pending
+      containerId: any; // eslint-disable-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: IPC payload, typed migration pending
+      mode: any; // eslint-disable-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: IPC payload, typed migration pending
+    }) {
       const targetWorkspaceId = workspaceId || projectId;
       await refreshDocker();
       const container = docker.findContainer(containerId);
@@ -3066,8 +3104,15 @@ export async function createRuntime({
       broadcastState();
       return getPayload();
     },
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    async openLazygitSession({ workspaceId, projectId, rootPath }: { workspaceId?: any; projectId: any; rootPath: any }) {
+    async openLazygitSession({
+      workspaceId,
+      projectId,
+      rootPath,
+    }: {
+      workspaceId?: any; // eslint-disable-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: IPC payload, typed migration pending
+      projectId: any; // eslint-disable-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: IPC payload, typed migration pending
+      rootPath: any; // eslint-disable-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: IPC payload, typed migration pending
+    }) {
       const targetWorkspaceId = workspaceId || projectId;
       await refreshGit(targetWorkspaceId);
       const launch = git.createLazygitLaunch(targetWorkspaceId, rootPath || null);
@@ -3110,8 +3155,17 @@ export async function createRuntime({
       broadcastState();
       return getPayload();
     },
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    async createWorktree({ workspaceId, projectId, name, rootPath }: { workspaceId?: any; projectId: any; name: any; rootPath?: any }) {
+    async createWorktree({
+      workspaceId,
+      projectId,
+      name,
+      rootPath,
+    }: {
+      workspaceId?: any; // eslint-disable-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: IPC payload, typed migration pending
+      projectId: any; // eslint-disable-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: IPC payload, typed migration pending
+      name: any; // eslint-disable-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: IPC payload, typed migration pending
+      rootPath?: any; // eslint-disable-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: IPC payload, typed migration pending
+    }) {
       const targetWorkspaceId = workspaceId || projectId;
       if (!name || !/^[a-zA-Z0-9._-]+$/.test(name)) {
         throw new Error("Worktree name must contain only alphanumeric characters, dots, hyphens, or underscores.");
@@ -3172,11 +3226,12 @@ export async function createRuntime({
         cwd: treePath,
         notes: `Worktree of ${project.name}`,
         activePanelId: "",
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        panels: (project as any).panels?.map((p: any) => ({
-          ...p,
-          id: `panel-${randomUUID()}`,
-        })) || [],
+        panels:
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: project is server state JSON, typed migration pending
+          (project as any).panels?.map((p: any) => ({
+            ...p,
+            id: `panel-${randomUUID()}`,
+          })) || [],
       });
 
       await store.mutate((draft: AppState) => {
@@ -3328,8 +3383,10 @@ export async function createRuntime({
         await execFileText(cmd, [command], { timeout: 5000 });
         return true;
       } catch (err) {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        log.debug("checkCommand: not found", { command, err: (err as any)?.error?.message || (err as Error).message || "unknown" });
+        log.debug("checkCommand: not found", {
+          command,
+          err: (err as any)?.error?.message || (err as Error).message || "unknown", // eslint-disable-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: error shape is unknown at catch boundary
+        });
         return false;
       }
     },

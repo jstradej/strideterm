@@ -173,8 +173,8 @@ export function createGitHubHandlers(ctx: GitHubHandlerCtx) {
           workspaceId: payload.workspaceId || "",
         });
       } catch (err) {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const message = err instanceof Error ? err.message : (err as any)?.stderr || (err as any)?.error?.message || String(err);
+        const message =
+          err instanceof Error ? err.message : (err as any)?.stderr || (err as any)?.error?.message || String(err); // eslint-disable-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: error shape is unknown at catch boundary
         log.warn("openGitHubPullRequest failed", { prKey: payload.prKey, err: message });
         throw new Error(message, { cause: err });
       }

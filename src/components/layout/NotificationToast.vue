@@ -24,11 +24,14 @@ interface Toast {
   body?: string;
 }
 
-const props = withDefaults(defineProps<{
-  toast?: Toast | null;
-}>(), {
-  toast: null,
-});
+const props = withDefaults(
+  defineProps<{
+    toast?: Toast | null;
+  }>(),
+  {
+    toast: null,
+  },
+);
 
 const emit = defineEmits<{
   (e: "dismissed"): void;

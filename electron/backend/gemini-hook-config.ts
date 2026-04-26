@@ -76,7 +76,11 @@ export function findExistingHook(settings: Record<string, unknown>, geminiEventN
     const e = entry as Record<string, unknown>;
     // Current (nested) shape: { matcher, hooks: [{ command, ... }] }
     if (Array.isArray(e?.hooks)) {
-      return (e.hooks as unknown[]).some((h: unknown) => typeof (h as Record<string, unknown>)?.command === "string" && HOOK_MARKERS.some((m) => ((h as Record<string, string>).command).includes(m)));
+      return (e.hooks as unknown[]).some(
+        (h: unknown) =>
+          typeof (h as Record<string, unknown>)?.command === "string" &&
+          HOOK_MARKERS.some((m) => (h as Record<string, string>).command.includes(m)),
+      );
     }
     // Legacy (flat) shape from earlier strIDEterm versions that used the wrong
     // format. Detect so upgrade replaces the stale entry in place.
@@ -87,7 +91,12 @@ export function findExistingHook(settings: Record<string, unknown>, geminiEventN
   });
 }
 
-async function readGeminiSettings(): Promise<{ ok: boolean; data: Record<string, unknown> | null; path: string; error?: string }> {
+async function readGeminiSettings(): Promise<{
+  ok: boolean;
+  data: Record<string, unknown> | null;
+  path: string;
+  error?: string;
+}> {
   const settingsPath = getGeminiSettingsPath();
   try {
     const raw = await readFile(settingsPath, "utf8");

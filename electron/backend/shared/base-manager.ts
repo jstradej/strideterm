@@ -44,7 +44,10 @@ interface ProviderSnapshot {
 }
 
 interface ReviewStore {
-  upsertTrackedPullRequest(prKey: string, data: { lastSeenActivityAt: string; reviewWorkspaceId: string }): Promise<void>;
+  upsertTrackedPullRequest(
+    prKey: string,
+    data: { lastSeenActivityAt: string; reviewWorkspaceId: string },
+  ): Promise<void>;
 }
 
 interface ReviewBridgeStore {
@@ -55,8 +58,10 @@ interface AuditLogStore {
   logEntry(entry: Record<string, unknown>): void;
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-type ApiFactory = (fetchImpl: typeof globalThis.fetch, opts: { auditLogger: (raw: any) => void }) => Record<string, unknown>;
+type ApiFactory = (
+  fetchImpl: typeof globalThis.fetch,
+  opts: { auditLogger: (raw: any) => void }, // eslint-disable-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: audit log entry shape is open-ended
+) => Record<string, unknown>;
 
 interface BaseProviderManagerOptions {
   credentialStore: CredentialStore;
@@ -158,7 +163,10 @@ export class BaseProviderManager extends EventEmitter {
     return this._log;
   }
 
-  setAuditContext({ connectionId = "", userInitiated = false }: { connectionId?: string; userInitiated?: boolean } = {}): void {
+  setAuditContext({
+    connectionId = "",
+    userInitiated = false,
+  }: { connectionId?: string; userInitiated?: boolean } = {}): void {
     this._auditConnectionId = connectionId;
     this._auditUserInitiated = userInitiated;
   }
@@ -286,7 +294,11 @@ export class BaseProviderManager extends EventEmitter {
       });
   }
 
-  async runGit(cwd: string, args: string[], { login, token }: RunGitOptions = {}): Promise<{ stdout: string; stderr: string }> {
+  async runGit(
+    cwd: string,
+    args: string[],
+    { login, token }: RunGitOptions = {},
+  ): Promise<{ stdout: string; stderr: string }> {
     const extraArgs: string[] = [];
     if (process.platform === "win32") {
       extraArgs.push("-c", "core.longpaths=true");

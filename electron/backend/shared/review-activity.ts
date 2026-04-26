@@ -117,7 +117,10 @@ export function buildReviewActivityEvent({
 /**
  * Prepend new events to the rolling activity log and cap length.
  */
-export function appendReviewActivity(previous: unknown[] | undefined | null, newEvents: unknown[] | undefined | null): unknown[] {
+export function appendReviewActivity(
+  previous: unknown[] | undefined | null,
+  newEvents: unknown[] | undefined | null,
+): unknown[] {
   if (!newEvents || newEvents.length === 0) return previous || [];
   return [...newEvents, ...(previous || [])].slice(0, MAX_REVIEW_ACTIVITY);
 }

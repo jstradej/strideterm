@@ -22,7 +22,12 @@ interface DialogActionsCtx {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   getPanelByViewId: (viewId: string, workspace?: any) => any;
   createWorktree: (workspaceId: string, name: string, rootPath?: string) => Promise<void>;
-  quickAddTemplateTab: (command: string, title: string, cwdOverride?: string, options?: Record<string, unknown>) => Promise<void>;
+  quickAddTemplateTab: (
+    command: string,
+    title: string,
+    cwdOverride?: string,
+    options?: Record<string, unknown>,
+  ) => Promise<void>;
 }
 
 // Build an initial CLI command string for a provider — used to pre-populate
@@ -42,8 +47,7 @@ function buildProviderCommandString({
   }
   if (providerId === "codex") {
     const parts = ["codex"];
-    if (skipPermissions !== false)
-      parts.push("--dangerously-bypass-approvals-and-sandbox", "-s", "danger-full-access");
+    if (skipPermissions !== false) parts.push("--dangerously-bypass-approvals-and-sandbox", "-s", "danger-full-access");
     if (model) parts.push("--model", model);
     return parts.join(" ");
   }
@@ -67,7 +71,11 @@ function buildProviderCommandString({
 function hookApiForProvider(
   api: AnyApi,
   providerId: string,
-): { status: (() => Promise<AnyApi>) | undefined; configure: (() => Promise<void>) | undefined; displayName: string } | null {
+): {
+  status: (() => Promise<AnyApi>) | undefined;
+  configure: (() => Promise<void>) | undefined;
+  displayName: string;
+} | null {
   if (!api) return null;
   if (providerId === "codex")
     return { status: api.getCodexHookStatus, configure: api.configureCodexHook, displayName: "Codex CLI" };
@@ -365,8 +373,7 @@ export function createDialogActions(ctx: DialogActionsCtx) {
   }
 
   function openAzureConnectionDialog(connectionId = ""): void {
-    const azureSettings =
-      (ctx.payload.value?.appState?.settings as AnyApi)?.integrations?.azureDevops || {};
+    const azureSettings = (ctx.payload.value?.appState?.settings as AnyApi)?.integrations?.azureDevops || {};
     const connection = ((azureSettings as AnyApi).connections || []).find((c: AnyApi) => c.id === connectionId) || null;
     openDialog("AzureConnectionDialog", {
       connection,
@@ -382,8 +389,7 @@ export function createDialogActions(ctx: DialogActionsCtx) {
   }
 
   function openGitHubConnectionDialog(connectionId = ""): void {
-    const ghSettings =
-      (ctx.payload.value?.appState?.settings as AnyApi)?.integrations?.github || {};
+    const ghSettings = (ctx.payload.value?.appState?.settings as AnyApi)?.integrations?.github || {};
     const connection = ((ghSettings as AnyApi).connections || []).find((c: AnyApi) => c.id === connectionId) || null;
     openDialog("GitHubConnectionDialog", {
       connection,
@@ -399,11 +405,8 @@ export function createDialogActions(ctx: DialogActionsCtx) {
   }
 
   function openGitHubQuickFixWizard(): void {
-    const ghSettings =
-      (ctx.payload.value?.appState?.settings as AnyApi)?.integrations?.github || {};
-    const connections = ((ghSettings as AnyApi).connections || []).filter(
-      (c: AnyApi) => c.enabled !== false,
-    );
+    const ghSettings = (ctx.payload.value?.appState?.settings as AnyApi)?.integrations?.github || {};
+    const connections = ((ghSettings as AnyApi).connections || []).filter((c: AnyApi) => c.enabled !== false);
     if (!connections.length) {
       openGitHubConnectionDialog("");
       return;
@@ -426,11 +429,8 @@ export function createDialogActions(ctx: DialogActionsCtx) {
   // --- Quick Fix wizard ---------------------------------------------------
 
   function openQuickFixWizard(): void {
-    const azureSettings =
-      (ctx.payload.value?.appState?.settings as AnyApi)?.integrations?.azureDevops || {};
-    const connections = ((azureSettings as AnyApi).connections || []).filter(
-      (c: AnyApi) => c.enabled !== false,
-    );
+    const azureSettings = (ctx.payload.value?.appState?.settings as AnyApi)?.integrations?.azureDevops || {};
+    const connections = ((azureSettings as AnyApi).connections || []).filter((c: AnyApi) => c.enabled !== false);
     if (!connections.length) {
       openAzureConnectionDialog("");
       return;
@@ -714,9 +714,7 @@ export function createDialogActions(ctx: DialogActionsCtx) {
     const workspaces = ctx.payload.value?.appState?.workspaces || [];
     const ws = (workspaces as AnyApi[]).find((w: AnyApi) => w.id === workspaceId) || null;
     const workerProviderId =
-      (ws as AnyApi)?.task?.workerProviderConfig?.providerId ||
-      (ws as AnyApi)?.workerProvider?.providerId ||
-      "claude";
+      (ws as AnyApi)?.task?.workerProviderConfig?.providerId || (ws as AnyApi)?.workerProvider?.providerId || "claude";
     const hookApi = hookApiForProvider(api, workerProviderId);
     const providerDisplayName = hookApi?.displayName || "the agent";
 
