@@ -2,8 +2,11 @@
 import { randomUUID } from "node:crypto";
 import { readFile, writeFile, rm } from "node:fs/promises";
 import path from "node:path";
+import { Effect } from "effect";
 import { getLogger } from "./logger.js";
 import type { Logger } from "./logger.js";
+import { runEffect } from "./effect/runtime.js";
+import { TaskFileError } from "./effect/errors/task-errors.js";
 import { getProvider, parseProviderFromCommand } from "./providers/provider-registry.js";
 import type { ParsedProviderConfig } from "./providers/provider-registry.js";
 import {
@@ -389,8 +392,22 @@ export class AgentTaskRunner {
       hasDescription: !!task.description,
       descriptionLength: (task.description || "").length,
     });
-    await writeTaskFiles(cwd, task, log);
-    await ensureGitIgnore(cwd, log);
+    // Run task file writes and .gitignore setup in parallel using Effect.all.
+    await runEffect(
+      Effect.all(
+        [
+          Effect.tryPromise({
+            try: () => writeTaskFiles(cwd, task, log),
+            catch: (e) => new TaskFileError({ workspaceId: task.taskId, path: cwd, cause: e }),
+          }),
+          Effect.tryPromise({
+            try: () => ensureGitIgnore(cwd, log),
+            catch: (e) => new TaskFileError({ workspaceId: task.taskId, path: cwd, cause: e }),
+          }),
+        ],
+        { concurrency: "unbounded" },
+      ),
+    );
   }
 
   // ---------------------------------------------------------------------------
@@ -1079,7 +1096,31 @@ export class AgentTaskRunner {
       log.debug("evaluation already in progress", { workspaceId });
       return;
     }
-    this.#evaluating.add(workspaceId);
+
+    // Effect.acquireRelease ensures #evaluating is always cleared even on
+    // unexpected errors — replaces the manual try/finally pattern.
+    await runEffect(
+      Effect.scoped(
+        Effect.acquireRelease(
+          Effect.sync(() => { this.#evaluating.add(workspaceId); return workspaceId; }),
+          (id) => Effect.sync(() => { this.#evaluating.delete(id); this.#programmaticJudges.delete(id); }),
+        ).pipe(
+          Effect.flatMap(() =>
+            Effect.promise(() => this.#evaluateWorkerBody(workspace)),
+          ),
+        ),
+      ),
+    ).catch((err: unknown) => {
+      log.error("evaluateWorker failed", { workspaceId, err: (err as Error)?.message });
+      task.pausedFromState = "";
+      this.#setTaskState(task, "paused");
+      this.#broadcastState!();
+    });
+  }
+
+  async #evaluateWorkerBody(workspace: TaskWorkspaceState): Promise<void> {
+    const task = workspace.task;
+    const workspaceId = workspace.id;
 
     try {
       const evalStart = Date.now();
@@ -1260,13 +1301,10 @@ export class AgentTaskRunner {
 
       this.#broadcastState!();
     } catch (err: unknown) {
-      log.error("evaluateWorker failed", { workspaceId, err: (err as Error)?.message });
-      task.pausedFromState = "";
-      this.#setTaskState(task, "paused");
-      this.#broadcastState!();
-    } finally {
-      this.#programmaticJudges.delete(workspaceId);
-      this.#evaluating.delete(workspaceId);
+      // Re-throw so the outer #evaluateWorker Effect catch handler can log and
+      // set the paused state.  The #evaluating / #programmaticJudges cleanup
+      // is handled by Effect.acquireRelease in the outer method.
+      throw err;
     }
   }
 

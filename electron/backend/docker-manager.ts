@@ -1,6 +1,9 @@
 import { EventEmitter } from "node:events";
+import { Effect } from "effect";
 import { execFileText, parseJsonLines, quotePosixArg } from "./process-utils.js";
 import { getLogger } from "./logger.js";
+import { runEffect } from "./effect/runtime.js";
+import { DockerCmdError } from "./effect/errors/docker-errors.js";
 import type { DockerState, DockerContainer } from "../shared/types/state.js";
 
 const log = getLogger("docker");
@@ -154,14 +157,44 @@ export class DockerManager extends EventEmitter {
     };
   }
 
+  // Effect-based parallel query for contexts + containers.  Used by refresh().
+  #fetchDockerData = Effect.fn("DockerManager.fetchDockerData")(function* (
+    this: DockerManager,
+  ): Effect.fn.Return<[{ stdout: string; stderr: string }, { stdout: string; stderr: string }], DockerCmdError> {
+    const [contextsResult, containersResult] = yield* Effect.all(
+      [
+        Effect.tryPromise({
+          try: () => this.runDocker(["context", "ls", "--format", "{{json .}}"]),
+          catch: (e) =>
+            new DockerCmdError({
+              containerId: "",
+              cmd: "docker context ls",
+              stderr: String((e as { stderr?: string }).stderr ?? e),
+              exitCode: 1,
+            }),
+        }),
+        Effect.tryPromise({
+          try: () => this.runDocker(["ps", "-a", "--no-trunc", "--format", "{{json .}}"]),
+          catch: (e) =>
+            new DockerCmdError({
+              containerId: "",
+              cmd: "docker ps",
+              stderr: String((e as { stderr?: string }).stderr ?? e),
+              exitCode: 1,
+            }),
+        }),
+      ],
+      { concurrency: "unbounded" },
+    );
+    return [contextsResult, containersResult];
+  });
+
   async refresh(): Promise<DockerState> {
     try {
       await this.detectBackend();
       await this.detectLazydocker();
-      const [contextsResult, containersResult] = await Promise.all([
-        this.runDocker(["context", "ls", "--format", "{{json .}}"]),
-        this.runDocker(["ps", "-a", "--no-trunc", "--format", "{{json .}}"]),
-      ]);
+      // Use Effect.all for concurrent Docker queries (Effect-based internal impl).
+      const [contextsResult, containersResult] = await runEffect(this.#fetchDockerData());
 
       this.snapshot = {
         available: true,

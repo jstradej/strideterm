@@ -2,6 +2,7 @@
 import { ipcMain, dialog, BrowserWindow, shell, Notification, app } from "electron";
 import { join } from "node:path";
 import type { createRuntime } from "./runtime.js";
+import { withOperationPromise } from "./effect/runtime.js";
 import * as fm from "./file-manager.js";
 import {
   validateIpc,
@@ -384,27 +385,32 @@ export function registerIpc(
   ipcMain.handle("task:status", async (_event, workspaceId) => runtime.getTaskStatus(workspaceId));
   ipcMain.handle("docker:refresh", async () => runtime.refreshDockerState());
   ipcMain.handle("git:refresh", async (_event, projectId) => runtime.refreshGitState(projectId));
-  ipcMain.handle("git:fetch", async (_event, payload) =>
-    runtime.gitFetch(validateIpc(gitPayloadSchema, payload, "git:fetch")),
-  );
-  ipcMain.handle("git:pull", async (_event, payload) =>
-    runtime.gitPull(validateIpc(gitPayloadSchema, payload, "git:pull")),
-  );
-  ipcMain.handle("git:push", async (_event, payload) =>
-    runtime.gitPush(validateIpc(gitPayloadSchema, payload, "git:push")),
-  );
+  ipcMain.handle("git:fetch", async (_event, payload) => {
+    const p = validateIpc(gitPayloadSchema, payload, "git:fetch");
+    return withOperationPromise({ workspaceId: p.workspaceId, opId: crypto.randomUUID() }, () => runtime.gitFetch(p));
+  });
+  ipcMain.handle("git:pull", async (_event, payload) => {
+    const p = validateIpc(gitPayloadSchema, payload, "git:pull");
+    return withOperationPromise({ workspaceId: p.workspaceId, opId: crypto.randomUUID() }, () => runtime.gitPull(p));
+  });
+  ipcMain.handle("git:push", async (_event, payload) => {
+    const p = validateIpc(gitPayloadSchema, payload, "git:push");
+    return withOperationPromise({ workspaceId: p.workspaceId, opId: crypto.randomUUID() }, () => runtime.gitPush(p));
+  });
   ipcMain.handle("git:checkout-branch", async (_event, payload) =>
     runtime.gitCheckoutBranch(validateIpc(gitPayloadSchema, payload, "git:checkout-branch")),
   );
   ipcMain.handle("git:create-branch", async (_event, payload) =>
     runtime.gitCreateBranch(validateIpc(gitPayloadSchema, payload, "git:create-branch")),
   );
-  ipcMain.handle("git:merge-into-current", async (_event, payload) =>
-    runtime.gitMergeIntoCurrent(validateIpc(gitPayloadSchema, payload, "git:merge-into-current")),
-  );
-  ipcMain.handle("git:rebase-onto", async (_event, payload) =>
-    runtime.gitRebaseOnto(validateIpc(gitPayloadSchema, payload, "git:rebase-onto")),
-  );
+  ipcMain.handle("git:merge-into-current", async (_event, payload) => {
+    const p = validateIpc(gitPayloadSchema, payload, "git:merge-into-current");
+    return withOperationPromise({ workspaceId: p.workspaceId, opId: crypto.randomUUID() }, () => runtime.gitMergeIntoCurrent(p));
+  });
+  ipcMain.handle("git:rebase-onto", async (_event, payload) => {
+    const p = validateIpc(gitPayloadSchema, payload, "git:rebase-onto");
+    return withOperationPromise({ workspaceId: p.workspaceId, opId: crypto.randomUUID() }, () => runtime.gitRebaseOnto(p));
+  });
   ipcMain.handle("git:continue", async (_event, payload) =>
     runtime.gitContinueOperation(validateIpc(gitPayloadSchema, payload, "git:continue")),
   );

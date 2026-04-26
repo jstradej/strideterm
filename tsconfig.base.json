@@ -1,5 +1,8 @@
 {
   "compilerOptions": {
+    "plugins": [
+      { "name": "@effect/language-service" }
+    ],
     "target": "ES2023",
     "module": "ESNext",
     "moduleResolution": "bundler",

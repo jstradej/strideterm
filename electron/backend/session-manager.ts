@@ -7,10 +7,13 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import pty from "node-pty";
 import type { IPty } from "node-pty";
+import { Effect, Exit, Scope } from "effect";
 import { createSessionId, parseSessionId } from "./default-state.js";
 import type { AppState, WorkspaceState, PanelState } from "../shared/types/state.js";
 import { APP_CONFIG } from "../../config/app-config.js";
 import { getLogger } from "./logger.js";
+import { runEffect } from "./effect/runtime.js";
+import { PtySpawnError } from "./effect/errors/session-errors.js";
 import type { SshManager } from "./ssh/ssh-manager.js";
 
 const log = getLogger("session-mgr");
@@ -190,6 +193,26 @@ interface BuildSshArgsResult {
   cleanupFn: () => Promise<void>;
 }
 
+// Acquires a temporary SSH private-key file and releases (deletes) it when
+// the enclosing Effect Scope closes.  The returned object has the filesystem
+// path (for passing to ssh -i) and a POSIX alias when writing into WSL UNC.
+function acquireSshKeyFile(privKey: string, distro: string | null) {
+  const randomId = crypto.randomBytes(8).toString("hex");
+  if (distro) {
+    const tmpPath = `\\\\wsl$\\${distro}\\tmp\\strideterm-ssh-${randomId}`;
+    const posixPath = `/tmp/strideterm-ssh-${randomId}`;
+    return Effect.acquireRelease(
+      Effect.promise(() => fsp.writeFile(tmpPath, privKey, { mode: 0o600 }).then(() => ({ tmpPath, posixPath }))),
+      ({ tmpPath: p }) => Effect.promise(() => fsp.unlink(p).catch(() => {})),
+    );
+  }
+  const tmpPath = path.join(os.tmpdir(), `strideterm-ssh-${randomId}`);
+  return Effect.acquireRelease(
+    Effect.promise(() => fsp.writeFile(tmpPath, privKey, { mode: 0o600 }).then(() => ({ tmpPath, posixPath: tmpPath }))),
+    ({ tmpPath: p }) => Effect.promise(() => fsp.unlink(p).catch(() => {})),
+  );
+}
+
 async function buildSystemSshArgs(
   host: HostRecord,
   credentialStore: SshManager["credentialStore"],
@@ -221,34 +244,22 @@ async function buildSystemSshArgs(
     if (chain.length) args.push("-J", chain.join(","));
   }
 
+  // SSH key temp file: use Effect.acquireRelease inside a long-lived Scope so
+  // cleanup (unlink) runs both on PTY exit and on spawn failure.
   let cleanupFn: () => Promise<void> = async () => {};
 
   if (host.auth && host.auth.keyRef) {
     const privKey = credentialStore.getSecret(host.auth.keyRef);
     if (privKey) {
-      const randomId = crypto.randomBytes(8).toString("hex");
-
-      if (distro) {
-        // Writing into the WSL filesystem via UNC respects POSIX permissions;
-        // /mnt/c/... mounts ignore chmod and `ssh` refuses 0777 keys.
-        const tmpPath = `\\\\wsl$\\${distro}\\tmp\\strideterm-ssh-${randomId}`;
-        await fsp.writeFile(tmpPath, privKey, { mode: 0o600 });
-        cleanupFn = async () => {
-          try {
-            await fsp.unlink(tmpPath);
-          } catch {}
-        };
-        args.push("-i", `/tmp/strideterm-ssh-${randomId}`);
-      } else {
-        const tmpPath = path.join(os.tmpdir(), `strideterm-ssh-${randomId}`);
-        await fsp.writeFile(tmpPath, privKey, { mode: 0o600 });
-        cleanupFn = async () => {
-          try {
-            await fsp.unlink(tmpPath);
-          } catch {}
-        };
-        args.push("-i", tmpPath);
-      }
+      // Create a long-lived scope owned by the caller (ensureSystemSshSession /
+      // ensureWslSshSession).  The scope is passed back so it can be closed
+      // when the PTY exits or immediately when spawn fails.
+      const scope = await runEffect(Scope.make());
+      const keyFile = await runEffect(
+        acquireSshKeyFile(privKey, distro).pipe(Effect.provideService(Scope.Scope, scope)),
+      );
+      cleanupFn = () => runEffect(Scope.close(scope, Exit.void));
+      args.push("-i", keyFile.posixPath);
     }
   }
 
@@ -585,23 +596,36 @@ export class SessionManager extends EventEmitter {
 
     log.debug("spawning system-ssh session", { sessionId, host: host.host, user: host.username });
 
-    let processHandle: IPty;
-    try {
-      processHandle = pty.spawn(sshExec, args, {
-        name: APP_CONFIG.session.termName,
-        cols: APP_CONFIG.session.defaultCols,
-        rows: APP_CONFIG.session.defaultRows,
-        cwd: os.homedir(),
-        env: { ...process.env, ...(host.advanced?.env || {}) },
-      });
-    } catch (err: unknown) {
-      const msg = (err as Error)?.message || String(err);
-      log.warn("system-ssh spawn failed", { sessionId, exec: sshExec, error: msg });
-      try {
-        cleanupFn?.();
-      } catch {
-        // best effort
-      }
+    // Effect-based spawn — PtySpawnError carries typed context; cleanup runs
+    // automatically via the scope created in buildSystemSshArgs.
+    const spawnResult = await runEffect(
+      Effect.tryPromise({
+        try: () =>
+          Promise.resolve(
+            pty.spawn(sshExec, args, {
+              name: APP_CONFIG.session.termName,
+              cols: APP_CONFIG.session.defaultCols,
+              rows: APP_CONFIG.session.defaultRows,
+              cwd: os.homedir(),
+              env: { ...process.env, ...(host.advanced?.env || {}) },
+            }),
+          ),
+        catch: (err) =>
+          new PtySpawnError({
+            cmd: sshExec,
+            args,
+            cause: err,
+          }),
+      }).pipe(
+        Effect.tapError((e) =>
+          Effect.sync(() => {
+            log.warn("system-ssh spawn failed", { sessionId, exec: sshExec, error: String(e.cause) });
+          }),
+        ),
+      ),
+    ).catch(async (err: unknown) => {
+      const msg = (err as { cause?: Error })?.cause?.message ?? String(err);
+      await cleanupFn();
       this.emit("terminal:data", {
         sessionId,
         data:
@@ -609,9 +633,11 @@ export class SessionManager extends EventEmitter {
           `\x1b[90m  Check Settings → SSH → System SSH Binary Path, or install the OpenSSH client.\x1b[0m\r\n`,
       });
       return null;
-    }
+    });
 
-    return this.registerProcessSession(sessionId, workspace, panel, processHandle, {
+    if (!spawnResult) return null;
+
+    return this.registerProcessSession(sessionId, workspace, panel, spawnResult, {
       kind: "ssh-system",
       cleanupFn,
     });
@@ -651,23 +677,34 @@ export class SessionManager extends EventEmitter {
 
     log.debug("spawning wsl ssh session", { sessionId, distro, host: host.host });
 
-    let processHandle: IPty;
-    try {
-      processHandle = pty.spawn("wsl.exe", args, {
-        name: APP_CONFIG.session.termName,
-        cols: APP_CONFIG.session.defaultCols,
-        rows: APP_CONFIG.session.defaultRows,
-        cwd: os.homedir(),
-        env: { ...process.env, WSL_UTF8: "1" },
-      });
-    } catch (err: unknown) {
-      const msg = (err as Error)?.message || String(err);
-      log.warn("wsl ssh spawn failed", { sessionId, error: msg });
-      try {
-        cleanupFn?.();
-      } catch {
-        // best effort
-      }
+    const spawnResult = await runEffect(
+      Effect.tryPromise({
+        try: () =>
+          Promise.resolve(
+            pty.spawn("wsl.exe", args, {
+              name: APP_CONFIG.session.termName,
+              cols: APP_CONFIG.session.defaultCols,
+              rows: APP_CONFIG.session.defaultRows,
+              cwd: os.homedir(),
+              env: { ...process.env, WSL_UTF8: "1" },
+            }),
+          ),
+        catch: (err) =>
+          new PtySpawnError({
+            cmd: "wsl.exe",
+            args,
+            cause: err,
+          }),
+      }).pipe(
+        Effect.tapError((e) =>
+          Effect.sync(() => {
+            log.warn("wsl ssh spawn failed", { sessionId, error: String(e.cause) });
+          }),
+        ),
+      ),
+    ).catch(async (err: unknown) => {
+      const msg = (err as { cause?: Error })?.cause?.message ?? String(err);
+      await cleanupFn();
       this.emit("terminal:data", {
         sessionId,
         data:
@@ -675,9 +712,11 @@ export class SessionManager extends EventEmitter {
           `\x1b[90m  Is WSL installed? Run \`wsl --list\` to verify distributions.\x1b[0m\r\n`,
       });
       return null;
-    }
+    });
 
-    return this.registerProcessSession(sessionId, workspace, panel, processHandle, {
+    if (!spawnResult) return null;
+
+    return this.registerProcessSession(sessionId, workspace, panel, spawnResult, {
       kind: "ssh-wsl",
       wslDistro: distro,
       cleanupFn,

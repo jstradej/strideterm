@@ -2,10 +2,14 @@
 import path from "node:path";
 import { EventEmitter } from "node:events";
 import { existsSync, readdirSync } from "node:fs";
+import { Effect } from "effect";
 import { execFileText, quotePosixArg } from "./process-utils.js";
 import { encodeAuthHeader, sanitizeGitEnvironment } from "./shared/git-auth-utils.js";
 import { APP_CONFIG } from "../../config/app-config.js";
 import { getLogger } from "./logger.js";
+import { runEffect } from "./effect/runtime.js";
+import { GitCommandError, GitAuthError } from "./effect/errors/git-errors.js";
+import { httpRetry } from "./effect/schedules.js";
 import {
   DEFAULT_DIFF_STAT,
   DEFAULT_OPERATION_STATE,
@@ -196,6 +200,42 @@ export class GitManager extends EventEmitter {
       return this.execGitImpl(cwd, [...extraArgs, ...args]);
     }
     return execFileText("git", [...extraArgs, ...args], { cwd, env: sanitizeGitEnvironment() });
+  }
+
+  // Effect-based wrapper for git subprocess calls with tagged error typing.
+  execGitEffect(cwd: string, args: string[]): Effect.Effect<GitExecResult, GitCommandError> {
+    return Effect.tryPromise({
+      try: () => this.execGit(cwd, args),
+      catch: (e) => {
+        const err = e as { stderr?: string; exitCode?: number; message?: string };
+        return new GitCommandError({ cwd, cmd: "git", args, stderr: err.stderr ?? String(e), exitCode: err.exitCode ?? 1 });
+      },
+    });
+  }
+
+  // Effect-based wrapper with auth support and HTTP retry policy.
+  execAuthGitEffect(
+    cwd: string,
+    args: string[],
+    { connection = null }: { connection?: Connection | null } = {},
+  ): Effect.Effect<GitExecResult, GitCommandError | GitAuthError> {
+    return Effect.retry(
+      Effect.tryPromise({
+        try: () => this.execAuthGit(cwd, args, { connection }),
+        catch: (e) => {
+          const err = e as { stderr?: string; exitCode?: number; message?: string };
+          const stderr = err.stderr ?? String(e);
+          if (/authentication failed|401|403|invalid credentials/i.test(stderr)) {
+            return new GitAuthError({ cwd, remote: cwd, cause: e });
+          }
+          return new GitCommandError({ cwd, cmd: "git", args, stderr, exitCode: err.exitCode ?? 1 });
+        },
+      }),
+      {
+        schedule: httpRetry,
+        while: (error) => error._tag === "GitCommandError" && !/authentication failed|401|403/i.test(error.stderr),
+      },
+    );
   }
 
   _cacheKey(workspaceId: string, rootPath: string | null): string {
@@ -787,7 +827,7 @@ export class GitManager extends EventEmitter {
     return this.runWriteAction(workspace, {
       type: "fetch",
       label: "Fetch",
-      run: async (cwd) => this.execAuthGit(cwd, ["fetch", "--all", "--prune"], { connection }),
+      run: (cwd) => runEffect(this.execAuthGitEffect(cwd, ["fetch", "--all", "--prune"], { connection })),
       allowDirty: true,
       connection,
       rootPath,
@@ -798,7 +838,7 @@ export class GitManager extends EventEmitter {
     return this.runWriteAction(workspace, {
       type: "pull",
       label: "Pull",
-      run: async (cwd) => this.execAuthGit(cwd, ["pull", "--ff-only"], { connection }),
+      run: (cwd) => runEffect(this.execAuthGitEffect(cwd, ["pull", "--ff-only"], { connection })),
       allowDirty: true,
       connection,
       rootPath,
@@ -836,7 +876,7 @@ export class GitManager extends EventEmitter {
       baseBranch: " ",
       allowDirty: true,
       skipPreflight: true,
-      run: async (cwd) => this.execAuthGit(cwd, pushArgs, { connection }),
+      run: (cwd) => runEffect(this.execAuthGitEffect(cwd, pushArgs, { connection })),
       connection,
       rootPath,
     });
@@ -889,7 +929,7 @@ export class GitManager extends EventEmitter {
       allowDirty: true,
       skipPreflight: true,
       run: async (cwd) => {
-        const r = await this.execAuthGit(cwd, ["push", leaseArg, remote, branch], { connection });
+        const r = await runEffect(this.execAuthGitEffect(cwd, ["push", leaseArg, remote, branch], { connection }));
         try {
           const headResult = await this.execGit(cwd, ["rev-parse", "HEAD"]);
           extraAudit.newRemoteRef = headResult.stdout.trim();
@@ -954,7 +994,7 @@ export class GitManager extends EventEmitter {
       label: "Merge",
       baseBranch,
       stashDirty,
-      run: async (cwd, resolvedBaseBranch) => this.execGit(cwd, ["merge", "--no-edit", resolvedBaseBranch]),
+      run: (cwd, resolvedBaseBranch) => runEffect(this.execGitEffect(cwd, ["merge", "--no-edit", resolvedBaseBranch])),
       rootPath,
     });
   }
@@ -965,7 +1005,7 @@ export class GitManager extends EventEmitter {
       label: "Rebase",
       baseBranch,
       stashDirty,
-      run: async (cwd, resolvedBaseBranch) => this.execGit(cwd, ["rebase", resolvedBaseBranch]),
+      run: (cwd, resolvedBaseBranch) => runEffect(this.execGitEffect(cwd, ["rebase", resolvedBaseBranch])),
       rootPath,
     });
   }
