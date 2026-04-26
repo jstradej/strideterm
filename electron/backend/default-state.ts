@@ -465,6 +465,7 @@ export function createDefaultState(): AppState & { activeProjectId: string; proj
       { id: "codex", title: "Codex", command: "codex", icon: "\u{1F9E0}" },
       { id: "gemini", title: "Gemini CLI", command: "gemini", icon: "\u2728" },
       { id: "copilot", title: "GitHub Copilot", command: "copilot", icon: "\u{1F419}" },
+      { id: "opencode", title: "OpenCode", command: "opencode", icon: "\u{1F9EC}" },
       { id: "devserver", title: "Dev Server", command: "npm run dev", icon: "\u{1F680}" },
       { id: "tests", title: "Tests", command: "npm test", icon: "\u{1F9EA}" },
       { id: "docker", title: "Docker Compose", command: "docker compose up", icon: "\u{1F433}" },
@@ -757,6 +758,21 @@ export function normalizeState(rawState: any = {}): AppState & { activeProjectId
     })();
     if (anchorIdx >= 0) tabTemplates.splice(anchorIdx + 1, 0, copilotTemplate);
     else tabTemplates.push(copilotTemplate);
+  }
+  // Migration for existing users: ensure the "opencode" agent template exists.
+  // Insert right after "copilot" (or after the last built-in agent) so the
+  // agent group stays tidy in the Tab picker dropdown.
+  if (!tabTemplates.some((t) => t.id === "opencode" || t.command === "opencode")) {
+    const opencodeTemplate = { id: "opencode", title: "OpenCode", command: "opencode", icon: "\u{1F9EC}" };
+    const anchorIdx = (() => {
+      for (const anchor of ["copilot", "gemini", "codex", "claude"]) {
+        const idx = tabTemplates.findIndex((t) => t.id === anchor);
+        if (idx >= 0) return idx;
+      }
+      return -1;
+    })();
+    if (anchorIdx >= 0) tabTemplates.splice(anchorIdx + 1, 0, opencodeTemplate);
+    else tabTemplates.push(opencodeTemplate);
   }
   const profiles = normalizeProfiles(rawState.profiles, defaults);
   const activeProfileId = profiles.some((profile) => profile.id === rawState.activeProfileId)

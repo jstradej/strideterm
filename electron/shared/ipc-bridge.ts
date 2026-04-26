@@ -187,6 +187,10 @@ export interface StridetermAPI {
   removeCopilotHook: () => Promise<unknown>;
   getCopilotHookStatus: () => Promise<unknown>;
   testCopilotHook: () => Promise<unknown>;
+  configureOpencodeHook: () => Promise<unknown>;
+  removeOpencodeHook: () => Promise<unknown>;
+  getOpencodeHookStatus: () => Promise<unknown>;
+  testOpencodeHook: () => Promise<unknown>;
   getNotificationMetrics: () => Promise<unknown>;
 
   // Task runner

@@ -501,6 +501,22 @@ async function handleApiRequest(runtime: Runtime, request: IncomingMessage, resp
       json(response, 200, await runtime.testCopilotHook());
       return;
     }
+    if (request.method === "POST" && url.pathname === "/api/opencode-hook/configure") {
+      json(response, 200, await runtime.configureOpencodeHook());
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/api/opencode-hook/remove") {
+      json(response, 200, await runtime.removeOpencodeHook());
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/api/opencode-hook/status") {
+      json(response, 200, await runtime.getOpencodeHookStatus());
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/api/opencode-hook/test") {
+      json(response, 200, await runtime.testOpencodeHook());
+      return;
+    }
 
     if (request.method === "POST" && url.pathname === "/api/check-command") {
       json(response, 200, await runtime.checkCommand(body.command));

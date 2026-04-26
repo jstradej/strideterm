@@ -579,6 +579,18 @@ export function registerIpc(
   ipcMain.handle("copilot-hook:test", async () =>
     withOperationPromise({ opId: "copilot-hook:test" }, () => runtime.testCopilotHook()),
   );
+  ipcMain.handle("opencode-hook:configure", async () =>
+    withOperationPromise({ opId: "opencode-hook:configure" }, () => runtime.configureOpencodeHook()),
+  );
+  ipcMain.handle("opencode-hook:remove", async () =>
+    withOperationPromise({ opId: "opencode-hook:remove" }, () => runtime.removeOpencodeHook()),
+  );
+  ipcMain.handle("opencode-hook:status", async () =>
+    withOperationPromise({ opId: "opencode-hook:status" }, () => runtime.getOpencodeHookStatus()),
+  );
+  ipcMain.handle("opencode-hook:test", async () =>
+    withOperationPromise({ opId: "opencode-hook:test" }, () => runtime.testOpencodeHook()),
+  );
   ipcMain.handle("notifications:metrics", async () =>
     withOperationPromise({ opId: "notifications:metrics" }, () => runtime.getNotificationMetrics()),
   );
@@ -1140,6 +1152,10 @@ export function registerIpc(
     ipcMain.removeHandler("copilot-hook:remove");
     ipcMain.removeHandler("copilot-hook:status");
     ipcMain.removeHandler("copilot-hook:test");
+    ipcMain.removeHandler("opencode-hook:configure");
+    ipcMain.removeHandler("opencode-hook:remove");
+    ipcMain.removeHandler("opencode-hook:status");
+    ipcMain.removeHandler("opencode-hook:test");
     ipcMain.removeHandler("task:create-workspace");
     ipcMain.removeHandler("task:start");
     ipcMain.removeHandler("task:stop");

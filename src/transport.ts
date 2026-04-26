@@ -314,6 +314,10 @@ function createRemoteTransport(): Transport {
     removeCopilotHook: () => fetchJson("/api/copilot-hook/remove", {}),
     getCopilotHookStatus: () => fetchJson("/api/copilot-hook/status", {}),
     testCopilotHook: () => fetchJson("/api/copilot-hook/test", {}),
+    configureOpencodeHook: () => fetchJson("/api/opencode-hook/configure", {}),
+    removeOpencodeHook: () => fetchJson("/api/opencode-hook/remove", {}),
+    getOpencodeHookStatus: () => fetchJson("/api/opencode-hook/status", {}),
+    testOpencodeHook: () => fetchJson("/api/opencode-hook/test", {}),
     checkCommand: (command) => fetchJson("/api/check-command", { command }),
     // Task runner
     recheckClaude: () => fetchJson("/api/task/recheck-claude", {}),

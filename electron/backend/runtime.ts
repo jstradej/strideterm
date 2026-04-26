@@ -36,6 +36,7 @@ import {
 import { configureGeminiHook, removeGeminiHook, detectGeminiHookStatus } from "./gemini-hook-config.js";
 import { configureCodexHook, removeCodexHook, detectCodexHookStatus } from "./codex-hook-config.js";
 import { configureCopilotHook, removeCopilotHook, detectCopilotHookStatus } from "./copilot-hook-config.js";
+import { configureOpencodeHook, removeOpencodeHook, detectOpencodeHookStatus } from "./opencode-hook-config.js";
 import { AgentTaskRunner } from "./agent-task-runner.js";
 import { getProvider, getAllProviders } from "./providers/provider-registry.js";
 import { classifyHookEvent } from "./notifications/classifier.js";
@@ -2872,6 +2873,15 @@ export async function createRuntime({
     async getCopilotHookStatus() {
       return detectCopilotHookStatus(userDataPath);
     },
+    async configureOpencodeHook() {
+      return configureOpencodeHook(userDataPath);
+    },
+    async removeOpencodeHook() {
+      return removeOpencodeHook();
+    },
+    async getOpencodeHookStatus() {
+      return detectOpencodeHookStatus(userDataPath);
+    },
     /**
      * Expose notification-pipeline metrics for the About dialog / diagnostics.
      * Pure read — returns a snapshot.
@@ -2974,6 +2984,9 @@ export async function createRuntime({
     },
     async testCopilotHook() {
       return this.runHookProbe({ detectStatus: detectCopilotHookStatus, configure: configureCopilotHook });
+    },
+    async testOpencodeHook() {
+      return this.runHookProbe({ detectStatus: detectOpencodeHookStatus, configure: configureOpencodeHook });
     },
     /**
      * Clear a single session's alert entry. Called from the notification

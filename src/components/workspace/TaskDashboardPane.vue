@@ -194,6 +194,7 @@ const PROVIDER_DISPLAY_NAMES = {
   codex: "Codex CLI",
   gemini: "Gemini CLI",
   copilot: "GitHub Copilot",
+  opencode: "OpenCode",
 };
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any

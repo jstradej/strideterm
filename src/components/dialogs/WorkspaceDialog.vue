@@ -428,6 +428,18 @@ const PROVIDER_CHOICES = [
       { id: "gpt-5.4-mini", name: "GPT-5.4 mini", suggestedRole: null },
     ],
   },
+  {
+    id: "opencode",
+    name: "OpenCode",
+    defaultSkipPermissions: true,
+    models: [
+      { id: "default", name: "Default", suggestedRole: null },
+      { id: "anthropic/claude-sonnet-4-5", name: "Claude Sonnet 4.5", suggestedRole: "worker" },
+      { id: "anthropic/claude-opus-4-5", name: "Claude Opus 4.5", suggestedRole: "judge" },
+      { id: "openai/gpt-4o", name: "GPT-4o", suggestedRole: null },
+      { id: "google/gemini-2.5-flash", name: "Gemini 2.5 Flash", suggestedRole: null },
+    ],
+  },
 ];
 
 function buildProviderCommand({ providerId, model, skipPermissions }: ProviderConfig) {
@@ -453,6 +465,12 @@ function buildProviderCommand({ providerId, model, skipPermissions }: ProviderCo
     const parts = ["copilot"];
     if (skipPermissions) parts.push("--allow-all-tools");
     if (model) parts.push("--model", model);
+    return parts.join(" ");
+  }
+  if (providerId === "opencode") {
+    const parts = ["opencode"];
+    if (skipPermissions) parts.push("--yolo");
+    if (model && model !== "default") parts.push("--model", model);
     return parts.join(" ");
   }
   return "";

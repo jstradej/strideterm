@@ -4,6 +4,7 @@ import { ClaudeProvider } from "./claude-provider.js";
 import { CodexProvider } from "./codex-provider.js";
 import { GeminiProvider } from "./gemini-provider.js";
 import { CopilotProvider } from "./copilot-provider.js";
+import { OpencodeProvider } from "./opencode-provider.js";
 
 interface ProviderClass {
   id: string;
@@ -61,6 +62,10 @@ export function getProviderChoices(): ProviderChoice[] {
 export function parseProviderFromCommand(cmd: string | null | undefined): ParsedProviderConfig {
   if (!cmd) return { providerId: "claude", model: "sonnet" };
   const trimmed = cmd.trim();
+  if (trimmed.startsWith("opencode")) {
+    const m = trimmed.match(/--model\s+(\S+)/);
+    return { providerId: "opencode", model: m?.[1] || "default" };
+  }
   if (trimmed.startsWith("copilot")) {
     const m = trimmed.match(/--model\s+(\S+)/);
     return { providerId: "copilot", model: m?.[1] || "claude-sonnet-4.6" };
@@ -82,3 +87,4 @@ registerProvider(ClaudeProvider);
 registerProvider(CodexProvider);
 registerProvider(GeminiProvider);
 registerProvider(CopilotProvider);
+registerProvider(OpencodeProvider);

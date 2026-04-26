@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-const SUPPORTED_REVIEW_AGENTS = new Set(["claude", "codex", "copilot"]);
+const SUPPORTED_REVIEW_AGENTS = new Set(["claude", "codex", "copilot", "opencode"]);
 const DEFAULT_APP_ENTRY = path.resolve(fileURLToPath(new URL("../../../", import.meta.url)));
 const REVIEW_BRIDGE_STDIO_ENTRY = fileURLToPath(new URL("./review-bridge-mcp-stdio.js", import.meta.url));
 
@@ -477,6 +477,9 @@ export function detectReviewAgentPanel(panel: ReviewPanel = {}): string | null {
   }
   if (title.includes("codex")) {
     return "codex";
+  }
+  if (title.includes("opencode")) {
+    return "opencode";
   }
 
   return null;

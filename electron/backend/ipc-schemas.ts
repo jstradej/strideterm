@@ -392,7 +392,7 @@ export const githubQuickFixCreateSchema = z.object({
 export type GithubQuickFixCreate = z.infer<typeof githubQuickFixCreateSchema>;
 
 export const providerConfigSchema = z.object({
-  providerId: z.enum(["claude", "codex", "gemini", "copilot"]),
+  providerId: z.enum(["claude", "codex", "gemini", "copilot", "opencode"]),
   model: z.string().max(100),
   skipPermissions: z.boolean().optional(),
   extra: z.record(z.string(), z.unknown()).optional(),

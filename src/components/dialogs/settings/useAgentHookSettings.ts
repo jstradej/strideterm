@@ -414,6 +414,55 @@ export function useAgentHookSettings(api: any) {
         "Hooks are registered but disableAllHooks is true in ~/.copilot/config.json. Set it back to false (or remove the key) to let hooks fire.",
       refreshAfterConfigure: true,
     }),
+    createHookProvider(api, {
+      id: "opencode",
+      title: "OpenCode",
+      statusMethod: "getOpencodeHookStatus",
+      configureMethod: "configureOpencodeHook",
+      removeMethod: "removeOpencodeHook",
+      testMethod: "testOpencodeHook",
+      configureLabel: "Configure OpenCode",
+      configureTitle:
+        "Install strIDEterm hook entries into the OpenCode config file (~/.config/opencode/config.json on Linux/macOS, %AppData%\\opencode\\config.json on Windows). Registers Stop and UserPromptSubmit events for the shared notify dispatcher. Preserves your existing OpenCode settings.",
+      removeTitle:
+        "Remove only strIDEterm's hook entries from the OpenCode config file. All other OpenCode settings stay intact.",
+      testTitle:
+        "End-to-end probe through the shared notify.mjs. Confirms the OpenCode hook → listener → dispatcher pipeline delivers events within 2 s.",
+      configJson: `{
+  "hooks": {
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \\"~/.strideterm/hooks/notify.mjs\\" Stop",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \\"~/.strideterm/hooks/notify.mjs\\" UserPromptSubmit",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}`,
+      manual: {
+        type: "single-path",
+        before: "If auto-configure fails, add this to",
+        path: "~/.config/opencode/config.json",
+        after: ":",
+      },
+    }),
   ];
 
   onMounted(() => {

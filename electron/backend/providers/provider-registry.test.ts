@@ -4,6 +4,7 @@ import { ClaudeProvider } from "./claude-provider.js";
 import { CodexProvider } from "./codex-provider.js";
 import { GeminiProvider } from "./gemini-provider.js";
 import { CopilotProvider } from "./copilot-provider.js";
+import { OpencodeProvider } from "./opencode-provider.js";
 
 describe("provider-registry", () => {
   describe("getProvider", () => {
@@ -27,6 +28,11 @@ describe("provider-registry", () => {
       expect(p).toBeInstanceOf(CopilotProvider);
     });
 
+    test("returns OpencodeProvider for 'opencode'", () => {
+      const p = getProvider("opencode");
+      expect(p).toBeInstanceOf(OpencodeProvider);
+    });
+
     test("throws for unknown provider", () => {
       expect(() => getProvider("unknown-provider")).toThrow("Unknown provider: unknown-provider");
     });
@@ -40,6 +46,7 @@ describe("provider-registry", () => {
       expect(ids).toContain("codex");
       expect(ids).toContain("gemini");
       expect(ids).toContain("copilot");
+      expect(ids).toContain("opencode");
     });
   });
 
@@ -117,6 +124,18 @@ describe("provider-registry", () => {
       const result = parseProviderFromCommand("copilot --allow-all-tools");
       expect(result.providerId).toBe("copilot");
       expect(result.model).toBe("claude-sonnet-4.6");
+    });
+
+    test("parses opencode command without model uses default", () => {
+      const result = parseProviderFromCommand("opencode --yolo");
+      expect(result.providerId).toBe("opencode");
+      expect(result.model).toBe("default");
+    });
+
+    test("parses opencode command with explicit --model", () => {
+      const result = parseProviderFromCommand("opencode --yolo --model anthropic/claude-sonnet-4-5");
+      expect(result.providerId).toBe("opencode");
+      expect(result.model).toBe("anthropic/claude-sonnet-4-5");
     });
   });
 });
@@ -286,5 +305,54 @@ describe("base provider prompt injection defaults", () => {
     expect(claude.promptSubmitDelayMs).toBe(200);
     expect(codex.promptSubmitDelayMs).toBe(200);
     expect(gemini.promptSubmitDelayMs).toBe(200);
+  });
+});
+
+describe("OpencodeProvider", () => {
+  let provider: OpencodeProvider;
+  beforeEach(() => {
+    provider = new OpencodeProvider();
+  });
+
+  test("buildCommand with skipPermissions includes --yolo", () => {
+    const cmd = provider.buildCommand({});
+    expect(cmd).toBe("opencode --yolo");
+  });
+
+  test("buildCommand with model includes --model flag", () => {
+    const cmd = provider.buildCommand({ model: "anthropic/claude-sonnet-4-5" });
+    expect(cmd).toBe("opencode --yolo --model anthropic/claude-sonnet-4-5");
+  });
+
+  test("buildCommand with default model omits --model flag", () => {
+    const cmd = provider.buildCommand({ model: "default" });
+    expect(cmd).toBe("opencode --yolo");
+  });
+
+  test("buildCommand with skipPermissions=false omits --yolo", () => {
+    const cmd = provider.buildCommand({ skipPermissions: false });
+    expect(cmd).toBe("opencode");
+  });
+
+  test("getEnvironment returns empty object", () => {
+    const env = provider.getEnvironment();
+    expect(Object.keys(env)).toHaveLength(0);
+  });
+
+  test("idleDetection is silence", () => {
+    expect(provider.idleDetection).toBe("silence");
+  });
+
+  test("idleTimeoutMs is 8000", () => {
+    expect(provider.idleTimeoutMs).toBe(8000);
+  });
+
+  test("static id and displayName", () => {
+    expect(OpencodeProvider.id).toBe("opencode");
+    expect(OpencodeProvider.displayName).toBe("OpenCode");
+  });
+
+  test("has at least one model", () => {
+    expect(OpencodeProvider.models.length).toBeGreaterThan(0);
   });
 });

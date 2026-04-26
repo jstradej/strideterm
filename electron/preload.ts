@@ -92,6 +92,10 @@ contextBridge.exposeInMainWorld("strideterm", {
   removeCopilotHook: () => ipcRenderer.invoke("copilot-hook:remove"),
   getCopilotHookStatus: () => ipcRenderer.invoke("copilot-hook:status"),
   testCopilotHook: () => ipcRenderer.invoke("copilot-hook:test"),
+  configureOpencodeHook: () => ipcRenderer.invoke("opencode-hook:configure"),
+  removeOpencodeHook: () => ipcRenderer.invoke("opencode-hook:remove"),
+  getOpencodeHookStatus: () => ipcRenderer.invoke("opencode-hook:status"),
+  testOpencodeHook: () => ipcRenderer.invoke("opencode-hook:test"),
   getNotificationMetrics: () => ipcRenderer.invoke("notifications:metrics"),
   // Task runner
   recheckClaude: () => ipcRenderer.invoke("task:recheck-claude"),
