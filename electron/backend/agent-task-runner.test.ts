@@ -15,6 +15,18 @@ import {
   taskDir,
 } from "./agent-task-utils.js";
 
+async function waitFor(
+  predicate: () => boolean | Promise<boolean>,
+  { timeoutMs = 5000, intervalMs = 10 }: { timeoutMs?: number; intervalMs?: number } = {},
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await predicate()) return;
+    await new Promise((r) => setTimeout(r, intervalMs));
+  }
+  throw new Error(`waitFor: predicate did not become true within ${timeoutMs}ms`);
+}
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function createMockDeps(workspaces: any[] = []): any {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -1463,8 +1475,8 @@ describe("WORK_LOCK lifecycle across rounds", () => {
       const result = localRunner.resumeTask(ws.id);
       expect(result).toBe(true);
 
-      // #handleJudgeVerdict is fire-and-forget; wait for it to finish.
-      await new Promise((resolve) => setTimeout(resolve, 200));
+      // #handleJudgeVerdict is fire-and-forget; poll until round 2 has started.
+      await waitFor(() => ws.task.currentRound === 2);
 
       // WORK_LOCK must exist — round 2's worker reads it as the "work remains" signal.
       const lockExists = await fs
@@ -1508,7 +1520,7 @@ describe("WORK_LOCK lifecycle across rounds", () => {
       ];
 
       localRunner.resumeTask(ws.id);
-      await new Promise((resolve) => setTimeout(resolve, 200));
+      await waitFor(() => ws.task.state === "completed");
 
       const lockExists = await fs
         .access(path.join(dir, WORK_LOCK_FILE))
