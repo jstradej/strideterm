@@ -4,5 +4,5 @@ npx lint-staged
 if git diff --cached --name-only | grep -q "package-lock.json"; then
   echo "package-lock.json changed — running security checks..."
   npm audit --audit-level=high
-  node scripts/check-package-age.mjs --allow=follow-redirects@1.16.0
+  npx tsx scripts/check-package-age.mts --allow=follow-redirects@1.16.0
 fi
