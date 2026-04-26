@@ -76,7 +76,7 @@ Most users should use the [pre-built releases](https://github.com/jstradej/strid
 - Docker CLI - for Docker workspaces
 - `lazygit` - for Git TUI
 - `cloudflared` - for Cloudflare tunnel remote access
-- `claude`, `codex`, `gemini`, or `copilot` CLI — for [Agent Task Runner](#agent-task-runner). Worker and Judge agents each pick one provider independently; any combination is allowed.
+- `claude`, `codex`, `gemini`, `copilot`, or `opencode` CLI — for [Agent Task Runner](#agent-task-runner). Worker and Judge agents each pick one provider independently; any combination is allowed.
 
 **Native build note:** `node-pty` requires local build tools (Visual Studio Build Tools on Windows, Xcode CLT on macOS, `build-essential` + `python3` on Linux).
 
@@ -160,18 +160,19 @@ strIDEterm can run a supervised coding loop where a **Worker** agent implements 
 
 Key features: auto-detected verify commands, TODO/WORK_LOCK file protocol, periodic context refresh (shower mode) for long tasks, and a Dashboard tab showing round-by-round progress with check results and judge feedback.
 
-Requires at least one of [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) (`claude`), [Codex CLI](https://developers.openai.com/codex/cli) (`codex`), [Gemini CLI](https://geminicli.com/) (`gemini`), or [GitHub Copilot CLI](https://docs.github.com/en/copilot/github-copilot-in-the-cli) (`copilot`) on your PATH. See [Agent Task Runner docs](docs/agent-task-runner.md) for full details.
+Requires at least one of [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) (`claude`), [Codex CLI](https://developers.openai.com/codex/cli) (`codex`), [Gemini CLI](https://geminicli.com/) (`gemini`), [GitHub Copilot CLI](https://docs.github.com/en/copilot/github-copilot-in-the-cli) (`copilot`), or [OpenCode](https://opencode.ai/) (`opencode`) on your PATH. See [Agent Task Runner docs](docs/agent-task-runner.md) for full details.
 
 ## Agent Notification Hooks
 
 strIDEterm integrates with each supported agent CLI's hook system so you get instant alerts when an agent finishes a turn or needs input — no polling, no silence timers. One-click setup per provider in **Settings → Notifications**:
 
-| Provider       | Config location                                                                   | Events registered                                  | Notes                                                                                                |
-| -------------- | --------------------------------------------------------------------------------- | -------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
-| Claude Code    | `~/.claude/settings.json`                                                         | Notification, Stop, SubagentStop, UserPromptSubmit | Widest event coverage                                                                                |
-| Gemini CLI     | `~/.gemini/settings.json`                                                         | AfterAgent, Notification, BeforeAgent              | Event names auto-mapped to Claude aliases                                                            |
-| Codex CLI      | `~/.codex/hooks.json` + `[features] codex_hooks = true` in `~/.codex/config.toml` | Stop, UserPromptSubmit                             | Requires Codex CLI **0.121.0+** on Windows ([PR #17268](https://github.com/openai/codex/pull/17268)) |
-| GitHub Copilot | `~/.copilot/config.json` (top-level `hooks` key)                                  | sessionEnd, userPromptSubmitted                    | Requires Copilot CLI **1.0.32+**. Respects `COPILOT_HOME` env var override                           |
+| Provider       | Config location                                                                            | Events registered                                  | Notes                                                                                                |
+| -------------- | ------------------------------------------------------------------------------------------ | -------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| Claude Code    | `~/.claude/settings.json`                                                                  | Notification, Stop, SubagentStop, UserPromptSubmit | Widest event coverage                                                                                |
+| Gemini CLI     | `~/.gemini/settings.json`                                                                  | AfterAgent, Notification, BeforeAgent              | Event names auto-mapped to Claude aliases                                                            |
+| Codex CLI      | `~/.codex/hooks.json` + `[features] codex_hooks = true` in `~/.codex/config.toml`          | Stop, UserPromptSubmit                             | Requires Codex CLI **0.121.0+** on Windows ([PR #17268](https://github.com/openai/codex/pull/17268)) |
+| GitHub Copilot | `~/.copilot/config.json` (top-level `hooks` key)                                           | sessionEnd, userPromptSubmitted                    | Requires Copilot CLI **1.0.32+**. Respects `COPILOT_HOME` env var override                           |
+| OpenCode       | `~/.config/opencode/config.json` (Linux/macOS), `%AppData%\opencode\config.json` (Windows) | Stop, UserPromptSubmit                             | Respects `OPENCODE_HOME` env var override                                                            |
 
 All providers share a single notification script (`~/.strideterm/hooks/notify.mjs`) that posts events to a local HTTP endpoint embedded in strIDEterm. The script is written automatically on startup, so you never need to edit it by hand. Settings also exposes a **Test hook** button that runs an end-to-end probe and reports delivery latency.
 

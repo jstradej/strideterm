@@ -2,14 +2,14 @@
 
 The Agent Task Runner is a supervised coding loop that coordinates two AI agents (Worker + Judge) to complete coding tasks autonomously. It auto-detects verification commands from your project and pre-fills them as a checklist in TASK.md, then uses an independent judge to evaluate completion.
 
-Worker and Judge each run one of the supported CLIs — **Claude Code**, **Codex CLI**, **Gemini CLI**, or **GitHub Copilot** — selected independently per role. You can mix providers (e.g. Claude Code as Worker + GitHub Copilot as Judge) to take advantage of each model's strengths.
+Worker and Judge each run one of the supported CLIs — **Claude Code**, **Codex CLI**, **Gemini CLI**, **GitHub Copilot**, or **OpenCode** — selected independently per role. You can mix providers (e.g. Claude Code as Worker + OpenCode as Judge) to take advantage of each model's strengths.
 
 ## Quick Start
 
 1. Click the **+** button in the sidebar and select **Create task workspace**
 2. Choose your **project directory** (must contain the code you want to modify)
 3. _(Optional)_ Check **Create in git worktree** to isolate the task on its own branch
-4. Pick the **Worker** and **Judge** agents — provider (Claude Code / Codex CLI / Gemini CLI / GitHub Copilot) + model. Unavailable providers (not on PATH) are disabled.
+4. Pick the **Worker** and **Judge** agents — provider (Claude Code / Codex CLI / Gemini CLI / GitHub Copilot / OpenCode) + model. Unavailable providers (not on PATH) are disabled.
 5. Write a **task assignment** describing what needs to be done
 6. Click **Create workspace** — control files are generated automatically
 7. Press **Start** in the Dashboard to begin
@@ -45,7 +45,7 @@ The loop repeats until the Judge approves the work or the maximum number of roun
 
 Each task workspace configures Worker and Judge independently. Two modes:
 
-**Picker mode (default)** — pick a provider and model from dropdowns, plus a per-role **Skip permission prompts (dangerous)** checkbox. Defaults per provider: Claude, Codex, and Copilot skip on, Gemini skip off. The checkbox controls CLI flags:
+**Picker mode (default)** — pick a provider and model from dropdowns, plus a per-role **Skip permission prompts (dangerous)** checkbox. Defaults per provider: Claude, Codex, Copilot, and OpenCode skip on, Gemini skip off. The checkbox controls CLI flags:
 
 | Provider       | Skip ON flag                                                       |
 | -------------- | ------------------------------------------------------------------ |
@@ -53,6 +53,7 @@ Each task workspace configures Worker and Judge independently. Two modes:
 | Codex CLI      | `--dangerously-bypass-approvals-and-sandbox -s danger-full-access` |
 | Gemini CLI     | `--yolo`                                                           |
 | GitHub Copilot | `--allow-all-tools` (plus `COPILOT_ALLOW_ALL=true` in env)         |
+| OpenCode       | `--yolo`                                                           |
 
 **Advanced: custom command** — full CLI command string, e.g. `codex --model o3 --approval-mode auto`. Toggling to advanced prefills the field from the picker state so you can tweak rather than start blank.
 
@@ -60,7 +61,7 @@ Choose **Default** as the model to let the CLI use its own default without passi
 
 ### Idle detection per provider
 
-Each CLI signals end-of-turn differently. Notification hooks are the primary signal for all four — they're instant, reliable, and don't depend on the agent emitting any particular terminal sequence between turns. Without hooks configured, the Task Runner falls back to a silence-based heuristic.
+Each CLI signals end-of-turn differently. Notification hooks are the primary signal for all five — they're instant, reliable, and don't depend on the agent emitting any particular terminal sequence between turns. Without hooks configured, the Task Runner falls back to a silence-based heuristic.
 
 | Provider       | Primary signal (with hooks)                        | Fallback (no hooks)         |
 | -------------- | -------------------------------------------------- | --------------------------- |
@@ -68,10 +69,11 @@ Each CLI signals end-of-turn differently. Notification hooks are the primary sig
 | Codex CLI      | Stop / UserPromptSubmit hooks (instant)            | Silence timer (8 s)         |
 | Gemini CLI     | AfterAgent / Notification hooks (instant)          | Silence timer (8 s)         |
 | GitHub Copilot | sessionEnd / userPromptSubmitted hooks (instant)   | Silence timer (8 s)         |
+| OpenCode       | Stop / UserPromptSubmit hooks (instant)            | Silence timer (8 s)         |
 
-Enable hooks for all four providers in **Settings → Notifications** — one click each. Without hooks the silence heuristic still works but introduces an 8-second delay per handoff (and longer if the CLI reasons for a while), and is more prone to false positives during long turns. OSC 133 shell integration only fires when a _shell_ returns to its prompt, so for interactive agent sessions (which never return to a prompt between turns) it's effectively silent — hooks are what carries the signal.
+Enable hooks for all five providers in **Settings → Notifications** — one click each. Without hooks the silence heuristic still works but introduces an 8-second delay per handoff (and longer if the CLI reasons for a while), and is more prone to false positives during long turns. OSC 133 shell integration only fires when a _shell_ returns to its prompt, so for interactive agent sessions (which never return to a prompt between turns) it's effectively silent — hooks are what carries the signal.
 
-Codex hooks require **Codex CLI 0.121.0+** on Windows — older Windows builds ship with hooks gated off. Copilot hooks require **GitHub Copilot CLI 1.0.32+** and honor `COPILOT_HOME` for config-path overrides; if `disableAllHooks: true` is set in `~/.copilot/config.json`, strIDEterm surfaces a distinct _"Configured — hooks disabled"_ state in Settings.
+Codex hooks require **Codex CLI 0.121.0+** on Windows — older Windows builds ship with hooks gated off. Copilot hooks require **GitHub Copilot CLI 1.0.32+** and honor `COPILOT_HOME` for config-path overrides; if `disableAllHooks: true` is set in `~/.copilot/config.json`, strIDEterm surfaces a distinct _"Configured — hooks disabled"_ state in Settings. OpenCode hooks honor `OPENCODE_HOME` for config-path overrides.
 
 ## Writing Good Task Descriptions
 
