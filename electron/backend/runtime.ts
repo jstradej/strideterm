@@ -1448,6 +1448,100 @@ export async function createRuntime({
     });
   }
 
+  // Two-stage rate-limit confirmation. Regex matching against agent output
+  // is inherently fragile — the worker editing rate-limit-related code emits
+  // diff lines, comments, and test output that contain the exact phrases the
+  // detectors look for. Stage 1 marks the session as "suspected" without
+  // raising any alert or setting task.rateLimitedUntil. Stage 2 fires after
+  // a confirmation window and checks whether the agent actually went quiet
+  // (real rate limit) or kept producing output (false positive).
+  //
+  // The alternative — firing immediately on first match — locked up a real
+  // task run when the worker's own diff scrolled "the runner was rate-limited"
+  // through stdout. The user explicitly chose latency over premature action.
+  interface RateLimitSuspicion {
+    match: import("./runtime-utils.js").RateLimitMatch;
+    workspaceId: string;
+    panelId: string;
+    panelTitle: string;
+    suspectedAt: number;
+    lastOutputAt: number;
+    timer: ReturnType<typeof setTimeout>;
+  }
+  const rateLimitSuspicions = new Map<string, RateLimitSuspicion>();
+  // Window after a match during which the session is observed before the
+  // alert fires. Long enough to outlast an agent's quiet "thinking" pause
+  // (extended reasoning can sit silent for 10–20 s mid-turn) so we don't
+  // false-confirm on a coincidental silence; short enough that a real
+  // auto-resume isn't meaningfully delayed against an hour-scale rate-limit.
+  const RATE_LIMIT_CONFIRM_WINDOW_MS = 30_000;
+  // Output is allowed to trail the match for this long (TUI repaint, the
+  // tail end of the same buffer) without flipping to "agent kept working".
+  const RATE_LIMIT_TRAILING_TOLERANCE_MS = 5_000;
+
+  function trackRateLimitOutput(sessionId: string, now: number): void {
+    const suspicion = rateLimitSuspicions.get(sessionId);
+    if (suspicion) suspicion.lastOutputAt = now;
+  }
+
+  function clearRateLimitSuspicion(sessionId: string): void {
+    const suspicion = rateLimitSuspicions.get(sessionId);
+    if (!suspicion) return;
+    clearTimeout(suspicion.timer);
+    rateLimitSuspicions.delete(sessionId);
+  }
+
+  function suspectRateLimit(
+    sessionId: string,
+    workspaceId: string,
+    panelId: string,
+    panelTitle: string,
+    match: import("./runtime-utils.js").RateLimitMatch,
+  ): void {
+    if (rateLimitSuspicions.has(sessionId)) return; // already observing this session
+    const now = Date.now();
+    const timer = setTimeout(() => {
+      const s = rateLimitSuspicions.get(sessionId);
+      if (!s) return;
+      rateLimitSuspicions.delete(sessionId);
+      const trailingMs = s.lastOutputAt - s.suspectedAt;
+      if (trailingMs > RATE_LIMIT_TRAILING_TOLERANCE_MS) {
+        log.debug("rate-limit suspicion dropped: agent kept working past silence window", {
+          sessionId,
+          trailingMs,
+          providerHint: s.match.providerHint,
+        });
+        return;
+      }
+      log.warn("rate-limit confirmed after silence window", {
+        sessionId,
+        trailingMs,
+        providerHint: s.match.providerHint,
+      });
+      raiseRateLimitAlert(sessionId, s.workspaceId, s.panelId, s.panelTitle, s.match);
+      // Hand off to the task runner only AFTER confirmation. For non-task
+      // sessions this is a no-op; for task workers it sets rateLimitedUntil
+      // and schedules the auto-resume timer. Deferring this is the whole
+      // point of the two-stage check — premature handoff is what blocks
+      // the judge when the original match was a false positive.
+      taskRunner.onWorkerRateLimited(sessionId, s.match, "output-detect-confirmed");
+    }, RATE_LIMIT_CONFIRM_WINDOW_MS);
+    rateLimitSuspicions.set(sessionId, {
+      match,
+      workspaceId,
+      panelId,
+      panelTitle,
+      suspectedAt: now,
+      lastOutputAt: now,
+      timer,
+    });
+    log.debug("rate-limit suspected, waiting for confirmation", {
+      sessionId,
+      providerHint: match.providerHint,
+      windowMs: RATE_LIMIT_CONFIRM_WINDOW_MS,
+    });
+  }
+
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   sessions.on("terminal:data", (payload: any) => {
     const descriptor = parseSessionId(payload.sessionId);
@@ -1463,17 +1557,16 @@ export async function createRuntime({
     // is a user-visible event regardless of where the agent is running, and
     // the existing `shouldTrackProjectAlert` gate (further down) excludes
     // some of those panel kinds. Detection happens before the gate so all
-    // sessions are covered.
+    // sessions are covered. A match here is only a SUSPICION — confirmation
+    // happens after a silence window so a banner scrolled through during
+    // unrelated work doesn't fire an alert and lock up the task runner.
+    trackRateLimitOutput(payload.sessionId, Date.now());
     if (descriptor && project && panel && cleanText) {
       const rateLimitMatch = detectRateLimit(cleanText);
       if (rateLimitMatch) {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const panelTitle = ((panel as any).title as string) || descriptor.panelId;
-        raiseRateLimitAlert(payload.sessionId, descriptor.workspaceId, descriptor.panelId, panelTitle, rateLimitMatch);
-        // Hand off to the task runner — no-op for non-task sessions; for
-        // task workers it auto-confirms Claude's prompt-limit dialog or
-        // schedules restart-and-resume for CLI-exit providers.
-        taskRunner.onWorkerRateLimited(payload.sessionId, rateLimitMatch, "output-detect");
+        suspectRateLimit(payload.sessionId, descriptor.workspaceId, descriptor.panelId, panelTitle, rateLimitMatch);
       }
     }
 
@@ -1974,6 +2067,7 @@ export async function createRuntime({
     clearActivityFade(payload.sessionId);
     deleteSessionSignal(payload.sessionId);
     lastRateLimitAlertAt.delete(payload.sessionId);
+    clearRateLimitSuspicion(payload.sessionId);
     events.emit("terminal:exit", payload);
     broadcastState();
   });
