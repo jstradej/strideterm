@@ -1,6 +1,6 @@
 /// <reference types="node" />
 import { randomUUID } from "node:crypto";
-import { readFile, writeFile, rm } from "node:fs/promises";
+import { access, readFile, writeFile, rm } from "node:fs/promises";
 import path from "node:path";
 import { Effect } from "effect";
 import { getLogger } from "./logger.js";
@@ -178,6 +178,8 @@ export class AgentTaskRunner {
   #rateLimitTimers = new Map<string, NodeJS.Timeout>();
   /** per-workspace runtime context for the active rate-limit cycle */
   #rateLimitCtx = new Map<string, { needsRestart: boolean; retries: number }>();
+  /** deferred WORK_LOCK-absence checks that override a possibly-false rate-limit hold */
+  #workLockOverrideTimers = new Map<string, NodeJS.Timeout>();
 
   // Injected dependencies (set via init())
   #writeToSession: RuntimeDeps["writeToSession"] | null = null;
@@ -597,8 +599,16 @@ export class AgentTaskRunner {
     task.pausedFromState = "";
     task.showerResumePrompt = "";
     task.lastShowerRound = 0;
+    task.rateLimitedUntil = null;
     // Preserve lastJudgeInstructions — might be useful for next run
     this.#evaluating.delete(workspaceId);
+    this.#clearWorkLockOverrideTimer(workspaceId);
+    const resumeTimer = this.#rateLimitTimers.get(workspaceId);
+    if (resumeTimer) {
+      clearTimeout(resumeTimer);
+      this.#rateLimitTimers.delete(workspaceId);
+    }
+    this.#rateLimitCtx.delete(workspaceId);
 
     // Recreate WORK_LOCK so the next run starts clean
     try {
@@ -743,6 +753,14 @@ export class AgentTaskRunner {
     // reset, don't try to evaluate or re-prompt — the worker can't act yet.
     // The scheduled timer in #scheduleRateLimitResume nudges it when the
     // window expires; if the marker is stale, clear it and proceed normally.
+    //
+    // Safety net: if the worker actually finished while the hold was set
+    // (false-positive rate-limit detection that was confirmed by the silence
+    // window — e.g. agent fell quiet right after emitting a code mention of
+    // "rate-limited"), the WORK_LOCK file is gone. Schedule an async check;
+    // if WORK_LOCK is missing, override the hold and run evaluation so the
+    // judge can finally see the finished work. Without this, a misfire
+    // silently blocks the judge from ever running.
     if (task.rateLimitedUntil) {
       const until = Date.parse(task.rateLimitedUntil);
       if (Number.isFinite(until) && until > Date.now()) {
@@ -750,6 +768,7 @@ export class AgentTaskRunner {
           sessionId,
           rateLimitedUntil: task.rateLimitedUntil,
         });
+        this.#scheduleWorkLockOverrideCheck(workspaceId, sessionId);
         return true;
       }
       task.rateLimitedUntil = null;
@@ -961,6 +980,7 @@ export class AgentTaskRunner {
     if (prev) clearTimeout(prev);
     this.#rateLimitTimers.delete(workspace.id);
     this.#rateLimitCtx.delete(workspace.id);
+    this.#clearWorkLockOverrideTimer(workspace.id);
     workspace.task.rateLimitedUntil = null;
     workspace.task.pausedFromState = workspace.task.state;
     this.#setTaskState(workspace.task, "paused");
@@ -976,6 +996,7 @@ export class AgentTaskRunner {
 
     const ctx = this.#rateLimitCtx.get(workspaceId);
     task.rateLimitedUntil = null;
+    this.#clearWorkLockOverrideTimer(workspaceId);
     log.info("rate-limit window expired, resuming worker", {
       workspaceId,
       taskState: task.state,
@@ -1027,6 +1048,92 @@ export class AgentTaskRunner {
   /** Clear the per-workspace retry counter once the worker makes progress. */
   #clearRateLimitCtx(workspaceId: string): void {
     this.#rateLimitCtx.delete(workspaceId);
+  }
+
+  /**
+   * Whether the worker has signaled completion. WORK_LOCK is the single
+   * authoritative bit: the worker is instructed to delete it ONLY when the
+   * task is genuinely done. Used by the runtime confirmation timer to skip
+   * setting a rate-limit hold when the silence is actually "task finished",
+   * and by the in-runner override check that recovers from a hold that was
+   * set on a false-positive match. File-system based — no in-memory cache,
+   * since the worker writes to disk asynchronously and we want the live state.
+   */
+  async isWorkerCompleted(workspaceId: string): Promise<boolean> {
+    const workspace = this.#findTaskWorkspace(workspaceId);
+    if (!workspace) return false;
+    const task = workspace.task;
+    if (!task?.taskId) return false;
+    const dir = taskDir(workspace.cwd, task.taskId);
+    try {
+      await access(path.join(dir, WORK_LOCK_FILE));
+      return false; // lock present => worker still has work
+    } catch {
+      return true; // ENOENT (or unreadable) => worker signaled done
+    }
+  }
+
+  #clearWorkLockOverrideTimer(workspaceId: string): void {
+    const timer = this.#workLockOverrideTimers.get(workspaceId);
+    if (!timer) return;
+    clearTimeout(timer);
+    this.#workLockOverrideTimers.delete(workspaceId);
+  }
+
+  /**
+   * Schedule a deferred WORK_LOCK check that, if the worker has signalled
+   * completion, overrides the rate-limit hold and runs evaluation. The
+   * 2 s delay both lets imminent state changes settle (resume timer firing,
+   * user pause, etc.) and keeps tests stable — they assert sync state and
+   * never wait long enough for the timer to fire.
+   */
+  #scheduleWorkLockOverrideCheck(workspaceId: string, sessionId: string): void {
+    if (this.#workLockOverrideTimers.has(workspaceId)) return;
+    const timer = setTimeout(() => {
+      void this.#performWorkLockOverrideCheck(workspaceId, sessionId);
+    }, 2000);
+    this.#workLockOverrideTimers.set(workspaceId, timer);
+  }
+
+  async #performWorkLockOverrideCheck(workspaceId: string, sessionId: string): Promise<void> {
+    this.#workLockOverrideTimers.delete(workspaceId);
+    const workspace = this.#findTaskWorkspace(workspaceId);
+    if (!workspace) return;
+    const task = workspace.task;
+    // All of these must still hold for the override to be the right action;
+    // otherwise the hold either already cleared, the task moved to a state
+    // where evaluation isn't appropriate (paused/completed/failed), or the
+    // worker is genuinely still working and will keep the lock around.
+    if (!task.rateLimitedUntil) return;
+    if (task.state !== "running") return;
+    if (!(await this.isWorkerCompleted(workspaceId))) return;
+
+    log.warn("rate-limit override: WORK_LOCK absent — worker signaled completion", {
+      workspaceId,
+      sessionId,
+    });
+    task.rateLimitedUntil = null;
+    const resumeTimer = this.#rateLimitTimers.get(workspaceId);
+    if (resumeTimer) {
+      clearTimeout(resumeTimer);
+      this.#rateLimitTimers.delete(workspaceId);
+    }
+    this.#rateLimitCtx.delete(workspaceId);
+    this.#logTaskEvent(
+      workspace,
+      "worker-rate-limit-overridden",
+      "WORK_LOCK absent — worker signaled completion. Clearing rate-limit hold and starting evaluation.",
+    );
+    this.#broadcastState!();
+
+    try {
+      await this.#evaluateWorker(workspace);
+    } catch (err: unknown) {
+      log.error("evaluateWorker error during rate-limit override", {
+        workspaceId,
+        err: (err as Error)?.message,
+      });
+    }
   }
 
   /**

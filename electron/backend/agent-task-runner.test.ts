@@ -352,6 +352,88 @@ describe("AgentTaskRunner", () => {
       runner.onAgentIdle(sessionId);
       expect(workspace.task.rateLimitedUntil).toBeNull();
     });
+
+    test("WORK_LOCK absent overrides rate-limit hold (worker actually finished)", async () => {
+      // Regression: a false-positive rate-limit detection that survived the
+      // 30 s confirmation window would lock up the judge — onAgentIdle would
+      // suppress every subsequent idle event because rateLimitedUntil was set.
+      // The override checks WORK_LOCK on disk; if the worker has already
+      // signaled completion (lock file deleted), the hold is cleared and
+      // evaluation runs.
+      const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-rl-override-"));
+      try {
+        const localRunner = new AgentTaskRunner();
+        const ws = localRunner.createTaskWorkspace({
+          state: { activeProfileId: "default" },
+          description: "Override test",
+          cwd: tmp,
+          parentWorkspaceId: "",
+          maxRounds: 3,
+        });
+        // Create the task dir but NOT the WORK_LOCK file — simulates the
+        // post-completion state where the worker explicitly removed it.
+        await fs.mkdir(taskDir(tmp, ws.task.taskId), { recursive: true });
+
+        const localDeps = createMockDeps([ws]);
+        localRunner.init(localDeps);
+
+        ws.task.state = "running";
+        ws.task.promptSent = true;
+        ws.task.rateLimitedUntil = new Date(Date.now() + 60 * 60_000).toISOString();
+
+        const sessionId = `${ws.id}:${ws.task.workerPanelId}`;
+        const result = localRunner.onAgentIdle(sessionId);
+
+        // Sync return: still consumed (hold present at call time).
+        expect(result).toBe(true);
+        expect(ws.task.rateLimitedUntil).not.toBeNull();
+
+        // Wait for the deferred override timer (2 s) plus a small buffer for
+        // the async fs probe + #evaluateWorker to run.
+        await new Promise((resolve) => setTimeout(resolve, 2500));
+
+        // Override fired: hold cleared.
+        expect(ws.task.rateLimitedUntil).toBeNull();
+      } finally {
+        await fs.rm(tmp, { recursive: true, force: true });
+      }
+    });
+
+    test("WORK_LOCK present preserves rate-limit hold (worker still working)", async () => {
+      const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-rl-keep-"));
+      try {
+        const localRunner = new AgentTaskRunner();
+        const ws = localRunner.createTaskWorkspace({
+          state: { activeProfileId: "default" },
+          description: "No-override test",
+          cwd: tmp,
+          parentWorkspaceId: "",
+          maxRounds: 3,
+        });
+        const dir = taskDir(tmp, ws.task.taskId);
+        await fs.mkdir(dir, { recursive: true });
+        await fs.writeFile(path.join(dir, WORK_LOCK_FILE), "Work remains.");
+
+        const localDeps = createMockDeps([ws]);
+        localRunner.init(localDeps);
+
+        ws.task.state = "running";
+        ws.task.promptSent = true;
+        const heldUntil = new Date(Date.now() + 60 * 60_000).toISOString();
+        ws.task.rateLimitedUntil = heldUntil;
+
+        const sessionId = `${ws.id}:${ws.task.workerPanelId}`;
+        localRunner.onAgentIdle(sessionId);
+
+        // Wait past the deferred check.
+        await new Promise((resolve) => setTimeout(resolve, 2500));
+
+        // Hold preserved — worker is still working (lock file still present).
+        expect(ws.task.rateLimitedUntil).toBe(heldUntil);
+      } finally {
+        await fs.rm(tmp, { recursive: true, force: true });
+      }
+    });
   });
 
   describe("onWorkerRateLimited", () => {

@@ -1501,30 +1501,56 @@ export async function createRuntime({
     if (rateLimitSuspicions.has(sessionId)) return; // already observing this session
     const now = Date.now();
     const timer = setTimeout(() => {
-      const s = rateLimitSuspicions.get(sessionId);
-      if (!s) return;
-      rateLimitSuspicions.delete(sessionId);
-      const trailingMs = s.lastOutputAt - s.suspectedAt;
-      if (trailingMs > RATE_LIMIT_TRAILING_TOLERANCE_MS) {
-        log.debug("rate-limit suspicion dropped: agent kept working past silence window", {
+      void (async () => {
+        const s = rateLimitSuspicions.get(sessionId);
+        if (!s) return;
+        rateLimitSuspicions.delete(sessionId);
+        const trailingMs = s.lastOutputAt - s.suspectedAt;
+        if (trailingMs > RATE_LIMIT_TRAILING_TOLERANCE_MS) {
+          log.debug("rate-limit suspicion dropped: agent kept working past silence window", {
+            sessionId,
+            trailingMs,
+            providerHint: s.match.providerHint,
+          });
+          return;
+        }
+
+        // Silence detected — but verify with WORK_LOCK before declaring it
+        // a rate-limit. If the worker has already deleted WORK_LOCK, the
+        // silence is "task finished", not "quota hit", and we must not
+        // raise an alert or set rateLimitedUntil (which would block the
+        // judge from running). Run the existing idle pipeline instead.
+        try {
+          if (await taskRunner.isWorkerCompleted(s.workspaceId)) {
+            log.warn("rate-limit suspicion overridden by WORK_LOCK absence on confirm", {
+              sessionId,
+              providerHint: s.match.providerHint,
+            });
+            taskRunner.onAgentIdle(sessionId, "rate-limit-override-on-confirm");
+            return;
+          }
+        } catch (err) {
+          // isWorkerCompleted is best-effort; on error fall through to the
+          // original alert path so we don't silently lose a real rate-limit.
+          log.debug("isWorkerCompleted threw on confirm — proceeding with alert", {
+            sessionId,
+            err: (err as Error)?.message,
+          });
+        }
+
+        log.warn("rate-limit confirmed after silence window", {
           sessionId,
           trailingMs,
           providerHint: s.match.providerHint,
         });
-        return;
-      }
-      log.warn("rate-limit confirmed after silence window", {
-        sessionId,
-        trailingMs,
-        providerHint: s.match.providerHint,
-      });
-      raiseRateLimitAlert(sessionId, s.workspaceId, s.panelId, s.panelTitle, s.match);
-      // Hand off to the task runner only AFTER confirmation. For non-task
-      // sessions this is a no-op; for task workers it sets rateLimitedUntil
-      // and schedules the auto-resume timer. Deferring this is the whole
-      // point of the two-stage check — premature handoff is what blocks
-      // the judge when the original match was a false positive.
-      taskRunner.onWorkerRateLimited(sessionId, s.match, "output-detect-confirmed");
+        raiseRateLimitAlert(sessionId, s.workspaceId, s.panelId, s.panelTitle, s.match);
+        // Hand off to the task runner only AFTER confirmation. For non-task
+        // sessions this is a no-op; for task workers it sets rateLimitedUntil
+        // and schedules the auto-resume timer. Deferring this is the whole
+        // point of the two-stage check — premature handoff is what blocks
+        // the judge when the original match was a false positive.
+        taskRunner.onWorkerRateLimited(sessionId, s.match, "output-detect-confirmed");
+      })();
     }, RATE_LIMIT_CONFIRM_WINDOW_MS);
     rateLimitSuspicions.set(sessionId, {
       match,
