@@ -180,6 +180,11 @@ export class AgentTaskRunner {
   #rateLimitCtx = new Map<string, { needsRestart: boolean; retries: number }>();
   /** deferred WORK_LOCK-absence checks that override a possibly-false rate-limit hold */
   #workLockOverrideTimers = new Map<string, NodeJS.Timeout>();
+  /** recurring WORK_LOCK probes — fire every 30 s while a hold is in effect so a
+   * worker that finished after a false-positive detection gets unblocked even if
+   * no idle hook ever lands (some Claude versions are unreliable about emitting
+   * Stop after the last action). */
+  #periodicWorkLockProbeTimers = new Map<string, NodeJS.Timeout>();
 
   // Injected dependencies (set via init())
   #writeToSession: RuntimeDeps["writeToSession"] | null = null;
@@ -603,6 +608,7 @@ export class AgentTaskRunner {
     // Preserve lastJudgeInstructions — might be useful for next run
     this.#evaluating.delete(workspaceId);
     this.#clearWorkLockOverrideTimer(workspaceId);
+    this.#stopPeriodicWorkLockProbe(workspaceId);
     const resumeTimer = this.#rateLimitTimers.get(workspaceId);
     if (resumeTimer) {
       clearTimeout(resumeTimer);
@@ -935,6 +941,11 @@ export class AgentTaskRunner {
       "worker-rate-limited",
       `Worker hit its rate limit (${match.providerHint}, retry ${ctx.retries}/${AgentTaskRunner.MAX_RATE_LIMIT_RETRIES}). Resuming after ${resetAt.toLocaleTimeString()}.`,
     );
+    // Periodic WORK_LOCK probe: if this hold is a false positive (worker's
+    // own output happened to mention rate-limit terms) and the worker
+    // actually finishes during the hold window, the probe will notice
+    // WORK_LOCK is gone and unblock the judge — even if no idle hook lands.
+    this.#startPeriodicWorkLockProbe(workspaceId);
     this.#broadcastState!();
 
     // Confirm prompt (Claude Code only): Enter selects the highlighted
@@ -981,6 +992,7 @@ export class AgentTaskRunner {
     this.#rateLimitTimers.delete(workspace.id);
     this.#rateLimitCtx.delete(workspace.id);
     this.#clearWorkLockOverrideTimer(workspace.id);
+    this.#stopPeriodicWorkLockProbe(workspace.id);
     workspace.task.rateLimitedUntil = null;
     workspace.task.pausedFromState = workspace.task.state;
     this.#setTaskState(workspace.task, "paused");
@@ -997,6 +1009,7 @@ export class AgentTaskRunner {
     const ctx = this.#rateLimitCtx.get(workspaceId);
     task.rateLimitedUntil = null;
     this.#clearWorkLockOverrideTimer(workspaceId);
+    this.#stopPeriodicWorkLockProbe(workspaceId);
     log.info("rate-limit window expired, resuming worker", {
       workspaceId,
       taskState: task.state,
@@ -1058,6 +1071,11 @@ export class AgentTaskRunner {
    * and by the in-runner override check that recovers from a hold that was
    * set on a false-positive match. File-system based — no in-memory cache,
    * since the worker writes to disk asynchronously and we want the live state.
+   *
+   * Requires the task dir itself to exist before we trust the WORK_LOCK
+   * absence as a "done" signal. Otherwise a workspace whose cwd has never
+   * been initialized (or a unit test pointing at a fake path) would always
+   * look "completed" because the dir doesn't exist either.
    */
   async isWorkerCompleted(workspaceId: string): Promise<boolean> {
     const workspace = this.#findTaskWorkspace(workspaceId);
@@ -1066,10 +1084,15 @@ export class AgentTaskRunner {
     if (!task?.taskId) return false;
     const dir = taskDir(workspace.cwd, task.taskId);
     try {
+      await access(dir);
+    } catch {
+      return false; // task dir missing => can't decide => stay safe
+    }
+    try {
       await access(path.join(dir, WORK_LOCK_FILE));
       return false; // lock present => worker still has work
     } catch {
-      return true; // ENOENT (or unreadable) => worker signaled done
+      return true; // ENOENT => worker signaled done
     }
   }
 
@@ -1078,6 +1101,46 @@ export class AgentTaskRunner {
     if (!timer) return;
     clearTimeout(timer);
     this.#workLockOverrideTimers.delete(workspaceId);
+  }
+
+  // Frequency of the periodic WORK_LOCK probe while a hold is active. Set
+  // generously — there's no need to react quickly here; a real rate-limit
+  // window is hours, and a false-positive hold just means the user waits up
+  // to one probe cycle before the judge starts. 5 min is the sweet spot:
+  // far enough apart that fs.access calls don't show up in load, close
+  // enough that a finished worker is unblocked within a coffee break.
+  static PERIODIC_WORK_LOCK_PROBE_MS = 5 * 60_000;
+
+  /**
+   * Periodically poll WORK_LOCK for a workspace under a rate-limit hold so a
+   * false-positive that survived all earlier checks doesn't permanently block
+   * the judge. The single-shot override fired by onAgentIdle handles the
+   * common case (worker hits idle, hook lands, override runs). The periodic
+   * probe handles the long tail where no idle hook arrives between
+   * "rate-limit confirmed" and "worker actually finished".
+   *
+   * Self-cancels on every tick when the hold has cleared or the task has
+   * moved out of "running", so manual cleanup is only needed when the
+   * lifecycle path doesn't trigger another probe tick first.
+   */
+  #startPeriodicWorkLockProbe(workspaceId: string): void {
+    this.#stopPeriodicWorkLockProbe(workspaceId);
+    const interval = setInterval(() => {
+      const ws = this.#findTaskWorkspace(workspaceId);
+      if (!ws || !ws.task.rateLimitedUntil || ws.task.state !== "running") {
+        this.#stopPeriodicWorkLockProbe(workspaceId);
+        return;
+      }
+      void this.#performWorkLockOverrideCheck(workspaceId, "periodic-probe");
+    }, AgentTaskRunner.PERIODIC_WORK_LOCK_PROBE_MS);
+    this.#periodicWorkLockProbeTimers.set(workspaceId, interval);
+  }
+
+  #stopPeriodicWorkLockProbe(workspaceId: string): void {
+    const t = this.#periodicWorkLockProbeTimers.get(workspaceId);
+    if (!t) return;
+    clearInterval(t);
+    this.#periodicWorkLockProbeTimers.delete(workspaceId);
   }
 
   /**
@@ -1119,6 +1182,7 @@ export class AgentTaskRunner {
       this.#rateLimitTimers.delete(workspaceId);
     }
     this.#rateLimitCtx.delete(workspaceId);
+    this.#stopPeriodicWorkLockProbe(workspaceId);
     this.#logTaskEvent(
       workspace,
       "worker-rate-limit-overridden",

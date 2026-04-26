@@ -1470,11 +1470,12 @@ export async function createRuntime({
   }
   const rateLimitSuspicions = new Map<string, RateLimitSuspicion>();
   // Window after a match during which the session is observed before the
-  // alert fires. Long enough to outlast an agent's quiet "thinking" pause
-  // (extended reasoning can sit silent for 10–20 s mid-turn) so we don't
-  // false-confirm on a coincidental silence; short enough that a real
-  // auto-resume isn't meaningfully delayed against an hour-scale rate-limit.
-  const RATE_LIMIT_CONFIRM_WINDOW_MS = 30_000;
+  // alert fires. 60 s outlasts even long extended-thinking pauses (Claude's
+  // deeper reasoning modes routinely sit silent 30–45 s mid-turn) — anything
+  // shorter false-confirmed when the worker happened to pause right after
+  // emitting code that mentioned rate-limit terms. Latency cost on a real
+  // rate-limit (which lasts hours) is negligible.
+  const RATE_LIMIT_CONFIRM_WINDOW_MS = 60_000;
   // Output is allowed to trail the match for this long (TUI repaint, the
   // tail end of the same buffer) without flipping to "agent kept working".
   const RATE_LIMIT_TRAILING_TOLERANCE_MS = 5_000;
