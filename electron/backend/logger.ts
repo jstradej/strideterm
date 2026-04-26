@@ -4,6 +4,7 @@ import os from "node:os";
 import { mkdirSync } from "node:fs";
 import winston from "winston";
 import { APP_CONFIG } from "../../config/app-config.js";
+import { operationContextStorage } from "./effect/operation-context.js";
 
 let LOG_DIR = path.join(os.homedir(), ".strideterm", "logs");
 
@@ -162,8 +163,9 @@ export function getLogger(label: string): Logger {
   const proxy = {} as Logger;
   for (const method of LOG_METHODS) {
     proxy[method] = (message, meta) => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (logger! as any)[method](message, meta ? { ...meta, label } : { label });
+      const ctx = operationContextStorage.getStore();
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: winston logger method dispatch via string key; logger is hot path called from all layers
+      (logger! as any)[method](message, { ...ctx, ...(meta || {}), label });
     };
   }
   return proxy;

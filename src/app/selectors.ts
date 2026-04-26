@@ -295,7 +295,7 @@ export function getWorkspaceTabs({
   if (activeWorkspace.kind === "docker") {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const dockerState = (payload?.docker as any) || {};
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     const containers: unknown[] = (dockerState.containers as unknown[] | undefined) || [];
     const runningCount = containers.filter(isContainerRunning).length;
     tabs.push({

@@ -355,7 +355,7 @@ export class AzureDevOpsManager extends BaseProviderManager {
     const connectionsChanged =
       JSON.stringify(connections.map((c) => c.id).sort()) !==
       JSON.stringify((this.snapshot.connections || []).map((c) => c.id).sort());
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     this.snapshot = {
       ...(connectionsChanged ? createEmptySnapshot() : this.snapshot),
       connections: connections as unknown as typeof this.snapshot.connections,
@@ -884,7 +884,7 @@ export class AzureDevOpsManager extends BaseProviderManager {
         (workspace as ReviewWorkspace)?.review?.provider === "azure-devops" ? (workspace as ReviewWorkspace).id : current.reviewWorkspaceId || "",
     };
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     this.setSnapshot({
       ...this.snapshot,
       pullRequests: {

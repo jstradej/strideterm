@@ -211,7 +211,7 @@ interface RuntimeDependencies {
   getTerminalEnvironment?: (...args: any[]) => any;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   safeStorage?: any;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+   
   fetchImpl?: typeof fetch;
 }
 
@@ -2538,7 +2538,7 @@ export async function createRuntime({
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async reorderWorkspaces(workspaceIds: any) {
       await store.mutate((draft: AppState) => {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+         
         draft.workspaces = workspaceIds
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           .map((id: any) => draft.workspaces.find((workspace) => workspace.id === id))

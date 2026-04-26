@@ -335,7 +335,7 @@ export class AgentTaskRunner {
       starred: false,
       review: null,
       quickfix: null,
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+       
       panels: [
         { id: dashboardPanelId, title: "Dashboard", command: "__task-dashboard__", shell: false as unknown as string, startup: "none" },
         {

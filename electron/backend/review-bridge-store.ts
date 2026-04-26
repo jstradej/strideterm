@@ -1470,7 +1470,7 @@ export async function createReviewBridgeStore(rootPath: string) {
           const commentRow = queueEntry.comment_key ? ((statements.selectCommentByKey.get(queueEntry.comment_key as string) as SqlRow | undefined) || null) : null;
           const context = readContext(prKey);
           const thread = context?.threads.find((entry) => entry.id === (commentRow as SqlRow | null)?.remote_thread_id) || null;
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+           
           const parentCommentId = Number((thread?.comments || []).at(-1)?.id || 0);
           if (!draftRow || !commentRow) {
             statements.updateQueueState.run(

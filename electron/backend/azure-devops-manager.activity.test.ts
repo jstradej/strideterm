@@ -3,7 +3,7 @@ import os from "node:os";
 import { describe, expect, test, vi } from "vitest";
 import { AzureDevOpsManager, createPullRequestKey } from "./azure-devops-manager.js";
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+ 
 function createCredentialStore(secrets: Record<string, string> = {}) {
   return { getSecret: (ref: string) => secrets[ref] || "" };
 }

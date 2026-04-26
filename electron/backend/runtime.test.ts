@@ -598,7 +598,7 @@ async function createFixture({ initialState, execFileTextImpl, dependencies = {}
     getThemeSource: () => "light",
     dependencies: {
       createStore: async () => store,
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+       
       SessionManager: class extends FakeSessionManager {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         constructor(opts: any) {

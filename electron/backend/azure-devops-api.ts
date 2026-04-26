@@ -99,7 +99,7 @@ export function createAzureApi(fetchImpl: typeof globalThis.fetch, { auditLogger
           // Evict oldest entries if cache grows too large
           if (etagCache.size >= ETAG_CACHE_MAX_SIZE) {
             const firstKey = etagCache.keys().next().value;
-            // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+             
             etagCache.delete(firstKey!);
           }
           etagCache.set(url, { etag, data });

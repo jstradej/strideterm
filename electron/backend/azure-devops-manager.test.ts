@@ -10,7 +10,7 @@ import {
 } from "./azure-devops-manager.js";
 import { buildPullRequestSummary } from "./azure-devops-pr-summary.js";
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+ 
 function createCredentialStore(secrets: Record<string, string> = {}) {
   return {
     getSecret(ref: string) {
@@ -344,7 +344,7 @@ describe("AzureDevOpsManager", () => {
       gitSnapshots: {},
     });
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     const detail = (await manager.ensurePullRequestDetail(createPullRequestKey("ado-main", "repo-1", 123), {
       workspaces: [
         {
@@ -393,7 +393,7 @@ describe("AzureDevOpsManager", () => {
       gitSnapshots: {},
     });
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     const result = (await manager.openReviewWorkspace({
       state: {
         activeProfileId: "default",
@@ -439,7 +439,7 @@ describe("AzureDevOpsManager", () => {
       gitSnapshots: {},
     });
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     const result = (await manager.openReviewWorkspace({
       state: {
         activeProfileId: "default",
@@ -495,7 +495,7 @@ describe("AzureDevOpsManager", () => {
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const summary = manager.getSnapshot().pullRequests[createPullRequestKey("ado-main", "repo-1", 123)] as any;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     const paths = manager.buildManagedReviewPaths(summary, {
       profileId: "default",
       workspaces: [
@@ -522,7 +522,7 @@ describe("AzureDevOpsManager", () => {
   test("derives a clone URL when Azure omits repository.remoteUrl", async () => {
     const execFileTextImpl = vi.fn().mockResolvedValue({ stdout: "", stderr: "" });
     const { manager } = createManager({ execFileTextImpl });
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     manager.setSnapshot({
       connections: [connection],
       inbox: {
@@ -621,7 +621,7 @@ describe("AzureDevOpsManager", () => {
       gitSnapshots: {},
     });
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     const result = (await manager.openReviewWorkspace({
       state: {
         activeProfileId: "default",
@@ -735,7 +735,7 @@ describe("AzureDevOpsManager", () => {
 
   test("fails clearly when a matched workspace has no cwd", async () => {
     const { manager } = createManager();
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     manager.setSnapshot({
       connections: [connection],
       inbox: {

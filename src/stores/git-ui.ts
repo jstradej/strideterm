@@ -867,7 +867,7 @@ export const useGitUiStore = defineStore("git-ui", () => {
     ui.reviewSelectedFile = filePath;
     ui.reviewFileDiffPreview = { ok: true, path: filePath, diff: "", summary: "Loading diff preview..." };
     try {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+       
       ui.reviewFileDiffPreview = (await (
         _api as Transport & { gitDiffPreview: (p: unknown) => Promise<unknown> }
       ).gitDiffPreview!({

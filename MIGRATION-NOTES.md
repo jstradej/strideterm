@@ -87,7 +87,13 @@ The plan uses `FiberRef.unsafeMake` / `FiberRef.unsafeGet` from Effect v3. These
 - `FiberRef.unsafeMake<T>(default)` → `Context.Reference<T>(id, { defaultValue: () => default })`
 - `yield* FiberRef.get(ref)` → `yield* ref` (Reference is directly yieldable)
 - `Effect.locallyWith(ref, fn)(effect)` → `Effect.gen(function*() { const cur = yield* ref; return yield* effect.pipe(Effect.provideService(ref, fn(cur))); })`
-- `FiberRef.unsafeGet(ref)` — **not available in v4**. The logger's operation context enrichment (plan 10.4 step 3) is omitted since there is no safe way to read a Context.Reference outside an Effect fiber. Non-Effect log calls remain unenriched with operation context. This is an accepted v4 limitation; future mitigation via AsyncLocalStorage adapter.
+- `FiberRef.unsafeGet(ref)` — **not available in v4**. Resolved via `AsyncLocalStorage` adapter: `operationContextStorage` (`AsyncLocalStorage<OperationContext>`) is exported from `operation-context.ts`. `withOperationPromise` populates it via `operationContextStorage.run(merged, ...)` before entering the Effect fiber, so synchronous non-Effect code (the winston logger proxy) can call `operationContextStorage.getStore()` to enrich log lines with `opId`/`workspaceId`/`correlationId` from the active IPC context.
+
+### IPC handler context propagation
+
+All `ipcMain.handle` registrations in `electron/backend/ipc.ts` are wrapped with `withOperationPromise`. Each handler uses the IPC channel name as `opId` and extracts `workspaceId` where the schema provides it (git/task handlers via validated payload; workspace/profile handlers via direct parameters). Fire-and-forget `ipcMain.on` handlers (`terminal:resize`, `terminal:input`) are not wrapped — they use `send` semantics with no Promise return.
+
+`withOperationPromise` accepts `fn: () => A | Promise<A>` (wrapping the call with `Promise.resolve`) so it works for both synchronous runtime methods (e.g. `getNotificationMetrics`, `getTaskStatus`) and async ones without requiring every callsite to add `async`.
 
 ### NodeContext.layer (plan) vs NodeServices.layer (v4)
 

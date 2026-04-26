@@ -23,7 +23,7 @@ import {
   computeCommitFileDiff,
 } from "./file-manager.js";
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+ 
 function execGit(cwd: string, args: string[]) {
   return new Promise((resolve, reject) => {
     execFile("git", args, { cwd, windowsHide: true }, (err, stdout, stderr) => {

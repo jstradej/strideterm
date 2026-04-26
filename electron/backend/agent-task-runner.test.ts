@@ -608,7 +608,7 @@ describe("AgentTaskRunner", () => {
 describe("formatVerifyChecklist", () => {
   test("formats detected commands as markdown checklist", () => {
     const result = formatVerifyChecklist(
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+       
       [
         { label: "Tests", command: "npm test", timeoutMs: 60_000 },
         { label: "Lint", command: "npm run lint", timeoutMs: 60_000 },

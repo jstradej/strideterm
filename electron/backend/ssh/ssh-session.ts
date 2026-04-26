@@ -240,7 +240,7 @@ export class SshSession {
     // `compress` is a legacy top-level ConnectConfig option that is not present
     // in the @types/ssh2 typings (it belongs in algorithms.compress) but ssh2
     // at runtime accepts it directly. Cast through unknown to keep the logic.
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     const cfg = {
       host: this.host.host,
       port: this.host.port || 22,
