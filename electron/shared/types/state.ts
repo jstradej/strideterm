@@ -456,8 +456,10 @@ export interface RemoteAccessState {
 
 export interface VersionCheckState {
   latestVersion: string | null;
+  latestUrl?: string;
   currentVersion: string;
   updateAvailable: boolean;
+  versionsBehind?: number;
   lastCheckedAt: string | null;
   error: string | null;
 }

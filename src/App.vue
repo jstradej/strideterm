@@ -218,13 +218,15 @@
       <SshAuthPrompt :prompt="sshStore.authPrompt" />
     </div>
     <div v-if="sshStore.hostKeyWarning" class="overlay ssh-overlay">
-      <SshHostKeyWarning :warning="sshStore.hostKeyWarning" />
+      <SshHostKeyWarning :warning="hostKeyWarning" />
     </div>
   </Teleport>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { computed, inject, onErrorCaptured, onMounted, ref, watch } from "vue";
+import type { ComponentPublicInstance } from "vue";
+import type { Transport } from "./transport.js";
 import { useAppStore } from "./stores/app.js";
 import { useGlobalEvents } from "./composables/useGlobalEvents.js";
 import { useAttentionSync } from "./composables/useAttentionSync.js";
@@ -255,7 +257,7 @@ import { useReviewNotifications } from "./composables/useReviewNotifications.js"
 import { useNotificationStore } from "./stores/notifications.js";
 import { useSshStore } from "./stores/ssh.js";
 
-const api = inject("api");
+const api = inject<Transport>("api");
 const store = useAppStore();
 const notifStore = useNotificationStore();
 const sshStore = useSshStore();
@@ -265,10 +267,10 @@ useReviewNotifications(latestToast);
 sshStore.bindEvents();
 sshStore.load();
 
-const frameRef = ref(null);
-const sidebarRef = ref(null);
+const frameRef = ref<HTMLElement | null>(null);
+const sidebarRef = ref<HTMLElement | null>(null);
 const mobileTabOpen = ref(false);
-const tabPickerAnchor = ref(null);
+const tabPickerAnchor = ref<DOMRect | null>(null);
 
 const sidebarCollapseLabel = computed(() => (store.sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"));
 
@@ -292,74 +294,78 @@ const versionToastShown = ref(false);
 watch(versionCheck, (check) => {
   if (!check || versionToastShown.value) return;
   versionToastShown.value = true;
-  if (check.versionsBehind > 0) {
-    const label = check.versionsBehind === 1 ? "1 version" : `${check.versionsBehind} versions`;
+  const versionsBehindCount = check.versionsBehind ?? 0;
+  if (versionsBehindCount > 0) {
+    const label = versionsBehindCount === 1 ? "1 version" : `${versionsBehindCount} versions`;
     latestToast.value = {
       id: crypto.randomUUID(),
       title: "Update available",
       body: `You are ${label} behind (latest: v${check.latestVersion}).`,
       kind: "info",
       at: new Date().toISOString(),
-      read: false,
+      tier: 1,
+      urgency: "normal",
+      category: "info",
     };
   }
 });
 
-function toggleSidebarCollapse() {
+function toggleSidebarCollapse(): void {
   store.sidebarCollapsed = !store.sidebarCollapsed;
   writeSidebarCollapsed(store.sidebarCollapsed);
 }
 
-function openSidebar() {
+function openSidebar(): void {
   sidebarRef.value?.classList.add("sidebar--open");
 }
 
-function closeSidebar() {
+function closeSidebar(): void {
   sidebarRef.value?.classList.remove("sidebar--open");
 }
 
-function onEditWorkspace(workspaceId) {
+function onEditWorkspace(workspaceId: string): void {
   const ws = (store.payload?.appState?.workspaces || []).find((w) => w.id === workspaceId);
   if (ws) store.openWorkspaceDialog(ws);
 }
 
-function onToolbarQuickFix() {
+function onToolbarQuickFix(): void {
   const ws = store.activeWorkspace;
   if (ws?.kind === "github") store.openGitHubQuickFixWizard();
   else store.openQuickFixWizard();
 }
 
-function onToolbarCreateWorktree() {
+function onToolbarCreateWorktree(): void {
   const wsId = store.payload?.appState?.activeWorkspaceId;
   if (wsId) store.createWorktreeWithDialog(wsId);
 }
 
-function onToolbarEditWorkspace() {
+function onToolbarEditWorkspace(): void {
   const wsId = store.payload?.appState?.activeWorkspaceId;
   if (wsId) onEditWorkspace(wsId);
 }
 
-function onToolbarDeleteWorkspace() {
+function onToolbarDeleteWorkspace(): void {
   const wsId = store.payload?.appState?.activeWorkspaceId;
   if (wsId) store.deleteWorkspace(wsId);
 }
 
-function onTabContextMenu(event) {
+function onTabContextMenu(event: { x: number; y: number; viewId: string }): void {
   store.showContextMenu(event.x, event.y, event.viewId);
 }
 
-function onToggleTabPicker(event) {
+function onToggleTabPicker(event: MouseEvent): void {
   if (tabPickerAnchor.value) {
     tabPickerAnchor.value = null;
   } else {
-    const btn = event?.target || event?.currentTarget;
-    tabPickerAnchor.value = btn ? btn.getBoundingClientRect().toJSON() : null;
+    const btn = (event.target ?? event.currentTarget) as Element | null;
+    tabPickerAnchor.value = btn ? btn.getBoundingClientRect() : null;
   }
 }
 
-function onOpenLayoutPicker(event) {
-  const btn = event?.target || event?.currentTarget;
-  store.showLayoutPicker(btn ? btn.getBoundingClientRect().toJSON() : null);
+function onOpenLayoutPicker(event: MouseEvent): void {
+  const btn = (event.target ?? event.currentTarget) as Element | null;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  store.showLayoutPicker((btn ? btn.getBoundingClientRect() : null) as any);
 }
 
 onMounted(() => {
@@ -373,14 +379,18 @@ onMounted(() => {
   }
 });
 
-onErrorCaptured((err, instance, info) => {
-  console.error(`[ErrorBoundary] Unhandled error in ${instance?.$options?.name || "component"} (${info}):`, err);
+onErrorCaptured((err, instance: ComponentPublicInstance | null, info) => {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  console.error(`[ErrorBoundary] Unhandled error in ${(instance as any)?.$options?.name || "component"} (${info}):`, err);
   return false;
 });
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const hostKeyWarning = computed(() => sshStore.hostKeyWarning as any);
+
 useGlobalEvents();
-useAttentionSync(api);
-useKeyboardShortcuts(api, { onNewWorkspace: () => store.openNewWorkspaceFlow() });
+useAttentionSync(api as Transport);
+useKeyboardShortcuts(api as Transport, { onNewWorkspace: () => store.openNewWorkspaceFlow() });
 useSidebarResize(frameRef, sidebarRef);
 useNotificationDockResize(frameRef);
 </script>
