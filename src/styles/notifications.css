@@ -839,3 +839,82 @@
   opacity: 0;
   transform: translateX(-20px);
 }
+
+/* ── Notification center tab bar ── */
+.notification-center__tabs {
+  display: flex;
+  gap: 2px;
+  align-items: center;
+}
+
+.notification-center__tab {
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 4px 10px;
+  font-size: 12px;
+  font-weight: 500;
+  border-radius: 4px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  transition:
+    color 0.15s,
+    background 0.15s;
+}
+
+.notification-center__tab:hover {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.notification-center__tab--active {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+/* ── Telegram status list ── */
+.telegram-status-list {
+  display: grid;
+  gap: 6px;
+  padding: 8px;
+}
+
+.telegram-status-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.telegram-status-item__label {
+  font-weight: 600;
+  font-size: 13px;
+  flex: 1;
+}
+
+.telegram-status-item__chat {
+  font-size: 11px;
+  color: var(--muted);
+  font-family: monospace;
+}
+
+.telegram-status-item__badge {
+  font-size: 11px;
+  padding: 2px 6px;
+  border-radius: 10px;
+}
+
+.tg-badge--ok {
+  background: rgba(0, 200, 100, 0.15);
+  color: #0c6;
+}
+
+.tg-badge--warn {
+  background: rgba(255, 180, 0, 0.15);
+  color: #fa0;
+}

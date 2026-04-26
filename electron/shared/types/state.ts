@@ -66,6 +66,8 @@ export interface TelegramConnection {
   pollSeconds: number;
   /** Which notification kinds to forward (empty = all) */
   forwardKinds: string[];
+  /** Optional CLI command to run in non-interactive mode. Use {task} for the task text. E.g. "claude --non-interactive -p" */
+  agentCommand?: string;
 }
 
 export interface TelegramIntegrationSettings {

@@ -900,6 +900,7 @@ export function normalizeState(rawState: any = {}): AppState & { activeProjectId
                 pollSeconds:
                   Number(connection.pollSeconds) || defaults.settings.integrations.telegram.defaultPollSeconds,
                 forwardKinds: Array.isArray(connection.forwardKinds) ? [...connection.forwardKinds] : [],
+                agentCommand: typeof connection.agentCommand === "string" ? connection.agentCommand : "",
               }),
             )
           : [],

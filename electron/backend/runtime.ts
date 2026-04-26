@@ -1410,17 +1410,40 @@ export async function createRuntime({
         const state = getState();
         const parentWorkspace = findWorkspace(state, cmd.workspaceId);
         if (parentWorkspace?.cwd) {
-          log.info("telegram: creating task workspace from command", {
-            workspaceId: cmd.workspaceId,
-            description: cmd.taskDescription?.slice(0, 80),
-          });
-          const result = await _rt?.createTaskWorkspace({
-            cwd: parentWorkspace.cwd,
-            description: cmd.taskDescription,
-            parentWorkspaceId: cmd.workspaceId,
-          });
-          if (result) {
-            await _rt?.startTask({ workspaceId: result.activeWorkspaceId || cmd.workspaceId });
+          if (cmd.agentCommand) {
+            // Run user-defined agent command in non-interactive mode
+            const agentCmd = cmd.agentCommand.replace(/\{task\}/g, cmd.taskDescription);
+            const argv = agentCmd.match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g) || [];
+            const executable = argv[0];
+            const args = argv.slice(1).map((a: string) => a.replace(/^["']|["']$/g, ""));
+            if (executable) {
+              log.info("telegram: spawning agent command", {
+                executable,
+                cwd: parentWorkspace.cwd,
+                description: cmd.taskDescription?.slice(0, 80),
+              });
+              const child = spawn(executable, args, {
+                cwd: parentWorkspace.cwd,
+                detached: false,
+                stdio: "ignore",
+              });
+              child.on("error", (err) => {
+                log.warn("telegram: agent command spawn error", { err: err.message });
+              });
+            }
+          } else {
+            log.info("telegram: creating task workspace from command", {
+              workspaceId: cmd.workspaceId,
+              description: cmd.taskDescription?.slice(0, 80),
+            });
+            const result = await _rt?.createTaskWorkspace({
+              cwd: parentWorkspace.cwd,
+              description: cmd.taskDescription,
+              parentWorkspaceId: cmd.workspaceId,
+            });
+            if (result) {
+              await _rt?.startTask({ workspaceId: result.activeWorkspaceId || cmd.workspaceId });
+            }
           }
         }
       } else if (cmd.type === "open-pr-review" && cmd.prKey && cmd.provider) {
@@ -1453,7 +1476,7 @@ export async function createRuntime({
       // Task runner completions/failures are authoritative — always T1.
       // `failed` variants are urgent so the user notices a broken task.
       const inferredUrgency = urgency || (kind === "waiting" || kind === "completed" ? "normal" : "urgent");
-      addProjectAlert({
+      raiseAlert({
         projectId,
         panelId,
         sessionId,
@@ -1464,7 +1487,6 @@ export async function createRuntime({
         urgency: inferredUrgency,
         exitCode,
       });
-      broadcastState();
     },
     async restartSession(sessionId) {
       await sessions.restartSession(getState(), sessionId);
@@ -3095,6 +3117,7 @@ export async function createRuntime({
         enabled: connection.enabled !== false,
         pollSeconds: Number(connection.pollSeconds) || getTelegramSettings().defaultPollSeconds || 5,
         forwardKinds: Array.isArray(connection.forwardKinds) ? [...connection.forwardKinds] : [],
+        agentCommand: typeof connection.agentCommand === "string" ? connection.agentCommand : "",
       };
 
       // eslint-disable-next-line @typescript-eslint/no-explicit-any

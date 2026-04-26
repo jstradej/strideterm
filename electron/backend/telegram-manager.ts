@@ -34,6 +34,7 @@ export interface TelegramConnectionConfig {
   enabled: boolean;
   pollSeconds: number;
   forwardKinds: string[];
+  agentCommand?: string;
 }
 
 export interface TelegramAlertContext {
@@ -82,6 +83,7 @@ interface TelegramCommandEvent {
   connectionId?: string;
   taskDescription?: string;
   alertId?: string;
+  agentCommand?: string;
 }
 
 // Minimal Telegram API types
@@ -115,11 +117,13 @@ interface TgSendMessageResult {
 
 // State machine for pending user input
 interface PendingRequest {
-  type: "task-description";
+  type: "task-description" | "confirm-action";
   workspaceId: string;
   panelId: string;
   alertId?: string;
   createdAt: number;
+  /** For confirm-action: the command to emit on confirm */
+  pendingCmd?: TelegramCommandEvent;
 }
 
 // ---------------------------------------------------------------------------
@@ -134,7 +138,7 @@ export class TelegramManager extends EventEmitter {
   private credentialStore: CredentialStore;
   private connections: TelegramConnectionConfig[] = [];
   private pollTimer: ReturnType<typeof setTimeout> | null = null;
-  private pollOffset: number = 0;
+  private pollOffsets: Map<string, number> = new Map();
   private running: boolean = false;
 
   /** Maps Telegram message_id → alert context, per connection */
@@ -341,7 +345,7 @@ export class TelegramManager extends EventEmitter {
       description?: string;
     }>(opts.botToken, "sendMessage", {
       chat_id: opts.chatId,
-      text: escapeMarkdown("✅ strIDEterm connected\\! Notifications will appear here\\."),
+      text: escapeMarkdown("✅ strIDEterm connected! Notifications will appear here."),
       parse_mode: "MarkdownV2",
     });
 
@@ -375,8 +379,7 @@ export class TelegramManager extends EventEmitter {
 
   private _scheduleNextPoll(): void {
     if (!this.running) return;
-    const intervalMs = Math.min(...this.connections.map((c) => c.pollSeconds * 1000), 5000);
-    const delay = this.connections.length > 0 ? intervalMs : 5000;
+    const delay = this.connections.length > 0 ? Math.min(...this.connections.map((c) => c.pollSeconds * 1000)) : 30000;
     this.pollTimer = setTimeout(() => {
       this._poll().catch((err) => {
         log.warn("telegram poll error", { err: (err as Error).message });
@@ -400,13 +403,15 @@ export class TelegramManager extends EventEmitter {
     const token = this.credentialStore.getSecret(conn.botTokenRef);
     if (!token) return;
 
+    const offset = this.pollOffsets.get(conn.id) ?? 0;
+
     const result = await this._apiCall<{
       ok: boolean;
       result?: TgUpdate[];
       description?: string;
     }>(token, "getUpdates", {
-      offset: this.pollOffset,
-      timeout: 0,
+      offset,
+      timeout: 25,
       limit: 100,
       allowed_updates: ["message", "callback_query"],
     });
@@ -417,7 +422,7 @@ export class TelegramManager extends EventEmitter {
     }
 
     for (const update of result.result) {
-      this.pollOffset = Math.max(this.pollOffset, update.update_id + 1);
+      this.pollOffsets.set(conn.id, Math.max(offset, update.update_id + 1));
 
       if (update.message) {
         await this._handleMessage(update.message, conn, token);
@@ -442,7 +447,7 @@ export class TelegramManager extends EventEmitter {
       this.pendingRequests.delete(chatId);
 
       if (pending.type === "task-description") {
-        log.info("telegram: dispatching start-task from pending request", {
+        log.info("telegram: requesting confirmation for start-task from pending request", {
           workspaceId: pending.workspaceId,
           panelId: pending.panelId,
         });
@@ -453,8 +458,16 @@ export class TelegramManager extends EventEmitter {
           taskDescription: text,
           alertId: pending.alertId,
         };
-        this.emit("command", cmd);
-        await this._sendText(token, chatId, `🚀 Starting new task:\n_${escapeMarkdown(text.slice(0, 200))}_`, true);
+        // Store as confirm-action and ask for confirmation
+        this.pendingRequests.set(chatId, {
+          type: "confirm-action",
+          workspaceId: pending.workspaceId,
+          panelId: pending.panelId,
+          alertId: pending.alertId,
+          createdAt: Date.now(),
+          pendingCmd: cmd,
+        });
+        await this._sendConfirmation(token, chatId, `🚀 Start task: _${escapeMarkdown(text.slice(0, 200))}_`);
         return;
       }
     }
@@ -464,7 +477,7 @@ export class TelegramManager extends EventEmitter {
       const entry = this.contextByMessageId.get(msg.reply_to_message.message_id);
       if (entry) {
         const ctx = entry.context;
-        await this._dispatchTextReply(text, ctx, chatId, token);
+        await this._dispatchTextReply(text, ctx, chatId, token, conn);
         return;
       }
     }
@@ -482,6 +495,7 @@ export class TelegramManager extends EventEmitter {
     ctx: TelegramAlertContext,
     chatId: string,
     token: string,
+    conn?: TelegramConnectionConfig,
   ): Promise<void> {
     const lower = text.toLowerCase().trim();
 
@@ -506,22 +520,37 @@ export class TelegramManager extends EventEmitter {
         provider: ctx.provider,
         connectionId: ctx.connectionId,
       };
-      this.emit("command", cmd);
-      await this._sendText(token, chatId, "🔍 Opening code review workspace…");
+      // Require confirmation before opening PR review
+      this.pendingRequests.set(chatId, {
+        type: "confirm-action",
+        workspaceId: ctx.workspaceId,
+        panelId: ctx.panelId,
+        createdAt: Date.now(),
+        pendingCmd: cmd,
+      });
+      await this._sendConfirmation(token, chatId, "🔍 Open code review for this PR?");
       return;
     }
 
     if (ctx.kind === "completed" || ctx.kind === "waiting") {
-      // User replied with a task description
+      // User replied with a task description — require confirmation
       const cmd: TelegramCommandEvent = {
         type: "start-task",
         workspaceId: ctx.workspaceId,
         panelId: ctx.panelId,
         taskDescription: text,
         alertId: ctx.alertId,
+        agentCommand: conn?.agentCommand || undefined,
       };
-      this.emit("command", cmd);
-      await this._sendText(token, chatId, `🚀 Starting new task:\n_${escapeMarkdown(text.slice(0, 200))}_`, true);
+      this.pendingRequests.set(chatId, {
+        type: "confirm-action",
+        workspaceId: ctx.workspaceId,
+        panelId: ctx.panelId,
+        alertId: ctx.alertId,
+        createdAt: Date.now(),
+        pendingCmd: cmd,
+      });
+      await this._sendConfirmation(token, chatId, `🚀 Start task: _${escapeMarkdown(text.slice(0, 200))}_`);
       return;
     }
 
@@ -566,6 +595,34 @@ export class TelegramManager extends EventEmitter {
       return;
     }
 
+    if (action.a === "confirm") {
+      const pending = this.pendingRequests.get(chatId);
+      if (
+        pending &&
+        pending.type === "confirm-action" &&
+        pending.pendingCmd &&
+        Date.now() - pending.createdAt < PENDING_TIMEOUT_MS
+      ) {
+        this.pendingRequests.delete(chatId);
+        this.emit("command", pending.pendingCmd);
+        const confirmMsg =
+          pending.pendingCmd.type === "start-task"
+            ? `🚀 Starting task:\n_${escapeMarkdown((pending.pendingCmd.taskDescription || "").slice(0, 200))}_`
+            : "🔍 Opening code review workspace…";
+        await this._answerText(token, chatId, query.message.message_id, confirmMsg);
+      } else {
+        this.pendingRequests.delete(chatId);
+        await this._answerText(token, chatId, query.message.message_id, "⚠️ No pending action to confirm\\.");
+      }
+      return;
+    }
+
+    if (action.a === "cancel") {
+      this.pendingRequests.delete(chatId);
+      await this._answerText(token, chatId, query.message.message_id, "❌ Cancelled\\.");
+      return;
+    }
+
     if (action.a === "start-task") {
       // Ask user for the task description
       this.pendingRequests.set(chatId, {
@@ -593,14 +650,41 @@ export class TelegramManager extends EventEmitter {
         prKey,
         provider,
       };
-      this.emit("command", cmd);
-      await this._answerText(token, chatId, query.message.message_id, "🔍 Opening code review workspace…");
+      // Require confirmation before opening PR review
+      this.pendingRequests.set(chatId, {
+        type: "confirm-action",
+        workspaceId,
+        panelId,
+        createdAt: Date.now(),
+        pendingCmd: cmd,
+      });
+      await this._sendConfirmation(token, chatId, "🔍 Open code review for this PR?");
       return;
     }
   }
 
   private async _answerText(token: string, chatId: string, replyToMessageId: number, text: string): Promise<void> {
     await this._sendText(token, chatId, text, false, replyToMessageId);
+  }
+
+  private async _sendConfirmation(token: string, chatId: string, promptText: string): Promise<void> {
+    const confirmData = JSON.stringify({ a: "confirm" });
+    const cancelData = JSON.stringify({ a: "cancel" });
+    await this._apiCall(token, "sendMessage", {
+      chat_id: chatId,
+      text: promptText,
+      parse_mode: "MarkdownV2",
+      reply_markup: {
+        inline_keyboard: [
+          [
+            { text: "✅ Confirm", callback_data: confirmData },
+            { text: "❌ Cancel", callback_data: cancelData },
+          ],
+        ],
+      },
+    }).catch((err) => {
+      log.warn("telegram sendConfirmation failed", { err: (err as Error).message });
+    });
   }
 
   private async _sendText(

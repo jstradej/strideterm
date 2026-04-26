@@ -18,15 +18,30 @@
         title="Drag to resize · double-click to reset"
       ></div>
       <header class="notification-center__header">
-        <h2 class="notification-center__title">
-          Notifications
-          <span
-            v-if="notifStore.unreadCount > 0"
-            class="notification-center__title-badge"
-            :title="`${notifStore.unreadCount} unread`"
-            >{{ notifStore.unreadCount > 99 ? "99+" : notifStore.unreadCount }}</span
+        <div class="notification-center__tabs">
+          <button
+            type="button"
+            class="notification-center__tab"
+            :class="{ 'notification-center__tab--active': activeTab === 'alerts' }"
+            @click="activeTab = 'alerts'"
           >
-        </h2>
+            Alerts
+            <span
+              v-if="notifStore.unreadCount > 0"
+              class="notification-center__title-badge"
+              :title="`${notifStore.unreadCount} unread`"
+              >{{ notifStore.unreadCount > 99 ? "99+" : notifStore.unreadCount }}</span
+            >
+          </button>
+          <button
+            type="button"
+            class="notification-center__tab"
+            :class="{ 'notification-center__tab--active': activeTab === 'telegram' }"
+            @click="activeTab = 'telegram'"
+          >
+            Telegram
+          </button>
+        </div>
         <div class="notification-center__actions">
           <button
             v-if="notifStore.unreadCount > 0 || notifStore.finishedSessions.length > 0"
@@ -81,7 +96,25 @@
         </button>
       </Transition>
 
-      <div ref="bodyRef" class="notification-center__body" @scroll="onBodyScroll">
+      <!-- Telegram status tab -->
+      <div v-if="activeTab === 'telegram'" class="notification-center__body">
+        <div v-if="telegramConnections.length === 0" class="notification-center__empty">
+          No Telegram connections configured.
+        </div>
+        <div v-else class="telegram-status-list">
+          <div v-for="conn in telegramConnections" :key="conn.id" class="telegram-status-item">
+            <span class="telegram-status-item__label">{{ conn.label || conn.chatId }}</span>
+            <span class="telegram-status-item__chat">chat {{ conn.chatId }}</span>
+            <span
+              class="telegram-status-item__badge"
+              :class="conn.status === 'configured' ? 'tg-badge--ok' : 'tg-badge--warn'"
+              >{{ conn.status === "configured" ? "connected" : conn.status }}</span
+            >
+          </div>
+        </div>
+      </div>
+
+      <div v-if="activeTab === 'alerts'" ref="bodyRef" class="notification-center__body" @scroll="onBodyScroll">
         <div v-if="notifStore.sessions.length === 0" class="notification-center__empty">No notifications yet.</div>
 
         <!-- Flat chronological timeline with day-band separators.
@@ -185,6 +218,13 @@ const appStore = useAppStore();
 const bodyRef = ref<HTMLElement | null>(null);
 const panelRef = ref<HTMLElement | null>(null);
 const selectedIndex = ref(0);
+const activeTab = ref<"alerts" | "telegram">("alerts");
+
+// Telegram connection statuses from live snapshot
+const telegramConnections = computed(() => {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return (appStore.payload as any)?.telegram?.connections || [];
+});
 // Selection outline is only shown when the user is actively driving the list
 // with the keyboard. Mouse interaction resets it so the panel doesn't look
 // like the first row is already "armed" on open.

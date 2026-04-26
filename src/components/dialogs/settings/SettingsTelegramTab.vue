@@ -69,6 +69,7 @@ interface TelegramConnection {
   enabled: boolean;
   pollSeconds: number;
   forwardKinds: string[];
+  agentCommand?: string;
 }
 
 interface TelegramSettings {
@@ -103,6 +104,7 @@ function makeBlankDraft() {
     enabled: true,
     pollSeconds: props.telegramSettings?.defaultPollSeconds ?? 5,
     forwardKinds: [] as string[],
+    agentCommand: "",
   });
 }
 
@@ -115,6 +117,7 @@ const editDraft = reactive({
   enabled: true,
   pollSeconds: 5,
   forwardKinds: [] as string[],
+  agentCommand: "",
 });
 
 watch(
@@ -141,6 +144,7 @@ function toggleEdit(id: string) {
   editDraft.enabled = conn.enabled;
   editDraft.pollSeconds = conn.pollSeconds;
   editDraft.forwardKinds = [...conn.forwardKinds];
+  editDraft.agentCommand = conn.agentCommand || "";
   editingId.value = id;
 }
 
@@ -172,6 +176,7 @@ type Draft = {
   enabled: boolean;
   pollSeconds: number;
   forwardKinds: string[];
+  agentCommand?: string;
 };
 
 async function testConnection(draft: Draft) {
@@ -205,6 +210,7 @@ async function saveConnection(draft: Draft) {
       enabled: draft.enabled,
       pollSeconds: draft.pollSeconds,
       forwardKinds: draft.forwardKinds,
+      agentCommand: draft.agentCommand || undefined,
     });
     showAddForm.value = false;
     editingId.value = null;
@@ -305,6 +311,23 @@ export const ConnectionForm = defineComponent({
             },
           }),
           h("small", { class: "help-text" }, "Your personal or group chat ID. Send /start to your bot to find it."),
+        ]),
+        h("label", { class: "form-label" }, [
+          h("span", "Agent command (optional)"),
+          h("input", {
+            value: d.agentCommand,
+            class: "settings-input",
+            placeholder: "claude --non-interactive -p",
+            maxlength: 500,
+            onInput: (e: Event) => {
+              d.agentCommand = (e.target as HTMLInputElement).value;
+            },
+          }),
+          h(
+            "small",
+            { class: "help-text" },
+            "CLI command to run in non-interactive mode. Use {task} for the task text. Leave empty to use the built-in task runner.",
+          ),
         ]),
         h("label", { class: "form-label form-label--inline" }, [
           h("input", {
