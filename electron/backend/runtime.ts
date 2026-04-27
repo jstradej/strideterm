@@ -1886,10 +1886,7 @@ export async function createRuntime({
         } catch (err) {
           log.warn("telegram: screenshot capture failed", { err: (err as Error).message });
           if (cmd.chatId) {
-            await telegramManager.notifyChat(
-              cmd.chatId,
-              "⚠️ Could not capture screenshot \\(window unavailable\\)\\.",
-            );
+            await telegramManager.notifyChat(cmd.chatId, "⚠️ Could not capture screenshot \\(window unavailable\\)\\.");
           }
           // Still try to switch back so user's UI returns to where they left it.
           if (targetWsId && originalActiveId && targetWsId !== originalActiveId) {

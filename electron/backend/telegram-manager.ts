@@ -1234,7 +1234,8 @@ export class TelegramManager extends EventEmitter {
           agentCommand: pending.agentCommand,
           draftTask: { ...draft, useWorktree: true, worktreeBranch: branch },
         });
-        const normalizedNote = branch !== text.trim() ? `_\\(normalized from "${escapeMarkdown(text.trim())}"\\)_\n` : "";
+        const normalizedNote =
+          branch !== text.trim() ? `_\\(normalized from "${escapeMarkdown(text.trim())}"\\)_\n` : "";
         await this._sendText(
           token,
           chatId,
@@ -1414,11 +1415,7 @@ export class TelegramManager extends EventEmitter {
 
     // Unrecognized message — provide help
     log.debug("telegram message unrecognized", { chatId, textPreview: text.slice(0, 40) });
-    await this._sendText(
-      token,
-      chatId,
-      "ℹ️ Reply to a notification, or type /help to list commands\\.",
-    );
+    await this._sendText(token, chatId, "ℹ️ Reply to a notification, or type /help to list commands\\.");
   }
 
   // --- Command handlers ---
@@ -2328,7 +2325,12 @@ export class TelegramManager extends EventEmitter {
         agentCommand: pending.agentCommand,
         draftTask: { ...draft, useWorktree: true },
       });
-      await this._answerText(token, chatId, messageId, "🌳 Type the new branch name \\(e\\.g\\. `feature/auth-fix`\\):");
+      await this._answerText(
+        token,
+        chatId,
+        messageId,
+        "🌳 Type the new branch name \\(e\\.g\\. `feature/auth-fix`\\):",
+      );
       return;
     }
 

@@ -2230,7 +2230,11 @@ describe("sendFile format detection", () => {
     });
     // sendText called with an error message
     expect(
-      calls.some((c) => c.method === "sendMessage" && (c.bodyText || "").includes("Cannot read file") || (c.bodyText || "").includes("Path does not exist")),
+      calls.some(
+        (c) =>
+          (c.method === "sendMessage" && (c.bodyText || "").includes("Cannot read file")) ||
+          (c.bodyText || "").includes("Path does not exist"),
+      ),
     ).toBe(true);
   });
 });

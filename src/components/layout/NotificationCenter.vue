@@ -156,17 +156,15 @@
                   :title="`The bot polls Telegram for new messages every ${conn.pollSeconds}s.`"
                   >poll {{ conn.pollSeconds }}s</span
                 >
-                <span
-                  class="telegram-status-item__chip"
-                  :title="forwardKindsTooltip(conn.forwardKinds)"
-                  >{{ forwardKindsLabel(conn.forwardKinds) }}</span
-                >
+                <span class="telegram-status-item__chip" :title="forwardKindsTooltip(conn.forwardKinds)">{{
+                  forwardKindsLabel(conn.forwardKinds)
+                }}</span>
               </div>
             </div>
           </div>
           <div class="telegram-status__hint">
-            Send <code>/help</code> to your bot for the available commands, or
-            <code>/menu</code> for an interactive hub.
+            Send <code>/help</code> to your bot for the available commands, or <code>/menu</code> for an interactive
+            hub.
           </div>
           <div class="telegram-status__actions">
             <button
