@@ -304,13 +304,28 @@ export class TelegramManager extends EventEmitter {
     log.debug("telegram configured", { count: this.connections.length });
   }
 
-  getSnapshot(): { connections: Array<{ id: string; label: string; chatId: string; status: string }> } {
+  getSnapshot(): {
+    connections: Array<{
+      id: string;
+      label: string;
+      chatId: string;
+      status: string;
+      pollSeconds: number;
+      forwardKinds: string[];
+    }>;
+  } {
     return {
       connections: this.connections.map((c) => ({
         id: c.id,
         label: c.label,
         chatId: c.chatId,
         status: this.credentialStore.hasSecret(c.botTokenRef) ? "configured" : "missing-token",
+        // Surface the operational config so the side-panel Telegram tab can
+        // show the user how the bot is wired up — at-a-glance answers to
+        // "how often is this polling?" and "what kinds of alerts forward?"
+        // without forcing a trip into Settings.
+        pollSeconds: c.pollSeconds,
+        forwardKinds: Array.isArray(c.forwardKinds) ? [...c.forwardKinds] : [],
       })),
     };
   }

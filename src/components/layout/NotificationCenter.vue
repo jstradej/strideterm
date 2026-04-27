@@ -101,40 +101,82 @@
       <div v-if="activeTab === 'telegram'" class="notification-center__body">
         <div
           v-if="telegramConnections.length === 0"
-          class="notification-center__empty"
+          class="notification-center__empty telegram-empty"
           title="No Telegram bot is wired up yet. Open Settings → Telegram to add one (you'll need a bot token from @BotFather and a chat ID)."
         >
-          No Telegram connections configured.
-        </div>
-        <div v-else class="telegram-status-list">
-          <div
-            v-for="conn in telegramConnections"
-            :key="conn.id"
-            class="telegram-status-item"
-            :title="`Telegram connection “${conn.label || conn.chatId}”. Manage in Settings → Telegram.`"
+          <p class="telegram-empty__title">No Telegram connections configured.</p>
+          <p class="telegram-empty__hint">
+            Forward strIDEterm alerts to your phone, and reply to act on them. Setup takes ~1 minute.
+          </p>
+          <button
+            type="button"
+            class="button button--primary telegram-empty__cta"
+            title="Open Settings → Telegram to add a bot connection"
+            @click="openTelegramSettings"
           >
-            <span
-              class="telegram-status-item__label"
-              :title="
-                conn.label ? `Connection label: ${conn.label}` : 'No label set — using chat ID as the display name.'
-              "
-              >{{ conn.label || conn.chatId }}</span
+            Set up Telegram bot
+          </button>
+        </div>
+        <div v-else class="telegram-status">
+          <div class="telegram-status-list">
+            <div
+              v-for="conn in telegramConnections"
+              :key="conn.id"
+              class="telegram-status-item"
+              :title="`Telegram connection “${conn.label || conn.chatId}”. Manage in Settings → Telegram.`"
             >
-            <span
-              class="telegram-status-item__chat"
-              title="Telegram chat ID this bot posts into. Negative -100… IDs are groups/channels."
-              >chat {{ conn.chatId }}</span
+              <div class="telegram-status-item__row">
+                <span
+                  class="telegram-status-item__label"
+                  :title="
+                    conn.label ? `Connection label: ${conn.label}` : 'No label set — using chat ID as the display name.'
+                  "
+                  >{{ conn.label || conn.chatId }}</span
+                >
+                <span
+                  class="telegram-status-item__chat"
+                  title="Telegram chat ID this bot posts into. Negative -100… IDs are groups/channels."
+                  >chat {{ conn.chatId }}</span
+                >
+                <span
+                  class="telegram-status-item__badge"
+                  :class="conn.status === 'configured' ? 'tg-badge--ok' : 'tg-badge--warn'"
+                  :title="
+                    conn.status === 'configured'
+                      ? 'Bot token is present in the credential store; long-polling is active.'
+                      : 'No bot token found for this connection — saved settings exist, but the token reference is missing. Re-save the connection to fix.'
+                  "
+                  >{{ conn.status === "configured" ? "connected" : conn.status }}</span
+                >
+              </div>
+              <div class="telegram-status-item__meta">
+                <span
+                  v-if="conn.pollSeconds"
+                  class="telegram-status-item__chip"
+                  :title="`The bot polls Telegram for new messages every ${conn.pollSeconds}s.`"
+                  >poll {{ conn.pollSeconds }}s</span
+                >
+                <span
+                  class="telegram-status-item__chip"
+                  :title="forwardKindsTooltip(conn.forwardKinds)"
+                  >{{ forwardKindsLabel(conn.forwardKinds) }}</span
+                >
+              </div>
+            </div>
+          </div>
+          <div class="telegram-status__hint">
+            Send <code>/help</code> to your bot for the available commands, or
+            <code>/menu</code> for an interactive hub.
+          </div>
+          <div class="telegram-status__actions">
+            <button
+              type="button"
+              class="button button--ghost"
+              title="Open Settings → Telegram"
+              @click="openTelegramSettings"
             >
-            <span
-              class="telegram-status-item__badge"
-              :class="conn.status === 'configured' ? 'tg-badge--ok' : 'tg-badge--warn'"
-              :title="
-                conn.status === 'configured'
-                  ? 'Bot token is present in the credential store; long-polling is active.'
-                  : 'No bot token found for this connection — saved settings exist, but the token reference is missing. Re-save the connection to fix.'
-              "
-              >{{ conn.status === "configured" ? "connected" : conn.status }}</span
-            >
+              ⚙ Configure
+            </button>
           </div>
         </div>
       </div>
@@ -246,10 +288,38 @@ const selectedIndex = ref(0);
 const activeTab = ref<"alerts" | "telegram">("alerts");
 
 // Telegram connection statuses from live snapshot
-const telegramConnections = computed(() => {
+interface TelegramConnectionView {
+  id: string;
+  label: string;
+  chatId: string;
+  status: string;
+  pollSeconds?: number;
+  forwardKinds?: string[];
+}
+const telegramConnections = computed<TelegramConnectionView[]>(() => {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  return (appStore.payload as any)?.telegram?.connections || [];
+  return ((appStore.payload as any)?.telegram?.connections || []) as TelegramConnectionView[];
 });
+
+// Friendly label for the forward filter chip. An empty `forwardKinds`
+// array means "forward everything" — surface that explicitly so users
+// don't think the chip is broken.
+function forwardKindsLabel(kinds: string[] | undefined): string {
+  if (!kinds || kinds.length === 0) return "all alerts";
+  if (kinds.length <= 3) return kinds.join(", ");
+  return `${kinds.slice(0, 2).join(", ")} +${kinds.length - 2}`;
+}
+
+function forwardKindsTooltip(kinds: string[] | undefined): string {
+  if (!kinds || kinds.length === 0) {
+    return "All alert kinds (completed, waiting, review, error, info, …) are forwarded to this chat.";
+  }
+  return `Forwarding only: ${kinds.join(", ")}. Other alert kinds are filtered out for this chat.`;
+}
+
+function openTelegramSettings(): void {
+  appStore.openSettingsDialog({ initialTab: "telegram" });
+}
 // Selection outline is only shown when the user is actively driving the list
 // with the keyboard. Mouse interaction resets it so the panel doesn't look
 // like the first row is already "armed" on open.

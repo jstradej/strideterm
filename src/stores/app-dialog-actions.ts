@@ -313,13 +313,14 @@ export function createDialogActions(ctx: DialogActionsCtx) {
 
   // --- Settings / help / profiles / azure connection dialogs -------------
 
-  function openSettingsDialog(): void {
+  function openSettingsDialog(opts: { initialTab?: string } = {}): void {
     openDialog("SettingsDialog", {
       settings: ctx.payload.value?.appState?.settings || {},
       tabTemplates: ctx.payload.value?.appState?.tabTemplates || [],
       appVersion: (ctx.payload.value as AnyApi)?.meta?.appVersion || "",
       repositoryUrl: (ctx.payload.value as AnyApi)?.meta?.repositoryUrl || "",
       versionCheck: (ctx.payload.value as AnyApi)?.meta?.versionCheck || null,
+      initialTab: opts.initialTab || "general",
       onCancel: closeDialog,
       onSave: async (patch: AnyApi) => {
         try {

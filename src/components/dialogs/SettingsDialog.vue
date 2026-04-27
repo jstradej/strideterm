@@ -150,6 +150,8 @@ interface Props {
   repositoryUrl?: string;
   versionCheck?: { versionsBehind: number; latestVersion: string; latestUrl: string } | null;
   saveError?: string;
+  /** Tab to open on mount. Defaults to `"general"`. */
+  initialTab?: string;
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -157,6 +159,7 @@ const props = withDefaults(defineProps<Props>(), {
   tabTemplates: () => [],
   appVersion: "",
   repositoryUrl: "",
+  initialTab: "general",
   versionCheck: null,
   saveError: "",
 });
@@ -169,7 +172,7 @@ const emit = defineEmits<{
 const api = inject<Transport>("api");
 const hookSettings = reactive(useAgentHookSettings(api));
 
-const activeTab = ref("general");
+const activeTab = ref(props.initialTab || "general");
 const form = reactive({
   theme: props.settings.theme || "dark",
   logLevel: props.settings.logLevel || "warn",
