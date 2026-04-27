@@ -57,7 +57,11 @@ function defaultGitHubReviewRoot(): string {
 }
 
 export function createAccessToken(): string {
-  return randomBytes(18).toString("base64url");
+  // 32 bytes = 256 bits of entropy. The remote-access token guards an
+  // HTTP/WS surface that exposes terminal sessions, file CRUD and git
+  // operations to the LAN / Cloudflare tunnel — at this blast radius
+  // we want the OAuth-grade 256-bit standard, not the previous 144 bits.
+  return randomBytes(32).toString("base64url");
 }
 
 function decodeUtf8Mojibake(value: string): string {

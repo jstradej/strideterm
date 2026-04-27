@@ -4,7 +4,9 @@ import { createAccessToken, createDefaultState, normalizeWorkspace, normalizeSta
 describe("default state", () => {
   test("createAccessToken returns a non-trivial token", () => {
     const token = createAccessToken();
-    expect(token.length).toBeGreaterThan(20);
+    // 32 random bytes base64url-encoded = 43 chars (no padding). Anything
+    // shorter than that would mean we have downgraded the entropy budget.
+    expect(token.length).toBeGreaterThanOrEqual(43);
     expect(token).toMatch(/^[A-Za-z0-9_-]+$/);
   });
 
