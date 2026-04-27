@@ -210,6 +210,33 @@ function createWindow(): void {
     },
   });
 
+  // Lock down every <webview> the renderer attaches.
+  //
+  // BrowserPane uses the webview tag to embed arbitrary user-supplied
+  // URLs (Confluence, Azure Devops Wiki, etc). By default a webview can
+  // turn nodeIntegration back on or load a custom preload — that would
+  // give attacker-controlled web pages full Node access. We strip every
+  // dangerous webPreference at attach time and refuse to load anything
+  // that isn't a regular http/https URL. Without this handler, the
+  // upstream Electron security checklist explicitly flags `webviewTag:
+  // true` as unsafe.
+  runtimeState.window.webContents.on("will-attach-webview", (event, webPreferences, params) => {
+    delete webPreferences.preload;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- legacy preload key still honoured by Electron
+    delete (webPreferences as any).preloadURL;
+    webPreferences.nodeIntegration = false;
+    webPreferences.nodeIntegrationInSubFrames = false;
+    webPreferences.contextIsolation = true;
+    webPreferences.sandbox = true;
+    webPreferences.webSecurity = true;
+
+    const src = params.src || "";
+    if (!/^https?:\/\//i.test(src) && src !== "about:blank") {
+      log.warn("blocked webview attach with non-http(s) src", { src: src.slice(0, 200) });
+      event.preventDefault();
+    }
+  });
+
   // Show window as soon as the DOM is ready (splash screen HTML is visible),
   // rather than waiting for ready-to-show which includes JS module loading.
   runtimeState.window.webContents.once("dom-ready", () => {
