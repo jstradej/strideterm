@@ -621,7 +621,17 @@ export class SessionManager extends EventEmitter {
       }).pipe(
         Effect.tapError((e) =>
           Effect.sync(() => {
-            log.warn("system-ssh spawn failed", { sessionId, exec: sshExec, error: String(e.cause) });
+            const causeErr = e.cause as { message?: string; code?: string } | undefined;
+            const errMsg = causeErr?.message || String(e.cause) || "spawn failed";
+            const isMissing = causeErr?.code === "ENOENT" || /file not found/i.test(errMsg);
+            log.warn("system-ssh spawn failed", {
+              sessionId,
+              exec: sshExec,
+              error: errMsg,
+              hint: isMissing
+                ? `Could not find “${sshExec}” on PATH. Configure Settings → SSH → System SSH Binary Path, or install OpenSSH (Windows: Settings → Apps → Optional features → OpenSSH Client).`
+                : undefined,
+            });
           }),
         ),
       ),

@@ -263,6 +263,38 @@ export function createRuntimeAttentionManager({
       return false;
     }
 
+    // Belt-and-suspenders: even if some upstream path forgets to ask the
+    // task runner first (or a race lets a stale silence timer fire after
+    // task state changed), suppress "waiting for input" alerts for the
+    // worker/judge panels of task workspaces while the runner owns the
+    // turn. The runner explicitly drives prompts, evaluations, re-prompts
+    // and verdicts — a "waiting for input" toast there is always wrong.
+    // Urgent (e.g. permission_prompt) bypasses since those genuinely need
+    // user attention.
+    if (kind === "waiting" && urgency !== "urgent") {
+      const state = getState();
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const ws = state.workspaces.find((w: any) => w.id === projectId);
+      if (ws?.kind === "task" && ws.task) {
+        const taskState = ws.task.state || "";
+        const isWorker = panelId === ws.task.workerPanelId;
+        const isJudge = panelId === ws.task.judgePanelId;
+        const runnerOwnsTurn =
+          taskState === "running" ||
+          taskState === "evaluating" ||
+          taskState === "judge-evaluating" ||
+          taskState === "refreshing";
+        if ((isWorker || isJudge) && runnerOwnsTurn) {
+          log.debug("raiseAlert suppressed: task runner owns this turn", {
+            sessionId,
+            taskState,
+            panelRole: isWorker ? "worker" : "judge",
+          });
+          return false;
+        }
+      }
+    }
+
     log.info("ALERT raised", { sessionId, projectId, panelId, title, kind, tier, urgency, detail, exitCode });
     if (getNotificationConfig().debug) {
       log.info("[notif-debug] alert-raised", {

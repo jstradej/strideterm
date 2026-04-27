@@ -76,6 +76,7 @@ contextBridge.exposeInMainWorld("strideterm", {
   githubQuickFixListBranches: (payload) => ipcRenderer.invoke("github:quickfix:list-branches", payload),
   githubQuickFixCreate: (payload) => ipcRenderer.invoke("github:quickfix:create", payload),
   verifyTelegramConnection: (connection) => ipcRenderer.invoke("telegram:verify-connection", connection),
+  detectTelegramChats: (connection) => ipcRenderer.invoke("telegram:detect-chats", connection),
   saveTelegramConnection: (connection) => ipcRenderer.invoke("telegram:save-connection", connection),
   deleteTelegramConnection: (connectionId) => ipcRenderer.invoke("telegram:delete-connection", connectionId),
   refreshTelegram: () => ipcRenderer.invoke("telegram:refresh"),

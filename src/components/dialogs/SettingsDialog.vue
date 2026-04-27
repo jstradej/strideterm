@@ -16,6 +16,7 @@
         type="button"
         class="settings-tab-btn"
         :class="{ 'settings-tab-btn--active': activeTab === tab.id }"
+        :title="tab.title"
         @click="switchTab(tab.id)"
       >
         {{ tab.label }}
@@ -75,12 +76,17 @@ import SettingsTemplatesTab from "./settings/SettingsTemplatesTab.vue";
 import { useAgentHookSettings } from "./settings/useAgentHookSettings.js";
 
 const TABS = [
-  { id: "general", label: "General" },
-  { id: "templates", label: "Tab Templates" },
-  { id: "git", label: "Git" },
-  { id: "ssh", label: "SSH" },
-  { id: "telegram", label: "Telegram" },
-  { id: "about", label: "About" },
+  { id: "general", label: "General", title: "Theme, logging, notification timing, agent hooks." },
+  { id: "templates", label: "Tab Templates", title: "Reusable tab presets shown in the “New tab” menu." },
+  { id: "git", label: "Git", title: "Git UI options (e.g. always show all actions in the Git pane)." },
+  { id: "ssh", label: "SSH", title: "SSH host/key configuration used by remote terminals." },
+  {
+    id: "telegram",
+    label: "Telegram",
+    title:
+      "Forward strIDEterm alerts to a Telegram bot and act on them (start a task, open a PR review) by replying or pressing inline buttons. No public URL needed — long-polling.",
+  },
+  { id: "about", label: "About", title: "Version, repository link, and update check." },
 ];
 
 const THEMES = ["dark", "light", "system"];

@@ -37,6 +37,7 @@
             type="button"
             class="notification-center__tab"
             :class="{ 'notification-center__tab--active': activeTab === 'telegram' }"
+            title="Status of all configured Telegram bot connections (polling state, missing tokens). Configure them in Settings → Telegram."
             @click="activeTab = 'telegram'"
           >
             Telegram
@@ -98,16 +99,40 @@
 
       <!-- Telegram status tab -->
       <div v-if="activeTab === 'telegram'" class="notification-center__body">
-        <div v-if="telegramConnections.length === 0" class="notification-center__empty">
+        <div
+          v-if="telegramConnections.length === 0"
+          class="notification-center__empty"
+          title="No Telegram bot is wired up yet. Open Settings → Telegram to add one (you'll need a bot token from @BotFather and a chat ID)."
+        >
           No Telegram connections configured.
         </div>
         <div v-else class="telegram-status-list">
-          <div v-for="conn in telegramConnections" :key="conn.id" class="telegram-status-item">
-            <span class="telegram-status-item__label">{{ conn.label || conn.chatId }}</span>
-            <span class="telegram-status-item__chat">chat {{ conn.chatId }}</span>
+          <div
+            v-for="conn in telegramConnections"
+            :key="conn.id"
+            class="telegram-status-item"
+            :title="`Telegram connection “${conn.label || conn.chatId}”. Manage in Settings → Telegram.`"
+          >
+            <span
+              class="telegram-status-item__label"
+              :title="
+                conn.label ? `Connection label: ${conn.label}` : 'No label set — using chat ID as the display name.'
+              "
+              >{{ conn.label || conn.chatId }}</span
+            >
+            <span
+              class="telegram-status-item__chat"
+              title="Telegram chat ID this bot posts into. Negative -100… IDs are groups/channels."
+              >chat {{ conn.chatId }}</span
+            >
             <span
               class="telegram-status-item__badge"
               :class="conn.status === 'configured' ? 'tg-badge--ok' : 'tg-badge--warn'"
+              :title="
+                conn.status === 'configured'
+                  ? 'Bot token is present in the credential store; long-polling is active.'
+                  : 'No bot token found for this connection — saved settings exist, but the token reference is missing. Re-save the connection to fix.'
+              "
               >{{ conn.status === "configured" ? "connected" : conn.status }}</span
             >
           </div>

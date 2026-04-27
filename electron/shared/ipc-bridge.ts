@@ -160,6 +160,7 @@ export interface StridetermAPI {
 
   // Telegram integration
   verifyTelegramConnection: (connection: TelegramConnectionPayload) => Promise<unknown>;
+  detectTelegramChats: (connection: TelegramConnectionPayload) => Promise<unknown>;
   saveTelegramConnection: (connection: TelegramConnectionPayload) => Promise<unknown>;
   deleteTelegramConnection: (connectionId: string) => Promise<unknown>;
   refreshTelegram: () => Promise<unknown>;

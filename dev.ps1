@@ -18,7 +18,13 @@
 param(
     [int]$Port = 1420,
     [int]$TimeoutSeconds = 30,
-    [string]$DataDir = (Join-Path $env:USERPROFILE '.strideterm-dev')
+    [string]$DataDir = (Join-Path $env:USERPROFILE '.strideterm-dev'),
+    # Auto-restart Electron whenever tsc --watch rewrites a file under
+    # dist-electron/. Vite handles frontend HMR on its own, but Electron's
+    # main process loads backend modules once at startup — without this the
+    # user has to manually Ctrl+C and re-run the script after every backend
+    # edit to pick up new IPC handlers, runtime methods, etc.
+    [switch]$NoAutoRestart
 )
 
 $ErrorActionPreference = 'Stop'
@@ -28,6 +34,10 @@ $script:viteProc = $null
 $script:backendProc = $null
 $script:electronProc = $null
 $script:exiting = $false
+$script:backendWatcher = $null
+$script:backendChangeAt = [DateTime]::MinValue
+$script:backendChangePending = $false
+$script:watcherEventIds = @()
 
 # --- Helpers ---------------------------------------------------------------
 
@@ -97,11 +107,48 @@ function Kill-PortOwner([int]$portNum) {
     }
 }
 
+function Start-ElectronProcess {
+    Start-Process -FilePath 'cmd.exe' -ArgumentList '/c','npm run dev:electron' `
+        -WorkingDirectory $PSScriptRoot `
+        -PassThru -NoNewWindow
+}
+
+function Restart-Electron {
+    if (-not $script:electronProc) { return }
+    Write-Step 'Backend rebuilt — restarting Electron...'
+    if (-not $script:electronProc.HasExited) {
+        Stop-ProcessTree $script:electronProc.Id
+    }
+    # Kill any orphaned electron processes from the previous instance so
+    # the single-instance lock isn't held by a zombie.
+    $orphaned = Get-Process -Name electron -ErrorAction SilentlyContinue
+    if ($orphaned) {
+        $orphaned | Stop-Process -Force -ErrorAction SilentlyContinue
+    }
+    Start-Sleep -Milliseconds 500
+    $script:electronProc = Start-ElectronProcess
+    if (!$script:electronProc -or $script:electronProc.HasExited) {
+        Write-Err 'Failed to restart Electron.'
+        return
+    }
+    Write-Ok "Electron restarted (PID $($script:electronProc.Id))."
+}
+
 function Cleanup {
     if ($script:exiting) { return }
     $script:exiting = $true
 
     Write-Step 'Shutting down...'
+
+    # Stop the file watcher first so it doesn't trigger a restart during shutdown.
+    if ($script:backendWatcher) {
+        $script:backendWatcher.EnableRaisingEvents = $false
+        foreach ($id in $script:watcherEventIds) {
+            Unregister-Event -SourceIdentifier $id -ErrorAction SilentlyContinue
+        }
+        $script:backendWatcher.Dispose()
+        $script:backendWatcher = $null
+    }
 
     if ($script:electronProc -and !$script:electronProc.HasExited) {
         Write-Step 'Stopping Electron...'
@@ -149,11 +196,23 @@ try {
 #   - sets Electron userData to $DataDir\electron-data (isolates cache + single-instance lock)
 #   - renames app to strideterm-<basename($DataDir)> so it does NOT fight prod for the lock
 $env:STRIDETERM_DATA_DIR = $DataDir
+# Default log level "trace" in dev — surfaces every detector decision, IPC
+# call, telegram message, etc. for debugging. Override by setting
+# STRIDETERM_LOG_LEVEL before invoking this script (e.g. 'info' or 'warn').
+if (-not $env:STRIDETERM_LOG_LEVEL) {
+    $env:STRIDETERM_LOG_LEVEL = 'trace'
+}
+# Default remote-access port in dev to 43124 so it doesn't collide with the
+# production strideterm (default 43123). Without this, both instances fight
+# for the same port and the second one logs EADDRINUSE on every start.
+if (-not $env:STRIDETERM_REMOTE_PORT) {
+    $env:STRIDETERM_REMOTE_PORT = '43124'
+}
 if (-not (Test-Path $DataDir)) {
     Write-Step "Creating data dir $DataDir..."
     New-Item -ItemType Directory -Path $DataDir -Force | Out-Null
 }
-Write-Ok "Using isolated data dir: $DataDir"
+Write-Ok "Using isolated data dir: $DataDir (log level: $($env:STRIDETERM_LOG_LEVEL))"
 
 # --- Step 1: Kill stale Electron processes ---------------------------------
 
@@ -268,9 +327,7 @@ Write-Ok 'Backend compiled (dist-electron/ ready).'
 # --- Step 5: Start Electron -----------------------------------------------
 
 Write-Step 'Starting Electron...'
-$script:electronProc = Start-Process -FilePath 'cmd.exe' -ArgumentList '/c','npm run dev:electron' `
-    -WorkingDirectory $PSScriptRoot `
-    -PassThru -NoNewWindow
+$script:electronProc = Start-ElectronProcess
 
 if (!$script:electronProc -or $script:electronProc.HasExited) {
     Write-Err 'Failed to start Electron. Aborting.'
@@ -278,23 +335,68 @@ if (!$script:electronProc -or $script:electronProc.HasExited) {
     exit 1
 }
 Write-Ok "Electron started (PID $($script:electronProc.Id))."
+
+# --- Step 5b: Watch dist-electron for backend rebuilds --------------------
+
+if (-not $NoAutoRestart) {
+    $watchPath = Join-Path $PSScriptRoot 'dist-electron'
+    if (Test-Path $watchPath) {
+        Write-Step "Watching $watchPath for backend rebuilds (auto-restart Electron)..."
+        $script:backendWatcher = New-Object System.IO.FileSystemWatcher
+        $script:backendWatcher.Path = $watchPath
+        $script:backendWatcher.Filter = '*.js'
+        $script:backendWatcher.IncludeSubdirectories = $true
+        $script:backendWatcher.NotifyFilter = [System.IO.NotifyFilters]::LastWrite -bor [System.IO.NotifyFilters]::FileName
+
+        $onChange = {
+            $script:backendChangeAt = Get-Date
+            $script:backendChangePending = $true
+        }
+        $idChanged = (Register-ObjectEvent -InputObject $script:backendWatcher -EventName Changed -Action $onChange).Name
+        $idCreated = (Register-ObjectEvent -InputObject $script:backendWatcher -EventName Created -Action $onChange).Name
+        $script:watcherEventIds = @($idChanged, $idCreated)
+        $script:backendWatcher.EnableRaisingEvents = $true
+    }
+    else {
+        Write-Warn "Watch path $watchPath does not exist; auto-restart disabled."
+    }
+}
+else {
+    Write-Warn 'Auto-restart disabled (--NoAutoRestart).'
+}
+
 Write-Host ''
 Write-Ok '=== Dev environment is running (isolated data dir) ==='
 Write-Host "    Vite:     http://127.0.0.1:$Port  (PID $($script:viteProc.Id))" -ForegroundColor Gray
 Write-Host "    Backend:  tsc --watch  (PID $($script:backendProc.Id))" -ForegroundColor Gray
 Write-Host "    Electron: PID $($script:electronProc.Id)" -ForegroundColor Gray
 Write-Host "    Data:     $DataDir" -ForegroundColor Gray
+if (-not $NoAutoRestart -and $script:backendWatcher) {
+    Write-Host '    Auto-restart Electron on backend changes: ON' -ForegroundColor Gray
+}
 Write-Host '    Press Ctrl+C to stop all.' -ForegroundColor Gray
 Write-Host ''
 
-# --- Step 6: Wait for Electron to exit ------------------------------------
+# --- Step 6: Wait for Electron to exit (and watch for backend rebuilds) ---
 
 $backendWarned = $false
-while (-not $script:electronProc.HasExited) {
+$RestartDebounceMs = 1500   # wait this long after the LAST file change before restarting
+
+while ($script:exiting -eq $false -and $script:electronProc -and -not $script:electronProc.HasExited) {
     if ($script:backendProc.HasExited -and -not $backendWarned) {
         Write-Warn "Backend tsc watch exited (code $($script:backendProc.ExitCode)) — TypeScript changes won't recompile."
         $backendWarned = $true
     }
+
+    # Auto-restart Electron when tsc-watch finishes a rebuild burst.
+    if ($script:backendChangePending) {
+        $sinceMs = ((Get-Date) - $script:backendChangeAt).TotalMilliseconds
+        if ($sinceMs -ge $RestartDebounceMs) {
+            $script:backendChangePending = $false
+            Restart-Electron
+        }
+    }
+
     if ($script:viteProc.HasExited) {
         Write-Warn 'Vite crashed! Restarting...'
         $script:viteProc = Start-Process -FilePath 'cmd.exe' -ArgumentList '/c','npm run dev:web' `
@@ -315,7 +417,7 @@ while (-not $script:electronProc.HasExited) {
             exit 1
         }
     }
-    Start-Sleep -Seconds 1
+    Start-Sleep -Milliseconds 500
 }
 
 Write-Step "Electron exited (code $($script:electronProc.ExitCode))."

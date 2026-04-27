@@ -384,6 +384,7 @@ function createRemoteTransport(): Transport {
     githubQuickFixListBranches: (payload) => fetchJson("/api/github/quickfix/list-branches", payload),
     githubQuickFixCreate: (payload) => fetchJson("/api/github/quickfix/create", payload),
     verifyTelegramConnection: (connection) => fetchJson("/api/telegram/verify-connection", { connection }),
+    detectTelegramChats: (connection) => fetchJson("/api/telegram/detect-chats", { connection }),
     saveTelegramConnection: (connection) => fetchJson("/api/telegram/save-connection", { connection }),
     deleteTelegramConnection: (connectionId) => fetchJson("/api/telegram/delete-connection", { connectionId }),
     refreshTelegram: () => fetchJson("/api/telegram/refresh", {}),

@@ -550,6 +550,19 @@ async function startServices(): Promise<void> {
     deferInitialRefresh: true,
     dependencies: {
       safeStorage,
+      // Telegram `📸 Screenshot` uses this to grab a PNG of the live
+      // BrowserWindow. Only the renderer view is captured (not surrounding
+      // OS chrome / other windows) which is exactly what the user asked
+      // for. Returns Buffer; the runtime hands it off to TelegramManager
+      // which uploads via sendPhoto.
+      captureMainWindowPng: async (): Promise<Buffer> => {
+        const win = runtimeState.window;
+        if (!win || win.isDestroyed()) {
+          throw new Error("Main window is not available for screenshot.");
+        }
+        const image = await win.webContents.capturePage();
+        return image.toPNG();
+      },
     },
   });
 

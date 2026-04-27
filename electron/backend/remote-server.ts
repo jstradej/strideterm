@@ -422,6 +422,10 @@ async function handleApiRequest(runtime: Runtime, request: IncomingMessage, resp
       json(response, 200, await runtime.verifyTelegramConnection(body.connection || {}));
       return;
     }
+    if (request.method === "POST" && url.pathname === "/api/telegram/detect-chats") {
+      json(response, 200, await runtime.detectTelegramChats(body.connection || {}));
+      return;
+    }
     if (request.method === "POST" && url.pathname === "/api/telegram/save-connection") {
       const result = await runtime.saveTelegramConnection(body.connection || {});
       json(response, 200, result.payload);
@@ -1060,7 +1064,16 @@ export async function startRemoteServer({
 
   const listenResult = await new Promise<{ ok: boolean; error?: Error }>((resolve) => {
     server.once("error", (error: Error) => {
-      log.warn("remote access server failed", { err: error.message });
+      const isPortBusy = (error as NodeJS.ErrnoException).code === "EADDRINUSE" || /EADDRINUSE/.test(error.message);
+      if (isPortBusy) {
+        log.warn("remote access port already in use — disabled until restart", {
+          port,
+          host,
+          hint: "Set STRIDETERM_REMOTE_PORT to pick a different port, or stop the other strideterm instance.",
+        });
+      } else {
+        log.warn("remote access server failed", { err: error.message, port, host });
+      }
       resolve({ ok: false, error });
     });
     server.listen(port, host, () => resolve({ ok: true }));

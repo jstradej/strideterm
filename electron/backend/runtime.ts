@@ -27,6 +27,7 @@ import { AzureDevOpsManager } from "./azure-devops-manager.js";
 import { GitHubManager } from "./github-manager.js";
 import { createGitHubAuditLogStore } from "./github-audit-log-store.js";
 import { TelegramManager } from "./telegram-manager.js";
+import { createTelegramAuditLogStore } from "./telegram-audit-log-store.js";
 import { startNotifyServer, generateNotifySecret, buildNotifyUrl } from "./notify-server.js";
 import {
   ensureNotifyScript,
@@ -39,6 +40,7 @@ import { configureCodexHook, removeCodexHook, detectCodexHookStatus } from "./co
 import { configureCopilotHook, removeCopilotHook, detectCopilotHookStatus } from "./copilot-hook-config.js";
 import { configureOpencodeHook, removeOpencodeHook, detectOpencodeHookStatus } from "./opencode-hook-config.js";
 import { AgentTaskRunner } from "./agent-task-runner.js";
+import { updateTaskDescriptionFile } from "./agent-task-files.js";
 import { getProvider, getAllProviders } from "./providers/provider-registry.js";
 import { classifyHookEvent } from "./notifications/classifier.js";
 import {
@@ -233,6 +235,15 @@ interface RuntimeDependencies {
   safeStorage?: any;
 
   fetchImpl?: typeof fetch;
+
+  /**
+   * Returns a PNG buffer of the current Electron window. Wired in main.ts via
+   * `mainWindow.webContents.capturePage().toPNG()`. Optional — Telegram
+   * `📸 Screenshot` falls back to an error message if not provided (e.g. in
+   * the headless remote-only build or in tests). Workspace-targeted captures
+   * just call activateWorkspace before invoking this.
+   */
+  captureMainWindowPng?: () => Promise<Buffer>;
 }
 
 export async function createRuntime({
@@ -612,17 +623,37 @@ export async function createRuntime({
   }
 
   // --- Telegram integration ---
-  const telegramManager = new TelegramManager({ credentialStore });
+  const telegramAuditLogDbPath = path.join(reviewBridgeRoot, "telegram-audit-log.db");
+  const telegramAuditLogStore = createTelegramAuditLogStore(telegramAuditLogDbPath);
+  const telegramManager = new TelegramManager({ credentialStore, auditLogStore: telegramAuditLogStore });
   telegramManager.setWorkspacesGetter(() =>
-    getState().workspaces.map((ws: WorkspaceState) => ({
-      id: ws.id,
-      name: ws.name,
-      cwd: ws.cwd || "",
-      kind: ws.kind || "workspace",
-      panels: (ws.panels || []).map((p) => ({ id: p.id, title: p.title || p.id })),
-      task: ws.task ? { state: ws.task.state || "unknown", description: ws.task.description || "" } : null,
-    })),
+    getState().workspaces.map((ws: WorkspaceState) => {
+      // Worktree children (created via "Open as worktree") look top-level in
+      // the state model — they have no parentWorkspaceId and a kind that's
+      // not "task"/"review" — but they are semantically children of their
+      // base workspace and live inside its `.strideterm/tree/<branch>` dir.
+      // For Telegram /task purposes we treat them like other children so
+      // they don't show up as task parent candidates (worktree-of-worktree
+      // nesting is confusing and almost never desired).
+      const isWorktreeChild = (ws.notes || "").startsWith("Worktree of ");
+      return {
+        id: ws.id,
+        name: ws.name,
+        cwd: ws.cwd || "",
+        kind: ws.kind || "workspace",
+        profileId: ws.profileId || "default",
+        notes: ws.notes || "",
+        parentWorkspaceId:
+          ws.task?.parentWorkspaceId ||
+          ws.review?.parentWorkspaceId ||
+          ws.quickfix?.parentWorkspaceId ||
+          (isWorktreeChild ? "__worktree__" : ""),
+        panels: (ws.panels || []).map((p) => ({ id: p.id, title: p.title || p.id })),
+        task: ws.task ? { state: ws.task.state || "unknown", description: ws.task.description || "" } : null,
+      };
+    }),
   );
+  telegramManager.setActiveProfileGetter(() => getState().activeProfileId || "default");
 
   // --- Agent notification hook server ---
   const notifySecret = generateNotifySecret();
@@ -651,9 +682,8 @@ export async function createRuntime({
    * shell tab where they DO want the "command finished" ping.
    */
   function isShellAlertAllowed(
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     signal: { agentLike?: boolean } | null | undefined,
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
     panel: { alertsForceOn?: boolean } | null | undefined,
     state = getState(),
   ): boolean {
@@ -1209,7 +1239,13 @@ export async function createRuntime({
           title: opts.title || "",
           detail: opts.detail || "",
         })
-        .catch(() => {});
+        .catch((err) => {
+          log.warn("telegram forwardAlert from raiseAlert failed", {
+            kind: opts.kind,
+            workspaceId: opts.projectId,
+            err: (err as Error).message,
+          });
+        });
     }
     return raised;
   }
@@ -1339,8 +1375,8 @@ export async function createRuntime({
     };
   }
 
-  // Track which PR keys have already been forwarded to Telegram to avoid duplicates.
-  const telegramForwardedPrKeys = new Set<string>();
+  // Dedup of PR keys already forwarded to Telegram is owned by TelegramManager
+  // (bounded LRU). Runtime just asks via hasForwardedPr / markPrForwarded.
 
   function checkAndForwardPrNotificationsToTelegram(): void {
     if (telegramManager.getSnapshot().connections.length === 0) return;
@@ -1352,9 +1388,10 @@ export async function createRuntime({
     for (const [prKey, summary] of Object.entries(azureSnapshot?.pullRequests || {})) {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const pr = summary as any;
-      if (!pr?.hasAttention || telegramForwardedPrKeys.has(prKey)) continue;
-      telegramForwardedPrKeys.add(prKey);
+      if (!pr?.hasAttention || telegramManager.hasForwardedPr(prKey)) continue;
+      telegramManager.markPrForwarded(prKey);
       const azureWorkspace = state.workspaces.find((w) => w.kind === "azure");
+      log.info("telegram: forwarding Azure PR notification", { prKey, connectionId: pr?.connectionId });
       telegramManager
         .forwardAlert({
           alertId: prKey,
@@ -1370,16 +1407,19 @@ export async function createRuntime({
           provider: "azure-devops",
           connectionId: pr?.connectionId || "",
         })
-        .catch(() => {});
+        .catch((err) => {
+          log.warn("telegram: Azure PR forward failed", { prKey, err: (err as Error).message });
+        });
     }
 
     // Check GitHub PRs with attention
     for (const [prKey, summary] of Object.entries(githubSnapshot?.pullRequests || {})) {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const pr = summary as any;
-      if (!pr?.hasAttention || telegramForwardedPrKeys.has(prKey)) continue;
-      telegramForwardedPrKeys.add(prKey);
+      if (!pr?.hasAttention || telegramManager.hasForwardedPr(prKey)) continue;
+      telegramManager.markPrForwarded(prKey);
       const githubWorkspace = state.workspaces.find((w) => w.kind === "github");
+      log.info("telegram: forwarding GitHub PR notification", { prKey, connectionId: pr?.connectionId });
       telegramManager
         .forwardAlert({
           alertId: prKey,
@@ -1395,7 +1435,9 @@ export async function createRuntime({
           provider: "github",
           connectionId: pr?.connectionId || "",
         })
-        .catch(() => {});
+        .catch((err) => {
+          log.warn("telegram: GitHub PR forward failed", { prKey, err: (err as Error).message });
+        });
     }
   }
 
@@ -1415,46 +1457,458 @@ export async function createRuntime({
   // asynchronously (after first Telegram poll), so _rt is guaranteed set.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   telegramManager.on("command", async (cmd: any) => {
+    log.info("telegram: command dispatch", {
+      type: cmd.type,
+      workspaceId: cmd.workspaceId,
+      prKey: cmd.prKey,
+      provider: cmd.provider,
+    });
     try {
       if (cmd.type === "start-task" && cmd.taskDescription && cmd.workspaceId) {
         const state = getState();
-        const parentWorkspace = findWorkspace(state, cmd.workspaceId);
-        if (parentWorkspace?.cwd) {
-          if (cmd.agentCommand) {
-            // Run user-defined agent command in non-interactive mode
-            const agentCmd = cmd.agentCommand.replace(/\{task\}/g, cmd.taskDescription);
-            const argv = agentCmd.match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g) || [];
-            const executable = argv[0];
-            const args = argv.slice(1).map((a: string) => a.replace(/^["']|["']$/g, ""));
-            if (executable) {
-              log.info("telegram: spawning agent command", {
-                executable,
-                cwd: parentWorkspace.cwd,
-                description: cmd.taskDescription?.slice(0, 80),
+        // Walk up the parent chain so a Telegram reply originating in a
+        // child workspace (PR review, quickfix, or another task) doesn't
+        // create a misnested "task of task" or "task of PR review" tree.
+        // Stops at the first ancestor with a workable cwd that's also a real
+        // project root (no own parent, no provider-inbox kind). Fallback to
+        // the original workspace if the walk-up dead-ends at something
+        // without a cwd (e.g. the github/azure inbox) — better to nest under
+        // the PR review than fail outright.
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const isProperRoot = (w: any): boolean =>
+          !!w &&
+          !!w.cwd &&
+          w.kind !== "azure" &&
+          w.kind !== "github" &&
+          w.kind !== "docker" &&
+          w.kind !== "task" &&
+          !w.review &&
+          !w.quickfix &&
+          !w.task;
+        const original = findWorkspace(state, cmd.workspaceId);
+        let walker = original;
+        const seen = new Set<string>();
+        let resolved = isProperRoot(walker) ? walker : null;
+        while (walker && !resolved && !seen.has(walker.id)) {
+          seen.add(walker.id);
+          const upId =
+            walker.task?.parentWorkspaceId ||
+            walker.review?.parentWorkspaceId ||
+            walker.quickfix?.parentWorkspaceId ||
+            "";
+          if (!upId) break;
+          walker = findWorkspace(state, upId);
+          if (isProperRoot(walker)) {
+            resolved = walker;
+          }
+        }
+        // Prefer the proper root we walked up to. Otherwise fall back to the
+        // original workspace if it has a cwd (covers PR review with worktree
+        // root). Otherwise abort.
+        const parentWorkspace = resolved || (original?.cwd ? original : null);
+        if (!parentWorkspace?.cwd) {
+          log.warn("telegram: start-task aborted — no valid parent workspace with cwd", {
+            originalWorkspaceId: cmd.workspaceId,
+          });
+          if (cmd.chatId) {
+            await telegramManager.notifyChat(
+              cmd.chatId,
+              "⚠️ Pro zdrojovou notifikaci nelze najít vhodný parent workspace s `cwd`\\. Použij `/task` a vyber workspace ručně\\.",
+            );
+          }
+          return;
+        }
+        if (parentWorkspace.id !== cmd.workspaceId) {
+          log.warn("telegram: start-task — resolved alert workspace to a higher-up parent", {
+            from: cmd.workspaceId,
+            to: parentWorkspace.id,
+            toName: parentWorkspace.name,
+          });
+        }
+        const resolvedParentId = parentWorkspace.id;
+        if (cmd.agentCommand) {
+          // Run user-defined agent command in non-interactive mode.
+          //
+          // Split the template FIRST, then substitute {task} per token. This
+          // keeps the user-supplied taskDescription as a single argv entry
+          // even if it contains spaces or shell metacharacters; spawn() runs
+          // without a shell so there's no further interpretation.
+          const argvTpl = String(cmd.agentCommand).match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g) || [];
+          const argv = argvTpl.map((tok: string) => {
+            const stripped = tok.replace(/^["']|["']$/g, "");
+            return stripped.includes("{task}") ? stripped.replace(/\{task\}/g, cmd.taskDescription) : stripped;
+          });
+          const executable = argv[0];
+          const args = argv.slice(1);
+          if (!executable) {
+            log.warn("telegram: agent command empty after parse", { agentCommand: cmd.agentCommand });
+            return;
+          }
+          log.info("telegram: spawning agent command", {
+            executable,
+            argCount: args.length,
+            cwd: parentWorkspace.cwd,
+            description: cmd.taskDescription?.slice(0, 80),
+          });
+          const child = spawn(executable, args, {
+            cwd: parentWorkspace.cwd,
+            detached: false,
+            stdio: "ignore",
+          });
+          child.on("error", (err) => {
+            log.warn("telegram: agent command spawn error", { executable, err: err.message });
+          });
+          child.on("exit", (code, signalName) => {
+            log.info("telegram: agent command exited", { executable, code, signal: signalName });
+          });
+        } else {
+          // Worktree mode: caller can either create a NEW git worktree
+          // (useWorktree=true + worktreeBranch), pick an EXISTING worktree
+          // (targetCwd overrides parent.cwd), or run the task DIRECTLY in
+          // the parent's cwd (default — no worktree). The validation of the
+          // branch name happens client-side in telegram-manager; the
+          // useWorktree path here just plumbs through.
+          const useWorktree = !!cmd.useWorktree;
+          const worktreeBranch = cmd.worktreeBranch?.trim() || "";
+          const targetCwd = cmd.targetCwd?.trim() || "";
+          if (useWorktree && !worktreeBranch) {
+            log.warn("telegram: start-task with useWorktree but no branch", { workspaceId: cmd.workspaceId });
+            if (cmd.chatId) {
+              await telegramManager.notifyChat(cmd.chatId, "⚠️ Chybí název větve pro novou worktree\\.");
+            }
+            return;
+          }
+          // For "existing worktree" mode we just substitute cwd before calling
+          // createTaskWorkspace; no git worktree is created. parentWorkspaceId
+          // still points at the top-level workspace so the sidebar grouping
+          // stays consistent.
+          const taskCwd = targetCwd || parentWorkspace.cwd;
+          log.warn("telegram: creating task workspace", {
+            parentWorkspaceId: resolvedParentId,
+            parentName: parentWorkspace.name,
+            taskCwd,
+            useWorktree,
+            worktreeBranch: worktreeBranch || undefined,
+            description: cmd.taskDescription?.slice(0, 80),
+          });
+          // activate:false — Telegram-driven creation must not yank the user
+          // out of the workspace they're currently in.
+          let result: { workspaceId: string; cwdWarning: string; payload: unknown } | undefined;
+          try {
+            result = await _rt?.createTaskWorkspace({
+              cwd: taskCwd,
+              description: cmd.taskDescription,
+              parentWorkspaceId: resolvedParentId,
+              activate: false,
+              useWorktree,
+              worktreeBranch: useWorktree ? worktreeBranch : undefined,
+            });
+          } catch (err) {
+            log.warn("telegram: createTaskWorkspace threw", {
+              workspaceId: cmd.workspaceId,
+              err: (err as Error).message,
+            });
+            if (cmd.chatId) {
+              await telegramManager.notifyChat(
+                cmd.chatId,
+                "⚠️ Vytvoření tasku selhalo: ` " + (err as Error).message.replace(/`/g, "'") + " `",
+              );
+            }
+            return;
+          }
+          if (result?.workspaceId) {
+            // Don't auto-start. Ask the user via Telegram whether to start
+            // the task now or leave it idle so they can edit TASK.md first.
+            if (cmd.chatId) {
+              const promptCwd =
+                targetCwd ||
+                (useWorktree
+                  ? `${parentWorkspace.cwd}\\.strideterm\\tree\\${worktreeBranch.replace(/\//g, "-")}`
+                  : parentWorkspace.cwd);
+              await telegramManager.promptStartAfterCreate({
+                chatId: cmd.chatId,
+                workspaceId: result.workspaceId,
+                description: cmd.taskDescription,
+                parentName: parentWorkspace.name,
+                cwd: promptCwd,
               });
-              const child = spawn(executable, args, {
-                cwd: parentWorkspace.cwd,
-                detached: false,
-                stdio: "ignore",
-              });
-              child.on("error", (err) => {
-                log.warn("telegram: agent command spawn error", { err: err.message });
+            } else {
+              log.warn("telegram: start-task created workspace but no chatId for follow-up", {
+                workspaceId: result.workspaceId,
               });
             }
           } else {
-            log.info("telegram: creating task workspace from command", {
-              workspaceId: cmd.workspaceId,
-              description: cmd.taskDescription?.slice(0, 80),
-            });
-            const result = await _rt?.createTaskWorkspace({
-              cwd: parentWorkspace.cwd,
-              description: cmd.taskDescription,
-              parentWorkspaceId: cmd.workspaceId,
-            });
-            if (result) {
-              await _rt?.startTask({ workspaceId: result.activeWorkspaceId || cmd.workspaceId });
+            log.warn("telegram: createTaskWorkspace returned no result", { workspaceId: cmd.workspaceId });
+          }
+        }
+      } else if (cmd.type === "start-existing-task" && cmd.workspaceId) {
+        // Defensive guard against accidental object-shaped IDs (older Telegram
+        // buffered updates / external callers) — taskRunner.startTask logs the
+        // shape it receives, which is how we caught the historical regression.
+        const wsId = typeof cmd.workspaceId === "string" ? cmd.workspaceId : "";
+        if (!wsId) {
+          log.warn("telegram: start-existing-task aborted — workspaceId not a string", {
+            workspaceIdType: typeof cmd.workspaceId,
+          });
+          if (cmd.chatId) {
+            await telegramManager.notifyChat(cmd.chatId, "⚠️ Interní chyba: chybí workspaceId\\.");
+          }
+          return;
+        }
+        const targetWs = findWorkspace(getState(), wsId);
+        if (!targetWs || targetWs.kind !== "task" || !targetWs.task) {
+          log.warn("telegram: start-existing-task aborted — workspace not found or not a task", {
+            workspaceId: wsId,
+            kind: targetWs?.kind,
+          });
+          if (cmd.chatId) {
+            await telegramManager.notifyChat(cmd.chatId, "⚠️ Task workspace nebyl nalezen \\(možná byl smazán\\)\\.");
+          }
+          return;
+        }
+        log.warn("telegram: starting existing task", { workspaceId: wsId, state: targetWs.task.state });
+        // CRITICAL: when the task workspace was created with `activate:false`,
+        // its worker/judge PTYs were never spawned. taskRunner.startTask
+        // would then write the initial prompt into a non-existent session
+        // (silent drop in session-manager.writeToSession), and the user sees
+        // a Claude welcome screen with no command — exactly the bug the
+        // user reported. Start the PTYs explicitly here, await readiness,
+        // and give Claude's TUI a moment to finish rendering its welcome
+        // before we inject the prompt.
+        const workerPanelId = targetWs.task.workerPanelId;
+        const judgePanelId = targetWs.task.judgePanelId;
+        const workerSessionId = createSessionId(wsId, workerPanelId);
+        const judgeSessionId = createSessionId(wsId, judgePanelId);
+        try {
+          await sessions.ensureSession(getState(), workerSessionId);
+          await sessions.ensureSession(getState(), judgeSessionId);
+        } catch (err) {
+          log.warn("telegram: failed to ensure task PTY sessions", {
+            workspaceId: wsId,
+            err: (err as Error).message,
+          });
+        }
+        // Wait for Claude's Ink TUI to finish its initial render. Without
+        // this delay the keystrokes get lost in the welcome banner. 2.5s is
+        // empirically enough on a fast machine; longer than that just makes
+        // the user wait without benefit. Tune via env if it turns out flaky.
+        const promptDelayMs = Number(process.env.STRIDETERM_TG_PROMPT_DELAY_MS) || 2500;
+        await new Promise((resolve) => setTimeout(resolve, promptDelayMs));
+        const ok = await _rt?.startTask(wsId);
+        if (cmd.chatId) {
+          await telegramManager.notifyChat(
+            cmd.chatId,
+            ok?.ok ? "▶️ Task spuštěn\\." : "⚠️ Task se nepodařilo spustit \\(zkontroluj log\\)\\.",
+          );
+        }
+      } else if (cmd.type === "pause-task" && cmd.workspaceId) {
+        log.info("telegram: pause task", { workspaceId: cmd.workspaceId });
+        const ok = _rt?.pauseTask(cmd.workspaceId);
+        if (cmd.chatId) {
+          await telegramManager.notifyChat(
+            cmd.chatId,
+            ok?.ok ? "⏸ Task pozastaven\\." : "⚠️ Task není ve stavu, který lze pozastavit\\.",
+          );
+        }
+      } else if (cmd.type === "resume-task" && cmd.workspaceId) {
+        log.info("telegram: resume task", { workspaceId: cmd.workspaceId });
+        const ok = _rt?.resumeTask(cmd.workspaceId);
+        if (cmd.chatId) {
+          await telegramManager.notifyChat(
+            cmd.chatId,
+            ok?.ok ? "▶️ Task obnoven\\." : "⚠️ Task nelze obnovit z aktuálního stavu\\.",
+          );
+        }
+      } else if (cmd.type === "stop-task" && cmd.workspaceId) {
+        log.info("telegram: stop task", { workspaceId: cmd.workspaceId });
+        const ok = _rt?.stopTask(cmd.workspaceId);
+        if (cmd.chatId) {
+          await telegramManager.notifyChat(cmd.chatId, ok?.ok ? "⏹ Task zastaven\\." : "⚠️ Task nelze zastavit\\.");
+        }
+      } else if (cmd.type === "reset-task" && cmd.workspaceId) {
+        log.info("telegram: reset task", { workspaceId: cmd.workspaceId });
+        const ok = await _rt?.resetTask(cmd.workspaceId);
+        if (cmd.chatId) {
+          await telegramManager.notifyChat(
+            cmd.chatId,
+            ok?.ok ? "🔄 Task resetován do IDLE\\." : "⚠️ Task nelze resetovat z aktuálního stavu\\.",
+          );
+        }
+      } else if (cmd.type === "update-task-description" && cmd.workspaceId && cmd.taskDescription !== undefined) {
+        log.info("telegram: update task description", {
+          workspaceId: cmd.workspaceId,
+          followUp: cmd.followUp,
+          length: String(cmd.taskDescription).length,
+        });
+        const updated = await _rt?.updateTaskDescription(cmd.workspaceId, cmd.taskDescription);
+        if (!updated?.ok) {
+          if (cmd.chatId) {
+            await telegramManager.notifyChat(cmd.chatId, "⚠️ Zadání se nepodařilo uložit\\.");
+          }
+        } else {
+          // Chained follow-up actions (Edit+Continue / Edit+Start)
+          if (cmd.followUp === "resume") {
+            const ok = _rt?.resumeTask(cmd.workspaceId);
+            if (cmd.chatId) {
+              await telegramManager.notifyChat(
+                cmd.chatId,
+                ok?.ok
+                  ? "📝 Zadání aktualizováno, task obnoven\\."
+                  : "📝 Zadání aktualizováno, ale task nešel obnovit z aktuálního stavu\\.",
+              );
+            }
+          } else if (cmd.followUp === "start") {
+            // Reset → start sequence so the new description takes effect from
+            // round 1 (startTask refreshes description from TASK.md).
+            await _rt?.resetTask(cmd.workspaceId);
+            const ok = await _rt?.startTask(cmd.workspaceId);
+            if (cmd.chatId) {
+              await telegramManager.notifyChat(
+                cmd.chatId,
+                ok?.ok
+                  ? "📝 Zadání aktualizováno, task spuštěn\\."
+                  : "📝 Zadání aktualizováno, ale task nešel spustit\\.",
+              );
+            }
+          } else {
+            if (cmd.chatId) {
+              await telegramManager.notifyChat(cmd.chatId, "📝 Zadání úkolu aktualizováno\\.");
             }
           }
+        }
+      } else if (cmd.type === "send-task-file" && cmd.workspaceId && cmd.filePath) {
+        const wsId = String(cmd.workspaceId);
+        const ws = findWorkspace(getState(), wsId);
+        if (!ws || ws.kind !== "task" || !ws.task) {
+          log.warn("telegram: send-task-file aborted — workspace not found or not a task", { workspaceId: wsId });
+          if (cmd.chatId) {
+            await telegramManager.notifyChat(cmd.chatId, "⚠️ Task workspace nebyl nalezen \\(možná byl smazán\\)\\.");
+          }
+          return;
+        }
+        if (!ws.cwd) {
+          log.warn("telegram: send-task-file aborted — workspace has no cwd", { workspaceId: wsId });
+          if (cmd.chatId) {
+            await telegramManager.notifyChat(cmd.chatId, "⚠️ Workspace nemá cwd\\.");
+          }
+          return;
+        }
+        // Resolve the requested path relative to task.cwd, then guard against
+        // path-traversal: the resolved absolute path must still live inside
+        // the workspace directory. Otherwise a chat user could exfiltrate
+        // arbitrary files via `..\..\..\Users\...`.
+        const path = await import("node:path");
+        const cleanRel = String(cmd.filePath)
+          .replace(/^[/\\]+/, "")
+          .trim();
+        const wsRoot = path.resolve(ws.cwd);
+        const requested = path.resolve(wsRoot, cleanRel);
+        const wsRootSep = wsRoot.endsWith(path.sep) ? wsRoot : wsRoot + path.sep;
+        if (requested !== wsRoot && !requested.startsWith(wsRootSep)) {
+          log.warn("telegram: send-task-file rejected — path escapes workspace cwd", {
+            workspaceId: wsId,
+            requested,
+            wsRoot,
+          });
+          if (cmd.chatId) {
+            await telegramManager.notifyChat(
+              cmd.chatId,
+              "⚠️ Cesta směřuje mimo task workspace\\. Použij relativní cestu uvnitř `cwd`\\.",
+            );
+          }
+          return;
+        }
+        log.warn("telegram: sending task file", {
+          workspaceId: wsId,
+          relPath: cleanRel,
+          absolutePath: requested,
+        });
+        if (cmd.chatId) {
+          await telegramManager.sendFile({
+            chatId: cmd.chatId,
+            absolutePath: requested,
+            relPath: cleanRel,
+            workspaceName: ws.name,
+            mode: cmd.fileMode === "document" ? "document" : "auto",
+          });
+        }
+      } else if (cmd.type === "screenshot-current" || cmd.type === "screenshot-workspace") {
+        const captureFn = dependencies.captureMainWindowPng;
+        if (!captureFn) {
+          log.warn("telegram: screenshot requested but captureMainWindowPng dependency missing");
+          if (cmd.chatId) {
+            await telegramManager.notifyChat(
+              cmd.chatId,
+              "⚠️ Screenshot není v této instanci k dispozici \\(nejspíš headless build\\)\\.",
+            );
+          }
+          return;
+        }
+        // Workspace-targeted: switch to that workspace, wait for renderer to
+        // catch up, capture, switch back. The brief flicker in the desktop
+        // app is the explicit cost of this feature — user requested it.
+        // Skip the round-trip if we're already on the target workspace.
+        const originalActiveId = getState().activeWorkspaceId;
+        let targetWsId = "";
+        let targetWsName = "current";
+        if (cmd.type === "screenshot-workspace" && cmd.workspaceId) {
+          targetWsId = String(cmd.workspaceId);
+          const targetWs = findWorkspace(getState(), targetWsId);
+          if (!targetWs) {
+            log.warn("telegram: screenshot-workspace aborted — workspace not found", { workspaceId: targetWsId });
+            if (cmd.chatId) {
+              await telegramManager.notifyChat(cmd.chatId, "⚠️ Workspace nebyl nalezen\\.");
+            }
+            return;
+          }
+          targetWsName = targetWs.name;
+          if (targetWsId !== originalActiveId) {
+            log.warn("telegram: switching workspace for screenshot", {
+              from: originalActiveId,
+              to: targetWsId,
+            });
+            await _rt?.activateWorkspace(targetWsId);
+            // Renderer needs time to lay out the panels and finish at least
+            // one paint frame before capturePage produces a representative
+            // image. 600ms is empirically enough for a typical workspace;
+            // configurable for slow machines via env.
+            const renderDelayMs = Number(process.env.STRIDETERM_TG_SCREENSHOT_DELAY_MS) || 600;
+            await new Promise((resolve) => setTimeout(resolve, renderDelayMs));
+          }
+        } else if (cmd.type === "screenshot-current" && originalActiveId) {
+          const ws = findWorkspace(getState(), originalActiveId);
+          targetWsName = ws?.name || "current";
+        }
+
+        let png: Buffer;
+        try {
+          png = await captureFn();
+        } catch (err) {
+          log.warn("telegram: screenshot capture failed", { err: (err as Error).message });
+          if (cmd.chatId) {
+            await telegramManager.notifyChat(
+              cmd.chatId,
+              "⚠️ Screenshot se nepodařilo pořídit \\(okno nedostupné\\)\\.",
+            );
+          }
+          // Still try to switch back so user's UI returns to where they left it.
+          if (targetWsId && originalActiveId && targetWsId !== originalActiveId) {
+            await _rt?.activateWorkspace(originalActiveId).catch(() => {});
+          }
+          return;
+        }
+
+        if (cmd.chatId) {
+          await telegramManager.sendScreenshotPng(cmd.chatId, png, targetWsName);
+        }
+
+        // Switch back to where the user was before. Best-effort — failures
+        // are logged but not surfaced to the user (their original workspace
+        // is still selectable from the sidebar).
+        if (targetWsId && originalActiveId && targetWsId !== originalActiveId) {
+          await _rt?.activateWorkspace(originalActiveId).catch((err: Error) => {
+            log.warn("telegram: switch-back after screenshot failed", { err: err.message });
+          });
         }
       } else if (cmd.type === "open-pr-review" && cmd.prKey && cmd.provider) {
         log.info("telegram: opening PR review from command", { prKey: cmd.prKey, provider: cmd.provider });
@@ -1463,10 +1917,24 @@ export async function createRuntime({
         } else {
           await _rt?.openAzurePullRequest({ prKey: cmd.prKey });
         }
-      } else if (cmd.type === "dismiss" && cmd.workspaceId && cmd.panelId) {
-        const sessionId = createSessionId(cmd.workspaceId, cmd.panelId);
-        clearAlertSession(sessionId);
+      } else if (cmd.type === "dismiss") {
+        // For PR alerts, drop from the manager's forwarded-PR LRU so the user
+        // can be re-notified later if the PR is re-flagged. For session-bound
+        // alerts (shell completion, agent waiting), clear the per-session alert.
+        if (cmd.prKey) {
+          telegramManager.forgetForwardedPr(cmd.prKey);
+          log.info("telegram: dismiss PR alert", { prKey: cmd.prKey });
+        }
+        if (cmd.workspaceId && cmd.panelId) {
+          const sessionId = createSessionId(cmd.workspaceId, cmd.panelId);
+          clearAlertSession(sessionId);
+        }
         broadcastState();
+      } else if (cmd.type === "custom-message") {
+        log.info("telegram: custom-message received", {
+          workspaceId: cmd.workspaceId,
+          textPreview: String(cmd.taskDescription || "").slice(0, 80),
+        });
       }
     } catch (err) {
       log.warn("telegram: command dispatch error", { type: cmd.type, err: (err as Error).message });
@@ -3089,16 +3557,50 @@ export async function createRuntime({
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async verifyTelegramConnection(connection: any) {
-      const botToken = connection.botToken || "";
       const chatId = String(connection.chatId || "").trim();
-      if (!botToken || !chatId) {
-        throw new Error("Bot token and chat ID are required.");
+      if (!chatId) {
+        throw new Error("Chat ID is required.");
+      }
+      // Edit mode: an empty botToken means "keep the existing one". Fall back
+      // to the stored credential keyed by either the explicit botTokenRef or
+      // the conventional `cred:<id>` reference.
+      let botToken = String(connection.botToken || "").trim();
+      if (!botToken) {
+        const ref = connection.botTokenRef || (connection.id ? `cred:${connection.id}` : "");
+        if (ref) {
+          botToken = credentialStore.getSecret(ref) || "";
+        }
+      }
+      if (!botToken) {
+        throw new Error("Bot token is required.");
       }
       return telegramManager.verifyConnection({ botToken, chatId });
     },
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async detectTelegramChats(connection: any) {
+      // Same edit-mode token fallback as verify.
+      let botToken = String(connection.botToken || "").trim();
+      if (!botToken) {
+        const ref = connection.botTokenRef || (connection.id ? `cred:${connection.id}` : "");
+        if (ref) {
+          botToken = credentialStore.getSecret(ref) || "";
+        }
+      }
+      if (!botToken) {
+        throw new Error("Bot token is required.");
+      }
+      return telegramManager.detectChats({ botToken });
+    },
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async saveTelegramConnection(connection: any) {
+      log.info("telegram saveTelegramConnection called", {
+        id: connection?.id,
+        chatId: connection?.chatId,
+        hasBotToken: Boolean(connection?.botToken),
+        forwardKindsType: Object.prototype.toString.call(connection?.forwardKinds),
+      });
       const connectionId = connection.id || `tg-${randomUUID()}`;
       const botTokenRef = connection.botTokenRef || `cred:${connectionId}`;
       const botToken = connection.botToken || credentialStore.getSecret(botTokenRef);
@@ -3146,7 +3648,24 @@ export async function createRuntime({
 
       reconfigureTelegram(getState());
       broadcastState();
-      return { payload: getPayload(), verification };
+
+      // Preflight: structured-clone the response we hand back to IPC. If
+      // something is non-cloneable (Vue Proxy, Map, function, etc.), this
+      // throws here with a stack we can log instead of the renderer's
+      // opaque "An object could not be cloned." error.
+      const response = { payload: getPayload(), verification };
+      try {
+        structuredClone(response);
+      } catch (err) {
+        log.warn("telegram saveTelegramConnection: response not cloneable", {
+          err: (err as Error).message,
+          verificationKeys: Object.keys(verification ?? {}),
+        });
+        // Fall through with a defensively-cloned response (drops anything
+        // structuredClone can't handle by serialising via JSON).
+        return JSON.parse(JSON.stringify(response));
+      }
+      return response;
     },
 
     async deleteTelegramConnection(connectionId: string) {
@@ -3899,6 +4418,7 @@ export async function createRuntime({
       auditLogStore.close?.();
       githubAuditLogStore.close?.();
       gitAuditLogStore.close?.();
+      telegramAuditLogStore.close?.();
       // State is already persisted on each mutate/replace operation.
       // Avoid rewriting the file on shutdown, which can overwrite newer
       // on-disk state if another instance touched it more recently.
@@ -4106,8 +4626,14 @@ export async function createRuntime({
       }
       // saveWorkspace normalizes and persists
       await this.saveWorkspace(workspace);
-      // Activate the new workspace
-      await this.activateWorkspace(workspace.id);
+      // Activate the new workspace unless the caller explicitly opted out
+      // (e.g. Telegram-driven creation, where the user is in another workspace
+      // and shouldn't have their UI yanked away).
+      if (config.activate !== false) {
+        await this.activateWorkspace(workspace.id);
+      } else {
+        broadcastState();
+      }
       return { workspaceId: workspace.id, cwdWarning, payload: getPayload() };
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -4134,6 +4660,44 @@ export async function createRuntime({
     async resetTask(workspaceId: any) {
       const result = await taskRunner.resetTask(workspaceId);
       return { ok: result, payload: getPayload() };
+    },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async updateTaskDescription(workspaceId: any, description: any) {
+      const id = String(workspaceId || "");
+      const desc = String(description ?? "");
+      const workspace = findWorkspace(getState(), id);
+      if (!workspace || workspace.kind !== "task" || !workspace.task) {
+        log.warn("updateTaskDescription: not a task workspace", { workspaceId: id });
+        return { ok: false, payload: getPayload() };
+      }
+      const taskId = workspace.task.taskId;
+      const cwd = workspace.cwd;
+      try {
+        await updateTaskDescriptionFile(cwd, taskId, desc, log);
+      } catch (err) {
+        log.warn("updateTaskDescription: failed to write TASK.md", {
+          workspaceId: id,
+          err: (err as Error).message,
+        });
+        return { ok: false, payload: getPayload() };
+      }
+      // Mirror the change in memory so the dashboard updates immediately
+      // without having to wait for the next startTask refresh.
+      await store.mutate((draft: AppState) => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const ws = draft.workspaces.find((w: any) => w.id === id);
+        if (ws?.task) {
+          ws.task.description = desc;
+          if (!ws.name || ws.name === "Task workspace") {
+            const trimmed = desc.trim();
+            if (trimmed) {
+              ws.name = trimmed.length > 50 ? trimmed.slice(0, 47) + "..." : trimmed;
+            }
+          }
+        }
+      });
+      broadcastState();
+      return { ok: true, payload: getPayload() };
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async rejectTaskVerdict(workspaceId: any, feedback: any) {

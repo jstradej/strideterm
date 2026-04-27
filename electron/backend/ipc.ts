@@ -494,6 +494,11 @@ export function registerIpc(
       runtime.verifyTelegramConnection(validateIpc(telegramConnectionSchema, connection, "telegram:verify-connection")),
     ),
   );
+  ipcMain.handle("telegram:detect-chats", async (_event, connection) =>
+    withOperationPromise({ opId: "telegram:detect-chats" }, () =>
+      runtime.detectTelegramChats(validateIpc(telegramConnectionSchema, connection, "telegram:detect-chats")),
+    ),
+  );
   ipcMain.handle("telegram:save-connection", async (_event, connection) =>
     withOperationPromise({ opId: "telegram:save-connection" }, () =>
       runtime.saveTelegramConnection(validateIpc(telegramConnectionSchema, connection, "telegram:save-connection")),
@@ -1145,6 +1150,7 @@ export function registerIpc(
     ipcMain.removeHandler("github:quickfix:list-branches");
     ipcMain.removeHandler("github:quickfix:create");
     ipcMain.removeHandler("telegram:verify-connection");
+    ipcMain.removeHandler("telegram:detect-chats");
     ipcMain.removeHandler("telegram:save-connection");
     ipcMain.removeHandler("telegram:delete-connection");
     ipcMain.removeHandler("telegram:refresh");

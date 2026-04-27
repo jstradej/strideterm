@@ -177,6 +177,57 @@ export async function readTaskDescription(cwd: string, taskId: string): Promise<
   }
 }
 
+/**
+ * Surgically replace just the user-authored description block in TASK.md.
+ * Preserves the auto-generated header (`# Task` + `> Created:` line) and every
+ * downstream section (`## Verification before completion`, `## Rules`,
+ * `## Technology-specific checks`). Used by remote channels (Telegram) that
+ * need to update assignment text without touching TODO.md / WORK_LOCK / Judge
+ * prompt files.
+ */
+export async function updateTaskDescriptionFile(
+  cwd: string,
+  taskId: string,
+  newDescription: string,
+  log: Logger,
+): Promise<void> {
+  const taskMdPath = path.join(taskDir(cwd, taskId), TASK_FILE);
+  const content = await readFile(taskMdPath, "utf8");
+  const lines = content.split("\n");
+  const endMarkers = new Set(["## Verification before completion", "## Rules", "## Technology-specific checks"]);
+
+  let descStart = 0;
+  for (; descStart < lines.length; descStart++) {
+    const trimmed = lines[descStart].trim();
+    if (!trimmed) continue;
+    if (trimmed.startsWith("# ")) continue;
+    if (trimmed.startsWith("> Created:")) continue;
+    break;
+  }
+
+  let descEnd = lines.length;
+  for (let i = descStart; i < lines.length; i++) {
+    if (endMarkers.has(lines[i].trim())) {
+      descEnd = i;
+      break;
+    }
+  }
+
+  const trimmedDescription = (newDescription || "").trim();
+  const descriptionBlock = trimmedDescription
+    ? trimmedDescription
+    : `> No task description provided. Instruct the Worker directly in the terminal,
+> or write your task here and press Start.`;
+
+  // Preserve a trailing blank line before the next section so the file stays
+  // readable and consistent with writeTaskFiles output.
+  const before = lines.slice(0, descStart);
+  const after = lines.slice(descEnd);
+  const newLines = [...before, descriptionBlock, "", ...after];
+  await writeFile(taskMdPath, newLines.join("\n"), "utf8");
+  log.info("task description updated", { path: taskMdPath, length: trimmedDescription.length });
+}
+
 export async function writeTaskFiles(cwd: string, task: TaskState, log: Logger): Promise<void> {
   const dir = taskDir(cwd, task.taskId);
   const relDir = taskDirRel(task.taskId);
