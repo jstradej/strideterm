@@ -2,6 +2,7 @@
 import path from "node:path";
 import fs from "node:fs/promises";
 import { existsSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { createDefaultState, normalizeState } from "./default-state.js";
 import { getLogger } from "./logger.js";
 
@@ -19,9 +20,15 @@ function sleep(ms: number): Promise<void> {
 /**
  * Atomic write: write to a temp file first, then rename over the target.
  * This prevents half-written/empty files if the process crashes mid-write.
+ *
+ * The temp filename mixes PID and a random UUID. PID alone is not enough
+ * — a sibling process started by `dev.ps1` (which runs an isolated data
+ * dir) or a stale process whose PID has been recycled by the OS could
+ * collide on the temp file and lose one of the two writes during the
+ * rename race.
  */
 async function atomicWriteFile(filePath: string, data: string): Promise<void> {
-  const tmpPath = `${filePath}.tmp-${process.pid}`;
+  const tmpPath = `${filePath}.tmp-${process.pid}-${randomUUID()}`;
   await fs.writeFile(tmpPath, data);
   await fs.rename(tmpPath, filePath);
 }
