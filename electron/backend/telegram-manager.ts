@@ -1995,7 +1995,7 @@ export class TelegramManager extends EventEmitter {
     if (action === "o") {
       if (!ctx.prKey || !ctx.provider) {
         log.warn("telegram open-pr button: context missing prKey/provider", { chatId });
-        await this._answerText(token, chatId, query.message.message_id, "⚠️ Notifikace neobsahuje PR informaci\\.");
+        await this._answerText(token, chatId, query.message.message_id, "⚠️ Notification has no PR context\\.");
         return;
       }
       const cmd: TelegramCommandEvent = {
@@ -2780,7 +2780,7 @@ export class TelegramManager extends EventEmitter {
         await this._sendText(
           token,
           chatId,
-          `⚠️ ${escapeMarkdown(method)} selhal: \`${escapeMarkdown(json.description?.slice(0, 200) || "unknown")}\``,
+          `⚠️ ${escapeMarkdown(method)} failed: \`${escapeMarkdown(json.description?.slice(0, 200) || "unknown")}\``,
           true,
         );
       }

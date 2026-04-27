@@ -1723,7 +1723,10 @@ export async function createRuntime({
         log.info("telegram: stop task", { workspaceId: cmd.workspaceId });
         const ok = _rt?.stopTask(cmd.workspaceId);
         if (cmd.chatId) {
-          await telegramManager.notifyChat(cmd.chatId, ok?.ok ? "⏹ Task zastaven\\." : "⚠️ Task nelze zastavit\\.");
+          await telegramManager.notifyChat(
+            cmd.chatId,
+            ok?.ok ? "⏹ Task stopped\\." : "⚠️ Task cannot be stopped from the current state\\.",
+          );
         }
       } else if (cmd.type === "reset-task" && cmd.workspaceId) {
         log.info("telegram: reset task", { workspaceId: cmd.workspaceId });
@@ -1857,7 +1860,7 @@ export async function createRuntime({
           if (!targetWs) {
             log.warn("telegram: screenshot-workspace aborted — workspace not found", { workspaceId: targetWsId });
             if (cmd.chatId) {
-              await telegramManager.notifyChat(cmd.chatId, "⚠️ Workspace nebyl nalezen\\.");
+              await telegramManager.notifyChat(cmd.chatId, "⚠️ Workspace not found\\.");
             }
             return;
           }
