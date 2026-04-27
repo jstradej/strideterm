@@ -20,6 +20,7 @@
 - **Docker Manager** - list containers, run actions, open shells, and stream logs
 - **SSH Support** - connect to remote machines from a saved host book or ad-hoc, with built-in key manager, host key TOFU verification, `~/.ssh/config` import, SSH agent support, jump hosts, and three launch modes (built-in, system `ssh`, or WSL) — see [docs](docs/ssh.md)
 - **Remote Access** - access your workspace from any device via LAN or Cloudflare tunnel with QR code
+- **Telegram Bot** - forward strIDEterm alerts to a Telegram chat and reply / tap inline buttons to drive the app from your phone — start a task, pause / resume agents, capture screenshots, fetch task files, open a PR review, all over Telegram's long-polling API (no webhook, no public tunnel) — see [docs](docs/telegram.md)
 - **Plugins** - extend functionality with plugins (Docker Ops and System Monitor built-in)
 - **Finish Notifications** - know when a command or agent finishes without watching the screen:
   - Audio ding when focused, system notification when in background
@@ -148,6 +149,18 @@ STRIDETERM_REMOTE_HOST=127.0.0.1 npm start
 From another device: `http://<your-lan-ip>:43123/?token=<token>`
 
 **Security:** treat the remote token like a password. Use LAN mode only on trusted networks.
+
+## Telegram Bot
+
+strIDEterm can forward workspace alerts to a Telegram chat and let you reply to act on them — start a task, pause / resume agents, capture screenshots, fetch task files, open a PR review. The whole feature uses Telegram's `getUpdates` long-polling API, so the strIDEterm machine only needs outbound HTTPS to `api.telegram.org` (no public webhook, no Cloudflare tunnel).
+
+1. Talk to **[@BotFather](https://t.me/BotFather)** in Telegram → `/newbot` → copy the token
+2. Send `/start` to your new bot from your account
+3. Open **Settings → Telegram**, paste the token, click **Detect** to find the chat, save
+
+The Telegram tab in the notification panel shows each connection's status, poll interval, and forward filter at a glance, with a one-click **Configure** shortcut. From the bot, `/menu` is the recommended entry point on mobile — it gives one-tap access to status, new task, screenshot, workspaces, and help.
+
+The bot token is stored encrypted via the OS keychain, the chat-ID allowlist is enforced on every incoming update, and the Get-file flow refuses paths that resolve outside the task workspace's `cwd`. See [Telegram docs](docs/telegram.md) for the full feature reference, security model, and technical overview.
 
 ## Agent Task Runner
 
