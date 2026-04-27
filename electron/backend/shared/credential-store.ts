@@ -2,7 +2,11 @@
 import path from "node:path";
 import fs from "node:fs/promises";
 import { existsSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { APP_CONFIG } from "../../../config/app-config.js";
+import { getLogger } from "../logger.js";
+
+const log = getLogger("credential-store");
 
 interface SecretEntry {
   value: string;
@@ -88,10 +92,17 @@ export async function createCredentialStore(
 ): Promise<CredentialStore> {
   const state = await loadState(filePath);
   let pending: Promise<unknown> = Promise.resolve(undefined);
+  let warnedAboutPlaintext = false;
 
   async function persist(): Promise<void> {
     await fs.mkdir(path.dirname(filePath), { recursive: true });
-    await fs.writeFile(filePath, JSON.stringify(state, null, 2));
+    // Atomic write: a crash mid-write would otherwise leave a truncated
+    // credentials file and lock the user out of every saved secret. The
+    // tmp + rename pattern guarantees the on-disk file is either the
+    // previous good state or the new good state, never a partial blob.
+    const tmpPath = `${filePath}.tmp-${process.pid}-${randomUUID()}`;
+    await fs.writeFile(tmpPath, JSON.stringify(state, null, 2));
+    await fs.rename(tmpPath, filePath);
   }
 
   function enqueue(operation: () => Promise<void>): Promise<void> {
@@ -101,7 +112,24 @@ export async function createCredentialStore(
   }
 
   function encode(value: string): string {
-    return canEncrypt(safeStorage) ? encodeEncrypted(value, safeStorage) : encodePlaintext(value);
+    if (canEncrypt(safeStorage)) {
+      return encodeEncrypted(value, safeStorage);
+    }
+    // Falling back to base64-on-disk is *not* encryption — anyone who can
+    // read the credentials file gets every secret. We allow it (the store
+    // would otherwise be useless on systems without OS keychain support)
+    // but the operator must know about it. Emit a one-shot warning per
+    // process so they cannot miss the downgrade in their logs.
+    if (!warnedAboutPlaintext) {
+      warnedAboutPlaintext = true;
+      log.warn(
+        "secure storage unavailable — credentials are being stored as base64 plaintext on disk. " +
+          "Anyone with read access to the credentials file can recover the secrets. " +
+          "On Linux this usually means installing libsecret/gnome-keyring; on macOS/Windows " +
+          "it means launching strideterm with the desktop session loaded.",
+      );
+    }
+    return encodePlaintext(value);
   }
 
   function decode(value: string): string {
