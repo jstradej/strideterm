@@ -217,8 +217,7 @@ function createWindow(): void {
   // attempt — the safe answer is to send the user to their default
   // browser instead. The Electron security checklist calls this out as
   // a required hardening step for `webviewTag: true` apps.
-  const distIndexUrl = new URL(`file://${path.join(app.getAppPath(), "dist", "index.html").replace(/\\/g, "/")}`)
-    .href;
+  const distIndexUrl = new URL(`file://${path.join(app.getAppPath(), "dist", "index.html").replace(/\\/g, "/")}`).href;
   const isRendererOrigin = (target: string): boolean => {
     if (!target) return false;
     // Production: only the bundled index.html is allowed. Refuse any
