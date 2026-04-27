@@ -5,6 +5,7 @@ import http from "node:http";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import fs from "node:fs/promises";
 import { existsSync } from "node:fs";
+import { timingSafeEqual } from "node:crypto";
 import { WebSocketServer } from "ws";
 import * as fm from "./file-manager.js";
 import { wsTerminalInputSchema, wsTerminalResizeSchema } from "./ipc-schemas.js";
@@ -90,6 +91,24 @@ function getTokenFromRequest(requestUrl: string, headers: IncomingMessage["heade
   }
 
   return url.searchParams.get("token") || "";
+}
+
+/**
+ * Constant-time string comparison for token validation. Prevents timing
+ * attacks where the attacker probes the token byte-by-byte by measuring
+ * how long the server takes to reject each guess.
+ *
+ * `timingSafeEqual` requires equal-length buffers, so we short-circuit
+ * the length check before the cryptographic compare. The empty-token
+ * case is handled explicitly because `Buffer.from("")` is also length 0
+ * and would compare equal to itself.
+ */
+function tokensEqual(a: string, b: string): boolean {
+  if (!a || !b) return false;
+  const aBuf = Buffer.from(a, "utf8");
+  const bBuf = Buffer.from(b, "utf8");
+  if (aBuf.length !== bBuf.length) return false;
+  return timingSafeEqual(aBuf, bBuf);
 }
 
 function listRemoteUrls(host: string, port: number, token: string): string[] {
@@ -987,7 +1006,7 @@ export async function startRemoteServer({
     const requestToken = getTokenFromRequest(requestUrl, request.headers);
     const isApiRoute = url.pathname.startsWith("/api/");
 
-    if (requestToken !== token && isApiRoute) {
+    if (isApiRoute && !tokensEqual(requestToken, token)) {
       response.writeHead(401, { "Content-Type": "text/plain; charset=utf-8" });
       response.end("Unauthorized");
       return;
@@ -1025,7 +1044,7 @@ export async function startRemoteServer({
 
   server.on("upgrade", (request, socket, head) => {
     const url = new URL(request.url || "/", "http://localhost");
-    if (url.pathname !== "/ws" || getTokenFromRequest(request.url || "/", request.headers) !== token) {
+    if (url.pathname !== "/ws" || !tokensEqual(getTokenFromRequest(request.url || "/", request.headers), token)) {
       socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
       socket.destroy();
       return;
