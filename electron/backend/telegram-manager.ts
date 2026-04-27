@@ -400,7 +400,7 @@ export class TelegramManager extends EventEmitter {
     try {
       const st = await stat(opts.absolutePath);
       if (!st.isFile()) {
-        await this._sendText(token, opts.chatId, "⚠️ Cesta neexistuje nebo není soubor\\.", true);
+        await this._sendText(token, opts.chatId, "⚠️ Path does not exist or is not a file\\.", true);
         return;
       }
       size = st.size;
@@ -411,7 +411,7 @@ export class TelegramManager extends EventEmitter {
       await this._sendText(
         token,
         opts.chatId,
-        `⚠️ Nelze přečíst soubor: \`${escapeMarkdown(errMsg.slice(0, 200))}\``,
+        `⚠️ Cannot read file: \`${escapeMarkdown(errMsg.slice(0, 200))}\``,
         true,
       );
       return;
@@ -583,12 +583,12 @@ export class TelegramManager extends EventEmitter {
     });
 
     const lines = [
-      `✅ Task workspace vytvořen v *${escapeMarkdown(opts.parentName)}*\\.`,
+      `✅ Task workspace created in *${escapeMarkdown(opts.parentName)}*\\.`,
       "",
       `📝 _${escapeMarkdown(opts.description.slice(0, 200))}_`,
       `📁 \`${escapeMarkdown(opts.cwd)}\``,
       "",
-      "Spustit teď, nebo nechat IDLE \\(můžeš editovat TASK\\.md a spustit ručně\\)?",
+      "Start now, or leave it IDLE \\(you can edit TASK\\.md and start it manually\\)?",
     ];
 
     await this._apiCall(token, "sendMessage", {
@@ -599,7 +599,7 @@ export class TelegramManager extends EventEmitter {
         inline_keyboard: [
           [
             { text: "▶️ Start now", callback_data: "c" },
-            { text: "⏸ Nechat IDLE", callback_data: "x" },
+            { text: "⏸ Leave IDLE", callback_data: "x" },
           ],
         ],
       },
@@ -1137,15 +1137,15 @@ export class TelegramManager extends EventEmitter {
         token,
         chatId,
         [
-          "📖 *Příkazy strIDEterm bota:*",
+          "📖 *strIDEterm bot commands:*",
           "",
-          "`/menu` — interaktivní hlavní menu \\(doporučeno na mobilu\\)",
-          "`/status` — stav všech task agentů",
-          "`/workspaces` — přehled workspace",
-          "`/task` — spustit nový task agent \\(výběr workspace\\)",
-          "`/screenshot` — pořídit screenshot strIDEterm okna",
+          "`/menu` — interactive main menu \\(recommended on mobile\\)",
+          "`/status` — show all task agents",
+          "`/workspaces` — list workspaces",
+          "`/task` — start a new task agent \\(workspace picker\\)",
+          "`/screenshot` — capture a screenshot of the strIDEterm window",
           "",
-          "Nebo odpovinej na konkrétní notifikaci pomocí Telegram Reply a stiskni inline tlačítka\\.",
+          "Or reply to a specific notification using Telegram Reply and tap the inline buttons\\.",
         ].join("\n"),
         true,
       );
@@ -1168,7 +1168,7 @@ export class TelegramManager extends EventEmitter {
           await this._sendText(
             token,
             chatId,
-            `⚠️ Neplatná volba\\. Zadej číslo 1–${escapeMarkdown(String(choices.length))}\\. Nebo spusť /task znovu\\.`,
+            `⚠️ Invalid choice\\. Enter a number 1–${escapeMarkdown(String(choices.length))}\\. Or run /task again\\.`,
           );
           return;
         }
@@ -1192,7 +1192,7 @@ export class TelegramManager extends EventEmitter {
           await this._sendText(
             token,
             chatId,
-            "⚠️ Neplatný název větve\\. Použij písmena, číslice, `.` `_` `-` `/` \\(např\\. `feature/auth-fix`\\)\\.",
+            "⚠️ Invalid branch name\\. Use letters, digits, `.` `_` `-` `/` \\(e\\.g\\. `feature/auth-fix`\\)\\.",
             true,
           );
           // Re-arm the same pending so user can try again
@@ -1202,7 +1202,7 @@ export class TelegramManager extends EventEmitter {
         const draft = pending.draftTask;
         if (!draft) {
           log.warn("telegram worktree-branch-input: missing draftTask", { chatId });
-          await this._sendText(token, chatId, "⚠️ Vnitřní chyba — spusť /task znovu\\.");
+          await this._sendText(token, chatId, "⚠️ Internal error — run /task again\\.");
           return;
         }
         log.info("telegram worktree-branch-input: branch received, asking description", {
@@ -1219,11 +1219,11 @@ export class TelegramManager extends EventEmitter {
           agentCommand: pending.agentCommand,
           draftTask: { ...draft, useWorktree: true, worktreeBranch: branch },
         });
-        const normalizedNote = branch !== text.trim() ? `_\\(upraveno z "${escapeMarkdown(text.trim())}"\\)_\n` : "";
+        const normalizedNote = branch !== text.trim() ? `_\\(normalized from "${escapeMarkdown(text.trim())}"\\)_\n` : "";
         await this._sendText(
           token,
           chatId,
-          `🌳 Nová worktree: *${escapeMarkdown(branch)}*\n${normalizedNote}📁 \`${escapeMarkdown(draft.parentCwd)}/.strideterm/tree/${escapeMarkdown(branch.replace(/\//g, "-"))}\`\n\nNapiš popis úkolu:`,
+          `🌳 New worktree: *${escapeMarkdown(branch)}*\n${normalizedNote}📁 \`${escapeMarkdown(draft.parentCwd)}/.strideterm/tree/${escapeMarkdown(branch.replace(/\//g, "-"))}\`\n\nType the task description:`,
           true,
         );
         return;
@@ -1317,13 +1317,13 @@ export class TelegramManager extends EventEmitter {
         });
         await this._apiCall(token, "sendMessage", {
           chat_id: chatId,
-          text: `📂 \`${escapeMarkdown(filePath)}\` — *jak ho poslat?*`,
+          text: `📂 \`${escapeMarkdown(filePath)}\` — *how should I send it?*`,
           parse_mode: "MarkdownV2",
           reply_markup: {
             inline_keyboard: [
               [
-                { text: "📄 Náhled", callback_data: "fm:a" },
-                { text: "📥 Soubor", callback_data: "fm:d" },
+                { text: "📄 Preview", callback_data: "fm:a" },
+                { text: "📥 As file", callback_data: "fm:d" },
               ],
               [{ text: "❌ Cancel", callback_data: "x" }],
             ],
@@ -1342,7 +1342,7 @@ export class TelegramManager extends EventEmitter {
           await this._sendText(
             token,
             chatId,
-            `⚠️ Neplatná volba\\. Zadej číslo 1–${escapeMarkdown(String(choices.length))}\\. Nebo spusť \`/screenshot\` znovu\\.`,
+            `⚠️ Invalid choice\\. Enter a number 1–${escapeMarkdown(String(choices.length))}\\. Or run \`/screenshot\` again\\.`,
             true,
           );
           // Re-arm so user can retry without losing the candidate list.
@@ -1375,7 +1375,7 @@ export class TelegramManager extends EventEmitter {
         await this._sendText(
           token,
           chatId,
-          `📸 Přepínám na *${escapeMarkdown(chosen.name)}* a pořizuji screenshot…`,
+          `📸 Switching to *${escapeMarkdown(chosen.name)}* and capturing screenshot…`,
           true,
         );
         return;
@@ -1402,7 +1402,7 @@ export class TelegramManager extends EventEmitter {
     await this._sendText(
       token,
       chatId,
-      "ℹ️ Odpovicej na notifikaci pomocí Reply, nebo napiš /help pro přehled příkazů\\.",
+      "ℹ️ Reply to a notification, or type /help to list commands\\.",
     );
   }
 
@@ -1413,11 +1413,11 @@ export class TelegramManager extends EventEmitter {
     const taskWs = workspaces.filter((w) => w.kind === "task" && w.task);
 
     if (taskWs.length === 0) {
-      await this._sendText(token, chatId, "📊 Žádné task agenty momentálně neběží\\.");
+      await this._sendText(token, chatId, "📊 No task agents are running\\.");
       return;
     }
 
-    const lines = ["📊 *Stav task agentů:*", "_Klikni na task pro akce \\(pause, resume, edit, reset, …\\)_", ""];
+    const lines = ["📊 *Task agent status:*", "_Tap a task for actions \\(pause, resume, edit, reset, …\\)_", ""];
     const buttons: Array<Array<{ text: string; callback_data: string }>> = [];
     // Telegram caps inline keyboards around 100 buttons total per message;
     // realistically users won't run more than a handful of tasks at once,
@@ -1436,7 +1436,7 @@ export class TelegramManager extends EventEmitter {
     }
     if (taskWs.length > VISIBLE) {
       lines.push("");
-      lines.push(`_… a dalších ${taskWs.length - VISIBLE} \\(skryto\\)_`);
+      lines.push(`_… and ${taskWs.length - VISIBLE} more \\(hidden\\)_`);
     }
 
     await this._apiCall(token, "sendMessage", {
@@ -1452,11 +1452,11 @@ export class TelegramManager extends EventEmitter {
   private async _handleWorkspacesCommand(chatId: string, token: string): Promise<void> {
     const workspaces = this.getWorkspaces?.() ?? [];
     if (workspaces.length === 0) {
-      await this._sendText(token, chatId, "🗂 Žádné workspace není otevřeno\\.");
+      await this._sendText(token, chatId, "🗂 No workspaces are open\\.");
       return;
     }
 
-    const lines = ["🗂 *Workspace:*", ""];
+    const lines = ["🗂 *Workspaces:*", ""];
     for (let i = 0; i < workspaces.length; i++) {
       const ws = workspaces[i];
       const kindLabel = ws.task ? `task: ${ws.task.state}` : ws.kind;
@@ -1477,7 +1477,7 @@ export class TelegramManager extends EventEmitter {
       await this._sendText(
         token,
         chatId,
-        `⏳ Počkej ještě ${escapeMarkdown(String(remaining))}s, než spustíš další /task\\.`,
+        `⏳ Wait ${escapeMarkdown(String(remaining))}s before starting another /task\\.`,
       );
       return;
     }
@@ -1508,20 +1508,20 @@ export class TelegramManager extends EventEmitter {
       await this._sendText(
         token,
         chatId,
-        `⚠️ V profilu *${escapeMarkdown(activeProfile)}* není žádný použitelný workspace\\.`,
+        `⚠️ Profile *${escapeMarkdown(activeProfile)}* has no usable workspace\\.`,
         true,
       );
       return;
     }
 
-    const lines = [`🗂 *Vyber workspace pro nový task* \\(profil: *${escapeMarkdown(activeProfile)}*\\):`, ""];
+    const lines = [`🗂 *Pick a workspace for the new task* \\(profile: *${escapeMarkdown(activeProfile)}*\\):`, ""];
     for (let i = 0; i < candidates.length; i++) {
       const ws = candidates[i];
       lines.push(`${i + 1}\\. *${escapeMarkdown(ws.name)}*`);
       if (ws.cwd) lines.push(`   📁 \`${escapeMarkdown(ws.cwd)}\``);
     }
     lines.push("");
-    lines.push("Odpověz číslem \\(např\\. `1`\\)\\.");
+    lines.push("Reply with a number \\(e\\.g\\. `1`\\)\\.");
 
     this.pendingRequests.set(chatId, {
       type: "workspace-selection",
@@ -1543,9 +1543,9 @@ export class TelegramManager extends EventEmitter {
 
   /**
    * `/screenshot` flow. Two entry points:
-   *   - Aktuální (current) → emit `screenshot-current`, runtime captures
-   *     whatever the user currently sees in the desktop window
-   *   - Vybrat workspace → present workspace-selection (numbered list);
+   *   - Current → emit `screenshot-current`, runtime captures whatever the
+   *     user currently sees in the desktop window
+   *   - Pick workspace → present workspace-selection (numbered list);
    *     after pick, emit `screenshot-workspace` so the runtime briefly
    *     activates that workspace, captures, then activates back
    */
@@ -1567,12 +1567,12 @@ export class TelegramManager extends EventEmitter {
 
     await this._apiCall(token, "sendMessage", {
       chat_id: chatId,
-      text: "📸 *Screenshot strIDEterm okna* — co zachytit?",
+      text: "📸 *Screenshot the strIDEterm window* — what should I capture?",
       parse_mode: "MarkdownV2",
       reply_markup: {
         inline_keyboard: [
-          [{ text: "📸 Aktuální workspace", callback_data: "ss:c" }],
-          [{ text: "🗂 Vybrat jiný workspace", callback_data: "ss:w" }],
+          [{ text: "📸 Current workspace", callback_data: "ss:c" }],
+          [{ text: "🗂 Pick another workspace", callback_data: "ss:w" }],
           [{ text: "❌ Cancel", callback_data: "x" }],
         ],
       },
@@ -1607,12 +1607,12 @@ export class TelegramManager extends EventEmitter {
     const idleTasks = profileWorkspaces.filter((w) => w.kind === "task" && w.task?.state === "idle");
 
     const lines = [
-      "🤖 *strIDEterm bot — hlavní menu*",
+      "🤖 *strIDEterm bot — main menu*",
       "",
-      `📂 Profil: *${escapeMarkdown(activeProfile)}*`,
-      `🔄 Běží: *${activeTasks.length}* · ⏸ Idle tasky: *${idleTasks.length}*`,
+      `📂 Profile: *${escapeMarkdown(activeProfile)}*`,
+      `🔄 Running: *${activeTasks.length}* · ⏸ Idle tasks: *${idleTasks.length}*`,
       "",
-      "_Klikni na tlačítko nebo napiš \\`/help\\` pro seznam příkazů\\._",
+      "_Tap a button or type \\`/help\\` for the command list\\._",
     ];
 
     await this._apiCall(token, "sendMessage", {
@@ -1623,7 +1623,7 @@ export class TelegramManager extends EventEmitter {
         inline_keyboard: [
           [
             { text: "📊 Status", callback_data: "mn:status" },
-            { text: "🚀 Nový task", callback_data: "mn:task" },
+            { text: "🚀 New task", callback_data: "mn:task" },
           ],
           [
             { text: "📸 Screenshot", callback_data: "mn:screenshot" },
@@ -1642,17 +1642,17 @@ export class TelegramManager extends EventEmitter {
     ws?: TelegramWorkspaceInfo,
     draft?: PendingRequest["draftTask"],
   ): string {
-    const lines = [`🚀 Vytvořit task: _${escapeMarkdown(taskDescription.slice(0, 200))}_`];
+    const lines = [`🚀 Create task: _${escapeMarkdown(taskDescription.slice(0, 200))}_`];
     if (ws) {
       lines.push(`\n🗂 Workspace: *${escapeMarkdown(ws.name)}*`);
-      if (ws.cwd) lines.push(`📁 Adresář: \`${escapeMarkdown(ws.cwd)}\``);
+      if (ws.cwd) lines.push(`📁 Directory: \`${escapeMarkdown(ws.cwd)}\``);
     }
     if (draft?.useWorktree && draft.worktreeBranch) {
-      lines.push(`🌳 Nová worktree: *${escapeMarkdown(draft.worktreeBranch)}*`);
+      lines.push(`🌳 New worktree: *${escapeMarkdown(draft.worktreeBranch)}*`);
     } else if (draft?.targetCwd) {
-      lines.push(`📂 Existující worktree: \`${escapeMarkdown(draft.targetCwd)}\``);
+      lines.push(`📂 Existing worktree: \`${escapeMarkdown(draft.targetCwd)}\``);
     } else if (draft) {
-      lines.push("📁 Spustí se přímo v cwd parenta");
+      lines.push("📁 Runs directly in the parent cwd");
     }
     return lines.join("\n");
   }
@@ -1924,7 +1924,7 @@ export class TelegramManager extends EventEmitter {
         token,
         chatId,
         query.message.message_id,
-        "⚠️ Tato notifikace už není k dispozici \\(příliš stará\\)\\.",
+        "⚠️ This notification is no longer available \\(too old\\)\\.",
       );
       return;
     }
@@ -2047,14 +2047,14 @@ export class TelegramManager extends EventEmitter {
     }
     if (!wsId) {
       log.warn("telegram task callback: missing workspaceId", { data: data.slice(0, 16) });
-      await this._answerText(token, chatId, messageId, "⚠️ Neplatný callback\\.");
+      await this._answerText(token, chatId, messageId, "⚠️ Invalid callback\\.");
       return;
     }
 
     const ws = this.getWorkspaces?.().find((w) => w.id === wsId);
     if (!ws || ws.kind !== "task" || !ws.task) {
       log.warn("telegram task callback: workspace not found or not a task", { wsId });
-      await this._answerText(token, chatId, messageId, "⚠️ Task už neexistuje\\.");
+      await this._answerText(token, chatId, messageId, "⚠️ Task no longer exists\\.");
       return;
     }
 
@@ -2068,12 +2068,12 @@ export class TelegramManager extends EventEmitter {
     // --- Immediate, reversible actions: pause / resume — no confirmation ---
     if (op === "p") {
       this._emitTaskCommand({ type: "pause-task", workspaceId: wsId, panelId, chatId });
-      await this._answerText(token, chatId, messageId, "⏸ Pauzuji…");
+      await this._answerText(token, chatId, messageId, "⏸ Pausing…");
       return;
     }
     if (op === "r") {
       this._emitTaskCommand({ type: "resume-task", workspaceId: wsId, panelId, chatId });
-      await this._answerText(token, chatId, messageId, "▶️ Obnovuji…");
+      await this._answerText(token, chatId, messageId, "▶️ Resuming…");
       return;
     }
 
@@ -2086,7 +2086,7 @@ export class TelegramManager extends EventEmitter {
         createdAt: Date.now(),
         pendingCmd: { type: "stop-task", workspaceId: wsId, panelId },
       });
-      await this._sendConfirmation(token, chatId, `⏹ Opravdu zastavit task *${escapeMarkdown(ws.name)}*?`);
+      await this._sendConfirmation(token, chatId, `⏹ Really stop task *${escapeMarkdown(ws.name)}*?`);
       return;
     }
     if (op === "x") {
@@ -2100,7 +2100,7 @@ export class TelegramManager extends EventEmitter {
       await this._sendConfirmation(
         token,
         chatId,
-        `🔄 Opravdu resetovat task *${escapeMarkdown(ws.name)}* do IDLE? Vyčistí se historie kol\\.`,
+        `🔄 Really reset task *${escapeMarkdown(ws.name)}* to IDLE? Round history will be cleared\\.`,
       );
       return;
     }
@@ -2129,7 +2129,7 @@ export class TelegramManager extends EventEmitter {
         token,
         chatId,
         messageId,
-        `📸 Přepínám na *${escapeMarkdown(ws.name)}* a pořizuji screenshot…`,
+        `📸 Switching to *${escapeMarkdown(ws.name)}* and capturing screenshot…`,
       );
       return;
     }
@@ -2146,7 +2146,7 @@ export class TelegramManager extends EventEmitter {
       await this._sendText(
         token,
         chatId,
-        `📂 *${escapeMarkdown(ws.name)}* — napiš relativní cestu k souboru${cwdHint}\n\n_Např\\. \`TASK\\.md\` nebo \`recept\\.md\`_`,
+        `📂 *${escapeMarkdown(ws.name)}* — type a relative file path${cwdHint}\n\n_E\\.g\\. \`TASK\\.md\` or \`notes\\.md\`_`,
         true,
       );
       return;
@@ -2174,19 +2174,19 @@ export class TelegramManager extends EventEmitter {
         createdAt: Date.now(),
         followUp,
       });
-      const followLabel = op === "e" ? "" : op === "c" ? " a poté pokračuj" : " a poté reset \\+ start";
-      const current = ws.task.description ? `\n\n_Aktuální:_ ${escapeMarkdown(ws.task.description.slice(0, 300))}` : "";
+      const followLabel = op === "e" ? "" : op === "c" ? " then resume" : " then reset \\+ start";
+      const current = ws.task.description ? `\n\n_Current:_ ${escapeMarkdown(ws.task.description.slice(0, 300))}` : "";
       await this._sendText(
         token,
         chatId,
-        `📝 *${escapeMarkdown(ws.name)}* — napiš nové zadání${followLabel}:${current}`,
+        `📝 *${escapeMarkdown(ws.name)}* — type the new description${followLabel}:${current}`,
         true,
       );
       return;
     }
 
     log.debug("telegram task callback: unknown op", { op });
-    await this._answerText(token, chatId, messageId, "⚠️ Neznámá akce\\.");
+    await this._answerText(token, chatId, messageId, "⚠️ Unknown action\\.");
   }
 
   // ---------------------------------------------------------------------------
@@ -2238,14 +2238,14 @@ export class TelegramManager extends EventEmitter {
       `🗂 Workspace: *${escapeMarkdown(parent.name)}*`,
       `📁 \`${escapeMarkdown(parent.cwd)}\``,
       "",
-      "*Kde má task běžet?*",
+      "*Where should the task run?*",
     ];
     const rows: Array<Array<{ text: string; callback_data: string }>> = [
-      [{ text: "🌳 Nová worktree (doporučeno)", callback_data: "m:n" }],
-      [{ text: "📁 Přímo v cwd parenta", callback_data: "m:d" }],
+      [{ text: "🌳 New worktree (recommended)", callback_data: "m:n" }],
+      [{ text: "📁 Directly in parent cwd", callback_data: "m:d" }],
     ];
     if (existing.length > 0) {
-      rows.push([{ text: `📂 Existující worktree (${existing.length})`, callback_data: "m:e" }]);
+      rows.push([{ text: `📂 Existing worktree (${existing.length})`, callback_data: "m:e" }]);
     }
     rows.push([{ text: "❌ Cancel", callback_data: "x" }]);
 
@@ -2273,12 +2273,12 @@ export class TelegramManager extends EventEmitter {
     const acceptedTypes = new Set(["worktree-mode-selection", "worktree-existing-pick"]);
     if (!pending || !acceptedTypes.has(pending.type) || !pending.draftTask) {
       log.debug("telegram worktree-mode callback: no matching pending", { chatId, op });
-      await this._answerText(token, chatId, messageId, "⚠️ Tato volba už není aktivní\\.");
+      await this._answerText(token, chatId, messageId, "⚠️ This option is no longer active\\.");
       return;
     }
     if (Date.now() - pending.createdAt >= PENDING_TIMEOUT_MS) {
       this.pendingRequests.delete(chatId);
-      await this._answerText(token, chatId, messageId, "⚠️ Volba vypršela — spusť `/task` znovu\\.");
+      await this._answerText(token, chatId, messageId, "⚠️ Option expired — run `/task` again\\.");
       return;
     }
 
@@ -2298,7 +2298,7 @@ export class TelegramManager extends EventEmitter {
         token,
         chatId,
         messageId,
-        `📁 Task poběží přímo v *${escapeMarkdown(draft.parentName)}*\\. Napiš popis úkolu:`,
+        `📁 Task will run directly in *${escapeMarkdown(draft.parentName)}*\\. Type the task description:`,
       );
       return;
     }
@@ -2313,7 +2313,7 @@ export class TelegramManager extends EventEmitter {
         agentCommand: pending.agentCommand,
         draftTask: { ...draft, useWorktree: true },
       });
-      await this._answerText(token, chatId, messageId, "🌳 Napiš název nové větve \\(např\\. `feature/auth-fix`\\):");
+      await this._answerText(token, chatId, messageId, "🌳 Type the new branch name \\(e\\.g\\. `feature/auth-fix`\\):");
       return;
     }
 
@@ -2321,7 +2321,7 @@ export class TelegramManager extends EventEmitter {
       // Show list of existing worktrees as inline buttons
       const choices = pending.worktreeChoices || [];
       if (choices.length === 0) {
-        await this._answerText(token, chatId, messageId, "⚠️ Žádné existující worktree nejsou\\.");
+        await this._answerText(token, chatId, messageId, "⚠️ No existing worktrees found\\.");
         return;
       }
       const rows = choices.slice(0, 30).map((w, i) => {
@@ -2336,7 +2336,7 @@ export class TelegramManager extends EventEmitter {
       });
       await this._apiCall(token, "sendMessage", {
         chat_id: chatId,
-        text: `📂 *Vyber existující worktree* parenta *${escapeMarkdown(draft.parentName)}*:`,
+        text: `📂 *Pick an existing worktree* of *${escapeMarkdown(draft.parentName)}*:`,
         parse_mode: "MarkdownV2",
         reply_markup: { inline_keyboard: rows },
       }).catch((err) => {
@@ -2348,14 +2348,14 @@ export class TelegramManager extends EventEmitter {
     if (op === "x") {
       // Existing worktree picked by index
       if (pending.type !== "worktree-existing-pick") {
-        await this._answerText(token, chatId, messageId, "⚠️ Nesprávný stav\\.");
+        await this._answerText(token, chatId, messageId, "⚠️ Wrong state\\.");
         return;
       }
       const idx = parseInt(arg, 10);
       const choices = pending.worktreeChoices || [];
       const chosen = choices[idx];
       if (!chosen) {
-        await this._answerText(token, chatId, messageId, "⚠️ Neplatný výběr\\.");
+        await this._answerText(token, chatId, messageId, "⚠️ Invalid selection\\.");
         return;
       }
       this.pendingRequests.set(chatId, {
@@ -2370,13 +2370,13 @@ export class TelegramManager extends EventEmitter {
         token,
         chatId,
         messageId,
-        `📂 Task poběží v existující worktree *${escapeMarkdown(chosen.name)}*\\. Napiš popis úkolu:`,
+        `📂 Task will run in existing worktree *${escapeMarkdown(chosen.name)}*\\. Type the task description:`,
       );
       return;
     }
 
     log.debug("telegram worktree-mode callback: unknown op", { op });
-    await this._answerText(token, chatId, messageId, "⚠️ Neznámá volba\\.");
+    await this._answerText(token, chatId, messageId, "⚠️ Unknown option\\.");
   }
 
   /**
@@ -2390,12 +2390,12 @@ export class TelegramManager extends EventEmitter {
     const pending = this.pendingRequests.get(chatId);
     if (!pending || pending.type !== "file-mode-selection" || !pending.pendingFilePath) {
       log.debug("telegram file-mode callback: no matching pending", { chatId, op });
-      await this._answerText(token, chatId, messageId, "⚠️ Tato volba už není aktivní\\.");
+      await this._answerText(token, chatId, messageId, "⚠️ This option is no longer active\\.");
       return;
     }
     if (Date.now() - pending.createdAt >= PENDING_TIMEOUT_MS) {
       this.pendingRequests.delete(chatId);
-      await this._answerText(token, chatId, messageId, "⚠️ Volba vypršela\\.");
+      await this._answerText(token, chatId, messageId, "⚠️ Option expired\\.");
       return;
     }
 
@@ -2428,7 +2428,7 @@ export class TelegramManager extends EventEmitter {
       token,
       chatId,
       messageId,
-      fileMode === "document" ? "📥 Posílám jako soubor…" : "📄 Posílám náhled…",
+      fileMode === "document" ? "📥 Sending as file…" : "📄 Sending preview…",
     );
   }
 
@@ -2449,12 +2449,12 @@ export class TelegramManager extends EventEmitter {
     const pending = this.pendingRequests.get(chatId);
     if (!pending || pending.type !== "screenshot-mode-selection") {
       log.debug("telegram screenshot-mode callback: no matching pending", { chatId, op });
-      await this._answerText(token, chatId, messageId, "⚠️ Tato volba už není aktivní\\.");
+      await this._answerText(token, chatId, messageId, "⚠️ This option is no longer active\\.");
       return;
     }
     if (Date.now() - pending.createdAt >= PENDING_TIMEOUT_MS) {
       this.pendingRequests.delete(chatId);
-      await this._answerText(token, chatId, messageId, "⚠️ Volba vypršela\\.");
+      await this._answerText(token, chatId, messageId, "⚠️ Option expired\\.");
       return;
     }
 
@@ -2476,7 +2476,7 @@ export class TelegramManager extends EventEmitter {
         userInitiated: true,
       });
       this.emit("command", cmd);
-      await this._answerText(token, chatId, messageId, "📸 Pořizuji screenshot…");
+      await this._answerText(token, chatId, messageId, "📸 Capturing screenshot…");
       return;
     }
 
@@ -2484,7 +2484,7 @@ export class TelegramManager extends EventEmitter {
       const choices = pending.workspaceChoices || [];
       if (choices.length === 0) {
         this.pendingRequests.delete(chatId);
-        await this._answerText(token, chatId, messageId, "⚠️ Žádné workspace v aktivním profilu\\.");
+        await this._answerText(token, chatId, messageId, "⚠️ No workspaces in the active profile\\.");
         return;
       }
       // Transition to numbered-pick: user types a number to choose workspace.
@@ -2493,12 +2493,12 @@ export class TelegramManager extends EventEmitter {
         type: "screenshot-workspace-pick",
         createdAt: Date.now(),
       });
-      const lines = ["📸 *Vyber workspace pro screenshot:*", ""];
+      const lines = ["📸 *Pick a workspace to screenshot:*", ""];
       for (let i = 0; i < choices.length; i++) {
         lines.push(`${i + 1}\\. *${escapeMarkdown(choices[i].name)}*`);
       }
       lines.push("");
-      lines.push("Odpověz číslem \\(např\\. `1`\\)\\.");
+      lines.push("Reply with a number \\(e\\.g\\. `1`\\)\\.");
       await this._sendText(token, chatId, lines.join("\n"), true);
       return;
     }
@@ -2537,15 +2537,15 @@ export class TelegramManager extends EventEmitter {
           token,
           chatId,
           [
-            "📖 *Příkazy strIDEterm bota:*",
+            "📖 *strIDEterm bot commands:*",
             "",
-            "`/menu` — interaktivní hlavní menu",
-            "`/status` — stav všech task agentů",
-            "`/workspaces` — přehled workspace",
-            "`/task` — spustit nový task agent \\(výběr workspace\\)",
-            "`/screenshot` — pořídit screenshot strIDEterm okna",
+            "`/menu` — interactive main menu",
+            "`/status` — show all task agents",
+            "`/workspaces` — list workspaces",
+            "`/task` — start a new task agent \\(workspace picker\\)",
+            "`/screenshot` — capture a screenshot of the strIDEterm window",
             "",
-            "Nebo odpovinej na konkrétní notifikaci pomocí Telegram Reply a stiskni inline tlačítka\\.",
+            "Or reply to a specific notification using Telegram Reply and tap the inline buttons\\.",
           ].join("\n"),
           true,
         );
@@ -2596,15 +2596,15 @@ export class TelegramManager extends EventEmitter {
   private _buildConfirmAcknowledgment(cmd: TelegramCommandEvent): string {
     switch (cmd.type) {
       case "start-task":
-        return `🚀 Vytvářím task:\n_${escapeMarkdown((cmd.taskDescription || "").slice(0, 200))}_`;
+        return `🚀 Creating task:\n_${escapeMarkdown((cmd.taskDescription || "").slice(0, 200))}_`;
       case "start-existing-task":
-        return "▶️ Spouštím task…";
+        return "▶️ Starting task…";
       case "stop-task":
-        return "⏹ Zastavuji task…";
+        return "⏹ Stopping task…";
       case "reset-task":
-        return "🔄 Resetuji task…";
+        return "🔄 Resetting task…";
       case "open-pr-review":
-        return "🔍 Otevírám code review workspace…";
+        return "🔍 Opening code review workspace…";
       default:
         return "✅ OK\\.";
     }
@@ -2652,7 +2652,7 @@ export class TelegramManager extends EventEmitter {
       { text: "📂 Get file", callback_data: `t:f:${ws.id}` },
       { text: "📸 Screenshot", callback_data: `t:s:${ws.id}` },
     ]);
-    rows.push([{ text: "🔙 Zpět na /status", callback_data: "t:b:" }]);
+    rows.push([{ text: "🔙 Back to /status", callback_data: "t:b:" }]);
 
     const lines = [`${icon} *${escapeMarkdown(ws.name)}* — \\(${escapeMarkdown(state)}\\)`];
     if (ws.task?.description) {
@@ -2769,7 +2769,7 @@ export class TelegramManager extends EventEmitter {
       }
     } catch (err) {
       log.warn("telegram file upload threw", { method, err: (err as Error).message });
-      await this._sendText(token, chatId, `⚠️ Nelze odeslat soubor \\(síťová chyba\\)\\.`, true);
+      await this._sendText(token, chatId, `⚠️ Could not send file \\(network error\\)\\.`, true);
     }
   }
 

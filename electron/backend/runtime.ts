@@ -1513,7 +1513,7 @@ export async function createRuntime({
           if (cmd.chatId) {
             await telegramManager.notifyChat(
               cmd.chatId,
-              "⚠️ Pro zdrojovou notifikaci nelze najít vhodný parent workspace s `cwd`\\. Použij `/task` a vyber workspace ručně\\.",
+              "⚠️ Cannot find a suitable parent workspace with `cwd` for the source notification\\. Use `/task` and pick a workspace manually\\.",
             );
           }
           return;
@@ -1574,7 +1574,7 @@ export async function createRuntime({
           if (useWorktree && !worktreeBranch) {
             log.warn("telegram: start-task with useWorktree but no branch", { workspaceId: cmd.workspaceId });
             if (cmd.chatId) {
-              await telegramManager.notifyChat(cmd.chatId, "⚠️ Chybí název větve pro novou worktree\\.");
+              await telegramManager.notifyChat(cmd.chatId, "⚠️ Missing branch name for the new worktree\\.");
             }
             return;
           }
@@ -1611,7 +1611,7 @@ export async function createRuntime({
             if (cmd.chatId) {
               await telegramManager.notifyChat(
                 cmd.chatId,
-                "⚠️ Vytvoření tasku selhalo: ` " + (err as Error).message.replace(/`/g, "'") + " `",
+                "⚠️ Task creation failed: ` " + (err as Error).message.replace(/`/g, "'") + " `",
               );
             }
             return;
@@ -1651,7 +1651,7 @@ export async function createRuntime({
             workspaceIdType: typeof cmd.workspaceId,
           });
           if (cmd.chatId) {
-            await telegramManager.notifyChat(cmd.chatId, "⚠️ Interní chyba: chybí workspaceId\\.");
+            await telegramManager.notifyChat(cmd.chatId, "⚠️ Internal error: missing workspaceId\\.");
           }
           return;
         }
@@ -1662,7 +1662,7 @@ export async function createRuntime({
             kind: targetWs?.kind,
           });
           if (cmd.chatId) {
-            await telegramManager.notifyChat(cmd.chatId, "⚠️ Task workspace nebyl nalezen \\(možná byl smazán\\)\\.");
+            await telegramManager.notifyChat(cmd.chatId, "⚠️ Task workspace not found \\(possibly deleted\\)\\.");
           }
           return;
         }
@@ -1698,7 +1698,7 @@ export async function createRuntime({
         if (cmd.chatId) {
           await telegramManager.notifyChat(
             cmd.chatId,
-            ok?.ok ? "▶️ Task spuštěn\\." : "⚠️ Task se nepodařilo spustit \\(zkontroluj log\\)\\.",
+            ok?.ok ? "▶️ Task started\\." : "⚠️ Task failed to start \\(check the log\\)\\.",
           );
         }
       } else if (cmd.type === "pause-task" && cmd.workspaceId) {
@@ -1707,7 +1707,7 @@ export async function createRuntime({
         if (cmd.chatId) {
           await telegramManager.notifyChat(
             cmd.chatId,
-            ok?.ok ? "⏸ Task pozastaven\\." : "⚠️ Task není ve stavu, který lze pozastavit\\.",
+            ok?.ok ? "⏸ Task paused\\." : "⚠️ Task is not in a state that can be paused\\.",
           );
         }
       } else if (cmd.type === "resume-task" && cmd.workspaceId) {
@@ -1716,7 +1716,7 @@ export async function createRuntime({
         if (cmd.chatId) {
           await telegramManager.notifyChat(
             cmd.chatId,
-            ok?.ok ? "▶️ Task obnoven\\." : "⚠️ Task nelze obnovit z aktuálního stavu\\.",
+            ok?.ok ? "▶️ Task resumed\\." : "⚠️ Task cannot be resumed from the current state\\.",
           );
         }
       } else if (cmd.type === "stop-task" && cmd.workspaceId) {
@@ -1731,7 +1731,7 @@ export async function createRuntime({
         if (cmd.chatId) {
           await telegramManager.notifyChat(
             cmd.chatId,
-            ok?.ok ? "🔄 Task resetován do IDLE\\." : "⚠️ Task nelze resetovat z aktuálního stavu\\.",
+            ok?.ok ? "🔄 Task reset to IDLE\\." : "⚠️ Task cannot be reset from the current state\\.",
           );
         }
       } else if (cmd.type === "update-task-description" && cmd.workspaceId && cmd.taskDescription !== undefined) {
@@ -1743,7 +1743,7 @@ export async function createRuntime({
         const updated = await _rt?.updateTaskDescription(cmd.workspaceId, cmd.taskDescription);
         if (!updated?.ok) {
           if (cmd.chatId) {
-            await telegramManager.notifyChat(cmd.chatId, "⚠️ Zadání se nepodařilo uložit\\.");
+            await telegramManager.notifyChat(cmd.chatId, "⚠️ Could not save the task description\\.");
           }
         } else {
           // Chained follow-up actions (Edit+Continue / Edit+Start)
@@ -1753,8 +1753,8 @@ export async function createRuntime({
               await telegramManager.notifyChat(
                 cmd.chatId,
                 ok?.ok
-                  ? "📝 Zadání aktualizováno, task obnoven\\."
-                  : "📝 Zadání aktualizováno, ale task nešel obnovit z aktuálního stavu\\.",
+                  ? "📝 Description updated, task resumed\\."
+                  : "📝 Description updated, but task could not be resumed from the current state\\.",
               );
             }
           } else if (cmd.followUp === "start") {
@@ -1766,13 +1766,13 @@ export async function createRuntime({
               await telegramManager.notifyChat(
                 cmd.chatId,
                 ok?.ok
-                  ? "📝 Zadání aktualizováno, task spuštěn\\."
-                  : "📝 Zadání aktualizováno, ale task nešel spustit\\.",
+                  ? "📝 Description updated, task started\\."
+                  : "📝 Description updated, but the task could not be started\\.",
               );
             }
           } else {
             if (cmd.chatId) {
-              await telegramManager.notifyChat(cmd.chatId, "📝 Zadání úkolu aktualizováno\\.");
+              await telegramManager.notifyChat(cmd.chatId, "📝 Task description updated\\.");
             }
           }
         }
@@ -1782,14 +1782,14 @@ export async function createRuntime({
         if (!ws || ws.kind !== "task" || !ws.task) {
           log.warn("telegram: send-task-file aborted — workspace not found or not a task", { workspaceId: wsId });
           if (cmd.chatId) {
-            await telegramManager.notifyChat(cmd.chatId, "⚠️ Task workspace nebyl nalezen \\(možná byl smazán\\)\\.");
+            await telegramManager.notifyChat(cmd.chatId, "⚠️ Task workspace not found \\(possibly deleted\\)\\.");
           }
           return;
         }
         if (!ws.cwd) {
           log.warn("telegram: send-task-file aborted — workspace has no cwd", { workspaceId: wsId });
           if (cmd.chatId) {
-            await telegramManager.notifyChat(cmd.chatId, "⚠️ Workspace nemá cwd\\.");
+            await telegramManager.notifyChat(cmd.chatId, "⚠️ Workspace has no cwd\\.");
           }
           return;
         }
@@ -1813,7 +1813,7 @@ export async function createRuntime({
           if (cmd.chatId) {
             await telegramManager.notifyChat(
               cmd.chatId,
-              "⚠️ Cesta směřuje mimo task workspace\\. Použij relativní cestu uvnitř `cwd`\\.",
+              "⚠️ Path points outside the task workspace\\. Use a relative path inside `cwd`\\.",
             );
           }
           return;
@@ -1839,7 +1839,7 @@ export async function createRuntime({
           if (cmd.chatId) {
             await telegramManager.notifyChat(
               cmd.chatId,
-              "⚠️ Screenshot není v této instanci k dispozici \\(nejspíš headless build\\)\\.",
+              "⚠️ Screenshot is not available in this instance \\(probably a headless build\\)\\.",
             );
           }
           return;
@@ -1888,7 +1888,7 @@ export async function createRuntime({
           if (cmd.chatId) {
             await telegramManager.notifyChat(
               cmd.chatId,
-              "⚠️ Screenshot se nepodařilo pořídit \\(okno nedostupné\\)\\.",
+              "⚠️ Could not capture screenshot \\(window unavailable\\)\\.",
             );
           }
           // Still try to switch back so user's UI returns to where they left it.

@@ -937,7 +937,7 @@ describe("setWorkspacesGetter", () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     await (manager as any)._handleMessage(msg, makeConnection(), "token123");
 
-    expect(sentTexts[0]).toContain("Žádné task agenty");
+    expect(sentTexts[0]).toContain("No task agents are running");
   });
 
   test("/workspaces lists all workspaces with cwd", async () => {
@@ -1058,7 +1058,7 @@ describe("setWorkspacesGetter", () => {
     await (manager as any)._handleMessage(msg2, conn, "token123");
 
     // Second call should produce a rate-limit response
-    const rateLimitedHit = sentTexts.some((t) => t.includes("Počkej") && t.includes("než spustíš další"));
+    const rateLimitedHit = sentTexts.some((t) => t.includes("Wait") && t.includes("before starting another"));
     expect(rateLimitedHit).toBe(true);
   });
 
@@ -1089,7 +1089,7 @@ describe("setWorkspacesGetter", () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     await (manager as any)._handleMessage(msg, makeConnection(), "token123");
 
-    expect(sentTexts[0]).toContain("Neplatná");
+    expect(sentTexts[0]).toContain("Invalid choice");
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     expect((manager as any).pendingRequests.has(chatId)).toBe(false);
   });
@@ -1494,7 +1494,7 @@ describe("worktree mode selection (post /task pick)", () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const pending = (manager as any).pendingRequests.get(chatId);
     expect(pending?.type).toBe("worktree-branch-input");
-    expect(sentTexts.some((t) => t.includes("Neplatný"))).toBe(true);
+    expect(sentTexts.some((t) => t.includes("Invalid branch name"))).toBe(true);
   });
 
   test("description after worktree-branch flows into start-task with useWorktree=true", async () => {
@@ -2229,7 +2229,9 @@ describe("sendFile format detection", () => {
       relPath: "x.png",
     });
     // sendText called with an error message
-    expect(calls.some((c) => c.method === "sendMessage" && (c.bodyText || "").includes("Nelze přečíst"))).toBe(true);
+    expect(
+      calls.some((c) => c.method === "sendMessage" && (c.bodyText || "").includes("Cannot read file") || (c.bodyText || "").includes("Path does not exist")),
+    ).toBe(true);
   });
 });
 
@@ -2276,7 +2278,7 @@ describe("/menu hub", () => {
     // Header must reflect live state (1 running task) so the user can see
     // at-a-glance what's going on without clicking anywhere.
     const text = sentBodies[0].text as string;
-    expect(text).toContain("Běží: *1*");
+    expect(text).toContain("Running: *1*");
   });
 
   test("plain 'menu' (without slash) works — mobile keyboards make / hard to type", async () => {
@@ -2436,7 +2438,7 @@ describe("/menu hub", () => {
 // ---------------------------------------------------------------------------
 
 describe("/screenshot flow", () => {
-  test("/screenshot opens mode selection menu (Aktuální / Vybrat)", async () => {
+  test("/screenshot opens mode selection menu (Current / Pick)", async () => {
     const cred = makeCredentialStore({ "cred:tg-1": "token123" });
     const manager = new TelegramManager({ credentialStore: cred });
     manager.configure([makeConnection()]);
@@ -2466,7 +2468,7 @@ describe("/screenshot flow", () => {
     expect(callbacks).toContain("ss:w");
   });
 
-  test("clicking Aktuální (ss:c) emits screenshot-current immediately", async () => {
+  test("clicking Current (ss:c) emits screenshot-current immediately", async () => {
     const cred = makeCredentialStore({ "cred:tg-1": "token123" });
     const manager = new TelegramManager({ credentialStore: cred });
     manager.configure([makeConnection()]);
