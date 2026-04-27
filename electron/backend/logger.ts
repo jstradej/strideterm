@@ -31,11 +31,56 @@ type LogLevelName = keyof typeof CUSTOM_LEVELS.levels;
 const LOG_METHODS = Object.keys(CUSTOM_LEVELS.levels) as LogLevelName[];
 
 const TIMESTAMP_FORMAT = winston.format.timestamp({ format: "YYYY-MM-DD HH:mm:ss.SSS" });
+
+// ---------------------------------------------------------------------------
+// Token redaction
+// ---------------------------------------------------------------------------
+// strideterm carries a handful of high-value secrets through error paths
+// (Azure PAT, GitHub PAT, Telegram bot token, remote-access token, SSH
+// passphrases). When an outbound HTTP call fails the URL or Authorization
+// header can land in the log. We strip those patterns before winston ever
+// sees the structured payload so a leaked log directory doesn't double as
+// a credential dump.
+//
+// The patterns are deliberately broad — we'd rather over-redact a stray
+// "token=..." in user content than under-redact a real secret. Bot tokens
+// in URL paths (`/bot<token>/`, used by Telegram) and bearer tokens in
+// Authorization headers are the highest-priority cases.
+const REDACTED = "[REDACTED]";
+const TOKEN_PATTERNS: Array<[RegExp, string]> = [
+  // Telegram: https://api.telegram.org/bot<digits>:<token>/method
+  [/(\/bot)\d{6,}:[A-Za-z0-9_-]{20,}/g, `$1${REDACTED}`],
+  // Authorization: Bearer <token>  /  authorization: bearer <token>
+  [/(authorization\s*[:=]\s*"?\s*bearer\s+)[^\s",}\]]+/gi, `$1${REDACTED}`],
+  [/(\bbearer\s+)[A-Za-z0-9._\-+/=]{16,}/gi, `$1${REDACTED}`],
+  // Azure PAT / generic ?token=... or &pat=... query strings
+  [/([?&](?:token|pat|access_token|api[_-]?key)=)[^&\s"']+/gi, `$1${REDACTED}`],
+  // JSON-style: "token":"...",  "pat":"...",  "password":"...", "secret":"..."
+  [
+    /("(?:token|pat|access[_-]?token|api[_-]?key|password|passphrase|secret|botToken)"\s*:\s*")[^"]+/gi,
+    `$1${REDACTED}`,
+  ],
+];
+
+function redactSecrets(value: string): string {
+  let result = value;
+  for (const [pattern, replacement] of TOKEN_PATTERNS) {
+    result = result.replace(pattern, replacement);
+  }
+  return result;
+}
+
 const PRINT_FORMAT = winston.format.printf(({ timestamp, level, label, message, ...rest }) => {
   const tag = label ? `[${label}]` : "";
-  const extra = Object.keys(rest).length ? ` ${JSON.stringify(rest)}` : "";
-  return `${timestamp} ${level.toUpperCase().padEnd(5)} ${tag} ${message}${extra}`;
+  const safeMessage = typeof message === "string" ? redactSecrets(message) : String(message);
+  const extra = Object.keys(rest).length ? ` ${redactSecrets(JSON.stringify(rest))}` : "";
+  return `${timestamp} ${level.toUpperCase().padEnd(5)} ${tag} ${safeMessage}${extra}`;
 });
+
+// Exposed for the focused unit test in logger-redaction.test.ts. Not part
+// of the public Logger interface — callers should never need to redact
+// before logging; the format does it on every emission.
+export const __redactSecretsForTesting = redactSecrets;
 
 type LogMethod = (message: string, meta?: Record<string, unknown>) => void;
 
