@@ -746,10 +746,10 @@ export class TelegramManager extends EventEmitter {
     }
     if (rawDetail) {
       // Long judge verdicts and task results contain code references like
-      // `recept-na-domaci-sunku.md:1` and `(lines 3-11)` that look terrible
-      // wrapped in italic — Telegram tries to render the dashes/dots as
-      // Markdown and auto-detects file paths as links. For anything longer
-      // than a one-liner, render as a fenced code block (preserves spacing,
+      // `src/foo/bar.ts:42` and `(lines 3-11)` that look terrible wrapped
+      // in italic — Telegram tries to render the dashes/dots as Markdown
+      // and auto-detects file paths as links. For anything longer than a
+      // one-liner, render as a fenced code block (preserves spacing,
       // disables auto-linking, monospace makes paths/code legible). Short
       // detail (like `prompt-returned`) stays as italic for visual hierarchy.
       const oneLiner = !rawDetail.includes("\n") && rawDetail.length <= 120;

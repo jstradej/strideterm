@@ -750,7 +750,7 @@ describe("_buildAlertText detail formatting", () => {
     const cred = makeCredentialStore({});
     const manager = new TelegramManager({ credentialStore: cred });
     const verdict =
-      "Judge: All 1 requirements verified implemented: (1) Recipe file for homemade ham exists at recept-na-domaci-sunku.md:1 with ingredients (lines 3-11), 5-step process with concrete temperatures and timings (lines 13-33), and tips (lines 35-39); committed in f05334c. WORK_LOCK absent, TODO In Progress/Blocked empty, task moved to Done in TODO.md:14.";
+      "Judge: All 1 requirements verified implemented: (1) Source file exists at src/foo/bar.ts:1 with helper (lines 3-11), 5-step process with concrete inputs and outputs (lines 13-33), and notes (lines 35-39); committed in f05334c. WORK_LOCK absent, TODO In Progress/Blocked empty, task moved to Done in TODO.md:14.";
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const text = (manager as any)._buildAlertText({
       kind: "completed",
@@ -764,7 +764,7 @@ describe("_buildAlertText detail formatting", () => {
     expect(text).toContain("```");
     // The raw verdict text appears verbatim inside the fence (no escapes
     // applied, since code blocks treat content literally).
-    expect(text).toContain("recept-na-domaci-sunku.md:1");
+    expect(text).toContain("src/foo/bar.ts:1");
     // Italic detail wrapper must NOT have wrapped the verdict
     expect(text).not.toContain(`_${verdict}_`);
   });
@@ -1651,7 +1651,7 @@ describe("worktree mode selection (post /task pick)", () => {
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     await (manager as any)._handleMessage(
-      { message_id: 95, chat: { id: 12345 }, text: "recept.md" },
+      { message_id: 95, chat: { id: 12345 }, text: "notes.md" },
       makeConnection(),
       "token123",
     );
@@ -1661,7 +1661,7 @@ describe("worktree mode selection (post /task pick)", () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const pending = (manager as any).pendingRequests.get(chatId);
     expect(pending?.type).toBe("file-mode-selection");
-    expect(pending?.pendingFilePath).toBe("recept.md");
+    expect(pending?.pendingFilePath).toBe("notes.md");
     // Mode menu was sent with both buttons
     const lastWithKb = [...sentBodies].reverse().find((b) => b.reply_markup);
     const markup = lastWithKb!.reply_markup as { inline_keyboard: Array<Array<{ callback_data: string }>> };
@@ -1685,7 +1685,7 @@ describe("worktree mode selection (post /task pick)", () => {
       workspaceId: "task-1",
       panelId: "",
       createdAt: Date.now(),
-      pendingFilePath: "recept.md",
+      pendingFilePath: "notes.md",
     });
 
     const emitted: Array<Record<string, unknown>> = [];
@@ -1701,7 +1701,7 @@ describe("worktree mode selection (post /task pick)", () => {
     expect(emitted).toHaveLength(1);
     expect(emitted[0].type).toBe("send-task-file");
     expect(emitted[0].fileMode).toBe("auto");
-    expect(emitted[0].filePath).toBe("recept.md");
+    expect(emitted[0].filePath).toBe("notes.md");
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     expect((manager as any).pendingRequests.has(chatId)).toBe(false);
   });
@@ -1721,7 +1721,7 @@ describe("worktree mode selection (post /task pick)", () => {
       workspaceId: "task-1",
       panelId: "",
       createdAt: Date.now(),
-      pendingFilePath: "recept.md",
+      pendingFilePath: "notes.md",
     });
 
     const emitted: Array<Record<string, unknown>> = [];
