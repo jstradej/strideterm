@@ -235,3 +235,33 @@ export async function shutdownLogger(): Promise<void> {
     logger!.end();
   });
 }
+
+/**
+ * Create a dedicated audit logger writing to its own file at always-info
+ * level. Independent of the main logger's user-configurable level so a
+ * forensic trail is always captured for security-relevant events.
+ *
+ * Reuses the same token-redaction format as the main logger.
+ */
+export function createAuditLogger(name: string): { info: LogMethod; warn: LogMethod; close: () => void } {
+  ensureLogDir();
+  const filename = path.join(LOG_DIR, `${name}.log`);
+  const instance = winston.createLogger({
+    levels: CUSTOM_LEVELS.levels,
+    level: "info",
+    format: winston.format.combine(TIMESTAMP_FORMAT, PRINT_FORMAT),
+    transports: [
+      new winston.transports.File({
+        filename,
+        maxsize: 5 * 1024 * 1024,
+        maxFiles: 5,
+        tailable: true,
+      }),
+    ],
+  });
+  return {
+    info: (message, meta) => instance.info(message, { ...(meta || {}), label: name }),
+    warn: (message, meta) => instance.warn(message, { ...(meta || {}), label: name }),
+    close: () => instance.close(),
+  };
+}

@@ -9,7 +9,7 @@ import { timingSafeEqual } from "node:crypto";
 import { WebSocketServer } from "ws";
 import * as fm from "./file-manager.js";
 import { wsTerminalInputSchema, wsTerminalResizeSchema } from "./ipc-schemas.js";
-import { getLogger } from "./logger.js";
+import { getLogger, createAuditLogger } from "./logger.js";
 
 const log = getLogger("remote-server");
 
@@ -1025,6 +1025,8 @@ export async function startRemoteServer({
     return { close: async () => {} };
   }
 
+  const audit = createAuditLogger("remote-api-audit");
+
   const server = http.createServer(async (request, response) => {
     const requestUrl = request.url || "/";
     const url = new URL(requestUrl, "http://localhost");
@@ -1034,10 +1036,27 @@ export async function startRemoteServer({
     if (isApiRoute && !tokensEqual(requestToken, token)) {
       writeHead(response, 401, { "Content-Type": "text/plain; charset=utf-8" });
       response.end("Unauthorized");
+      audit.warn("api request rejected", {
+        method: request.method,
+        path: url.pathname,
+        statusCode: 401,
+        remoteAddress: request.socket?.remoteAddress,
+      });
       return;
     }
 
     if (isApiRoute) {
+      const startedAt = Date.now();
+      const remoteAddress = request.socket?.remoteAddress;
+      response.on("finish", () => {
+        audit.info("api request", {
+          method: request.method,
+          path: url.pathname,
+          statusCode: response.statusCode,
+          durationMs: Date.now() - startedAt,
+          remoteAddress,
+        });
+      });
       await handleApiRequest(runtime, request, response);
       return;
     }
@@ -1124,6 +1143,7 @@ export async function startRemoteServer({
   });
 
   if (!listenResult.ok) {
+    audit.close();
     unsubscribe.forEach((dispose) => dispose());
     wss.close();
     server.close();
@@ -1144,6 +1164,7 @@ export async function startRemoteServer({
 
   return {
     async close() {
+      audit.close();
       unsubscribe.forEach((dispose) => dispose());
       for (const socket of sockets) {
         socket.close();
