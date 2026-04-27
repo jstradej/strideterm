@@ -2234,6 +2234,204 @@ describe("sendFile format detection", () => {
 });
 
 // ---------------------------------------------------------------------------
+// /menu — interactive hub for mobile users
+// ---------------------------------------------------------------------------
+
+describe("/menu hub", () => {
+  test("/menu sends inline keyboard with all top-level actions", async () => {
+    const cred = makeCredentialStore({ "cred:tg-1": "token123" });
+    const manager = new TelegramManager({ credentialStore: cred });
+    manager.configure([makeConnection()]);
+    manager.setWorkspacesGetter(() => [
+      makeWorkspace({ id: "ws-1", name: "alpha", cwd: "/p/a" }),
+      makeWorkspace({
+        id: "task-1",
+        name: "running-task",
+        kind: "task",
+        cwd: "/p/t",
+        task: { state: "running", description: "x" },
+      }),
+    ]);
+
+    const sentBodies: Array<Record<string, unknown>> = [];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (manager as any)._apiCall = async (_t: string, _m: string, body: Record<string, unknown>) => {
+      sentBodies.push(body);
+      return { ok: true, result: { message_id: 2000 } };
+    };
+
+    const msg = { message_id: 400, chat: { id: 12345 }, text: "/menu" };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (manager as any)._handleMessage(msg, makeConnection(), "token123");
+
+    expect(sentBodies).toHaveLength(1);
+    const markup = sentBodies[0].reply_markup as { inline_keyboard: Array<Array<{ callback_data: string }>> };
+    const callbacks = markup.inline_keyboard.flatMap((row) => row.map((b) => b.callback_data));
+    expect(callbacks).toContain("mn:status");
+    expect(callbacks).toContain("mn:task");
+    expect(callbacks).toContain("mn:workspaces");
+    expect(callbacks).toContain("mn:screenshot");
+    expect(callbacks).toContain("mn:help");
+
+    // Header must reflect live state (1 running task) so the user can see
+    // at-a-glance what's going on without clicking anywhere.
+    const text = sentBodies[0].text as string;
+    expect(text).toContain("Běží: *1*");
+  });
+
+  test("plain 'menu' (without slash) works — mobile keyboards make / hard to type", async () => {
+    const cred = makeCredentialStore({ "cred:tg-1": "token123" });
+    const manager = new TelegramManager({ credentialStore: cred });
+    manager.configure([makeConnection()]);
+    manager.setWorkspacesGetter(() => []);
+
+    const sentBodies: Array<Record<string, unknown>> = [];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (manager as any)._apiCall = async (_t: string, _m: string, body: Record<string, unknown>) => {
+      sentBodies.push(body);
+      return { ok: true, result: { message_id: 2010 } };
+    };
+
+    // No slash, mixed case, surrounding whitespace — should all be tolerated
+    for (const variant of ["menu", "Menu", "MENU", " menu ", "/MENU"]) {
+      sentBodies.length = 0;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      await (manager as any)._handleMessage(
+        { message_id: 410, chat: { id: 12345 }, text: variant },
+        makeConnection(),
+        "token123",
+      );
+      expect(sentBodies.some((b) => (b.reply_markup as { inline_keyboard?: unknown })?.inline_keyboard)).toBe(true);
+    }
+  });
+
+  test("plain command words (without slash) reach all top-level handlers", async () => {
+    const cred = makeCredentialStore({ "cred:tg-1": "token123" });
+    const manager = new TelegramManager({ credentialStore: cred });
+    manager.configure([makeConnection()]);
+    manager.setWorkspacesGetter(() => [makeWorkspace({ id: "ws-1", name: "alpha", cwd: "/p/a" })]);
+
+    const sentBodies: Array<Record<string, unknown>> = [];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (manager as any)._apiCall = async (_t: string, _m: string, body: Record<string, unknown>) => {
+      sentBodies.push(body);
+      return { ok: true, result: { message_id: 2011 } };
+    };
+
+    // Each command word triggers its handler. We just verify a message
+    // was sent (the handler-specific assertions live in their own tests).
+    for (const word of ["status", "workspaces", "task", "screenshot", "help"]) {
+      const before = sentBodies.length;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      await (manager as any)._handleMessage(
+        { message_id: 411, chat: { id: 12345 }, text: word },
+        makeConnection(),
+        "token123",
+      );
+      expect(sentBodies.length).toBeGreaterThan(before);
+    }
+  });
+
+  test("/start aliases /menu (Telegram bot convention for first interaction)", async () => {
+    const cred = makeCredentialStore({ "cred:tg-1": "token123" });
+    const manager = new TelegramManager({ credentialStore: cred });
+    manager.configure([makeConnection()]);
+    manager.setWorkspacesGetter(() => []);
+
+    const sentBodies: Array<Record<string, unknown>> = [];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (manager as any)._apiCall = async (_t: string, _m: string, body: Record<string, unknown>) => {
+      sentBodies.push(body);
+      return { ok: true, result: { message_id: 2001 } };
+    };
+
+    const msg = { message_id: 401, chat: { id: 12345 }, text: "/start" };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (manager as any)._handleMessage(msg, makeConnection(), "token123");
+
+    expect(sentBodies).toHaveLength(1);
+    expect(sentBodies[0].reply_markup).toBeDefined();
+  });
+
+  test("clicking mn:status dispatches to /status handler (lists task agents)", async () => {
+    const cred = makeCredentialStore({ "cred:tg-1": "token123" });
+    const manager = new TelegramManager({ credentialStore: cred });
+    manager.configure([makeConnection()]);
+    manager.setWorkspacesGetter(() => [
+      makeWorkspace({
+        id: "task-1",
+        name: "alpha",
+        kind: "task",
+        cwd: "/p/a",
+        task: { state: "running", description: "x" },
+      }),
+    ]);
+
+    const sentBodies: Array<Record<string, unknown>> = [];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (manager as any)._apiCall = async (_t: string, _m: string, body: Record<string, unknown>) => {
+      sentBodies.push(body);
+      return { ok: true, result: { message_id: 2002 } };
+    };
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (manager as any)._handleCallbackQuery(
+      { id: "cq", from: { id: 1 }, message: { message_id: 120, chat: { id: 12345 }, text: "" }, data: "mn:status" },
+      makeConnection(),
+      "token123",
+    );
+
+    // Status sends the task list keyboard — buttons with t:m:<wsId>
+    const lastWithKb = [...sentBodies].reverse().find((b) => b.reply_markup);
+    const markup = lastWithKb!.reply_markup as { inline_keyboard: Array<Array<{ callback_data: string }>> };
+    const callbacks = markup.inline_keyboard.flatMap((row) => row.map((b) => b.callback_data));
+    expect(callbacks.some((c) => c.startsWith("t:m:"))).toBe(true);
+  });
+
+  test("clicking mn:task dispatches to /task handler (workspace-selection pending)", async () => {
+    const cred = makeCredentialStore({ "cred:tg-1": "token123" });
+    const manager = new TelegramManager({ credentialStore: cred });
+    manager.configure([makeConnection()]);
+    manager.setWorkspacesGetter(() => [makeWorkspace({ id: "ws-1", name: "alpha", cwd: "/p/a" })]);
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (manager as any)._apiCall = async () => ({ ok: true, result: { message_id: 2003 } });
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (manager as any)._handleCallbackQuery(
+      { id: "cq", from: { id: 1 }, message: { message_id: 121, chat: { id: 12345 }, text: "" }, data: "mn:task" },
+      makeConnection(),
+      "token123",
+    );
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const pending = (manager as any).pendingRequests.get("12345");
+    expect(pending?.type).toBe("workspace-selection");
+  });
+
+  test("clicking mn:screenshot dispatches to /screenshot handler", async () => {
+    const cred = makeCredentialStore({ "cred:tg-1": "token123" });
+    const manager = new TelegramManager({ credentialStore: cred });
+    manager.configure([makeConnection()]);
+    manager.setWorkspacesGetter(() => [makeWorkspace({ id: "ws-1", name: "alpha", cwd: "/p/a" })]);
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (manager as any)._apiCall = async () => ({ ok: true, result: { message_id: 2004 } });
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (manager as any)._handleCallbackQuery(
+      { id: "cq", from: { id: 1 }, message: { message_id: 122, chat: { id: 12345 }, text: "" }, data: "mn:screenshot" },
+      makeConnection(),
+      "token123",
+    );
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const pending = (manager as any).pendingRequests.get("12345");
+    expect(pending?.type).toBe("screenshot-mode-selection");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // /screenshot flow — capture current or pick another workspace
 // ---------------------------------------------------------------------------
 

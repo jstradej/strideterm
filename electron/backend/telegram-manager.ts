@@ -1126,6 +1126,11 @@ export class TelegramManager extends EventEmitter {
       await this._handleScreenshotCommand(chatId, token);
       return;
     }
+    if (lower === "/menu" || lower === "menu" || lower === "/start" || lower === "start") {
+      log.info("telegram command: /menu", { chatId });
+      await this._handleMenuCommand(chatId, token);
+      return;
+    }
     if (lower === "/help" || lower === "help") {
       log.debug("telegram command: /help", { chatId });
       await this._sendText(
@@ -1134,6 +1139,7 @@ export class TelegramManager extends EventEmitter {
         [
           "📖 *Příkazy strIDEterm bota:*",
           "",
+          "`/menu` — interaktivní hlavní menu \\(doporučeno na mobilu\\)",
           "`/status` — stav všech task agentů",
           "`/workspaces` — přehled workspace",
           "`/task` — spustit nový task agent \\(výběr workspace\\)",
@@ -1575,6 +1581,62 @@ export class TelegramManager extends EventEmitter {
     });
   }
 
+  /**
+   * `/menu` — interactive hub. Mobile users don't memorise commands; this
+   * gives them one-tap access to every other top-level flow. Each button
+   * just dispatches to the corresponding command handler so behaviour
+   * stays in sync with typed commands.
+   *
+   * Layout is two-wide where it makes sense (Status+Task as the most
+   * common pair, Screenshot+Workspaces as the secondary pair) and a single
+   * Help row at the bottom. Telegram renders this nicely on mobile and
+   * desktop alike.
+   */
+  private async _handleMenuCommand(chatId: string, token: string): Promise<void> {
+    // Show a small live snapshot in the menu header so the user sees what
+    // matters most at a glance without having to drill in.
+    const workspaces = this.getWorkspaces?.() ?? [];
+    const activeProfile = this.getActiveProfileId?.() || "default";
+    const profileWorkspaces = workspaces.filter((w) => (w.profileId || "default") === activeProfile);
+    const activeTasks = profileWorkspaces.filter((w) => {
+      const s = w.task?.state || "";
+      return (
+        w.kind === "task" && (s === "running" || s === "evaluating" || s === "judge-evaluating" || s === "refreshing")
+      );
+    });
+    const idleTasks = profileWorkspaces.filter((w) => w.kind === "task" && w.task?.state === "idle");
+
+    const lines = [
+      "🤖 *strIDEterm bot — hlavní menu*",
+      "",
+      `📂 Profil: *${escapeMarkdown(activeProfile)}*`,
+      `🔄 Běží: *${activeTasks.length}* · ⏸ Idle tasky: *${idleTasks.length}*`,
+      "",
+      "_Klikni na tlačítko nebo napiš \\`/help\\` pro seznam příkazů\\._",
+    ];
+
+    await this._apiCall(token, "sendMessage", {
+      chat_id: chatId,
+      text: lines.join("\n"),
+      parse_mode: "MarkdownV2",
+      reply_markup: {
+        inline_keyboard: [
+          [
+            { text: "📊 Status", callback_data: "mn:status" },
+            { text: "🚀 Nový task", callback_data: "mn:task" },
+          ],
+          [
+            { text: "📸 Screenshot", callback_data: "mn:screenshot" },
+            { text: "🗂 Workspaces", callback_data: "mn:workspaces" },
+          ],
+          [{ text: "❓ Help", callback_data: "mn:help" }],
+        ],
+      },
+    }).catch((err) => {
+      log.warn("telegram /menu send failed", { err: (err as Error).message });
+    });
+  }
+
   private _buildStartTaskConfirmText(
     taskDescription: string,
     ws?: TelegramWorkspaceInfo,
@@ -1790,6 +1852,13 @@ export class TelegramManager extends EventEmitter {
     // `ss:w` = present workspace list to pick from (then numbered reply)
     if (data.startsWith("ss:")) {
       await this._handleScreenshotModeCallback(data, chatId, token, query.message.message_id);
+      return;
+    }
+
+    // --- Main-menu callbacks (prefixed `mn:`) — for /menu hub ---
+    // Each button just dispatches to the corresponding command handler.
+    if (data.startsWith("mn:")) {
+      await this._handleMenuCallback(data, chatId, token, conn);
       return;
     }
 
@@ -2435,6 +2504,55 @@ export class TelegramManager extends EventEmitter {
     }
 
     log.debug("telegram screenshot-mode callback: unknown op", { op });
+  }
+
+  /**
+   * Dispatches a main-menu (`mn:`) button click to the corresponding
+   * command handler. Each button is the same as typing the command —
+   * no separate behaviour, single source of truth for each flow.
+   */
+  private async _handleMenuCallback(
+    data: string,
+    chatId: string,
+    token: string,
+    conn: TelegramConnectionConfig,
+  ): Promise<void> {
+    const op = data.split(":")[1] || "";
+    log.info("telegram /menu button clicked", { chatId, op });
+    switch (op) {
+      case "status":
+        await this._handleStatusCommand(chatId, token);
+        return;
+      case "task":
+        await this._handleTaskCommand(chatId, token, conn);
+        return;
+      case "workspaces":
+        await this._handleWorkspacesCommand(chatId, token);
+        return;
+      case "screenshot":
+        await this._handleScreenshotCommand(chatId, token);
+        return;
+      case "help":
+        await this._sendText(
+          token,
+          chatId,
+          [
+            "📖 *Příkazy strIDEterm bota:*",
+            "",
+            "`/menu` — interaktivní hlavní menu",
+            "`/status` — stav všech task agentů",
+            "`/workspaces` — přehled workspace",
+            "`/task` — spustit nový task agent \\(výběr workspace\\)",
+            "`/screenshot` — pořídit screenshot strIDEterm okna",
+            "",
+            "Nebo odpovinej na konkrétní notifikaci pomocí Telegram Reply a stiskni inline tlačítka\\.",
+          ].join("\n"),
+          true,
+        );
+        return;
+      default:
+        log.debug("telegram /menu callback: unknown op", { op });
+    }
   }
 
   /**
