@@ -210,6 +210,48 @@ function createWindow(): void {
     },
   });
 
+  // The strideterm renderer is single-page and never expects to navigate
+  // anywhere except its own bundle (Vite dev URL or the local dist/
+  // file). If something inside the renderer (or a buggy plugin) tries to
+  // navigate to an external origin, that almost always means a hijack
+  // attempt — the safe answer is to send the user to their default
+  // browser instead. The Electron security checklist calls this out as
+  // a required hardening step for `webviewTag: true` apps.
+  const distIndexUrl = new URL(`file://${path.join(app.getAppPath(), "dist", "index.html").replace(/\\/g, "/")}`)
+    .href;
+  const isRendererOrigin = (target: string): boolean => {
+    if (!target) return false;
+    // Production: only the bundled index.html is allowed. Refuse any
+    // other file:// URL so a hijack cannot pivot to e.g.
+    // `file:///c:/Users/.../secrets.txt`.
+    if (target.startsWith("file://")) {
+      return target === distIndexUrl;
+    }
+    try {
+      const url = new URL(target);
+      const allowed = new URL(rendererUrl);
+      return url.origin === allowed.origin;
+    } catch {
+      return false;
+    }
+  };
+
+  runtimeState.window.webContents.on("will-navigate", (event, url) => {
+    if (!isRendererOrigin(url)) {
+      log.warn("blocked main-window navigation away from renderer origin", { url: url.slice(0, 200) });
+      event.preventDefault();
+    }
+  });
+
+  runtimeState.window.webContents.setWindowOpenHandler(({ url }) => {
+    // Open external links in the user's default browser instead of a new
+    // BrowserWindow that would inherit our preload + Node access.
+    if (/^https?:\/\//i.test(url)) {
+      void import("electron").then(({ shell }) => shell.openExternal(url));
+    }
+    return { action: "deny" };
+  });
+
   // Lock down every <webview> the renderer attaches.
   //
   // BrowserPane uses the webview tag to embed arbitrary user-supplied
