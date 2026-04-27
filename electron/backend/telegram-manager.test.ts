@@ -1,5 +1,5 @@
 import { describe, test, expect, vi, beforeEach } from "vitest";
-import { TelegramManager, escapeMarkdown, normalizeBranchName } from "./telegram-manager.js";
+import { TelegramManager, escapeMarkdown, escapeInlineCode, normalizeBranchName } from "./telegram-manager.js";
 import type { TelegramConnectionConfig, TelegramWorkspaceInfo } from "./telegram-manager.js";
 
 // ---------------------------------------------------------------------------
@@ -53,6 +53,32 @@ describe("escapeMarkdown", () => {
 
   test("handles text with no special chars unchanged", () => {
     expect(escapeMarkdown("hello world")).toBe("hello world");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// escapeInlineCode
+// ---------------------------------------------------------------------------
+
+describe("escapeInlineCode", () => {
+  test("escapes backslashes and backticks only", () => {
+    expect(escapeInlineCode("path\\to\\file")).toBe("path\\\\to\\\\file");
+    expect(escapeInlineCode("use `code` here")).toBe("use \\`code\\` here");
+  });
+
+  test("does not escape parentheses, dashes, dots, or other MarkdownV2 special chars", () => {
+    expect(escapeInlineCode("/home/user/my-project (main)")).toBe("/home/user/my-project (main)");
+    expect(escapeInlineCode("C:\\Users\\user\\project (test)")).toBe("C:\\\\Users\\\\user\\\\project (test)");
+    expect(escapeInlineCode("src/foo.ts")).toBe("src/foo.ts");
+    expect(escapeInlineCode("file_name.ext")).toBe("file_name.ext");
+  });
+
+  test("returns empty string for empty input", () => {
+    expect(escapeInlineCode("")).toBe("");
+  });
+
+  test("handles text with no special chars unchanged", () => {
+    expect(escapeInlineCode("hello world")).toBe("hello world");
   });
 });
 
@@ -916,7 +942,8 @@ describe("setWorkspacesGetter", () => {
     const text = sentTexts[0];
     expect(text).toContain("fix\\-auth");
     expect(text).toContain("running");
-    expect(text).toContain("/projects/fix\\-auth");
+    // Paths inside backtick spans use escapeInlineCode — dashes are NOT escaped there
+    expect(text).toContain("/projects/fix-auth");
   });
 
   test("/status reports no tasks when none running", async () => {

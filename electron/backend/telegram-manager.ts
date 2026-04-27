@@ -426,7 +426,7 @@ export class TelegramManager extends EventEmitter {
       await this._sendText(
         token,
         opts.chatId,
-        `⚠️ Cannot read file: \`${escapeMarkdown(errMsg.slice(0, 200))}\``,
+        `⚠️ Cannot read file: \`${escapeInlineCode(errMsg.slice(0, 200))}\``,
         true,
       );
       return;
@@ -435,8 +435,8 @@ export class TelegramManager extends EventEmitter {
     const ext = path.extname(opts.absolutePath).toLowerCase();
     const basename = path.basename(opts.absolutePath);
     const captionHeader = opts.workspaceName
-      ? `📂 *${escapeMarkdown(opts.workspaceName)}* › \`${escapeMarkdown(opts.relPath)}\``
-      : `📂 \`${escapeMarkdown(opts.relPath)}\``;
+      ? `📂 *${escapeMarkdown(opts.workspaceName)}* › \`${escapeInlineCode(opts.relPath)}\``
+      : `📂 \`${escapeInlineCode(opts.relPath)}\``;
 
     const IMAGE_EXTS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"]);
     const TEXT_EXTS = new Set([
@@ -601,7 +601,7 @@ export class TelegramManager extends EventEmitter {
       `✅ Task workspace created in *${escapeMarkdown(opts.parentName)}*\\.`,
       "",
       `📝 _${escapeMarkdown(opts.description.slice(0, 200))}_`,
-      `📁 \`${escapeMarkdown(opts.cwd)}\``,
+      `📁 \`${escapeInlineCode(opts.cwd)}\``,
       "",
       "Start now, or leave it IDLE \\(you can edit TASK\\.md and start it manually\\)?",
     ];
@@ -1184,6 +1184,7 @@ export class TelegramManager extends EventEmitter {
             token,
             chatId,
             `⚠️ Invalid choice\\. Enter a number 1–${escapeMarkdown(String(choices.length))}\\. Or run /task again\\.`,
+            true,
           );
           return;
         }
@@ -1217,7 +1218,7 @@ export class TelegramManager extends EventEmitter {
         const draft = pending.draftTask;
         if (!draft) {
           log.warn("telegram worktree-branch-input: missing draftTask", { chatId });
-          await this._sendText(token, chatId, "⚠️ Internal error — run /task again\\.");
+          await this._sendText(token, chatId, "⚠️ Internal error — run /task again\\.", true);
           return;
         }
         log.info("telegram worktree-branch-input: branch received, asking description", {
@@ -1239,7 +1240,7 @@ export class TelegramManager extends EventEmitter {
         await this._sendText(
           token,
           chatId,
-          `🌳 New worktree: *${escapeMarkdown(branch)}*\n${normalizedNote}📁 \`${escapeMarkdown(draft.parentCwd)}/.strideterm/tree/${escapeMarkdown(branch.replace(/\//g, "-"))}\`\n\nType the task description:`,
+          `🌳 New worktree: *${escapeMarkdown(branch)}*\n${normalizedNote}📁 \`${escapeInlineCode(draft.parentCwd)}/.strideterm/tree/${escapeInlineCode(branch.replace(/\//g, "-"))}\`\n\nType the task description:`,
           true,
         );
         return;
@@ -1333,7 +1334,7 @@ export class TelegramManager extends EventEmitter {
         });
         await this._apiCall(token, "sendMessage", {
           chat_id: chatId,
-          text: `📂 \`${escapeMarkdown(filePath)}\` — *how should I send it?*`,
+          text: `📂 \`${escapeInlineCode(filePath)}\` — *how should I send it?*`,
           parse_mode: "MarkdownV2",
           reply_markup: {
             inline_keyboard: [
@@ -1415,7 +1416,7 @@ export class TelegramManager extends EventEmitter {
 
     // Unrecognized message — provide help
     log.debug("telegram message unrecognized", { chatId, textPreview: text.slice(0, 40) });
-    await this._sendText(token, chatId, "ℹ️ Reply to a notification, or type /help to list commands\\.");
+    await this._sendText(token, chatId, "ℹ️ Reply to a notification, or type /help to list commands\\.", true);
   }
 
   // --- Command handlers ---
@@ -1425,7 +1426,7 @@ export class TelegramManager extends EventEmitter {
     const taskWs = workspaces.filter((w) => w.kind === "task" && w.task);
 
     if (taskWs.length === 0) {
-      await this._sendText(token, chatId, "📊 No task agents are running\\.");
+      await this._sendText(token, chatId, "📊 No task agents are running\\.", true);
       return;
     }
 
@@ -1440,7 +1441,7 @@ export class TelegramManager extends EventEmitter {
       const state = ws.task?.state || "unknown";
       const icon = this._taskStateIcon(state);
       lines.push(`${i + 1}\\. ${icon} *${escapeMarkdown(ws.name)}* \\(${escapeMarkdown(state)}\\)`);
-      if (ws.cwd) lines.push(`   📁 \`${escapeMarkdown(ws.cwd)}\``);
+      if (ws.cwd) lines.push(`   📁 \`${escapeInlineCode(ws.cwd)}\``);
       if (ws.task?.description) {
         lines.push(`   📝 ${escapeMarkdown(ws.task.description.slice(0, 100))}`);
       }
@@ -1464,7 +1465,7 @@ export class TelegramManager extends EventEmitter {
   private async _handleWorkspacesCommand(chatId: string, token: string): Promise<void> {
     const workspaces = this.getWorkspaces?.() ?? [];
     if (workspaces.length === 0) {
-      await this._sendText(token, chatId, "🗂 No workspaces are open\\.");
+      await this._sendText(token, chatId, "🗂 No workspaces are open\\.", true);
       return;
     }
 
@@ -1473,7 +1474,7 @@ export class TelegramManager extends EventEmitter {
       const ws = workspaces[i];
       const kindLabel = ws.task ? `task: ${ws.task.state}` : ws.kind;
       lines.push(`${i + 1}\\. *${escapeMarkdown(ws.name)}* \\(${escapeMarkdown(kindLabel)}\\)`);
-      if (ws.cwd) lines.push(`   📁 \`${escapeMarkdown(ws.cwd)}\``);
+      if (ws.cwd) lines.push(`   📁 \`${escapeInlineCode(ws.cwd)}\``);
     }
 
     await this._sendText(token, chatId, lines.join("\n"), true);
@@ -1490,6 +1491,7 @@ export class TelegramManager extends EventEmitter {
         token,
         chatId,
         `⏳ Wait ${escapeMarkdown(String(remaining))}s before starting another /task\\.`,
+        true,
       );
       return;
     }
@@ -1530,7 +1532,7 @@ export class TelegramManager extends EventEmitter {
     for (let i = 0; i < candidates.length; i++) {
       const ws = candidates[i];
       lines.push(`${i + 1}\\. *${escapeMarkdown(ws.name)}*`);
-      if (ws.cwd) lines.push(`   📁 \`${escapeMarkdown(ws.cwd)}\``);
+      if (ws.cwd) lines.push(`   📁 \`${escapeInlineCode(ws.cwd)}\``);
     }
     lines.push("");
     lines.push("Reply with a number \\(e\\.g\\. `1`\\)\\.");
@@ -1657,12 +1659,12 @@ export class TelegramManager extends EventEmitter {
     const lines = [`🚀 Create task: _${escapeMarkdown(taskDescription.slice(0, 200))}_`];
     if (ws) {
       lines.push(`\n🗂 Workspace: *${escapeMarkdown(ws.name)}*`);
-      if (ws.cwd) lines.push(`📁 Directory: \`${escapeMarkdown(ws.cwd)}\``);
+      if (ws.cwd) lines.push(`📁 Directory: \`${escapeInlineCode(ws.cwd)}\``);
     }
     if (draft?.useWorktree && draft.worktreeBranch) {
       lines.push(`🌳 New worktree: *${escapeMarkdown(draft.worktreeBranch)}*`);
     } else if (draft?.targetCwd) {
-      lines.push(`📂 Existing worktree: \`${escapeMarkdown(draft.targetCwd)}\``);
+      lines.push(`📂 Existing worktree: \`${escapeInlineCode(draft.targetCwd)}\``);
     } else if (draft) {
       lines.push("📁 Runs directly in the parent cwd");
     }
@@ -1723,7 +1725,7 @@ export class TelegramManager extends EventEmitter {
         resourceId: ctx.alertId,
       });
       this.emit("command", cmd);
-      await this._sendText(token, chatId, "✓ Dismissed\\.");
+      await this._sendText(token, chatId, "✓ Dismissed\\.", true);
       return;
     }
 
@@ -1804,7 +1806,7 @@ export class TelegramManager extends EventEmitter {
       summary: text.slice(0, 200),
     });
     this.emit("command", cmd);
-    await this._sendText(token, chatId, "✓ Message received\\.");
+    await this._sendText(token, chatId, "✓ Message received\\.", true);
   }
 
   private async _handleCallbackQuery(
@@ -2154,11 +2156,11 @@ export class TelegramManager extends EventEmitter {
         panelId,
         createdAt: Date.now(),
       });
-      const cwdHint = ws.cwd ? `\n📁 \`${escapeMarkdown(ws.cwd)}\`` : "";
+      const cwdHint = ws.cwd ? `\n📁 \`${escapeInlineCode(ws.cwd)}\`` : "";
       await this._sendText(
         token,
         chatId,
-        `📂 *${escapeMarkdown(ws.name)}* — type a relative file path${cwdHint}\n\n_E\\.g\\. \`TASK\\.md\` or \`notes\\.md\`_`,
+        `📂 *${escapeMarkdown(ws.name)}* — type a relative file path${cwdHint}\n\n_E\\.g\\. \`TASK.md\` or \`notes.md\`_`,
         true,
       );
       return;
@@ -2248,7 +2250,7 @@ export class TelegramManager extends EventEmitter {
 
     const lines = [
       `🗂 Workspace: *${escapeMarkdown(parent.name)}*`,
-      `📁 \`${escapeMarkdown(parent.cwd)}\``,
+      `📁 \`${escapeInlineCode(parent.cwd)}\``,
       "",
       "*Where should the task run?*",
     ];
@@ -2675,7 +2677,7 @@ export class TelegramManager extends EventEmitter {
     if (ws.task?.description) {
       lines.push(`📝 ${escapeMarkdown(ws.task.description.slice(0, 200))}`);
     }
-    if (ws.cwd) lines.push(`📁 \`${escapeMarkdown(ws.cwd)}\``);
+    if (ws.cwd) lines.push(`📁 \`${escapeInlineCode(ws.cwd)}\``);
 
     await this._apiCall(token, "sendMessage", {
       chat_id: chatId,
@@ -2688,7 +2690,7 @@ export class TelegramManager extends EventEmitter {
   }
 
   private async _answerText(token: string, chatId: string, replyToMessageId: number, text: string): Promise<void> {
-    await this._sendText(token, chatId, text, false, replyToMessageId);
+    await this._sendText(token, chatId, text, true, replyToMessageId);
   }
 
   private async _sendConfirmation(token: string, chatId: string, promptText: string): Promise<void> {
@@ -2780,7 +2782,7 @@ export class TelegramManager extends EventEmitter {
         await this._sendText(
           token,
           chatId,
-          `⚠️ ${escapeMarkdown(method)} failed: \`${escapeMarkdown(json.description?.slice(0, 200) || "unknown")}\``,
+          `⚠️ ${escapeMarkdown(method)} failed: \`${escapeInlineCode(json.description?.slice(0, 200) || "unknown")}\``,
           true,
         );
       }
@@ -2967,6 +2969,17 @@ export class TelegramManager extends EventEmitter {
  */
 export function escapeMarkdown(text: string): string {
   return text.replace(/[_*[\]()~`>#+=|{}.!\\-]/g, (char) => `\\${char}`);
+}
+
+/**
+ * Escape content placed inside a Telegram MarkdownV2 inline code span
+ * (backtick) or pre/code block. Per spec, only `\` and `` ` `` need escaping
+ * inside code entities — all other characters are treated as literals, so
+ * applying escapeMarkdown there would produce visible backslashes before
+ * parentheses, dashes, dots, etc.
+ */
+export function escapeInlineCode(text: string): string {
+  return text.replace(/\\/g, "\\\\").replace(/`/g, "\\`");
 }
 
 /**
