@@ -47,8 +47,33 @@ interface Runtime {
   [key: string]: any;
 }
 
+/**
+ * Defence-in-depth response headers applied to every HTTP response.
+ *
+ *  - `X-Content-Type-Options: nosniff` — browser must trust our explicit
+ *    Content-Type and not MIME-sniff a `.json` blob into HTML.
+ *  - `X-Frame-Options: DENY` — strideterm never renders inside a frame;
+ *    block clickjacking attempts that would embed the remote UI.
+ *  - `Referrer-Policy: no-referrer` — prevents the access token (which
+ *    rides in `?token=...`) from leaking to third-party origins via
+ *    Referer when the user clicks an external link.
+ *  - `Cache-Control: no-store` — JSON state and HTML responses include
+ *    workspace metadata; do not let a shared HTTP cache (or the browser
+ *    history) hold onto it.
+ */
+const SECURITY_HEADERS: Record<string, string> = {
+  "X-Content-Type-Options": "nosniff",
+  "X-Frame-Options": "DENY",
+  "Referrer-Policy": "no-referrer",
+  "Cache-Control": "no-store",
+};
+
+function writeHead(response: ServerResponse, statusCode: number, headers: Record<string, string>): void {
+  response.writeHead(statusCode, { ...SECURITY_HEADERS, ...headers });
+}
+
 function json(response: ServerResponse, statusCode: number, body: unknown): void {
-  response.writeHead(statusCode, { "Content-Type": "application/json; charset=utf-8" });
+  writeHead(response, statusCode, { "Content-Type": "application/json; charset=utf-8" });
   response.end(JSON.stringify(body));
 }
 
@@ -136,7 +161,7 @@ async function serveStatic(staticRoot: string, requestUrl: string, response: Ser
   const resolvedPath = path.normalize(path.join(staticRoot, pathname));
   const safeRoot = path.normalize(staticRoot);
   if (!resolvedPath.startsWith(safeRoot)) {
-    response.writeHead(403);
+    writeHead(response, 403, {});
     response.end("Forbidden");
     return;
   }
@@ -149,10 +174,10 @@ async function serveStatic(staticRoot: string, requestUrl: string, response: Ser
   try {
     const buffer = await fs.readFile(finalPath);
     const contentType = CONTENT_TYPES[path.extname(finalPath)] || "application/octet-stream";
-    response.writeHead(200, { "Content-Type": contentType });
+    writeHead(response, 200, { "Content-Type": contentType });
     response.end(buffer);
   } catch {
-    response.writeHead(503, { "Content-Type": "text/plain; charset=utf-8" });
+    writeHead(response, 503, { "Content-Type": "text/plain; charset=utf-8" });
     response.end("strIDEterm remote UI is unavailable until the renderer build exists.");
   }
 }
@@ -1007,7 +1032,7 @@ export async function startRemoteServer({
     const isApiRoute = url.pathname.startsWith("/api/");
 
     if (isApiRoute && !tokensEqual(requestToken, token)) {
-      response.writeHead(401, { "Content-Type": "text/plain; charset=utf-8" });
+      writeHead(response, 401, { "Content-Type": "text/plain; charset=utf-8" });
       response.end("Unauthorized");
       return;
     }
