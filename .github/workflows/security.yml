@@ -1,0 +1,86 @@
+name: Security Scan
+
+on:
+  schedule:
+    - cron: "0 3 * * 1" # Every Monday at 03:00 UTC
+  workflow_dispatch: # Manual trigger
+
+permissions:
+  contents: read
+
+jobs:
+  dependency-audit:
+    name: Dependency vulnerability scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      # Block the workflow on high-severity CVEs (same threshold as CI).
+      - name: Audit — high severity (blocking)
+        run: npm audit --audit-level=high
+
+      # Surface moderate-severity findings as informational. These are often
+      # transitive dependencies where no fix is available yet; tracking them
+      # here keeps them visible without breaking CI on every PR.
+      - name: Audit — moderate severity (informational)
+        run: npm audit --audit-level=moderate
+        continue-on-error: true
+
+      # Verify registry signatures. A missing or invalid signature can indicate
+      # a supply-chain tampering attempt. Marked continue-on-error because the
+      # npm signature database is occasionally incomplete for older packages.
+      - name: Verify package signatures
+        run: npm audit signatures
+        continue-on-error: true
+
+  static-analysis:
+    name: Static security analysis (ESLint)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      # eslint-plugin-security (included in npm run lint) catches OWASP Top 10
+      # issues: eval injection, unsafe regex (ReDoS), prototype pollution, etc.
+      - name: Lint with security rules
+        run: npm run lint
+
+  sbom:
+    name: Generate Software Bill of Materials
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      # npm sbom (built-in since npm 8.19) generates a CycloneDX SBOM listing
+      # every direct and transitive dependency with resolved versions.
+      # The artifact can be used for licence audits and CVE cross-referencing
+      # against external databases (NIST NVD, OSV, etc.).
+      - name: Generate SBOM (CycloneDX)
+        run: npm sbom --sbom-format cyclonedx > sbom.json
+
+      - name: Upload SBOM artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-cyclonedx
+          path: sbom.json
+          retention-days: 30

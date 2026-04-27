@@ -60,6 +60,19 @@ interface Runtime {
 /**
  * Defence-in-depth response headers applied to every HTTP response.
  *
+ *  - `Content-Security-Policy` — restricts what the browser may load or
+ *    execute. `default-src 'none'` blocks everything not explicitly listed.
+ *    `script-src 'self'` allows only same-origin JS bundles (Vite output).
+ *    `style-src 'self' 'unsafe-inline'` allows same-origin CSS plus inline
+ *    styles that xterm.js and Monaco inject at runtime.
+ *    `connect-src 'self' ws: wss:` allows WebSocket back to the server.
+ *    `worker-src 'self' blob:` allows Monaco's web workers (created via
+ *    blob: URLs from the same origin).
+ *    `img-src 'self' data: blob:` allows inline SVGs and canvas exports.
+ *    `font-src 'self' data:` allows the embedded terminal font.
+ *    `frame-ancestors 'none'` is a stronger X-Frame-Options equivalent.
+ *    `base-uri 'self'` prevents <base href="..."> injection.
+ *    `form-action 'none'` — the remote UI has no forms.
  *  - `X-Content-Type-Options: nosniff` — browser must trust our explicit
  *    Content-Type and not MIME-sniff a `.json` blob into HTML.
  *  - `X-Frame-Options: DENY` — strideterm never renders inside a frame;
@@ -70,8 +83,23 @@ interface Runtime {
  *  - `Cache-Control: no-store` — JSON state and HTML responses include
  *    workspace metadata; do not let a shared HTTP cache (or the browser
  *    history) hold onto it.
+ *  - `Permissions-Policy` — disables browser features that the remote UI
+ *    never uses (camera, microphone, geolocation, payment).
  */
 const SECURITY_HEADERS: Record<string, string> = {
+  "Content-Security-Policy": [
+    "default-src 'none'",
+    "script-src 'self'",
+    "style-src 'self' 'unsafe-inline'",
+    "connect-src 'self' ws: wss:",
+    "worker-src 'self' blob:",
+    "img-src 'self' data: blob:",
+    "font-src 'self' data:",
+    "frame-ancestors 'none'",
+    "base-uri 'self'",
+    "form-action 'none'",
+  ].join("; "),
+  "Permissions-Policy": "camera=(), microphone=(), geolocation=(), payment=()",
   "X-Content-Type-Options": "nosniff",
   "X-Frame-Options": "DENY",
   "Referrer-Policy": "no-referrer",

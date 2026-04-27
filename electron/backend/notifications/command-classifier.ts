@@ -16,6 +16,7 @@
  * we fall back to "shell" which keeps the full heuristic pipeline active.
  */
 
+// eslint-disable-next-line security/detect-unsafe-regex -- applied to short user-typed terminal commands; not attacker-controlled in a ReDoS-relevant way
 const AGENT_RE = /^\s*(?:env\s+\S+=\S+\s+)*(claude|codex|aider|opencode|gemini|copilot)(?:\s|$)/i;
 
 const STREAMING_RE = new RegExp(

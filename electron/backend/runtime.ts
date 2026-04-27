@@ -1533,6 +1533,7 @@ export async function createRuntime({
           // keeps the user-supplied taskDescription as a single argv entry
           // even if it contains spaces or shell metacharacters; spawn() runs
           // without a shell so there's no further interpretation.
+          // eslint-disable-next-line security/detect-unsafe-regex -- argv tokeniser; alternatives are mutually exclusive on first char so no exponential backtracking
           const argvTpl = String(cmd.agentCommand).match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g) || [];
           const argv = argvTpl.map((tok: string) => {
             const stripped = tok.replace(/^["']|["']$/g, "");

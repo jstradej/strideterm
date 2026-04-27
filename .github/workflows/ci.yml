@@ -27,5 +27,7 @@ jobs:
       - name: Verify package signatures
         run: npm audit signatures
         continue-on-error: true
+      - name: Lint (includes security static analysis)
+        run: npm run lint
       - run: npm test
       - run: npm run build

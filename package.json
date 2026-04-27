@@ -165,6 +165,7 @@
     "electron-builder": "^26.8.1",
     "eslint": "^10.2.0",
     "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-security": "4.0.0",
     "eslint-plugin-vue": "^10.8.0",
     "globals": "^17.5.0",
     "husky": "^9.1.7",

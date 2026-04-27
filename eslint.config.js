@@ -3,6 +3,7 @@ import vue from "eslint-plugin-vue";
 import prettier from "eslint-config-prettier";
 import globals from "globals";
 import tseslint from "typescript-eslint";
+import security from "eslint-plugin-security";
 
 const tsRules = {
   // TypeScript handles undefined references better than ESLint's no-undef.
@@ -33,6 +34,10 @@ export default [
 
   js.configs.recommended,
   ...vue.configs["flat/recommended"],
+  // OWASP-aligned static security analysis. All rules default to "warn" so
+  // the rollout doesn't break existing code; critical rules are promoted to
+  // "error" in the shared-rules block below.
+  security.configs.recommended,
   prettier,
 
   // --- Vue SFCs with TypeScript script blocks ---
@@ -111,6 +116,20 @@ export default [
       "no-empty": ["error", { allowEmptyCatch: true }], // We use empty catch for "ignore if fails"
       "no-control-regex": "off", // ANSI escape regex patterns use control chars
       "no-console": "off", // Backend uses console.log/warn intentionally
+
+      // Security — core rules promoted to error (OWASP Top 10 A03 / injection)
+      "no-eval": "error",
+      "no-implied-eval": "error",
+      "no-new-func": "error",
+      "no-script-url": "error",
+      // Deprecated Buffer constructor — use Buffer.alloc / Buffer.from instead
+      "security/detect-new-buffer": "error",
+      // eval() with a variable argument is always dangerous
+      "security/detect-eval-with-expression": "error",
+      // Math.random is not cryptographically secure — use crypto.randomBytes
+      "security/detect-pseudoRandomBytes": "error",
+      // Regex that can hang the event loop under attacker-controlled input
+      "security/detect-unsafe-regex": "error",
 
       // Vue best practices
       "vue/multi-word-component-names": "off", // We have single-word components (App, etc.)

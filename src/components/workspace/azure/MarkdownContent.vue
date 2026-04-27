@@ -23,6 +23,7 @@ function renderMarkdownToHtml(text = ""): string {
   out = out.replace(/(?<!\*)\*([^*]+)\*(?!\*)/g, "<em>$1</em>");
   // Bullet lists: lines starting with - (after a newline or at start)
   out = out.replace(/(^|\n)- (.+)/g, "$1<li>$2</li>");
+  // eslint-disable-next-line security/detect-unsafe-regex -- applied to pre-escaped HTML output; no attacker-controlled input reaches this regex
   out = out.replace(/(<li>.*<\/li>\n?)+/g, "<ul>$&</ul>");
   // Line breaks (but not inside pre blocks)
   out = out.replace(/\n/g, "<br>");

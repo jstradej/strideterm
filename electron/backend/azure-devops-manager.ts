@@ -1069,6 +1069,7 @@ export class AzureDevOpsManager extends BaseProviderManager {
       const targetEnd = (thread.lineEnd || thread.lineStart) + 2;
 
       for (const line of lines) {
+        // eslint-disable-next-line security/detect-unsafe-regex -- git diff hunk header; bounded by \d+ quantifiers, no exponential backtracking path
         const hunkMatch = line.match(/^@@\s+-\d+(?:,\d+)?\s+\+(\d+)(?:,\d+)?\s+@@/);
         if (hunkMatch) {
           currentNewLine = Number.parseInt(hunkMatch[1], 10);

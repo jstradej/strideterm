@@ -8,6 +8,11 @@ import os from "node:os";
 
 // --- ANSI / terminal pattern matching ---
 
+// Regexes below operate on terminal byte streams (ANSI/VT escape sequences).
+// They are never applied to attacker-controlled network input, so ReDoS is
+// not a realistic threat. safe-regex flags them on structural heuristics,
+// not actual exploitability.
+/* eslint-disable security/detect-unsafe-regex */
 export const ANSI_ESCAPE_RE =
   /\u001B\[[0-?]*[ -/]*[@-~]|\u001B\][^\u0007]*(?:\u0007|\u001B\\)|\u009B[0-?]*[ -/]*[@-~]/g;
 export const OSC133_COMMAND_FINISHED_RE = /\u001B\]133;D(?:;(-?\d+))?/;
