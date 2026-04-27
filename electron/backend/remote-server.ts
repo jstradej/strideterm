@@ -13,6 +13,16 @@ import { getLogger, createAuditLogger } from "./logger.js";
 
 const log = getLogger("remote-server");
 
+/**
+ * Heartbeat interval for remote WebSocket clients. Each tick we send a
+ * ping; any client that didn't pong since the previous tick is terminated.
+ * 30s is short enough to evict dead clients before they accumulate, long
+ * enough to be a rounding error on traffic. Idle real clients stay alive
+ * because pong is automatic — only sockets the kernel can no longer
+ * deliver to are dropped.
+ */
+const WS_HEARTBEAT_INTERVAL_MS = 30_000;
+
 const CONTENT_TYPES: Record<string, string> = {
   ".css": "text/css; charset=utf-8",
   ".html": "text/html; charset=utf-8",
@@ -1097,6 +1107,12 @@ export async function startRemoteServer({
     wss.handleUpgrade(request, socket, head, async (ws) => {
       log.debug("WebSocket client connected", { remoteAddress: request.socket?.remoteAddress });
       sockets.add(ws);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- isAlive is the heartbeat flag attached to the ws instance
+      (ws as any).isAlive = true;
+      ws.on("pong", () => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (ws as any).isAlive = true;
+      });
       ws.send(JSON.stringify({ type: "state:updated", payload: await runtime.getInitialState() }));
 
       ws.on("message", (raw: Buffer) => {
@@ -1125,6 +1141,33 @@ export async function startRemoteServer({
     });
   });
 
+  // Drop dead WebSocket clients: each tick we ping every connection, and on
+  // the next tick terminate any that didn't pong back. Without this a NAT
+  // box quietly losing the connection leaves the socket sitting in `sockets`
+  // forever, and a leaked-token attacker reusing an idle channel would never
+  // be evicted by token regeneration alone.
+  const heartbeat = setInterval(() => {
+    for (const ws of sockets) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const live = (ws as any).isAlive;
+      if (!live) {
+        log.debug("WebSocket heartbeat timeout — terminating client");
+        sockets.delete(ws);
+        ws.terminate();
+        continue;
+      }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (ws as any).isAlive = false;
+      try {
+        ws.ping();
+      } catch {
+        // Ping on a half-closed socket throws; the next tick will reap it.
+      }
+    }
+  }, WS_HEARTBEAT_INTERVAL_MS);
+  // Ensure the heartbeat doesn't keep the event loop alive on shutdown.
+  heartbeat.unref?.();
+
   const listenResult = await new Promise<{ ok: boolean; error?: Error }>((resolve) => {
     server.once("error", (error: Error) => {
       const isPortBusy = (error as NodeJS.ErrnoException).code === "EADDRINUSE" || /EADDRINUSE/.test(error.message);
@@ -1143,6 +1186,7 @@ export async function startRemoteServer({
   });
 
   if (!listenResult.ok) {
+    clearInterval(heartbeat);
     audit.close();
     unsubscribe.forEach((dispose) => dispose());
     wss.close();
@@ -1164,6 +1208,7 @@ export async function startRemoteServer({
 
   return {
     async close() {
+      clearInterval(heartbeat);
       audit.close();
       unsubscribe.forEach((dispose) => dispose());
       for (const socket of sockets) {
