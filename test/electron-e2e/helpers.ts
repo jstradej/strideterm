@@ -33,6 +33,12 @@ export async function launchApp(fixture: FixtureName = "empty"): Promise<Launche
       STRIDETERM_FORCE_DIST: "1",
       STRIDETERM_SHELL_INTEGRATION: "0",
       ELECTRON_DISABLE_SECURITY_WARNINGS: "1",
+      // Pin window size for deterministic screenshots across the OS matrix.
+      // Default (1560×940) is wider than some CI virtual displays — the
+      // window then collapses to minWindowWidth and the sidebar ends up
+      // looking enormous. 1280×800 fits comfortably on every runner.
+      STRIDETERM_WINDOW_WIDTH: "1280",
+      STRIDETERM_WINDOW_HEIGHT: "800",
     },
     timeout: 60_000,
   });

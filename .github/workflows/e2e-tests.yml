@@ -69,7 +69,7 @@ jobs:
         run: npm run build
       - name: Run Electron E2E tests (Linux, under xvfb)
         if: runner.os == 'Linux'
-        run: xvfb-run --auto-servernum --server-args="-screen 0 1280x720x24" npx playwright test --config playwright.config.electron.js
+        run: xvfb-run --auto-servernum --server-args="-screen 0 1366x900x24" npx playwright test --config playwright.config.electron.js
       - name: Run Electron E2E tests (Windows / macOS)
         if: runner.os != 'Linux'
         run: npx playwright test --config playwright.config.electron.js
