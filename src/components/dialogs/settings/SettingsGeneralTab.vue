@@ -244,7 +244,7 @@ interface Props {
   themes: string[];
   logLevels: string[];
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  hookSettings: Record<string, any>;
+  hookSettings: { providers: any[]; [key: string]: any };
 }
 
 const props = withDefaults(defineProps<Props>(), {

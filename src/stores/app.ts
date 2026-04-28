@@ -174,7 +174,7 @@ export const useAppStore = defineStore("app", () => {
     return result;
   });
 
-  const visibleTabs = computed(() => {
+  const visibleTabs = computed<AnyApi[]>(() => {
     const result = getVisibleTabs({
       tabs: workspaceTabs.value,
       activeViewId: activeViewId.value,

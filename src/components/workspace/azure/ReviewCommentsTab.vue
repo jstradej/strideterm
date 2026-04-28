@@ -122,7 +122,7 @@
             <!-- Comment thread -->
             <div class="review-comment-thread">
               <div
-                v-for="(comment, ci) in thread.comments || []"
+                v-for="(comment, ci) in threadComments(thread)"
                 :key="comment.id"
                 :class="['review-comment', ci > 0 && 'review-comment--reply']"
               >
@@ -442,8 +442,13 @@ function formatRelativeTime(dateStr: string) {
 
 /* ── Thread helpers ── */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
+function threadComments(thread: Record<string, any>): Array<Record<string, any>> {
+  return Array.isArray(thread.comments) ? thread.comments : [];
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 function threadDate(thread: Record<string, any>): string {
-  const comments = thread.comments || [];
+  const comments = threadComments(thread);
   return comments.at(-1)?.publishedDate || thread.lastUpdatedDate || thread.publishedDate || "";
 }
 
