@@ -329,22 +329,14 @@ select option:checked {
   background: var(--border);
 }
 
+/* ── Internal-content responsiveness (Remote Access etc.) ──
+ * Keeps sidebar | main as a 2-column desktop layout right down to the
+ * mobile breakpoint in mobile.css. Anything that was previously stacked
+ * here purely because the *frame* collapsed lives in that 768px block
+ * instead — at 1100px we still have ~880px of main area on a default
+ * 220px sidebar, no reason to fold the whole shell.
+ */
 @media (max-width: 1100px) {
-  .frame {
-    grid-template-columns: 1fr;
-  }
-
-  .sidebar-resize-handle {
-    display: none;
-  }
-
-  .sidebar {
-    min-height: auto;
-    border-right: 0;
-    border-bottom: 1px solid var(--border);
-    grid-template-rows: auto auto auto;
-  }
-
   .remote-access--expanded {
     position: static;
     width: auto;
