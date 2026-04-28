@@ -50,3 +50,40 @@ jobs:
           name: test-results
           path: test-results/
           retention-days: 7
+
+  e2e-electron:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Build app (renderer + electron + backend)
+        run: npm run build
+      - name: Run Electron E2E tests (Linux, under xvfb)
+        if: runner.os == 'Linux'
+        run: xvfb-run --auto-servernum --server-args="-screen 0 1280x720x24" npx playwright test --config playwright.config.electron.js
+      - name: Run Electron E2E tests (Windows / macOS)
+        if: runner.os != 'Linux'
+        run: npx playwright test --config playwright.config.electron.js
+      - name: Upload HTML report (with embedded screenshots)
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: playwright-report-electron-${{ matrix.os }}
+          path: playwright-report-electron/
+          retention-days: 14
+      - name: Upload raw screenshots / videos / traces
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-results-electron-${{ matrix.os }}
+          path: test-results-electron/
+          retention-days: 14

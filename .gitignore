@@ -1,5 +1,6 @@
 node_modules/
 dist/
+dist-electron/
 .vite/
 coverage/
 target/
@@ -39,7 +40,9 @@ out/
 
 # Playwright
 test-results/
+test-results-electron/
 playwright-report/
+playwright-report-electron/
 blob-report/
 
 CLAUDE.md

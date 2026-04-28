@@ -1,0 +1,28 @@
+{
+  "activeWorkspaceId": "",
+  "activeProjectId": "",
+  "activeProfileId": "default",
+  "settings": {
+    "theme": "dark",
+    "sidebarWidth": 220,
+    "sidebarCollapsed": false,
+    "remoteAccess": {
+      "enabled": false,
+      "host": "127.0.0.1",
+      "port": 0,
+      "token": "test-token",
+      "customPublicUrl": "",
+      "cloudflaredPath": ""
+    },
+    "integrations": {
+      "azureDevops": { "enabled": false, "connections": [], "reviewRoot": "", "defaultPollSeconds": 600 },
+      "github": { "enabled": false, "connections": [], "reviewRoot": "", "defaultPollSeconds": 600 },
+      "telegram": { "enabled": false, "defaultPollSeconds": 600, "connections": [] }
+    },
+    "tabTemplates": [{ "id": "shell", "title": "Shell", "command": "", "icon": "terminal" }]
+  },
+  "tabTemplates": [{ "id": "shell", "title": "Shell", "command": "", "icon": "terminal" }],
+  "profiles": [{ "id": "default", "name": "Default", "color": "", "workspaceIds": [], "projectIds": [] }],
+  "workspaces": [],
+  "projects": []
+}
