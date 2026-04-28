@@ -71,6 +71,8 @@ chmod +x strIDEterm.AppImage
 ./strIDEterm.AppImage
 ```
 
+AppImage requires FUSE. On Ubuntu 24.04+ install `libfuse2t64`, on older Debian/Ubuntu install `libfuse2`. To skip FUSE entirely, launch with `./strIDEterm.AppImage --appimage-extract-and-run`.
+
 </details>
 
 <details>
@@ -78,9 +80,10 @@ chmod +x strIDEterm.AppImage
 
 ```bash
 VER=$(curl -fsSL https://api.github.com/repos/jstradej/strideterm/releases/latest | grep -m1 '"tag_name":' | cut -d'"' -f4 | sed 's/^v//')
-curl -fL -o strideterm.deb \
+curl -fL -o /tmp/strideterm.deb \
   "https://github.com/jstradej/strideterm/releases/latest/download/strideterm_${VER}_amd64.deb"
-sudo apt install ./strideterm.deb
+sudo apt install /tmp/strideterm.deb
+strideterm
 ```
 
 </details>
