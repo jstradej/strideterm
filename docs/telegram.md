@@ -12,7 +12,7 @@ When something noteworthy happens in strIDEterm — a task agent finishes, an ag
 
 - **Tap an inline button** — fires the action immediately for short, low-risk operations, or pops a confirmation prompt for destructive ones (stop, reset).
 - **Use Telegram Reply** — reply to a notification with free text and the bot routes it to the right workspace as a `custom-message` command.
-- **Type a slash command** — `/menu`, `/status`, `/workspaces`, `/task`, `/screenshot`, `/help`. `/menu` is the recommended entry point on mobile because tapping is faster than typing.
+- **Type a slash command** — `/menu` (or `/start`, which is aliased to `/menu`), `/status`, `/workspaces`, `/task`, `/screenshot`, `/help`. `/menu` is the recommended entry point on mobile because tapping is faster than typing.
 
 The whole feature works over Telegram's `getUpdates` long-polling API, so the strIDEterm machine only needs outbound HTTPS to `api.telegram.org`.
 
@@ -103,9 +103,9 @@ Each connection can pin a per-bot **agent command** (e.g. `claude`, `codex`) tha
 
 The **Get file** flow refuses paths that resolve outside the task's `cwd`, prevents `..` traversal, and picks a delivery mode based on size and extension:
 
-- `.png/.jpg/.svg/.webp/.gif/.bmp/.ico/.avif` → `sendPhoto` (inline preview, max 10 MB)
+- `.png` / `.jpg` / `.jpeg` / `.gif` / `.webp` / `.bmp` → `sendPhoto` (inline preview, max 10 MB)
 - Text files ≤ 3500 bytes → fenced code block in chat with language tag inferred from extension
-- Everything else → `sendDocument` (raw attachment up to 50 MB)
+- Everything else (including `.svg`, `.ico`, `.avif`, and any binary) → `sendDocument` (raw attachment up to 50 MB)
 
 You can force the document path by tapping **As file** instead of **Preview** in the file-mode prompt.
 
@@ -129,7 +129,7 @@ Entries are kept for 30 days and include timestamps, chat ID, workspace ID, the 
 - **Update replay protection** — `getUpdates` is called with the next-expected `offset` so a previously processed update can never be re-dispatched.
 - **Pending-state expiry** — every multi-step flow (workspace pick, branch input, description input) carries a `createdAt` and is dropped after `PENDING_TIMEOUT_MS` so a stale callback can't be weaponised.
 - **Rate limiting** — `/task` enforces `TASK_COMMAND_COOLDOWN_MS` per chat to stop rapid-fire workspace spam from a hijacked phone.
-- **Token redaction** — the winston log format strips the Telegram bot token from any URL it ends up logging, so an outbound-fetch error message or HTTP 401 response can't double as a credential dump in `~/.strideterm/logs/`.
+- **Token redaction** — the audit-log layer strips the Telegram bot token from any URL it ends up persisting (via `redactTokenInUrl` in `shared/base-audit-log-store.ts`), so an outbound-fetch error message or HTTP 401 response can't double as a credential dump in `~/.strideterm/logs/`.
 
 ---
 
@@ -173,7 +173,7 @@ Runtime-only state — pending requests, polling offsets, in-flight HTTP timers 
 
 ### Polling
 
-Default poll interval is 5 seconds per connection (configurable, minimum 1 second). The actual `getUpdates` call uses Telegram's long-polling timeout of 25 seconds, so the bot reacts to messages within ~1 second in practice while still using only one outbound request per ~25 seconds. Polling state is per-connection so multiple bots in the same instance don't interfere.
+Default poll interval is 5 seconds per connection. The actual `getUpdates` call uses Telegram's long-polling timeout of 25 seconds (with a slightly longer 35 s HTTP read timeout to give the server room to respond), so the bot reacts to messages within ~1 second in practice while still using only one outbound request per ~25 seconds. Polling state is per-connection so multiple bots in the same instance don't interfere.
 
 ### Inline buttons and callbacks
 
@@ -201,14 +201,14 @@ Every payload goes through the same Zod-schema validation layer the rest of the 
 
 ### Configuration
 
-| Setting                               | Default  | Purpose                                                   |
-| ------------------------------------- | -------- | --------------------------------------------------------- |
-| `pollSeconds` (per connection)        | `5`      | Interval between `getUpdates` calls.                      |
-| `forwardKinds` (per connection)       | `[]`     | Empty = forward all; otherwise list of alert kinds.       |
-| `agentCommand` (per connection)       | `""`     | Default agent for `/task`-initiated workspaces.           |
-| `TASK_COMMAND_COOLDOWN_MS` (constant) | `60_000` | Minimum gap between two `/task` invocations from a chat.  |
-| `PENDING_TIMEOUT_MS` (constant)       | `5 min`  | Multi-step flow expiry (workspace pick, branch input, …). |
-| `GETUPDATES_LONG_POLL_SEC` (constant) | `25`     | Telegram long-poll timeout.                               |
+| Setting                               | Default  | Purpose                                                                                                                 |
+| ------------------------------------- | -------- | ----------------------------------------------------------------------------------------------------------------------- |
+| `pollSeconds` (per connection)        | `5`      | Interval between `getUpdates` calls.                                                                                    |
+| `forwardKinds` (per connection)       | `[]`     | Empty = forward all; otherwise list of alert kinds.                                                                     |
+| `agentCommand` (per connection)       | `""`     | Default agent for `/task`-initiated workspaces.                                                                         |
+| `TASK_COMMAND_COOLDOWN_MS` (constant) | `10_000` | Minimum gap between two `/task` invocations from a chat.                                                                |
+| `PENDING_TIMEOUT_MS` (constant)       | `10 min` | Multi-step flow expiry (workspace pick, branch input, …).                                                               |
+| `GETUPDATES_LONG_POLL_SEC` (constant) | `25`     | Telegram long-poll timeout. Paired with a `35 s` HTTP read timeout so the request can outlive the server's poll window. |
 
 Constants live next to `TelegramManager` in the backend; per-connection settings live in the main state file and are editable in **Settings → Telegram**.
 

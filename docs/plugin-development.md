@@ -1,6 +1,6 @@
 # Plugin Development Guide
 
-This guide explains how to create plugins for strIDEterm. Plugins can provide workspace templates and optional runtime hooks.
+This guide explains how to create plugins for strIDEterm. **Plugins are currently manifest-only** — they declare a workspace template and optional metadata. Runtime hooks (an `activate(...)` entry point) are not yet wired into the loader; see [Future Ideas](#future-ideas).
 
 ## Quick Start
 
@@ -63,12 +63,11 @@ If a user plugin has the same `id` as a built-in plugin, the built-in plugin win
 ```text
 ~/.strideterm/plugins/my-plugin/
 |- plugin.json
-|- index.js
 |- README.md
 `- assets/
 ```
 
-Only `plugin.json` is required. `index.js` is optional.
+Only `plugin.json` is required. The plugin loader does not currently import or execute any code from the plugin directory (see [Future Ideas](#future-ideas)). Platform scripts referenced from `panels[].platforms[].script` are an exception — they're invoked as part of a panel's startup command.
 
 ## Manifest Reference
 
@@ -82,18 +81,18 @@ Only `plugin.json` is required. `index.js` is optional.
 
 ### Optional Fields
 
-| Field                 | Type       | Default      | Description                                      |
-| --------------------- | ---------- | ------------ | ------------------------------------------------ |
-| `description`         | `string`   | `""`         | Short description shown in the UI                |
-| `author`              | `string`   | `""`         | Plugin author name                               |
-| `license`             | `string`   | `""`         | License identifier such as `"MIT"`               |
-| `icon`                | `string`   | `"PL"`       | 1-4 character badge shown on the workspace card  |
-| `color`               | `string`   | `"#888"`     | Hex color for the workspace accent               |
-| `kind`                | `string`   | `"terminal"` | Workspace type: `"terminal"` or `"docker"`       |
-| `capabilities`        | `string[]` | `[]`         | Declared capabilities                            |
-| `workspaceDefaults`   | `object`   | `null`       | Default workspace template                       |
-| `entryPoint`          | `string`   | `"index.js"` | Relative path to the JS entry point              |
-| `recommendedPackages` | `object[]` | `[]`         | Optional list of recommended npm/system packages |
+| Field                 | Type       | Default      | Description                                                                                                                                                                                            |
+| --------------------- | ---------- | ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `description`         | `string`   | `""`         | Short description shown in the UI                                                                                                                                                                      |
+| `author`              | `string`   | `""`         | Plugin author name                                                                                                                                                                                     |
+| `license`             | `string`   | `""`         | License identifier such as `"MIT"`                                                                                                                                                                     |
+| `icon`                | `string`   | `"PL"`       | 1-4 character badge shown on the workspace card                                                                                                                                                        |
+| `color`               | `string`   | `"#888"`     | Hex color for the workspace accent                                                                                                                                                                     |
+| `kind`                | `string`   | `"terminal"` | Workspace type. Built-ins use `"terminal"`, `"docker"`, `"azure"`, `"github"`. The loader does not validate this field, so any string is accepted, but renderer code only knows the four values above. |
+| `capabilities`        | `string[]` | `[]`         | Declared capabilities (validated against a whitelist)                                                                                                                                                  |
+| `workspaceDefaults`   | `object`   | `null`       | Default workspace template                                                                                                                                                                             |
+| `entryPoint`          | `string`   | —            | Reserved for future runtime hooks. The loader validates the path stays inside the plugin directory but **does not import or execute the file** today.                                                  |
+| `recommendedPackages` | `object[]` | `[]`         | Free-form list of suggested packages. Informational only — not surfaced anywhere by the runtime currently.                                                                                             |
 
 ## Workspace Template
 
@@ -197,32 +196,15 @@ Minimal static plugin example:
 }
 ```
 
-## Entry Point
+## Plugin Lifecycle (today)
 
-If present, the entry point must be an ES module that exports `activate`:
+The loader is intentionally minimal:
 
-```javascript
-export const id = "my-plugin";
+1. Discovery — every direct subdirectory of `plugins/` (built-in) and `~/.strideterm/plugins/` (user) that contains a `plugin.json` is picked up. Discovery is **not recursive** — nested plugin directories are ignored.
+2. Manifest validation — `id` regex, required fields, capability whitelist, and `entryPoint` path containment.
+3. Workspace-template surfacing — the renderer reads `workspaceDefaults` so the plugin appears in the **+ Add Workspace** picker. Selecting it materialises the template with platform panels resolved (`win32` / `linux` / `darwin`, falling back to `posix` if defined).
 
-export function activate({ runtime }) {
-  console.log("My plugin activated");
-
-  return {
-    deactivate() {
-      console.log("My plugin deactivated");
-    },
-  };
-}
-```
-
-Lifecycle:
-
-1. Discovery
-2. Manifest validation
-3. Optional module import
-4. `activate()` call
-5. Running until shutdown
-6. Optional `deactivate()` call on shutdown
+There is no module import, no `activate()` invocation, and no `deactivate()` callback. If you need plugin-driven runtime behaviour today, fork the relevant manager in `electron/backend/` rather than depending on the entry point.
 
 ## Security Model
 
@@ -245,8 +227,8 @@ That means plugin authors should be treated as trusted code authors.
 
 1. Keep plugin scope small and obvious.
 2. Declare only capabilities you actually need.
-3. Prefer `workspaceDefaults` if you only need a template.
-4. Clean up timers, listeners, and subprocesses in `deactivate()`.
+3. Prefer `workspaceDefaults` if you only need a template — that's the supported path today.
+4. Look at `plugins/system-monitor/` for a real example of `platforms` + `recommendedPackages`.
 5. Include a `README.md` that explains prerequisites and commands.
 6. Use semantic versioning.
 
@@ -263,8 +245,8 @@ That means plugin authors should be treated as trusted code authors.
 
 ## Future Ideas
 
+- **Entry-point activation** — wire `activate({ runtime })` / `deactivate()` into the loader so plugins can register listeners, timers, and IPC handlers. The manifest already validates `entryPoint` for path containment, but the loader doesn't import it yet.
 - Plugin settings UI
 - Hot reload
 - Shared plugin schema module
-- More runtime hooks
 - Custom renderer surfaces for trusted plugins

@@ -107,7 +107,7 @@ What it does:
 
 1. **Skips push** if there are no commits ahead of remote (only publishes comments)
 2. **Pushes commits** to the remote PR branch (with PAT authentication, using `HEAD:refs/heads/{branch}` refspec)
-3. **Publishes all queued draft comments** as GitHub issue comments
+3. **Publishes all queued draft comments** as GitHub issue comments via the `/issues/{number}/comments` endpoint. Note: replies that you queue against a specific inline review-comment thread are still published as top-level issue comments — strIDEterm does not currently post inline review-comment replies into the original code thread.
 
 If there are no commits to push, only comments are published — no dirty worktree check needed.
 
@@ -177,7 +177,7 @@ Supports filtering by category (read/write), status, source, date range, and fre
 
 ### Polling
 
-Default: 120 seconds per connection. Configurable per connection (minimum 15 seconds). The active review workspace polls more frequently through manual refresh.
+Default: 120 seconds per connection. Configurable per connection (minimum 1 second, maximum 1 hour, enforced by the IPC schema). The active review workspace polls more frequently through manual refresh.
 
 ### Differences from Azure DevOps Integration
 

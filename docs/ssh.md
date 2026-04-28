@@ -46,7 +46,7 @@ The **Key Manager** dialog (available for the built-in SSH mode) lets you:
 - **Import certificates** and see their principals, validity window, and key ID parsed out
 - **Inspect** which hosts reference a key before deleting it, with cascade-delete for dependents
 
-Private key material is stored encrypted in the operating system's credential store (Windows Credential Manager, macOS Keychain, or libsecret on Linux). Passphrases are stored under a separate record so you can rotate one without touching the other. Files on disk (e.g. `~/.ssh/id_ed25519`) are never modified by the import.
+Private key material is stored in `~/.strideterm/credentials.json`, encrypted via Electron's `safeStorage` (which is backed by DPAPI on Windows, the macOS Keychain, and libsecret/kwallet on Linux). Passphrases are stored under a separate record so you can rotate one without touching the other. Files on disk (e.g. `~/.ssh/id_ed25519`) are never modified by the import. If the OS keychain isn't available, see the **Settings** option below to refuse plaintext fallback rather than store credentials unprotected.
 
 ### Host Key Verification
 
@@ -103,18 +103,18 @@ Host definitions, key metadata, certificate metadata, and trusted host-key finge
 
 Sensitive material is stored separately from that state file:
 
-- Private key bytes go into the OS credential store, referenced by an opaque key ID.
-- Passphrases are stored as their own credential-store records, so rotating one doesn't require re-importing the key.
+- Private key bytes are written to `~/.strideterm/credentials.json` under an opaque key ID, encrypted via Electron's `safeStorage` (DPAPI / macOS Keychain / libsecret-kwallet under the hood).
+- Passphrases are stored as their own credential records, so rotating one doesn't require re-importing the key.
 - Host-key fingerprints are kept in a TOFU-style map keyed by `host:port`.
 
 ### Security Model
 
-- Private keys don't leave the device and are encrypted by the OS keychain.
+- Private keys don't leave the device. They are encrypted with Electron's `safeStorage` master key (which is itself protected by the OS keychain) and stored in `credentials.json` rather than handed to the keychain directly.
 - Passphrases are held separately; users can opt not to save them at all and be prompted per connect.
 - Host-key verification is explicit on first connect (when policy requires) and always on mismatch, with the previously trusted fingerprint surfaced in the UI.
 - Keyboard-interactive answers are scoped to a single connect attempt.
 - Agent forwarding is off by default and requires explicit per-host opt-in.
-- If the OS credential store is unavailable, the app warns and (optionally) refuses to save credentials at all.
+- If `safeStorage` is unavailable (e.g. headless Linux without `gnome-keyring`/`kwallet`), the credential store falls back to base64-on-disk and emits a logged warning. The **Settings → SSH** option _Refuse to save credentials without OS keychain_ turns that fallback into a hard refusal.
 
 ### IPC Surface
 

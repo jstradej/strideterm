@@ -1,6 +1,10 @@
 # Contributing to strIDEterm
 
+Thanks for your interest. The build, test, and dev-startup details live in the [Development Guide](docs/development.md) — this file covers the conventions on top of that.
+
 ## Setup
+
+See [docs/development.md](docs/development.md) for prerequisites and the full build & test command list. The short form:
 
 ```bash
 git clone https://github.com/jstradej/strideterm.git
@@ -9,45 +13,31 @@ npm install
 npm run dev
 ```
 
-## Code Quality
+## Code quality
 
 Pre-commit hooks (husky + lint-staged) run automatically on every commit:
 
 - **ESLint** — catches bugs and enforces code style
 - **Prettier** — formats code consistently
 
-Manual check: `npm run lint`
-Auto-fix: `npm run lint:fix`
-Type-check: `npm run typecheck`
-
-## Testing
+Manual checks:
 
 ```bash
-npm run typecheck   # TypeScript type-check (frontend + backend)
-npm test            # Unit tests (UI + backend)
-npm run test:e2e    # E2E tests (Playwright + mock server)
-npm run smoke       # Startup smoke test
+npm run lint        # ESLint + Prettier check
+npm run lint:fix    # auto-fix
+npm run typecheck   # TypeScript type-check (frontend + backend + tests + scripts)
 ```
 
-E2E tests use fixture JSON files in `test/fixtures/` and a mock server that serves them on the same API as the real backend. No Electron needed.
+## Commit guidelines
 
-## Project Structure
-
-- `src/` — Vue 3 frontend (TypeScript components, stores, composables)
-- `electron/backend/` — TypeScript backend (runtime, managers, IPC)
-- `electron/main.ts` — Electron shell
-- `config/` — shared app configuration
-- `test/` — E2E test infrastructure (mock server, fixtures, specs)
-
-## Commit Guidelines
-
-- Write clear commit messages describing the "why"
+- Write clear commit messages describing the **why**
 - Keep commits focused — one logical change per commit
 - Pre-commit hooks enforce lint and formatting automatically
 
-## Pull Requests
+## Pull requests
 
 - Branch from `master`
-- Ensure `npm run lint` and `npm run typecheck` pass with 0 errors
-- Ensure `npm run test:e2e` passes
-- Describe what changed and why in the PR description
+- `npm run lint` and `npm run typecheck` must pass with 0 errors
+- `npm test` and `npm run test:e2e` must pass
+- Describe what changed and why in the PR body
+- If you change packaging, remote access, plugins, or runtime behavior, update the relevant docs

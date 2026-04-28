@@ -42,15 +42,9 @@
 | ---------------------------------------------------------- | --------------------------------------------------- | ---------------------------------------------------- |
 | ![Notifications](docs/images/screenshot-notifications.png) | ![Remote](docs/images/screenshot-remote-access.png) | ![Lazydocker](docs/images/screenshot-lazydocker.png) |
 
-## Platform Support
-
-- Windows (NSIS installer + portable)
-- macOS (DMG, x64 + arm64)
-- Linux (AppImage + deb)
-
 ## Installation
 
-**[Download the latest release](https://github.com/jstradej/strideterm/releases/latest)** — pre-built installers are available for all platforms:
+**[Download the latest release](https://github.com/jstradej/strideterm/releases/latest)** — pre-built installers are available for all major platforms:
 
 | Platform | Format                                           |
 | -------- | ------------------------------------------------ |
@@ -58,54 +52,86 @@
 | macOS    | DMG (`.dmg`) — x64 and arm64                     |
 | Linux    | AppImage (`.AppImage`) + Debian package (`.deb`) |
 
-Nightly builds from the latest `master` are available on the [Releases page](https://github.com/jstradej/strideterm/releases) for bleeding-edge users.
+Nightly builds from the latest `master` are also published on the [Releases page](https://github.com/jstradej/strideterm/releases).
 
-## Building from Source
+> **Code signing:** the Windows installer is code-signed. macOS DMGs and Linux artifacts are not currently signed/notarized — on first launch macOS Gatekeeper will require **System Settings → Privacy & Security → Open Anyway** (or `xattr -dr com.apple.quarantine strIDEterm.app`), and Linux package managers may warn about the unsigned `.deb`.
 
-Most users should use the [pre-built releases](https://github.com/jstradej/strideterm/releases/latest) above. The instructions below are for contributors and developers.
+### Quick install
 
-### Requirements
+The snippets below resolve the latest release tag from the GitHub API and download the matching artifact. They produce the same installers as clicking the buttons above.
 
-**Required:**
-
-- Node.js 22+
-- npm
-
-**Optional:**
-
-- `git` - for Git integration
-- Docker CLI - for Docker workspaces
-- `lazygit` - for Git TUI
-- `cloudflared` - for Cloudflare tunnel remote access
-- `claude`, `codex`, `gemini`, `copilot`, or `opencode` CLI — for [Agent Task Runner](#agent-task-runner). Worker and Judge agents each pick one provider independently; any combination is allowed.
-
-**Native build note:** `node-pty` requires local build tools (Visual Studio Build Tools on Windows, Xcode CLT on macOS, `build-essential` + `python3` on Linux).
-
-### Build & Run
+<details>
+<summary><b>Linux — AppImage</b> (universal)</summary>
 
 ```bash
-# Install dependencies
-npm install
-
-# Development mode (hot reload)
-npm run dev
-
-# Run packaged app
-npm start
-
-# Build distributables
-npm run dist
+VER=$(curl -fsSL https://api.github.com/repos/jstradej/strideterm/releases/latest | grep -m1 '"tag_name":' | cut -d'"' -f4 | sed 's/^v//')
+curl -fL -o strIDEterm.AppImage \
+  "https://github.com/jstradej/strideterm/releases/latest/download/strIDEterm-${VER}.AppImage"
+chmod +x strIDEterm.AppImage
+./strIDEterm.AppImage
 ```
 
-Platform-specific packaging:
+</details>
+
+<details>
+<summary><b>Linux — Debian / Ubuntu</b> (`.deb`)</summary>
 
 ```bash
-npm run dist:win
-npm run dist:mac
-npm run dist:linux
+VER=$(curl -fsSL https://api.github.com/repos/jstradej/strideterm/releases/latest | grep -m1 '"tag_name":' | cut -d'"' -f4 | sed 's/^v//')
+curl -fL -o strideterm.deb \
+  "https://github.com/jstradej/strideterm/releases/latest/download/strideterm_${VER}_amd64.deb"
+sudo apt install ./strideterm.deb
 ```
 
-**Windows build note:** `node-pty` native rebuild may fail locally. Production builds are handled by [GitHub Actions CI](.github/workflows/release.yml) which has the correct build environment. For local development, `npm run dev` and `npm start` work without rebuilding.
+</details>
+
+<details>
+<summary><b>macOS — Apple Silicon (arm64)</b></summary>
+
+```bash
+VER=$(curl -fsSL https://api.github.com/repos/jstradej/strideterm/releases/latest | grep -m1 '"tag_name":' | cut -d'"' -f4 | sed 's/^v//')
+curl -fL -o strIDEterm.dmg \
+  "https://github.com/jstradej/strideterm/releases/latest/download/strIDEterm-${VER}-arm64.dmg"
+open strIDEterm.dmg
+```
+
+</details>
+
+<details>
+<summary><b>macOS — Intel (x64)</b></summary>
+
+```bash
+VER=$(curl -fsSL https://api.github.com/repos/jstradej/strideterm/releases/latest | grep -m1 '"tag_name":' | cut -d'"' -f4 | sed 's/^v//')
+curl -fL -o strIDEterm.dmg \
+  "https://github.com/jstradej/strideterm/releases/latest/download/strIDEterm-${VER}.dmg"
+open strIDEterm.dmg
+```
+
+</details>
+
+<details>
+<summary><b>Windows — installer</b> (PowerShell)</summary>
+
+```powershell
+$ver = (Invoke-RestMethod https://api.github.com/repos/jstradej/strideterm/releases/latest).tag_name.TrimStart('v')
+Invoke-WebRequest -Uri "https://github.com/jstradej/strideterm/releases/latest/download/strIDEterm-Setup-$ver.exe" -OutFile strIDEterm-Setup.exe
+Start-Process .\strIDEterm-Setup.exe
+```
+
+</details>
+
+<details>
+<summary><b>Windows — portable</b> (PowerShell)</summary>
+
+```powershell
+$ver = (Invoke-RestMethod https://api.github.com/repos/jstradej/strideterm/releases/latest).tag_name.TrimStart('v')
+Invoke-WebRequest -Uri "https://github.com/jstradej/strideterm/releases/latest/download/strIDEterm-$ver-win-x64.exe" -OutFile strIDEterm.exe
+.\strIDEterm.exe
+```
+
+</details>
+
+Building from source is for contributors — see the [Development Guide](docs/development.md).
 
 ## Configuration
 
@@ -195,44 +221,24 @@ All providers share a single notification script (`~/.strideterm/hooks/notify.mj
 
 ## Plugins
 
-Built-in plugins:
+Built-in plugins (under `plugins/`):
 
-- **GitHub** - GitHub PR review integration
-- **Docker Ops** - container management workspace
-- **System Monitor** - system dashboard
+- **Azure DevOps** — workspace template for the Azure DevOps PR inbox
+- **GitHub** — workspace template for the GitHub PR inbox
+- **Docker Ops** — container management workspace
+- **System Monitor** — system dashboard
 
 User plugins: `~/.strideterm/plugins/`
 
 See [Plugin Development Guide](docs/plugin-development.md) for details.
 
-## Testing
+## Development
 
-```bash
-npm run lint        # ESLint + Prettier check
-npm run typecheck   # TypeScript type-check (frontend + backend)
-npm test            # Unit tests (UI + backend)
-npm run test:e2e    # E2E tests (Playwright + mock server fixtures)
-npm run smoke       # Startup smoke test
-```
+Building from source, running tests, and the project architecture are documented separately so this README stays focused on using the app:
 
-## Architecture
-
-The app is split into:
-
-- **Electron backend** (`electron/`) - runtime, session manager, store, Docker/Git managers, Azure DevOps & GitHub PR review, Agent Task Runner, MCP bridge, structured logging (all TypeScript)
-- **Renderer** (`src/`) - Vue 3 + Pinia single-page application with Composition API (TypeScript + Vue SFCs)
-- **Shared config** (`config/`) - app-wide configuration and shell integration scripts
-
-See [Architecture](docs/architecture.md) for details.
-
-## Contributing
-
-```bash
-npm install
-npm test
-```
-
-If you change packaging, remote access, plugins, or runtime behavior, update the relevant docs.
+- [Development Guide](docs/development.md) — requirements, dev startup, build & test commands, packaging notes
+- [Architecture](docs/architecture.md) — runtime/adapter/renderer breakdown and key patterns
+- [Contributing](CONTRIBUTING.md) — commit and PR conventions
 
 ## License
 

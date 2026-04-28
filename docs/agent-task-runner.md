@@ -358,8 +358,8 @@ This makes the task workspace reusable: create it once, then reset and re-run as
 
 ```
 WorkspaceDialog (UI, task mode)
-  --> transport.js: createTaskWorkspace()
-    --> runtime.js: createTaskWorkspace()
+  --> transport.ts: createTaskWorkspace()
+    --> runtime.ts: createTaskWorkspace()
       --> [if useWorktree] git worktree add     // create isolated branch
       --> AgentTaskRunner.createTaskWorkspace()  // builds workspace object
       --> AgentTaskRunner.writeInitialFiles()    // writes TASK.md, TODO.md, etc.
