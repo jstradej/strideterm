@@ -37,8 +37,8 @@ export async function launchApp(fixture: FixtureName = "empty"): Promise<Launche
       // Default (1560×940) is wider than some CI virtual displays — the
       // window then collapses to minWindowWidth and the sidebar ends up
       // looking enormous. 1280×800 fits comfortably on every runner.
-      STRIDETERM_WINDOW_WIDTH: "1280",
-      STRIDETERM_WINDOW_HEIGHT: "800",
+      STRIDETERM_WINDOW_WIDTH: "1100",
+      STRIDETERM_WINDOW_HEIGHT: "720",
     },
     timeout: 60_000,
   });
