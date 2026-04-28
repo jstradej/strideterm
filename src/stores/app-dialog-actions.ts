@@ -63,6 +63,12 @@ function buildProviderCommandString({
     if (model) parts.push("--model", model);
     return parts.join(" ");
   }
+  if (providerId === "opencode") {
+    const parts = ["opencode"];
+    if (skipPermissions !== false) parts.push("--yolo");
+    if (model && model !== "default") parts.push("--model", model);
+    return parts.join(" ");
+  }
   return "claude --dangerously-skip-permissions --model sonnet";
 }
 
@@ -86,6 +92,12 @@ function hookApiForProvider(
       status: api.getCopilotHookStatus,
       configure: api.configureCopilotHook,
       displayName: "GitHub Copilot",
+    };
+  if (providerId === "opencode")
+    return {
+      status: api.getOpencodeHookStatus,
+      configure: api.configureOpencodeHook,
+      displayName: "OpenCode",
     };
   // Default to Claude for legacy workspaces and explicit claude selection.
   return { status: api.getClaudeHookStatus, configure: api.configureClaudeHook, displayName: "Claude Code" };

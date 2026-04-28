@@ -43,6 +43,10 @@ const FALLBACK_TEMPLATES: TabTemplate[] = [
   { title: "Bash", command: "bash", icon: "\u{1F41A}", platforms: ["darwin", "linux"] },
   { title: "Zsh", command: "zsh", icon: "\u{1F41A}", platforms: ["darwin", "linux"] },
   { title: "Claude Code", command: "claude", icon: "\u{1F916}" },
+  { title: "Codex", command: "codex", icon: "\u{1F9E0}" },
+  { title: "Gemini CLI", command: "gemini", icon: "✨" },
+  { title: "GitHub Copilot", command: "copilot", icon: "\u{1F419}" },
+  { title: "OpenCode", command: "opencode", icon: "\u{1F9EC}" },
   { title: "Browser", command: "https://", icon: "\u{1F310}" },
   { title: "Files", command: "__files__", icon: "\u{1F4C2}" },
 ];

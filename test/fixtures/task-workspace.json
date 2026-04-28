@@ -1,0 +1,252 @@
+{
+  "meta": {
+    "appVersion": "1.3.1-test",
+    "repositoryUrl": "https://github.com/example/strideterm"
+  },
+  "appState": {
+    "activeWorkspaceId": "ws-task",
+    "activeProjectId": "ws-task",
+    "activeProfileId": "default",
+    "settings": {
+      "theme": "dark",
+      "sidebarWidth": 220,
+      "sidebarCollapsed": false,
+      "remoteAccess": {
+        "enabled": false,
+        "host": "127.0.0.1",
+        "port": 3999,
+        "token": "",
+        "customPublicUrl": "",
+        "cloudflaredPath": ""
+      },
+      "integrations": {
+        "azureDevops": { "enabled": false, "connections": [], "reviewRoot": "", "defaultPollSeconds": 60 },
+        "github": { "enabled": false, "connections": [], "reviewRoot": "", "defaultPollSeconds": 60 }
+      },
+      "tabTemplates": [
+        { "id": "shell", "title": "Shell", "command": "", "icon": "💻" },
+        { "id": "claude", "title": "Claude Code", "command": "claude", "icon": "🤖" },
+        { "id": "opencode", "title": "OpenCode", "command": "opencode", "icon": "🧬" }
+      ]
+    },
+    "tabTemplates": [
+      { "id": "shell", "title": "Shell", "command": "", "icon": "💻" },
+      { "id": "claude", "title": "Claude Code", "command": "claude", "icon": "🤖" },
+      { "id": "codex", "title": "Codex", "command": "codex", "icon": "🧠" },
+      { "id": "gemini", "title": "Gemini CLI", "command": "gemini", "icon": "✨" },
+      { "id": "copilot", "title": "GitHub Copilot", "command": "copilot", "icon": "🐙" },
+      { "id": "opencode", "title": "OpenCode", "command": "opencode", "icon": "🧬" }
+    ],
+    "profiles": [
+      {
+        "id": "default",
+        "name": "Default",
+        "color": "",
+        "workspaceIds": ["ws-task", "ws-terminal"],
+        "projectIds": ["ws-task", "ws-terminal"]
+      }
+    ],
+    "workspaces": [
+      {
+        "id": "ws-task",
+        "name": "Auth Refactor Task",
+        "icon": "🤖",
+        "color": "#7C4DFF",
+        "kind": "task",
+        "source": "manual",
+        "pluginId": "",
+        "cwd": "/home/user/projects/myapp",
+        "notes": "",
+        "profileId": "default",
+        "connectionId": "",
+        "activePanelId": "panel-dashboard",
+        "activeViewId": "task-dashboard:panel-dashboard",
+        "panels": [
+          {
+            "id": "panel-dashboard",
+            "title": "Dashboard",
+            "command": "__task-dashboard__",
+            "shell": false,
+            "startup": "none"
+          },
+          {
+            "id": "panel-worker",
+            "title": "Worker",
+            "command": "claude --dangerously-skip-permissions --model sonnet",
+            "shell": true,
+            "startup": "default"
+          },
+          {
+            "id": "panel-judge",
+            "title": "Judge",
+            "command": "claude --dangerously-skip-permissions --model opus",
+            "shell": true,
+            "startup": "default"
+          }
+        ],
+        "task": {
+          "taskId": "task-001",
+          "description": "Refactor the authentication module to use JWT tokens instead of session cookies. Ensure all existing tests pass after the change.",
+          "parentWorkspaceId": "",
+          "worktreeBase": "",
+          "worktreeBranch": "",
+          "workerPanelId": "panel-worker",
+          "judgePanelId": "panel-judge",
+          "maxRounds": 8,
+          "showerInterval": 3,
+          "state": "idle",
+          "currentRound": 0,
+          "rounds": [],
+          "lastShowerRound": 0,
+          "lastJudgeInstructions": "",
+          "workerProviderConfig": { "providerId": "claude", "model": "sonnet", "skipPermissions": true },
+          "judgeProviderConfig": { "providerId": "claude", "model": "opus", "skipPermissions": true },
+          "promptSent": false,
+          "pausedFromState": "",
+          "showerResumePrompt": "",
+          "startedAt": null,
+          "totalPausedMs": 0,
+          "pausedAt": null,
+          "finishedAt": null,
+          "rateLimitedUntil": null
+        },
+        "review": null,
+        "quickfix": null
+      },
+      {
+        "id": "ws-terminal",
+        "name": "Dev Terminal",
+        "icon": "🖥",
+        "color": "#4a9eff",
+        "kind": "terminal",
+        "source": "manual",
+        "pluginId": "",
+        "cwd": "/home/user/projects/myapp",
+        "notes": "",
+        "profileId": "default",
+        "connectionId": "",
+        "activePanelId": "panel-shell",
+        "panels": [
+          {
+            "id": "panel-shell",
+            "title": "Shell",
+            "command": "",
+            "shell": true,
+            "startup": "default"
+          },
+          {
+            "id": "panel-claude-t",
+            "title": "Claude Code",
+            "command": "claude --dangerously-skip-permissions",
+            "shell": true,
+            "startup": "default"
+          },
+          {
+            "id": "panel-opencode-t",
+            "title": "OpenCode",
+            "command": "opencode --yolo",
+            "shell": true,
+            "startup": "default"
+          }
+        ],
+        "review": null,
+        "quickfix": null
+      }
+    ],
+    "projects": []
+  },
+  "workspace": {
+    "workspace": {
+      "id": "ws-task",
+      "name": "Auth Refactor Task",
+      "icon": "🤖",
+      "color": "#7C4DFF",
+      "kind": "task",
+      "cwd": "/home/user/projects/myapp",
+      "panels": [
+        {
+          "id": "panel-dashboard",
+          "title": "Dashboard",
+          "command": "__task-dashboard__",
+          "shell": false,
+          "startup": "none"
+        },
+        {
+          "id": "panel-worker",
+          "title": "Worker",
+          "command": "claude --dangerously-skip-permissions --model sonnet",
+          "shell": true,
+          "startup": "default"
+        },
+        {
+          "id": "panel-judge",
+          "title": "Judge",
+          "command": "claude --dangerously-skip-permissions --model opus",
+          "shell": true,
+          "startup": "default"
+        }
+      ],
+      "task": {
+        "taskId": "task-001",
+        "description": "Refactor the authentication module to use JWT tokens instead of session cookies. Ensure all existing tests pass after the change.",
+        "parentWorkspaceId": "",
+        "worktreeBase": "",
+        "worktreeBranch": "",
+        "workerPanelId": "panel-worker",
+        "judgePanelId": "panel-judge",
+        "maxRounds": 8,
+        "showerInterval": 3,
+        "state": "idle",
+        "currentRound": 0,
+        "rounds": [],
+        "lastShowerRound": 0,
+        "lastJudgeInstructions": "",
+        "workerProviderConfig": { "providerId": "claude", "model": "sonnet", "skipPermissions": true },
+        "judgeProviderConfig": { "providerId": "claude", "model": "opus", "skipPermissions": true },
+        "promptSent": false,
+        "pausedFromState": "",
+        "showerResumePrompt": "",
+        "startedAt": null,
+        "totalPausedMs": 0,
+        "pausedAt": null,
+        "finishedAt": null,
+        "rateLimitedUntil": null
+      },
+      "review": null,
+      "quickfix": null
+    },
+    "project": null,
+    "sessions": [
+      {
+        "sessionId": "ws-task:panel-worker",
+        "panelId": "panel-worker",
+        "title": "Worker",
+        "command": "claude --dangerously-skip-permissions --model sonnet",
+        "launch": null,
+        "startup": "default",
+        "status": "idle"
+      },
+      {
+        "sessionId": "ws-task:panel-judge",
+        "panelId": "panel-judge",
+        "title": "Judge",
+        "command": "claude --dangerously-skip-permissions --model opus",
+        "launch": null,
+        "startup": "default",
+        "status": "idle"
+      }
+    ]
+  },
+  "attention": {
+    "byWorkspace": {},
+    "byProject": {},
+    "activeWorkspace": null,
+    "activeProject": null
+  },
+  "docker": { "containers": [], "available": false, "error": null },
+  "git": { "workspaces": {}, "projects": {} },
+  "environment": {
+    "claudeAvailable": true,
+    "platform": "linux"
+  }
+}

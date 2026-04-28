@@ -53,7 +53,8 @@ export interface MockServerHandle {
 export async function startMockServer({
   fixture = "empty-state",
   port = 0,
-}: { fixture?: string; port?: number } = {}): Promise<MockServerHandle> {
+  fileContents = {},
+}: { fixture?: string; port?: number; fileContents?: Record<string, string> } = {}): Promise<MockServerHandle> {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: fixture JSON is untyped server state blob
   const payload: any = JSON.parse(JSON.stringify(loadFixture(fixture)));
   const TOKEN = "test-token";
@@ -124,6 +125,14 @@ export async function startMockServer({
         if (url.pathname.endsWith("/settings/update") && body.settings) {
           Object.assign(payload.appState.settings, body.settings);
           broadcast({ type: "state:updated", payload });
+        }
+
+        // File read — return injected content if available
+        if (url.pathname.endsWith("/file/read") && body.relativePath !== undefined) {
+          const content = fileContents[body.relativePath] ?? "";
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ content }));
+          return;
         }
 
         res.writeHead(200, { "Content-Type": "application/json" });
