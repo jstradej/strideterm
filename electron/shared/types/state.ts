@@ -511,18 +511,8 @@ export interface RecoveryCandidate {
   profileId: string;
   currentRound: number;
   maxRounds: number;
-  phase: "worker" | "judge";
-  lastSavedAt: number;
-  worker: { providerId: string; model?: string };
-  judge: { providerId: string; model?: string };
-  artifacts: {
-    cwd: string;
-    taskDir: string;
-    handoffPath: string;
-    verdictPath: string;
-    workLockPath: string;
-  };
-  fsState: RecoveryFsState;
+  /** The task state at the time the app was closed (e.g. "running", "judge-evaluating"). */
+  previousState: string;
 }
 
 export interface MetaState {

@@ -11,18 +11,7 @@
         "profileId": "default",
         "currentRound": 3,
         "maxRounds": 8,
-        "phase": "worker",
-        "lastSavedAt": 1730000000000,
-        "worker": { "providerId": "claude", "model": "sonnet" },
-        "judge": { "providerId": "claude", "model": "opus" },
-        "artifacts": {
-          "cwd": "/tmp/auth-refactor",
-          "taskDir": "/tmp/auth-refactor/.strideterm/tasks/task-auth-refactor",
-          "handoffPath": "/tmp/auth-refactor/.strideterm/tasks/task-auth-refactor/HANDOFF.md",
-          "verdictPath": "/tmp/auth-refactor/.strideterm/tasks/task-auth-refactor/verdict.json",
-          "workLockPath": "/tmp/auth-refactor/.strideterm/tasks/task-auth-refactor/WORK_LOCK"
-        },
-        "fsState": "neither"
+        "previousState": "running"
       },
       {
         "taskId": "task-billing",
@@ -31,18 +20,7 @@
         "profileId": "work",
         "currentRound": 1,
         "maxRounds": 4,
-        "phase": "judge",
-        "lastSavedAt": 1730000000000,
-        "worker": { "providerId": "opencode", "model": "claude-sonnet" },
-        "judge": { "providerId": "claude", "model": "opus" },
-        "artifacts": {
-          "cwd": "/tmp/billing",
-          "taskDir": "/tmp/billing/.strideterm/tasks/task-billing",
-          "handoffPath": "/tmp/billing/.strideterm/tasks/task-billing/HANDOFF.md",
-          "verdictPath": "/tmp/billing/.strideterm/tasks/task-billing/verdict.json",
-          "workLockPath": "/tmp/billing/.strideterm/tasks/task-billing/WORK_LOCK"
-        },
-        "fsState": "handoff-exists"
+        "previousState": "judge-evaluating"
       }
     ]
   },

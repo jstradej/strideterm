@@ -40,11 +40,8 @@ import { configureCodexHook, removeCodexHook, detectCodexHookStatus } from "./co
 import { configureCopilotHook, removeCopilotHook, detectCopilotHookStatus } from "./copilot-hook-config.js";
 import { configureOpencodeHook, removeOpencodeHook, detectOpencodeHookStatus } from "./opencode-hook-config.js";
 import { AgentTaskRunner } from "./agent-task-runner.js";
-import { checkLockFile, writeLockFile, clearLockFileSync } from "./recovery/lock-file.js";
-import { inspectCandidates } from "./recovery/task-recovery-handler.js";
-import { deleteRecoverySnapshot } from "./recovery/task-recovery-snapshot.js";
 import { buildRecoveryPrompt } from "./agent-task-prompts.js";
-import type { RecoveryCandidate } from "./recovery/types.js";
+import type { RecoveryCandidate } from "../shared/types/state.js";
 import { updateTaskDescriptionFile } from "./agent-task-files.js";
 import { getProvider, getAllProviders } from "./providers/provider-registry.js";
 import { classifyHookEvent } from "./notifications/classifier.js";
@@ -350,24 +347,8 @@ export async function createRuntime({
     log.info("logger reconfigured from stored settings", { level: storedLogLevel });
   }
 
-  // ---------------------------------------------------------------------------
-  // Crash recovery — check runtime.lock BEFORE task runner reconcile
-  // ---------------------------------------------------------------------------
-  const lockPath = path.join(userDataPath, "runtime.lock");
+  // Populated after taskRunner.init() — see below.
   let _recoveryCandidates: RecoveryCandidate[] = [];
-  try {
-    const lockStatus = await checkLockFile(lockPath);
-    if (lockStatus === "stale-crash") {
-      const appState = store.getState() as AppState;
-      _recoveryCandidates = await inspectCandidates(path.join(userDataPath, "tasks"), appState);
-      log.info("crash detected — recovery candidates", { count: _recoveryCandidates.length });
-    } else if (lockStatus === "live-owner") {
-      log.warn("second instance detected — skipping recovery");
-    }
-    await writeLockFile(lockPath);
-  } catch (lockErr) {
-    log.warn("lock file check/write failed (non-fatal)", { err: (lockErr as Error).message });
-  }
 
   // ---------------------------------------------------------------------------
   // Notify URL file registration — Claude Code hooks don't inherit parent env
@@ -1998,6 +1979,15 @@ export async function createRuntime({
     },
     recoverySnapshotRoot: path.join(userDataPath, "tasks"),
   });
+
+  // Collect tasks that were active when the app last closed.
+  // #reconcileOnStartup (called inside taskRunner.init above) set them to "paused".
+  _recoveryCandidates = taskRunner.getStartupRecoveryCandidates();
+  if (_recoveryCandidates.length > 0) {
+    log.info("startup: found tasks active at last close — offering recovery dialog", {
+      count: _recoveryCandidates.length,
+    });
+  }
 
   async function ensureRemoteOriginReady(remoteConfig: { host?: string; port?: number }): Promise<string> {
     const originUrl = createTunnelOriginUrl(remoteConfig);
@@ -4737,55 +4727,55 @@ export async function createRuntime({
     },
 
     async resolveTaskRecovery(decisions: Record<string, string>) {
-      const snapshotRoot = path.join(userDataPath, "tasks");
-
       for (const [workspaceId, decision] of Object.entries(decisions)) {
         const candidate = _recoveryCandidates.find((c) => c.workspaceId === workspaceId);
         if (!candidate) continue;
-        const snapshotDir = path.join(snapshotRoot, candidate.taskId);
 
-        if (decision === "skip") {
-          await deleteRecoverySnapshot(snapshotDir).catch(() => {});
-          continue;
-        }
+        if (decision === "skip") continue;
 
         try {
           if (decision === "fresh") {
-            await rm(candidate.artifacts.handoffPath, { force: true }).catch(() => {});
+            await taskRunner.resetTask(workspaceId);
+            continue;
           }
 
-          // Build a recovery prompt the worker will see on its first idle.
-          // We always resume as worker — if HANDOFF.md is already on disk,
-          // the prompt tells the worker not to redo it; the worker idles,
-          // and the runner naturally advances to judge phase from there.
-          const recoveryPrompt =
-            decision === "fresh"
-              ? ""
-              : buildRecoveryPrompt({
-                  role: "worker",
-                  round: candidate.currentRound,
-                  taskId: candidate.taskId,
-                });
-
-          await store.mutate((draft: AppState) => {
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            const ws = draft.workspaces.find((w: any) => w.id === workspaceId);
-            if (ws?.task) {
-              ws.task.promptSent = false;
-              ws.task.showerResumePrompt = recoveryPrompt;
-              ws.task.pausedFromState = "running";
-            }
+          // "continue" — build an orientation prompt and resume the agent.
+          // pausedFromState was set by #reconcileOnStartup, so resumeTask resumes
+          // to the correct role (worker or judge-evaluating).
+          const role = candidate.previousState === "judge-evaluating" ? "judge" : "worker";
+          const recoveryPrompt = buildRecoveryPrompt({
+            role,
+            round: candidate.currentRound,
+            taskId: candidate.taskId,
           });
 
-          // After a crash the PTY is gone. Spawn it before resumeTask, otherwise
-          // the worker-idle hook never fires and the recovery prompt sits unused.
           const state = getState();
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           const ws = state.workspaces.find((w: any) => w.id === workspaceId);
+
+          await store.mutate((draft: AppState) => {
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const dws = draft.workspaces.find((w: any) => w.id === workspaceId);
+            if (dws?.task) {
+              dws.task.promptSent = false;
+              dws.task.showerResumePrompt = recoveryPrompt;
+            }
+          });
+
+          // Ensure PTY sessions exist before resuming.
           if (ws?.task?.workerPanelId) {
             const workerSessionId = `${workspaceId}:${ws.task.workerPanelId}`;
             await sessions.ensureSession(state, workerSessionId).catch((err: unknown) => {
-              log.warn("resolveTaskRecovery: ensureSession failed", {
+              log.warn("resolveTaskRecovery: ensureSession (worker) failed", {
+                workspaceId,
+                err: (err as Error).message,
+              });
+            });
+          }
+          if (ws?.task?.judgePanelId) {
+            const judgeSessionId = `${workspaceId}:${ws.task.judgePanelId}`;
+            await sessions.ensureSession(state, judgeSessionId).catch((err: unknown) => {
+              log.warn("resolveTaskRecovery: ensureSession (judge) failed", {
                 workspaceId,
                 err: (err as Error).message,
               });
@@ -4794,8 +4784,6 @@ export async function createRuntime({
 
           const ok = taskRunner.resumeTask(workspaceId);
           if (!ok) log.warn("resolveTaskRecovery: resumeTask returned false", { workspaceId });
-
-          await deleteRecoverySnapshot(snapshotDir).catch(() => {});
         } catch (err) {
           log.warn("resolveTaskRecovery: failed for workspace", { workspaceId, err: (err as Error).message });
         }
@@ -4804,12 +4792,6 @@ export async function createRuntime({
       _recoveryCandidates = [];
       broadcastState();
       return { ok: true, payload: getPayload() };
-    },
-    getLockPath() {
-      return lockPath;
-    },
-    clearLockFileSync() {
-      clearLockFileSync(lockPath);
     },
   };
   _rt = returnObj;

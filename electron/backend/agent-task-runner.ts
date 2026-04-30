@@ -33,7 +33,6 @@ import {
   buildJudgePrompt,
   buildJudgeFeedbackPrompt,
   buildUserFeedbackPrompt,
-  buildRecoveryPrompt,
 } from "./agent-task-prompts.js";
 import { writeRecoverySnapshot, deleteRecoverySnapshot } from "./recovery/task-recovery-snapshot.js";
 import { execCommand } from "./agent-task-exec.js";
@@ -49,7 +48,7 @@ import {
   writeTaskFiles,
 } from "./agent-task-files.js";
 import { ensureGitRepo, getGitContext } from "./agent-task-git.js";
-import type { AppState, WorkspaceState } from "../shared/types/state.js";
+import type { AppState, WorkspaceState, RecoveryCandidate } from "../shared/types/state.js";
 import type { TaskState } from "../shared/types/task.js";
 
 const log: Logger = getLogger("task-runner");
@@ -190,6 +189,8 @@ export class AgentTaskRunner {
    * no idle hook ever lands (some Claude versions are unreliable about emitting
    * Stop after the last action). */
   #periodicWorkLockProbeTimers = new Map<string, NodeJS.Timeout>();
+  /** Tasks that were in an active state when reconcileOnStartup ran — offered to user for recovery. */
+  #startupRecoveryCandidates: RecoveryCandidate[] = [];
 
   // Injected dependencies (set via init())
   #writeToSession: RuntimeDeps["writeToSession"] | null = null;
@@ -261,6 +262,7 @@ export class AgentTaskRunner {
         taskDir: tDir,
         handoffPath: path.join(tDir, "HANDOFF.md"),
         verdictPath: path.join(tDir, "verdict.json"),
+        promptPath: path.join(tDir, PROMPT_FILE),
         workLockPath: path.join(tDir, "WORK_LOCK"),
       },
     }).catch((err: unknown) => {
@@ -286,18 +288,34 @@ export class AgentTaskRunner {
       if (!isTaskWorkspace(workspace)) continue;
       if (!ACTIVE.has(workspace.task.state)) continue;
 
+      const previousState = workspace.task.state;
       log.info("reconcileOnStartup: pausing task left in active state", {
         workspaceId: workspace.id,
-        previousState: workspace.task.state,
+        previousState,
       });
-      workspace.task.pausedFromState = "";
+      workspace.task.pausedFromState = previousState;
       this.#setTaskState(workspace.task, "paused");
-      this.#logTaskEvent(workspace, "task-paused", `Paused on startup (was ${workspace.task.state})`);
+      this.#logTaskEvent(workspace, "task-paused", `Paused on startup (was ${previousState})`);
+
+      this.#startupRecoveryCandidates.push({
+        taskId: workspace.task.taskId,
+        workspaceId: workspace.id,
+        workspaceName: workspace.name ?? "",
+        profileId: workspace.profileId ?? "default",
+        currentRound: workspace.task.currentRound,
+        maxRounds: workspace.task.maxRounds,
+        previousState,
+      });
     }
 
     // No broadcastState() here — runtime isn't fully initialized yet
     // (getPayload depends on pluginManager etc.). The corrected state
     // will be included in the first natural broadcast after startup.
+  }
+
+  /** Returns tasks that were active when the app was last closed, collected at startup. */
+  getStartupRecoveryCandidates(): RecoveryCandidate[] {
+    return [...this.#startupRecoveryCandidates];
   }
 
   // ---------------------------------------------------------------------------
@@ -665,7 +683,9 @@ export class AgentTaskRunner {
     // If resumed to judge-evaluating, the judge's idle hook may have already
     // fired and been ignored while paused.  Proactively try to read the
     // verdict — if the file exists, handle it; otherwise wait for the next hook.
-    if (resumeTo === "judge-evaluating") {
+    // Skip if showerResumePrompt is set: that means recovery will inject a prompt
+    // first, and the verdict should only be read after the judge writes it.
+    if (resumeTo === "judge-evaluating" && !task.showerResumePrompt) {
       log.info("resumed to judge-evaluating, proactively checking verdict", { workspaceId });
       this.#handleJudgeVerdict(workspace).catch((err: unknown) => {
         log.error("proactive verdict check failed", { workspaceId, err: (err as Error)?.message });
@@ -894,6 +914,18 @@ export class AgentTaskRunner {
       if (this.#programmaticJudges.has(workspaceId)) {
         log.debug("judge idle ignored while programmatic judge is running", { workspaceId, sessionId, source });
         return true;
+      }
+      // Recovery path: if a recovery prompt is pending, inject it before reading verdict.
+      // showerResumePrompt is reused here for judge sessions spawned via resolveTaskRecovery.
+      if (task.showerResumePrompt) {
+        const prompt = task.showerResumePrompt;
+        task.showerResumePrompt = "";
+        log.info("judge recovery: injecting recovery prompt on first idle", { workspaceId, sessionId });
+        this.#injectPrompt(sessionId, prompt, workspace).catch((err: unknown) => {
+          log.error("judge recovery prompt injection failed", { workspaceId, err: (err as Error)?.message });
+        });
+        this.#broadcastState!();
+        return true; // Wait for next idle to read verdict
       }
       log.info("judge idle detected, reading verdict", { workspaceId, sessionId, source });
       this.#logTaskEvent(workspace, "judge-idle-detected", `Judge went idle via ${source}. Reading verdict…`);

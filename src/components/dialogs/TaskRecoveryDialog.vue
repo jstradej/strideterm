@@ -9,8 +9,7 @@
     </div>
     <div class="form">
       <p class="info-box info-box--warning">
-        strIDEterm did not shut down cleanly. The following task agent sessions were interrupted. Choose how to handle
-        each one.
+        The following task agents were running when strIDEterm was closed. Choose how to handle each one.
       </p>
 
       <div v-for="c in candidates" :key="c.workspaceId" class="recovery-item">
@@ -25,8 +24,7 @@
           </span>
           <span class="recovery-item__meta">
             Round {{ c.currentRound }}/{{ c.maxRounds }} &middot;
-            {{ c.phase === "judge" ? "Judge evaluating" : "Worker running" }} &middot;
-            <span :class="fsStateClass(c.fsState)">{{ fsStateLabel(c.fsState) }}</span>
+            {{ stateLabel(c.previousState) }}
           </span>
         </div>
         <div class="recovery-item__actions">
@@ -61,7 +59,7 @@
 <script setup lang="ts">
 import { reactive, ref } from "vue";
 import { useAppStore } from "../../stores/app.js";
-import type { RecoveryCandidate, RecoveryFsState } from "../../../electron/shared/types/state.js";
+import type { RecoveryCandidate } from "../../../electron/shared/types/state.js";
 
 interface Props {
   onClose?: () => void;
@@ -93,16 +91,11 @@ function profileFor(profileId: string): ProfileInfo | null {
   return profiles.find((p) => p.id === profileId) || null;
 }
 
-function fsStateLabel(state: RecoveryFsState): string {
-  if (state === "verdict-exists") return "verdict on disk";
-  if (state === "handoff-exists") return "handoff written";
-  return "no output yet";
-}
-
-function fsStateClass(state: RecoveryFsState): string {
-  if (state === "verdict-exists") return "fs-state fs-state--done";
-  if (state === "handoff-exists") return "fs-state fs-state--partial";
-  return "fs-state";
+function stateLabel(state: string): string {
+  if (state === "judge-evaluating") return "Judge evaluating";
+  if (state === "evaluating") return "Evaluating";
+  if (state === "refreshing") return "Refreshing";
+  return "Worker running";
 }
 
 async function confirm(): Promise<void> {
@@ -189,14 +182,6 @@ function skipAll(): void {
 .radio-label__hint {
   font-size: 11px;
   color: var(--text-muted);
-}
-
-.fs-state--done {
-  color: var(--green, #4caf50);
-}
-
-.fs-state--partial {
-  color: var(--yellow, #ffa424);
 }
 
 .recovery-item__profile {

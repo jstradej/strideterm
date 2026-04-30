@@ -34,6 +34,7 @@ function makeSnapshot(overrides: Partial<TaskRecoverySnapshot> = {}): TaskRecove
       taskDir: "/tmp/myproject/.strideterm/tasks/task-abc",
       handoffPath: "/tmp/myproject/.strideterm/tasks/task-abc/HANDOFF.md",
       verdictPath: "/tmp/myproject/.strideterm/tasks/task-abc/verdict.json",
+      promptPath: "/tmp/myproject/.strideterm/tasks/task-abc/PROMPT.md",
       workLockPath: "/tmp/myproject/.strideterm/tasks/task-abc/WORK_LOCK",
     },
     ...overrides,

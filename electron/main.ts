@@ -745,7 +745,6 @@ app.on("window-all-closed", () => {
 
 app.on("before-quit", async () => {
   log.info("app quitting");
-  runtimeState.runtime?.clearLockFileSync?.();
   runtimeState.unsubscribeStateUpdated?.();
   runtimeState.unsubscribeRemoteConfig?.();
   runtimeState.disposeIpc?.();

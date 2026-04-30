@@ -2,8 +2,7 @@
  * Shared types for the task-agent session-recovery subsystem.
  */
 
-export type { RecoveryCandidate, RecoveryFsState } from "../../shared/types/state.js";
-import type { RecoveryFsState } from "../../shared/types/state.js";
+export type { RecoveryCandidate } from "../../shared/types/state.js";
 
 export interface TaskRecoverySnapshot {
   taskId: string;
@@ -22,18 +21,10 @@ export interface TaskRecoverySnapshot {
     taskDir: string;
     handoffPath: string;
     verdictPath: string;
+    /** Path to round-N-prompt.md written before agent spawn. Used for Copilot programmatic resume. */
+    promptPath: string;
     workLockPath: string;
   };
 }
 
-export interface RuntimeLock {
-  pid: number;
-  /** Epoch ms of the process start time (for PID-reuse detection). */
-  startedAt: number;
-  execPath: string;
-}
-
 export type RecoveryDecision = "continue" | "fresh" | "skip";
-
-/** @deprecated Use RecoveryFsState from shared/types/state.ts */
-export type FsState = RecoveryFsState;

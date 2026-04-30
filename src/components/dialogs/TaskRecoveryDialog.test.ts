@@ -17,18 +17,7 @@ function makeCandidate(overrides: Partial<RecoveryCandidate> = {}): RecoveryCand
     profileId: "default",
     currentRound: 3,
     maxRounds: 8,
-    phase: "worker",
-    lastSavedAt: Date.now(),
-    worker: { providerId: "claude", model: "sonnet" },
-    judge: { providerId: "claude", model: "opus" },
-    artifacts: {
-      cwd: "/tmp/auth",
-      taskDir: "/tmp/auth/.strideterm/tasks/task-1",
-      handoffPath: "/tmp/auth/.strideterm/tasks/task-1/HANDOFF.md",
-      verdictPath: "/tmp/auth/.strideterm/tasks/task-1/verdict.json",
-      workLockPath: "/tmp/auth/.strideterm/tasks/task-1/WORK_LOCK",
-    },
-    fsState: "neither",
+    previousState: "running",
     ...overrides,
   };
 }
@@ -49,7 +38,13 @@ describe("TaskRecoveryDialog", () => {
   test("renders one row per candidate with name and round metadata", () => {
     seedStore([
       makeCandidate({ workspaceId: "ws-a", workspaceName: "Auth", currentRound: 3, maxRounds: 8 }),
-      makeCandidate({ workspaceId: "ws-b", workspaceName: "Billing", currentRound: 1, maxRounds: 4, phase: "judge" }),
+      makeCandidate({
+        workspaceId: "ws-b",
+        workspaceName: "Billing",
+        currentRound: 1,
+        maxRounds: 4,
+        previousState: "judge-evaluating",
+      }),
     ]);
     const wrapper = mount(TaskRecoveryDialog);
     expect(wrapper.text()).toContain("Auth");
@@ -70,14 +65,14 @@ describe("TaskRecoveryDialog", () => {
     }
   });
 
-  test("shows fs-state label per candidate", () => {
+  test("shows previousState label per candidate", () => {
     seedStore([
-      makeCandidate({ workspaceId: "ws-a", fsState: "neither" }),
-      makeCandidate({ workspaceId: "ws-b", fsState: "handoff-exists" }),
+      makeCandidate({ workspaceId: "ws-a", previousState: "running" }),
+      makeCandidate({ workspaceId: "ws-b", previousState: "judge-evaluating" }),
     ]);
     const wrapper = mount(TaskRecoveryDialog);
-    expect(wrapper.text()).toContain("no output yet");
-    expect(wrapper.text()).toContain("handoff written");
+    expect(wrapper.text()).toContain("Worker running");
+    expect(wrapper.text()).toContain("Judge evaluating");
   });
 
   test("shows profile badge for non-default profile when profile exists in store", () => {
