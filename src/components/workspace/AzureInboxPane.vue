@@ -30,16 +30,29 @@
           </button>
         </div>
         <div class="azure-inbox__actions">
-          <button type="button" class="button" @click="appStore.openQuickFixWizard()">New Branch</button>
+          <button
+            type="button"
+            class="button"
+            title="Open the Quick-fix wizard: pick an Azure project & repo, branch off and start work without leaving the IDE."
+            @click="appStore.openQuickFixWizard()"
+          >
+            New Branch
+          </button>
           <button
             type="button"
             :class="['button', 'button--ghost', busyAction === 'refresh' && 'button--busy']"
             :disabled="!!busyAction"
+            title="Force re-poll all Azure DevOps connections now (PR list, comments, votes). Skips the configured poll interval."
             @click="handleRefresh"
           >
             {{ busyAction === "refresh" ? "Refreshing…" : "Refresh" }}
           </button>
-          <button type="button" class="button button--ghost" @click="appStore.openAzureConnectionDialog('')">
+          <button
+            type="button"
+            class="button button--ghost"
+            title="Add a new Azure DevOps connection (organization URL, login, PAT, project filters)."
+            @click="appStore.openAzureConnectionDialog('')"
+          >
             Add connection
           </button>
         </div>
@@ -108,10 +121,11 @@
                 <div v-if="conn.lastSyncAt" style="font-size: 11px; color: var(--muted); padding: 2px 0">
                   Last sync: {{ new Date(conn.lastSyncAt).toLocaleString() }}
                 </div>
-                <div class="docker-card__actions">
+                <div class="docker-card__actions docker-card__actions--end">
                   <button
                     type="button"
                     class="button button--ghost"
+                    title="Edit this connection (organization URL, PAT, project filters, poll interval, review root)."
                     @click="appStore.openAzureConnectionDialog(conn.id)"
                   >
                     Edit
@@ -120,6 +134,7 @@
                     type="button"
                     :class="['button', 'button--ghost', 'danger', busyAction === `delete-${conn.id}` && 'button--busy']"
                     :disabled="!!busyAction"
+                    title="Delete this Azure DevOps connection. PR cache and audit log entries for it remain on disk."
                     @click="handleDeleteConnection(conn.id)"
                   >
                     Delete
@@ -158,6 +173,7 @@
                     ? 'font-size:11px;padding:2px 8px;background:var(--accent);color:var(--bg);'
                     : 'font-size:11px;padding:2px 8px;'
                 "
+                title="Show pull requests across every project / repository."
                 @click="repoFilter = ''"
               >
                 All repos
@@ -172,12 +188,36 @@
                     ? 'font-size:11px;padding:2px 8px;background:var(--accent);color:var(--bg);'
                     : 'font-size:11px;padding:2px 8px;'
                 "
+                :title="`Show only PRs from ${repo}.`"
                 @click="repoFilter = repoFilter === repo ? '' : repo"
               >
                 {{ repo }}
               </button>
             </div>
-            <template v-if="activeGroupedItems.length">
+            <!-- Needs Attention is special: subdivide by why it needs attention
+                 (assigned reviewer, comment on watched PR, your own PR). -->
+            <template v-if="tab.id === 'attention' && attentionGroupedItems.length">
+              <div
+                v-for="grp in attentionGroupedItems"
+                :key="grp.bucket"
+                class="azure-attention-bucket"
+              >
+                <div class="azure-attention-bucket__header">
+                  <span class="azure-attention-bucket__name">{{ grp.label }}</span>
+                  <span class="azure-attention-bucket__count">{{ grp.items.length }}</span>
+                  <small class="azure-attention-bucket__hint">{{ grp.hint }}</small>
+                </div>
+                <AzurePrRow
+                  v-for="item in grp.items"
+                  :key="item.prKey"
+                  :item="item"
+                  @open="onOpenPr"
+                  @browser="onOpenBrowser"
+                  @seen="onMarkSeen"
+                />
+              </div>
+            </template>
+            <template v-else-if="activeGroupedItems.length">
               <div v-for="group in activeGroupedItems" :key="group.repo" class="azure-repo-group">
                 <div v-if="!repoFilter && repoNames.length > 1" class="azure-repo-group__header">
                   <span class="azure-repo-group__name">{{ group.repo }}</span>
@@ -215,7 +255,10 @@ withDefaults(defineProps<{ workspaceId: string; showHeader?: boolean }>(), { sho
 const appStore = useAppStore();
 
 const busyAction = ref<string>("");
-const activeTab = ref<string>("all");
+// Default to the "Needs attention" tab so the most actionable items surface
+// first — explicit reviewers, mentions, your-PR comments. Falls back to the
+// generic All tab when there's nothing actionable yet.
+const activeTab = ref<string>("attention");
 const openError = ref<string>("");
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -273,6 +316,65 @@ const repoNames = computed(() => {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const names = [...new Set(all.map((item: any) => `${item.project?.name || ""}/${item.repository?.name || ""}`))];
   return names.sort();
+});
+
+// Group "Needs attention" items by why they need attention. The reasons —
+// assigned reviewer, comment activity on a watched PR, your-own-PR with new
+// activity — are far more useful to the user than a flat list, and answer the
+// 5.1 request: "the picker has to be sharper, route reviews-of-mine /
+// commented-on / mine-as-author into the same screen but split by source".
+const attentionBuckets = [
+  {
+    bucket: "reviewer",
+    label: "You were asked to review",
+    hint: "PRs where you are an explicit reviewer with new activity since you last looked.",
+    test: (item: { role?: string }) => item.role === "reviewer",
+  },
+  {
+    bucket: "author",
+    label: "Your PRs need a look",
+    hint: "Pull requests you opened that received a vote, comment, or build update since you last visited.",
+    test: (item: { role?: string }) => item.role === "author",
+  },
+  {
+    bucket: "comments",
+    label: "New comments on PRs you watch",
+    hint: "Comments / replies on pull requests you neither own nor review but follow.",
+    test: (item: { role?: string; attentionReason?: string }) =>
+      item.role !== "reviewer" && item.role !== "author" && /comment|reply|mention/i.test(item.attentionReason || ""),
+  },
+  {
+    bucket: "other",
+    label: "Other activity",
+    hint: "Everything else flagged for your attention (build status changes, conflict, etc.).",
+    test: () => true,
+  },
+];
+
+const attentionGroupedItems = computed(() => {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let items: any[] = [...(inbox.value.needsAttention || [])];
+  if (repoFilter.value) {
+    items = items.filter(
+      (item) => `${item.project?.name || ""}/${item.repository?.name || ""}` === repoFilter.value,
+    );
+  }
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const buckets: { bucket: string; label: string; hint: string; items: any[] }[] = attentionBuckets.map((b) => ({
+    bucket: b.bucket,
+    label: b.label,
+    hint: b.hint,
+    items: [],
+  }));
+  outer: for (const item of items) {
+    for (let i = 0; i < attentionBuckets.length; i++) {
+      if (attentionBuckets[i].test(item)) {
+        buckets[i].items.push(item);
+        continue outer;
+      }
+    }
+  }
+  return buckets.filter((b) => b.items.length);
 });
 
 // Group items by project/repo for the active tab, cached as computed

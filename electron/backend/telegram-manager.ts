@@ -177,6 +177,21 @@ export interface TelegramWorkspaceInfo {
   parentWorkspaceId?: string;
   panels: Array<{ id: string; title: string }>;
   task?: { state: string; description: string } | null;
+  /** Whether the user has flagged this workspace as a favourite. Telegram
+   * listings surface starred entries first. */
+  starred?: boolean;
+}
+
+/**
+ * Sort helper used by every Telegram listing of workspaces or worktrees:
+ * starred entries first (★), then alphabetical by name. Mutates a copy and
+ * returns it.
+ */
+export function sortWorkspacesStarredFirst<T extends { starred?: boolean; name?: string }>(items: T[]): T[] {
+  return [...items].sort((a, b) => {
+    if (!!a.starred !== !!b.starred) return a.starred ? -1 : 1;
+    return String(a.name || "").localeCompare(String(b.name || ""));
+  });
 }
 
 // State machine for pending user input
@@ -1463,17 +1478,19 @@ export class TelegramManager extends EventEmitter {
   }
 
   private async _handleWorkspacesCommand(chatId: string, token: string): Promise<void> {
-    const workspaces = this.getWorkspaces?.() ?? [];
-    if (workspaces.length === 0) {
+    const raw = this.getWorkspaces?.() ?? [];
+    if (raw.length === 0) {
       await this._sendText(token, chatId, "🗂 No workspaces are open\\.", true);
       return;
     }
+    const workspaces = sortWorkspacesStarredFirst(raw);
 
     const lines = ["🗂 *Workspaces:*", ""];
     for (let i = 0; i < workspaces.length; i++) {
       const ws = workspaces[i];
       const kindLabel = ws.task ? `task: ${ws.task.state}` : ws.kind;
-      lines.push(`${i + 1}\\. *${escapeMarkdown(ws.name)}* \\(${escapeMarkdown(kindLabel)}\\)`);
+      const star = ws.starred ? "⭐ " : "";
+      lines.push(`${i + 1}\\. ${star}*${escapeMarkdown(ws.name)}* \\(${escapeMarkdown(kindLabel)}\\)`);
       if (ws.cwd) lines.push(`   📁 \`${escapeInlineCode(ws.cwd)}\``);
     }
 
@@ -1506,15 +1523,17 @@ export class TelegramManager extends EventEmitter {
     //  - has a workable cwd
     //  - belongs to the active profile (so the user doesn't accidentally
     //    create a task in another profile they aren't currently viewing)
-    const candidates = workspaces.filter(
-      (w) =>
-        !w.parentWorkspaceId &&
-        w.kind !== "azure" &&
-        w.kind !== "github" &&
-        w.kind !== "docker" &&
-        w.kind !== "task" &&
-        !!w.cwd &&
-        (w.profileId || "default") === activeProfile,
+    const candidates = sortWorkspacesStarredFirst(
+      workspaces.filter(
+        (w) =>
+          !w.parentWorkspaceId &&
+          w.kind !== "azure" &&
+          w.kind !== "github" &&
+          w.kind !== "docker" &&
+          w.kind !== "task" &&
+          !!w.cwd &&
+          (w.profileId || "default") === activeProfile,
+      ),
     );
 
     if (candidates.length === 0) {
@@ -1531,7 +1550,8 @@ export class TelegramManager extends EventEmitter {
     const lines = [`🗂 *Pick a workspace for the new task* \\(profile: *${escapeMarkdown(activeProfile)}*\\):`, ""];
     for (let i = 0; i < candidates.length; i++) {
       const ws = candidates[i];
-      lines.push(`${i + 1}\\. *${escapeMarkdown(ws.name)}*`);
+      const star = ws.starred ? "⭐ " : "";
+      lines.push(`${i + 1}\\. ${star}*${escapeMarkdown(ws.name)}*`);
       if (ws.cwd) lines.push(`   📁 \`${escapeInlineCode(ws.cwd)}\``);
     }
     lines.push("");
@@ -2218,10 +2238,12 @@ export class TelegramManager extends EventEmitter {
     const all = this.getWorkspaces?.() ?? [];
     const namePrefix = `${parent.name} / `;
     const notesNeedle = `Worktree of ${parent.name}`;
-    return all.filter(
+    const matches = all.filter(
       (w) =>
         w.id !== parent.id && ((w.notes || "").startsWith(notesNeedle) || w.name.startsWith(namePrefix)) && !!w.cwd,
     );
+    // Starred worktrees first so the user sees their pinned ones at the top.
+    return sortWorkspacesStarredFirst(matches);
   }
 
   private async _presentWorktreeModeMenu(

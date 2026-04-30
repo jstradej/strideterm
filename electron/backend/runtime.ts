@@ -655,6 +655,7 @@ export async function createRuntime({
           (isWorktreeChild ? "__worktree__" : ""),
         panels: (ws.panels || []).map((p) => ({ id: p.id, title: p.title || p.id })),
         task: ws.task ? { state: ws.task.state || "unknown", description: ws.task.description || "" } : null,
+        starred: !!ws.starred,
       };
     }),
   );

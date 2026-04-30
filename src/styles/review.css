@@ -99,26 +99,49 @@
 }
 
 .azure-repo-group {
-  margin-bottom: 4px;
+  margin-bottom: 6px;
+  border-left: 3px solid color-mix(in srgb, var(--accent), transparent 55%);
+  background: rgba(var(--tint), 0.02);
+  border-radius: 0 4px 4px 0;
 }
 
 .azure-repo-group__header {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 8px 16px 4px;
+  gap: 10px;
+  padding: 10px 16px 6px;
   border-bottom: 1px solid var(--border);
-  background: rgba(var(--tint), 0.02);
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--accent), transparent 88%) 0%,
+    color-mix(in srgb, var(--accent), transparent 96%) 70%,
+    transparent 100%
+  );
   position: sticky;
   top: 0;
   z-index: 1;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.azure-repo-group__header::before {
+  content: "▸";
+  color: var(--accent);
+  font-size: 10px;
+  opacity: 0.7;
+}
+
+/* Indent the PR rows under a project/repo group so the nesting reads
+   visually — the user reported it was "almost invisible". */
+.azure-repo-group .azure-pr-row {
+  padding-left: 26px;
 }
 
 .azure-repo-group__name {
   font-size: 12px;
-  font-weight: 600;
+  font-weight: 700;
   color: var(--accent);
-  letter-spacing: 0.02em;
+  letter-spacing: 0.06em;
 }
 
 .azure-repo-group__count {
@@ -189,6 +212,114 @@
   gap: 4px;
   flex-shrink: 0;
   padding-top: 2px;
+  margin-left: auto;
+  justify-content: flex-end;
+  align-items: center;
+}
+
+/* Right-align the action cluster on connection cards, review summary,
+   and similar action rows. The user explicitly asked for buttons to
+   line up on the right across all comparable forms. */
+.docker-card__actions--end {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+  align-items: center;
+}
+
+/* Sub-buckets within the Needs Attention tab. Visually distinct from the
+   project/repo grouping so the user reads the source of attention first. */
+.azure-attention-bucket {
+  margin-bottom: 8px;
+  border: 1px solid color-mix(in srgb, var(--accent), transparent 70%);
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--accent), transparent 95%);
+}
+
+.azure-attention-bucket__header {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 8px 14px;
+  border-bottom: 1px solid color-mix(in srgb, var(--accent), transparent 70%);
+  background: color-mix(in srgb, var(--accent), transparent 88%);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.azure-attention-bucket__name {
+  font-weight: 700;
+  color: var(--accent);
+}
+
+.azure-attention-bucket__count {
+  font-size: 10px;
+  color: var(--muted);
+  background: rgba(var(--tint), 0.06);
+  padding: 0 6px;
+  border-radius: 8px;
+}
+
+.azure-attention-bucket__hint {
+  font-size: 11px;
+  color: var(--muted);
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+/* Diff toolbar above the Monaco panel in the Files tab. Holds per-commit
+   chips for 6.1 and the current-mode label. */
+.review-diff-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--border);
+  flex-wrap: wrap;
+}
+
+.review-diff-toolbar__chips {
+  display: inline-flex;
+  gap: 4px;
+  flex-wrap: wrap;
+  flex: 1;
+  min-width: 0;
+}
+
+.review-diff-toolbar__mode {
+  font-size: 11px;
+  color: var(--muted);
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+}
+
+.review-diff-chip {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-family: var(--mono, monospace);
+}
+
+.review-diff-chip:hover {
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+.review-diff-chip--active {
+  background: rgba(255, 164, 36, 0.15);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.review-diff-monaco {
+  flex: 1;
+  min-height: 0;
+  display: flex;
 }
 
 .azure-empty {

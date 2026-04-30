@@ -400,13 +400,46 @@
             </div>
             <div class="review-files-split__right">
               <template v-if="reviewUi.reviewFileDiffPreview">
-                <div class="section-head" style="padding: 0 6px">
+                <div class="review-diff-toolbar">
                   <div>
-                    <p class="eyebrow">Diff preview</p>
-                    <h3>{{ reviewUi.reviewFileDiffPreview.path }}</h3>
+                    <p class="eyebrow" style="margin: 0">Diff</p>
+                    <h3 style="margin: 0; font-size: 13px">{{ reviewUi.reviewFileDiffPreview.path }}</h3>
                   </div>
+                  <!-- 6.1: per-commit toggle. The "Final" entry is the
+                       roll-up branch diff; each commit option scopes the
+                       Monaco view to that commit's changes only. -->
+                  <div class="review-diff-toolbar__chips">
+                    <button
+                      type="button"
+                      :class="['review-diff-chip', !reviewCommitFilter && 'review-diff-chip--active']"
+                      title="Show the rolled-up branch diff vs the PR target. This is the final state of every change in the PR."
+                      @click="reviewCommitFilter = ''"
+                    >
+                      Final
+                    </button>
+                    <button
+                      v-for="c in changedFileCommits"
+                      :key="c.shortHash"
+                      type="button"
+                      :class="['review-diff-chip', reviewCommitFilter === c.shortHash && 'review-diff-chip--active']"
+                      :title="`Show only what changed in commit ${c.shortHash}: ${c.subject}`"
+                      @click="reviewCommitFilter = c.shortHash"
+                    >
+                      {{ c.shortHash }}
+                    </button>
+                  </div>
+                  <span class="review-diff-toolbar__mode" :title="reviewDiffModeLabel">{{ reviewDiffModeLabel }}</span>
                 </div>
-                <DiffViewer v-if="reviewUi.reviewFileDiffPreview.diff" :diff="reviewUi.reviewFileDiffPreview.diff" />
+                <MonacoDiffPanel
+                  v-if="monacoDiffPayload"
+                  :payload="monacoDiffPayload"
+                  :loading="monacoDiffLoading"
+                  class="review-diff-monaco"
+                />
+                <DiffViewer
+                  v-else-if="reviewUi.reviewFileDiffPreview.diff"
+                  :diff="reviewUi.reviewFileDiffPreview.diff"
+                />
                 <p v-else class="git-card__hint" style="padding: 6px">
                   {{ reviewUi.reviewFileDiffPreview.summary || "No diff available." }}
                 </p>
@@ -560,7 +593,16 @@
                     <h3>{{ reviewUi.reviewFileDiffPreview.path }}</h3>
                   </div>
                 </div>
-                <DiffViewer v-if="reviewUi.reviewFileDiffPreview.diff" :diff="reviewUi.reviewFileDiffPreview.diff" />
+                <MonacoDiffPanel
+                  v-if="monacoDiffPayload"
+                  :payload="monacoDiffPayload"
+                  :loading="monacoDiffLoading"
+                  class="review-diff-monaco"
+                />
+                <DiffViewer
+                  v-else-if="reviewUi.reviewFileDiffPreview.diff"
+                  :diff="reviewUi.reviewFileDiffPreview.diff"
+                />
                 <p v-else class="git-card__hint" style="padding: 6px">
                   {{ reviewUi.reviewFileDiffPreview.summary || "No diff available." }}
                 </p>
@@ -599,13 +641,14 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, inject, watch } from "vue";
+import { computed, ref, inject, watch, defineAsyncComponent } from "vue";
 import { useAppStore } from "../../stores/app.js";
 import { useGitUiStore } from "../../stores/git-ui.js";
 import { useReviewComments } from "../../composables/useReviewComments.js";
 import PaneShell from "../layout/PaneShell.vue";
 import DiffViewer from "./DiffViewer.vue";
 import GitCommitLog from "./git/GitCommitLog.vue";
+const MonacoDiffPanel = defineAsyncComponent(() => import("../shared/MonacoDiffPanel.vue"));
 import ReviewSummaryTab from "./azure/ReviewSummaryTab.vue";
 import ReviewCommentsTab from "./azure/ReviewCommentsTab.vue";
 import ReviewAgentTab from "./azure/ReviewAgentTab.vue";
@@ -1090,13 +1133,97 @@ const fileTree = computed(() => {
   return toArray(root);
 });
 
+// --- Monaco diff state for the review Files tab ---
+// We mirror GitChangesTab/GitHistoryTab: load raw left/right content via
+// fileGitDiff and feed it to MonacoDiffPanel for word-level diff, side-by-
+// side view, change navigation. The unified-text DiffViewer fallback is
+// kept around as a safety net for environments where Monaco fails to load.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const monacoDiffPayload = ref<Record<string, any> | null>(null);
+const monacoDiffLoading = ref(false);
+let monacoDiffSeq = 0;
+
+// When set, we render the per-commit diff for the selected commit instead of
+// the rolled-up branch diff. The user requested both views (final state +
+// per-commit) on item 6.1.
+const reviewCommitFilter = ref<string>("");
+
+const reviewDiffMode = computed<"branch" | "commit">(() => (reviewCommitFilter.value ? "commit" : "branch"));
+
+const reviewDiffModeLabel = computed(() =>
+  reviewDiffMode.value === "commit"
+    ? `Commit ${reviewCommitFilter.value.slice(0, 8)}`
+    : `Final diff vs ${stripRef(pullRequest.value.targetRefName || "") || "base"}`,
+);
+
+// Commits that introduced changes inside the PR. We surface each as a chip
+// in the Monaco toolbar so the reviewer can flip between final state and
+// per-commit context (6.1).
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const changedFileCommits = computed<any[]>(() => {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const log: any[] = (gitSnapshot.value?.log || []) as any[];
+  const ahead = Number(gitSnapshot.value?.aheadCount || 0);
+  if (ahead > 0) return log.slice(0, ahead);
+  return log.slice(0, 12);
+});
+
+async function loadMonacoReviewDiff(filePath: string) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const w = workspace.value as any;
+  const rootPath = w?.cwd || (w?.gitRoots?.[0] ?? "");
+  if (!rootPath || !filePath) {
+    monacoDiffPayload.value = null;
+    return;
+  }
+  const seq = ++monacoDiffSeq;
+  monacoDiffLoading.value = true;
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const api = appStore.getApi() as any;
+    let payload;
+    if (reviewDiffMode.value === "commit") {
+      payload = await api.fileCommitDiff({ rootPath, relativePath: filePath, hash: reviewCommitFilter.value });
+    } else {
+      const targetBranch = stripRef(pullRequest.value.targetRefName || "");
+      const ref = targetBranch ? `origin/${targetBranch}` : "HEAD";
+      payload = await api.fileGitDiff({ rootPath, relativePath: filePath, source: "branch", revisionRef: ref });
+    }
+    if (seq !== monacoDiffSeq) return;
+    monacoDiffPayload.value = payload || null;
+  } catch (err) {
+    if (seq !== monacoDiffSeq) return;
+    monacoDiffPayload.value = {
+      ok: false,
+      leftError: (err as Error)?.message || "Failed to load diff",
+      leftContent: "",
+      rightContent: "",
+      leftLabel: "",
+      rightLabel: "",
+      leftMissing: true,
+      rightMissing: true,
+      language: "plaintext",
+    };
+  } finally {
+    if (seq === monacoDiffSeq) monacoDiffLoading.value = false;
+  }
+}
+
 function onSelectFile(filePath: string) {
   // Strip leading / for git operations
   const normalized = String(filePath || "").replace(/^\//, "");
-  // Pass the PR target branch so diff uses the correct base
+  // Pass the PR target branch so the legacy unified-diff fallback uses the
+  // correct base.
   const targetBranch = stripRef(pullRequest.value.targetRefName || "");
   gitUiStore.reviewSelectFileDiff(props.workspaceId, normalized, targetBranch);
+  loadMonacoReviewDiff(normalized);
 }
+
+watch(reviewCommitFilter, () => {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const sel = (reviewUi.value as any)?.reviewSelectedFile;
+  if (sel) loadMonacoReviewDiff(String(sel).replace(/^\//, ""));
+});
 
 // Helpers
 function stripRef(ref: unknown) {

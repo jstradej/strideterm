@@ -62,12 +62,12 @@
         </div>
 
         <div class="review-section-divider"><span>Review actions</span></div>
-        <div class="docker-card__actions">
+        <div class="docker-card__actions docker-card__actions--end">
           <button
             type="button"
             :class="['button', 'button--ghost', busyAction === 'vote-10' && 'button--busy']"
-            :disabled="!!busyAction"
-            title="Vote +10: Approve this PR on Azure DevOps"
+            :disabled="!!busyAction || !canVote"
+            :title="voteDisabledTitle('Vote +10: Approve this PR on Azure DevOps. The vote is recorded under your reviewer profile.')"
             @click="handleVote(prKey, 10, 'Approve')"
           >
             {{ busyAction === "vote-10" ? "Approving…" : "Approve" }}
@@ -75,8 +75,8 @@
           <button
             type="button"
             :class="['button', 'button--ghost', busyAction === 'vote-5' && 'button--busy']"
-            :disabled="!!busyAction"
-            title="Vote +5: Approve with suggestions — looks good but has minor feedback"
+            :disabled="!!busyAction || !canVote"
+            :title="voteDisabledTitle('Vote +5: Approve with suggestions — looks good but has minor feedback that the author can address before merge.')"
             @click="handleVote(prKey, 5, 'Approve')"
           >
             {{ busyAction === "vote-5" ? "Submitting…" : "Approve with suggestions" }}
@@ -84,8 +84,8 @@
           <button
             type="button"
             :class="['button', 'button--ghost', busyAction === 'vote--5' && 'button--busy']"
-            :disabled="!!busyAction"
-            title="Vote -5: Wait for author — changes needed before approval"
+            :disabled="!!busyAction || !canVote"
+            :title="voteDisabledTitle('Vote -5: Wait for author — changes needed before approval. Author should address comments and re-request review.')"
             @click="handleVote(prKey, -5, 'Wait')"
           >
             {{ busyAction === "vote--5" ? "Submitting…" : "Wait" }}
@@ -93,8 +93,8 @@
           <button
             type="button"
             :class="['button', 'button--ghost', 'danger', busyAction === 'vote--10' && 'button--busy']"
-            :disabled="!!busyAction"
-            title="Vote -10: Reject this PR on Azure DevOps"
+            :disabled="!!busyAction || !canVote"
+            :title="voteDisabledTitle('Vote -10: Reject this PR. Strong signal — only Reset Vote or a new revision can clear it.')"
             @click="handleVote(prKey, -10, 'Reject')"
           >
             {{ busyAction === "vote--10" ? "Rejecting…" : "Reject" }}
@@ -102,8 +102,8 @@
           <button
             type="button"
             :class="['button', 'button--ghost', busyAction === 'vote-0' && 'button--busy']"
-            :disabled="!!busyAction"
-            title="Reset your vote to 0 (no vote) on Azure DevOps"
+            :disabled="!!busyAction || !canVote"
+            :title="voteDisabledTitle('Reset your vote to 0 (no vote) on this PR.')"
             @click="handleVote(prKey, 0, 'Clear')"
           >
             {{ busyAction === "vote-0" ? "Clearing…" : "Clear vote" }}
@@ -122,12 +122,12 @@
         </div>
 
         <div class="review-section-divider"><span>Git operations</span></div>
-        <div class="docker-card__actions">
+        <div class="docker-card__actions docker-card__actions--end">
           <button
             type="button"
             :class="['button', 'button--ghost', busyAction === 'fetch' && 'button--busy']"
             :disabled="!!busyAction"
-            title="Git fetch — download the latest commits from the remote for this review worktree"
+            title="Git fetch — refresh remote tracking refs for this review worktree without changing your working tree."
             @click="handleFetch(workspaceId)"
           >
             {{ busyAction === "fetch" ? "Fetching…" : "Fetch" }}
@@ -135,8 +135,12 @@
           <button
             type="button"
             :class="['button', 'button--ghost', busyAction === 'rebase' && 'button--busy']"
-            :disabled="!!busyAction"
-            title="Rebase the PR source branch onto the latest target branch in this review worktree"
+            :disabled="!!busyAction || !canRebase"
+            :title="
+              !canRebase
+                ? 'Rebase is unnecessary — your branch is already up to date with the PR target.'
+                : 'Rebase the PR source branch onto the latest PR target branch. Conflicts will be reported in the Conflicts tab.'
+            "
             @click="handleRebase(workspaceId)"
           >
             {{ busyAction === "rebase" ? "Rebasing…" : "Rebase on target" }}
@@ -144,8 +148,12 @@
           <button
             type="button"
             :class="['button', 'button--ghost', busyAction === 'push' && 'button--busy']"
-            :disabled="!!busyAction"
-            title="Push the current branch of this review worktree to the remote"
+            :disabled="!!busyAction || !canPush"
+            :title="
+              !canPush
+                ? 'Nothing to push — no local commits ahead of the remote tracking branch.'
+                : 'Push the local commits of this review worktree to the remote PR branch (fast-forward only).'
+            "
             @click="handlePush(workspaceId)"
           >
             {{ busyAction === "push" ? "Pushing…" : "Push branch" }}
@@ -153,8 +161,12 @@
           <button
             type="button"
             :class="['button', 'button--ghost', busyAction === 'force-push' && 'button--busy']"
-            :disabled="!!busyAction"
-            title="Force push (--force-with-lease) — use after rebase to update the PR branch"
+            :disabled="!!busyAction || !canForcePush"
+            :title="
+              !canForcePush
+                ? 'Force push is unnecessary — local and remote agree.'
+                : 'Force push with --force-with-lease. Use after rebase to update the PR branch; aborts if someone else pushed since your last fetch.'
+            "
             @click="handleForcePush(workspaceId)"
           >
             {{ busyAction === "force-push" ? "Force pushing…" : "Force push" }}
@@ -163,7 +175,7 @@
             type="button"
             class="button button--ghost"
             :disabled="!!busyAction"
-            title="Open Lazygit in a terminal for this review worktree"
+            title="Open Lazygit in a terminal pointed at this review worktree for ad-hoc git operations."
             @click="gitUiStore.openLazygit(workspaceId)"
           >
             Open Lazygit
@@ -246,6 +258,45 @@ const appStore = useAppStore();
 const gitUiStore = useGitUiStore();
 
 const busyAction = ref<string>("");
+
+// 6.2: surface why a button is disabled. Voting on your own PR is rejected
+// by Azure; force-push only makes sense after a rebase or when ahead of
+// remote; rebase only makes sense when the branch is behind its target;
+// push only makes sense when there are local commits ahead of remote.
+const isOwnPr = computed(() => {
+  const me = String(props.detail?.currentUserId || props.detail?.connection?.currentUserId || "").toLowerCase();
+  const author = String(
+    props.pullRequest?.createdBy?.id ||
+      props.pullRequest?.createdBy?.uniqueName ||
+      props.detail?.author?.id ||
+      "",
+  ).toLowerCase();
+  return !!me && !!author && me === author;
+});
+
+const isReviewer = computed(() => {
+  const role = String(props.detail?.role || "").toLowerCase();
+  if (role === "reviewer") return true;
+  return Array.isArray(props.reviewers) && props.reviewers.length > 0;
+});
+
+const gitSnapshot = computed(() => appStore.getGitSnapshot(props.workspaceId) as Record<string, unknown> | null);
+const aheadCount = computed(() => Number((gitSnapshot.value as { aheadCount?: number } | null)?.aheadCount || 0));
+const behindCount = computed(() => Number((gitSnapshot.value as { behindCount?: number } | null)?.behindCount || 0));
+
+const voteDisabledReason = computed(() => {
+  if (busyAction.value) return "";
+  if (isOwnPr.value) return "Azure DevOps does not allow voting on your own pull request.";
+  if (!isReviewer.value)
+    return "Only assigned reviewers can vote. Add yourself as a reviewer in Azure or via the &quot;Add me&quot; flow.";
+  return "";
+});
+const canVote = computed(() => !voteDisabledReason.value);
+const voteDisabledTitle = (base: string) => (voteDisabledReason.value ? voteDisabledReason.value : base);
+
+const canPush = computed(() => aheadCount.value > 0);
+const canForcePush = computed(() => aheadCount.value > 0 || behindCount.value > 0);
+const canRebase = computed(() => behindCount.value > 0);
 
 const conflictInfo = computed(() => {
   const status = props.pullRequest.mergeStatus || "";

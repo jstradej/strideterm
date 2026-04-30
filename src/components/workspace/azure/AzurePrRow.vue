@@ -21,17 +21,29 @@
       </div>
     </div>
     <div class="azure-pr-row__actions">
-      <button type="button" class="button" @click="$emit('open', { prKey: item.prKey, workspaceId: openWorkspaceId })">
+      <button
+        type="button"
+        class="button"
+        :title="actionTitle"
+        @click="$emit('open', { prKey: item.prKey, workspaceId: openWorkspaceId })"
+      >
         {{ actionLabel }}
       </button>
       <button
         type="button"
         class="button button--ghost"
+        title="Open this pull request in your default browser."
         @click="$emit('browser', pullRequest.webUrl || pullRequest.url)"
       >
         Browser
       </button>
-      <button v-if="item.hasAttention" type="button" class="button button--ghost" @click="$emit('seen', item.prKey)">
+      <button
+        v-if="item.hasAttention"
+        type="button"
+        class="button button--ghost"
+        title="Acknowledge: clear the &quot;needs attention&quot; flag for this PR until it changes again."
+        @click="$emit('seen', item.prKey)"
+      >
         Seen
       </button>
     </div>
@@ -66,6 +78,16 @@ const actionLabel = computed(() => {
   if (props.item.role === "author" && props.item.existingWorkspaceId && !props.item.reviewWorkspaceId) return "Attach";
   if (props.item.reviewWorkspaceId) return "Open";
   return "Review";
+});
+
+const actionTitle = computed(() => {
+  if (actionLabel.value === "Attach") {
+    return "Attach this PR to your existing workspace at the same source branch — no review workspace will be created.";
+  }
+  if (actionLabel.value === "Open") {
+    return "Switch to the review workspace already prepared for this PR.";
+  }
+  return "Create a fresh review workspace: clone the PR branch into the review root and open it for inspection.";
 });
 
 function stripRef(ref: unknown) {
