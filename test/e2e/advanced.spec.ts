@@ -212,17 +212,6 @@ test.describe("New workspace picker", () => {
 // Task dashboard pane
 // ---------------------------------------------------------------------------
 test.describe("Task dashboard", () => {
-  // These tests click `.td__tab` to switch between Status / Assignment / Files
-  // tabs, which mutates state held in the mock server closure (activeWorkspaceId,
-  // settings, etc.). Without resetting between tests, the 6th test would open
-  // a fresh page against a mock that no longer had Status as the active panel.
-  //
-  // Recreating the mock server per test (beforeEach/afterEach) is unsafe here:
-  // mock.close() can hang indefinitely because the Vite HMR WebSocket proxy
-  // creates raw socket pipes that aren't tracked, so server.close() never
-  // resolves. Instead we share one mock across the describe (cheap, no
-  // teardown timing risk) and call mock.reset() in beforeEach to re-seed the
-  // payload from the fixture between tests.
   let mock: Awaited<ReturnType<typeof startMockServer>>;
   test.beforeAll(async () => {
     mock = await startMockServer({
@@ -234,9 +223,6 @@ test.describe("Task dashboard", () => {
           "You are the Judge agent. Evaluate whether the Worker has completed the task according to the requirements below.\n\n## Verification\n\n- Run `npm test` and verify all tests pass\n- Check that JWT tokens are properly validated\n- Verify session cookie code is removed",
       },
     });
-  });
-  test.beforeEach(async () => {
-    await mock.reset();
   });
   test.afterAll(async () => {
     await mock?.close();
