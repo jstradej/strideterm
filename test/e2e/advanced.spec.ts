@@ -212,8 +212,16 @@ test.describe("New workspace picker", () => {
 // Task dashboard pane
 // ---------------------------------------------------------------------------
 test.describe("Task dashboard", () => {
+  // Per-test mock server because these tests click `.td__tab` to switch
+  // between Status / Assignment / Files tabs, which mutates state held in
+  // the mock server closure (activeWorkspaceId, active panel, etc.). With
+  // `beforeAll` that mutation leaked into later tests in the describe, so
+  // a test expecting the default Status dashboard could land on whatever
+  // state the previous test ended in. Cost is ~50ms/test for a fresh HTTP
+  // listener — negligible compared to test runtime, and worth it for
+  // total isolation.
   let mock: Awaited<ReturnType<typeof startMockServer>>;
-  test.beforeAll(async () => {
+  test.beforeEach(async () => {
     mock = await startMockServer({
       fixture: "task-workspace",
       fileContents: {
@@ -224,7 +232,7 @@ test.describe("Task dashboard", () => {
       },
     });
   });
-  test.afterAll(async () => {
+  test.afterEach(async () => {
     await mock?.close();
   });
 

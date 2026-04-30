@@ -46,13 +46,19 @@
       "tabTemplates": [
         { "id": "shell", "title": "Shell", "command": "", "icon": "terminal" },
         { "id": "claude", "title": "Claude Code", "command": "claude", "icon": "bot" },
-        { "id": "codex", "title": "Codex", "command": "codex", "icon": "bot" }
+        { "id": "codex", "title": "Codex", "command": "codex", "icon": "bot" },
+        { "id": "gemini", "title": "Gemini CLI", "command": "gemini", "icon": "bot" },
+        { "id": "copilot", "title": "GitHub Copilot", "command": "copilot", "icon": "bot" },
+        { "id": "opencode", "title": "OpenCode", "command": "opencode", "icon": "bot" }
       ]
     },
     "tabTemplates": [
       { "id": "shell", "title": "Shell", "command": "", "icon": "terminal" },
       { "id": "claude", "title": "Claude Code", "command": "claude", "icon": "bot" },
-      { "id": "codex", "title": "Codex", "command": "codex", "icon": "bot" }
+      { "id": "codex", "title": "Codex", "command": "codex", "icon": "bot" },
+      { "id": "gemini", "title": "Gemini CLI", "command": "gemini", "icon": "bot" },
+      { "id": "copilot", "title": "GitHub Copilot", "command": "copilot", "icon": "bot" },
+      { "id": "opencode", "title": "OpenCode", "command": "opencode", "icon": "bot" }
     ],
     "profiles": [
       {

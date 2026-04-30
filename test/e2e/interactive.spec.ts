@@ -87,7 +87,9 @@ test.describe("Tab picker", () => {
 
     const dropdown = page.locator(".tab-picker-dropdown");
     await expect(dropdown).toBeVisible({ timeout: 3_000 });
-    // All 3 templates from the multi-workspace fixture
+    // Templates from the multi-workspace fixture (we only assert the
+    // baseline three exist — the fixture also carries Gemini/Copilot/OpenCode
+    // for other suites, but they're not load-bearing here).
     await expect(dropdown.getByText("Shell")).toBeVisible();
     await expect(dropdown.getByText("Claude Code")).toBeVisible();
     await expect(dropdown.getByText("Codex")).toBeVisible();
