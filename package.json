@@ -156,7 +156,7 @@
     "vue": "^3.5.33",
     "winston": "^3.19.0",
     "ws": "^8.20.0",
-    "zod": "^4.3.6"
+    "zod": "^4.4.1"
   },
   "devDependencies": {
     "@effect/language-service": "0.85.1",
