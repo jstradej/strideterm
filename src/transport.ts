@@ -412,6 +412,7 @@ function createRemoteTransport(): Transport {
     gitStash: (payload) => fetchJson("/api/git/stash", payload),
     gitStashPop: (payload) => fetchJson("/api/git/stash-pop", payload),
     gitCommitDiff: (payload) => fetchJson("/api/git/commit-diff", payload),
+    gitLogPage: (payload) => fetchJson("/api/git/log-page", payload),
     gitListTags: (payload) => fetchJson("/api/git/list-tags", payload),
     gitCreateTag: (payload) => fetchJson("/api/git/create-tag", payload),
     gitDeleteTag: (payload) => fetchJson("/api/git/delete-tag", payload),

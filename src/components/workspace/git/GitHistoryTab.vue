@@ -26,7 +26,11 @@
               :commits="allCommits"
               :selected-commit="gitUi.selectedCommit"
               :ahead-count="snapshot.aheadCount || 0"
+              :has-more="hasMore"
+              :loading-more="loadingMore"
+              :page-size="pageSize"
               @select="(hash) => gitUiStore.gitSelectCommit(workspaceId, hash)"
+              @load-more="loadMore"
             />
           </div>
         </Pane>
@@ -94,19 +98,77 @@ const props = withDefaults(
 const appStore = useAppStore();
 const gitUiStore = useGitUiStore();
 
+const pageSize = 100;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const extraCommits = ref<any[]>([]);
+const hasMore = ref(true);
+const loadingMore = ref(false);
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const allCommits = computed<any[]>(() => {
   const seen = new Set<string>();
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const result: any[] = [];
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  for (const entry of [...(props.compare.commits || []), ...(props.snapshot?.log || [])] as any[]) {
+  for (const entry of [
+    ...(props.compare.commits || []),
+    ...(props.snapshot?.log || []),
+    ...extraCommits.value,
+  ] as any[]) {
     if (!entry.shortHash || seen.has(entry.shortHash)) continue;
     seen.add(entry.shortHash);
     result.push(entry);
   }
   return result;
 });
+
+// Reset pagination when workspace or base branch changes — the cached extra
+// commits are tied to the current range.
+watch(
+  () => [props.workspaceId, props.effectiveBaseBranch, props.activeRootPath],
+  () => {
+    extraCommits.value = [];
+    hasMore.value = true;
+    loadingMore.value = false;
+  },
+);
+
+async function loadMore() {
+  if (loadingMore.value || !hasMore.value) return;
+  loadingMore.value = true;
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const api = appStore.getApi() as any;
+    if (!api?.gitLogPage) {
+      hasMore.value = false;
+      return;
+    }
+    const skip = allCommits.value.length;
+    const result = await api.gitLogPage({
+      workspaceId: props.workspaceId,
+      rootPath: props.activeRootPath,
+      baseBranch: props.effectiveBaseBranch || "",
+      skip,
+      limit: pageSize,
+    });
+    if (!result || result.ok === false) {
+      hasMore.value = false;
+      return;
+    }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const incoming: any[] = Array.isArray(result.commits) ? result.commits : [];
+    if (!incoming.length) {
+      hasMore.value = false;
+    } else {
+      extraCommits.value = [...extraCommits.value, ...incoming];
+      hasMore.value = !!result.hasMore;
+    }
+  } catch {
+    hasMore.value = false;
+  } finally {
+    loadingMore.value = false;
+  }
+}
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const commitFiles = ref<any[]>([]);

@@ -211,6 +211,15 @@ export const gitPayloadSchema = z
   .passthrough();
 export type GitPayload = z.infer<typeof gitPayloadSchema>;
 
+export const gitLogPageSchema = z.object({
+  workspaceId: nonEmptyString,
+  rootPath: z.string().optional(),
+  baseBranch: safeGitRef.optional(),
+  skip: z.number().int().min(0).default(0),
+  limit: z.number().int().min(1).max(500).default(100),
+});
+export type GitLogPage = z.infer<typeof gitLogPageSchema>;
+
 export const gitDiffPreviewSchema = z.object({
   workspaceId: nonEmptyString,
   path: nonEmptyString,

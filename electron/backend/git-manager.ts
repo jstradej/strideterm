@@ -2,6 +2,7 @@
 import path from "node:path";
 import { EventEmitter } from "node:events";
 import { existsSync, readdirSync } from "node:fs";
+import { rm as fsRm } from "node:fs/promises";
 import { Effect } from "effect";
 import { execFileText, quotePosixArg } from "./process-utils.js";
 import { encodeAuthHeader, sanitizeGitEnvironment } from "./shared/git-auth-utils.js";
@@ -336,6 +337,46 @@ export class GitManager extends EventEmitter {
     return value;
   }
 
+  /**
+   * Resolve "last activity" for a worktree as a Unix timestamp (ms).
+   *
+   * We don't want a per-worktree subprocess on every snapshot, so we use the
+   * mtime of the worktree's HEAD pointer file. Git updates HEAD on commit,
+   * checkout, reset and friends — close enough to "last user activity" for
+   * the worktree picker without burning a `git log -1` per row.
+   *
+   * Falls back to the worktree directory's own mtime, then to 0 (unknown).
+   */
+  async getWorktreeLastActivity(worktreePath: string, gitCommonDir: string, isMain: boolean): Promise<number> {
+    const candidates: string[] = [];
+    const safePath = String(worktreePath || "");
+    if (!safePath) return 0;
+
+    if (isMain) {
+      if (gitCommonDir) candidates.push(path.join(gitCommonDir, "HEAD"));
+      candidates.push(path.join(safePath, ".git", "HEAD"));
+    } else {
+      // Linked worktrees keep their HEAD inside <commonDir>/worktrees/<name>/HEAD.
+      const wtName = path.basename(safePath);
+      if (gitCommonDir && wtName) candidates.push(path.join(gitCommonDir, "worktrees", wtName, "HEAD"));
+      // Some setups use a plain .git file pointing into the common dir; if that
+      // exists, its mtime is a reasonable proxy too.
+      candidates.push(path.join(safePath, ".git"));
+    }
+    candidates.push(safePath);
+
+    const { stat } = await import("node:fs/promises");
+    for (const candidate of candidates) {
+      try {
+        const info = await stat(candidate);
+        if (info.mtimeMs) return Math.floor(info.mtimeMs);
+      } catch {
+        // try next
+      }
+    }
+    return 0;
+  }
+
   async detectLazygit(workspace: WorkspaceRef, rootPath: string | null = null): Promise<Record<string, unknown>> {
     const cwd = rootPath || workspace.cwd;
     const hostBinary = this.resolveLazygitBinary();
@@ -529,9 +570,12 @@ export class GitManager extends EventEmitter {
       const siblingWorktrees = await Promise.all(
         worktrees.map(async (entry, index) => {
           const isCurrent = path.resolve(entry.path) === path.resolve(root);
-          const dirtyState = isCurrent
-            ? { dirty: dirtyCount > 0, dirtyCount }
-            : await this.getCachedWorktreeDirtyState(entry.path);
+          const [dirtyState, lastActivity] = await Promise.all([
+            isCurrent
+              ? Promise.resolve({ dirty: dirtyCount > 0, dirtyCount })
+              : this.getCachedWorktreeDirtyState(entry.path),
+            this.getWorktreeLastActivity(entry.path, gitCommonDir, index === 0),
+          ]);
           const entryBranch = entry.branch || "";
           return {
             path: entry.path,
@@ -547,6 +591,7 @@ export class GitManager extends EventEmitter {
             prunable: entry.prunable,
             branchMerged:
               !!entryBranch && !entry.detached && entryBranch !== baseBranch && mergedBranchesSet.has(entryBranch),
+            lastActivityMs: lastActivity,
           };
         }),
       );
@@ -1198,6 +1243,40 @@ export class GitManager extends EventEmitter {
     }
   }
 
+  async logPage(
+    workspace: WorkspaceRef | null,
+    {
+      rootPath = "",
+      baseBranch = "",
+      skip = 0,
+      limit = 100,
+    }: { rootPath?: string; baseBranch?: string; skip?: number; limit?: number } = {},
+  ): Promise<{ ok: boolean; commits: ReturnType<typeof parseGitLog>; hasMore: boolean; error?: string }> {
+    const cwd = rootPath || workspace?.cwd || "";
+    if (!cwd) return { ok: false, commits: [], hasMore: false, error: "Missing rootPath" };
+    const safeLimit = Math.max(1, Math.min(500, Math.floor(limit)));
+    const safeSkip = Math.max(0, Math.floor(skip));
+    const range = baseBranch ? `${baseBranch}..HEAD` : "HEAD";
+    try {
+      // Fetch one extra to detect if more remain.
+      const result = await this.execGit(cwd, [
+        "log",
+        "--date=relative",
+        "--pretty=format:%h%x09%ad%x09%an%x09%d%x09%s",
+        "--skip",
+        String(safeSkip),
+        "-n",
+        String(safeLimit + 1),
+        range,
+      ]);
+      const all = parseGitLog(result.stdout || "");
+      const hasMore = all.length > safeLimit;
+      return { ok: true, commits: all.slice(0, safeLimit), hasMore };
+    } catch (error) {
+      return { ok: false, commits: [], hasMore: false, error: extractErrorMessage(error) };
+    }
+  }
+
   async commitDiff(
     workspace: WorkspaceRef | null,
     { hash, rootPath = "" }: { hash?: string; rootPath?: string } = {},
@@ -1595,14 +1674,39 @@ export class GitManager extends EventEmitter {
       }
     }
 
+    // Fast path: delete the worktree directory ourselves with fs.rm, then ask
+    // git to prune the metadata. `git worktree remove --force` recursively
+    // walks the tree using its own logic which is markedly slower than the
+    // platform's recursive remove on Windows when worktrees contain large
+    // node_modules / build directories. fs.rm with retries handles antivirus /
+    // file-lock interference better.
+    let rawOutput = "";
+    let removalError: { stdout?: string; stderr?: string; message?: string } | null = null;
     try {
-      await this.execGit(effectiveCwd, ["worktree", "remove", "--force", resolvedPath]);
+      if (existsSync(resolvedPath)) {
+        await fsRm(resolvedPath, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+      }
     } catch (error) {
-      const err = error as { stdout?: string; stderr?: string };
+      removalError = error as { stdout?: string; stderr?: string; message?: string };
+    }
+
+    // Tell git to drop the worktree entry. `prune` cleans stale entries when
+    // we already removed the directory; if the directory still exists (e.g.
+    // fs.rm hit a locked file), fall back to `git worktree remove --force`.
+    try {
+      if (removalError || existsSync(resolvedPath)) {
+        const result = await this.execGit(effectiveCwd, ["worktree", "remove", "--force", resolvedPath]);
+        rawOutput = joinRawOutput(result.stdout, result.stderr);
+      } else {
+        const pruneResult = await this.execGit(effectiveCwd, ["worktree", "prune"]);
+        rawOutput = joinRawOutput(pruneResult.stdout, pruneResult.stderr);
+      }
+    } catch (error) {
+      const err = error as { stdout?: string; stderr?: string; message?: string };
       return createStructuredResult({
         ok: false,
         summary: `Failed to remove worktree at ${resolvedPath}.`,
-        rawOutput: joinRawOutput(err.stdout, err.stderr),
+        rawOutput: joinRawOutput(err.stdout || (removalError?.message ?? ""), err.stderr),
       });
     }
 
@@ -1620,7 +1724,7 @@ export class GitManager extends EventEmitter {
     return createStructuredResult({
       ok: true,
       summary: `Worktree removed.${branchName && deleteBranch ? ` Branch ${branchName} deleted.` : ""}`,
-      rawOutput: branchOutput,
+      rawOutput: joinRawOutput(rawOutput, branchOutput),
     });
   }
 

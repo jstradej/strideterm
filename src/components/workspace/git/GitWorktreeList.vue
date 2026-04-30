@@ -19,34 +19,56 @@
             {{ entry.dirty ? "dirty" : "clean" }}
           </span>
           <span v-if="entry.isCurrent" class="workspace-chip workspace-chip--alert"><strong>active</strong></span>
+          <span
+            v-if="entry.lastActivityMs"
+            class="workspace-chip workspace-chip--muted"
+            :title="`Last activity (HEAD/checkout/commit) at ${formatAbsolute(entry.lastActivityMs)}`"
+          >
+            <strong>{{ formatRelative(entry.lastActivityMs) }}</strong>
+          </span>
         </div>
-        <div v-if="!entry.isCurrent" class="git-sibling__actions">
+        <div class="git-sibling__actions">
           <button
-            v-if="getWorkspaceId(entry)"
+            v-if="!entry.isCurrent && getWorkspaceId(entry)"
             type="button"
             class="button button--ghost button--small"
+            :title="`Switch focus to the workspace at ${entry.path}.`"
             @click="appStore.activateWorkspace(getWorkspaceId(entry))"
           >
             Open
           </button>
+          <button
+            v-if="entry.isCurrent"
+            type="button"
+            class="button button--ghost button--small"
+            disabled
+            title="You are currently in this worktree — switch to a different workspace before removing it."
+          >
+            (active)
+          </button>
           <!-- Per-row push: gated by same logic as toolbar Push; hidden in review workspace -->
           <button
-            v-if="canPushWorktree(entry) && !isReviewWorkspace"
+            v-if="!entry.isCurrent && canPushWorktree(entry) && !isReviewWorkspace"
             type="button"
             class="button button--ghost button--small"
             :disabled="!!gitUi.busyAction"
-            :title="`Push branch ${entry.branch}`"
+            :title="`Push branch ${entry.branch} to its tracking remote.`"
             @click="onPushWorktree(entry)"
           >
             Push
           </button>
-          <!-- Delete worktree: hidden in review workspace (UC-15) -->
+          <!-- Delete worktree: hidden in review workspace (UC-15); also disabled
+               for the worktree the user is currently in (git refuses anyway). -->
           <button
-            v-if="!isReviewWorkspace"
+            v-if="!isReviewWorkspace && !entry.isMainWorktree"
             type="button"
             class="button button--ghost button--small button--danger"
-            :disabled="!!gitUi.busyAction"
-            title="Remove this worktree (confirm required)"
+            :disabled="!!gitUi.busyAction || entry.isCurrent"
+            :title="
+              entry.isCurrent
+                ? 'Cannot remove the worktree you are currently in. Switch to another workspace first.'
+                : `Remove the worktree at ${entry.path}. You will be asked to confirm; the underlying branch is kept by default.`
+            "
             @click="onDeleteWorktree(entry)"
           >
             Delete
@@ -81,7 +103,21 @@ const props = withDefaults(
 const appStore = useAppStore();
 const gitUiStore = useGitUiStore();
 
-const siblings = computed(() => props.snapshot.siblingWorktrees || []);
+const siblings = computed(() => {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const items: any[] = [...(props.snapshot.siblingWorktrees || [])];
+  // Sort: current first, then most recent activity, then main last among
+  // never-touched ones. Keeps the user oriented when many worktrees exist.
+  return items.sort((a, b) => {
+    if (a.isCurrent && !b.isCurrent) return -1;
+    if (b.isCurrent && !a.isCurrent) return 1;
+    const aMs = Number(a.lastActivityMs) || 0;
+    const bMs = Number(b.lastActivityMs) || 0;
+    if (aMs !== bMs) return bMs - aMs;
+    if (a.isMainWorktree !== b.isMainWorktree) return a.isMainWorktree ? -1 : 1;
+    return String(a.branch || "").localeCompare(String(b.branch || ""));
+  });
+});
 const workspaceIdsByPath = computed(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   () => new Map(props.workspaces.map((ws: any) => [String(ws.cwd || "").toLowerCase(), ws.id])),
@@ -105,6 +141,34 @@ function onPushWorktree(entry: any) {
   const wsId = getWorkspaceId(entry);
   if (wsId) {
     gitUiStore.gitPush(wsId);
+  }
+}
+
+function formatRelative(ms: number): string {
+  if (!ms) return "";
+  const diff = Date.now() - ms;
+  if (diff < 0) return "just now";
+  const mins = Math.round(diff / 60_000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.round(mins / 60);
+  if (hours < 48) return `${hours}h ago`;
+  const days = Math.round(hours / 24);
+  if (days < 14) return `${days}d ago`;
+  const weeks = Math.round(days / 7);
+  if (weeks < 8) return `${weeks}w ago`;
+  const months = Math.round(days / 30);
+  if (months < 18) return `${months}mo ago`;
+  const years = Math.round(days / 365);
+  return `${years}y ago`;
+}
+
+function formatAbsolute(ms: number): string {
+  if (!ms) return "";
+  try {
+    return new Date(ms).toLocaleString();
+  } catch {
+    return new Date(ms).toISOString();
   }
 }
 

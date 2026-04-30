@@ -99,7 +99,8 @@ export const APP_CONFIG = {
     requireEncryptedStorage: envBoolean("STRIDETERM_SSH_REQUIRE_ENCRYPTED_STORAGE", true),
   },
   git: {
-    recentLogLimit: envNumber("STRIDETERM_GIT_LOG_LIMIT", 18),
+    recentLogLimit: envNumber("STRIDETERM_GIT_LOG_LIMIT", 100),
+    logPageSize: envNumber("STRIDETERM_GIT_LOG_PAGE_SIZE", 100),
     lazygitWingetPackagePrefix: envString("STRIDETERM_LAZYGIT_WINGET_PREFIX", "JesseDuffield.lazygit_"),
   },
   tunnel: {

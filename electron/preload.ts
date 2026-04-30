@@ -140,6 +140,7 @@ contextBridge.exposeInMainWorld("strideterm", {
   gitStash: (payload) => ipcRenderer.invoke("git:stash", payload),
   gitStashPop: (payload) => ipcRenderer.invoke("git:stash-pop", payload),
   gitCommitDiff: (payload) => ipcRenderer.invoke("git:commit-diff", payload),
+  gitLogPage: (payload) => ipcRenderer.invoke("git:log-page", payload),
   gitListTags: (payload) => ipcRenderer.invoke("git:list-tags", payload),
   gitCreateTag: (payload) => ipcRenderer.invoke("git:create-tag", payload),
   gitDeleteTag: (payload) => ipcRenderer.invoke("git:delete-tag", payload),

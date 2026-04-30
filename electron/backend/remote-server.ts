@@ -806,6 +806,11 @@ async function handleApiRequest(runtime: Runtime, request: IncomingMessage, resp
       return;
     }
 
+    if (request.method === "POST" && url.pathname === "/api/git/log-page") {
+      json(response, 200, await runtime.gitLogPage(body));
+      return;
+    }
+
     if (request.method === "POST" && url.pathname === "/api/git/list-tags") {
       json(response, 200, await runtime.gitListTags(body));
       return;

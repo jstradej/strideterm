@@ -257,6 +257,7 @@
                 :is-review-workspace="isReviewWorkspace"
               />
             </article>
+            <GitOperationCard :snapshot="snapshot" :workspace-id="workspaceId" :git-ui="gitUi" />
           </div>
         </template>
 
@@ -285,6 +286,10 @@
                 :is-review-workspace="isReviewWorkspace"
               />
             </article>
+            <!-- Confirm dialogs/result banners must render here too — without
+              this, Delete on the Worktrees tab silently sets a pending action
+              that never surfaces (it only renders inside the Branch tab). -->
+            <GitOperationCard :snapshot="snapshot" :workspace-id="workspaceId" :git-ui="gitUi" />
           </div>
         </template>
 
@@ -315,6 +320,7 @@ import GitChangesTab from "./git/GitChangesTab.vue";
 import GitHistoryTab from "./git/GitHistoryTab.vue";
 import GitPullRequestTab from "./git/GitPullRequestTab.vue";
 import GitWorktreeList from "./git/GitWorktreeList.vue";
+import GitOperationCard from "./git/GitOperationCard.vue";
 import GitTagList from "./git/GitTagList.vue";
 import BulkRepoTable from "./git/BulkRepoTable.vue";
 import CustomSelect from "../common/CustomSelect.vue";

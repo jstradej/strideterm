@@ -157,6 +157,17 @@ export function createGitHandlers(ctx: GitHandlerCtx) {
       return runGitWorkspaceAction(workspace, git.stashPop(workspace, { rootPath }));
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async gitLogPage(payload: any = {}) {
+      const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId);
+      const rootPath = resolveRootPath(workspace, payload.rootPath);
+      return git.logPage(workspace, {
+        rootPath,
+        baseBranch: payload.baseBranch || "",
+        skip: payload.skip || 0,
+        limit: payload.limit || 100,
+      });
+    },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async gitCommitDiff(payload: any = {}) {
       const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId);
       const rootPath = resolveRootPath(workspace, payload.rootPath);

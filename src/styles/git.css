@@ -346,6 +346,24 @@
   color: var(--muted);
 }
 
+.git-sibling__meta {
+  flex: 1 1 auto;
+}
+
+/* Worktree row actions: right-aligned cluster (1.2 — buttons right). */
+.git-sibling__actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  margin-left: auto;
+}
+
+.workspace-chip--muted {
+  color: var(--muted);
+  border-color: color-mix(in srgb, var(--border), transparent 30%);
+}
+
 .git-operation-banner {
   display: grid;
   gap: 8px;

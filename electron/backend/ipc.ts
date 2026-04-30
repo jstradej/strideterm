@@ -39,6 +39,7 @@ import {
   fileCommitDiffSchema,
   gitPayloadSchema,
   gitDiffPreviewSchema,
+  gitLogPageSchema,
   gitCommitSchema,
   gitTagSchema,
   dockerActionSchema,
@@ -775,6 +776,11 @@ export function registerIpc(
       runtime.gitCommitDiff(validateIpc(gitPayloadSchema, payload, "git:commit-diff")),
     ),
   );
+  ipcMain.handle("git:log-page", async (_event, payload) =>
+    withOperationPromise({ opId: "git:log-page" }, () =>
+      runtime.gitLogPage(validateIpc(gitLogPageSchema, payload, "git:log-page")),
+    ),
+  );
   ipcMain.handle("git:list-tags", async (_event, payload) => {
     const p = validateIpc(gitPayloadSchema, payload, "git:list-tags");
     return withOperationPromise({ workspaceId: p.workspaceId, opId: "git:list-tags" }, () => runtime.gitListTags(p));
@@ -1219,6 +1225,7 @@ export function registerIpc(
     ipcMain.removeHandler("git:stash");
     ipcMain.removeHandler("git:stash-pop");
     ipcMain.removeHandler("git:commit-diff");
+    ipcMain.removeHandler("git:log-page");
     ipcMain.removeHandler("docker:action");
     ipcMain.removeHandler("docker:open-session");
     ipcMain.removeHandler("docker:open-lazydocker");
