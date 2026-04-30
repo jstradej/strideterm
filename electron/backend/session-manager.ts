@@ -1,7 +1,7 @@
 /// <reference types="node" />
 import { EventEmitter } from "node:events";
 import os from "node:os";
-import { promises as fsp } from "node:fs";
+import { promises as fsp, existsSync } from "node:fs";
 import crypto from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -18,10 +18,33 @@ import type { SshManager } from "./ssh/ssh-manager.js";
 
 const log = getLogger("session-mgr");
 
-const SHELL_INTEGRATION_DIR = path.resolve(
-  path.dirname(fileURLToPath(import.meta.url)),
-  "../../config/shell-integration",
-);
+/**
+ * Resolves the directory containing shell-integration rc scripts. These
+ * scripts are sourced by the user's shell (bash/zsh/pwsh) inside the PTY,
+ * so the path **must** point to a real on-disk file — paths inside
+ * `app.asar/` cannot be sourced (the shell can't read into asar archives
+ * and bails with "not a directory").
+ *
+ * Resolution order:
+ *  1. `STRIDETERM_RESOURCES_DIR` env var (set by main.ts; in packaged apps
+ *     this is `process.resourcesPath`, where extraResources land).
+ *  2. Walk up from this module to the nearest dir that has both
+ *     `package.json` and `config/shell-integration/`. Works for TS source,
+ *     compiled `dist-electron/`, and tests run from anywhere in the tree.
+ *  3. Last-resort static fallback.
+ */
+function getShellIntegrationDir(): string {
+  if (process.env.STRIDETERM_RESOURCES_DIR) {
+    return path.join(process.env.STRIDETERM_RESOURCES_DIR, "config", "shell-integration");
+  }
+  let dir = path.dirname(fileURLToPath(import.meta.url));
+  while (dir !== path.dirname(dir)) {
+    const candidate = path.join(dir, "config", "shell-integration");
+    if (existsSync(candidate)) return candidate;
+    dir = path.dirname(dir);
+  }
+  return path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../config/shell-integration");
+}
 
 // ------ Internal types -------
 
@@ -141,7 +164,7 @@ export function shellIntegrationEnv(
   const base = shellBasename(launcherFile);
 
   if (base === "bash" || base === "sh") {
-    const scriptPath = path.join(SHELL_INTEGRATION_DIR, "bash.sh");
+    const scriptPath = path.join(getShellIntegrationDir(), "bash.sh");
     return {
       STRIDETERM_SHELL_INTEGRATION: "1",
       BASH_ENV: scriptPath,
@@ -151,7 +174,7 @@ export function shellIntegrationEnv(
   }
 
   if (base === "zsh") {
-    const scriptPath = path.join(SHELL_INTEGRATION_DIR, "zsh.sh");
+    const scriptPath = path.join(getShellIntegrationDir(), "zsh.sh");
     return {
       STRIDETERM_SHELL_INTEGRATION: "1",
       STRIDETERM_SHELL_INTEGRATION_SCRIPT: scriptPath,
@@ -160,7 +183,7 @@ export function shellIntegrationEnv(
   }
 
   if (base === "pwsh" || base === "powershell") {
-    const scriptPath = path.join(SHELL_INTEGRATION_DIR, "pwsh.ps1");
+    const scriptPath = path.join(getShellIntegrationDir(), "pwsh.ps1");
     return {
       STRIDETERM_SHELL_INTEGRATION: "1",
       STRIDETERM_SHELL_INTEGRATION_SCRIPT: scriptPath,

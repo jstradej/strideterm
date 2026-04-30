@@ -1,3 +1,4 @@
+/// <reference lib="dom" />
 import { contextBridge, ipcRenderer } from "electron";
 import type { StridetermAPI } from "./shared/ipc-bridge.js";
 
@@ -210,3 +211,13 @@ contextBridge.exposeInMainWorld("strideterm", {
   sshConfigImport: (payload) => ipcRenderer.invoke("ssh:config:import", payload),
   sshKnownHostsImport: (payload) => ipcRenderer.invoke("ssh:known-hosts:import", payload),
 } satisfies StridetermAPI);
+
+// Tag <body> with the host platform so CSS can target macOS-only chrome
+// (the hiddenInset traffic-light cutout that needs sidebar header padding).
+// Win/Linux get matching classes for symmetry; the renderer reads them via
+// `document.body.classList`. preload runs in an isolated context but shares
+// the renderer DOM, so listening for DOMContentLoaded here is the standard
+// way to mutate <body> before app code mounts.
+window.addEventListener("DOMContentLoaded", () => {
+  document.body.classList.add(`platform-${process.platform}`);
+});

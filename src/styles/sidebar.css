@@ -189,6 +189,20 @@ dt {
   -webkit-app-region: no-drag;
 }
 
+/* macOS uses titleBarStyle: hiddenInset which floats traffic lights at
+   ~12px,12px — directly over the sidebar header's top-left corner. Reserve
+   vertical space and let tools wrap below the brand when the sidebar is
+   narrow, so the close/min/zoom dots get their own zone. flex-wrap keeps
+   the buttons clickable even at the smallest sidebar width. */
+body.platform-darwin .sidebar__head {
+  padding-top: 28px;
+  flex-wrap: wrap;
+}
+
+body.platform-darwin .frame--sidebar-collapsed .sidebar__head {
+  padding-top: 32px;
+}
+
 .brand {
   font-family: "Cascadia Mono", "JetBrains Mono", "Fira Code", "Consolas", monospace;
   font-size: 15px;

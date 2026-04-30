@@ -1,12 +1,15 @@
 import { app, BrowserWindow, ipcMain, nativeImage, nativeTheme, safeStorage } from "electron";
 import os from "node:os";
 import path from "node:path";
+import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
 import { createRuntime } from "./backend/runtime.js";
 import { registerIpc } from "./backend/ipc.js";
 import { startRemoteServer } from "./backend/remote-server.js";
 import { parseReviewBridgeMcpArgs, runReviewBridgeMcpServer } from "./backend/review-bridge-mcp.js";
 import { createDefaultState, normalizeState } from "./backend/default-state.js";
+import { inheritShellPath } from "./backend/fix-path.js";
 import { APP_CONFIG, getRendererDevUrl } from "../config/app-config.js";
 import { getLogger, setLogDir, shutdownLogger } from "./backend/logger.js";
 
@@ -30,6 +33,26 @@ const userDataPath = customDataDir || path.join(os.homedir(), ".strideterm");
 if (customDataDir) {
   process.env.STRIDETERM_DATA_DIR = customDataDir;
 }
+
+// Resolve where extraResources live at runtime. In packaged apps that's
+// `process.resourcesPath` (loose files next to app.asar — readable by
+// external programs like bash/zsh/child processes). In dev we walk up to
+// the repo root because process.resourcesPath there points to Electron's
+// own resources dir, not ours.
+//
+// Anything passed to a shell or executed as a script (shell-integration
+// rc files, plugin scripts) MUST come from this dir, not from app.asar/.
+function resolveResourcesDir(): string {
+  if (app.isPackaged) return process.resourcesPath;
+  let dir = path.dirname(fileURLToPath(import.meta.url));
+  while (dir !== path.dirname(dir)) {
+    if (existsSync(path.join(dir, "package.json"))) return dir;
+    dir = path.dirname(dir);
+  }
+  return dir;
+}
+const resourcesDir = resolveResourcesDir();
+process.env.STRIDETERM_RESOURCES_DIR = resourcesDir;
 
 // When using a custom data dir, change the app name so Electron uses a
 // separate single-instance lock and separate session data.
@@ -613,7 +636,7 @@ async function startServices(): Promise<void> {
   runtimeState.runtimeInteractive = false;
   runtimeState.runtime = await createRuntime({
     userDataPath,
-    builtinPluginsDir: path.join(app.getAppPath(), "plugins"),
+    builtinPluginsDir: path.join(resourcesDir, "plugins"),
     getThemeSource: () => (nativeTheme.shouldUseDarkColors ? "dark" : "light"),
     deferInitialRefresh: true,
     dependencies: {
@@ -694,6 +717,13 @@ if (mcpMode) {
   });
 
   app.whenReady().then(async () => {
+    // Inherit PATH from the user's login shell on macOS/Linux so child
+    // processes (Claude/Codex/Gemini/Copilot/OpenCode detection, Docker, git,
+    // btm, etc.) see the same binaries the user has in Terminal. Without
+    // this, GUI launches from Finder/Dock get a degraded PATH that misses
+    // brew, mise, nvm, pnpm, ~/.local/bin, etc. — every "is X installed"
+    // probe then returns false even when the binary is right there.
+    await inheritShellPath();
     runtimeState.runtimeReady = startServices().catch((error: unknown) => {
       console.error(`Startup services failed: ${(error as Error)?.message || error}`);
     });
