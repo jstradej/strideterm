@@ -28,7 +28,7 @@ interface AzureHandlerCtx {
   broadcastState: () => void;
   refreshAzure: () => Promise<unknown>;
   refreshGit: (workspaceId?: string | null) => Promise<void>;
-  ensureAzureWorkspace: () => Promise<WorkspaceState>;
+  ensureAzureWorkspace: (profileId?: string) => Promise<WorkspaceState>;
   ensureVisibleSession: (workspaceId?: string) => string | null;
   scheduleAzurePolling: () => void;
   resolveGitWorkspace: (workspaceId?: string, projectId?: string) => WorkspaceState;
@@ -90,6 +90,15 @@ export function createAzureHandlers(ctx: AzureHandlerCtx) {
         pat,
       });
       const resolvedProfileId = connection.profileId || getState().activeProfileId || "default";
+      log.debug("saveAzureConnection: profile resolution", {
+        connectionId,
+        incomingProfileId: connection.profileId || null,
+        stateActiveProfileId: getState().activeProfileId || null,
+        resolvedProfileId,
+        existingConnectionsForProfile: getAzureConnections(getState()).filter(
+          (c: { profileId?: string }) => (c.profileId || "default") === resolvedProfileId,
+        ).length,
+      });
       const normalizedConnection = {
         id: connectionId,
         label: String(normalizedInput.label || connectionId).trim(),
@@ -125,7 +134,19 @@ export function createAzureHandlers(ctx: AzureHandlerCtx) {
         }
       });
 
-      await ensureAzureWorkspace();
+      // Pass the connection's resolved profile so the inbox workspace lands
+      // on the same profile as the connection — without this, ensureX defaults
+      // to getState().activeProfileId and the workspace ends up invisible
+      // on profiles other than the one that happened to be active first.
+      const ensuredWorkspace = await ensureAzureWorkspace(resolvedProfileId);
+      log.debug("saveAzureConnection: ensured workspace", {
+        connectionId,
+        resolvedProfileId,
+        workspaceId: ensuredWorkspace?.id,
+        workspaceProfileId: ensuredWorkspace?.profileId,
+        workspaceName: ensuredWorkspace?.name,
+        totalAzureWorkspaces: getState().workspaces.filter((w) => w.kind === "azure").length,
+      });
       await refreshAzure();
       scheduleAzurePolling();
       broadcastState();

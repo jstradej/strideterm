@@ -316,7 +316,7 @@ export class AgentTaskRunner {
     workerProvider,
     judgeProvider,
   }: {
-    state: Pick<AppState, "activeProfileId">;
+    state: Pick<AppState, "activeProfileId"> & Partial<Pick<AppState, "workspaces">>;
     description: string;
     cwd: string;
     parentWorkspaceId: string;
@@ -397,7 +397,14 @@ export class AgentTaskRunner {
       gitRoots: [],
       activeRootPath: "",
       notes: notes?.trim() || "",
-      profileId: state.activeProfileId || "default",
+      // Inherit the parent workspace's profile when one is provided —
+      // otherwise a Telegram-driven task creation lands on whatever profile
+      // the desktop UI happens to show, not on the profile that owns the
+      // parent. Falls back to active profile when there is no parent.
+      profileId:
+        (parentWorkspaceId && state.workspaces?.find((w) => w.id === parentWorkspaceId)?.profileId) ||
+        state.activeProfileId ||
+        "default",
       connectionId: "",
       activePanelId: dashboardPanelId,
       activeViewId: null,

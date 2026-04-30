@@ -787,9 +787,22 @@ export function normalizeState(rawState: any = {}): AppState & { activeProjectId
     else tabTemplates.push(opencodeTemplate);
   }
   const profiles = normalizeProfiles(rawState.profiles, defaults);
-  const activeProfileId = profiles.some((profile) => profile.id === rawState.activeProfileId)
-    ? rawState.activeProfileId
-    : profiles[0]?.id || "default";
+  const rawActive = rawState.activeProfileId;
+  const activeProfileFound = profiles.some((profile) => profile.id === rawActive);
+  const activeProfileId = activeProfileFound ? rawActive : profiles[0]?.id || "default";
+  if (rawActive && !activeProfileFound) {
+    // The active profile id stored in raw state is no longer present in the
+    // normalized profiles list — this normalization step silently falls back
+    // to the first profile, which has bitten us before (workspace lands on
+    // "default" even though the user thinks "asdf" is active). Surface it
+    // loudly so the regression is obvious in the log next time.
+    // eslint-disable-next-line no-console -- debug instrumentation, runs at state-load only
+    console.warn("[default-state] activeProfileId not in profiles, falling back", {
+      rawActive,
+      profileIds: profiles.map((p) => p.id),
+      fallback: activeProfileId,
+    });
+  }
 
   const VALID_LOG_LEVELS = ["error", "warn", "info", "debug", "trace"];
   const rawLogLevel = (rawState.settings || {}).logLevel;

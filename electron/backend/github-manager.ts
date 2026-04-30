@@ -1084,7 +1084,11 @@ export class GitHubManager extends BaseProviderManager {
       pluginId: "",
       cwd: checkout.rootPath,
       notes: `GitHub review workspace for ${summaryRepo.fullName} PR #${summaryPr.number}`,
-      profileId: state.activeProfileId || "default",
+      // Land the review workspace on the same profile as its GitHub parent /
+      // connection (reviewProfileId), not on whatever profile the UI happens
+      // to show right now — otherwise the review is invisible on the profile
+      // that owns the connection.
+      profileId: reviewProfileId,
       activePanelId: panels[0]?.id || "",
       panels,
       review: this.buildReviewMetadata(summary, checkout as unknown as Record<string, unknown>, {
@@ -1299,7 +1303,10 @@ export class GitHubManager extends BaseProviderManager {
     const { connection, token } = this.resolveConnectionAndToken(connectionId);
     const connRec = connection as Record<string, unknown>;
 
-    const activeProfile = state.activeProfileId || "default";
+    // Pin to the connection's profile — falling back to active profile breaks
+    // when quickfix is invoked from a profile that doesn't own the connection
+    // (the workspace ends up on the wrong profile and goes invisible).
+    const activeProfile = (connRec.profileId as string) || state.activeProfileId || "default";
     const parentGitHubWorkspace =
       state.workspaces.find((ws) => ws.kind === "github" && (ws.profileId || "default") === activeProfile) || null;
     const reviewRoot = parentGitHubWorkspace?.cwd || (connRec.reviewRoot as string) || getDefaultReviewRoot();

@@ -72,9 +72,10 @@
       </span>
       <small>{{ workspace.summary }}</small>
     </span>
-    <span v-if="workspace.active" class="workspace-card__actions">
+    <span class="workspace-card__actions">
       <button
         v-if="
+          workspace.active &&
           workspace.kind === 'task' &&
           (workspace.taskState === 'running' ||
             workspace.taskState === 'evaluating' ||
@@ -90,6 +91,7 @@
       </button>
       <button
         v-if="
+          workspace.active &&
           workspace.kind === 'task' &&
           workspace.taskState !== 'running' &&
           workspace.taskState !== 'evaluating' &&
@@ -104,10 +106,14 @@
       >
         ▶
       </button>
+      <!-- Kebab menu is always present so the user can edit / delete / star
+           an inactive workspace without having to activate it first. CSS
+           keeps it hidden until hover (or when the card is active). -->
       <button
         class="workspace-card__action workspace-card__action--menu"
         type="button"
         title="Workspace actions"
+        @mousedown.stop
         @click.stop="$emit('open-menu', $event)"
       >
         &#x2026;

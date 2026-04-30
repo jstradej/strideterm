@@ -1202,6 +1202,16 @@ body.platform-darwin .frame--sidebar-collapsed .sidebar__head {
   font-size: 16px;
   font-weight: bold;
   letter-spacing: 1px;
+  /* Hidden by default on inactive cards — pops in on hover so the user can
+     open the menu without activating the workspace first. Kept visible on
+     the active card for quick access. */
+  opacity: 0;
+  transition: opacity 0.12s ease-out;
+}
+.workspace-card:hover .workspace-card__action--menu,
+.workspace-card--active .workspace-card__action--menu,
+.workspace-card__action--menu:focus-visible {
+  opacity: 1;
 }
 
 /* Task status: corner triangle on badge (mirrors PR corner) */

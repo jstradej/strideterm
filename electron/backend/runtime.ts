@@ -5,7 +5,7 @@ import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { watch, readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import type { FSWatcher } from "node:fs";
-import { readFile, writeFile, mkdir, readdir, access, rm } from "node:fs/promises";
+import { readFile, writeFile, mkdir, readdir, access, rm, rename } from "node:fs/promises";
 import { EventEmitter } from "node:events";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
@@ -293,27 +293,48 @@ export async function createRuntime({
     // locked files, retrying it won't help; let the retry loop use fs.rm which
     // gives us proper EBUSY/EPERM error codes for the backoff logic).
     if (process.platform === "win32") {
+      const t0 = Date.now();
       try {
         await execFileTextImpl("cmd.exe", ["/c", "rd", "/s", "/q", dirPath], { timeout: 30_000 });
+        log.debug("rmPath: rd /s /q succeeded", { dirPath, ms: Date.now() - t0 });
         return;
-      } catch {
+      } catch (err) {
         // rd failed (e.g. locked files, long paths) — fall through to fs.rm with retries
+        log.debug("rmPath: rd /s /q failed, falling back to fs.rm", {
+          dirPath,
+          ms: Date.now() - t0,
+          err: (err as Error)?.message?.slice(0, 200) || String(err),
+        });
       }
     }
 
     const retryDelays = [300, 600, 1200];
     for (let attempt = 0; attempt <= retryDelays.length; attempt++) {
+      const t0 = Date.now();
       try {
         await rm(dirPath, { recursive: true, force: true });
+        log.debug("rmPath: fs.rm succeeded", { dirPath, attempt, ms: Date.now() - t0 });
         return;
       } catch (err) {
-        if (
-          attempt < retryDelays.length &&
-          ((err as NodeJS.ErrnoException).code === "EBUSY" || (err as NodeJS.ErrnoException).code === "EPERM")
-        ) {
+        const code = (err as NodeJS.ErrnoException).code;
+        if (attempt < retryDelays.length && (code === "EBUSY" || code === "EPERM")) {
+          log.debug("rmPath: fs.rm hit lock, retrying", {
+            dirPath,
+            attempt,
+            code,
+            ms: Date.now() - t0,
+            backoffMs: retryDelays[attempt],
+          });
           await new Promise((resolve) => setTimeout(resolve, retryDelays[attempt]));
           continue;
         }
+        log.debug("rmPath: fs.rm gave up", {
+          dirPath,
+          attempt,
+          code,
+          ms: Date.now() - t0,
+          err: (err as Error)?.message?.slice(0, 200),
+        });
         throw err;
       }
     }
@@ -3347,6 +3368,14 @@ export async function createRuntime({
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async saveWorkspace(workspace: any) {
+      log.debug("saveWorkspace: called", {
+        workspaceId: workspace?.id,
+        name: workspace?.name,
+        kind: workspace?.kind,
+        incomingProfileId: workspace?.profileId || null,
+        stateActiveProfileId: getState().activeProfileId || null,
+        stateProfileIds: (getState().profiles || []).map((p) => p.id),
+      });
       // Ensure the working directory exists (create if needed)
       if (workspace.cwd && workspace.kind !== "docker") {
         await mkdir(workspace.cwd, { recursive: true }).catch(() => {});
@@ -3354,6 +3383,11 @@ export async function createRuntime({
 
       await store.mutate((draft: AppState) => {
         const normalized = normalizeWorkspace(workspace);
+        log.debug("saveWorkspace: normalized", {
+          workspaceId: normalized.id,
+          normalizedProfileId: normalized.profileId,
+          incomingProfileId: workspace.profileId || null,
+        });
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const index = draft.workspaces.findIndex((item: any) => item.id === normalized.id);
         if (index >= 0) {
@@ -3438,12 +3472,55 @@ export async function createRuntime({
         const diskPath = allowedPaths.includes(requestedPath) ? requestedPath : "";
         if (diskPath && path.isAbsolute(diskPath)) {
           pendingWorktreeDeletions.add(diskPath);
+          const tDelete0 = Date.now();
+          log.debug("deleteWorkspace: starting disk delete", {
+            workspaceId,
+            workspaceName: workspace.name,
+            diskPath,
+            kind: workspace.kind,
+            isReview: !!workspace.review,
+            isTask: !!workspace.task,
+            isQuickfix: !!workspace.quickfix,
+          });
           try {
+            const tWait0 = Date.now();
             await sessionsExited;
-            // Short delay for Windows NTFS to release file handles after PTY exit.
-            // macOS/Linux release handles synchronously on process exit — no delay needed.
+            log.debug("deleteWorkspace: PTY sessions exited", {
+              workspaceId,
+              waitMs: Date.now() - tWait0,
+            });
+            // On Windows, agent children (claude.exe, codex.exe, …) spawned by
+            // the killed PTY shell may outlive their parent for hundreds of
+            // milliseconds while still holding file handles inside the
+            // worktree. fs/rd will fail with EBUSY/EPERM until those handles
+            // are released. We don't taskkill the tree (too brutal — risks
+            // truncated agent state), instead we wait by probing: try to
+            // rename diskPath onto itself; on Windows this fails while any
+            // handle is open and succeeds once they're all released. Cap the
+            // wait at 5s; if it still locks, rmPath's own retry loop will
+            // either eventually succeed or the git fallback will run.
             if (process.platform === "win32") {
-              await new Promise((resolve) => setTimeout(resolve, 200));
+              const tProbe0 = Date.now();
+              const probeTimeout = 5000;
+              const probeInterval = 150;
+              let probedReady = false;
+              while (Date.now() - tProbe0 < probeTimeout) {
+                try {
+                  // rename(p, p) is a cheap OS-level lock probe — it touches
+                  // the directory entry without scanning contents.
+                  await rename(diskPath, diskPath);
+                  probedReady = true;
+                  break;
+                } catch {
+                  await new Promise((resolve) => setTimeout(resolve, probeInterval));
+                }
+              }
+              log.debug("deleteWorkspace: handle-release probe finished", {
+                workspaceId,
+                diskPath,
+                probeMs: Date.now() - tProbe0,
+                released: probedReady,
+              });
             }
 
             const cacheRepoPath = workspace.review?.checkout?.cacheRepoPath || "";
@@ -3452,19 +3529,64 @@ export async function createRuntime({
             // workspace.cwd is like /repo/.strideterm/tree/branch-name — 3 levels up to repo root
             const mainWorktreePath = workspace.cwd ? path.resolve(workspace.cwd, "..", "..", "..") : "";
             const gitCwd = cacheRepoPath || taskWorktreeBase || mainWorktreePath;
-            let gitRemoved = false;
-            if (gitCwd) {
-              try {
-                await execFileTextImpl("git", ["worktree", "remove", "--force", diskPath], { cwd: gitCwd });
-                gitRemoved = true;
-              } catch {}
-              // Prune doesn't need to block — it just cleans up stale admin refs
-              execFileTextImpl("git", ["worktree", "prune"], { cwd: gitCwd }).catch(() => {});
-            }
-
-            if (!gitRemoved) {
+            log.debug("deleteWorkspace: resolved git cwd", { workspaceId, gitCwd, cacheRepoPath, taskWorktreeBase });
+            // Fast path: nuke the directory at the filesystem level, then ask
+            // git to prune stale metadata. `git worktree remove --force` walks
+            // the tree itself with per-file stat calls — markedly slower than
+            // platform-native `rd /s /q` (Windows) or fs.rm (POSIX) when the
+            // worktree has a fat node_modules / build dir. The previous order
+            // (git first, fs fallback) made every successful delete take the
+            // slow path. Only fall back to `git worktree remove --force` if
+            // rmPath couldn't finish (e.g. locked files held by AV).
+            let rmFailed = false;
+            let rmErr: unknown = null;
+            const tRm0 = Date.now();
+            try {
               await rmPath(diskPath);
+              log.debug("deleteWorkspace: rmPath succeeded", { workspaceId, diskPath, ms: Date.now() - tRm0 });
+            } catch (err) {
+              rmFailed = true;
+              rmErr = err;
+              log.debug("deleteWorkspace: rmPath failed, trying git worktree remove --force", {
+                workspaceId,
+                diskPath,
+                ms: Date.now() - tRm0,
+                err: (err as Error)?.message?.slice(0, 200),
+              });
             }
+            if (gitCwd) {
+              if (rmFailed) {
+                const tGit0 = Date.now();
+                try {
+                  await execFileTextImpl("git", ["worktree", "remove", "--force", diskPath], { cwd: gitCwd });
+                  log.debug("deleteWorkspace: git worktree remove --force succeeded", {
+                    workspaceId,
+                    diskPath,
+                    ms: Date.now() - tGit0,
+                  });
+                } catch (err) {
+                  log.warn("deleteWorkspace: git worktree remove --force also failed", {
+                    workspaceId,
+                    diskPath,
+                    ms: Date.now() - tGit0,
+                    err: (err as Error)?.message?.slice(0, 200),
+                    rmErr: (rmErr as Error)?.message?.slice(0, 200),
+                  });
+                }
+              }
+              // Prune the .git/worktrees admin entry. Doesn't need to block
+              // the response — it's just metadata cleanup.
+              execFileTextImpl("git", ["worktree", "prune"], { cwd: gitCwd }).catch(() => {});
+            } else if (rmFailed) {
+              // No git cwd to prune from — surface the rm failure.
+              throw new Error(`Failed to remove ${diskPath}`);
+            }
+            log.debug("deleteWorkspace: disk delete complete", {
+              workspaceId,
+              diskPath,
+              totalMs: Date.now() - tDelete0,
+              rmFailed,
+            });
           } catch (err) {
             diskDeleteError = `Could not delete ${diskPath}: ${(err as any)?.message || err}`; // eslint-disable-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: unknown catch shape
             log.warn("workspace disk delete failed", { diskPath, err: diskDeleteError });

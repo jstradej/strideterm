@@ -77,6 +77,12 @@ export function createProviderLifecycle(ctx: ProviderLifecycleCtx) {
 
   async function ensureAzureWorkspace(profileId = getState().activeProfileId || "default"): Promise<WorkspaceState> {
     const existing = getAzureWorkspace(profileId);
+    log.debug("ensureAzureWorkspace: called", {
+      requestedProfileId: profileId,
+      stateActiveProfileId: getState().activeProfileId || null,
+      existingId: existing?.id || null,
+      existingProfileId: existing?.profileId || null,
+    });
     if (existing) {
       return existing;
     }
@@ -94,6 +100,11 @@ export function createProviderLifecycle(ctx: ProviderLifecycleCtx) {
       profileId,
       panels,
       activePanelId: panels[0]?.id || "",
+    });
+    log.debug("ensureAzureWorkspace: creating", {
+      workspaceId: workspace.id,
+      profileId: workspace.profileId,
+      cwd: workspace.cwd,
     });
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     await store.mutate((draft: any) => {

@@ -21,6 +21,12 @@
   align-items: center;
 }
 
+/* Push the action button cluster to the right edge of the toolbar so the
+   summary chips stay left and the buttons don't float in the middle. */
+.git-view__actions {
+  margin-left: auto;
+}
+
 .git-tabs {
   display: flex;
   gap: 2px;

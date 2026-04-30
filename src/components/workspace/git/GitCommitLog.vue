@@ -49,7 +49,7 @@
     <div v-if="hasMore" class="git-log-loadmore">
       <button
         type="button"
-        class="git-btn"
+        class="button button--ghost button--small"
         :disabled="loadingMore"
         :title="`Load the next ${pageSize} commits from git log.`"
         @click="$emit('load-more')"
@@ -173,7 +173,7 @@ const sortedCommits = computed(() => {
 
 .git-log-loadmore {
   display: flex;
-  justify-content: flex-end;
+  justify-content: center;
   align-items: center;
   gap: 10px;
   padding: 8px 10px;

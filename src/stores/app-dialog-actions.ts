@@ -248,37 +248,45 @@ export function createDialogActions(ctx: DialogActionsCtx) {
       tabTemplates,
       onCancel: closeDialog,
       onSubmit: async (draft: AnyApi) => {
-        try {
-          const isNew = !workspace;
-          if (isNew) draft.profileId = ctx.payload.value?.appState?.activeProfileId || "default";
-          // Guard: preserve task workspace identity on edit (kind + task object must survive)
-          if (!isNew && workspace.kind === "task" && workspace.task) {
-            draft.kind = "task";
-            draft.task = { ...workspace.task, description: draft.task?.description ?? workspace.task.description };
-          }
-          const firstPanel = draft.panels?.[0];
-          if (draft.kind === "azure") {
-            ctx.activeViewId.value = `azure:${draft.id}`;
-          } else if (draft.kind === "github") {
-            ctx.activeViewId.value = `github:${draft.id}`;
-          } else if (firstPanel) {
-            ctx.activeViewId.value = isBrowserPanel(firstPanel)
-              ? `browser:${firstPanel.id}`
-              : `${draft.id}:${firstPanel.id}`;
-          }
-          // Strip reactive proxies — IPC structuredClone cannot handle Vue Proxy objects
-          const plain = JSON.parse(JSON.stringify(draft)) as AnyApi;
-          await ctx.withSuppressedBroadcast(async () => {
-            ctx.payload.value = (await (ctx.getApi() as AnyApi).saveWorkspace(plain)) as StatePayload;
-            if (isNew) {
-              ctx.payload.value = (await (ctx.getApi() as AnyApi).activateWorkspace(plain.id)) as StatePayload;
-            }
-          });
-        } catch (err) {
-          console.error("[workspace-dialog] save failed:", err);
-        } finally {
-          closeDialog();
+        const isNew = !workspace;
+        // Always pin profileId to the currently active profile when missing.
+        // `isNew` was inferred from the parent calling openWorkspaceDialog(null)
+        // — but the New Workspace picker prefills a draft and calls
+        // openWorkspaceDialog(draft), which makes `isNew` false even though
+        // the draft has no profileId yet. Without this fallback, the draft
+        // arrives at saveWorkspace with profileId=undefined and the backend
+        // normalizes it to "default" — landing the workspace on the wrong
+        // profile silently.
+        if (!draft.profileId) {
+          draft.profileId = ctx.payload.value?.appState?.activeProfileId || "default";
         }
+        // Guard: preserve task workspace identity on edit (kind + task object must survive)
+        if (!isNew && workspace.kind === "task" && workspace.task) {
+          draft.kind = "task";
+          draft.task = { ...workspace.task, description: draft.task?.description ?? workspace.task.description };
+        }
+        const firstPanel = draft.panels?.[0];
+        if (draft.kind === "azure") {
+          ctx.activeViewId.value = `azure:${draft.id}`;
+        } else if (draft.kind === "github") {
+          ctx.activeViewId.value = `github:${draft.id}`;
+        } else if (firstPanel) {
+          ctx.activeViewId.value = isBrowserPanel(firstPanel)
+            ? `browser:${firstPanel.id}`
+            : `${draft.id}:${firstPanel.id}`;
+        }
+        // Strip reactive proxies — IPC structuredClone cannot handle Vue Proxy objects
+        const plain = JSON.parse(JSON.stringify(draft)) as AnyApi;
+        // Let backend errors propagate so WorkspaceDialog can render them in
+        // the dialog footer instead of swallowing them into devtools console
+        // and silently closing the dialog.
+        await ctx.withSuppressedBroadcast(async () => {
+          ctx.payload.value = (await (ctx.getApi() as AnyApi).saveWorkspace(plain)) as StatePayload;
+          if (isNew) {
+            ctx.payload.value = (await (ctx.getApi() as AnyApi).activateWorkspace(plain.id)) as StatePayload;
+          }
+        });
+        closeDialog();
       },
     });
   }

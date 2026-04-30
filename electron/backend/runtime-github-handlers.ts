@@ -26,7 +26,7 @@ interface GitHubHandlerCtx {
   broadcastState: () => void;
   refreshGitHub: () => Promise<unknown>;
   refreshGit: (workspaceId?: string | null) => Promise<void>;
-  ensureGitHubWorkspace: () => Promise<WorkspaceState>;
+  ensureGitHubWorkspace: (profileId?: string) => Promise<WorkspaceState>;
   ensureVisibleSession: (workspaceId?: string) => string | null;
   scheduleGitHubPolling: () => void;
   resolveGitWorkspace: (workspaceId?: string, projectId?: string) => WorkspaceState;
@@ -87,6 +87,12 @@ export function createGitHubHandlers(ctx: GitHubHandlerCtx) {
       const pat = connection.pat || credentialStore.getSecret(tokenRef);
       const verification = await github.verifyConnection({ ...normalizedInput, pat });
       const resolvedProfileId = connection.profileId || getState().activeProfileId || "default";
+      log.debug("saveGitHubConnection: profile resolution", {
+        connectionId,
+        incomingProfileId: connection.profileId || null,
+        stateActiveProfileId: getState().activeProfileId || null,
+        resolvedProfileId,
+      });
       const normalizedConnection = {
         id: connectionId,
         label: String(normalizedInput.label || connectionId).trim(),
@@ -120,7 +126,16 @@ export function createGitHubHandlers(ctx: GitHubHandlerCtx) {
           ghSettings.connections.push(normalizedConnection);
         }
       });
-      await ensureGitHubWorkspace();
+      // Pass the resolved profile so the inbox workspace lives on the same
+      // profile as the connection (not just whatever profile happens to be
+      // active in the UI right now).
+      const ensuredWorkspace = await ensureGitHubWorkspace(resolvedProfileId);
+      log.debug("saveGitHubConnection: ensured workspace", {
+        connectionId,
+        resolvedProfileId,
+        workspaceId: ensuredWorkspace?.id,
+        workspaceProfileId: ensuredWorkspace?.profileId,
+      });
       await refreshGitHub();
       scheduleGitHubPolling();
       broadcastState();

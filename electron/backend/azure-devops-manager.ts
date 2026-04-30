@@ -1411,7 +1411,12 @@ export class AzureDevOpsManager extends BaseProviderManager {
       pluginId: "",
       cwd: checkout.rootPath,
       notes: `Azure DevOps review workspace for ${summary.repository?.name} PR #${summary.pullRequest?.id}`,
-      profileId: state.activeProfileId || "default",
+      // Land the review workspace on the same profile as its Azure parent /
+      // its connection (already resolved as reviewProfileId above) — using
+      // state.activeProfileId here puts the review on whatever profile the
+      // user happens to be looking at, hiding it on the profile that owns
+      // the connection.
+      profileId: reviewProfileId,
       activePanelId: panels[0]?.id || "",
       panels,
       review: this.buildReviewMetadata(summary, checkout, checkout.mode, {
@@ -1839,7 +1844,11 @@ export class AzureDevOpsManager extends BaseProviderManager {
   }): Promise<{ workspace: ReviewWorkspace; parentWorkspaceId: string }> {
     const { connection, token } = this.resolveAzureConnectionAndToken(connectionId);
 
-    const activeProfile = state.activeProfileId || "default";
+    // Pin quickfix to the profile that owns the connection — falling back to
+    // active profile breaks when the user triggers quickfix from a different
+    // profile than the one the connection lives on (the workspace lands on
+    // the wrong profile and goes invisible).
+    const activeProfile = (connection as { profileId?: string }).profileId || state.activeProfileId || "default";
     const parentAzureWorkspace: ReviewWorkspace | null =
       state.workspaces.find(
         (ws: ReviewWorkspace) => ws.kind === "azure" && (ws.profileId || "default") === activeProfile,

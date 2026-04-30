@@ -1674,20 +1674,34 @@ export class GitManager extends EventEmitter {
       }
     }
 
-    // Fast path: delete the worktree directory ourselves with fs.rm, then ask
-    // git to prune the metadata. `git worktree remove --force` recursively
-    // walks the tree using its own logic which is markedly slower than the
-    // platform's recursive remove on Windows when worktrees contain large
-    // node_modules / build directories. fs.rm with retries handles antivirus /
-    // file-lock interference better.
+    // Fast path: delete the worktree directory ourselves, then ask git to
+    // prune the metadata. `git worktree remove --force` walks the tree with
+    // per-file stat calls and is markedly slower than the platform-native
+    // recursive remove. On Windows we shell out to `rd /s /q` (filesystem
+    // driver level — one or two orders of magnitude faster than fs.rm on NTFS
+    // with deep node_modules trees). Other platforms use fs.rm directly,
+    // which is already a thin syscall wrapper there. fs.rm fallback with
+    // retries handles antivirus / lock interference on Windows when rd fails.
     let rawOutput: string;
     let removalError: { stdout?: string; stderr?: string; message?: string } | null = null;
-    try {
-      if (existsSync(resolvedPath)) {
-        await fsRm(resolvedPath, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    if (existsSync(resolvedPath)) {
+      let removed = false;
+      if (process.platform === "win32") {
+        try {
+          await execFileText("cmd.exe", ["/c", "rd", "/s", "/q", resolvedPath], { timeout: 30_000 });
+          removed = true;
+        } catch {
+          // fall through to fs.rm with retries — gives proper EBUSY/EPERM
+          // error codes that the maxRetries loop can back off on.
+        }
       }
-    } catch (error) {
-      removalError = error as { stdout?: string; stderr?: string; message?: string };
+      if (!removed) {
+        try {
+          await fsRm(resolvedPath, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+        } catch (error) {
+          removalError = error as { stdout?: string; stderr?: string; message?: string };
+        }
+      }
     }
 
     // Tell git to drop the worktree entry. `prune` cleans stale entries when
