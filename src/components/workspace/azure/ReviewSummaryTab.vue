@@ -67,7 +67,11 @@
             type="button"
             :class="['button', 'button--ghost', busyAction === 'vote-10' && 'button--busy']"
             :disabled="!!busyAction || !canVote"
-            :title="voteDisabledTitle('Vote +10: Approve this PR on Azure DevOps. The vote is recorded under your reviewer profile.')"
+            :title="
+              voteDisabledTitle(
+                'Vote +10: Approve this PR on Azure DevOps. The vote is recorded under your reviewer profile.',
+              )
+            "
             @click="handleVote(prKey, 10, 'Approve')"
           >
             {{ busyAction === "vote-10" ? "Approving…" : "Approve" }}
@@ -76,7 +80,11 @@
             type="button"
             :class="['button', 'button--ghost', busyAction === 'vote-5' && 'button--busy']"
             :disabled="!!busyAction || !canVote"
-            :title="voteDisabledTitle('Vote +5: Approve with suggestions — looks good but has minor feedback that the author can address before merge.')"
+            :title="
+              voteDisabledTitle(
+                'Vote +5: Approve with suggestions — looks good but has minor feedback that the author can address before merge.',
+              )
+            "
             @click="handleVote(prKey, 5, 'Approve')"
           >
             {{ busyAction === "vote-5" ? "Submitting…" : "Approve with suggestions" }}
@@ -85,7 +93,11 @@
             type="button"
             :class="['button', 'button--ghost', busyAction === 'vote--5' && 'button--busy']"
             :disabled="!!busyAction || !canVote"
-            :title="voteDisabledTitle('Vote -5: Wait for author — changes needed before approval. Author should address comments and re-request review.')"
+            :title="
+              voteDisabledTitle(
+                'Vote -5: Wait for author — changes needed before approval. Author should address comments and re-request review.',
+              )
+            "
             @click="handleVote(prKey, -5, 'Wait')"
           >
             {{ busyAction === "vote--5" ? "Submitting…" : "Wait" }}
@@ -94,7 +106,11 @@
             type="button"
             :class="['button', 'button--ghost', 'danger', busyAction === 'vote--10' && 'button--busy']"
             :disabled="!!busyAction || !canVote"
-            :title="voteDisabledTitle('Vote -10: Reject this PR. Strong signal — only Reset Vote or a new revision can clear it.')"
+            :title="
+              voteDisabledTitle(
+                'Vote -10: Reject this PR. Strong signal — only Reset Vote or a new revision can clear it.',
+              )
+            "
             @click="handleVote(prKey, -10, 'Reject')"
           >
             {{ busyAction === "vote--10" ? "Rejecting…" : "Reject" }}
@@ -266,10 +282,7 @@ const busyAction = ref<string>("");
 const isOwnPr = computed(() => {
   const me = String(props.detail?.currentUserId || props.detail?.connection?.currentUserId || "").toLowerCase();
   const author = String(
-    props.pullRequest?.createdBy?.id ||
-      props.pullRequest?.createdBy?.uniqueName ||
-      props.detail?.author?.id ||
-      "",
+    props.pullRequest?.createdBy?.id || props.pullRequest?.createdBy?.uniqueName || props.detail?.author?.id || "",
   ).toLowerCase();
   return !!me && !!author && me === author;
 });

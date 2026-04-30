@@ -41,7 +41,7 @@
         v-if="item.hasAttention"
         type="button"
         class="button button--ghost"
-        title="Acknowledge: clear the &quot;needs attention&quot; flag for this PR until it changes again."
+        title='Acknowledge: clear the "needs attention" flag for this PR until it changes again.'
         @click="$emit('seen', item.prKey)"
       >
         Seen

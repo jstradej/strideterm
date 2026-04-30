@@ -111,11 +111,7 @@ const allCommits = computed<any[]>(() => {
   const result: any[] = [];
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const merged: any[] = [
-    ...(props.compare.commits || []),
-    ...(props.snapshot?.log || []),
-    ...extraCommits.value,
-  ];
+  const merged: any[] = [...(props.compare.commits || []), ...(props.snapshot?.log || []), ...extraCommits.value];
   for (const entry of merged) {
     if (!entry.shortHash || seen.has(entry.shortHash)) continue;
     seen.add(entry.shortHash);

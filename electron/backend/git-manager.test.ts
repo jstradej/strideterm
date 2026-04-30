@@ -1352,10 +1352,7 @@ describe("GitManager", () => {
       const stdout = "aaa1111\t1 day ago\tjane\t\tFirst\n";
       const execGitImpl = vi.fn().mockResolvedValue({ stdout, stderr: "" });
       const mgr = new GitManager({ execGitImpl });
-      const result = await mgr.logPage(
-        { id: "ws1", cwd: "/repo" },
-        { rootPath: "/repo", skip: 0, limit: 100 },
-      );
+      const result = await mgr.logPage({ id: "ws1", cwd: "/repo" }, { rootPath: "/repo", skip: 0, limit: 100 });
       expect(result.ok).toBe(true);
       expect(result.hasMore).toBe(false);
       expect(result.commits).toHaveLength(1);
@@ -1405,10 +1402,7 @@ describe("GitManager", () => {
         return { stdout: "", stderr: "" };
       });
       const mgr = new GitManager({ execGitImpl });
-      const result = await mgr.removeWorktree(
-        { id: "ws1", cwd: root },
-        { worktreePath: wtPath, rootPath: root },
-      );
+      const result = await mgr.removeWorktree({ id: "ws1", cwd: root }, { worktreePath: wtPath, rootPath: root });
       // The worktree directory itself was removed by fs.rm before git ran.
       let dirGone = false;
       try {
@@ -1442,10 +1436,7 @@ describe("GitManager", () => {
 
       const execGitImpl = vi.fn().mockResolvedValue({ stdout: "", stderr: "" });
       const mgr = new GitManager({ execGitImpl });
-      const result = await mgr.removeWorktree(
-        { id: "ws1", cwd: root },
-        { worktreePath: wtPath, rootPath: root },
-      );
+      const result = await mgr.removeWorktree({ id: "ws1", cwd: root }, { worktreePath: wtPath, rootPath: root });
       expect(result.ok).toBe(true);
     });
   });

@@ -197,11 +197,7 @@
             <!-- Needs Attention is special: subdivide by why it needs attention
                  (assigned reviewer, comment on watched PR, your own PR). -->
             <template v-if="tab.id === 'attention' && attentionGroupedItems.length">
-              <div
-                v-for="grp in attentionGroupedItems"
-                :key="grp.bucket"
-                class="azure-attention-bucket"
-              >
+              <div v-for="grp in attentionGroupedItems" :key="grp.bucket" class="azure-attention-bucket">
                 <div class="azure-attention-bucket__header">
                   <span class="azure-attention-bucket__name">{{ grp.label }}</span>
                   <span class="azure-attention-bucket__count">{{ grp.items.length }}</span>
@@ -355,9 +351,7 @@ const attentionGroupedItems = computed(() => {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let items: any[] = [...(inbox.value.needsAttention || [])];
   if (repoFilter.value) {
-    items = items.filter(
-      (item) => `${item.project?.name || ""}/${item.repository?.name || ""}` === repoFilter.value,
-    );
+    items = items.filter((item) => `${item.project?.name || ""}/${item.repository?.name || ""}` === repoFilter.value);
   }
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const buckets: { bucket: string; label: string; hint: string; items: any[] }[] = attentionBuckets.map((b) => ({

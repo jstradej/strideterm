@@ -51,14 +51,14 @@ Each connection has its own filter, so different chats can subscribe to differen
 
 ### Bot commands
 
-| Command       | What it does                                                               |
-| ------------- | -------------------------------------------------------------------------- |
-| `/menu`       | Interactive main menu with inline buttons (recommended on mobile).         |
-| `/status`     | List every task agent and its state. Tap a task for actions.               |
-| `/workspaces` | List every workspace in the active profile. Starred workspaces (⭐) appear first, then alphabetical. |
+| Command       | What it does                                                                                                                 |
+| ------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| `/menu`       | Interactive main menu with inline buttons (recommended on mobile).                                                           |
+| `/status`     | List every task agent and its state. Tap a task for actions.                                                                 |
+| `/workspaces` | List every workspace in the active profile. Starred workspaces (⭐) appear first, then alphabetical.                         |
 | `/task`       | Start a new task agent. Picks workspace → worktree mode → branch → prompt. Starred workspaces are shown first in the picker. |
-| `/screenshot` | Capture a PNG of the strIDEterm window (current or any workspace).         |
-| `/help`       | Print the command list.                                                    |
+| `/screenshot` | Capture a PNG of the strIDEterm window (current or any workspace).                                                           |
+| `/help`       | Print the command list.                                                                                                      |
 
 Slash-prefix is optional — both `/status` and `status` work, since mobile keyboards make `/` annoying to type.
 
