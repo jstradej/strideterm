@@ -362,26 +362,33 @@ rejected round.`;
 }
 
 /**
- * Recovery prompt — pasted into a freshly spawned agent after a crash.
- * Reminds the agent to orient from the filesystem before continuing.
+ * Recovery prompt — pasted into a freshly spawned agent after a crash/restart.
+ *
+ * Why pure text:
+ *   We deliberately do NOT use any provider's "context restore" feature
+ *   (Claude `--continue`, Codex resume flag, IDE session reattach). Those
+ *   features either don't exist for our supported providers or restore the
+ *   wrong context (the previous human dialog, not the task state).
+ *
+ *   The recovery prompt instead instructs a fresh agent to re-orient from
+ *   files the previous round wrote: TASK.md, TODO.md, HANDOFF.md, WORK_LOCK,
+ *   verdict.json, plus git history. Those artifacts ARE the durable record
+ *   of progress — the in-memory transcript was never the source of truth.
+ *
+ *   Side benefit: the same mechanism works identically across providers and
+ *   across local/remote Electron — no per-provider wiring.
  */
 export function buildRecoveryPrompt({
   role,
   round,
   taskId,
-  copilotShort = false,
 }: {
   role: "worker" | "judge";
   round: number;
   taskId: string;
-  copilotShort?: boolean;
 }): string {
   const dir = taskDirRel(taskId);
   const roleUpper = role.toUpperCase();
-
-  if (copilotShort) {
-    return `App restarted during round ${round}. Your role: ${roleUpper}. Check ${dir}/ on disk. Don't rewrite already-complete artifacts. Continue.`;
-  }
 
   const handoffNote =
     role === "worker"

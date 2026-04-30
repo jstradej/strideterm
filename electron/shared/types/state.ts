@@ -502,8 +502,6 @@ export interface VersionCheckState {
   error: string | null;
 }
 
-export type RecoveryFsState = "verdict-exists" | "handoff-exists" | "neither";
-
 export interface RecoveryCandidate {
   taskId: string;
   workspaceId: string;

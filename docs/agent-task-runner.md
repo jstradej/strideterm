@@ -426,3 +426,7 @@ This saves time by only involving the Judge when the Worker believes the task is
 ### Persistence
 
 Task state (rounds, shower interval, judge instructions) is persisted to `~/.strideterm/strideterm-state.json` via `normalizeWorkspace()`. Survives Electron restarts. Ephemeral state (shower resume prompt) is intentionally in-memory only.
+
+### Crash recovery
+
+When the app closes mid-task (quit, window close, OS reboot), the PTY processes die but the task state on disk still says `running` / `judge-evaluating`. On the next startup the runtime sweeps those tasks, flips them to `paused`, and offers the user a dialog to resume. Resume re-spawns the PTY and injects a pure-text orientation prompt — no `--continue` flag, no transcript replay. See [task-recovery.md](./task-recovery.md) for the full protocol.

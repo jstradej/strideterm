@@ -48,6 +48,7 @@
 
       <footer class="dialog__footer" style="gap: 8px">
         <button type="button" class="button button--ghost" @click="skipAll">Skip all</button>
+        <button type="button" class="button button--ghost" @click="resumeAll">Resume all</button>
         <button type="button" class="button" :disabled="resolving" @click="confirm">
           {{ resolving ? "Resuming…" : "Confirm" }}
         </button>
@@ -111,6 +112,19 @@ async function confirm(): Promise<void> {
 function skipAll(): void {
   for (const c of candidates) decisions[c.workspaceId] = "skip";
   store.resolveTaskRecovery(decisions).finally(() => props.onClose?.());
+}
+
+// One-click resume of every candidate. Used when the user has many tasks
+// stranded by a restart and just wants them all back without picking through
+// each one. Equivalent to leaving every radio at the default "continue" and
+// pressing Confirm, but saves the user one mental step.
+function resumeAll(): void {
+  for (const c of candidates) decisions[c.workspaceId] = "continue";
+  resolving.value = true;
+  store.resolveTaskRecovery(decisions).finally(() => {
+    resolving.value = false;
+    props.onClose?.();
+  });
 }
 </script>
 

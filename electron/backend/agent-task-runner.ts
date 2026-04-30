@@ -34,7 +34,6 @@ import {
   buildJudgeFeedbackPrompt,
   buildUserFeedbackPrompt,
 } from "./agent-task-prompts.js";
-import { writeRecoverySnapshot, deleteRecoverySnapshot } from "./recovery/task-recovery-snapshot.js";
 import { execCommand } from "./agent-task-exec.js";
 import type { ExecResult } from "./agent-task-exec.js";
 import {
@@ -120,8 +119,6 @@ interface RuntimeDeps {
   broadcastState: () => void;
   raiseAlert: (alert: RaiseAlertArgs) => void;
   restartSession: (sessionId: string) => Promise<void>;
-  /** Directory under which per-task recovery.json snapshots are stored. */
-  recoverySnapshotRoot?: string;
 }
 
 // ------ Module-level pure helpers -------
@@ -198,90 +195,69 @@ export class AgentTaskRunner {
   #broadcastState: RuntimeDeps["broadcastState"] | null = null;
   #raiseAlert: RuntimeDeps["raiseAlert"] | null = null;
   #restartSession: RuntimeDeps["restartSession"] | null = null;
-  #recoverySnapshotRoot: string | null = null;
 
   /**
    * Late-init with runtime dependencies (avoids circular refs).
    * Called once from runtime.js after all closures are available.
    */
-  init({
-    writeToSession,
-    getState,
-    broadcastState,
-    raiseAlert,
-    restartSession,
-    recoverySnapshotRoot,
-  }: RuntimeDeps): void {
+  init({ writeToSession, getState, broadcastState, raiseAlert, restartSession }: RuntimeDeps): void {
     this.#writeToSession = writeToSession;
     this.#getState = getState;
     this.#broadcastState = broadcastState;
     this.#raiseAlert = raiseAlert;
     this.#restartSession = restartSession;
-    this.#recoverySnapshotRoot = recoverySnapshotRoot ?? null;
 
-    // Pause any tasks left in active states from a previous session.
-    // After an app restart, Claude Code sessions are fresh (no context),
-    // so auto-resuming would redo work blindly. The user can explicitly
-    // click Continue to resume.
+    // Crash-recovery sweep on startup. See #reconcileOnStartup for the full
+    // story; the short version is: tasks whose state on disk says they were
+    // running when the app last closed get paused and added to a candidate
+    // list, which the UI surfaces (or the runtime auto-resolves) so the user
+    // can choose whether to re-spawn the agent.
     this.#reconcileOnStartup();
   }
 
   // ---------------------------------------------------------------------------
-  // Recovery snapshot helpers
+  // Crash-recovery sweep
   // ---------------------------------------------------------------------------
-
-  #recoverySnapshotDir(taskId: string): string | null {
-    if (!this.#recoverySnapshotRoot) return null;
-    return path.join(this.#recoverySnapshotRoot, taskId);
-  }
-
-  #saveRecoverySnapshot(workspace: TaskWorkspaceState, phase: "worker" | "judge"): void {
-    const snapshotDir = this.#recoverySnapshotDir(workspace.task.taskId);
-    if (!snapshotDir) return;
-    const task = workspace.task;
-    const tDir = taskDir(workspace.cwd, task.taskId);
-    writeRecoverySnapshot(snapshotDir, {
-      taskId: task.taskId,
-      workspaceId: workspace.id,
-      workspaceName: workspace.name || workspace.id,
-      profileId: (workspace as WorkspaceState & { profileId?: string }).profileId ?? "default",
-      currentRound: task.currentRound || 1,
-      maxRounds: task.maxRounds || 10,
-      lastSavedAt: Date.now(),
-      phase,
-      worker: {
-        providerId: task.workerProviderConfig?.providerId || "claude",
-        model: task.workerProviderConfig?.model,
-      },
-      judge: {
-        providerId: task.judgeProviderConfig?.providerId || "claude",
-        model: task.judgeProviderConfig?.model,
-      },
-      artifacts: {
-        cwd: workspace.cwd,
-        taskDir: tDir,
-        handoffPath: path.join(tDir, "HANDOFF.md"),
-        verdictPath: path.join(tDir, "verdict.json"),
-        promptPath: path.join(tDir, PROMPT_FILE),
-        workLockPath: path.join(tDir, "WORK_LOCK"),
-      },
-    }).catch((err: unknown) => {
-      log.warn("saveRecoverySnapshot failed (non-fatal)", { taskId: task.taskId, err: (err as Error)?.message });
-    });
-  }
-
-  #clearRecoverySnapshot(taskId: string): void {
-    const snapshotDir = this.#recoverySnapshotDir(taskId);
-    if (!snapshotDir) return;
-    deleteRecoverySnapshot(snapshotDir).catch((err: unknown) => {
-      log.warn("clearRecoverySnapshot failed (non-fatal)", { taskId, err: (err as Error)?.message });
-    });
-  }
+  //
+  // Why this exists:
+  //   When the app closes (Quit / window close / OS reboot / power loss),
+  //   every PTY process for a running task agent dies with it. The persisted
+  //   AppState on disk, however, still says state="running" (or
+  //   "judge-evaluating", etc.) because that flag only flips on explicit
+  //   lifecycle events, not on process death.
+  //
+  //   On the next startup we therefore have a contradiction: state says the
+  //   task is mid-flight, but no process exists to drive it forward. If we
+  //   leave the contradiction in place, two things break:
+  //     1. The task never makes progress — there is no agent to do work.
+  //     2. UI shows a misleading "running" badge that never resolves.
+  //
+  //   #reconcileOnStartup flips every such task to "paused" (recording where
+  //   it was) and surfaces the list to the user so they can decide whether
+  //   to resume. Resume means: re-spawn the PTY and inject a pure-text
+  //   recovery prompt. We do NOT use --continue / --resume / any provider
+  //   "context restore" flag — the agent re-orients from the artifacts the
+  //   previous round wrote to disk (HANDOFF.md, TODO.md, WORK_LOCK,
+  //   verdict.json, git history). See buildRecoveryPrompt for the prompt
+  //   text and docs/task-recovery.md for the full protocol.
+  // ---------------------------------------------------------------------------
 
   #reconcileOnStartup(): void {
     const state = this.#getState?.();
     if (!state?.workspaces) return;
 
+    // Which task states qualify as "was running when the app closed"?
+    //   running           — worker actively coding
+    //   evaluating        — between rounds, runner about to spawn judge
+    //   judge-evaluating  — judge actively reviewing
+    //   refreshing        — worker after periodic context refresh ("shower")
+    //
+    // Deliberately EXCLUDED:
+    //   paused            — user explicitly paused, don't second-guess them
+    //   completed/failed  — terminal verdict already issued; reopening should
+    //                       go through "Send Back" with explicit feedback,
+    //                       not a silent restart that may overwrite verdict.json
+    //   idle              — task never started; nothing to recover
     const ACTIVE = new Set(["running", "evaluating", "judge-evaluating", "refreshing"]);
 
     for (const workspace of state.workspaces) {
@@ -593,7 +569,6 @@ export class AgentTaskRunner {
     const prompt = buildInitialWorkerPrompt(task);
     await this.#injectPrompt(workerSessionId, prompt, workspace);
     task.promptSent = true;
-    this.#saveRecoverySnapshot(workspace, "worker");
     const detail = task.description ? "Prompt sent to Worker" : "Prompt sent to Worker (task in TASK.md)";
     log.info("task started, prompt sent to worker", {
       workspaceId,
@@ -612,7 +587,6 @@ export class AgentTaskRunner {
 
     this.#setTaskState(workspace.task, "paused");
     this.#evaluating.delete(workspaceId);
-    this.#clearRecoverySnapshot(workspace.task.taskId);
     log.info("task stopped (paused)", { workspaceId });
     this.#logTaskEvent(workspace, "task-stopped");
     this.#broadcastState!();
@@ -632,7 +606,6 @@ export class AgentTaskRunner {
 
     this.#setTaskState(workspace.task, "paused");
     this.#evaluating.delete(workspaceId);
-    this.#clearRecoverySnapshot(workspace.task.taskId);
     log.info("task paused", { workspaceId });
     this.#logTaskEvent(workspace, "task-paused");
     this.#broadcastState!();
@@ -1828,7 +1801,6 @@ export class AgentTaskRunner {
       await this.#injectPrompt(judgeSessionId, judgePrompt, workspace);
       const totalSetupMs = Date.now() - judgeSetupStart;
       this.#setTaskState(task, "judge-evaluating");
-      this.#saveRecoverySnapshot(workspace, "judge");
       log.info("judge evaluation requested", { workspaceId, round: task.currentRound, gitContextMs, totalSetupMs });
       this.#logTaskEvent(
         workspace,
@@ -1894,7 +1866,6 @@ export class AgentTaskRunner {
       if (verdict.verdict === "complete") {
         this.#setTaskState(task, "completed");
         if (lastRound) lastRound.action = "completed";
-        this.#clearRecoverySnapshot(task.taskId);
         log.info("task completed by judge verdict", { workspaceId, rounds: task.currentRound });
         this.#logTaskEvent(workspace, "task-completed", verdict.reason || "Judge approved");
         this.#raiseTaskAlert(workspace, "completed", verdict.reason ? `Judge: ${verdict.reason}` : undefined);
@@ -1914,7 +1885,6 @@ export class AgentTaskRunner {
         if (task.currentRound >= task.maxRounds) {
           this.#setTaskState(task, "failed");
           if (lastRound) lastRound.action = "failed";
-          this.#clearRecoverySnapshot(task.taskId);
           log.info("task failed: max rounds after judge", { workspaceId, rounds: task.currentRound });
           this.#logTaskEvent(workspace, "task-failed", `Max rounds after judge. ${verdict.reason || ""}`);
           this.#raiseTaskAlert(workspace, "failed", `Max rounds reached. Judge: ${verdict.reason || "incomplete"}`);
@@ -1932,7 +1902,6 @@ export class AgentTaskRunner {
           const workerSessionId = `${workspaceId}:${task.workerPanelId}`;
           await this.#injectPrompt(workerSessionId, prompt, workspace);
           this.#setTaskState(task, "running");
-          this.#saveRecoverySnapshot(workspace, "worker");
           if (lastRound) lastRound.action = "re-prompted";
           task.currentRound += 1;
           this.#ensureRunningRound(task);

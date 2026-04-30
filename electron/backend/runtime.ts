@@ -1977,14 +1977,18 @@ export async function createRuntime({
       await sessions.restartSession(getState(), sessionId);
       resetSessionSignal(sessionId);
     },
-    recoverySnapshotRoot: path.join(userDataPath, "tasks"),
   });
 
   // Collect tasks that were active when the app last closed.
-  // #reconcileOnStartup (called inside taskRunner.init above) set them to "paused".
+  // taskRunner.init() ran #reconcileOnStartup, which paused those tasks
+  // and built the candidate list. We surface the list to the renderer via
+  // meta.recoveryCandidates (see getMeta below) so the dialog can open.
+  // If the user has disabled the dialog (settings.recovery.showTaskRecoveryDialog
+  // = false), we auto-resolve the candidates with "continue" once the runtime
+  // is fully constructed — see the setImmediate at the bottom of createRuntime.
   _recoveryCandidates = taskRunner.getStartupRecoveryCandidates();
   if (_recoveryCandidates.length > 0) {
-    log.info("startup: found tasks active at last close — offering recovery dialog", {
+    log.info("startup: found tasks active at last close", {
       count: _recoveryCandidates.length,
     });
   }
@@ -4726,6 +4730,28 @@ export async function createRuntime({
       return taskRunner.getTaskState(workspaceId);
     },
 
+    /**
+     * Apply the user's per-task recovery decisions, collected by the dialog
+     * (or auto-generated when the dialog is suppressed; see setImmediate at
+     * the end of createRuntime).
+     *
+     * For each candidate:
+     *   - "skip"     → leave paused. The task stays in AppState and the user
+     *                  can resume it later from the dashboard the normal way.
+     *   - "fresh"    → reset rounds and start over (clears history, recreates
+     *                  WORK_LOCK). Use when the previous attempt was so broken
+     *                  that re-orienting from disk would mislead the agent.
+     *   - "continue" → re-spawn worker AND judge PTY sessions, and stash a
+     *                  recovery prompt on the task (`showerResumePrompt`).
+     *                  When the freshly-spawned agent emits its first idle
+     *                  signal, the task runner injects this prompt instead of
+     *                  the standard initial prompt — the agent re-orients
+     *                  from disk and continues. This is the pure-prompt path:
+     *                  no `--continue` flag, no transcript replay.
+     *
+     * The candidate list is cleared after we process the batch so a redrive
+     * can't double-spawn.
+     */
     async resolveTaskRecovery(decisions: Record<string, string>) {
       for (const [workspaceId, decision] of Object.entries(decisions)) {
         const candidate = _recoveryCandidates.find((c) => c.workspaceId === workspaceId);
@@ -4740,8 +4766,8 @@ export async function createRuntime({
           }
 
           // "continue" — build an orientation prompt and resume the agent.
-          // pausedFromState was set by #reconcileOnStartup, so resumeTask resumes
-          // to the correct role (worker or judge-evaluating).
+          // pausedFromState was set by #reconcileOnStartup, so resumeTask
+          // resumes to the correct role (worker or judge-evaluating).
           const role = candidate.previousState === "judge-evaluating" ? "judge" : "worker";
           const recoveryPrompt = buildRecoveryPrompt({
             role,
@@ -4753,6 +4779,11 @@ export async function createRuntime({
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           const ws = state.workspaces.find((w: any) => w.id === workspaceId);
 
+          // Stash the recovery prompt on the task. We reuse `showerResumePrompt`
+          // (originally added for the periodic "fresh-context shower" feature)
+          // because both flows want the same thing: replace the next idle's
+          // prompt with our text. Setting `promptSent = false` triggers the
+          // injection path in onAgentIdle.
           await store.mutate((draft: AppState) => {
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
             const dws = draft.workspaces.find((w: any) => w.id === workspaceId);
@@ -4762,7 +4793,10 @@ export async function createRuntime({
             }
           });
 
-          // Ensure PTY sessions exist before resuming.
+          // Re-spawn PTY sessions for both worker and judge panels. After an
+          // app restart the prior PTYs are gone with the parent process; the
+          // task runner's resumeTask() expects sessions to exist before it
+          // schedules its idle hook.
           if (ws?.task?.workerPanelId) {
             const workerSessionId = `${workspaceId}:${ws.task.workerPanelId}`;
             await sessions.ensureSession(state, workerSessionId).catch((err: unknown) => {
@@ -4795,5 +4829,41 @@ export async function createRuntime({
     },
   };
   _rt = returnObj;
+
+  // Auto-resolve path for users who disabled the recovery dialog. The dialog
+  // is the default and recommended UX (it's the user's chance to skip a task
+  // they don't want to resume). But if `settings.recovery.showTaskRecoveryDialog`
+  // is explicitly false, leaving candidates unresolved would silently strand
+  // tasks in `paused` forever — there'd be no way to wake them up. So we
+  // auto-resolve everything as "continue".
+  //
+  // Why setImmediate rather than awaiting here:
+  //   createRuntime is called synchronously by main.ts / remote-server.ts
+  //   which then registers IPC handlers and (for Electron) creates the window.
+  //   Auto-resolve calls broadcastState and ensureSession; those work fine
+  //   without a window, but deferring to the next tick keeps construction
+  //   order clean — the runtime object is fully returned before any task-agent
+  //   PTYs start spawning.
+  //
+  // Reliability:
+  //   - getState() returns the AppState loaded synchronously at startup.
+  //   - resolveTaskRecovery is internally try/catch'd per workspace, so a
+  //     failure on one task can't block the others.
+  //   - The list is consumed (set to []) before broadcast, so a second tick
+  //     can't double-spawn agents.
+  const startupSettings = getState().settings;
+  if (_recoveryCandidates.length > 0 && startupSettings?.recovery?.showTaskRecoveryDialog === false) {
+    log.info("startup: dialog disabled — auto-resolving recovery candidates as continue", {
+      count: _recoveryCandidates.length,
+    });
+    const decisions: Record<string, string> = {};
+    for (const c of _recoveryCandidates) decisions[c.workspaceId] = "continue";
+    setImmediate(() => {
+      returnObj.resolveTaskRecovery(decisions).catch((err: unknown) => {
+        log.warn("startup: auto-resolve failed", { err: (err as Error)?.message });
+      });
+    });
+  }
+
   return returnObj;
 }
