@@ -1680,7 +1680,7 @@ export class GitManager extends EventEmitter {
     // platform's recursive remove on Windows when worktrees contain large
     // node_modules / build directories. fs.rm with retries handles antivirus /
     // file-lock interference better.
-    let rawOutput = "";
+    let rawOutput: string;
     let removalError: { stdout?: string; stderr?: string; message?: string } | null = null;
     try {
       if (existsSync(resolvedPath)) {

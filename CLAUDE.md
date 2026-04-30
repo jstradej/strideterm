@@ -124,9 +124,9 @@ Configurable via `settings.notifications` (persisted per user) or env vars:
 
 | Setting | Env var | Default | Purpose |
 |---------|---------|---------|---------|
-| `promptQuietMs` | `STRIDETERM_PROMPT_QUIET_MS` | 900 | Silence before shell prompt-return alert |
-| `agentQuietMs` | `STRIDETERM_AGENT_QUIET_MS` | 20000 | Silence before agent idle alert |
-| `agentQuietFastMs` | `STRIDETERM_AGENT_QUIET_FAST_MS` | 12000 | Agent idle alert after output bursts |
+| `promptQuietMs` | `STRIDETERM_PROMPT_QUIET_MS` | 2500 | Silence before shell prompt-return alert |
+| `agentQuietMs` | `STRIDETERM_AGENT_QUIET_MS` | 45000 | Silence before agent idle alert |
+| `agentQuietFastMs` | `STRIDETERM_AGENT_QUIET_FAST_MS` | 25000 | Agent idle alert after output bursts |
 | `alertCooldownMs` | `STRIDETERM_ALERT_COOLDOWN_MS` | 15000 | Per-session alert cooldown |
 | `shellIntegration` | `STRIDETERM_SHELL_INTEGRATION` | true | Auto-inject OSC 133 shell integration |
 

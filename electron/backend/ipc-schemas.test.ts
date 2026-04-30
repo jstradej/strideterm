@@ -7,6 +7,7 @@ import {
   azureThreadStatusSchema,
   gitPayloadSchema,
   gitDiffPreviewSchema,
+  gitLogPageSchema,
   terminalResizeSchema,
   profileSchema,
   worktreeSchema,
@@ -153,6 +154,22 @@ describe("ipc-schemas", () => {
           "test",
         ),
       ).toThrow();
+    });
+  });
+
+  describe("gitLogPageSchema", () => {
+    test("applies default skip and limit", () => {
+      const result = validateIpc(gitLogPageSchema, { workspaceId: "ws-1" }, "git:log-page");
+      expect(result.skip).toBe(0);
+      expect(result.limit).toBe(100);
+    });
+
+    test("clamps limit to <= 500", () => {
+      expect(() => validateIpc(gitLogPageSchema, { workspaceId: "ws-1", limit: 9999 }, "test")).toThrow();
+    });
+
+    test("rejects negative skip", () => {
+      expect(() => validateIpc(gitLogPageSchema, { workspaceId: "ws-1", skip: -1 }, "test")).toThrow();
     });
   });
 

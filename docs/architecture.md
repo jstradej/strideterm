@@ -150,8 +150,9 @@ Files:
 
 Responsibilities:
 
-- produce a `GitSnapshot` per tracked git root (branch, upstream, ahead/behind, dirty counts, operation state, worktrees, tags)
-- execute write actions (fetch, pull, push, checkout, branch, merge, rebase, stash, tag, commit, diff preview, worktree add/remove) with Azure DevOps / GitHub credential injection and audit logging
+- produce a `GitSnapshot` per tracked git root (branch, upstream, ahead/behind, dirty counts, operation state, worktrees with `lastActivityMs`, tags)
+- execute write actions (fetch, pull, push, checkout, branch, merge, rebase, stash, tag, commit, diff preview, log pagination, worktree add/remove) with Azure DevOps / GitHub credential injection and audit logging
+- worktree removal uses Node's `fs.rm` with retries to delete the directory and `git worktree prune` to clean metadata; falls back to `git worktree remove --force` when the platform leaves locked files behind
 - probe a parent directory for sibling git repositories to power multi-repo workspace detection
 - back the renderer's Git pane, Bulk sub-tab, and Lazygit launch point via a stable IPC contract
 

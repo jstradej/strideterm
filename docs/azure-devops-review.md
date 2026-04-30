@@ -21,10 +21,10 @@ PAT is stored encrypted, separately from the main state file.
 
 ### The Inbox
 
-The inbox shows all active pull requests across your connections, grouped by repository. Filter tabs:
+The inbox shows all active pull requests across your connections, grouped by repository. The default tab is **Needs attention** so the most actionable items surface first. Filter tabs:
 
+- **Needs attention** (default) — PRs flagged for you, sub-grouped by why: assigned reviewer, comments on PRs you watch, your own PRs with new activity, and other (build status, conflicts, …)
 - **All** — every PR sorted by recent activity
-- **Needs attention** — PRs with new comments, vote changes, or check failures
 - **Needs review** — PRs where you are a reviewer
 - **My PRs** — PRs you authored
 - **Connections** — manage Azure DevOps connections
@@ -61,7 +61,7 @@ The review pane has five tabs:
 
 ### Files
 
-Split view: changed files tree on the left, diff preview on the right. Click a file to see its diff.
+Split view: changed files tree on the left, Monaco diff editor on the right (side-by-side or inline, F7 / Shift+F7 to step through changes). Click a file to load its diff. Above the editor a **Final** chip shows the rolled-up branch diff vs the PR target; one chip per commit lets you scope the view to that commit's changes only.
 
 ### Comments
 

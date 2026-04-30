@@ -1,5 +1,11 @@
 import { describe, test, expect, vi, beforeEach } from "vitest";
-import { TelegramManager, escapeMarkdown, escapeInlineCode, normalizeBranchName } from "./telegram-manager.js";
+import {
+  TelegramManager,
+  escapeMarkdown,
+  escapeInlineCode,
+  normalizeBranchName,
+  sortWorkspacesStarredFirst,
+} from "./telegram-manager.js";
 import type { TelegramConnectionConfig, TelegramWorkspaceInfo } from "./telegram-manager.js";
 
 // ---------------------------------------------------------------------------
@@ -965,6 +971,50 @@ describe("setWorkspacesGetter", () => {
     await (manager as any)._handleMessage(msg, makeConnection(), "token123");
 
     expect(sentTexts[0]).toContain("No task agents are running");
+  });
+
+  test("/workspaces puts starred entries first and prefixes them with a star", async () => {
+    const cred = makeCredentialStore({ "cred:tg-1": "token123" });
+    const manager = new TelegramManager({ credentialStore: cred });
+    manager.configure([makeConnection()]);
+
+    manager.setWorkspacesGetter(() => [
+      makeWorkspace({ id: "ws-1", name: "zeta", cwd: "/p/zeta" }),
+      makeWorkspace({ id: "ws-2", name: "beta", cwd: "/p/beta", starred: true }),
+      makeWorkspace({ id: "ws-3", name: "alpha", cwd: "/p/alpha" }),
+    ]);
+
+    const sentTexts: string[] = [];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (manager as any)._apiCall = async (_token: string, _method: string, body: Record<string, unknown>) => {
+      if (body.text) sentTexts.push(body.text as string);
+      return { ok: true, result: { message_id: 600 } };
+    };
+
+    const msg = { message_id: 99, chat: { id: 12345 }, text: "/workspaces" };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (manager as any)._handleMessage(msg, makeConnection(), "token123");
+
+    const text = sentTexts[0] || "";
+    const betaIdx = text.indexOf("beta");
+    const alphaIdx = text.indexOf("alpha");
+    const zetaIdx = text.indexOf("zeta");
+    // beta is starred so it appears before alpha and zeta even though it
+    // comes later alphabetically among starred items (only one starred here).
+    expect(betaIdx).toBeGreaterThan(0);
+    expect(betaIdx).toBeLessThan(alphaIdx);
+    expect(alphaIdx).toBeLessThan(zetaIdx);
+    expect(text).toContain("⭐");
+  });
+
+  test("sortWorkspacesStarredFirst: starred ⭐ first, then alphabetical", () => {
+    const sorted = sortWorkspacesStarredFirst([
+      { name: "zeta" },
+      { name: "alpha" },
+      { name: "Mike", starred: true },
+      { name: "Bob", starred: true },
+    ] as TelegramWorkspaceInfo[]);
+    expect(sorted.map((s) => s.name)).toEqual(["Bob", "Mike", "alpha", "zeta"]);
   });
 
   test("/workspaces lists all workspaces with cwd", async () => {
