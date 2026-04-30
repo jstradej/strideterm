@@ -204,6 +204,29 @@
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
+/* Explicit two-column grid that holds when the dialog is too narrow for
+   the implicit `.grid` rule to win. Use this on `<div class="grid grid--two-col">`
+   when you want comboboxes / inputs sitting visibly side-by-side instead
+   of expanding full-width like single-field rows. */
+.grid--two-col {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+@media (max-width: 540px) {
+  .grid--two-col {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* Right-aligned footer button cluster — buttons stay together on the right
+   so the action chain is read in a consistent place across all dialogs. */
+.dialog__footer--end {
+  justify-content: flex-end;
+  gap: 8px;
+}
+
 label {
   display: grid;
   gap: 4px;

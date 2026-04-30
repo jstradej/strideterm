@@ -5,7 +5,14 @@
         <p class="eyebrow">{{ providerLabel }}</p>
         <h2>New Branch</h2>
       </div>
-      <button type="button" class="button button--ghost" @click="emit('cancel')">Close</button>
+      <button
+        type="button"
+        class="button button--ghost"
+        title="Close the wizard without creating a workspace."
+        @click="emit('cancel')"
+      >
+        Close
+      </button>
     </div>
 
     <!-- Step indicator -->
@@ -28,6 +35,11 @@
             v-for="conn in connections"
             :key="conn.id"
             :class="['nb-item', selected.connectionId === conn.id && 'nb-item--active']"
+            :title="
+              provider === 'github'
+                ? `Use the GitHub connection at ${conn.hostUrl} (signed in as ${conn.currentUserLogin}).`
+                : `Use the Azure DevOps connection at ${conn.orgUrl}. The next steps will list projects visible to its PAT.`
+            "
             @click="selectConnection(conn)"
           >
             <span class="nb-item__name">{{ conn.label || conn.orgUrl || conn.hostUrl }}</span>
@@ -47,6 +59,7 @@
             v-for="proj in projects"
             :key="proj.id"
             :class="['nb-item', selected.projectName === proj.name && 'nb-item--active']"
+            :title="`Pick the Azure DevOps project '${proj.name}'. The next step will list its repositories.`"
             @click="selectProject(proj)"
           >
             <span class="nb-item__name">{{ proj.name }}</span>
@@ -64,6 +77,7 @@
             v-model="repoSearch"
             placeholder="Filter repositories…"
             style="width: 100%; margin-bottom: 8px"
+            title="Filter the list below by repository name. Matching is case-insensitive substring."
           />
           <div class="nb-list">
             <button
@@ -74,6 +88,7 @@
                 (provider === 'github' ? selected.fullName === repo.fullName : selected.repositoryId === repo.id) &&
                   'nb-item--active',
               ]"
+              :title="`Pick repository ${repo.fullName || repo.name}${repo.defaultBranch ? ' (default branch: ' + repo.defaultBranch + ')' : ''}. The next step will list its branches so you can pick a base.`"
               @click="selectRepository(repo)"
             >
               <span class="nb-item__name">{{ repo.fullName || repo.name }}</span>
@@ -87,7 +102,10 @@
       <div v-if="currentStep === 'branch'">
         <p class="eyebrow">Branch setup</p>
         <p v-if="loading" style="color: var(--muted)">Loading branches…</p>
-        <div v-else class="form" style="margin-top: 8px">
+        <!-- Two-column layout so the base-branch combo and new-branch composer
+             sit side-by-side instead of each spanning the whole 680 px dialog
+             (5.2). The grid collapses to a single column on narrow widths. -->
+        <div v-else class="form qf-branch-grid" style="margin-top: 8px">
           <label>
             <span>Base branch</span>
             <div class="nb-combo" @keydown.escape="branchDropdownOpen = false">
@@ -96,12 +114,14 @@
                 v-model="baseBranchSearch"
                 placeholder="Search branches…"
                 autocomplete="off"
+                title="Type to filter the list of remote branches. The new branch will be created off whichever branch you pick here (typically your team's main / develop / release line)."
                 @focus="branchDropdownOpen = true"
                 @input="branchDropdownOpen = true"
               />
               <div
                 v-if="selected.baseBranch && !branchDropdownOpen"
                 class="nb-combo__selected"
+                title="Click to re-open the branch picker and choose a different base."
                 @click="
                   branchDropdownOpen = true;
                   $nextTick(() => baseBranchInputRef?.focus());
@@ -114,6 +134,7 @@
                   v-for="b in filteredBranches"
                   :key="b"
                   :class="['nb-combo__option', selected.baseBranch === b && 'nb-combo__option--active']"
+                  :title="`Use ${b} as the base branch — the new branch will be cut from its tip.`"
                   @mousedown.prevent="selectBaseBranch(b)"
                 >
                   {{ b }}
@@ -124,18 +145,20 @@
           </label>
           <label>
             <span>New branch name</span>
-            <div style="display: flex; gap: 6px; align-items: stretch">
+            <div class="qf-branch-name">
               <input
                 v-model="branchPrefix"
                 placeholder="fix/"
-                style="width: 110px; flex-shrink: 0"
+                class="qf-branch-name__prefix"
+                title="Branch prefix (e.g. fix/, feature/, chore/). Saved per user — the next time you open this wizard the same prefix is filled in."
                 @change="savePrefixPreference"
               />
               <input
                 ref="branchNameRef"
                 v-model="branchSuffix"
                 placeholder="my-branch-name"
-                style="flex: 1"
+                class="qf-branch-name__suffix"
+                title="Slug part of the branch name. Use lowercase, dashes between words. The full branch name shown below is what will be pushed to the remote."
                 @keydown.enter.prevent="canCreate && handleCreate()"
               />
             </div>
@@ -152,14 +175,34 @@
     </div>
 
     <footer class="dialog__footer">
-      <button v-if="canGoBack" type="button" class="button button--ghost" @click="goBack">Back</button>
+      <button
+        v-if="canGoBack"
+        type="button"
+        class="button button--ghost"
+        title="Return to the previous step. Your selections so far are preserved."
+        @click="goBack"
+      >
+        Back
+      </button>
       <span style="flex: 1"></span>
-      <button type="button" class="button button--ghost" @click="emit('cancel')">Cancel</button>
+      <button
+        type="button"
+        class="button button--ghost"
+        title="Discard your selections and close the wizard."
+        @click="emit('cancel')"
+      >
+        Cancel
+      </button>
       <button
         v-if="currentStep === 'branch'"
         type="button"
         :class="['button', busy && 'button--busy']"
         :disabled="!canCreate || busy"
+        :title="
+          !canCreate
+            ? 'Pick a base branch and type a valid branch name to enable.'
+            : `Clone (or reuse a cached clone of) the repository, create the branch '${fullBranchName}' off the chosen base, and open it as a new strIDEterm workspace.`
+        "
         @click="handleCreate"
       >
         {{ busy ? "Creating…" : "Create workspace" }}
@@ -607,5 +650,36 @@ onMounted(() => {
   text-align: center;
   color: var(--muted);
   font-size: 12px;
+}
+
+/* Branch step layout — two columns side-by-side instead of each label
+   spanning the whole 680 px dialog (5.2: comboboxes were spreading
+   full-width). Collapses to a single column under 540 px. */
+.qf-branch-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 12px;
+}
+
+@media (max-width: 540px) {
+  .qf-branch-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.qf-branch-name {
+  display: flex;
+  gap: 6px;
+  align-items: stretch;
+}
+
+.qf-branch-name__prefix {
+  width: 90px;
+  flex-shrink: 0;
+}
+
+.qf-branch-name__suffix {
+  flex: 1;
+  min-width: 0;
 }
 </style>

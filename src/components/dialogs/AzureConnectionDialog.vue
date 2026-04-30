@@ -5,64 +5,121 @@
         <p class="eyebrow">Azure DevOps</p>
         <h2>{{ connection ? "Edit connection" : "Add connection" }}</h2>
       </div>
-      <button type="button" class="button button--ghost" @click="emit('cancel')">Close</button>
+      <button
+        type="button"
+        class="button button--ghost"
+        title="Close this dialog without saving any changes."
+        @click="emit('cancel')"
+      >
+        Close
+      </button>
     </div>
     <form class="form" @submit.prevent="handleSubmit">
-      <div class="grid">
+      <div class="grid grid--two-col">
         <label>
           <span>Label</span>
-          <input ref="labelRef" v-model="draft.label" required maxlength="60" />
+          <input
+            ref="labelRef"
+            v-model="draft.label"
+            required
+            maxlength="60"
+            title="Human-readable name for this Azure DevOps connection. Shown in the inbox header and connection list."
+          />
         </label>
         <label>
           <span>Poll seconds</span>
-          <input v-model.number="draft.pollSeconds" type="number" min="15" max="3600" />
+          <input
+            v-model.number="draft.pollSeconds"
+            type="number"
+            min="15"
+            max="3600"
+            title="How often (in seconds) strIDEterm should re-poll Azure DevOps for this connection. Lower = fresher but more API calls; minimum 15s, maximum 1 hour."
+          />
         </label>
       </div>
       <label>
         <span>Organization URL</span>
-        <input v-model="draft.orgUrl" placeholder="https://dev.azure.com/your-org" required maxlength="300" />
+        <input
+          v-model="draft.orgUrl"
+          placeholder="https://dev.azure.com/your-org"
+          required
+          maxlength="300"
+          title="Your Azure DevOps organization root URL. Pasting a project or repository page URL also works — strIDEterm will normalize it down to the org root."
+        />
         <small style="color: var(--muted); font-size: 12px"
           >A project or repository page URL also works. The app will normalize it.</small
         >
       </label>
-      <div class="grid">
+      <div class="grid grid--two-col">
         <label>
           <span>Login / UPN</span>
-          <input v-model="draft.login" placeholder="me@company.com" required maxlength="200" />
+          <input
+            v-model="draft.login"
+            placeholder="me@company.com"
+            required
+            maxlength="200"
+            title="Your Azure DevOps account email / UPN. Used for git authentication when checking out PRs and pushing branches."
+          />
         </label>
         <label>
           <span>PAT {{ connection ? "(leave empty to keep current token)" : "" }}</span>
-          <input v-model="draft.pat" type="password" placeholder="Personal Access Token" maxlength="300" />
+          <input
+            v-model="draft.pat"
+            type="password"
+            placeholder="Personal Access Token"
+            maxlength="300"
+            title="Personal Access Token (Code: read+write, Pull Request: read+write). Stored encrypted in the OS credential store; not in plain text. When editing, leave empty to keep the existing token."
+          />
         </label>
       </div>
       <label>
         <span>Review checkout root</span>
         <div class="input-with-action">
-          <input v-model="draft.reviewRoot" placeholder="C:/Users/me/.strideterm/azure-pr" maxlength="500" />
+          <input
+            v-model="draft.reviewRoot"
+            placeholder="C:/Users/me/.strideterm/azure-pr"
+            maxlength="500"
+            title="Local directory under which strIDEterm will create per-PR review worktrees. Each PR gets a folder named pr-<id>; cloning is shared across PRs from the same repo."
+          />
           <button
             v-if="api?.browseDirectory"
             type="button"
             class="button button--ghost input-with-action__btn"
+            title="Pick a directory using the OS file picker."
             @click="browseReviewRoot"
           >
             Browse
           </button>
         </div>
       </label>
-      <div class="grid">
+      <div class="grid grid--two-col">
         <label>
           <span>Project filters</span>
-          <input v-model="draft.projectFilters" placeholder="Platform, Mobile" maxlength="500" />
+          <input
+            v-model="draft.projectFilters"
+            placeholder="Platform, Mobile"
+            maxlength="500"
+            title="Comma-separated list of Azure DevOps project names or ids to poll. Empty = poll all projects visible to your PAT."
+          />
           <small style="color: var(--muted); font-size: 12px">Comma-separated project ids or names.</small>
         </label>
         <label>
           <span>Repository filters</span>
-          <input v-model="draft.repositoryFilters" placeholder="web-app, api" maxlength="500" />
+          <input
+            v-model="draft.repositoryFilters"
+            placeholder="web-app, api"
+            maxlength="500"
+            title="Comma-separated list of repository names or ids inside the filtered projects. Empty = include every repo in the selected projects."
+          />
           <small style="color: var(--muted); font-size: 12px">Optional repo ids or names.</small>
         </label>
       </div>
       <label style="display: flex; align-items: center; gap: 8px">
-        <input v-model="draft.enabled" type="checkbox" />
+        <input
+          v-model="draft.enabled"
+          type="checkbox"
+          title="When unchecked, strIDEterm keeps the connection but stops polling it. Useful for temporarily silencing one connection without deleting its config."
+        />
         <span>Enable polling for this connection</span>
       </label>
       <p v-if="errorMessage" style="margin: 0; color: var(--danger)">{{ errorMessage }}</p>
@@ -85,17 +142,30 @@
           }}</span>
         </div>
       </div>
-      <footer class="dialog__footer">
-        <button type="button" class="button button--ghost" @click="emit('cancel')">Cancel</button>
+      <footer class="dialog__footer dialog__footer--end">
+        <button
+          type="button"
+          class="button button--ghost"
+          title="Discard the changes you made and close the dialog."
+          @click="emit('cancel')"
+        >
+          Cancel
+        </button>
         <button
           type="button"
           :class="['button', 'button--ghost', busy && 'button--busy']"
           :disabled="busy"
+          title="Verify the URL, login and PAT against Azure DevOps and list the projects this connection can see. Does not save."
           @click="testConnection"
         >
           {{ busy ? "Testing…" : "Test connection" }}
         </button>
-        <button type="submit" :class="['button', busy && 'button--busy']" :disabled="busy">
+        <button
+          type="submit"
+          :class="['button', busy && 'button--busy']"
+          :disabled="busy"
+          title="Save this connection and (when enabled) start polling it on the configured interval."
+        >
           {{ busy ? "Saving…" : "Save connection" }}
         </button>
       </footer>
