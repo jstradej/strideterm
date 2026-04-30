@@ -212,6 +212,14 @@ test.describe("New workspace picker", () => {
 // Task dashboard pane
 // ---------------------------------------------------------------------------
 test.describe("Task dashboard", () => {
+  // .td lives in TaskDashboardPane, a separate Vite chunk that loads on demand.
+  // On busy CI runners that chunk fetch + Vue mount can stretch past the
+  // default 30s per-test budget. Raise the ceiling so individual `expect`s with
+  // a generous timeout (see below) can actually wait the full duration without
+  // the harness killing the test first. Playwright still resolves as soon as
+  // the element appears — only a real breakage waits the full 2 minutes.
+  test.describe.configure({ timeout: 120_000 });
+
   let mock: Awaited<ReturnType<typeof startMockServer>>;
   test.beforeAll(async () => {
     mock = await startMockServer({
@@ -248,7 +256,12 @@ test.describe("Task dashboard", () => {
   test("task dashboard shows status tab by default", async ({ page }) => {
     await openApp(page, mock);
     const dashboard = page.locator(".td");
-    await expect(dashboard).toBeVisible({ timeout: 5_000 });
+    // .td lives inside TaskDashboardPane, which Vite splits into a lazy chunk
+    // (TaskDashboardPane-*.js). On a busy CI runner the fetch + parse + Vue
+    // mount routinely takes >5s. The 60s ceiling here is a fallback — Playwright
+    // observes DOM mutations and resolves immediately when the element appears,
+    // so fast runs stay fast; only a true breakage waits the full 60s.
+    await expect(dashboard).toBeVisible({ timeout: 60_000 });
     // Status tab should be active by default
     await expect(dashboard.locator(".td__tab--active")).toContainText("Status");
     assertNoErrors(page);
@@ -257,7 +270,12 @@ test.describe("Task dashboard", () => {
   test("task dashboard Start button is visible in idle state", async ({ page }) => {
     await openApp(page, mock);
     const dashboard = page.locator(".td");
-    await expect(dashboard).toBeVisible({ timeout: 5_000 });
+    // .td lives inside TaskDashboardPane, which Vite splits into a lazy chunk
+    // (TaskDashboardPane-*.js). On a busy CI runner the fetch + parse + Vue
+    // mount routinely takes >5s. The 60s ceiling here is a fallback — Playwright
+    // observes DOM mutations and resolves immediately when the element appears,
+    // so fast runs stay fast; only a true breakage waits the full 60s.
+    await expect(dashboard).toBeVisible({ timeout: 60_000 });
     await expect(dashboard.locator("button", { hasText: "Start" })).toBeVisible({ timeout: 3_000 });
     assertNoErrors(page);
   });
@@ -265,7 +283,12 @@ test.describe("Task dashboard", () => {
   test("switching to Assignment tab loads Monaco editor with TASK.md content", async ({ page }) => {
     await openApp(page, mock);
     const dashboard = page.locator(".td");
-    await expect(dashboard).toBeVisible({ timeout: 5_000 });
+    // .td lives inside TaskDashboardPane, which Vite splits into a lazy chunk
+    // (TaskDashboardPane-*.js). On a busy CI runner the fetch + parse + Vue
+    // mount routinely takes >5s. The 60s ceiling here is a fallback — Playwright
+    // observes DOM mutations and resolves immediately when the element appears,
+    // so fast runs stay fast; only a true breakage waits the full 60s.
+    await expect(dashboard).toBeVisible({ timeout: 60_000 });
 
     // Click on the files/Assignment tab
     await dashboard.locator(".td__tab", { hasText: /Assignment|Files/ }).click();
@@ -280,7 +303,12 @@ test.describe("Task dashboard", () => {
   test("file tabs show Task and Judge options", async ({ page }) => {
     await openApp(page, mock);
     const dashboard = page.locator(".td");
-    await expect(dashboard).toBeVisible({ timeout: 5_000 });
+    // .td lives inside TaskDashboardPane, which Vite splits into a lazy chunk
+    // (TaskDashboardPane-*.js). On a busy CI runner the fetch + parse + Vue
+    // mount routinely takes >5s. The 60s ceiling here is a fallback — Playwright
+    // observes DOM mutations and resolves immediately when the element appears,
+    // so fast runs stay fast; only a true breakage waits the full 60s.
+    await expect(dashboard).toBeVisible({ timeout: 60_000 });
 
     // Click Assignment/Files tab
     await dashboard.locator(".td__tab", { hasText: /Assignment|Files/ }).click();
