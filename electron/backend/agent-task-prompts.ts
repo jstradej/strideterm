@@ -361,6 +361,50 @@ verifiable implementation. A few more minutes of work is cheaper than another
 rejected round.`;
 }
 
+/**
+ * Recovery prompt — pasted into a freshly spawned agent after a crash.
+ * Reminds the agent to orient from the filesystem before continuing.
+ */
+export function buildRecoveryPrompt({
+  role,
+  round,
+  taskId,
+  copilotShort = false,
+}: {
+  role: "worker" | "judge";
+  round: number;
+  taskId: string;
+  copilotShort?: boolean;
+}): string {
+  const dir = taskDirRel(taskId);
+  const roleUpper = role.toUpperCase();
+
+  if (copilotShort) {
+    return `App restarted during round ${round}. Your role: ${roleUpper}. Check ${dir}/ on disk. Don't rewrite already-complete artifacts. Continue.`;
+  }
+
+  const handoffNote =
+    role === "worker"
+      ? `Your work for this round may already be done — the runner will hand off to the judge.`
+      : `Read it and continue your evaluation; write ${dir}/${VERDICT_FILE} when you're done.`;
+
+  return `The application restarted unexpectedly during round ${round} of this task.
+Your role: ${roleUpper}.
+
+Before continuing, briefly check the state of your work on disk:
+
+1. Read your task directory: ${dir}/
+2. If ${dir}/HANDOFF.md is already complete: do NOT rewrite it.
+   ${handoffNote}
+3. If ${dir}/HANDOFF.md is partial/incomplete: your call to finish it or rewrite — judge what's salvageable.
+4. ${WORK_LOCK_FILE} is still in place — same protocol as a normal round. Remove it only when the task is fully verified, not because of the restart.
+5. **Git safety**: if commits already exist on this branch since the round started (check \`git log\`), they are real work. Do NOT revert, rebase, force-push, or rewrite them. Continue from current HEAD.
+6. **Side effect safety**: if you can tell that destructive or external operations already happened (PRs created, releases tagged, external APIs called, files written outside cwd), verify current state before redoing anything.
+7. Re-orient from the artifacts on disk and continue the round.
+
+Continue from where you left off.`;
+}
+
 export function buildUserFeedbackPrompt(task: TaskData, feedback: string): string {
   const dir = taskDirRel(task.taskId);
   return `The user reviewed your work after you stopped and found something still

@@ -30,6 +30,7 @@ const DIALOGS = {
   QuickFixWizardDialog: defineAsyncComponent(() => import("./QuickFixWizardDialog.vue")),
   BusyOverlay: defineAsyncComponent(() => import("./BusyOverlay.vue")),
   TaskHookCheckDialog: defineAsyncComponent(() => import("./TaskHookCheckDialog.vue")),
+  TaskRecoveryDialog: defineAsyncComponent(() => import("./TaskRecoveryDialog.vue")),
   SshHostsDialog: defineAsyncComponent(() => import("../ssh/SshHostsDialog.vue")),
   SshHostEditor: defineAsyncComponent(() => import("../ssh/SshHostEditor.vue")),
   SshKeyManager: defineAsyncComponent(() => import("../ssh/SshKeyManager.vue")),

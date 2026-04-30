@@ -460,6 +460,9 @@ export function createDefaultState(): AppState & { activeProjectId: string; proj
           showAllActions: false,
         },
       },
+      recovery: {
+        showTaskRecoveryDialog: true,
+      },
     },
     tabTemplates: [
       { id: "shell", title: "Shell", command: "", icon: "\u{1F4BB}" },
@@ -929,6 +932,12 @@ export function normalizeState(rawState: any = {}): AppState & { activeProjectId
             ? (rawState.settings || {}).git.ui.showAllActions
             : defaults.settings.git.ui.showAllActions,
       },
+    },
+    recovery: {
+      showTaskRecoveryDialog:
+        typeof (rawState.settings || {}).recovery?.showTaskRecoveryDialog === "boolean"
+          ? (rawState.settings || {}).recovery.showTaskRecoveryDialog
+          : defaults.settings.recovery.showTaskRecoveryDialog,
     },
   };
   const workspaces = groupChildWorkspaces(

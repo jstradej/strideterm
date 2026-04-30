@@ -41,6 +41,7 @@ import type {
   TaskWorkspaceCreate,
   TaskWorkspaceAction,
   TaskRejectVerdict,
+  TaskRecoveryResolve,
   ProfilePayload,
   NotificationShow,
   TelegramConnectionPayload,
@@ -213,6 +214,7 @@ export interface StridetermAPI {
   resumeTask: (payload: TaskWorkspaceAction) => Promise<unknown>;
   resetTask: (payload: TaskWorkspaceAction) => Promise<unknown>;
   rejectTaskVerdict: (payload: TaskRejectVerdict) => Promise<unknown>;
+  resolveTaskRecovery: (decisions: TaskRecoveryResolve) => Promise<unknown>;
   getTaskStatus: (workspaceId: string) => Promise<unknown>;
 
   // Tunnel

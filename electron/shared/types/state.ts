@@ -90,6 +90,10 @@ export interface GitSettings {
   ui: GitUiSettings;
 }
 
+export interface RecoverySettings {
+  showTaskRecoveryDialog: boolean;
+}
+
 export interface Settings {
   theme: string;
   sidebarWidth: number;
@@ -100,6 +104,7 @@ export interface Settings {
   taskDefaults: TaskDefaults;
   integrations: IntegrationSettings;
   git: GitSettings;
+  recovery: RecoverySettings;
 }
 
 // ------- Tab templates -------
@@ -497,11 +502,35 @@ export interface VersionCheckState {
   error: string | null;
 }
 
+export type RecoveryFsState = "verdict-exists" | "handoff-exists" | "neither";
+
+export interface RecoveryCandidate {
+  taskId: string;
+  workspaceId: string;
+  workspaceName: string;
+  profileId: string;
+  currentRound: number;
+  maxRounds: number;
+  phase: "worker" | "judge";
+  lastSavedAt: number;
+  worker: { providerId: string; model?: string };
+  judge: { providerId: string; model?: string };
+  artifacts: {
+    cwd: string;
+    taskDir: string;
+    handoffPath: string;
+    verdictPath: string;
+    workLockPath: string;
+  };
+  fsState: RecoveryFsState;
+}
+
 export interface MetaState {
   appVersion: string;
   repositoryUrl: string;
   versionCheck: VersionCheckState;
   platform: string;
+  recoveryCandidates: RecoveryCandidate[];
 }
 
 // ------- Full payload broadcast to frontend -------

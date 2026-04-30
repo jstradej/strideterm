@@ -33,7 +33,9 @@ import {
   buildJudgePrompt,
   buildJudgeFeedbackPrompt,
   buildUserFeedbackPrompt,
+  buildRecoveryPrompt,
 } from "./agent-task-prompts.js";
+import { writeRecoverySnapshot, deleteRecoverySnapshot } from "./recovery/task-recovery-snapshot.js";
 import { execCommand } from "./agent-task-exec.js";
 import type { ExecResult } from "./agent-task-exec.js";
 import {
@@ -119,6 +121,8 @@ interface RuntimeDeps {
   broadcastState: () => void;
   raiseAlert: (alert: RaiseAlertArgs) => void;
   restartSession: (sessionId: string) => Promise<void>;
+  /** Directory under which per-task recovery.json snapshots are stored. */
+  recoverySnapshotRoot?: string;
 }
 
 // ------ Module-level pure helpers -------
@@ -193,23 +197,83 @@ export class AgentTaskRunner {
   #broadcastState: RuntimeDeps["broadcastState"] | null = null;
   #raiseAlert: RuntimeDeps["raiseAlert"] | null = null;
   #restartSession: RuntimeDeps["restartSession"] | null = null;
+  #recoverySnapshotRoot: string | null = null;
 
   /**
    * Late-init with runtime dependencies (avoids circular refs).
    * Called once from runtime.js after all closures are available.
    */
-  init({ writeToSession, getState, broadcastState, raiseAlert, restartSession }: RuntimeDeps): void {
+  init({
+    writeToSession,
+    getState,
+    broadcastState,
+    raiseAlert,
+    restartSession,
+    recoverySnapshotRoot,
+  }: RuntimeDeps): void {
     this.#writeToSession = writeToSession;
     this.#getState = getState;
     this.#broadcastState = broadcastState;
     this.#raiseAlert = raiseAlert;
     this.#restartSession = restartSession;
+    this.#recoverySnapshotRoot = recoverySnapshotRoot ?? null;
 
     // Pause any tasks left in active states from a previous session.
     // After an app restart, Claude Code sessions are fresh (no context),
     // so auto-resuming would redo work blindly. The user can explicitly
     // click Continue to resume.
     this.#reconcileOnStartup();
+  }
+
+  // ---------------------------------------------------------------------------
+  // Recovery snapshot helpers
+  // ---------------------------------------------------------------------------
+
+  #recoverySnapshotDir(taskId: string): string | null {
+    if (!this.#recoverySnapshotRoot) return null;
+    return path.join(this.#recoverySnapshotRoot, taskId);
+  }
+
+  #saveRecoverySnapshot(workspace: TaskWorkspaceState, phase: "worker" | "judge"): void {
+    const snapshotDir = this.#recoverySnapshotDir(workspace.task.taskId);
+    if (!snapshotDir) return;
+    const task = workspace.task;
+    const tDir = taskDir(workspace.cwd, task.taskId);
+    writeRecoverySnapshot(snapshotDir, {
+      taskId: task.taskId,
+      workspaceId: workspace.id,
+      workspaceName: workspace.name || workspace.id,
+      profileId: (workspace as WorkspaceState & { profileId?: string }).profileId ?? "default",
+      currentRound: task.currentRound || 1,
+      maxRounds: task.maxRounds || 10,
+      lastSavedAt: Date.now(),
+      phase,
+      worker: {
+        providerId: task.workerProviderConfig?.providerId || "claude",
+        model: task.workerProviderConfig?.model,
+      },
+      judge: {
+        providerId: task.judgeProviderConfig?.providerId || "claude",
+        model: task.judgeProviderConfig?.model,
+      },
+      artifacts: {
+        cwd: workspace.cwd,
+        taskDir: tDir,
+        handoffPath: path.join(tDir, "HANDOFF.md"),
+        verdictPath: path.join(tDir, "verdict.json"),
+        workLockPath: path.join(tDir, "WORK_LOCK"),
+      },
+    }).catch((err: unknown) => {
+      log.warn("saveRecoverySnapshot failed (non-fatal)", { taskId: task.taskId, err: (err as Error)?.message });
+    });
+  }
+
+  #clearRecoverySnapshot(taskId: string): void {
+    const snapshotDir = this.#recoverySnapshotDir(taskId);
+    if (!snapshotDir) return;
+    deleteRecoverySnapshot(snapshotDir).catch((err: unknown) => {
+      log.warn("clearRecoverySnapshot failed (non-fatal)", { taskId, err: (err as Error)?.message });
+    });
   }
 
   #reconcileOnStartup(): void {
@@ -511,6 +575,7 @@ export class AgentTaskRunner {
     const prompt = buildInitialWorkerPrompt(task);
     await this.#injectPrompt(workerSessionId, prompt, workspace);
     task.promptSent = true;
+    this.#saveRecoverySnapshot(workspace, "worker");
     const detail = task.description ? "Prompt sent to Worker" : "Prompt sent to Worker (task in TASK.md)";
     log.info("task started, prompt sent to worker", {
       workspaceId,
@@ -529,6 +594,7 @@ export class AgentTaskRunner {
 
     this.#setTaskState(workspace.task, "paused");
     this.#evaluating.delete(workspaceId);
+    this.#clearRecoverySnapshot(workspace.task.taskId);
     log.info("task stopped (paused)", { workspaceId });
     this.#logTaskEvent(workspace, "task-stopped");
     this.#broadcastState!();
@@ -548,6 +614,7 @@ export class AgentTaskRunner {
 
     this.#setTaskState(workspace.task, "paused");
     this.#evaluating.delete(workspaceId);
+    this.#clearRecoverySnapshot(workspace.task.taskId);
     log.info("task paused", { workspaceId });
     this.#logTaskEvent(workspace, "task-paused");
     this.#broadcastState!();
@@ -579,7 +646,9 @@ export class AgentTaskRunner {
     // description under the old code path, or the user is resuming a state that
     // never sent a prompt), inject it now. Without this, Resume would flip the
     // state badge to "running" but the Worker would still sit idle waiting.
-    if (!task.promptSent && resumeTo === "running") {
+    // Skip if showerResumePrompt is set — that means recovery set a specific
+    // prompt that the idle hook will inject on first idle, overriding initial.
+    if (!task.promptSent && resumeTo === "running" && !task.showerResumePrompt) {
       const workerSessionId = `${workspaceId}:${task.workerPanelId}`;
       const prompt = buildInitialWorkerPrompt(task);
       this.#injectPrompt(workerSessionId, prompt, workspace)
@@ -1727,6 +1796,7 @@ export class AgentTaskRunner {
       await this.#injectPrompt(judgeSessionId, judgePrompt, workspace);
       const totalSetupMs = Date.now() - judgeSetupStart;
       this.#setTaskState(task, "judge-evaluating");
+      this.#saveRecoverySnapshot(workspace, "judge");
       log.info("judge evaluation requested", { workspaceId, round: task.currentRound, gitContextMs, totalSetupMs });
       this.#logTaskEvent(
         workspace,
@@ -1792,6 +1862,7 @@ export class AgentTaskRunner {
       if (verdict.verdict === "complete") {
         this.#setTaskState(task, "completed");
         if (lastRound) lastRound.action = "completed";
+        this.#clearRecoverySnapshot(task.taskId);
         log.info("task completed by judge verdict", { workspaceId, rounds: task.currentRound });
         this.#logTaskEvent(workspace, "task-completed", verdict.reason || "Judge approved");
         this.#raiseTaskAlert(workspace, "completed", verdict.reason ? `Judge: ${verdict.reason}` : undefined);
@@ -1811,6 +1882,7 @@ export class AgentTaskRunner {
         if (task.currentRound >= task.maxRounds) {
           this.#setTaskState(task, "failed");
           if (lastRound) lastRound.action = "failed";
+          this.#clearRecoverySnapshot(task.taskId);
           log.info("task failed: max rounds after judge", { workspaceId, rounds: task.currentRound });
           this.#logTaskEvent(workspace, "task-failed", `Max rounds after judge. ${verdict.reason || ""}`);
           this.#raiseTaskAlert(workspace, "failed", `Max rounds reached. Judge: ${verdict.reason || "incomplete"}`);
@@ -1828,6 +1900,7 @@ export class AgentTaskRunner {
           const workerSessionId = `${workspaceId}:${task.workerPanelId}`;
           await this.#injectPrompt(workerSessionId, prompt, workspace);
           this.#setTaskState(task, "running");
+          this.#saveRecoverySnapshot(workspace, "worker");
           if (lastRound) lastRound.action = "re-prompted";
           task.currentRound += 1;
           this.#ensureRunningRound(task);

@@ -69,6 +69,7 @@ import {
   taskWorkspaceCreateSchema,
   taskWorkspaceActionSchema,
   taskRejectVerdictSchema,
+  taskRecoveryResolveSchema,
   telegramConnectionSchema,
 } from "./ipc-schemas.js";
 
@@ -679,6 +680,12 @@ export function registerIpc(
       runtime.getTaskStatus(workspaceId),
     ),
   );
+  ipcMain.handle("task-recovery:resolve", async (_event, payload) =>
+    withOperationPromise({ opId: "task-recovery:resolve" }, async () => {
+      const parsed = validateIpc(taskRecoveryResolveSchema, payload, "task-recovery:resolve");
+      return runtime.resolveTaskRecovery(parsed.decisions);
+    }),
+  );
   ipcMain.handle("docker:refresh", async () =>
     withOperationPromise({ opId: "docker:refresh" }, () => runtime.refreshDockerState()),
   );
@@ -1193,6 +1200,7 @@ export function registerIpc(
     ipcMain.removeHandler("task:resume");
     ipcMain.removeHandler("task:reset");
     ipcMain.removeHandler("task:status");
+    ipcMain.removeHandler("task-recovery:resolve");
     ipcMain.removeHandler("docker:refresh");
     ipcMain.removeHandler("git:refresh");
     ipcMain.removeHandler("git:fetch");

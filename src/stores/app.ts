@@ -24,7 +24,7 @@ import { createDialogActions } from "./app-dialog-actions.js";
 import { createWorkspaceActions } from "./app-workspace-actions.js";
 import { createApiActions } from "./app-api-actions.js";
 import { useGitUiStore } from "./git-ui.js";
-import type { StatePayload } from "../../electron/shared/types/state.js";
+import type { StatePayload, RecoveryCandidate } from "../../electron/shared/types/state.js";
 import type { Transport } from "../transport.js";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -63,6 +63,9 @@ export const useAppStore = defineStore("app", () => {
   const contextMenu = ref<{ x: number; y: number; viewId: string } | null>(null); // { x, y, viewId } | null
   const layoutPickerAnchor = ref<DOMRect | null>(null); // DOMRect | null (for positioning)
   const starFilterActive = ref(false);
+
+  // --- Task recovery ---
+  const recoveryCandidates = ref<RecoveryCandidate[]>([]);
 
   // --- Race condition prevention ---
   const pendingWorkspaceActivationId = ref("");
@@ -153,6 +156,28 @@ export const useAppStore = defineStore("app", () => {
     }
     _prevAttention = next;
     return next;
+  });
+
+  // Count attention alerts whose workspace lives in a profile other than the
+  // active one. Drives the small "work elsewhere" indicator on the ProfileBar
+  // so background task agents in inactive profiles aren't invisible.
+  const otherProfileAttentionCount = computed<number>(() => {
+    const p = payload.value;
+    if (!p) return 0;
+    const activeId = p.appState?.activeProfileId || "default";
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- runtime-only attention shape
+    const byWorkspace = (p.attention as any)?.byWorkspace as Record<string, { alerts?: unknown[] }> | undefined;
+    if (!byWorkspace) return 0;
+    const workspaces = (p.appState?.workspaces || []) as AnyApi[];
+    const profileByWs = new Map<string, string>();
+    for (const ws of workspaces) profileByWs.set(ws.id, ws.profileId || "default");
+    let count = 0;
+    for (const [wsId, entry] of Object.entries(byWorkspace)) {
+      const profileId = profileByWs.get(wsId) || "default";
+      if (profileId === activeId) continue;
+      count += entry?.alerts?.length || 0;
+    }
+    return count;
   });
 
   let _prevTabsKey = "";
@@ -702,6 +727,12 @@ export const useAppStore = defineStore("app", () => {
         payload.value = p as StatePayload;
         // Seed cache with the initial workspace state on bootstrap
         _cacheCurrentWorkspace();
+        // Show recovery dialog if there are crash-recovery candidates
+        const candidates: RecoveryCandidate[] = (p?.meta?.recoveryCandidates as RecoveryCandidate[]) ?? [];
+        if (candidates.length > 0 && p?.appState?.settings?.recovery?.showTaskRecoveryDialog !== false) {
+          recoveryCandidates.value = candidates;
+          dialogActions.openDialog("TaskRecoveryDialog", { onClose: () => dialogActions.closeDialog() });
+        }
       })
       .catch((error: AnyApi) => {
         const message = error?.message?.includes("401")
@@ -723,6 +754,16 @@ export const useAppStore = defineStore("app", () => {
     getApi,
     withSuppressedBroadcast,
   });
+
+  async function resolveTaskRecovery(decisions: Record<string, "continue" | "fresh" | "skip">): Promise<void> {
+    const api = getApi();
+    try {
+      await api.resolveTaskRecovery?.({ decisions });
+    } finally {
+      recoveryCandidates.value = [];
+      dialogActions.closeDialog();
+    }
+  }
 
   return {
     // State
@@ -746,11 +787,13 @@ export const useAppStore = defineStore("app", () => {
     pendingViewActivationId,
     suppressBroadcast,
     lastError,
+    recoveryCandidates,
     // Computed
     activeWorkspace,
     filteredWorkspaces,
     activeProfile,
     attentionSummary,
+    otherProfileAttentionCount,
     workspaceTabs,
     visibleTabs,
     // Core actions
@@ -763,6 +806,7 @@ export const useAppStore = defineStore("app", () => {
     clearRemoteConnectionIssue,
     dismissError,
     getApi,
+    resolveTaskRecovery,
     // Delegated dialog actions
     ...dialogActions,
     // Delegated workspace actions

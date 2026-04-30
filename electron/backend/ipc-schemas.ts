@@ -444,6 +444,11 @@ export const taskRejectVerdictSchema = z.object({
 });
 export type TaskRejectVerdict = z.infer<typeof taskRejectVerdictSchema>;
 
+export const taskRecoveryResolveSchema = z.object({
+  decisions: z.record(z.string(), z.enum(["continue", "fresh", "skip"])),
+});
+export type TaskRecoveryResolve = z.infer<typeof taskRecoveryResolveSchema>;
+
 export const workspaceReorderSchema = z.array(nonEmptyString);
 export type WorkspaceReorder = z.infer<typeof workspaceReorderSchema>;
 

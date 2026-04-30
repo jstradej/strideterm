@@ -40,6 +40,11 @@ import { configureCodexHook, removeCodexHook, detectCodexHookStatus } from "./co
 import { configureCopilotHook, removeCopilotHook, detectCopilotHookStatus } from "./copilot-hook-config.js";
 import { configureOpencodeHook, removeOpencodeHook, detectOpencodeHookStatus } from "./opencode-hook-config.js";
 import { AgentTaskRunner } from "./agent-task-runner.js";
+import { checkLockFile, writeLockFile, clearLockFileSync } from "./recovery/lock-file.js";
+import { inspectCandidates } from "./recovery/task-recovery-handler.js";
+import { deleteRecoverySnapshot } from "./recovery/task-recovery-snapshot.js";
+import { buildRecoveryPrompt } from "./agent-task-prompts.js";
+import type { RecoveryCandidate } from "./recovery/types.js";
 import { updateTaskDescriptionFile } from "./agent-task-files.js";
 import { getProvider, getAllProviders } from "./providers/provider-registry.js";
 import { classifyHookEvent } from "./notifications/classifier.js";
@@ -343,6 +348,25 @@ export async function createRuntime({
   if (storedLogLevel) {
     reconfigureLogger({ level: storedLogLevel });
     log.info("logger reconfigured from stored settings", { level: storedLogLevel });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Crash recovery — check runtime.lock BEFORE task runner reconcile
+  // ---------------------------------------------------------------------------
+  const lockPath = path.join(userDataPath, "runtime.lock");
+  let _recoveryCandidates: RecoveryCandidate[] = [];
+  try {
+    const lockStatus = await checkLockFile(lockPath);
+    if (lockStatus === "stale-crash") {
+      const appState = store.getState() as AppState;
+      _recoveryCandidates = await inspectCandidates(path.join(userDataPath, "tasks"), appState);
+      log.info("crash detected — recovery candidates", { count: _recoveryCandidates.length });
+    } else if (lockStatus === "live-owner") {
+      log.warn("second instance detected — skipping recovery");
+    }
+    await writeLockFile(lockPath);
+  } catch (lockErr) {
+    log.warn("lock file check/write failed (non-fatal)", { err: (lockErr as Error).message });
   }
 
   // ---------------------------------------------------------------------------
@@ -1307,6 +1331,7 @@ export async function createRuntime({
         repositoryUrl: APP_CONFIG.app.repositoryUrl,
         versionCheck: versionChecker.getCachedResult(),
         platform: process.platform,
+        recoveryCandidates: _recoveryCandidates,
       },
       appState: (() => {
         const cloned = clone(state);
@@ -1971,6 +1996,7 @@ export async function createRuntime({
       await sessions.restartSession(getState(), sessionId);
       resetSessionSignal(sessionId);
     },
+    recoverySnapshotRoot: path.join(userDataPath, "tasks"),
   });
 
   async function ensureRemoteOriginReady(remoteConfig: { host?: string; port?: number }): Promise<string> {
@@ -4708,6 +4734,82 @@ export async function createRuntime({
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     getTaskStatus(workspaceId: any) {
       return taskRunner.getTaskState(workspaceId);
+    },
+
+    async resolveTaskRecovery(decisions: Record<string, string>) {
+      const snapshotRoot = path.join(userDataPath, "tasks");
+
+      for (const [workspaceId, decision] of Object.entries(decisions)) {
+        const candidate = _recoveryCandidates.find((c) => c.workspaceId === workspaceId);
+        if (!candidate) continue;
+        const snapshotDir = path.join(snapshotRoot, candidate.taskId);
+
+        if (decision === "skip") {
+          await deleteRecoverySnapshot(snapshotDir).catch(() => {});
+          continue;
+        }
+
+        try {
+          if (decision === "fresh") {
+            await rm(candidate.artifacts.handoffPath, { force: true }).catch(() => {});
+          }
+
+          // Build a recovery prompt the worker will see on its first idle.
+          // We always resume as worker — if HANDOFF.md is already on disk,
+          // the prompt tells the worker not to redo it; the worker idles,
+          // and the runner naturally advances to judge phase from there.
+          const recoveryPrompt =
+            decision === "fresh"
+              ? ""
+              : buildRecoveryPrompt({
+                  role: "worker",
+                  round: candidate.currentRound,
+                  taskId: candidate.taskId,
+                });
+
+          await store.mutate((draft: AppState) => {
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const ws = draft.workspaces.find((w: any) => w.id === workspaceId);
+            if (ws?.task) {
+              ws.task.promptSent = false;
+              ws.task.showerResumePrompt = recoveryPrompt;
+              ws.task.pausedFromState = "running";
+            }
+          });
+
+          // After a crash the PTY is gone. Spawn it before resumeTask, otherwise
+          // the worker-idle hook never fires and the recovery prompt sits unused.
+          const state = getState();
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const ws = state.workspaces.find((w: any) => w.id === workspaceId);
+          if (ws?.task?.workerPanelId) {
+            const workerSessionId = `${workspaceId}:${ws.task.workerPanelId}`;
+            await sessions.ensureSession(state, workerSessionId).catch((err: unknown) => {
+              log.warn("resolveTaskRecovery: ensureSession failed", {
+                workspaceId,
+                err: (err as Error).message,
+              });
+            });
+          }
+
+          const ok = taskRunner.resumeTask(workspaceId);
+          if (!ok) log.warn("resolveTaskRecovery: resumeTask returned false", { workspaceId });
+
+          await deleteRecoverySnapshot(snapshotDir).catch(() => {});
+        } catch (err) {
+          log.warn("resolveTaskRecovery: failed for workspace", { workspaceId, err: (err as Error).message });
+        }
+      }
+
+      _recoveryCandidates = [];
+      broadcastState();
+      return { ok: true, payload: getPayload() };
+    },
+    getLockPath() {
+      return lockPath;
+    },
+    clearLockFileSync() {
+      clearLockFileSync(lockPath);
     },
   };
   _rt = returnObj;
