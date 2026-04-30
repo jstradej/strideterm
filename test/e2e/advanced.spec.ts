@@ -245,10 +245,12 @@ test.describe("Task dashboard", () => {
   test("task dashboard pane is visible with task description", async ({ page }) => {
     await openApp(page, mock);
     const dashboardPane = page.locator(".workspace-pane--task-dashboard");
-    await expect(dashboardPane).toBeVisible({ timeout: 5_000 });
-    // Task description is shown in the header
+    // The parent .workspace-pane--task-dashboard wrapper renders eagerly, but
+    // the description text inside lives in the lazy TaskDashboardPane chunk —
+    // same 60s ceiling reasoning as the other Task dashboard tests.
+    await expect(dashboardPane).toBeVisible({ timeout: 60_000 });
     await expect(dashboardPane.getByText("Refactor the authentication module")).toBeVisible({
-      timeout: 5_000,
+      timeout: 60_000,
     });
     assertNoErrors(page);
   });
