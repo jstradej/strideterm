@@ -48,6 +48,14 @@ export interface MockServerHandle {
   wsUrl: string;
   browserUrl: string;
   close(): Promise<void>;
+  /**
+   * Re-seed the in-memory payload from the original fixture and notify any
+   * connected WebSocket clients. Use this in `test.beforeEach` to undo state
+   * mutations from a prior test (active workspace switches, settings tweaks,
+   * etc.) without paying the cost — and the close-hang risk from Vite HMR
+   * proxy sockets — of recreating the whole HTTP server per test.
+   */
+  reset(): Promise<void>;
 }
 
 export async function startMockServer({
@@ -228,6 +236,16 @@ export async function startMockServer({
       await new Promise<void>((resolve) => wss.close(() => resolve()));
       server.closeAllConnections();
       await new Promise<void>((resolve) => server.close(() => resolve()));
+    },
+    async reset() {
+      // Mutate `payload` in place so the closure references in the request
+      // handlers keep pointing at the same object — reassigning the const
+      // wouldn't propagate to them.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: untyped fixture state
+      const fresh: any = JSON.parse(JSON.stringify(loadFixture(fixture)));
+      for (const key of Object.keys(payload)) delete payload[key];
+      Object.assign(payload, fresh);
+      broadcast({ type: "state:updated", payload });
     },
   };
 }
