@@ -1296,6 +1296,67 @@ describe("reconcileOnStartup", () => {
     expect(failed.task.state).toBe("failed");
     expect(deps.broadcastState).not.toHaveBeenCalled();
   });
+
+  test("pauses tasks left in refreshing state", () => {
+    const runner = new AgentTaskRunner();
+    const ws = createTaskWorkspace(runner);
+    ws.task.state = "refreshing";
+
+    const deps = createMockDeps([ws]);
+    runner.init(deps);
+
+    expect(ws.task.state).toBe("paused");
+  });
+
+  test("records pausedFromState so resume returns to the right phase", () => {
+    const runner = new AgentTaskRunner();
+    const judgeWs = createTaskWorkspace(runner);
+    const workerWs = createTaskWorkspace(runner);
+    judgeWs.task.state = "judge-evaluating";
+    workerWs.task.state = "running";
+
+    const deps = createMockDeps([judgeWs, workerWs]);
+    runner.init(deps);
+
+    // Both are paused, but pausedFromState lets resumeTask drop back into the
+    // correct phase — judge resumes to judge-evaluating, worker to running.
+    expect(judgeWs.task.pausedFromState).toBe("judge-evaluating");
+    expect(workerWs.task.pausedFromState).toBe("running");
+  });
+
+  test("getStartupRecoveryCandidates returns one record per recovered task", () => {
+    const runner = new AgentTaskRunner();
+    const a = createTaskWorkspace(runner);
+    const b = createTaskWorkspace(runner);
+    const inert = createTaskWorkspace(runner);
+    a.task.state = "running";
+    a.task.currentRound = 2;
+    a.task.maxRounds = 7;
+    b.task.state = "judge-evaluating";
+    b.task.currentRound = 5;
+    b.task.maxRounds = 8;
+    inert.task.state = "completed";
+
+    const deps = createMockDeps([a, b, inert]);
+    runner.init(deps);
+
+    const candidates = runner.getStartupRecoveryCandidates();
+    expect(candidates).toHaveLength(2);
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const byWs = new Map<string, any>(candidates.map((c: any) => [c.workspaceId, c]));
+    const ca = byWs.get(a.id);
+    expect(ca).toBeDefined();
+    expect(ca.taskId).toBe(a.task.taskId);
+    expect(ca.previousState).toBe("running");
+    expect(ca.currentRound).toBe(2);
+    expect(ca.maxRounds).toBe(7);
+    expect(ca.profileId).toBe("default");
+
+    const cb = byWs.get(b.id);
+    expect(cb.previousState).toBe("judge-evaluating");
+    expect(cb.currentRound).toBe(5);
+  });
 });
 
 describe("extractTaskDescription", () => {

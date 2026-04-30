@@ -116,8 +116,10 @@ class FakeSessionManager extends EventEmitter {
     return activePanelId ? createSessionId(project.id, activePanelId) : null;
   }
 
+  // Match the real SessionManager.ensureSession signature: async, returns
+  // Promise<session | null>. Production callers chain `.catch()` on the result.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  ensureSession(state: any, sessionId: any) {
+  async ensureSession(state: any, sessionId: any) {
     const [projectId, panelId] = String(sessionId).split(":");
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const project = state.projects.find((item: any) => item.id === projectId);
@@ -2703,3 +2705,193 @@ describe("runtime integration", () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// Task-agent crash recovery (see docs/task-recovery.md)
+// ---------------------------------------------------------------------------
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function makeTaskWorkspace(overrides: Partial<any> = {}): any {
+  const id = overrides.id || `ws-${Math.random().toString(36).slice(2, 8)}`;
+  const workerPanelId = "panel-worker";
+  const judgePanelId = "panel-judge";
+  return {
+    id,
+    name: overrides.name || "Recovery test task",
+    kind: "task",
+    cwd: overrides.cwd || "/tmp/test-task",
+    profileId: overrides.profileId || "default",
+    activePanelId: "panel-dashboard",
+    panels: [
+      { id: "panel-dashboard", title: "Dashboard", command: "__task-dashboard__", startup: "none" },
+      { id: workerPanelId, title: "Worker", command: "echo worker", startup: "default" },
+      { id: judgePanelId, title: "Judge", command: "echo judge", startup: "default" },
+    ],
+    task: {
+      taskId: overrides.taskId || `task-${id}`,
+      description: "test task",
+      parentWorkspaceId: "",
+      worktreeBase: "",
+      worktreeBranch: "",
+      workerPanelId,
+      judgePanelId,
+      maxRounds: overrides.maxRounds ?? 5,
+      showerInterval: 5,
+      state: overrides.state ?? "running",
+      currentRound: overrides.currentRound ?? 2,
+      rounds: [],
+      lastShowerRound: 0,
+      lastJudgeInstructions: "",
+      promptSent: true,
+      pausedFromState: "",
+      showerResumePrompt: "",
+      ...overrides.task,
+    },
+  };
+}
+
+describe("task recovery: resolveTaskRecovery", () => {
+  test("'continue' decision sets a recovery prompt and re-spawns PTY sessions", async () => {
+    const ws = makeTaskWorkspace({ id: "ws-cont", state: "running", currentRound: 3 });
+    const fixture = await createFixture({
+      initialState: {
+        workspaces: [ws],
+        activeWorkspaceId: "",
+      },
+    });
+    fixtures.push(fixture);
+
+    // After init, the task should already be paused with a candidate ready
+    const meta = fixture.runtime.getPayload().meta;
+    expect(meta.recoveryCandidates).toHaveLength(1);
+    expect(meta.recoveryCandidates[0].workspaceId).toBe("ws-cont");
+    expect(meta.recoveryCandidates[0].previousState).toBe("running");
+
+    const result = await fixture.runtime.resolveTaskRecovery({ "ws-cont": "continue" });
+    expect(result.ok).toBe(true);
+
+    // showerResumePrompt now carries the orientation prompt for the worker
+    const wsAfter = fixture.runtime.getPayload().appState.workspaces.find((w: { id: string }) => w.id === "ws-cont");
+    expect(wsAfter?.task?.showerResumePrompt).toBeTruthy();
+    expect(wsAfter?.task?.showerResumePrompt).toContain("WORKER");
+    expect(wsAfter?.task?.showerResumePrompt).toContain("round 3");
+    expect(wsAfter?.task?.promptSent).toBe(false);
+
+    // Both worker and judge PTYs were spawned (we don't know which idle's
+    // first, so resolveTaskRecovery prepares both)
+    expect(fixture.sessionManager.sessions.has("ws-cont:panel-worker")).toBe(true);
+    expect(fixture.sessionManager.sessions.has("ws-cont:panel-judge")).toBe(true);
+
+    // Candidate list cleared — a redrive can't double-spawn
+    expect(fixture.runtime.getPayload().meta.recoveryCandidates).toHaveLength(0);
+  });
+
+  test("'continue' with previousState=judge-evaluating builds a JUDGE recovery prompt", async () => {
+    const ws = makeTaskWorkspace({ id: "ws-judge", state: "judge-evaluating", currentRound: 4 });
+    const fixture = await createFixture({ initialState: { workspaces: [ws] } });
+    fixtures.push(fixture);
+
+    await fixture.runtime.resolveTaskRecovery({ "ws-judge": "continue" });
+
+    const wsAfter = fixture.runtime.getPayload().appState.workspaces.find((w: { id: string }) => w.id === "ws-judge");
+    expect(wsAfter?.task?.showerResumePrompt).toContain("JUDGE");
+    // resumeTask should have flipped state back to judge-evaluating
+    expect(wsAfter?.task?.state).toBe("judge-evaluating");
+  });
+
+  test("'skip' leaves task paused without spawning sessions", async () => {
+    const ws = makeTaskWorkspace({ id: "ws-skip", state: "running" });
+    const fixture = await createFixture({ initialState: { workspaces: [ws] } });
+    fixtures.push(fixture);
+
+    await fixture.runtime.resolveTaskRecovery({ "ws-skip": "skip" });
+
+    const wsAfter = fixture.runtime.getPayload().appState.workspaces.find((w: { id: string }) => w.id === "ws-skip");
+    // Task remains paused (the reconcile sweep already paused it)
+    expect(wsAfter?.task?.state).toBe("paused");
+    // No recovery prompt
+    expect(wsAfter?.task?.showerResumePrompt).toBe("");
+    // No PTY spawned
+    expect(fixture.sessionManager.sessions.has("ws-skip:panel-worker")).toBe(false);
+  });
+
+  test("'fresh' decision resets the round counter", async () => {
+    const ws = makeTaskWorkspace({ id: "ws-fresh", state: "running", currentRound: 7 });
+    const fixture = await createFixture({ initialState: { workspaces: [ws] } });
+    fixtures.push(fixture);
+
+    await fixture.runtime.resolveTaskRecovery({ "ws-fresh": "fresh" });
+
+    const wsAfter = fixture.runtime.getPayload().appState.workspaces.find((w: { id: string }) => w.id === "ws-fresh");
+    expect(wsAfter?.task?.currentRound).toBe(0);
+    expect(wsAfter?.task?.rounds).toHaveLength(0);
+    expect(wsAfter?.task?.state).toBe("idle");
+  });
+
+  test("ignores decisions for workspaces that aren't recovery candidates", async () => {
+    // This task is "completed" — not a recovery candidate. A stray decision
+    // for it must not crash and must not flip its state.
+    const completed = makeTaskWorkspace({ id: "ws-done", state: "completed", currentRound: 5 });
+    const fixture = await createFixture({ initialState: { workspaces: [completed] } });
+    fixtures.push(fixture);
+
+    expect(fixture.runtime.getPayload().meta.recoveryCandidates).toHaveLength(0);
+
+    const result = await fixture.runtime.resolveTaskRecovery({ "ws-done": "continue" });
+    expect(result.ok).toBe(true);
+
+    const wsAfter = fixture.runtime.getPayload().appState.workspaces.find((w: { id: string }) => w.id === "ws-done");
+    expect(wsAfter?.task?.state).toBe("completed");
+    expect(wsAfter?.task?.showerResumePrompt).toBe("");
+  });
+});
+
+describe("task recovery: auto-resolve when dialog suppressed", () => {
+  test("settings.recovery.showTaskRecoveryDialog=false auto-resolves all candidates as continue", async () => {
+    const ws = makeTaskWorkspace({ id: "ws-auto", state: "running", currentRound: 2 });
+    const fixture = await createFixture({
+      initialState: {
+        workspaces: [ws],
+        settings: { recovery: { showTaskRecoveryDialog: false } },
+      },
+    });
+    fixtures.push(fixture);
+
+    // setImmediate inside createRuntime fires on the next tick.
+    // Yield until the candidate list drains.
+    await waitForRecoveryDrain(fixture.runtime);
+
+    expect(fixture.runtime.getPayload().meta.recoveryCandidates).toHaveLength(0);
+    // Worker session re-spawned by the auto-resolved "continue" decision
+    expect(fixture.sessionManager.sessions.has("ws-auto:panel-worker")).toBe(true);
+  });
+
+  test("default settings (dialog enabled) leave candidates for the renderer to resolve", async () => {
+    const ws = makeTaskWorkspace({ id: "ws-default", state: "running" });
+    const fixture = await createFixture({
+      initialState: {
+        workspaces: [ws],
+        // No recovery setting → defaults to true (show dialog)
+      },
+    });
+    fixtures.push(fixture);
+
+    // Wait one tick to be sure setImmediate would have fired if it were going to
+    await new Promise((r) => setImmediate(r));
+
+    // Candidate list intact, awaiting the dialog
+    expect(fixture.runtime.getPayload().meta.recoveryCandidates).toHaveLength(1);
+    // No sessions spawned yet
+    expect(fixture.sessionManager.sessions.has("ws-default:panel-worker")).toBe(false);
+  });
+});
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function waitForRecoveryDrain(runtime: any, timeoutMs = 1000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (runtime.getPayload().meta.recoveryCandidates.length === 0) return;
+    await new Promise((r) => setImmediate(r));
+  }
+  throw new Error("recovery candidates were not drained within timeout");
+}

@@ -105,6 +105,31 @@ describe("TaskRecoveryDialog", () => {
     expect(onClose).toHaveBeenCalled();
   });
 
+  test("Resume all dispatches continue for every candidate, even ones the user toggled off", async () => {
+    const store = seedStore([
+      makeCandidate({ workspaceId: "ws-a" }),
+      makeCandidate({ workspaceId: "ws-b" }),
+      makeCandidate({ workspaceId: "ws-c" }),
+    ]);
+    const wrapper = mount(TaskRecoveryDialog);
+
+    // User toggled ws-b to "skip" — Resume all must override that
+    const skipRadios = wrapper.findAll<HTMLInputElement>("input[value='skip']");
+    await skipRadios[1].setValue();
+
+    const resumeAllBtn = wrapper.findAll("button").find((b) => b.text() === "Resume all");
+    expect(resumeAllBtn, "Resume all button must exist").toBeTruthy();
+    await resumeAllBtn!.trigger("click");
+    // Resume all uses the same callback as Confirm so the wait is identical
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(store.resolveTaskRecovery).toHaveBeenCalledWith({
+      "ws-a": "continue",
+      "ws-b": "continue",
+      "ws-c": "continue",
+    });
+  });
+
   test("Skip all dispatches skip for every candidate", async () => {
     const store = seedStore([
       makeCandidate({ workspaceId: "ws-a" }),
