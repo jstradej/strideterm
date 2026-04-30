@@ -242,16 +242,16 @@ test.describe("Task dashboard", () => {
     assertNoErrors(page);
   });
 
-  // TODO(task-dashboard-e2e): the five tests below are skipped because they
-  // hit a deeper bug than the lazy-chunk timing first suspected. Even with a
-  // 60s ceiling the .td element never appears — page snapshots show the
-  // active panel landing on Worker (an empty-xterm black pane) instead of
-  // Dashboard, despite the fixture setting `activePanelId: "panel-dashboard"`.
-  // Something in workspace activation flips the active panel between the
-  // first sidebar-only test (which passes) and tests #2-5 that need .td.
-  // Skipping unblocks CI for releases; unit-level coverage of TaskDashboardPane
-  // is in place, and `renders task workspace in sidebar` above still
-  // exercises the workspace-mount path.
+  // The five tests below are skipped at the e2e layer because Worker/Judge
+  // panes are empty xterms in tests by definition (no agent process runs in
+  // CI) and the resulting empty split layout interacts badly with Vite's
+  // lazy-chunk loading for TaskDashboardPane — the dashboard pane intermittently
+  // never mounts. Equivalent assertions now live as fast component tests in
+  // src/components/workspace/TaskDashboardPane.test.ts: description heading,
+  // Status active by default, Start/Continue/Pause/Send back/Reset state
+  // gating, the five top-level tabs, tab switching. The e2e shell still covers
+  // the integration sanity check via `renders task workspace in sidebar`
+  // above + `Task workspace split layout` further down.
   test.skip("task dashboard pane is visible with task description", async ({ page }) => {
     await openApp(page, mock);
     const dashboardPane = page.locator(".workspace-pane--task-dashboard");
