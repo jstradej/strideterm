@@ -66,6 +66,8 @@ export interface TelegramAlertContext {
   workspaceName?: string;
   /** Panel title for display */
   panelTitle?: string;
+  /** Alert title (used for auto-review to populate the task description) */
+  title?: string;
 }
 
 export interface TelegramAlertPayload {
@@ -163,6 +165,21 @@ interface TgGetUpdatesResult {
   parameters?: { retry_after?: number };
 }
 
+/** Minimal PR info the manager needs for /prs and auto-review */
+export interface TelegramPrInfo {
+  prKey: string;
+  provider: "azure-devops" | "github";
+  connectionId: string;
+  /** ID of the workspace used when forwarding this PR alert */
+  workspaceId: string;
+  title: string;
+  hasAttention: boolean;
+  attentionReason?: string;
+  checksFailedCount?: number;
+  checksPendingCount?: number;
+  webUrl?: string;
+}
+
 /** Minimal workspace info the manager needs for status/task commands */
 export interface TelegramWorkspaceInfo {
   id: string;
@@ -207,7 +224,8 @@ interface PendingRequest {
     | "file-path-input"
     | "file-mode-selection"
     | "screenshot-mode-selection"
-    | "screenshot-workspace-pick";
+    | "screenshot-workspace-pick"
+    | "pr-selection";
   workspaceId: string;
   panelId: string;
   alertId?: string;
@@ -234,6 +252,8 @@ interface PendingRequest {
   worktreeChoices?: TelegramWorkspaceInfo[];
   /** For file-mode-selection: relative path the user typed, awaiting delivery-mode choice */
   pendingFilePath?: string;
+  /** For pr-selection: ordered list of PR choices shown to the user */
+  prChoices?: TelegramPrInfo[];
 }
 
 // ---------------------------------------------------------------------------
@@ -256,13 +276,14 @@ const DEFAULT_HTTP_TIMEOUT_MS = 15_000;
 const telegramRetry = Schedule.both(Schedule.exponential("200 millis"), Schedule.recurs(3));
 
 // Compact callback action codes (kept short to fit in Telegram's 64 B limit).
-type CallbackAction = "s" | "o" | "d" | "c" | "x";
+type CallbackAction = "s" | "o" | "d" | "c" | "x" | "ar";
 const CALLBACK_ACTION_LABEL: Record<CallbackAction, string> = {
   s: "start-task",
   o: "open-pr-review",
   d: "dismiss",
   c: "confirm",
   x: "cancel",
+  ar: "auto-review",
 };
 
 export class TelegramManager extends EventEmitter {
@@ -292,6 +313,9 @@ export class TelegramManager extends EventEmitter {
   /** Runtime-provided getter for the active profile id — used by /task to filter candidates */
   private getActiveProfileId: (() => string) | null = null;
 
+  /** Runtime-provided getter for current PR list — used by /prs command */
+  private getPrInfos: (() => TelegramPrInfo[]) | null = null;
+
   constructor({
     credentialStore,
     auditLogStore = null,
@@ -312,6 +336,11 @@ export class TelegramManager extends EventEmitter {
   /** Called by the runtime so /task can scope candidates to the user's current profile. */
   setActiveProfileGetter(fn: () => string): void {
     this.getActiveProfileId = fn;
+  }
+
+  /** Called by the runtime so /prs can list open pull requests. */
+  setPrInfosGetter(fn: () => TelegramPrInfo[]): void {
+    this.getPrInfos = fn;
   }
 
   configure(connections: TelegramConnectionConfig[]): void {
@@ -692,6 +721,7 @@ export class TelegramManager extends EventEmitter {
       connectionId: payload.connectionId,
       workspaceName: payload.workspaceName,
       panelTitle: payload.panelTitle,
+      title: payload.title,
     };
     const keyboard = this._buildKeyboard(payload);
 
@@ -786,7 +816,12 @@ export class TelegramManager extends EventEmitter {
       lines.push(`_Reply with a task description to start a new task, or press a button below\\._`);
     } else if (payload.kind === "review" || (payload.prKey && payload.provider)) {
       lines.push("");
-      lines.push(`_Press "Open Review" to start the code review workspace, or reply to dismiss\\._`);
+      lines.push(
+        `_Press "Open Review" to open the review workspace, "Auto\\-review" to start an AI\\-assisted review, or reply to dismiss\\._`,
+      );
+    } else if (payload.kind === "pipeline") {
+      lines.push("");
+      lines.push(`_Pipeline check completed\\._`);
     }
 
     return lines.join("\n");
@@ -810,8 +845,9 @@ export class TelegramManager extends EventEmitter {
       return [
         [
           { text: "🔍 Open Review", callback_data: "o" },
-          { text: "✓ Dismiss", callback_data: "d" },
+          { text: "🤖 Auto-review", callback_data: "ar" },
         ],
+        [{ text: "✓ Dismiss", callback_data: "d" }],
       ];
     }
 
@@ -826,6 +862,8 @@ export class TelegramManager extends EventEmitter {
         return "⏳";
       case "review":
         return "🔍";
+      case "pipeline":
+        return "🔧";
       case "error":
         return "❌";
       case "warning":
@@ -1156,6 +1194,11 @@ export class TelegramManager extends EventEmitter {
       await this._handleScreenshotCommand(chatId, token);
       return;
     }
+    if (lower === "/prs" || lower === "prs") {
+      log.info("telegram command: /prs", { chatId });
+      await this._handlePrsCommand(chatId, token, conn);
+      return;
+    }
     if (lower === "/menu" || lower === "menu" || lower === "/start" || lower === "start") {
       log.info("telegram command: /menu", { chatId });
       await this._handleMenuCommand(chatId, token);
@@ -1173,6 +1216,7 @@ export class TelegramManager extends EventEmitter {
           "`/status` — show all task agents",
           "`/workspaces` — list workspaces",
           "`/task` — start a new task agent \\(workspace picker\\)",
+          "`/prs` — list pull requests and start reviews",
           "`/screenshot` — capture a screenshot of the strIDEterm window",
           "",
           "Or reply to a specific notification using Telegram Reply and tap the inline buttons\\.",
@@ -1209,6 +1253,25 @@ export class TelegramManager extends EventEmitter {
           workspaceName: chosen.name,
         });
         await this._presentWorktreeModeMenu(token, chatId, chosen, pending.agentCommand);
+        return;
+      }
+
+      if (pending.type === "pr-selection") {
+        const idx = parseInt(text.trim(), 10) - 1;
+        const choices = pending.prChoices || [];
+        const chosen = choices[idx];
+        if (!chosen) {
+          log.info("telegram pr-selection: invalid choice", { input: text, choiceCount: choices.length });
+          await this._sendText(
+            token,
+            chatId,
+            `⚠️ Invalid choice\\. Enter a number 1–${escapeMarkdown(String(choices.length))}\\. Or run /prs again\\.`,
+            true,
+          );
+          return;
+        }
+        log.info("telegram pr-selection: chose PR", { chatId, prKey: chosen.prKey, provider: chosen.provider });
+        await this._presentPrActionsMenu(token, chatId, chosen);
         return;
       }
 
@@ -1660,15 +1723,106 @@ export class TelegramManager extends EventEmitter {
             { text: "🚀 New task", callback_data: "mn:task" },
           ],
           [
-            { text: "📸 Screenshot", callback_data: "mn:screenshot" },
+            { text: "🔍 Pull requests", callback_data: "mn:prs" },
             { text: "🗂 Workspaces", callback_data: "mn:workspaces" },
           ],
-          [{ text: "❓ Help", callback_data: "mn:help" }],
+          [
+            { text: "📸 Screenshot", callback_data: "mn:screenshot" },
+            { text: "❓ Help", callback_data: "mn:help" },
+          ],
         ],
       },
     }).catch((err) => {
       log.warn("telegram /menu send failed", { err: (err as Error).message });
     });
+  }
+
+  private async _handlePrsCommand(chatId: string, token: string, conn: TelegramConnectionConfig): Promise<void> {
+    const prs = this.getPrInfos?.() ?? [];
+    if (prs.length === 0) {
+      await this._sendText(token, chatId, "✅ No pull requests require your attention right now\\.", true);
+      return;
+    }
+
+    const lines = ["🔍 *Pull requests needing attention:*", ""];
+    for (let i = 0; i < prs.length; i++) {
+      const pr = prs[i];
+      const providerIcon = pr.provider === "azure-devops" ? "🔷" : "🐙";
+      const checksIcon = (pr.checksFailedCount ?? 0) > 0 ? " ❌" : (pr.checksPendingCount ?? 0) > 0 ? " ⏳" : "";
+      lines.push(`${i + 1}\\. ${providerIcon} *${escapeMarkdown(pr.title)}*${checksIcon}`);
+      if (pr.attentionReason) lines.push(`   _${escapeMarkdown(pr.attentionReason)}_`);
+    }
+    lines.push("");
+    lines.push("Reply with a number to pick a PR, e\\.g\\. `1`\\.");
+
+    this.pendingRequests.set(chatId, {
+      type: "pr-selection",
+      workspaceId: "",
+      panelId: "",
+      createdAt: Date.now(),
+      agentCommand: conn.agentCommand || undefined,
+      prChoices: prs,
+    });
+
+    log.info("telegram /prs: presented PR choices", { chatId, prCount: prs.length });
+    await this._sendText(token, chatId, lines.join("\n"), true);
+  }
+
+  private async _presentPrActionsMenu(token: string, chatId: string, pr: TelegramPrInfo): Promise<void> {
+    const providerLabel = pr.provider === "azure-devops" ? "Azure DevOps" : "GitHub";
+    const checksLine =
+      (pr.checksFailedCount ?? 0) > 0
+        ? `❌ ${pr.checksFailedCount} check(s) failed`
+        : (pr.checksPendingCount ?? 0) > 0
+          ? `⏳ ${pr.checksPendingCount} check(s) pending`
+          : "✅ Checks passing";
+
+    const lines = [
+      `🔍 *${escapeMarkdown(pr.title)}*`,
+      `_${escapeMarkdown(providerLabel)}_`,
+      checksLine,
+      "",
+      "*What would you like to do?*",
+    ];
+
+    // Store context for the action buttons — reuse contextByMessageId pattern
+    // by setting a fake alert context so the action handlers work.
+    const fakeCtx: TelegramAlertContext = {
+      alertId: pr.prKey,
+      workspaceId: pr.workspaceId,
+      panelId: "inbox",
+      kind: "review",
+      title: pr.title,
+      prKey: pr.prKey,
+      provider: pr.provider,
+      connectionId: pr.connectionId,
+    };
+
+    const result = await this._apiCall<TgSendMessageResult>(token, "sendMessage", {
+      chat_id: chatId,
+      text: lines.join("\n"),
+      parse_mode: "MarkdownV2",
+      reply_markup: {
+        inline_keyboard: [
+          [
+            { text: "🔍 Open Review", callback_data: "o" },
+            { text: "🤖 Auto-review", callback_data: "ar" },
+          ],
+          [{ text: "✓ Dismiss", callback_data: "d" }],
+        ],
+      },
+    }).catch((err) => {
+      log.warn("telegram PR actions menu send failed", { err: (err as Error).message });
+      return null;
+    });
+
+    if (result?.result?.message_id) {
+      this.contextByMessageId.set(result.result.message_id, {
+        context: fakeCtx,
+        connectionId: "",
+        at: Date.now(),
+      });
+    }
   }
 
   private _buildStartTaskConfirmText(
@@ -2044,6 +2198,42 @@ export class TelegramManager extends EventEmitter {
       return;
     }
 
+    if (action === "ar") {
+      if (!ctx.prKey || !ctx.provider) {
+        log.warn("telegram auto-review button: context missing prKey/provider", { chatId });
+        await this._answerText(token, chatId, query.message.message_id, "⚠️ Notification has no PR context\\.");
+        return;
+      }
+      const prTitle = ctx.title || ctx.prKey;
+      const providerLabel = ctx.provider === "azure-devops" ? "Azure DevOps" : "GitHub";
+      const reviewDesc = `Review PR "${prTitle}" (${providerLabel}): analyze the changed files for bugs, security issues, and code quality. Summarize findings and leave inline review comments.`;
+      const cmd: TelegramCommandEvent = {
+        type: "start-task",
+        workspaceId: ctx.workspaceId,
+        panelId: ctx.panelId,
+        prKey: ctx.prKey,
+        provider: ctx.provider,
+        connectionId: ctx.connectionId,
+        taskDescription: reviewDesc,
+        chatId,
+      };
+      log.info("telegram auto-review button: asking confirm", {
+        chatId,
+        prKey: ctx.prKey,
+        provider: ctx.provider,
+      });
+      this.pendingRequests.set(chatId, {
+        type: "confirm-action",
+        workspaceId: ctx.workspaceId,
+        panelId: ctx.panelId,
+        createdAt: Date.now(),
+        pendingCmd: cmd,
+      });
+      const ws = this.getWorkspaces?.().find((w) => w.id === ctx.workspaceId);
+      await this._sendConfirmation(token, chatId, this._buildStartTaskConfirmText(reviewDesc, ws));
+      return;
+    }
+
     log.debug("telegram callback: unknown action code", { data: data.slice(0, 16) });
   }
 
@@ -2280,9 +2470,12 @@ export class TelegramManager extends EventEmitter {
       [{ text: "🌳 New worktree (recommended)", callback_data: "m:n" }],
       [{ text: "📁 Directly in parent cwd", callback_data: "m:d" }],
     ];
-    if (existing.length > 0) {
-      rows.push([{ text: `📂 Existing worktree (${existing.length})`, callback_data: "m:e" }]);
-    }
+    rows.push([
+      {
+        text: existing.length > 0 ? `📂 Existing worktree (${existing.length})` : "📂 Existing worktree",
+        callback_data: "m:e",
+      },
+    ]);
     rows.push([{ text: "❌ Cancel", callback_data: "x" }]);
 
     await this._apiCall(token, "sendMessage", {
@@ -2570,6 +2763,9 @@ export class TelegramManager extends EventEmitter {
       case "workspaces":
         await this._handleWorkspacesCommand(chatId, token);
         return;
+      case "prs":
+        await this._handlePrsCommand(chatId, token, conn);
+        return;
       case "screenshot":
         await this._handleScreenshotCommand(chatId, token);
         return;
@@ -2584,6 +2780,7 @@ export class TelegramManager extends EventEmitter {
             "`/status` — show all task agents",
             "`/workspaces` — list workspaces",
             "`/task` — start a new task agent \\(workspace picker\\)",
+            "`/prs` — list pull requests and start reviews",
             "`/screenshot` — capture a screenshot of the strIDEterm window",
             "",
             "Or reply to a specific notification using Telegram Reply and tap the inline buttons\\.",

@@ -259,6 +259,7 @@ import SshAuthPrompt from "./components/ssh/SshAuthPrompt.vue";
 import SshHostKeyWarning from "./components/ssh/SshHostKeyWarning.vue";
 import { useNotificationCapture } from "./composables/useNotificationCapture.js";
 import { useReviewNotifications } from "./composables/useReviewNotifications.js";
+import { usePipelineNotifications } from "./composables/usePipelineNotifications.js";
 import { useNotificationStore } from "./stores/notifications.js";
 import { useSshStore } from "./stores/ssh.js";
 
@@ -268,6 +269,7 @@ const notifStore = useNotificationStore();
 const sshStore = useSshStore();
 const { latestToast } = useNotificationCapture();
 useReviewNotifications(latestToast);
+usePipelineNotifications();
 
 sshStore.bindEvents();
 sshStore.load();

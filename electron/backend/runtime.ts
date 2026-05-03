@@ -681,6 +681,56 @@ export async function createRuntime({
     }),
   );
   telegramManager.setActiveProfileGetter(() => getState().activeProfileId || "default");
+  telegramManager.setPrInfosGetter(() => {
+    const state = getState();
+    const azurePrs = Object.entries(azure.getSnapshot()?.pullRequests || {}).map(
+      ([prKey, summary]: [string, unknown]) => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const pr = summary as any;
+        const wsId =
+          pr?.reviewWorkspaceId ||
+          pr?.existingWorkspaceId ||
+          state.workspaces.find((w: WorkspaceState) => w.kind === "azure")?.id ||
+          "azure";
+        return {
+          prKey,
+          provider: "azure-devops" as const,
+          connectionId: pr?.connectionId || "",
+          workspaceId: wsId,
+          title: pr?.pullRequest?.title || prKey,
+          hasAttention: !!pr?.hasAttention,
+          attentionReason: pr?.attentionReason || "",
+          checksFailedCount: pr?.checks?.failedCount || 0,
+          checksPendingCount: pr?.checks?.pendingCount || 0,
+          webUrl: pr?.pullRequest?.url || "",
+        };
+      },
+    );
+    const githubPrs = Object.entries(github.getSnapshot()?.pullRequests || {}).map(
+      ([prKey, summary]: [string, unknown]) => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const pr = summary as any;
+        const wsId =
+          pr?.reviewWorkspaceId ||
+          pr?.existingWorkspaceId ||
+          state.workspaces.find((w: WorkspaceState) => w.kind === "github")?.id ||
+          "github";
+        return {
+          prKey,
+          provider: "github" as const,
+          connectionId: pr?.connectionId || "",
+          workspaceId: wsId,
+          title: pr?.pullRequest?.title || prKey,
+          hasAttention: !!pr?.hasAttention,
+          attentionReason: pr?.attentionReason || "",
+          checksFailedCount: pr?.checks?.failedCount || 0,
+          checksPendingCount: pr?.checks?.pendingCount || 0,
+          webUrl: pr?.pullRequest?.webUrl || "",
+        };
+      },
+    );
+    return [...azurePrs, ...githubPrs];
+  });
 
   // --- Agent notification hook server ---
   const notifySecret = generateNotifySecret();
@@ -1418,18 +1468,21 @@ export async function createRuntime({
       const pr = summary as any;
       if (!pr?.hasAttention || telegramManager.hasForwardedPr(prKey)) continue;
       telegramManager.markPrForwarded(prKey);
-      const azureWorkspace = state.workspaces.find((w) => w.kind === "azure");
+      const azureWorkspace = state.workspaces.find((w: WorkspaceState) => w.kind === "azure");
+      // Use review or existing workspace so auto-review can walk up to the parent cwd
+      const prWorkspaceId = pr?.reviewWorkspaceId || pr?.existingWorkspaceId || azureWorkspace?.id || "azure";
+      const prTitle = pr?.pullRequest?.title || prKey;
       log.info("telegram: forwarding Azure PR notification", { prKey, connectionId: pr?.connectionId });
       telegramManager
         .forwardAlert({
           alertId: prKey,
-          workspaceId: azureWorkspace?.id || "azure",
+          workspaceId: prWorkspaceId,
           panelId: "inbox",
           workspaceName: azureWorkspace?.name || "Azure DevOps",
           panelTitle: "Inbox",
           kind: "review",
           urgency: "normal",
-          title: `PR Review: ${pr?.pullRequest?.title || prKey}`,
+          title: `PR Review: ${prTitle}`,
           detail: pr?.attentionReason || "Needs review",
           prKey,
           provider: "azure-devops",
@@ -1446,18 +1499,20 @@ export async function createRuntime({
       const pr = summary as any;
       if (!pr?.hasAttention || telegramManager.hasForwardedPr(prKey)) continue;
       telegramManager.markPrForwarded(prKey);
-      const githubWorkspace = state.workspaces.find((w) => w.kind === "github");
+      const githubWorkspace = state.workspaces.find((w: WorkspaceState) => w.kind === "github");
+      const prWorkspaceId = pr?.reviewWorkspaceId || pr?.existingWorkspaceId || githubWorkspace?.id || "github";
+      const prTitle = pr?.pullRequest?.title || prKey;
       log.info("telegram: forwarding GitHub PR notification", { prKey, connectionId: pr?.connectionId });
       telegramManager
         .forwardAlert({
           alertId: prKey,
-          workspaceId: githubWorkspace?.id || "github",
+          workspaceId: prWorkspaceId,
           panelId: "inbox",
           workspaceName: githubWorkspace?.name || "GitHub",
           panelTitle: "Inbox",
           kind: "review",
           urgency: "normal",
-          title: `PR Review: ${pr?.pullRequest?.title || prKey}`,
+          title: `PR Review: ${prTitle}`,
           detail: pr?.attentionReason || "Needs review",
           prKey,
           provider: "github",
@@ -1469,6 +1524,82 @@ export async function createRuntime({
     }
   }
 
+  // Track check states per PR for pipeline completion forwarding to Telegram
+  const forwardedPipelineChecks = new Map<string, string>(); // prKey:checkId → last forwarded state
+  const PIPELINE_CHECK_SEED_MS = 10_000; // don't forward checks that complete in the first 10s (startup)
+  const pipelineCheckStartedAt = Date.now();
+
+  function checkAndForwardPipelineNotificationsToTelegram(): void {
+    if (telegramManager.getSnapshot().connections.length === 0) return;
+    const azureSnapshot = azure.getSnapshot();
+    const githubSnapshot = github.getSnapshot();
+    const inStartupGrace = Date.now() - pipelineCheckStartedAt < PIPELINE_CHECK_SEED_MS;
+
+    function processPrChecks(
+      prs: Record<string, unknown>,
+      provider: "azure-devops" | "github",
+      workspaceFinder: () => WorkspaceState | undefined,
+    ) {
+      for (const [prKey, summary] of Object.entries(prs)) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const pr = summary as any;
+        const checks: Array<{ id?: string; state?: string; name?: string }> = pr?.checks?.items || [];
+        const prTitle: string = pr?.pullRequest?.title || prKey;
+        const prWorkspaceId: string =
+          pr?.reviewWorkspaceId || pr?.existingWorkspaceId || workspaceFinder()?.id || provider;
+
+        for (const check of checks) {
+          if (!check?.id) continue;
+          const key = `${provider}:${prKey}:${check.id}`;
+          const prevState = forwardedPipelineChecks.get(key);
+          const curState = check.state || "";
+          forwardedPipelineChecks.set(key, curState);
+
+          if (inStartupGrace) continue;
+          if (prevState === undefined) continue; // first time seeing this check
+          const wasRunning = prevState === "pending" || prevState === "";
+          const isTerminal = curState === "succeeded" || curState === "failed";
+          if (!wasRunning || !isTerminal) continue;
+
+          const checkName = (check as { name?: string; displayName?: string }).name || "Check";
+          const icon = curState === "succeeded" ? "✅" : "❌";
+          const detail = curState === "succeeded" ? "Passed" : "Failed";
+          log.info("telegram: forwarding pipeline check completion", {
+            prKey,
+            checkName,
+            state: curState,
+            provider,
+          });
+          telegramManager
+            .forwardAlert({
+              alertId: `pipeline:${prKey}:${check.id}`,
+              workspaceId: prWorkspaceId,
+              panelId: "pipelines",
+              workspaceName: prTitle,
+              panelTitle: "Pipelines",
+              kind: "pipeline",
+              urgency: curState === "failed" ? "urgent" : "normal",
+              title: `${icon} ${checkName} — ${prTitle}`,
+              detail,
+              prKey,
+              provider,
+              connectionId: pr?.connectionId || "",
+            })
+            .catch((err) => {
+              log.warn("telegram: pipeline check forward failed", { prKey, err: (err as Error).message });
+            });
+        }
+      }
+    }
+
+    processPrChecks(azureSnapshot?.pullRequests || {}, "azure-devops", () =>
+      getState().workspaces.find((w: WorkspaceState) => w.kind === "azure"),
+    );
+    processPrChecks(githubSnapshot?.pullRequests || {}, "github", () =>
+      getState().workspaces.find((w: WorkspaceState) => w.kind === "github"),
+    );
+  }
+
   function broadcastState() {
     if (broadcastScheduled) return;
     broadcastScheduled = true;
@@ -1477,6 +1608,7 @@ export async function createRuntime({
       const payload = getPayload();
       events.emit("state:updated", payload);
       checkAndForwardPrNotificationsToTelegram();
+      checkAndForwardPipelineNotificationsToTelegram();
     });
   }
 
