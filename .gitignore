@@ -45,9 +45,9 @@ playwright-report/
 playwright-report-electron/
 blob-report/
 
-CLAUDE.md
 AGENTS.md
 .claude/
+CLAUDE.local.md
 
 # strIDEterm local artifacts
 .strideterm/

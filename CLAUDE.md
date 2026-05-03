@@ -1,92 +1,53 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+Guidance for Claude Code in this repo. Project-specific notes first, then behavioral guidelines.
 
 ## Project
 
-strIDEterm — multi-workspace Electron terminal app (Vue 3, Pinia, xterm.js) with Docker, Git, Azure DevOps PR review, plugins, and remote LAN/tunnel access. The Electron shell is a thin adapter over a headless runtime that also serves a remote web client.
+strIDEterm — multi-workspace terminal app with Electron shell, headless runtime, and remote web client. Details (stack, modules, build scripts) live in the codebase — discover them by reading; don't rely on a description here that will rot.
 
-## Commands
+## Project-Specific Things to Remember
 
-Single test file: `npx vitest run --config vite.config.ts src/stores/notifications.test.ts`
+### Dev runtime uses a separate home directory
 
-Backend single test: `npx vitest run --config vitest.backend.config.ts electron/backend/store.test.ts`
+Dev is started with `.\dev.ps1` (interactive PowerShell, not from the Bash tool). It sets `STRIDETERM_DATA_DIR` to `~/.strideterm-dev` and remaps Electron `userData` there. Production uses `~/.strideterm` (also not Electron's default userData path — see `electron/main.ts`).
 
-## Starting Dev Servers (important)
+- **Dev logs, state, credentials, and Electron cache live under `~/.strideterm-dev/`, separate from prod's `~/.strideterm/`.** When debugging a dev-mode issue, read logs from the dev directory.
+- Dev and prod don't share state — a workspace/profile/credential present in one is not present in the other.
+- The single-instance lock is also isolated, so dev and prod can run side-by-side.
 
-The preferred way to start the dev environment is `dev.ps1` in the project root:
+`--data-dir <path>` overrides both. Check `dev.ps1` and `electron/main.ts` if unsure where something landed.
 
-```powershell
-.\dev.ps1                # PowerShell — recommended
-```
+### Cross-platform & multi-agent
 
-This script handles everything: kills stale Electron/Node processes, clears Electron cache, frees port 1420, starts Vite, starts the backend `tsc --watch` and waits for `dist-electron/electron/main.js`, starts Electron, auto-restarts Vite if it crashes, and cleans up on Ctrl+C. It requires an interactive PowerShell session — **do not run it from Claude Code's Bash tool** (background process management won't work).
+Users run on **Windows, macOS, and Linux**, and may drive the app from multiple **AI agents** (Claude Code, Codex, Gemini, etc.). Most functionality is intentionally generic:
 
-If `dev.ps1` is not an option (e.g. non-Windows), fall back to manual startup:
+- Don't hardcode platform paths, shells, or executables — go through the existing config / platform-detection helpers.
+- Don't bake in assumptions about a specific terminal, PTY, or path separator.
+- Don't tie behavior to a single agent's conventions; agent integrations should share the generic plumbing.
+- When adding a feature, ask: "does this work on all three OSes and for any agent?" If you need platform- or agent-specific code, isolate it behind the existing abstractions.
 
-1. **Kill existing processes first** — old Electron/Node may hold port 1420:
-   ```bash
-   taskkill //F //IM electron.exe 2>/dev/null; taskkill //F //IM node.exe 2>/dev/null
-   ```
+### Profiles — what is and isn't isolated
 
-2. **Start Vite first**, wait for it to be ready (look for "ready in" output):
-   ```bash
-   npm run dev:web &          # background, stays alive
-   ```
+Profiles group workspaces inside one installation. They are a UI/organizational construct, **not a security or storage boundary**.
 
-3. **Start the backend TypeScript watcher**:
-   ```bash
-   npm run dev:backend &   # background, compiles electron/ on change
-   ```
+- **Scoped to a profile:** which workspaces are visible/active, profile metadata (name, color), and the workspace→profile assignment via `profileId`.
+- **Shared across all profiles in one install:** the persisted state file, credentials store (`credentials.json` under the data dir), and the runtime managers (git/docker/azure/github). Anything else: check the code before assuming — profile is primarily a workspace-grouping concept, not a sandbox.
 
-4. **Start Electron after Vite is listening** (needs ~3s):
-   ```bash
-   sleep 3 && npm run dev:electron &   # background, exits when window closes
-   ```
+Switching profiles filters the visible workspace list — it does not swap stores or credentials. For true isolation (different creds, different data), use a separate data dir (dev vs prod, or `--data-dir`) or a different OS user.
 
-Do NOT use `npm run dev` (the concurrent script) from Bash — it uses `concurrently -k` which kills both when either exits, and the process management doesn't work well from non-interactive shells. Start them separately.
+---
 
-If port 1420 is already in use, kill the old node.exe process holding it before restarting Vite.
+# Behavioral Guidelines
 
-## Architecture (3 layers)
-
-### 1. Headless Runtime (`electron/backend/`)
-
-Pure TypeScript — no Electron imports. Owns all state (persisted + runtime), PTY sessions, git/docker/azure/github managers, plugin loader, and the remote HTTP/WS server. Broadcasts events to any number of connected clients.
-
-### 2. Electron Adapter (`electron/main.ts`, `electron/preload.ts`)
-
-Thin shell: creates BrowserWindow, wires IPC, manages native attention (overlay icon, taskbar flash, badge count, system notifications). Preload exposes `window.strideterm` via contextBridge.
-
-### 3. Vue Renderer (`src/`)
-
-Vue 3 + Pinia SPA. The `transport.ts` module abstracts Electron IPC vs remote HTTP/WS so all stores work identically in both modes.
-
-
-## Configuration
-
-`config/app-config.ts` — central config with env var overrides for ports, hosts, terminal defaults, polling intervals, theme, and command paths.
-
-
-## Testing
-
-- UI tests (`src/**/*.test.ts`): jsdom environment, import Vue components and Pinia stores directly
-- Backend tests (`electron/backend/**/*.test.ts`): node environment, test runtime/managers in isolation
-- Both use Vitest. `npm run smoke` does a headless startup check.
-- E2E tests: `npm run test:e2e` (Playwright, remote HTTP/WS client against a live backend) and `npm run test:e2e:electron` (full Electron stack). Do not run these from Claude Code — they require an interactive display or are slow.
-
-
-# Behavioral guidelines to reduce common LLM coding mistakes. Merge with project-specific instructions as needed.
-
-**Tradeoff:** These guidelines bias toward caution over speed. For trivial tasks, use judgment.
+Reduce common LLM coding mistakes. Bias toward caution over speed; for trivial tasks, use judgment.
 
 ## 1. Think Before Coding
 
 **Don't assume. Don't hide confusion. Surface tradeoffs.**
 
-Before implementing:
-- State your assumptions explicitly. If uncertain, ask.
-- If multiple interpretations exist, present them - don't pick silently.
+- State assumptions explicitly. If uncertain, ask.
+- If multiple interpretations exist, present them — don't pick silently.
 - If a simpler approach exists, say so. Push back when warranted.
 - If something is unclear, stop. Name what's confusing. Ask.
 
@@ -100,38 +61,33 @@ Before implementing:
 - No error handling for impossible scenarios.
 - If you write 200 lines and it could be 50, rewrite it.
 
-Ask yourself: "Would a senior engineer say this is overcomplicated?" If yes, simplify.
+Ask: "Would a senior engineer say this is overcomplicated?" If yes, simplify.
 
 ## 3. Surgical Changes
 
 **Touch only what you must. Clean up only your own mess.**
 
-When editing existing code:
 - Don't "improve" adjacent code, comments, or formatting.
 - Don't refactor things that aren't broken.
 - Match existing style, even if you'd do it differently.
-- If you notice unrelated dead code, mention it - don't delete it.
+- If you notice unrelated dead code, mention it — don't delete it.
+- Remove imports/variables/functions that _your_ changes orphaned. Don't remove pre-existing dead code unless asked.
 
-When your changes create orphans:
-- Remove imports/variables/functions that YOUR changes made unused.
-- Don't remove pre-existing dead code unless asked.
-
-The test: Every changed line should trace directly to the user's request.
+The test: every changed line should trace directly to the user's request.
 
 ## 4. Goal-Driven Execution
 
 **Define success criteria. Loop until verified.**
 
-Transform tasks into verifiable goals:
 - "Add validation" → "Write tests for invalid inputs, then make them pass"
 - "Fix the bug" → "Write a test that reproduces it, then make it pass"
 - "Refactor X" → "Ensure tests pass before and after"
 
 For multi-step tasks, state a brief plan:
+
 ```
 1. [Step] → verify: [check]
 2. [Step] → verify: [check]
-3. [Step] → verify: [check]
 ```
 
 Strong success criteria let you loop independently. Weak criteria ("make it work") require constant clarification.
