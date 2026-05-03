@@ -768,9 +768,10 @@ export const useAppStore = defineStore("app", () => {
         payload.value = p as StatePayload;
         // Seed cache with the initial workspace state on bootstrap
         _cacheCurrentWorkspace();
-        // Show recovery dialog if there are crash-recovery candidates
+        // Show recovery dialog if there are crash-recovery candidates.
+        // The dialog is the only resume path — silent auto-resume was unreliable.
         const candidates: RecoveryCandidate[] = (p?.meta?.recoveryCandidates as RecoveryCandidate[]) ?? [];
-        if (candidates.length > 0 && p?.appState?.settings?.recovery?.showTaskRecoveryDialog !== false) {
+        if (candidates.length > 0) {
           recoveryCandidates.value = candidates;
           dialogActions.openDialog("TaskRecoveryDialog", { onClose: () => dialogActions.closeDialog() });
         }
@@ -798,12 +799,12 @@ export const useAppStore = defineStore("app", () => {
 
   async function resolveTaskRecovery(decisions: Record<string, "continue" | "fresh" | "skip">): Promise<void> {
     const api = getApi();
-    try {
-      await api.resolveTaskRecovery?.({ decisions });
-    } finally {
-      recoveryCandidates.value = [];
-      dialogActions.closeDialog();
-    }
+    await api.resolveTaskRecovery?.({ decisions });
+    // Drop the resolved candidates from the local list. The dialog uses this
+    // both to decide when to close (list empty) and to know which candidate
+    // to show next in sequential mode.
+    const decided = new Set(Object.keys(decisions));
+    recoveryCandidates.value = recoveryCandidates.value.filter((c) => !decided.has(c.workspaceId));
   }
 
   return {
