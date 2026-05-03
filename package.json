@@ -156,7 +156,7 @@
     "vue": "^3.5.33",
     "winston": "^3.19.0",
     "ws": "^8.20.0",
-    "zod": "^4.3.6"
+    "zod": "^4.4.2"
   },
   "devDependencies": {
     "@effect/language-service": "0.85.1",
@@ -171,9 +171,9 @@
     "@vue/eslint-config-typescript": "14.7.0",
     "@vue/test-utils": "^2.4",
     "concurrently": "^9.2.1",
-    "electron": "^41.3.0",
+    "electron": "^41.5.0",
     "electron-builder": "^26.8.1",
-    "eslint": "^10.2.0",
+    "eslint": "^10.3.0",
     "eslint-config-prettier": "^10.1.8",
     "eslint-plugin-security": "4.0.0",
     "eslint-plugin-vue": "^10.8.0",
@@ -185,8 +185,8 @@
     "tsx": "4.21.0",
     "typescript": "6.0.3",
     "typescript-eslint": "8.59.0",
-    "vite": "^8.0.8",
-    "vitest": "^4.1.4",
+    "vite": "^8.0.10",
+    "vitest": "^4.1.5",
     "vue-tsc": "3.2.7",
     "wait-on": "^9.0.5"
   },
