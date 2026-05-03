@@ -61,6 +61,7 @@ interface WorkspaceActionsCtx {
   workspaceTabs: ComputedRef<WorkspaceTab[]>;
   overlay: Ref<string | null>;
   overlayProps: Ref<Record<string, unknown>>;
+  optimisticallyDeletedIds: Ref<Set<string>>;
   getApi: () => Transport;
   withSuppressedBroadcast: (fn: () => Promise<void>) => Promise<void>;
 }
@@ -79,11 +80,36 @@ export function createWorkspaceActions(ctx: WorkspaceActionsCtx) {
     ctx.payload.value = (await (ctx.getApi() as AnyApi).saveWorkspace(draft)) as StatePayload;
   }
 
+  /**
+   * Optimistic workspace delete.
+   *
+   * Deleting a worktree-backed workspace (regular worktree, review checkout,
+   * quickfix sandbox, task workspace) used to block the UI for 5–20 s while
+   * the backend recursively removed thousands of node_modules files. The
+   * user couldn't switch tabs, scroll the sidebar, or do anything else
+   * during that wait. So now we:
+   *
+   *   1. Remove the workspace from the local sidebar tree immediately,
+   *      switching the active workspace if needed.
+   *   2. Fire the delete request in the background. We don't await it.
+   *   3. On success: silent — the sidebar already shows the deletion.
+   *   4. On error: push a sticky toast with the path and a "Copy path"
+   *      button so the user can finish the cleanup in Explorer or a shell.
+   *      The toast persists until the user dismisses it; whatever they
+   *      switched to in the meantime keeps their attention.
+   *
+   * Backend-side state is the source of truth: the next broadcast after
+   * removal will line up with our optimistic mutation, so nothing sticks
+   * around in a half-deleted form.
+   */
   async function deleteWorkspace(workspaceId: string): Promise<void> {
     const ws = (ctx.payload.value?.appState?.workspaces || []).find((w: AnyApi) => w.id === workspaceId);
     if (!ws) return;
     if (!window.confirm(`Delete workspace "${(ws as AnyApi).name}"?`)) return;
 
+    // Detect worktree-backed kinds — these own a directory on disk that we
+    // need to offer to remove. This covers all four variants: plain
+    // `git worktree`, review checkout, quickfix sandbox, task agent worktree.
     const isWorktreeChild =
       ((ws as AnyApi).notes || "").startsWith("Worktree of ") ||
       (ws as AnyApi).review?.checkout?.mode === "managed-worktree" ||
@@ -102,27 +128,85 @@ export function createWorkspaceActions(ctx: WorkspaceActionsCtx) {
       );
     }
 
-    if (deleteFromDisk) {
-      ctx.overlay.value = "BusyOverlay";
-      ctx.overlayProps.value = { message: `Deleting workspace "${(ws as AnyApi).name}"…`, detail: diskPath };
+    // --- Optimistic UI removal ---------------------------------------------
+    //
+    // Build a payload with the workspace already gone. Use shallow object
+    // copies so Vue's reactivity treats this as a fresh ref assignment.
+    // We don't need to clone deeply — the components that consume this
+    // payload only need the workspaces array to be a new reference for the
+    // computed selectors to refresh.
+    const wsName = (ws as AnyApi).name || "";
+    const wasActive = ctx.payload.value?.appState?.activeWorkspaceId === workspaceId;
+    const before = ctx.payload.value;
+    const remainingWorkspaces = (before?.appState?.workspaces || []).filter((w: AnyApi) => w.id !== workspaceId);
+    const nextActiveId = wasActive
+      ? remainingWorkspaces[0]?.id || ""
+      : before?.appState?.activeWorkspaceId || "";
+    // Track the id so any broadcast arriving before the backend finishes the
+    // delete (e.g. from a docker poll) doesn't put the workspace back into
+    // the sidebar tree.
+    ctx.optimisticallyDeletedIds.value = new Set([
+      ...ctx.optimisticallyDeletedIds.value,
+      workspaceId,
+    ]);
+    if (before) {
+      ctx.payload.value = {
+        ...before,
+        appState: {
+          ...(before.appState as AnyApi),
+          workspaces: remainingWorkspaces,
+          activeWorkspaceId: nextActiveId,
+        },
+      } as StatePayload;
     }
-    try {
-      const result = (await (ctx.getApi() as AnyApi).deleteWorkspace(workspaceId, {
-        deleteFromDisk,
-        diskPath,
-      })) as AnyApi;
-      if (result?.deleteWorkspaceError) {
-        window.alert(
-          `Workspace was deleted, but files could not be removed:\n\n${result.deleteWorkspaceError}\n\nYou can delete the directory manually.`,
-        );
+
+    // --- Background deletion ------------------------------------------------
+    //
+    // Note: not awaited. The user is free to navigate away. Errors land in a
+    // sticky toast keyed off the workspace name + path so two failures don't
+    // collapse into a single ambiguous error.
+    void (async () => {
+      try {
+        const result = (await (ctx.getApi() as AnyApi).deleteWorkspace(workspaceId, {
+          deleteFromDisk,
+          diskPath,
+        })) as AnyApi;
+
+        if (result?.deleteWorkspaceError) {
+          // Backend deleted the workspace from state but couldn't remove
+          // disk files. Surface the path + reason so the user can finish.
+          // Lazy import keeps this file out of the notifications store's
+          // dependency cycle.
+          const { useNotificationStore } = await import("./notifications.js");
+          useNotificationStore().pushPersistentToast({
+            title: `Couldn't remove "${wsName}" from disk`,
+            body: result.deleteWorkspaceError,
+            kind: "error",
+            copyPath: diskPath,
+          });
+        }
+        // Success path: ignore. The next broadcast will reconcile the payload
+        // with what the backend now believes — which already matches our
+        // optimistic state. Once the broadcast confirms the backend agrees
+        // the workspace is gone, the suppression set self-clears in the
+        // broadcast handler. Until then keep it suppressed.
+      } catch (err: unknown) {
+        const message = (err as { message?: string })?.message || String(err);
+        // The IPC call failed outright (couldn't reach backend, schema
+        // rejection, runtime threw). The workspace probably still exists
+        // server-side, so unflag it and let the next broadcast restore it.
+        const next = new Set(ctx.optimisticallyDeletedIds.value);
+        next.delete(workspaceId);
+        ctx.optimisticallyDeletedIds.value = next;
+        const { useNotificationStore } = await import("./notifications.js");
+        useNotificationStore().pushPersistentToast({
+          title: `Failed to delete "${wsName}"`,
+          body: message,
+          kind: "error",
+          copyPath: diskPath,
+        });
       }
-      ctx.payload.value = result as StatePayload;
-    } finally {
-      if (deleteFromDisk) {
-        ctx.overlay.value = null;
-        ctx.overlayProps.value = {};
-      }
-    }
+    })();
   }
 
   // --- Tab management ----------------------------------------------------

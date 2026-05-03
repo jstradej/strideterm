@@ -1,0 +1,234 @@
+import { describe, it, expect, beforeEach, vi, afterEach } from "vitest";
+import { setActivePinia, createPinia } from "pinia";
+import { ref, shallowRef, computed } from "vue";
+import { createWorkspaceActions } from "./app-workspace-actions.js";
+import { useNotificationStore } from "./notifications.js";
+
+// Minimal harness for testing the workspace-actions factory in isolation.
+// We don't spin up the full app store — just provide the refs the factory
+// reads from and a stub Transport so deleteWorkspace can be exercised end
+// to end without IPC.
+
+interface AnyApi {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  [k: string]: any;
+}
+
+function makeWorkspaces(): AnyApi[] {
+  return [
+    { id: "ws-A", name: "Project A", cwd: "C:\\work\\a" },
+    {
+      id: "ws-B",
+      name: "Worktree B",
+      cwd: "C:\\work\\a\\.strideterm\\tree\\branch-b",
+      notes: "Worktree of Project A",
+    },
+    {
+      id: "ws-C",
+      name: "Review C",
+      cwd: "C:\\tmp\\review-c",
+      review: { checkout: { mode: "managed-worktree", rootPath: "C:\\tmp\\review-c" } },
+    },
+    {
+      id: "ws-D",
+      name: "Quickfix D",
+      cwd: "C:\\tmp\\quickfix-d",
+      quickfix: { parentWorkspaceId: "ws-A", rootPath: "C:\\tmp\\quickfix-d" },
+    },
+    {
+      id: "ws-E",
+      name: "Task E",
+      cwd: "C:\\work\\a\\.strideterm\\tree\\task-e",
+      kind: "task",
+      task: { worktreeBase: "C:\\work\\a", taskId: "task-e-id" },
+    },
+  ];
+}
+
+function makeCtx(initialPayload: AnyApi, apiOverrides: AnyApi = {}) {
+  const payload = shallowRef(initialPayload);
+  const optimisticallyDeletedIds = ref(new Set<string>());
+  const overlay = ref<string | null>(null);
+  const overlayProps = ref<Record<string, unknown>>({});
+  const splitGroup = ref<{ layout: string; viewIds: string[] } | null>(null);
+  const activeViewId = ref<string | null>(null);
+  const activeSessionId = ref<string | null>(null);
+  const hiddenViewIds = ref(new Set<string>());
+  const workspaceTabs = computed(() => [] as { id: string; type: string; title: string; status: string; tone: string }[]);
+
+  const api = {
+    deleteWorkspace: vi.fn(async () => initialPayload),
+    ...apiOverrides,
+  };
+
+  const ctx = {
+    payload,
+    activeViewId,
+    activeSessionId,
+    splitGroup,
+    hiddenViewIds,
+    workspaceTabs,
+    overlay,
+    overlayProps,
+    optimisticallyDeletedIds,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    getApi: () => api as any,
+    withSuppressedBroadcast: async (fn: () => Promise<void>) => fn(),
+  };
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return { ctx: ctx as any, api, payload, optimisticallyDeletedIds };
+}
+
+describe("createWorkspaceActions.deleteWorkspace (optimistic)", () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    window.localStorage.clear();
+    vi.spyOn(window, "confirm").mockImplementation(() => true);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("removes the workspace from the local payload synchronously (no waiting on the IPC)", async () => {
+    const initial = {
+      appState: { workspaces: makeWorkspaces(), activeWorkspaceId: "ws-A" },
+    };
+    // Make the IPC hang so we can prove the UI moved on without it.
+    let releaseIpc: (v: AnyApi) => void = () => {};
+    const ipcCall = new Promise<AnyApi>((resolve) => (releaseIpc = resolve));
+    const { ctx, payload, optimisticallyDeletedIds } = makeCtx(initial, {
+      deleteWorkspace: vi.fn(() => ipcCall),
+    });
+    const actions = createWorkspaceActions(ctx);
+
+    // Fire the delete; do not await.
+    const finished = actions.deleteWorkspace("ws-B");
+    // Yield once so the synchronous mutation lands.
+    await Promise.resolve();
+
+    // Sidebar tree no longer carries the workspace, *before* the IPC resolved.
+    expect(payload.value.appState.workspaces.find((w: AnyApi) => w.id === "ws-B")).toBeUndefined();
+    expect(optimisticallyDeletedIds.value.has("ws-B")).toBe(true);
+
+    // Now release the IPC and the call resolves cleanly.
+    releaseIpc({ ...initial, appState: { ...initial.appState, workspaces: initial.appState.workspaces.filter((w) => w.id !== "ws-B") } });
+    await finished;
+  });
+
+  it("switches the active workspace if the deleted one was active", async () => {
+    const initial = {
+      appState: { workspaces: makeWorkspaces(), activeWorkspaceId: "ws-A" },
+    };
+    const { ctx, payload } = makeCtx(initial);
+    const actions = createWorkspaceActions(ctx);
+
+    await actions.deleteWorkspace("ws-A");
+    // Yield additional times for any nested microtasks.
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // Active workspace must have moved to the first remaining one — we
+    // never want to show a "no active workspace" dead state.
+    expect(payload.value.appState.activeWorkspaceId).toBe("ws-B");
+    expect(payload.value.appState.workspaces.find((w: AnyApi) => w.id === "ws-A")).toBeUndefined();
+  });
+
+  it("does not change active workspace when deleting an inactive one", async () => {
+    const initial = {
+      appState: { workspaces: makeWorkspaces(), activeWorkspaceId: "ws-A" },
+    };
+    const { ctx, payload } = makeCtx(initial);
+    const actions = createWorkspaceActions(ctx);
+
+    await actions.deleteWorkspace("ws-C");
+    await Promise.resolve();
+
+    expect(payload.value.appState.activeWorkspaceId).toBe("ws-A");
+  });
+
+  it.each([
+    ["worktree child", "ws-B"],
+    ["review checkout", "ws-C"],
+    ["quickfix", "ws-D"],
+    ["task agent", "ws-E"],
+  ])("optimistically removes a %s workspace", async (_label, idToDelete) => {
+    const initial = {
+      appState: { workspaces: makeWorkspaces(), activeWorkspaceId: "ws-A" },
+    };
+    const { ctx, payload, optimisticallyDeletedIds } = makeCtx(initial);
+    const actions = createWorkspaceActions(ctx);
+
+    await actions.deleteWorkspace(idToDelete);
+    await Promise.resolve();
+
+    expect(payload.value.appState.workspaces.find((w: AnyApi) => w.id === idToDelete)).toBeUndefined();
+    // Until the next broadcast confirms, the id stays in the suppression set
+    // so unrelated polls can't bring it back.
+    expect(optimisticallyDeletedIds.value.has(idToDelete)).toBe(true);
+  });
+
+  it("does nothing if the user declines the confirm prompt", async () => {
+    vi.spyOn(window, "confirm").mockImplementation(() => false);
+    const initial = {
+      appState: { workspaces: makeWorkspaces(), activeWorkspaceId: "ws-A" },
+    };
+    const { ctx, payload, api } = makeCtx(initial);
+    const actions = createWorkspaceActions(ctx);
+
+    await actions.deleteWorkspace("ws-B");
+    expect(payload.value.appState.workspaces).toHaveLength(5);
+    expect(api.deleteWorkspace).not.toHaveBeenCalled();
+  });
+
+  it("shows a persistent toast with the path when the backend reports a disk-delete error", async () => {
+    const initial = {
+      appState: { workspaces: makeWorkspaces(), activeWorkspaceId: "ws-A" },
+    };
+    const { ctx } = makeCtx(initial, {
+      deleteWorkspace: vi.fn(async () => ({
+        ...initial,
+        appState: { ...initial.appState, workspaces: initial.appState.workspaces.filter((w) => w.id !== "ws-B") },
+        deleteWorkspaceError: "EBUSY: resource busy or locked",
+      })),
+    });
+    const actions = createWorkspaceActions(ctx);
+    const notifs = useNotificationStore();
+
+    // Confirm both the delete prompt AND the "delete from disk" follow-up.
+    await actions.deleteWorkspace("ws-B");
+    // Wait for the lazy import + microtask flush.
+    await new Promise((r) => setTimeout(r, 10));
+
+    expect(notifs.persistentToasts).toHaveLength(1);
+    const toast = notifs.persistentToasts[0];
+    expect(toast.title).toContain("Worktree B");
+    expect(toast.body).toContain("EBUSY");
+    // The user needs the path to finish cleanup manually — make sure it's
+    // attached so the "Copy path" button has something to copy.
+    expect(toast.copyPath).toContain("branch-b");
+  });
+
+  it("shows a persistent toast and rolls back the suppression set when the IPC throws", async () => {
+    const initial = {
+      appState: { workspaces: makeWorkspaces(), activeWorkspaceId: "ws-A" },
+    };
+    const { ctx, optimisticallyDeletedIds } = makeCtx(initial, {
+      deleteWorkspace: vi.fn(async () => {
+        throw new Error("ECONNREFUSED");
+      }),
+    });
+    const actions = createWorkspaceActions(ctx);
+    const notifs = useNotificationStore();
+
+    await actions.deleteWorkspace("ws-B");
+    await new Promise((r) => setTimeout(r, 10));
+
+    expect(notifs.persistentToasts).toHaveLength(1);
+    expect(notifs.persistentToasts[0].body).toContain("ECONNREFUSED");
+    // IPC failure means the backend probably still has the workspace; we
+    // must let the next broadcast restore it instead of silently swallowing.
+    expect(optimisticallyDeletedIds.value.has("ws-B")).toBe(false);
+  });
+});

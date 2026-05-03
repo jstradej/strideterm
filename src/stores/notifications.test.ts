@@ -141,6 +141,64 @@ describe("notification store (session-grouped)", () => {
     expect(store.sessions[0].workspaceId).toBe("ws1");
   });
 
+  describe("persistent toasts (background-error UI)", () => {
+    it("starts with no persistent toasts", () => {
+      const store = useNotificationStore();
+      expect(store.persistentToasts).toEqual([]);
+    });
+
+    it("pushPersistentToast adds an entry and returns its id", () => {
+      const store = useNotificationStore();
+      const id = store.pushPersistentToast({
+        title: "Couldn't remove ws",
+        body: "EBUSY: file in use",
+        copyPath: "C:\\tmp\\worktree-foo",
+      });
+      expect(id).toBeTruthy();
+      expect(store.persistentToasts).toHaveLength(1);
+      expect(store.persistentToasts[0].title).toBe("Couldn't remove ws");
+      expect(store.persistentToasts[0].copyPath).toBe("C:\\tmp\\worktree-foo");
+      expect(store.persistentToasts[0].kind).toBe("error");
+    });
+
+    it("dismissPersistentToast removes only the matching entry", () => {
+      const store = useNotificationStore();
+      const idA = store.pushPersistentToast({ title: "A", body: "a" });
+      const idB = store.pushPersistentToast({ title: "B", body: "b" });
+      expect(store.persistentToasts).toHaveLength(2);
+      store.dismissPersistentToast(idA);
+      expect(store.persistentToasts).toHaveLength(1);
+      expect(store.persistentToasts[0].title).toBe("B");
+      // Idempotent: dismissing a missing id is a no-op
+      store.dismissPersistentToast("nope");
+      expect(store.persistentToasts).toHaveLength(1);
+      store.dismissPersistentToast(idB);
+      expect(store.persistentToasts).toHaveLength(0);
+    });
+
+    it("mirrors the toast into the dock so dismissing the toast doesn't lose the error", () => {
+      const store = useNotificationStore();
+      store.pushPersistentToast({
+        title: "Disk delete failed",
+        body: "Access is denied",
+        copyPath: "/tmp/foo",
+      });
+      // Mirrored event lives in the dock and should include the path so the
+      // user can still find it after dismissing the floating toast.
+      expect(store.sessions).toHaveLength(1);
+      const ev = store.sessions[0].events[0];
+      expect(ev.title).toBe("Disk delete failed");
+      expect(ev.body).toContain("/tmp/foo");
+      expect(ev.kind).toBe("error");
+    });
+
+    it("pushPersistentToast defaults kind to error", () => {
+      const store = useNotificationStore();
+      store.pushPersistentToast({ title: "x", body: "y" });
+      expect(store.persistentToasts[0].kind).toBe("error");
+    });
+  });
+
   it("clearOnBackend exists and tolerates missing api gracefully", async () => {
     const store = useNotificationStore();
     // No app store api is wired in this test harness — clearOnBackend must

@@ -1480,6 +1480,22 @@ export async function createRuntime({
     });
   }
 
+  // Debounced persistence — coalesces a burst of in-memory mutations (mostly
+  // from agent-task-runner.setTaskState) into a single store.save() so the
+  // disk file isn't rewritten dozens of times per second. Used to make task
+  // lifecycle transitions durable without paying for atomic writes on every
+  // hook event.
+  let persistTimer: ReturnType<typeof setTimeout> | null = null;
+  function schedulePersist(): void {
+    if (persistTimer) return;
+    persistTimer = setTimeout(() => {
+      persistTimer = null;
+      store.save().catch((err: unknown) => {
+        log.warn("schedulePersist: save failed", { err: (err as Error)?.message });
+      });
+    }, 250);
+  }
+
   // --- Telegram command dispatch ---
   // _rt is populated at the end of createRuntime(); commands always fire
   // asynchronously (after first Telegram poll), so _rt is guaranteed set.
@@ -1998,6 +2014,15 @@ export async function createRuntime({
     async restartSession(sessionId) {
       await sessions.restartSession(getState(), sessionId);
       resetSessionSignal(sessionId);
+    },
+    // Debounced persistence trigger. taskRunner mutates state in-memory and
+    // relies on opportunistic store.mutate() calls elsewhere to flush to
+    // disk. That's flaky for crash recovery: a task that flips to "running"
+    // and is then killed before any unrelated mutation runs would never have
+    // its active state persisted, so reconcileOnStartup wouldn't see it as a
+    // candidate. Schedule an async save so lifecycle transitions reach disk.
+    saveState() {
+      schedulePersist();
     },
   });
 

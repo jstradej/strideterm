@@ -461,7 +461,11 @@ export function createDefaultState(): AppState & { activeProjectId: string; proj
         },
       },
       recovery: {
-        showTaskRecoveryDialog: true,
+        // Default OFF: when the app restarts and finds tasks that were active
+        // when it last closed, it transparently resumes them. Surfacing a
+        // dialog every restart breaks the user's flow — they almost always
+        // want to keep going. Set to true if you want to be asked first.
+        showTaskRecoveryDialog: false,
       },
     },
     tabTemplates: [
@@ -947,10 +951,12 @@ export function normalizeState(rawState: any = {}): AppState & { activeProjectId
       },
     },
     recovery: {
-      showTaskRecoveryDialog:
-        typeof (rawState.settings || {}).recovery?.showTaskRecoveryDialog === "boolean"
-          ? (rawState.settings || {}).recovery.showTaskRecoveryDialog
-          : defaults.settings.recovery.showTaskRecoveryDialog,
+      // No settings UI ever shipped that exposed this flag, so any persisted
+      // value is just the previous default. Force-adopt the current default
+      // (auto-resume on) so existing installs aren't stuck on the old "ask
+      // me every time" behavior. If we ever expose a UI control we'll need
+      // to honor user choice here.
+      showTaskRecoveryDialog: defaults.settings.recovery.showTaskRecoveryDialog,
     },
   };
   const workspaces = groupChildWorkspaces(

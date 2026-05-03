@@ -24,6 +24,22 @@ type NotificationState = "waiting" | "finished" | "resolved" | "snoozed";
 type NotificationUrgency = "normal" | "urgent";
 type NotificationKind = "waiting" | "completed" | "info" | "review" | "error" | "warning" | string;
 
+/**
+ * A toast that does not auto-dismiss. Used for errors the user must act on
+ * (e.g. background workspace deletion failed and the user needs the path to
+ * delete it manually). The user explicitly closes it; until they do, it
+ * stays visible. `copyPath` adds a "Copy path" affordance so the user can
+ * paste the offending path into Explorer / a shell without retyping it.
+ */
+export interface PersistentToast {
+  id: string;
+  title: string;
+  body: string;
+  kind: NotificationKind;
+  copyPath?: string;
+  at: string;
+}
+
 interface NotificationEvent {
   id: string;
   title: string;
@@ -130,6 +146,10 @@ export const useNotificationStore = defineStore("notifications", () => {
   // part of the app can trigger a toast via showError/showToast without
   // threading a ref through prop drilling or custom event buses.
   const latestToast = ref<(NotificationEvent & { category: string }) | null>(null);
+  // Stickier counterpart of latestToast: each entry stays until the user
+  // closes it. Rendered as a stack in App.vue so multiple background
+  // failures don't clobber each other.
+  const persistentToasts = ref<PersistentToast[]>([]);
 
   // Back-compat computed: a flat `items` list still exposed so older
   // consumers (and tests) can iterate per-event.  New UI reads `sessions`.
@@ -409,6 +429,44 @@ export const useNotificationStore = defineStore("notifications", () => {
     return entry;
   }
 
+  /**
+   * Push a sticky toast. Returns the id so the caller can dismiss it
+   * programmatically (e.g. once the underlying problem is resolved). The
+   * toast also lands as a persistent dock entry so it survives page reload.
+   */
+  function pushPersistentToast({
+    title,
+    body,
+    kind = "error",
+    copyPath = "",
+  }: {
+    title: string;
+    body: string;
+    kind?: NotificationKind;
+    copyPath?: string;
+  }): string {
+    const id = crypto.randomUUID();
+    persistentToasts.value = [
+      ...persistentToasts.value,
+      { id, title, body, kind, copyPath, at: new Date().toISOString() },
+    ];
+    // Mirror to the dock so a quick "X" on the toast doesn't lose the error
+    // entirely — the user can still find it later in the notification panel.
+    addEvent({
+      title,
+      body: copyPath ? `${body}\n${copyPath}` : body,
+      kind,
+      tier: 1,
+      urgency: "normal",
+      category: "error",
+    });
+    return id;
+  }
+
+  function dismissPersistentToast(id: string): void {
+    persistentToasts.value = persistentToasts.value.filter((t) => t.id !== id);
+  }
+
   return {
     // State
     sessions,
@@ -417,6 +475,7 @@ export const useNotificationStore = defineStore("notifications", () => {
     pinned,
     focusRequestSignal,
     latestToast,
+    persistentToasts,
     // Computed
     unreadCount,
     waitingSessions,
@@ -438,5 +497,7 @@ export const useNotificationStore = defineStore("notifications", () => {
     togglePin,
     requestFocus,
     showError,
+    pushPersistentToast,
+    dismissPersistentToast,
   };
 });

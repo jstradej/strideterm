@@ -209,6 +209,10 @@
        itself plays that role). Sound alert still fires via useNotificationCapture. -->
   <NotificationToast v-if="!notifStore.pinned" :toast="latestToast" @dismissed="latestToast = null" />
 
+  <!-- Sticky toasts (background-deletion errors, etc.). These never auto-hide
+       so the user can take action even if the original flow has moved on. -->
+  <PersistentToastStack />
+
   <!-- SSH modal prompts rendered as teleported overlays driven by the SSH
        store. They sit outside the normal DialogOverlay because they're
        triggered by backend events rather than user navigation, and can
@@ -249,6 +253,7 @@ import LayoutPicker from "./components/layout/LayoutPicker.vue";
 import TabPickerDropdown from "./components/layout/TabPickerDropdown.vue";
 import NotificationCenter from "./components/layout/NotificationCenter.vue";
 import NotificationToast from "./components/layout/NotificationToast.vue";
+import PersistentToastStack from "./components/layout/PersistentToastStack.vue";
 import ReturnToAppBanner from "./components/layout/ReturnToAppBanner.vue";
 import SshAuthPrompt from "./components/ssh/SshAuthPrompt.vue";
 import SshHostKeyWarning from "./components/ssh/SshHostKeyWarning.vue";

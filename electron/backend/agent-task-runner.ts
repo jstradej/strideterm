@@ -119,6 +119,12 @@ interface RuntimeDeps {
   broadcastState: () => void;
   raiseAlert: (alert: RaiseAlertArgs) => void;
   restartSession: (sessionId: string) => Promise<void>;
+  /** Persist current in-memory state to disk. Optional — older callers without
+   * a save hook fall back to opportunistic persistence via unrelated mutations.
+   * Used by setTaskState so a task that flips to "running" actually survives a
+   * crash; without this, recovery on next startup wouldn't see the active
+   * state because nothing wrote it to disk. */
+  saveState?: () => void;
 }
 
 // ------ Module-level pure helpers -------
@@ -195,17 +201,19 @@ export class AgentTaskRunner {
   #broadcastState: RuntimeDeps["broadcastState"] | null = null;
   #raiseAlert: RuntimeDeps["raiseAlert"] | null = null;
   #restartSession: RuntimeDeps["restartSession"] | null = null;
+  #saveState: RuntimeDeps["saveState"] | null = null;
 
   /**
    * Late-init with runtime dependencies (avoids circular refs).
    * Called once from runtime.js after all closures are available.
    */
-  init({ writeToSession, getState, broadcastState, raiseAlert, restartSession }: RuntimeDeps): void {
+  init({ writeToSession, getState, broadcastState, raiseAlert, restartSession, saveState }: RuntimeDeps): void {
     this.#writeToSession = writeToSession;
     this.#getState = getState;
     this.#broadcastState = broadcastState;
     this.#raiseAlert = raiseAlert;
     this.#restartSession = restartSession;
+    this.#saveState = saveState ?? null;
 
     // Crash-recovery sweep on startup. See #reconcileOnStartup for the full
     // story; the short version is: tasks whose state on disk says they were
@@ -1491,6 +1499,12 @@ export class AgentTaskRunner {
     }
 
     task.state = newState;
+
+    // Persist immediately on lifecycle transitions so a hard kill (Force-quit,
+    // power loss) doesn't leave the on-disk state stale. Without this, the
+    // crash-recovery sweep on next startup wouldn't see the task as ACTIVE
+    // because the in-memory "running" flag never reached disk.
+    this.#saveState?.();
   }
 
   /**

@@ -71,6 +71,11 @@ export const useAppStore = defineStore("app", () => {
   const pendingWorkspaceActivationId = ref("");
   const pendingViewActivationId = ref("");
   const suppressBroadcast = ref(false);
+  // Workspaces the UI removed optimistically, awaiting backend confirmation.
+  // Until the backend completes the delete, unrelated broadcasts (git poll,
+  // docker poll) still carry the deleted workspace and would otherwise
+  // re-introduce it into the sidebar tree mid-deletion.
+  const optimisticallyDeletedIds = ref(new Set<string>());
 
   // --- Workspace state cache (avoids tab-status flicker on switch) ---
   // Stores workspace-specific payload parts keyed by workspace ID.
@@ -476,6 +481,41 @@ export const useAppStore = defineStore("app", () => {
     }
 
     if (suppressBroadcast.value) return;
+    // Strip out workspaces that the user just optimistically deleted but the
+    // backend hasn't finished removing yet. Without this, every interim
+    // broadcast would re-introduce the workspace into the sidebar until the
+    // delete IPC call finally lands — visible as a "delete, flicker back,
+    // then re-delete" cycle that defeats the whole optimistic UX.
+    if (optimisticallyDeletedIds.value.size > 0 && (nextPayload as AnyApi)?.appState?.workspaces) {
+      const stripped = ((nextPayload as AnyApi).appState.workspaces as AnyApi[]).filter(
+        (w: AnyApi) => !optimisticallyDeletedIds.value.has(w.id),
+      );
+      if (stripped.length !== ((nextPayload as AnyApi).appState.workspaces as AnyApi[]).length) {
+        const incomingActive = (nextPayload as AnyApi).appState.activeWorkspaceId;
+        const nextActiveId = optimisticallyDeletedIds.value.has(incomingActive)
+          ? stripped[0]?.id || ""
+          : incomingActive;
+        nextPayload = {
+          ...(nextPayload as AnyApi),
+          appState: {
+            ...((nextPayload as AnyApi).appState as AnyApi),
+            workspaces: stripped,
+            activeWorkspaceId: nextActiveId,
+          },
+        } as StatePayload;
+      }
+      // Once the broadcast itself has the workspace gone, the deletion has
+      // landed in the source-of-truth store; we can stop suppressing.
+      const stillPresent = ((nextPayload as AnyApi).appState.workspaces as AnyApi[]).map((w: AnyApi) => w.id);
+      let mutated = false;
+      for (const pendingId of Array.from(optimisticallyDeletedIds.value)) {
+        if (!stillPresent.includes(pendingId)) {
+          optimisticallyDeletedIds.value.delete(pendingId);
+          mutated = true;
+        }
+      }
+      if (mutated) optimisticallyDeletedIds.value = new Set(optimisticallyDeletedIds.value);
+    }
     payload.value = nextPayload;
     // Keep workspace cache fresh on every broadcast for the active workspace
     _cacheCurrentWorkspace();
@@ -648,6 +688,7 @@ export const useAppStore = defineStore("app", () => {
     workspaceTabs: workspaceTabs as AnyApi,
     overlay,
     overlayProps,
+    optimisticallyDeletedIds,
     getApi,
     withSuppressedBroadcast,
   });
