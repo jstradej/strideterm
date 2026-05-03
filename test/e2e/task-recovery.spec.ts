@@ -5,10 +5,10 @@ import { openApp, assertNoErrors } from "./helpers.js";
 /**
  * Task recovery dialog E2E.
  *
- * The fixture seeds two recovery candidates in `meta.recoveryCandidates`. On
- * boot the app should detect them and open TaskRecoveryDialog. We exercise
- * the user-facing flow: pick a decision per task, click Confirm, assert the
- * resolve IPC fires with the expected payload, dialog closes.
+ * Fixture seeds two candidates. The dialog presents them one-at-a-time
+ * (sequential mode): only the head of the queue is rendered, each Resume /
+ * Restart / Skip click sends one resolve POST and advances to the next
+ * candidate. Skip all / Resume all batch all remaining decisions in one POST.
  */
 
 test.describe("Task recovery dialog", () => {
@@ -22,62 +22,69 @@ test.describe("Task recovery dialog", () => {
     await mock?.close();
   });
 
-  test("dialog opens automatically when crash candidates are present", async ({ page }) => {
+  test("dialog opens automatically and shows the head candidate", async ({ page }) => {
     await openApp(page, mock);
     await expect(page.getByRole("heading", { name: "Unfinished agent tasks detected" })).toBeVisible({
       timeout: 5_000,
     });
 
-    // Both candidates rendered as separate items
+    // Only the first candidate (Auth Refactor) is visible; the second is queued
     await expect(page.getByText("Auth Refactor", { exact: true })).toBeVisible();
-    await expect(page.getByText("Refactor billing", { exact: true })).toBeVisible();
+    await expect(page.getByText("Refactor billing", { exact: true })).toHaveCount(0);
 
-    // Round / phase / fs-state metadata for each
     await expect(page.getByText(/Round 3\/8/)).toBeVisible();
     await expect(page.getByText("Worker running")).toBeVisible();
-    await expect(page.getByText(/Round 1\/4/)).toBeVisible();
-    await expect(page.getByText("Judge evaluating")).toBeVisible();
+
+    // Position indicator confirms there's more in the queue
+    await expect(page.getByText("Task 1 of 2")).toBeVisible();
 
     assertNoErrors(page);
   });
 
-  test("profile badge shows for non-default profiles", async ({ page }) => {
+  test("profile badge shows for non-default profiles after advancing", async ({ page }) => {
     await openApp(page, mock);
     await expect(page.getByRole("heading", { name: "Unfinished agent tasks detected" })).toBeVisible({
       timeout: 5_000,
     });
 
-    // The "Refactor billing" task is in profile "work" → badge visible
+    // First candidate (Auth Refactor) is in default profile — no badge
+    await expect(page.locator(".recovery-item__profile")).toHaveCount(0);
+
+    // Skip first to advance to Refactor billing (profile "work")
+    await page.getByRole("button", { name: "Skip", exact: true }).click();
+
+    await expect(page.getByText("Refactor billing", { exact: true })).toBeVisible();
     await expect(page.locator(".recovery-item__profile").filter({ hasText: "Work" })).toBeVisible();
 
     assertNoErrors(page);
   });
 
-  test("confirm sends resolve POST with per-task decisions", async ({ page }) => {
+  test("each decision sends its own resolve POST and the dialog closes when empty", async ({ page }) => {
     await openApp(page, mock);
     await expect(page.getByRole("heading", { name: "Unfinished agent tasks detected" })).toBeVisible({
       timeout: 5_000,
     });
 
-    // Default decision is "continue" for all — change one to "skip".
-    // Use label.radio-label filter because the label also contains hint text ("Leave task paused"),
-    // so exact-text matching against "Skip" alone won't work.
-    await page.locator(".recovery-item").nth(1).locator("label.radio-label").filter({ hasText: "Skip" }).click();
-
-    // Click Confirm and capture the resolve request
-    const resolveRequest = page.waitForRequest(
+    // Resume first task — sends POST with ws-auth: continue
+    const firstResolve = page.waitForRequest(
       (req) => req.url().endsWith("/api/task-recovery/resolve") && req.method() === "POST",
     );
-    await page.getByRole("button", { name: "Confirm" }).click();
-    const req = await resolveRequest;
-    const body = JSON.parse(req.postData() || "{}");
+    await page.getByRole("button", { name: "Resume", exact: true }).click();
+    const firstBody = JSON.parse((await firstResolve).postData() || "{}");
+    expect(firstBody.decisions).toEqual({ "ws-auth": "continue" });
 
-    // The runtime IPC takes { decisions } — transport wraps it as the POST body
-    expect(body.decisions).toBeDefined();
-    expect(body.decisions["ws-auth"]).toBe("continue");
-    expect(body.decisions["ws-billing"]).toBe("skip");
+    // Dialog advances to second candidate
+    await expect(page.getByText("Refactor billing", { exact: true })).toBeVisible();
 
-    // Dialog should close after confirm
+    // Skip second task — sends POST with ws-billing: skip
+    const secondResolve = page.waitForRequest(
+      (req) => req.url().endsWith("/api/task-recovery/resolve") && req.method() === "POST",
+    );
+    await page.getByRole("button", { name: "Skip", exact: true }).click();
+    const secondBody = JSON.parse((await secondResolve).postData() || "{}");
+    expect(secondBody.decisions).toEqual({ "ws-billing": "skip" });
+
+    // Queue empty — dialog closes
     await expect(page.getByRole("heading", { name: "Unfinished agent tasks detected" })).not.toBeVisible({
       timeout: 3_000,
     });
