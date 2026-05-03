@@ -28,9 +28,9 @@ test.describe("Task recovery dialog", () => {
       timeout: 5_000,
     });
 
-    // Only the first candidate (Auth Refactor) is visible; the second is queued
-    await expect(page.getByText("Auth Refactor", { exact: true })).toBeVisible();
-    await expect(page.getByText("Refactor billing", { exact: true })).toHaveCount(0);
+    // Only the first candidate (Auth Refactor) is rendered as a recovery item;
+    // the second is queued and not yet in the DOM
+    await expect(page.locator(".recovery-item__name")).toHaveText("Auth Refactor");
 
     await expect(page.getByText(/Round 3\/8/)).toBeVisible();
     await expect(page.getByText("Worker running")).toBeVisible();
@@ -41,20 +41,20 @@ test.describe("Task recovery dialog", () => {
     assertNoErrors(page);
   });
 
-  test("profile badge shows for non-default profiles after advancing", async ({ page }) => {
+  test("profile badge reflects the head candidate and updates as the queue advances", async ({ page }) => {
     await openApp(page, mock);
     await expect(page.getByRole("heading", { name: "Unfinished agent tasks detected" })).toBeVisible({
       timeout: 5_000,
     });
 
-    // First candidate (Auth Refactor) is in default profile — no badge
-    await expect(page.locator(".recovery-item__profile")).toHaveCount(0);
+    // First candidate (Auth Refactor) is in profile "default" → "Default" badge
+    await expect(page.locator(".recovery-item__profile")).toHaveText("Default");
 
     // Skip first to advance to Refactor billing (profile "work")
     await page.getByRole("button", { name: "Skip", exact: true }).click();
 
-    await expect(page.getByText("Refactor billing", { exact: true })).toBeVisible();
-    await expect(page.locator(".recovery-item__profile").filter({ hasText: "Work" })).toBeVisible();
+    await expect(page.locator(".recovery-item__name")).toHaveText("Refactor billing");
+    await expect(page.locator(".recovery-item__profile")).toHaveText("Work");
 
     assertNoErrors(page);
   });
@@ -74,7 +74,7 @@ test.describe("Task recovery dialog", () => {
     expect(firstBody.decisions).toEqual({ "ws-auth": "continue" });
 
     // Dialog advances to second candidate
-    await expect(page.getByText("Refactor billing", { exact: true })).toBeVisible();
+    await expect(page.locator(".recovery-item__name")).toHaveText("Refactor billing");
 
     // Skip second task — sends POST with ws-billing: skip
     const secondResolve = page.waitForRequest(
