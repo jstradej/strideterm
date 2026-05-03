@@ -90,10 +90,6 @@ export interface GitSettings {
   ui: GitUiSettings;
 }
 
-export interface RecoverySettings {
-  showTaskRecoveryDialog: boolean;
-}
-
 export interface Settings {
   theme: string;
   sidebarWidth: number;
@@ -104,7 +100,6 @@ export interface Settings {
   taskDefaults: TaskDefaults;
   integrations: IntegrationSettings;
   git: GitSettings;
-  recovery: RecoverySettings;
 }
 
 // ------- Tab templates -------

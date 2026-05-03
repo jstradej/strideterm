@@ -460,13 +460,6 @@ export function createDefaultState(): AppState & { activeProjectId: string; proj
           showAllActions: false,
         },
       },
-      recovery: {
-        // Default OFF: when the app restarts and finds tasks that were active
-        // when it last closed, it transparently resumes them. Surfacing a
-        // dialog every restart breaks the user's flow — they almost always
-        // want to keep going. Set to true if you want to be asked first.
-        showTaskRecoveryDialog: false,
-      },
     },
     tabTemplates: [
       { id: "shell", title: "Shell", command: "", icon: "\u{1F4BB}" },
@@ -800,7 +793,7 @@ export function normalizeState(rawState: any = {}): AppState & { activeProjectId
     // to the first profile, which has bitten us before (workspace lands on
     // "default" even though the user thinks "asdf" is active). Surface it
     // loudly so the regression is obvious in the log next time.
-    // eslint-disable-next-line no-console -- debug instrumentation, runs at state-load only
+
     console.warn("[default-state] activeProfileId not in profiles, falling back", {
       rawActive,
       profileIds: profiles.map((p) => p.id),
@@ -949,14 +942,6 @@ export function normalizeState(rawState: any = {}): AppState & { activeProjectId
             ? (rawState.settings || {}).git.ui.showAllActions
             : defaults.settings.git.ui.showAllActions,
       },
-    },
-    recovery: {
-      // No settings UI ever shipped that exposed this flag, so any persisted
-      // value is just the previous default. Force-adopt the current default
-      // (auto-resume on) so existing installs aren't stuck on the old "ask
-      // me every time" behavior. If we ever expose a UI control we'll need
-      // to honor user choice here.
-      showTaskRecoveryDialog: defaults.settings.recovery.showTaskRecoveryDialog,
     },
   };
   const workspaces = groupChildWorkspaces(
