@@ -4975,6 +4975,58 @@ export async function createRuntime({
               });
             });
           }
+
+          // Force-trigger onAgentIdle a few seconds after spawn instead of
+          // waiting for hook-fallback silence (HOOK_FALLBACK_SILENCE_MS = 2 min).
+          //
+          // Why this is necessary: a freshly-spawned Claude Code session
+          // doesn't fire its Stop hook until *after* it processes a turn —
+          // there's nothing to stop yet. The runtime treats hook-capable
+          // sessions as hook-primary and gates silence detection behind a
+          // 2-minute fallback. Without this nudge, the user clicks Resume
+          // and sees the agent sit at an empty prompt for two full minutes
+          // before the recovery prompt finally gets pasted in. 5 s is enough
+          // for Claude Code to render its banner and be ready to accept a
+          // paste; onAgentIdle's existing logic does the actual injection.
+          if (!ws?.task?.workerPanelId) {
+            log.warn("resolveTaskRecovery: ws lookup failed — cannot schedule deferred idle", {
+              workspaceId,
+              hasWs: !!ws,
+              hasTask: !!ws?.task,
+              workerPanelId: ws?.task?.workerPanelId,
+            });
+          }
+          if (ws?.task?.workerPanelId) {
+            const workerSessionId = `${workspaceId}:${ws.task.workerPanelId}`;
+            const role = candidate.previousState === "judge-evaluating" ? "judge" : "worker";
+            const idleSessionId =
+              role === "judge" && ws.task.judgePanelId ? `${workspaceId}:${ws.task.judgePanelId}` : workerSessionId;
+            log.info("resolveTaskRecovery: scheduling deferred idle nudge", {
+              workspaceId,
+              role,
+              idleSessionId,
+              delayMs: 5000,
+            });
+            setTimeout(() => {
+              log.info("resolveTaskRecovery: firing deferred onAgentIdle", {
+                workspaceId,
+                idleSessionId,
+              });
+              try {
+                const handled = taskRunner.onAgentIdle(idleSessionId, "recovery-deferred");
+                log.info("resolveTaskRecovery: deferred onAgentIdle returned", {
+                  workspaceId,
+                  idleSessionId,
+                  handled,
+                });
+              } catch (err) {
+                log.warn("resolveTaskRecovery: deferred onAgentIdle threw", {
+                  workspaceId,
+                  err: (err as Error).message,
+                });
+              }
+            }, 5000);
+          }
         } catch (err) {
           log.warn("resolveTaskRecovery: failed for workspace", { workspaceId, err: (err as Error).message });
         }
