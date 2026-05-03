@@ -8,27 +8,6 @@ strIDEterm — multi-workspace Electron terminal app (Vue 3, Pinia, xterm.js) wi
 
 ## Commands
 
-```bash
-npm run dev              # Concurrent Vite + TS backend watch + Electron dev (hot reload)
-npm run dev:web          # Vite dev server only (port 1420)
-npm run dev:backend      # TypeScript backend watch (tsc -p tsconfig.backend.json --watch)
-npm run dev:electron     # Electron only (connects to Vite dev server)
-npm start                # Build + run packaged Electron app
-
-npm run lint             # ESLint + Prettier check
-npm run lint:fix         # Auto-fix lint + formatting issues
-npm run typecheck        # Type-check all TS/Vue files (frontend + backend + tests + scripts)
-npm test                 # All tests (UI + backend)
-npm run test:ui          # Vitest jsdom — src/**/*.test.ts
-npm run test:backend     # Vitest node  — electron/backend/**/*.test.ts
-npm run test:e2e         # Playwright E2E — mock server + fixture data
-
-npm run build            # vue-tsc + Vite + tsc backend → dist/ + dist-electron/
-npm run dist             # Build + electron-builder (all platforms)
-npm run smoke            # Build + headless startup test
-npm run perf             # Node GC profiling
-```
-
 Single test file: `npx vitest run --config vite.config.ts src/stores/notifications.test.ts`
 
 Backend single test: `npx vitest run --config vitest.backend.config.ts electron/backend/store.test.ts`
@@ -55,7 +34,12 @@ If `dev.ps1` is not an option (e.g. non-Windows), fall back to manual startup:
    npm run dev:web &          # background, stays alive
    ```
 
-3. **Start Electron after Vite is listening** (needs ~3s):
+3. **Start the backend TypeScript watcher**:
+   ```bash
+   npm run dev:backend &   # background, compiles electron/ on change
+   ```
+
+4. **Start Electron after Vite is listening** (needs ~3s):
    ```bash
    sleep 3 && npm run dev:electron &   # background, exits when window closes
    ```
@@ -68,21 +52,7 @@ If port 1420 is already in use, kill the old node.exe process holding it before 
 
 ### 1. Headless Runtime (`electron/backend/`)
 
-The core — no Electron dependency. Can be driven by Electron IPC or the remote HTTP/WS server.
-
-- **runtime.ts** — orchestrator: owns all state, broadcasts events, delegates to managers
-- **session-manager.ts** — PTY lifecycle (spawn/resize/kill via node-pty), shell integration injection
-- **store.ts** — atomic JSON persistence (~/.strideterm/strideterm-state.json, write-to-tmp-then-rename)
-- **ipc.ts** — registers all `ipcMain.handle()` handlers; returns cleanup function
-- **ipc-schemas.ts** — Zod validation for every IPC payload
-- **remote-server.ts** — HTTP + WebSocket server for remote/LAN access (token auth)
-- **git-manager.ts** — event-driven `inspectWorkspace` (~10 git subprocesses per call, 8 s snapshot cache); triggered on user actions, workspace switch, and OSC 133;D shell signal. The `gitPoll` loop in `runtime.ts` only calls `syncWorktrees()` (filesystem stat, no git subprocesses) every 60 s as a backstop for externally-added/removed worktrees. Full git snapshot is **never** polled periodically.
-- **docker-manager.ts** — polling (15s), container list, start/stop/restart/remove/shell/logs
-- **azure-devops-manager.ts** — Azure DevOps PR inbox polling, review workspace creation, audit logging
-- **github-manager.ts** — GitHub PR inbox polling, review workspace creation, audit logging (same architecture as Azure DevOps)
-- **review-bridge-mcp.ts** — MCP server exposing review context to AI agents (provider-agnostic, works with both Azure DevOps and GitHub)
-- **plugin-loader.ts** — manifest validation, capability whitelist, safe script execution
-- **file-manager.ts** — file tree, read/write/rename/delete/move/copy operations
+Pure TypeScript — no Electron imports. Owns all state (persisted + runtime), PTY sessions, git/docker/azure/github managers, plugin loader, and the remote HTTP/WS server. Broadcasts events to any number of connected clients.
 
 ### 2. Electron Adapter (`electron/main.ts`, `electron/preload.ts`)
 
@@ -90,54 +60,82 @@ Thin shell: creates BrowserWindow, wires IPC, manages native attention (overlay 
 
 ### 3. Vue Renderer (`src/`)
 
-- **transport.ts** — abstracts Electron IPC vs Remote HTTP/WS. All stores use this, never raw IPC.
-- **stores/app.ts** — main Pinia store: `payload` (shallowRef of full server state), active workspace/tab/session, split layout, overlay/dialog state. Uses memoized computed to avoid unnecessary rerenders.
-- **stores/app-*-actions.ts** — modular action groups (dialog, workspace, api) mixed into the app store
-- **stores/terminal.ts** — xterm.js controller instances, mount/unmount lifecycle
-- **stores/git-ui.ts** — git snapshot cache, diff preview state
-- **stores/file-manager.ts** — file browser tree, preview, edit state
-- **stores/notifications.ts** — notification queue with localStorage persistence
-- **composables/** — reusable hooks (useTerminal, useNotificationCapture, useNotificationSound, useAttentionSync, useDragDrop, etc.)
-- **app/terminal-controller.ts** — imperative xterm.js lifecycle management (attach/detach/dispose)
+Vue 3 + Pinia SPA. The `transport.ts` module abstracts Electron IPC vs remote HTTP/WS so all stores work identically in both modes.
 
-## Key Patterns
-
-- **Profile-aware lookups** — workspaces can exist in multiple profiles with the same name/cwd. Any lookup by cwd or name (parent detection, grouping, auto-fill) **must** filter by the active profile first. Forgetting this causes cross-profile mismatches (e.g. a task workspace parented to the wrong "strideterm" in another profile). Key locations: `findParentByCwd` in `default-state.ts`, parent auto-detection in `app-dialog-actions.ts`.
-- **Session ID** = `workspaceId:panelId`. This composite key is used everywhere.
-- **shallowRef for payload** — the server state blob is large; shallowRef avoids deep reactivity overhead. Computed properties derive slices.
-- **Workspace payload cache** — on workspace switch-away, the current payload is cached; on switch-back it restores instantly while the server catches up.
-- **Fire-and-forget IPC** — terminal:resize and terminal:input use `ipcRenderer.send()` (not invoke) for low latency.
-- **Transport abstraction** — stores call `api.someMethod()` which works identically in Electron (IPC) and remote (HTTP POST) mode. `api.isRemote` distinguishes them.
-- **IPC validation** — every complex IPC payload goes through `validateIpc(schema, payload, channel)` using Zod schemas before reaching runtime methods.
-
-## State Persistence
-
-All state lives in `~/.strideterm/strideterm-state.json`: workspaces, projects, profiles, tab templates, settings, Azure DevOps and GitHub connections. Written atomically (tmp + rename). Runtime-only state (PTY handles, terminal size, WS connections) is never persisted.
 
 ## Configuration
 
 `config/app-config.ts` — central config with env var overrides for ports, hosts, terminal defaults, polling intervals, theme, and command paths.
 
-### Notification Timing
-
-Configurable via `settings.notifications` (persisted per user) or env vars:
-
-| Setting | Env var | Default | Purpose |
-|---------|---------|---------|---------|
-| `promptQuietMs` | `STRIDETERM_PROMPT_QUIET_MS` | 2500 | Silence before shell prompt-return alert |
-| `agentQuietMs` | `STRIDETERM_AGENT_QUIET_MS` | 45000 | Silence before agent idle alert |
-| `agentQuietFastMs` | `STRIDETERM_AGENT_QUIET_FAST_MS` | 25000 | Agent idle alert after output bursts |
-| `alertCooldownMs` | `STRIDETERM_ALERT_COOLDOWN_MS` | 15000 | Per-session alert cooldown |
-| `shellIntegration` | `STRIDETERM_SHELL_INTEGRATION` | true | Auto-inject OSC 133 shell integration |
-
-### Shell Integration
-
-`config/shell-integration/` contains scripts (bash.sh, zsh.sh, pwsh.ps1) that emit OSC 133 escape sequences for command boundary detection. When `shellIntegration` is enabled, `session-manager.ts` auto-injects these into PTY sessions. OSC 133;D gives instant, zero-false-positive command completion detection.
-
-For agent sessions (Claude Code, Codex, etc.), a silence-based heuristic is used instead, with a secondary check (`matchesAgentIdle`) verifying the last output line looks like an idle prompt before raising an alert.
 
 ## Testing
 
 - UI tests (`src/**/*.test.ts`): jsdom environment, import Vue components and Pinia stores directly
 - Backend tests (`electron/backend/**/*.test.ts`): node environment, test runtime/managers in isolation
-- Both use Vitest. No E2E framework — `npm run smoke` does a basic startup check.
+- Both use Vitest. `npm run smoke` does a headless startup check.
+- E2E tests: `npm run test:e2e` (Playwright, remote HTTP/WS client against a live backend) and `npm run test:e2e:electron` (full Electron stack). Do not run these from Claude Code — they require an interactive display or are slow.
+
+
+# Behavioral guidelines to reduce common LLM coding mistakes. Merge with project-specific instructions as needed.
+
+**Tradeoff:** These guidelines bias toward caution over speed. For trivial tasks, use judgment.
+
+## 1. Think Before Coding
+
+**Don't assume. Don't hide confusion. Surface tradeoffs.**
+
+Before implementing:
+- State your assumptions explicitly. If uncertain, ask.
+- If multiple interpretations exist, present them - don't pick silently.
+- If a simpler approach exists, say so. Push back when warranted.
+- If something is unclear, stop. Name what's confusing. Ask.
+
+## 2. Simplicity First
+
+**Minimum code that solves the problem. Nothing speculative.**
+
+- No features beyond what was asked.
+- No abstractions for single-use code.
+- No "flexibility" or "configurability" that wasn't requested.
+- No error handling for impossible scenarios.
+- If you write 200 lines and it could be 50, rewrite it.
+
+Ask yourself: "Would a senior engineer say this is overcomplicated?" If yes, simplify.
+
+## 3. Surgical Changes
+
+**Touch only what you must. Clean up only your own mess.**
+
+When editing existing code:
+- Don't "improve" adjacent code, comments, or formatting.
+- Don't refactor things that aren't broken.
+- Match existing style, even if you'd do it differently.
+- If you notice unrelated dead code, mention it - don't delete it.
+
+When your changes create orphans:
+- Remove imports/variables/functions that YOUR changes made unused.
+- Don't remove pre-existing dead code unless asked.
+
+The test: Every changed line should trace directly to the user's request.
+
+## 4. Goal-Driven Execution
+
+**Define success criteria. Loop until verified.**
+
+Transform tasks into verifiable goals:
+- "Add validation" → "Write tests for invalid inputs, then make them pass"
+- "Fix the bug" → "Write a test that reproduces it, then make it pass"
+- "Refactor X" → "Ensure tests pass before and after"
+
+For multi-step tasks, state a brief plan:
+```
+1. [Step] → verify: [check]
+2. [Step] → verify: [check]
+3. [Step] → verify: [check]
+```
+
+Strong success criteria let you loop independently. Weak criteria ("make it work") require constant clarification.
+
+---
+
+**These guidelines are working if:** fewer unnecessary changes in diffs, fewer rewrites due to overcomplication, and clarifying questions come before implementation rather than after mistakes.
