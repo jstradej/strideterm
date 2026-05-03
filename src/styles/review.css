@@ -65,22 +65,33 @@
 
 .azure-tab__count {
   font-weight: 700;
-  font-size: 12px;
-  min-width: 18px;
+  font-size: 11px;
+  min-width: 20px;
   text-align: center;
-  border-radius: 8px;
-  padding: 0 5px;
-  background: rgba(var(--tint), 0.08);
-  line-height: 18px;
+  border-radius: 9px;
+  padding: 1px 6px;
+  background: color-mix(in srgb, var(--accent), transparent 78%);
+  border: 1px solid color-mix(in srgb, var(--accent), transparent 55%);
+  color: var(--accent);
+  line-height: 16px;
 }
 
 .azure-tab--active .azure-tab__count {
   background: var(--accent);
+  border-color: var(--accent);
   color: var(--bg);
+}
+
+.azure-tab--alert .azure-tab__count {
+  background: color-mix(in srgb, var(--danger), transparent 78%);
+  border-color: color-mix(in srgb, var(--danger), transparent 55%);
+  color: var(--danger);
 }
 
 .azure-tab--alert.azure-tab--active .azure-tab__count {
   background: var(--danger);
+  border-color: var(--danger);
+  color: var(--bg);
 }
 
 .azure-inbox__content {
@@ -145,12 +156,44 @@
 }
 
 .azure-repo-group__count {
-  font-size: 10px;
-  color: var(--muted);
-  background: rgba(var(--tint), 0.06);
-  padding: 0 5px;
-  border-radius: 8px;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent), transparent 80%);
+  border: 1px solid color-mix(in srgb, var(--accent), transparent 60%);
+  padding: 1px 7px;
+  border-radius: 9px;
   line-height: 16px;
+}
+
+/* Inline icon prefix on chips — keeps the chip width balanced and gives
+   the small badge enough visual weight to register at a glance. */
+.workspace-chip .chip-icon {
+  display: inline-block;
+  margin-right: 3px;
+  font-size: 11px;
+  line-height: 1;
+  vertical-align: -1px;
+}
+
+/* Make the seen button keep its slot in the row when the PR has no
+   attention flag — disabled style instead of removed-from-DOM, so the
+   neighbouring buttons don't shift left and right as PRs cycle in/out
+   of the attention list. */
+.azure-pr-row__actions .button[disabled] {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+/* Inline hint used in the Needs Attention sub-bucket headers — explains
+   why this group needs attention (e.g. "PRs where you are an explicit
+   reviewer..."). Reuses the same .azure-repo-group__header frame. */
+.azure-repo-group__hint {
+  font-size: 11px;
+  color: var(--muted);
+  text-transform: none;
+  letter-spacing: 0;
+  font-weight: 400;
 }
 
 .azure-pr-row {
@@ -225,47 +268,6 @@
   gap: 6px;
   justify-content: flex-end;
   align-items: center;
-}
-
-/* Sub-buckets within the Needs Attention tab. Visually distinct from the
-   project/repo grouping so the user reads the source of attention first. */
-.azure-attention-bucket {
-  margin-bottom: 8px;
-  border: 1px solid color-mix(in srgb, var(--accent), transparent 70%);
-  border-radius: 4px;
-  background: color-mix(in srgb, var(--accent), transparent 95%);
-}
-
-.azure-attention-bucket__header {
-  display: flex;
-  align-items: baseline;
-  gap: 10px;
-  padding: 8px 14px;
-  border-bottom: 1px solid color-mix(in srgb, var(--accent), transparent 70%);
-  background: color-mix(in srgb, var(--accent), transparent 88%);
-  font-size: 12px;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-}
-
-.azure-attention-bucket__name {
-  font-weight: 700;
-  color: var(--accent);
-}
-
-.azure-attention-bucket__count {
-  font-size: 10px;
-  color: var(--muted);
-  background: rgba(var(--tint), 0.06);
-  padding: 0 6px;
-  border-radius: 8px;
-}
-
-.azure-attention-bucket__hint {
-  font-size: 11px;
-  color: var(--muted);
-  text-transform: none;
-  letter-spacing: 0;
 }
 
 /* Diff toolbar above the Monaco panel in the Files tab. Holds per-commit

@@ -194,19 +194,21 @@
                 {{ repo }}
               </button>
             </div>
-            <!-- Needs Attention is special: subdivide by why it needs attention
-                 (assigned reviewer, comment on watched PR, your own PR). -->
+            <!-- Needs Attention: same visual frame as the All tab (azure-repo-group),
+                 but the groups are sub-buckets by *why* the PR needs attention
+                 (reviewer / author / comments / other) instead of by repo. -->
             <template v-if="tab.id === 'attention' && attentionGroupedItems.length">
-              <div v-for="grp in attentionGroupedItems" :key="grp.bucket" class="azure-attention-bucket">
-                <div class="azure-attention-bucket__header">
-                  <span class="azure-attention-bucket__name">{{ grp.label }}</span>
-                  <span class="azure-attention-bucket__count">{{ grp.items.length }}</span>
-                  <small class="azure-attention-bucket__hint">{{ grp.hint }}</small>
+              <div v-for="grp in attentionGroupedItems" :key="grp.bucket" class="azure-repo-group">
+                <div class="azure-repo-group__header">
+                  <span class="azure-repo-group__name">{{ grp.label }}</span>
+                  <span class="azure-repo-group__count">{{ grp.items.length }}</span>
+                  <small class="azure-repo-group__hint">{{ grp.hint }}</small>
                 </div>
                 <AzurePrRow
                   v-for="item in grp.items"
                   :key="item.prKey"
                   :item="item"
+                  :show-seen="true"
                   @open="onOpenPr"
                   @browser="onOpenBrowser"
                   @seen="onMarkSeen"
@@ -223,6 +225,7 @@
                   v-for="item in group.items"
                   :key="item.prKey"
                   :item="item"
+                  :show-seen="activeTab !== 'all'"
                   @open="onOpenPr"
                   @browser="onOpenBrowser"
                   @seen="onMarkSeen"
@@ -314,11 +317,10 @@ const repoNames = computed(() => {
   return names.sort();
 });
 
-// Group "Needs attention" items by why they need attention. The reasons —
-// assigned reviewer, comment activity on a watched PR, your-own-PR with new
-// activity — are far more useful to the user than a flat list, and answer the
-// 5.1 request: "the picker has to be sharper, route reviews-of-mine /
-// commented-on / mine-as-author into the same screen but split by source".
+// Sub-buckets for the "Needs attention" tab: route reviews-of-mine /
+// commented-on / mine-as-author into the same screen but split by source.
+// First-match wins (no double-counting); the catch-all "other" bucket
+// always returns true so anything that didn't match earlier falls through.
 const attentionBuckets = [
   {
     bucket: "reviewer",

@@ -467,6 +467,18 @@
   border-color: rgba(255, 164, 36, 0.45);
 }
 
+/* Active-pane indicator is useful for terminal panes (signals which pane
+   takes keyboard input) but adds visual noise on non-interactive content
+   panes — Azure/GitHub inboxes, Git, Docker, file manager, dashboards.
+   Drop the orange border on those. */
+.workspace-pane--active:has(.workspace-pane__body--git),
+.workspace-pane--active:has(.workspace-pane__body--browser),
+.workspace-pane--active:has(.workspace-pane__body--files),
+.workspace-pane--active:has(.workspace-pane__body--task-dashboard),
+.workspace-pane--active:has(.workspace-pane__body--headless-judge) {
+  border-color: var(--border);
+}
+
 .workspace-pane__header {
   display: flex;
   justify-content: space-between;
