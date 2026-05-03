@@ -99,6 +99,10 @@ interface LogConfig {
 }
 
 let logger: winston.Logger | null = null;
+// Flipped by shutdownLogger() so late callers (PTY exit/data events that fire
+// after we've ended winston's transports) silently drop their log entries
+// instead of crashing the process with "write after end" NodeError.
+let loggerClosed = false;
 
 function resolveConfig(overrides: Partial<LogConfig> = {}): LogConfig {
   const cfg = (APP_CONFIG.logging || {}) as Partial<LogConfig>;
@@ -208,6 +212,7 @@ export function getLogger(label: string): Logger {
   const proxy = {} as Logger;
   for (const method of LOG_METHODS) {
     proxy[method] = (message, meta) => {
+      if (loggerClosed) return;
       const ctx = operationContextStorage.getStore();
       // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: winston logger method dispatch via string key; logger is hot path called from all layers
       (logger! as any)[method](message, { ...ctx, ...(meta || {}), label });
@@ -230,6 +235,10 @@ export function setLogLevel(level: string): void {
  */
 export async function shutdownLogger(): Promise<void> {
   if (!logger) return;
+  // Set the gate before calling end(): any log emitted on this microtask or
+  // later (PTY exit/data events ride a synchronous emit chain that may run
+  // after we've called end() but before "finish" fires) becomes a no-op.
+  loggerClosed = true;
   return new Promise((resolve) => {
     logger!.on("finish", resolve);
     logger!.end();
