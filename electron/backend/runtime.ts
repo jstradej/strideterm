@@ -2030,9 +2030,9 @@ export async function createRuntime({
   // taskRunner.init() ran #reconcileOnStartup, which paused those tasks
   // and built the candidate list. We surface the list to the renderer via
   // meta.recoveryCandidates (see getMeta below) so the dialog can open.
-  // If the user has disabled the dialog (settings.recovery.showTaskRecoveryDialog
-  // = false), we auto-resolve the candidates with "continue" once the runtime
-  // is fully constructed — see the setImmediate at the bottom of createRuntime.
+  // The dialog is the only resume path — silent auto-resume was unreliable
+  // (the freshly-spawned agent's first idle event sometimes never reached
+  // the runner, leaving the task stuck on "running" forever).
   _recoveryCandidates = taskRunner.getStartupRecoveryCandidates();
   if (_recoveryCandidates.length > 0) {
     log.info("startup: found tasks active at last close", {
@@ -4901,9 +4901,11 @@ export async function createRuntime({
      * can't double-spawn.
      */
     async resolveTaskRecovery(decisions: Record<string, string>) {
+      const processedIds = new Set<string>();
       for (const [workspaceId, decision] of Object.entries(decisions)) {
         const candidate = _recoveryCandidates.find((c) => c.workspaceId === workspaceId);
         if (!candidate) continue;
+        processedIds.add(workspaceId);
 
         if (decision === "skip") continue;
 
@@ -4941,10 +4943,20 @@ export async function createRuntime({
             }
           });
 
+          // Flip the task state from "paused" → "running" / "judge-evaluating"
+          // BEFORE spawning the PTYs. If we spawned first, the freshly-started
+          // agent's banner-then-idle sequence would fire onAgentIdle while the
+          // task was still paused, the handler would bail at its `state ===
+          // "paused"` early return, and the recovery prompt would never get
+          // injected — the worker would just sit at an empty prompt forever.
+          const ok = taskRunner.resumeTask(workspaceId);
+          if (!ok) log.warn("resolveTaskRecovery: resumeTask returned false", { workspaceId });
+
           // Re-spawn PTY sessions for both worker and judge panels. After an
-          // app restart the prior PTYs are gone with the parent process; the
-          // task runner's resumeTask() expects sessions to exist before it
-          // schedules its idle hook.
+          // app restart the prior PTYs are gone with the parent process. The
+          // first idle these new agents emit will hit onAgentIdle with the
+          // task already in "running"/"judge-evaluating" state, so the
+          // recovery prompt set above gets injected.
           if (ws?.task?.workerPanelId) {
             const workerSessionId = `${workspaceId}:${ws.task.workerPanelId}`;
             await sessions.ensureSession(state, workerSessionId).catch((err: unknown) => {
@@ -4963,55 +4975,19 @@ export async function createRuntime({
               });
             });
           }
-
-          const ok = taskRunner.resumeTask(workspaceId);
-          if (!ok) log.warn("resolveTaskRecovery: resumeTask returned false", { workspaceId });
         } catch (err) {
           log.warn("resolveTaskRecovery: failed for workspace", { workspaceId, err: (err as Error).message });
         }
       }
 
-      _recoveryCandidates = [];
+      // Remove only the candidates we just processed — the dialog calls this
+      // method per-decision in sequential mode, so wiping the whole list would
+      // make the next call a no-op.
+      _recoveryCandidates = _recoveryCandidates.filter((c) => !processedIds.has(c.workspaceId));
       broadcastState();
       return { ok: true, payload: getPayload() };
     },
   };
   _rt = returnObj;
-
-  // Auto-resolve path for users who disabled the recovery dialog. The dialog
-  // is the default and recommended UX (it's the user's chance to skip a task
-  // they don't want to resume). But if `settings.recovery.showTaskRecoveryDialog`
-  // is explicitly false, leaving candidates unresolved would silently strand
-  // tasks in `paused` forever — there'd be no way to wake them up. So we
-  // auto-resolve everything as "continue".
-  //
-  // Why setImmediate rather than awaiting here:
-  //   createRuntime is called synchronously by main.ts / remote-server.ts
-  //   which then registers IPC handlers and (for Electron) creates the window.
-  //   Auto-resolve calls broadcastState and ensureSession; those work fine
-  //   without a window, but deferring to the next tick keeps construction
-  //   order clean — the runtime object is fully returned before any task-agent
-  //   PTYs start spawning.
-  //
-  // Reliability:
-  //   - getState() returns the AppState loaded synchronously at startup.
-  //   - resolveTaskRecovery is internally try/catch'd per workspace, so a
-  //     failure on one task can't block the others.
-  //   - The list is consumed (set to []) before broadcast, so a second tick
-  //     can't double-spawn agents.
-  const startupSettings = getState().settings;
-  if (_recoveryCandidates.length > 0 && startupSettings?.recovery?.showTaskRecoveryDialog === false) {
-    log.info("startup: dialog disabled — auto-resolving recovery candidates as continue", {
-      count: _recoveryCandidates.length,
-    });
-    const decisions: Record<string, string> = {};
-    for (const c of _recoveryCandidates) decisions[c.workspaceId] = "continue";
-    setImmediate(() => {
-      returnObj.resolveTaskRecovery(decisions).catch((err: unknown) => {
-        log.warn("startup: auto-resolve failed", { err: (err as Error)?.message });
-      });
-    });
-  }
-
   return returnObj;
 }
