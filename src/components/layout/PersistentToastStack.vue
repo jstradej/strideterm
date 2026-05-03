@@ -13,12 +13,7 @@
           <p class="persistent-toast__body">{{ t.body }}</p>
           <p v-if="t.copyPath" class="persistent-toast__path" :title="t.copyPath">{{ t.copyPath }}</p>
           <div v-if="t.copyPath" class="persistent-toast__actions">
-            <button
-              type="button"
-              class="persistent-toast__copy"
-              :data-copied="copiedId === t.id"
-              @click="copyPath(t)"
-            >
+            <button type="button" class="persistent-toast__copy" :data-copied="copiedId === t.id" @click="copyPath(t)">
               {{ copiedId === t.id ? "Copied" : "Copy path" }}
             </button>
           </div>

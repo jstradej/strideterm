@@ -139,16 +139,11 @@ export function createWorkspaceActions(ctx: WorkspaceActionsCtx) {
     const wasActive = ctx.payload.value?.appState?.activeWorkspaceId === workspaceId;
     const before = ctx.payload.value;
     const remainingWorkspaces = (before?.appState?.workspaces || []).filter((w: AnyApi) => w.id !== workspaceId);
-    const nextActiveId = wasActive
-      ? remainingWorkspaces[0]?.id || ""
-      : before?.appState?.activeWorkspaceId || "";
+    const nextActiveId = wasActive ? remainingWorkspaces[0]?.id || "" : before?.appState?.activeWorkspaceId || "";
     // Track the id so any broadcast arriving before the backend finishes the
     // delete (e.g. from a docker poll) doesn't put the workspace back into
     // the sidebar tree.
-    ctx.optimisticallyDeletedIds.value = new Set([
-      ...ctx.optimisticallyDeletedIds.value,
-      workspaceId,
-    ]);
+    ctx.optimisticallyDeletedIds.value = new Set([...ctx.optimisticallyDeletedIds.value, workspaceId]);
     if (before) {
       ctx.payload.value = {
         ...before,

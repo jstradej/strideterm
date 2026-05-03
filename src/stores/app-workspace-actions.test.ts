@@ -54,7 +54,9 @@ function makeCtx(initialPayload: AnyApi, apiOverrides: AnyApi = {}) {
   const activeViewId = ref<string | null>(null);
   const activeSessionId = ref<string | null>(null);
   const hiddenViewIds = ref(new Set<string>());
-  const workspaceTabs = computed(() => [] as { id: string; type: string; title: string; status: string; tone: string }[]);
+  const workspaceTabs = computed(
+    () => [] as { id: string; type: string; title: string; status: string; tone: string }[],
+  );
 
   const api = {
     deleteWorkspace: vi.fn(async () => initialPayload),
@@ -113,7 +115,10 @@ describe("createWorkspaceActions.deleteWorkspace (optimistic)", () => {
     expect(optimisticallyDeletedIds.value.has("ws-B")).toBe(true);
 
     // Now release the IPC and the call resolves cleanly.
-    releaseIpc({ ...initial, appState: { ...initial.appState, workspaces: initial.appState.workspaces.filter((w) => w.id !== "ws-B") } });
+    releaseIpc({
+      ...initial,
+      appState: { ...initial.appState, workspaces: initial.appState.workspaces.filter((w) => w.id !== "ws-B") },
+    });
     await finished;
   });
 
