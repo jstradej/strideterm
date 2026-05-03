@@ -2340,14 +2340,32 @@ Do NOT continue working on the task — only write the handoff summary.`;
     }, 2000);
   }
 
+  #formatElapsed(ms: number): string {
+    const totalSeconds = Math.round(ms / 1000);
+    const h = Math.floor(totalSeconds / 3600);
+    const m = Math.floor((totalSeconds % 3600) / 60);
+    const s = totalSeconds % 60;
+    if (h > 0) return `${h}h ${m}m`;
+    if (m > 0) return `${m}m ${s}s`;
+    return `${s}s`;
+  }
+
   /**
    * Raise a user-visible alert for a task event.
    */
   #raiseTaskAlert(workspace: TaskWorkspaceState, kind: "completed" | "failed", reason?: string): void {
     if (!this.#raiseAlert) return;
     const task = workspace.task;
-    const roundInfo = task.currentRound ? ` after ${task.currentRound} round${task.currentRound !== 1 ? "s" : ""}` : "";
-    const detail = reason ? `task-${kind}: ${reason}` : `task-${kind}${roundInfo}`;
+    const rounds = task.currentRound || 0;
+    const roundLabel = rounds ? `${rounds} round${rounds !== 1 ? "s" : ""}` : "";
+    const endTime = task.finishedAt ? (task.finishedAt as unknown as number) : Date.now();
+    const elapsedMs = task.startedAt
+      ? Math.max(0, endTime - (task.startedAt as unknown as number) - (task.totalPausedMs || 0))
+      : 0;
+    const elapsedLabel = elapsedMs ? this.#formatElapsed(elapsedMs) : "";
+    const statsInfo = [roundLabel, elapsedLabel].filter(Boolean).join(", ");
+    const base = reason ? `task-${kind}: ${reason}` : `task-${kind}`;
+    const detail = statsInfo ? `${base} — ${statsInfo}` : base;
     // Task completed = normal urgency (you can check it later).
     // Task failed/crashed = urgent — otherwise a broken task sits silent
     // and defeats the point of running it unattended.
