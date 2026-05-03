@@ -2846,73 +2846,50 @@ describe("task recovery: resolveTaskRecovery", () => {
   });
 });
 
-describe("task recovery: auto-resolve when dialog suppressed", () => {
-  test("settings.recovery.showTaskRecoveryDialog=false auto-resolves all candidates as continue", async () => {
-    const ws = makeTaskWorkspace({ id: "ws-auto", state: "running", currentRound: 2 });
-    const fixture = await createFixture({
-      initialState: {
-        workspaces: [ws],
-        settings: { recovery: { showTaskRecoveryDialog: false } },
-      },
-    });
-    fixtures.push(fixture);
-
-    // setImmediate inside createRuntime fires on the next tick.
-    // Yield until the candidate list drains.
-    await waitForRecoveryDrain(fixture.runtime);
-
-    expect(fixture.runtime.getPayload().meta.recoveryCandidates).toHaveLength(0);
-    // Worker session re-spawned by the auto-resolved "continue" decision
-    expect(fixture.sessionManager.sessions.has("ws-auto:panel-worker")).toBe(true);
-  });
-
-  test("default settings auto-resume on startup (dialog disabled by default)", async () => {
+describe("task recovery: dialog is the only resume path", () => {
+  test("startup leaves candidates pending — no silent auto-resume", async () => {
     const ws = makeTaskWorkspace({ id: "ws-default", state: "running" });
     const fixture = await createFixture({
       initialState: {
         workspaces: [ws],
-        // No recovery setting → adopts the default, which is now "auto-resume"
-        // (the prior behavior of showing a dialog every restart broke flow).
-      },
-    });
-    fixtures.push(fixture);
-
-    await waitForRecoveryDrain(fixture.runtime);
-
-    expect(fixture.runtime.getPayload().meta.recoveryCandidates).toHaveLength(0);
-    expect(fixture.sessionManager.sessions.has("ws-default:panel-worker")).toBe(true);
-  });
-
-  test("explicit settings.recovery.showTaskRecoveryDialog=true keeps candidates for the renderer", async () => {
-    const ws = makeTaskWorkspace({ id: "ws-keep", state: "running" });
-    const fixture = await createFixture({
-      initialState: {
-        workspaces: [ws],
-        // Explicit opt-in to the legacy "ask me first" behavior. The
-        // normalizer in default-state currently ignores any persisted value
-        // (no UI shipped to set it), so this test is best-effort: if the
-        // normalizer ever starts honoring user choice again, this test will
-        // start exercising the dialog branch as intended.
-        settings: { recovery: { showTaskRecoveryDialog: true } },
       },
     });
     fixtures.push(fixture);
 
     await new Promise((r) => setImmediate(r));
 
-    // Either path is acceptable today; the contract we care about is
-    // "auto-resume on by default", which the previous test asserts.
     const meta = fixture.runtime.getPayload().meta;
-    expect(meta.recoveryCandidates.length === 0 || meta.recoveryCandidates.length === 1).toBe(true);
+    expect(meta.recoveryCandidates).toHaveLength(1);
+    expect(meta.recoveryCandidates[0].workspaceId).toBe("ws-default");
+    // Worker session NOT spawned — that happens when the user picks "continue"
+    expect(fixture.sessionManager.sessions.has("ws-default:panel-worker")).toBe(false);
   });
 });
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function waitForRecoveryDrain(runtime: any, timeoutMs = 1000): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (runtime.getPayload().meta.recoveryCandidates.length === 0) return;
-    await new Promise((r) => setImmediate(r));
-  }
-  throw new Error("recovery candidates were not drained within timeout");
-}
+describe("task recovery: sequential resolve", () => {
+  test("processing decisions one at a time leaves remaining candidates available", async () => {
+    const wsA = makeTaskWorkspace({ id: "ws-a", state: "running" });
+    const wsB = makeTaskWorkspace({ id: "ws-b", state: "running" });
+    const fixture = await createFixture({
+      initialState: {
+        workspaces: [wsA, wsB],
+      },
+    });
+    fixtures.push(fixture);
+
+    // Both candidates present after startup
+    expect(fixture.runtime.getPayload().meta.recoveryCandidates).toHaveLength(2);
+
+    // Resolve only ws-a — ws-b must still be a candidate so the dialog can
+    // advance to it. Previously this branch wiped the whole list.
+    await fixture.runtime.resolveTaskRecovery({ "ws-a": "skip" });
+
+    const meta = fixture.runtime.getPayload().meta;
+    expect(meta.recoveryCandidates).toHaveLength(1);
+    expect(meta.recoveryCandidates[0].workspaceId).toBe("ws-b");
+
+    // Then resolve the second one — list drains
+    await fixture.runtime.resolveTaskRecovery({ "ws-b": "skip" });
+    expect(fixture.runtime.getPayload().meta.recoveryCandidates).toHaveLength(0);
+  });
+});
