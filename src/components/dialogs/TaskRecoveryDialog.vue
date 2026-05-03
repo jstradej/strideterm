@@ -7,50 +7,42 @@
       </div>
       <button type="button" class="button button--ghost" @click="skipAll">Close</button>
     </div>
-    <div class="form">
+    <div v-if="current" class="form">
       <p class="info-box info-box--warning">
-        The following task agents were running when strIDEterm was closed. Choose how to handle each one.
+        Task agent <strong>{{ current.workspaceName }}</strong> was running when strIDEterm was closed. We've switched
+        the workspace into view so you can watch it spin back up.
       </p>
 
-      <div v-for="c in candidates" :key="c.workspaceId" class="recovery-item">
+      <div class="recovery-item">
         <div class="recovery-item__header">
-          <span class="recovery-item__name">{{ c.workspaceName }}</span>
+          <span class="recovery-item__name">{{ current.workspaceName }}</span>
           <span
-            v-if="profileFor(c.profileId)"
+            v-if="profileFor(current.profileId)"
             class="recovery-item__profile"
-            :style="`--profile-color: ${profileFor(c.profileId)?.color || '#ffa424'}`"
+            :style="`--profile-color: ${profileFor(current.profileId)?.color || '#ffa424'}`"
           >
-            {{ profileFor(c.profileId)?.name }}
+            {{ profileFor(current.profileId)?.name }}
           </span>
           <span class="recovery-item__meta">
-            Round {{ c.currentRound }}/{{ c.maxRounds }} &middot;
-            {{ stateLabel(c.previousState) }}
+            Round {{ current.currentRound }}/{{ current.maxRounds }} &middot;
+            {{ stateLabel(current.previousState) }}
           </span>
         </div>
-        <div class="recovery-item__actions">
-          <label class="radio-label" :class="{ selected: decisions[c.workspaceId] === 'continue' }">
-            <input v-model="decisions[c.workspaceId]" type="radio" :name="c.workspaceId" value="continue" />
-            Resume
-            <span class="radio-label__hint">Continue from where it left off</span>
-          </label>
-          <label class="radio-label" :class="{ selected: decisions[c.workspaceId] === 'fresh' }">
-            <input v-model="decisions[c.workspaceId]" type="radio" :name="c.workspaceId" value="fresh" />
-            Restart
-            <span class="radio-label__hint">Start the round from scratch</span>
-          </label>
-          <label class="radio-label" :class="{ selected: decisions[c.workspaceId] === 'skip' }">
-            <input v-model="decisions[c.workspaceId]" type="radio" :name="c.workspaceId" value="skip" />
-            Skip
-            <span class="radio-label__hint">Leave task paused</span>
-          </label>
-        </div>
+        <p v-if="originalTotal > 1" class="recovery-item__progress">Task {{ position }} of {{ originalTotal }}</p>
       </div>
 
-      <footer class="dialog__footer" style="gap: 8px">
-        <button type="button" class="button button--ghost" @click="skipAll">Skip all</button>
-        <button type="button" class="button button--ghost" @click="resumeAll">Resume all</button>
-        <button type="button" class="button" :disabled="resolving" @click="confirm">
-          {{ resolving ? "Resuming…" : "Confirm" }}
+      <footer class="dialog__footer" style="gap: 8px; flex-wrap: wrap">
+        <button type="button" class="button button--ghost" :disabled="busy" @click="decide('skip')">Skip</button>
+        <button type="button" class="button button--ghost" :disabled="busy" @click="decide('fresh')">Restart</button>
+        <button type="button" class="button" :disabled="busy" @click="decide('continue')">
+          {{ busy ? "Resuming…" : "Resume" }}
+        </button>
+        <span style="flex: 1"></span>
+        <button v-if="total > 1" type="button" class="button button--ghost" :disabled="busy" @click="skipAll">
+          Skip all
+        </button>
+        <button v-if="total > 1" type="button" class="button button--ghost" :disabled="busy" @click="resumeAll">
+          Resume all
         </button>
       </footer>
     </div>
@@ -58,7 +50,7 @@
 </template>
 
 <script setup lang="ts">
-import { reactive, ref } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import { useAppStore } from "../../stores/app.js";
 import type { RecoveryCandidate } from "../../../electron/shared/types/state.js";
 
@@ -71,12 +63,18 @@ const props = withDefaults(defineProps<Props>(), {
 });
 
 const store = useAppStore();
-const candidates = store.recoveryCandidates as RecoveryCandidate[];
-const resolving = ref(false);
+const busy = ref(false);
 
-const decisions = reactive<Record<string, "continue" | "fresh" | "skip">>(
-  Object.fromEntries(candidates.map((c) => [c.workspaceId, "continue"])),
-);
+// The candidate list is reactive on the store — every call to resolveTaskRecovery
+// trims it. We always show the head of the list. When it empties, we close.
+const candidates = computed<RecoveryCandidate[]>(() => store.recoveryCandidates as RecoveryCandidate[]);
+const current = computed<RecoveryCandidate | null>(() => candidates.value[0] || null);
+const total = computed(() => candidates.value.length);
+// "Task N of M" — N is the user's mental position, which is total-original minus
+// what's left + 1. Snapshot the original total at first render so position
+// counts up as decisions get made and the queue trims.
+const originalTotal = ref(candidates.value.length);
+const position = computed(() => Math.max(1, originalTotal.value - candidates.value.length + 1));
 
 interface ProfileInfo {
   id: string;
@@ -87,7 +85,6 @@ interface ProfileInfo {
 function profileFor(profileId: string): ProfileInfo | null {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- payload profile shape is open-ended
   const profiles = ((store.payload as any)?.appState?.profiles || []) as ProfileInfo[];
-  // Hide badge for the default profile — it's not informative on a single-profile setup
   if (profileId === "default" && !profiles.find((p) => p.id === "default")) return null;
   return profiles.find((p) => p.id === profileId) || null;
 }
@@ -99,32 +96,70 @@ function stateLabel(state: string): string {
   return "Worker running";
 }
 
-async function confirm(): Promise<void> {
-  resolving.value = true;
+// Switch the active workspace to the candidate currently being decided.
+// Why: the user's whole point of the dialog is to *see* the task come back to
+// life — if we leave them on whatever workspace was active before, Resume
+// looks like nothing happens. activateWorkspace is best-effort; failures
+// (e.g. workspace was deleted between sessions) shouldn't block the dialog.
+async function activateCurrent(): Promise<void> {
+  if (!current.value) return;
   try {
-    await store.resolveTaskRecovery(decisions);
-  } finally {
-    resolving.value = false;
-    props.onClose?.();
+    await store.activateWorkspace(current.value.workspaceId);
+  } catch {
+    // ignore — the dialog still works without the visual context switch
   }
 }
 
-function skipAll(): void {
-  for (const c of candidates) decisions[c.workspaceId] = "skip";
-  store.resolveTaskRecovery(decisions).finally(() => props.onClose?.());
+onMounted(() => {
+  void activateCurrent();
+});
+
+watch(current, (next, prev) => {
+  // When the head of the queue changes (next candidate revealed), pull that
+  // workspace into view too. Skip on first mount — onMounted handles it.
+  if (next && prev && next.workspaceId !== prev.workspaceId) {
+    void activateCurrent();
+  }
+  // Empty queue = work is done.
+  if (!next && originalTotal.value > 0) {
+    props.onClose?.();
+  }
+});
+
+async function decide(choice: "continue" | "fresh" | "skip"): Promise<void> {
+  if (!current.value || busy.value) return;
+  const id = current.value.workspaceId;
+  busy.value = true;
+  try {
+    await store.resolveTaskRecovery({ [id]: choice });
+  } finally {
+    busy.value = false;
+  }
+  // The watcher above closes the dialog when the queue empties.
 }
 
-// One-click resume of every candidate. Used when the user has many tasks
-// stranded by a restart and just wants them all back without picking through
-// each one. Equivalent to leaving every radio at the default "continue" and
-// pressing Confirm, but saves the user one mental step.
-function resumeAll(): void {
-  for (const c of candidates) decisions[c.workspaceId] = "continue";
-  resolving.value = true;
-  store.resolveTaskRecovery(decisions).finally(() => {
-    resolving.value = false;
-    props.onClose?.();
-  });
+async function skipAll(): Promise<void> {
+  if (busy.value) return;
+  busy.value = true;
+  try {
+    const decisions: Record<string, "skip"> = {};
+    for (const c of candidates.value) decisions[c.workspaceId] = "skip";
+    await store.resolveTaskRecovery(decisions);
+  } finally {
+    busy.value = false;
+  }
+}
+
+async function resumeAll(): Promise<void> {
+  if (busy.value) return;
+  busy.value = true;
+  try {
+    const decisions: Record<string, "continue"> = {};
+    for (const c of candidates.value) decisions[c.workspaceId] = "continue";
+    await store.resolveTaskRecovery(decisions);
+  } finally {
+    busy.value = false;
+  }
 }
 </script>
 
@@ -164,38 +199,10 @@ function resumeAll(): void {
   color: var(--text-muted);
 }
 
-.recovery-item__actions {
-  display: flex;
-  gap: 8px;
-}
-
-.radio-label {
-  display: flex;
-  flex-direction: column;
-  flex: 1;
-  cursor: pointer;
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  padding: 6px 10px;
-  font-size: 13px;
-  gap: 2px;
-  transition:
-    border-color 0.1s,
-    background 0.1s;
-}
-
-.radio-label.selected {
-  border-color: var(--accent);
-  background: rgba(var(--accent-rgb), 0.08);
-}
-
-.radio-label input {
-  display: none;
-}
-
-.radio-label__hint {
-  font-size: 11px;
+.recovery-item__progress {
+  font-size: 12px;
   color: var(--text-muted);
+  margin: 0;
 }
 
 .recovery-item__profile {
