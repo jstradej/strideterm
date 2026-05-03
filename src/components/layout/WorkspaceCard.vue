@@ -21,24 +21,9 @@
       <span class="workspace-card__index">{{ workspace.index }}</span
       >{{ workspace.icon }}
       <span
-        v-if="workspace.prStatus"
-        :class="['workspace-card__pr-corner', `workspace-card__pr-corner--${workspace.prStatus}`]"
-      ></span>
-      <span
-        v-if="workspace.kind === 'task' && workspace.taskState"
-        :class="[
-          'workspace-card__task-corner',
-          workspace.taskState === 'completed'
-            ? 'workspace-card__task-corner--completed'
-            : workspace.taskState === 'failed'
-              ? 'workspace-card__task-corner--failed'
-              : workspace.taskState === 'running' ||
-                  workspace.taskState === 'evaluating' ||
-                  workspace.taskState === 'judge-evaluating' ||
-                  workspace.taskState === 'refreshing'
-                ? 'workspace-card__task-corner--running'
-                : 'workspace-card__task-corner--idle',
-        ]"
+        v-if="statusDot"
+        :class="['workspace-card__status-dot', `workspace-card__status-dot--${statusDot.state}`]"
+        :title="statusDot.label"
       ></span>
     </span>
     <button
@@ -123,6 +108,8 @@
 </template>
 
 <script setup lang="ts">
+import { computed } from "vue";
+
 interface WorkspaceCardData {
   active: boolean;
   attentionCount: number;
@@ -143,9 +130,32 @@ interface WorkspaceCardData {
   id: string;
 }
 
-defineProps<{
+const props = defineProps<{
   workspace: WorkspaceCardData;
 }>();
+
+const RUNNING_STATES = new Set(["running", "evaluating", "judge-evaluating", "refreshing", "showering"]);
+
+const statusDot = computed((): { state: string; label: string } | null => {
+  const { taskState, prStatus, kind } = props.workspace;
+
+  if (kind === "task" && taskState) {
+    if (RUNNING_STATES.has(taskState)) return { state: "running", label: "Running…" };
+    if (taskState === "failed") return { state: "failed", label: "Failed" };
+    if (taskState === "stopped") return { state: "stopped", label: "Stopped" };
+    if (taskState === "paused") return { state: "paused", label: "Paused" };
+    if (taskState === "completed" || taskState === "done") {
+      if (prStatus === "completed") return { state: "merged", label: "Done · PR merged" };
+      return { state: "completed", label: "Completed" };
+    }
+  }
+
+  if (prStatus === "active") return { state: "pr-active", label: "PR open" };
+  if (prStatus === "completed") return { state: "merged", label: "PR merged" };
+  if (prStatus === "abandoned") return { state: "abandoned", label: "PR abandoned" };
+
+  return null;
+});
 
 defineEmits<{
   (e: "activate"): void;
