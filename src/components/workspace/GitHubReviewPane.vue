@@ -11,7 +11,45 @@
       <p>No pull request context available</p>
       <small>Open a GitHub PR from the inbox to see review details.</small>
     </div>
-    <div v-else class="azure-review">
+    <div
+      v-else
+      :class="[
+        'azure-review',
+        'review-shell',
+        isMobile && menuOpen && 'review-shell--menu-open',
+        isMobile && tabsMenuOpen && 'review-shell--tabs-menu-open',
+      ]"
+    >
+      <button
+        v-if="isMobile"
+        type="button"
+        class="review-shell__tabs-trigger"
+        :aria-expanded="tabsMenuOpen"
+        :aria-label="tabsMenuOpen ? 'Close tabs menu' : 'Open tabs menu'"
+        @click="toggleTabsMenu"
+      >
+        <span class="review-shell__tabs-trigger__label">{{ activeReviewTabInfo.label }}</span>
+        <span v-if="activeReviewTabInfo.count" class="azure-tab__count">{{ activeReviewTabInfo.count }}</span>
+        <span class="review-shell__tabs-trigger__caret" aria-hidden="true">▼</span>
+      </button>
+      <button
+        v-if="isMobile"
+        type="button"
+        class="review-shell__menu-trigger"
+        :aria-expanded="menuOpen"
+        :aria-label="menuOpen ? 'Close actions menu' : 'Open actions menu'"
+        @click="toggleActionsMenu"
+      >
+        <span class="review-shell__menu-trigger__dot" aria-hidden="true">⋮</span>
+        <span>{{ menuOpen ? "Close" : "Actions" }}</span>
+      </button>
+      <div
+        v-if="isMobile && (menuOpen || tabsMenuOpen)"
+        class="review-shell__menu-backdrop"
+        aria-hidden="true"
+        @click="closeAllMenus"
+      ></div>
+
       <!-- Header -->
       <div class="azure-review__header">
         <div class="azure-review__title-row">
@@ -26,8 +64,10 @@
         </div>
       </div>
 
-      <!-- Quick actions -->
-      <div class="azure-review__actions">
+      <!-- Quick actions — reused as the .git-view__toolbar slot so the
+           mobile overlay rules in review.css can collapse them under the
+           ⋮ trigger like the Azure pane does. -->
+      <div class="git-view__toolbar azure-review__actions">
         <button type="button" class="button button--ghost" @click="openInBrowser">Open in browser</button>
         <button type="button" class="button button--ghost" @click="handleFetch">Fetch</button>
         <button type="button" class="button button--ghost" @click="handleRebase">Rebase on target</button>
@@ -41,7 +81,7 @@
           :key="tab.id"
           type="button"
           :class="['azure-tab', activeTab === tab.id && 'azure-tab--active', tab.alert && 'azure-tab--alert']"
-          @click="activeTab = tab.id"
+          @click="onReviewTabClick(tab.id)"
         >
           {{ tab.label }}<span v-if="tab.count" class="azure-tab__count">{{ tab.count }}</span>
         </button>
@@ -124,8 +164,9 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed } from "vue";
+import { ref, computed, watch } from "vue";
 import { useAppStore } from "../../stores/app.js";
+import { useIsNarrow } from "../../composables/useIsNarrow.js";
 import PaneShell from "../layout/PaneShell.vue";
 import ReviewPipelinesTab from "./shared/ReviewPipelinesTab.vue";
 
@@ -135,10 +176,51 @@ const props = withDefaults(defineProps<{ workspaceId?: string; showHeader?: bool
 });
 
 const appStore = useAppStore();
+const { isMobile } = useIsNarrow();
+const menuOpen = ref(false);
+const tabsMenuOpen = ref(false);
+
+watch(isMobile, (mobile) => {
+  if (!mobile) {
+    menuOpen.value = false;
+    tabsMenuOpen.value = false;
+  }
+});
+
+function toggleActionsMenu() {
+  if (menuOpen.value) {
+    menuOpen.value = false;
+  } else {
+    menuOpen.value = true;
+    tabsMenuOpen.value = false;
+  }
+}
+
+function toggleTabsMenu() {
+  if (tabsMenuOpen.value) {
+    tabsMenuOpen.value = false;
+  } else {
+    tabsMenuOpen.value = true;
+    menuOpen.value = false;
+  }
+}
+
+function closeAllMenus() {
+  menuOpen.value = false;
+  tabsMenuOpen.value = false;
+}
+
+function onReviewTabClick(id: string) {
+  activeTab.value = id;
+  if (tabsMenuOpen.value) tabsMenuOpen.value = false;
+}
+
 const reviewBody = ref<string>("");
 const commentBody = ref<string>("");
 const activeTab = ref<string>("summary");
 const refreshingChecks = ref(false);
+
+const activeReviewTabInfo = computed(() => reviewTabs.value.find((t) => t.id === activeTab.value) || reviewTabs.value[0]);
 
 const workspace = computed(() =>
   (appStore.payload?.appState?.workspaces || []).find((w) => w.id === props.workspaceId),

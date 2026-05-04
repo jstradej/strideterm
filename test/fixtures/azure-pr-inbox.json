@@ -1,0 +1,260 @@
+{
+  "meta": { "appVersion": "1.3.1-test", "repositoryUrl": "https://github.com/example/strideterm" },
+  "appState": {
+    "activeWorkspaceId": "ws-azure",
+    "activeProjectId": "ws-azure",
+    "activeProfileId": "default",
+    "settings": {
+      "theme": "dark",
+      "sidebarWidth": 220,
+      "sidebarCollapsed": false,
+      "remoteAccess": {
+        "enabled": true,
+        "host": "127.0.0.1",
+        "port": 3999,
+        "token": "test-token",
+        "customPublicUrl": "",
+        "cloudflaredPath": ""
+      },
+      "integrations": {
+        "azureDevops": {
+          "enabled": true,
+          "connections": [
+            {
+              "id": "ado-1",
+              "label": "Mock org",
+              "orgUrl": "https://dev.azure.com/mock-org",
+              "login": "mock.user@example.com",
+              "tokenRef": "cred:ado-1",
+              "enabled": true,
+              "profileId": "default",
+              "projectFilters": ["MockProject"],
+              "pollSeconds": 60,
+              "reviewRoot": ""
+            }
+          ],
+          "reviewRoot": "",
+          "defaultPollSeconds": 60
+        },
+        "github": { "enabled": false, "connections": [], "reviewRoot": "", "defaultPollSeconds": 60 }
+      },
+      "tabTemplates": [{ "id": "shell", "title": "Shell", "command": "", "icon": "terminal" }]
+    },
+    "tabTemplates": [{ "id": "shell", "title": "Shell", "command": "", "icon": "terminal" }],
+    "profiles": [
+      {
+        "id": "default",
+        "name": "Default",
+        "color": "",
+        "workspaceIds": ["ws-azure"],
+        "projectIds": ["ws-azure"]
+      }
+    ],
+    "workspaces": [
+      {
+        "id": "ws-azure",
+        "name": "Azure Inbox",
+        "icon": "🔷",
+        "color": "#4a9eff",
+        "kind": "azure",
+        "source": "manual",
+        "pluginId": "",
+        "cwd": "",
+        "notes": "",
+        "profileId": "default",
+        "connectionId": "",
+        "activePanelId": "panel-inbox",
+        "panels": [{ "id": "panel-inbox", "title": "Inbox", "command": "", "launch": null, "shell": false, "startup": "default" }],
+        "review": null,
+        "quickfix": null
+      }
+    ],
+    "projects": []
+  },
+  "workspace": {
+    "workspace": {
+      "id": "ws-azure",
+      "name": "Azure Inbox",
+      "icon": "🔷",
+      "color": "#4a9eff",
+      "kind": "azure",
+      "panels": [{ "id": "panel-inbox", "title": "Inbox", "command": "", "launch": null, "shell": false, "startup": "default" }]
+    },
+    "project": null,
+    "sessions": []
+  },
+  "attention": { "byWorkspace": {}, "byProject": {}, "activeWorkspace": null, "activeProject": null },
+  "docker": { "containers": [], "available": false, "error": null },
+  "git": { "workspaces": {}, "projects": {}, "activeWorkspace": null, "activeProject": null },
+  "azureDevops": {
+    "connections": [
+      {
+        "id": "ado-1",
+        "label": "Mock org",
+        "orgUrl": "https://dev.azure.com/mock-org",
+        "login": "mock.user@example.com",
+        "enabled": true,
+        "pollSeconds": 60,
+        "projectFilters": ["MockProject"],
+        "status": "ok",
+        "lastSyncAt": "2026-05-04T11:55:00.000Z",
+        "lastError": ""
+      }
+    ],
+    "inbox": {
+      "needsMyReview": [
+        {
+          "prKey": "ado:1001",
+          "project": { "name": "MockProject" },
+          "repository": { "name": "platform-api" },
+          "pullRequest": {
+            "id": 1001,
+            "title": "Add tunnel URL command for Telegram bot",
+            "isDraft": false,
+            "sourceRefName": "refs/heads/feat/telegram-tunnel",
+            "targetRefName": "refs/heads/main",
+            "url": "https://dev.azure.com/mock-org/MockProject/_git/platform-api/pullrequest/1001"
+          },
+          "author": { "displayName": "Alice Example", "uniqueName": "alice@example.com" },
+          "role": "reviewer",
+          "hasAttention": true,
+          "attentionReason": "new comment",
+          "checks": { "failedCount": 0, "pendingCount": 0, "passedCount": 4 }
+        },
+        {
+          "prKey": "ado:1003",
+          "project": { "name": "MockProject" },
+          "repository": { "name": "platform-api" },
+          "pullRequest": {
+            "id": 1003,
+            "title": "Documentation polish for Worktrees tab",
+            "isDraft": false,
+            "sourceRefName": "refs/heads/docs/worktrees",
+            "targetRefName": "refs/heads/main",
+            "url": "https://dev.azure.com/mock-org/MockProject/_git/platform-api/pullrequest/1003"
+          },
+          "author": { "displayName": "Carol Example", "uniqueName": "carol@example.com" },
+          "role": "reviewer",
+          "hasAttention": false,
+          "attentionReason": "",
+          "checks": { "failedCount": 0, "pendingCount": 0, "passedCount": 4 }
+        }
+      ],
+      "myPullRequests": [
+        {
+          "prKey": "ado:1002",
+          "project": { "name": "MockProject" },
+          "repository": { "name": "platform-api" },
+          "pullRequest": {
+            "id": 1002,
+            "title": "Refactor azure-devops-manager poll loop",
+            "isDraft": false,
+            "sourceRefName": "refs/heads/refactor/azure-poll",
+            "targetRefName": "refs/heads/main",
+            "url": "https://dev.azure.com/mock-org/MockProject/_git/platform-api/pullrequest/1002"
+          },
+          "author": { "displayName": "You", "uniqueName": "mock.user@example.com" },
+          "role": "author",
+          "hasAttention": true,
+          "attentionReason": "checks failed",
+          "checks": { "failedCount": 2, "pendingCount": 0, "passedCount": 1 }
+        }
+      ],
+      "recentlyUpdated": [
+        {
+          "prKey": "ado:1001",
+          "project": { "name": "MockProject" },
+          "repository": { "name": "platform-api" },
+          "pullRequest": {
+            "id": 1001,
+            "title": "Add tunnel URL command for Telegram bot",
+            "isDraft": false,
+            "sourceRefName": "refs/heads/feat/telegram-tunnel",
+            "targetRefName": "refs/heads/main",
+            "url": "https://dev.azure.com/mock-org/MockProject/_git/platform-api/pullrequest/1001"
+          },
+          "author": { "displayName": "Alice Example", "uniqueName": "alice@example.com" },
+          "role": "reviewer",
+          "hasAttention": true,
+          "attentionReason": "new comment",
+          "checks": { "failedCount": 0, "pendingCount": 0, "passedCount": 4 }
+        },
+        {
+          "prKey": "ado:1002",
+          "project": { "name": "MockProject" },
+          "repository": { "name": "platform-api" },
+          "pullRequest": {
+            "id": 1002,
+            "title": "Refactor azure-devops-manager poll loop",
+            "isDraft": false,
+            "sourceRefName": "refs/heads/refactor/azure-poll",
+            "targetRefName": "refs/heads/main",
+            "url": "https://dev.azure.com/mock-org/MockProject/_git/platform-api/pullrequest/1002"
+          },
+          "author": { "displayName": "You", "uniqueName": "mock.user@example.com" },
+          "role": "author",
+          "hasAttention": true,
+          "attentionReason": "checks failed",
+          "checks": { "failedCount": 2, "pendingCount": 0, "passedCount": 1 }
+        }
+      ],
+      "needsAttention": [
+        {
+          "prKey": "ado:1001",
+          "project": { "name": "MockProject" },
+          "repository": { "name": "platform-api" },
+          "pullRequest": {
+            "id": 1001,
+            "title": "Add tunnel URL command for Telegram bot",
+            "isDraft": false,
+            "sourceRefName": "refs/heads/feat/telegram-tunnel",
+            "targetRefName": "refs/heads/main",
+            "url": "https://dev.azure.com/mock-org/MockProject/_git/platform-api/pullrequest/1001"
+          },
+          "author": { "displayName": "Alice Example", "uniqueName": "alice@example.com" },
+          "role": "reviewer",
+          "hasAttention": true,
+          "attentionReason": "new comment",
+          "checks": { "failedCount": 0, "pendingCount": 0, "passedCount": 4 }
+        },
+        {
+          "prKey": "ado:1002",
+          "project": { "name": "MockProject" },
+          "repository": { "name": "platform-api" },
+          "pullRequest": {
+            "id": 1002,
+            "title": "Refactor azure-devops-manager poll loop",
+            "isDraft": false,
+            "sourceRefName": "refs/heads/refactor/azure-poll",
+            "targetRefName": "refs/heads/main",
+            "url": "https://dev.azure.com/mock-org/MockProject/_git/platform-api/pullrequest/1002"
+          },
+          "author": { "displayName": "You", "uniqueName": "mock.user@example.com" },
+          "role": "author",
+          "hasAttention": true,
+          "attentionReason": "checks failed",
+          "checks": { "failedCount": 2, "pendingCount": 0, "passedCount": 1 }
+        }
+      ]
+    },
+    "trackedPullRequests": {},
+    "pullRequests": {},
+    "sync": {
+      "running": false,
+      "lastStartedAt": "2026-05-04T11:54:00.000Z",
+      "lastCompletedAt": "2026-05-04T11:55:00.000Z"
+    }
+  },
+  "github": {
+    "connections": [],
+    "inbox": { "needsMyReview": [], "myPullRequests": [], "recentlyUpdated": [], "needsAttention": [] },
+    "trackedPullRequests": {},
+    "pullRequests": {},
+    "sync": { "running": false, "lastStartedAt": null, "lastCompletedAt": null }
+  },
+  "reviewBridge": { "pullRequests": {}, "agentPrompts": [] },
+  "plugins": [],
+  "environment": { "platform": "win32", "shell": "bash" },
+  "themeSource": "dark",
+  "remoteAccess": { "enabled": true, "host": "127.0.0.1", "port": 3999, "urls": [] }
+}

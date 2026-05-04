@@ -157,7 +157,47 @@
         {{ busyAction === "refresh" ? "Refreshing…" : "Refresh" }}
       </button>
     </div>
-    <div v-else class="git-view review-shell">
+    <div
+      v-else
+      :class="[
+        'git-view',
+        'review-shell',
+        isMobile && menuOpen && 'review-shell--menu-open',
+        isMobile && tabsMenuOpen && 'review-shell--tabs-menu-open',
+      ]"
+    >
+      <button
+        v-if="isMobile"
+        type="button"
+        class="review-shell__tabs-trigger"
+        :aria-expanded="tabsMenuOpen"
+        :aria-label="tabsMenuOpen ? 'Close tabs menu' : 'Open tabs menu'"
+        @click="toggleTabsMenu"
+      >
+        <span class="review-shell__tabs-trigger__label">{{ activeReviewTabInfo.label }}</span>
+        <span v-if="activeReviewTabInfo.count != null" class="azure-tab__count">{{
+          activeReviewTabInfo.count
+        }}</span>
+        <span class="review-shell__tabs-trigger__caret" aria-hidden="true">▼</span>
+      </button>
+      <button
+        v-if="isMobile"
+        type="button"
+        class="review-shell__menu-trigger"
+        :aria-expanded="menuOpen"
+        :aria-label="menuOpen ? 'Close actions menu' : 'Open actions menu'"
+        @click="toggleActionsMenu"
+      >
+        <span class="review-shell__menu-trigger__dot" aria-hidden="true">⋮</span>
+        <span>{{ menuOpen ? "Close" : "Actions" }}</span>
+      </button>
+      <div
+        v-if="isMobile && (menuOpen || tabsMenuOpen)"
+        class="review-shell__menu-backdrop"
+        aria-hidden="true"
+        @click="closeAllMenus"
+      ></div>
+
       <!-- Toolbar -->
       <div class="git-view__toolbar">
         <div class="git-view__summary">
@@ -313,7 +353,7 @@
             reviewUi.activeReviewTab === tab.id && 'azure-tab--active',
             tab.alert && 'azure-tab--alert',
           ]"
-          @click="gitUiStore.reviewSwitchTab(workspaceId, tab.id)"
+          @click="onReviewTabClick(tab.id)"
         >
           {{ tab.label }}<span v-if="tab.count !== null" class="azure-tab__count">{{ tab.count }}</span>
         </button>
@@ -649,6 +689,7 @@
 import { computed, ref, inject, watch, defineAsyncComponent } from "vue";
 import { useAppStore } from "../../stores/app.js";
 import { useGitUiStore } from "../../stores/git-ui.js";
+import { useIsNarrow } from "../../composables/useIsNarrow.js";
 import { useReviewComments } from "../../composables/useReviewComments.js";
 import PaneShell from "../layout/PaneShell.vue";
 import DiffViewer from "./DiffViewer.vue";
@@ -664,6 +705,44 @@ const props = withDefaults(defineProps<{ workspaceId: string; showHeader?: boole
 
 const appStore = useAppStore();
 const gitUiStore = useGitUiStore();
+const { isMobile } = useIsNarrow();
+const menuOpen = ref(false);
+const tabsMenuOpen = ref(false);
+
+watch(isMobile, (mobile) => {
+  if (!mobile) {
+    menuOpen.value = false;
+    tabsMenuOpen.value = false;
+  }
+});
+
+function toggleActionsMenu() {
+  if (menuOpen.value) {
+    menuOpen.value = false;
+  } else {
+    menuOpen.value = true;
+    tabsMenuOpen.value = false;
+  }
+}
+
+function toggleTabsMenu() {
+  if (tabsMenuOpen.value) {
+    tabsMenuOpen.value = false;
+  } else {
+    tabsMenuOpen.value = true;
+    menuOpen.value = false;
+  }
+}
+
+function closeAllMenus() {
+  menuOpen.value = false;
+  tabsMenuOpen.value = false;
+}
+
+function onReviewTabClick(id: string) {
+  gitUiStore.reviewSwitchTab(props.workspaceId, id);
+  if (tabsMenuOpen.value) tabsMenuOpen.value = false;
+}
 
 // Data selectors
 const workspace = computed(() =>
@@ -970,6 +1049,8 @@ const reviewTabs = computed(() => [
   },
   { id: "agent", label: "Agent", count: null, alert: false },
 ]);
+
+const activeReviewTabInfo = computed(() => reviewTabs.value.find((t) => t.id === activeTab.value) || reviewTabs.value[0]);
 
 // MCP info for agent tab
 const mcpCommandLine = computed(() => {

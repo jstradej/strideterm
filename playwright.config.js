@@ -18,9 +18,14 @@ export default defineConfig({
     actionTimeout: 5_000,
     screenshot: "only-on-failure",
   },
+  // Allow overriding the dev server port via VITE_DEV_PORT — useful when
+  // running tests in a worktree while the main repo's dev server already
+  // owns port 1420.
   webServer: {
-    command: "npm run dev:web",
-    port: 1420,
+    command: process.env.VITE_DEV_PORT
+      ? `npm run dev:web -- --port ${process.env.VITE_DEV_PORT}`
+      : "npm run dev:web",
+    port: Number(process.env.VITE_DEV_PORT || 1420),
     reuseExistingServer: true,
   },
   projects: [

@@ -19,7 +19,10 @@ import { WebSocketServer, WebSocket } from "ws";
 import { fileURLToPath } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const VITE_ORIGIN = "http://127.0.0.1:1420";
+// VITE_DEV_PORT lets test runners point the mock server at a vite instance on
+// a non-default port — useful when the default 1420 is already taken by an
+// unrelated dev session in another worktree.
+const VITE_ORIGIN = process.env.VITE_DEV_ORIGIN || `http://127.0.0.1:${process.env.VITE_DEV_PORT || "1420"}`;
 
 function parseArgs(argv: string[]): { fixture: string; port: number } {
   let fixture = "empty-state";

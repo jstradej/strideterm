@@ -23,6 +23,7 @@ import {
 import { createDialogActions } from "./app-dialog-actions.js";
 import { createWorkspaceActions } from "./app-workspace-actions.js";
 import { createApiActions } from "./app-api-actions.js";
+import { maybeApplyMockFromUrl } from "./dev-mocks.js";
 import { useGitUiStore } from "./git-ui.js";
 import type { StatePayload, RecoveryCandidate } from "../../electron/shared/types/state.js";
 import type { Transport } from "../transport.js";
@@ -516,7 +517,7 @@ export const useAppStore = defineStore("app", () => {
       }
       if (mutated) optimisticallyDeletedIds.value = new Set(optimisticallyDeletedIds.value);
     }
-    payload.value = nextPayload;
+    payload.value = maybeApplyMockFromUrl(nextPayload as AnyApi) as StatePayload;
     // Keep workspace cache fresh on every broadcast for the active workspace
     _cacheCurrentWorkspace();
   }
@@ -545,7 +546,7 @@ export const useAppStore = defineStore("app", () => {
         !pendingWorkspaceActivationId.value ||
         (nextPayload as AnyApi)?.appState?.activeWorkspaceId === pendingWorkspaceActivationId.value
       ) {
-        payload.value = nextPayload;
+        payload.value = maybeApplyMockFromUrl(nextPayload as AnyApi) as StatePayload;
         // Update cache with fresh server data for the newly activated workspace
         _cacheCurrentWorkspace();
         if (!(nextPayload as AnyApi)?.meta?.bootstrap) pendingWorkspaceActivationId.value = "";
@@ -594,7 +595,7 @@ export const useAppStore = defineStore("app", () => {
             .refreshGit(wsId)
             .then((nextPayload: StatePayload) => {
               if (nextPayload && !pendingWorkspaceActivationId.value) {
-                payload.value = nextPayload;
+                payload.value = maybeApplyMockFromUrl(nextPayload as AnyApi) as StatePayload;
                 _cacheCurrentWorkspace();
               }
             })
@@ -612,7 +613,7 @@ export const useAppStore = defineStore("app", () => {
       if (pendingViewActivationId.value === viewId && !(nextPayload as AnyApi)?.meta?.bootstrap) {
         pendingViewActivationId.value = "";
       }
-      payload.value = nextPayload;
+      payload.value = maybeApplyMockFromUrl(nextPayload as AnyApi) as StatePayload;
     } catch {
       if (pendingViewActivationId.value === viewId) {
         pendingViewActivationId.value = "";
@@ -765,7 +766,7 @@ export const useAppStore = defineStore("app", () => {
           }
         }
 
-        payload.value = p as StatePayload;
+        payload.value = maybeApplyMockFromUrl(p as AnyApi) as StatePayload;
         // Seed cache with the initial workspace state on bootstrap
         _cacheCurrentWorkspace();
         // Show recovery dialog if there are crash-recovery candidates.

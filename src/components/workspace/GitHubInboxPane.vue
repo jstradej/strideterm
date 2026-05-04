@@ -16,7 +16,43 @@
         </button>
       </div>
     </div>
-    <div v-else class="azure-inbox">
+    <div
+      v-else
+      :class="[
+        'azure-inbox',
+        isMobile && menuOpen && 'azure-inbox--menu-open',
+        isMobile && tabsMenuOpen && 'azure-inbox--tabs-menu-open',
+      ]"
+    >
+      <button
+        v-if="isMobile"
+        type="button"
+        class="azure-inbox__tabs-trigger"
+        :aria-expanded="tabsMenuOpen"
+        :aria-label="tabsMenuOpen ? 'Close tabs menu' : 'Open tabs menu'"
+        @click="toggleTabsMenu"
+      >
+        <span class="azure-inbox__tabs-trigger__label">{{ activeTabInfo.label }}</span>
+        <span v-if="activeTabInfo.count != null" class="azure-tab__count">{{ activeTabInfo.count }}</span>
+        <span class="azure-inbox__tabs-trigger__caret" aria-hidden="true">▼</span>
+      </button>
+      <button
+        v-if="isMobile"
+        type="button"
+        class="azure-inbox__menu-trigger"
+        :aria-expanded="menuOpen"
+        :aria-label="menuOpen ? 'Close actions menu' : 'Open actions menu'"
+        @click="toggleActionsMenu"
+      >
+        <span class="azure-inbox__menu-trigger__dot" aria-hidden="true">⋮</span>
+        <span>{{ menuOpen ? "Close" : "Actions" }}</span>
+      </button>
+      <div
+        v-if="isMobile && (menuOpen || tabsMenuOpen)"
+        class="azure-inbox__menu-backdrop"
+        aria-hidden="true"
+        @click="closeAllMenus"
+      ></div>
       <div class="azure-inbox__toolbar">
         <div class="azure-inbox__tabs">
           <button
@@ -24,7 +60,7 @@
             :key="tab.id"
             type="button"
             :class="['azure-tab', activeTab === tab.id && 'azure-tab--active', tab.alert && 'azure-tab--alert']"
-            @click="activeTab = tab.id"
+            @click="onTabClick(tab.id)"
           >
             {{ tab.label }} <span v-if="tab.count != null" class="azure-tab__count">{{ tab.count }}</span>
           </button>
@@ -203,8 +239,9 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, ref, watch } from "vue";
 import { useAppStore } from "../../stores/app.js";
+import { useIsNarrow } from "../../composables/useIsNarrow.js";
 import PaneShell from "../layout/PaneShell.vue";
 import GitHubPrRow from "./github/GitHubPrRow.vue";
 import AuditLog from "./azure/AzureAuditLog.vue";
@@ -212,10 +249,50 @@ import AuditLog from "./azure/AzureAuditLog.vue";
 withDefaults(defineProps<{ workspaceId: string; showHeader?: boolean }>(), { showHeader: false });
 
 const appStore = useAppStore();
+const { isMobile } = useIsNarrow();
+const menuOpen = ref(false);
+const tabsMenuOpen = ref(false);
+
+watch(isMobile, (mobile) => {
+  if (!mobile) {
+    menuOpen.value = false;
+    tabsMenuOpen.value = false;
+  }
+});
+
+function toggleActionsMenu() {
+  if (menuOpen.value) {
+    menuOpen.value = false;
+  } else {
+    menuOpen.value = true;
+    tabsMenuOpen.value = false;
+  }
+}
+
+function toggleTabsMenu() {
+  if (tabsMenuOpen.value) {
+    tabsMenuOpen.value = false;
+  } else {
+    tabsMenuOpen.value = true;
+    menuOpen.value = false;
+  }
+}
+
+function closeAllMenus() {
+  menuOpen.value = false;
+  tabsMenuOpen.value = false;
+}
+
+function onTabClick(id: string) {
+  activeTab.value = id;
+  if (tabsMenuOpen.value) tabsMenuOpen.value = false;
+}
 
 const busyAction = ref<string>("");
 const activeTab = ref<string>("all");
 const repoFilter = ref<string>("");
+
+const activeTabInfo = computed(() => inboxTabs.value.find((t) => t.id === activeTab.value) || inboxTabs.value[0]);
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const githubData = computed<Record<string, any>>(() => (appStore.payload?.github as any) || {});

@@ -1268,3 +1268,425 @@ details[open] > .review-tree-dir__label .review-tree-dir__icon::before {
   cursor: text;
   user-select: all;
 }
+
+/* ──────────────────────────────────────────────────────────────────────
+   Mobile: compact Azure DevOps Inbox + GitHub Inbox + Review pane.
+
+   Same compound breakpoint as git.css / mobile.css — covers portrait
+   phones (≤768px wide) and landscape phones (≤500px tall). Strategy
+   mirrors the Git pane redesign:
+     - Tabs collapse into a "[active tab] ▼" popover trigger top-left
+     - Actions collapse into a "⋮ Actions" popover trigger top-right
+     - Backdrop overlay catches outside clicks to dismiss popovers
+     - PR rows reflow: title + meta on top, action buttons stretch
+       across a second row instead of squeezing into a sliver
+     - Files-tab split (file tree | diff) stacks vertically in portrait,
+       stays side-by-side in landscape so the diff still gets width
+   ────────────────────────────────────────────────────────────────────── */
+.azure-inbox__menu-trigger,
+.azure-inbox__tabs-trigger,
+.azure-inbox__menu-backdrop,
+.review-shell__menu-trigger,
+.review-shell__tabs-trigger,
+.review-shell__menu-backdrop {
+  display: none;
+}
+
+@media (max-width: 768px), (max-height: 500px) {
+  /* ── Inbox pane (Azure / GitHub share these classes via .azure-inbox) ── */
+  .azure-inbox {
+    position: relative;
+  }
+
+  /* Header strip (32px) reserved for the two trigger buttons. The full
+     toolbar pops over it when --menu-open or --tabs-menu-open. */
+  .azure-inbox__toolbar {
+    display: none;
+  }
+
+  .azure-inbox--menu-open .azure-inbox__toolbar {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 6px;
+    position: absolute;
+    top: 36px;
+    left: 5px;
+    right: 5px;
+    z-index: 50;
+    padding: 8px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--panel-elevated);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+    max-height: calc(100% - 60px);
+    overflow-y: auto;
+  }
+
+  /* When the actions popover is open, hide the tabs strip — only show
+     the action cluster. (If both panes were on screen the popover would
+     dwarf the data behind it.) */
+  .azure-inbox--menu-open .azure-inbox__tabs {
+    display: none;
+  }
+
+  .azure-inbox--tabs-menu-open .azure-inbox__toolbar {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0;
+    position: absolute;
+    top: 36px;
+    left: 5px;
+    right: 5px;
+    z-index: 50;
+    padding: 4px 0;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--panel-elevated);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+    max-height: calc(100% - 60px);
+    overflow-y: auto;
+  }
+  .azure-inbox--tabs-menu-open .azure-inbox__actions {
+    display: none;
+  }
+  .azure-inbox--tabs-menu-open .azure-inbox__tabs {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0;
+  }
+  .azure-inbox--tabs-menu-open .azure-tab {
+    padding: 10px 12px;
+    text-align: left;
+    border-radius: 0;
+    border: none;
+    border-left: 3px solid transparent;
+    font-size: 13px;
+    width: 100%;
+    flex: 0 0 auto;
+    justify-content: space-between;
+  }
+  .azure-inbox--tabs-menu-open .azure-tab--active {
+    border-left-color: var(--accent);
+    background: rgba(var(--tint), 0.08);
+  }
+
+  /* Action cluster: full width, buttons stretch so taps don't miss. */
+  .azure-inbox--menu-open .azure-inbox__actions {
+    width: 100%;
+    margin-left: 0;
+    flex-wrap: wrap;
+  }
+  .azure-inbox--menu-open .azure-inbox__actions .button {
+    flex: 1 1 auto;
+    padding: 8px 10px;
+    font-size: 12px;
+  }
+
+  /* Triggers — fixed pinning so tabs/actions are always reachable
+     regardless of scroll position. */
+  .azure-inbox__menu-trigger {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 10px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: var(--panel);
+    color: var(--text);
+    font-size: 12px;
+    cursor: pointer;
+    position: absolute;
+    top: 5px;
+    right: 5px;
+    z-index: 50;
+  }
+  .azure-inbox__menu-trigger:hover {
+    background: rgba(var(--tint), 0.08);
+  }
+  .azure-inbox__menu-trigger__dot {
+    font-size: 16px;
+    line-height: 1;
+  }
+
+  .azure-inbox__tabs-trigger {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 10px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: var(--panel);
+    color: var(--text);
+    font-size: 12px;
+    cursor: pointer;
+    position: absolute;
+    top: 5px;
+    left: 5px;
+    z-index: 50;
+    max-width: calc(100% - 110px);
+  }
+  .azure-inbox__tabs-trigger__label {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+  }
+  .azure-inbox__tabs-trigger__caret {
+    font-size: 9px;
+    opacity: 0.7;
+    flex-shrink: 0;
+  }
+
+  .azure-inbox__menu-backdrop {
+    display: block;
+    position: absolute;
+    inset: 0;
+    z-index: 40;
+  }
+
+  /* Reserve a 36px chrome strip at the top so the popovers know where to
+     anchor and the content area starts below it. */
+  .azure-inbox__content {
+    margin-top: 36px;
+    padding: 0;
+  }
+
+  /* Content area itself — keep paddings tight. */
+  .azure-section {
+    padding: 4px;
+  }
+
+  /* PR row: stack title/meta and the action cluster vertically so the
+     buttons get full width instead of being squeezed off-screen. */
+  .azure-pr-row {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+    padding: 10px 12px;
+  }
+  .azure-pr-row__main {
+    width: 100%;
+  }
+  .azure-pr-row__title {
+    flex-wrap: wrap;
+  }
+  .azure-pr-row__title strong {
+    font-size: 13px;
+    word-break: break-word;
+    overflow-wrap: anywhere;
+  }
+  .azure-pr-row__branch {
+    white-space: normal;
+    word-break: break-all;
+  }
+  .azure-pr-row__actions {
+    margin-left: 0;
+    width: 100%;
+    flex-wrap: wrap;
+    justify-content: flex-start;
+  }
+  .azure-pr-row__actions .button {
+    flex: 1 1 auto;
+    min-width: 0;
+    padding: 6px 10px;
+    font-size: 12px;
+  }
+  .azure-repo-group .azure-pr-row {
+    /* drop the desktop indent so the cards use full width on phones */
+    padding-left: 12px;
+  }
+
+  /* Repo group header reads better wrapped on narrow screens. */
+  .azure-repo-group__header {
+    flex-wrap: wrap;
+    padding: 8px 12px 6px;
+  }
+  .azure-repo-group__hint {
+    flex: 1 1 100%;
+  }
+
+  /* ── Review pane ── */
+  .review-shell {
+    position: relative;
+  }
+  .review-shell .git-view__toolbar {
+    /* The review pane reuses .git-view__toolbar — collapse it under a
+       trigger like in the Git pane. */
+    display: none;
+  }
+  .review-shell--menu-open .git-view__toolbar {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 6px;
+    position: absolute;
+    top: 36px;
+    left: 5px;
+    right: 5px;
+    z-index: 50;
+    padding: 8px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--panel-elevated);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+    max-height: calc(100% - 60px);
+    overflow-y: auto;
+  }
+  .review-shell--menu-open .git-view__summary,
+  .review-shell--menu-open .git-view__actions {
+    width: 100%;
+    margin-left: 0;
+    flex-wrap: wrap;
+  }
+  .review-shell--menu-open .git-view__actions .button {
+    flex: 1 1 auto;
+    padding: 8px 10px;
+    font-size: 12px;
+  }
+
+  .review-shell .review-subtabs {
+    display: none;
+  }
+  .review-shell--tabs-menu-open .review-subtabs {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0;
+    position: absolute;
+    top: 36px;
+    left: 5px;
+    right: 5px;
+    z-index: 50;
+    padding: 4px 0;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--panel-elevated);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+    max-height: calc(100% - 60px);
+    overflow-y: auto;
+  }
+  .review-shell--tabs-menu-open .azure-tab {
+    padding: 10px 12px;
+    text-align: left;
+    border-radius: 0;
+    border: none;
+    border-left: 3px solid transparent;
+    width: 100%;
+    flex: 0 0 auto;
+    justify-content: space-between;
+    font-size: 13px;
+  }
+  .review-shell--tabs-menu-open .azure-tab--active {
+    border-left-color: var(--accent);
+    background: rgba(var(--tint), 0.08);
+  }
+
+  .review-shell__menu-trigger {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 10px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: var(--panel);
+    color: var(--text);
+    font-size: 12px;
+    cursor: pointer;
+    position: absolute;
+    top: 5px;
+    right: 5px;
+    z-index: 50;
+  }
+  .review-shell__menu-trigger:hover {
+    background: rgba(var(--tint), 0.08);
+  }
+  .review-shell__menu-trigger__dot {
+    font-size: 16px;
+    line-height: 1;
+  }
+
+  .review-shell__tabs-trigger {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 10px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: var(--panel);
+    color: var(--text);
+    font-size: 12px;
+    cursor: pointer;
+    position: absolute;
+    top: 5px;
+    left: 5px;
+    z-index: 50;
+    max-width: calc(100% - 110px);
+  }
+  .review-shell__tabs-trigger__label {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+  }
+  .review-shell__tabs-trigger__caret {
+    font-size: 9px;
+    opacity: 0.7;
+    flex-shrink: 0;
+  }
+
+  .review-shell__menu-backdrop {
+    display: block;
+    position: absolute;
+    inset: 0;
+    z-index: 40;
+  }
+
+  .review-shell .review-content {
+    margin-top: 36px;
+    padding: 8px;
+  }
+
+  /* Files split (file tree + Monaco diff): in portrait the diff barely
+     gets any width. Stack them: tree on top with a fixed cap, diff
+     fills the rest. In landscape phones we keep them side-by-side via
+     the (max-height: 500px) rule below. */
+  .review-files-split {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(120px, 30vh) minmax(0, 1fr);
+  }
+  .review-files-split__left {
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+    max-height: 30vh;
+  }
+
+  /* Summary cards stack instead of trying for two columns. */
+  .review-grid--summary,
+  .review-grid--drafts,
+  .review-grid--agent {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  /* Pre-PR ("New branch") form layout — ditto. */
+  .review-shell .nb-step {
+    flex-wrap: wrap;
+  }
+}
+
+/* Landscape phones: keep the file-tree + diff side-by-side because the
+   width is just enough, and the height is too short to tolerate a
+   stacked layout (the diff would only get ~150px of vertical room). */
+@media (max-width: 768px) and (min-aspect-ratio: 13/10), (max-height: 500px) and (min-width: 480px) {
+  .review-files-split {
+    grid-template-columns: minmax(160px, 0.4fr) minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr);
+  }
+  .review-files-split__left {
+    border-right: 1px solid var(--border);
+    border-bottom: none;
+    max-height: none;
+  }
+}
