@@ -370,7 +370,7 @@ const isDetachedHead = computed(() => snapshot.value?.branch === "HEAD" || !snap
 const isEmptyRepo = computed(() => (snapshot.value?.commitCount || 0) === 0);
 const isDiverged = computed(() => {
   const s = snapshot.value;
-  return s && s.aheadCount > 0 && s.behindCount > 0 && s.upstream;
+  return !!(s && s.aheadCount > 0 && s.behindCount > 0 && s.upstream);
 });
 
 // Push button state — detect remote name from upstream or remotes list
