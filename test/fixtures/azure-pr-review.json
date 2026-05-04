@@ -65,7 +65,9 @@
         "connectionId": "",
         "activePanelId": "panel-shell",
         "activeViewId": "review:ws-azure-review",
-        "panels": [{ "id": "panel-shell", "title": "Shell", "command": "", "launch": null, "shell": true, "startup": "default" }],
+        "panels": [
+          { "id": "panel-shell", "title": "Shell", "command": "", "launch": null, "shell": true, "startup": "default" }
+        ],
         "review": { "provider": "azure-devops", "prKey": "ado:1001" },
         "quickfix": null
       }
@@ -79,7 +81,9 @@
       "icon": "🔷",
       "color": "#4a9eff",
       "kind": "terminal",
-      "panels": [{ "id": "panel-shell", "title": "Shell", "command": "", "launch": null, "shell": true, "startup": "default" }],
+      "panels": [
+        { "id": "panel-shell", "title": "Shell", "command": "", "launch": null, "shell": true, "startup": "default" }
+      ],
       "review": { "provider": "azure-devops", "prKey": "ado:1001" }
     },
     "project": null,

@@ -67,7 +67,9 @@
         "connectionId": "",
         "activePanelId": "panel-shell",
         "activeViewId": "review:ws-gh-review",
-        "panels": [{ "id": "panel-shell", "title": "Shell", "command": "", "launch": null, "shell": true, "startup": "default" }],
+        "panels": [
+          { "id": "panel-shell", "title": "Shell", "command": "", "launch": null, "shell": true, "startup": "default" }
+        ],
         "review": { "provider": "github", "prKey": "github:42" },
         "quickfix": null
       }
@@ -81,7 +83,9 @@
       "icon": "🐙",
       "color": "#238636",
       "kind": "terminal",
-      "panels": [{ "id": "panel-shell", "title": "Shell", "command": "", "launch": null, "shell": true, "startup": "default" }],
+      "panels": [
+        { "id": "panel-shell", "title": "Shell", "command": "", "launch": null, "shell": true, "startup": "default" }
+      ],
       "review": { "provider": "github", "prKey": "github:42" }
     },
     "project": null,
@@ -149,9 +153,7 @@
         "reviewerSummary": {
           "approvedCount": 1,
           "changesRequestedCount": 0,
-          "reviewers": [
-            { "login": "octocat", "displayName": "octocat", "state": "approved" }
-          ]
+          "reviewers": [{ "login": "octocat", "displayName": "octocat", "state": "approved" }]
         },
         "checks": {
           "failedCount": 0,

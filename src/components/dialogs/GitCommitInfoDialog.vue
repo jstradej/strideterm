@@ -57,7 +57,10 @@
         <template v-if="effective.author">
           <dt>Author</dt>
           <dd>
-            <span>{{ effective.author }}<span v-if="effective.authorEmail"> &lt;{{ effective.authorEmail }}&gt;</span></span>
+            <span
+              >{{ effective.author
+              }}<span v-if="effective.authorEmail"> &lt;{{ effective.authorEmail }}&gt;</span></span
+            >
           </dd>
         </template>
         <template v-if="effective.committer && effective.committer !== effective.author">
@@ -81,9 +84,9 @@
         <template v-if="parentHashes.length">
           <dt>Parents</dt>
           <dd>
-            <code v-for="p in parentHashes" :key="p" class="git-commit-dialog__mono git-commit-dialog__parent"
-              >{{ p }}</code
-            >
+            <code v-for="p in parentHashes" :key="p" class="git-commit-dialog__mono git-commit-dialog__parent">{{
+              p
+            }}</code>
           </dd>
         </template>
         <template v-if="effective.stat">

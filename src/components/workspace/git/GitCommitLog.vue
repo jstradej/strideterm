@@ -183,7 +183,9 @@ const sortedCommits = computed(() => {
   font-size: 13px;
   cursor: pointer;
   line-height: 1.2;
-  transition: background 120ms ease, border-color 120ms ease;
+  transition:
+    background 120ms ease,
+    border-color 120ms ease;
 }
 
 .git-log-info-btn:hover,

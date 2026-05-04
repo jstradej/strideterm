@@ -220,7 +220,9 @@ const commentBody = ref<string>("");
 const activeTab = ref<string>("summary");
 const refreshingChecks = ref(false);
 
-const activeReviewTabInfo = computed(() => reviewTabs.value.find((t) => t.id === activeTab.value) || reviewTabs.value[0]);
+const activeReviewTabInfo = computed(
+  () => reviewTabs.value.find((t) => t.id === activeTab.value) || reviewTabs.value[0],
+);
 
 const workspace = computed(() =>
   (appStore.payload?.appState?.workspaces || []).find((w) => w.id === props.workspaceId),

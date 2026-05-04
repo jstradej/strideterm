@@ -64,7 +64,9 @@
         "profileId": "default",
         "connectionId": "",
         "activePanelId": "panel-inbox",
-        "panels": [{ "id": "panel-inbox", "title": "Inbox", "command": "", "launch": null, "shell": false, "startup": "default" }],
+        "panels": [
+          { "id": "panel-inbox", "title": "Inbox", "command": "", "launch": null, "shell": false, "startup": "default" }
+        ],
         "review": null,
         "quickfix": null
       }
@@ -78,7 +80,9 @@
       "icon": "🔷",
       "color": "#4a9eff",
       "kind": "azure",
-      "panels": [{ "id": "panel-inbox", "title": "Inbox", "command": "", "launch": null, "shell": false, "startup": "default" }]
+      "panels": [
+        { "id": "panel-inbox", "title": "Inbox", "command": "", "launch": null, "shell": false, "startup": "default" }
+      ]
     },
     "project": null,
     "sessions": []

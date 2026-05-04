@@ -2763,10 +2763,7 @@ describe("/tunnel command", () => {
     manager.configure([makeConnection()]);
     manager.setTunnelInfoGetter(() => ({
       remoteEnabled: true,
-      lanUrls: [
-        "http://192.168.1.20:7333/?token=abc",
-        "http://10.0.0.5:7333/?token=abc",
-      ],
+      lanUrls: ["http://192.168.1.20:7333/?token=abc", "http://10.0.0.5:7333/?token=abc"],
       cloudflareUrl: "https://blah-blah.trycloudflare.com",
       remoteToken: "abc",
       cloudflareStatus: "connected",

@@ -1335,13 +1335,7 @@ export class GitManager extends EventEmitter {
     ].join(SEP);
 
     try {
-      const result = await this.execGit(effectiveCwd, [
-        "show",
-        "--no-patch",
-        "--shortstat",
-        `--format=${fmt}`,
-        hash,
-      ]);
+      const result = await this.execGit(effectiveCwd, ["show", "--no-patch", "--shortstat", `--format=${fmt}`, hash]);
       const raw = String(result.stdout || "").replace(/\r\n/g, "\n");
       // git show concatenates the format output and the --shortstat line; the
       // shortstat sits on its own line at the very end. We split on the last

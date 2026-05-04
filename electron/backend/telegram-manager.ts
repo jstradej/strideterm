@@ -1829,7 +1829,8 @@ export class TelegramManager extends EventEmitter {
     const lines: string[] = ["🌐 *strIDEterm tunnel*", ""];
 
     if (cloudflareUrl) {
-      const statusEmoji = info.cloudflareStatus === "connected" ? "✅" : info.cloudflareStatus === "connecting" ? "⏳" : "ℹ️";
+      const statusEmoji =
+        info.cloudflareStatus === "connected" ? "✅" : info.cloudflareStatus === "connecting" ? "⏳" : "ℹ️";
       lines.push(`${statusEmoji} *Cloudflare \\(public\\):*`);
       lines.push(`\`${escapeInlineCode(cloudflareUrl)}\``);
       lines.push("");
