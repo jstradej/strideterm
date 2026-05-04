@@ -230,6 +230,9 @@ function createWindow(): void {
       nodeIntegration: false,
       sandbox: false,
       webviewTag: true,
+      // Keep requestAnimationFrame running when the window is occluded so the
+      // xterm.js WebGL renderer doesn't stall mid-scroll on macOS.
+      backgroundThrottling: false,
     },
   });
 

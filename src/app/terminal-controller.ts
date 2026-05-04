@@ -2,6 +2,7 @@ import { Terminal } from "@xterm/xterm";
 import type { ITheme } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
+import { WebglAddon } from "@xterm/addon-webgl";
 import type { Ref } from "vue";
 import type { APP_CONFIG } from "../../config/app-config.js";
 import type { StatePayload } from "../../electron/shared/types/state.js";
@@ -242,6 +243,18 @@ export function createTerminalController({
     if (!view.opened) {
       view.term.open(view.mount);
       view.opened = true;
+      // Switch to the GPU renderer for smooth scrolling under heavy TUI traffic
+      // (e.g. Claude Code). The DOM renderer can't keep up with high-frequency
+      // cursor moves and color changes, especially on macOS retina displays.
+      // Per @xterm/addon-webgl README, must be loaded AFTER term.open().
+      // On context loss (sleep/minimize on macOS), dispose so xterm falls back to DOM.
+      try {
+        const webglAddon = new WebglAddon();
+        webglAddon.onContextLoss(() => webglAddon.dispose());
+        view.term.loadAddon(webglAddon);
+      } catch {
+        // WebGL2 unavailable — DOM renderer remains in place silently.
+      }
       const queued = buffers.value.get(sessionId);
       if (queued) {
         view.term.write(queued);
