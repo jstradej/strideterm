@@ -1149,18 +1149,19 @@ body.platform-darwin .frame--sidebar-collapsed .sidebar__head {
 /* Workspace status dot — replaces the old corner triangles */
 .workspace-card__status-dot {
   position: absolute;
-  bottom: -3px;
-  right: -3px;
-  width: 10px;
-  height: 10px;
+  bottom: -5px;
+  right: -5px;
+  width: 16px;
+  height: 16px;
+  box-sizing: border-box;
   border-radius: 50%;
-  border: 1.5px solid var(--panel);
+  border: 2px solid var(--panel);
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 6px;
+  font-size: 9px;
   line-height: 1;
-  font-weight: 900;
+  font-weight: 700;
   color: #fff;
 }
 .workspace-card__status-dot--running {
@@ -1192,8 +1193,18 @@ body.platform-darwin .frame--sidebar-collapsed .sidebar__head {
 .workspace-card__status-dot--paused {
   background: #f0c028;
 }
-.workspace-card__status-dot--paused::before {
-  content: "‖";
+/* Pause glyph drawn as two CSS bars — unicode ‖ renders inconsistently at 9px. */
+.workspace-card__status-dot--paused::before,
+.workspace-card__status-dot--paused::after {
+  content: "";
+  display: block;
+  width: 2px;
+  height: 7px;
+  background: #2a1a00;
+  border-radius: 1px;
+}
+.workspace-card__status-dot--paused::after {
+  margin-left: 2px;
 }
 .workspace-card__status-dot--pr-active {
   background: #5b8dd9;
