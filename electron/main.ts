@@ -240,16 +240,20 @@ function createWindow(): void {
       preload: path.join(app.getAppPath(), "dist-electron", "electron", "preload.js"),
       contextIsolation: true,
       nodeIntegration: false,
-      // Run the renderer process under Chromium's OS sandbox. The preload
-      // here only uses contextBridge + ipcRenderer + process.argv/platform,
-      // all of which are part of the limited surface that sandboxed
-      // preloads are still allowed to touch — so the upgrade is
-      // transparent at the API level. The win is that even an XSS that
-      // smuggles arbitrary JS into the renderer can't reach Node directly
-      // anymore (it would have to abuse a specific IPC handler instead),
-      // closing the foot-gun the Electron security checklist calls out
-      // for any app with `webviewTag: true`.
-      sandbox: true,
+      // SEC-008 follow-up: would like `sandbox: true` but the e2e Electron
+      // suite proves that Electron 41 loads sandboxed preloads as
+      // CommonJS — the ESM `import { contextBridge, ipcRenderer } from
+      // "electron"` in our compiled preload.js fails with
+      // `SyntaxError: Cannot use import statement outside a module`,
+      // window.strideterm never gets exposed, and every IPC-driven test
+      // breaks. Smoke (which only checks the app boots) didn't catch it.
+      // To turn this back on we need to ship preload as CJS — either a
+      // dedicated `tsconfig.preload.json` emitting `.cjs`, or an esbuild
+      // pass that bundles preload.ts to CommonJS. Tracked as the only
+      // open security-review item; mitigated for now by
+      // `contextIsolation: true` + `nodeIntegration: false` + the
+      // `will-attach-webview` lockdown below.
+      sandbox: false,
       webviewTag: true,
       // Keep requestAnimationFrame running when the window is occluded so the
       // xterm.js WebGL renderer doesn't stall mid-scroll on macOS.
