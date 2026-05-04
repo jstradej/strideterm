@@ -2751,3 +2751,199 @@ describe("promptStartAfterCreate", () => {
     expect(sentBodies).toHaveLength(0);
   });
 });
+
+// ---------------------------------------------------------------------------
+// /tunnel — surface remote URL (LAN / Cloudflare) on the user's phone
+// ---------------------------------------------------------------------------
+
+describe("/tunnel command", () => {
+  test("/tunnel reports Cloudflare public URL with copy + open buttons when connected", async () => {
+    const cred = makeCredentialStore({ "cred:tg-1": "token123" });
+    const manager = new TelegramManager({ credentialStore: cred });
+    manager.configure([makeConnection()]);
+    manager.setTunnelInfoGetter(() => ({
+      remoteEnabled: true,
+      lanUrls: [
+        "http://192.168.1.20:7333/?token=abc",
+        "http://10.0.0.5:7333/?token=abc",
+      ],
+      cloudflareUrl: "https://blah-blah.trycloudflare.com",
+      remoteToken: "abc",
+      cloudflareStatus: "connected",
+      tunnelMode: "cloudflare",
+    }));
+
+    const sentBodies: Array<Record<string, unknown>> = [];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (manager as any)._apiCall = async (_t: string, _m: string, body: Record<string, unknown>) => {
+      sentBodies.push(body);
+      return { ok: true, result: { message_id: 8000 } };
+    };
+
+    const msg = { message_id: 800, chat: { id: 12345 }, text: "/tunnel" };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (manager as any)._handleMessage(msg, makeConnection(), "token123");
+
+    expect(sentBodies).toHaveLength(1);
+    const body = sentBodies[0];
+    const text = body.text as string;
+    // Cloudflare URL is shown with appended ?token= so it works without
+    // re-pasting the auth secret on the phone.
+    expect(text).toContain("blah-blah.trycloudflare.com");
+    expect(text).toContain("token=abc");
+    // LAN URLs are listed underneath as fallbacks.
+    expect(text).toContain("192.168.1.20:7333");
+    expect(text).toContain("10.0.0.5:7333");
+
+    // Inline keyboard contains an "Open public" button + per-LAN open buttons.
+    const markup = body.reply_markup as { inline_keyboard: Array<Array<{ text: string; url: string }>> };
+    const urls = markup.inline_keyboard.flatMap((row) => row.map((b) => b.url));
+    expect(urls.some((u) => u.includes("trycloudflare.com"))).toBe(true);
+    expect(urls.some((u) => u.includes("192.168.1.20"))).toBe(true);
+  });
+
+  test("/tunnel falls back to LAN URLs when Cloudflare is not connected", async () => {
+    const cred = makeCredentialStore({ "cred:tg-1": "token123" });
+    const manager = new TelegramManager({ credentialStore: cred });
+    manager.configure([makeConnection()]);
+    manager.setTunnelInfoGetter(() => ({
+      remoteEnabled: true,
+      lanUrls: ["http://192.168.1.20:7333/?token=abc"],
+      cloudflareUrl: "",
+      remoteToken: "abc",
+      cloudflareStatus: "idle",
+      tunnelMode: "lan-only",
+    }));
+
+    const sentBodies: Array<Record<string, unknown>> = [];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (manager as any)._apiCall = async (_t: string, _m: string, body: Record<string, unknown>) => {
+      sentBodies.push(body);
+      return { ok: true, result: { message_id: 8001 } };
+    };
+
+    const msg = { message_id: 801, chat: { id: 12345 }, text: "/tunnel" };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (manager as any)._handleMessage(msg, makeConnection(), "token123");
+
+    expect(sentBodies).toHaveLength(1);
+    const text = sentBodies[0].text as string;
+    expect(text).toContain("192.168.1.20:7333");
+    expect(text).not.toContain("trycloudflare");
+  });
+
+  test("/tunnel says remote access is off when nothing is configured", async () => {
+    const cred = makeCredentialStore({ "cred:tg-1": "token123" });
+    const manager = new TelegramManager({ credentialStore: cred });
+    manager.configure([makeConnection()]);
+    manager.setTunnelInfoGetter(() => ({
+      remoteEnabled: false,
+      lanUrls: [],
+      cloudflareUrl: "",
+      remoteToken: "",
+      cloudflareStatus: "idle",
+      tunnelMode: "off",
+    }));
+
+    const sentBodies: Array<Record<string, unknown>> = [];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (manager as any)._apiCall = async (_t: string, _m: string, body: Record<string, unknown>) => {
+      sentBodies.push(body);
+      return { ok: true, result: { message_id: 8002 } };
+    };
+
+    const msg = { message_id: 802, chat: { id: 12345 }, text: "/tunnel" };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (manager as any)._handleMessage(msg, makeConnection(), "token123");
+
+    expect(sentBodies).toHaveLength(1);
+    const text = sentBodies[0].text as string;
+    expect(text.toLowerCase()).toContain("remote access is");
+    expect(text.toLowerCase()).toContain("off");
+  });
+
+  test("plain 'tunnel' alias and '/url' alias both reach handler", async () => {
+    const cred = makeCredentialStore({ "cred:tg-1": "token123" });
+    const manager = new TelegramManager({ credentialStore: cred });
+    manager.configure([makeConnection()]);
+    manager.setTunnelInfoGetter(() => ({
+      remoteEnabled: true,
+      lanUrls: ["http://10.0.0.1:7333/?token=t"],
+      cloudflareUrl: "",
+      remoteToken: "t",
+      cloudflareStatus: "idle",
+      tunnelMode: "lan-only",
+    }));
+
+    const sentBodies: Array<Record<string, unknown>> = [];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (manager as any)._apiCall = async (_t: string, _m: string, body: Record<string, unknown>) => {
+      sentBodies.push(body);
+      return { ok: true, result: { message_id: 8003 } };
+    };
+
+    for (const variant of ["tunnel", "/tunnel", "url", "/URL", " /tunnel "]) {
+      sentBodies.length = 0;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      await (manager as any)._handleMessage(
+        { message_id: 810, chat: { id: 12345 }, text: variant },
+        makeConnection(),
+        "token123",
+      );
+      expect(sentBodies.length).toBe(1);
+      expect((sentBodies[0].text as string).toLowerCase()).toContain("strideterm tunnel");
+    }
+  });
+
+  test("clicking mn:tunnel in main menu dispatches to /tunnel handler", async () => {
+    const cred = makeCredentialStore({ "cred:tg-1": "token123" });
+    const manager = new TelegramManager({ credentialStore: cred });
+    manager.configure([makeConnection()]);
+    manager.setTunnelInfoGetter(() => ({
+      remoteEnabled: true,
+      lanUrls: ["http://10.0.0.1:7333/?token=t"],
+      cloudflareUrl: "",
+      remoteToken: "t",
+      cloudflareStatus: "idle",
+      tunnelMode: "lan-only",
+    }));
+
+    const sentBodies: Array<Record<string, unknown>> = [];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (manager as any)._apiCall = async (_t: string, _m: string, body: Record<string, unknown>) => {
+      sentBodies.push(body);
+      return { ok: true, result: { message_id: 8004 } };
+    };
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (manager as any)._handleCallbackQuery(
+      { id: "cq", from: { id: 1 }, message: { message_id: 130, chat: { id: 12345 }, text: "" }, data: "mn:tunnel" },
+      makeConnection(),
+      "token123",
+    );
+
+    const text = sentBodies[sentBodies.length - 1].text as string;
+    expect(text.toLowerCase()).toContain("strideterm tunnel");
+  });
+
+  test("/tunnel without getter set yields a clear warning instead of crashing", async () => {
+    const cred = makeCredentialStore({ "cred:tg-1": "token123" });
+    const manager = new TelegramManager({ credentialStore: cred });
+    manager.configure([makeConnection()]);
+
+    const sentBodies: Array<Record<string, unknown>> = [];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (manager as any)._apiCall = async (_t: string, _m: string, body: Record<string, unknown>) => {
+      sentBodies.push(body);
+      return { ok: true, result: { message_id: 8005 } };
+    };
+
+    const msg = { message_id: 803, chat: { id: 12345 }, text: "/tunnel" };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (manager as any)._handleMessage(msg, makeConnection(), "token123");
+
+    expect(sentBodies).toHaveLength(1);
+    const text = sentBodies[0].text as string;
+    expect(text.toLowerCase()).toContain("not available");
+  });
+});

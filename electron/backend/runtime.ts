@@ -732,6 +732,25 @@ export async function createRuntime({
     return [...azurePrs, ...githubPrs];
   });
 
+  // Expose the live LAN/Cloudflare URLs to the Telegram /tunnel command. The
+  // remote server pushes URL snapshots via setRemoteInfo as it (re)binds, and
+  // tunnel.getSnapshot() carries the current Cloudflare quick-tunnel state.
+  // Both are read on demand so /tunnel always reports the latest state.
+  telegramManager.setTunnelInfoGetter(() => {
+    const state = getState();
+    const remote = state.settings?.remoteAccess || {};
+    const tunnelSnap = tunnel.getSnapshot();
+    const remoteUrls: string[] = Array.isArray(remoteInfo?.urls) ? (remoteInfo!.urls as string[]) : [];
+    return {
+      remoteEnabled: !!remote.enabled,
+      lanUrls: remoteUrls.filter((u) => typeof u === "string" && u.length > 0),
+      cloudflareUrl: tunnelSnap?.publicUrl || "",
+      remoteToken: remote.token || "",
+      cloudflareStatus: tunnelSnap?.status || "idle",
+      tunnelMode: APP_CONFIG.tunnel?.mode || "off",
+    };
+  });
+
   // --- Agent notification hook server ---
   const notifySecret = generateNotifySecret();
   let notifyServerHandle: NotifyServerHandle | null = null;

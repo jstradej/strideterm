@@ -180,6 +180,22 @@ export interface TelegramPrInfo {
   webUrl?: string;
 }
 
+/** Tunnel/remote-access info the manager needs for the /tunnel command */
+export interface TelegramTunnelInfo {
+  /** Whether LAN remote access is enabled in settings */
+  remoteEnabled: boolean;
+  /** LAN URLs (one per network interface when host=0.0.0.0). Includes ?token=. */
+  lanUrls: string[];
+  /** Cloudflare quick tunnel public URL when connected; empty otherwise. */
+  cloudflareUrl: string;
+  /** Auth token to append (?token=...) to cloudflare URL when remote auth is on. */
+  remoteToken: string;
+  /** Cloudflare tunnel status: idle | connecting | connected */
+  cloudflareStatus: string;
+  /** Configured tunnel mode (e.g. "off" | "cloudflare" | "lan-only") */
+  tunnelMode: string;
+}
+
 /** Minimal workspace info the manager needs for status/task commands */
 export interface TelegramWorkspaceInfo {
   id: string;
@@ -316,6 +332,9 @@ export class TelegramManager extends EventEmitter {
   /** Runtime-provided getter for current PR list — used by /prs command */
   private getPrInfos: (() => TelegramPrInfo[]) | null = null;
 
+  /** Runtime-provided getter for tunnel/remote-access info — used by /tunnel command */
+  private getTunnelInfo: (() => TelegramTunnelInfo) | null = null;
+
   constructor({
     credentialStore,
     auditLogStore = null,
@@ -341,6 +360,15 @@ export class TelegramManager extends EventEmitter {
   /** Called by the runtime so /prs can list open pull requests. */
   setPrInfosGetter(fn: () => TelegramPrInfo[]): void {
     this.getPrInfos = fn;
+  }
+
+  /**
+   * Called by the runtime so `/tunnel` can report current LAN / Cloudflare
+   * URLs to the user's phone. The runtime owns the source of truth (remote
+   * server + tunnel manager), this getter just snapshots it on demand.
+   */
+  setTunnelInfoGetter(fn: () => TelegramTunnelInfo): void {
+    this.getTunnelInfo = fn;
   }
 
   configure(connections: TelegramConnectionConfig[]): void {
@@ -1199,6 +1227,11 @@ export class TelegramManager extends EventEmitter {
       await this._handlePrsCommand(chatId, token, conn);
       return;
     }
+    if (lower === "/tunnel" || lower === "tunnel" || lower === "/url" || lower === "url") {
+      log.info("telegram command: /tunnel", { chatId });
+      await this._handleTunnelCommand(chatId, token);
+      return;
+    }
     if (lower === "/menu" || lower === "menu" || lower === "/start" || lower === "start") {
       log.info("telegram command: /menu", { chatId });
       await this._handleMenuCommand(chatId, token);
@@ -1217,6 +1250,7 @@ export class TelegramManager extends EventEmitter {
           "`/workspaces` — list workspaces",
           "`/task` — start a new task agent \\(workspace picker\\)",
           "`/prs` — list pull requests and start reviews",
+          "`/tunnel` — get the strIDEterm remote URL \\(LAN / Cloudflare\\) on this phone",
           "`/screenshot` — capture a screenshot of the strIDEterm window",
           "",
           "Or reply to a specific notification using Telegram Reply and tap the inline buttons\\.",
@@ -1728,13 +1762,130 @@ export class TelegramManager extends EventEmitter {
           ],
           [
             { text: "📸 Screenshot", callback_data: "mn:screenshot" },
-            { text: "❓ Help", callback_data: "mn:help" },
+            { text: "🌐 Tunnel URL", callback_data: "mn:tunnel" },
           ],
+          [{ text: "❓ Help", callback_data: "mn:help" }],
         ],
       },
     }).catch((err) => {
       log.warn("telegram /menu send failed", { err: (err as Error).message });
     });
+  }
+
+  /**
+   * `/tunnel` — surface the strIDEterm remote URL so the user can pop it
+   * open on whatever device the Telegram chat is running on (typically
+   * their phone).
+   *
+   * Pick the most useful URL automatically: if a Cloudflare quick tunnel is
+   * connected we lead with that (works from outside the LAN), otherwise we
+   * fall back to the LAN URLs. We always list the LAN URLs underneath as
+   * extra options so the user can copy whichever they want — both are valid
+   * and they may be on the same Wi-Fi where the LAN URL is preferable
+   * (no cloudflared round-trip).
+   *
+   * Output is markdown-formatted with the URLs as fenced code blocks so
+   * tapping the bubble in Telegram copies the URL without surrounding
+   * decoration. Inline keyboard buttons let mobile users open the URL in
+   * one tap (Telegram opens https links in the in-app browser).
+   */
+  private async _handleTunnelCommand(chatId: string, token: string): Promise<void> {
+    const info = this.getTunnelInfo?.();
+    if (!info) {
+      log.warn("telegram /tunnel: no getTunnelInfo configured");
+      await this._sendText(
+        token,
+        chatId,
+        "⚠️ Remote-access info is not available\\. Open strIDEterm Settings → Remote access\\.",
+        true,
+      );
+      return;
+    }
+
+    const lanUrls = (info.lanUrls || []).filter((u) => !!u);
+    let cloudflareUrl = info.cloudflareUrl || "";
+    if (cloudflareUrl && info.remoteToken && !cloudflareUrl.includes("?token=")) {
+      // Append the auth token so the user doesn't have to re-paste it on
+      // their phone — the cloudflared snapshot only carries the public URL.
+      cloudflareUrl += `?token=${encodeURIComponent(info.remoteToken)}`;
+    }
+
+    if (!info.remoteEnabled && !cloudflareUrl && !lanUrls.length) {
+      await this._sendText(
+        token,
+        chatId,
+        [
+          "🌐 *strIDEterm tunnel*",
+          "",
+          "Remote access is *off*\\.",
+          "",
+          "Enable it in *Settings → Remote access* on the desktop, then run `/tunnel` again\\.",
+        ].join("\n"),
+        true,
+      );
+      return;
+    }
+
+    const lines: string[] = ["🌐 *strIDEterm tunnel*", ""];
+
+    if (cloudflareUrl) {
+      const statusEmoji = info.cloudflareStatus === "connected" ? "✅" : info.cloudflareStatus === "connecting" ? "⏳" : "ℹ️";
+      lines.push(`${statusEmoji} *Cloudflare \\(public\\):*`);
+      lines.push(`\`${escapeInlineCode(cloudflareUrl)}\``);
+      lines.push("");
+    } else if (info.cloudflareStatus === "connecting") {
+      lines.push("⏳ Cloudflare tunnel is starting\\. Try `/tunnel` again in a few seconds\\.");
+      lines.push("");
+    }
+
+    if (lanUrls.length) {
+      lines.push(`📡 *LAN URL${lanUrls.length === 1 ? "" : "s"}:*`);
+      for (const url of lanUrls) {
+        lines.push(`\`${escapeInlineCode(url)}\``);
+      }
+      lines.push("");
+    } else if (info.remoteEnabled) {
+      lines.push("📡 LAN URL is not available yet \\(server still starting\\)\\.");
+      lines.push("");
+    }
+
+    lines.push("_Tap a URL to copy it, or use a button below to open it directly\\._");
+
+    // Build an inline keyboard with up to four "Open" buttons. Telegram
+    // requires the URL to be valid — we only build buttons for non-empty
+    // entries so the API doesn't reject the message.
+    const buttons: Array<Array<{ text: string; url: string }>> = [];
+    if (cloudflareUrl) {
+      buttons.push([{ text: "🌍 Open public URL", url: cloudflareUrl }]);
+    }
+    for (const url of lanUrls.slice(0, 3)) {
+      // Use the host portion as the button label so multi-NIC machines stay readable.
+      let label = url;
+      try {
+        label = new URL(url).host;
+      } catch {
+        // ignore; fall back to full URL
+      }
+      buttons.push([{ text: `📡 Open LAN: ${label}`, url }]);
+    }
+
+    if (buttons.length) {
+      await this._apiCall(token, "sendMessage", {
+        chat_id: chatId,
+        text: lines.join("\n"),
+        parse_mode: "MarkdownV2",
+        reply_markup: { inline_keyboard: buttons },
+      }).catch(async (err) => {
+        log.warn("telegram /tunnel inline-keyboard send failed, falling back to plain text", {
+          err: (err as Error).message,
+        });
+        // Fallback if Telegram rejects the buttons (e.g. HTTP-only URLs are blocked
+        // for some bots). Plain text still gets the URLs to the user.
+        await this._sendText(token, chatId, lines.join("\n"), true);
+      });
+    } else {
+      await this._sendText(token, chatId, lines.join("\n"), true);
+    }
   }
 
   private async _handlePrsCommand(chatId: string, token: string, conn: TelegramConnectionConfig): Promise<void> {
@@ -2768,6 +2919,9 @@ export class TelegramManager extends EventEmitter {
         return;
       case "screenshot":
         await this._handleScreenshotCommand(chatId, token);
+        return;
+      case "tunnel":
+        await this._handleTunnelCommand(chatId, token);
         return;
       case "help":
         await this._sendText(
