@@ -1224,17 +1224,24 @@ const reviewDiffMode = computed<"branch" | "commit">(() => (reviewCommitFilter.v
 // can show the file name prominently and the directory in a smaller eyebrow.
 // Repeating the full path inline made the toolbar wrap to two rows when the
 // path was long; splitting + truncating keeps it on one row.
+//
+// PR/git diff paths normally use forward slashes regardless of OS, but a
+// path produced by file-manager on Windows can ride in with `\` separators
+// (or mixed). Find the last separator of either flavor.
+function lastPathSepIndex(s: string): number {
+  return Math.max(s.lastIndexOf("/"), s.lastIndexOf("\\"));
+}
 const diffFileName = computed(() => {
   const p = String(reviewUi.value?.reviewFileDiffPreview?.path || "");
-  const idx = p.lastIndexOf("/");
+  const idx = lastPathSepIndex(p);
   return idx >= 0 ? p.slice(idx + 1) : p;
 });
 const diffFileDir = computed(() => {
   const p = String(reviewUi.value?.reviewFileDiffPreview?.path || "");
-  const idx = p.lastIndexOf("/");
+  const idx = lastPathSepIndex(p);
   if (idx <= 0) return "";
-  // Drop any leading slash so the eyebrow doesn't start with "/".
-  return p.slice(0, idx).replace(/^\//, "");
+  // Drop any leading slash/backslash so the eyebrow doesn't start with one.
+  return p.slice(0, idx).replace(/^[/\\]+/, "");
 });
 
 // Commits that introduced changes inside the PR. We surface each in the

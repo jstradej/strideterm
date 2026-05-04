@@ -985,7 +985,19 @@ export function registerIpc(
     withOperationPromise({ opId: "file:open-in-editor" }, async () => {
       const { absPath, editor } = payload || {};
       if (typeof absPath !== "string" || !absPath) return { ok: false, error: "Missing absPath" };
-      const editorCmd = (typeof editor === "string" && editor.trim()) || "";
+      // Defense in depth: even though this handler is renderer-only (the
+      // remote-server stub returns 501), don't make it a free-form
+      // command-execution primitive if the renderer is ever XSS'd. Allow
+      // only bare command names — no path separators, no quotes, no shell
+      // metacharacters that would let an attacker craft `editor=sh -c ...`.
+      const rawEditor = typeof editor === "string" ? editor.trim() : "";
+      let editorCmd = "";
+      if (rawEditor) {
+        if (!/^[A-Za-z0-9_+.-]+$/.test(rawEditor)) {
+          return { ok: false, error: "Editor command must be a single bare program name (PATH-resolved)" };
+        }
+        editorCmd = rawEditor;
+      }
       const { spawn } = await import("node:child_process");
       try {
         if (editorCmd) {

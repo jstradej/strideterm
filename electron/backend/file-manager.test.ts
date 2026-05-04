@@ -55,6 +55,53 @@ afterAll(async () => {
   if (tmpRoot) await fs.rm(tmpRoot, { recursive: true, force: true });
 });
 
+describe("file-manager root allowlist + denylist", () => {
+  test("rejects rootPath outside the allowlist", async () => {
+    // Resolver from beforeAll only allows tmpRoot. Anything else throws.
+    const elsewhere = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-not-allowed-"));
+    try {
+      await expect(listDirectory(elsewhere, "")).rejects.toThrow(/Root path not allowed/);
+    } finally {
+      await fs.rm(elsewhere, { recursive: true, force: true });
+    }
+  });
+
+  test("rejects sensitive system roots (POSIX + Windows) regardless of allowlist", async () => {
+    const sensitive =
+      process.platform === "win32"
+        ? ["C:\\Windows", "C:\\Windows\\System32", "C:\\Program Files", "C:\\"]
+        : ["/etc", "/etc/passwd", "/", "/usr/local"];
+    // Promote each sensitive path INTO the allowlist — the denylist should
+    // still beat the allowlist, by design.
+    const original = (await import("./file-manager.js")).setAllowedRootsResolver;
+    original(() => [tmpRoot, ...sensitive]);
+    try {
+      for (const p of sensitive) {
+        await expect(listDirectory(p, "")).rejects.toThrow(/Root path not allowed/);
+      }
+    } finally {
+      // Restore default resolver for the rest of the suite.
+      original(() => [tmpRoot]);
+    }
+  });
+
+  test("rejects Windows extended-length / UNC-prefixed paths that target system dirs", async () => {
+    // Crafted strings — we don't actually open them, the resolver rejects
+    // before any fs syscall. Skip on POSIX where these prefixes don't apply.
+    if (process.platform !== "win32") return;
+    const bypassAttempts = [
+      "\\\\?\\C:\\Windows",
+      "\\\\?\\C:\\Windows\\System32\\drivers\\etc\\hosts",
+      "\\\\?\\UNC\\server\\share\\file.txt",
+      "\\\\.\\C:\\Windows",
+      "\\\\server\\share",
+    ];
+    for (const p of bypassAttempts) {
+      await expect(listDirectory(p, "")).rejects.toThrow(/Root path not allowed/);
+    }
+  });
+});
+
 describe("file-manager core", () => {
   test("listDirectory + path traversal guard", async () => {
     const root = path.join(tmpRoot, "list-test");

@@ -161,8 +161,28 @@ export function setAllowedRootsResolver(resolver: () => string[]): void {
   allowedRootsResolver = resolver;
 }
 
+// Strip Windows extended-length / namespace prefixes so the rest of the
+// pipeline can compare against plain `C:\…` and `\\server\…` forms. Without
+// this, `\\?\C:\Windows` slips past both the regex denylist and the
+// allowlist (the resolved path doesn't start with a drive letter).
+function stripWindowsNamespacePrefix(p: string): string {
+  if (p.startsWith("\\\\?\\UNC\\")) return "\\\\" + p.slice("\\\\?\\UNC\\".length);
+  if (p.startsWith("\\\\?\\")) return p.slice("\\\\?\\".length);
+  if (p.startsWith("\\\\.\\")) return p.slice("\\\\.\\".length);
+  return p;
+}
+
+// Path comparisons are case-insensitive on Windows (NTFS/ReFS default) and
+// historically case-insensitive on macOS (HFS+ default; APFS configurable).
+// Treat both as case-insensitive so `C:\Work\Project` and `c:\work\project`
+// match. Linux is case-sensitive — leave it alone.
+const CASE_INSENSITIVE_FS = process.platform === "win32" || process.platform === "darwin";
+
 function normalizePathForCompare(p: string): string {
-  return path.resolve(p).replace(/\\/g, "/").replace(/\/+$/, "");
+  const stripped = stripWindowsNamespacePrefix(p);
+  let n = path.resolve(stripped).replace(/\\/g, "/").replace(/\/+$/, "");
+  if (CASE_INSENSITIVE_FS) n = n.toLowerCase();
+  return n;
 }
 
 // Hard denylist applied regardless of the workspace allowlist. Even if the
@@ -173,11 +193,21 @@ function normalizePathForCompare(p: string): string {
 // especially when reached via the remote LAN endpoint.
 function isSensitivePath(p: string): boolean {
   if (!p) return true;
-  const resolved = path.resolve(p);
+  const stripped = stripWindowsNamespacePrefix(p);
+  const resolved = path.resolve(stripped);
   const parsed = path.parse(resolved);
   // Filesystem root itself: "/" on POSIX, "C:\" on Windows.
   if (resolved === parsed.root) return true;
   const norm = resolved.replace(/\\/g, "/").toLowerCase();
+  // UNC root or partial path (`//server`, `//server/share`). Refuse without
+  // an explicit allowlist entry — there's no good default for "is this share
+  // sensitive?" so treat them all as sensitive and rely on the workspace
+  // having added the exact share when the user opted in.
+  if (norm.startsWith("//")) {
+    const segments = norm.replace(/^\/+/, "").split("/").filter(Boolean);
+    // \\server or \\server\share with no further path component → sensitive.
+    if (segments.length <= 2) return true;
+  }
   const posixDeny = [
     "/etc",
     "/bin",
