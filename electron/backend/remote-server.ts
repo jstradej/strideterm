@@ -817,6 +817,10 @@ async function handleApiRequest(runtime: Runtime, request: IncomingMessage, resp
       json(response, 200, await runtime.gitCommitDiff(body));
       return;
     }
+    if (request.method === "POST" && url.pathname === "/api/git/commit-info") {
+      json(response, 200, await runtime.gitCommitInfo(body));
+      return;
+    }
 
     if (request.method === "POST" && url.pathname === "/api/git/log-page") {
       json(response, 200, await runtime.gitLogPage(body));

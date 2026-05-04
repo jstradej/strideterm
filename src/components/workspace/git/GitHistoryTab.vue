@@ -31,6 +31,7 @@
               :page-size="pageSize"
               @select="(hash) => gitUiStore.gitSelectCommit(workspaceId, hash)"
               @load-more="loadMore"
+              @show-info="onShowCommitInfo"
             />
           </div>
         </Pane>
@@ -253,6 +254,27 @@ watch(
 function onSelectCommitFile(path: string /* scope */) {
   selectedCommitFile.value = path;
   loadCommitFileDiff(props.gitUi.selectedCommit, path);
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function onShowCommitInfo(entry: any) {
+  // Use the row data we already have as the seed so the dialog renders
+  // immediately, and let it fetch the full body / hash / authorship
+  // metadata in the background.
+  appStore.openDialog("GitCommitInfoDialog", {
+    workspaceId: props.workspaceId,
+    rootPath: props.activeRootPath || "",
+    hash: entry?.shortHash || entry?.hash || "",
+    seed: {
+      shortHash: entry?.shortHash || "",
+      hash: entry?.hash || entry?.shortHash || "",
+      subject: entry?.subject || "",
+      author: entry?.author || "",
+      relativeDate: entry?.relativeDate || "",
+      refs: entry?.refs || "",
+    },
+    onClose: () => appStore.closeDialog(),
+  });
 }
 </script>
 

@@ -777,6 +777,11 @@ export function registerIpc(
       runtime.gitCommitDiff(validateIpc(gitPayloadSchema, payload, "git:commit-diff")),
     ),
   );
+  ipcMain.handle("git:commit-info", async (_event, payload) =>
+    withOperationPromise({ opId: "git:commit-info" }, () =>
+      runtime.gitCommitInfo(validateIpc(gitPayloadSchema, payload, "git:commit-info")),
+    ),
+  );
   ipcMain.handle("git:log-page", async (_event, payload) =>
     withOperationPromise({ opId: "git:log-page" }, () =>
       runtime.gitLogPage(validateIpc(gitLogPageSchema, payload, "git:log-page")),
@@ -1249,6 +1254,7 @@ export function registerIpc(
     ipcMain.removeHandler("git:stash");
     ipcMain.removeHandler("git:stash-pop");
     ipcMain.removeHandler("git:commit-diff");
+    ipcMain.removeHandler("git:commit-info");
     ipcMain.removeHandler("git:log-page");
     ipcMain.removeHandler("docker:action");
     ipcMain.removeHandler("docker:open-session");

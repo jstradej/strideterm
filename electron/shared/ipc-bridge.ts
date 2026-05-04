@@ -252,6 +252,7 @@ export interface StridetermAPI {
   gitStash: (payload: GitPayload) => Promise<unknown>;
   gitStashPop: (payload: GitPayload) => Promise<unknown>;
   gitCommitDiff: (payload: GitPayload) => Promise<unknown>;
+  gitCommitInfo: (payload: GitPayload) => Promise<unknown>;
   gitLogPage: (payload: GitPayload & { skip?: number; limit?: number }) => Promise<unknown>;
   gitListTags: (payload: GitPayload) => Promise<unknown>;
   gitCreateTag: (payload: GitTag) => Promise<unknown>;

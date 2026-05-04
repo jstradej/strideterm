@@ -1277,6 +1277,116 @@ export class GitManager extends EventEmitter {
     }
   }
 
+  /**
+   * Fetch full metadata for a single commit (used by the GitHistoryTab info
+   * dialog so the user can read a long commit message in a real scrollable
+   * pane and copy the full hash / body without the tooltip-truncates-long-
+   * text problem).
+   *
+   * Returns a flat record with the full hash, abbreviated hash, author /
+   * committer identities, ISO/relative dates, refs (decoration), subject,
+   * full body, and the diff stat one-line shortlog. Using `-z` separators
+   * keeps multi-line bodies intact.
+   */
+  async commitInfo(
+    workspace: WorkspaceRef | null,
+    { hash, rootPath = "" }: { hash?: string; rootPath?: string } = {},
+  ): Promise<{
+    ok: boolean;
+    hash: string;
+    shortHash?: string;
+    parents?: string;
+    author?: string;
+    authorEmail?: string;
+    committer?: string;
+    committerEmail?: string;
+    authorDate?: string;
+    committerDate?: string;
+    relativeDate?: string;
+    refs?: string;
+    subject?: string;
+    body?: string;
+    stat?: string;
+    error?: string;
+  }> {
+    const effectiveCwd = rootPath || workspace?.cwd || "";
+    if (!effectiveCwd || !hash) {
+      return { ok: false, hash: hash || "", error: "Workspace cwd and commit hash are required." };
+    }
+
+    // %x1f is unit-separator (rare in commit messages); we use it as a hard
+    // delimiter so we don't have to deal with tab/newline collisions inside
+    // the body. The trailing %B (full message) is kept last so anything goes.
+    const SEP = "";
+    const fmt = [
+      "%H", // 0 full hash
+      "%h", // 1 short hash
+      "%P", // 2 parent hashes (space-separated)
+      "%an", // 3 author name
+      "%ae", // 4 author email
+      "%aI", // 5 author date ISO
+      "%cn", // 6 committer name
+      "%ce", // 7 committer email
+      "%cI", // 8 committer date ISO
+      "%ar", // 9 author date relative
+      "%d", // 10 ref names (decoration)
+      "%s", // 11 subject
+      "%B", // 12 full body (last so any newlines/separators don't break parsing)
+    ].join(SEP);
+
+    try {
+      const result = await this.execGit(effectiveCwd, [
+        "show",
+        "--no-patch",
+        "--shortstat",
+        `--format=${fmt}`,
+        hash,
+      ]);
+      const raw = String(result.stdout || "").replace(/\r\n/g, "\n");
+      // git show concatenates the format output and the --shortstat line; the
+      // shortstat sits on its own line at the very end. We split on the last
+      // newline that follows the body.
+      const parts = raw.split(SEP);
+      // The 12th field is %B (full body); but everything after the 12th SEP
+      // is part of %B and may itself contain newlines + the appended stat
+      // line. We re-join indices ≥12 in case anyone ever sneaks SEP into a
+      // commit message.
+      if (parts.length < 13) {
+        return { ok: false, hash, error: "Could not parse git show output." };
+      }
+      const tail = parts.slice(12).join(SEP);
+      // Pull the trailing shortstat line (e.g. " 3 files changed, 12 insertions(+), 1 deletion(-)").
+      const tailLines = tail.split(/\n/);
+      let stat = "";
+      while (tailLines.length && tailLines[tailLines.length - 1].trim() === "") tailLines.pop();
+      if (tailLines.length && /file[s]?\s+changed/.test(tailLines[tailLines.length - 1])) {
+        stat = tailLines.pop()!.trim();
+        // Drop the blank line that git inserts between body and shortstat.
+        while (tailLines.length && tailLines[tailLines.length - 1].trim() === "") tailLines.pop();
+      }
+      const body = tailLines.join("\n").trim();
+      return {
+        ok: true,
+        hash: parts[0] || hash,
+        shortHash: parts[1] || "",
+        parents: parts[2] || "",
+        author: parts[3] || "",
+        authorEmail: parts[4] || "",
+        authorDate: parts[5] || "",
+        committer: parts[6] || "",
+        committerEmail: parts[7] || "",
+        committerDate: parts[8] || "",
+        relativeDate: parts[9] || "",
+        refs: (parts[10] || "").trim().replace(/^\(/, "").replace(/\)$/, ""),
+        subject: parts[11] || "",
+        body,
+        stat,
+      };
+    } catch (error) {
+      return { ok: false, hash, error: extractErrorMessage(error) };
+    }
+  }
+
   async commitDiff(
     workspace: WorkspaceRef | null,
     { hash, rootPath = "" }: { hash?: string; rootPath?: string } = {},

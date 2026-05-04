@@ -174,6 +174,12 @@ export function createGitHandlers(ctx: GitHandlerCtx) {
       return git.commitDiff(workspace, { ...payload, rootPath });
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async gitCommitInfo(payload: any = {}) {
+      const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId);
+      const rootPath = resolveRootPath(workspace, payload.rootPath);
+      return git.commitInfo(workspace, { hash: payload.hash, rootPath });
+    },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async gitListTags(payload: any = {}) {
       const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId);
       const connection = resolveGitConnection(workspace);

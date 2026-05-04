@@ -69,7 +69,12 @@
         <div v-if="hasCommits" style="margin-top: 20px">
           <p class="eyebrow">Commits ({{ gitSnapshot?.aheadCount || 0 }} ahead of base)</p>
           <div style="margin-top: 6px">
-            <GitCommitLog :commits="recentCommits" :ahead-count="gitSnapshot?.aheadCount || 0" selected-commit="" />
+            <GitCommitLog
+              :commits="recentCommits"
+              :ahead-count="gitSnapshot?.aheadCount || 0"
+              selected-commit=""
+              @show-info="onShowCommitInfo"
+            />
           </div>
         </div>
 
@@ -1239,6 +1244,27 @@ function changeTypeLabel(t: unknown) {
 function openBrowser() {
   const url = pullRequest.value.webUrl || pullRequest.value.url || "";
   if (url) openExternal(url);
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function onShowCommitInfo(entry: any) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const ws = workspace.value as any;
+  const rootPath = ws?.cwd || (ws?.gitRoots?.[0] ?? "");
+  appStore.openDialog("GitCommitInfoDialog", {
+    workspaceId: props.workspaceId,
+    rootPath,
+    hash: entry?.shortHash || entry?.hash || "",
+    seed: {
+      shortHash: entry?.shortHash || "",
+      hash: entry?.hash || entry?.shortHash || "",
+      subject: entry?.subject || "",
+      author: entry?.author || "",
+      relativeDate: entry?.relativeDate || "",
+      refs: entry?.refs || "",
+    },
+    onClose: () => appStore.closeDialog(),
+  });
 }
 
 function openAzureComment() {

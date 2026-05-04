@@ -6,6 +6,7 @@
         <col class="git-log-col--msg" />
         <col class="git-log-col--date" />
         <col class="git-log-col--author" />
+        <col class="git-log-col--actions" />
       </colgroup>
       <thead>
         <tr>
@@ -20,6 +21,7 @@
               sortDir === "asc" ? "▲" : "▼"
             }}</span>
           </th>
+          <th class="git-log-table__head git-log-table__head--actions" aria-label="Details"></th>
         </tr>
       </thead>
       <tbody>
@@ -42,6 +44,17 @@
           </td>
           <td class="git-log-table__date">{{ entry.relativeDate }}</td>
           <td class="git-log-table__author">{{ entry.author || "" }}</td>
+          <td class="git-log-table__actions">
+            <button
+              type="button"
+              class="git-log-info-btn"
+              title="Show full commit details (message, author, hash, dates) in a copyable dialog."
+              :aria-label="`Show details for commit ${entry.shortHash}`"
+              @click.stop="$emit('show-info', entry)"
+            >
+              ⓘ
+            </button>
+          </td>
         </tr>
       </tbody>
     </table>
@@ -80,6 +93,8 @@ const props = withDefaults(
 defineEmits<{
   (e: "select", hash: string): void;
   (e: "load-more"): void;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (e: "show-info", entry: any): void;
 }>();
 
 const columns = [
@@ -143,6 +158,39 @@ const sortedCommits = computed(() => {
 }
 .git-log-col--author {
   width: 120px;
+}
+.git-log-col--actions {
+  width: 36px;
+}
+
+.git-log-table__head--actions {
+  cursor: default;
+  resize: none;
+}
+
+.git-log-table__actions {
+  text-align: right;
+  padding: 0 6px;
+  white-space: nowrap;
+}
+
+.git-log-info-btn {
+  border: 1px solid transparent;
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--accent, #ffa424);
+  border-radius: 3px;
+  padding: 1px 6px;
+  font-size: 13px;
+  cursor: pointer;
+  line-height: 1.2;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+
+.git-log-info-btn:hover,
+.git-log-info-btn:focus-visible {
+  background: rgba(255, 164, 36, 0.18);
+  border-color: var(--accent, #ffa424);
+  outline: none;
 }
 
 .git-log-table__head {
