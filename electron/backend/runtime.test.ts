@@ -1874,7 +1874,15 @@ describe("runtime integration", () => {
   });
 
   test("restarts cloudflare tunnel and emits remote config changes when settings change", async () => {
-    const fixture = await createFixture();
+    // remoteAccess defaults to disabled — this test covers the running-server
+    // restart path, so seed the fixture with an enabled connection.
+    const fixture = await createFixture({
+      initialState: {
+        settings: {
+          remoteAccess: { enabled: true, host: "127.0.0.1", port: 43123, token: "abc" },
+        },
+      },
+    });
     fixtures.push(fixture);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const configChanges: any[] = [];

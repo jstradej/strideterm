@@ -10,9 +10,12 @@ describe("default state", () => {
     expect(token).toMatch(/^[A-Za-z0-9_-]+$/);
   });
 
-  test("default state includes remote access enabled and empty workspaces", () => {
+  test("default state ships with remote access disabled and empty workspaces", () => {
+    // Remote access binds the LAN port the moment the app launches. Defaulting
+    // to disabled keeps the auth-protected endpoint off the network until the
+    // user opts in via Settings.
     const state = createDefaultState();
-    expect(state.settings.remoteAccess.enabled).toBe(true);
+    expect(state.settings.remoteAccess.enabled).toBe(false);
     expect(state.workspaces).toEqual([]);
   });
 

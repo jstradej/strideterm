@@ -101,8 +101,16 @@ export async function createCredentialStore(
     // tmp + rename pattern guarantees the on-disk file is either the
     // previous good state or the new good state, never a partial blob.
     const tmpPath = `${filePath}.tmp-${process.pid}-${randomUUID()}`;
-    await fs.writeFile(tmpPath, JSON.stringify(state, null, 2));
+    // mode 0o600: credentials.json contains user secrets (PATs, OAuth tokens,
+    // SSH key passphrases). Without an explicit mode the default umask leaves
+    // it world-readable on shared Linux/macOS hosts. Windows ignores `mode`,
+    // so this is safe everywhere.
+    await fs.writeFile(tmpPath, JSON.stringify(state, null, 2), { mode: 0o600 });
     await fs.rename(tmpPath, filePath);
+    // Belt-and-suspenders: rename preserves the source mode but if the file
+    // already existed the kernel may keep the previous mode bits. chmod
+    // explicitly so a permissive ancestor file can't lock us into 0644.
+    await fs.chmod(filePath, 0o600).catch(() => {});
   }
 
   function enqueue(operation: () => Promise<void>): Promise<void> {

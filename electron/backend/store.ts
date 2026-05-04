@@ -29,8 +29,12 @@ function sleep(ms: number): Promise<void> {
  */
 async function atomicWriteFile(filePath: string, data: string): Promise<void> {
   const tmpPath = `${filePath}.tmp-${process.pid}-${randomUUID()}`;
-  await fs.writeFile(tmpPath, data);
+  // mode 0o600: the state file contains the remote-access token in plaintext
+  // (the LAN auth secret). Default umask 022 would leave it world-readable
+  // and any other user on the same host could connect. Windows ignores mode.
+  await fs.writeFile(tmpPath, data, { mode: 0o600 });
   await fs.rename(tmpPath, filePath);
+  await fs.chmod(filePath, 0o600).catch(() => {});
 }
 
 async function loadState(statePath: string): Promise<{ state: AppState; isDefaults: boolean }> {

@@ -149,12 +149,108 @@ interface PorcelainEntry {
 // Helpers
 // ---------------------------------------------------------------------------
 
+// Whitelist of paths a caller may target as `rootPath`. Without this guard
+// the remote LAN client (which holds the access token but is otherwise
+// untrusted code on a separate machine) could read or write any file the
+// Electron process can see by simply choosing rootPath = "/" or "C:\".
+// Wired up by the runtime once workspaces are loaded; until then the
+// allowlist is empty and every fs call rejects.
+let allowedRootsResolver: (() => string[]) | null = null;
+
+export function setAllowedRootsResolver(resolver: () => string[]): void {
+  allowedRootsResolver = resolver;
+}
+
+function normalizePathForCompare(p: string): string {
+  return path.resolve(p).replace(/\\/g, "/").replace(/\/+$/, "");
+}
+
+// Hard denylist applied regardless of the workspace allowlist. Even if the
+// user explicitly created a workspace at one of these locations (e.g.
+// `C:\Windows` or `/etc`) we refuse to read or write through file-manager
+// — point the user at a real editor instead. This is defense in depth so
+// a careless workspace cwd can't turn into an arbitrary-fs primitive,
+// especially when reached via the remote LAN endpoint.
+function isSensitivePath(p: string): boolean {
+  if (!p) return true;
+  const resolved = path.resolve(p);
+  const parsed = path.parse(resolved);
+  // Filesystem root itself: "/" on POSIX, "C:\" on Windows.
+  if (resolved === parsed.root) return true;
+  const norm = resolved.replace(/\\/g, "/").toLowerCase();
+  const posixDeny = [
+    "/etc",
+    "/bin",
+    "/sbin",
+    "/usr",
+    "/var",
+    "/boot",
+    "/dev",
+    "/proc",
+    "/sys",
+    "/root",
+    "/lib",
+    "/lib64",
+    "/opt",
+    "/srv",
+  ];
+  for (const d of posixDeny) {
+    if (norm === d || norm.startsWith(d + "/")) return true;
+  }
+  // Windows system dirs on any drive letter, comparing the path tail
+  // after the drive letter. Catches `C:\Windows`, `D:\Program Files`, etc.
+  const winMatch = /^([a-z]):\/(.+)$/.exec(norm);
+  if (winMatch) {
+    const tail = "/" + winMatch[2];
+    const winDeny = [
+      "/windows",
+      "/program files",
+      "/program files (x86)",
+      "/programdata",
+      "/system volume information",
+    ];
+    for (const t of winDeny) {
+      if (tail === t || tail.startsWith(t + "/")) return true;
+    }
+  }
+  return false;
+}
+
+function isRootAllowed(root: string): boolean {
+  // Deny first — sensitive system paths are off-limits even if the user
+  // has registered them as a workspace cwd.
+  if (isSensitivePath(root)) return false;
+  if (!allowedRootsResolver) {
+    // Resolver not yet installed — be safe and refuse. The runtime registers
+    // it during `init()`; tests that bypass init must register their own.
+    return false;
+  }
+  const requested = normalizePathForCompare(root);
+  if (!requested) return false;
+  for (const allowed of allowedRootsResolver()) {
+    if (!allowed) continue;
+    // Skip allowed entries that are themselves sensitive — an absent-minded
+    // workspace at `/` shouldn't open up the whole filesystem.
+    if (isSensitivePath(allowed)) continue;
+    const a = normalizePathForCompare(allowed);
+    if (requested === a) return true;
+    // Allow drilling into subdirectories of an allowed root (file pickers
+    // legitimately walk below the project root).
+    if (requested.startsWith(a + "/")) return true;
+  }
+  return false;
+}
+
 /**
  * Resolve and guard a path against traversal outside the root.
- * Returns the absolute path, or throws if it escapes.
+ * Returns the absolute path, or throws if it escapes or if `rootPath`
+ * itself isn't in the allowlist.
  */
 function safePath(rootPath: string, relativePath: string | null | undefined): string {
   const root = path.resolve(rootPath);
+  if (!isRootAllowed(root)) {
+    throw new Error(`Root path not allowed: ${rootPath}`);
+  }
   const resolved = path.resolve(root, relativePath || "");
   const normalizedRoot = root.endsWith(path.sep) ? root : root + path.sep;
   if (resolved !== root && !resolved.startsWith(normalizedRoot)) {

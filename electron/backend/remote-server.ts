@@ -1156,6 +1156,32 @@ export async function startRemoteServer({
       socket.destroy();
       return;
     }
+    // CSRF guard for the WebSocket: a malicious page in the user's browser
+    // could open ws://host:port/ws?token=<leaked> and (since browsers send
+    // cookies/auth headers cross-origin for WS) ride the user's session.
+    // Refuse upgrades whose Origin doesn't match the Host the user is
+    // connecting to. Same-origin and tooling without an Origin header (curl,
+    // websocat, the Electron renderer) still pass.
+    const origin = (request.headers.origin || "").toString();
+    if (origin) {
+      try {
+        const originUrl = new URL(origin);
+        const host = (request.headers.host || "").toString().toLowerCase();
+        const expected =
+          `${originUrl.hostname}:${originUrl.port || (originUrl.protocol === "https:" ? "443" : "80")}`.toLowerCase();
+        if (host && host !== expected && host !== originUrl.hostname.toLowerCase()) {
+          log.warn("WebSocket upgrade rejected: origin/host mismatch", { origin, host });
+          socket.write("HTTP/1.1 403 Forbidden\r\n\r\n");
+          socket.destroy();
+          return;
+        }
+      } catch {
+        log.warn("WebSocket upgrade rejected: malformed Origin", { origin });
+        socket.write("HTTP/1.1 403 Forbidden\r\n\r\n");
+        socket.destroy();
+        return;
+      }
+    }
 
     wss.handleUpgrade(request, socket, head, async (ws) => {
       log.debug("WebSocket client connected", { remoteAddress: request.socket?.remoteAddress });

@@ -67,7 +67,11 @@ export const APP_CONFIG = {
     maxFiles: envNumber("STRIDETERM_LOG_MAX_FILES", 3),
   },
   remoteAccess: {
-    enabled: envBoolean("STRIDETERM_REMOTE_ENABLED", true),
+    // Off by default. Binding the LAN port the moment the app launches means
+    // every machine on the user's network can poke at the auth-protected
+    // endpoint without the user opting in. Toggle from Settings or via the
+    // env var to enable explicitly.
+    enabled: envBoolean("STRIDETERM_REMOTE_ENABLED", false),
     host: envString("STRIDETERM_REMOTE_HOST", "0.0.0.0"),
     port: envNumber("STRIDETERM_REMOTE_PORT", 43123),
   },

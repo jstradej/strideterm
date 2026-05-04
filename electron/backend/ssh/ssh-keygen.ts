@@ -29,16 +29,25 @@ export async function detectSshKeygen(): Promise<boolean> {
   return keygenAvailable;
 }
 
+// Restrict to algorithms ssh-keygen actually supports, and prevent option
+// injection (`-t -ofoo`) — args ride into spawn() unquoted, so a value like
+// "-S/etc/passwd" would otherwise be parsed as a flag.
+const ALLOWED_KEY_KINDS = new Set(["ed25519", "rsa", "ecdsa", "dsa"]);
+
 export async function generateKey({
   kind = "ed25519",
   comment = "",
   passphrase = "",
 }: { kind?: string; comment?: string; passphrase?: string } = {}): Promise<GeneratedKey> {
+  const safeKind = String(kind || "").toLowerCase();
+  if (!ALLOWED_KEY_KINDS.has(safeKind)) {
+    throw new Error(`Unsupported SSH key kind: ${kind}`);
+  }
   if (await detectSshKeygen()) {
-    return generateViaKeygen({ kind, comment, passphrase });
+    return generateViaKeygen({ kind: safeKind, comment, passphrase });
   }
   log.warn("ssh-keygen missing, falling back to sshpk");
-  return generateViaSshpk({ kind, comment, passphrase });
+  return generateViaSshpk({ kind: safeKind, comment, passphrase });
 }
 
 async function generateViaKeygen({

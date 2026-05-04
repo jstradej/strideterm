@@ -21,6 +21,7 @@ import {
   readFileAtRevision,
   getCommitFiles,
   computeCommitFileDiff,
+  setAllowedRootsResolver,
 } from "./file-manager.js";
 
 function execGit(cwd: string, args: string[]) {
@@ -45,6 +46,9 @@ beforeAll(async () => {
   // so root and top compare equal.
   const created = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-fm-test-"));
   tmpRoot = await fs.realpath(created);
+  // safePath now requires roots to be on a runtime-supplied allowlist.
+  // The runtime isn't booted in unit tests — register the temp dir directly.
+  setAllowedRootsResolver(() => [tmpRoot]);
 });
 
 afterAll(async () => {

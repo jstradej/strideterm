@@ -10,6 +10,7 @@ import { EventEmitter } from "node:events";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { createStore } from "./store.js";
+import * as fm from "./file-manager.js";
 import { SessionManager } from "./session-manager.js";
 import { createAccessToken, createSessionId, normalizeWorkspace, parseSessionId } from "./default-state.js";
 import { execFileText } from "./process-utils.js";
@@ -765,6 +766,26 @@ export async function createRuntime({
   function getState(): AppState {
     return store.getState() as AppState;
   }
+
+  // Tell the file-manager which `rootPath` values are legitimate. Without
+  // this hook safePath() rejects every fs request, which is the right
+  // default — but here we expose the set of paths the user has actually
+  // opened (workspace cwds + any git/review/quickfix roots tied to those
+  // workspaces). Anything outside is refused even with a valid token.
+  fm.setAllowedRootsResolver(() => {
+    const roots: string[] = [];
+    for (const ws of getState().workspaces || []) {
+      if (ws.cwd) roots.push(ws.cwd);
+      if (Array.isArray(ws.gitRoots)) roots.push(...ws.gitRoots.filter(Boolean));
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const review = (ws as any).review?.checkout?.rootPath;
+      if (review) roots.push(review);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const quickfix = (ws as any).quickfix?.rootPath;
+      if (quickfix) roots.push(quickfix);
+    }
+    return roots;
+  });
 
   function getNotificationConfig(state = getState()) {
     return state.settings?.notifications || APP_CONFIG.notifications;
