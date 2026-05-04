@@ -270,8 +270,8 @@
   align-items: center;
 }
 
-/* Diff toolbar above the Monaco panel in the Files tab. Holds per-commit
-   chips for 6.1 and the current-mode label. */
+/* Diff toolbar above the Monaco panel in the Files tab. Holds the
+   per-commit selector for 6.1. */
 .review-diff-toolbar {
   display: flex;
   align-items: center;
@@ -281,41 +281,39 @@
   flex-wrap: wrap;
 }
 
-.review-diff-toolbar__chips {
-  display: inline-flex;
-  gap: 4px;
-  flex-wrap: wrap;
-  flex: 1;
+.review-diff-toolbar__title {
+  flex: 1 1 auto;
   min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
 }
 
-.review-diff-toolbar__mode {
-  font-size: 11px;
-  color: var(--muted);
+/* File name on top, full + prominent. */
+.review-diff-toolbar__name {
+  margin: 0;
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Directory path below — truncate from the LEFT (rtl trick) so the most
+   specific path segments stay visible when there's not enough room. */
+.review-diff-toolbar__path {
+  margin: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  direction: rtl;
+  text-align: left;
+}
+
+.review-diff-toolbar__commit-select {
+  flex: 0 0 auto;
   margin-left: auto;
-  font-variant-numeric: tabular-nums;
-}
-
-.review-diff-chip {
-  font-size: 11px;
-  padding: 2px 8px;
-  border-radius: 12px;
-  border: 1px solid var(--border);
-  background: transparent;
-  color: var(--muted);
-  cursor: pointer;
-  font-family: var(--mono, monospace);
-}
-
-.review-diff-chip:hover {
-  border-color: var(--accent);
-  color: var(--text);
-}
-
-.review-diff-chip--active {
-  background: rgba(255, 164, 36, 0.15);
-  border-color: var(--accent);
-  color: var(--accent);
+  min-width: 220px;
+  max-width: 360px;
 }
 
 .review-diff-monaco {
@@ -985,9 +983,12 @@
   padding: 10px;
   overflow-y: auto;
   min-height: 0;
-  display: grid;
+  /* Flex column so the diff body (MonacoDiffPanel / DiffViewer / hint) can
+     fill remaining height under the toolbar. With display:grid the rows
+     collapsed to their content height and Monaco rendered with h=0. */
+  display: flex;
+  flex-direction: column;
   gap: 8px;
-  align-content: start;
 }
 
 .review-files-split__right .git-output--preview {

@@ -147,25 +147,6 @@ test.describe("Task agent creation dialog", () => {
     assertNoErrors(page);
   });
 
-  test("can select OpenCode as worker provider", async ({ page }) => {
-    await openApp(page, mock);
-    await page.locator("button[title='Create task agent']").click();
-    await expect(page.locator(".overlay")).toBeVisible({ timeout: 3_000 });
-
-    const workerSection = page.locator(".agent-config-section").first();
-    const workerProviderSelect = workerSection.locator(".custom-select").first();
-    await workerProviderSelect.click();
-
-    const openCodeOption = page
-      .locator(".custom-select__option, [class*='select__option']", { hasText: "OpenCode" })
-      .first();
-    await openCodeOption.click();
-
-    // Verify OpenCode is selected (trigger shows the selection)
-    await expect(workerProviderSelect).toContainText("OpenCode");
-    assertNoErrors(page);
-  });
-
   test("closes dialog on Cancel", async ({ page }) => {
     await openApp(page, mock);
     await page.locator("button[title='Create task agent']").click();

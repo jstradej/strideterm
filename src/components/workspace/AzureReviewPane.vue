@@ -175,9 +175,7 @@
         @click="toggleTabsMenu"
       >
         <span class="review-shell__tabs-trigger__label">{{ activeReviewTabInfo.label }}</span>
-        <span v-if="activeReviewTabInfo.count != null" class="azure-tab__count">{{
-          activeReviewTabInfo.count
-        }}</span>
+        <span v-if="activeReviewTabInfo.count != null" class="azure-tab__count">{{ activeReviewTabInfo.count }}</span>
         <span class="review-shell__tabs-trigger__caret" aria-hidden="true">▼</span>
       </button>
       <button
@@ -446,34 +444,18 @@
             <div class="review-files-split__right">
               <template v-if="reviewUi.reviewFileDiffPreview">
                 <div class="review-diff-toolbar">
-                  <div>
-                    <p class="eyebrow" style="margin: 0">Diff</p>
-                    <h3 style="margin: 0; font-size: 13px">{{ reviewUi.reviewFileDiffPreview.path }}</h3>
+                  <div class="review-diff-toolbar__title" :title="reviewUi.reviewFileDiffPreview.path">
+                    <p class="eyebrow review-diff-toolbar__path">{{ diffFileDir || "Diff" }}</p>
+                    <h3 class="review-diff-toolbar__name">{{ diffFileName }}</h3>
                   </div>
-                  <!-- 6.1: per-commit toggle. The "Final" entry is the
-                       roll-up branch diff; each commit option scopes the
-                       Monaco view to that commit's changes only. -->
-                  <div class="review-diff-toolbar__chips">
-                    <button
-                      type="button"
-                      :class="['review-diff-chip', !reviewCommitFilter && 'review-diff-chip--active']"
-                      title="Show the rolled-up branch diff vs the PR target. This is the final state of every change in the PR."
-                      @click="reviewCommitFilter = ''"
-                    >
-                      Final
-                    </button>
-                    <button
-                      v-for="c in changedFileCommits"
-                      :key="c.shortHash"
-                      type="button"
-                      :class="['review-diff-chip', reviewCommitFilter === c.shortHash && 'review-diff-chip--active']"
-                      :title="`Show only what changed in commit ${c.shortHash}: ${c.subject}`"
-                      @click="reviewCommitFilter = c.shortHash"
-                    >
-                      {{ c.shortHash }}
-                    </button>
-                  </div>
-                  <span class="review-diff-toolbar__mode" :title="reviewDiffModeLabel">{{ reviewDiffModeLabel }}</span>
+                  <!-- 6.1: per-commit selector. The empty value is the
+                       roll-up branch diff ("Final"); each commit option
+                       scopes the Monaco view to that commit's changes only. -->
+                  <CustomSelect
+                    v-model="reviewCommitFilter"
+                    :options="commitFilterOptions"
+                    class="review-diff-toolbar__commit-select"
+                  />
                 </div>
                 <MonacoDiffPanel
                   v-if="monacoDiffPayload"
@@ -1050,7 +1032,9 @@ const reviewTabs = computed(() => [
   { id: "agent", label: "Agent", count: null, alert: false },
 ]);
 
-const activeReviewTabInfo = computed(() => reviewTabs.value.find((t) => t.id === activeTab.value) || reviewTabs.value[0]);
+const activeReviewTabInfo = computed(
+  () => reviewTabs.value.find((t) => t.id === activeTab.value) || reviewTabs.value[0],
+);
 
 // MCP info for agent tab
 const mcpCommandLine = computed(() => {
@@ -1236,15 +1220,26 @@ const reviewCommitFilter = ref<string>("");
 
 const reviewDiffMode = computed<"branch" | "commit">(() => (reviewCommitFilter.value ? "commit" : "branch"));
 
-const reviewDiffModeLabel = computed(() =>
-  reviewDiffMode.value === "commit"
-    ? `Commit ${reviewCommitFilter.value.slice(0, 8)}`
-    : `Final diff vs ${stripRef(pullRequest.value.targetRefName || "") || "base"}`,
-);
+// Split the diff preview path into "directory" + "file name" so the toolbar
+// can show the file name prominently and the directory in a smaller eyebrow.
+// Repeating the full path inline made the toolbar wrap to two rows when the
+// path was long; splitting + truncating keeps it on one row.
+const diffFileName = computed(() => {
+  const p = String(reviewUi.value?.reviewFileDiffPreview?.path || "");
+  const idx = p.lastIndexOf("/");
+  return idx >= 0 ? p.slice(idx + 1) : p;
+});
+const diffFileDir = computed(() => {
+  const p = String(reviewUi.value?.reviewFileDiffPreview?.path || "");
+  const idx = p.lastIndexOf("/");
+  if (idx <= 0) return "";
+  // Drop any leading slash so the eyebrow doesn't start with "/".
+  return p.slice(0, idx).replace(/^\//, "");
+});
 
-// Commits that introduced changes inside the PR. We surface each as a chip
-// in the Monaco toolbar so the reviewer can flip between final state and
-// per-commit context (6.1).
+// Commits that introduced changes inside the PR. We surface each in the
+// Monaco toolbar's commit selector so the reviewer can flip between final
+// state and per-commit context (6.1).
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const changedFileCommits = computed<any[]>(() => {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -1252,6 +1247,16 @@ const changedFileCommits = computed<any[]>(() => {
   const ahead = Number(gitSnapshot.value?.aheadCount || 0);
   if (ahead > 0) return log.slice(0, ahead);
   return log.slice(0, 12);
+});
+
+const commitFilterOptions = computed(() => {
+  const target = stripRef(pullRequest.value?.targetRefName || "") || "base";
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const commits = changedFileCommits.value.map((c: any) => ({
+    value: String(c.shortHash || ""),
+    label: `${String(c.shortHash || "").slice(0, 8)} — ${String(c.subject || "").slice(0, 60)}`,
+  }));
+  return [{ value: "", label: `Final — vs ${target}` }, ...commits];
 });
 
 async function loadMonacoReviewDiff(filePath: string) {

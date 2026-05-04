@@ -23,6 +23,31 @@ if (typeof crypto !== "undefined" && typeof crypto.randomUUID !== "function") {
   };
 }
 
+// Monaco builds rich-format clipboard payloads via `new ClipboardItem({...})`.
+// In non-secure contexts the constructor isn't a defined global at all (not
+// just hidden behind navigator.clipboard), so Monaco throws ReferenceError
+// when copying. Provide a minimal stand-in that captures the blobs so the
+// later navigator.clipboard.write() polyfill below can drain them.
+if (
+  typeof globalThis !== "undefined" &&
+  typeof (globalThis as { ClipboardItem?: unknown }).ClipboardItem === "undefined"
+) {
+  class ClipboardItemPolyfill {
+    private readonly items: Record<string, Blob | string>;
+    readonly types: string[];
+    constructor(items: Record<string, Blob | string>) {
+      this.items = items;
+      this.types = Object.keys(items);
+    }
+    async getType(type: string): Promise<Blob> {
+      const v = this.items[type];
+      if (v == null) throw new Error(`No data of type ${type}`);
+      return v instanceof Blob ? v : new Blob([String(v)], { type });
+    }
+  }
+  (globalThis as unknown as { ClipboardItem: unknown }).ClipboardItem = ClipboardItemPolyfill;
+}
+
 // navigator.clipboard is also gated to secure contexts. Without it, Monaco's
 // copy/cut handlers crash with "Cannot read properties of undefined (reading
 // 'write')", and terminal-controller's Ctrl+C/right-click copy throws too.
@@ -78,6 +103,20 @@ if (typeof navigator !== "undefined" && !navigator.clipboard) {
     // Browser refuses redefinition — leave it; affected callers already have
     // try/catch around clipboard access, the only real loss is Monaco's copy.
   }
+}
+
+// Monaco rejects in-flight diff/format operations with `Canceled: Canceled`
+// whenever the editor model is disposed mid-load (e.g. switching files in
+// the review pane). The rejection bubbles up as an unhandled rejection but
+// is benign — silence just this specific case so the console stays useful.
+if (typeof window !== "undefined") {
+  window.addEventListener("unhandledrejection", (event) => {
+    const reason = event.reason as { name?: string; message?: string } | null;
+    const msg = reason?.message || String(reason || "");
+    if (reason?.name === "Canceled" || msg === "Canceled" || msg === "Canceled: Canceled") {
+      event.preventDefault();
+    }
+  });
 }
 
 const api = createTransport();
