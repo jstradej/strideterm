@@ -23,6 +23,63 @@ if (typeof crypto !== "undefined" && typeof crypto.randomUUID !== "function") {
   };
 }
 
+// navigator.clipboard is also gated to secure contexts. Without it, Monaco's
+// copy/cut handlers crash with "Cannot read properties of undefined (reading
+// 'write')", and terminal-controller's Ctrl+C/right-click copy throws too.
+// Use a textarea + execCommand fallback for writes; reads aren't recoverable
+// without user gesture flows we don't want to wire up here.
+if (typeof navigator !== "undefined" && !navigator.clipboard) {
+  const writeViaTextarea = (text: string): Promise<void> => {
+    return new Promise((resolve, reject) => {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.setAttribute("readonly", "");
+      ta.style.position = "fixed";
+      ta.style.left = "-9999px";
+      ta.style.top = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      try {
+        const ok = document.execCommand("copy");
+        document.body.removeChild(ta);
+        ok ? resolve() : reject(new Error("Copy failed"));
+      } catch (err) {
+        document.body.removeChild(ta);
+        reject(err as Error);
+      }
+    });
+  };
+  // Monaco passes ClipboardItem[] for rich content; pull the first text/plain.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const writeItems = async (items: any[]): Promise<void> => {
+    for (const item of items || []) {
+      const types: string[] = item?.types || [];
+      if (types.includes("text/plain") && typeof item.getType === "function") {
+        const blob = await item.getType("text/plain");
+        const text = typeof blob.text === "function" ? await blob.text() : "";
+        await writeViaTextarea(text);
+        return;
+      }
+    }
+  };
+  const noop = () => {};
+  const stub = {
+    writeText: writeViaTextarea,
+    readText: () => Promise.reject(new Error("Clipboard read not supported in non-secure context")),
+    write: writeItems,
+    read: () => Promise.reject(new Error("Clipboard read not supported in non-secure context")),
+    addEventListener: noop,
+    removeEventListener: noop,
+    dispatchEvent: () => false,
+  } as unknown as Clipboard;
+  try {
+    Object.defineProperty(navigator, "clipboard", { value: stub, configurable: true });
+  } catch {
+    // Browser refuses redefinition — leave it; affected callers already have
+    // try/catch around clipboard access, the only real loss is Monaco's copy.
+  }
+}
+
 const api = createTransport();
 
 const app = createApp(App);

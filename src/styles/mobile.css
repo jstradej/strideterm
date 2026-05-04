@@ -27,7 +27,12 @@
   display: none;
 }
 
-@media (max-width: 768px) {
+/* Mobile layout fires for narrow viewports (≤768px) AND for short ones
+   (≤500px) — the latter catches landscape phones (~844×390, ~915×412)
+   which would otherwise fall into the desktop branch and waste vertical
+   space on the sidebar / desktop-size chrome. iPads in landscape (height
+   ≥ 700px) stay on desktop layout. */
+@media (max-width: 768px), (max-height: 500px) {
   .frame {
     grid-template-columns: 1fr;
     grid-template-rows: 1fr;
@@ -293,5 +298,14 @@
 
   .overlay {
     padding: 10px;
+  }
+
+  /* Hide the Remote Access compact card (QR + Configure) and the sidebar
+     footer (version + GitHub link) on mobile — the user is already on
+     the mobile client and only needs the workspace list. The teleported
+     `.remote-access--expanded` modal is unaffected if reached via desktop. */
+  .remote-card--compact,
+  .sidebar-footer {
+    display: none;
   }
 }

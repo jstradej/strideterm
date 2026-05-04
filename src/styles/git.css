@@ -4,6 +4,15 @@
   display: grid;
   grid-template-rows: auto auto minmax(0, 1fr);
   gap: 10px;
+  position: relative;
+}
+
+/* Mobile-only: triggers and backdrop that hide chrome behind popovers.
+   Default state hides them; the mobile media query reveals them. */
+.git-view__menu-trigger,
+.git-view__tabs-trigger,
+.git-view__menu-backdrop {
+  display: none;
 }
 
 .git-view__panel {
@@ -605,4 +614,231 @@
 .button--small {
   padding: 3px 8px;
   font-size: 11px;
+}
+
+/* ── Mobile: make the Git pane fit narrow viewports without horizontal
+   overflow. Same compound breakpoint as mobile.css — covers portrait
+   phones (≤768px wide) and landscape phones (≤500px tall). ── */
+@media (max-width: 768px), (max-height: 500px) {
+  .git-view {
+    padding: 5px;
+    gap: 0;
+    /* Two rows on mobile: a fixed-height chrome strip (filled by absolute
+       triggers) and the data area. Toolbar and tabs both render as popovers
+       anchored under the chrome strip when their menus are open. */
+    grid-template-rows: 32px minmax(0, 1fr);
+  }
+
+  .git-view__panel {
+    grid-row: 2;
+  }
+
+  .git-view__toolbar,
+  .git-view__summary,
+  .git-view__actions {
+    gap: 5px;
+  }
+
+  /* Toolbar collapses behind the "⋮" trigger; only renders when open. */
+  .git-view__toolbar {
+    display: none;
+  }
+
+  .git-view--menu-open .git-view__toolbar {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    position: absolute;
+    top: 36px;
+    left: 5px;
+    right: 5px;
+    z-index: 50;
+    padding: 8px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--panel-elevated);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+    max-height: calc(100% - 50px);
+    overflow-y: auto;
+  }
+
+  .git-view--menu-open .git-view__summary,
+  .git-view--menu-open .git-view__actions {
+    width: 100%;
+    margin-left: 0;
+    flex-wrap: wrap;
+  }
+
+  .git-view--menu-open .git-view__actions .button {
+    padding: 6px 10px;
+    font-size: 12px;
+    flex: 1 1 auto;
+  }
+
+  .git-view--menu-open .git-view__actions .git-branch-select,
+  .git-view--menu-open .git-view__actions .git-repo-picker__select {
+    width: auto !important;
+    flex: 1 1 140px;
+    min-width: 0;
+  }
+
+  .git-view--menu-open .git-repo-picker {
+    flex: 1 1 100%;
+  }
+
+  /* "⋮ Actions" trigger — pinned to the top-right of the git pane, level
+     with the tabs row so the tabs and the trigger share a single chrome row.
+     Above the backdrop so the user can tap to close directly. */
+  .git-view__menu-trigger {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 10px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: var(--panel);
+    color: var(--text);
+    font-size: 12px;
+    cursor: pointer;
+    position: absolute;
+    top: 5px;
+    right: 5px;
+    z-index: 50;
+  }
+  .git-view__menu-trigger:hover {
+    background: rgba(var(--tint), 0.08);
+  }
+  .git-view__menu-trigger__dot {
+    font-size: 16px;
+    line-height: 1;
+  }
+
+  /* Backdrop for click-outside dismissal of the actions popover. */
+  .git-view__menu-backdrop {
+    display: block;
+    position: absolute;
+    inset: 0;
+    z-index: 40;
+  }
+
+  /* Tabs collapse behind the left "current tab ▼" trigger. Default hidden;
+     popover when --tabs-menu-open. */
+  .git-tabs {
+    display: none;
+  }
+  .git-view--tabs-menu-open .git-tabs {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0;
+    border-bottom: none;
+    position: absolute;
+    top: 36px;
+    left: 5px;
+    right: 5px;
+    z-index: 50;
+    padding: 4px 0;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--panel-elevated);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+    max-height: calc(100% - 50px);
+    overflow-y: auto;
+  }
+  .git-view--tabs-menu-open .git-tabs__item {
+    padding: 10px 12px;
+    text-align: left;
+    border-bottom: none;
+    border-left: 3px solid transparent;
+    font-size: 13px;
+    width: 100%;
+    flex: 0 0 auto;
+  }
+  .git-view--tabs-menu-open .git-tabs__item--active {
+    border-left-color: var(--accent);
+    background: rgba(var(--tint), 0.08);
+  }
+
+  /* "Current tab ▼" trigger — pinned top-left, level with the actions trigger. */
+  .git-view__tabs-trigger {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 10px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: var(--panel);
+    color: var(--text);
+    font-size: 12px;
+    cursor: pointer;
+    position: absolute;
+    top: 5px;
+    left: 5px;
+    max-width: calc(100% - 110px);
+    z-index: 50;
+  }
+  .git-view__tabs-trigger:hover {
+    background: rgba(var(--tint), 0.08);
+  }
+  .git-view__tabs-trigger__label {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+  }
+  .git-view__tabs-trigger__caret {
+    font-size: 9px;
+    opacity: 0.7;
+    flex-shrink: 0;
+  }
+
+  .git-card {
+    padding: 10px;
+    gap: 8px;
+  }
+
+  /* Inline selects inside cards (Switch Branch, Base branch picker) need
+     to flex with the row, not hold a desktop 220px. */
+  .git-card .git-branch-select {
+    width: auto !important;
+    flex: 1 1 140px;
+    min-width: 0;
+  }
+
+  /* Detail rows wrap so label + select + button can break across lines
+     instead of overflowing. */
+  .git-detail-list__row {
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+
+  /* PR form: 3-col grid (label / input / action) → stacked. */
+  .git-pr-form__field {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .git-pr-form__textarea {
+    grid-column: 1 / -1;
+  }
+
+  /* Multi-column card grids collapse to single column. */
+  .git-changes-grid,
+  .git-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  /* History: drop the 250px+300px two-column track so log/detail stack. */
+  .git-history__panels {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  /* Long branch names / paths shouldn't push the card wider than viewport. */
+  .git-card h3,
+  .git-card__path {
+    word-break: break-word;
+    overflow-wrap: anywhere;
+  }
+
+  .section-head {
+    flex-wrap: wrap;
+  }
 }

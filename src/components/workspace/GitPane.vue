@@ -11,8 +11,44 @@
       <p>Git workspace is unavailable</p>
       <small>This workspace is not inside a Git repository.</small>
     </div>
-    <div v-else class="git-view">
-      <div class="git-view__toolbar">
+    <div
+      v-else
+      class="git-view"
+      :class="{
+        'git-view--menu-open': isMobile && menuOpen,
+        'git-view--tabs-menu-open': isMobile && tabsMenuOpen,
+      }"
+    >
+      <button
+        v-if="isMobile"
+        type="button"
+        class="git-view__tabs-trigger"
+        :aria-expanded="tabsMenuOpen"
+        :aria-label="tabsMenuOpen ? 'Close tabs menu' : 'Open tabs menu'"
+        @click="toggleTabsMenu"
+      >
+        <span class="git-view__tabs-trigger__label">{{ activeTabInfo.label }}</span>
+        <span v-if="activeTabInfo.badge" class="git-tabs__badge">{{ activeTabInfo.badge }}</span>
+        <span class="git-view__tabs-trigger__caret" aria-hidden="true">▼</span>
+      </button>
+      <button
+        v-if="isMobile"
+        type="button"
+        class="git-view__menu-trigger"
+        :aria-expanded="menuOpen"
+        :aria-label="menuOpen ? 'Close actions menu' : 'Open actions menu'"
+        @click="toggleActionsMenu"
+      >
+        <span class="git-view__menu-trigger__dot" aria-hidden="true">⋮</span>
+        <span>{{ menuOpen ? "Close" : "Actions" }}</span>
+      </button>
+      <div
+        v-if="isMobile && (menuOpen || tabsMenuOpen)"
+        class="git-view__menu-backdrop"
+        aria-hidden="true"
+        @click="closeAllMenus"
+      ></div>
+      <div class="git-view__toolbar" @click="onToolbarClick">
         <div class="git-view__summary">
           <!-- Branch chip — detached HEAD gets special styling -->
           <span :class="['workspace-chip', isDetachedHead && 'workspace-chip--warn']">
@@ -166,7 +202,7 @@
           role="tab"
           :aria-selected="tab.id === activeTab ? 'true' : 'false'"
           :class="['git-tabs__item', tab.id === activeTab && 'git-tabs__item--active']"
-          @click="gitUiStore.gitSwitchTab(workspaceId, tab.id)"
+          @click="onTabClick(tab.id)"
         >
           {{ tab.label }}<span v-if="tab.badge" class="git-tabs__badge">{{ tab.badge }}</span>
         </button>
@@ -324,11 +360,60 @@ import GitOperationCard from "./git/GitOperationCard.vue";
 import GitTagList from "./git/GitTagList.vue";
 import BulkRepoTable from "./git/BulkRepoTable.vue";
 import CustomSelect from "../common/CustomSelect.vue";
+import { useIsNarrow } from "../../composables/useIsNarrow.js";
 
 const props = withDefaults(defineProps<{ workspaceId: string; showHeader?: boolean }>(), { showHeader: false });
 
 const appStore = useAppStore();
 const gitUiStore = useGitUiStore();
+const { isMobile } = useIsNarrow();
+const menuOpen = ref(false);
+const tabsMenuOpen = ref(false);
+
+watch(isMobile, (mobile) => {
+  if (!mobile) {
+    menuOpen.value = false;
+    tabsMenuOpen.value = false;
+  }
+});
+
+function toggleActionsMenu() {
+  if (menuOpen.value) {
+    menuOpen.value = false;
+  } else {
+    menuOpen.value = true;
+    tabsMenuOpen.value = false;
+  }
+}
+
+function toggleTabsMenu() {
+  if (tabsMenuOpen.value) {
+    tabsMenuOpen.value = false;
+  } else {
+    tabsMenuOpen.value = true;
+    menuOpen.value = false;
+  }
+}
+
+function closeAllMenus() {
+  menuOpen.value = false;
+  tabsMenuOpen.value = false;
+}
+
+function onTabClick(id: string) {
+  gitUiStore.gitSwitchTab(props.workspaceId, id);
+  if (tabsMenuOpen.value) tabsMenuOpen.value = false;
+}
+
+function onToolbarClick(e: MouseEvent) {
+  if (!isMobile.value || !menuOpen.value) return;
+  const target = e.target as Element | null;
+  if (!target) return;
+  // CustomSelect renders its dropdown via Teleport; clicking its trigger
+  // shouldn't dismiss the actions menu.
+  if (target.closest(".custom-select")) return;
+  if (target.closest("button")) menuOpen.value = false;
+}
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: git snapshot is an open-ended server JSON blob; typed in shared types but indexed dynamically here
 const snapshot = computed<Record<string, any> | null>(
@@ -608,6 +693,8 @@ const tabs = computed(() => {
   }
   return list;
 });
+
+const activeTabInfo = computed(() => tabs.value.find((t) => t.id === activeTab.value) || tabs.value[0]);
 
 const headerTitle = computed(() => `Git: ${snapshot.value?.branch || props.workspaceId}`);
 const headerStatus = computed(() => (snapshot.value?.dirty ? `${snapshot.value.dirtyCount} dirty` : ""));

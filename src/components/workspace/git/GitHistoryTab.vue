@@ -19,7 +19,7 @@
       </template>
     </div>
     <div class="git-history__split">
-      <Splitpanes class="default-theme git-history__splitpanes">
+      <Splitpanes :horizontal="isNarrow" class="default-theme git-history__splitpanes">
         <Pane :size="35" :min-size="20">
           <div class="git-history__log">
             <GitCommitLog
@@ -76,6 +76,7 @@ import GitDiffStat from "./GitDiffStat.vue";
 import GitChangeTree from "./GitChangeTree.vue";
 import GitCommitLog from "./GitCommitLog.vue";
 import GitBaseBranchPicker from "./GitBaseBranchPicker.vue";
+import { useIsNarrow } from "../../../composables/useIsNarrow.js";
 
 const MonacoDiffPanel = defineAsyncComponent(() => import("../../shared/MonacoDiffPanel.vue"));
 
@@ -97,6 +98,7 @@ const props = withDefaults(
 
 const appStore = useAppStore();
 const gitUiStore = useGitUiStore();
+const { isNarrow } = useIsNarrow();
 
 const pageSize = 100;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -109,7 +111,7 @@ const allCommits = computed<any[]>(() => {
   const seen = new Set<string>();
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const result: any[] = [];
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const merged: any[] = [...(props.compare.commits || []), ...(props.snapshot?.log || []), ...extraCommits.value];
   for (const entry of merged) {
@@ -286,6 +288,21 @@ function onSelectCommitFile(path: string /* scope */) {
 
 .git-history__picker :deep(.custom-select) {
   width: 220px;
+}
+
+@media (max-width: 768px), (max-height: 500px) {
+  .git-history__picker {
+    flex: 1 1 100%;
+  }
+  .git-history__picker :deep(.custom-select) {
+    width: auto;
+    flex: 1 1 140px;
+    min-width: 0;
+  }
+  .git-history__header--compact {
+    padding: 6px 8px;
+    gap: 6px 10px;
+  }
 }
 
 .git-history__counter {

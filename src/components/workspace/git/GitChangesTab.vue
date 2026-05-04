@@ -1,7 +1,7 @@
 <template>
   <div class="git-section git-section--changes">
     <div class="git-changes__body">
-      <Splitpanes class="default-theme git-changes__splitpanes">
+      <Splitpanes :horizontal="isNarrow" class="default-theme git-changes__splitpanes">
         <Pane :size="40" :min-size="20">
           <div class="git-section__files git-section__files--split">
             <article class="git-card">
@@ -88,6 +88,7 @@ import { useAppStore } from "../../../stores/app.js";
 import { useGitUiStore } from "../../../stores/git-ui.js";
 import GitDiffStat from "./GitDiffStat.vue";
 import GitChangeTree from "./GitChangeTree.vue";
+import { useIsNarrow } from "../../../composables/useIsNarrow.js";
 
 const MonacoDiffPanel = defineAsyncComponent(() => import("../../shared/MonacoDiffPanel.vue"));
 
@@ -109,6 +110,7 @@ const props = withDefaults(
 
 const appStore = useAppStore();
 const gitUiStore = useGitUiStore();
+const { isNarrow } = useIsNarrow();
 
 const allChangedFiles = computed(() => {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -219,6 +221,7 @@ function onCommitAll() {
 :deep(.git-changes__splitpanes.splitpanes > .splitpanes__splitter) {
   background: var(--border) !important;
   min-width: 3px;
+  min-height: 3px;
 }
 
 :deep(.git-changes__splitpanes.splitpanes > .splitpanes__splitter:hover) {
@@ -230,6 +233,13 @@ function onCommitAll() {
   min-height: 0;
   overflow-y: auto;
   padding-right: 6px;
+}
+
+@media (max-width: 768px), (max-height: 500px) {
+  .git-section__files--split {
+    padding-right: 0;
+    padding-bottom: 6px;
+  }
 }
 
 /* Monaco diff host needs explicit flex sizing so the editor gets a real
