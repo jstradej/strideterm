@@ -275,6 +275,12 @@ function isRootAllowed(root: string): boolean {
  * Resolve and guard a path against traversal outside the root.
  * Returns the absolute path, or throws if it escapes or if `rootPath`
  * itself isn't in the allowlist.
+ *
+ * Logical check only — `path.resolve` normalises `..` segments but does
+ * not follow symlinks. A symlink inside the workspace pointing at
+ * `/etc/shadow` would still satisfy this check. Callers that read or
+ * write the resolved path must additionally call `assertRealPathInside()`
+ * before performing the syscall.
  */
 function safePath(rootPath: string, relativePath: string | null | undefined): string {
   const root = path.resolve(rootPath);
@@ -287,6 +293,102 @@ function safePath(rootPath: string, relativePath: string | null | undefined): st
     throw new Error(`Path traversal blocked: ${relativePath}`);
   }
   return resolved;
+}
+
+/**
+ * Defence in depth against symlink escapes. `safePath` only checks the
+ * logical path, so a symlink at `<root>/danger -> /etc` would resolve
+ * to `<root>/danger` and pass. Before any fs read/write/delete we also
+ * canonicalise the target with `fs.realpath` and verify the *real* path
+ * still lives under the root's real path — or under any other root the
+ * runtime allowlist covers, so legitimate cross-workspace symlinks
+ * (a pnpm shared store, a dev `~/lib` aliased into multiple workspaces)
+ * keep working.
+ *
+ * For create operations the leaf doesn't exist yet, so we realpath the
+ * deepest existing ancestor and re-attach the missing tail. That still
+ * catches `parent` being a symlink out of the workspace; only the new
+ * leaf segment itself is unverified, and a freshly-created file can't
+ * be a symlink.
+ */
+async function assertRealPathInside(rootPath: string, absoluteTarget: string): Promise<void> {
+  const root = path.resolve(rootPath);
+  let realRoot: string;
+  try {
+    realRoot = await fs.realpath(root);
+  } catch {
+    // The root itself doesn't exist on disk — fall back to the logical
+    // root, since `path.resolve` already normalised it. No symlink to
+    // canonicalise away.
+    realRoot = root;
+  }
+  let realTarget: string;
+  try {
+    realTarget = await fs.realpath(absoluteTarget);
+  } catch {
+    // Target missing — walk up to the deepest existing ancestor and
+    // realpath that. Anything below it is a path the caller is about
+    // to create, which can't itself be a symlink yet.
+    let parent = path.dirname(absoluteTarget);
+    while (parent !== path.dirname(parent)) {
+      try {
+        const realParent = await fs.realpath(parent);
+        const tail = path.relative(parent, absoluteTarget);
+        realTarget = path.resolve(realParent, tail);
+        break;
+      } catch {
+        parent = path.dirname(parent);
+      }
+    }
+    // Loop exited without finding any ancestor — fall back to the
+    // logical target. `path.resolve` already eliminated `..` segments,
+    // so this is no worse than the pre-realpath state.
+    realTarget ??= absoluteTarget;
+  }
+
+  // Pre-canonicalise denylist trip-wires. Even if the realpath happens
+  // to fall under an allowlisted root (or under the requesting root),
+  // refuse anything that lands in `/etc`, `C:\Windows`, etc. The
+  // existing root allowlist already filters these, but realpath can
+  // route around it: a workspace at `~/proj` with a symlink
+  // `~/proj/escape -> /etc` realpaths to `/etc/...`, which the
+  // workspace allowlist on its own would have to exhaustively enumerate
+  // to block.
+  if (isSensitivePath(realTarget)) {
+    throw new Error("Symlink escape blocked: target is a sensitive system path");
+  }
+
+  // Common case: realpath stays under the requesting workspace's root
+  // (or the workspace itself, equal-not-startsWith). Most pnpm /
+  // virtualenv layouts hit this branch — they symlink within the same
+  // workspace dir.
+  const sep = path.sep;
+  const normReqRoot = realRoot.endsWith(sep) ? realRoot : realRoot + sep;
+  if (realTarget === realRoot || realTarget.startsWith(normReqRoot)) return;
+
+  // Fallback: cross-workspace symlinks — accept if the realpath lands
+  // under any other root the user has registered (other workspace cwds,
+  // git roots, review checkouts). This covers the user who deliberately
+  // shares a node_modules across two workspaces; a malicious workspace
+  // can only "escape" into something the user already opened, never
+  // into arbitrary filesystem.
+  if (allowedRootsResolver) {
+    const realTargetCmp = normalizePathForCompare(realTarget);
+    for (const allowed of allowedRootsResolver()) {
+      if (!allowed) continue;
+      if (isSensitivePath(allowed)) continue;
+      let realAllowed: string;
+      try {
+        realAllowed = await fs.realpath(path.resolve(allowed));
+      } catch {
+        realAllowed = path.resolve(allowed);
+      }
+      const a = normalizePathForCompare(realAllowed);
+      if (realTargetCmp === a || realTargetCmp.startsWith(a + "/")) return;
+    }
+  }
+
+  throw new Error("Symlink escape blocked");
 }
 
 function toRelative(rootPath: string, absolutePath: string): string {
@@ -372,6 +474,7 @@ export async function listDirectory(
   relativePath: string,
 ): Promise<{ entries: FileEntry[]; path: string }> {
   const absDir = safePath(rootPath, relativePath);
+  await assertRealPathInside(rootPath, absDir);
   const dirents = await fs.readdir(absDir, { withFileTypes: true });
   const root = path.resolve(rootPath);
 
@@ -412,6 +515,7 @@ export async function getDirectoryTree(
 
 export async function readFilePreview(rootPath: string, relativePath: string): Promise<FilePreviewResult> {
   const absFile = safePath(rootPath, relativePath);
+  await assertRealPathInside(rootPath, absFile);
   const stat = await fs.stat(absFile);
 
   if (stat.isDirectory()) {
@@ -496,12 +600,14 @@ export async function readFilePreview(rootPath: string, relativePath: string): P
 
 export async function readFileContent(rootPath: string, relativePath: string): Promise<FileContentResult> {
   const absFile = safePath(rootPath, relativePath);
+  await assertRealPathInside(rootPath, absFile);
   const content = await fs.readFile(absFile, "utf-8");
   return { content, size: Buffer.byteLength(content, "utf-8"), encoding: "utf-8" };
 }
 
 export async function writeFileContent(rootPath: string, relativePath: string, content: string): Promise<WriteResult> {
   const absFile = safePath(rootPath, relativePath);
+  await assertRealPathInside(rootPath, absFile);
   await fs.writeFile(absFile, content, "utf-8");
   const stat = await fs.stat(absFile);
   return { ok: true, size: stat.size };
@@ -511,6 +617,7 @@ export async function createFile(rootPath: string, parentPath: string, name: str
   const absDir = safePath(rootPath, parentPath);
   const absFile = path.join(absDir, name);
   safePath(rootPath, path.relative(path.resolve(rootPath), absFile));
+  await assertRealPathInside(rootPath, absFile);
   await fs.writeFile(absFile, "", "utf-8");
   return { entry: await statEntry(absFile, path.resolve(rootPath)) };
 }
@@ -519,6 +626,7 @@ export async function createDirectory(rootPath: string, parentPath: string, name
   const absDir = safePath(rootPath, parentPath);
   const absNew = path.join(absDir, name);
   safePath(rootPath, path.relative(path.resolve(rootPath), absNew));
+  await assertRealPathInside(rootPath, absNew);
   await fs.mkdir(absNew, { recursive: true });
   return { entry: await statEntry(absNew, path.resolve(rootPath)) };
 }
@@ -527,12 +635,15 @@ export async function renameEntry(rootPath: string, relativePath: string, newNam
   const absOld = safePath(rootPath, relativePath);
   const absNew = path.join(path.dirname(absOld), newName);
   safePath(rootPath, path.relative(path.resolve(rootPath), absNew));
+  await assertRealPathInside(rootPath, absOld);
+  await assertRealPathInside(rootPath, absNew);
   await fs.rename(absOld, absNew);
   return { entry: await statEntry(absNew, path.resolve(rootPath)) };
 }
 
 export async function deleteEntry(rootPath: string, relativePath: string): Promise<{ ok: boolean }> {
   const absTarget = safePath(rootPath, relativePath);
+  await assertRealPathInside(rootPath, absTarget);
   const stat = await fs.stat(absTarget);
   if (stat.isDirectory()) {
     await fs.rm(absTarget, { recursive: true, force: true });
@@ -545,6 +656,8 @@ export async function deleteEntry(rootPath: string, relativePath: string): Promi
 export async function moveEntry(rootPath: string, fromPath: string, toPath: string): Promise<EntryResult> {
   const absFrom = safePath(rootPath, fromPath);
   const absTo = safePath(rootPath, toPath);
+  await assertRealPathInside(rootPath, absFrom);
+  await assertRealPathInside(rootPath, absTo);
   await fs.rename(absFrom, absTo);
   return { entry: await statEntry(absTo, path.resolve(rootPath)) };
 }
@@ -552,6 +665,8 @@ export async function moveEntry(rootPath: string, fromPath: string, toPath: stri
 export async function copyEntry(rootPath: string, fromPath: string, toPath: string): Promise<EntryResult> {
   const absFrom = safePath(rootPath, fromPath);
   const absTo = safePath(rootPath, toPath);
+  await assertRealPathInside(rootPath, absFrom);
+  await assertRealPathInside(rootPath, absTo);
   const stat = await fs.stat(absFrom);
   if (stat.isDirectory()) {
     await fs.cp(absFrom, absTo, { recursive: true });
@@ -563,6 +678,7 @@ export async function copyEntry(rootPath: string, fromPath: string, toPath: stri
 
 export async function getFileInfo(rootPath: string, relativePath: string): Promise<FileInfoResult> {
   const absFile = safePath(rootPath, relativePath);
+  await assertRealPathInside(rootPath, absFile);
   const stat = await fs.stat(absFile);
   return {
     stat: {
@@ -749,6 +865,7 @@ export async function readFileAtRevision(
   revision: string | null | undefined,
 ): Promise<FileRevisionResult> {
   const absFile = safePath(rootPath, relativePath);
+  await assertRealPathInside(rootPath, absFile);
   const top = await resolveGitToplevel(path.resolve(rootPath));
   if (!top) {
     return { ok: false, content: "", missing: true, error: "Not a git repository", revision };
@@ -778,6 +895,7 @@ export async function readWorkingFile(
 ): Promise<{ ok: boolean; content: string; missing: boolean; error?: string }> {
   try {
     const absFile = safePath(rootPath, relativePath);
+    await assertRealPathInside(rootPath, absFile);
     const stat = await fs.stat(absFile);
     if (!stat.isFile()) {
       return { ok: false, content: "", missing: true, error: "Not a regular file" };

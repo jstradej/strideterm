@@ -202,12 +202,20 @@ function validateManifest(manifest: unknown, pluginDir: string): ValidationResul
  * - `script`: filename inside the plugin directory. The loader validates the
  *   extension against ALLOWED_SCRIPT_EXTENSIONS and ensures no path traversal.
  *   The actual shell runner is chosen by the loader, not the plugin.
- * - `command`: a plain shell command (no file references). Allowed only for
- *   well-known CLI tools, not arbitrary code execution.
+ * - `command`: a plain shell command (no file references). Honoured for
+ *   *builtin* plugins shipped inside the app bundle (those manifests ship
+ *   with the build and are already code-reviewed). Refused for user plugins
+ *   under ~/.strideterm/plugins/ — that directory is writable by anyone with
+ *   filesystem access (or by a malicious npm postinstall) and a freeform
+ *   command field there is an arbitrary-code-execution primitive at the
+ *   first workspace activation. User plugins must use the `script` form,
+ *   which goes through the path-traversal + extension allowlist + quoted
+ *   runner pipeline above.
  */
 function resolvePlatformPanels(
   panels: RawPanel[] | undefined | null,
   pluginDir: string,
+  { trusted = false }: { trusted?: boolean } = {},
 ): RawPanel[] | undefined | null {
   if (!panels) return panels;
   const platform = process.platform; // "win32", "linux", "darwin"
@@ -248,7 +256,17 @@ function resolvePlatformPanels(
         resolved.command = `echo "Plugin error: no runner for '${ext}'."`;
       }
     } else if (platformConfig.command) {
-      resolved.command = String(platformConfig.command);
+      if (!trusted) {
+        // User plugin asking for an arbitrary shell command — refuse rather
+        // than spawn it. Surface the rejection in the panel so the user can
+        // see why the plugin didn't work, and tell them to use a script
+        // file instead. (Builtin plugins, which ship inside the app bundle
+        // and are reviewed at build time, still flow through the trusted
+        // branch above.)
+        resolved.command = `echo "Plugin error: untrusted plugin tried to run an inline command. Use a script file instead."`;
+      } else {
+        resolved.command = String(platformConfig.command);
+      }
     }
 
     return resolved;
@@ -353,7 +371,8 @@ export async function createPluginManager({
           ? (JSON.parse(JSON.stringify(m.workspaceDefaults)) as { panels?: RawPanel[]; [key: string]: unknown })
           : null;
         if (workspaceDefaults?.panels) {
-          workspaceDefaults.panels = resolvePlatformPanels(workspaceDefaults.panels, p.directory) ?? [];
+          workspaceDefaults.panels =
+            resolvePlatformPanels(workspaceDefaults.panels, p.directory, { trusted: !!p.builtin }) ?? [];
         }
         return {
           id: m.id,
@@ -384,7 +403,7 @@ export async function createPluginManager({
         [key: string]: unknown;
       };
       if (template.panels) {
-        template.panels = resolvePlatformPanels(template.panels, plugin.directory) ?? [];
+        template.panels = resolvePlatformPanels(template.panels, plugin.directory, { trusted: !!plugin.builtin }) ?? [];
       }
       return template;
     },

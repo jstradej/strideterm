@@ -1,5 +1,19 @@
 <template>
   <div class="settings-ssh-tab">
+    <!-- Secure-storage warning. When the OS keychain isn't available
+         (Linux without libsecret/gnome-keyring is the typical case)
+         credentials.json falls back to base64-on-disk. The user must
+         see this — a one-shot log warning is too easy to miss, and any
+         token/passphrase saved through the credential store is then
+         readable by anyone with read access to the file. -->
+    <div v-if="!secureStorageAvailable" class="ssh-secure-warning" role="alert">
+      <strong>OS keychain unavailable.</strong>
+      Credentials are being saved as base64 plaintext in
+      <code>credentials.json</code>. Anyone who can read that file can recover the secrets.
+      <span v-if="isLinuxClient">Install <code>libsecret</code> / <code>gnome-keyring</code> and restart.</span>
+      <span v-else>Make sure strideterm is launched with the desktop session attached, then restart.</span>
+    </div>
+
     <!-- 1. Connection mode — the primary decision. Everything below depends on this. -->
     <section class="form-group">
       <h3 class="section-title">Connection Mode</h3>
@@ -104,6 +118,17 @@ const store = useAppStore();
 const ua = navigator.userAgent.toLowerCase();
 const isWin = ua.includes("win");
 const isMac = ua.includes("mac");
+const isLinuxClient = !isWin && !isMac;
+
+// Pull the secure-storage flag straight from the runtime payload. It's
+// surfaced from the credential store on the main process via getPayload();
+// see runtime.ts for the field. Falls back to `true` so older payloads
+// that don't include the field don't show a spurious warning.
+const secureStorageAvailable = computed<boolean>(() => {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const flag = (store.payload as any)?.secureStorage?.available;
+  return flag === undefined ? true : Boolean(flag);
+});
 
 const launchViaOptions = computed(() => {
   const opts = [
@@ -233,5 +258,22 @@ label {
   gap: 12px;
   margin-top: 4px;
   flex-wrap: wrap;
+}
+.ssh-secure-warning {
+  margin: 0 0 18px;
+  padding: 10px 12px;
+  border: 1px solid #d97706;
+  border-radius: 6px;
+  background: rgba(217, 119, 6, 0.12);
+  color: var(--text);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+.ssh-secure-warning code {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  background: rgba(255, 255, 255, 0.08);
+  padding: 1px 5px;
+  border-radius: 3px;
 }
 </style>

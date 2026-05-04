@@ -5,16 +5,19 @@ on:
     - cron: "0 2 * * *" # Every day at 02:00 UTC
   workflow_dispatch: # Manual trigger
 
+# Default to read-only; the publish job below elevates for the release upload.
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   check-changes:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     outputs:
       has_changes: ${{ steps.check.outputs.has_changes }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           fetch-depth: 2
       - id: check
@@ -28,6 +31,8 @@ jobs:
   build:
     needs: check-changes
     if: needs.check-changes.outputs.has_changes == 'true' || github.event_name == 'workflow_dispatch'
+    permissions:
+      contents: read
     strategy:
       matrix:
         include:
@@ -39,9 +44,9 @@ jobs:
             args: --linux
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
         with:
           node-version: 22
           cache: npm
@@ -61,7 +66,7 @@ jobs:
         run: npx electron-builder ${{ matrix.args }} --publish never
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: nightly-${{ matrix.os }}
           path: |
@@ -75,10 +80,14 @@ jobs:
   publish:
     needs: build
     runs-on: ubuntu-latest
+    # Only this job needs `contents: write` — to delete the previous nightly
+    # tag/release and create the new one. Build jobs above stay read-only.
+    permissions:
+      contents: write
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           path: artifacts
           merge-multiple: true
@@ -89,7 +98,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Create nightly release
-        uses: softprops/action-gh-release@v3
+        uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda # v3
         with:
           tag_name: nightly
           name: "Nightly Build (${{ github.sha }})"

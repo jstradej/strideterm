@@ -5,11 +5,17 @@ on:
     tags:
       - "v*"
 
+# Default to read-only at the workflow level. The publish job below
+# elevates to `contents: write` for the actual GitHub Release upload.
+# Build jobs only need to read source + write artifacts (the artifact
+# action stores them out-of-band, no repo write needed).
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   build:
+    permissions:
+      contents: read
     strategy:
       matrix:
         include:
@@ -21,9 +27,14 @@ jobs:
             args: --linux
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v6
-
-      - uses: actions/setup-node@v6
+      # Third-party / first-party actions pinned to a full commit SHA. Tags
+      # like @v6 are mutable — a compromised maintainer (or compromised
+      # GitHub account) can move v6 to a malicious commit and we'd silently
+      # pull it on the next CI run, with `contents: write` and our code-
+      # signing secrets in scope. Renovate / Dependabot handle SHA updates
+      # the same way as tag updates, so the maintenance cost is identical.
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
         with:
           node-version: 22
           cache: npm
@@ -38,18 +49,19 @@ jobs:
         if: matrix.os == 'windows-latest'
         run: npx electron-builder ${{ matrix.args }} --publish never
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # GH_TOKEN deliberately *not* exposed to electron-builder here:
+          # `--publish never` doesn't talk to GitHub, so handing it the
+          # token would only widen the blast radius if the build step
+          # were compromised. Code-signing secrets are required.
           CSC_LINK: ${{ secrets.CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
 
       - name: Build distributables
         if: matrix.os != 'windows-latest'
         run: npx electron-builder ${{ matrix.args }} --publish never
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: release-${{ matrix.os }}
           path: |
@@ -61,20 +73,54 @@ jobs:
             release/*.yaml
           if-no-files-found: warn
 
-  publish:
+  sbom:
     needs: build
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
-      - uses: actions/download-artifact@v8
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      # CycloneDX SBOM bound to the release tag — anyone consuming the
+      # release artifact can map every shipped binary blob back to the exact
+      # transitive dependency graph it was built from. Without this the
+      # SBOM only existed as a weekly security-scan artifact, retained 30
+      # days, and not connected to any specific binary.
+      - name: Generate SBOM (CycloneDX)
+        run: npm sbom --sbom-format cyclonedx > strideterm-sbom-${{ github.ref_name }}.json
+      - name: Upload SBOM artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: sbom
+          path: strideterm-sbom-*.json
+          if-no-files-found: error
+
+  publish:
+    needs: [build, sbom]
+    runs-on: ubuntu-latest
+    # Only this job needs write access — it creates the GitHub Release.
+    # Scoping the permission here (rather than at workflow level) means a
+    # compromised build step on Windows / macOS / Linux can't push tags
+    # or modify repository content while running with our secrets.
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           path: artifacts
           merge-multiple: true
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v3
+        uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda # v3
         with:
           draft: true
           generate_release_notes: true
+          # SBOM ships alongside the binaries so downstream users can map
+          # every release back to its dependency graph without rebuilding.
           files: artifacts/**/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

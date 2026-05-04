@@ -163,7 +163,16 @@ function createRemoteTransport(): Transport {
   }
 
   const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-  const ws = new WebSocket(`${protocol}//${window.location.host}/ws?token=${encodeURIComponent(token)}`);
+  // After the share-URL bootstrap, the token is gone from the URL and a
+  // session cookie has taken over (server: SESSION_COOKIE_NAME). The
+  // browser attaches that cookie to WS upgrade requests automatically,
+  // so dropping the `?token=` segment is enough to keep working without
+  // re-emitting the master token. External callers that still hold the
+  // token (e.g. API clients) keep the old `?token=` form.
+  const wsUrl = token
+    ? `${protocol}//${window.location.host}/ws?token=${encodeURIComponent(token)}`
+    : `${protocol}//${window.location.host}/ws`;
+  const ws = new WebSocket(wsUrl);
 
   ws.addEventListener("open", () => {
     emitConnectionState({ connected: true, message: "" });
@@ -209,18 +218,22 @@ function createRemoteTransport(): Transport {
   });
 
   async function fetchJson(pathname: string, payload?: unknown): Promise<unknown> {
-    if (!token) {
-      throw new Error("Remote access token is required.");
+    // Without a token we fall through to the cookie-based path: the
+    // bootstrap redirect set `strideterm_session=…; HttpOnly` and the
+    // browser attaches it to every same-origin fetch. The server's
+    // `isAuthorized` accepts either, so dropping the Authorization
+    // header is correct here. If both are missing the server will
+    // 401 and the existing error path surfaces it.
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    if (token) {
+      headers.Authorization = `Bearer ${token}`;
     }
 
     let response: Response;
     try {
       response = await fetch(pathname, {
         method: payload ? "POST" : "GET",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-        },
+        headers,
         body: payload ? JSON.stringify(payload) : undefined,
       });
     } catch (cause) {

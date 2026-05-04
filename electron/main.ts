@@ -240,7 +240,16 @@ function createWindow(): void {
       preload: path.join(app.getAppPath(), "dist-electron", "electron", "preload.js"),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false,
+      // Run the renderer process under Chromium's OS sandbox. The preload
+      // here only uses contextBridge + ipcRenderer + process.argv/platform,
+      // all of which are part of the limited surface that sandboxed
+      // preloads are still allowed to touch — so the upgrade is
+      // transparent at the API level. The win is that even an XSS that
+      // smuggles arbitrary JS into the renderer can't reach Node directly
+      // anymore (it would have to abuse a specific IPC handler instead),
+      // closing the foot-gun the Electron security checklist calls out
+      // for any app with `webviewTag: true`.
+      sandbox: true,
       webviewTag: true,
       // Keep requestAnimationFrame running when the window is occluded so the
       // xterm.js WebGL renderer doesn't stall mid-scroll on macOS.
@@ -287,8 +296,28 @@ function createWindow(): void {
   runtimeState.window.webContents.setWindowOpenHandler(({ url }) => {
     // Open external links in the user's default browser instead of a new
     // BrowserWindow that would inherit our preload + Node access.
-    if (/^https?:\/\//i.test(url)) {
-      void import("electron").then(({ shell }) => shell.openExternal(url));
+    //
+    // The bare `^https?://` regex prefix-matches but doesn't reject
+    // schemes that *contain* http (e.g. some platforms register
+    // `https-everywhere://`-style protocol handlers, or a malicious
+    // payload encodes `https://attacker/#javascript:…` to coax the user
+    // into running arbitrary JS via `shell.openExternal`). Parse the URL
+    // through WHATWG and assert the protocol is exactly http: or https:
+    // before handing it off; everything else (file:, ftp:, custom
+    // schemes) is dropped. We don't allowlist domains because legitimate
+    // outbound links span Azure DevOps, GitHub, user docs, Confluence,
+    // npm — too broad to enumerate and too easy to be wrong.
+    let parsed: URL;
+    try {
+      parsed = new URL(url);
+    } catch {
+      return { action: "deny" };
+    }
+    if (parsed.protocol === "http:" || parsed.protocol === "https:") {
+      const safeUrl = parsed.toString();
+      void import("electron").then(({ shell }) => shell.openExternal(safeUrl));
+    } else {
+      log.warn("blocked openExternal for non-http(s) protocol", { protocol: parsed.protocol });
     }
     return { action: "deny" };
   });

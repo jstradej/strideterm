@@ -1490,6 +1490,14 @@ export async function createRuntime({
         port: notifyServerHandle?.port || null,
       },
       taskRunner: taskRunner.getTaskSnapshot(),
+      // Surface OS-keychain availability so Settings can show a banner when
+      // we're falling back to base64-on-disk for credentials. The user
+      // needs to *see* the downgrade — a one-shot log warning isn't enough,
+      // because most users never tail strideterm.log.
+      secureStorage: {
+        available:
+          typeof credentialStore.isEncryptionAvailable === "function" ? credentialStore.isEncryptionAvailable() : true,
+      },
     };
   }
 

@@ -5,11 +5,37 @@ import http from "node:http";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import fs from "node:fs/promises";
 import { existsSync } from "node:fs";
-import { timingSafeEqual } from "node:crypto";
+import { randomBytes, timingSafeEqual } from "node:crypto";
 import { WebSocketServer } from "ws";
 import * as fm from "./file-manager.js";
 import { wsTerminalInputSchema, wsTerminalResizeSchema } from "./ipc-schemas.js";
 import { getLogger, createAuditLogger } from "./logger.js";
+
+/**
+ * Cookie carrying a per-session ID. Once the user has bootstrapped via the
+ * token-bearing share URL, the cookie is what every subsequent request
+ * authenticates with — the master token is never sent again from a normal
+ * browser session, so it stops appearing in URL bars, browser history,
+ * proxy logs, screen shares, or accidental "copy this link" leaks.
+ *
+ * The cookie value is a fresh 256-bit random per session, *not* the
+ * master token, so even if the cookie store is somehow exfiltrated we
+ * don't lose the long-lived token. It survives only in this process —
+ * regenerating the token (or restarting the server, which happens on
+ * any settings change) tears down all sessions.
+ *
+ * Attributes:
+ *   - HttpOnly: JS can't read it (mitigates XSS-driven session theft).
+ *   - SameSite=Strict: browser only sends it on first-party requests,
+ *     so even if a leaked URL is opened in another tab the cookie won't
+ *     ride a cross-origin form post.
+ *   - Path=/: applies to every endpoint on this origin.
+ *   - Note: no `Secure` attribute on bare HTTP LAN. Cloudflare-tunnel
+ *     deployments are HTTPS already; the browser scopes the cookie by
+ *     origin so an HTTP and HTTPS deployment never see each other.
+ */
+const SESSION_COOKIE_NAME = "strideterm_session";
+const SESSION_COOKIE_ATTRS = "HttpOnly; SameSite=Strict; Path=/";
 
 const log = getLogger("remote-server");
 
@@ -154,6 +180,22 @@ function getTokenFromRequest(requestUrl: string, headers: IncomingMessage["heade
   }
 
   return url.searchParams.get("token") || "";
+}
+
+/**
+ * Pull the session id out of the Cookie header. The header is a
+ * single-line `name=value; name2=value2; …` blob; we only care about
+ * our own cookie so a forgiving parser is fine.
+ */
+function getSessionFromRequest(headers: IncomingMessage["headers"]): string {
+  const raw = (headers.cookie as string) || "";
+  if (!raw) return "";
+  for (const part of raw.split(";")) {
+    const trimmed = part.trim();
+    if (!trimmed.startsWith(`${SESSION_COOKIE_NAME}=`)) continue;
+    return trimmed.slice(SESSION_COOKIE_NAME.length + 1).trim();
+  }
+  return "";
 }
 
 /**
@@ -1090,13 +1132,38 @@ export async function startRemoteServer({
 
   const audit = createAuditLogger("remote-api-audit");
 
+  // Active session IDs minted after a valid token bootstrap. Lives only
+  // in process memory; restarts (settings change, token regenerate, app
+  // quit) wipe it, by design — that's how clients lose access when the
+  // user revokes the token. See SESSION_COOKIE_NAME for the threat model.
+  const activeSessions = new Set<string>();
+
+  function isAuthorized(requestUrl: string, headers: IncomingMessage["headers"]): boolean {
+    // Master token (URL `?token=` or `Authorization: Bearer …`) — used
+    // by the renderer's fetch path and by external callers like the
+    // mobile inbox / agent tooling.
+    if (tokensEqual(getTokenFromRequest(requestUrl, headers), token)) return true;
+    // Session cookie — minted on first HTML hit, used for every
+    // subsequent navigation and WebSocket upgrade from the same
+    // browser. Avoids re-emitting the long-lived token on every
+    // request.
+    const sessionId = getSessionFromRequest(headers);
+    if (sessionId && activeSessions.has(sessionId)) return true;
+    return false;
+  }
+
+  function mintSession(): string {
+    const id = randomBytes(32).toString("base64url");
+    activeSessions.add(id);
+    return id;
+  }
+
   const server = http.createServer(async (request, response) => {
     const requestUrl = request.url || "/";
     const url = new URL(requestUrl, "http://localhost");
-    const requestToken = getTokenFromRequest(requestUrl, request.headers);
     const isApiRoute = url.pathname.startsWith("/api/");
 
-    if (isApiRoute && !tokensEqual(requestToken, token)) {
+    if (isApiRoute && !isAuthorized(requestUrl, request.headers)) {
       writeHead(response, 401, { "Content-Type": "text/plain; charset=utf-8" });
       response.end("Unauthorized");
       audit.warn("api request rejected", {
@@ -1124,6 +1191,31 @@ export async function startRemoteServer({
       return;
     }
 
+    // First-hit bootstrap: a freshly-shared QR/URL arrives as
+    // `GET /?token=<master>`. Validate the token, mint a fresh session,
+    // and 302 the browser to a clean URL. Net effect: the master token
+    // appears in network logs / browser history exactly once (the
+    // initial HTTP request) and never again — the cookie carries every
+    // subsequent request, including the WebSocket upgrade.
+    if (request.method === "GET" && url.pathname === "/" && url.searchParams.has("token")) {
+      if (!tokensEqual(url.searchParams.get("token") || "", token)) {
+        writeHead(response, 401, { "Content-Type": "text/plain; charset=utf-8" });
+        response.end("Unauthorized");
+        return;
+      }
+      const sessionId = mintSession();
+      writeHead(response, 302, {
+        "Set-Cookie": `${SESSION_COOKIE_NAME}=${sessionId}; ${SESSION_COOKIE_ATTRS}`,
+        Location: "/",
+      });
+      response.end();
+      return;
+    }
+
+    // Static asset fetches don't gate on auth (they're harmless JS/CSS
+    // bundles served to any LAN peer who guesses the URL), but the
+    // renderer's API + WS calls do. Keeping static open avoids a
+    // brittle dependency on every asset path also having auth headers.
     await serveStatic(staticRoot, requestUrl, response);
   });
 
@@ -1151,7 +1243,13 @@ export async function startRemoteServer({
 
   server.on("upgrade", (request, socket, head) => {
     const url = new URL(request.url || "/", "http://localhost");
-    if (url.pathname !== "/ws" || !tokensEqual(getTokenFromRequest(request.url || "/", request.headers), token)) {
+    // WS upgrade accepts either the master token (Bearer header or
+    // ?token= URL — useful for non-browser clients that don't carry
+    // cookies) or the session cookie set during bootstrap. Browsers
+    // attach cookies to WS upgrade requests automatically, so the
+    // renderer's `new WebSocket(url)` call no longer needs the token
+    // in the URL once the user has bootstrapped.
+    if (url.pathname !== "/ws" || !isAuthorized(request.url || "/", request.headers)) {
       socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
       socket.destroy();
       return;

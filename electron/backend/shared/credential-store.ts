@@ -34,6 +34,18 @@ export interface CredentialStore {
   hasSecret(ref: string): boolean;
   deleteSecret(ref: string): Promise<void>;
   listRefs(): string[];
+  /**
+   * Reports whether the OS keychain (Electron `safeStorage`) is available
+   * for actual encryption. When false, secrets are persisted as base64
+   * plaintext on disk (with a warning logged once per process). The
+   * renderer surfaces this in the Settings UI so the operator sees the
+   * downgrade rather than discovering it after a credentials.json leak.
+   *
+   * On Linux: false typically means libsecret/gnome-keyring is missing.
+   * On macOS/Windows: false typically means Electron is running headless
+   * without a desktop session attached.
+   */
+  isEncryptionAvailable(): boolean;
 }
 
 function createDefaultState(): CredentialState {
@@ -198,6 +210,9 @@ export async function createCredentialStore(
     },
     listRefs(): string[] {
       return Object.keys(state.secrets);
+    },
+    isEncryptionAvailable(): boolean {
+      return canEncrypt(safeStorage);
     },
   };
 }

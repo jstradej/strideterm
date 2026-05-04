@@ -85,6 +85,73 @@ describe("file-manager root allowlist + denylist", () => {
     }
   });
 
+  test("rejects access through a symlink that escapes the workspace root", async () => {
+    // Windows symlink creation needs Developer Mode or Admin — skip the
+    // check there to keep CI green. realpath behaviour still applies on
+    // any platform that lets us drop the link.
+    if (process.platform === "win32") return;
+    const inside = path.join(tmpRoot, "symlink-test");
+    await fs.mkdir(inside, { recursive: true });
+    const outside = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-outside-"));
+    await fs.writeFile(path.join(outside, "secret.txt"), "leaked\n");
+    try {
+      // Drop a symlink inside the workspace pointing at an unrelated dir.
+      // safePath() alone passes — the logical path stays under the root.
+      // assertRealPathInside catches it because realpath() canonicalises
+      // through the link to `outside`, which is not in the allowlist.
+      await fs.symlink(outside, path.join(inside, "evil"));
+    } catch {
+      // Some sandboxes deny symlink() entirely — give up rather than
+      // mark this test inconclusive.
+      return;
+    }
+    await expect(readFileContent(inside, "evil/secret.txt")).rejects.toThrow(/Symlink escape/);
+    await expect(listDirectory(inside, "evil")).rejects.toThrow(/Symlink escape/);
+    await fs.rm(outside, { recursive: true, force: true });
+  });
+
+  test("permits symlinks that resolve into another allowlisted workspace", async () => {
+    // Cross-workspace symlinks (pnpm shared store, dev `~/lib` aliased
+    // into multiple projects) are a legitimate pattern — the realpath
+    // check shouldn't break them. Two sibling workspaces, both on the
+    // allowlist, with one symlinking into the other.
+    if (process.platform === "win32") return;
+    const wsA = path.join(tmpRoot, "ws-A");
+    const wsB = path.join(tmpRoot, "ws-B");
+    await fs.mkdir(wsA, { recursive: true });
+    await fs.mkdir(wsB, { recursive: true });
+    await fs.writeFile(path.join(wsB, "shared.txt"), "shared payload\n");
+    try {
+      await fs.symlink(wsB, path.join(wsA, "shared"));
+    } catch {
+      return;
+    }
+    // Both workspaces register on the allowlist for this assertion.
+    const original = (await import("./file-manager.js")).setAllowedRootsResolver;
+    original(() => [tmpRoot, wsA, wsB]);
+    try {
+      const result = await readFileContent(wsA, "shared/shared.txt");
+      expect(result.content).toBe("shared payload\n");
+    } finally {
+      original(() => [tmpRoot]);
+    }
+  });
+
+  test("blocks symlinks that resolve to a denylisted system path even via allowlisted root", async () => {
+    // Pathological case: a workspace symlinks straight to `/etc`. Even
+    // if the user did this themselves, the file API must refuse — the
+    // denylist beats the allowlist by design (see SEC-002).
+    if (process.platform === "win32") return;
+    const ws = path.join(tmpRoot, "deny-via-symlink");
+    await fs.mkdir(ws, { recursive: true });
+    try {
+      await fs.symlink("/etc", path.join(ws, "system"));
+    } catch {
+      return;
+    }
+    await expect(readFileContent(ws, "system/hostname")).rejects.toThrow(/Symlink escape/);
+  });
+
   test("rejects Windows extended-length / UNC-prefixed paths that target system dirs", async () => {
     // Crafted strings — we don't actually open them, the resolver rejects
     // before any fs syscall. Skip on POSIX where these prefixes don't apply.

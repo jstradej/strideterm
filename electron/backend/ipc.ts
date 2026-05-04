@@ -106,9 +106,24 @@ export function registerIpc(
   }
   ipcMain.handle("shell:open-external", async (_event, url) =>
     withOperationPromise({ opId: "shell:open-external" }, async () => {
-      if (typeof url === "string" && /^https?:\/\//i.test(url)) {
-        return shell.openExternal(url);
+      // Mirror the strict scheme check from main.ts setWindowOpenHandler:
+      // parse via WHATWG and require protocol === http:/https: exactly,
+      // not just `^https?://` prefix. The bare prefix would let a payload
+      // like `https://x#javascript:alert(1)` through without the JS being
+      // run by the *opener* — but a malicious renderer can still craft a
+      // URL whose registered protocol handler does something dangerous,
+      // e.g. `vscode://file/etc/passwd`, and `shell.openExternal` will
+      // hand it to the OS-registered handler. Restricting to http(s)
+      // shuts that off completely.
+      if (typeof url !== "string") return;
+      let parsed: URL;
+      try {
+        parsed = new URL(url);
+      } catch {
+        return;
       }
+      if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return;
+      return shell.openExternal(parsed.toString());
     }),
   );
   ipcMain.handle("workspace:activate", async (_event, workspaceId) =>
