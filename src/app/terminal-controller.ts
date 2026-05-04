@@ -21,10 +21,105 @@ interface TerminalView {
   opened: boolean;
 }
 
+type LogLevel = "info" | "warn" | "error" | "debug";
+
 interface TerminalControllerApi {
   resizeTerminal: (sessionId: string, size: { cols: number; rows: number }) => void;
   writeTerminal: (sessionId: string, data: string) => void;
   isRemote?: boolean;
+  startupFlags?: {
+    disableWebgl?: boolean;
+  };
+  logRenderer?: (level: LogLevel, message: string, meta?: Record<string, unknown>) => void;
+}
+
+// ---------------------------------------------------------------------------
+// WebGL pre-flight
+// ---------------------------------------------------------------------------
+// xterm.js's WebglAddon constructor only fails (throws) when WebGL2 context
+// creation outright errors. On certain older Macs / Intel iGPUs the context
+// is created successfully but rendering produces broken output (giant
+// glyphs, blank canvas) — the addon never sees an error so we never fall
+// back. Mitigation: probe WebGL2 capability ourselves before instantiating
+// the addon. Probe runs once per session and is cached because the result
+// can't change at runtime (context loss is handled separately via
+// onContextLoss).
+type WebglProbe = { ok: boolean; reason: string };
+let cachedWebglProbe: WebglProbe | null = null;
+
+function probeWebgl2(): WebglProbe {
+  if (cachedWebglProbe) return cachedWebglProbe;
+
+  try {
+    const canvas = document.createElement("canvas");
+    canvas.width = 16;
+    canvas.height = 16;
+
+    let gl: WebGL2RenderingContext | null = null;
+    try {
+      gl = canvas.getContext("webgl2", {
+        antialias: false,
+        preserveDrawingBuffer: false,
+        // Tell the driver to refuse the context if it would force software
+        // rasterization. Catches a chunk of the broken-macOS cases without
+        // needing a renderer-string heuristic.
+        failIfMajorPerformanceCaveat: true,
+      }) as WebGL2RenderingContext | null;
+    } catch (err) {
+      cachedWebglProbe = { ok: false, reason: `getContext-threw:${(err as Error)?.message || "unknown"}` };
+      return cachedWebglProbe;
+    }
+
+    if (!gl) {
+      cachedWebglProbe = { ok: false, reason: "no-webgl2-context" };
+      return cachedWebglProbe;
+    }
+
+    // Software-renderer blacklist. Apple hides WEBGL_debug_renderer_info on
+    // macOS so this branch is mostly a Windows/Linux safety net; on macOS
+    // we rely on failIfMajorPerformanceCaveat + the shader-compile probe.
+    let renderer = "";
+    const dbg = gl.getExtension("WEBGL_debug_renderer_info");
+    if (dbg) {
+      try {
+        renderer = String(gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) || "");
+      } catch {
+        renderer = "";
+      }
+      if (renderer && /SwiftShader|llvmpipe|software|Microsoft Basic Render/i.test(renderer)) {
+        gl.getExtension("WEBGL_lose_context")?.loseContext();
+        cachedWebglProbe = { ok: false, reason: `software-renderer:${renderer}` };
+        return cachedWebglProbe;
+      }
+    }
+
+    // Compile a trivial vertex shader. WebglAddon compiles its own shaders
+    // on construction; if the GPU's shader compiler is broken (rare but
+    // observed on some macOS setups) the addon's shaders fail too. Probing
+    // here lets us short-circuit to DOM before the addon paints garbage.
+    const vs = gl.createShader(gl.VERTEX_SHADER);
+    if (!vs) {
+      gl.getExtension("WEBGL_lose_context")?.loseContext();
+      cachedWebglProbe = { ok: false, reason: "shader-create-failed" };
+      return cachedWebglProbe;
+    }
+    gl.shaderSource(vs, "#version 300 es\nvoid main(){ gl_Position = vec4(0); }");
+    gl.compileShader(vs);
+    const compiled = gl.getShaderParameter(vs, gl.COMPILE_STATUS);
+    gl.deleteShader(vs);
+    if (!compiled) {
+      gl.getExtension("WEBGL_lose_context")?.loseContext();
+      cachedWebglProbe = { ok: false, reason: "vertex-shader-compile-failed" };
+      return cachedWebglProbe;
+    }
+
+    gl.getExtension("WEBGL_lose_context")?.loseContext();
+    cachedWebglProbe = { ok: true, reason: renderer ? `ok:${renderer}` : "ok" };
+    return cachedWebglProbe;
+  } catch (err) {
+    cachedWebglProbe = { ok: false, reason: `probe-threw:${(err as Error)?.message || "unknown"}` };
+    return cachedWebglProbe;
+  }
 }
 
 type AppConfig = typeof APP_CONFIG;
@@ -259,20 +354,38 @@ export function createTerminalController({
       // produces a permanently broken renderer (giant glyphs, blank screen)
       // with no automatic fallback.
       if (!api.isRemote) {
-        const loadWebgl = () => {
-          if (!view.mount.isConnected || view.term.cols === 0 || view.term.rows === 0) {
-            return;
+        const log = api.logRenderer ?? (() => {});
+        const disabledByFlag = api.startupFlags?.disableWebgl ?? false;
+
+        if (disabledByFlag) {
+          log("info", "[webgl] skipped: disabled by --no-webgl / STRIDETERM_DISABLE_WEBGL");
+        } else {
+          const probe = probeWebgl2();
+          if (!probe.ok) {
+            log("warn", "[webgl] skipped: pre-flight failed, using DOM renderer", { reason: probe.reason });
+          } else {
+            const loadWebgl = () => {
+              if (!view.mount.isConnected || view.term.cols === 0 || view.term.rows === 0) {
+                return;
+              }
+              try {
+                const webglAddon = new WebglAddon();
+                webglAddon.onContextLoss(() => {
+                  log("warn", "[webgl] context lost; disposing addon, falling back to DOM renderer");
+                  webglAddon.dispose();
+                });
+                view.term.loadAddon(webglAddon);
+                log("info", "[webgl] renderer enabled", { probe: probe.reason });
+              } catch (err) {
+                log("error", "[webgl] addon load threw; falling back to DOM renderer", {
+                  error: (err as Error)?.message || String(err),
+                });
+              }
+            };
+            const ready = document.fonts?.ready ?? Promise.resolve();
+            ready.then(() => window.setTimeout(loadWebgl, 50)).catch(() => {});
           }
-          try {
-            const webglAddon = new WebglAddon();
-            webglAddon.onContextLoss(() => webglAddon.dispose());
-            view.term.loadAddon(webglAddon);
-          } catch {
-            // WebGL2 unavailable — DOM renderer remains in place silently.
-          }
-        };
-        const ready = document.fonts?.ready ?? Promise.resolve();
-        ready.then(() => window.setTimeout(loadWebgl, 50)).catch(() => {});
+        }
       }
     } else {
       // Force fit + refresh after re-attach (pane may have changed size)

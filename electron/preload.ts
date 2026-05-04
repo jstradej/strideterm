@@ -2,6 +2,14 @@
 import { contextBridge, ipcRenderer } from "electron";
 import type { StridetermAPI } from "./shared/ipc-bridge.js";
 
+// Startup flags injected by main via webPreferences.additionalArguments.
+// Reading process.argv here is safe — preload runs in the renderer's Node
+// context but with the original argv. Synchronous read so the bridge can
+// expose the flag without forcing every consumer through an async getter.
+const startupFlags = {
+  disableWebgl: process.argv.includes("--strideterm-disable-webgl"),
+};
+
 contextBridge.exposeInMainWorld("strideterm", {
   openExternal: (url) => ipcRenderer.invoke("shell:open-external", url),
   showSystemNotification: (payload) => ipcRenderer.invoke("notification:show-system", payload),
@@ -212,6 +220,16 @@ contextBridge.exposeInMainWorld("strideterm", {
   sshConfigPreview: (payload) => ipcRenderer.invoke("ssh:config:preview", payload),
   sshConfigImport: (payload) => ipcRenderer.invoke("ssh:config:import", payload),
   sshKnownHostsImport: (payload) => ipcRenderer.invoke("ssh:known-hosts:import", payload),
+  startupFlags,
+  logRenderer: (level, message, meta) => {
+    // Fire-and-forget; the main handler validates and never throws back.
+    try {
+      ipcRenderer.send("log:renderer", level, message, meta);
+    } catch {
+      // If IPC is torn down (window closing) we silently drop the entry —
+      // this is a logger, it must never break the caller.
+    }
+  },
 } satisfies StridetermAPI);
 
 // Tag <body> with the host platform so CSS can target macOS-only chrome

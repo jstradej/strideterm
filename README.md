@@ -163,6 +163,22 @@ npx electron . --data-dir ~/.strideterm-dev
 
 Each data directory gets its own state file, logs, credentials, and single-instance lock. The window title shows the directory name as a suffix so you can tell instances apart. `--data-dir` takes precedence over the `STRIDETERM_DATA_DIR` environment variable.
 
+### Terminal Renderer (WebGL)
+
+The terminal pane uses a WebGL renderer by default — it draws the whole viewport in a single GPU call, which keeps scrolling smooth under heavy TUI traffic (Claude Code, htop, tig, lazygit, etc.). On startup strIDEterm probes WebGL2 support: it creates a test context with `failIfMajorPerformanceCaveat`, blacklists known software rasterizers (SwiftShader, llvmpipe, Microsoft Basic Render), and compiles a trivial shader. If any step fails, the terminal silently falls back to the built-in DOM renderer. Every probe result and load attempt is written to `logs/strideterm.log` under the `[renderer]` label so you can see why a fallback happened.
+
+If WebGL renders incorrectly on your device (giant glyphs, blank canvas, or visual glitches — occasionally observed on older Macs and certain Intel iGPUs) you can force the DOM renderer:
+
+```bash
+# Per-launch (CLI flag — wins over the env var)
+strideterm --no-webgl
+
+# Globally (environment variable)
+STRIDETERM_DISABLE_WEBGL=1 strideterm
+```
+
+`--no-webgl` is the recommended fix when only one machine is affected — add it to your shortcut, `.desktop` file, or launch command. The env var is convenient when you want the same behavior across every shell and shortcut on a host. Both are independent of remote-access clients (web/mobile), where WebGL is always disabled because mobile WebGL is too unreliable to validate.
+
 ## Remote Access
 
 strIDEterm can expose the workspace over HTTP/WebSocket to another device.

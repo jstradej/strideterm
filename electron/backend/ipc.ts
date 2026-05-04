@@ -4,6 +4,7 @@ import { join } from "node:path";
 import type { createRuntime } from "./runtime.js";
 import { withOperationPromise } from "./effect/runtime.js";
 import * as fm from "./file-manager.js";
+import { getLogger } from "./logger.js";
 import {
   validateIpc,
   workspaceSchema,
@@ -1078,6 +1079,29 @@ export function registerIpc(
     }
   });
 
+  // Renderer-side diagnostics (e.g. WebGL pre-flight result) routed into the
+  // main-process logger. Validates inputs because the channel is exposed to
+  // the renderer and could be flooded by a buggy/compromised page.
+  const rendererLog = getLogger("renderer");
+  ipcMain.on("log:renderer", (_event, level, message, meta) => {
+    if (typeof message !== "string" || message.length === 0 || message.length > 4000) return;
+    const safeMeta = meta && typeof meta === "object" && !Array.isArray(meta) ? (meta as Record<string, unknown>) : {};
+    switch (level) {
+      case "error":
+        rendererLog.error(message, safeMeta);
+        return;
+      case "warn":
+        rendererLog.warn(message, safeMeta);
+        return;
+      case "debug":
+        rendererLog.debug(message, safeMeta);
+        return;
+      case "info":
+      default:
+        rendererLog.info(message, safeMeta);
+    }
+  });
+
   return () => {
     subscriptions.forEach((unsubscribe) => unsubscribe());
     if (includeStateGet) {
@@ -1276,5 +1300,6 @@ export function registerIpc(
     ipcMain.removeHandler("review-bridge:agent-prompt:reset");
     ipcMain.removeAllListeners("terminal:resize");
     ipcMain.removeAllListeners("terminal:input");
+    ipcMain.removeAllListeners("log:renderer");
   };
 }

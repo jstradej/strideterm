@@ -315,6 +315,19 @@ export interface StridetermAPI {
   sshConfigImport: (payload: SshConfigImport) => Promise<unknown>;
   sshKnownHostsImport: (payload: SshKnownHostsImport) => Promise<unknown>;
 
+  // Startup flags resolved by main (CLI args + env vars). Read once at
+  // preload time so the renderer can branch synchronously without an IPC
+  // round-trip on hot paths (e.g. terminal mount).
+  startupFlags: {
+    disableWebgl: boolean;
+  };
+
+  // Fire-and-forget log shipping: the renderer routes diagnostic output
+  // (e.g. WebGL pre-flight result) into the main-process winston logger
+  // so it lands in ~/.strideterm/logs/strideterm.log alongside backend
+  // events. Never throws.
+  logRenderer: (level: "info" | "warn" | "error" | "debug", message: string, meta?: Record<string, unknown>) => void;
+
   // Event listeners
   onStateUpdated: (handler: (payload: StatePayload) => void) => void;
   onTerminalData: (handler: (payload: TerminalDataPayload) => void) => void;

@@ -86,6 +86,13 @@ export const APP_CONFIG = {
     posixShellFile: envString("STRIDETERM_POSIX_SHELL", "/bin/bash"),
     posixShellArgs: Object.freeze(["-l"] as const),
   },
+  terminal: {
+    // Default: WebGL renderer enabled. Switched off automatically when the
+    // pre-flight detects no usable WebGL2 (e.g. broken macOS GPU drivers,
+    // software rasterizers). Forced off via STRIDETERM_DISABLE_WEBGL=1 or
+    // the --no-webgl CLI flag.
+    disableWebgl: envBoolean("STRIDETERM_DISABLE_WEBGL", false),
+  },
   ssh: {
     defaultKeepaliveMs: envNumber("STRIDETERM_SSH_KEEPALIVE_MS", 30000),
     defaultConnectTimeoutMs: envNumber("STRIDETERM_SSH_CONNECT_TIMEOUT_MS", 20000),

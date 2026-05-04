@@ -23,8 +23,20 @@ function resolveDataDir(): string {
   return process.env.STRIDETERM_DATA_DIR ? path.resolve(process.env.STRIDETERM_DATA_DIR) : "";
 }
 
+// --- WebGL terminal renderer opt-out (--no-webgl or STRIDETERM_DISABLE_WEBGL) ---
+// CLI flag wins over env var; the renderer reads the resolved value through
+// the preload bridge so a user can disable WebGL without rebuilding when
+// their device's WebGL2 stack is broken (some older Macs, certain Intel iGPUs).
+function resolveWebglDisabled(): boolean {
+  if (process.argv.slice(1).some((arg) => arg === "--no-webgl")) {
+    return true;
+  }
+  return APP_CONFIG.terminal.disableWebgl;
+}
+
 const customDataDir = resolveDataDir();
 const userDataPath = customDataDir || path.join(os.homedir(), ".strideterm");
+const webglDisabled = resolveWebglDisabled();
 
 // Expose the resolved data dir via env so modules that read it lazily
 // (DEFAULT_REVIEW_ROOT getters, strideDataDir() helper in default-state.js,
@@ -233,6 +245,10 @@ function createWindow(): void {
       // Keep requestAnimationFrame running when the window is occluded so the
       // xterm.js WebGL renderer doesn't stall mid-scroll on macOS.
       backgroundThrottling: false,
+      // Pass startup flags into the preload process via process.argv so the
+      // bridge can expose them synchronously without an IPC round-trip on
+      // every terminal mount.
+      additionalArguments: webglDisabled ? ["--strideterm-disable-webgl"] : [],
     },
   });
 
