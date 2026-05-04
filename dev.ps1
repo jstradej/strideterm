@@ -3,8 +3,14 @@
     Start strIDEterm dev environment against an isolated dev data directory.
 .DESCRIPTION
     Same orchestration as production runs (port cleanup, stale process kill,
-    Vite + backend tsc watch + Electron, graceful Ctrl+C), but forces Electron
-    to use ~/.strideterm-dev as its data directory via STRIDETERM_DATA_DIR.
+    Vite + backend tsc watch + frontend build watch + Electron, graceful
+    Ctrl+C), but forces Electron to use ~/.strideterm-dev as its data
+    directory via STRIDETERM_DATA_DIR.
+
+    The frontend build watcher (`vite build --watch`) keeps dist/ fresh so
+    mobile / remote clients (served from dist/ by remote-server.ts) see
+    edits without manual `npm run build`. Vite dev server still drives HMR
+    for the Electron desktop renderer.
 
     This makes state, credentials, logs, electron session data, and the
     single-instance lock separate from the default ~/.strideterm install — so
@@ -12,7 +18,8 @@
     state.
 
     Run from the project root:  .\dev.ps1
-    Stop with Ctrl+C - Vite, backend watcher, and Electron will all be terminated.
+    Stop with Ctrl+C - all child processes (Vite, watchers, Electron) will
+    be terminated.
 #>
 
 param(
@@ -32,6 +39,7 @@ Set-StrictMode -Version Latest
 
 $script:viteProc = $null
 $script:backendProc = $null
+$script:frontendBuildProc = $null
 $script:electronProc = $null
 $script:exiting = $false
 $script:backendWatcher = $null
@@ -158,6 +166,11 @@ function Cleanup {
     if ($script:backendProc -and !$script:backendProc.HasExited) {
         Write-Step 'Stopping backend tsc watch...'
         Stop-ProcessTree $script:backendProc.Id
+    }
+
+    if ($script:frontendBuildProc -and !$script:frontendBuildProc.HasExited) {
+        Write-Step 'Stopping frontend build watcher...'
+        Stop-ProcessTree $script:frontendBuildProc.Id
     }
 
     if ($script:viteProc -and !$script:viteProc.HasExited) {
@@ -324,6 +337,34 @@ if (-not $compiled) {
 }
 Write-Ok 'Backend compiled (dist-electron/ ready).'
 
+# --- Step 4c: Start frontend build watcher (for remote-served dist/) ------
+
+# Vite dev server (Step 3) drives HMR for the Electron desktop renderer, but
+# the remote server (mobile / web clients on the LAN) serves static files
+# straight from dist/ — see electron/main.ts: staticRoot = path.join(...,
+# "dist"). Without this watcher, every frontend edit ships to desktop via
+# HMR but mobile is stuck on whatever was in dist/ from the last manual
+# `npm run build`. Running `vite build --watch` in parallel keeps dist/
+# fresh on every src/ change.
+
+Write-Step 'Starting frontend build watcher (vite build --watch) for remote dist/...'
+# VITE_BUILD_WATCH=1 tells vite.config.ts to (a) skip emptyOutDir so existing
+# chunks survive a rebuild and live pages don't lose dynamically-imported
+# modules, and (b) drop content hashes from filenames so chunks overwrite
+# in place instead of accumulating alongside their predecessors.
+$script:frontendBuildProc = Start-Process -FilePath 'cmd.exe' -ArgumentList '/c','set VITE_BUILD_WATCH=1 && npx vite build --watch' `
+    -WorkingDirectory $PSScriptRoot `
+    -PassThru -NoNewWindow
+
+if (!$script:frontendBuildProc -or $script:frontendBuildProc.HasExited) {
+    Write-Warn 'Frontend build watcher failed to start. Mobile/remote clients will see stale dist/. Continuing.'
+    $script:frontendBuildProc = $null
+}
+else {
+    Write-Ok "Frontend build watcher started (PID $($script:frontendBuildProc.Id))."
+    Write-Warn 'Note: first dist/ rebuild takes ~20-30s — mobile remote will be stale until then.'
+}
+
 # --- Step 5: Start Electron -----------------------------------------------
 
 Write-Step 'Starting Electron...'
@@ -369,6 +410,9 @@ Write-Host ''
 Write-Ok '=== Dev environment is running (isolated data dir) ==='
 Write-Host "    Vite:     http://127.0.0.1:$Port  (PID $($script:viteProc.Id))" -ForegroundColor Gray
 Write-Host "    Backend:  tsc --watch  (PID $($script:backendProc.Id))" -ForegroundColor Gray
+if ($script:frontendBuildProc) {
+    Write-Host "    Frontend: vite build --watch  (PID $($script:frontendBuildProc.Id))  → dist/ for remote clients" -ForegroundColor Gray
+}
 Write-Host "    Electron: PID $($script:electronProc.Id)" -ForegroundColor Gray
 Write-Host "    Data:     $DataDir" -ForegroundColor Gray
 if (-not $NoAutoRestart -and $script:backendWatcher) {
@@ -380,12 +424,18 @@ Write-Host ''
 # --- Step 6: Wait for Electron to exit (and watch for backend rebuilds) ---
 
 $backendWarned = $false
+$frontendBuildWarned = $false
 $RestartDebounceMs = 1500   # wait this long after the LAST file change before restarting
 
 while ($script:exiting -eq $false -and $script:electronProc -and -not $script:electronProc.HasExited) {
     if ($script:backendProc.HasExited -and -not $backendWarned) {
         Write-Warn "Backend tsc watch exited (code $($script:backendProc.ExitCode)) — TypeScript changes won't recompile."
         $backendWarned = $true
+    }
+
+    if ($script:frontendBuildProc -and $script:frontendBuildProc.HasExited -and -not $frontendBuildWarned) {
+        Write-Warn "Frontend build watcher exited (code $($script:frontendBuildProc.ExitCode)) — mobile/remote clients will see stale dist/."
+        $frontendBuildWarned = $true
     }
 
     # Auto-restart Electron when tsc-watch finishes a rebuild burst.

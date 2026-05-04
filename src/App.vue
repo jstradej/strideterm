@@ -15,11 +15,17 @@
       'frame--remote': api?.isRemote,
       'frame--sidebar-collapsed': store.sidebarCollapsed,
       'frame--notif-pinned': notifStore.pinned,
+      'frame--has-overlay': !!store.overlay,
     }"
   >
-    <div class="sidebar-backdrop" data-role="sidebar-backdrop" @click="closeSidebar"></div>
+    <div
+      class="sidebar-backdrop"
+      :class="{ 'sidebar-backdrop--visible': sidebarOpen }"
+      data-role="sidebar-backdrop"
+      @click="closeSidebar"
+    ></div>
 
-    <aside ref="sidebarRef" class="sidebar">
+    <aside ref="sidebarRef" class="sidebar" :class="{ 'sidebar--open': sidebarOpen }">
       <div class="sidebar__head">
         <h1 class="brand">str<em>IDE</em>term</h1>
         <div class="sidebar__tools">
@@ -50,6 +56,15 @@
             ⚙
           </button>
           <button type="button" class="sidebar__icon-btn" title="Help" @click="store.openHelpDialog()">?</button>
+          <button
+            type="button"
+            class="sidebar__icon-btn sidebar__close-btn"
+            title="Close sidebar"
+            aria-label="Close sidebar"
+            @click="closeSidebar"
+          >
+            ✕
+          </button>
         </div>
       </div>
 
@@ -276,6 +291,7 @@ sshStore.load();
 
 const frameRef = ref<HTMLElement | null>(null);
 const sidebarRef = ref<HTMLElement | null>(null);
+const sidebarOpen = ref(false);
 const mobileTabOpen = ref(false);
 const tabPickerAnchor = ref<DOMRect | null>(null);
 
@@ -323,11 +339,11 @@ function toggleSidebarCollapse(): void {
 }
 
 function openSidebar(): void {
-  sidebarRef.value?.classList.add("sidebar--open");
+  sidebarOpen.value = true;
 }
 
 function closeSidebar(): void {
-  sidebarRef.value?.classList.remove("sidebar--open");
+  sidebarOpen.value = false;
 }
 
 function onEditWorkspace(workspaceId: string): void {

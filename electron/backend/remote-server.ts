@@ -206,6 +206,18 @@ async function serveStatic(staticRoot: string, requestUrl: string, response: Ser
 
   let finalPath = resolvedPath;
   if (!existsSync(finalPath)) {
+    // SPA fallback: route-style paths (no extension, e.g. /workspace/abc) get
+    // index.html so client-side routing works on hard refresh. But hashed
+    // assets (/assets/foo-XXX.js, .css, .map, etc.) must NOT fall back to
+    // HTML — the browser's strict-MIME check rejects HTML for module
+    // <script> tags and the page crashes with "Failed to load module
+    // script". Return 404 instead so a stale chunk after a fresh build
+    // surfaces as a clean error rather than a misleading HTML response.
+    if (url.pathname.startsWith("/assets/") || /\.[a-zA-Z0-9]+$/.test(url.pathname)) {
+      writeHead(response, 404, { "Content-Type": "text/plain; charset=utf-8" });
+      response.end("Not found");
+      return;
+    }
     finalPath = path.join(staticRoot, "index.html");
   }
 

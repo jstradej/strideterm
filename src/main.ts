@@ -8,6 +8,21 @@ import { useAppStore } from "./stores/app.js";
 import { useTerminalStore } from "./stores/terminal.js";
 import { useGitUiStore } from "./stores/git-ui.js";
 
+// crypto.randomUUID is gated to secure contexts (HTTPS / localhost / file://).
+// The remote web client served over LAN HTTP is not a secure context, so it
+// crashes on UUID-using flows (template tab dialog, notifications, etc.).
+// crypto.getRandomValues is available everywhere — polyfill randomUUID on top.
+if (typeof crypto !== "undefined" && typeof crypto.randomUUID !== "function") {
+  (crypto as Crypto & { randomUUID: () => string }).randomUUID = () => {
+    const bytes = new Uint8Array(16);
+    crypto.getRandomValues(bytes);
+    bytes[6] = (bytes[6] & 0x0f) | 0x40; // version 4
+    bytes[8] = (bytes[8] & 0x3f) | 0x80; // variant 10
+    const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+    return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}` as `${string}-${string}-${string}-${string}-${string}`;
+  };
+}
+
 const api = createTransport();
 
 const app = createApp(App);

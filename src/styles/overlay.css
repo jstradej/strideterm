@@ -8,6 +8,17 @@
   padding: 20px;
 }
 
+/* The overlay backdrop is translucent (75% dark), so the resize handles
+   underneath leak through with their hover/active orange tint. They also
+   remain hoverable through the overlay because their stacking context is
+   independent. When any modal is open, hide them entirely so the dialog
+   feels fully on top. Driven by the .frame--has-overlay class on the root
+   frame (toggled in App.vue from store.overlay). */
+.frame--has-overlay .sidebar-resize-handle,
+.frame--has-overlay .notif-dock-resize-handle {
+  display: none;
+}
+
 .boot-shell {
   width: 100%;
   height: 100%;

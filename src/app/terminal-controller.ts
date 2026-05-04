@@ -24,6 +24,7 @@ interface TerminalView {
 interface TerminalControllerApi {
   resizeTerminal: (sessionId: string, size: { cols: number; rows: number }) => void;
   writeTerminal: (sessionId: string, data: string) => void;
+  isRemote?: boolean;
 }
 
 type AppConfig = typeof APP_CONFIG;
@@ -243,24 +244,36 @@ export function createTerminalController({
     if (!view.opened) {
       view.term.open(view.mount);
       view.opened = true;
-      // Switch to the GPU renderer for smooth scrolling under heavy TUI traffic
-      // (e.g. Claude Code). The DOM renderer can't keep up with high-frequency
-      // cursor moves and color changes, especially on macOS retina displays.
-      // Per @xterm/addon-webgl README, must be loaded AFTER term.open().
-      // On context loss (sleep/minimize on macOS), dispose so xterm falls back to DOM.
-      try {
-        const webglAddon = new WebglAddon();
-        webglAddon.onContextLoss(() => webglAddon.dispose());
-        view.term.loadAddon(webglAddon);
-      } catch {
-        // WebGL2 unavailable — DOM renderer remains in place silently.
-      }
       const queued = buffers.value.get(sessionId);
       if (queued) {
         view.term.write(queued);
         buffers.value.delete(sessionId);
       }
       scheduleDeferredTerminalFits(sessionId);
+      // Switch to the GPU renderer for smooth scrolling under heavy TUI traffic
+      // (e.g. Claude Code) on the desktop. We skip it on remote clients (web,
+      // mobile) because mobile WebGL is unreliable and we can't validate the
+      // result. On the desktop we wait for fonts.ready + an initial fit before
+      // loading the addon — WebglAddon caches glyph dimensions at load time, so
+      // attaching it before the font is ready or while the canvas is 0×0
+      // produces a permanently broken renderer (giant glyphs, blank screen)
+      // with no automatic fallback.
+      if (!api.isRemote) {
+        const loadWebgl = () => {
+          if (!view.mount.isConnected || view.term.cols === 0 || view.term.rows === 0) {
+            return;
+          }
+          try {
+            const webglAddon = new WebglAddon();
+            webglAddon.onContextLoss(() => webglAddon.dispose());
+            view.term.loadAddon(webglAddon);
+          } catch {
+            // WebGL2 unavailable — DOM renderer remains in place silently.
+          }
+        };
+        const ready = document.fonts?.ready ?? Promise.resolve();
+        ready.then(() => window.setTimeout(loadWebgl, 50)).catch(() => {});
+      }
     } else {
       // Force fit + refresh after re-attach (pane may have changed size)
       scheduleDeferredTerminalFits(sessionId);

@@ -22,8 +22,27 @@ export function useGlobalEvents() {
     });
   }
 
+  // PTY size is shared across all connected clients (desktop + remote). When
+  // another client resized it, our local DOM didn't change, so ResizeObserver
+  // doesn't fire — the active client must reclaim its size when the user
+  // returns to it. Otherwise the desktop stays "shrunk" until the user wiggles
+  // the window.
+  function reclaimTerminalSize() {
+    if (termStore.views.size > 0) {
+      termStore.scheduleAllVisibleResize();
+    }
+  }
+
+  function handleVisibility() {
+    if (document.visibilityState === "visible") {
+      reclaimTerminalSize();
+    }
+  }
+
   onMounted(() => {
     window.addEventListener("resize", handleResize);
+    window.addEventListener("focus", reclaimTerminalSize);
+    document.addEventListener("visibilitychange", handleVisibility);
     if (window.visualViewport) {
       window.visualViewport.addEventListener("resize", handleVisualViewportResize);
     }
@@ -31,6 +50,8 @@ export function useGlobalEvents() {
 
   onUnmounted(() => {
     window.removeEventListener("resize", handleResize);
+    window.removeEventListener("focus", reclaimTerminalSize);
+    document.removeEventListener("visibilitychange", handleVisibility);
     if (window.visualViewport) {
       window.visualViewport.removeEventListener("resize", handleVisualViewportResize);
     }

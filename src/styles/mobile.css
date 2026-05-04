@@ -9,6 +9,12 @@
   display: none;
 }
 
+/* Mobile-only close (✕) for the slide-out sidebar.
+   Desktop sidebar uses the collapse button (◀) instead. */
+.sidebar__close-btn {
+  display: none;
+}
+
 /* ── Mobile tab picker (hidden on desktop) ── */
 .mobile-tab-picker {
   display: none;
@@ -29,6 +35,11 @@
 
   .sidebar__collapse-btn {
     display: none;
+  }
+
+  .sidebar__close-btn {
+    display: grid;
+    place-items: center;
   }
 
   /* ── Hamburger button ── */
@@ -168,18 +179,23 @@
   }
 
   .mobile-tab-picker__dropdown {
-    position: absolute;
-    top: 100%;
-    right: 0;
+    /* Anchored to viewport, not the picker — the picker sits mid-toolbar
+       (margin-left: auto only pushes it past the tab strip; the bell + tab
+       actions live to its right), so a picker-relative dropdown overflows
+       off the left edge of the screen on narrow viewports. */
+    position: fixed;
+    top: 56px;
+    left: 8px;
+    right: 8px;
     z-index: 120;
-    min-width: 200px;
-    max-width: 80vw;
-    margin-top: 4px;
     padding: 4px 0;
     border: 1px solid var(--border);
     border-radius: 6px;
     background: var(--panel);
     box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+    max-height: calc(100dvh - 70px);
+    max-height: calc(100% - 70px);
+    overflow-y: auto;
   }
 
   .mobile-tab-picker__item {
