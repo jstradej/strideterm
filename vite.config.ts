@@ -69,5 +69,9 @@ export default defineConfig({
   test: {
     environment: "jsdom",
     include: ["**/*.test.js", "**/*.test.ts"],
+    // Polyfill window.matchMedia so jsdom-mounted components that call
+    // useIsNarrow / responsive composables don't crash with "matchMedia
+    // is not a function" the moment they hit onMounted.
+    setupFiles: [resolve(__dirname, "test/vitest-setup.ts")],
   },
 });

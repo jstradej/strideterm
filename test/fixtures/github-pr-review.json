@@ -1,0 +1,185 @@
+{
+  "meta": { "appVersion": "1.3.1-test", "repositoryUrl": "https://github.com/example/strideterm" },
+  "appState": {
+    "activeWorkspaceId": "ws-gh-review",
+    "activeProjectId": "ws-gh-review",
+    "activeProfileId": "default",
+    "settings": {
+      "theme": "dark",
+      "sidebarWidth": 220,
+      "sidebarCollapsed": false,
+      "remoteAccess": {
+        "enabled": true,
+        "host": "127.0.0.1",
+        "port": 3999,
+        "token": "test-token",
+        "customPublicUrl": "",
+        "cloudflaredPath": ""
+      },
+      "integrations": {
+        "azureDevops": { "enabled": false, "connections": [], "reviewRoot": "", "defaultPollSeconds": 60 },
+        "github": {
+          "enabled": true,
+          "connections": [
+            {
+              "id": "gh-1",
+              "label": "Mock GitHub",
+              "hostUrl": "https://github.com",
+              "apiBaseUrl": "https://api.github.com",
+              "currentUserLogin": "mock-user",
+              "tokenRef": "cred:gh-1",
+              "enabled": true,
+              "profileId": "default",
+              "ownerFilters": [],
+              "repositoryFilters": [],
+              "pollSeconds": 60,
+              "reviewRoot": ""
+            }
+          ],
+          "reviewRoot": "",
+          "defaultPollSeconds": 60
+        }
+      },
+      "tabTemplates": [{ "id": "shell", "title": "Shell", "command": "", "icon": "terminal" }]
+    },
+    "tabTemplates": [{ "id": "shell", "title": "Shell", "command": "", "icon": "terminal" }],
+    "profiles": [
+      {
+        "id": "default",
+        "name": "Default",
+        "color": "",
+        "workspaceIds": ["ws-gh-review"],
+        "projectIds": ["ws-gh-review"]
+      }
+    ],
+    "workspaces": [
+      {
+        "id": "ws-gh-review",
+        "name": "PR #42 review",
+        "icon": "🐙",
+        "color": "#238636",
+        "kind": "terminal",
+        "source": "manual",
+        "pluginId": "",
+        "cwd": "C:/tmp/review/gh-pr-42",
+        "notes": "",
+        "profileId": "default",
+        "connectionId": "",
+        "activePanelId": "panel-shell",
+        "activeViewId": "review:ws-gh-review",
+        "panels": [{ "id": "panel-shell", "title": "Shell", "command": "", "launch": null, "shell": true, "startup": "default" }],
+        "review": { "provider": "github", "prKey": "github:42" },
+        "quickfix": null
+      }
+    ],
+    "projects": []
+  },
+  "workspace": {
+    "workspace": {
+      "id": "ws-gh-review",
+      "name": "PR #42 review",
+      "icon": "🐙",
+      "color": "#238636",
+      "kind": "terminal",
+      "panels": [{ "id": "panel-shell", "title": "Shell", "command": "", "launch": null, "shell": true, "startup": "default" }],
+      "review": { "provider": "github", "prKey": "github:42" }
+    },
+    "project": null,
+    "sessions": [
+      {
+        "sessionId": "ws-gh-review:panel-shell",
+        "panelId": "panel-shell",
+        "title": "Shell",
+        "command": "",
+        "launch": null,
+        "startup": "default",
+        "status": "running"
+      }
+    ]
+  },
+  "attention": { "byWorkspace": {}, "byProject": {}, "activeWorkspace": null, "activeProject": null },
+  "docker": { "containers": [], "available": false, "error": null },
+  "git": { "workspaces": {}, "projects": {}, "activeWorkspace": null, "activeProject": null },
+  "azureDevops": {
+    "connections": [],
+    "inbox": { "needsMyReview": [], "myPullRequests": [], "recentlyUpdated": [], "needsAttention": [] },
+    "trackedPullRequests": {},
+    "pullRequests": {},
+    "sync": { "running": false, "lastStartedAt": null, "lastCompletedAt": null }
+  },
+  "github": {
+    "connections": [
+      {
+        "id": "gh-1",
+        "label": "Mock GitHub",
+        "hostUrl": "https://github.com",
+        "currentUserLogin": "mock-user",
+        "enabled": true,
+        "pollSeconds": 60,
+        "ownerFilters": [],
+        "repositoryFilters": [],
+        "status": "ok",
+        "lastSyncAt": "2026-05-04T11:55:00.000Z",
+        "lastError": ""
+      }
+    ],
+    "inbox": { "needsMyReview": [], "myPullRequests": [], "recentlyUpdated": [], "needsAttention": [] },
+    "trackedPullRequests": {},
+    "pullRequests": {
+      "github:42": {
+        "pullRequest": {
+          "id": 42,
+          "number": 42,
+          "title": "Mobile-friendly Azure DevOps + GitHub panes",
+          "body": "Mirrors the Git pane redesign across Azure DevOps and GitHub.",
+          "draft": false,
+          "isDraft": false,
+          "sourceRefName": "mobilnivzled",
+          "targetRefName": "main",
+          "sourceBranch": "mobilnivzled",
+          "targetBranch": "main",
+          "webUrl": "https://github.com/mock-org/strideterm/pull/42",
+          "url": "https://github.com/mock-org/strideterm/pull/42",
+          "mergeStatus": "succeeded"
+        },
+        "repository": { "fullName": "mock-org/strideterm" },
+        "role": "author",
+        "hasAttention": true,
+        "attentionReason": "review state changed",
+        "reviewerSummary": {
+          "approvedCount": 1,
+          "changesRequestedCount": 0,
+          "reviewers": [
+            { "login": "octocat", "displayName": "octocat", "state": "approved" }
+          ]
+        },
+        "checks": {
+          "failedCount": 0,
+          "pendingCount": 0,
+          "passedCount": 4,
+          "checks": [
+            { "id": "ci/build", "name": "build", "state": "passed", "durationMs": 91000 },
+            { "id": "ci/test", "name": "test", "state": "passed", "durationMs": 65000 }
+          ]
+        },
+        "changedFiles": [
+          { "path": "src/components/workspace/AzureInboxPane.vue", "changeType": "edit" },
+          { "path": "src/components/workspace/GitHubInboxPane.vue", "changeType": "edit" },
+          { "path": "src/styles/review.css", "changeType": "edit" }
+        ],
+        "threads": [],
+        "issueComments": []
+      }
+    },
+    "sync": {
+      "running": false,
+      "lastStartedAt": "2026-05-04T11:54:00.000Z",
+      "lastCompletedAt": "2026-05-04T11:55:00.000Z"
+    }
+  },
+  "reviewBridge": { "pullRequests": {}, "agentPrompts": [] },
+  "plugins": [],
+  "environment": { "platform": "win32", "shell": "bash" },
+  "themeSource": "dark",
+  "remoteAccess": { "enabled": true, "host": "127.0.0.1", "port": 3999, "urls": [] }
+}
