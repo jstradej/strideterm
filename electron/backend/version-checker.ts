@@ -133,8 +133,16 @@ export function createVersionChecker({
     cachedResult = await loadCache(cachePath);
   }
 
+  // Cache stores versionsBehind as it was at fetch time, but the user can update the
+  // binary between the fetch and the next read. Recompute against the live currentVersion
+  // every time we hand the cache out so the count never lags behind an in-place update.
+  function withCurrentVersionsBehind(cached: CachedResult): CachedResult {
+    const versionsBehind = cached.releases.filter((r) => compareVersions(r.tag, currentVersion) > 0).length;
+    return { ...cached, versionsBehind };
+  }
+
   function getCachedResult(): CachedResult | null {
-    return cachedResult;
+    return cachedResult ? withCurrentVersionsBehind(cachedResult) : null;
   }
 
   async function checkForUpdates(force = false): Promise<CachedResult | null> {
@@ -144,7 +152,7 @@ export function createVersionChecker({
     if (!force && cachedResult?.lastCheckAt) {
       const elapsed = Date.now() - new Date(cachedResult.lastCheckAt).getTime();
       if (elapsed < THROTTLE_MS) {
-        return cachedResult;
+        return withCurrentVersionsBehind(cachedResult);
       }
     }
 
@@ -159,26 +167,26 @@ export function createVersionChecker({
       response = await doFetch(apiUrl, { headers });
     } catch {
       // Network error — return cached result silently.
-      return cachedResult;
+      return cachedResult ? withCurrentVersionsBehind(cachedResult) : null;
     }
 
     // 304 Not Modified — data unchanged, just update the timestamp.
     if (response.status === 304) {
       cachedResult = { ...cachedResult!, lastCheckAt: new Date().toISOString() };
       await saveCache(cachePath, cachedResult);
-      return cachedResult;
+      return withCurrentVersionsBehind(cachedResult);
     }
 
     // Non-OK response (rate limit, server error) — return cached result.
     if (!response.ok) {
-      return cachedResult;
+      return cachedResult ? withCurrentVersionsBehind(cachedResult) : null;
     }
 
     let releases: GitHubRelease[];
     try {
       releases = (await response.json()) as GitHubRelease[];
     } catch {
-      return cachedResult;
+      return cachedResult ? withCurrentVersionsBehind(cachedResult) : null;
     }
 
     const etag = response.headers?.get?.("etag") || cachedResult?.etag || "";

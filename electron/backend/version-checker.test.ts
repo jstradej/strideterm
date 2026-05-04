@@ -391,4 +391,87 @@ describe("createVersionChecker", () => {
     const result = await checker.checkForUpdates();
     expect(result).toBeNull();
   });
+
+  test("throttle path recomputes versionsBehind against the current binary version", async () => {
+    const dir = await createTempDir();
+    // Seed cache as if running v1.4.0: both v1.5.0 and v1.6.0 are newer.
+    const seedChecker = createVersionChecker({
+      currentVersion: "1.4.0",
+      repositoryUrl: "https://github.com/test/repo",
+      userDataPath: dir,
+      fetchImpl: createMockFetch([mockRelease("v1.6.0"), mockRelease("v1.5.0")]),
+    });
+    const seeded = await seedChecker.checkForUpdates();
+    expect(seeded!.versionsBehind).toBe(2);
+
+    // User updates the binary in-place to v1.6.0; new instance starts within 24h.
+    // Throttle would normally hand back the stale cached count (2) — it must recompute (0).
+    const updatedChecker = createVersionChecker({
+      currentVersion: "1.6.0",
+      repositoryUrl: "https://github.com/test/repo",
+      userDataPath: dir,
+      fetchImpl: createFailingFetch(), // proves we never fetched
+    });
+    const result = await updatedChecker.checkForUpdates();
+    expect(result!.versionsBehind).toBe(0);
+    expect(result!.latestVersion).toBe("1.6.0");
+
+    // Partial update (v1.5.0): one cached release still newer.
+    const partialChecker = createVersionChecker({
+      currentVersion: "1.5.0",
+      repositoryUrl: "https://github.com/test/repo",
+      userDataPath: dir,
+      fetchImpl: createFailingFetch(),
+    });
+    const partial = await partialChecker.checkForUpdates();
+    expect(partial!.versionsBehind).toBe(1);
+  });
+
+  test("304 path recomputes versionsBehind against the current binary version", async () => {
+    const dir = await createTempDir();
+    const seedChecker = createVersionChecker({
+      currentVersion: "1.4.0",
+      repositoryUrl: "https://github.com/test/repo",
+      userDataPath: dir,
+      fetchImpl: createMockFetch([mockRelease("v1.6.0"), mockRelease("v1.5.0")]),
+    });
+    await seedChecker.checkForUpdates();
+
+    // Backdate so the throttle expires and we actually hit the 304 branch.
+    const cachePath = path.join(dir, "version-check.json");
+    const cached = JSON.parse(await fs.readFile(cachePath, "utf8"));
+    cached.lastCheckAt = "2020-01-01T00:00:00.000Z";
+    await fs.writeFile(cachePath, JSON.stringify(cached));
+
+    const updatedChecker = createVersionChecker({
+      currentVersion: "1.6.0",
+      repositoryUrl: "https://github.com/test/repo",
+      userDataPath: dir,
+      fetchImpl: create304Fetch(),
+    });
+    const result = await updatedChecker.checkForUpdates(true);
+    expect(result!.versionsBehind).toBe(0);
+  });
+
+  test("getCachedResult recomputes versionsBehind against the current binary version", async () => {
+    const dir = await createTempDir();
+    const seedChecker = createVersionChecker({
+      currentVersion: "1.4.0",
+      repositoryUrl: "https://github.com/test/repo",
+      userDataPath: dir,
+      fetchImpl: createMockFetch([mockRelease("v1.6.0"), mockRelease("v1.5.0")]),
+    });
+    await seedChecker.checkForUpdates();
+
+    const updatedChecker = createVersionChecker({
+      currentVersion: "1.6.0",
+      repositoryUrl: "https://github.com/test/repo",
+      userDataPath: dir,
+      fetchImpl: createFailingFetch(),
+    });
+    // Trigger the lazy load via checkForUpdates — getCachedResult itself doesn't load.
+    await updatedChecker.checkForUpdates();
+    const cachedView = updatedChecker.getCachedResult();
+    expect(cachedView!.versionsBehind).toBe(0);
+  });
 });
