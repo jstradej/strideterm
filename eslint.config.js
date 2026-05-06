@@ -78,6 +78,17 @@ export default [
     rules: tsRules,
   },
 
+  // --- Preload (CommonJS source for sandboxed preload) ---
+  {
+    files: ["electron/**/*.cts"],
+    plugins: { "@typescript-eslint": tseslint.plugin },
+    languageOptions: {
+      parser: tseslint.parser,
+      parserOptions: { project: "./tsconfig.preload.json" },
+    },
+    rules: tsRules,
+  },
+
   // --- Test TS files ---
   {
     files: ["**/*.test.ts", "test/**/*.ts"],
@@ -153,7 +164,7 @@ export default [
 
   // --- Backend (Node.js) ---
   {
-    files: ["electron/**/*.{js,ts}", "config/**/*.{js,ts}", "scripts/**/*.{mjs,mts}"],
+    files: ["electron/**/*.{js,ts,cts}", "config/**/*.{js,ts}", "scripts/**/*.{mjs,mts}"],
     languageOptions: { globals: { ...globals.node } },
   },
 

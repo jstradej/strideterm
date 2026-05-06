@@ -1,0 +1,18 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "lib": ["ES2023", "DOM"],
+    "types": ["node"],
+    "outDir": "dist-electron",
+    "rootDir": ".",
+    "declaration": false,
+    "sourceMap": true,
+    "noEmit": false,
+    "verbatimModuleSyntax": false,
+    "esModuleInterop": true
+  },
+  "include": ["electron/preload.cts", "electron/shared/**/*.ts"],
+  "exclude": ["**/*.test.ts", "node_modules", "dist-electron"]
+}
