@@ -60,10 +60,14 @@ function probeWebgl2(): WebglProbe {
       gl = canvas.getContext("webgl2", {
         antialias: false,
         preserveDrawingBuffer: false,
-        // Tell the driver to refuse the context if it would force software
-        // rasterization. Catches a chunk of the broken-macOS cases without
-        // needing a renderer-string heuristic.
-        failIfMajorPerformanceCaveat: true,
+        // Prefer the discrete GPU on multi-GPU systems (laptops with
+        // integrated + discrete). We intentionally do NOT set
+        // failIfMajorPerformanceCaveat:true — that flag is too aggressive in
+        // Electron: it returns null for integrated GPUs that are perfectly
+        // capable of hardware rendering, forcing the CPU-heavy DOM renderer.
+        // Software renderers are caught below via the renderer-string
+        // blacklist and the shader-compile probe.
+        powerPreference: "high-performance",
       }) as WebGL2RenderingContext | null;
     } catch (err) {
       cachedWebglProbe = { ok: false, reason: `getContext-threw:${(err as Error)?.message || "unknown"}` };
@@ -77,7 +81,7 @@ function probeWebgl2(): WebglProbe {
 
     // Software-renderer blacklist. Apple hides WEBGL_debug_renderer_info on
     // macOS so this branch is mostly a Windows/Linux safety net; on macOS
-    // we rely on failIfMajorPerformanceCaveat + the shader-compile probe.
+    // the shader-compile probe below is the primary guard.
     let renderer = "";
     const dbg = gl.getExtension("WEBGL_debug_renderer_info");
     if (dbg) {

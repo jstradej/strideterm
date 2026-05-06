@@ -41,6 +41,10 @@ if (typeof window !== "undefined" && typeof window.matchMedia !== "function") {
   });
 }
 
+// Make this a module so `declare global` is valid (TypeScript requires global
+// augmentations to live inside an external or ambient module).
+export {};
+
 /**
  * Test helper exported on the global so individual tests can override the
  * `matches` value for a specific query before mounting their component.
@@ -48,7 +52,6 @@ if (typeof window !== "undefined" && typeof window.matchMedia !== "function") {
  *     setMatchMediaResult("(max-width: 768px)", true);
  */
 declare global {
-  // eslint-disable-next-line no-var
   var setMatchMediaResult: (query: string, matches: boolean) => void;
 }
 

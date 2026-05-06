@@ -37,6 +37,9 @@ function fakeCredentialStore(initial: Record<string, string> = {}): CredentialSt
     listRefs() {
       return [...secrets.keys()];
     },
+    isEncryptionAvailable() {
+      return true;
+    },
   };
 }
 

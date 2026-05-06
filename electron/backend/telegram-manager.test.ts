@@ -19,6 +19,7 @@ function makeCredentialStore(secrets: Record<string, string> = {}) {
     setSecret: vi.fn(),
     deleteSecret: vi.fn(),
     listRefs: vi.fn(() => Object.keys(secrets)),
+    isEncryptionAvailable: vi.fn(() => true),
   };
 }
 

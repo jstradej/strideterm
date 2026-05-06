@@ -81,9 +81,7 @@ function mountPane(provider: "azure-devops" | "github" = "azure-devops") {
   appStore.payload = buildPayload(provider);
   // Stub the network-bound store actions the component fires from
   // mounted/watch hooks so they don't blow up against the null _api.
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const noop = () => Promise.resolve();
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   for (const fn of [
     "refreshAzure",
     "refreshGitHub",
@@ -92,8 +90,9 @@ function mountPane(provider: "azure-devops" | "github" = "azure-devops") {
     "markAzurePullRequestSeen",
     "openExternal",
   ]) {
-    if (typeof (appStore as Record<string, unknown>)[fn] === "function") {
-      vi.spyOn(appStore as never, fn as never).mockImplementation(noop as never);
+    if (typeof (appStore as unknown as Record<string, unknown>)[fn] === "function") {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (vi.spyOn(appStore as any, fn as any) as any).mockImplementation(noop);
     }
   }
   return mount(AzureReviewPane, {
