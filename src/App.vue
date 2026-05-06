@@ -149,6 +149,9 @@
               >
                 <span class="mobile-tab-picker__name">{{ tab.title }}</span>
                 <small class="mobile-tab-picker__status">{{ tab.status }}</small>
+                <span class="mobile-tab-picker__menu" title="Tab menu" @click.stop="onMobileTabMenu($event, tab.id)"
+                  >☰</span
+                >
               </button>
             </div>
           </div>
@@ -374,6 +377,13 @@ function onToolbarDeleteWorkspace(): void {
 
 function onTabContextMenu(event: { x: number; y: number; viewId: string }): void {
   store.showContextMenu(event.x, event.y, event.viewId);
+}
+
+function onMobileTabMenu(event: MouseEvent, viewId: string): void {
+  const btn = (event.currentTarget || event.target) as Element;
+  const rect = btn.getBoundingClientRect();
+  mobileTabOpen.value = false;
+  store.showContextMenu(rect.left, rect.bottom + 4, viewId);
 }
 
 function onToggleTabPicker(event: MouseEvent): void {

@@ -234,6 +234,26 @@
     margin-left: auto;
   }
 
+  .mobile-tab-picker__menu {
+    display: grid;
+    place-items: center;
+    width: 32px;
+    height: 32px;
+    margin-left: 4px;
+    border-radius: 4px;
+    color: var(--muted);
+    font-size: 14px;
+    line-height: 1;
+    flex-shrink: 0;
+    cursor: pointer;
+  }
+
+  .mobile-tab-picker__menu:hover,
+  .mobile-tab-picker__menu:active {
+    background: rgba(var(--tint), 0.12);
+    color: var(--text);
+  }
+
   .mobile-tab-picker__backdrop {
     display: block;
     position: fixed;
