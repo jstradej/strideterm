@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { getWorkspacePanelByViewId, getWorkspaceTabs } from "./selectors.js";
+import { getVisibleTabs, getWorkspacePanelByViewId, getWorkspaceTabs } from "./selectors.js";
 import type { StatePayload, WorkspaceState } from "../../electron/shared/types/state.js";
 
 describe("workspace selectors", () => {
@@ -135,5 +135,74 @@ describe("workspace selectors", () => {
       status: "headless judge",
       tone: "running",
     });
+  });
+});
+
+describe("getVisibleTabs", () => {
+  // Reproduces the user's complaint: on a phone-width viewport the task agent's
+  // 3-pane split (Dashboard + Worker + Judge) didn't fit, forcing them to
+  // manually unsplit every time. The fix is a viewport-aware "force solo"
+  // override that hides the split visually while preserving the underlying
+  // splitGroup state, so resizing back to desktop re-shows the full layout.
+  const tabs = [
+    { id: "task-1:dash", title: "Dashboard", status: "", tone: "idle" },
+    { id: "task-1:worker", title: "Worker", status: "", tone: "running" },
+    { id: "task-1:judge", title: "Judge", status: "", tone: "running" },
+    { id: "task-1:files", title: "Files", status: "", tone: "idle" },
+  ] as Parameters<typeof getVisibleTabs>[0]["tabs"];
+  const splitGroup = { layout: "top-split", viewIds: ["task-1:dash", "task-1:worker", "task-1:judge"] };
+  const isInSplitGroup: Parameters<typeof getVisibleTabs>[0]["isInSplitGroup"] = (viewId, group) =>
+    viewId ? group.viewIds.includes(viewId) : false;
+
+  test("desktop: returns every tab in the split group when active view is part of it", () => {
+    const result = getVisibleTabs({ tabs, activeViewId: "task-1:worker", splitGroup, isInSplitGroup });
+    expect(result.visibleTabs.map((t) => t.id)).toEqual(["task-1:dash", "task-1:worker", "task-1:judge"]);
+    expect(result.splitGroup).not.toBeNull();
+  });
+
+  test("forceSoloLayout: returns only the active tab when the viewport asks for solo even though splitGroup is set", () => {
+    const result = getVisibleTabs({
+      tabs,
+      activeViewId: "task-1:worker",
+      splitGroup,
+      isInSplitGroup,
+      forceSoloLayout: true,
+    });
+    expect(result.visibleTabs.map((t) => t.id)).toEqual(["task-1:worker"]);
+  });
+
+  test("forceSoloLayout preserves the underlying splitGroup so resizing back restores the layout", () => {
+    const result = getVisibleTabs({
+      tabs,
+      activeViewId: "task-1:worker",
+      splitGroup,
+      isInSplitGroup,
+      forceSoloLayout: true,
+    });
+    // The returned splitGroup is preserved so the store does not have to
+    // re-create it when the viewport widens again.
+    expect(result.splitGroup).toEqual(splitGroup);
+  });
+
+  test("forceSoloLayout falls back to the first tab when activeViewId is invalid", () => {
+    const result = getVisibleTabs({
+      tabs,
+      activeViewId: null,
+      splitGroup,
+      isInSplitGroup,
+      forceSoloLayout: true,
+    });
+    expect(result.visibleTabs.map((t) => t.id)).toEqual(["task-1:dash"]);
+  });
+
+  test("forceSoloLayout=false (default) leaves desktop split rendering unchanged", () => {
+    const result = getVisibleTabs({
+      tabs,
+      activeViewId: "task-1:worker",
+      splitGroup,
+      isInSplitGroup,
+      forceSoloLayout: false,
+    });
+    expect(result.visibleTabs.map((t) => t.id)).toEqual(["task-1:dash", "task-1:worker", "task-1:judge"]);
   });
 });

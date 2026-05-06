@@ -329,11 +329,19 @@ export function getVisibleTabs({
   activeViewId,
   splitGroup,
   isInSplitGroup,
+  forceSoloLayout = false,
 }: {
   tabs: WorkspaceTab[];
   activeViewId: string | null;
   splitGroup: SplitGroup | null;
   isInSplitGroup: (viewId: string | null, group: SplitGroup) => boolean;
+  /**
+   * When true, only the active tab is rendered even if `splitGroup` is set.
+   * The returned `splitGroup` is preserved so that flipping the flag back to
+   * false (e.g. resizing from mobile to desktop) restores the original layout
+   * without the caller having to re-create it.
+   */
+  forceSoloLayout?: boolean;
 }): {
   activeViewId: string | null;
   splitGroup: SplitGroup | null;
@@ -357,7 +365,13 @@ export function getVisibleTabs({
   }
 
   let visibleIds: string[];
-  if (next.splitGroup && isInSplitGroup(next.activeViewId, next.splitGroup)) {
+  if (forceSoloLayout) {
+    // Phone-width viewport: hide every tab except the active one. The
+    // splitGroup state is intentionally returned unchanged so that resizing
+    // back to desktop re-renders the full split layout without the user
+    // having to re-pick it.
+    visibleIds = next.activeViewId ? [next.activeViewId] : [];
+  } else if (next.splitGroup && isInSplitGroup(next.activeViewId, next.splitGroup)) {
     visibleIds = [...next.splitGroup.viewIds];
   } else {
     visibleIds = next.activeViewId ? [next.activeViewId] : [];

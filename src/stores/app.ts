@@ -23,6 +23,7 @@ import {
 import { createDialogActions } from "./app-dialog-actions.js";
 import { createWorkspaceActions } from "./app-workspace-actions.js";
 import { createApiActions } from "./app-api-actions.js";
+import { isMobileViewport } from "../composables/useIsNarrow.js";
 import { maybeApplyMockFromUrl } from "./dev-mocks.js";
 import { useGitUiStore } from "./git-ui.js";
 import type { StatePayload, RecoveryCandidate } from "../../electron/shared/types/state.js";
@@ -211,6 +212,11 @@ export const useAppStore = defineStore("app", () => {
       splitGroup: splitGroup.value,
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       isInSplitGroup: (viewId: string | null, sg: any) => (viewId ? sg?.viewIds?.includes(viewId) : false) || false,
+      // On phone-width / short viewports we collapse splits to just the active
+      // tab so the user does not have to manually unsplit (the 3-pane task
+      // agent layout did not fit a phone). The splitGroup state itself stays
+      // intact, so resizing back to desktop restores the full layout.
+      forceSoloLayout: isMobileViewport.value,
     });
     return (result as AnyApi).visibleTabs;
   });

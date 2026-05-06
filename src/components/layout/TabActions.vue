@@ -10,7 +10,7 @@
       + Tab
     </button>
     <button
-      v-if="store.splitGroup"
+      v-if="store.splitGroup && !isMobile"
       type="button"
       class="button button--ghost"
       title="Disband the current split layout — the active view returns to a single full-width pane."
@@ -19,6 +19,7 @@
       Unsplit
     </button>
     <button
+      v-if="!isMobile"
       type="button"
       class="button button--ghost"
       :class="{ 'button--active': currentLayout !== 'solo' }"
@@ -79,6 +80,7 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import { useAppStore } from "../../stores/app.js";
+import { useIsNarrow } from "../../composables/useIsNarrow.js";
 
 const LAYOUTS = {
   solo: { slots: 1, label: "Solo" },
@@ -90,6 +92,7 @@ const LAYOUTS = {
 };
 
 const store = useAppStore();
+const { isMobile } = useIsNarrow();
 
 const workspaceKind = computed(() => store.activeWorkspace?.kind || "terminal");
 const gitAvailable = computed(() => {
