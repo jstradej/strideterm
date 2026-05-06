@@ -529,11 +529,14 @@ const pullDisabled = computed(() => {
 });
 const pullTooltip = computed(() => {
   const s = snapshot.value;
-  if (!s?.upstream) return "No upstream tracking branch";
-  if (s.dirty) return "Commit or stash changes before pulling";
-  if (isDetachedHead.value) return "Cannot pull in detached HEAD state";
-  if (s.behindCount > 0) return `Pull ${s.behindCount} commit${s.behindCount !== 1 ? "s" : ""} from ${s.upstream}`;
-  return "Nothing to pull";
+  if (!s?.upstream)
+    return "Disabled — this branch has no upstream tracking ref. Set one with the Push button (it publishes and tracks at the same time).";
+  if (s.dirty)
+    return "Disabled — commit or stash your uncommitted changes first; git refuses to pull when the working tree is dirty.";
+  if (isDetachedHead.value) return "Disabled — HEAD is detached from any branch. Check out a branch first, then pull.";
+  if (s.behindCount > 0)
+    return `Run git pull (fast-forward + merge) to bring in ${s.behindCount} commit${s.behindCount !== 1 ? "s" : ""} from ${s.upstream} and update the working tree.`;
+  return "Disabled — local branch is already up to date with upstream; nothing to pull.";
 });
 
 // Push state
@@ -552,15 +555,16 @@ const pushDisabled = computed(() => {
 });
 const pushTooltip = computed(() => {
   const s = snapshot.value;
-  if (!s) return "Push";
+  if (!s) return "Push the current branch to its remote tracking ref.";
   if (isDiverged.value && !showAllActions.value)
-    return "Push may be rejected — branch diverged from upstream. Use Force push (with lease) in the banner above if you rewrote history intentionally.";
+    return "Disabled — local branch has diverged from upstream and a regular push would be rejected. Resolve via the Force push (--force-with-lease) banner above if you intentionally rewrote history.";
   const target = `${pushRemote.value}/${s.branch}`;
   if (!s.upstream || !upstreamMatchesBranch.value) {
-    return `Push ${s.branch} and set upstream to ${target}`;
+    return `Run git push -u ${pushRemote.value} ${s.branch} — publishes the branch and pins ${target} as its upstream tracking ref so future pulls and pushes know where to go.`;
   }
-  if (s.aheadCount > 0) return `Push ${s.aheadCount} commit${s.aheadCount !== 1 ? "s" : ""} to ${target}`;
-  return "Nothing to push";
+  if (s.aheadCount > 0)
+    return `Run git push to send ${s.aheadCount} local commit${s.aheadCount !== 1 ? "s" : ""} to ${target}.`;
+  return "Disabled — local branch has nothing ahead of upstream; nothing to push.";
 });
 
 // Card visibility
