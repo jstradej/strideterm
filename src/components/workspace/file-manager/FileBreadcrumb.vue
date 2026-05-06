@@ -9,7 +9,11 @@
           'file-breadcrumb__link--active': i === items.length - 1,
           [`file-breadcrumb__link--git-${dirtyFor(item.path)}`]: !!dirtyFor(item.path),
         }"
-        :title="dirtyFor(item.path) ? `Contains ${dirtyFor(item.path)} files` : item.path"
+        :title="
+          dirtyFor(item.path)
+            ? `Click to navigate into ${item.path || 'the workspace root'}. Sub-tree contains ${dirtyFor(item.path)} files (the underline colour matches the git status legend in the toolbar).`
+            : `Click to navigate the file list into ${item.path || 'the workspace root'}.`
+        "
         @click="$emit('navigate', item.path)"
       >
         {{ item.name }}

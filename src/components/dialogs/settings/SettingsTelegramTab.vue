@@ -50,9 +50,15 @@
             "
             >{{ conn.enabled ? "enabled" : "disabled" }}</span
           >
-          <span class="connection-item__chevron" :title="editingId === conn.id ? 'Collapse' : 'Expand to edit'">{{
-            editingId === conn.id ? "▲" : "▼"
-          }}</span>
+          <span
+            class="connection-item__chevron"
+            :title="
+              editingId === conn.id
+                ? 'Collapse this connection — close the inline editor and return to the connection list view.'
+                : 'Expand this connection to edit its bot token, chat ID, poll interval, forward filter, and enabled flag inline.'
+            "
+            >{{ editingId === conn.id ? "▲" : "▼" }}</span
+          >
         </div>
         <div v-if="editingId === conn.id" class="connection-form">
           <ConnectionForm
