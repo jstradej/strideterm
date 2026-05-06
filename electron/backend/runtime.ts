@@ -28,6 +28,7 @@ import { AzureDevOpsManager } from "./azure-devops-manager.js";
 import { GitHubManager } from "./github-manager.js";
 import { createGitHubAuditLogStore } from "./github-audit-log-store.js";
 import { TelegramManager } from "./telegram-manager.js";
+import { resolveTelegramTaskTarget } from "./telegram-task-resolution.js";
 import { createTelegramAuditLogStore } from "./telegram-audit-log-store.js";
 import { startNotifyServer, generateNotifySecret, buildNotifyUrl } from "./notify-server.js";
 import {
@@ -1693,43 +1694,18 @@ export async function createRuntime({
         // Walk up the parent chain so a Telegram reply originating in a
         // child workspace (PR review, quickfix, or another task) doesn't
         // create a misnested "task of task" or "task of PR review" tree.
-        // Stops at the first ancestor with a workable cwd that's also a real
-        // project root (no own parent, no provider-inbox kind). Fallback to
-        // the original workspace if the walk-up dead-ends at something
-        // without a cwd (e.g. the github/azure inbox) — better to nest under
-        // the PR review than fail outright.
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const isProperRoot = (w: any): boolean =>
-          !!w &&
-          !!w.cwd &&
-          w.kind !== "azure" &&
-          w.kind !== "github" &&
-          w.kind !== "docker" &&
-          w.kind !== "task" &&
-          !w.review &&
-          !w.quickfix &&
-          !w.task;
-        const original = findWorkspace(state, cmd.workspaceId);
-        let walker = original;
-        const seen = new Set<string>();
-        let resolved = isProperRoot(walker) ? walker : null;
-        while (walker && !resolved && !seen.has(walker.id)) {
-          seen.add(walker.id);
-          const upId =
-            walker.task?.parentWorkspaceId ||
-            walker.review?.parentWorkspaceId ||
-            walker.quickfix?.parentWorkspaceId ||
-            "";
-          if (!upId) break;
-          walker = findWorkspace(state, upId);
-          if (isProperRoot(walker)) {
-            resolved = walker;
-          }
-        }
-        // Prefer the proper root we walked up to. Otherwise fall back to the
-        // original workspace if it has a cwd (covers PR review with worktree
-        // root). Otherwise abort.
-        const parentWorkspace = resolved || (original?.cwd ? original : null);
+        // Pure helper at telegram-task-resolution.ts owns the logic — it
+        // also handles the trickier "task ran in a worktree, completed,
+        // user replied to the completion notification" case so the new
+        // task continues in the same worktree instead of jumping back to
+        // the main project root.
+        const targetCwdHint = String(cmd.targetCwd || "").trim();
+        const resolution = resolveTelegramTaskTarget({
+          workspaces: state.workspaces,
+          sourceWorkspaceId: cmd.workspaceId,
+          targetCwd: targetCwdHint,
+        });
+        const parentWorkspace = resolution.parentWorkspace;
         if (!parentWorkspace?.cwd) {
           log.warn("telegram: start-task aborted — no valid parent workspace with cwd", {
             originalWorkspaceId: cmd.workspaceId,
@@ -1747,6 +1723,7 @@ export async function createRuntime({
             from: cmd.workspaceId,
             to: parentWorkspace.id,
             toName: parentWorkspace.name,
+            cwdReason: resolution.cwdReason,
           });
         }
         const resolvedParentId = parentWorkspace.id;
@@ -1795,7 +1772,6 @@ export async function createRuntime({
           // useWorktree path here just plumbs through.
           const useWorktree = !!cmd.useWorktree;
           const worktreeBranch = cmd.worktreeBranch?.trim() || "";
-          const targetCwd = cmd.targetCwd?.trim() || "";
           if (useWorktree && !worktreeBranch) {
             log.warn("telegram: start-task with useWorktree but no branch", { workspaceId: cmd.workspaceId });
             if (cmd.chatId) {
@@ -1803,17 +1779,24 @@ export async function createRuntime({
             }
             return;
           }
-          // For "existing worktree" mode we just substitute cwd before calling
-          // createTaskWorkspace; no git worktree is created. parentWorkspaceId
-          // still points at the top-level workspace so the sidebar grouping
-          // stays consistent.
-          const taskCwd = targetCwd || parentWorkspace.cwd;
+          // The task cwd is decided by `resolveTelegramTaskTarget` above:
+          //  - explicit `cmd.targetCwd` → used as-is (pick-existing-worktree),
+          //  - source workspace's cwd if it differs from the resolved root
+          //    (the "completion notification from a worktree task" case the
+          //    user reported as buggy),
+          //  - resolved root cwd otherwise.
+          // For "new worktree" mode we ignore the resolution result and keep
+          // the resolved root's cwd as the BASE for the new worktree — the
+          // git worktree is always cut off the project root, never off
+          // another worktree.
+          const taskCwd = useWorktree ? parentWorkspace.cwd : resolution.taskCwd;
           log.warn("telegram: creating task workspace", {
             parentWorkspaceId: resolvedParentId,
             parentName: parentWorkspace.name,
             taskCwd,
             useWorktree,
             worktreeBranch: worktreeBranch || undefined,
+            cwdReason: resolution.cwdReason,
             description: cmd.taskDescription?.slice(0, 80),
           });
           // activate:false — Telegram-driven creation must not yank the user
@@ -1845,11 +1828,9 @@ export async function createRuntime({
             // Don't auto-start. Ask the user via Telegram whether to start
             // the task now or leave it idle so they can edit TASK.md first.
             if (cmd.chatId) {
-              const promptCwd =
-                targetCwd ||
-                (useWorktree
-                  ? `${parentWorkspace.cwd}\\.strideterm\\tree\\${worktreeBranch.replace(/\//g, "-")}`
-                  : parentWorkspace.cwd);
+              const promptCwd = useWorktree
+                ? `${parentWorkspace.cwd}\\.strideterm\\tree\\${worktreeBranch.replace(/\//g, "-")}`
+                : taskCwd;
               await telegramManager.promptStartAfterCreate({
                 chatId: cmd.chatId,
                 workspaceId: result.workspaceId,
