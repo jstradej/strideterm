@@ -136,9 +136,91 @@ function writeHead(response: ServerResponse, statusCode: number, headers: Record
   response.writeHead(statusCode, { ...SECURITY_HEADERS, ...headers });
 }
 
+/**
+ * Settings on `remoteAccess` that a remote caller (HTTP-side updateSettings)
+ * may not change. Local IPC bypasses this filter — the desktop Settings UI
+ * needs to be able to flip these freely.
+ *
+ * Why each is dangerous when reachable from a leaked-token attacker:
+ *   - `cloudflaredPath`: tunnel-manager spawns this binary directly. Combined
+ *     with file-write into a workspace cwd (allowed by the file-API
+ *     allowlist) it's a one-shot RCE — drop a script, repoint the path,
+ *     POST /api/tunnel/create.
+ *   - `enabled`/`host`/`port`: change how the server binds. Disabling kicks
+ *     the legitimate user off; widening `host` increases exposure.
+ *   - `token`: rotating invalidates every existing session and locks the
+ *     legitimate user out until they walk back to the desktop.
+ *
+ * `customPublicUrl` is intentionally allowed — it's a display-only string for
+ * the "Copy share URL" feature.
+ */
+export const REMOTE_BLOCKED_REMOTE_ACCESS_FIELDS: ReadonlyArray<string> = [
+  "cloudflaredPath",
+  "enabled",
+  "host",
+  "port",
+  "token",
+];
+
+/**
+ * Apply the same blocklist `/api/settings/update` enforces. Exported for
+ * tests; mutates `settings.remoteAccess` in place to drop the blocked keys
+ * and returns the list of fields that were actually present (for audit).
+ */
+export function sanitizeSettingsFromRemote(settings: Record<string, unknown>): string[] {
+  const remoteAccess = settings.remoteAccess as Record<string, unknown> | undefined;
+  if (!remoteAccess || typeof remoteAccess !== "object") return [];
+  const removed: string[] = [];
+  for (const key of REMOTE_BLOCKED_REMOTE_ACCESS_FIELDS) {
+    if (key in remoteAccess) {
+      delete remoteAccess[key];
+      removed.push(key);
+    }
+  }
+  return removed;
+}
+
+/**
+ * Strip server-side secrets that a remote browser must never see in JSON
+ * responses or `state:updated` broadcasts. Today that's only the master
+ * access token — every other remote-only secret either rides outside the
+ * payload (Set-Cookie session id) or is intentionally part of the share-URL
+ * UX (`payload.remoteAccess.urls[*]` still embeds `?token=…`, accepted by
+ * SEC-004 as the cost of a working "Copy share URL" button).
+ *
+ * This is defense in depth: the desktop Electron renderer reads state via
+ * IPC, not /api/state, so stripping for the HTTP/WS path doesn't break any
+ * local UI. A remote browser that wants to hand off the share URL still has
+ * `payload.remoteAccess.urls`; UIs that surface the bare token (e.g.
+ * "Token: <value>" in a settings panel) will now see an empty string when
+ * loaded over remote, which is the desired outcome.
+ *
+ * Returns the input unchanged when it doesn't look like a runtime payload —
+ * safe to wrap every JSON response, including `{ ok: true }` and error
+ * envelopes.
+ */
+export function stripSecretsForRemote(body: unknown): unknown {
+  if (!body || typeof body !== "object") return body;
+  const payload = body as Record<string, unknown>;
+  const appState = payload.appState as Record<string, unknown> | undefined;
+  const settings = appState?.settings as Record<string, unknown> | undefined;
+  const remoteAccess = settings?.remoteAccess as Record<string, unknown> | undefined;
+  if (!remoteAccess || typeof remoteAccess !== "object") return body;
+  return {
+    ...payload,
+    appState: {
+      ...appState,
+      settings: {
+        ...settings,
+        remoteAccess: { ...remoteAccess, token: "" },
+      },
+    },
+  };
+}
+
 function json(response: ServerResponse, statusCode: number, body: unknown): void {
   writeHead(response, statusCode, { "Content-Type": "application/json; charset=utf-8" });
-  response.end(JSON.stringify(body));
+  response.end(JSON.stringify(stripSecretsForRemote(body)));
 }
 
 const MAX_BODY_SIZE = 5 * 1024 * 1024; // 5 MB
@@ -315,7 +397,14 @@ async function handleApiRequest(runtime: Runtime, request: IncomingMessage, resp
     }
 
     if (request.method === "POST" && url.pathname === "/api/settings/update") {
-      const result = await runtime.updateSettings(body.settings || {});
+      // Drop fields a remote caller is never authorised to change. See
+      // REMOTE_BLOCKED_REMOTE_ACCESS_FIELDS for the rationale; the short
+      // version is "cloudflaredPath would be remote RCE, the rest are
+      // bind/lockout knobs that only the desktop-side admin should touch".
+      // Mutating the parsed body in place is fine — it isn't shared.
+      const settings = (body.settings || {}) as Record<string, unknown>;
+      sanitizeSettingsFromRemote(settings);
+      const result = await runtime.updateSettings(settings);
       json(response, 200, result.payload);
       return;
     }
@@ -1232,7 +1321,12 @@ export async function startRemoteServer({
   }
 
   const unsubscribe = [
-    runtime.on("state:updated", (payload: unknown) => broadcast({ type: "state:updated", payload })),
+    // state:updated carries the same payload shape as /api/state, so reuse
+    // the strip for every WS broadcast too — otherwise we'd just be moving
+    // the leak from HTTP to WS.
+    runtime.on("state:updated", (payload: unknown) =>
+      broadcast({ type: "state:updated", payload: stripSecretsForRemote(payload) }),
+    ),
     runtime.on("terminal:data", (payload: unknown) => broadcast({ type: "terminal:data", payload })),
     runtime.on("terminal:exit", (payload: unknown) => broadcast({ type: "terminal:exit", payload })),
     runtime.on("ssh:auth-prompt", (payload: unknown) => broadcast({ type: "ssh:auth-prompt", payload })),
@@ -1290,7 +1384,12 @@ export async function startRemoteServer({
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         (ws as any).isAlive = true;
       });
-      ws.send(JSON.stringify({ type: "state:updated", payload: await runtime.getInitialState() }));
+      ws.send(
+        JSON.stringify({
+          type: "state:updated",
+          payload: stripSecretsForRemote(await runtime.getInitialState()),
+        }),
+      );
 
       ws.on("message", (raw: Buffer) => {
         try {
