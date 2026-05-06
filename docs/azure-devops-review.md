@@ -34,6 +34,8 @@ When you have multiple repositories, filter buttons appear at the top to show on
 
 Each PR card shows: number, title, author, branches, role (author/reviewer), and attention reason. Actions: **Open/Review** (opens review workspace), **Browser** (opens in Azure DevOps).
 
+Click the **▸** caret on the left of the title to expand a PR row in place. The expanded view shows the PR description, creation date, status, merge state, comment counts (total / unresolved / new since you last looked), check pass/fail/pending breakdown, reviewer roll-up, the source-branch HEAD short SHA, and a preview of the latest comment from someone other than you — handy for triaging the inbox without opening every review workspace.
+
 ### Open a Review Workspace
 
 Clicking **Review** on a PR creates a local workspace:

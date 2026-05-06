@@ -35,6 +35,8 @@ When you have multiple repositories, filter buttons appear at the top to show on
 
 Each PR card shows: number, title, author, branches, role (author/reviewer), approval status, and attention reason. Actions: **Review** (opens review workspace), **Browser** (opens on GitHub).
 
+Click the **▸** caret on the left of the title to expand a PR row in place. The expanded view shows the PR body (description), created/updated dates, state, mergeable state (clean / dirty / blocked / behind / unstable), comment counts (total + new since you last looked), check run pass/fail/pending breakdown, reviewer roll-up (approved / changes-requested / still requested), and the head commit short SHA — useful for scanning the inbox without opening every review workspace.
+
 ### Open a Review Workspace
 
 Clicking **Review** on a PR creates a local workspace:

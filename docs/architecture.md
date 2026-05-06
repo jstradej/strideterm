@@ -266,7 +266,7 @@ Known limitations:
 
 - remote auth is token-based (no user accounts)
 - terminal panes use imperative DOM attachment (xterm.js requires stable mount points)
-- remote UI is usable on mobile but not phone-first optimized
+- the renderer adapts the sidebar, Git pane, Azure DevOps / GitHub inbox, and review pane chrome to phone widths via popovers — but desktop remains the primary target, so dense workspace dialogs may still need a wider viewport
 - Docker manager is container-centric rather than compose-centric
 - browser tabs use `<webview>` in Electron (bypasses X-Frame-Options) but `<iframe>` in remote mode (subject to site restrictions)
 - `node-pty` native rebuild may fail on some Windows setups

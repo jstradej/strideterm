@@ -1,5 +1,7 @@
 <template>
-  <article :class="['azure-pr-row', item.hasAttention && 'azure-pr-row--attention', expanded && 'azure-pr-row--expanded']">
+  <article
+    :class="['azure-pr-row', item.hasAttention && 'azure-pr-row--attention', expanded && 'azure-pr-row--expanded']"
+  >
     <div class="azure-pr-row__main">
       <div class="azure-pr-row__title">
         <button
@@ -7,7 +9,11 @@
           class="azure-pr-row__expand"
           :aria-expanded="expanded"
           :aria-label="expanded ? 'Hide pull request details' : 'Show pull request details'"
-          :title="expanded ? 'Collapse — hide description and details.' : 'Expand — preview description, status and reviewers without opening the PR.'"
+          :title="
+            expanded
+              ? 'Collapse — hide description and details.'
+              : 'Expand — preview description, status and reviewers without opening the PR.'
+          "
           @click="expanded = !expanded"
         >
           <span class="azure-pr-row__expand-caret" aria-hidden="true">{{ expanded ? "▾" : "▸" }}</span>
@@ -65,7 +71,9 @@
           </div>
           <div v-if="pullRequest.sourceCommitId" class="azure-pr-row__fact">
             <dt>HEAD</dt>
-            <dd><code>{{ shortSha(pullRequest.sourceCommitId) }}</code></dd>
+            <dd>
+              <code>{{ shortSha(pullRequest.sourceCommitId) }}</code>
+            </dd>
           </div>
         </dl>
         <p v-if="latestCommentPreview" class="azure-pr-row__comment-preview">

@@ -1,7 +1,23 @@
 <template>
-  <article :class="['azure-pr-row', item.hasAttention && 'azure-pr-row--attention']">
+  <article
+    :class="['azure-pr-row', item.hasAttention && 'azure-pr-row--attention', expanded && 'azure-pr-row--expanded']"
+  >
     <div class="azure-pr-row__main">
       <div class="azure-pr-row__title">
+        <button
+          type="button"
+          class="azure-pr-row__expand"
+          :aria-expanded="expanded"
+          :aria-label="expanded ? 'Hide pull request details' : 'Show pull request details'"
+          :title="
+            expanded
+              ? 'Collapse — hide description and details.'
+              : 'Expand — preview description, status and reviewers without opening the PR.'
+          "
+          @click="expanded = !expanded"
+        >
+          <span class="azure-pr-row__expand-caret" aria-hidden="true">{{ expanded ? "▾" : "▸" }}</span>
+        </button>
         <span class="azure-pr-row__id">#{{ pullRequest.number || pullRequest.id }}</span>
         <strong>{{ pullRequest.title || "Untitled pull request" }}</strong>
         <span v-if="pullRequest.draft || pullRequest.isDraft" class="workspace-chip" style="font-size: 10px">
@@ -32,6 +48,46 @@
       </div>
       <div class="azure-pr-row__branch">
         {{ stripRef(pullRequest.sourceRefName) }} &rarr; {{ stripRef(pullRequest.targetRefName) }}
+      </div>
+      <div v-if="expanded" class="azure-pr-row__details">
+        <p v-if="description" class="azure-pr-row__description">{{ description }}</p>
+        <p v-else class="azure-pr-row__description azure-pr-row__description--empty">No description provided.</p>
+        <dl class="azure-pr-row__facts">
+          <div v-if="pullRequest.createdAt" class="azure-pr-row__fact">
+            <dt>Created</dt>
+            <dd>{{ formatDate(pullRequest.createdAt) }}</dd>
+          </div>
+          <div v-if="pullRequest.updatedAt" class="azure-pr-row__fact">
+            <dt>Updated</dt>
+            <dd>{{ formatDate(pullRequest.updatedAt) }}</dd>
+          </div>
+          <div class="azure-pr-row__fact">
+            <dt>State</dt>
+            <dd>{{ pullRequest.state || "open" }}</dd>
+          </div>
+          <div v-if="mergeStatusLabel" class="azure-pr-row__fact">
+            <dt>Merge</dt>
+            <dd>{{ mergeStatusLabel }}</dd>
+          </div>
+          <div v-if="commentLabel" class="azure-pr-row__fact">
+            <dt>Comments</dt>
+            <dd>{{ commentLabel }}</dd>
+          </div>
+          <div v-if="checksLabel" class="azure-pr-row__fact">
+            <dt>Checks</dt>
+            <dd>{{ checksLabel }}</dd>
+          </div>
+          <div v-if="reviewerLabel" class="azure-pr-row__fact">
+            <dt>Reviewers</dt>
+            <dd>{{ reviewerLabel }}</dd>
+          </div>
+          <div v-if="pullRequest.headSha" class="azure-pr-row__fact">
+            <dt>HEAD</dt>
+            <dd>
+              <code>{{ shortSha(pullRequest.headSha) }}</code>
+            </dd>
+          </div>
+        </dl>
       </div>
     </div>
     <div class="azure-pr-row__actions">
@@ -73,6 +129,7 @@ const emit = defineEmits<{
 }>();
 
 const busy = ref(false);
+const expanded = ref(false);
 const pullRequest = computed(() => props.item.pullRequest || {});
 const authorName = computed(() => {
   const author = props.item.author;
@@ -107,8 +164,79 @@ const attentionIcon = computed(() => {
   return "⚡";
 });
 
+const description = computed(() => {
+  // GitHub stores PR body under `body`; older code may have populated
+  // `description` directly. Check both for forward compatibility.
+  const text = String(pullRequest.value.body || pullRequest.value.description || "").trim();
+  return text;
+});
+
+const mergeStatusLabel = computed(() => {
+  const status = String(pullRequest.value.mergeableState || "");
+  if (!status) return "";
+  if (status === "clean") return "No conflicts";
+  if (status === "dirty") return "Conflicts detected";
+  if (status === "blocked") return "Blocked";
+  if (status === "behind") return "Behind base";
+  if (status === "unstable") return "Unstable (failing checks)";
+  if (status === "unknown") return "";
+  return status;
+});
+
+const commentLabel = computed(() => {
+  const total = Number(props.item.commentCount || 0);
+  const fresh = Number(props.item.newCommentsCount || 0);
+  if (!total && !fresh) return "";
+  const parts: string[] = [];
+  if (total) parts.push(`${total} total`);
+  if (fresh) parts.push(`${fresh} new`);
+  return parts.join(" · ");
+});
+
+const checksLabel = computed(() => {
+  const checks = props.item.checks;
+  if (!checks) return "";
+  const passed = Number(checks.passedCount || 0);
+  const failed = Number(checks.failedCount || 0);
+  const pending = Number(checks.pendingCount || 0);
+  if (!passed && !failed && !pending) return "";
+  const parts: string[] = [];
+  if (passed) parts.push(`${passed} passed`);
+  if (failed) parts.push(`${failed} failed`);
+  if (pending) parts.push(`${pending} pending`);
+  return parts.join(" · ");
+});
+
+const reviewerLabel = computed(() => {
+  const summary = props.item.reviewerSummary;
+  const reviewers: Array<{ state?: string; isRequested?: boolean }> = (summary?.reviewers || []) as Array<{
+    state?: string;
+    isRequested?: boolean;
+  }>;
+  if (!reviewers.length) return "";
+  const approved = Number(summary?.approvedCount || 0);
+  const changesRequested = Number(summary?.changesRequestedCount || 0);
+  const requested = Number(summary?.requestedCount || 0);
+  const parts = [`${reviewers.length} total`];
+  if (approved) parts.push(`${approved} approved`);
+  if (changesRequested) parts.push(`${changesRequested} changes requested`);
+  if (requested) parts.push(`${requested} requested`);
+  return parts.join(" · ");
+});
+
 function stripRef(ref: unknown) {
   return String(ref || "").replace(/^refs\/heads\//, "");
+}
+
+function shortSha(sha: unknown) {
+  return String(sha || "").slice(0, 7);
+}
+
+function formatDate(iso: unknown): string {
+  if (!iso) return "";
+  const d = new Date(iso as string);
+  if (Number.isNaN(d.getTime())) return "";
+  return d.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
 }
 
 function handleOpen() {

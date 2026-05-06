@@ -20,7 +20,7 @@
 - **Docker Manager** - list containers, run actions, open shells, and stream logs
 - **SSH Support** - connect to remote machines from a saved host book or ad-hoc, with built-in key manager, host key TOFU verification, `~/.ssh/config` import, SSH agent support, jump hosts, and three launch modes (built-in, system `ssh`, or WSL) — see [docs](docs/ssh.md)
 - **Remote Access** - access your workspace from any device via LAN or Cloudflare tunnel with QR code
-- **Telegram Bot** - forward strIDEterm alerts to a Telegram chat and reply / tap inline buttons to drive the app from your phone — start a task, pause / resume agents, capture screenshots, fetch task files, open a PR review, all over Telegram's long-polling API (no webhook, no public tunnel) — see [docs](docs/telegram.md)
+- **Telegram Bot** - forward strIDEterm alerts to a Telegram chat and reply / tap inline buttons to drive the app from your phone — start a task, pause / resume agents, capture screenshots, fetch task files, open a PR review, grab the remote-access URL via `/tunnel`, all over Telegram's long-polling API (no webhook, no public tunnel) — see [docs](docs/telegram.md)
 - **Plugins** - extend functionality with plugins (Docker Ops and System Monitor built-in)
 - **Finish Notifications** - know when a command or agent finishes without watching the screen:
   - Audio ding when focused, system notification when in background
@@ -31,6 +31,7 @@
 - **Keyboard Shortcuts** - navigate workspaces, tabs, and layouts entirely from the keyboard for a fast, mouse-free workflow
 - **Light/Dark Theme** - full theme support including terminal colors and title bar
 - **Drag & Drop** - reorder workspaces and tabs by dragging
+- **Mobile-Responsive Remote UI** - the web client served by the remote-access server adapts to phone-width viewports: the workspace sidebar, Git pane chrome, Azure DevOps / GitHub PR inbox and review panes, and per-tab actions all collapse into popovers and full-width controls so you can drive a workspace from a phone over LAN or a Cloudflare tunnel
 
 ## Screenshots
 
