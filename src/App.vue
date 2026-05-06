@@ -16,6 +16,7 @@
       'frame--sidebar-collapsed': store.sidebarCollapsed,
       'frame--notif-pinned': notifStore.pinned,
       'frame--has-overlay': !!store.overlay,
+      'frame--remote-expanded': store.remoteAccessExpanded,
     }"
   >
     <div

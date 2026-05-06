@@ -8,14 +8,20 @@
   padding: 20px;
 }
 
-/* The overlay backdrop is translucent (75% dark), so the resize handles
-   underneath leak through with their hover/active orange tint. They also
-   remain hoverable through the overlay because their stacking context is
-   independent. When any modal is open, hide them entirely so the dialog
-   feels fully on top. Driven by the .frame--has-overlay class on the root
-   frame (toggled in App.vue from store.overlay). */
+/* Resize handles (sidebar, notif-dock) are at z-index 50 and turn orange
+   on hover/active. They leak through any panel that opens above the
+   workspace:
+   - Dialog overlay (.overlay) is z-9000 but its translucent backdrop
+     still shows the orange tint beneath, and the handles' independent
+     stacking context lets them stay hoverable through it.
+   - RemoteAccessPanel is a fixed card teleported to body at z-index 40,
+     which is BELOW the handles, so the orange sits visibly on top of
+     the panel.
+   Hide the handles entirely while either is open. */
 .frame--has-overlay .sidebar-resize-handle,
-.frame--has-overlay .notif-dock-resize-handle {
+.frame--has-overlay .notif-dock-resize-handle,
+.frame--remote-expanded .sidebar-resize-handle,
+.frame--remote-expanded .notif-dock-resize-handle {
   display: none;
 }
 
