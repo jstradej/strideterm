@@ -10,27 +10,7 @@ permissions:
   contents: read
 
 jobs:
-  check-changes:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    outputs:
-      has_changes: ${{ steps.check.outputs.has_changes }}
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-        with:
-          fetch-depth: 2
-      - id: check
-        run: |
-          if git diff --quiet HEAD~1 HEAD -- '*.js' '*.json' '*.css' '*.html' '*.mjs' '*.ps1' '*.vue'; then
-            echo "has_changes=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "has_changes=true" >> "$GITHUB_OUTPUT"
-          fi
-
   build:
-    needs: check-changes
-    if: needs.check-changes.outputs.has_changes == 'true' || github.event_name == 'workflow_dispatch'
     permissions:
       contents: read
     strategy:
