@@ -36,7 +36,11 @@ export function useRemoteConnection() {
   const normalizedCustomUrl = computed(() => normalizeAbsoluteUrl(customPublicUrl.value));
 
   const activeShareUrl = computed(() => {
-    const mode = store.remoteAccessExpanded
+    // While the Remote Access dialog is open the user is actively choosing a
+    // mode, so honor their tab selection. Otherwise (compact sidebar card)
+    // auto-pick the most useful URL: prefer a public tunnel/VPS over LAN.
+    const dialogOpen = store.overlay === "RemoteAccessDialog";
+    const mode = dialogOpen
       ? store.remoteAccessMode || "lan"
       : tunnelShareUrl.value || customShareUrl.value
         ? "cloudflare"

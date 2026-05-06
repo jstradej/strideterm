@@ -361,6 +361,10 @@ export function createDialogActions(ctx: DialogActionsCtx) {
     openDialog("HelpDialog", { onClose: closeDialog });
   }
 
+  function openRemoteAccessDialog(): void {
+    openDialog("RemoteAccessDialog", { onClose: closeDialog });
+  }
+
   function openProfilesDialog(): void {
     const appState = ctx.payload.value?.appState || ({} as AnyApi);
     openDialog("ProfilesDialog", {
@@ -838,6 +842,7 @@ export function createDialogActions(ctx: DialogActionsCtx) {
     openNewWorkspaceFlow,
     openSettingsDialog,
     openHelpDialog,
+    openRemoteAccessDialog,
     openProfilesDialog,
     openAzureConnectionDialog,
     openGitHubConnectionDialog,

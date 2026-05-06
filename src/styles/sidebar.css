@@ -420,16 +420,6 @@ body.platform-darwin .frame--sidebar-collapsed .sidebar__head {
   color: #ffc877;
 }
 
-.remote-access--expanded {
-  position: fixed;
-  top: 14px;
-  left: 14px;
-  width: min(620px, calc(100vw - 28px));
-  max-height: min(84vh, 920px);
-  overflow: visible;
-  z-index: 40;
-}
-
 .remote-card,
 .docker-manager,
 .empty-card {
@@ -518,13 +508,6 @@ body.platform-darwin .frame--sidebar-collapsed .sidebar__head {
   display: flex;
   gap: 6px;
   flex-shrink: 0;
-}
-
-.remote-card.remote-access--expanded {
-  padding: 14px;
-  max-height: min(84vh, 920px);
-  overflow: auto;
-  background: var(--panel);
 }
 
 .remote-card--disabled {
@@ -643,16 +626,30 @@ body.platform-darwin .frame--sidebar-collapsed .sidebar__head {
 }
 
 .remote-mode-panel {
-  display: none;
-  padding: 10px;
+  /* All three panels share one grid cell (set on .remote-access-dialog
+     .remote-access__body below) so the body keeps the tallest panel's
+     height — flipping tabs no longer resizes the dialog. Inactive panels
+     stay laid out but hidden + non-interactive. */
+  display: grid;
   gap: 10px;
+  padding: 10px;
   border: 1px solid var(--border);
   border-radius: 4px;
   background: rgba(var(--tint), 0.015);
+  visibility: hidden;
+  pointer-events: none;
 }
 
 .remote-mode-panel--active {
-  display: grid;
+  visibility: visible;
+  pointer-events: auto;
+}
+
+.remote-access-dialog .remote-mode-panel {
+  grid-row: 1;
+  grid-column: 1;
+  align-self: stretch;
+  justify-self: stretch;
 }
 
 .remote-mode-panel__actions {
@@ -750,15 +747,19 @@ body.platform-darwin .frame--sidebar-collapsed .sidebar__head {
   flex: 1 1 auto;
 }
 
-.remote-access--expanded .remote-access__body {
+.remote-access-dialog .remote-access__body {
+  /* All three .remote-mode-panel children stack into row 1 / column 1
+     so the body sizes to the tallest panel and tab-flipping doesn't
+     resize the dialog. */
   gap: 0;
+  grid-template-columns: minmax(0, 1fr);
 }
 
-.remote-access--expanded .remote-access__hero {
+.remote-access-dialog .remote-access__hero {
   grid-template-columns: 120px minmax(0, 1fr);
 }
 
-.remote-access--expanded .remote-access__qr {
+.remote-access-dialog .remote-access__qr {
   width: 120px;
   height: 120px;
 }
@@ -771,6 +772,13 @@ body.platform-darwin .frame--sidebar-collapsed .sidebar__head {
   background: transparent;
   cursor: pointer;
   border-radius: 4px;
+  /* Use block layout so the inline `<img>` child doesn't add a baseline
+     descender gap (~4px) below itself — otherwise the button is ~4px
+     taller than the plain `.remote-access__qr--placeholder` div used
+     when no URL is available, and switching to the VPS tab makes the
+     dialog jump. */
+  display: block;
+  line-height: 0;
 }
 
 .remote-qr-button:hover .remote-access__qr,

@@ -58,7 +58,6 @@ export const useAppStore = defineStore("app", () => {
   const overlayProps = ref<Record<string, unknown>>({});
   const bootstrapError = ref("");
   const remoteConnectionIssue = ref("");
-  const remoteAccessExpanded = ref(false);
   const remoteAccessMode = ref("lan"); // "lan" | "cloudflare" | "vps"
   const selectedLanUrl = ref("");
   const contextMenu = ref<{ x: number; y: number; viewId: string } | null>(null); // { x, y, viewId } | null
@@ -791,7 +790,6 @@ export const useAppStore = defineStore("app", () => {
     activeViewId,
     activeSessionId,
     splitGroup,
-    remoteAccessExpanded,
     remoteAccessMode,
     selectedLanUrl,
     getApi,
@@ -820,7 +818,6 @@ export const useAppStore = defineStore("app", () => {
     overlayProps,
     bootstrapError,
     remoteConnectionIssue,
-    remoteAccessExpanded,
     remoteAccessMode,
     selectedLanUrl,
     contextMenu,

@@ -32,6 +32,7 @@ const DIALOGS = {
   TaskHookCheckDialog: defineAsyncComponent(() => import("./TaskHookCheckDialog.vue")),
   TaskRecoveryDialog: defineAsyncComponent(() => import("./TaskRecoveryDialog.vue")),
   GitCommitInfoDialog: defineAsyncComponent(() => import("./GitCommitInfoDialog.vue")),
+  RemoteAccessDialog: defineAsyncComponent(() => import("./RemoteAccessDialog.vue")),
   SshHostsDialog: defineAsyncComponent(() => import("../ssh/SshHostsDialog.vue")),
   SshHostEditor: defineAsyncComponent(() => import("../ssh/SshHostEditor.vue")),
   SshKeyManager: defineAsyncComponent(() => import("../ssh/SshKeyManager.vue")),

@@ -8,7 +8,6 @@ interface ApiActionsCtx {
   activeViewId: Ref<string | null>;
   activeSessionId: Ref<string | null>;
   splitGroup: Ref<{ layout: string; viewIds: string[] } | null>;
-  remoteAccessExpanded: Ref<boolean>;
   remoteAccessMode: Ref<string>;
   selectedLanUrl: Ref<string>;
   getApi: () => Transport;
@@ -21,7 +20,7 @@ interface ApiActionsCtx {
  */
 export function createApiActions(ctx: ApiActionsCtx) {
   // ctx = { payload, activeViewId, activeSessionId, splitGroup,
-  //         remoteAccessExpanded, remoteAccessMode, selectedLanUrl,
+  //         remoteAccessMode, selectedLanUrl,
   //         getApi, withSuppressedBroadcast }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -289,10 +288,6 @@ export function createApiActions(ctx: ApiActionsCtx) {
     }
   }
 
-  function toggleRemotePanel(): void {
-    ctx.remoteAccessExpanded.value = !ctx.remoteAccessExpanded.value;
-  }
-
   async function toggleRemoteAccess(): Promise<void> {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const enabled = !(ctx.payload.value as any)?.appState?.settings?.remoteAccess?.enabled;
@@ -462,7 +457,6 @@ export function createApiActions(ctx: ApiActionsCtx) {
     resetAgentPrompts,
     // Remote access
     setRemoteMode,
-    toggleRemotePanel,
     toggleRemoteAccess,
     regenerateRemoteToken,
     saveCustomPublicUrl,

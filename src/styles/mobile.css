@@ -322,8 +322,8 @@
 
   /* Hide the Remote Access compact card (QR + Configure) and the sidebar
      footer (version + GitHub link) on mobile — the user is already on
-     the mobile client and only needs the workspace list. The teleported
-     `.remote-access--expanded` modal is unaffected if reached via desktop. */
+     the mobile client and only needs the workspace list. The
+     RemoteAccessDialog modal is unaffected if reached via desktop. */
   .remote-card--compact,
   .sidebar-footer {
     display: none;
