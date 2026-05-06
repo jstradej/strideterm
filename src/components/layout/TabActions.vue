@@ -4,18 +4,25 @@
       v-if="workspaceKind !== 'docker' && workspaceKind !== 'azure' && workspaceKind !== 'github'"
       type="button"
       class="button button--ghost"
+      title="Add a new tab to this workspace — pick from your tab templates (Shell, Claude Code, Codex, Gemini, Files, Browser…)."
       @click="$emit('toggle-tab-picker', $event)"
     >
       + Tab
     </button>
-    <button v-if="store.splitGroup" type="button" class="button button--ghost" @click="$emit('disband-split')">
+    <button
+      v-if="store.splitGroup"
+      type="button"
+      class="button button--ghost"
+      title="Disband the current split layout — the active view returns to a single full-width pane."
+      @click="$emit('disband-split')"
+    >
       Unsplit
     </button>
     <button
       type="button"
       class="button button--ghost"
       :class="{ 'button--active': currentLayout !== 'solo' }"
-      :title="'Layout'"
+      title="Choose a split layout (side by side, stacked, top + two below, left + two right, or 2×2 grid) so this workspace shows multiple tabs at once."
       @click="$emit('open-layout-picker', $event)"
     >
       {{ currentLayout !== "solo" ? layouts[currentLayout]?.label || "Split" : "Split" }}
@@ -27,7 +34,7 @@
       v-if="workspaceKind === 'azure' || workspaceKind === 'github'"
       type="button"
       class="tab-actions__icon"
-      title="New branch"
+      title="Open the New Branch wizard — pick a connection, project, repository and base branch, then create a fresh worktree for a new branch without leaving the IDE."
       @click="$emit('quick-fix')"
     >
       &#x1FA84;
@@ -36,7 +43,7 @@
       v-if="gitAvailable"
       type="button"
       class="tab-actions__icon"
-      title="New worktree"
+      title="Create a git worktree for an existing or new branch off this repository, opened as its own workspace so the main checkout stays untouched."
       @click="$emit('create-worktree')"
     >
       &#x1F33F;
@@ -45,18 +52,23 @@
       v-if="workspaceKind !== 'task'"
       type="button"
       class="tab-actions__icon"
-      title="Create task agent"
+      title="Create a task workspace — runs a supervised Worker + Judge AI loop against a project directory until the task is verified complete."
       @click="$emit('create-task')"
     >
       &#x1F916;
     </button>
-    <button type="button" class="tab-actions__icon" title="Edit workspace" @click="$emit('edit-workspace')">
+    <button
+      type="button"
+      class="tab-actions__icon"
+      title="Edit this workspace — rename, change colour/icon, edit notes, manage tab templates, multi-repo roots, and per-tab startup."
+      @click="$emit('edit-workspace')"
+    >
       &#x270E;
     </button>
     <button
       type="button"
       class="tab-actions__icon tab-actions__icon--danger"
-      title="Delete workspace"
+      title="Delete this workspace — kills running PTY sessions and removes it from the sidebar. Review/quickfix worktrees are offered for cleanup separately."
       @click="$emit('delete-workspace')"
     >
       &#x2715;

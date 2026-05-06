@@ -9,9 +9,23 @@
           <span>Access token</span>
           <input v-model="tokenInput" name="token" placeholder="Paste the strIDEterm token" />
         </label>
-        <button type="submit" class="button">Connect</button>
+        <button
+          type="submit"
+          class="button"
+          title="Save the access token for this remote session and reload — the page will reconnect to the strIDEterm runtime if the token is valid."
+        >
+          Connect
+        </button>
       </form>
-      <button v-else type="button" class="button" @click="retry">Retry</button>
+      <button
+        v-else
+        type="button"
+        class="button"
+        title="Reload the page to retry connecting to the runtime. The error message above shows what failed last time."
+        @click="retry"
+      >
+        Retry
+      </button>
     </div>
   </section>
 </template>

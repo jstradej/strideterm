@@ -1,43 +1,97 @@
 <template>
   <Teleport to="body">
     <div v-if="store.contextMenu" ref="menuRef" class="context-menu" :style="menuStyle" @click.stop>
-      <button type="button" class="context-menu__item" @click="onFocus">
+      <button
+        type="button"
+        class="context-menu__item"
+        title="Make this tab the active view in the workspace — same as left-clicking it in the tab bar."
+        @click="onFocus"
+      >
         <span class="context-menu__icon">&#x25C9;</span><span>Focus tab</span>
       </button>
 
       <template v-if="isTerminal">
-        <button v-if="hasPersistentPanel && !isSshPanel" type="button" class="context-menu__item" @click="onEdit">
+        <button
+          v-if="hasPersistentPanel && !isSshPanel"
+          type="button"
+          class="context-menu__item"
+          title="Edit this tab's title, command, icon, and notification override."
+          @click="onEdit"
+        >
           <span class="context-menu__icon">&#x270E;</span><span>Edit tab</span>
         </button>
-        <button v-if="isSshPanel" type="button" class="context-menu__item" @click="onEditSshHost">
+        <button
+          v-if="isSshPanel"
+          type="button"
+          class="context-menu__item"
+          title="Open the SSH host editor for the host this tab is connected to — change auth, port, jump hosts, post-login command, etc."
+          @click="onEditSshHost"
+        >
           <span class="context-menu__icon">&#x1F310;</span><span>Edit SSH host</span>
         </button>
-        <button type="button" class="context-menu__item" @click="onSaveTranscript">
+        <button
+          type="button"
+          class="context-menu__item"
+          title="Export the last 500 lines of this terminal's scrollback to a text file via the system save dialog."
+          @click="onSaveTranscript"
+        >
           <span class="context-menu__icon">&#x21E9;</span><span>Save last 500 lines</span>
         </button>
-        <button type="button" class="context-menu__item" @click="onClear">
+        <button
+          type="button"
+          class="context-menu__item"
+          title="Clear the terminal viewport (Ctrl+L equivalent). Scrollback is also wiped."
+          @click="onClear"
+        >
           <span class="context-menu__icon">&#x232B;</span><span>Clear output</span>
         </button>
         <template v-if="isSshPanel">
-          <button type="button" class="context-menu__item" @click="onRestart">
+          <button
+            type="button"
+            class="context-menu__item"
+            title="Re-establish the SSH connection — kills the current session if alive and starts a fresh one."
+            @click="onRestart"
+          >
             <span class="context-menu__icon">&#x21BB;</span><span>Reconnect SSH</span>
           </button>
-          <button type="button" class="context-menu__item context-menu__item--danger" @click="onDisconnectSsh">
+          <button
+            type="button"
+            class="context-menu__item context-menu__item--danger"
+            title="Close the SSH session immediately — the tab stays open, but the remote shell ends."
+            @click="onDisconnectSsh"
+          >
             <span class="context-menu__icon">&#x274C;</span><span>Disconnect SSH</span>
           </button>
         </template>
-        <button v-else type="button" class="context-menu__item" @click="onRestart">
+        <button
+          v-else
+          type="button"
+          class="context-menu__item"
+          title="Kill the current process in this tab and re-run the tab's startup command. Useful when an agent gets stuck or you want a fresh session."
+          @click="onRestart"
+        >
           <span class="context-menu__icon">&#x21BB;</span><span>Restart</span>
         </button>
       </template>
 
-      <button v-if="refreshKind" type="button" class="context-menu__item" @click="onRefresh">
+      <button
+        v-if="refreshKind"
+        type="button"
+        class="context-menu__item"
+        :title="`Force a re-poll of ${refreshLabel} now (skip the configured poll interval) — refreshes container/PR data, comments, and statuses.`"
+        @click="onRefresh"
+      >
         <span class="context-menu__icon">&#x21BB;</span><span>Refresh {{ refreshLabel }}</span>
       </button>
 
       <template v-if="canClose">
         <div class="context-menu__divider"></div>
-        <button type="button" class="context-menu__item context-menu__item--danger" @click="onClose">
+        <button
+          type="button"
+          class="context-menu__item context-menu__item--danger"
+          title="Close this tab. Default panels (Git / Docker / Files / Browser) reopen on next workspace activation; closed PTY tabs do not."
+          @click="onClose"
+        >
           <span class="context-menu__icon">&#x2715;</span><span>Close tab</span>
         </button>
       </template>
@@ -51,6 +105,7 @@
             :key="target.viewId"
             type="button"
             class="context-menu__item"
+            :title="`Swap this tab with '${target.title}' so it occupies the slot in that direction.`"
             @click="onSwapWith(target.viewId)"
           >
             <span class="context-menu__icon">{{ target.arrow }}</span
@@ -58,16 +113,31 @@
           </button>
         </template>
         <div class="context-menu__divider"></div>
-        <button type="button" class="context-menu__item" @click="onRemoveFromGroup">
+        <button
+          type="button"
+          class="context-menu__item"
+          title="Remove just this tab from the split. Other tabs in the group stay split."
+          @click="onRemoveFromGroup"
+        >
           <span class="context-menu__icon">&#x2715;</span><span>Remove from split</span>
         </button>
-        <button type="button" class="context-menu__item context-menu__item--danger" @click="onDisbandGroup">
+        <button
+          type="button"
+          class="context-menu__item context-menu__item--danger"
+          title="Disband the entire split layout — every tab in the group returns to a single full-width pane."
+          @click="onDisbandGroup"
+        >
           <span class="context-menu__icon">&#x2573;</span><span>Disband split</span>
         </button>
       </template>
       <template v-else-if="canAddToSplit">
         <div class="context-menu__divider"></div>
-        <button type="button" class="context-menu__item" @click="onAddToGroup">
+        <button
+          type="button"
+          class="context-menu__item"
+          title="Add this tab to the existing split layout — fills the next free slot in the current layout."
+          @click="onAddToGroup"
+        >
           <span class="context-menu__icon">+</span><span>Add to split</span>
         </button>
       </template>

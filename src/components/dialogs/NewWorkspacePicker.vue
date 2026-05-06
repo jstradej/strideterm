@@ -9,8 +9,10 @@
     </div>
     <div style="display: grid; gap: 8px; margin-top: 14px">
       <button
+        type="button"
         class="project"
         style="--accent: #ffa424; border: 1px solid var(--border); cursor: pointer"
+        title="Open the workspace editor with no preset — pick a working directory, name, and tab list manually. The most flexible option."
         @click="emit('pick-empty')"
       >
         <span class="project__badge" style="background: rgba(255, 164, 36, 0.24); font-size: 16px">+</span>
@@ -20,8 +22,10 @@
         </span>
       </button>
       <button
+        type="button"
         class="project"
         style="--accent: #7c4dff; border: 1px solid var(--border); cursor: pointer"
+        title="Create a Worker + Judge agent task workspace — supervised AI loop that runs a Worker agent against a project, runs verification commands between rounds, and asks an independent Judge to confirm completion."
         @click="emit('pick-task')"
       >
         <span class="project__badge" style="background: rgba(124, 77, 255, 0.24); font-size: 16px">&#x1F916;</span>
@@ -35,8 +39,10 @@
       <button
         v-for="plugin in pluginsWithTemplates"
         :key="plugin.id"
+        type="button"
         class="project"
         :style="`--accent:${plugin.color};border:1px solid var(--border);cursor:pointer;`"
+        :title="`Materialise the ${plugin.name} plugin's workspace template${plugin.description ? ' — ' + plugin.description : ''}.`"
         @click="emit('pick-plugin', plugin.id)"
       >
         <span class="project__badge">{{ plugin.icon }}</span>

@@ -6,11 +6,37 @@
     <div class="template-list">
       <div v-for="(template, index) in templates" :key="template.id || index" class="template-row">
         <span class="template-icon">{{ template.icon }}</span>
-        <input v-model="template.title" placeholder="Title" maxlength="40" class="template-input" />
-        <input v-model="template.command" placeholder="Command" maxlength="500" class="template-input" />
-        <button type="button" class="template-remove-btn" @click="templates.splice(index, 1)">&times;</button>
+        <input
+          v-model="template.title"
+          placeholder="Title"
+          maxlength="40"
+          class="template-input"
+          title="Tab title shown in the workspace tab bar and in the + Tab quick-add menu."
+        />
+        <input
+          v-model="template.command"
+          placeholder="Command"
+          maxlength="500"
+          class="template-input"
+          title="Shell command run when this tab is activated. Leave empty for an interactive shell."
+        />
+        <button
+          type="button"
+          class="template-remove-btn"
+          title="Remove this tab template from the list. Existing workspaces that already use it are unaffected."
+          @click="templates.splice(index, 1)"
+        >
+          &times;
+        </button>
       </div>
-      <button type="button" class="button button--ghost add-template-btn" @click="addTemplate">+ Add template</button>
+      <button
+        type="button"
+        class="button button--ghost add-template-btn"
+        title="Add a new tab template — appears in the + Tab quick-add menu and in the New Workspace dialog."
+        @click="addTemplate"
+      >
+        + Add template
+      </button>
     </div>
   </div>
 </template>

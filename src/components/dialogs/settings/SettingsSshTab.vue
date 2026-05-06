@@ -91,8 +91,21 @@
       <h3 class="section-title">Host &amp; Key Management</h3>
 
       <div class="actions-row">
-        <button type="button" class="button" @click="store.openSshHostsDialog()">Manage SSH Hosts</button>
-        <button v-if="isSsh2Mode" type="button" class="button" @click="store.openSshKeyManager()">
+        <button
+          type="button"
+          class="button"
+          title="Open the host book — add, edit, or delete saved SSH hosts; configure auth (key/password/agent), launch mode, jump hosts, and post-login commands."
+          @click="store.openSshHostsDialog()"
+        >
+          Manage SSH Hosts
+        </button>
+        <button
+          v-if="isSsh2Mode"
+          type="button"
+          class="button"
+          title="Open the strIDEterm key store — generate or import private keys (ed25519/ECDSA/RSA), inspect certificates, and see which hosts reference each key. ssh2 mode only."
+          @click="store.openSshKeyManager()"
+        >
           Manage Keys &amp; Certs
         </button>
       </div>

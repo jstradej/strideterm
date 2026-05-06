@@ -8,6 +8,7 @@
           :key="theme"
           type="button"
           :class="['button', 'button-row__item', form.theme === theme ? 'button--active' : 'button--ghost']"
+          :title="`Switch the app to the ${theme} theme — affects sidebar, dialogs, terminal colours, and the Electron title bar.`"
           @click="form.theme = theme"
         >
           {{ theme }}
@@ -23,6 +24,7 @@
           v-if="api?.browseFile"
           type="button"
           class="button button--ghost input-with-action__btn"
+          title="Open a file picker to locate your preferred external editor binary on disk."
           @click="browseEditor"
         >
           Browse
@@ -45,6 +47,7 @@
           v-if="api?.browseFile"
           type="button"
           class="button button--ghost input-with-action__btn"
+          title="Open a file picker to locate the cloudflared binary used for Cloudflare quick-tunnels. Leave empty to fall back to PATH lookup."
           @click="browseCloudflared"
         >
           Browse
@@ -213,7 +216,12 @@
             <span class="metrics-value">{{ hookSettings.metricsSnapshot.dismissedWithoutInteraction }}</span>
           </div>
         </div>
-        <button type="button" class="button button--ghost button--small" @click="hookSettings.refreshMetrics">
+        <button
+          type="button"
+          class="button button--ghost button--small"
+          title="Re-poll the notification metrics counters (hooks received, alerts emitted by tier and urgency, dismissals without interaction). Counters are kept in memory and reset when strIDEterm restarts."
+          @click="hookSettings.refreshMetrics"
+        >
           Refresh
         </button>
       </details>

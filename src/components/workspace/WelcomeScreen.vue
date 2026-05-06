@@ -10,7 +10,12 @@
             <strong>Review settings &amp; configure hooks</strong>
             <small
               >Set your theme, notification timings and agent hooks in
-              <button type="button" class="welcome-screen__link" @click="$emit('open-settings')">
+              <button
+                type="button"
+                class="welcome-screen__link"
+                title="Open the Settings dialog — theme, notifications, agent hooks, SSH, tab templates, and more."
+                @click="$emit('open-settings')"
+              >
                 Settings ⚙
               </button></small
             >
@@ -39,8 +44,22 @@
         </div>
       </div>
       <div class="welcome-screen__actions">
-        <button type="button" class="button button--ghost" @click="$emit('open-settings')">⚙ Open Settings</button>
-        <button type="button" class="button" @click="$emit('new-workspace')">+ Create your first workspace</button>
+        <button
+          type="button"
+          class="button button--ghost"
+          title="Open the Settings dialog to configure theme, notifications, agent hooks, SSH defaults, and tab templates before creating a workspace."
+          @click="$emit('open-settings')"
+        >
+          ⚙ Open Settings
+        </button>
+        <button
+          type="button"
+          class="button"
+          title="Open the New Workspace picker — choose a kind (terminal, Docker, Azure DevOps, GitHub, plugin) and a working directory to create your first workspace."
+          @click="$emit('new-workspace')"
+        >
+          + Create your first workspace
+        </button>
       </div>
     </div>
   </div>

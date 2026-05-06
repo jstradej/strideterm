@@ -28,7 +28,7 @@
         type="button"
         class="workspace-suggestion"
         :style="`--accent:${plugin.color}`"
-        :title="`Add ${plugin.name}`"
+        :title="`Materialise the ${plugin.name} plugin's workspace template — adds it to the active profile so it shows up in the workspace list above.`"
         @click="$emit('add-plugin-workspace', plugin.id)"
       >
         <span
@@ -57,6 +57,7 @@
         v-if="wsMenu.ws.kind === 'azure' || wsMenu.ws.kind === 'github'"
         type="button"
         class="context-menu__item"
+        title="Open the New Branch wizard for this connection — pick project / repo / base branch, type a name, and a fresh worktree workspace is created off the chosen base."
         @click="onMenuAction('quick-fix')"
       >
         &#x1FA84; New branch
@@ -65,6 +66,7 @@
         v-if="wsMenu.ws.gitAvailable"
         type="button"
         class="context-menu__item"
+        title="Create a git worktree for this repository on a new or existing branch and open it as its own workspace, leaving the main checkout untouched."
         @click="onMenuAction('create-worktree')"
       >
         &#x1F33F; New worktree
@@ -73,13 +75,26 @@
         v-if="wsMenu.ws.kind !== 'task'"
         type="button"
         class="context-menu__item"
+        title="Spawn a task workspace bound to this project — runs a supervised Worker + Judge AI loop with auto-detected verification commands."
         @click="onMenuAction('create-task')"
       >
         &#x1F916; Create task agent
       </button>
       <div class="context-menu__divider"></div>
-      <button type="button" class="context-menu__item" @click="onMenuAction('edit')">&#x270E; Edit</button>
-      <button type="button" class="context-menu__item context-menu__item--danger" @click="onMenuAction('delete')">
+      <button
+        type="button"
+        class="context-menu__item"
+        title="Open the workspace editor — rename, change icon/colour, edit notes, manage tabs, and configure multi-repo roots."
+        @click="onMenuAction('edit')"
+      >
+        &#x270E; Edit
+      </button>
+      <button
+        type="button"
+        class="context-menu__item context-menu__item--danger"
+        title="Remove this workspace from the sidebar and kill its PTY sessions. Review/quickfix worktrees prompt for cleanup separately."
+        @click="onMenuAction('delete')"
+      >
         &#x2715; Delete
       </button>
     </div>

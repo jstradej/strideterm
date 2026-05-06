@@ -23,9 +23,30 @@
         setup.
       </p>
       <footer class="dialog__footer" style="gap: 8px">
-        <button type="button" class="button button--ghost" @click="emit('cancel')">Cancel</button>
-        <button type="button" class="button button--ghost" @click="emit('skip')">Start without hooks</button>
-        <button type="button" class="button" @click="emit('configure')">Configure &amp; start</button>
+        <button
+          type="button"
+          class="button button--ghost"
+          title="Don't start the task — close this dialog and return to the Dashboard so you can configure hooks manually first."
+          @click="emit('cancel')"
+        >
+          Cancel
+        </button>
+        <button
+          type="button"
+          class="button button--ghost"
+          title="Start the task anyway with hooks disabled — the runner will fall back to a silence-based heuristic, which adds delay between rounds."
+          @click="emit('skip')"
+        >
+          Start without hooks
+        </button>
+        <button
+          type="button"
+          class="button"
+          :title="`Install the strIDEterm notification hook into ${providerDisplayName}'s settings file (one-time setup) and immediately start the task. Recommended.`"
+          @click="emit('configure')"
+        >
+          Configure &amp; start
+        </button>
       </footer>
     </div>
   </div>

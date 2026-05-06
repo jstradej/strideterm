@@ -23,6 +23,7 @@
               v-model="profile.name"
               class="profile-name-input"
               maxlength="40"
+              title="Rename this profile. The new name takes effect when you click away or press Enter."
               @click.stop
               @blur="onRenameProfile(profile)"
               @keydown.enter="(e: Event) => (e.target as HTMLInputElement).blur()"
@@ -31,14 +32,18 @@
             <div class="profile-card__actions">
               <button
                 v-if="profile.id !== activeProfileId"
+                type="button"
                 class="button button--ghost"
+                title="Switch to this profile — the sidebar will filter to show only its workspaces. Credentials and runtime managers are shared across all profiles in this install."
                 @click="handleActivate(profile.id)"
               >
                 Activate
               </button>
               <button
                 v-if="localProfiles.length > 1"
+                type="button"
                 class="button button--ghost button--danger-text"
+                title="Delete this profile. Any workspaces assigned to it move back to the default profile — they are not deleted."
                 @click="handleDelete(profile.id)"
               >
                 Delete
@@ -66,10 +71,18 @@
           placeholder="New profile name..."
           maxlength="40"
           class="add-profile-input"
+          title="Type a name for the new profile. Press Enter or click + Add to create it."
           @click.stop
           @keydown.enter="addProfile"
         />
-        <button class="button button--ghost" @click="addProfile">+ Add</button>
+        <button
+          type="button"
+          class="button button--ghost"
+          title="Create a new profile with the typed name. New profiles start empty — drag workspaces into them or assign workspaces via the workspace editor."
+          @click="addProfile"
+        >
+          + Add
+        </button>
       </div>
       <div v-if="errorMessage" class="dialog__error" role="alert">
         <span class="dialog__error-icon" aria-hidden="true">⚠</span>

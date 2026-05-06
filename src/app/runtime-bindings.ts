@@ -144,6 +144,57 @@ function selectActiveWorkspaceRenderState(payload: StatePayload | null | undefin
   };
 }
 
+/**
+ * Pull just the fields the active workspace's render decision depends on,
+ * keeping the original references whenever the source payload still has them.
+ * Used by `shouldRenderActiveWorkspace` to short-circuit on shallow reference
+ * equality before falling back to a deeper compare. Building wrapper objects
+ * (like `selectActiveWorkspaceRenderState` does for the bridge view) defeats
+ * reference equality, so this variant intentionally avoids any per-call
+ * allocation that creates fresh inner references.
+ */
+function selectActiveWorkspaceRenderRefs(payload: StatePayload | null | undefined): {
+  activeWorkspaceId: string;
+  activeWorkspace: unknown;
+  workspacePayload: unknown;
+  attention: unknown;
+  git: unknown;
+  docker: unknown;
+  azureInbox: unknown;
+  githubInbox: unknown;
+  azureReview: unknown;
+  githubReview: unknown;
+  reviewBridgePr: unknown;
+} {
+  const activeWorkspaceId = payload?.appState?.activeWorkspaceId || "";
+  const activeWorkspace =
+    (payload?.appState?.workspaces || []).find((workspace) => workspace.id === activeWorkspaceId) || null;
+  const reviewProvider = activeWorkspace?.review?.provider || "";
+  const reviewPrKey = ["azure-devops", "github"].includes(reviewProvider) ? (activeWorkspace?.review?.prKey ?? "") : "";
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const azureDevops = payload?.azureDevops as any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const github = payload?.github as any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const reviewBridge = payload?.reviewBridge as any;
+
+  return {
+    activeWorkspaceId,
+    activeWorkspace,
+    workspacePayload: payload?.workspace || null,
+    attention: readActiveAttention(payload, activeWorkspaceId),
+    git: readActiveGitSnapshot(payload, activeWorkspaceId),
+    docker: activeWorkspace?.kind === "docker" ? payload?.docker || null : null,
+    azureInbox: activeWorkspace?.kind === "azure" ? payload?.azureDevops || null : null,
+    githubInbox: activeWorkspace?.kind === "github" ? payload?.github || null : null,
+    azureReview:
+      reviewProvider === "azure-devops" && reviewPrKey ? azureDevops?.pullRequests?.[reviewPrKey] || null : null,
+    githubReview: reviewProvider === "github" && reviewPrKey ? github?.pullRequests?.[reviewPrKey] || null : null,
+    reviewBridgePr: reviewPrKey ? reviewBridge?.pullRequests?.[reviewPrKey] || null : null,
+  };
+}
+
 export function shouldRenderActiveWorkspace(
   nextPayload: StatePayload | null | undefined,
   previousPayload: StatePayload | null | undefined,
@@ -151,6 +202,31 @@ export function shouldRenderActiveWorkspace(
   if (!previousPayload) {
     return true;
   }
+  // Whole-payload reference identity: nothing changed at all.
+  if (nextPayload === previousPayload) {
+    return false;
+  }
+  // Fast path: compare only the source slices the active workspace reads, by
+  // reference. This is enough for the common case (terminal output, telegram
+  // poll, agent snapshots — all high-frequency unrelated subtrees) and avoids
+  // a JSON.stringify of the entire workspace + review bridge subtree on every
+  // broadcast.
+  const nextRefs = selectActiveWorkspaceRenderRefs(nextPayload);
+  const prevRefs = selectActiveWorkspaceRenderRefs(previousPayload);
+  let allEqual = true;
+  for (const key of Object.keys(nextRefs) as Array<keyof typeof nextRefs>) {
+    if (nextRefs[key] !== prevRefs[key]) {
+      allEqual = false;
+      break;
+    }
+  }
+  if (allEqual) {
+    return false;
+  }
+  // Slow path: at least one slice changed by reference. The change might still
+  // be cosmetic (e.g. the manager rebuilt an array but the contents are equal),
+  // so fall back to a structural compare on just the wrapper shape — same
+  // semantics as the previous implementation, just only when needed.
   return (
     JSON.stringify(selectActiveWorkspaceRenderState(nextPayload)) !==
     JSON.stringify(selectActiveWorkspaceRenderState(previousPayload))

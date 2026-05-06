@@ -12,22 +12,42 @@
         :key="tmpl.title"
         type="button"
         class="button button--ghost template-btn"
+        :title="`Add a new ${tmpl.title} tab to this workspace${tmpl.command ? ` — runs '${tmpl.command}' on startup.` : '.'}`"
         @click="addPanelFromTemplate(tmpl)"
       >
         {{ tmpl.icon }} {{ tmpl.title }}
       </button>
-      <button type="button" class="button button--ghost template-btn" @click="addPanel">+ Custom</button>
+      <button
+        type="button"
+        class="button button--ghost template-btn"
+        title="Add a blank tab — pick the title, command, and icon yourself in the editor below."
+        @click="addPanel"
+      >
+        + Custom
+      </button>
     </div>
     <div class="panel-list">
       <article v-for="(panel, index) in panels" :key="panel.id" class="panel-card">
         <div class="panel-card__header">
           <strong>Tab {{ index + 1 }}</strong>
-          <button type="button" class="button button--ghost" @click="removePanel(panel.id)">Remove</button>
+          <button
+            type="button"
+            class="button button--ghost"
+            title="Remove this tab from the workspace template — its PTY session is killed when the workspace is saved."
+            @click="removePanel(panel.id)"
+          >
+            Remove
+          </button>
         </div>
         <label>
           <span>Title</span>
           <div class="panel-title-row">
-            <button type="button" class="panel-icon-btn" title="Pick icon" @click="togglePanelIconPicker(panel.id)">
+            <button
+              type="button"
+              class="panel-icon-btn"
+              title="Open the icon picker for this tab — pick an emoji that represents what the tab is for."
+              @click="togglePanelIconPicker(panel.id)"
+            >
               {{ panelIconValue(panel.title) || "💻" }}
             </button>
             <input v-model="panel.title" maxlength="60" class="panel-title-input" />
@@ -38,6 +58,7 @@
               :key="icon"
               type="button"
               class="panel-icon-picker__btn"
+              :title="`Use ${icon} as the tab icon.`"
               @click="pickPanelIcon(panel, icon)"
             >
               {{ icon }}

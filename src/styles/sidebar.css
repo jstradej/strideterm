@@ -439,7 +439,84 @@ body.platform-darwin .frame--sidebar-collapsed .sidebar__head {
   padding: 8px;
   display: grid;
   gap: 8px;
-  justify-items: center;
+  justify-items: stretch;
+}
+
+/* Single-row summary: caret + tiny QR thumb + status pill + Configure.
+   Wraps to two lines on the narrowest sidebar widths so nothing clips. */
+.remote-compact__row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.remote-compact__caret {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: rgba(var(--tint), 0.04);
+  color: var(--muted);
+  font: inherit;
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.remote-compact__caret:hover {
+  border-color: color-mix(in srgb, var(--accent), transparent 50%);
+  color: var(--text);
+}
+
+.remote-card--qr-open .remote-compact__caret {
+  border-color: color-mix(in srgb, var(--accent), transparent 50%);
+  color: var(--accent);
+}
+
+.remote-compact__caret-glyph {
+  display: inline-block;
+  transform: translateY(-1px);
+}
+
+.remote-compact__qr-thumb {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 2px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: rgba(var(--tint), 0.04);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.remote-compact__qr-thumb:hover {
+  border-color: color-mix(in srgb, var(--accent), transparent 50%);
+}
+
+.remote-card--qr-open .remote-compact__qr-thumb {
+  border-color: color-mix(in srgb, var(--accent), transparent 50%);
+}
+
+.remote-compact__qr-thumb-img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+}
+
+.remote-compact__qr-panel {
+  display: flex;
+  justify-content: center;
+  padding-top: 4px;
 }
 
 .remote-card--minimal {
@@ -467,14 +544,6 @@ body.platform-darwin .frame--sidebar-collapsed .sidebar__head {
   border: 1px solid var(--border);
   background: rgba(var(--tint), 0.03);
   object-fit: contain;
-}
-
-.remote-compact__info {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-  justify-content: center;
-  flex-wrap: wrap;
 }
 
 .remote-pill--ok {
@@ -1405,11 +1474,14 @@ body.platform-darwin .frame--sidebar-collapsed .sidebar__head {
 .frame--sidebar-collapsed .remote-access:not(.remote-access--expanded) .remote-access__qr,
 .frame--sidebar-collapsed .remote-access:not(.remote-access--expanded) .remote-summary__label,
 .frame--sidebar-collapsed .remote-access:not(.remote-access--expanded) .remote-compact__icon,
-.frame--sidebar-collapsed .remote-access:not(.remote-access--expanded) .remote-compact__info > span {
+.frame--sidebar-collapsed .remote-access:not(.remote-access--expanded) .remote-compact__caret,
+.frame--sidebar-collapsed .remote-access:not(.remote-access--expanded) .remote-compact__qr-thumb,
+.frame--sidebar-collapsed .remote-access:not(.remote-access--expanded) .remote-compact__qr-panel,
+.frame--sidebar-collapsed .remote-access:not(.remote-access--expanded) .remote-compact__row > .remote-pill {
   display: none;
 }
 
-.frame--sidebar-collapsed .remote-access:not(.remote-access--expanded) .remote-compact__info {
+.frame--sidebar-collapsed .remote-access:not(.remote-access--expanded) .remote-compact__row {
   display: block;
 }
 

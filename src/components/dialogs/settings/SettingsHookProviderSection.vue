@@ -79,7 +79,12 @@
         </p>
 
         <pre class="hook-setup-code">{{ provider.configJson }}</pre>
-        <button type="button" class="button button--ghost hook-copy-btn" @click="provider.copyConfig()">
+        <button
+          type="button"
+          class="button button--ghost hook-copy-btn"
+          title="Copy this hook configuration JSON to the clipboard so you can paste it into the provider's settings file by hand if auto-configure isn't an option."
+          @click="provider.copyConfig()"
+        >
           {{ provider.copied ? "Copied!" : "Copy to clipboard" }}
         </button>
       </div>

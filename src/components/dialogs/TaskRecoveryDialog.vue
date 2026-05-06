@@ -32,16 +32,52 @@
       </div>
 
       <footer class="dialog__footer" style="gap: 8px; flex-wrap: wrap">
-        <button type="button" class="button button--ghost" :disabled="busy" @click="decide('skip')">Skip</button>
-        <button type="button" class="button button--ghost" :disabled="busy" @click="decide('fresh')">Restart</button>
-        <button type="button" class="button" :disabled="busy" @click="decide('continue')">
+        <button
+          type="button"
+          class="button button--ghost"
+          :disabled="busy"
+          title="Leave this task in the paused state — control files stay on disk so you can inspect or resume it manually later from the Dashboard."
+          @click="decide('skip')"
+        >
+          Skip
+        </button>
+        <button
+          type="button"
+          class="button button--ghost"
+          :disabled="busy"
+          title="Wipe the round history and return to idle — the next Start re-runs from round 1. Control files (TASK.md, JUDGE_PROMPT.md) stay on disk."
+          @click="decide('fresh')"
+        >
+          Restart
+        </button>
+        <button
+          type="button"
+          class="button"
+          :disabled="busy"
+          title="Spawn a fresh agent process and inject an orientation prompt so it picks up where the previous one left off (TODO/HANDOFF/WORK_LOCK on disk)."
+          @click="decide('continue')"
+        >
           {{ busy ? "Resuming…" : "Resume" }}
         </button>
         <span style="flex: 1"></span>
-        <button v-if="total > 1" type="button" class="button button--ghost" :disabled="busy" @click="skipAll">
+        <button
+          v-if="total > 1"
+          type="button"
+          class="button button--ghost"
+          :disabled="busy"
+          title="Apply Skip to every remaining recovery candidate — leaves them all paused with on-disk state intact."
+          @click="skipAll"
+        >
           Skip all
         </button>
-        <button v-if="total > 1" type="button" class="button button--ghost" :disabled="busy" @click="resumeAll">
+        <button
+          v-if="total > 1"
+          type="button"
+          class="button button--ghost"
+          :disabled="busy"
+          title="Apply Resume to every remaining recovery candidate — spawns fresh agents for each and dismisses the dialog."
+          @click="resumeAll"
+        >
           Resume all
         </button>
       </footer>

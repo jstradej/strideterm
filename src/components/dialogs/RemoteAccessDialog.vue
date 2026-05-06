@@ -6,7 +6,17 @@
         <h2>Share this workspace</h2>
       </div>
       <div class="remote-access__header-actions">
-        <button v-if="!isRemote" type="button" class="button button--ghost" @click="store.toggleRemoteAccess()">
+        <button
+          v-if="!isRemote"
+          type="button"
+          class="button button--ghost"
+          :title="
+            remoteConfig.enabled
+              ? 'Stop the remote-access server. Already-connected clients are disconnected and the share URLs stop working.'
+              : 'Start the remote-access HTTP/WebSocket server so other devices on your LAN (or via tunnel/VPS) can attach to this workspace.'
+          "
+          @click="store.toggleRemoteAccess()"
+        >
           {{ remoteConfig.enabled ? "Disable" : "Enable" }}
         </button>
         <button type="button" class="button button--ghost" @click="emit('close')">Close</button>
@@ -20,6 +30,7 @@
         :key="tab.id"
         type="button"
         :class="['remote-mode-tab', store.remoteAccessMode === tab.id && 'remote-mode-tab--active']"
+        :title="`Show settings for the ${tab.label} sharing mode and use its URL as the active share URL (its QR code shows above).`"
         @click="store.setRemoteMode(tab.id)"
       >
         {{ tab.label }}
@@ -32,7 +43,7 @@
         v-if="remoteConfig.enabled && modeShareUrl && qrDataUrl"
         type="button"
         class="remote-qr-button"
-        title="Copy share URL"
+        title="Copy the share URL of the currently selected sharing mode (token included) to the clipboard."
         @click="copyActiveUrl"
       >
         <img class="remote-access__qr" :src="qrDataUrl" alt="QR code for remote access" />
@@ -47,6 +58,7 @@
               type="button"
               class="button button--ghost remote-field__copy"
               :disabled="!modeShareUrl"
+              title="Copy the share URL of the currently selected sharing mode (token included) to the clipboard."
               @click="copyModeUrl"
             >
               Copy
@@ -73,6 +85,7 @@
               type="button"
               class="button button--ghost remote-field__copy"
               :disabled="!lanShareUrl"
+              title="Copy the LAN share URL (token included) to the clipboard so you can paste it into a phone or another device on the same network."
               @click="store.copyText(lanShareUrl)"
             >
               Copy
@@ -85,6 +98,7 @@
             :key="btn.shareUrl"
             type="button"
             :class="['workspace-chip', 'workspace-chip--btn', btn.active && 'workspace-chip--active']"
+            :title="`Use ${btn.host} as the active LAN share URL — the QR code and Copy buttons above will switch to this address. Useful when the host has multiple network interfaces.`"
             @click="store.pickLanUrl(btn.shareUrl)"
           >
             {{ btn.host }}
@@ -117,6 +131,7 @@
               type="button"
               class="button button--ghost remote-field__copy"
               :disabled="!tunnelShareUrl"
+              title="Copy the public Cloudflare tunnel URL (token included) to the clipboard."
               @click="store.copyText(tunnelShareUrl)"
             >
               Copy
@@ -128,7 +143,12 @@
             <span>cloudflared path</span>
             <span class="remote-field">
               <input v-model="cloudflaredPathInput" placeholder="Leave empty for PATH, or set full path" />
-              <button type="button" class="button button--ghost remote-field__copy" @click="browseCloudflared">
+              <button
+                type="button"
+                class="button button--ghost remote-field__copy"
+                title="Open a file picker to locate your cloudflared binary on disk. Leave empty to fall back to the system PATH lookup."
+                @click="browseCloudflared"
+              >
                 Browse
               </button>
             </span>
@@ -150,6 +170,11 @@
             type="button"
             class="button"
             :disabled="!(remoteConfig.enabled && tunnel.available)"
+            :title="
+              tunnel.publicUrl
+                ? 'Tear down the current Cloudflare quick-tunnel and start a fresh one — useful if the existing URL stopped routing.'
+                : 'Spawn cloudflared to create a public Cloudflare quick-tunnel that proxies to your local remote-access server. No port forwarding needed.'
+            "
             @click="store.createCloudflareTunnel()"
           >
             {{ tunnel.publicUrl ? "Recreate tunnel" : "Create tunnel" }}
@@ -158,6 +183,7 @@
             type="button"
             class="button button--ghost"
             :disabled="!remoteConfig.enabled"
+            title="Re-read the cloudflared binary status and tunnel state — does not restart the tunnel."
             @click="store.refreshTunnel()"
           >
             Refresh
@@ -166,6 +192,7 @@
             type="button"
             class="button button--ghost"
             :disabled="!tunnel.publicUrl"
+            title="Stop the running Cloudflare quick-tunnel — the public URL stops working immediately. LAN access is unaffected."
             @click="store.stopCloudflareTunnel()"
           >
             Stop
@@ -185,6 +212,7 @@
               type="button"
               class="button button--ghost remote-field__copy"
               :disabled="!customShareUrl || !normalizedCustomUrl"
+              title="Copy the saved custom public URL (token included) to the clipboard."
               @click="store.copyText(customShareUrl)"
             >
               Copy
@@ -192,11 +220,19 @@
           </span>
         </label>
         <div v-if="!isRemote" class="remote-mode-panel__actions">
-          <button type="button" class="button" @click="saveCustomUrl">Save URL</button>
+          <button
+            type="button"
+            class="button"
+            title="Persist the URL above as the custom public URL for this app — used by the Telegram /tunnel command and the Share URL field above."
+            @click="saveCustomUrl"
+          >
+            Save URL
+          </button>
           <button
             type="button"
             class="button button--ghost"
             :disabled="!remoteConfig.customPublicUrl"
+            title="Forget the saved custom public URL — falls back to the Cloudflare tunnel URL or LAN URL as the active share URL."
             @click="store.clearCustomPublicUrl()"
           >
             Clear
@@ -218,6 +254,7 @@
           type="button"
           class="button button--ghost"
           :disabled="!remoteConfig.enabled"
+          title="Generate a new random access token. The old token is invalidated immediately — every active remote client is disconnected and must reconnect with the new share URL."
           @click="store.regenerateRemoteToken()"
         >
           Regenerate token
