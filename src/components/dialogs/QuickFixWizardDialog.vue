@@ -584,10 +584,13 @@ onMounted(() => {
   color: var(--muted);
 }
 
-/* Combobox for branch selection */
+/* Combobox for branch selection.
+   The parent <label> already supplies the 4px gap below the <span> caption,
+   so this container intentionally has no margin-top — that previously made
+   the base-branch input sit ~4px lower than the New branch name input on
+   the right side of the two-column form, breaking row alignment. */
 .nb-combo {
   position: relative;
-  margin-top: 4px;
 }
 
 .nb-combo input {

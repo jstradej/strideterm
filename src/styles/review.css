@@ -260,6 +260,123 @@
   align-items: center;
 }
 
+/* Caret toggle that expands the row to reveal description, status, and
+   reviewer info inline. Uses a tight square so it doesn't push the title
+   down a line on dense lists. */
+.azure-pr-row__expand {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  margin-right: 2px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: rgba(var(--tint), 0.04);
+  color: var(--muted);
+  font: inherit;
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+  flex-shrink: 0;
+  align-self: center;
+}
+
+.azure-pr-row__expand:hover {
+  border-color: color-mix(in srgb, var(--accent), transparent 50%);
+  color: var(--text);
+}
+
+.azure-pr-row--expanded .azure-pr-row__expand {
+  border-color: color-mix(in srgb, var(--accent), transparent 50%);
+  color: var(--accent);
+}
+
+.azure-pr-row__expand-caret {
+  display: inline-block;
+  transform: translateY(-1px);
+}
+
+.azure-pr-row__details {
+  margin-top: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: rgba(var(--tint), 0.025);
+  display: grid;
+  gap: 8px;
+}
+
+.azure-pr-row__description {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.azure-pr-row__description--empty {
+  color: var(--muted);
+  font-style: italic;
+}
+
+.azure-pr-row__facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 6px 16px;
+  margin: 0;
+}
+
+.azure-pr-row__fact {
+  display: grid;
+  gap: 1px;
+}
+
+.azure-pr-row__fact dt {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+
+.azure-pr-row__fact dd {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text);
+}
+
+.azure-pr-row__fact code {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--accent);
+}
+
+.azure-pr-row__comment-preview {
+  margin: 0;
+  padding: 6px 8px;
+  border-left: 2px solid color-mix(in srgb, var(--accent), transparent 50%);
+  background: rgba(var(--tint), 0.02);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text);
+  display: grid;
+  gap: 2px;
+}
+
+.azure-pr-row__comment-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+
+.azure-pr-row__comment-body {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 /* Right-align the action cluster on connection cards, review summary,
    and similar action rows. The user explicitly asked for buttons to
    line up on the right across all comparable forms. */

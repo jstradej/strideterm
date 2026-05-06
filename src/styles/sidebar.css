@@ -588,6 +588,10 @@ body.platform-darwin .frame--sidebar-collapsed .sidebar__head {
   border-radius: 4px;
   overflow: hidden;
   background: rgba(0, 0, 0, 0.15);
+  /* Breathing room between the LAN/Cloudflare/VPS tabs and the QR + URL hero
+     card below — the two were touching, which made the active-tab underline
+     blend visually into the hero border. */
+  margin-bottom: 12px;
 }
 
 .remote-mode-tab {
