@@ -7,10 +7,22 @@
       <div class="td__log-toolbar">
         <span class="td__log-count">{{ logEntries.length }} events</span>
         <div class="td__log-actions">
-          <button class="td__log-btn" title="Copy log to clipboard" @click="copyLog">
+          <button
+            type="button"
+            class="td__log-btn"
+            title="Copy the full task event log (raw JSONL) to the clipboard so you can paste it into a bug report or share it with another agent."
+            @click="copyLog"
+          >
             {{ copyFeedback || "Copy" }}
           </button>
-          <button class="td__log-btn" title="Save log as text file" @click="saveLog">Save</button>
+          <button
+            type="button"
+            class="td__log-btn"
+            title="Save the task event log to a text file via the system save dialog — same JSONL content as Copy, just persisted to disk."
+            @click="saveLog"
+          >
+            Save
+          </button>
         </div>
       </div>
       <table class="td__log-table">

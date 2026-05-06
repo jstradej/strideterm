@@ -7,7 +7,14 @@
             <span class="fm-diff__filename">{{ store.diffEntry?.name || "" }}</span>
             <span class="fm-diff__path">{{ store.diffEntry?.relativePath || "" }}</span>
           </div>
-          <button type="button" class="fm-diff__close" title="Close (Esc)" @click="store.closeDiff()">×</button>
+          <button
+            type="button"
+            class="fm-diff__close"
+            title="Close the diff overlay and return to the file manager. Keyboard shortcut: Esc."
+            @click="store.closeDiff()"
+          >
+            ×
+          </button>
         </header>
 
         <div class="fm-diff__controls">
@@ -69,7 +76,14 @@
 
           <div class="fm-diff__spacer"></div>
 
-          <button type="button" class="fm-diff__btn" title="Refresh" @click="store.runDiff()">↻</button>
+          <button
+            type="button"
+            class="fm-diff__btn"
+            title="Re-run git diff for this file against the selected source — picks up new commits or working-tree edits made since the diff was opened."
+            @click="store.runDiff()"
+          >
+            ↻
+          </button>
         </div>
 
         <MonacoDiffPanel :payload="store.diffPayload" :loading="store.diffLoading" class="fm-diff__panel" />

@@ -45,7 +45,14 @@
           selectedRoundData.action
         }}</span>
         <time class="td__round-time">{{ formatTime(selectedRoundData.startedAt) }}</time>
-        <button class="td__round-close" title="Close" @click="selectedRound = null">&times;</button>
+        <button
+          type="button"
+          class="td__round-close"
+          title="Collapse this round's detail panel and return to the round-chip overview."
+          @click="selectedRound = null"
+        >
+          &times;
+        </button>
       </div>
       <div v-if="selectedRoundData.checks?.length" class="td__checks">
         <div v-for="check in selectedRoundData.checks" :key="check.label" class="td__check">

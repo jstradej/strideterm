@@ -102,8 +102,15 @@ async function handlePullAll() {
 <template>
   <div class="bulk-repo-table">
     <div class="bulk-repo-table__toolbar">
-      <button class="bulk-btn" @click="handleFetchAll">Fetch all</button>
-      <button class="bulk-btn" :disabled="anyDirty" :title="pullAllTitle()" @click="handlePullAll">
+      <button
+        type="button"
+        class="bulk-btn"
+        title="Run git fetch in every repository in this multi-root workspace, in parallel — refreshes ahead/behind counts without modifying any working tree."
+        @click="handleFetchAll"
+      >
+        Fetch all
+      </button>
+      <button type="button" class="bulk-btn" :disabled="anyDirty" :title="pullAllTitle()" @click="handlePullAll">
         Pull all (ff-only)
       </button>
     </div>
@@ -132,7 +139,12 @@ async function handlePullAll() {
           <td class="bulk-repo-table__count">{{ snap.aheadCount ?? "—" }}</td>
           <td class="bulk-repo-table__count">{{ snap.behindCount ?? "—" }}</td>
           <td class="bulk-repo-table__dirty">
-            <span v-if="snap.dirty" class="dirty-marker" title="Uncommitted changes">&#9679;</span>
+            <span
+              v-if="snap.dirty"
+              class="dirty-marker"
+              title="Working tree has uncommitted changes — Pull (ff-only) is disabled until the tree is clean. Use the Git pane to commit or stash."
+              >&#9679;</span
+            >
           </td>
           <td class="bulk-repo-table__fetch">{{ snap.lastFetchAt ? formatDate(snap.lastFetchAt) : "—" }}</td>
           <td class="bulk-repo-table__status">
@@ -144,26 +156,41 @@ async function handlePullAll() {
           </td>
           <td class="bulk-repo-table__actions">
             <button
+              type="button"
               class="row-btn"
-              title="Refresh"
+              title="Re-read this repository's git status (branch, ahead/behind, dirty count) without performing any network operation."
               :disabled="rowState[snap.rootPath] === 'busy'"
               @click="onRefreshRow(snap.rootPath)"
             >
               &#8635;
             </button>
             <button
+              type="button"
               class="row-btn"
-              title="Pull (fast-forward only)"
+              title="git pull --ff-only on this repository — fast-forward the current branch from its upstream. Refuses to merge or rebase. Disabled when the working tree is dirty."
               :disabled="snap.dirty || rowState[snap.rootPath] === 'busy'"
               @click="onPullRow(snap.rootPath)"
             >
               &#8595;
             </button>
-            <button class="row-btn" title="Open terminal in this directory" @click="onRevealRow(snap.rootPath)">
+            <button
+              type="button"
+              class="row-btn"
+              title="Open a new terminal tab in the active workspace with the cwd pinned to this repository — handy for ad-hoc commands without touching the other roots."
+              @click="onRevealRow(snap.rootPath)"
+            >
               &#9654;
             </button>
-            <span v-if="rowState[snap.rootPath] === 'ok'" class="row-result row-result--ok" title="Done">&#10003;</span>
-            <span v-else-if="rowState[snap.rootPath] === 'error'" class="row-result row-result--error" title="Failed"
+            <span
+              v-if="rowState[snap.rootPath] === 'ok'"
+              class="row-result row-result--ok"
+              title="Last bulk action on this repo finished successfully."
+              >&#10003;</span
+            >
+            <span
+              v-else-if="rowState[snap.rootPath] === 'error'"
+              class="row-result row-result--error"
+              title="Last bulk action on this repo failed — hover the row's status cell or check strideterm.log for details."
               >&#10007;</span
             >
             <span v-else-if="rowState[snap.rootPath] === 'busy'" class="row-result row-result--busy">&hellip;</span>

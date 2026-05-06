@@ -2,8 +2,22 @@
   <Transition name="toast">
     <div v-if="visible" class="return-banner" @click="openCenter">
       <span>⚠ {{ waitingCount }} session{{ waitingCount === 1 ? "" : "s" }} waiting for you</span>
-      <button type="button" class="return-banner__action" @click.stop="openCenter">Show</button>
-      <button type="button" class="return-banner__close" title="Dismiss" @click.stop="dismiss">&times;</button>
+      <button
+        type="button"
+        class="return-banner__action"
+        title="Open the notification panel to see the waiting sessions and pick what to do next (Jump / Dismiss / Snooze)."
+        @click.stop="openCenter"
+      >
+        Show
+      </button>
+      <button
+        type="button"
+        class="return-banner__close"
+        title="Hide this welcome-back banner — the waiting sessions stay in the notification history and the bell icon will keep flagging them."
+        @click.stop="dismiss"
+      >
+        &times;
+      </button>
     </div>
   </Transition>
 </template>

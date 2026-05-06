@@ -19,7 +19,7 @@
           type="button"
           class="mdp__btn"
           :disabled="!changeCount"
-          title="Previous change (Shift+F7)"
+          title="Jump the diff cursor to the previous changed hunk and scroll it into view. Keyboard shortcut: Shift+F7."
           @click="goToChange(-1)"
         >
           ◀
@@ -28,15 +28,31 @@
           <template v-if="changeCount">{{ currentChangeIndex + 1 }} / {{ changeCount }}</template>
           <template v-else>no changes</template>
         </span>
-        <button type="button" class="mdp__btn" :disabled="!changeCount" title="Next change (F7)" @click="goToChange(1)">
+        <button
+          type="button"
+          class="mdp__btn"
+          :disabled="!changeCount"
+          title="Jump the diff cursor to the next changed hunk and scroll it into view. Keyboard shortcut: F7."
+          @click="goToChange(1)"
+        >
           ▶
         </button>
       </div>
       <div class="mdp__layout-toggle">
-        <button type="button" :class="['mdp__btn', sideBySide && 'mdp__btn--active']" @click="sideBySide = true">
+        <button
+          type="button"
+          :class="['mdp__btn', sideBySide && 'mdp__btn--active']"
+          title="Show the diff in two side-by-side panes — old on the left, new on the right. Best for wide screens."
+          @click="sideBySide = true"
+        >
           Side-by-side
         </button>
-        <button type="button" :class="['mdp__btn', !sideBySide && 'mdp__btn--active']" @click="sideBySide = false">
+        <button
+          type="button"
+          :class="['mdp__btn', !sideBySide && 'mdp__btn--active']"
+          title="Show the diff inline in a single column with red / green markers — better for narrow viewports and easier to read line-by-line."
+          @click="sideBySide = false"
+        >
           Inline
         </button>
       </div>

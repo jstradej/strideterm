@@ -59,7 +59,7 @@
               type="color"
               :value="profile.color || '#ffa424'"
               class="profile-color-input"
-              title="Profile color"
+              title="Pick the profile's accent colour — used for the profile bar and the workspace card border so you can spot which profile a workspace belongs to at a glance."
               @input="(e) => onProfileColorChange(profile, (e.target as HTMLInputElement).value)"
             />
           </div>

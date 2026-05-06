@@ -66,7 +66,7 @@
             <button
               v-if="canRerun(item)"
               class="pipeline-item__rerun"
-              title="Re-run this check"
+              title="Trigger this pipeline to run again on the current source commit — only available for checks the upstream provider lets us re-run from this client."
               :disabled="rerunningId === item.id"
               @click.stop="handleRerun(item)"
             >
@@ -76,7 +76,7 @@
               v-if="item.url"
               class="pipeline-item__link"
               :href="item.url"
-              title="Open in browser"
+              title="Open this build / check in your default web browser (Azure DevOps / GitHub) so you can drill into logs and artifacts."
               @click.stop="openUrl(item.url)"
             >
               ↗

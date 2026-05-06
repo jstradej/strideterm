@@ -4,17 +4,25 @@
       type="button"
       class="profile-bar"
       :style="`--profile-color:${profile.color || '#ffa424'}`"
+      title="Open the Profiles dialog to switch the active profile, rename / colour profiles, or create a new one. The sidebar workspace list is filtered to the active profile."
       @click="$emit('click')"
     >
       {{ profile.name }}
       <span
         v-if="otherProfileCount > 0"
         class="profile-bar__other-attention"
-        :title="`${otherProfileCount} alert${otherProfileCount === 1 ? '' : 's'} in other profile${otherProfileCount === 1 ? '' : 's'}`"
+        :title="`${otherProfileCount} alert${otherProfileCount === 1 ? '' : 's'} in other profile${otherProfileCount === 1 ? '' : 's'} — switch profiles to see them.`"
         >{{ otherProfileCount }}</span
       >
     </button>
-    <button type="button" class="profile-bar__menu" title="Profiles" @click="$emit('click')">☰</button>
+    <button
+      type="button"
+      class="profile-bar__menu"
+      title="Open the Profiles dialog (same as clicking the active profile name) — switch profiles, create new ones, edit colour or workspaces."
+      @click="$emit('click')"
+    >
+      ☰
+    </button>
   </div>
 </template>
 

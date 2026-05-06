@@ -267,19 +267,25 @@ function isTextLikeEntry(entry: Record<string, any> | null | undefined) {
 }
 
 const headerActions = computed(() => [
-  { className: "workspace-pane__icon-btn", action: "refresh", title: "Refresh", label: "↻" },
+  {
+    className: "workspace-pane__icon-btn",
+    action: "refresh",
+    title:
+      "Re-read the current directory listing from disk — picks up changes from external tools, builds, or git operations.",
+    label: "↻",
+  },
   {
     className: "workspace-pane__icon-btn",
     action: "select-tab",
     viewId: `files:${props.workspaceId}`,
-    title: "Focus tab",
+    title: "Make the Files pane the active tab — same as left-clicking it in the tab bar.",
     label: "◉",
   },
   {
     className: "workspace-pane__icon-btn workspace-pane__icon-btn--danger",
     action: "close-tab",
     viewId: `files:${props.workspaceId}`,
-    title: "Close tab",
+    title: "Close the Files tab. The pane reopens automatically when you re-activate this workspace.",
     label: "×",
   },
 ]);

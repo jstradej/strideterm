@@ -46,7 +46,7 @@
                   :disabled="
                     !!gitUi.busyAction || !commitMessage.trim() || operation.inProgress || !!gitUi.pendingAction
                   "
-                  title="Stage all changes and commit"
+                  title="Stage every modified, added, deleted, and untracked file in the working tree and create a commit with the message above. Equivalent to git add -A && git commit -m '…'."
                   @click="onCommitAll"
                 >
                   {{ gitUi.busyAction === "commit" ? "Committing…" : "Commit all" }}

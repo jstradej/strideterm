@@ -18,7 +18,7 @@
           v-if="gitStatus && entry?.kind === 'file'"
           type="button"
           class="button button--ghost file-preview__btn"
-          title="Show diff vs HEAD / branch / commit"
+          title="Open the file's git diff against HEAD (or the configured comparison ref) in a Monaco side-by-side viewer — read-only, lets you inspect the staged and unstaged changes for this file."
           @click="store.openDiff(entry as any)"
         >
           Diff
@@ -27,22 +27,34 @@
           v-if="isEditable && !store.editMode"
           type="button"
           class="button button--ghost file-preview__btn"
+          title="Switch this file into the inline editor — type changes, then Save to persist or Cancel to discard. The file stays in the preview pane the whole time."
           @click="store.startEdit()"
         >
           Edit
         </button>
         <template v-if="store.editMode">
-          <button type="button" class="button file-preview__btn" :disabled="!store.editDirty" @click="store.saveEdit()">
+          <button
+            type="button"
+            class="button file-preview__btn"
+            :disabled="!store.editDirty"
+            title="Write the editor's contents back to disk and leave edit mode. Disabled when there are no unsaved changes."
+            @click="store.saveEdit()"
+          >
             Save
           </button>
-          <button type="button" class="button button--ghost file-preview__btn" @click="store.cancelEdit()">
+          <button
+            type="button"
+            class="button button--ghost file-preview__btn"
+            title="Discard pending edits and return to the read-only preview. Asks for confirmation if unsaved changes exist."
+            @click="store.cancelEdit()"
+          >
             Cancel
           </button>
         </template>
         <button
           type="button"
           class="button button--ghost file-preview__btn"
-          title="Open in explorer"
+          title="Reveal this file in your operating system's file manager (Explorer on Windows, Finder on macOS, the default file browser on Linux) so you can drag it elsewhere or run it externally."
           @click="$emit('open-in-explorer')"
         >
           Reveal
@@ -67,7 +79,14 @@
       <template v-else-if="preview?.kind === 'binary'">
         <div class="file-preview__binary">
           <p>Binary file · {{ formatSize(entry.size) }}</p>
-          <button type="button" class="button button--ghost" @click="$emit('open-in-explorer')">Open externally</button>
+          <button
+            type="button"
+            class="button button--ghost"
+            title="Open this file in your OS's default application for its file type (image viewer, archive tool, PDF reader, etc.) — strIDEterm cannot preview binary content inline."
+            @click="$emit('open-in-explorer')"
+          >
+            Open externally
+          </button>
         </div>
       </template>
 
@@ -75,7 +94,15 @@
       <template v-else-if="preview?.kind === 'empty'">
         <div class="file-preview__binary">
           <p>Empty file</p>
-          <button v-if="isEditable" type="button" class="button button--ghost" @click="store.startEdit()">Edit</button>
+          <button
+            v-if="isEditable"
+            type="button"
+            class="button button--ghost"
+            title="Start typing into this empty file — Save when you're ready to write the contents to disk."
+            @click="store.startEdit()"
+          >
+            Edit
+          </button>
         </div>
       </template>
 

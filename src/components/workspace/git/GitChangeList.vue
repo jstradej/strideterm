@@ -26,7 +26,7 @@
             v-if="entry.code !== 'D' && entry.unstagedStatus !== 'D' && entry.stagedStatus !== 'D'"
             type="button"
             class="git-file__edit-btn"
-            title="Open in external editor"
+            title="Open this file in the external editor configured in Settings → General. Falls back to the OS default if no editor is configured."
             @click.stop="$emit('open-editor', entry.path)"
           >
             &#x270E;

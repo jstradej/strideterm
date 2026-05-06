@@ -59,7 +59,7 @@
                 <button
                   type="button"
                   class="button button--ghost review-copy-btn"
-                  :title="'Copy to clipboard'"
+                  title="Copy this prompt's rendered text to the clipboard so you can paste it into a terminal-side AI agent (Claude Code, Codex, Copilot, …)."
                   @click="appStore.copyText(renderPrompt(prompt))"
                 >
                   📋
@@ -67,7 +67,7 @@
                 <button
                   type="button"
                   class="button button--ghost review-copy-btn"
-                  title="Edit this prompt"
+                  title="Open the prompt editor for this template — change title, description, and body. Saved per review root."
                   @click="editAgentPrompt(prompt)"
                 >
                   ✎
@@ -83,7 +83,7 @@
                     busyAction === `delete-${prompt.promptId}` && 'button--busy',
                   ]"
                   :disabled="!!busyAction"
-                  title="Delete this prompt"
+                  title="Delete this custom prompt template — it is removed from the review-bridge database immediately. Built-in prompts cannot be deleted."
                   @click="handleDeletePrompt(prompt.promptId)"
                 >
                   🗑

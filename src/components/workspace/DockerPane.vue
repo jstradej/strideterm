@@ -195,19 +195,24 @@ async function handleRefresh() {
 
 const headerStatus = computed(() => `${runningCount.value}/${containers.value.length} running`);
 const headerActions = computed(() => [
-  { className: "workspace-pane__icon-btn", action: "refresh-docker", title: "Refresh Docker", label: "↻" },
+  {
+    className: "workspace-pane__icon-btn",
+    action: "refresh-docker",
+    title: "Force a fresh poll of Docker (containers, images, contexts) regardless of the configured interval.",
+    label: "↻",
+  },
   {
     className: "workspace-pane__icon-btn",
     action: "select-tab",
     viewId: `docker:${props.workspaceId}`,
-    title: "Focus tab",
+    title: "Make this Docker pane the active tab — same as left-clicking the Docker tab in the tab bar.",
     label: "◉",
   },
   {
     className: "workspace-pane__icon-btn workspace-pane__icon-btn--danger",
     action: "close-tab",
     viewId: `docker:${props.workspaceId}`,
-    title: "Close tab",
+    title: "Close the Docker tab. The Docker pane reopens automatically when you re-activate this workspace.",
     label: "×",
   },
 ]);

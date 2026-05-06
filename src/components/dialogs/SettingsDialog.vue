@@ -57,8 +57,22 @@
     <footer class="dialog__footer settings-footer">
       <p v-if="saveError" class="save-error">{{ saveError }}</p>
       <span class="footer-actions">
-        <button type="button" class="button button--ghost" @click="emit('cancel')">Cancel</button>
-        <button type="button" class="button" @click="handleSave">Save</button>
+        <button
+          type="button"
+          class="button button--ghost"
+          title="Discard every change made in this session and close the Settings dialog. Already-applied auto-saving controls (e.g. Configure hook) are not reverted."
+          @click="emit('cancel')"
+        >
+          Cancel
+        </button>
+        <button
+          type="button"
+          class="button"
+          title="Persist every changed field in this dialog to ~/.strideterm/strideterm-state.json and apply them. The dialog stays open afterwards so you can keep tweaking."
+          @click="handleSave"
+        >
+          Save
+        </button>
       </span>
     </footer>
   </div>

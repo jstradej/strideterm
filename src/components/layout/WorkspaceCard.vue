@@ -31,7 +31,11 @@
       draggable="false"
       class="workspace-card__star"
       :class="{ 'workspace-card__star--active': workspace.starred }"
-      :title="workspace.starred ? 'Remove star' : 'Star this workspace'"
+      :title="
+        workspace.starred
+          ? 'Remove the star — this workspace will no longer be pinned to the top of the list and is no longer prioritised in the Telegram /task picker.'
+          : 'Star this workspace — pins it to the top of the sidebar list and surfaces it first in the Telegram /task workspace picker.'
+      "
       @mousedown.stop
       @click.stop="$emit('toggle-star')"
     >
@@ -45,10 +49,10 @@
           :class="['workspace-card__checks-dot', `workspace-card__checks-dot--${workspace.checksState}`]"
           :title="
             workspace.checksState === 'failed'
-              ? 'Checks failed'
+              ? 'CI / pipeline checks for this workspace’s pull request are failing — open the Review pane to see which.'
               : workspace.checksState === 'pending'
-                ? 'Checks pending'
-                : 'Checks passed'
+                ? 'CI / pipeline checks for this workspace’s pull request are still running.'
+                : 'All required CI / pipeline checks for this workspace’s pull request passed.'
           "
         ></span>
         <span v-if="workspace.attentionCount" class="workspace-card__attention" :title="workspace.attentionTooltip">
@@ -69,7 +73,7 @@
         "
         class="workspace-card__action"
         type="button"
-        title="Pause the task — Continue or Reset afterwards"
+        title="Pause the agent task immediately — the Worker / Judge processes keep running but the runner stops sending new prompts. Click Continue (or Reset) afterwards from the Dashboard."
         @click.stop="$emit('task-stop')"
       >
         ⏸
@@ -86,7 +90,7 @@
         "
         class="workspace-card__action"
         type="button"
-        title="Resume the task from where it left off"
+        title="Resume the agent task from where it left off — the runner re-prompts the Worker (or Judge) with the orientation prompt and continues the round."
         @click.stop="$emit('task-toggle')"
       >
         ▶
@@ -97,7 +101,7 @@
       <button
         class="workspace-card__action workspace-card__action--menu"
         type="button"
-        title="Workspace actions"
+        title="Open the workspace actions menu — Edit, Delete, Star/Unstar, and (for Azure / GitHub workspaces) New branch / New worktree / Create task agent shortcuts."
         @mousedown.stop
         @click.stop="$emit('open-menu', $event)"
       >

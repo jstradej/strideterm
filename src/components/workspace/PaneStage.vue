@@ -245,14 +245,20 @@ function withSwapAndMenu(tab: Tab, baseActions: any[]) {
 
 function terminalPaneActions(tab: Tab) {
   return withSwapAndMenu(tab, [
-    { className: "workspace-pane__icon-btn", action: "select-tab", viewId: tab.id, title: "Focus tab", label: "◉" },
+    {
+      className: "workspace-pane__icon-btn",
+      action: "select-tab",
+      viewId: tab.id,
+      title: "Make this pane the active tab — same as left-clicking it in the tab bar.",
+      label: "◉",
+    },
     ...(tab.persistent
       ? [
           {
             className: "workspace-pane__icon-btn",
             action: "edit-tab",
             viewId: tab.id,
-            title: "Edit tab",
+            title: "Edit this tab's title, command, icon, and notification override.",
             label: "✎",
           },
         ]
@@ -261,28 +267,30 @@ function terminalPaneActions(tab: Tab) {
       className: "workspace-pane__icon-btn",
       action: "export-terminal-transcript",
       sessionId: tab.id,
-      title: "Save last 500 lines",
+      title: "Export the last 500 lines of this terminal's scrollback to a text file via the system save dialog.",
       label: "⇩",
     },
     {
       className: "workspace-pane__icon-btn",
       action: "clear-terminal",
       sessionId: tab.id,
-      title: "Clear output",
+      title: "Clear the terminal viewport (Ctrl+L equivalent). Scrollback is also wiped.",
       label: "⌫",
     },
     {
       className: "workspace-pane__icon-btn",
       action: "restart-session",
       sessionId: tab.id,
-      title: "Restart",
+      title:
+        "Kill the current process in this tab and re-run the tab's startup command. Useful when an agent gets stuck or you want a fresh session.",
       label: "↻",
     },
     {
       className: "workspace-pane__icon-btn workspace-pane__icon-btn--danger",
       action: "close-tab",
       viewId: tab.id,
-      title: "Close tab",
+      title:
+        "Close this tab. Default panels (Git / Docker / Files / Browser) reopen on next workspace activation; closed PTY tabs do not.",
       label: "×",
     },
   ]);
@@ -295,36 +303,69 @@ function nonTerminalPaneActions(tab: Tab) {
 function nonTerminalPaneBaseActions(tab: Tab) {
   if (isGitViewId(tab.id)) {
     return [
-      { className: "workspace-pane__icon-btn", action: "select-tab", viewId: tab.id, title: "Focus tab", label: "◉" },
+      {
+        className: "workspace-pane__icon-btn",
+        action: "select-tab",
+        viewId: tab.id,
+        title: "Make this pane the active tab — same as left-clicking it in the tab bar.",
+        label: "◉",
+      },
       {
         className: "workspace-pane__icon-btn workspace-pane__icon-btn--danger",
         action: "close-tab",
         viewId: tab.id,
-        title: "Close tab",
+        title:
+          "Close this tab. Default panels (Git / Docker / Files / Browser) reopen on next workspace activation; closed PTY tabs do not.",
         label: "×",
       },
     ];
   }
   if (isDockerViewId(tab.id)) {
     return [
-      { className: "workspace-pane__icon-btn", action: "refresh-docker", title: "Refresh Docker", label: "↻" },
-      { className: "workspace-pane__icon-btn", action: "select-tab", viewId: tab.id, title: "Focus tab", label: "◉" },
+      {
+        className: "workspace-pane__icon-btn",
+        action: "refresh-docker",
+        title: "Force a fresh poll of Docker (containers, images, contexts) regardless of the configured interval.",
+        label: "↻",
+      },
+      {
+        className: "workspace-pane__icon-btn",
+        action: "select-tab",
+        viewId: tab.id,
+        title: "Make this pane the active tab — same as left-clicking it in the tab bar.",
+        label: "◉",
+      },
       {
         className: "workspace-pane__icon-btn workspace-pane__icon-btn--danger",
         action: "close-tab",
         viewId: tab.id,
-        title: "Close tab",
+        title:
+          "Close this tab. Default panels (Git / Docker / Files / Browser) reopen on next workspace activation; closed PTY tabs do not.",
         label: "×",
       },
     ];
   }
   if (isAzureViewId(tab.id)) {
     return [
-      { className: "workspace-pane__icon-btn", action: "refresh-azure", title: "Refresh Azure DevOps", label: "↻" },
+      {
+        className: "workspace-pane__icon-btn",
+        action: "refresh-azure",
+        title:
+          "Force a fresh poll of every Azure DevOps connection (PRs, threads, votes, checks) and skip the configured poll interval.",
+        label: "↻",
+      },
     ];
   }
   if (isGitHubViewId(tab.id)) {
-    return [{ className: "workspace-pane__icon-btn", action: "refresh-github", title: "Refresh GitHub", label: "↻" }];
+    return [
+      {
+        className: "workspace-pane__icon-btn",
+        action: "refresh-github",
+        title:
+          "Force a fresh poll of every GitHub connection (PRs, reviews, threads, checks) and skip the configured poll interval.",
+        label: "↻",
+      },
+    ];
   }
   if (isReviewViewId(tab.id)) {
     const ws = store.payload?.appState?.workspaces?.find((w) => w.id === tab.id.replace(/^review:/, ""));
@@ -333,33 +374,46 @@ function nonTerminalPaneBaseActions(tab: Tab) {
       {
         className: "workspace-pane__icon-btn",
         action: provider === "github" ? "refresh-github" : "refresh-azure",
-        title: `Refresh ${provider === "github" ? "GitHub" : "Azure DevOps"}`,
+        title: `Force a fresh poll of ${provider === "github" ? "GitHub" : "Azure DevOps"} so this PR's metadata, reviewers, comments, and checks update straight away.`,
         label: "↻",
       },
     ];
   }
   if (isFilesViewId(tab.id)) {
     return [
-      { className: "workspace-pane__icon-btn", action: "select-tab", viewId: tab.id, title: "Focus tab", label: "◉" },
+      {
+        className: "workspace-pane__icon-btn",
+        action: "select-tab",
+        viewId: tab.id,
+        title: "Make this pane the active tab — same as left-clicking it in the tab bar.",
+        label: "◉",
+      },
       {
         className: "workspace-pane__icon-btn workspace-pane__icon-btn--danger",
         action: "close-tab",
         viewId: tab.id,
-        title: "Close tab",
+        title:
+          "Close this tab. Default panels (Git / Docker / Files / Browser) reopen on next workspace activation; closed PTY tabs do not.",
         label: "×",
       },
     ];
   }
   if (tab.type === "headless-judge") {
     return [
-      { className: "workspace-pane__icon-btn", action: "select-tab", viewId: tab.id, title: "Focus tab", label: "◉" },
+      {
+        className: "workspace-pane__icon-btn",
+        action: "select-tab",
+        viewId: tab.id,
+        title: "Make this pane the active tab — same as left-clicking it in the tab bar.",
+        label: "◉",
+      },
       ...(tab.persistent
         ? [
             {
               className: "workspace-pane__icon-btn",
               action: "edit-tab",
               viewId: tab.id,
-              title: "Edit tab",
+              title: "Edit this tab's title, command, icon, and notification override.",
               label: "✎",
             },
           ]

@@ -13,7 +13,9 @@
         <div class="workspace-meta__main">
           <span
             class="workspace-meta__path workspace-meta__path--copyable"
-            :title="activeWorkspace.cwd ? 'Click to copy path' : ''"
+            :title="
+              activeWorkspace.cwd ? 'Click to copy this workspace’s working-directory path to the clipboard.' : ''
+            "
             @click="copyPath"
             >{{
               pathCopied
@@ -46,7 +48,9 @@
         <div class="workspace-meta__main">
           <span
             class="workspace-meta__path workspace-meta__path--copyable"
-            :title="activeWorkspace.cwd ? 'Click to copy path' : ''"
+            :title="
+              activeWorkspace.cwd ? 'Click to copy this workspace’s working-directory path to the clipboard.' : ''
+            "
             @click="copyPath"
             >{{ pathCopied ? "Copied!" : activeWorkspace.cwd || "Not set" }}</span
           >

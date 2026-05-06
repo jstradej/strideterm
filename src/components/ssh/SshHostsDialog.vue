@@ -9,8 +9,21 @@
     </div>
 
     <div class="ssh-hosts-dialog__toolbar">
-      <input v-model="searchQuery" type="text" class="input" placeholder="Search hosts..." />
-      <button type="button" class="button" @click="store.openSshHostEditor()">+ Add Host</button>
+      <input
+        v-model="searchQuery"
+        type="text"
+        class="input"
+        placeholder="Search hosts..."
+        title="Filter the host list by name, address, or tag (case-insensitive substring match)."
+      />
+      <button
+        type="button"
+        class="button"
+        title="Open the empty SSH host editor — fill in name, host, port, user, auth, optional jump chain, and post-login command, then Save to add it to the host book."
+        @click="store.openSshHostEditor()"
+      >
+        + Add Host
+      </button>
     </div>
 
     <div class="ssh-hosts-dialog__list">
@@ -26,11 +39,30 @@
           </div>
         </div>
         <div class="ssh-host-card__actions">
-          <button type="button" class="button button--ghost button--small" @click="store.openSshHostEditor(host)">
+          <button
+            type="button"
+            class="button button--ghost button--small"
+            title="Open the SSH host editor for this entry — change name, host, auth, jump hosts, post-login command, and other advanced options."
+            @click="store.openSshHostEditor(host)"
+          >
             Edit
           </button>
-          <button type="button" class="button button--ghost button--small" @click="connectHost(host)">Connect</button>
-          <button type="button" class="button button--danger button--small" @click="deleteHost(host)">Delete</button>
+          <button
+            type="button"
+            class="button button--ghost button--small"
+            title="Open a new SSH tab in the active workspace using this saved host — the host's auth and post-login command are applied automatically."
+            @click="connectHost(host)"
+          >
+            Connect
+          </button>
+          <button
+            type="button"
+            class="button button--danger button--small"
+            title="Delete this saved host from the host book after a confirmation prompt. Tabs that referenced it will fail to reconnect until you re-add or pick a different host."
+            @click="deleteHost(host)"
+          >
+            Delete
+          </button>
         </div>
       </div>
     </div>

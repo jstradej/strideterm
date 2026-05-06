@@ -6,6 +6,7 @@
         type="button"
         data-browser-action="back"
         class="button button--ghost browser-url-bar__btn"
+        title="Go back to the previous page in this embedded browser tab's history."
         @click="goBack"
       >
         &#8592;
@@ -15,6 +16,7 @@
         type="button"
         data-browser-action="forward"
         class="button button--ghost browser-url-bar__btn"
+        title="Go forward to the next page in this embedded browser tab's history."
         @click="goForward"
       >
         &#8594;
@@ -23,6 +25,7 @@
         type="button"
         data-browser-action="reload"
         class="button button--ghost browser-url-bar__btn"
+        title="Reload the current page in this embedded browser tab — re-fetches the document and runs all its scripts again."
         @click="reload"
       >
         &#x21BB;
@@ -32,13 +35,14 @@
         type="text"
         class="browser-url-bar__input"
         :placeholder="homeUrl"
+        title="Navigate the embedded browser to this URL. Press Enter to load it; the http:// scheme is added automatically when missing."
         @focus="(e) => (e.target as HTMLInputElement)?.select()"
       />
       <button
         type="button"
         data-browser-action="home"
         class="button button--ghost browser-url-bar__btn"
-        title="Home"
+        title="Reset the embedded browser to this tab's saved home URL — same as opening a fresh browser tab from this template."
         @click="goHome"
       >
         &#x2302;
@@ -47,7 +51,7 @@
         type="button"
         data-browser-action="external"
         class="button button--ghost browser-url-bar__btn"
-        title="Open in browser"
+        title="Open the current page in your operating system's default web browser instead of the embedded view — handy when you need extensions, autofill, or saved logins."
         @click="openExternal"
       >
         &#x2197;

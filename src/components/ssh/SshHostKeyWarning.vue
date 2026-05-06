@@ -32,9 +32,32 @@
       </div>
 
       <footer class="dialog__footer">
-        <button type="button" class="button button--ghost" @click="reject">Cancel</button>
-        <button type="button" class="button" @click="acceptOnce">Accept once</button>
-        <button type="button" class="button button--danger" @click="acceptPermanent">
+        <button
+          type="button"
+          class="button button--ghost"
+          title="Abort the connection — the SSH session is closed without trusting the new key. Use this if you can't verify the fingerprint with the server admin."
+          @click="reject"
+        >
+          Cancel
+        </button>
+        <button
+          type="button"
+          class="button"
+          title="Trust this fingerprint for the current connection only — the next attempt to connect will prompt again. Useful for one-shot or untrusted-network scenarios."
+          @click="acceptOnce"
+        >
+          Accept once
+        </button>
+        <button
+          type="button"
+          class="button button--danger"
+          :title="
+            data.previous
+              ? 'Replace the previously trusted fingerprint with this new one and trust it for all future sessions. Only do this if you have verified the change with the server admin.'
+              : 'Persist this fingerprint to the TOFU store and trust it for every future connection to this host. Only do this when the fingerprint matches what the server admin published.'
+          "
+          @click="acceptPermanent"
+        >
           {{ data.previous ? "Replace & trust" : "Trust forever" }}
         </button>
       </footer>

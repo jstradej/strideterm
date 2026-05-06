@@ -33,7 +33,12 @@
       <small v-if="tab.taskBadge" class="tab__task-badge" :title="tab.taskTooltip">{{ tab.taskBadge }}</small>
       <small v-else>{{ tab.status }}</small>
       <span v-if="tab.attention" class="tab__attention" :title="tab.attentionTooltip">🔔</span>
-      <span class="tab__menu" :title="'Tab menu'" @click.stop="onMenuClick($event, tab.id)">☰</span>
+      <span
+        class="tab__menu"
+        title="Open the tab actions menu (Focus, Edit, Save scrollback, Clear, Restart, Close, split moves) — same options as the right-click context menu but reachable on touch devices."
+        @click.stop="onMenuClick($event, tab.id)"
+        >☰</span
+      >
     </button>
   </div>
 </template>

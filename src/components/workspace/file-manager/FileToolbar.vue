@@ -1,25 +1,47 @@
 <template>
   <div class="file-toolbar">
-    <button type="button" class="file-toolbar__btn" title="New File (Ctrl+N)" @click="$emit('create-file')">
+    <button
+      type="button"
+      class="file-toolbar__btn"
+      title="Create a new empty file in the current directory — opens an inline name prompt, then creates the file on disk and selects it. Shortcut: Ctrl+N."
+      @click="$emit('create-file')"
+    >
       + File
     </button>
-    <button type="button" class="file-toolbar__btn" title="New Folder (Ctrl+Shift+N)" @click="$emit('create-dir')">
+    <button
+      type="button"
+      class="file-toolbar__btn"
+      title="Create a new empty subdirectory in the current directory — opens an inline name prompt, then makes the folder on disk. Shortcut: Ctrl+Shift+N."
+      @click="$emit('create-dir')"
+    >
       + Folder
     </button>
-    <button type="button" class="file-toolbar__btn" title="Refresh (F5)" @click="$emit('refresh')">↻</button>
+    <button
+      type="button"
+      class="file-toolbar__btn"
+      title="Re-read the current directory listing from disk — picks up changes made by other processes (build outputs, git operations, external tools). Shortcut: F5."
+      @click="$emit('refresh')"
+    >
+      ↻
+    </button>
 
     <div class="file-toolbar__search">
       <input
         type="search"
         :value="filterText"
         placeholder="Filter…"
+        title="Filter the file list to entries whose name contains this text (case-insensitive). Press Escape to clear the filter."
         class="file-toolbar__search-input"
         @input="$emit('filter', ($event.target as HTMLInputElement).value)"
         @keydown.escape="$emit('filter', '')"
       />
     </div>
 
-    <span v-if="gitIsRepo" class="file-toolbar__legend" :title="dirtyCount + ' dirty file(s)'">
+    <span
+      v-if="gitIsRepo"
+      class="file-toolbar__legend"
+      :title="`Git status legend for this directory. M = modified, S = staged, U = untracked. ${dirtyCount} file${dirtyCount === 1 ? '' : 's'} currently dirty.`"
+    >
       <span class="file-toolbar__legend-item" :style="{ color: 'var(--fm-status-modified, #d8a14b)' }">M</span>
       <span class="file-toolbar__legend-item" :style="{ color: 'var(--fm-status-staged, #6cb478)' }">S</span>
       <span class="file-toolbar__legend-item" :style="{ color: 'var(--fm-status-untracked, #5e9bd6)' }">U</span>
@@ -33,7 +55,11 @@
       type="button"
       class="file-toolbar__btn"
       :class="{ 'file-toolbar__btn--active': showHidden }"
-      title="Toggle hidden files"
+      :title="
+        showHidden
+          ? 'Hide files and folders that start with a dot (.git, .env, …) — they will be filtered out of the listing.'
+          : 'Show files and folders that start with a dot (.git, .env, …) — currently hidden.'
+      "
       @click="$emit('toggle-hidden')"
     >
       .*
@@ -41,7 +67,11 @@
     <button
       type="button"
       class="file-toolbar__btn"
-      :title="viewMode === 'list' ? 'Grid view' : 'List view'"
+      :title="
+        viewMode === 'list'
+          ? 'Switch the file list to grid view — large icons in a wrap layout, easier for quick visual scanning of media folders.'
+          : 'Switch the file list back to list view — one entry per row with name, size, and git status, easier to read and filter.'
+      "
       @click="$emit('toggle-view')"
     >
       {{ viewMode === "list" ? "▦" : "≡" }}

@@ -83,8 +83,18 @@
       <li v-for="tag in tags" :key="tag.name" class="git-tag-item">
         <div class="git-tag-item__meta">
           <strong class="git-tag-item__name">{{ tag.name }}</strong>
-          <span v-if="tag.annotated" class="workspace-chip" title="Tag with message and author info">annotated</span>
-          <span v-else-if="tag.local" class="workspace-chip" title="Simple tag without message">lightweight</span>
+          <span
+            v-if="tag.annotated"
+            class="workspace-chip"
+            title="Annotated git tag — carries a message, tagger identity, and creation date. Created with git tag -a."
+            >annotated</span
+          >
+          <span
+            v-else-if="tag.local"
+            class="workspace-chip"
+            title="Lightweight git tag — just a named pointer at a commit, no message or tagger metadata. Created with plain git tag."
+            >lightweight</span
+          >
           <span
             v-if="tag.local && tag.pushed"
             class="workspace-chip"

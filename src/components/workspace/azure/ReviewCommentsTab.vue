@@ -302,7 +302,7 @@
                   class="button button--ghost"
                   style="font-size: 11px; padding: 2px 8px"
                   :disabled="!!busyAction"
-                  title="Edit the text of this draft"
+                  title="Open the draft body in a multi-line editor so you can revise the text before publishing. Saved locally until you click Push & publish."
                   @click="editLocalDraft(comment)"
                 >
                   Edit

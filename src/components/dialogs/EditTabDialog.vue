@@ -15,6 +15,7 @@
           role="tab"
           :aria-selected="tabType === 'local'"
           :class="['segmented__btn', { 'segmented__btn--active': tabType === 'local' }]"
+          title="Create a local shell tab — runs an interactive PTY session in the workspace's working directory using your default shell."
           @click="tabType = 'local'"
         >
           💻 Local shell
@@ -24,6 +25,7 @@
           role="tab"
           :aria-selected="tabType === 'ssh'"
           :class="['segmented__btn', { 'segmented__btn--active': tabType === 'ssh' }]"
+          title="Create an SSH tab — connects to a remote host via the strIDEterm SSH client. Pick a saved host below or use Quick connect to type host details by hand."
           @click="tabType = 'ssh'"
         >
           🔐 SSH
@@ -33,10 +35,26 @@
       <label class="field">
         <span>Title</span>
         <div class="title-row">
-          <button type="button" class="icon-btn" :title="'Pick icon'" @click="showIconPicker = !showIconPicker">
+          <button
+            type="button"
+            class="icon-btn"
+            :title="
+              showIconPicker
+                ? 'Close the emoji picker without changing the icon.'
+                : 'Open the emoji picker to prefix this tab with an icon — the picked emoji is inserted at the start of the title.'
+            "
+            @click="showIconPicker = !showIconPicker"
+          >
             {{ currentIcon || "\u{1F4BB}" }}
           </button>
-          <input ref="titleRef" v-model="titleInput" class="title-input" maxlength="60" required />
+          <input
+            ref="titleRef"
+            v-model="titleInput"
+            class="title-input"
+            maxlength="60"
+            title="Tab title shown in the tab bar. Edit freely — leading emoji is treated as the icon and is editable via the icon picker."
+            required
+          />
         </div>
         <div v-if="showIconPicker" class="icon-picker">
           <button
@@ -44,6 +62,7 @@
             :key="icon"
             type="button"
             class="icon-picker__btn"
+            :title="`Use ${icon} as the tab's leading icon — replaces any existing emoji prefix in the title.`"
             @click="pickIcon(icon)"
           >
             {{ icon }}
@@ -59,7 +78,11 @@
             :aria-selected="sshMode === 'saved'"
             :class="['segmented__btn', { 'segmented__btn--active': sshMode === 'saved' }]"
             :disabled="sshHosts.length === 0"
-            :title="sshHosts.length === 0 ? 'No saved hosts yet — use Quick connect' : ''"
+            :title="
+              sshHosts.length === 0
+                ? 'Disabled — no saved hosts yet. Switch to Quick connect to type host details by hand, or add a host in Settings → SSH first.'
+                : 'Pick a host from your strIDEterm host book below — saved hosts carry their auth, jump chain, and post-login command.'
+            "
             @click="sshMode = 'saved'"
           >
             Saved host
@@ -69,6 +92,7 @@
             role="tab"
             :aria-selected="sshMode === 'quick'"
             :class="['segmented__btn', { 'segmented__btn--active': sshMode === 'quick' }]"
+            title="Type host / user / port / auth in-place — useful for one-off connections. Optionally save the result to the host book before connecting."
             @click="sshMode = 'quick'"
           >
             Quick connect
@@ -90,7 +114,7 @@
                 type="button"
                 class="button button--ghost saved-host-row__edit"
                 :disabled="!selectedSshHostId"
-                title="Open the full host editor"
+                title="Open the full SSH host editor for the currently selected host — change auth, port, jump chain, post-login command, etc. Returns to this dialog when saved."
                 @click="editSelectedHost"
               >
                 Edit…

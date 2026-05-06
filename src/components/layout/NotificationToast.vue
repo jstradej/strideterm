@@ -6,7 +6,14 @@
         <strong class="notification-toast__title">{{ toast?.title }}</strong>
         <p class="notification-toast__body">{{ toast?.body }}</p>
       </div>
-      <button type="button" class="notification-toast__close" title="Dismiss" @click.stop="dismiss">&times;</button>
+      <button
+        type="button"
+        class="notification-toast__close"
+        title="Hide this toast — the alert stays in the notification history panel so you can act on it later."
+        @click.stop="dismiss"
+      >
+        &times;
+      </button>
     </div>
   </Transition>
 </template>

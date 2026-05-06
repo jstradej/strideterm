@@ -170,7 +170,7 @@
               type="button"
               class="button"
               :disabled="!switchBranchTarget || !!gitUi.busyAction"
-              title="Checkout the selected branch"
+              title="Run git checkout on the selected branch — switches the working tree to that branch's tip. Aborts if uncommitted changes would be overwritten."
               style="margin-left: 6px"
               @click="onCheckoutBranch"
             >

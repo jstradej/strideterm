@@ -103,7 +103,7 @@
             data-testid="refresh-button"
             :class="['button', 'button--ghost', gitUi.busyAction === 'refresh' && 'button--busy']"
             :disabled="!!gitUi.busyAction"
-            title="Re-read git status from disk"
+            title="Re-read this repository's branch, ahead/behind counts, dirty list, worktrees, and tags from disk. No network operations."
             @click="gitUiStore.refreshGit(workspaceId)"
           >
             {{ gitUi.busyAction === "refresh" ? "Refreshing…" : "Refresh" }}
@@ -116,7 +116,7 @@
             data-testid="fetch-button"
             :class="['button', 'button--ghost', gitUi.busyAction === 'fetch' && 'button--busy']"
             :disabled="!!gitUi.busyAction || !!gitUi.pendingAction || operation.inProgress"
-            title="Download remote refs without changing your working tree"
+            title="git fetch — download remote refs and tags from origin so the ahead/behind counts update. Working tree, current branch, and uncommitted changes are not touched."
             @click="gitUiStore.gitFetch(workspaceId)"
           >
             {{ gitUi.busyAction === "fetch" ? "Fetching…" : "Fetch" }}
@@ -155,7 +155,7 @@
             data-testid="new-worktree-button"
             class="button button--ghost"
             :disabled="!!gitUi.busyAction || !!gitUi.pendingAction || operation.inProgress"
-            title="Create a new git worktree with its own branch"
+            title="Open the worktree dialog — create a new git worktree off this repository on a new or existing branch and open it as its own workspace, so the main checkout stays untouched."
             @click="onCreateWorktree"
           >
             New worktree
@@ -168,6 +168,7 @@
             data-testid="lazygit-button"
             class="button button--ghost"
             style="white-space: nowrap"
+            title="Open lazygit in a new terminal tab pointed at this repository — full keyboard-driven git TUI for staging, committing, branching, rebasing, and history exploration."
             @click="gitUiStore.openLazygit(workspaceId)"
           >
             Open Lazygit
@@ -178,7 +179,7 @@
             class="button button--ghost"
             disabled
             style="white-space: nowrap; border: 1px dashed var(--accent); color: var(--accent); opacity: 0.9"
-            title="Install lazygit to enable"
+            title="Disabled — lazygit was not detected on PATH. Install it (https://github.com/jesseduffield/lazygit) and restart strIDEterm to enable this button."
           >
             Install Lazygit
           </button>
@@ -703,14 +704,14 @@ const headerActions = computed(() => [
     className: "workspace-pane__icon-btn",
     action: "select-tab",
     viewId: `git:${props.workspaceId}`,
-    title: "Focus tab",
+    title: "Make the Git pane the active tab — same as left-clicking it in the tab bar.",
     label: "◉",
   },
   {
     className: "workspace-pane__icon-btn workspace-pane__icon-btn--danger",
     action: "close-tab",
     viewId: `git:${props.workspaceId}`,
-    title: "Close tab",
+    title: "Close the Git tab. The pane reopens automatically when you re-activate this workspace.",
     label: "×",
   },
 ]);

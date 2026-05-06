@@ -7,7 +7,7 @@
           :key="key"
           type="button"
           :class="['layout-picker__item', currentLayout === key && 'layout-picker__item--active']"
-          :title="layout.label"
+          :title="`Switch the active workspace to the ${layout.label} layout — shows ${layout.slots} tabs side-by-side. Pick which tabs fill the slots from the tab bar; right-click an empty slot to add a tab.`"
           @click="pickLayout(key)"
         >
           <svg class="layout-thumb" viewBox="0 0 40 30">

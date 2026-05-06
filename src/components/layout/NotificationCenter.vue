@@ -48,7 +48,7 @@
             v-if="notifStore.unreadCount > 0 || notifStore.finishedSessions.length > 0"
             type="button"
             class="notification-center__action"
-            title="Acknowledge all finished"
+            title="Mark every unread / finished notification as read so the unread badge clears. Notifications stay in the history list — use Clear all to delete them."
             @click="notifStore.markAllRead()"
           >
             <span class="notification-center__action-icon" aria-hidden="true">✓</span>
@@ -58,7 +58,7 @@
             v-if="notifStore.sessions.length > 0"
             type="button"
             class="notification-center__action notification-center__action--danger"
-            title="Clear all notifications"
+            title="Permanently remove every notification from the history list (read and unread). This cannot be undone."
             @click="notifStore.clearAll()"
           >
             <span class="notification-center__action-icon" aria-hidden="true">🗑</span>
@@ -68,7 +68,11 @@
             type="button"
             class="notification-center__pin"
             :class="{ 'notification-center__pin--active': notifStore.pinned }"
-            :title="notifStore.pinned ? 'Unpin panel' : 'Pin panel to the right'"
+            :title="
+              notifStore.pinned
+                ? 'Unpin the notification panel — it will collapse back into the side rail when you click outside it.'
+                : 'Pin the notification panel to the right of the workspace so it stays open while you work; clicking outside no longer dismisses it.'
+            "
             @click="notifStore.togglePin()"
           >
             {{ notifStore.pinned ? "📌" : "📍" }}
@@ -77,7 +81,7 @@
             v-if="!notifStore.pinned"
             type="button"
             class="notification-center__close"
-            title="Close"
+            title="Hide the notification panel (Esc). New notifications still arrive in the background and the bell icon will indicate unread alerts."
             @click="notifStore.closePanel()"
           >
             &times;
@@ -90,7 +94,7 @@
           v-if="unseenCount > 0"
           type="button"
           class="notification-center__new-pill"
-          title="Scroll to top and show new"
+          title="Scroll the list back to the top to reveal the latest unseen notifications and clear the new-counter pill."
           @click="scrollToTopAndClear"
         >
           ↑ {{ unseenCount }} new
@@ -170,7 +174,7 @@
             <button
               type="button"
               class="button button--ghost"
-              title="Open Settings → Telegram"
+              title="Open Settings → Telegram to add a new bot, edit existing connections (token, chat ID, forward filter), or remove one."
               @click="openTelegramSettings"
             >
               ⚙ Configure
@@ -221,17 +225,25 @@
                 </div>
                 <p class="notification-item__body">{{ sessionBody(row.session) }}</p>
                 <div v-if="row.session.state === 'waiting'" class="notification-item__quick-actions">
-                  <button class="quick-action" title="Jump to session (Enter)" @click.stop="jump(row.session)">
+                  <button
+                    class="quick-action"
+                    title="Switch to the workspace and tab that produced this alert and focus its terminal so you can reply to the agent (keyboard shortcut: Enter)."
+                    @click.stop="jump(row.session)"
+                  >
                     Jump
                   </button>
                   <button
                     class="quick-action"
-                    title="Silence without acting — feeds adaptive suppression (d)"
+                    title="Silence this alert without acting on it. Feeds the adaptive suppression model so you get fewer of the same kind in future. Shortcut: d."
                     @click.stop="dismiss(row.session)"
                   >
                     Dismiss
                   </button>
-                  <button class="quick-action" title="Snooze for 10 minutes (s)" @click.stop="snooze(row.session)">
+                  <button
+                    class="quick-action"
+                    title="Hide this alert for ten minutes. If the underlying session is still waiting after that it will re-appear at the top of the list. Shortcut: s."
+                    @click.stop="snooze(row.session)"
+                  >
                     Snooze
                   </button>
                 </div>
@@ -242,7 +254,7 @@
               <button
                 v-if="row.session.state !== 'waiting'"
                 class="notification-item__remove"
-                title="Remove from history"
+                title="Permanently remove just this notification from the history list. Cannot be undone."
                 @click.stop="notifStore.remove(row.session.id)"
               >
                 &times;
