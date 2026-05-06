@@ -29,7 +29,12 @@
       <div class="sidebar__head">
         <h1 class="brand">str<em>IDE</em>term</h1>
         <div class="sidebar__tools">
-          <button type="button" class="sidebar__icon-btn" title="Add workspace" @click="store.openNewWorkspaceFlow()">
+          <button
+            type="button"
+            class="sidebar__icon-btn"
+            title="Open the New Workspace picker — pick an empty workspace, an Agent Task Runner, or one of the installed plugin templates (Azure DevOps, GitHub, Docker, System Monitor)."
+            @click="store.openNewWorkspaceFlow()"
+          >
             +
           </button>
           <button
@@ -37,7 +42,11 @@
             type="button"
             class="sidebar__icon-btn"
             :class="{ 'sidebar__icon-btn--star-active': store.starFilterActive }"
-            :title="store.starFilterActive ? 'Show all workspaces' : 'Show starred only'"
+            :title="
+              store.starFilterActive
+                ? 'Drop the starred-only filter — every workspace in the active profile becomes visible again.'
+                : 'Hide non-starred workspaces — only the ones you marked with ★ stay visible in the sidebar list.'
+            "
             @click="store.starFilterActive = !store.starFilterActive"
           >
             {{ store.starFilterActive ? "★" : "☆" }}
@@ -46,20 +55,36 @@
             type="button"
             class="sidebar__icon-btn sidebar__collapse-btn"
             data-role="sidebar-collapse"
-            :title="sidebarCollapseLabel"
+            :title="
+              store.sidebarCollapsed
+                ? 'Expand the sidebar back to its full width — workspace names, summaries, and the Configure button reappear.'
+                : 'Shrink the sidebar to a slim icon strip so the active workspace gets more horizontal room. Workspace cards collapse to icons; click one to switch.'
+            "
             :aria-label="sidebarCollapseLabel"
             @click="toggleSidebarCollapse"
           >
             {{ store.sidebarCollapsed ? "▶" : "◀" }}
           </button>
-          <button type="button" class="sidebar__icon-btn" title="Settings" @click="store.openSettingsDialog()">
+          <button
+            type="button"
+            class="sidebar__icon-btn"
+            title="Open the Settings dialog (theme, notifications, agent hooks, SSH, tab templates, Telegram bot, and About)."
+            @click="store.openSettingsDialog()"
+          >
             ⚙
           </button>
-          <button type="button" class="sidebar__icon-btn" title="Help" @click="store.openHelpDialog()">?</button>
+          <button
+            type="button"
+            class="sidebar__icon-btn"
+            title="Open the Help dialog — keyboard shortcuts, navigation tips, and links to the project's docs."
+            @click="store.openHelpDialog()"
+          >
+            ?
+          </button>
           <button
             type="button"
             class="sidebar__icon-btn sidebar__close-btn"
-            title="Close sidebar"
+            title="Hide the sidebar drawer (mobile / narrow viewports). The hamburger menu in the toolbar reopens it."
             aria-label="Close sidebar"
             @click="closeSidebar"
           >
@@ -90,7 +115,7 @@
               v-if="versionsBehind > 0"
               type="button"
               class="sidebar-footer__update-hint"
-              :title="`Open latest release (v${latestVersionLabel})`"
+              :title="`Open the GitHub release page for v${latestVersionLabel} in your default web browser so you can download the new build.`"
               @click="api?.openExternal?.(latestReleaseUrl)"
             >
               {{ versionsBehind }} {{ versionsBehind === 1 ? "update" : "updates" }} behind
@@ -100,7 +125,7 @@
             v-if="repositoryUrl"
             type="button"
             class="sidebar-footer__repo"
-            :title="repositoryUrl"
+            :title="`Open the strIDEterm GitHub repository (${repositoryUrl}) in your default web browser — issues, releases, and source.`"
             @click="api?.openExternal?.(repositoryUrl)"
           >
             GitHub repo
@@ -116,7 +141,12 @@
         <WorkspaceHero />
 
         <div class="terminal-toolbar">
-          <button type="button" class="mobile-hamburger" title="Menu" @click="openSidebar">
+          <button
+            type="button"
+            class="mobile-hamburger"
+            title="Open the sidebar drawer (mobile / narrow viewports) — workspace list, profile bar, settings, help, and remote-access controls. The badge shows how many workspaces currently need your attention."
+            @click="openSidebar"
+          >
             ☰
             <span
               class="mobile-hamburger__badge"
@@ -133,7 +163,12 @@
 
           <!-- Mobile tab picker (replaces cramped tab strip) -->
           <div class="mobile-tab-picker">
-            <button type="button" class="mobile-tab-picker__trigger" @click="mobileTabOpen = !mobileTabOpen">
+            <button
+              type="button"
+              class="mobile-tab-picker__trigger"
+              title="Open the mobile tab list — every tab in the active workspace as a stacked dropdown. Tap a row to switch to that tab; tap the ☰ icon for the per-tab actions menu."
+              @click="mobileTabOpen = !mobileTabOpen"
+            >
               ▤ Tabs
             </button>
             <div v-if="mobileTabOpen" class="mobile-tab-picker__dropdown">
@@ -149,7 +184,10 @@
               >
                 <span class="mobile-tab-picker__name">{{ tab.title }}</span>
                 <small class="mobile-tab-picker__status">{{ tab.status }}</small>
-                <span class="mobile-tab-picker__menu" title="Tab menu" @click.stop="onMobileTabMenu($event, tab.id)"
+                <span
+                  class="mobile-tab-picker__menu"
+                  title="Open the tab actions menu (Focus, Edit, Save scrollback, Clear, Restart, Close, split moves) — same options as the right-click context menu."
+                  @click.stop="onMobileTabMenu($event, tab.id)"
                   >☰</span
                 >
               </button>
@@ -163,7 +201,7 @@
             class="notification-bell"
             :class="{ 'notification-bell--has-unread': notifStore.unreadCount > 0 }"
             data-role="notification-bell"
-            title="Notifications"
+            title="Open the notification panel — agent alerts, command-finished pings, PR review activity, and the Telegram bot status. The badge shows the unread count."
             @click="notifStore.togglePanel()"
           >
             🔔
