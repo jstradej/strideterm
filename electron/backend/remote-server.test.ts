@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
 import {
   REMOTE_BLOCKED_REMOTE_ACCESS_FIELDS,
+  buildSessionCookieAttrs,
   sanitizeSettingsFromRemote,
   stripSecretsForRemote,
 } from "./remote-server.js";
@@ -15,12 +16,14 @@ describe("sanitizeSettingsFromRemote", () => {
         port: 1234,
         token: "attacker-chosen",
         customPublicUrl: "https://my.tunnel.example",
+        someUnknownFutureField: "kept",
       },
       logLevel: "debug",
     };
     const removed = sanitizeSettingsFromRemote(settings as Record<string, unknown>);
     expect(removed.sort()).toEqual([...REMOTE_BLOCKED_REMOTE_ACCESS_FIELDS].sort());
-    expect(settings.remoteAccess).toEqual({ customPublicUrl: "https://my.tunnel.example" });
+    // Only the non-blocked extra field survives.
+    expect(settings.remoteAccess).toEqual({ someUnknownFutureField: "kept" });
     // Non-remoteAccess settings are untouched.
     expect(settings.logLevel).toBe("debug");
   });
@@ -38,18 +41,17 @@ describe("sanitizeSettingsFromRemote", () => {
     expect(removed).toEqual([]);
   });
 
-  test("only removes the blocked keys — extra fields stay", () => {
+  test("only removes the blocked keys — non-blocked fields stay", () => {
     const settings = {
       remoteAccess: {
         cloudflaredPath: "/should/be/removed",
-        customPublicUrl: "stays",
-        someFutureField: "also stays",
+        customPublicUrl: "/should/be/removed/too",
+        someFutureField: "stays",
       },
     };
     sanitizeSettingsFromRemote(settings as Record<string, unknown>);
     expect(settings.remoteAccess).toEqual({
-      customPublicUrl: "stays",
-      someFutureField: "also stays",
+      someFutureField: "stays",
     });
   });
 });
@@ -92,5 +94,31 @@ describe("stripSecretsForRemote", () => {
   test("passes through partial payload shapes", () => {
     const partial = { appState: { settings: { logLevel: "info" } } };
     expect(stripSecretsForRemote(partial)).toEqual(partial);
+  });
+});
+
+describe("buildSessionCookieAttrs", () => {
+  test("omits Secure on plain HTTP (no x-forwarded-proto)", () => {
+    expect(buildSessionCookieAttrs({})).toBe("HttpOnly; SameSite=Strict; Path=/");
+  });
+
+  test("omits Secure when x-forwarded-proto is http", () => {
+    expect(buildSessionCookieAttrs({ "x-forwarded-proto": "http" })).toBe("HttpOnly; SameSite=Strict; Path=/");
+  });
+
+  test("appends Secure when x-forwarded-proto is https (Cloudflare tunnel)", () => {
+    expect(buildSessionCookieAttrs({ "x-forwarded-proto": "https" })).toBe("HttpOnly; SameSite=Strict; Path=/; Secure");
+  });
+
+  test("respects only the first proto in a comma-separated chain", () => {
+    // Some proxies append; the originating client-facing proto is the first.
+    expect(buildSessionCookieAttrs({ "x-forwarded-proto": "https, http" })).toBe(
+      "HttpOnly; SameSite=Strict; Path=/; Secure",
+    );
+    expect(buildSessionCookieAttrs({ "x-forwarded-proto": "http, https" })).toBe("HttpOnly; SameSite=Strict; Path=/");
+  });
+
+  test("is case-insensitive", () => {
+    expect(buildSessionCookieAttrs({ "x-forwarded-proto": "HTTPS" })).toBe("HttpOnly; SameSite=Strict; Path=/; Secure");
   });
 });

@@ -30,12 +30,36 @@ import { getLogger, createAuditLogger } from "./logger.js";
  *     so even if a leaked URL is opened in another tab the cookie won't
  *     ride a cross-origin form post.
  *   - Path=/: applies to every endpoint on this origin.
- *   - Note: no `Secure` attribute on bare HTTP LAN. Cloudflare-tunnel
- *     deployments are HTTPS already; the browser scopes the cookie by
- *     origin so an HTTP and HTTPS deployment never see each other.
+ *   - Secure: appended only when `X-Forwarded-Proto: https` indicates the
+ *     browser ↔ proxy hop was TLS (Cloudflare tunnel, reverse proxy). For
+ *     bare HTTP LAN we omit it — `Secure` would forbid the browser from
+ *     ever sending the cookie back, breaking the LAN bootstrap. See
+ *     `buildSessionCookieAttrs` below.
  */
 const SESSION_COOKIE_NAME = "strideterm_session";
-const SESSION_COOKIE_ATTRS = "HttpOnly; SameSite=Strict; Path=/";
+const SESSION_COOKIE_ATTRS_BASE = "HttpOnly; SameSite=Strict; Path=/";
+
+/**
+ * Decide whether the cookie should carry the `Secure` attribute. When the
+ * client reaches us through Cloudflare tunnel (or any other HTTPS reverse
+ * proxy) the request socket is plain HTTP from the proxy → us, but the
+ * browser ↔ proxy hop is TLS. The proxy advertises that via
+ * `X-Forwarded-Proto: https`, and the browser will only consent to send a
+ * `Secure` cookie back over the same scheme. Skipping `Secure` for the bare
+ * LAN-HTTP case (no proxy) keeps the LAN bootstrap working — browsers scope
+ * cookies by origin so an HTTP and HTTPS deployment never see each other's
+ * cookies anyway, but adding `Secure` to an HTTPS-fronted deployment closes
+ * the door on accidental insecure-channel echoes (e.g. tooling that strips
+ * TLS for debugging).
+ */
+export function buildSessionCookieAttrs(headers: IncomingMessage["headers"]): string {
+  const proto = String(headers["x-forwarded-proto"] || "")
+    .toLowerCase()
+    .split(",")[0]
+    .trim();
+  if (proto === "https") return `${SESSION_COOKIE_ATTRS_BASE}; Secure`;
+  return SESSION_COOKIE_ATTRS_BASE;
+}
 
 const log = getLogger("remote-server");
 
@@ -160,6 +184,13 @@ export const REMOTE_BLOCKED_REMOTE_ACCESS_FIELDS: ReadonlyArray<string> = [
   "host",
   "port",
   "token",
+  // `customPublicUrl` is display-only metadata — but the desktop "Copy share
+  // URL" affordance reads it, so a leaked-token attacker rewriting it to
+  // `https://evil/strideterm` turns the local user into an unwitting phishing
+  // courier. Blast radius is small (token leak already grants RCE-equivalent
+  // access), but the fix is one entry and the lost capability — "edit my
+  // VPS URL from the phone" — is rare enough to walk back to the desktop.
+  "customPublicUrl",
 ];
 
 /**
@@ -1294,7 +1325,7 @@ export async function startRemoteServer({
       }
       const sessionId = mintSession();
       writeHead(response, 302, {
-        "Set-Cookie": `${SESSION_COOKIE_NAME}=${sessionId}; ${SESSION_COOKIE_ATTRS}`,
+        "Set-Cookie": `${SESSION_COOKIE_NAME}=${sessionId}; ${buildSessionCookieAttrs(request.headers)}`,
         Location: "/",
       });
       response.end();

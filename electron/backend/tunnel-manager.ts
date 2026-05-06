@@ -37,7 +37,14 @@ function createSnapshot(overrides: Partial<TunnelSnapshot> = {}): TunnelSnapshot
 }
 
 function resolveCloudflaredBinary(preferredBinary = ""): string {
-  if (preferredBinary) {
+  // Defense-in-depth on top of the multi-transport filter
+  // (REMOTE_BLOCKED_REMOTE_ACCESS_FIELDS in remote-server.ts) that already
+  // prevents a leaked-token attacker from setting this path. If that filter
+  // ever regresses and we get a bogus path here, the existsSync gate makes us
+  // fall through to the candidate search instead of trusting it — so spawn
+  // never runs an attacker-pointed-at-but-missing binary, and refreshAvailability
+  // surfaces a clean "not found on PATH" error to the user.
+  if (preferredBinary && existsSync(preferredBinary)) {
     return preferredBinary;
   }
 
