@@ -2546,7 +2546,25 @@ export async function createRuntime({
         if (taskRunner.onAgentIdle(payload.sessionId, "osc133")) {
           log.debug("OSC 133;D: task runner handled idle", { sessionId: payload.sessionId });
           cancelPromptTimer(signal);
-        } else if (signal.hasUserInput) {
+        } else if (signal.hasUserInput && !signal.agentLike) {
+          // OSC 133;D as an alert source is reliable ONLY for real shells
+          // (bash / zsh / pwsh / cmd with shell-integration), where the
+          // sequence marks a true command-finished boundary. Agent TUIs
+          // (Claude Code, Codex, Gemini) emit OSC 133;D multiple times
+          // within a single turn — once per UI prompt, tool-permission ask,
+          // or status update between tool uses — so treating it as
+          // "command finished" produced false-positive "waiting for input"
+          // alerts whenever the user briefly looked away mid-turn (the 5s
+          // visibility grace expired before the next OSC arrived, then the
+          // next OSC fired the alert from the not-visible branch below).
+          //
+          // For agent sessions, end-of-turn detection flows through hooks
+          // (Stop event → classifier → raiseAlert) and the 2-min silence
+          // fallback in the agent branches further down. The same long-turn
+          // false-positive reasoning the original author already applied to
+          // silence detection (see comment in the hookCapable branch below)
+          // applies equally to OSC 133;D — extending the guard here closes
+          // that gap.
           const now = Date.now();
           const inCooldown = signal.lastAlertAt > 0 && now - signal.lastAlertAt < notifConfig.alertCooldownMs;
           if (signal.busy && !inCooldown) {
@@ -2576,7 +2594,15 @@ export async function createRuntime({
             });
           }
         }
-        // Skip normal detection for this chunk — OSC 133;D is authoritative.
+        // For shells, OSC 133;D is authoritative — the agent branches below
+        // are skipped via the `else if` chain. For agents we entered this
+        // block too (status update, task-runner intercept, git refresh) but
+        // skipped the alert path above; the `else if` chain still skips the
+        // agent branches for OSC chunks, which means busy/output tracking
+        // misses chunks that contain OSC. That matches pre-existing behavior
+        // and is acceptable because the next non-OSC chunk catches up; if
+        // that ever turns out to be observable, refactor to run the agent
+        // branches independently of OSC.
         // perf-3: schedule a debounced git refresh if this session is in a git workspace
         if (descriptor?.workspaceId) {
           const wsSnapshot = git.getSnapshot?.(descriptor.workspaceId);
@@ -2587,9 +2613,11 @@ export async function createRuntime({
       } else if (signal.agentLike && signal.hookCapable) {
         // --- Agent sessions with proven hooks: trust them exclusively ---
         // Phase 0 § 3.2.d — a session that has fired at least one hook event
-        // uses hooks as its ONLY alert source (plus BEL / OSC 133;D already
-        // handled above).  Silence-based fallback is off — it's the primary
-        // source of false positives during long Claude Code turns.
+        // uses hooks as its ONLY alert source. Silence-based fallback is
+        // off — it's the primary source of false positives during long
+        // Claude Code turns. OSC 133;D is no longer an alert source for
+        // agents either (see guard in the OSC block above); BEL below is
+        // still honored as a cheap T1 signal.
         const now = Date.now();
         const inCooldown = signal.lastAlertAt > 0 && now - signal.lastAlertAt < notifConfig.alertCooldownMs;
         const hasBell = rawText.includes("\u0007");
