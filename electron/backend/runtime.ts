@@ -4391,10 +4391,17 @@ export async function createRuntime({
       const now = Date.now();
       for (const [, signal] of sessionSignals) {
         cancelPromptTimer(signal);
+        // Only carry the post-clear cooldown on signals that were actually
+        // alerting — otherwise a stale buffer replay could re-alert. Fresh
+        // signals (never alerted, not waiting) have nothing to suppress, so
+        // applying lastAlertAt to them just silences valid future hooks for
+        // the next ~15s. Use `everAlerted` (not `lastAlertAt > 0`) because
+        // signals are seeded with lastAlertAt=createTime for warmup.
+        const wasActive = signal.waitingRaised || signal.everAlerted;
         signal.busy = false;
         signal.waitingRaised = false;
         signal.lastOutputAt = 0;
-        signal.lastAlertAt = now;
+        if (wasActive) signal.lastAlertAt = now;
       }
       broadcastState();
       return getPayload();

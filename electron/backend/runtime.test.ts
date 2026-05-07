@@ -1736,6 +1736,53 @@ describe("runtime integration", () => {
     }
   });
 
+  test("clearAllAttention does not silence fresh sessions that never alerted", async () => {
+    vi.useFakeTimers();
+    try {
+      const fixture = await createFixture({
+        initialState: {
+          activeProjectId: "frontend",
+          projects: [
+            {
+              id: "frontend",
+              name: "Frontend",
+              kind: "terminal",
+              cwd: "/tmp/frontend",
+              activePanelId: "claude",
+              panels: [{ id: "claude", title: "Claude Code", command: "claude", shell: true, startup: "default" }],
+            },
+            {
+              id: "backend",
+              name: "Backend",
+              kind: "terminal",
+              cwd: "/tmp/backend",
+              activePanelId: "shell",
+              panels: [{ id: "shell", title: "Shell", command: "", shell: true, startup: "default" }],
+            },
+          ],
+        },
+      });
+      fixtures.push(fixture);
+
+      await fixture.runtime.syncAttentionContext({ visibleSessionIds: ["frontend:claude"] });
+      fixture.sessionManager.emit("terminal:data", { sessionId: "backend:shell", data: "$ " });
+      // Advance past the initial-warmup cooldown.
+      await vi.advanceTimersByTimeAsync(16_000);
+      fixture.runtime.writeToSession("backend:shell", "claude\r");
+
+      // User clicks "Clear all" before any alert ever fired on this session.
+      // Previously this seeded lastAlertAt=now and silenced the next ~15s
+      // worth of valid hooks. With the fix, fresh signals are unaffected.
+      fixture.runtime.clearAllAttention();
+
+      // A hook arriving immediately after clear should still raise an alert.
+      fixture.runtime.notifyAgentHook("backend:shell", "idle_prompt");
+      expect(fixture.runtime.getPayload().attention.byProject.backend).toMatchObject({ count: 1 });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   test("notifyAgentHook ignores irrelevant notification types", async () => {
     vi.useFakeTimers();
     try {
