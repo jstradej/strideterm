@@ -1268,6 +1268,72 @@ describe("resetTask", () => {
     const result = await runner.resetTask(ws.id);
     expect(result).toBe(false);
   });
+
+  test("flags the task to clear Worker + Judge context on next start", async () => {
+    // Reset by itself doesn't kill agent sessions (we keep them warm to avoid
+    // a slow restart), so we mark the task and let startTask emit /clear once
+    // — otherwise the agents would re-run with stale memory of the previous
+    // attempt, which is confusing especially if the user edited the brief.
+    const runner = new AgentTaskRunner();
+    const ws = createTaskWorkspace(runner);
+    const deps = createMockDeps([ws]);
+    runner.init(deps);
+
+    ws.task.state = "completed";
+    expect(ws.task.needsContextClear).toBeFalsy();
+
+    const result = await runner.resetTask(ws.id);
+    expect(result).toBe(true);
+    expect(ws.task.needsContextClear).toBe(true);
+  });
+});
+
+describe("startTask after reset — context clearing", () => {
+  test("emits /clear to both Worker and Judge sessions before injecting the initial prompt, then unsets the flag", async () => {
+    const runner = new AgentTaskRunner();
+    const ws = createTaskWorkspace(runner);
+    // Simulate post-reset state: idle, no rounds, flag set.
+    ws.task.state = "idle";
+    ws.task.rounds = [];
+    ws.task.promptSent = false;
+    ws.task.needsContextClear = true;
+
+    const deps = createMockDeps([ws]);
+    runner.init(deps);
+
+    await runner.startTask(ws.id);
+
+    const workerSessionId = `${ws.id}:${ws.task.workerPanelId}`;
+    const judgeSessionId = `${ws.id}:${ws.task.judgePanelId}`;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const workerWrites = deps.written.filter((w: any) => w.sessionId === workerSessionId);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const judgeWrites = deps.written.filter((w: any) => w.sessionId === judgeSessionId);
+
+    // Both sessions saw `/clear` before any other content.
+    expect(workerWrites[0]?.data).toContain("/clear");
+    expect(judgeWrites[0]?.data).toContain("/clear");
+    // Flag was consumed so a follow-up start (e.g. user runs another task or
+    // resumes mid-flight) doesn't double-clear and wipe in-flight context.
+    expect(ws.task.needsContextClear).toBe(false);
+  });
+
+  test("does NOT clear context on a fresh start (flag never set)", async () => {
+    const runner = new AgentTaskRunner();
+    const ws = createTaskWorkspace(runner);
+    const deps = createMockDeps([ws]);
+    runner.init(deps);
+
+    expect(ws.task.needsContextClear).toBeFalsy();
+    await runner.startTask(ws.id);
+
+    const workerSessionId = `${ws.id}:${ws.task.workerPanelId}`;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const workerWrites = deps.written.filter((w: any) => w.sessionId === workerSessionId);
+    // First write should be the prompt itself (or its file-injection
+    // directive), not a `/clear`.
+    expect(workerWrites[0]?.data ?? "").not.toContain("/clear");
+  });
 });
 
 describe("reconcileOnStartup", () => {

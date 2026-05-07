@@ -322,13 +322,16 @@ function openAssignment() {
   files.switchFile("TASK.md");
 }
 
-// Hero "Start" can carry a freshly typed brief. When present, persist it via
-// the same IPC Telegram uses (writes TASK.md and updates state.description),
-// then fall through to the normal start flow.
+// Hero "Start" carries the textarea contents (always — the textarea is
+// initialized from state.description). Persist the brief via the same IPC
+// Telegram uses (writes TASK.md and updates state.description), but only
+// when it actually differs from the persisted description — pressing Start
+// without edits should not trigger a redundant disk write or broadcast.
 async function onStartWithBrief(brief?: string) {
   const id = wsId();
   const trimmed = (brief || "").trim();
-  if (api && id && trimmed) {
+  const current = (taskState.value?.description || "").trim();
+  if (api && id && trimmed && trimmed !== current) {
     try {
       const r = await api.updateTaskDescription({ workspaceId: id, description: trimmed });
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -376,7 +379,11 @@ async function onReset() {
   try {
     const r = await api.resetTask({ workspaceId: id });
     if (r?.payload) store.handleBroadcastPayload(r.payload);
-    activeTab.value = "files";
+    // Hop to Status so the hero shows up — its inline textarea is the natural
+    // place to tweak the brief before the next run. Pre-hero this jumped to
+    // Files (Assignment) because that was the only editable surface; Status
+    // makes more sense now that editing lives there too.
+    activeTab.value = "status";
   } catch (err) {
     console.error("[task-dashboard] reset failed:", err);
   }

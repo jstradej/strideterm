@@ -587,6 +587,31 @@ export class AgentTaskRunner {
     // for that workflow, and only typing directly into the terminal worked.
     const workerSessionId = `${workspaceId}:${task.workerPanelId}`;
     await this.#ensureFormatFlag(task, workspace);
+
+    // After a Reset (or any other path that flips needsContextClear), wipe
+    // the Worker and Judge conversational context before we inject the new
+    // prompt. This keeps a re-run on a tweaked brief from being shadowed by
+    // the agent's memory of the previous attempt. Best-effort — providers
+    // that don't recognize `/clear` (none today, but tolerated) just see the
+    // command as a stray line and ignore it.
+    if (task.needsContextClear) {
+      const judgeSessionId = `${workspaceId}:${task.judgePanelId}`;
+      try {
+        await Promise.all([
+          this.#clearSessionContext(workerSessionId, workspace),
+          this.#clearSessionContext(judgeSessionId, workspace),
+        ]);
+        log.info("task start: cleared Worker + Judge context after reset", { workspaceId });
+        this.#logTaskEvent(workspace, "context-cleared", "Sent /clear to Worker and Judge before initial prompt");
+      } catch (err: unknown) {
+        log.warn("task start: context clear failed (proceeding anyway)", {
+          workspaceId,
+          err: (err as Error)?.message,
+        });
+      }
+      task.needsContextClear = false;
+    }
+
     const prompt = buildInitialWorkerPrompt(task);
     await this.#injectPrompt(workerSessionId, prompt, workspace);
     task.promptSent = true;
@@ -714,6 +739,10 @@ export class AgentTaskRunner {
     task.showerResumePrompt = "";
     task.lastShowerRound = 0;
     task.rateLimitedUntil = null;
+    // Tell the next Start to wipe Worker + Judge conversational context so
+    // they don't run on stale memory of the previous attempt — particularly
+    // important if the user edits the brief between Reset and Start.
+    task.needsContextClear = true;
     // Preserve lastJudgeInstructions — might be useful for next run
     this.#evaluating.delete(workspaceId);
     this.#clearWorkLockOverrideTimer(workspaceId);

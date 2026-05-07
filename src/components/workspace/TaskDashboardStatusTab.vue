@@ -5,10 +5,7 @@
     <div v-if="showIdleHero" class="td__hero">
       <div class="td__hero-eyebrow">Ready to start</div>
 
-      <div v-if="taskState?.description" class="td__hero-desc">
-        {{ taskState.description }}
-      </div>
-      <div v-else class="td__hero-editor">
+      <div class="td__hero-editor">
         <label class="td__hero-editor-label" for="td-hero-brief">What should the Worker do?</label>
         <textarea
           id="td-hero-brief"
@@ -21,16 +18,16 @@
           @keydown.meta.enter.exact.prevent="onStart"
         ></textarea>
         <div class="td__hero-editor-hint">
-          Write a short brief and press Start &mdash; or open the
+          Edit and press Start &mdash; changes get saved to the brief on the way in. Need more space?
           <button
             type="button"
             class="td__link-btn"
             title="Open the Task tab for a full editor (better for longer briefs)"
             @click="$emit('open-assignment')"
           >
-            Task
+            Open Task tab
           </button>
-          tab for a full editor.
+          .
         </div>
       </div>
 
@@ -210,10 +207,21 @@ const emit = defineEmits<{
   (e: "open-config"): void;
 }>();
 
-// Local-only: text the user types into the inline hero editor when no
-// description is set yet. On Start it gets emitted upstream so the Pane can
-// save TASK.md via updateTaskDescription before kicking off the run.
-const briefDraft = ref("");
+// Hero textarea is always editable so the user can rewrite the brief from
+// the idle screen — including after Reset, where the existing description is
+// preserved on disk and we want to let them tweak it before re-running.
+// Initialize from the persisted description and re-sync if it changes from
+// outside (e.g. someone saved the Task tab in another pane). The Pane
+// upstream is responsible for diffing against state.description and only
+// hitting updateTaskDescription when the brief actually changed.
+const briefDraft = ref(props.taskState?.description ?? "");
+
+watch(
+  () => props.taskState?.description,
+  (desc) => {
+    briefDraft.value = desc ?? "";
+  },
+);
 
 function onStart() {
   const draft = briefDraft.value.trim();
@@ -240,7 +248,9 @@ const showIdleHero = computed(() => props.taskState?.state === "idle" && !rounds
 // Start is gated on having a brief — either in persisted state or freshly
 // typed into the inline editor. The textarea is the primary path for new
 // tasks; users can still write in the Task tab for longer briefs.
-const canStart = computed(() => !!props.taskState?.description?.trim() || !!briefDraft.value.trim());
+// Textarea is always rendered (initialized from state.description), so the
+// draft is the single source of truth for "do we have a brief to start with".
+const canStart = computed(() => !!briefDraft.value.trim());
 
 // Auto-select the latest round so the user sees what's happening without
 // having to click a chip. User can still click another chip to inspect an

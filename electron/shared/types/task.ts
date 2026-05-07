@@ -66,6 +66,13 @@ export interface TaskState {
   // Persists for the task's lifetime so prompt builders can branch without
   // re-probing each round.
   useWorkerFile?: boolean;
+  // Set to true by resetTask. The next startTask sends `/clear` to the
+  // Worker and Judge sessions before injecting prompts so neither agent
+  // carries conversational context from the previous run (which would
+  // shadow an updated brief or make the worker think work is already done).
+  // Cleared after the clears fire so Resume / mid-task starts don't wipe
+  // running context.
+  needsContextClear?: boolean;
 }
 
 export interface TaskWorkspace {
