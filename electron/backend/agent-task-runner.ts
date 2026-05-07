@@ -43,6 +43,7 @@ import {
   readTaskDescription,
   readVerdict,
   runBuiltInChecks,
+  taskHasWorkerFile,
   waitForFile,
   writeTaskFiles,
 } from "./agent-task-files.js";
@@ -501,6 +502,10 @@ export class AgentTaskRunner {
         { concurrency: "unbounded" },
       ),
     );
+    // Tasks created from now on use the new split format (TASK.md + WORKER.md).
+    // Setting the flag here means downstream prompt builders skip the disk
+    // probe — and the flag persists with task state across pause/resume.
+    task.useWorkerFile = true;
   }
 
   // ---------------------------------------------------------------------------
@@ -581,6 +586,7 @@ export class AgentTaskRunner {
     // tab and press Start. Gating on description meant Start was a silent no-op
     // for that workflow, and only typing directly into the terminal worked.
     const workerSessionId = `${workspaceId}:${task.workerPanelId}`;
+    await this.#ensureFormatFlag(task, workspace);
     const prompt = buildInitialWorkerPrompt(task);
     await this.#injectPrompt(workerSessionId, prompt, workspace);
     task.promptSent = true;
@@ -656,6 +662,10 @@ export class AgentTaskRunner {
     // prompt that the idle hook will inject on first idle, overriding initial.
     if (!task.promptSent && resumeTo === "running" && !task.showerResumePrompt) {
       const workerSessionId = `${workspaceId}:${task.workerPanelId}`;
+      // task.useWorkerFile was set by startTask before this path is reachable;
+      // if it's still undefined (legacy task created before this change), the
+      // prompt builder treats undefined as falsy = legacy single-file format,
+      // which is correct for those tasks.
       const prompt = buildInitialWorkerPrompt(task);
       this.#injectPrompt(workerSessionId, prompt, workspace)
         .then(() => {
@@ -766,6 +776,7 @@ export class AgentTaskRunner {
     this.#setTaskState(task, "running");
     this.#ensureRunningRound(task);
 
+    await this.#ensureFormatFlag(task, workspace);
     const prompt = buildUserFeedbackPrompt(task, trimmed);
     const workerSessionId = `${workspaceId}:${task.workerPanelId}`;
     try {
@@ -1196,6 +1207,15 @@ export class AgentTaskRunner {
    * concludes the task is already done. Runtime-owned (not worker-owned) so the
    * "WORK_LOCK absent" check stays a meaningful completion signal.
    */
+  // Ensures task.useWorkerFile reflects what's on disk. Probes once per task
+  // lifetime — once we know the format we cache it on the task object so
+  // subsequent prompt builds in the same round trip skip the fs.access.
+  async #ensureFormatFlag(task: TaskState, workspace: TaskWorkspaceState): Promise<void> {
+    if (task.useWorkerFile === undefined) {
+      task.useWorkerFile = await taskHasWorkerFile(workspace.cwd, task.taskId);
+    }
+  }
+
   async #recreateWorkLock(workspace: TaskWorkspaceState, context: string): Promise<void> {
     try {
       const dir = taskDir(workspace.cwd, workspace.task.taskId);
@@ -1747,6 +1767,7 @@ export class AgentTaskRunner {
         } else {
           log.warn("shower failed, falling back to normal re-prompt", { workspaceId });
           this.#logTaskEvent(workspace, "shower-failed", "Handoff not written in time, falling back to re-prompt");
+          await this.#ensureFormatFlag(task, workspace);
           const prompt = buildRePrompt(task, round);
           const workerSessionId = `${workspaceId}:${task.workerPanelId}`;
           await this.#injectPrompt(workerSessionId, prompt, workspace);
@@ -1754,6 +1775,7 @@ export class AgentTaskRunner {
           round.action = "running";
         }
       } else {
+        await this.#ensureFormatFlag(task, workspace);
         const prompt = buildRePrompt(task, round);
         const workerSessionId = `${workspaceId}:${task.workerPanelId}`;
         await this.#injectPrompt(workerSessionId, prompt, workspace);
@@ -1778,6 +1800,7 @@ export class AgentTaskRunner {
       const gitContextMs = Date.now() - judgeSetupStart;
 
       const judgeSessionId = `${workspaceId}:${task.judgePanelId}`;
+      await this.#ensureFormatFlag(task, workspace);
       const judgePrompt = await buildJudgePrompt(task, round, gitContext, workspace.cwd);
       if (shouldUseProgrammaticCopilotJudge(task.judgeProviderConfig)) {
         this.#setTaskState(task, "judge-evaluating");
@@ -1918,6 +1941,7 @@ export class AgentTaskRunner {
           // round for "task already done", refusing to do further work.
           await this.#recreateWorkLock(workspace, "judgeVerdict-continue");
 
+          await this.#ensureFormatFlag(task, workspace);
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           const prompt = buildJudgeFeedbackPrompt(task, verdict as any);
           const workerSessionId = `${workspaceId}:${task.workerPanelId}`;

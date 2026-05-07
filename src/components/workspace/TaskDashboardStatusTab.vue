@@ -1,7 +1,99 @@
 <template>
   <div class="td__section">
+    <!-- Idle hero — replaces the empty pipeline + tiny "Press Start" hint with
+         a real ready-to-run panel: brief, agents, max rounds, big Start CTA. -->
+    <div v-if="showIdleHero" class="td__hero">
+      <div class="td__hero-eyebrow">Ready to start</div>
+
+      <div v-if="taskState?.description" class="td__hero-desc">
+        {{ taskState.description }}
+      </div>
+      <div v-else class="td__hero-editor">
+        <label class="td__hero-editor-label" for="td-hero-brief">What should the Worker do?</label>
+        <textarea
+          id="td-hero-brief"
+          v-model="briefDraft"
+          class="td__hero-textarea"
+          rows="4"
+          placeholder="e.g. Add input validation to the signup form."
+          title="Type the task brief, then press Start (or Ctrl+Enter / Cmd+Enter)"
+          @keydown.ctrl.enter.exact.prevent="onStart"
+          @keydown.meta.enter.exact.prevent="onStart"
+        ></textarea>
+        <div class="td__hero-editor-hint">
+          Write a short brief and press Start &mdash; or open the
+          <button
+            type="button"
+            class="td__link-btn"
+            title="Open the Task tab for a full editor (better for longer briefs)"
+            @click="$emit('open-assignment')"
+          >
+            Task
+          </button>
+          tab for a full editor.
+        </div>
+      </div>
+
+      <div class="td__hero-meta">
+        <div class="td__hero-meta-item" title="Worker agent — runs the task. Change in the Config tab.">
+          <span class="td__hero-meta-label">Worker</span>
+          <span class="td__hero-meta-value">{{ workerProviderLabel }}</span>
+        </div>
+        <div
+          class="td__hero-meta-item"
+          title="Judge agent — independently verifies completion. Change in the Config tab."
+        >
+          <span class="td__hero-meta-label">Judge</span>
+          <span class="td__hero-meta-value">{{ judgeProviderLabel }}</span>
+        </div>
+        <div
+          class="td__hero-meta-item"
+          title="Maximum loop iterations before the task auto-fails. Change in the Config tab."
+        >
+          <span class="td__hero-meta-label">Max rounds</span>
+          <span class="td__hero-meta-value">{{ taskState?.maxRounds || 10 }}</span>
+        </div>
+      </div>
+
+      <button
+        type="button"
+        class="button td__hero-start"
+        :class="{ 'td__hero-start--disabled': !canStart }"
+        :disabled="!canStart"
+        :title="
+          canStart
+            ? 'Begin the task — sends prompt to Worker and starts the automation loop'
+            : 'Write a task brief first'
+        "
+        @click="onStart"
+      >
+        <span class="td__hero-start-icon" aria-hidden="true">&#9654;</span>
+        Start task
+      </button>
+
+      <div class="td__hero-footer">
+        <button
+          type="button"
+          class="td__link-btn"
+          title="Open the Task tab to write or edit the brief in a full editor"
+          @click="$emit('open-assignment')"
+        >
+          Open Task tab
+        </button>
+        <span class="td__hero-sep">&middot;</span>
+        <button
+          type="button"
+          class="td__link-btn"
+          title="Open the Config tab to change Worker/Judge agents or max rounds"
+          @click="$emit('open-config')"
+        >
+          Adjust config
+        </button>
+      </div>
+    </div>
+
     <!-- Pipeline flow — horizontal -->
-    <div class="td__pipeline">
+    <div v-if="!showIdleHero" class="td__pipeline">
       <template v-for="(step, i) in pipelineSteps" :key="step.id">
         <div
           v-if="i > 0"
@@ -91,14 +183,8 @@
       </table>
     </div>
 
-    <div v-if="!roundsChronological.length && !allLogEntries.length" class="td__empty">
-      {{
-        taskState?.state === "idle"
-          ? "Press Start to begin."
-          : taskState?.state === "running"
-            ? "Worker is processing..."
-            : "Waiting for activity..."
-      }}
+    <div v-if="!showIdleHero && !roundsChronological.length && !allLogEntries.length" class="td__empty">
+      {{ taskState?.state === "running" ? "Worker is processing..." : "Waiting for activity..." }}
     </div>
   </div>
 </template>
@@ -112,9 +198,31 @@ const props = withDefaults(
     taskState?: Record<string, any> | null;
     workspaceCwd?: string;
     taskId?: string;
+    workerProviderLabel?: string;
+    judgeProviderLabel?: string;
   }>(),
-  { taskState: null, workspaceCwd: "", taskId: "" },
+  { taskState: null, workspaceCwd: "", taskId: "", workerProviderLabel: "", judgeProviderLabel: "" },
 );
+
+const emit = defineEmits<{
+  (e: "start", brief?: string): void;
+  (e: "open-assignment"): void;
+  (e: "open-config"): void;
+}>();
+
+// Local-only: text the user types into the inline hero editor when no
+// description is set yet. On Start it gets emitted upstream so the Pane can
+// save TASK.md via updateTaskDescription before kicking off the run.
+const briefDraft = ref("");
+
+function onStart() {
+  const draft = briefDraft.value.trim();
+  if (draft) {
+    emit("start", draft);
+  } else {
+    emit("start");
+  }
+}
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const api = inject<any>("api");
@@ -123,6 +231,16 @@ const logRaw = ref<string>("");
 
 // ── Rounds ────────────────────────────────────────────────────────
 const roundsChronological = computed(() => props.taskState?.rounds || []);
+
+// Hero is shown when task is idle and has nothing to display yet (no rounds).
+// After Reset, rounds are cleared too, so the hero re-appears on each fresh
+// run — matching the "always idle && empty" intent.
+const showIdleHero = computed(() => props.taskState?.state === "idle" && !roundsChronological.value.length);
+
+// Start is gated on having a brief — either in persisted state or freshly
+// typed into the inline editor. The textarea is the primary path for new
+// tasks; users can still write in the Task tab for longer briefs.
+const canStart = computed(() => !!props.taskState?.description?.trim() || !!briefDraft.value.trim());
 
 // Auto-select the latest round so the user sees what's happening without
 // having to click a chip. User can still click another chip to inspect an
@@ -380,6 +498,167 @@ function formatTime(iso: string | null | undefined): string {
   opacity: 0.5;
   padding: 24px 0;
   text-align: center;
+}
+
+/* ── Idle hero ────────────────────────────────────────────────── */
+.td__hero {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  padding: 28px 24px 24px;
+  margin: 8px 0 16px;
+  border: 1px solid var(--border, #333);
+  border-radius: 8px;
+  background: radial-gradient(circle at 50% 0%, rgba(255, 164, 36, 0.08), transparent 60%), rgba(255, 255, 255, 0.02);
+  text-align: center;
+}
+.td__hero-eyebrow {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--muted, #888);
+}
+.td__hero-desc {
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1.4;
+  color: var(--fg, #ccc);
+  max-width: 560px;
+}
+.td__hero-desc--empty {
+  font-weight: 500;
+  font-size: 13px;
+  opacity: 0.75;
+}
+.td__hero-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+  max-width: 560px;
+  text-align: left;
+}
+.td__hero-editor-label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted, #888);
+}
+.td__hero-textarea {
+  width: 100%;
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid var(--border, #333);
+  border-radius: 4px;
+  padding: 10px 12px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--fg, #ccc);
+  font-family: inherit;
+  resize: vertical;
+  min-height: 80px;
+  max-height: 200px;
+  transition:
+    border-color 0.15s,
+    background 0.15s;
+}
+.td__hero-textarea:focus {
+  outline: none;
+  border-color: var(--accent, #ffa424);
+  background: rgba(0, 0, 0, 0.4);
+}
+.td__hero-textarea::placeholder {
+  color: var(--muted, #888);
+  opacity: 0.5;
+}
+.td__hero-editor-hint {
+  font-size: 11px;
+  color: var(--muted, #888);
+  opacity: 0.8;
+}
+.td__hero-meta {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+  margin: 4px 0;
+}
+.td__hero-meta-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 6px 12px;
+  border: 1px solid var(--border, #333);
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.2);
+  min-width: 100px;
+}
+.td__hero-meta-label {
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted, #888);
+}
+.td__hero-meta-value {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fg, #ccc);
+}
+.td__hero-start {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 22px;
+  font-size: 14px;
+  font-weight: 700;
+  margin-top: 4px;
+  box-shadow: 0 2px 14px rgba(255, 164, 36, 0.25);
+  transition:
+    transform 0.1s,
+    box-shadow 0.15s;
+}
+.td__hero-start:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 18px rgba(255, 164, 36, 0.35);
+}
+.td__hero-start--disabled,
+.td__hero-start:disabled {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--muted, #888);
+  cursor: not-allowed;
+  box-shadow: none;
+  filter: grayscale(0.4);
+}
+.td__hero-start-icon {
+  font-size: 11px;
+  line-height: 1;
+}
+.td__hero-footer {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+  color: var(--muted, #888);
+  margin-top: 2px;
+}
+.td__hero-sep {
+  opacity: 0.5;
+}
+.td__link-btn {
+  background: none;
+  border: none;
+  color: var(--accent, #ffa424);
+  cursor: pointer;
+  font-size: inherit;
+  text-decoration: underline;
+  padding: 0;
+}
+.td__link-btn:hover {
+  opacity: 0.8;
 }
 
 /* ── Horizontal pipeline ──────────────────────────────────────── */

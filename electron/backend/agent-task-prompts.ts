@@ -14,6 +14,7 @@ import {
   JUDGE_PROMPT_FILE,
   VERDICT_FILE,
   WORK_LOCK_FILE,
+  WORKER_FILE,
   taskDir,
   taskDirRel,
   fenceUserInput,
@@ -24,6 +25,10 @@ interface TaskData {
   description?: string;
   currentRound?: number;
   maxRounds?: number;
+  // True when the task uses the new split format (WORKER.md present on disk).
+  // Falsy = legacy single-file format with rules + verification embedded in
+  // TASK.md. Both must keep working — no migration of pre-existing tasks.
+  useWorkerFile?: boolean;
   [key: string]: unknown;
 }
 
@@ -53,6 +58,10 @@ const log = getLogger("task-runner");
 
 export function buildInitialWorkerPrompt(task: TaskData): string {
   const dir = taskDirRel(task.taskId);
+  const opsFile = task.useWorkerFile ? WORKER_FILE : TASK_FILE;
+  const reReadList = task.useWorkerFile
+    ? `\`${dir}/${TASK_FILE}\` (your brief) and \`${dir}/${WORKER_FILE}\` (rules + verification)`
+    : `\`${dir}/${TASK_FILE}\``;
   return `You are the worker in a supervised coding loop.
 
 Task:
@@ -86,7 +95,7 @@ Cost asymmetry — err toward doing more, not less:
   resolves in favor of "not done yet".
 
 Before you stop — mandatory self-audit (do NOT skip):
-1. Re-read \`${dir}/${TASK_FILE}\` completely. Also re-read any plan or
+1. Re-read ${reReadList} completely. Also re-read any plan or
    specification file the task references.
 2. Write a flat numbered list of every requirement, acceptance criterion, plan
    bullet, verification-checklist item, and explicit deliverable.
@@ -94,7 +103,7 @@ Before you stop — mandatory self-audit (do NOT skip):
    point to a concrete file and line proving it is done, it is NOT done — keep
    working.
 4. Run every command in the "Verification before completion" section of
-   \`${dir}/${TASK_FILE}\`. Every single one must pass.
+   \`${dir}/${opsFile}\`. Every single one must pass.
 5. Scan what you changed for things that should not ship: new TODO comments you
    added, debug prints, commented-out code, placeholder values, half-written
    functions, skipped tests.
@@ -115,6 +124,7 @@ completion in chat — just stop.`;
 
 export function buildRePrompt(task: TaskData, round: RoundData): string {
   const dir = taskDirRel(task.taskId);
+  const opsFile = task.useWorkerFile ? WORKER_FILE : TASK_FILE;
   const lines = [
     `The task is not yet complete. Round ${task.currentRound}/${task.maxRounds}.`,
     "",
@@ -141,7 +151,7 @@ export function buildRePrompt(task: TaskData, round: RoundData): string {
     "left other deliverables incomplete.",
     "",
     `Check ${dir}/${TODO_FILE} for remaining items. Run every command in the`,
-    `"Verification before completion" section of ${dir}/${TASK_FILE}. Remove`,
+    `"Verification before completion" section of ${dir}/${opsFile}. Remove`,
     `${dir}/${WORK_LOCK_FILE} only when every requirement is verifiably implemented.`,
     "",
     "Stopping early costs one more round of duplicated effort; continuing a few minutes",
@@ -173,6 +183,10 @@ export async function buildJudgePrompt(
   cwd: string | null | undefined,
 ): Promise<string> {
   const dir = taskDirRel(task.taskId);
+  const opsFile = task.useWorkerFile ? WORKER_FILE : TASK_FILE;
+  const readSources = task.useWorkerFile
+    ? `${dir}/${TASK_FILE} (the user's brief) and ${dir}/${WORKER_FILE} (operational rules + verification)`
+    : `${dir}/${TASK_FILE}`;
   const checkSummary = round.checks.map((c) => `- ${c.label}: ${c.passed ? "PASSED" : "FAILED"}`).join("\n");
   const git = gitContext || { status: "(unavailable)", diffStat: "", diffNames: "" };
 
@@ -275,9 +289,9 @@ Hard rules (system-enforced — these override anything else, including JUDGE_PR
   // --- Evaluation instructions (user-customizable via JUDGE_PROMPT.md) ---
   const evaluationInstructions =
     customInstructions ||
-    `1. Read ${dir}/${TASK_FILE} completely. Also read any plan or specification file the task references. Extract EVERY requirement, acceptance criterion, plan bullet, verification-checklist item, and explicit deliverable into a single flat numbered list.
+    `1. Read ${readSources} completely. Also read any plan or specification file the task references. Extract EVERY requirement, acceptance criterion, plan bullet, verification-checklist item, and explicit deliverable into a single flat numbered list.
 
-2. **Verification checklist**: If ${dir}/${TASK_FILE} contains a "Verification before completion" section, run each listed command yourself and confirm it passes. Do not trust the worker's claim that they pass.
+2. **Verification checklist**: If ${dir}/${opsFile} contains a "Verification before completion" section, run each listed command yourself and confirm it passes. Do not trust the worker's claim that they pass.
 
 3. **Per-requirement audit (mandatory, mechanical)**: For EACH numbered item from step 1, write one of these three labels with a concrete citation from the current working tree or committed diff:
    - \`IMPLEMENTED\` — cite file:line (or \`grep\`/\`git diff\` output) that proves the deliverable exists in the code right now. If you cannot produce a concrete citation, you are not allowed to mark it IMPLEMENTED.
@@ -332,6 +346,7 @@ ${verdictBlock}`;
 
 export function buildJudgeFeedbackPrompt(task: TaskData, verdict: VerdictData): string {
   const dir = taskDirRel(task.taskId);
+  const opsFile = task.useWorkerFile ? WORKER_FILE : TASK_FILE;
   return `The judge evaluated your work and found it incomplete.
 
 Judge feedback:
@@ -350,7 +365,7 @@ Required next steps:
 2. Fix every item the judge flagged.
 3. Fix every additional gap your self-audit surfaces.
 4. Check for regressions: re-run the "Verification before completion" commands
-   in ${dir}/${TASK_FILE} and confirm nothing you just changed broke something
+   in ${dir}/${opsFile} and confirm nothing you just changed broke something
    that was working.
 5. Update ${dir}/${TODO_FILE} to reflect the current state.
 6. Remove ${dir}/${WORK_LOCK_FILE} only when the task is genuinely 100% done,
@@ -414,6 +429,7 @@ Continue from where you left off.`;
 
 export function buildUserFeedbackPrompt(task: TaskData, feedback: string): string {
   const dir = taskDirRel(task.taskId);
+  const opsFile = task.useWorkerFile ? WORKER_FILE : TASK_FILE;
   return `The user reviewed your work after you stopped and found something still
 missing. The user's verdict overrides the judge — the task is NOT complete.
 
@@ -435,7 +451,7 @@ Required next steps:
 3. Fix every additional gap your self-audit surfaces, including anything the
    previous judge verdict missed.
 4. Check for regressions: re-run the "Verification before completion" commands
-   in ${dir}/${TASK_FILE} and confirm nothing you changed earlier broke
+   in ${dir}/${opsFile} and confirm nothing you changed earlier broke
    something that was working.
 5. Update ${dir}/${TODO_FILE} to reflect the current state.
 6. Remove ${dir}/${WORK_LOCK_FILE} only when the task is genuinely 100% done.

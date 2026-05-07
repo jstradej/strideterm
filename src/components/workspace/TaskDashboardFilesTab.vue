@@ -6,7 +6,7 @@
         :key="f.name"
         class="td__file-tab"
         :class="{ 'td__file-tab--active': activeFile === f.name }"
-        :title="f.name"
+        :title="f.description || f.name"
         @click="switchFile(f.name)"
       >
         {{ f.label || f.name }}
@@ -51,6 +51,7 @@ const MonacoEditor = defineAsyncComponent(() => import("../shared/MonacoEditor.v
 interface TaskFile {
   name: string;
   label?: string;
+  description?: string;
   dirty?: boolean;
 }
 

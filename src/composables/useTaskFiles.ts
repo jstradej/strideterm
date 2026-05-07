@@ -1,18 +1,21 @@
-import { ref, computed } from "vue";
+import { ref, computed, watch } from "vue";
 import type { Ref } from "vue";
 import type { Transport } from "../transport.js";
 import type { WorkspaceState } from "../../electron/shared/types/state.js";
 import type { TaskState } from "../../electron/shared/types/task.js";
 
-// Only the files the user actively *writes* belong in the Assignment tab.
-// TODO.md is the worker's notebook; JUDGE_TODO.md is the judge's audit; the
-// JSONL log is system-managed. Those live on disk under
-// .strideterm/tasks/<taskId>/ and can be opened via the regular file manager
-// for the rare cases someone wants to inspect or reset them by hand.
-const TASK_FILES: { name: string; label: string }[] = [
-  { name: "TASK.md", label: "Task" },
-  { name: "JUDGE_PROMPT.md", label: "Judge" },
-];
+// Files the user actively edits belong in the Assignment tab. TODO.md is the
+// worker's notebook; JUDGE_TODO.md is the judge's audit; the JSONL log is
+// system-managed. Those live on disk under .strideterm/tasks/<taskId>/ and
+// can be opened via the regular file manager for the rare cases someone wants
+// to inspect or reset them by hand.
+//
+// WORKER.md is only present in the new split format — older tasks have rules
+// embedded in TASK.md and don't ship a Worker tab. The composable probes its
+// existence at mount and updates the tab list reactively.
+const TASK_FILE_NAME = "TASK.md";
+const WORKER_FILE_NAME = "WORKER.md";
+const JUDGE_FILE_NAME = "JUDGE_PROMPT.md";
 
 /**
  * Composable for task dashboard file editing.
@@ -24,14 +27,16 @@ export function useTaskFiles(
   workspace: Ref<WorkspaceState | null | undefined>,
   taskState: Ref<TaskState | null | undefined>,
 ) {
-  const activeFile = ref("TASK.md");
-  const fileContents = ref<Record<string, string>>({}); // { "TASK.md": "...", ... }
-  const fileDirtyFlags = ref<Record<string, boolean>>({}); // { "TASK.md": true, ... }
+  const activeFile = ref(TASK_FILE_NAME);
+  const fileContents = ref<Record<string, string>>({});
+  const fileDirtyFlags = ref<Record<string, boolean>>({});
   const activeFileContent = ref("");
   const fileLoading = ref(false);
   const fileError = ref("");
   const fileSaveStatus = ref("");
   const saving = ref(false);
+  // null = haven't probed yet; true/false = result of disk probe.
+  const workerFileExists = ref<boolean | null>(null);
   let suppressDirty = false;
 
   const taskDir = computed(() => {
@@ -41,13 +46,34 @@ export function useTaskFiles(
     return `.strideterm/tasks/${taskId}`;
   });
 
-  const taskFiles = computed(() =>
-    TASK_FILES.map((file) => ({
+  const taskFiles = computed(() => {
+    const list = [
+      {
+        name: TASK_FILE_NAME,
+        label: "Task",
+        description: "Brief — what the Worker should do. The user writes this.",
+      },
+    ];
+    if (workerFileExists.value) {
+      list.push({
+        name: WORKER_FILE_NAME,
+        label: "Worker",
+        description:
+          "Operational rules and verification checklist for the Worker. Edit only if you know what you're changing.",
+      });
+    }
+    list.push({
+      name: JUDGE_FILE_NAME,
+      label: "Judge",
+      description: "Custom evaluation instructions for the Judge. Edit only if you know what you're changing.",
+    });
+    return list.map((file) => ({
       name: file.name,
       label: file.label,
+      description: file.description,
       dirty: !!fileDirtyFlags.value[file.name],
-    })),
-  );
+    }));
+  });
 
   const activeFileDirty = computed(() => !!fileDirtyFlags.value[activeFile.value]);
 
@@ -57,6 +83,34 @@ export function useTaskFiles(
     if (name.endsWith(".md")) return "markdown";
     return "plaintext";
   });
+
+  // Probe WORKER.md presence on mount and whenever the task changes.
+  // Backend's fileRead returns content or throws — we treat any failure as
+  // "doesn't exist" so old single-file tasks gracefully hide the Worker tab.
+  async function probeWorkerFile() {
+    if (!api?.fileRead || !taskDir.value || !workspace.value?.cwd) {
+      workerFileExists.value = null;
+      return;
+    }
+    try {
+      await api.fileRead({
+        rootPath: workspace.value.cwd,
+        relativePath: `${taskDir.value}/${WORKER_FILE_NAME}`,
+      });
+      workerFileExists.value = true;
+    } catch {
+      workerFileExists.value = false;
+    }
+  }
+
+  watch(
+    () => taskState.value?.taskId,
+    (taskId) => {
+      if (taskId) probeWorkerFile();
+      else workerFileExists.value = null;
+    },
+    { immediate: true },
+  );
 
   async function loadFile(name: string) {
     if (!api || !api.fileRead || !taskDir.value || !workspace.value?.cwd) return;
@@ -121,6 +175,12 @@ export function useTaskFiles(
       suppressDirty = true;
       fileDirtyFlags.value[activeFile.value] = false;
       fileSaveStatus.value = "\u2713 Saved";
+      // If the user just saved WORKER.md (e.g. on a legacy task they're
+      // upgrading by hand), surface the Worker tab now instead of waiting
+      // for the next mount.
+      if (activeFile.value === WORKER_FILE_NAME && !workerFileExists.value) {
+        workerFileExists.value = true;
+      }
       setTimeout(() => {
         suppressDirty = false;
       }, 100);

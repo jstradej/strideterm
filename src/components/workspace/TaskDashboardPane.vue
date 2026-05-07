@@ -56,7 +56,7 @@
           <button
             v-if="taskState?.state === 'paused' || taskState?.state === 'completed' || taskState?.state === 'failed'"
             class="button button--ghost button--sm"
-            title="Clear all rounds and return to idle — edit TASK.md or other files, then press Start"
+            title="Clear all rounds and return to idle — edit the brief in the Task tab, then press Start"
             @click="onReset"
           >
             Reset
@@ -86,6 +86,11 @@
           :task-state="taskState"
           :workspace-cwd="workspace?.cwd || ''"
           :task-id="taskState?.taskId || ''"
+          :worker-provider-label="workerProviderLabel"
+          :judge-provider-label="judgeProviderLabel"
+          @start="onStartWithBrief"
+          @open-assignment="openAssignment"
+          @open-config="activeTab = 'config'"
         />
 
         <TaskDashboardFilesTab
@@ -310,6 +315,31 @@ watch(activeTab, (tab) => {
 
 function wsId(): string | undefined {
   return workspace.value?.id;
+}
+
+function openAssignment() {
+  activeTab.value = "files";
+  files.switchFile("TASK.md");
+}
+
+// Hero "Start" can carry a freshly typed brief. When present, persist it via
+// the same IPC Telegram uses (writes TASK.md and updates state.description),
+// then fall through to the normal start flow.
+async function onStartWithBrief(brief?: string) {
+  const id = wsId();
+  const trimmed = (brief || "").trim();
+  if (api && id && trimmed) {
+    try {
+      const r = await api.updateTaskDescription({ workspaceId: id, description: trimmed });
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const payload = (r as any)?.payload;
+      if (payload) store.handleBroadcastPayload(payload);
+    } catch (err) {
+      console.error("[task-dashboard] save brief before start failed:", err);
+      return;
+    }
+  }
+  await onStart();
 }
 
 async function onStart() {

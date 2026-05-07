@@ -2522,7 +2522,7 @@ export class TelegramManager extends EventEmitter {
       await this._sendText(
         token,
         chatId,
-        `📂 *${escapeMarkdown(ws.name)}* — type a relative file path${cwdHint}\n\n_E\\.g\\. \`TASK.md\` or \`notes.md\`_`,
+        `📂 *${escapeMarkdown(ws.name)}* — type a relative file path${cwdHint}\n\n_E\\.g\\. \`TASK.md\`, \`WORKER.md\`, or \`notes.md\`_`,
         true,
       );
       return;

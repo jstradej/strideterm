@@ -8,6 +8,7 @@ import { z } from "zod";
 export const TASK_ROOT = ".strideterm/tasks";
 export const VERDICT_FILE = "verdict.json";
 export const TASK_FILE = "TASK.md";
+export const WORKER_FILE = "WORKER.md";
 export const TODO_FILE = "TODO.md";
 export const JUDGE_TODO_FILE = "JUDGE_TODO.md";
 export const JUDGE_PROMPT_FILE = "JUDGE_PROMPT.md";

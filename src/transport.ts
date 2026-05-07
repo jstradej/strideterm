@@ -344,6 +344,7 @@ function createRemoteTransport(): Transport {
     resumeTask: (payload) => fetchJson("/api/task/resume", payload),
     resetTask: (payload) => fetchJson("/api/task/reset", payload),
     rejectTaskVerdict: (payload) => fetchJson("/api/task/reject-verdict", payload),
+    updateTaskDescription: (payload) => fetchJson("/api/task/update-description", payload),
     resolveTaskRecovery: (decisions) => fetchJson("/api/task-recovery/resolve", decisions),
     getTaskStatus: (workspaceId) => fetchJson("/api/task/status", { workspaceId }),
     verifyAzureConnection: (connection) => fetchJson("/api/azure/verify-connection", { connection }),

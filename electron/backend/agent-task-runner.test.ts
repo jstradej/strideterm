@@ -231,6 +231,38 @@ describe("AgentTaskRunner", () => {
     });
   });
 
+  // writeInitialFiles is the only path that produces task files for new
+  // workspaces. The split (TASK.md = brief, WORKER.md = rules+verification)
+  // depends on this function (a) writing both files and (b) marking the task
+  // with useWorkerFile=true so prompt builders pick the right file references.
+  // If a future refactor accidentally bypasses one of those steps, the
+  // user-facing TASK.md regrows the operational sections — exactly the bug
+  // we just removed.
+  describe("writeInitialFiles — split format", () => {
+    test("creates both TASK.md and WORKER.md and flips useWorkerFile on the task", async () => {
+      const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-write-initial-"));
+      try {
+        const ws = createTaskWorkspace(runner, { cwd: tmp, description: "Some brief." });
+        await runner.writeInitialFiles(tmp, ws.task);
+
+        const dir = taskDir(tmp, ws.task.taskId);
+        const taskMd = await fs.readFile(path.join(dir, TASK_FILE), "utf8");
+        const workerMd = await fs.readFile(path.join(dir, "WORKER.md"), "utf8");
+
+        expect(taskMd).toContain("Some brief.");
+        expect(taskMd).not.toContain("## Verification");
+        expect(taskMd).not.toContain("## Rules");
+        expect(workerMd).toContain("## Verification before completion");
+        expect(workerMd).toContain("## Rules");
+
+        // Flag drives format-aware prompt building. Must be true for new tasks.
+        expect(ws.task.useWorkerFile).toBe(true);
+      } finally {
+        await fs.rm(tmp, { recursive: true, force: true });
+      }
+    });
+  });
+
   describe("task lifecycle", () => {
     test("stopTask sets state to paused", () => {
       workspace.task.state = "running";

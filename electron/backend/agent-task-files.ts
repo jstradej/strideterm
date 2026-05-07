@@ -8,6 +8,7 @@ import {
   TODO_FILE,
   VERDICT_FILE,
   WORK_LOCK_FILE,
+  WORKER_FILE,
   activeItems,
   extractTaskDescription,
   formatVerifyChecklist,
@@ -178,12 +179,29 @@ export async function readTaskDescription(cwd: string, taskId: string): Promise<
 }
 
 /**
+ * Returns true when the task uses the new split format (TASK.md = brief only,
+ * WORKER.md = operational rules + verification). Falsy result means the task
+ * was created before the split and still has rules embedded in TASK.md — both
+ * paths must keep working.
+ */
+export async function taskHasWorkerFile(cwd: string, taskId: string): Promise<boolean> {
+  try {
+    await access(path.join(taskDir(cwd, taskId), WORKER_FILE));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Surgically replace just the user-authored description block in TASK.md.
- * Preserves the auto-generated header (`# Task` + `> Created:` line) and every
- * downstream section (`## Verification before completion`, `## Rules`,
- * `## Technology-specific checks`). Used by remote channels (Telegram) that
- * need to update assignment text without touching TODO.md / WORK_LOCK / Judge
- * prompt files.
+ * Handles both formats:
+ *   - New (split): TASK.md is `# Task` + `> Created:` + description. The whole
+ *     post-header body is the description and is replaced wholesale.
+ *   - Old (legacy): TASK.md has trailing system sections (`## Verification`,
+ *     `## Rules`, `## Technology-specific checks`). Those are preserved and
+ *     only the description block between the header and the first system
+ *     section gets replaced.
  */
 export async function updateTaskDescriptionFile(
   cwd: string,
@@ -253,19 +271,29 @@ ${verifyChecklist}
 `
     : `## Verification before completion
 
-> No commands auto-detected. Add your own checks here, for example:
->
-> \`- [ ] Run \\\`npm test\\\` — must pass\`
-> \`- [ ] Run \\\`npm run lint\\\` — no errors\`
->
-> The Worker will run these before finishing. The Judge will verify them independently.
+> No automated checks were auto-detected for this project.
+> Before finishing, look at how this project tests and lints itself
+> (package scripts, Makefile, README, CI config, etc.) and run those
+> checks. If there is no automated test setup, do a careful manual
+> review of every file you changed.
+> Edit or replace this section with concrete commands once you know them.
 `;
 
+  // TASK.md (new split format) is just the user's brief — header + description.
+  // Operational rules and verification live in WORKER.md so the user-facing
+  // file stays focused on "what should the Worker do?".
   const taskMd = `# Task
 
 > Created: ${now} | Project: ${cwd}
 
 ${descriptionBlock}
+`;
+
+  const workerMd = `# Worker
+
+> Operational rules and verification checks for the Worker agent. The Worker
+> reads this alongside ${TASK_FILE}. Edit only if you know what you're changing —
+> these are the same rules the Worker prompt enforces internally.
 
 ${verifySection}
 ## Rules
@@ -328,9 +356,9 @@ close" is an argument for "continue", not for "complete".
 
 ## Evaluation steps
 
-1. Read ${relDir}/${TASK_FILE} completely. Also read any plan file referenced in the task (e.g. \`.private/plan-*.md\`). Extract EVERY requirement, acceptance criterion, plan bullet, verification-checklist item, and explicit deliverable into a single flat numbered list.
+1. Read ${relDir}/${TASK_FILE} (the user's brief) and ${relDir}/${WORKER_FILE} (operational rules + verification checklist) completely. Also read any plan file referenced in the task (e.g. \`.private/plan-*.md\`). Extract EVERY requirement, acceptance criterion, plan bullet, verification-checklist item, and explicit deliverable into a single flat numbered list.
 
-2. **Verification checklist**: If TASK.md contains a "Verification before completion" section, run each listed command yourself and confirm it passes — do not trust the Worker's claim.
+2. **Verification checklist**: Run each command in the "Verification before completion" section of ${relDir}/${WORKER_FILE} (or ${relDir}/${TASK_FILE} for older tasks created before the split) yourself and confirm it passes — do not trust the Worker's claim.
 
 3. **Per-requirement audit (mandatory, mechanical)**: For EACH numbered item from step 1, write one of these three labels with a concrete citation from the current working tree or committed diff:
    - \`IMPLEMENTED\` — cite file:line (or \`grep\`/\`git diff\` output) proving the deliverable exists right now. No citation → not allowed to mark it IMPLEMENTED.
@@ -368,6 +396,7 @@ ${stackSection}
 
   await Promise.all([
     writeFile(path.join(dir, TASK_FILE), taskMd, "utf8"),
+    writeFile(path.join(dir, WORKER_FILE), workerMd, "utf8"),
     writeFile(path.join(dir, TODO_FILE), todoMd, "utf8"),
     writeFile(path.join(dir, JUDGE_PROMPT_FILE), judgePromptMd, "utf8"),
     writeFile(path.join(dir, WORK_LOCK_FILE), workLock, "utf8"),

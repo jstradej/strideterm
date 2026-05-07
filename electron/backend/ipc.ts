@@ -74,6 +74,7 @@ import {
   taskWorkspaceCreateSchema,
   taskWorkspaceActionSchema,
   taskRejectVerdictSchema,
+  taskUpdateDescriptionSchema,
   taskRecoveryResolveSchema,
   telegramConnectionSchema,
 } from "./ipc-schemas.js";
@@ -780,6 +781,12 @@ export function registerIpc(
       return runtime.rejectTaskVerdict(parsed.workspaceId, parsed.feedback);
     }),
   );
+  ipcMain.handle("task:update-description", async (_event, payload) => {
+    const p = validateIpc(taskUpdateDescriptionSchema, payload, "task:update-description");
+    return withOperationPromise({ workspaceId: p.workspaceId, opId: "task:update-description" }, () =>
+      runtime.updateTaskDescription(p.workspaceId, p.description),
+    );
+  });
   ipcMain.handle("task:status", async (_event, workspaceId) =>
     withOperationPromise({ workspaceId: String(workspaceId || ""), opId: "task:status" }, () =>
       runtime.getTaskStatus(workspaceId),

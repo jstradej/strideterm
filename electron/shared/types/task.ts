@@ -61,6 +61,11 @@ export interface TaskState {
   // the worker is suppressed so the runner doesn't try to evaluate or re-prompt
   // a paused worker. The runner schedules a resume nudge for this time + grace.
   rateLimitedUntil: string | null;
+  // Set on first prompt-build after probing disk: true when WORKER.md exists
+  // (new split format), false for legacy tasks with rules embedded in TASK.md.
+  // Persists for the task's lifetime so prompt builders can branch without
+  // re-probing each round.
+  useWorkerFile?: boolean;
 }
 
 export interface TaskWorkspace {

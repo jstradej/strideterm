@@ -1,5 +1,11 @@
 import { describe, expect, test } from "vitest";
-import { buildRecoveryPrompt } from "./agent-task-prompts.js";
+import {
+  buildInitialWorkerPrompt,
+  buildJudgeFeedbackPrompt,
+  buildRePrompt,
+  buildRecoveryPrompt,
+  buildUserFeedbackPrompt,
+} from "./agent-task-prompts.js";
 
 describe("buildRecoveryPrompt", () => {
   test("worker variant references the worker handoff hint", () => {
@@ -47,5 +53,64 @@ describe("buildRecoveryPrompt", () => {
     // PRs created, releases tagged, external API calls — the agent must check
     // before redoing those.
     expect(out.toLowerCase()).toMatch(/side effect|destructive|external/);
+  });
+});
+
+// Tasks created before the TASK.md/WORKER.md split keep their rules embedded
+// in TASK.md and have no WORKER.md on disk; new tasks split the operational
+// content into WORKER.md. The prompts must point each role at the right file
+// for both formats — losing the verification reference would leave the worker
+// or judge running blind on legacy tasks.
+describe("prompt builders — format-aware references", () => {
+  const baseTask = {
+    taskId: "task-fmt-001",
+    description: "Refactor auth.",
+    currentRound: 1,
+    maxRounds: 5,
+  };
+
+  const round = {
+    checks: [{ label: "Tests", passed: false }],
+  };
+
+  test("legacy task (no useWorkerFile) references TASK.md for verification", () => {
+    const prompt = buildInitialWorkerPrompt(baseTask);
+    expect(prompt).toContain("Re-read `.strideterm/tasks/task-fmt-001/TASK.md`");
+    expect(prompt).toContain(
+      '"Verification before completion" section of\n   `.strideterm/tasks/task-fmt-001/TASK.md`',
+    );
+    expect(prompt).not.toContain("WORKER.md");
+  });
+
+  test("split task (useWorkerFile=true) references WORKER.md for verification + re-read", () => {
+    const prompt = buildInitialWorkerPrompt({ ...baseTask, useWorkerFile: true });
+    expect(prompt).toContain(".strideterm/tasks/task-fmt-001/TASK.md`");
+    expect(prompt).toContain(".strideterm/tasks/task-fmt-001/WORKER.md`");
+    expect(prompt).toContain(
+      '"Verification before completion" section of\n   `.strideterm/tasks/task-fmt-001/WORKER.md`',
+    );
+  });
+
+  test("buildRePrompt switches verification source by format", () => {
+    const legacy = buildRePrompt(baseTask, round);
+    expect(legacy).toContain("section of .strideterm/tasks/task-fmt-001/TASK.md");
+    expect(legacy).not.toContain("WORKER.md");
+
+    const split = buildRePrompt({ ...baseTask, useWorkerFile: true }, round);
+    expect(split).toContain("section of .strideterm/tasks/task-fmt-001/WORKER.md");
+  });
+
+  test("feedback prompts switch verification source by format", () => {
+    const legacy = buildJudgeFeedbackPrompt(baseTask, { reason: "missing X" });
+    expect(legacy).toContain("in .strideterm/tasks/task-fmt-001/TASK.md");
+
+    const split = buildJudgeFeedbackPrompt({ ...baseTask, useWorkerFile: true }, { reason: "missing X" });
+    expect(split).toContain("in .strideterm/tasks/task-fmt-001/WORKER.md");
+
+    const userLegacy = buildUserFeedbackPrompt(baseTask, "still incomplete");
+    expect(userLegacy).toContain("in .strideterm/tasks/task-fmt-001/TASK.md");
+
+    const userSplit = buildUserFeedbackPrompt({ ...baseTask, useWorkerFile: true }, "still incomplete");
+    expect(userSplit).toContain("in .strideterm/tasks/task-fmt-001/WORKER.md");
   });
 });

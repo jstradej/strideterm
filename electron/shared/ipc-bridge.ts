@@ -41,6 +41,7 @@ import type {
   TaskWorkspaceCreate,
   TaskWorkspaceAction,
   TaskRejectVerdict,
+  TaskUpdateDescription,
   TaskRecoveryResolve,
   ProfilePayload,
   NotificationShow,
@@ -223,6 +224,7 @@ export interface StridetermAPI {
   resumeTask: (payload: TaskWorkspaceAction) => Promise<unknown>;
   resetTask: (payload: TaskWorkspaceAction) => Promise<unknown>;
   rejectTaskVerdict: (payload: TaskRejectVerdict) => Promise<unknown>;
+  updateTaskDescription: (payload: TaskUpdateDescription) => Promise<unknown>;
   resolveTaskRecovery: (decisions: TaskRecoveryResolve) => Promise<unknown>;
   getTaskStatus: (workspaceId: string) => Promise<unknown>;
 

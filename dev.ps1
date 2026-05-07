@@ -47,6 +47,13 @@ $script:backendWatcher = $null
 $script:backendChangeAt = [DateTime]::MinValue
 $script:backendChangePending = $false
 $script:watcherEventIds = @()
+# Set after Electron has started — file changes within this many seconds of
+# Electron startup are treated as the tsc --watch initial-compile re-emit
+# (we just did a one-shot, watcher then re-emits the same files) rather than
+# real source edits, so we don't auto-restart Electron immediately after it
+# launched.
+$script:electronStartedAt = [DateTime]::MinValue
+$script:watcherWarmupSec = 15
 
 # --- Helpers ---------------------------------------------------------------
 
@@ -140,6 +147,10 @@ function Restart-Electron {
         Write-Err 'Failed to restart Electron.'
         return
     }
+    # Reset the warmup window so subsequent restarts (e.g. from a Reset that
+    # restarts Electron) also ignore the immediate-aftermath dist-electron
+    # writes if any are still in flight.
+    $script:electronStartedAt = Get-Date
     Write-Ok "Electron restarted (PID $($script:electronProc.Id))."
 }
 
@@ -303,11 +314,77 @@ if (-not $ready) {
 }
 Write-Ok "Vite is ready on http://127.0.0.1:$Port"
 
-# --- Step 4b: Start backend TS watcher and wait for compiled main.js ------
+# --- Step 4b: One-shot backend + preload compile BEFORE Electron starts ---
+
+# Why a one-shot here, even though we also start tsc --watch below: relying on
+# the watcher's initial compile races with Electron startup. The watcher emits
+# files incrementally as it processes them — Electron can latch onto a partial
+# dist-electron/ where main.js is fresh but agent-task-files.js is still the
+# previous run's output, and silently keep running stale modules until the
+# user manually restarts. The one-shot is synchronous (-Wait), so dist-electron
+# is guaranteed coherent before we hand it to Electron. tsc --watch then takes
+# over for incremental rebuilds during the session.
 
 $mainEntry = Join-Path $PSScriptRoot 'dist-electron/electron/main.js'
+$preloadEntry = Join-Path $PSScriptRoot 'dist-electron/electron/preload.cjs'
 
-Write-Step 'Starting backend TypeScript watcher...'
+Write-Step 'Compiling backend + preload (one-shot, before Electron)...'
+$backendBuildArgs = @('/c','npx tsc -p tsconfig.backend.json')
+$preloadBuildArgs = @('/c','npx tsc -p tsconfig.preload.json')
+$backendBuild = Start-Process -FilePath 'cmd.exe' -ArgumentList $backendBuildArgs `
+    -WorkingDirectory $PSScriptRoot -PassThru -NoNewWindow
+$preloadBuild = Start-Process -FilePath 'cmd.exe' -ArgumentList $preloadBuildArgs `
+    -WorkingDirectory $PSScriptRoot -PassThru -NoNewWindow
+
+# Wait for both to finish in parallel rather than chaining sequentially —
+# they're independent tsc runs against different tsconfigs.
+$buildTimeoutSec = 120
+$buildDeadline = (Get-Date).AddSeconds($buildTimeoutSec)
+while (((-not $backendBuild.HasExited) -or (-not $preloadBuild.HasExited)) -and ((Get-Date) -lt $buildDeadline)) {
+    Start-Sleep -Milliseconds 200
+}
+if (-not $backendBuild.HasExited) {
+    Write-Err "Backend compile timed out after ${buildTimeoutSec}s. Aborting."
+    Stop-ProcessTree $backendBuild.Id
+    Stop-ProcessTree $preloadBuild.Id
+    Cleanup
+    exit 1
+}
+if (-not $preloadBuild.HasExited) {
+    Write-Err "Preload compile timed out after ${buildTimeoutSec}s. Aborting."
+    Stop-ProcessTree $preloadBuild.Id
+    Cleanup
+    exit 1
+}
+if ($backendBuild.ExitCode -ne 0) {
+    Write-Err "Backend compile failed (exit $($backendBuild.ExitCode))."
+    Cleanup
+    exit 1
+}
+if ($preloadBuild.ExitCode -ne 0) {
+    Write-Err "Preload compile failed (exit $($preloadBuild.ExitCode))."
+    Cleanup
+    exit 1
+}
+if (-not (Test-Path $mainEntry)) {
+    Write-Err "Backend compile reported success but $mainEntry is missing. Aborting."
+    Cleanup
+    exit 1
+}
+if (-not (Test-Path $preloadEntry)) {
+    Write-Err "Preload compile reported success but $preloadEntry is missing. Aborting."
+    Cleanup
+    exit 1
+}
+Write-Ok 'Backend + preload compiled (dist-electron/ ready).'
+
+# --- Step 4c: Start tsc --watch for ongoing incremental compiles ---------
+
+# After the one-shot above, dist-electron is fresh. The watchers below take
+# over so edits during the dev session keep flowing through to Electron via
+# the dist-electron file watcher (Step 5b auto-restart).
+
+Write-Step 'Starting backend TypeScript watcher (incremental)...'
 $script:backendProc = Start-Process -FilePath 'cmd.exe' -ArgumentList '/c','npm run dev:backend' `
     -WorkingDirectory $PSScriptRoot `
     -PassThru -NoNewWindow
@@ -319,32 +396,6 @@ if (!$script:backendProc -or $script:backendProc.HasExited) {
 }
 Write-Ok "Backend watcher started (PID $($script:backendProc.Id))."
 
-$backendTimeout = 60
-Write-Step "Waiting for backend build output (timeout ${backendTimeout}s)..."
-$deadline = (Get-Date).AddSeconds($backendTimeout)
-$compiled = $false
-while ((Get-Date) -lt $deadline) {
-    if ($script:backendProc.HasExited) {
-        Write-Err "Backend watcher exited unexpectedly with code $($script:backendProc.ExitCode)."
-        Cleanup
-        exit 1
-    }
-    if (Test-Path $mainEntry) {
-        $compiled = $true
-        break
-    }
-    Start-Sleep -Milliseconds 500
-}
-
-if (-not $compiled) {
-    Write-Err "Backend did not produce $mainEntry within ${backendTimeout}s. Aborting."
-    Cleanup
-    exit 1
-}
-Write-Ok 'Backend compiled (dist-electron/ ready).'
-
-# --- Step 4b2: Start preload TS watcher -----------------------------------
-
 # `tsconfig.preload.json` builds electron/preload.cts → dist-electron/electron/preload.cjs.
 # We need its own watch process — `dev:backend` only covers tsconfig.backend.json
 # and electron loads the preload script as a separate context-isolated bundle.
@@ -354,7 +405,7 @@ Write-Ok 'Backend compiled (dist-electron/ ready).'
 # is a feature that "just doesn't react" — typeof api.someNewMethod ===
 # "function" returns false and the gated code path is skipped.
 
-Write-Step 'Starting preload TypeScript watcher...'
+Write-Step 'Starting preload TypeScript watcher (incremental)...'
 $script:preloadProc = Start-Process -FilePath 'cmd.exe' -ArgumentList '/c','npm run dev:preload' `
     -WorkingDirectory $PSScriptRoot `
     -PassThru -NoNewWindow
@@ -366,7 +417,7 @@ if (!$script:preloadProc -or $script:preloadProc.HasExited) {
 }
 Write-Ok "Preload watcher started (PID $($script:preloadProc.Id))."
 
-# --- Step 4c: Start frontend build watcher (for remote-served dist/) ------
+# --- Step 4d: Start frontend build watcher (for remote-served dist/) ------
 
 # Vite dev server (Step 3) drives HMR for the Electron desktop renderer, but
 # the remote server (mobile / web clients on the LAN) serves static files
@@ -404,6 +455,7 @@ if (!$script:electronProc -or $script:electronProc.HasExited) {
     Cleanup
     exit 1
 }
+$script:electronStartedAt = Get-Date
 Write-Ok "Electron started (PID $($script:electronProc.Id))."
 
 # --- Step 5b: Watch dist-electron for backend rebuilds --------------------
@@ -419,6 +471,15 @@ if (-not $NoAutoRestart) {
         $script:backendWatcher.NotifyFilter = [System.IO.NotifyFilters]::LastWrite -bor [System.IO.NotifyFilters]::FileName
 
         $onChange = {
+            # Suppress the watcher during Electron's startup window — the tsc
+            # --watch processes do their own initial full compile right after
+            # we hand off, which writes the same dist-electron files we just
+            # produced one-shot. Without this guard the watcher would catch
+            # those writes and bounce Electron seconds after it launched.
+            if ($script:electronStartedAt -ne [DateTime]::MinValue -and
+                ((Get-Date) - $script:electronStartedAt).TotalSeconds -lt $script:watcherWarmupSec) {
+                return
+            }
             $script:backendChangeAt = Get-Date
             $script:backendChangePending = $true
         }
