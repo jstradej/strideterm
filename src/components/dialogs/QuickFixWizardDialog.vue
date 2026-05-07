@@ -108,7 +108,7 @@
         <div v-else class="form qf-branch-grid" style="margin-top: 8px">
           <label>
             <span>Base branch</span>
-            <div class="nb-combo" @keydown.escape="branchDropdownOpen = false">
+            <div class="nb-combo" @keydown.escape.stop="branchDropdownOpen = false">
               <input
                 ref="baseBranchInputRef"
                 v-model="baseBranchSearch"

@@ -1,18 +1,13 @@
 <template>
   <Teleport to="body">
-    <div
-      v-if="store.overlay"
-      class="overlay"
-      @click.self="handleBackdropClick"
-      @keydown.esc.window="handleBackdropClick"
-    >
+    <div v-if="store.overlay" class="overlay" @click.self="handleBackdropClick">
       <component :is="dialogComponent" v-if="dialogComponent" v-bind="store.overlayProps" />
     </div>
   </Teleport>
 </template>
 
 <script setup lang="ts">
-import { computed, defineAsyncComponent, watch, nextTick } from "vue";
+import { computed, defineAsyncComponent, watch, nextTick, onBeforeUnmount } from "vue";
 import { useAppStore } from "../../stores/app.js";
 
 const DIALOGS = {
@@ -86,4 +81,17 @@ function handleBackdropClick() {
   if (cb) cb();
   else store.closeDialog();
 }
+
+// Esc must close the dialog regardless of where focus is. Vue's `.window`
+// modifier is not real, so we attach a window-level listener manually.
+function handleEsc(e: KeyboardEvent) {
+  if (e.key !== "Escape") return;
+  if (!store.overlay) return;
+  e.preventDefault();
+  e.stopPropagation();
+  handleBackdropClick();
+}
+
+window.addEventListener("keydown", handleEsc);
+onBeforeUnmount(() => window.removeEventListener("keydown", handleEsc));
 </script>

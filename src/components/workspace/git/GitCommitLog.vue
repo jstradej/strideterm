@@ -52,7 +52,7 @@
               :aria-label="`Show details for commit ${entry.shortHash}`"
               @click.stop="$emit('show-info', entry)"
             >
-              ⓘ
+              &#x2139;
             </button>
           </td>
         </tr>
@@ -165,7 +165,6 @@ const sortedCommits = computed(() => {
 
 .git-log-table__head--actions {
   cursor: default;
-  resize: none;
 }
 
 .git-log-table__actions {
@@ -198,8 +197,6 @@ const sortedCommits = computed(() => {
 .git-log-table__head {
   cursor: pointer;
   user-select: none;
-  overflow: hidden;
-  resize: horizontal;
 }
 
 .git-log-table__head:hover {
