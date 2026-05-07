@@ -116,7 +116,7 @@
               v-if="versionsBehind > 0"
               type="button"
               class="sidebar-footer__update-hint"
-              :title="`Open the GitHub release page for v${latestVersionLabel} in your default web browser so you can download the new build.`"
+              :title="`Open the latest release page on GitHub in your default web browser so you can download the new build (current latest: v${latestVersionLabel}).`"
               @click="api?.openExternal?.(latestReleaseUrl)"
             >
               {{ versionsBehind }} {{ versionsBehind === 1 ? "update" : "updates" }} behind
@@ -353,7 +353,16 @@ const repositoryUrl = computed(() => store.payload?.meta?.repositoryUrl || "");
 const versionCheck = computed(() => store.payload?.meta?.versionCheck);
 const versionsBehind = computed(() => versionCheck.value?.versionsBehind || 0);
 const latestVersionLabel = computed(() => versionCheck.value?.latestVersion || "");
-const latestReleaseUrl = computed(() => versionCheck.value?.latestUrl || "");
+// Always use GitHub's /releases/latest redirect rather than the cached
+// html_url of a specific tag. The cache can lag behind the live releases
+// list (24h throttle, plus the user can sit on a stale cache between fetch
+// and click), so a hard-coded tag URL would sometimes land the user on a
+// release that's no longer the latest by the time they click. /latest is
+// resolved server-side at click time and always redirects to the most
+// recent non-prerelease release.
+const latestReleaseUrl = computed(() =>
+  repositoryUrl.value ? `${repositoryUrl.value.replace(/\/+$/, "")}/releases/latest` : "",
+);
 
 const versionToastShown = ref(false);
 watch(versionCheck, (check) => {
