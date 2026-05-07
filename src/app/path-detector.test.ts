@@ -106,18 +106,37 @@ describe("detectPaths", () => {
       expect(r).toHaveLength(0);
     });
 
-    test("rejects bare /etc / /var / /usr — same shape as a slash command", () => {
-      // Trade-off: /etc by itself doesn't get linkified. Users who want it
-      // should write `/etc/` (trailing slash, see tests below) or follow
-      // it with a real subpath like `/etc/passwd`.
-      const r = detectPaths("see /etc and /var and /usr");
+    test("accepts bare /etc / /var / /usr (whitelisted Unix root dirs)", () => {
+      const r = detectPaths("see /etc and /var and /usr for system stuff");
+      expect(r).toHaveLength(3);
+      expect(r.map((m) => m.path)).toEqual(["/etc", "/var", "/usr"]);
+    });
+
+    test("accepts macOS top-level /Users and /Applications", () => {
+      const r = detectPaths("backup /Users then /Applications");
+      expect(r).toHaveLength(2);
+      expect(r.map((m) => m.path)).toEqual(["/Users", "/Applications"]);
+    });
+
+    test("rejects custom single-segment roots like /data, /work, /storage", () => {
+      // Trade-off: not on the whitelist, looks too much like a slash
+      // command. Users with custom roots should include a subpath.
+      const r = detectPaths("see /data and /work and /storage");
       expect(r).toHaveLength(0);
     });
 
-    test("still matches /etc/ when written with a trailing slash", () => {
+    test("still matches /etc/ (trailing slash) — explicit directory marker", () => {
       const r = detectPaths("contents of /etc/ are interesting");
       expect(r).toHaveLength(1);
       expect(r[0].path).toBe("/etc/");
+    });
+
+    test("still matches /data/ (custom dir) when trailing slash flags it", () => {
+      // Not on the whitelist, but the trailing slash distinguishes a real
+      // directory token from a slash command (commands never have one).
+      const r = detectPaths("contents of /data/ now");
+      expect(r).toHaveLength(1);
+      expect(r[0].path).toBe("/data/");
     });
 
     test("still matches a multi-segment slash path even if the first segment looks command-like", () => {

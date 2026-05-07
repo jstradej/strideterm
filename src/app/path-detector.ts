@@ -114,25 +114,76 @@ function bodyIsOnlyDigitsAndSeparators(path: string): boolean {
 }
 
 /**
+ * Whitelist of single-segment Unix-absolute paths we accept as real
+ * filesystem locations rather than treat as ambiguous slash-command
+ * tokens. Covers Linux/POSIX top-level dirs plus the macOS additions
+ * the typical user actually navigates to. Anything outside this set
+ * (e.g. `/init`, `/release-notes`, `/help`, but also less-common real
+ * dirs like `/data` or `/storage`) is rejected when it appears on its
+ * own — multi-segment forms (`/init/foo`, `/data/file.txt`) still go
+ * through the regular accept path and let fs.stat sort it out at click.
+ *
+ * The list is intentionally narrow: each addition raises the chance that
+ * a slash command on a future LLM CLI accidentally collides, so we
+ * stop at "the dirs basically every Unix has" plus the well-known macOS
+ * top-level entries. Users with custom roots (`/data`, `/work`) need to
+ * include a subpath to get a clickable link.
+ */
+const KNOWN_UNIX_ROOT_DIRS = new Set([
+  // Linux / POSIX
+  "bin",
+  "sbin",
+  "etc",
+  "usr",
+  "var",
+  "tmp",
+  "opt",
+  "proc",
+  "sys",
+  "dev",
+  "mnt",
+  "run",
+  "root",
+  "home",
+  "lib",
+  "lib64",
+  "srv",
+  "media",
+  "boot",
+  // macOS
+  "Users",
+  "Volumes",
+  "Applications",
+  "Library",
+  "System",
+  "Network",
+  "private",
+  "cores",
+]);
+
+/**
  * Single-segment Unix-absolute paths (`/init`, `/release-notes`) are
  * indistinguishable from the slash-command tokens Claude Code, Codex CLI
  * etc. print in their welcome banners ("Run /init", "/release-notes for
- * more"). Real single-segment paths like `/etc`, `/var`, `/usr` exist —
- * but they're almost always either followed by something (`/etc/passwd`,
- * `/var/log`) or written with a trailing slash to flag a directory
- * (`/var/log/`). We reject the bare `/word` shape and accept the `/word/`
- * shape so the false positives disappear without dropping the cases the
- * user actually wants to click.
+ * more"). To filter those without breaking real single-segment paths
+ * like `/etc` or `/var`, we accept any candidate that:
+ *   1. has a trailing slash (`/etc/`, `/var/log/`) — explicit directory
+ *      marker is a strong signal,
+ *   2. matches a known Unix root dir from the whitelist above, or
+ *   3. has more than one segment (`/etc/passwd`, `/init/foo` — the
+ *      regular Pass-1 path).
+ * Everything else with the bare `/word` shape gets rejected here.
  *
  * Drive-letter (C:\temp), UNC (\\srv), home (~/x), and explicit-relative
- * (./x, ../x) anchors are *not* single-segment-rejectable: their leading
- * marker is specific enough to distinguish a path from a stray token.
+ * (./x, ../x) anchors are *not* affected: their leading marker is
+ * specific enough that single-segment matches stay unambiguous.
  */
 function isAmbiguousSingleSegmentUnixAbsolute(path: string): boolean {
   if (!path.startsWith("/") || path.startsWith("//")) return false;
   if (path.endsWith("/") || path.endsWith("\\")) return false;
   const body = path.slice(1);
-  return !body.includes("/") && !body.includes("\\");
+  if (body.includes("/") || body.includes("\\")) return false;
+  return !KNOWN_UNIX_ROOT_DIRS.has(body);
 }
 
 function trimTrailingPunctuation(path: string): { path: string; delta: number } {
