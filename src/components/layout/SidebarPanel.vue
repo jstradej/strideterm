@@ -97,6 +97,14 @@
       >
         &#x2715; Delete
       </button>
+      <button
+        type="button"
+        class="context-menu__item"
+        title="Remove only the sidebar entry — leaves files on disk untouched. Use when a regular Delete couldn't finish (locked files, missing directory, manually deleted worktree) so the orphan entry sticks around."
+        @click="onMenuAction('force-remove')"
+      >
+        &#x21A9; Remove from list
+      </button>
     </div>
   </Teleport>
 </template>
@@ -287,6 +295,7 @@ const emit = defineEmits<{
   (e: "create-worktree", id: string): void;
   (e: "edit-workspace", id: string): void;
   (e: "delete-workspace", id: string): void;
+  (e: "force-remove-workspace", id: string): void;
   (e: "add-plugin-workspace", id: string): void;
   (e: "activate", id: string): void;
   (e: "create-task"): void;
@@ -402,6 +411,8 @@ function onMenuAction(action: string): void {
     emit("edit-workspace", ws.id as string);
   } else if (action === "delete") {
     emit("delete-workspace", ws.id as string);
+  } else if (action === "force-remove") {
+    emit("force-remove-workspace", ws.id as string);
   }
 }
 

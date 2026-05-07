@@ -505,9 +505,69 @@ export function createWorkspaceActions(ctx: WorkspaceActionsCtx) {
     }
   }
 
+  /**
+   * Remove the workspace from the sidebar without touching disk files.
+   *
+   * The escape hatch for orphan / leftover workspace entries: a previous
+   * delete couldn't finish (locked files, partial worktree, manually
+   * deleted directory) and the sidebar entry is now useless because the
+   * workspace can't be activated. This skips the "delete from disk?"
+   * second prompt the regular Delete flow asks, and forwards to the
+   * backend with `deleteFromDisk: false` so any remaining files stay
+   * exactly where they are. A persistent toast is still shown if the
+   * backend reports a failure (e.g. IPC drops).
+   *
+   * NOTE: This does not persist a "do not re-add" marker. If the cwd
+   * still exists and lives under a parent's `.strideterm/tree/`, the
+   * worktree-discovery sweep in syncWorktrees will recreate the entry on
+   * the next git poll. That case (dir exists but user wants it hidden)
+   * is a separate feature; this action is built for the orphan case.
+   */
+  async function forceRemoveWorkspace(workspaceId: string): Promise<void> {
+    const ws = (ctx.payload.value?.appState?.workspaces || []).find((w: AnyApi) => w.id === workspaceId);
+    if (!ws) return;
+    const wsName = (ws as AnyApi).name || "";
+    if (!window.confirm(`Remove "${wsName}" from the sidebar?\n\nFiles on disk are kept untouched.`)) return;
+
+    const wasActive = ctx.payload.value?.appState?.activeWorkspaceId === workspaceId;
+    const before = ctx.payload.value;
+    const remainingWorkspaces = (before?.appState?.workspaces || []).filter((w: AnyApi) => w.id !== workspaceId);
+    const nextActiveId = wasActive ? remainingWorkspaces[0]?.id || "" : before?.appState?.activeWorkspaceId || "";
+    ctx.optimisticallyDeletedIds.value = new Set([...ctx.optimisticallyDeletedIds.value, workspaceId]);
+    if (before) {
+      ctx.payload.value = {
+        ...before,
+        appState: {
+          ...(before.appState as AnyApi),
+          workspaces: remainingWorkspaces,
+          activeWorkspaceId: nextActiveId,
+        },
+      } as StatePayload;
+    }
+
+    void (async () => {
+      try {
+        await (ctx.getApi() as AnyApi).deleteWorkspace(workspaceId, { deleteFromDisk: false });
+        // Success: next broadcast reconciles, optimistic suppression self-clears.
+      } catch (err: unknown) {
+        const message = (err as { message?: string })?.message || String(err);
+        const next = new Set(ctx.optimisticallyDeletedIds.value);
+        next.delete(workspaceId);
+        ctx.optimisticallyDeletedIds.value = next;
+        const { useNotificationStore } = await import("./notifications.js");
+        useNotificationStore().pushPersistentToast({
+          title: `Failed to remove "${wsName}"`,
+          body: message,
+          kind: "error",
+        });
+      }
+    })();
+  }
+
   return {
     saveWorkspace,
     deleteWorkspace,
+    forceRemoveWorkspace,
     closeTab,
     quickAddTab,
     quickAddTemplateTab,

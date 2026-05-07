@@ -388,7 +388,24 @@ export const useAppStore = defineStore("app", () => {
     if (pendingViewActivationId.value) return;
     const storedViewId = wsEntry?.activeViewId || "";
     const fallbackViewId = wsEntry?.activePanelId ? `${workspaceId}:${wsEntry.activePanelId}` : "";
-    const nextViewId = storedViewId || fallbackViewId || null;
+    let nextViewId = storedViewId || fallbackViewId || null;
+
+    // Mobile override: on a phone-width viewport, task workspaces always
+    // open on the Dashboard tab regardless of the persisted active view.
+    // The 3-pane split collapses to one pane (forceSoloLayout) and the
+    // persisted view is often Worker/Judge terminal — Dashboard is the
+    // useful entry point. Runtime-only, not pushed to setWorkspaceUIState,
+    // so the desktop preference is preserved when the viewport widens.
+    // Skipped during optimisticOnly because the task-dashboard tab is not
+    // in the workspaceTabs list yet (selectors fill it in once the real
+    // payload arrives).
+    if (!optimisticOnly && isMobileViewport.value && wsEntry?.kind === "task") {
+      const dashPanel = (wsEntry?.panels || []).find((p: AnyApi) => p?.command === "__task-dashboard__");
+      if (dashPanel?.id) {
+        nextViewId = `task-dashboard:${dashPanel.id}`;
+      }
+    }
+
     if (!nextViewId) return;
     // Optimistic phase: the workspace snapshot lacks git/docker/azure data, so
     // special-prefix tabs aren't yet in the tabs list and the workspaceTabs watcher

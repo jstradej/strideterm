@@ -3103,6 +3103,67 @@ export async function createRuntime({
     }
   }
 
+  /**
+   * Drop workspaces whose `cwd` no longer exists on disk. Covers the orphan
+   * case: user nuked the worktree externally (or a previous deleteFromDisk
+   * left only stragglers behind), and the sidebar entry is now useless —
+   * nothing in the workspace can be activated when its working directory
+   * is gone. `syncWorktrees` already handles this for `notes: "Worktree of"`
+   * children; this function extends the same hygiene to task-agent
+   * workspaces and any other top-level entry whose cwd has gone missing.
+   *
+   * Skipped: inbox-only kinds (azure / github), workspaces with no cwd at
+   * all, paths currently being deleted by another flow, and any workspace
+   * referenced by `_recoveryCandidates` (the user gets the recovery dialog
+   * first; resolveTaskRecovery clears the candidate, after which the next
+   * prune pass removes it).
+   */
+  async function pruneOrphanedWorkspaces(): Promise<number> {
+    const state = getState();
+    const recoveryIds = new Set(_recoveryCandidates.map((c) => c.workspaceId));
+    const toRemove: WorkspaceState[] = [];
+    for (const ws of state.workspaces) {
+      if (!ws.cwd) continue;
+      if (ws.kind === "azure" || ws.kind === "github") continue;
+      if (recoveryIds.has(ws.id)) continue;
+      const resolvedCwd = path.resolve(ws.cwd);
+      if (pendingWorktreeDeletions.has(resolvedCwd)) continue;
+      try {
+        await access(ws.cwd);
+      } catch {
+        toRemove.push(ws);
+      }
+    }
+    if (toRemove.length === 0) return 0;
+    const removeIds = new Set(toRemove.map((w) => w.id));
+    await store.mutate((draft: AppState) => {
+      draft.workspaces = draft.workspaces.filter((w) => !removeIds.has(w.id));
+      if (removeIds.has(draft.activeWorkspaceId)) {
+        const activeProfileId = draft.activeProfileId || "default";
+        const fallback = draft.workspaces.find((w) => (w.profileId || "default") === activeProfileId);
+        draft.activeWorkspaceId = fallback?.id || draft.workspaces[0]?.id || "";
+      }
+    });
+    for (const ws of toRemove) {
+      if (ws.kind === "task" && ws.task?.taskId) {
+        try {
+          taskRunner.stopTask(ws.id);
+        } catch {
+          /* best-effort; task may already be stopped */
+        }
+      }
+      sessions.removeWorkspaceSessions(ws.id);
+      clearProjectAlerts(ws.id);
+    }
+    log.info("pruneOrphanedWorkspaces removed orphans", {
+      count: toRemove.length,
+      removed: toRemove.map((w) => ({ id: w.id, name: w.name, cwd: w.cwd, kind: w.kind })),
+    });
+    ensureVisibleSession();
+    broadcastState();
+    return toRemove.length;
+  }
+
   async function syncWorktreesImpl() {
     const state = getState();
     const parents = state.workspaces.filter(
@@ -3378,6 +3439,18 @@ export async function createRuntime({
       .then(() => broadcastState())
       .catch(() => {});
   }, 10_000);
+
+  // Deferred orphan prune — runs ~5s after startup, non-blocking. Removes
+  // workspaces whose cwd is gone (e.g. worktree dirs the user nuked
+  // externally, or a previous deleteFromDisk that bailed mid-way and left
+  // a state entry pointing at nothing). Delayed so external drives /
+  // network mounts have a chance to come up first; skipped while a task
+  // recovery dialog is still pending.
+  setTimeout(() => {
+    pruneOrphanedWorkspaces().catch((err) => {
+      log.warn("pruneOrphanedWorkspaces failed", { err: (err as Error)?.message });
+    });
+  }, 5_000);
 
   // --- Extracted handler groups ---
   const gitHandlers = createGitHandlers({

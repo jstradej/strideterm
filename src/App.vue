@@ -99,6 +99,7 @@
         @create-worktree="store.createWorktreeWithDialog($event)"
         @edit-workspace="onEditWorkspace($event)"
         @delete-workspace="store.deleteWorkspace($event)"
+        @force-remove-workspace="store.forceRemoveWorkspace($event)"
         @add-plugin-workspace="store.openNewWorkspaceFlow()"
         @create-task="store.openTaskWorkspaceDialog()"
       />

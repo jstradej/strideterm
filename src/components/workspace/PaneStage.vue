@@ -161,6 +161,12 @@ const termStore = useTerminalStore();
 const visibleTabs = computed(() => store.visibleTabs);
 
 const currentLayout = computed(() => {
+  // When only one pane is visible (e.g. mobile forceSoloLayout collapses a
+  // 3-pane task agent split to the active tab), force "solo" so the stage
+  // grid does not reserve space for the absent split slots — otherwise the
+  // single article ends up parked in slot "a" of "top-split" / "left-split"
+  // and the rest of the viewport stays blank.
+  if (visibleTabs.value.length <= 1) return "solo";
   const sg = store.splitGroup;
   if (!sg) return "solo";
   return sg.viewIds.includes(store.activeViewId || "") ? sg.layout : "solo";
