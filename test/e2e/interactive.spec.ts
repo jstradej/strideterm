@@ -147,10 +147,11 @@ test.describe("Settings dialog", () => {
     await expect(overlay).toBeVisible({ timeout: 3_000 });
     await expect(overlay.locator("h2")).toHaveText("Settings");
 
-    // General tab should be active with theme buttons
-    await expect(overlay.getByText("Dark")).toBeVisible();
-    await expect(overlay.getByText("Light")).toBeVisible();
-    await expect(overlay.getByText("System")).toBeVisible();
+    // General tab should be active with theme buttons. Use exact match —
+    // the path-opener-mode group also has a "System default" label.
+    await expect(overlay.getByText("Dark", { exact: true })).toBeVisible();
+    await expect(overlay.getByText("Light", { exact: true })).toBeVisible();
+    await expect(overlay.getByText("System", { exact: true })).toBeVisible();
     assertNoErrors(page);
   });
 
