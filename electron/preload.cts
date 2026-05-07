@@ -12,6 +12,7 @@ const startupFlags = {
 
 contextBridge.exposeInMainWorld("strideterm", {
   openExternal: (url) => ipcRenderer.invoke("shell:open-external", url),
+  openTerminalPath: (request) => ipcRenderer.invoke("terminal:open-path", request),
   showSystemNotification: (payload) => ipcRenderer.invoke("notification:show-system", payload),
   checkForUpdates: () => ipcRenderer.invoke("app:check-for-updates"),
   checkCommand: (command) => ipcRenderer.invoke("app:check-command", command),

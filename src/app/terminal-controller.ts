@@ -5,7 +5,8 @@ import { WebLinksAddon } from "@xterm/addon-web-links";
 import { WebglAddon } from "@xterm/addon-webgl";
 import type { Ref } from "vue";
 import type { APP_CONFIG } from "../../config/app-config.js";
-import type { StatePayload } from "../../electron/shared/types/state.js";
+import type { StatePayload, WorkspaceState } from "../../electron/shared/types/state.js";
+import { detectPaths } from "./path-detector.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -26,11 +27,35 @@ type LogLevel = "info" | "warn" | "error" | "debug";
 interface TerminalControllerApi {
   resizeTerminal: (sessionId: string, size: { cols: number; rows: number }) => void;
   writeTerminal: (sessionId: string, data: string) => void;
+  /** Optional — desktop only. Path link clicks are no-ops in remote mode. */
+  openTerminalPath?: (request: {
+    path: string;
+    workspaceCwd?: string;
+    line?: number;
+    column?: number;
+  }) => Promise<{ ok: boolean; absPath?: string; error?: string }>;
   isRemote?: boolean;
   startupFlags?: {
     disableWebgl?: boolean;
   };
   logRenderer?: (level: LogLevel, message: string, meta?: Record<string, unknown>) => void;
+}
+
+/**
+ * Recover the cwd of the workspace that owns a given session. Session IDs
+ * are formatted `<workspaceId>:<panelId>`, so we split on the first colon
+ * and look up the workspace in the current state. Returns the cwd or an
+ * empty string when unknown — the backend `terminal:open-path` handler
+ * falls back to process.cwd() in that case, which is right for paths the
+ * user pastes into a terminal that's not bound to a worktree.
+ */
+function resolveWorkspaceCwdForSession(sessionId: string, payload: StatePayload | null | undefined): string {
+  if (!sessionId || !payload) return "";
+  const colonIdx = sessionId.indexOf(":");
+  const workspaceId = colonIdx >= 0 ? sessionId.slice(0, colonIdx) : sessionId;
+  const workspaces = (payload.appState?.workspaces || []) as WorkspaceState[];
+  const ws = workspaces.find((w) => w.id === workspaceId);
+  return ws?.cwd || "";
 }
 
 // ---------------------------------------------------------------------------
@@ -286,6 +311,58 @@ export function createTerminalController({
     const webLinksAddon = new WebLinksAddon(openTerminalLink);
     term.loadAddon(fitAddon);
     term.loadAddon(webLinksAddon);
+    // File-path link provider: scans each visible line for path-shaped text
+    // (Unix /abs/path, Windows C:\..., relative ./..., compiler refs like
+    // foo.ts:42:5) and surfaces them as clickable links. The detector lives
+    // in path-detector.ts (see its tests for the full inclusion / exclusion
+    // contract). Validation that the path actually resolves to a real file
+    // happens in the backend `terminal:open-path` IPC, so a stale match
+    // surfaces as a "File not found" toast instead of silently doing nothing.
+    // Skipped on remote transports — the backend handler runs on the host
+    // and would open files there, which is rarely what a remote user wants.
+    if (!api.isRemote && typeof api.openTerminalPath === "function") {
+      const openPath = api.openTerminalPath;
+      term.registerLinkProvider({
+        provideLinks(bufferLineNumber, callback) {
+          const buffer = term.buffer.active;
+          const line = buffer.getLine(bufferLineNumber - 1);
+          const text = line ? line.translateToString(true) : "";
+          if (!text) {
+            callback(undefined);
+            return;
+          }
+          const matches = detectPaths(text);
+          if (matches.length === 0) {
+            callback(undefined);
+            return;
+          }
+          const workspaceCwd = resolveWorkspaceCwdForSession(sessionId, getPayload());
+          const links = matches.map((m) => ({
+            range: {
+              start: { x: m.start + 1, y: bufferLineNumber },
+              end: { x: m.start + m.length, y: bufferLineNumber },
+            },
+            text: text.substring(m.start, m.start + m.length),
+            activate: () => {
+              void openPath({ path: m.path, line: m.line, column: m.column, workspaceCwd })
+                .then(async (result) => {
+                  if (!result?.ok) {
+                    const { useNotificationStore } = await import("../stores/notifications.js");
+                    useNotificationStore().showError(`Couldn't open ${m.path}: ${result?.error || "unknown error"}`);
+                  }
+                })
+                .catch(async (err: unknown) => {
+                  const { useNotificationStore } = await import("../stores/notifications.js");
+                  useNotificationStore().showError(
+                    `Couldn't open ${m.path}: ${(err as Error)?.message || String(err)}`,
+                  );
+                });
+            },
+          }));
+          callback(links);
+        },
+      });
+    }
     term.attachCustomKeyEventHandler((event) => {
       if (!(event.ctrlKey || event.metaKey)) return true;
       if (!event.altKey && /^Digit[1-9]$/.test(event.code)) return false;

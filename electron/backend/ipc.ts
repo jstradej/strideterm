@@ -1,6 +1,8 @@
 /// <reference types="node" />
 import { ipcMain, dialog, BrowserWindow, shell, Notification, app } from "electron";
-import { join } from "node:path";
+import path, { join } from "node:path";
+import { homedir } from "node:os";
+import { stat } from "node:fs/promises";
 import type { createRuntime } from "./runtime.js";
 import { withOperationPromise } from "./effect/runtime.js";
 import * as fm from "./file-manager.js";
@@ -126,6 +128,49 @@ export function registerIpc(
       return shell.openExternal(parsed.toString());
     }),
   );
+
+  // Resolve a path captured from terminal output, validate it exists, and
+  // hand it to the OS-default opener. Used by the xterm path link provider
+  // (TerminalPane → terminal-controller). Same scheme-strict spirit as
+  // shell:open-external: the renderer can be tricked into asking us to open
+  // arbitrary paths, so we resolve relative paths against the workspace cwd
+  // here (not via shell expansion) and stat the result before handing it to
+  // shell.openPath. ~ expands to the runtime user's home; absolute paths
+  // are accepted as-is. Returns { ok, absPath } on success, { ok:false,
+  // error } otherwise so the renderer can surface a toast.
+  ipcMain.handle("terminal:open-path", async (_event, payload) =>
+    withOperationPromise({ opId: "terminal:open-path" }, async () => {
+      const rawPath = typeof payload?.path === "string" ? payload.path : "";
+      if (!rawPath) return { ok: false, error: "Missing path" };
+      const workspaceCwd = typeof payload?.workspaceCwd === "string" ? payload.workspaceCwd : "";
+
+      let resolved = rawPath;
+      if (resolved === "~") {
+        resolved = homedir();
+      } else if (resolved.startsWith("~/") || resolved.startsWith("~\\")) {
+        resolved = path.join(homedir(), resolved.slice(2));
+      } else if (!path.isAbsolute(resolved)) {
+        const base = workspaceCwd || process.cwd();
+        resolved = path.resolve(base, resolved);
+      }
+
+      try {
+        await stat(resolved);
+      } catch {
+        return { ok: false, error: `File not found: ${resolved}` };
+      }
+
+      try {
+        const result = await shell.openPath(resolved);
+        // shell.openPath returns "" on success and the error string on failure.
+        if (result) return { ok: false, error: result, absPath: resolved };
+        return { ok: true, absPath: resolved };
+      } catch (err) {
+        return { ok: false, error: (err as Error).message, absPath: resolved };
+      }
+    }),
+  );
+
   ipcMain.handle("workspace:activate", async (_event, workspaceId) =>
     withOperationPromise({ workspaceId: String(workspaceId || ""), opId: "workspace:activate" }, () =>
       runtime.activateWorkspace(workspaceId),
@@ -1315,6 +1360,7 @@ export function registerIpc(
     ipcMain.removeHandler("dialog:browse-directory");
     ipcMain.removeHandler("dialog:browse-file");
     ipcMain.removeHandler("shell:open-external");
+    ipcMain.removeHandler("terminal:open-path");
     ipcMain.removeHandler("task:recheck-claude");
     ipcMain.removeHandler("task:check-providers");
     ipcMain.removeHandler("task:check-git-repo");
