@@ -45,6 +45,18 @@ jobs:
       - run: npm test
       - run: npm run build
 
+      # Drop cpu-features before electron-builder kicks @electron/rebuild.
+      # cpu-features is an *optional* dep of ssh2 used only as an AES-NI hint
+      # for Linux native crypto; ssh2 falls back to Node's crypto module when
+      # the package is missing. The native source ships against NAN, which
+      # has not been updated for V8 13.x's mandatory `ExternalPointerTypeTag`
+      # arg on `External::New` / `External::Value` — so rebuilding it for
+      # Electron 42's V8 fails on every platform with
+      # "candidate expects 3 arguments, 2 provided". Removing the package
+      # makes @electron/rebuild skip it entirely. Cross-platform via node fs.
+      - name: Drop cpu-features (NaN/V8 incompat with Electron 42)
+        run: node -e "require('node:fs').rmSync('node_modules/cpu-features',{recursive:true,force:true})"
+
       - name: Build Windows distributables
         if: matrix.os == 'windows-latest'
         run: npx electron-builder ${{ matrix.args }} --publish never
