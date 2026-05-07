@@ -20,6 +20,15 @@ interface TerminalView {
   resizeFrame: number | null;
   resizeObserver: ResizeObserver | null;
   opened: boolean;
+  /**
+   * True while a `WebglAddon` instance is live on this terminal. Flipped
+   * back to false when xterm fires `onContextLoss` (and the addon disposes
+   * itself), which lets the re-attach path know it needs to create a new
+   * addon instance — without this, a workspace switch on macOS that loses
+   * the GL context leaves the terminal silently stuck on the DOM
+   * fallback (or worse, a black canvas) until the session is restarted.
+   */
+  webglAttached: boolean;
 }
 
 type LogLevel = "info" | "warn" | "error" | "debug";
@@ -399,6 +408,7 @@ export function createTerminalController({
       resizeFrame: null,
       resizeObserver: null,
       opened: false,
+      webglAttached: false,
     });
 
     return views.value.get(sessionId)!;
@@ -412,6 +422,55 @@ export function createTerminalController({
       view.resizeObserver?.disconnect();
       view.resizeObserver = null;
     }
+  }
+
+  /**
+   * Best-effort attach of the WebGL renderer for one terminal view.
+   * Idempotent — if `view.webglAttached` is already true the call is a
+   * no-op. Used by both the first-open and re-attach paths so a
+   * WebGL-context-lost terminal can recover after a workspace switch
+   * without restarting the session (the macOS integrated-GPU symptom
+   * where panes come back black after switching away).
+   */
+  function tryAttachWebglAddon(view: TerminalView, reason: "open" | "reattach"): void {
+    if (view.webglAttached) return;
+    if (api.isRemote) return;
+    const log = api.logRenderer ?? (() => {});
+    if (api.startupFlags?.disableWebgl) {
+      if (reason === "open") log("info", "[webgl] skipped: disabled by --no-webgl / STRIDETERM_DISABLE_WEBGL");
+      return;
+    }
+    const probe = probeWebgl2();
+    if (!probe.ok) {
+      if (reason === "open")
+        log("warn", "[webgl] skipped: pre-flight failed, using DOM renderer", { reason: probe.reason });
+      return;
+    }
+    const loadWebgl = (): void => {
+      if (!view.mount.isConnected || view.term.cols === 0 || view.term.rows === 0) return;
+      if (view.webglAttached) return;
+      try {
+        const webglAddon = new WebglAddon();
+        webglAddon.onContextLoss(() => {
+          log("warn", `[webgl] context lost (${reason}); disposing addon, will retry on next reattach`);
+          webglAddon.dispose();
+          view.webglAttached = false;
+        });
+        view.term.loadAddon(webglAddon);
+        view.webglAttached = true;
+        log("info", `[webgl] renderer enabled (${reason})`, { probe: probe.reason });
+      } catch (err) {
+        log("error", "[webgl] addon load threw; falling back to DOM renderer", {
+          error: (err as Error)?.message || String(err),
+        });
+      }
+    };
+    // Wait for fonts on first open (WebglAddon caches glyph dimensions
+    // at load time, so it has to see real font metrics). Reattach already
+    // has the fonts ready and the term sized — but the same gated path is
+    // safe and keeps the diff narrow.
+    const ready = document.fonts?.ready ?? Promise.resolve();
+    ready.then(() => window.setTimeout(loadWebgl, 50)).catch(() => {});
   }
 
   function attachTerminalPane(sessionId: string, paneBody: Element): TerminalView {
@@ -434,43 +493,24 @@ export function createTerminalController({
       // attaching it before the font is ready or while the canvas is 0×0
       // produces a permanently broken renderer (giant glyphs, blank screen)
       // with no automatic fallback.
-      if (!api.isRemote) {
-        const log = api.logRenderer ?? (() => {});
-        const disabledByFlag = api.startupFlags?.disableWebgl ?? false;
-
-        if (disabledByFlag) {
-          log("info", "[webgl] skipped: disabled by --no-webgl / STRIDETERM_DISABLE_WEBGL");
-        } else {
-          const probe = probeWebgl2();
-          if (!probe.ok) {
-            log("warn", "[webgl] skipped: pre-flight failed, using DOM renderer", { reason: probe.reason });
-          } else {
-            const loadWebgl = () => {
-              if (!view.mount.isConnected || view.term.cols === 0 || view.term.rows === 0) {
-                return;
-              }
-              try {
-                const webglAddon = new WebglAddon();
-                webglAddon.onContextLoss(() => {
-                  log("warn", "[webgl] context lost; disposing addon, falling back to DOM renderer");
-                  webglAddon.dispose();
-                });
-                view.term.loadAddon(webglAddon);
-                log("info", "[webgl] renderer enabled", { probe: probe.reason });
-              } catch (err) {
-                log("error", "[webgl] addon load threw; falling back to DOM renderer", {
-                  error: (err as Error)?.message || String(err),
-                });
-              }
-            };
-            const ready = document.fonts?.ready ?? Promise.resolve();
-            ready.then(() => window.setTimeout(loadWebgl, 50)).catch(() => {});
-          }
-        }
-      }
+      tryAttachWebglAddon(view, "open");
     } else {
-      // Force fit + refresh after re-attach (pane may have changed size)
+      // Re-attach after a workspace switch. The pane was removed from the
+      // DOM (PaneStage v-for drops inactive articles) and is now back —
+      // re-fit the terminal to the (possibly new) size, retry the WebGL
+      // addon if the GL context was lost while we were away, and force a
+      // redraw so any DOM-rendered terminal that didn't paint while
+      // detached fills the canvas. Without the refresh, macOS terminals
+      // sometimes come back as a black square until the user types or
+      // resizes the window.
       scheduleDeferredTerminalFits(sessionId);
+      tryAttachWebglAddon(view, "reattach");
+      try {
+        view.term.refresh(0, Math.max(0, view.term.rows - 1));
+      } catch {
+        // refresh throws if the renderer is in a transient bad state; the
+        // resize that follows will paint the canvas anyway, so swallow.
+      }
     }
     view.resizeObserver?.disconnect();
     view.resizeObserver = new ResizeObserver(() => {
