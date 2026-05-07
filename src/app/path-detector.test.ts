@@ -86,13 +86,50 @@ describe("detectPaths", () => {
     });
   });
 
-  describe("Directory paths (no extension required)", () => {
-    test("Unix single-segment directory /etc", () => {
-      const r = detectPaths("look in /etc for config");
-      expect(r).toHaveLength(1);
-      expect(r[0].path).toBe("/etc");
+  describe("Slash-command false positives (Claude Code, Codex CLI, etc.)", () => {
+    // Single-segment Unix-absolute paths are indistinguishable from the
+    // slash-command tokens our supported AI agents print in their welcome
+    // banners. The detector rejects the bare /word shape but still accepts
+    // /word/ (trailing slash flags it as a directory) and any nested form.
+    test("rejects /init (Claude Code slash command)", () => {
+      const r = detectPaths("Run /init to create a CLAUDE.md file");
+      expect(r).toHaveLength(0);
     });
 
+    test("rejects /release-notes (Claude Code slash command)", () => {
+      const r = detectPaths("/release-notes for more");
+      expect(r).toHaveLength(0);
+    });
+
+    test("rejects /help / /clear / /compact / /model bare commands", () => {
+      const r = detectPaths("commands: /help /clear /compact /model");
+      expect(r).toHaveLength(0);
+    });
+
+    test("rejects bare /etc / /var / /usr — same shape as a slash command", () => {
+      // Trade-off: /etc by itself doesn't get linkified. Users who want it
+      // should write `/etc/` (trailing slash, see tests below) or follow
+      // it with a real subpath like `/etc/passwd`.
+      const r = detectPaths("see /etc and /var and /usr");
+      expect(r).toHaveLength(0);
+    });
+
+    test("still matches /etc/ when written with a trailing slash", () => {
+      const r = detectPaths("contents of /etc/ are interesting");
+      expect(r).toHaveLength(1);
+      expect(r[0].path).toBe("/etc/");
+    });
+
+    test("still matches a multi-segment slash path even if the first segment looks command-like", () => {
+      // /init/foo could be a real path; we only reject when the body has no
+      // further separator. Two segments → accept and let fs.stat validate.
+      const r = detectPaths("logs at /init/foo/bar.log");
+      expect(r).toHaveLength(1);
+      expect(r[0].path).toBe("/init/foo/bar.log");
+    });
+  });
+
+  describe("Directory paths (no extension required)", () => {
     test("Unix nested directory without trailing slash", () => {
       const r = detectPaths("ls /var/log");
       expect(r).toHaveLength(1);

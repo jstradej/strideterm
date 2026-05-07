@@ -113,6 +113,28 @@ function bodyIsOnlyDigitsAndSeparators(path: string): boolean {
   return /^[\d/\\]+$/.test(body);
 }
 
+/**
+ * Single-segment Unix-absolute paths (`/init`, `/release-notes`) are
+ * indistinguishable from the slash-command tokens Claude Code, Codex CLI
+ * etc. print in their welcome banners ("Run /init", "/release-notes for
+ * more"). Real single-segment paths like `/etc`, `/var`, `/usr` exist —
+ * but they're almost always either followed by something (`/etc/passwd`,
+ * `/var/log`) or written with a trailing slash to flag a directory
+ * (`/var/log/`). We reject the bare `/word` shape and accept the `/word/`
+ * shape so the false positives disappear without dropping the cases the
+ * user actually wants to click.
+ *
+ * Drive-letter (C:\temp), UNC (\\srv), home (~/x), and explicit-relative
+ * (./x, ../x) anchors are *not* single-segment-rejectable: their leading
+ * marker is specific enough to distinguish a path from a stray token.
+ */
+function isAmbiguousSingleSegmentUnixAbsolute(path: string): boolean {
+  if (!path.startsWith("/") || path.startsWith("//")) return false;
+  if (path.endsWith("/") || path.endsWith("\\")) return false;
+  const body = path.slice(1);
+  return !body.includes("/") && !body.includes("\\");
+}
+
 function trimTrailingPunctuation(path: string): { path: string; delta: number } {
   const trimmed = path.replace(TRAILING_PUNCT_RE, "");
   if (trimmed.length === 0) return { path, delta: 0 };
@@ -199,6 +221,7 @@ export function detectPaths(input: string): DetectedPath[] {
 
     if (!bodyHasContent(path)) continue;
     if (bodyIsOnlyDigitsAndSeparators(path)) continue;
+    if (isAmbiguousSingleSegmentUnixAbsolute(path)) continue;
 
     matches.push({
       path,
