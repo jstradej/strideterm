@@ -94,12 +94,15 @@ export interface TerminalExitPayload {
 export interface StridetermAPI {
   // Core app
   openExternal: (url: string) => Promise<unknown>;
-  openTerminalPath: (request: {
-    path: string;
-    workspaceCwd?: string;
+  openTerminalPath: (request: { path: string; workspaceCwd?: string; line?: number; column?: number }) => Promise<{
+    ok: boolean;
+    absPath?: string;
+    error?: string;
+    /** Set when the user's mode is "internal" — caller drives FileManager nav. */
+    internal?: boolean;
     line?: number;
     column?: number;
-  }) => Promise<{ ok: boolean; absPath?: string; error?: string }>;
+  }>;
   showSystemNotification: (payload: NotificationShow) => Promise<unknown>;
   checkForUpdates: () => Promise<unknown>;
   checkCommand: (command: string) => Promise<unknown>;

@@ -6,6 +6,7 @@ import { stat } from "node:fs/promises";
 import type { createRuntime } from "./runtime.js";
 import { withOperationPromise } from "./effect/runtime.js";
 import * as fm from "./file-manager.js";
+import { parseCommandTemplate, substituteCommandArg } from "./command-template.js";
 import { getLogger } from "./logger.js";
 import {
   validateIpc,
@@ -130,19 +131,24 @@ export function registerIpc(
   );
 
   // Resolve a path captured from terminal output, validate it exists, and
-  // hand it to the OS-default opener. Used by the xterm path link provider
-  // (TerminalPane → terminal-controller). Same scheme-strict spirit as
-  // shell:open-external: the renderer can be tricked into asking us to open
-  // arbitrary paths, so we resolve relative paths against the workspace cwd
-  // here (not via shell expansion) and stat the result before handing it to
-  // shell.openPath. ~ expands to the runtime user's home; absolute paths
-  // are accepted as-is. Returns { ok, absPath } on success, { ok:false,
-  // error } otherwise so the renderer can surface a toast.
+  // dispatch the open action based on the user's `externalPathOpener` setting.
+  // Used by the xterm path link provider (TerminalPane → terminal-controller).
+  // Same scheme-strict spirit as shell:open-external: the renderer can be
+  // tricked into asking us to open arbitrary paths, so we resolve relative
+  // paths against the workspace cwd here (not via shell expansion) and stat
+  // the result before any open action.
+  //
+  // Returns:
+  //   { ok: true, absPath }                              — opened externally (system / command modes)
+  //   { ok: true, absPath, internal: true, line, column } — caller handles in-app navigation
+  //   { ok: false, error, absPath? }                      — surface to user via toast
   ipcMain.handle("terminal:open-path", async (_event, payload) =>
     withOperationPromise({ opId: "terminal:open-path" }, async () => {
       const rawPath = typeof payload?.path === "string" ? payload.path : "";
       if (!rawPath) return { ok: false, error: "Missing path" };
       const workspaceCwd = typeof payload?.workspaceCwd === "string" ? payload.workspaceCwd : "";
+      const lineNum = typeof payload?.line === "number" ? payload.line : 0;
+      const columnNum = typeof payload?.column === "number" ? payload.column : 0;
 
       let resolved = rawPath;
       if (resolved === "~") {
@@ -160,6 +166,43 @@ export function registerIpc(
         return { ok: false, error: `File not found: ${resolved}` };
       }
 
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- runtime payload type is open by design
+      const opener = (runtime.getPayload() as any)?.appState?.settings?.externalPathOpener || {};
+      const mode: string = opener.mode === "command" || opener.mode === "internal" ? opener.mode : "system";
+
+      // Internal mode: just resolve and let the renderer navigate to its
+      // FileManager pane. We don't have a direct way to drive the renderer
+      // from main; the renderer reads the `internal: true` flag and dispatches.
+      if (mode === "internal") {
+        return { ok: true, internal: true, absPath: resolved, line: lineNum, column: columnNum };
+      }
+
+      // Command mode: parse the user's command template and spawn it. The
+      // template is tokenised argv-style (no shell), so nothing gets handed
+      // to `sh -c`. Placeholders ${path}/${line}/${column} are substituted in
+      // each arg after tokenisation, so a malicious filename can't escape
+      // its argv slot.
+      if (mode === "command") {
+        const template: string = typeof opener.command === "string" ? opener.command : "";
+        const parsed = parseCommandTemplate(template);
+        if (!parsed) {
+          return { ok: false, error: "Invalid command template (empty or unterminated quote)", absPath: resolved };
+        }
+        const substitutedArgs = parsed.args.map((arg) => substituteCommandArg(arg, resolved, lineNum, columnNum));
+        try {
+          const { spawn } = await import("node:child_process");
+          spawn(parsed.binary, substitutedArgs, { detached: true, stdio: "ignore" }).unref();
+          return { ok: true, absPath: resolved };
+        } catch (err) {
+          return {
+            ok: false,
+            error: `Couldn't run "${parsed.binary}": ${(err as Error)?.message || String(err)}`,
+            absPath: resolved,
+          };
+        }
+      }
+
+      // System default: hand to the OS opener.
       try {
         const result = await shell.openPath(resolved);
         // shell.openPath returns "" on success and the error string on failure.

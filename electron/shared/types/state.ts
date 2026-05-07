@@ -90,6 +90,27 @@ export interface GitSettings {
   ui: GitUiSettings;
 }
 
+/**
+ * How a path-link click in the terminal opens its target.
+ *
+ * - `system`: hand it to the OS default opener (`shell.openPath` —
+ *   Finder/Explorer/xdg-open). Always works, never blocks the user on
+ *   editor configuration, which is why it's the default.
+ * - `command`: run a user-supplied command template, e.g.
+ *   `code -g \${path}:\${line}:\${column}` for VS Code or
+ *   `nvim +\${line} \${path}` for Neovim. The template is parsed argv-style
+ *   (no shell), so nothing gets evaluated by `sh -c`. Substitutable
+ *   placeholders are `\${path}`, `\${line}`, `\${column}`. Missing line/
+ *   column fall back to empty strings.
+ * - `internal`: open inside strIDEterm — switch to the active workspace's
+ *   Files tab (creating it if absent) and select the file there.
+ */
+export interface ExternalPathOpenerSettings {
+  mode: "system" | "command" | "internal";
+  /** Used only when `mode === "command"`. Empty for the other modes. */
+  command: string;
+}
+
 export interface Settings {
   theme: string;
   sidebarWidth: number;
@@ -100,6 +121,7 @@ export interface Settings {
   taskDefaults: TaskDefaults;
   integrations: IntegrationSettings;
   git: GitSettings;
+  externalPathOpener: ExternalPathOpenerSettings;
 }
 
 // ------- Tab templates -------

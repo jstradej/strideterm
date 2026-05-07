@@ -266,6 +266,39 @@ export const useFileManagerStore = defineStore("fileManager", () => {
     }
   }
 
+  /**
+   * Navigate the file-manager pane to a file by absolute path. Used by the
+   * terminal path-link provider when the user has chosen the "internal"
+   * external-path-opener mode. Returns false if the path is outside the
+   * current workspace root (caller is expected to fall back to the system
+   * opener in that case) or if the parent directory doesn't list the file.
+   *
+   * Caller must `init(workspaceCwd)` first so `rootPath` is set; we don't
+   * touch the root from here because changing it under the user's feet
+   * would be surprising for terminals that don't match the active workspace.
+   */
+  async function openFileAbsPath(absPath: string): Promise<boolean> {
+    if (!rootPath.value || !absPath) return false;
+    const norm = (s: string) => s.replace(/\\/g, "/").replace(/\/+$/, "");
+    const rootNorm = norm(rootPath.value);
+    const pathNorm = norm(absPath);
+    if (pathNorm === rootNorm) {
+      // Path is the workspace root itself — nothing to select.
+      await navigate("");
+      return true;
+    }
+    if (!pathNorm.startsWith(rootNorm + "/")) return false;
+    const relPath = pathNorm.slice(rootNorm.length + 1);
+    const lastSlash = relPath.lastIndexOf("/");
+    const parentDir = lastSlash >= 0 ? relPath.slice(0, lastSlash) : "";
+    const filename = lastSlash >= 0 ? relPath.slice(lastSlash + 1) : relPath;
+    await navigate(parentDir);
+    const entry = entries.value.find((e) => e.name === filename);
+    if (!entry) return false;
+    await selectEntry(entry);
+    return true;
+  }
+
   async function createFile(name: string): Promise<void> {
     if (!_api) return;
     try {
@@ -597,6 +630,7 @@ export const useFileManagerStore = defineStore("fileManager", () => {
     collapseTreeNode,
     selectEntry,
     loadPreview,
+    openFileAbsPath,
     createFile,
     createDirectory,
     renameEntry,

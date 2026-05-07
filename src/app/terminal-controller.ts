@@ -37,12 +37,14 @@ interface TerminalControllerApi {
   resizeTerminal: (sessionId: string, size: { cols: number; rows: number }) => void;
   writeTerminal: (sessionId: string, data: string) => void;
   /** Optional — desktop only. Path link clicks are no-ops in remote mode. */
-  openTerminalPath?: (request: {
-    path: string;
-    workspaceCwd?: string;
+  openTerminalPath?: (request: { path: string; workspaceCwd?: string; line?: number; column?: number }) => Promise<{
+    ok: boolean;
+    absPath?: string;
+    error?: string;
+    internal?: boolean;
     line?: number;
     column?: number;
-  }) => Promise<{ ok: boolean; absPath?: string; error?: string }>;
+  }>;
   isRemote?: boolean;
   startupFlags?: {
     disableWebgl?: boolean;
@@ -65,6 +67,52 @@ function resolveWorkspaceCwdForSession(sessionId: string, payload: StatePayload 
   const workspaces = (payload.appState?.workspaces || []) as WorkspaceState[];
   const ws = workspaces.find((w) => w.id === workspaceId);
   return ws?.cwd || "";
+}
+
+/**
+ * Drive the in-app FileManager pane to a path resolved from a terminal
+ * link. Used by the path-link `activate` handler when the user has chosen
+ * the "internal" external-path-opener mode.
+ *
+ * Requires the active workspace to expose a Files tab (a panel with
+ * `command: "__files__"`). If no Files tab exists or the path is outside
+ * the workspace root, surfaces a hint toast and bails — the user can then
+ * either open a Files tab or switch the opener mode in Settings.
+ *
+ * Imports are deferred so this module doesn't pull the renderer stores into
+ * its own load graph (terminal-controller is loaded eagerly; the stores
+ * shouldn't be).
+ */
+async function openInInternalViewer(absPath: string): Promise<void> {
+  const [appMod, fmMod, notifMod] = await Promise.all([
+    import("../stores/app.js"),
+    import("../stores/file-manager.js"),
+    import("../stores/notifications.js"),
+  ]);
+  const ws = appMod.useAppStore().activeWorkspace;
+  if (!ws) {
+    notifMod.useNotificationStore().showError("No active workspace to open the file in.");
+    return;
+  }
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- workspace.panels is loosely typed in the store
+  const filesPanel = ((ws.panels || []) as any[]).find((p) => p?.command === "__files__");
+  if (!filesPanel) {
+    notifMod
+      .useNotificationStore()
+      .showError("No Files tab in this workspace — open one first, or change the path-opener mode in Settings.");
+    return;
+  }
+  await appMod.useAppStore().activateView(`files:${filesPanel.id}`);
+  const fmStore = fmMod.useFileManagerStore();
+  if (ws.cwd) {
+    await fmStore.init(ws.cwd);
+  }
+  const ok = await fmStore.openFileAbsPath(absPath);
+  if (!ok) {
+    notifMod
+      .useNotificationStore()
+      .showError(`Couldn't navigate to ${absPath} — the file may be outside the workspace root.`);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -358,6 +406,14 @@ export function createTerminalController({
                   if (!result?.ok) {
                     const { useNotificationStore } = await import("../stores/notifications.js");
                     useNotificationStore().showError(`Couldn't open ${m.path}: ${result?.error || "unknown error"}`);
+                    return;
+                  }
+                  // Internal-mode response: backend resolved + validated the
+                  // path but didn't open anything. Drive the in-app
+                  // FileManager pane from here. Falls back to a toast hint if
+                  // the workspace doesn't expose a Files tab yet.
+                  if (result.internal === true && result.absPath) {
+                    await openInInternalViewer(result.absPath);
                   }
                 })
                 .catch(async (err: unknown) => {

@@ -460,6 +460,10 @@ export function createDefaultState(): AppState & { activeProjectId: string; proj
           showAllActions: false,
         },
       },
+      externalPathOpener: {
+        mode: "system" as const,
+        command: "",
+      },
     },
     tabTemplates: [
       { id: "shell", title: "Shell", command: "", icon: "\u{1F4BB}" },
@@ -942,6 +946,17 @@ export function normalizeState(rawState: any = {}): AppState & { activeProjectId
             ? (rawState.settings || {}).git.ui.showAllActions
             : defaults.settings.git.ui.showAllActions,
       },
+    },
+    externalPathOpener: {
+      mode:
+        ((rawState.settings || {}).externalPathOpener || {}).mode === "command" ||
+        ((rawState.settings || {}).externalPathOpener || {}).mode === "internal"
+          ? ((rawState.settings || {}).externalPathOpener || {}).mode
+          : defaults.settings.externalPathOpener.mode,
+      command:
+        typeof ((rawState.settings || {}).externalPathOpener || {}).command === "string"
+          ? ((rawState.settings || {}).externalPathOpener || {}).command
+          : defaults.settings.externalPathOpener.command,
     },
   };
   const workspaces = groupChildWorkspaces(

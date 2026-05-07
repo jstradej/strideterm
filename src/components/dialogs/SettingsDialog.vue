@@ -131,6 +131,7 @@ interface SettingsObj {
     debug?: boolean;
   };
   git?: { ui?: { showAllActions?: boolean } };
+  externalPathOpener?: { mode?: string; command?: string };
   ssh?: {
     preferAgent?: boolean;
     agentPath?: string;
@@ -208,6 +209,13 @@ const form = reactive({
       showAllActions: props.settings.git?.ui?.showAllActions ?? false,
     },
   },
+  externalPathOpener: {
+    mode:
+      props.settings.externalPathOpener?.mode === "command" || props.settings.externalPathOpener?.mode === "internal"
+        ? props.settings.externalPathOpener.mode
+        : "system",
+    command: props.settings.externalPathOpener?.command || "",
+  },
   ssh: {
     preferAgent: props.settings.ssh?.preferAgent ?? true,
     agentPath: props.settings.ssh?.agentPath ?? "",
@@ -278,6 +286,10 @@ function handleSave() {
     },
     tabTemplates: templates.filter((t) => t.title || t.command).map((t) => ({ ...toRaw(t) })),
     git: { ui: { showAllActions: form.git.ui.showAllActions } },
+    externalPathOpener: {
+      mode: form.externalPathOpener.mode,
+      command: form.externalPathOpener.command,
+    },
     ssh: {
       preferAgent: form.ssh.preferAgent,
       agentPath: form.ssh.agentPath,

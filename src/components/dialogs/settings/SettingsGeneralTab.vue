@@ -36,6 +36,46 @@
     </div>
 
     <div>
+      <span class="section-label">Terminal path links</span>
+      <div class="path-opener-modes">
+        <label
+          v-for="opt in pathOpenerModes"
+          :key="opt.value"
+          class="path-opener-mode"
+          :class="{ 'path-opener-mode--active': form.externalPathOpener.mode === opt.value }"
+          :title="opt.tooltip"
+        >
+          <input
+            v-model="form.externalPathOpener.mode"
+            type="radio"
+            name="external-path-opener-mode"
+            :value="opt.value"
+          />
+          <span class="path-opener-mode__label">{{ opt.label }}</span>
+          <small class="path-opener-mode__hint">{{ opt.hint }}</small>
+        </label>
+      </div>
+      <div v-if="form.externalPathOpener.mode === 'command'" class="path-opener-command">
+        <input
+          v-model="form.externalPathOpener.command"
+          placeholder="e.g. code -g ${path}:${line}:${column}"
+          class="settings-input"
+          title="Command template for opening file paths clicked in terminals. Tokens are split argv-style (no shell), so no metacharacters get interpreted. Substitutable placeholders: ${path}, ${line}, ${column}. Quote arguments containing spaces."
+        />
+        <small class="help-text">
+          Substitutable placeholders: <code>${path}</code>, <code>${line}</code>, <code>${column}</code>. The template
+          is parsed argv-style (no shell), so no metacharacters get interpreted. Examples:
+          <code>code -g ${path}:${line}:${column}</code> (VS Code), <code>nvim +${line} ${path}</code> (Neovim),
+          <code>subl ${path}:${line}:${column}</code> (Sublime).
+        </small>
+      </div>
+      <small v-else class="help-text">
+        How clicked file paths in terminal output get opened. Internal viewer requires the active workspace to have a
+        Files tab — open one if it doesn't.
+      </small>
+    </div>
+
+    <div>
       <span class="section-label">Cloudflared binary</span>
       <div class="input-with-action">
         <input
@@ -264,6 +304,29 @@ const form = inject<Record<string, any>>("settingsForm")!;
 
 const logLevelOptions = computed(() => props.logLevels.map((level) => ({ value: level, label: level })));
 
+const pathOpenerModes = [
+  {
+    value: "system",
+    label: "System default",
+    hint: "Open with the OS-registered handler (Finder, Explorer, xdg-open).",
+    tooltip: "Hand the path to the OS default opener (`shell.openPath`). Always works; no editor configuration needed.",
+  },
+  {
+    value: "command",
+    label: "Custom command",
+    hint: "Run your own editor — VS Code, Neovim, Sublime…",
+    tooltip:
+      "Run a command template you define below. Parsed argv-style (no shell). Use ${path}/${line}/${column} placeholders.",
+  },
+  {
+    value: "internal",
+    label: "Internal viewer",
+    hint: "Open in strIDEterm's Files tab if the active workspace has one.",
+    tooltip:
+      "Switch to the active workspace's Files tab and select the file there. Falls back to a hint toast when no Files tab exists.",
+  },
+];
+
 async function browseEditor() {
   if (!props.api?.browseFile) return;
   const selected = await props.api.browseFile({ defaultPath: form.externalEditor });
@@ -421,5 +484,76 @@ async function browseCloudflared() {
 .button--small {
   padding: 4px 10px;
   font-size: 12px;
+}
+
+.path-opener-modes {
+  display: grid;
+  gap: 6px;
+}
+
+.path-opener-mode {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  grid-template-rows: auto auto;
+  column-gap: 8px;
+  row-gap: 2px;
+  align-items: start;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  cursor: pointer;
+  background: rgba(255, 255, 255, 0.02);
+  transition: background 0.12s ease;
+}
+
+.path-opener-mode:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.path-opener-mode--active {
+  border-color: var(--accent);
+  background: rgba(var(--tint), 0.08);
+}
+
+.path-opener-mode input[type="radio"] {
+  grid-row: 1 / 3;
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: none;
+  accent-color: var(--accent);
+  width: auto;
+  align-self: center;
+}
+
+.path-opener-mode__label {
+  font-size: 13px;
+  color: var(--text);
+}
+
+.path-opener-mode__hint {
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.4;
+}
+
+.path-opener-command {
+  margin-top: 8px;
+  display: grid;
+  gap: 4px;
+}
+
+.path-opener-command code {
+  background: rgba(255, 255, 255, 0.06);
+  padding: 1px 4px;
+  border-radius: 3px;
+  font-size: 11px;
+}
+
+.help-text code {
+  background: rgba(255, 255, 255, 0.06);
+  padding: 1px 4px;
+  border-radius: 3px;
+  font-size: 11px;
 }
 </style>
