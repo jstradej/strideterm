@@ -39,6 +39,7 @@ Set-StrictMode -Version Latest
 
 $script:viteProc = $null
 $script:backendProc = $null
+$script:preloadProc = $null
 $script:frontendBuildProc = $null
 $script:electronProc = $null
 $script:exiting = $false
@@ -166,6 +167,11 @@ function Cleanup {
     if ($script:backendProc -and !$script:backendProc.HasExited) {
         Write-Step 'Stopping backend tsc watch...'
         Stop-ProcessTree $script:backendProc.Id
+    }
+
+    if ($script:preloadProc -and !$script:preloadProc.HasExited) {
+        Write-Step 'Stopping preload tsc watch...'
+        Stop-ProcessTree $script:preloadProc.Id
     }
 
     if ($script:frontendBuildProc -and !$script:frontendBuildProc.HasExited) {
@@ -337,6 +343,29 @@ if (-not $compiled) {
 }
 Write-Ok 'Backend compiled (dist-electron/ ready).'
 
+# --- Step 4b2: Start preload TS watcher -----------------------------------
+
+# `tsconfig.preload.json` builds electron/preload.cts → dist-electron/electron/preload.cjs.
+# We need its own watch process — `dev:backend` only covers tsconfig.backend.json
+# and electron loads the preload script as a separate context-isolated bundle.
+# Without this watcher, every change to electron/preload.cts (e.g. a new
+# contextBridge entry) silently runs against the LAST manually-built preload,
+# so the renderer sees window.strideterm without the new field. The symptom
+# is a feature that "just doesn't react" — typeof api.someNewMethod ===
+# "function" returns false and the gated code path is skipped.
+
+Write-Step 'Starting preload TypeScript watcher...'
+$script:preloadProc = Start-Process -FilePath 'cmd.exe' -ArgumentList '/c','npm run dev:preload' `
+    -WorkingDirectory $PSScriptRoot `
+    -PassThru -NoNewWindow
+
+if (!$script:preloadProc -or $script:preloadProc.HasExited) {
+    Write-Err 'Failed to start preload watcher. Aborting.'
+    Cleanup
+    exit 1
+}
+Write-Ok "Preload watcher started (PID $($script:preloadProc.Id))."
+
 # --- Step 4c: Start frontend build watcher (for remote-served dist/) ------
 
 # Vite dev server (Step 3) drives HMR for the Electron desktop renderer, but
@@ -410,6 +439,9 @@ Write-Host ''
 Write-Ok '=== Dev environment is running (isolated data dir) ==='
 Write-Host "    Vite:     http://127.0.0.1:$Port  (PID $($script:viteProc.Id))" -ForegroundColor Gray
 Write-Host "    Backend:  tsc --watch  (PID $($script:backendProc.Id))" -ForegroundColor Gray
+if ($script:preloadProc) {
+    Write-Host "    Preload:  tsc --watch  (PID $($script:preloadProc.Id))" -ForegroundColor Gray
+}
 if ($script:frontendBuildProc) {
     Write-Host "    Frontend: vite build --watch  (PID $($script:frontendBuildProc.Id))  → dist/ for remote clients" -ForegroundColor Gray
 }
@@ -424,6 +456,7 @@ Write-Host ''
 # --- Step 6: Wait for Electron to exit (and watch for backend rebuilds) ---
 
 $backendWarned = $false
+$preloadWarned = $false
 $frontendBuildWarned = $false
 $RestartDebounceMs = 1500   # wait this long after the LAST file change before restarting
 
@@ -431,6 +464,11 @@ while ($script:exiting -eq $false -and $script:electronProc -and -not $script:el
     if ($script:backendProc.HasExited -and -not $backendWarned) {
         Write-Warn "Backend tsc watch exited (code $($script:backendProc.ExitCode)) — TypeScript changes won't recompile."
         $backendWarned = $true
+    }
+
+    if ($script:preloadProc -and $script:preloadProc.HasExited -and -not $preloadWarned) {
+        Write-Warn "Preload tsc watch exited (code $($script:preloadProc.ExitCode)) — preload.cts changes won't recompile."
+        $preloadWarned = $true
     }
 
     if ($script:frontendBuildProc -and $script:frontendBuildProc.HasExited -and -not $frontendBuildWarned) {
