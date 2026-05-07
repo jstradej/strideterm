@@ -86,6 +86,50 @@ describe("detectPaths", () => {
     });
   });
 
+  describe("Directory paths (no extension required)", () => {
+    test("Unix single-segment directory /etc", () => {
+      const r = detectPaths("look in /etc for config");
+      expect(r).toHaveLength(1);
+      expect(r[0].path).toBe("/etc");
+    });
+
+    test("Unix nested directory without trailing slash", () => {
+      const r = detectPaths("ls /var/log");
+      expect(r).toHaveLength(1);
+      expect(r[0].path).toBe("/var/log");
+    });
+
+    test("Windows single-segment directory C:\\temp", () => {
+      const r = detectPaths("contents of C:\\temp now");
+      expect(r).toHaveLength(1);
+      expect(r[0].path).toBe("C:\\temp");
+    });
+
+    test("Windows two-segment directory C:\\temp\\test", () => {
+      const r = detectPaths("created C:\\temp\\test (master)");
+      expect(r).toHaveLength(1);
+      expect(r[0].path).toBe("C:\\temp\\test");
+    });
+
+    test("Windows directory with forward slashes", () => {
+      const r = detectPaths("see C:/temp/test for the cache");
+      expect(r).toHaveLength(1);
+      expect(r[0].path).toBe("C:/temp/test");
+    });
+
+    test("relative directory ./src", () => {
+      const r = detectPaths("cd ./src then run");
+      expect(r).toHaveLength(1);
+      expect(r[0].path).toBe("./src");
+    });
+
+    test("directory with trailing slash kept verbatim", () => {
+      const r = detectPaths("cd /var/log/ now");
+      expect(r).toHaveLength(1);
+      expect(r[0].path).toBe("/var/log/");
+    });
+  });
+
   describe("Windows absolute paths", () => {
     test("detects C:\\Users\\foo\\bar.txt with backslashes", () => {
       const r = detectPaths("open C:\\Users\\jaromir\\file.txt please");

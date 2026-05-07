@@ -267,15 +267,18 @@ export const useFileManagerStore = defineStore("fileManager", () => {
   }
 
   /**
-   * Navigate the file-manager pane to a file by absolute path. Used by the
-   * terminal path-link provider when the user has chosen the "internal"
-   * external-path-opener mode. Returns false if the path is outside the
-   * current workspace root (caller is expected to fall back to the system
-   * opener in that case) or if the parent directory doesn't list the file.
+   * Navigate the file-manager pane to a path (file or directory) by
+   * absolute path. Used by the terminal path-link provider when the user
+   * has chosen the "internal" external-path-opener mode.
    *
-   * Caller must `init(workspaceCwd)` first so `rootPath` is set; we don't
-   * touch the root from here because changing it under the user's feet
-   * would be surprising for terminals that don't match the active workspace.
+   * Behaviour by entry kind:
+   *   - file       → list its parent dir, select the file (preview opens)
+   *   - directory  → list the directory itself (descend into it)
+   *
+   * Returns false if the path is outside the current workspace root
+   * (caller falls back to the system opener) or if the parent directory
+   * doesn't list the target. Caller must `init(workspaceCwd)` first so
+   * `rootPath` is set.
    */
   async function openFileAbsPath(absPath: string): Promise<boolean> {
     if (!rootPath.value || !absPath) return false;
@@ -283,7 +286,7 @@ export const useFileManagerStore = defineStore("fileManager", () => {
     const rootNorm = norm(rootPath.value);
     const pathNorm = norm(absPath);
     if (pathNorm === rootNorm) {
-      // Path is the workspace root itself — nothing to select.
+      // The path *is* the workspace root — list the root itself.
       await navigate("");
       return true;
     }
@@ -291,11 +294,18 @@ export const useFileManagerStore = defineStore("fileManager", () => {
     const relPath = pathNorm.slice(rootNorm.length + 1);
     const lastSlash = relPath.lastIndexOf("/");
     const parentDir = lastSlash >= 0 ? relPath.slice(0, lastSlash) : "";
-    const filename = lastSlash >= 0 ? relPath.slice(lastSlash + 1) : relPath;
+    const lastSegment = lastSlash >= 0 ? relPath.slice(lastSlash + 1) : relPath;
     await navigate(parentDir);
-    const entry = entries.value.find((e) => e.name === filename);
+    const entry = entries.value.find((e) => e.name === lastSegment);
     if (!entry) return false;
-    await selectEntry(entry);
+    if (entry.kind === "directory") {
+      // Descend into the directory rather than just highlighting it in the
+      // parent listing — that's almost always what the user clicked the
+      // link for.
+      await navigate(entry.relativePath);
+    } else {
+      await selectEntry(entry);
+    }
     return true;
   }
 
