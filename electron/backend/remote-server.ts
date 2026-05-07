@@ -194,18 +194,50 @@ export const REMOTE_BLOCKED_REMOTE_ACCESS_FIELDS: ReadonlyArray<string> = [
 ];
 
 /**
+ * Top-level settings keys (sibling to `remoteAccess`, directly under
+ * `state.settings.X`) that a remote caller may not change. Same threat model
+ * as REMOTE_BLOCKED_REMOTE_ACCESS_FIELDS — a leaked-token attacker must not be
+ * able to repoint a binary the local desktop will later spawn — but these
+ * fields don't live under `remoteAccess`, so the per-field loop on that
+ * subtree wouldn't see them.
+ *
+ *   - `externalPathOpener`: when `mode === "command"`, the desktop main
+ *     process spawns `command` (parsed argv-style) every time the user
+ *     clicks a path link in terminal output. Allowing a remote caller to
+ *     repoint this turns a benign local action ("click a filename in my
+ *     terminal") into arbitrary code execution. Per invariant S1 ("any
+ *     user-configurable binary path pattern automatically belongs in the
+ *     remote blocklist"), this entry is mandatory; do not relax it.
+ *
+ * The whole subtree is dropped (not per-field) because `mode` and `command`
+ * are jointly part of the spawn chain — flipping `mode` from `"system"` to
+ * `"command"` is half the exploit by itself.
+ */
+export const REMOTE_BLOCKED_TOP_LEVEL_FIELDS: ReadonlyArray<string> = ["externalPathOpener"];
+
+/**
  * Apply the same blocklist `/api/settings/update` enforces. Exported for
- * tests; mutates `settings.remoteAccess` in place to drop the blocked keys
- * and returns the list of fields that were actually present (for audit).
+ * tests; mutates `settings` in place to drop both the blocked top-level keys
+ * and the blocked `remoteAccess` keys, and returns the names of fields that
+ * were actually present so the caller can audit-log the drop.
  */
 export function sanitizeSettingsFromRemote(settings: Record<string, unknown>): string[] {
-  const remoteAccess = settings.remoteAccess as Record<string, unknown> | undefined;
-  if (!remoteAccess || typeof remoteAccess !== "object") return [];
   const removed: string[] = [];
-  for (const key of REMOTE_BLOCKED_REMOTE_ACCESS_FIELDS) {
-    if (key in remoteAccess) {
-      delete remoteAccess[key];
+  // Top-level subtrees first — these are dropped wholesale.
+  for (const key of REMOTE_BLOCKED_TOP_LEVEL_FIELDS) {
+    if (key in settings) {
+      delete settings[key];
       removed.push(key);
+    }
+  }
+  // Per-field drop inside `remoteAccess` (preserves non-blocked siblings).
+  const remoteAccess = settings.remoteAccess as Record<string, unknown> | undefined;
+  if (remoteAccess && typeof remoteAccess === "object") {
+    for (const key of REMOTE_BLOCKED_REMOTE_ACCESS_FIELDS) {
+      if (key in remoteAccess) {
+        delete remoteAccess[key];
+        removed.push(key);
+      }
     }
   }
   return removed;
@@ -429,12 +461,24 @@ async function handleApiRequest(runtime: Runtime, request: IncomingMessage, resp
 
     if (request.method === "POST" && url.pathname === "/api/settings/update") {
       // Drop fields a remote caller is never authorised to change. See
-      // REMOTE_BLOCKED_REMOTE_ACCESS_FIELDS for the rationale; the short
-      // version is "cloudflaredPath would be remote RCE, the rest are
-      // bind/lockout knobs that only the desktop-side admin should touch".
-      // Mutating the parsed body in place is fine — it isn't shared.
+      // REMOTE_BLOCKED_REMOTE_ACCESS_FIELDS and REMOTE_BLOCKED_TOP_LEVEL_FIELDS
+      // for the rationale; the short version is "anything that controls a
+      // binary spawn or the network bind/auth knobs". Mutating the parsed body
+      // in place is fine — it isn't shared.
+      //
+      // We log every actual drop at warn-level so a leaked-token probe (or a
+      // confused mobile UI sending desktop-only fields) leaves an
+      // investigatable trail in the strideterm log; the per-request audit log
+      // already records the request itself, this entry is the "and here's
+      // what we silently stripped from it" annotation.
       const settings = (body.settings || {}) as Record<string, unknown>;
-      sanitizeSettingsFromRemote(settings);
+      const droppedFields = sanitizeSettingsFromRemote(settings);
+      if (droppedFields.length > 0) {
+        log.warn("remote settings update: dropped privileged fields", {
+          fields: droppedFields,
+          remoteAddress: request.socket?.remoteAddress,
+        });
+      }
       const result = await runtime.updateSettings(settings);
       json(response, 200, result.payload);
       return;

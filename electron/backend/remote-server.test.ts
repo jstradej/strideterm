@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
 import {
   REMOTE_BLOCKED_REMOTE_ACCESS_FIELDS,
+  REMOTE_BLOCKED_TOP_LEVEL_FIELDS,
   buildSessionCookieAttrs,
   sanitizeSettingsFromRemote,
   stripSecretsForRemote,
@@ -53,6 +54,47 @@ describe("sanitizeSettingsFromRemote", () => {
     expect(settings.remoteAccess).toEqual({
       someFutureField: "stays",
     });
+  });
+
+  test("drops the externalPathOpener subtree wholesale", () => {
+    // A leaked-token attacker repointing this would turn the desktop user's
+    // next path-link click in xterm output into arbitrary code execution
+    // (see REMOTE_BLOCKED_TOP_LEVEL_FIELDS comment in remote-server.ts).
+    // Both `mode` and `command` are part of the spawn chain — flipping
+    // mode to "command" is half the exploit by itself — so the whole
+    // subtree is dropped, not just `command`.
+    const settings = {
+      externalPathOpener: {
+        mode: "command",
+        command: "powershell -c <evil>",
+      },
+      logLevel: "debug",
+    };
+    const removed = sanitizeSettingsFromRemote(settings as Record<string, unknown>);
+    expect(removed).toContain("externalPathOpener");
+    expect(settings).not.toHaveProperty("externalPathOpener");
+    expect(settings.logLevel).toBe("debug");
+  });
+
+  test("drops top-level + remoteAccess fields in one pass", () => {
+    const settings = {
+      externalPathOpener: { mode: "command", command: "/tmp/evil.sh" },
+      remoteAccess: { cloudflaredPath: "/tmp/also-evil", enabled: true, someFutureField: "stays" },
+      theme: "dark",
+    };
+    const removed = sanitizeSettingsFromRemote(settings as Record<string, unknown>);
+    expect(removed.sort()).toEqual(["cloudflaredPath", "enabled", "externalPathOpener"].sort());
+    expect(settings).not.toHaveProperty("externalPathOpener");
+    expect(settings.remoteAccess).toEqual({ someFutureField: "stays" });
+    expect(settings.theme).toBe("dark");
+  });
+
+  test("REMOTE_BLOCKED_TOP_LEVEL_FIELDS includes externalPathOpener", () => {
+    // Defensive — invariant S1 ("any user-configurable binary path pattern
+    // automatically belongs in the remote blocklist") is enforced by this
+    // entry being present. If a future refactor accidentally removes it,
+    // this test fires before the multi-transport gap reopens.
+    expect(REMOTE_BLOCKED_TOP_LEVEL_FIELDS).toContain("externalPathOpener");
   });
 });
 

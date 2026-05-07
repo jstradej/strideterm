@@ -35,7 +35,16 @@
       >
     </div>
 
-    <div>
+    <!--
+      Desktop-only: the path-opener setting drives the renderer's response to
+      a path-link click in xterm output, which only fires inside the Electron
+      app. The remote/HTTP transport drops this field server-side anyway (see
+      REMOTE_BLOCKED_TOP_LEVEL_FIELDS in remote-server.ts), so showing the
+      controls in a remote browser would let the user fiddle with values that
+      silently never persist. Hide instead — same shape as the customPublicUrl
+      decision (N-2026-05-06-1).
+    -->
+    <div v-if="!api?.isRemote">
       <span class="section-label">Terminal path links</span>
       <div class="path-opener-modes">
         <label
