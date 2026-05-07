@@ -7,13 +7,7 @@ import {
   buildProgrammaticCopilotJudgeCommand,
   shouldUseProgrammaticCopilotJudge,
 } from "./agent-task-runner.js";
-import {
-  TASK_FILE,
-  WORK_LOCK_FILE,
-  extractTaskDescription,
-  formatVerifyChecklist,
-  taskDir,
-} from "./agent-task-utils.js";
+import { TASK_FILE, WORK_LOCK_FILE, extractTaskDescription, taskDir } from "./agent-task-utils.js";
 
 async function waitFor(
   predicate: () => boolean | Promise<boolean>,
@@ -933,28 +927,6 @@ describe("AgentTaskRunner", () => {
       const state = runner.getTaskState("nonexistent");
       expect(state).toBeNull();
     });
-  });
-});
-
-describe("formatVerifyChecklist", () => {
-  test("formats detected commands as markdown checklist", () => {
-    const result = formatVerifyChecklist([
-      { label: "Tests", command: "npm test", timeoutMs: 60_000 },
-      { label: "Lint", command: "npm run lint", timeoutMs: 60_000 },
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: test helper cast to bypass partial CheckConfig shape
-    ] as any);
-    expect(result).toBe("- [ ] Run `npm test` — must pass\n- [ ] Run `npm run lint` — must pass");
-  });
-
-  test("returns empty string for empty array", () => {
-    expect(formatVerifyChecklist([])).toBe("");
-  });
-
-  test("returns empty string for null/undefined", () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    expect(formatVerifyChecklist(null as any)).toBe("");
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    expect(formatVerifyChecklist(undefined as any)).toBe("");
   });
 });
 

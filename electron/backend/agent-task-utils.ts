@@ -85,15 +85,6 @@ export function activeItems(lines: string[]): string[] {
 }
 
 /**
- * Format auto-detected verify commands as a markdown checklist
- * for inclusion in TASK.md's verification section.
- */
-export function formatVerifyChecklist(detected: Array<{ command: string }>): string {
-  if (!detected?.length) return "";
-  return detected.map((cmd) => `- [ ] Run \`${cmd.command}\` — must pass`).join("\n");
-}
-
-/**
  * Extract the user-authored description block from a TASK.md file.
  *
  * TASK.md is generated as: `# Task` heading, `> Created: ...` blockquote,

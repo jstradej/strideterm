@@ -185,10 +185,16 @@ describe("writeTaskFiles — split format (TASK.md + WORKER.md)", () => {
     expect(taskMd).not.toMatch(/npm test|npm run lint|npm run typecheck/);
   });
 
-  test("when verify commands are auto-detected, they land in WORKER.md (not TASK.md)", async () => {
-    // Drop a package.json with detectable scripts so the auto-detector picks
-    // them up. The detector is shared with production — if anything ever
-    // routes its output back into TASK.md, this test catches it.
+  test("Verification block is generic (no auto-detected tool commands) and lives in WORKER.md", async () => {
+    // Auto-detection (npm test, mvn package, cargo test, …) used to be
+    // injected here based on package.json / pom.xml / Cargo.toml sniffing.
+    // It got removed because (a) it was wrong on polyglot or non-standard
+    // repos and (b) it forced tool-specific commands the user often didn't
+    // care about for the actual task. The block is now a single generic
+    // "read the project's docs and run the relevant checks" prose,
+    // regardless of stack. This test pins both invariants: the WORKER.md
+    // verify section exists, and no auto-detected tool string from a
+    // dropped package.json leaks into either file.
     await writeFile(
       path.join(cwd, "package.json"),
       JSON.stringify({ scripts: { test: "vitest", lint: "eslint .", typecheck: "tsc --noEmit" } }),
@@ -202,10 +208,12 @@ describe("writeTaskFiles — split format (TASK.md + WORKER.md)", () => {
     const taskMd = await readFile(path.join(taskDir(cwd, task.taskId), TASK_FILE), "utf8");
     const workerMd = await readFile(path.join(taskDir(cwd, task.taskId), WORKER_FILE), "utf8");
 
-    expect(taskMd).not.toContain("npm test");
-    expect(taskMd).not.toContain("npm run lint");
-    expect(workerMd).toContain("npm test");
-    expect(workerMd).toContain("npm run lint");
+    expect(workerMd).toContain("## Verification before completion");
+    expect(workerMd).toContain("project's own documentation");
+    // No auto-detected tool commands anywhere — neither TASK.md nor WORKER.md
+    // should mention npm/mvn/cargo just because of a manifest in cwd.
+    expect(taskMd).not.toMatch(/npm test|npm run lint|npm run typecheck|mvn |cargo /);
+    expect(workerMd).not.toMatch(/Run `npm test`|Run `npm run lint`|Run `mvn|Run `cargo/);
   });
 
   test("taskHasWorkerFile returns true after split, false when WORKER.md is missing", async () => {

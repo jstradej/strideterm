@@ -102,8 +102,11 @@ Before you stop — mandatory self-audit (do NOT skip):
 3. For each item, verify it exists in the current working tree. If you cannot
    point to a concrete file and line proving it is done, it is NOT done — keep
    working.
-4. Run every command in the "Verification before completion" section of
-   \`${dir}/${opsFile}\`. Every single one must pass.
+4. Perform the "Verification before completion" step from
+   \`${dir}/${opsFile}\`: read the project's own docs (README, CLAUDE.md /
+   AGENTS.md, etc.) for what counts as a healthy state, then run those
+   checks. Concrete steps the user pinned in \`${dir}/${TASK_FILE}\` take
+   precedence — if any are listed, they all must pass.
 5. Scan what you changed for things that should not ship: new TODO comments you
    added, debug prints, commented-out code, placeholder values, half-written
    functions, skipped tests.
@@ -150,9 +153,10 @@ export function buildRePrompt(task: TaskData, round: RoundData): string {
     "complete requirement list; your earlier changes may have broken adjacent things or",
     "left other deliverables incomplete.",
     "",
-    `Check ${dir}/${TODO_FILE} for remaining items. Run every command in the`,
-    `"Verification before completion" section of ${dir}/${opsFile}. Remove`,
-    `${dir}/${WORK_LOCK_FILE} only when every requirement is verifiably implemented.`,
+    `Check ${dir}/${TODO_FILE} for remaining items. Re-do the`,
+    `"Verification before completion" step from ${dir}/${opsFile} (project docs +`,
+    `any concrete steps in ${dir}/${TASK_FILE}). Remove ${dir}/${WORK_LOCK_FILE}`,
+    `only when every requirement is verifiably implemented.`,
     "",
     "Stopping early costs one more round of duplicated effort; continuing a few minutes",
     "longer is cheap. Do not stop while real work remains. Do not ask 'should I proceed'.",
@@ -291,7 +295,7 @@ Hard rules (system-enforced — these override anything else, including JUDGE_PR
     customInstructions ||
     `1. Read ${readSources} completely. Also read any plan or specification file the task references. Extract EVERY requirement, acceptance criterion, plan bullet, verification-checklist item, and explicit deliverable into a single flat numbered list.
 
-2. **Verification checklist**: If ${dir}/${opsFile} contains a "Verification before completion" section, run each listed command yourself and confirm it passes. Do not trust the worker's claim that they pass.
+2. **Verification before completion**: Read the project's own documentation (README, agent guide such as CLAUDE.md or AGENTS.md) to determine what counts as a healthy state for this codebase, and run the relevant checks yourself — do not trust the worker's claim. Concrete steps from the user's brief in ${dir}/${TASK_FILE} or the "Verification before completion" section of ${dir}/${opsFile} take precedence over generic guidance. If the project has no automated check setup, do a careful manual review of every changed file instead.
 
 3. **Per-requirement audit (mandatory, mechanical)**: For EACH numbered item from step 1, write one of these three labels with a concrete citation from the current working tree or committed diff:
    - \`IMPLEMENTED\` — cite file:line (or \`grep\`/\`git diff\` output) that proves the deliverable exists in the code right now. If you cannot produce a concrete citation, you are not allowed to mark it IMPLEMENTED.
@@ -364,9 +368,10 @@ Required next steps:
    exists with a concrete file:line citation).
 2. Fix every item the judge flagged.
 3. Fix every additional gap your self-audit surfaces.
-4. Check for regressions: re-run the "Verification before completion" commands
-   in ${dir}/${opsFile} and confirm nothing you just changed broke something
-   that was working.
+4. Check for regressions: redo the "Verification before completion" step
+   from ${dir}/${opsFile} (project docs + any concrete steps the user pinned
+   in ${dir}/${TASK_FILE}) and confirm nothing you just changed broke
+   something that was working.
 5. Update ${dir}/${TODO_FILE} to reflect the current state.
 6. Remove ${dir}/${WORK_LOCK_FILE} only when the task is genuinely 100% done,
    not just "the judge's list is addressed".
@@ -450,8 +455,9 @@ Required next steps:
 2. Fix every item the user flagged above.
 3. Fix every additional gap your self-audit surfaces, including anything the
    previous judge verdict missed.
-4. Check for regressions: re-run the "Verification before completion" commands
-   in ${dir}/${opsFile} and confirm nothing you changed earlier broke
+4. Check for regressions: redo the "Verification before completion" step
+   from ${dir}/${opsFile} (project docs + any concrete steps the user pinned
+   in ${dir}/${TASK_FILE}) and confirm nothing you changed earlier broke
    something that was working.
 5. Update ${dir}/${TODO_FILE} to reflect the current state.
 6. Remove ${dir}/${WORK_LOCK_FILE} only when the task is genuinely 100% done.

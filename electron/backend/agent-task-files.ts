@@ -11,14 +11,12 @@ import {
   WORKER_FILE,
   activeItems,
   extractTaskDescription,
-  formatVerifyChecklist,
   parseTodoSections,
   tailLines,
   taskDir,
   taskDirRel,
   verdictSchema,
 } from "./agent-task-utils.js";
-import { detectProjectVerifyCommands, detectStackReviewHints } from "./agent-task-detection.js";
 import type { Logger } from "./logger.js";
 import type { ExecResult } from "./agent-task-exec.js";
 import type { TaskState } from "../shared/types/task.js";
@@ -251,8 +249,6 @@ export async function writeTaskFiles(cwd: string, task: TaskState, log: Logger):
   const relDir = taskDirRel(task.taskId);
   await mkdir(dir, { recursive: true });
 
-  const detected = await detectProjectVerifyCommands(cwd);
-  const stackHints = await detectStackReviewHints(cwd);
   const now = new Date().toISOString().replace("T", " ").slice(0, 19);
 
   const descriptionBlock = task.description
@@ -260,23 +256,20 @@ export async function writeTaskFiles(cwd: string, task: TaskState, log: Logger):
     : `> No task description provided. Instruct the Worker directly in the terminal,
 > or write your task here and press Start.`;
 
-  const verifyChecklist = formatVerifyChecklist(detected);
-  const verifySection = verifyChecklist
-    ? `## Verification before completion
+  // Single generic verification block, regardless of stack. Auto-detection
+  // (npm/mvn/cargo/…) was actively harmful: forced tool-specific commands
+  // even when the user's actual task didn't care about them, and got it
+  // outright wrong on polyglot or non-standard repos. The agent reads the
+  // project's own docs to figure out what "healthy" looks like; concrete
+  // verification steps belong in the user's brief in TASK.md, not here.
+  const verifySection = `## Verification before completion
 
-> Auto-detected from your project. Edit freely — add, remove, or rewrite in your own language.
-> The Worker and Judge both read this section. The Worker must run these checks before finishing.
-
-${verifyChecklist}
-`
-    : `## Verification before completion
-
-> No automated checks were auto-detected for this project.
-> Before finishing, look at how this project tests and lints itself
-> (package scripts, Makefile, README, CI config, etc.) and run those
-> checks. If there is no automated test setup, do a careful manual
+> Before finishing, check the project's own documentation (README,
+> agent guide such as CLAUDE.md or AGENTS.md) for what counts as a
+> healthy state, and run those checks. If the user's brief in
+> ${TASK_FILE} above lists concrete steps, those take precedence.
+> If the project has no automated check setup, do a careful manual
 > review of every file you changed.
-> Edit or replace this section with concrete commands once you know them.
 `;
 
   // TASK.md (new split format) is just the user's brief — header + description.
@@ -325,10 +318,6 @@ ${verifySection}
 
   const workLock = "Work remains. Remove this file only when the task is complete and all verification steps pass.\n";
 
-  const stackSection = stackHints.length
-    ? `\n## Technology-specific checks\n\n${stackHints.map((hint) => `- ${hint}`).join("\n")}\n`
-    : "";
-
   const judgePromptMd = `# Judge Instructions
 
 > Edit this file to customize how the Judge evaluates the Worker's output.
@@ -358,7 +347,7 @@ close" is an argument for "continue", not for "complete".
 
 1. Read ${relDir}/${TASK_FILE} (the user's brief) and ${relDir}/${WORKER_FILE} (operational rules + verification checklist) completely. Also read any plan file referenced in the task (e.g. \`.private/plan-*.md\`). Extract EVERY requirement, acceptance criterion, plan bullet, verification-checklist item, and explicit deliverable into a single flat numbered list.
 
-2. **Verification checklist**: Run each command in the "Verification before completion" section of ${relDir}/${WORKER_FILE} (or ${relDir}/${TASK_FILE} for older tasks created before the split) yourself and confirm it passes — do not trust the Worker's claim.
+2. **Verification before completion**: Read the project's own documentation (README, agent guide such as CLAUDE.md or AGENTS.md) to determine what counts as a healthy state for this codebase, and run the relevant checks yourself — do not trust the Worker's claim. Concrete steps from the user's brief in ${relDir}/${TASK_FILE} or the "Verification before completion" section of ${relDir}/${WORKER_FILE} (or ${relDir}/${TASK_FILE} for older tasks created before the split) take precedence over generic guidance. If the project has no automated check setup, do a careful manual review of every changed file instead.
 
 3. **Per-requirement audit (mandatory, mechanical)**: For EACH numbered item from step 1, write one of these three labels with a concrete citation from the current working tree or committed diff:
    - \`IMPLEMENTED\` — cite file:line (or \`grep\`/\`git diff\` output) proving the deliverable exists right now. No citation → not allowed to mark it IMPLEMENTED.
@@ -385,7 +374,7 @@ close" is an argument for "continue", not for "complete".
    - Complete: \`{"verdict": "complete", "reason": "All <N> requirements verified implemented: ..."}\`
    - Continue: \`{"verdict": "continue", "reason": "Missing: ...; Partial: ..."}\`
    Include concrete file:line citations. A "complete" verdict with no citations, or with any phrase like "mostly", "substantially", "largely", "essentially", "close enough", "good enough", "small enough", or mentioning follow-up/deferred work is by definition wrong — change it to "continue".
-${stackSection}
+
 ## Severity guide (informational — does NOT soften the completion rule)
 
 - **Blocker** (must fix): broken functionality, security vulnerability, data loss risk, failing tests
@@ -402,7 +391,7 @@ ${stackSection}
     writeFile(path.join(dir, WORK_LOCK_FILE), workLock, "utf8"),
   ]);
 
-  log.info("task files written", { dir, detectedCommands: detected.length });
+  log.info("task files written", { dir });
 }
 
 export async function ensureGitIgnore(cwd: string, log: Logger): Promise<void> {

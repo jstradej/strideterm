@@ -76,9 +76,10 @@ describe("prompt builders — format-aware references", () => {
   test("legacy task (no useWorkerFile) references TASK.md for verification", () => {
     const prompt = buildInitialWorkerPrompt(baseTask);
     expect(prompt).toContain("Re-read `.strideterm/tasks/task-fmt-001/TASK.md`");
-    expect(prompt).toContain(
-      '"Verification before completion" section of\n   `.strideterm/tasks/task-fmt-001/TASK.md`',
-    );
+    // The format-aware switch routes the verification step at the right
+    // ops file. Wording around it is generic by design — what we pin is
+    // the path, not the prose, so future copy edits don't break this test.
+    expect(prompt).toMatch(/"Verification before completion"[^`]*`\.strideterm\/tasks\/task-fmt-001\/TASK\.md`/s);
     expect(prompt).not.toContain("WORKER.md");
   });
 
@@ -86,31 +87,29 @@ describe("prompt builders — format-aware references", () => {
     const prompt = buildInitialWorkerPrompt({ ...baseTask, useWorkerFile: true });
     expect(prompt).toContain(".strideterm/tasks/task-fmt-001/TASK.md`");
     expect(prompt).toContain(".strideterm/tasks/task-fmt-001/WORKER.md`");
-    expect(prompt).toContain(
-      '"Verification before completion" section of\n   `.strideterm/tasks/task-fmt-001/WORKER.md`',
-    );
+    expect(prompt).toMatch(/"Verification before completion"[^`]*`\.strideterm\/tasks\/task-fmt-001\/WORKER\.md`/s);
   });
 
   test("buildRePrompt switches verification source by format", () => {
     const legacy = buildRePrompt(baseTask, round);
-    expect(legacy).toContain("section of .strideterm/tasks/task-fmt-001/TASK.md");
+    expect(legacy).toContain(".strideterm/tasks/task-fmt-001/TASK.md");
     expect(legacy).not.toContain("WORKER.md");
 
     const split = buildRePrompt({ ...baseTask, useWorkerFile: true }, round);
-    expect(split).toContain("section of .strideterm/tasks/task-fmt-001/WORKER.md");
+    expect(split).toContain(".strideterm/tasks/task-fmt-001/WORKER.md");
   });
 
   test("feedback prompts switch verification source by format", () => {
     const legacy = buildJudgeFeedbackPrompt(baseTask, { reason: "missing X" });
-    expect(legacy).toContain("in .strideterm/tasks/task-fmt-001/TASK.md");
+    expect(legacy).toContain(".strideterm/tasks/task-fmt-001/TASK.md");
 
     const split = buildJudgeFeedbackPrompt({ ...baseTask, useWorkerFile: true }, { reason: "missing X" });
-    expect(split).toContain("in .strideterm/tasks/task-fmt-001/WORKER.md");
+    expect(split).toContain(".strideterm/tasks/task-fmt-001/WORKER.md");
 
     const userLegacy = buildUserFeedbackPrompt(baseTask, "still incomplete");
-    expect(userLegacy).toContain("in .strideterm/tasks/task-fmt-001/TASK.md");
+    expect(userLegacy).toContain(".strideterm/tasks/task-fmt-001/TASK.md");
 
     const userSplit = buildUserFeedbackPrompt({ ...baseTask, useWorkerFile: true }, "still incomplete");
-    expect(userSplit).toContain("in .strideterm/tasks/task-fmt-001/WORKER.md");
+    expect(userSplit).toContain(".strideterm/tasks/task-fmt-001/WORKER.md");
   });
 });
