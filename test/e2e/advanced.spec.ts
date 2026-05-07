@@ -98,7 +98,7 @@ test.describe("Task agent creation dialog", () => {
 
   test("opens from 'Create task agent' button", async ({ page }) => {
     await openApp(page, mock);
-    await page.locator("button[title='Create task agent']").click();
+    await page.locator("button[title^='Create a task workspace']").click();
     await expect(page.locator(".overlay")).toBeVisible({ timeout: 3_000 });
     await expect(page.locator(".overlay h2")).toHaveText("Create task workspace");
     assertNoErrors(page);
@@ -106,7 +106,7 @@ test.describe("Task agent creation dialog", () => {
 
   test("shows task assignment textarea", async ({ page }) => {
     await openApp(page, mock);
-    await page.locator("button[title='Create task agent']").click();
+    await page.locator("button[title^='Create a task workspace']").click();
     await expect(page.locator(".overlay")).toBeVisible({ timeout: 3_000 });
 
     // Task assignment textarea
@@ -118,7 +118,7 @@ test.describe("Task agent creation dialog", () => {
 
   test("shows worker and judge provider dropdowns", async ({ page }) => {
     await openApp(page, mock);
-    await page.locator("button[title='Create task agent']").click();
+    await page.locator("button[title^='Create a task workspace']").click();
     await expect(page.locator(".overlay")).toBeVisible({ timeout: 3_000 });
 
     // Worker agent section
@@ -129,7 +129,7 @@ test.describe("Task agent creation dialog", () => {
 
   test("provider dropdown includes OpenCode option", async ({ page }) => {
     await openApp(page, mock);
-    await page.locator("button[title='Create task agent']").click();
+    await page.locator("button[title^='Create a task workspace']").click();
     await expect(page.locator(".overlay")).toBeVisible({ timeout: 3_000 });
 
     // Open the worker provider dropdown
@@ -149,7 +149,7 @@ test.describe("Task agent creation dialog", () => {
 
   test("closes dialog on Cancel", async ({ page }) => {
     await openApp(page, mock);
-    await page.locator("button[title='Create task agent']").click();
+    await page.locator("button[title^='Create a task workspace']").click();
     await expect(page.locator(".overlay")).toBeVisible({ timeout: 3_000 });
     await page.locator(".overlay").getByText("Close").click();
     await expect(page.locator(".overlay")).not.toBeVisible({ timeout: 3_000 });
@@ -171,7 +171,7 @@ test.describe("New workspace picker", () => {
 
   test("shows both workspace type options", async ({ page }) => {
     await openApp(page, mock);
-    await page.locator("button[title='Add workspace']").click();
+    await page.locator("button[title^='Open the New Workspace picker']").click();
     await expect(page.locator(".overlay")).toBeVisible({ timeout: 3_000 });
     await expect(page.locator(".overlay").getByText("Empty Workspace")).toBeVisible();
     await expect(page.locator(".overlay").getByText("Agent Task Runner")).toBeVisible();
@@ -180,7 +180,7 @@ test.describe("New workspace picker", () => {
 
   test("Agent Task Runner opens task creation dialog", async ({ page }) => {
     await openApp(page, mock);
-    await page.locator("button[title='Add workspace']").click();
+    await page.locator("button[title^='Open the New Workspace picker']").click();
     await expect(page.locator(".overlay")).toBeVisible({ timeout: 3_000 });
 
     await page.locator(".overlay").getByText("Agent Task Runner").click();
@@ -318,7 +318,7 @@ test.describe("Edit workspace dialog", () => {
   test("opens edit workspace dialog with existing workspace data", async ({ page }) => {
     await openApp(page, mock);
     // Click the edit workspace button (pencil icon)
-    await page.locator("button[title='Edit workspace']").click();
+    await page.locator("button[title^='Edit this workspace']").click();
     await expect(page.locator(".overlay")).toBeVisible({ timeout: 3_000 });
     // Should show "Edit workspace" heading (not "Add workspace" or "Create task workspace")
     await expect(page.locator(".overlay h2")).toHaveText("Edit workspace");
@@ -327,7 +327,7 @@ test.describe("Edit workspace dialog", () => {
 
   test("edit dialog shows current workspace name", async ({ page }) => {
     await openApp(page, mock);
-    await page.locator("button[title='Edit workspace']").click();
+    await page.locator("button[title^='Edit this workspace']").click();
     await expect(page.locator(".overlay")).toBeVisible({ timeout: 3_000 });
     // Name field should be filled with the current workspace name
     const nameInput = page.locator(".overlay input[name='name']");
@@ -337,7 +337,7 @@ test.describe("Edit workspace dialog", () => {
 
   test("edit dialog shows tab templates including OpenCode", async ({ page }) => {
     await openApp(page, mock);
-    await page.locator("button[title='Edit workspace']").click();
+    await page.locator("button[title^='Edit this workspace']").click();
     await expect(page.locator(".overlay")).toBeVisible({ timeout: 3_000 });
 
     // Template buttons should include OpenCode from the fixture
@@ -413,7 +413,7 @@ test.describe("Visual regression — split and task @visual", () => {
 
   test("task creation dialog", async ({ page }) => {
     await openApp(page, mockMulti);
-    await page.locator("button[title='Create task agent']").click();
+    await page.locator("button[title^='Create a task workspace']").click();
     await expect(page.locator(".overlay")).toBeVisible({ timeout: 3_000 });
     await page.waitForTimeout(300);
     await expect(page).toHaveScreenshot("task-creation-dialog.png");

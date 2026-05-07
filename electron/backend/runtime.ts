@@ -3446,11 +3446,19 @@ export async function createRuntime({
   // a state entry pointing at nothing). Delayed so external drives /
   // network mounts have a chance to come up first; skipped while a task
   // recovery dialog is still pending.
-  setTimeout(() => {
-    pruneOrphanedWorkspaces().catch((err) => {
-      log.warn("pruneOrphanedWorkspaces failed", { err: (err as Error)?.message });
-    });
-  }, 5_000);
+  //
+  // Gated behind deferInitialRefresh so it only fires in production (Electron
+  // main passes deferInitialRefresh: true). Tests run with fake timers and
+  // would otherwise advance past the 5s deadline mid-test, prune workspaces
+  // whose fixture cwd doesn't exist on disk (e.g. `/tmp/idletask`), and
+  // throw off attention/runtime assertions.
+  if (deferInitialRefresh) {
+    setTimeout(() => {
+      pruneOrphanedWorkspaces().catch((err) => {
+        log.warn("pruneOrphanedWorkspaces failed", { err: (err as Error)?.message });
+      });
+    }, 5_000);
+  }
 
   // --- Extracted handler groups ---
   const gitHandlers = createGitHandlers({

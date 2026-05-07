@@ -142,7 +142,7 @@ test.describe("Settings dialog", () => {
 
   test("opens on General tab with theme options", async ({ page }) => {
     await openApp(page, mock);
-    await page.locator("button[title='Settings']").click();
+    await page.locator("button[title^='Open the Settings dialog']").click();
     const overlay = page.locator(".overlay");
     await expect(overlay).toBeVisible({ timeout: 3_000 });
     await expect(overlay.locator("h2")).toHaveText("Settings");
@@ -156,7 +156,7 @@ test.describe("Settings dialog", () => {
 
   test("navigating to Tab Templates tab changes content", async ({ page }) => {
     await openApp(page, mock);
-    await page.locator("button[title='Settings']").click();
+    await page.locator("button[title^='Open the Settings dialog']").click();
     const overlay = page.locator(".overlay");
     await expect(overlay).toBeVisible({ timeout: 3_000 });
 
@@ -173,7 +173,7 @@ test.describe("Settings dialog", () => {
 
   test("navigating to About tab shows version info", async ({ page }) => {
     await openApp(page, mock);
-    await page.locator("button[title='Settings']").click();
+    await page.locator("button[title^='Open the Settings dialog']").click();
     const overlay = page.locator(".overlay");
     await expect(overlay).toBeVisible({ timeout: 3_000 });
 
@@ -184,13 +184,13 @@ test.describe("Settings dialog", () => {
 
   test("Close button dismisses overlay completely", async ({ page }) => {
     await openApp(page, mock);
-    await page.locator("button[title='Settings']").click();
+    await page.locator("button[title^='Open the Settings dialog']").click();
     await expect(page.locator(".overlay")).toBeVisible({ timeout: 3_000 });
 
     await page.locator(".overlay").getByText("Close").click();
     await expect(page.locator(".overlay")).not.toBeVisible({ timeout: 3_000 });
     // Settings button should still work after closing
-    await page.locator("button[title='Settings']").click();
+    await page.locator("button[title^='Open the Settings dialog']").click();
     await expect(page.locator(".overlay")).toBeVisible({ timeout: 3_000 });
     assertNoErrors(page);
   });
@@ -210,7 +210,7 @@ test.describe("Profile selector", () => {
 
   test("opens profile management overlay", async ({ page }) => {
     await openApp(page, mock);
-    await page.locator("button[title='Profiles']").click();
+    await page.locator("button[title^='Open the Profiles dialog']").click();
     await expect(page.locator(".overlay").first()).toBeVisible({ timeout: 3_000 });
     assertNoErrors(page);
   });
@@ -230,7 +230,7 @@ test.describe("Add workspace", () => {
 
   test("opens workspace creation dialog", async ({ page }) => {
     await openApp(page, mock);
-    await page.locator("button[title='Add workspace']").click();
+    await page.locator("button[title^='Open the New Workspace picker']").click();
     await expect(page.locator(".overlay")).toBeVisible({ timeout: 3_000 });
     assertNoErrors(page);
   });
@@ -252,7 +252,7 @@ test.describe("Help dialog", () => {
     await openApp(page, mock);
     // Help button sits near the sidebar resize handle and may be obscured on narrow
     // viewports — dispatch click via JS to avoid pointer-events interception.
-    await page.locator("button[title='Help']").dispatchEvent("click");
+    await page.locator("button[title^='Open the Help dialog']").dispatchEvent("click");
     await expect(page.locator(".overlay")).toBeVisible({ timeout: 3_000 });
     assertNoErrors(page);
   });
@@ -274,7 +274,7 @@ test.describe("Sidebar collapse", () => {
     await openApp(page, mock);
     await expect(page.getByText("Frontend App")).toBeVisible();
 
-    await page.locator("button[title='Collapse sidebar']").click();
+    await page.locator("button[data-role='sidebar-collapse']").click();
     // After collapse, full workspace names should not be visible
     await expect(page.getByText("Frontend App")).not.toBeVisible({ timeout: 3_000 });
     assertNoErrors(page);
@@ -322,7 +322,7 @@ test.describe("Visual regression @visual", () => {
 
   test("settings dialog", async ({ page }) => {
     await openApp(page, mock);
-    await page.locator("button[title='Settings']").click();
+    await page.locator("button[title^='Open the Settings dialog']").click();
     await expect(page.locator(".overlay")).toBeVisible({ timeout: 3_000 });
     await page.waitForTimeout(300);
     await expect(page).toHaveScreenshot("settings-dialog.png");
@@ -344,7 +344,7 @@ test.describe("Visual regression @visual", () => {
 
   test("add workspace dialog", async ({ page }) => {
     await openApp(page, mock);
-    await page.locator("button[title='Add workspace']").click();
+    await page.locator("button[title^='Open the New Workspace picker']").click();
     await expect(page.locator(".overlay")).toBeVisible({ timeout: 3_000 });
     await page.waitForTimeout(300);
     await expect(page).toHaveScreenshot("add-workspace-dialog.png");

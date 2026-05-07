@@ -37,10 +37,10 @@ test.describe("Electron shell — empty state", () => {
   test("window opens and renders the sidebar", async () => {
     const { page } = launched!;
     await expect(page.getByRole("heading", { name: "strIDEterm", exact: true })).toBeVisible({ timeout: 15_000 });
-    await expect(page.locator("button[title='Add workspace']")).toBeVisible();
-    await expect(page.locator("button[title='Settings']")).toBeVisible();
-    await expect(page.locator("button[title='Help']")).toBeVisible();
-    await expect(page.locator("button[title='Notifications']")).toBeVisible();
+    await expect(page.locator("button[title^='Open the New Workspace picker']")).toBeVisible();
+    await expect(page.locator("button[title^='Open the Settings dialog']")).toBeVisible();
+    await expect(page.locator("button[title^='Open the Help dialog']")).toBeVisible();
+    await expect(page.locator("button[data-role='notification-bell']")).toBeVisible();
     assertNoRendererErrors(launched!);
   });
 
@@ -54,7 +54,7 @@ test.describe("Electron shell — empty state", () => {
 
   test("Settings dialog: General tab opens and closes", async () => {
     const { page } = launched!;
-    await page.locator("button[title='Settings']").click();
+    await page.locator("button[title^='Open the Settings dialog']").click();
     await expect(page.locator(".overlay h2")).toHaveText("Settings");
     await expect(page.getByText("Theme", { exact: false }).first()).toBeVisible({ timeout: 5_000 });
     await captureStep(launched!, "settings-general-open");
@@ -65,7 +65,7 @@ test.describe("Electron shell — empty state", () => {
 
   test("Settings dialog: switching to About tab reveals app metadata", async () => {
     const { page } = launched!;
-    await page.locator("button[title='Settings']").click();
+    await page.locator("button[title^='Open the Settings dialog']").click();
     await page.locator(".settings-tab-btn", { hasText: "About" }).click();
     await expect(page.locator(".settings-tab-content")).toBeVisible();
     await captureStep(launched!, "settings-about-open");
@@ -76,7 +76,7 @@ test.describe("Electron shell — empty state", () => {
 
   test("Help dialog opens with keyboard-shortcuts heading", async () => {
     const { page } = launched!;
-    await page.locator("button[title='Help']").click();
+    await page.locator("button[title^='Open the Help dialog']").click();
     await expect(page.locator(".overlay h2")).toContainText("Help");
     await expect(page.getByText("Getting Started")).toBeVisible();
     await captureStep(launched!, "help-open");
@@ -87,7 +87,7 @@ test.describe("Electron shell — empty state", () => {
 
   test("Add workspace flow opens the template picker", async () => {
     const { page } = launched!;
-    await page.locator("button[title='Add workspace']").click();
+    await page.locator("button[title^='Open the New Workspace picker']").click();
     await expect(page.locator(".overlay h2")).toContainText("Choose a template");
     await expect(page.getByText("Empty Workspace")).toBeVisible();
     await captureStep(launched!, "new-workspace-picker-open");
