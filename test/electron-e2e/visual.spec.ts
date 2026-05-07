@@ -41,7 +41,7 @@ test.describe("Visual snapshots @visual", () => {
 
   test("empty: settings dialog (General tab)", async () => {
     const { page } = empty!;
-    await page.locator("button[title^='Open the Settings dialog']").click();
+    await page.locator("button.sidebar__icon-btn[title^='Open the Settings dialog']").click();
     await expect(page.locator(".overlay h2")).toHaveText("Settings");
     await settleForScreenshot(page);
     await expect(page).toHaveScreenshot("empty-settings-general.png");
@@ -50,7 +50,7 @@ test.describe("Visual snapshots @visual", () => {
 
   test("empty: help dialog", async () => {
     const { page } = empty!;
-    await page.locator("button[title^='Open the Help dialog']").click();
+    await page.locator("button.sidebar__icon-btn[title^='Open the Help dialog']").click();
     await page.getByText("Getting Started").waitFor();
     await settleForScreenshot(page);
     await expect(page).toHaveScreenshot("empty-help.png");
@@ -59,7 +59,7 @@ test.describe("Visual snapshots @visual", () => {
 
   test("empty: new workspace template picker", async () => {
     const { page } = empty!;
-    await page.locator("button[title^='Open the New Workspace picker']").click();
+    await page.locator("button.sidebar__icon-btn[title^='Open the New Workspace picker']").click();
     await page.getByText("Empty Workspace").waitFor();
     await settleForScreenshot(page);
     await expect(page).toHaveScreenshot("empty-new-workspace.png");

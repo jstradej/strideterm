@@ -210,7 +210,7 @@ test.describe("Profile selector", () => {
 
   test("opens profile management overlay", async ({ page }) => {
     await openApp(page, mock);
-    await page.locator("button[title^='Open the Profiles dialog']").click();
+    await page.locator("button.profile-bar[title^='Open the Profiles dialog']").click();
     await expect(page.locator(".overlay").first()).toBeVisible({ timeout: 3_000 });
     assertNoErrors(page);
   });

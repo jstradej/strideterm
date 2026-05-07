@@ -18,9 +18,9 @@ test.describe("Empty state", () => {
   test("shows sidebar with app title and core buttons", async ({ page }) => {
     await openApp(page, mock);
     await expect(page.getByRole("heading", { name: "strIDEterm", exact: true })).toBeVisible();
-    await expect(page.locator("button[title^='Open the New Workspace picker']")).toBeVisible();
-    await expect(page.locator("button[title^='Open the Settings dialog']")).toBeVisible();
-    await expect(page.locator("button[title^='Open the Help dialog']")).toBeVisible();
+    await expect(page.locator("button.sidebar__icon-btn[title^='Open the New Workspace picker']")).toBeVisible();
+    await expect(page.locator("button.sidebar__icon-btn[title^='Open the Settings dialog']")).toBeVisible();
+    await expect(page.locator("button.sidebar__icon-btn[title^='Open the Help dialog']")).toBeVisible();
     await expect(page.locator("button[data-role='notification-bell']")).toBeVisible();
     assertNoErrors(page);
   });
@@ -88,7 +88,7 @@ test.describe("Multi-workspace state", () => {
 
   test("sidebar shows active profile name", async ({ page }) => {
     await openApp(page, mock);
-    await expect(page.locator("button[title^='Open the Profiles dialog']")).toBeVisible();
+    await expect(page.locator("button.profile-bar[title^='Open the Profiles dialog']")).toBeVisible();
     await expect(page.getByText("Default")).toBeVisible();
     assertNoErrors(page);
   });
