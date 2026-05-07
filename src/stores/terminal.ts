@@ -1,6 +1,7 @@
 import { defineStore } from "pinia";
 import { shallowRef } from "vue";
 import { createTerminalController } from "../app/terminal-controller.js";
+import type { TerminalView } from "../app/terminal-controller.js";
 import { openTerminalLink, getWindowsPtyOptions, downloadTextFile, safeFilenamePart } from "../app/helpers.js";
 import type { Transport } from "../transport.js";
 import type { StatePayload } from "../../electron/shared/types/state.js";
@@ -11,18 +12,6 @@ function shortcutTabDirection(event: KeyboardEvent): number {
   if (key === "PageDown" || key === "Next" || code === "PageDown") return 1;
   if (key === "PageUp" || key === "Prior" || code === "PageUp") return -1;
   return 0;
-}
-
-interface TerminalView {
-  mount: HTMLDivElement;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  term: any;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  fitAddon: any;
-  lastSizeKey: string | null;
-  resizeFrame: number | null;
-  resizeObserver: ResizeObserver | null;
-  opened: boolean;
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any

@@ -12,7 +12,7 @@ import { detectPaths } from "./path-detector.js";
 // Types
 // ---------------------------------------------------------------------------
 
-interface TerminalView {
+export interface TerminalView {
   mount: HTMLDivElement;
   term: Terminal;
   fitAddon: FitAddon;
@@ -91,7 +91,7 @@ async function openInInternalViewer(absPath: string): Promise<void> {
   ]);
   const ws = appMod.useAppStore().activeWorkspace;
   if (!ws) {
-    notifMod.useNotificationStore().showError("No active workspace to open the file in.");
+    notifMod.useNotificationStore().showError("Open in Files failed", "No active workspace to open the file in.");
     return;
   }
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- workspace.panels is loosely typed in the store
@@ -99,7 +99,10 @@ async function openInInternalViewer(absPath: string): Promise<void> {
   if (!filesPanel) {
     notifMod
       .useNotificationStore()
-      .showError("No Files tab in this workspace — open one first, or change the path-opener mode in Settings.");
+      .showError(
+        "Open in Files failed",
+        "No Files tab in this workspace — open one first, or change the path-opener mode in Settings.",
+      );
     return;
   }
   await appMod.useAppStore().activateView(`files:${filesPanel.id}`);
@@ -111,7 +114,10 @@ async function openInInternalViewer(absPath: string): Promise<void> {
   if (!ok) {
     notifMod
       .useNotificationStore()
-      .showError(`Couldn't navigate to ${absPath} — the file may be outside the workspace root.`);
+      .showError(
+        "Open in Files failed",
+        `Couldn't navigate to ${absPath} — the file may be outside the workspace root.`,
+      );
   }
 }
 
@@ -405,7 +411,10 @@ export function createTerminalController({
                 .then(async (result) => {
                   if (!result?.ok) {
                     const { useNotificationStore } = await import("../stores/notifications.js");
-                    useNotificationStore().showError(`Couldn't open ${m.path}: ${result?.error || "unknown error"}`);
+                    useNotificationStore().showError(
+                      "Open path failed",
+                      `Couldn't open ${m.path}: ${result?.error || "unknown error"}`,
+                    );
                     return;
                   }
                   // Internal-mode response: backend resolved + validated the
@@ -419,6 +428,7 @@ export function createTerminalController({
                 .catch(async (err: unknown) => {
                   const { useNotificationStore } = await import("../stores/notifications.js");
                   useNotificationStore().showError(
+                    "Open path failed",
                     `Couldn't open ${m.path}: ${(err as Error)?.message || String(err)}`,
                   );
                 });
