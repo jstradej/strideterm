@@ -8,6 +8,12 @@
   overflow: hidden;
 }
 
+/* Narrow/mobile degradation: single cell */
+.workspace-grid--solo {
+  grid-template-columns: 1fr;
+  grid-template-rows: 1fr;
+}
+
 /* 2-column layout */
 .workspace-grid--cols {
   grid-template-columns: 1fr 1fr;
@@ -86,6 +92,12 @@
   height: 100%;
   color: var(--muted);
   font-size: 12px;
+}
+
+/* Drag-over highlight */
+.workspace-cell--drag-over {
+  outline: 2px dashed var(--accent);
+  outline-offset: -2px;
 }
 
 /* Empty cell placeholder */

@@ -1,6 +1,14 @@
 <template>
   <!-- Empty slot -->
-  <div v-if="!workspaceId" class="workspace-cell workspace-cell--empty" @mousedown.prevent="$emit('focus')">
+  <div
+    v-if="!workspaceId"
+    class="workspace-cell workspace-cell--empty"
+    :class="{ 'workspace-cell--drag-over': dragOver }"
+    @mousedown.prevent="$emit('focus')"
+    @dragover.prevent="onDragover"
+    @dragleave="onDragleave"
+    @drop.prevent="onDrop"
+  >
     <button
       type="button"
       class="workspace-cell__pick-btn"
@@ -20,8 +28,11 @@
   <div
     v-else
     class="workspace-cell"
-    :class="{ 'workspace-cell--focused': focused }"
+    :class="{ 'workspace-cell--focused': focused, 'workspace-cell--drag-over': dragOver }"
     @mousedown.capture="onMousedown"
+    @dragover.prevent="onDragover"
+    @dragleave="onDragleave"
+    @drop.prevent="onDrop"
   >
     <WorkspaceCellHeader
       :workspace-id="workspaceId"
@@ -60,7 +71,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, defineAsyncComponent } from "vue";
+import { computed, ref, onMounted, onUnmounted, defineAsyncComponent } from "vue";
 import { useAppStore } from "../../stores/app.js";
 import { useTerminalStore } from "../../stores/terminal.js";
 import {
@@ -102,6 +113,7 @@ const store = useAppStore();
 const termStore = useTerminalStore();
 const showPicker = ref(false);
 const swapSource = ref<number | null>(null);
+const dragOver = ref(false);
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyApi = any;
@@ -188,5 +200,36 @@ function onMousedown(event: MouseEvent): void {
 
 function onClear(): void {
   store.setGridCell(props.cellIndex, null);
+}
+
+function onGridCellPickerEvent(event: Event): void {
+  const detail = (event as CustomEvent).detail as { cellIndex: number };
+  if (detail.cellIndex === props.cellIndex) showPicker.value = true;
+}
+
+onMounted(() => {
+  window.addEventListener("open-grid-cell-picker", onGridCellPickerEvent);
+});
+onUnmounted(() => {
+  window.removeEventListener("open-grid-cell-picker", onGridCellPickerEvent);
+});
+
+function onDragover(event: DragEvent): void {
+  if (event.dataTransfer?.types?.includes("workspace-id")) {
+    dragOver.value = true;
+    event.dataTransfer.dropEffect = "copy";
+  }
+}
+
+function onDragleave(): void {
+  dragOver.value = false;
+}
+
+async function onDrop(event: DragEvent): Promise<void> {
+  dragOver.value = false;
+  const wsId = event.dataTransfer?.getData("workspace-id");
+  if (!wsId) return;
+  await store.setGridCell(props.cellIndex, wsId);
+  await store.activateWorkspace(wsId);
 }
 </script>

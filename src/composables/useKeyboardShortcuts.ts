@@ -59,18 +59,40 @@ export function useKeyboardShortcuts(api: Transport, { onNewWorkspace }: { onNew
     }
 
     // Alt+1..4 — focus grid cell by index
-    if (event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey) {
+    // Alt+Shift+1..4 — open picker for grid cell by index
+    if (event.altKey && !event.ctrlKey && !event.metaKey) {
       const digitMatch = event.code?.match(/^Digit([1-4])$/);
       if (digitMatch && appStore.isGridVisible) {
         event.preventDefault();
         event.stopImmediatePropagation();
         const cellIndex = parseInt(digitMatch[1], 10) - 1;
-        const grid = appStore.workspaceGrid;
-        const wsId = grid?.cellWorkspaceIds?.[cellIndex];
-        if (wsId) {
-          await appStore.activateWorkspace(wsId);
-          termStore.focusActiveTerminal();
+        if (!event.shiftKey) {
+          const grid = appStore.workspaceGrid;
+          const wsId = grid?.cellWorkspaceIds?.[cellIndex];
+          if (wsId) {
+            await appStore.activateWorkspace(wsId);
+            termStore.focusActiveTerminal();
+          }
         }
+        // Alt+Shift+1..4: open picker — handled by focusGridCellPicker event
+        // (picker opens on the WorkspaceCell component; dispatch a custom event)
+        if (event.shiftKey) {
+          window.dispatchEvent(new CustomEvent("open-grid-cell-picker", { detail: { cellIndex } }));
+        }
+        return;
+      }
+    }
+
+    // Ctrl+\ — cycle grid layouts when grid exists
+    if ((event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey && event.key === "\\") {
+      const grid = appStore.workspaceGrid;
+      if (grid) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        const layouts = ["cols", "rows", "grid", "top-split", "left-split"];
+        const currentIdx = layouts.indexOf(grid.layout);
+        const nextLayout = layouts[(currentIdx + 1) % layouts.length];
+        await appStore.setGridLayout(nextLayout);
         return;
       }
     }

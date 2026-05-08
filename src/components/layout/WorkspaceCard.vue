@@ -8,6 +8,7 @@
       'workspace-card--sub': workspace.depth > 0,
       'workspace-card--pr-completed': workspace.prStatus === 'completed',
       'workspace-card--pr-abandoned': workspace.prStatus === 'abandoned',
+      'workspace-card--in-grid': workspace.inGrid,
     }"
     :style="`--accent:${workspace.color}${workspace.depth > 0 ? `;margin-left:${workspace.depth * 16}px` : ''}`"
     :title="workspace.title"
@@ -132,6 +133,7 @@ interface WorkspaceCardData {
   summary?: string;
   title?: string;
   id: string;
+  inGrid?: boolean;
 }
 
 const props = defineProps<{

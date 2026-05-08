@@ -1022,6 +1022,10 @@ body.platform-darwin .frame--sidebar-collapsed .sidebar__head {
   box-shadow: inset 0 0 0 1.5px var(--accent);
 }
 
+.workspace-card--in-grid {
+  border-left: 2px solid color-mix(in srgb, var(--accent), transparent 50%);
+}
+
 .project--attention,
 .workspace-card--attention {
   box-shadow: inset 2px 0 0 rgba(255, 111, 141, 0.55);

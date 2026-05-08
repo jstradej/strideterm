@@ -81,6 +81,7 @@ export function useWorkspaceDragDrop(workspaceListRef: Ref<HTMLElement | null | 
     event.dataTransfer!.effectAllowed = "move";
     const workspaceId = card.dataset.workspaceId!;
     event.dataTransfer!.setData("text/plain", workspaceId);
+    event.dataTransfer!.setData("workspace-id", workspaceId);
     const workspaces = (store.payload?.appState?.workspaces || []) as WsLike[];
     const groupIds = getWorktreeGroup(workspaceId, workspaces);
     requestAnimationFrame(() => {

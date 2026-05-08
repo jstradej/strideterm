@@ -12,7 +12,7 @@
     <WorkspaceCard
       v-for="ws in displayedCards"
       :key="ws.id"
-      :workspace="ws"
+      :workspace="{ ...ws, inGrid: gridCellIds.has(ws.id) }"
       :data-workspace-id="ws.id"
       @activate="onActivate(ws.id)"
       @open-menu="onOpenMenu($event, ws)"
@@ -79,6 +79,15 @@
         @click="onMenuAction('create-task')"
       >
         &#x1F916; Create task agent
+      </button>
+      <button
+        v-if="wsMenuHasChildren"
+        type="button"
+        class="context-menu__item"
+        title="Open workspace grid with this workspace in slot 0 and its 3 most-recently-active children filling the remaining slots."
+        @click="onMenuAction('open-in-grid')"
+      >
+        &#x22F6; Open in grid
       </button>
       <div class="context-menu__divider"></div>
       <button
@@ -372,6 +381,14 @@ async function handleTaskStop(ws: any): Promise<void> {
   }
 }
 
+// --- Grid cell IDs set (for inGrid indicator) ---
+
+const gridCellIds = computed<Set<string>>(() => {
+  const grid = store.workspaceGrid;
+  if (!grid) return new Set();
+  return new Set((grid.cellWorkspaceIds as (string | null)[]).filter(Boolean) as string[]);
+});
+
 // --- Workspace actions menu ---
 
 interface WsMenuState {
@@ -381,6 +398,21 @@ interface WsMenuState {
 }
 const wsMenu = ref<WsMenuState | null>(null);
 const wsMenuRef = ref<HTMLElement | null>(null);
+
+const wsMenuHasChildren = computed<boolean>(() => {
+  const ws = wsMenu.value?.ws;
+  if (!ws) return false;
+  const allWs = store.filteredWorkspaces;
+  return allWs.some((w) => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const a = w as any;
+    return (
+      a.review?.parentWorkspaceId === ws.id ||
+      a.quickfix?.parentWorkspaceId === ws.id ||
+      a.task?.parentWorkspaceId === ws.id
+    );
+  });
+});
 
 function onOpenMenu(event: MouseEvent, ws: Record<string, unknown>): void {
   const btn = (event.target as Element).closest("button");
@@ -413,7 +445,28 @@ function onMenuAction(action: string): void {
     emit("delete-workspace", ws.id as string);
   } else if (action === "force-remove") {
     emit("force-remove-workspace", ws.id as string);
+  } else if (action === "open-in-grid") {
+    openInGrid(ws.id as string);
   }
+}
+
+function openInGrid(parentId: string): void {
+  const allWs = store.filteredWorkspaces;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const children = allWs.filter((w: any) => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const a = w as any;
+    return (
+      a.review?.parentWorkspaceId === parentId ||
+      a.quickfix?.parentWorkspaceId === parentId ||
+      a.task?.parentWorkspaceId === parentId
+    );
+  });
+  // Take up to 3 most recent children (prefer starred, then order as shown)
+  const top3 = children.slice(0, 3).map((w) => w.id);
+  const slots: (string | null)[] = [parentId, ...top3];
+  while (slots.length < 4) slots.push(null);
+  store.enableWorkspaceGrid("grid", { workspaceIds: slots.slice(0, 4) });
 }
 
 // Viewport-clamp the menu
