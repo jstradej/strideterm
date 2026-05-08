@@ -3,13 +3,20 @@ import { ref, onMounted, onBeforeUnmount, type Ref } from "vue";
 const NARROW_QUERY = "(max-width: 768px)";
 const MOBILE_QUERY = "(max-width: 768px), (max-height: 500px)";
 
-// Module-level shared refs. Every component that mounts the composable
-// updates these via its own per-instance matchMedia listener — the listeners
-// stay per-instance (same as the original implementation, no shared lifetime
-// to argue about) but they all write into the same ref so non-component code
-// (Pinia store, plain modules) can read the live value too.
-const sharedIsNarrow = ref(false);
-const sharedIsMobile = ref(false);
+// Module-level shared refs. Initialized synchronously from matchMedia.matches
+// so the correct value is available before any component onMounted fires.
+// Every mounted component also registers a per-instance change listener so the
+// refs stay in sync when the viewport is resized.
+const sharedIsNarrow = ref(
+  typeof window !== "undefined" && typeof window.matchMedia === "function"
+    ? window.matchMedia(NARROW_QUERY).matches
+    : false
+);
+const sharedIsMobile = ref(
+  typeof window !== "undefined" && typeof window.matchMedia === "function"
+    ? window.matchMedia(MOBILE_QUERY).matches
+    : false
+);
 
 /**
  * Module-level reactive flags shared across every consumer. Safe to read from
