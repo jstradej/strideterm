@@ -210,7 +210,7 @@ describe("SessionManager", () => {
   });
 
   test("coalesces concurrent ssh session starts for the same session id", async () => {
-    let resolveStart: (() => void) | null = null;
+    let resolveStart: (() => void) | undefined;
     const sshManager = {
       getHost: vi.fn(() => ({
         id: "host-a",
@@ -225,7 +225,8 @@ describe("SessionManager", () => {
       ),
     };
     const manager = new SessionManager({ sshManager: sshManager as never });
-    const state = createState();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const state: any = createState();
     state.workspaces[0].activePanelId = "ssh";
     state.workspaces[0].panels[0] = {
       id: "ssh",
@@ -235,13 +236,13 @@ describe("SessionManager", () => {
       launch: { kind: "ssh", sshHostId: "host-a" },
     };
 
-    const first = manager.ensureSession(state as Parameters<typeof manager.ensureSession>[0], "workspace-a:ssh");
-    const second = manager.ensureSession(state as Parameters<typeof manager.ensureSession>[0], "workspace-a:ssh");
+    const first = manager.ensureSession(state, "workspace-a:ssh");
+    const second = manager.ensureSession(state, "workspace-a:ssh");
     await Promise.resolve();
 
     expect(sshManager.createSession).toHaveBeenCalledTimes(1);
     expect(resolveStart).toBeTypeOf("function");
-    resolveStart?.();
+    (resolveStart as () => void)();
     const [firstSession, secondSession] = await Promise.all([first, second]);
 
     expect(firstSession).toBe(secondSession);
