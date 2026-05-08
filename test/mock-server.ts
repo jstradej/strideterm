@@ -57,7 +57,21 @@ export async function startMockServer({
   fixture = "empty-state",
   port = 0,
   fileContents = {},
-}: { fixture?: string; port?: number; fileContents?: Record<string, string> } = {}): Promise<MockServerHandle> {
+  delayApiStateMs = 0,
+}: {
+  fixture?: string;
+  port?: number;
+  fileContents?: Record<string, string>;
+  /**
+   * Delay the GET /api/state response by N ms. Useful for tests that need
+   * the WebSocket `state:updated` broadcast to arrive before the HTTP
+   * bootstrap — handleBroadcastPayload only applies workspace UI state
+   * (splitGroup, activeViewId restoration) when `payload.value` is still
+   * unset, so a WS-first ordering is required to test split-layout
+   * bootstrap behaviour.
+   */
+  delayApiStateMs?: number;
+} = {}): Promise<MockServerHandle> {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: fixture JSON is untyped server state blob
   const payload: any = JSON.parse(JSON.stringify(loadFixture(fixture)));
   const TOKEN = "test-token";
@@ -78,8 +92,12 @@ export async function startMockServer({
 
     // API routes — accept any token or no token for testing
     if (url.pathname === "/api/state" && req.method === "GET") {
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify(payload));
+      const send = () => {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(payload));
+      };
+      if (delayApiStateMs > 0) setTimeout(send, delayApiStateMs);
+      else send();
       return;
     }
 
