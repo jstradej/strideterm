@@ -2,11 +2,12 @@
   <div
     ref="stripRef"
     class="tab-strip"
+    :class="{ 'tab-strip--compact': compact }"
     data-role="tab-strip"
-    @dragover.prevent="dragDrop.onDragover"
-    @dragleave="dragDrop.onDragleave"
-    @drop="dragDrop.onDrop"
-    @dragend="dragDrop.onDragend"
+    @dragover.prevent="!compact && dragDrop.onDragover($event)"
+    @dragleave="!compact && dragDrop.onDragleave($event)"
+    @drop="!compact && dragDrop.onDrop($event)"
+    @dragend="!compact && dragDrop.onDragend($event)"
   >
     <button
       v-for="tab in tabModels"
@@ -23,17 +24,18 @@
       :data-view-id="tab.id"
       :data-persistent="tab.persistent ? 'true' : 'false'"
       :title="tab.titleTooltip"
-      :draggable="tab.persistent"
+      :draggable="!compact && tab.persistent"
       @click="store.activateView(tab.id).then(() => nextTick(() => termStore.focusActiveTerminal()))"
-      @dblclick="tab.persistent && $emit('edit-tab', tab.id)"
-      @dragstart="dragDrop.onDragstart"
-      @contextmenu.prevent="$emit('contextmenu-tab', { x: $event.clientX, y: $event.clientY, viewId: tab.id })"
+      @dblclick="!compact && tab.persistent && $emit('edit-tab', tab.id)"
+      @dragstart="!compact && dragDrop.onDragstart($event)"
+      @contextmenu.prevent="!compact && $emit('contextmenu-tab', { x: $event.clientX, y: $event.clientY, viewId: tab.id })"
     >
       <span>{{ tab.title }}</span>
       <small v-if="tab.taskBadge" class="tab__task-badge" :title="tab.taskTooltip">{{ tab.taskBadge }}</small>
       <small v-else>{{ tab.status }}</small>
       <span v-if="tab.attention" class="tab__attention" :title="tab.attentionTooltip">🔔</span>
       <span
+        v-if="!compact"
         class="tab__menu"
         title="Open the tab actions menu (Focus, Edit, Save scrollback, Clear, Restart, Close, split moves) — same options as the right-click context menu but reachable on touch devices."
         @click.stop="onMenuClick($event, tab.id)"
@@ -65,12 +67,54 @@ interface AttentionAlert {
   at?: string;
 }
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type AnyApi = any;
+
+const props = withDefaults(
+  defineProps<{
+    compact?: boolean;
+    workspaceId?: string;
+  }>(),
+  { compact: false, workspaceId: undefined },
+);
+
 const store = useAppStore();
 const termStore = useTerminalStore();
 const stripRef = ref<HTMLElement | null>(null);
 const dragDrop = useTabDragDrop(stripRef);
 
+// In compact mode for a non-active workspace, derive minimal tab models from persisted panels.
+const compactTabModels = computed(() => {
+  if (!props.compact || !props.workspaceId) return null;
+  const wsId = props.workspaceId;
+  const activeWsId = (store.payload as AnyApi)?.appState?.activeWorkspaceId;
+  // If this cell is the active workspace, the normal tabModels computation handles it.
+  if (wsId === activeWsId) return null;
+  const wsEntry = ((store.payload as AnyApi)?.appState?.workspaces || []).find((w: AnyApi) => w.id === wsId);
+  if (!wsEntry) return [];
+  const activeViewId = wsEntry.activeViewId || null;
+  const panels: AnyApi[] = wsEntry.panels || [];
+  return panels.map((p: AnyApi) => ({
+    id: p.id,
+    title: p.title || p.id,
+    status: "",
+    tone: "idle",
+    active: p.id === activeViewId,
+    grouped: false,
+    persistent: true,
+    closable: true,
+    attention: false,
+    attentionFresh: false,
+    attentionTooltip: "",
+    taskBadge: "",
+    taskTooltip: "",
+    titleTooltip: p.title || p.id,
+  }));
+});
+
 const tabModels = computed(() => {
+  if (compactTabModels.value !== null) return compactTabModels.value;
+
   const tabs = store.workspaceTabs;
   const activeViewId = store.activeViewId;
   const splitGroup = store.splitGroup;

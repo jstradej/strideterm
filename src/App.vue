@@ -141,7 +141,7 @@
       <section class="workspace-main">
         <WorkspaceHero />
 
-        <div class="terminal-toolbar">
+        <div v-show="!store.isGridVisible" class="terminal-toolbar">
           <button
             type="button"
             class="mobile-hamburger"
@@ -234,8 +234,8 @@
           @open-settings="store.openSettingsDialog()"
         />
 
-        <!-- Terminal + pane stage -->
-        <PaneStage v-else-if="store.payload" />
+        <!-- Workspace stage (grid or single pane) -->
+        <WorkspaceStage v-else-if="store.payload" />
       </section>
     </main>
 
@@ -301,7 +301,7 @@ import TabStrip from "./components/layout/TabStrip.vue";
 import TabActions from "./components/layout/TabActions.vue";
 import WorkspaceHero from "./components/workspace/WorkspaceHero.vue";
 import WelcomeScreen from "./components/workspace/WelcomeScreen.vue";
-import PaneStage from "./components/workspace/PaneStage.vue";
+import WorkspaceStage from "./components/workspace/WorkspaceStage.vue";
 import DialogOverlay from "./components/dialogs/DialogOverlay.vue";
 import RemoteAccessPanel from "./components/layout/RemoteAccessPanel.vue";
 import BootstrapError from "./components/layout/BootstrapError.vue";

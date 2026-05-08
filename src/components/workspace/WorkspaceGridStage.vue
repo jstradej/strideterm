@@ -1,0 +1,48 @@
+<template>
+  <div
+    v-if="store.workspaceGrid"
+    class="workspace-grid"
+    :class="`workspace-grid--${store.workspaceGrid.layout}`"
+    :data-layout="store.workspaceGrid.layout"
+  >
+    <article
+      v-for="(workspaceId, index) in store.workspaceGrid.cellWorkspaceIds"
+      :key="index"
+      class="workspace-grid__cell"
+      :class="{
+        'workspace-grid__cell--focused': index === store.focusedGridCellIndex,
+        'workspace-grid__cell--empty': !workspaceId,
+      }"
+      :style="cellStyle(index)"
+    >
+      <WorkspaceCell
+        :workspace-id="workspaceId"
+        :cell-index="index"
+        :focused="index === store.focusedGridCellIndex"
+        @focus="onCellFocus(index)"
+      />
+    </article>
+  </div>
+</template>
+
+<script setup lang="ts">
+import { useAppStore } from "../../stores/app.js";
+import { AREA_LAYOUTS, AREA_NAMES } from "../../app/layout-geometry.js";
+import WorkspaceCell from "./WorkspaceCell.vue";
+
+const store = useAppStore();
+
+function cellStyle(index: number): Record<string, string> {
+  const layout = store.workspaceGrid?.layout ?? "";
+  if (!AREA_LAYOUTS.has(layout)) return {};
+  const area = AREA_NAMES[index as 0 | 1 | 2 | 3];
+  return area ? { gridArea: area } : {};
+}
+
+function onCellFocus(index: number): void {
+  const ids = store.workspaceGrid?.cellWorkspaceIds;
+  if (!ids) return;
+  const wsId = ids[index];
+  if (wsId) store.activateWorkspace(wsId);
+}
+</script>

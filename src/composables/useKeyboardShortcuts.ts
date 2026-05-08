@@ -46,6 +46,35 @@ export function useKeyboardShortcuts(api: Transport, { onNewWorkspace }: { onNew
       return;
     }
 
+    // Ctrl/Cmd+Shift+G — toggle workspace grid (enable cols with active workspace, or disable)
+    if ((event.ctrlKey || event.metaKey) && event.shiftKey && !event.altKey && event.key.toLowerCase() === "g") {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      if (appStore.isGridVisible) {
+        await appStore.disableWorkspaceGrid();
+      } else {
+        await appStore.enableWorkspaceGrid("cols");
+      }
+      return;
+    }
+
+    // Alt+1..4 — focus grid cell by index
+    if (event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey) {
+      const digitMatch = event.code?.match(/^Digit([1-4])$/);
+      if (digitMatch && appStore.isGridVisible) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        const cellIndex = parseInt(digitMatch[1], 10) - 1;
+        const grid = appStore.workspaceGrid;
+        const wsId = grid?.cellWorkspaceIds?.[cellIndex];
+        if (wsId) {
+          await appStore.activateWorkspace(wsId);
+          termStore.focusActiveTerminal();
+        }
+        return;
+      }
+    }
+
     if (!(event.ctrlKey || event.metaKey)) return;
 
     if (event.key.toLowerCase() === "n") {

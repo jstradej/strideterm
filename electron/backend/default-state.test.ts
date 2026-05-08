@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { createAccessToken, createDefaultState, normalizeWorkspace, normalizeState } from "./default-state.js";
+import { createAccessToken, createDefaultState, normalizeWorkspace, normalizeState, normalizeWorkspaceGrid } from "./default-state.js";
 
 describe("default state", () => {
   test("createAccessToken returns a non-trivial token", () => {
@@ -565,5 +565,84 @@ describe("default state", () => {
     const ids = state.workspaces.map((w) => w.id);
     // Child should be grouped right after parent
     expect(ids.indexOf("child-task")).toBe(ids.indexOf("parent") + 1);
+  });
+});
+
+describe("normalizeWorkspaceGrid", () => {
+  const ws = (id: string, profileId = "default") => ({
+    id,
+    profileId,
+    name: id,
+    command: "",
+    panels: [],
+    icon: "",
+  });
+
+  test("returns null for null/non-object input", () => {
+    expect(normalizeWorkspaceGrid(null, [], "default")).toBeNull();
+    expect(normalizeWorkspaceGrid(undefined, [], "default")).toBeNull();
+    expect(normalizeWorkspaceGrid("cols", [], "default")).toBeNull();
+  });
+
+  test("returns null for invalid layout", () => {
+    expect(normalizeWorkspaceGrid({ layout: "unknown", cellWorkspaceIds: ["a"] }, [ws("a")], "default")).toBeNull();
+  });
+
+  test("returns null when all cells are null after normalisation", () => {
+    expect(normalizeWorkspaceGrid({ layout: "cols", cellWorkspaceIds: [null, null] }, [], "default")).toBeNull();
+  });
+
+  test("filters out workspace IDs not in the active profile", () => {
+    const result = normalizeWorkspaceGrid(
+      { layout: "cols", cellWorkspaceIds: ["ws1", "ws2"] },
+      [ws("ws1", "profile-a"), ws("ws2", "profile-b")],
+      "profile-a",
+    );
+    expect(result).not.toBeNull();
+    expect(result!.cellWorkspaceIds).toEqual(["ws1", null]);
+  });
+
+  test("removes duplicate IDs — keeps first occurrence, nulls subsequent", () => {
+    const result = normalizeWorkspaceGrid(
+      { layout: "grid", cellWorkspaceIds: ["ws1", "ws1", "ws2", "ws1"] },
+      [ws("ws1"), ws("ws2")],
+      "default",
+    );
+    expect(result).not.toBeNull();
+    expect(result!.cellWorkspaceIds).toEqual(["ws1", null, "ws2", null]);
+  });
+
+  test("trims cellWorkspaceIds to the number of slots for the layout", () => {
+    const result = normalizeWorkspaceGrid(
+      { layout: "cols", cellWorkspaceIds: ["ws1", "ws2", "ws3", "ws4"] },
+      [ws("ws1"), ws("ws2"), ws("ws3"), ws("ws4")],
+      "default",
+    );
+    expect(result).not.toBeNull();
+    expect(result!.cellWorkspaceIds).toHaveLength(2);
+    expect(result!.cellWorkspaceIds).toEqual(["ws1", "ws2"]);
+  });
+
+  test("pads missing slots with null", () => {
+    const result = normalizeWorkspaceGrid(
+      { layout: "cols", cellWorkspaceIds: ["ws1"] },
+      [ws("ws1")],
+      "default",
+    );
+    expect(result).not.toBeNull();
+    expect(result!.cellWorkspaceIds).toEqual(["ws1", null]);
+  });
+
+  test("returns a valid result for all supported layouts", () => {
+    const workspaces = ["a", "b", "c", "d"].map((id) => ws(id));
+    for (const layout of ["cols", "rows", "top-split", "left-split", "grid"]) {
+      const result = normalizeWorkspaceGrid(
+        { layout, cellWorkspaceIds: ["a", "b", "c", "d"] },
+        workspaces,
+        "default",
+      );
+      expect(result).not.toBeNull();
+      expect(result!.layout).toBe(layout);
+    }
   });
 });
