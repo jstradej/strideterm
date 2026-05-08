@@ -66,6 +66,25 @@ export function useKeyboardShortcuts(api: Transport, { onNewWorkspace }: { onNew
     if (direction !== 0) {
       event.preventDefault();
       event.stopImmediatePropagation();
+      if (event.shiftKey) {
+        // Ctrl/Cmd+Shift+PgUp/PgDown — switch workspace.
+        // Cycles through starred workspaces if any exist, otherwise all.
+        const all = appStore.filteredWorkspaces as Array<{ id: string; starred?: boolean }>;
+        if (all.length < 2) return;
+        const starred = all.filter((ws) => ws.starred);
+        const list = starred.length > 0 ? starred : all;
+        const activeId = appStore.payload?.appState?.activeWorkspaceId || null;
+        const currentIdx = list.findIndex((ws) => ws.id === activeId);
+        const target =
+          currentIdx === -1
+            ? direction > 0
+              ? list[0]
+              : list[list.length - 1]
+            : list[(currentIdx + direction + list.length) % list.length];
+        await appStore.activateWorkspace(target.id);
+        termStore.focusActiveTerminal();
+        return;
+      }
       const tabs = appStore.workspaceTabs;
       if (tabs.length < 2) return;
       const currentIndex = tabs.findIndex((tab) => tab.id === appStore.activeViewId);

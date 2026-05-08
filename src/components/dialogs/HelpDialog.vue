@@ -41,6 +41,8 @@
           <dd style="color: var(--muted)">Switch to workspace 1-9</dd>
           <dt style="color: var(--accent); font-weight: 700">Ctrl + PageDown/PageUp</dt>
           <dd style="color: var(--muted)">Next / previous tab</dd>
+          <dt style="color: var(--accent); font-weight: 700">Ctrl + Shift + PageDown/PageUp</dt>
+          <dd style="color: var(--muted)">Next / previous workspace (cycles starred workspaces if any)</dd>
         </dl>
       </article>
       <article

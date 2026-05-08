@@ -398,6 +398,29 @@ export function wireRuntimeBindings({
       if (direction !== 0) {
         event.preventDefault();
         event.stopImmediatePropagation();
+        if (event.shiftKey) {
+          // Ctrl/Cmd+Shift+PgUp/PgDown — switch workspace.
+          // Cycles through starred workspaces if any exist, otherwise all.
+          const all = getFilteredWorkspaces() as Array<{ id: string; starred?: boolean }>;
+          if (all.length < 2) return;
+          const starred = all.filter((ws) => ws.starred);
+          const list = starred.length > 0 ? starred : all;
+          const activeId = state.payload?.appState?.activeWorkspaceId || null;
+          const currentIdx = list.findIndex((ws) => ws.id === activeId);
+          const target =
+            currentIdx === -1
+              ? direction > 0
+                ? list[0]
+                : list[list.length - 1]
+              : list[(currentIdx + direction + list.length) % list.length];
+          const prevId = state.payload?.appState?.activeWorkspaceId;
+          if (prevId && state.splitGroup) _splitGroupCache.set(prevId, state.splitGroup);
+          state.payload = (await api.activateWorkspace(target.id)) as StatePayload;
+          state.splitGroup = _splitGroupCache.get(target.id) || null;
+          render();
+          focusActiveTerminal();
+          return;
+        }
         const workspace = getWorkspace();
         if (!workspace) return;
         const tabs = getWorkspaceTabs(workspace);
