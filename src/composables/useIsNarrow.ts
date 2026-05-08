@@ -10,12 +10,12 @@ const MOBILE_QUERY = "(max-width: 768px), (max-height: 500px)";
 const sharedIsNarrow = ref(
   typeof window !== "undefined" && typeof window.matchMedia === "function"
     ? window.matchMedia(NARROW_QUERY).matches
-    : false
+    : false,
 );
 const sharedIsMobile = ref(
   typeof window !== "undefined" && typeof window.matchMedia === "function"
     ? window.matchMedia(MOBILE_QUERY).matches
-    : false
+    : false,
 );
 
 /**
