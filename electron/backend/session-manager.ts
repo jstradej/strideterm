@@ -300,6 +300,7 @@ async function buildSystemSshArgs(
 
 export class SessionManager extends EventEmitter {
   sessions: Map<string, RuntimeSession>;
+  startingSessions: Map<string, Promise<RuntimeSession | null>>;
   suppressedExits: Map<string, number>;
   getSessionEnv: ((ctx: SessionEnvContext) => Record<string, string>) | null;
   getSessionLaunch: ((ctx: SessionEnvContext) => SessionLaunchOverride | null) | null;
@@ -308,10 +309,31 @@ export class SessionManager extends EventEmitter {
   constructor({ getSessionEnv = null, getSessionLaunch = null, sshManager = null }: SessionManagerOpts = {}) {
     super();
     this.sessions = new Map();
+    this.startingSessions = new Map();
     this.suppressedExits = new Map();
     this.getSessionEnv = typeof getSessionEnv === "function" ? getSessionEnv : null;
     this.getSessionLaunch = typeof getSessionLaunch === "function" ? getSessionLaunch : null;
     this.sshManager = sshManager || null;
+  }
+
+  async trackSessionStart(
+    sessionId: string,
+    start: () => Promise<RuntimeSession | null>,
+  ): Promise<RuntimeSession | null> {
+    const pending = this.startingSessions.get(sessionId);
+    if (pending) {
+      return pending;
+    }
+
+    const started = start();
+    this.startingSessions.set(sessionId, started);
+    try {
+      return await started;
+    } finally {
+      if (this.startingSessions.get(sessionId) === started) {
+        this.startingSessions.delete(sessionId);
+      }
+    }
   }
 
   suppressNextExit(sessionId: string): void {
@@ -409,31 +431,33 @@ export class SessionManager extends EventEmitter {
     }
 
     if (panel.launch?.kind === "ssh") {
-      if (!this.sshManager) {
-        log.warn("SSH panel launched but sshManager is not wired", { sessionId: key });
-        return null;
-      }
-      // Resolve to a host definition: saved host book entry OR the panel's
-      // inline ad-hoc config. Inline wins if both are present (shouldn't
-      // happen, but quick-connect editing could leave both temporarily).
-      let host: HostRecord | undefined;
-      if (panel.launch.sshInline) {
-        host = { id: `inline:${key}`, jump: [], ...panel.launch.sshInline } as unknown as HostRecord;
-      } else if (panel.launch.sshHostId) {
-        host = this.sshManager.getHost(panel.launch.sshHostId) as HostRecord | undefined;
-        if (!host) {
-          log.warn("SSH host not found for panel", { sessionId: key, hostId: panel.launch.sshHostId });
+      return this.trackSessionStart(key, async () => {
+        if (!this.sshManager) {
+          log.warn("SSH panel launched but sshManager is not wired", { sessionId: key });
           return null;
         }
-      } else {
-        log.warn("SSH panel has neither sshHostId nor sshInline", { sessionId: key });
-        return null;
-      }
+        // Resolve to a host definition: saved host book entry OR the panel's
+        // inline ad-hoc config. Inline wins if both are present (shouldn't
+        // happen, but quick-connect editing could leave both temporarily).
+        let host: HostRecord | undefined;
+        if (panel.launch?.sshInline) {
+          host = { id: `inline:${key}`, jump: [], ...panel.launch.sshInline } as unknown as HostRecord;
+        } else if (panel.launch?.sshHostId) {
+          host = this.sshManager.getHost(panel.launch.sshHostId) as HostRecord | undefined;
+          if (!host) {
+            log.warn("SSH host not found for panel", { sessionId: key, hostId: panel.launch.sshHostId });
+            return null;
+          }
+        } else {
+          log.warn("SSH panel has neither sshHostId nor sshInline", { sessionId: key });
+          return null;
+        }
 
-      const mode = host.advanced?.launchVia || "ssh2";
-      if (mode === "system-ssh") return this.ensureSystemSshSession(state, workspace, panel, key, host);
-      if (mode === "wsl") return this.ensureWslSshSession(state, workspace, panel, key, host);
-      return this.ensureSshSession(state, workspace, panel, key, host);
+        const mode = host.advanced?.launchVia || "ssh2";
+        if (mode === "system-ssh") return this.ensureSystemSshSession(state, workspace, panel, key, host);
+        if (mode === "wsl") return this.ensureWslSshSession(state, workspace, panel, key, host);
+        return this.ensureSshSession(state, workspace, panel, key, host);
+      });
     }
 
     const launchOverride =
@@ -467,25 +491,36 @@ export class SessionManager extends EventEmitter {
       shellIntegration: shellIntEnabled,
     });
 
-    const processHandle = pty.spawn(launcher.file, launcher.args, {
-      name: APP_CONFIG.session.termName,
-      cols: APP_CONFIG.session.defaultCols,
-      rows: APP_CONFIG.session.defaultRows,
-      cwd: launchOverride?.cwd || panel.cwd || workspace.cwd,
-      env: {
-        ...process.env,
-        ...integrationEnv,
-        TERM_PROGRAM: APP_CONFIG.session.termProgram,
-        FORCE_COLOR: APP_CONFIG.session.forceColor,
-        ...(this.getSessionEnv?.({
-          state,
-          workspace,
-          panel,
-          sessionId: key,
-        }) || {}),
-        ...(launchOverride?.env || {}),
-      },
-    });
+    let processHandle: IPty;
+    try {
+      processHandle = pty.spawn(launcher.file, launcher.args, {
+        name: APP_CONFIG.session.termName,
+        cols: APP_CONFIG.session.defaultCols,
+        rows: APP_CONFIG.session.defaultRows,
+        cwd: launchOverride?.cwd || panel.cwd || workspace.cwd,
+        env: {
+          ...process.env,
+          ...integrationEnv,
+          TERM_PROGRAM: APP_CONFIG.session.termProgram,
+          FORCE_COLOR: APP_CONFIG.session.forceColor,
+          ...(this.getSessionEnv?.({
+            state,
+            workspace,
+            panel,
+            sessionId: key,
+          }) || {}),
+          ...(launchOverride?.env || {}),
+        },
+      });
+    } catch (error: unknown) {
+      const message = (error as Error)?.message || String(error);
+      log.warn("PTY spawn failed", { sessionId: key, file: launcher.file, err: message });
+      this.emit("terminal:data", {
+        sessionId: key,
+        data: `\r\n\x1b[31mFailed to launch terminal: ${message}\x1b[0m\r\n`,
+      });
+      return null;
+    }
 
     const session: PtySession = {
       id: key,

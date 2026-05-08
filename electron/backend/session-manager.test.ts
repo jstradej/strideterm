@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, test, vi } from "vitest";
 
 const handles: FakePtyHandle[] = [];
 const spawnCalls: Array<{ file: string; args: string[]; options: Record<string, unknown> }> = [];
+let spawnError: Error | null = null;
 
 class FakePtyHandle {
   dataHandlers: Array<(data: string) => void> = [];
@@ -29,6 +30,9 @@ class FakePtyHandle {
 vi.mock("node-pty", () => ({
   default: {
     spawn: vi.fn((file: string, args: string[], options: Record<string, unknown>) => {
+      if (spawnError) {
+        throw spawnError;
+      }
       const handle = new FakePtyHandle();
       handles.push(handle);
       spawnCalls.push({ file, args, options });
@@ -64,6 +68,7 @@ describe("SessionManager", () => {
   beforeEach(() => {
     handles.length = 0;
     spawnCalls.length = 0;
+    spawnError = null;
   });
 
   test("hard restart spawns a fresh session and marks old exit as intentional", async () => {
@@ -182,6 +187,65 @@ describe("SessionManager", () => {
 
     const env = spawnCalls[0].options.env as Record<string, string>;
     expect(env.STRIDETERM_SHELL_INTEGRATION).toBeUndefined();
+  });
+
+  test("returns null and emits terminal data when pty spawn fails", async () => {
+    const manager = new SessionManager();
+    const terminalData: unknown[] = [];
+    spawnError = new Error("bad cwd");
+    manager.on("terminal:data", (payload) => terminalData.push(payload));
+
+    const result = await manager.ensureSession(
+      createState() as Parameters<typeof manager.ensureSession>[0],
+      "workspace-a:shell",
+    );
+
+    expect(result).toBeNull();
+    expect(manager.sessions.has("workspace-a:shell")).toBe(false);
+    expect(terminalData).toHaveLength(1);
+    expect(terminalData[0]).toMatchObject({
+      sessionId: "workspace-a:shell",
+      data: expect.stringContaining("bad cwd"),
+    });
+  });
+
+  test("coalesces concurrent ssh session starts for the same session id", async () => {
+    let resolveStart: (() => void) | null = null;
+    const sshManager = {
+      getHost: vi.fn(() => ({
+        id: "host-a",
+        host: "example.test",
+        advanced: { launchVia: "ssh2" },
+      })),
+      createSession: vi.fn(
+        () =>
+          new Promise<void>((resolve) => {
+            resolveStart = resolve;
+          }),
+      ),
+    };
+    const manager = new SessionManager({ sshManager: sshManager as never });
+    const state = createState();
+    state.workspaces[0].activePanelId = "ssh";
+    state.workspaces[0].panels[0] = {
+      id: "ssh",
+      title: "SSH",
+      command: "ssh",
+      startup: "default",
+      launch: { kind: "ssh", sshHostId: "host-a" },
+    };
+
+    const first = manager.ensureSession(state as Parameters<typeof manager.ensureSession>[0], "workspace-a:ssh");
+    const second = manager.ensureSession(state as Parameters<typeof manager.ensureSession>[0], "workspace-a:ssh");
+    await Promise.resolve();
+
+    expect(sshManager.createSession).toHaveBeenCalledTimes(1);
+    expect(resolveStart).toBeTypeOf("function");
+    resolveStart?.();
+    const [firstSession, secondSession] = await Promise.all([first, second]);
+
+    expect(firstSession).toBe(secondSession);
+    expect(manager.sessions.get("workspace-a:ssh")).toBe(firstSession);
   });
 });
 

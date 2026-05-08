@@ -3222,15 +3222,16 @@ export async function createRuntime({
         if (!entry.isDirectory()) continue;
         const treePath = path.join(treeDir, entry.name);
         if (pendingWorktreeDeletions.has(path.resolve(treePath))) continue;
-        const existing = worktrees.find((w) => w.cwd === treePath);
+        const parentProfileId = parent.profileId || "default";
+        const existing = worktrees.find((w) => w.cwd === treePath && (w.profileId || "default") === parentProfileId);
         if (existing) {
           // Repair profileId if it drifted from parent
-          if ((existing.profileId || "default") !== (parent.profileId || "default")) {
-            toRepair.push({ id: existing.id, profileId: parent.profileId || "default" });
+          if ((existing.profileId || "default") !== parentProfileId) {
+            toRepair.push({ id: existing.id, profileId: parentProfileId });
           }
           continue;
         }
-        if (toAdd.some((w) => w.cwd === treePath)) continue;
+        if (toAdd.some((w) => w.cwd === treePath && (w.profileId || "default") === parentProfileId)) continue;
         toAdd.push(
           normalizeWorkspace({
             id: `workspace-${randomUUID()}`,

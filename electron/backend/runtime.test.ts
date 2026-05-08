@@ -2056,6 +2056,61 @@ describe("runtime integration", () => {
     expect(projectWorkspaces[1].cwd).toBe(path.join(projectRoot, ".strideterm", "tree", "feature-x"));
   });
 
+  test("discovers worktrees per active profile when parent cwd is shared", async () => {
+    const projectRoot = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-shared-project-"));
+    tempPaths.push(projectRoot);
+    const worktreePath = path.join(projectRoot, ".strideterm", "tree", "feature-x");
+    await fs.mkdir(worktreePath, { recursive: true });
+
+    const fixture = await createFixture({
+      initialState: {
+        activeProfileId: "profile-b",
+        activeProjectId: "shared-b",
+        profiles: [
+          { id: "default", name: "Default" },
+          { id: "profile-b", name: "Profile B" },
+        ],
+        projects: [
+          {
+            id: "shared-default",
+            name: "Shared",
+            kind: "terminal",
+            profileId: "default",
+            cwd: projectRoot,
+            activePanelId: "shell",
+            panels: [{ id: "shell", title: "Shell", command: "", shell: true, startup: "default" }],
+          },
+          {
+            id: "shared-b",
+            name: "Shared",
+            kind: "terminal",
+            profileId: "profile-b",
+            cwd: projectRoot,
+            activePanelId: "shell",
+            panels: [{ id: "shell", title: "Shell", command: "", shell: true, startup: "default" }],
+          },
+          {
+            id: "existing-default-worktree",
+            name: "Shared / feature-x",
+            kind: "terminal",
+            profileId: "default",
+            cwd: worktreePath,
+            notes: "Worktree of Shared",
+            activePanelId: "shell",
+            panels: [{ id: "shell", title: "Shell", command: "", shell: true, startup: "default" }],
+          },
+        ],
+      },
+    });
+    fixtures.push(fixture);
+
+    const matchingWorktrees = fixture.runtime
+      .getPayload()
+      .appState.projects!.filter((project) => project.cwd === worktreePath);
+
+    expect(matchingWorktrees.map((project) => project.profileId).sort()).toEqual(["default", "profile-b"]);
+  });
+
   test("createWorktree on multi-repo workspace requires rootPath and runs inside the selected repo", async () => {
     const parentRoot = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-multirepo-"));
     tempPaths.push(parentRoot);
