@@ -77,6 +77,10 @@ import {
   taskUpdateDescriptionSchema,
   taskRecoveryResolveSchema,
   telegramConnectionSchema,
+  workspaceGridEnableSchema,
+  workspaceGridSetLayoutSchema,
+  workspaceGridSetCellSchema,
+  workspaceGridSwapCellsSchema,
 } from "./ipc-schemas.js";
 
 type Runtime = Awaited<ReturnType<typeof createRuntime>>;
@@ -627,6 +631,33 @@ export function registerIpc(
     withOperationPromise({ workspaceId: String(workspaceId || ""), opId: "workspace:set-ui-state" }, async () => {
       const parsed = validateIpc(workspaceUIStateSchema, { workspaceId, uiState }, "workspace:set-ui-state");
       return runtime.setWorkspaceUIState(parsed.workspaceId, parsed.uiState);
+    }),
+  );
+  ipcMain.handle("workspace-grid:enable", async (_event, payload) =>
+    withOperationPromise({ opId: "workspace-grid:enable" }, () => {
+      const parsed = validateIpc(workspaceGridEnableSchema, payload, "workspace-grid:enable");
+      return (runtime as any).enableWorkspaceGrid(parsed.layout, parsed.workspaceIds);
+    }),
+  );
+  ipcMain.handle("workspace-grid:disable", async () =>
+    withOperationPromise({ opId: "workspace-grid:disable" }, () => (runtime as any).disableWorkspaceGrid()),
+  );
+  ipcMain.handle("workspace-grid:set-layout", async (_event, payload) =>
+    withOperationPromise({ opId: "workspace-grid:set-layout" }, () => {
+      const parsed = validateIpc(workspaceGridSetLayoutSchema, payload, "workspace-grid:set-layout");
+      return (runtime as any).setGridLayout(parsed.layout);
+    }),
+  );
+  ipcMain.handle("workspace-grid:set-cell", async (_event, payload) =>
+    withOperationPromise({ opId: "workspace-grid:set-cell" }, () => {
+      const parsed = validateIpc(workspaceGridSetCellSchema, payload, "workspace-grid:set-cell");
+      return (runtime as any).setGridCell(parsed.cellIndex, parsed.workspaceId);
+    }),
+  );
+  ipcMain.handle("workspace-grid:swap-cells", async (_event, payload) =>
+    withOperationPromise({ opId: "workspace-grid:swap-cells" }, () => {
+      const parsed = validateIpc(workspaceGridSwapCellsSchema, payload, "workspace-grid:swap-cells");
+      return (runtime as any).swapGridCells(parsed.a, parsed.b);
     }),
   );
   ipcMain.handle("attention:sync", async (_event, payload) =>

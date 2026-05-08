@@ -297,6 +297,11 @@ function createRemoteTransport(): Transport {
     activateProject: (projectId) => fetchJson("/api/project/activate", { projectId }),
     activateSession: (sessionId) => fetchJson("/api/session/activate", { sessionId }),
     setWorkspaceUIState: (workspaceId, uiState) => fetchJson("/api/workspace/set-ui-state", { workspaceId, uiState }),
+    enableWorkspaceGrid: (layout, workspaceIds) => fetchJson("/api/workspace-grid/enable", { layout, workspaceIds }),
+    disableWorkspaceGrid: () => fetchJson("/api/workspace-grid/disable", {}),
+    setGridLayout: (layout) => fetchJson("/api/workspace-grid/set-layout", { layout }),
+    setGridCell: (cellIndex, workspaceId) => fetchJson("/api/workspace-grid/set-cell", { cellIndex, workspaceId }),
+    swapGridCells: (a, b) => fetchJson("/api/workspace-grid/swap-cells", { a, b }),
     syncAttentionContext: (payload) => fetchJson("/api/attention/sync", payload),
     clearAllAttention: () => fetchJson("/api/attention/clear-all", {}),
     clearAlertForSession: (sessionId, options) =>

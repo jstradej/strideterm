@@ -114,6 +114,11 @@ export interface StridetermAPI {
   activateProject: (projectId: string) => Promise<unknown>;
   activateSession: (sessionId: string) => Promise<unknown>;
   setWorkspaceUIState: (workspaceId: string, uiState: WorkspaceUIState["uiState"]) => Promise<unknown>;
+  enableWorkspaceGrid: (layout: string, workspaceIds?: (string | null)[]) => Promise<unknown>;
+  disableWorkspaceGrid: () => Promise<unknown>;
+  setGridLayout: (layout: string) => Promise<unknown>;
+  setGridCell: (cellIndex: number, workspaceId: string | null) => Promise<unknown>;
+  swapGridCells: (a: number, b: number) => Promise<unknown>;
   syncAttentionContext: (payload: AttentionSync) => Promise<unknown>;
   clearAllAttention: () => Promise<unknown>;
   clearAlertForSession: (sessionId: string, options?: Record<string, unknown>) => Promise<unknown>;

@@ -3652,6 +3652,77 @@ export async function createRuntime({
       return getPayload();
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async enableWorkspaceGrid(layout: any, workspaceIds?: (string | null)[]) {
+      await store.mutate((draft: AppState) => {
+        const slots = { cols: 2, rows: 2, "top-split": 3, "left-split": 3, grid: 4 }[String(layout)] as number | undefined;
+        if (!slots) return;
+        const ids: (string | null)[] = [];
+        for (let i = 0; i < slots; i++) {
+          ids.push(workspaceIds?.[i] ?? null);
+        }
+        draft.workspaceGrid = { layout, cellWorkspaceIds: ids };
+      });
+      broadcastState();
+      return getPayload();
+    },
+
+    async disableWorkspaceGrid() {
+      await store.mutate((draft: AppState) => {
+        draft.workspaceGrid = null;
+      });
+      broadcastState();
+      return getPayload();
+    },
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async setGridLayout(layout: any) {
+      await store.mutate((draft: AppState) => {
+        if (!draft.workspaceGrid) return;
+        const slots = { cols: 2, rows: 2, "top-split": 3, "left-split": 3, grid: 4 }[String(layout)] as number | undefined;
+        if (!slots) return;
+        const existing = draft.workspaceGrid.cellWorkspaceIds.filter((id) => id !== null);
+        const ids: (string | null)[] = [];
+        let taken = 0;
+        for (let i = 0; i < slots; i++) {
+          ids.push(taken < existing.length ? (existing[taken++] ?? null) : null);
+        }
+        draft.workspaceGrid.layout = layout;
+        draft.workspaceGrid.cellWorkspaceIds = ids;
+      });
+      broadcastState();
+      return getPayload();
+    },
+
+    async setGridCell(cellIndex: number, workspaceId: string | null) {
+      await store.mutate((draft: AppState) => {
+        if (!draft.workspaceGrid) return;
+        const ids = draft.workspaceGrid.cellWorkspaceIds;
+        if (cellIndex < 0 || cellIndex >= ids.length) return;
+        if (workspaceId) {
+          const existing = ids.indexOf(workspaceId);
+          if (existing >= 0 && existing !== cellIndex) ids[existing] = null;
+        }
+        ids[cellIndex] = workspaceId;
+        if (ids.every((id) => id === null)) draft.workspaceGrid = null;
+      });
+      broadcastState();
+      return getPayload();
+    },
+
+    async swapGridCells(a: number, b: number) {
+      await store.mutate((draft: AppState) => {
+        if (!draft.workspaceGrid) return;
+        const ids = draft.workspaceGrid.cellWorkspaceIds;
+        if (a < 0 || a >= ids.length || b < 0 || b >= ids.length || a === b) return;
+        const tmp = ids[a];
+        ids[a] = ids[b];
+        ids[b] = tmp;
+      });
+      broadcastState();
+      return getPayload();
+    },
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async saveWorkspace(workspace: any) {
       log.debug("saveWorkspace: called", {
         workspaceId: workspace?.id,

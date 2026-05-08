@@ -154,6 +154,66 @@ export const useAppStore = defineStore("app", () => {
     return found;
   });
 
+  // --- Workspace grid computed ---
+
+  const workspaceGrid = computed(() => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return (payload.value as AnyApi)?.appState?.workspaceGrid ?? null;
+  });
+
+  const isGridVisible = computed<boolean>(() => {
+    const grid = workspaceGrid.value;
+    if (!grid) return false;
+    const activeWsId = (payload.value as AnyApi)?.appState?.activeWorkspaceId;
+    return activeWsId ? (grid.cellWorkspaceIds as (string | null)[]).includes(activeWsId) : false;
+  });
+
+  const gridCellWorkspaces = computed<(AnyApi | null)[]>(() => {
+    const grid = workspaceGrid.value;
+    if (!grid) return [];
+    const wsById = new Map(((payload.value as AnyApi)?.appState?.workspaces || []).map((ws: AnyApi) => [ws.id, ws]));
+    return (grid.cellWorkspaceIds as (string | null)[]).map((id) => (id ? (wsById.get(id) ?? null) : null));
+  });
+
+  const focusedGridCellIndex = computed<number>(() => {
+    const grid = workspaceGrid.value;
+    if (!grid) return -1;
+    const activeWsId = (payload.value as AnyApi)?.appState?.activeWorkspaceId;
+    return activeWsId ? (grid.cellWorkspaceIds as (string | null)[]).indexOf(activeWsId) : -1;
+  });
+
+  // --- Grid actions ---
+
+  async function enableWorkspaceGrid(
+    layout: string,
+    preset?: { workspaceIds: (string | null)[] },
+  ): Promise<void> {
+    const ids = preset?.workspaceIds;
+    if (ids) {
+      const activeWsId = (payload.value as AnyApi)?.appState?.activeWorkspaceId;
+      if (activeWsId) await activateWorkspace(ids.find((id) => id != null) ?? activeWsId);
+    }
+    await (_api as AnyApi)?.enableWorkspaceGrid?.(layout, ids);
+  }
+
+  async function disableWorkspaceGrid(): Promise<void> {
+    await (_api as AnyApi)?.disableWorkspaceGrid?.();
+  }
+
+  async function setGridLayout(layout: string): Promise<void> {
+    await (_api as AnyApi)?.setGridLayout?.(layout);
+  }
+
+  async function setGridCell(cellIndex: number, workspaceId: string | null): Promise<void> {
+    await (_api as AnyApi)?.setGridCell?.(cellIndex, workspaceId);
+  }
+
+  async function swapGridCells(a: number, b: number): Promise<void> {
+    await (_api as AnyApi)?.swapGridCells?.(a, b);
+  }
+
+  // --------------------------------
+
   let _prevAttention = { count: 0, waitingCount: 0 };
   const attentionSummary = computed(() => {
     const next = summarizeAttention(payload.value);
@@ -859,6 +919,10 @@ export const useAppStore = defineStore("app", () => {
     otherProfileAttentionCount,
     workspaceTabs,
     visibleTabs,
+    workspaceGrid,
+    isGridVisible,
+    gridCellWorkspaces,
+    focusedGridCellIndex,
     // Core actions
     init,
     handleBroadcastPayload,
@@ -870,6 +934,12 @@ export const useAppStore = defineStore("app", () => {
     dismissError,
     getApi,
     resolveTaskRecovery,
+    // Grid actions
+    enableWorkspaceGrid,
+    disableWorkspaceGrid,
+    setGridLayout,
+    setGridCell,
+    swapGridCells,
     // Delegated dialog actions
     ...dialogActions,
     // Delegated workspace actions

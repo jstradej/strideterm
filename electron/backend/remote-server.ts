@@ -914,6 +914,36 @@ async function handleApiRequest(runtime: Runtime, request: IncomingMessage, resp
       return;
     }
 
+    if (request.method === "POST" && url.pathname === "/api/workspace-grid/enable") {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      json(response, 200, await (runtime as any).enableWorkspaceGrid(body.layout, body.workspaceIds));
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/workspace-grid/disable") {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      json(response, 200, await (runtime as any).disableWorkspaceGrid());
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/workspace-grid/set-layout") {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      json(response, 200, await (runtime as any).setGridLayout(body.layout));
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/workspace-grid/set-cell") {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      json(response, 200, await (runtime as any).setGridCell(body.cellIndex, body.workspaceId));
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/workspace-grid/swap-cells") {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      json(response, 200, await (runtime as any).swapGridCells(body.a, body.b));
+      return;
+    }
+
     if (request.method === "POST" && url.pathname === "/api/attention/sync") {
       json(response, 200, await runtime.syncAttentionContext(body));
       return;

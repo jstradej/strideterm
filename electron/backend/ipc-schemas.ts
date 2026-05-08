@@ -685,6 +685,35 @@ export const sshKnownHostsImportSchema = z.object({
 });
 export type SshKnownHostsImport = z.infer<typeof sshKnownHostsImportSchema>;
 
+// ------- Workspace grid schemas -------
+
+const workspaceGridLayoutSchema = z.enum(["cols", "rows", "top-split", "left-split", "grid"]);
+
+export const workspaceGridEnableSchema = z.object({
+  layout: workspaceGridLayoutSchema,
+  workspaceIds: z.array(z.string().nullable()).optional(),
+});
+export type WorkspaceGridEnable = z.infer<typeof workspaceGridEnableSchema>;
+
+export const workspaceGridSetLayoutSchema = z.object({
+  layout: workspaceGridLayoutSchema,
+});
+export type WorkspaceGridSetLayout = z.infer<typeof workspaceGridSetLayoutSchema>;
+
+export const workspaceGridSetCellSchema = z.object({
+  cellIndex: z.number().int().min(0).max(3),
+  workspaceId: z.string().nullable(),
+});
+export type WorkspaceGridSetCell = z.infer<typeof workspaceGridSetCellSchema>;
+
+export const workspaceGridSwapCellsSchema = z.object({
+  a: z.number().int().min(0).max(3),
+  b: z.number().int().min(0).max(3),
+});
+export type WorkspaceGridSwapCells = z.infer<typeof workspaceGridSwapCellsSchema>;
+
+// ----------------------------------------
+
 export function validateIpc<T extends z.ZodTypeAny>(schema: T, payload: unknown, channel: string): z.infer<T> {
   const result = schema.safeParse(payload);
   if (!result.success) {

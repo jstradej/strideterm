@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { randomBytes } from "node:crypto";
 import { APP_CONFIG } from "../../config/app-config.js";
-import type { AppState, WorkspaceState, Profile, TabTemplate } from "../shared/types/state.js";
+import type { AppState, WorkspaceState, Profile, TabTemplate, WorkspaceGridState, WorkspaceGridLayout } from "../shared/types/state.js";
 
 const UTF8_DECODER = (() => {
   try {
@@ -688,6 +688,56 @@ function groupChildWorkspaces(workspaces: WorkspaceState[]): WorkspaceState[] {
   return result;
 }
 
+const GRID_LAYOUT_SLOTS: Record<string, number> = {
+  cols: 2,
+  rows: 2,
+  "top-split": 3,
+  "left-split": 3,
+  grid: 4,
+};
+const VALID_GRID_LAYOUTS = new Set(Object.keys(GRID_LAYOUT_SLOTS));
+
+/**
+ * Validate and normalise a raw workspaceGrid value.
+ * Returns null when the grid is empty, invalid, or all cells are empty.
+ * Clears any cell whose workspace no longer exists in the active profile.
+ */
+export function normalizeWorkspaceGrid(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  grid: any,
+  workspaces: WorkspaceState[],
+  activeProfileId: string,
+): WorkspaceGridState | null {
+  if (!grid || typeof grid !== "object") return null;
+
+  const layout = grid.layout as string;
+  if (!VALID_GRID_LAYOUTS.has(layout)) return null;
+
+  const slots = GRID_LAYOUT_SLOTS[layout];
+  const rawIds: unknown[] = Array.isArray(grid.cellWorkspaceIds) ? grid.cellWorkspaceIds : [];
+
+  const activeProfileWsIds = new Set(
+    workspaces.filter((ws) => (ws.profileId || "default") === activeProfileId).map((ws) => ws.id),
+  );
+
+  const seen = new Set<string>();
+  const cellWorkspaceIds: (string | null)[] = [];
+
+  for (let i = 0; i < slots; i++) {
+    const raw = i < rawIds.length ? rawIds[i] : null;
+    if (typeof raw === "string" && raw && activeProfileWsIds.has(raw) && !seen.has(raw)) {
+      cellWorkspaceIds.push(raw);
+      seen.add(raw);
+    } else {
+      cellWorkspaceIds.push(null);
+    }
+  }
+
+  if (cellWorkspaceIds.every((id) => id === null)) return null;
+
+  return { layout: layout as WorkspaceGridLayout, cellWorkspaceIds };
+}
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function normalizeState(rawState: any = {}): AppState & { activeProjectId: string; projects: WorkspaceState[] } {
   const defaults = createDefaultState();
@@ -1012,6 +1062,8 @@ export function normalizeState(rawState: any = {}): AppState & { activeProjectId
     },
   };
 
+  const workspaceGrid = normalizeWorkspaceGrid(rawState.workspaceGrid, workspaces, activeProfileId);
+
   const normalized = {
     ...defaults,
     ...rawState,
@@ -1022,6 +1074,7 @@ export function normalizeState(rawState: any = {}): AppState & { activeProjectId
     tabTemplates,
     profiles,
     workspaces,
+    workspaceGrid,
   };
 
   return {

@@ -291,6 +291,16 @@ export interface GitHubConnection {
   enabled: boolean;
 }
 
+// ------- Workspace grid -------
+
+export type WorkspaceGridLayout = "cols" | "rows" | "top-split" | "left-split" | "grid";
+
+export interface WorkspaceGridState {
+  layout: WorkspaceGridLayout;
+  /** Length === LAYOUTS[layout].slots; null = empty slot */
+  cellWorkspaceIds: (string | null)[];
+}
+
 // ------- AppState (persisted) -------
 
 export interface AppState {
@@ -301,6 +311,7 @@ export interface AppState {
   profiles: Profile[];
   workspaces: WorkspaceState[];
   ssh: SshAppState;
+  workspaceGrid?: WorkspaceGridState | null;
   // Legacy aliases
   activeProjectId?: string;
   projects?: WorkspaceState[];
