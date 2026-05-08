@@ -309,6 +309,7 @@ export class TelegramManager extends EventEmitter {
   private pollTimer: ReturnType<typeof setTimeout> | null = null;
   private pollOffsets: Map<string, number> = new Map();
   private running: boolean = false;
+  private currentPollAbort: AbortController | null = null;
 
   /** Maps Telegram message_id → alert context, per connection */
   private contextByMessageId: Map<number, { context: TelegramAlertContext; connectionId: string; at: number }> =
@@ -1107,6 +1108,7 @@ export class TelegramManager extends EventEmitter {
   start(): void {
     if (this.running) return;
     this.running = true;
+    this.currentPollAbort = new AbortController();
     this._scheduleNextPoll();
     log.info("telegram polling started", { connectionCount: this.connections.length });
   }
@@ -1117,13 +1119,21 @@ export class TelegramManager extends EventEmitter {
       clearTimeout(this.pollTimer);
       this.pollTimer = null;
     }
+    if (this.currentPollAbort) {
+      this.currentPollAbort.abort();
+      this.currentPollAbort = null;
+    }
     log.info("telegram polling stopped");
   }
 
   private _scheduleNextPoll(): void {
     if (!this.running) return;
+    if (this.pollTimer !== null) {
+      clearTimeout(this.pollTimer);
+    }
     const delay = this.connections.length > 0 ? Math.min(...this.connections.map((c) => c.pollSeconds * 1000)) : 30000;
     this.pollTimer = setTimeout(() => {
+      this.pollTimer = null;
       this._poll().catch((err) => {
         log.warn("telegram poll error", { err: (err as Error).message });
       });
@@ -1160,7 +1170,7 @@ export class TelegramManager extends EventEmitter {
         limit: 100,
         allowed_updates: ["message", "callback_query"],
       },
-      { httpTimeoutMs: GETUPDATES_HTTP_TIMEOUT_MS, retry: false },
+      { httpTimeoutMs: GETUPDATES_HTTP_TIMEOUT_MS, retry: false, signal: this.currentPollAbort?.signal },
     );
 
     if (!result.ok || !result.result) {
@@ -3182,20 +3192,23 @@ export class TelegramManager extends EventEmitter {
     token: string,
     method: string,
     body: Record<string, unknown>,
-    opts: { httpTimeoutMs?: number; retry?: boolean } = {},
+    opts: { httpTimeoutMs?: number; retry?: boolean; signal?: AbortSignal } = {},
   ): Promise<T> {
     const httpTimeoutMs = opts.httpTimeoutMs ?? DEFAULT_HTTP_TIMEOUT_MS;
     const shouldRetry = opts.retry !== false;
+    const callerSignal = opts.signal;
 
     const fetchEff: Effect.Effect<T, TelegramError> = Effect.gen(function* () {
       const { status, parsed, raw } = yield* Effect.tryPromise({
         try: async () => {
           const url = `https://api.telegram.org/bot${token}/${method}`;
+          const timeoutSignal = AbortSignal.timeout(httpTimeoutMs);
+          const signal = callerSignal ? AbortSignal.any([timeoutSignal, callerSignal]) : timeoutSignal;
           const response = await fetch(url, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(body),
-            signal: AbortSignal.timeout(httpTimeoutMs),
+            signal,
           });
           const text = await response.text();
           let parsed: {

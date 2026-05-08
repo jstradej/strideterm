@@ -1132,8 +1132,8 @@ export async function createRuntime({
 
   function reconfigureTelegram(state = getState()) {
     const settings = getTelegramSettings(state);
+    telegramManager.stop();
     if (!settings.enabled) {
-      telegramManager.stop();
       telegramManager.configure([]);
       return;
     }
