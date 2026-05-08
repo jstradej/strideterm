@@ -45,43 +45,54 @@ describe("ensureCodexHooksFeatureFlag", () => {
 
     const content = await fs.readFile(getCodexConfigPath(), "utf8");
     expect(content).toContain("[features]");
-    expect(content).toContain("codex_hooks = true");
+    expect(content).toContain("hooks = true");
+    expect(content).not.toContain("codex_hooks");
   });
 
   test("is no-op when already enabled", async () => {
     await fs.mkdir(path.dirname(getCodexConfigPath()), { recursive: true });
-    await fs.writeFile(getCodexConfigPath(), "[features]\ncodex_hooks = true\n");
+    await fs.writeFile(getCodexConfigPath(), "[features]\nhooks = true\n");
 
     const result = await ensureCodexHooksFeatureFlag();
     expect(result.ok).toBe(true);
     expect(result.changed).toBe(false);
   });
 
-  test("replaces codex_hooks = false with true", async () => {
+  test("replaces hooks = false with true", async () => {
     await fs.mkdir(path.dirname(getCodexConfigPath()), { recursive: true });
-    await fs.writeFile(getCodexConfigPath(), "[features]\ncodex_hooks = false\nother = 1\n");
+    await fs.writeFile(getCodexConfigPath(), "[features]\nhooks = false\nother = 1\n");
 
     const result = await ensureCodexHooksFeatureFlag();
     expect(result.ok).toBe(true);
     expect(result.changed).toBe(true);
 
     const content = await fs.readFile(getCodexConfigPath(), "utf8");
-    expect(content).toContain("codex_hooks = true");
-    expect(content).not.toContain("codex_hooks = false");
+    expect(content).toContain("hooks = true");
+    expect(content).not.toContain("hooks = false");
     expect(content).toContain("other = 1");
   });
 
-  test("appends codex_hooks to existing [features] section", async () => {
+  test("appends hooks to existing [features] section", async () => {
     await fs.mkdir(path.dirname(getCodexConfigPath()), { recursive: true });
     await fs.writeFile(getCodexConfigPath(), "[features]\nsomething = true\n\n[other]\nkey = 1\n");
 
     await ensureCodexHooksFeatureFlag();
 
     const content = await fs.readFile(getCodexConfigPath(), "utf8");
-    expect(content).toContain("codex_hooks = true");
+    expect(content).toContain("hooks = true");
     expect(content).toContain("something = true");
     expect(content).toContain("[other]");
     expect(content).toContain("key = 1");
+  });
+
+  test("appends hooks under empty [features] section without trailing newline", async () => {
+    await fs.mkdir(path.dirname(getCodexConfigPath()), { recursive: true });
+    await fs.writeFile(getCodexConfigPath(), "[features]");
+
+    await ensureCodexHooksFeatureFlag();
+
+    const content = await fs.readFile(getCodexConfigPath(), "utf8");
+    expect(content).toBe("[features]\nhooks = true\n");
   });
 
   test("appends new [features] section when none exists", async () => {
@@ -93,7 +104,7 @@ describe("ensureCodexHooksFeatureFlag", () => {
     const content = await fs.readFile(getCodexConfigPath(), "utf8");
     expect(content).toContain("[profile]");
     expect(content).toContain("[features]");
-    expect(content).toContain("codex_hooks = true");
+    expect(content).toContain("hooks = true");
     expect(content.indexOf("[features]")).toBeGreaterThan(content.indexOf("[profile]"));
   });
 
@@ -105,8 +116,22 @@ describe("ensureCodexHooksFeatureFlag", () => {
 
     const content = await fs.readFile(getCodexConfigPath(), "utf8");
     expect(content).not.toContain("\r");
-    expect(content).toContain("codex_hooks = true");
+    expect(content).toContain("hooks = true");
     expect(content).toContain("something = true");
+  });
+
+  test("upgrades legacy codex_hooks flag to hooks without leaving deprecation warning behind", async () => {
+    await fs.mkdir(path.dirname(getCodexConfigPath()), { recursive: true });
+    await fs.writeFile(getCodexConfigPath(), "[features]\ncodex_hooks = true\nother = 1\n");
+
+    const result = await ensureCodexHooksFeatureFlag();
+    expect(result.ok).toBe(true);
+    expect(result.changed).toBe(true);
+
+    const content = await fs.readFile(getCodexConfigPath(), "utf8");
+    expect(content).toContain("hooks = true");
+    expect(content).not.toContain("codex_hooks");
+    expect(content).toContain("other = 1");
   });
 });
 
@@ -123,11 +148,17 @@ describe("isCodexHooksFeatureFlagEnabled", () => {
 
   test("returns false when flag is false", async () => {
     await fs.mkdir(path.dirname(getCodexConfigPath()), { recursive: true });
-    await fs.writeFile(getCodexConfigPath(), "[features]\ncodex_hooks = false\n");
+    await fs.writeFile(getCodexConfigPath(), "[features]\nhooks = false\n");
     expect(await isCodexHooksFeatureFlagEnabled()).toBe(false);
   });
 
   test("returns true when flag is true", async () => {
+    await fs.mkdir(path.dirname(getCodexConfigPath()), { recursive: true });
+    await fs.writeFile(getCodexConfigPath(), "[features]\nhooks = true\n");
+    expect(await isCodexHooksFeatureFlagEnabled()).toBe(true);
+  });
+
+  test("returns true for legacy codex_hooks flag", async () => {
     await fs.mkdir(path.dirname(getCodexConfigPath()), { recursive: true });
     await fs.writeFile(getCodexConfigPath(), "[features]\ncodex_hooks = true\n");
     expect(await isCodexHooksFeatureFlagEnabled()).toBe(true);
@@ -184,7 +215,7 @@ describe("configureCodexHook", () => {
     }
   });
 
-  test("enables codex_hooks feature flag in config.toml", async () => {
+  test("enables hooks feature flag in config.toml", async () => {
     await configureCodexHook(userDataPath);
     expect(await isCodexHooksFeatureFlagEnabled()).toBe(true);
   });
@@ -200,7 +231,7 @@ describe("configureCodexHook", () => {
     expect(content).toContain('model = "gpt-5"');
     expect(content).toContain("[sandbox]");
     expect(content).toContain('mode = "read-only"');
-    expect(content).toContain("codex_hooks = true");
+    expect(content).toContain("hooks = true");
   });
 
   test("command uses forward slashes", async () => {
@@ -254,7 +285,7 @@ describe("removeCodexHook", () => {
     expect(hooks.hooks.Stop[0].hooks[0].command).toBe("echo user-hook");
   });
 
-  test("leaves codex_hooks feature flag alone — user may rely on it", async () => {
+  test("leaves hooks feature flag alone — user may rely on it", async () => {
     await configureCodexHook(userDataPath);
     await removeCodexHook();
 

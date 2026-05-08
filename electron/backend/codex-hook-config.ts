@@ -12,7 +12,7 @@ const log = getLogger("codex-hook");
  * Manages Codex CLI notification hooks at user scope.
  *
  * Codex stores config in two files:
- *   ~/.codex/config.toml  — must contain [features] codex_hooks = true to load hooks
+ *   ~/.codex/config.toml  — must contain [features] hooks = true to load hooks
  *   ~/.codex/hooks.json   — hook definitions (same nested shape as Claude)
  *
  * Codex hooks were gated off on Windows until PR #17268 (merged 2026-04-09),
@@ -110,8 +110,38 @@ async function writeHooksJson(data: Record<string, unknown>): Promise<{ ok: bool
   }
 }
 
+function findFeaturesSection(content: string): { bodyStart: number; bodyEnd: number; body: string } | null {
+  const header = /(^|\n)\[features\][ \t]*(?:\n|$)/.exec(content);
+  if (!header) return null;
+
+  const bodyStart = header.index + header[0].length;
+  const nextSection = /\n\[[^\]\n]+\]/g;
+  nextSection.lastIndex = bodyStart;
+  const next = nextSection.exec(content);
+  const bodyEnd = next ? next.index : content.length;
+  return {
+    bodyStart,
+    bodyEnd,
+    body: content.slice(bodyStart, bodyEnd),
+  };
+}
+
+function hasFeatureFlag(body: string, flagName: "hooks" | "codex_hooks", expectedTrue?: boolean): boolean {
+  const line = body.split("\n").find((candidate) => {
+    const equalIndex = candidate.indexOf("=");
+    if (equalIndex < 0) return false;
+    return candidate.slice(0, equalIndex).trim() === flagName;
+  });
+  if (!line) return false;
+  if (expectedTrue === undefined) return true;
+  const rawValue = line.slice(line.indexOf("=") + 1);
+  const commentIndex = rawValue.indexOf("#");
+  const value = commentIndex >= 0 ? rawValue.slice(0, commentIndex) : rawValue;
+  return value.trim().toLowerCase() === "true";
+}
+
 /**
- * Minimalist TOML mutation for the single `codex_hooks` feature flag.
+ * Minimalist TOML mutation for the single Codex hooks feature flag.
  *
  * Handles three cases:
  *   1. Flag already present and true  → no-op
@@ -136,21 +166,27 @@ export async function ensureCodexHooksFeatureFlag() {
   // Work with LF-normalized text for regex consistency; re-emit as UTF-8 LF.
   const content = raw.replace(/\r\n/g, "\n");
 
-  if (/(^|\n)codex_hooks\s*=\s*true(\s|$)/.test(content)) {
+  const section = findFeaturesSection(content);
+  if (section && hasFeatureFlag(section.body, "hooks", true) && !hasFeatureFlag(section.body, "codex_hooks")) {
     return { ok: true, changed: false, path: configPath };
   }
 
   let updated;
-  if (/(^|\n)codex_hooks\s*=/.test(content)) {
-    // Existing flag (maybe false) — replace
-    updated = content.replace(/(^|\n)codex_hooks\s*=[^\n]*/, "$1codex_hooks = true");
-  } else if (/(^|\n)\[features\][ \t]*(\r?\n|$)/.test(content)) {
-    // [features] section exists — insert flag after its header
-    updated = content.replace(/(^|\n)(\[features\][ \t]*\n)/, "$1$2codex_hooks = true\n");
+  if (section) {
+    const sectionPrefix = content.slice(0, section.bodyStart);
+    const before = sectionPrefix.endsWith("\n") ? sectionPrefix : `${sectionPrefix}\n`;
+    const after = content.slice(section.bodyEnd);
+    let body = section.body.replace(/(^|\n)[ \t]*codex_hooks\s*=[^\n]*(?=\n|$)/g, "$1");
+    if (hasFeatureFlag(body, "hooks")) {
+      body = body.replace(/(^|\n)[ \t]*hooks\s*=[^\n]*/, "$1hooks = true");
+    } else {
+      body = `hooks = true\n${body}`;
+    }
+    updated = `${before}${body}${after}`;
   } else {
     // No [features] section — append
     const sep = content && !content.endsWith("\n") ? "\n" : "";
-    updated = content + sep + (content ? "\n" : "") + "[features]\ncodex_hooks = true\n";
+    updated = content + sep + (content ? "\n" : "") + "[features]\nhooks = true\n";
   }
 
   const dir = path.dirname(configPath);
@@ -167,13 +203,27 @@ export async function ensureCodexHooksFeatureFlag() {
 }
 
 /**
- * Check if the codex_hooks feature flag is currently enabled in config.toml.
- * Returns true if `codex_hooks = true` is present anywhere in the file.
+ * Check if Codex hooks are currently enabled in config.toml.
+ * Returns true for the current `hooks = true` flag and the legacy
+ * `codex_hooks = true` flag so old installs remain detectable.
  */
 export async function isCodexHooksFeatureFlagEnabled(): Promise<boolean> {
   try {
     const raw = await readFile(getCodexConfigPath(), "utf8");
-    return /(^|\n)codex_hooks\s*=\s*true(\s|$)/.test(raw.replace(/\r\n/g, "\n"));
+    const section = findFeaturesSection(raw.replace(/\r\n/g, "\n"));
+    return (
+      !!section && (hasFeatureFlag(section.body, "hooks", true) || hasFeatureFlag(section.body, "codex_hooks", true))
+    );
+  } catch {
+    return false;
+  }
+}
+
+async function isCurrentCodexHooksFeatureFlagEnabled(): Promise<boolean> {
+  try {
+    const raw = await readFile(getCodexConfigPath(), "utf8");
+    const section = findFeaturesSection(raw.replace(/\r\n/g, "\n"));
+    return !!section && hasFeatureFlag(section.body, "hooks", true);
   } catch {
     return false;
   }
@@ -183,7 +233,7 @@ export async function isCodexHooksFeatureFlagEnabled(): Promise<boolean> {
  * Configure Codex CLI lifecycle hooks.
  *
  * - Writes notify.mjs to <userDataPath>/hooks/notify.mjs (shared with Claude/Gemini)
- * - Enables [features] codex_hooks = true in ~/.codex/config.toml (preserves other keys)
+ * - Enables [features] hooks = true in ~/.codex/config.toml (preserves other keys)
  * - Merges hook entries into ~/.codex/hooks.json (preserves user hooks)
  * - Idempotent: re-running replaces existing strIDEterm entries
  */
@@ -256,7 +306,7 @@ export async function configureCodexHook(userDataPath: string) {
 
 /**
  * Remove strIDEterm hook entries from ~/.codex/hooks.json.
- * The codex_hooks feature flag in config.toml is left alone — the user may
+ * The hooks feature flag in config.toml is left alone — the user may
  * have their own hooks that rely on it.
  */
 export async function removeCodexHook() {
@@ -305,7 +355,7 @@ export async function removeCodexHook() {
  * status:
  *   "configured"     — flag set, hooks registered, script exists
  *   "partial"        — some hooks registered but not all
- *   "flag-missing"   — hooks registered but codex_hooks feature flag is not true
+ *   "flag-missing"   — hooks registered but the current hooks feature flag is not true
  *   "script-missing" — config looks right but notify.mjs is gone
  *   "not-configured" — no strIDEterm entries in hooks.json
  *   "error"          — could not read hooks.json (parse error etc.)
@@ -339,7 +389,7 @@ export async function detectCodexHookStatus(userDataPath: string) {
     return { status: "script-missing", configPath, hooksPath, scriptPath, registered, missingHooks: missing };
   }
 
-  const flagEnabled = await isCodexHooksFeatureFlagEnabled();
+  const flagEnabled = await isCurrentCodexHooksFeatureFlagEnabled();
   if (!flagEnabled) {
     return {
       status: "flag-missing",

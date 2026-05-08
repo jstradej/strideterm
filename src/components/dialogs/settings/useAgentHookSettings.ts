@@ -1,5 +1,4 @@
 import { onBeforeUnmount, onMounted, reactive, ref } from "vue";
-import type { Transport } from "../../../transport.js";
 
 interface HookProviderConfig {
   id: string;
@@ -325,11 +324,11 @@ export function useAgentHookSettings(api: any) {
       testMethod: "testCodexHook",
       configureLabel: "Configure Codex CLI",
       configureTitle:
-        "Writes two files: (1) [features] codex_hooks = true into ~/.codex/config.toml (required for Codex to load hooks), (2) Stop + UserPromptSubmit entries into ~/.codex/hooks.json. Merges with existing settings.",
+        "Writes two files: (1) [features] hooks = true into ~/.codex/config.toml (required for Codex to load hooks), (2) Stop + UserPromptSubmit entries into ~/.codex/hooks.json. Merges with existing settings.",
       removeTitle:
-        "Remove only strIDEterm's hook entries from ~/.codex/hooks.json. The codex_hooks feature flag in config.toml is left alone — other hooks you may have rely on it.",
+        "Remove only strIDEterm's hook entries from ~/.codex/hooks.json. The hooks feature flag in config.toml is left alone — other hooks you may have rely on it.",
       testTitle:
-        "End-to-end probe through the shared notify.mjs. Confirms the Codex hook → listener → dispatcher pipeline delivers events within 2 s.",
+        "End-to-end probe through the shared notify.mjs. Confirms delivery to strIDEterm, but Codex may still require one-time /hooks review before real hook commands run.",
       configJson: `{
   "hooks": {
     "Stop": [
@@ -363,10 +362,11 @@ export function useAgentHookSettings(api: any) {
         firstPath: "~/.codex/config.toml",
         secondPath: "~/.codex/hooks.json",
       },
-      infoText: "Requires Codex CLI 0.121.0+ on Windows.",
+      infoText:
+        "Requires Codex CLI 0.121.0+ on Windows. After configuring, open Codex and approve the two strIDEterm hooks once via /hooks.",
       warningStatus: "flag-missing",
       warningText:
-        "Hooks are registered but the codex_hooks feature flag is not set in ~/.codex/config.toml. Click Configure to fix.",
+        "Hooks are registered but the current hooks feature flag is not set in ~/.codex/config.toml, or only the deprecated codex_hooks flag is present. Click Configure to fix.",
     }),
     createHookProvider(api, {
       id: "copilot",

@@ -305,6 +305,7 @@ export function createRuntimeAttentionManager({
         detail,
         commandClass: signal?.commandClass || "",
         hookCapable: signal?.hookCapable || false,
+        completionHookCapable: signal?.completionHookCapable || false,
         outputBursts: signal?.outputBursts || 0,
         lastHookType: signal?.lastHookType || "",
       });

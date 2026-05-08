@@ -68,7 +68,7 @@
           at the referenced path:
         </p>
         <p v-else-if="provider.manual.type === 'double-path'">
-          If auto-configure fails, (1) add <code>[features]<br />codex_hooks = true</code> to
+          If auto-configure fails, (1) add <code>[features]<br />hooks = true</code> to
           <code>{{ provider.manual.firstPath }}</code
           >, then (2) add this to <code>{{ provider.manual.secondPath }}</code
           >:
@@ -131,7 +131,7 @@ interface HookProvider {
 interface Props {
   provider: HookProvider;
   statusLabels: Record<string, string>;
-  hookTestFailLabel: (reason?: string) => string;
+  hookTestFailLabel: (_reason?: string) => string;
   api?: Transport | null;
   spaced?: boolean;
 }

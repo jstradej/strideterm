@@ -311,6 +311,7 @@ export function createSessionSignal(sessionId: string): {
   lastHookAlertAt: number;
   everAlerted: boolean;
   hookCapable: boolean;
+  completionHookCapable: boolean;
   lastHookAt: number;
   lastHookType: string;
   lastPromptAt: number;
@@ -342,9 +343,11 @@ export function createSessionSignal(sessionId: string): {
     // "second alert without anything new happening".
     everAlerted: false,
     // Hook-first pipeline tracking (Phase 0 § 3.2.d).
-    // Set to true by dispatcher on first hook event; disables silence-based
-    // fallback entirely for agent sessions that have proven hooks work.
+    // hookCapable is set on any hook event; completionHookCapable is set only
+    // once a user-facing completion/waiting hook arrives. UserPromptSubmit
+    // alone must not disable fallback because it does not prove Stop works.
     hookCapable: false,
+    completionHookCapable: false,
     lastHookAt: 0,
     lastHookType: "", // e.g. "Notification:idle_prompt", "Stop"
     lastPromptAt: 0, // UserPromptSubmit timestamp

@@ -2285,7 +2285,7 @@ describe("runtime integration", () => {
     }
   });
 
-  test("hookCapable agent session does NOT raise T3 silence alert", async () => {
+  test("completion-hook-capable agent session does NOT raise T3 silence alert", async () => {
     vi.useFakeTimers();
     try {
       const fixture = await createTwoWorkspaceFixture();
@@ -2297,13 +2297,13 @@ describe("runtime integration", () => {
       await vi.advanceTimersByTimeAsync(16_000);
       fixture.runtime.writeToSession("backend:shell", "do a thing\r");
 
-      // A hook fires once — now signal.hookCapable = true. We clear the
+      // A completion hook fires once — now signal.completionHookCapable = true. We clear the
       // alert (simulates user ack'ing) so the next detector cycle starts fresh.
       fixture.runtime.notifyAgentHook("backend:shell", "idle_prompt");
       expect(fixture.runtime.getPayload().attention.byProject.backend).toMatchObject({ count: 1 });
       fixture.runtime.clearAlertForSession("backend:shell", { dismissed: false });
 
-      // Simulate a long burst of output + long silence. Without hookCapable
+      // Simulate a long burst of output + long silence. Without completion hook
       // gating this would trigger a T3 silence alert; with it, nothing fires.
       for (let i = 0; i < 20; i += 1) {
         fixture.sessionManager.emit("terminal:data", { sessionId: "backend:shell", data: `line ${i}\n` });
@@ -2312,6 +2312,62 @@ describe("runtime integration", () => {
       await vi.advanceTimersByTimeAsync(120_000);
 
       expect(fixture.runtime.getPayload().attention.byProject.backend).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("completion-hook-capable agent session ignores BEL while still running", async () => {
+    vi.useFakeTimers();
+    try {
+      const fixture = await createTwoWorkspaceFixture();
+      fixtures.push(fixture);
+
+      await fixture.runtime.syncAttentionContext({ visibleSessionIds: ["frontend:claude"] });
+      fixture.sessionManager.emit("terminal:data", { sessionId: "backend:shell", data: "claude code v1.0\n" });
+      await vi.advanceTimersByTimeAsync(16_000);
+      fixture.runtime.writeToSession("backend:shell", "do a thing\r");
+
+      fixture.runtime.notifyAgentHook("backend:shell", "idle_prompt");
+      expect(fixture.runtime.getPayload().attention.byProject.backend).toMatchObject({ count: 1 });
+      fixture.runtime.clearAlertForSession("backend:shell", { dismissed: false });
+
+      // Some agent TUIs emit BEL while redrawing or thinking. With hooks
+      // proven, BEL must not become a user-visible "waiting" alert.
+      await vi.advanceTimersByTimeAsync(6_000);
+      fixture.sessionManager.emit("terminal:data", { sessionId: "backend:shell", data: "still working\u0007\n" });
+
+      expect(fixture.runtime.getPayload().attention.byProject.backend).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("UserPromptSubmit alone does not disable hook fallback", async () => {
+    vi.useFakeTimers();
+    try {
+      const fixture = await createTwoWorkspaceFixture();
+      fixtures.push(fixture);
+
+      await fixture.runtime.syncAttentionContext({ visibleSessionIds: ["frontend:claude"] });
+      fixture.sessionManager.emit("terminal:data", { sessionId: "backend:shell", data: "openai codex\n" });
+      fixture.runtime.writeToSession("backend:shell", "do a thing\r");
+
+      // UserPromptSubmit proves only the bookkeeping hook works. If Stop is
+      // still blocked by Codex /hooks review, fallback must remain available.
+      fixture.runtime.notifyAgentHook("backend:shell", "", "UserPromptSubmit");
+      await vi.advanceTimersByTimeAsync(16_000);
+
+      fixture.sessionManager.emit("terminal:data", { sessionId: "backend:shell", data: "working\n" });
+      fixture.sessionManager.emit("terminal:data", { sessionId: "backend:shell", data: "> " });
+      await vi.advanceTimersByTimeAsync(120_000);
+
+      expect(fixture.runtime.getPayload().attention.byProject.backend.alerts[0]).toMatchObject({
+        panelId: "shell",
+        kind: "waiting",
+        detail: "hook-fallback",
+        tier: 3,
+      });
     } finally {
       vi.useRealTimers();
     }

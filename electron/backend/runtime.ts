@@ -877,12 +877,15 @@ export async function createRuntime({
       return;
     }
 
-    // --- 1. Record on signal (for hookCapable gating in detector) ---
+    // --- 1. Record on signal (for hook gating in detector) ---
     const state = getState();
     const project = findWorkspace(state, descriptor.workspaceId) as WorkspaceState | null;
     const panel = project?.panels.find((p) => p.id === descriptor.panelId) || null;
     const signal = getSessionSignal(sessionId, project, panel);
     signal.hookCapable = true;
+    if (hook === "Notification" || hook === "Stop" || hook === "SubagentStop") {
+      signal.completionHookCapable = true;
+    }
     signal.lastHookAt = Date.now();
     signal.lastHookType = subtype ? `${hook}:${subtype}` : hook;
 
@@ -2562,7 +2565,7 @@ export async function createRuntime({
           // (Stop event → classifier → raiseAlert) and the 2-min silence
           // fallback in the agent branches further down. The same long-turn
           // false-positive reasoning the original author already applied to
-          // silence detection (see comment in the hookCapable branch below)
+          // silence detection (see comment in the completion-hook branch below)
           // applies equally to OSC 133;D — extending the guard here closes
           // that gap.
           const now = Date.now();
@@ -2610,16 +2613,15 @@ export async function createRuntime({
             scheduleGitRefreshFromShell(descriptor.workspaceId);
           }
         }
-      } else if (signal.agentLike && signal.hookCapable) {
+      } else if (signal.agentLike && signal.completionHookCapable) {
         // --- Agent sessions with proven hooks: trust them exclusively ---
-        // Phase 0 § 3.2.d — a session that has fired at least one hook event
+        // Phase 0 § 3.2.d — a session that has fired a completion/waiting hook
         // uses hooks as its ONLY alert source. Silence-based fallback is
         // off — it's the primary source of false positives during long
         // Claude Code turns. OSC 133;D is no longer an alert source for
-        // agents either (see guard in the OSC block above); BEL below is
-        // still honored as a cheap T1 signal.
-        const now = Date.now();
-        const inCooldown = signal.lastAlertAt > 0 && now - signal.lastAlertAt < notifConfig.alertCooldownMs;
+        // agents either (see guard in the OSC block above), and BEL is only
+        // tracked for diagnostics because agent TUIs can emit it while still
+        // working.
         const hasBell = rawText.includes("\u0007");
 
         // Still track busy so task runner sees activity; still update
@@ -2633,21 +2635,8 @@ export async function createRuntime({
         }
         signal.lastOutputAt = Date.now();
 
-        // BEL is a legacy T1 signal (some agents emit it alongside hooks).
-        // Keep honoring it — cheap, authoritative, no false positives.
-        if (hasBell && !inCooldown && signal.hasUserInput) {
-          cancelPromptTimer(signal);
-          if (isSessionVisible(payload.sessionId)) {
-            resetSessionSignal(payload.sessionId);
-          } else {
-            raiseWaitingAlert({
-              sessionId: payload.sessionId,
-              projectId: descriptor.workspaceId,
-              panelId: descriptor.panelId,
-              title: panel?.title || descriptor.panelId,
-              detail: "bell-hookcapable",
-            });
-          }
+        if (hasBell) {
+          log.trace("agent hook-capable bell ignored", { sessionId: payload.sessionId });
         }
         // No silence timer, no hook-fallback: hooks are the source of truth.
       } else if (signal.agentLike) {
@@ -2676,7 +2665,7 @@ export async function createRuntime({
         // time with no hook ever arriving — almost always a config issue.
         if (
           signal.busy &&
-          !signal.hookCapable &&
+          !signal.completionHookCapable &&
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           !(signal as any)._hookMissingWarned &&
           signal.lastOutputAt > 0 &&
@@ -2684,7 +2673,7 @@ export async function createRuntime({
           signal.lastAlertAt > 0 &&
           Date.now() - signal.lastAlertAt > 60_000
         ) {
-          log.warn("agent session has been active >60s with no hook event — hook may be misconfigured", {
+          log.warn("agent session has been active >60s with no completion hook event — hook may be misconfigured", {
             sessionId: payload.sessionId,
             agentLike: signal.agentLike,
           });
