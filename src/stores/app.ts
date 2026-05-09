@@ -199,6 +199,33 @@ export const useAppStore = defineStore("app", () => {
   }
 
   async function setGridLayout(layout: string): Promise<void> {
+    // Backend setGridLayout truncates cellWorkspaceIds to the new layout's
+    // slot count, taking the first N non-null entries. If the active
+    // workspace lives in a cell that won't survive truncation, the active
+    // would end up not-in-grid → isGridVisible flips false → entire grid
+    // vanishes. Pre-empt that by reassigning activeWorkspaceId to the first
+    // kept workspace before the layout change is committed, so the grid
+    // stays visible across the layout swap.
+    const grid = workspaceGrid.value;
+    const activeWsId = (payload.value as AnyApi)?.appState?.activeWorkspaceId;
+    if (grid && activeWsId) {
+      const slotCounts: Record<string, number> = {
+        solo: 1,
+        cols: 2,
+        rows: 2,
+        "top-split": 3,
+        "left-split": 3,
+        grid: 4,
+      };
+      const newSlots = slotCounts[layout];
+      if (newSlots) {
+        const nonNull = (grid.cellWorkspaceIds as (string | null)[]).filter((id): id is string => id !== null);
+        const kept = nonNull.slice(0, newSlots);
+        if (kept.length > 0 && !kept.includes(activeWsId)) {
+          await activateWorkspace(kept[0]);
+        }
+      }
+    }
     await (_api as AnyApi)?.setGridLayout?.(layout);
   }
 
@@ -797,6 +824,7 @@ export const useAppStore = defineStore("app", () => {
     overlayProps,
     optimisticallyDeletedIds,
     isGridVisible,
+    setGridLayout,
     getApi,
     withSuppressedBroadcast,
   });

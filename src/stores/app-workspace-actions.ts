@@ -63,6 +63,10 @@ interface WorkspaceActionsCtx {
   overlayProps: Ref<Record<string, unknown>>;
   optimisticallyDeletedIds: Ref<Set<string>>;
   isGridVisible: ComputedRef<boolean>;
+  /** Wrapper exposed by the store that pre-empts active-cell truncation
+   *  before forwarding to the IPC. Use this rather than the raw transport
+   *  setGridLayout — see store.setGridLayout for why. */
+  setGridLayout: (layout: string) => Promise<void>;
   getApi: () => Transport;
   withSuppressedBroadcast: (fn: () => Promise<void>) => Promise<void>;
 }
@@ -358,19 +362,16 @@ export function createWorkspaceActions(ctx: WorkspaceActionsCtx) {
 
   function pickLayout(layout: string): void {
     // When the workspace grid is visible, the picker controls the cross-workspace
-    // grid layout; the per-workspace splitGroup stays untouched. The backend
-    // re-shapes cellWorkspaceIds (truncate / pad with null) for the new slot count.
+    // grid layout; the per-workspace splitGroup stays untouched. We dispatch
+    // through the store wrapper so it can re-anchor activeWorkspaceId before
+    // truncation drops cells beyond the new slot count — without that
+    // guard, a 4 → 2 cell shrink would evict the focused workspace and the
+    // entire grid would vanish.
     if (ctx.isGridVisible.value) {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const api = ctx.getApi() as any;
-      if (api?.setGridLayout) {
-        api.setGridLayout(layout).catch((err: unknown) => {
-          // Layout failures shouldn't be silent — surface them in the console
-          // so we notice if the IPC call rejected (e.g. unknown layout key).
-          // eslint-disable-next-line no-console
-          console.error("[grid] setGridLayout failed:", err);
-        });
-      }
+      ctx.setGridLayout(layout).catch((err: unknown) => {
+        // eslint-disable-next-line no-console
+        console.error("[grid] setGridLayout failed:", err);
+      });
       return;
     }
     const slots = LAYOUTS[layout]?.slots || 1;

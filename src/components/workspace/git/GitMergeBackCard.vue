@@ -172,7 +172,7 @@
           type="button"
           class="button button--ghost"
           :title="`Switch to ${resolvedBaseBranch} worktree.`"
-          @click="appStore.activateWorkspace(mainWorktreeWorkspaceId)"
+          @click="appStore.activateWorkspaceInGrid(mainWorktreeWorkspaceId)"
         >
           Open {{ resolvedBaseBranch }} worktree
         </button>

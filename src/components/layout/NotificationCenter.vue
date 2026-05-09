@@ -696,7 +696,9 @@ async function jump(s: NotificationSession): Promise<void> {
   }
   const activeWsId = appStore.payload.appState?.activeWorkspaceId;
   if (activeWsId !== target.workspaceId) {
-    await appStore.activateWorkspace(target.workspaceId);
+    // Route through the grid-aware wrapper so jumping to a non-grid
+    // workspace from a notification doesn't dissolve the user's split.
+    await appStore.activateWorkspaceInGrid(target.workspaceId);
   }
   if (target.viewId) appStore.activateView(target.viewId);
   // Pinned dock stays open — the item greys in place instead of the panel closing.

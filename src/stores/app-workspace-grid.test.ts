@@ -193,6 +193,41 @@ describe("workspace grid store — actions", () => {
     expect(api.setGridLayout).toHaveBeenCalledWith("rows");
   });
 
+  it("setGridLayout pre-empts truncation by re-anchoring active before shrink", async () => {
+    // Backend setGridLayout truncates cellWorkspaceIds to the new slot count.
+    // If the active workspace is in a cell that won't survive (e.g. cell 3 of
+    // a 4-cell grid going to cols/2), it would end up not-in-grid and the
+    // grid would vanish. The wrapper switches active to the first kept
+    // workspace before forwarding to the IPC.
+    const api = makeApi();
+    const store = useAppStore();
+    store.init(api as AnyApi);
+    store.payload = makePayload({
+      workspaceGrid: { layout: "grid", cellWorkspaceIds: ["ws-A", "ws-B", "ws-C", "ws-D"] },
+      activeWorkspaceId: "ws-D",
+    });
+
+    await store.setGridLayout("cols");
+
+    expect(api.activateWorkspace).toHaveBeenCalledWith("ws-A");
+    expect(api.setGridLayout).toHaveBeenCalledWith("cols");
+  });
+
+  it("setGridLayout does not re-anchor if active workspace survives truncation", async () => {
+    const api = makeApi();
+    const store = useAppStore();
+    store.init(api as AnyApi);
+    store.payload = makePayload({
+      workspaceGrid: { layout: "grid", cellWorkspaceIds: ["ws-A", "ws-B", "ws-C", "ws-D"] },
+      activeWorkspaceId: "ws-A",
+    });
+
+    await store.setGridLayout("cols");
+
+    expect(api.activateWorkspace).not.toHaveBeenCalled();
+    expect(api.setGridLayout).toHaveBeenCalledWith("cols");
+  });
+
   it("setGridCell calls api.setGridCell with cellIndex and workspaceId", async () => {
     const api = makeApi();
     const store = useAppStore();

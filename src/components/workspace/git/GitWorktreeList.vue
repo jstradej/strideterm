@@ -33,7 +33,7 @@
             type="button"
             class="button button--ghost button--small"
             :title="`Switch focus to the workspace at ${entry.path}.`"
-            @click="appStore.activateWorkspace(getWorkspaceId(entry))"
+            @click="appStore.activateWorkspaceInGrid(getWorkspaceId(entry))"
           >
             Open
           </button>
