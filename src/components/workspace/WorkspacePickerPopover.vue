@@ -67,6 +67,14 @@ const searchRef = ref<HTMLInputElement | null>(null);
 
 onMounted(() => {
   searchRef.value?.focus();
+  // Default: collapse all parents so only root-level entries are visible on open.
+  const ws: AnyApi[] = (store.payload as AnyApi)?.appState?.workspaces || [];
+  const parentIds = new Set<string>();
+  for (const w of ws) {
+    const pid = resolveParentId(w, ws);
+    if (pid) parentIds.add(pid);
+  }
+  collapsed.value = parentIds;
 });
 
 const allWorkspaces = computed<AnyApi[]>(() => {

@@ -64,49 +64,7 @@ import {
 import PaneShell from "../layout/PaneShell.vue";
 import TerminalPane from "./TerminalPane.vue";
 import { resolvePaneComponent, resolvePaneProps } from "../../app/pane-resolver.js";
-
-const AREA_NAMES = ["a", "b", "c", "d"];
-const AREA_LAYOUTS = new Set(["top-split", "left-split"]);
-
-// Per-layout slot geometry. Each slot has a center (rCenter/cCenter) and an
-// extent (rMin..rMax, cMin..cMax). Extents differ from centers for spanning
-// panes — e.g. the top pane in "top-split" occupies the full width, so its
-// cMin/cMax are 0/1 while its cCenter is 0.5. Without this, the arrow from
-// a bottom sub-pane to the top pane resolved to "↗" / "↖" instead of "↑".
-const SLOT_BOXES = {
-  solo: [{ rMin: 0, rMax: 0, cMin: 0, cMax: 0 }],
-  cols: [
-    { rMin: 0, rMax: 0, cMin: 0, cMax: 0 },
-    { rMin: 0, rMax: 0, cMin: 1, cMax: 1 },
-  ],
-  rows: [
-    { rMin: 0, rMax: 0, cMin: 0, cMax: 0 },
-    { rMin: 1, rMax: 1, cMin: 0, cMax: 0 },
-  ],
-  grid: [
-    { rMin: 0, rMax: 0, cMin: 0, cMax: 0 },
-    { rMin: 0, rMax: 0, cMin: 1, cMax: 1 },
-    { rMin: 1, rMax: 1, cMin: 0, cMax: 0 },
-    { rMin: 1, rMax: 1, cMin: 1, cMax: 1 },
-  ],
-  "top-split": [
-    { rMin: 0, rMax: 0, cMin: 0, cMax: 1 }, // full-width top
-    { rMin: 1, rMax: 1, cMin: 0, cMax: 0 },
-    { rMin: 1, rMax: 1, cMin: 1, cMax: 1 },
-  ],
-  "left-split": [
-    { rMin: 0, rMax: 1, cMin: 0, cMax: 0 }, // full-height left
-    { rMin: 0, rMax: 0, cMin: 1, cMax: 1 },
-    { rMin: 1, rMax: 1, cMin: 1, cMax: 1 },
-  ],
-};
-
-interface SlotBox {
-  rMin: number;
-  rMax: number;
-  cMin: number;
-  cMax: number;
-}
+import { SLOT_BOXES, gridAreaStyle as _gridAreaStyle, type SlotBox } from "../../app/layout-geometry.js";
 interface Tab {
   id: string;
   type: string;
@@ -178,9 +136,7 @@ function paneClasses(tab: Tab) {
 }
 
 function gridAreaStyle(index: number) {
-  if (!AREA_LAYOUTS.has(currentLayout.value)) return {};
-  const area = AREA_NAMES[index];
-  return area ? { gridArea: area } : {};
+  return _gridAreaStyle(index, currentLayout.value);
 }
 
 // Build swap actions for the current pane based on the active split group.

@@ -53,7 +53,7 @@ export function useKeyboardShortcuts(api: Transport, { onNewWorkspace }: { onNew
       if (appStore.isGridVisible) {
         await appStore.disableWorkspaceGrid();
       } else {
-        await appStore.enableWorkspaceGrid("cols");
+        await appStore.enableWorkspaceGrid("grid");
       }
       return;
     }

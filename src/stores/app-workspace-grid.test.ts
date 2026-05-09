@@ -152,14 +152,14 @@ describe("workspace grid store — actions", () => {
     setActivePinia(createPinia());
   });
 
-  it("enableWorkspaceGrid calls api.enableWorkspaceGrid with layout and ids", async () => {
+  it("enableWorkspaceGrid defaults to [activeWorkspaceId, null, null, null] when no preset given", async () => {
     const api = makeApi();
     const store = useAppStore();
     store.init(api as AnyApi);
-    store.payload = makePayload();
+    store.payload = makePayload({ activeWorkspaceId: "ws-A" });
 
     await store.enableWorkspaceGrid("cols");
-    expect(api.enableWorkspaceGrid).toHaveBeenCalledWith("cols", undefined);
+    expect(api.enableWorkspaceGrid).toHaveBeenCalledWith("cols", ["ws-A", null, null, null]);
   });
 
   it("enableWorkspaceGrid passes preset workspaceIds to api", async () => {
