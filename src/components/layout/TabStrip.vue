@@ -181,6 +181,7 @@ const tabModels = computed(() => {
   const tabs = store.workspaceTabs;
   const activeViewId = store.activeViewId;
   const splitGroup = store.splitGroup;
+  const splitVisible = store.visibleTabs.length > 1;
 
   const workspace = store.activeWorkspace;
   const taskState = store.payload?.taskRunner?.[workspace?.id] as TaskRunnerState | undefined;
@@ -218,7 +219,7 @@ const tabModels = computed(() => {
       status: suppressStatus ? "" : tab.status,
       tone: suppressStatus ? "idle" : tab.tone,
       active: tab.id === activeViewId,
-      grouped: splitGroup?.viewIds.includes(tab.id) || false,
+      grouped: splitVisible && tab.id !== activeViewId && (splitGroup?.viewIds.includes(tab.id) || false),
       persistent: !!tab.persistent,
       closable: tab.closable !== false,
       attention: !!tabAttention,

@@ -3,10 +3,12 @@ import { mount } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import TabStrip from "./TabStrip.vue";
 import { useAppStore } from "../../stores/app.js";
+import { isMobileViewport } from "../../composables/useIsNarrow.js";
 import type { StatePayload } from "../../../electron/shared/types/state.js";
 
 beforeEach(() => {
   setActivePinia(createPinia());
+  isMobileViewport.value = false;
 });
 
 interface SessionInput {
@@ -98,6 +100,25 @@ describe("TabStrip", () => {
     const tabs = wrapper.findAll(".tab");
     expect(tabs[0].classes()).toContain("tab--active");
     expect(tabs[1].classes()).not.toContain("tab--active");
+  });
+
+  test("does not underline split siblings when the split is collapsed to one visible pane", () => {
+    const store = useAppStore();
+    store.payload = makePayload([
+      { id: "ws1:shell", title: "Shell" },
+      { id: "ws1:claude", title: "Claude Code" },
+    ]);
+    store.activeViewId = "ws1:shell";
+    store.splitGroup = { layout: "cols", viewIds: ["ws1:shell", "ws1:claude"] };
+    isMobileViewport.value = true;
+
+    const wrapper = mount(TabStrip);
+    const tabs = wrapper.findAll(".tab");
+
+    expect(tabs[0].classes()).toContain("tab--active");
+    expect(tabs[0].classes()).not.toContain("tab--grouped");
+    expect(tabs[1].classes()).not.toContain("tab--active");
+    expect(tabs[1].classes()).not.toContain("tab--grouped");
   });
 
   test("shows attention bell for tabs with tabAttention", () => {
