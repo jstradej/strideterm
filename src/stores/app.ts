@@ -210,6 +210,32 @@ export const useAppStore = defineStore("app", () => {
     await (_api as AnyApi)?.swapGridCells?.(a, b);
   }
 
+  /**
+   * Activate a workspace from a user-driven UI surface (sidebar click,
+   * keyboard cycle). When the workspace grid is visible and the target is
+   * not already in a cell, drop it into:
+   *   1. the first empty cell (additive — no eviction), OR
+   *   2. the currently focused cell (replace it, when grid is full).
+   * This keeps the grid layout pinned. Without this wrapper, activation
+   * would flip `isGridVisible` to false and the entire grid would vanish
+   * into a single-pane PaneStage — surprising UX after the user spent
+   * effort wiring up a split.
+   *
+   * Server-driven / bootstrap paths should keep calling
+   * `activateWorkspace` directly so they don't reshuffle cells.
+   */
+  async function activateWorkspaceInGrid(workspaceId: string): Promise<void> {
+    if (isGridVisible.value) {
+      const ids = (workspaceGrid.value?.cellWorkspaceIds || []) as (string | null)[];
+      if (!ids.includes(workspaceId)) {
+        const emptyIdx = ids.indexOf(null);
+        const targetIdx = emptyIdx >= 0 ? emptyIdx : Math.max(0, focusedGridCellIndex.value);
+        await setGridCell(targetIdx, workspaceId);
+      }
+    }
+    await activateWorkspace(workspaceId);
+  }
+
   // --------------------------------
 
   let _prevAttention = { count: 0, waitingCount: 0 };
@@ -939,6 +965,7 @@ export const useAppStore = defineStore("app", () => {
     setGridLayout,
     setGridCell,
     swapGridCells,
+    activateWorkspaceInGrid,
     // Delegated dialog actions
     ...dialogActions,
     // Delegated workspace actions

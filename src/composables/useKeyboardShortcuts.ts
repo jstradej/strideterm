@@ -27,7 +27,7 @@ export function useKeyboardShortcuts(api: Transport, { onNewWorkspace }: { onNew
         const workspaces = appStore.filteredWorkspaces;
         const index = parseInt(digitMatch[1], 10) - 1;
         if (index < workspaces.length) {
-          await appStore.activateWorkspace(workspaces[index].id);
+          await appStore.activateWorkspaceInGrid(workspaces[index].id);
           termStore.focusActiveTerminal();
         }
         return;
@@ -132,7 +132,7 @@ export function useKeyboardShortcuts(api: Transport, { onNewWorkspace }: { onNew
               ? list[0]
               : list[list.length - 1]
             : list[(currentIdx + direction + list.length) % list.length];
-        await appStore.activateWorkspace(target.id);
+        await appStore.activateWorkspaceInGrid(target.id);
         termStore.focusActiveTerminal();
         return;
       }

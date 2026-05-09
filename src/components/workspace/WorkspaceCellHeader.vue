@@ -72,6 +72,11 @@ interface SwapAction {
 }
 
 const swapActions = computed<SwapAction[]>(() => {
+  // Only the focused cell renders swap controls — otherwise a 4-cell grid
+  // would show 4 × 3 = 12 arrow buttons across the workspace, which is
+  // visually noisy and pointless (a swap is symmetric, you only need to
+  // initiate it from one side).
+  if (!props.focused) return [];
   const grid = store.workspaceGrid;
   if (!grid) return [];
   const layout = grid.layout;

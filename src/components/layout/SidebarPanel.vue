@@ -340,8 +340,8 @@ const emit = defineEmits<{
   (e: "create-task"): void;
 }>();
 
-function onActivate(workspaceId: string): void {
-  store.activateWorkspace(workspaceId);
+async function onActivate(workspaceId: string): Promise<void> {
+  await store.activateWorkspaceInGrid(workspaceId);
   emit("activate", workspaceId);
 }
 

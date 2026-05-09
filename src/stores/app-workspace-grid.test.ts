@@ -35,6 +35,7 @@ function makeApi(overrides: AnyApi = {}) {
     setGridLayout: vi.fn(async () => undefined),
     setGridCell: vi.fn(async () => undefined),
     swapGridCells: vi.fn(async () => undefined),
+    activateWorkspace: vi.fn(async () => ({ appState: { workspaces: BASE_WORKSPACES } })),
     ...overrides,
   };
 }
@@ -220,5 +221,81 @@ describe("workspace grid store — actions", () => {
 
     await store.swapGridCells(0, 2);
     expect(api.swapGridCells).toHaveBeenCalledWith(0, 2);
+  });
+});
+
+describe("workspace grid store — activateWorkspaceInGrid", () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+  });
+
+  it("when grid is not visible, just delegates to activateWorkspace (no setGridCell)", async () => {
+    const api = makeApi();
+    const store = useAppStore();
+    store.init(api as AnyApi);
+    store.payload = makePayload({ workspaceGrid: null, activeWorkspaceId: "ws-A" });
+
+    await store.activateWorkspaceInGrid("ws-B");
+
+    expect(api.setGridCell).not.toHaveBeenCalled();
+    expect(api.activateWorkspace).toHaveBeenCalledWith("ws-B");
+  });
+
+  it("when target is already in grid, just activates (no cell mutation)", async () => {
+    const api = makeApi();
+    const store = useAppStore();
+    store.init(api as AnyApi);
+    store.payload = makePayload({
+      workspaceGrid: { layout: "cols", cellWorkspaceIds: ["ws-A", "ws-B"] },
+      activeWorkspaceId: "ws-A",
+    });
+
+    await store.activateWorkspaceInGrid("ws-B");
+
+    expect(api.setGridCell).not.toHaveBeenCalled();
+    expect(api.activateWorkspace).toHaveBeenCalledWith("ws-B");
+  });
+
+  it("when grid visible and target not in grid, replaces focused cell first", async () => {
+    const api = makeApi();
+    const store = useAppStore();
+    store.init(api as AnyApi);
+    store.payload = makePayload({
+      workspaceGrid: { layout: "cols", cellWorkspaceIds: ["ws-A", "ws-B"] },
+      activeWorkspaceId: "ws-A",
+    });
+
+    await store.activateWorkspaceInGrid("ws-C");
+
+    expect(api.setGridCell).toHaveBeenCalledWith(0, "ws-C");
+    expect(api.activateWorkspace).toHaveBeenCalledWith("ws-C");
+  });
+
+  it("when grid visible and target not in grid, prefers first empty cell over evicting focused", async () => {
+    const api = makeApi();
+    const store = useAppStore();
+    store.init(api as AnyApi);
+    store.payload = makePayload({
+      workspaceGrid: { layout: "grid", cellWorkspaceIds: ["ws-A", null, null, null] },
+      activeWorkspaceId: "ws-A",
+    });
+
+    await store.activateWorkspaceInGrid("ws-D");
+
+    expect(api.setGridCell).toHaveBeenCalledWith(1, "ws-D");
+  });
+
+  it("when grid is full and target not in grid, replaces focused cell", async () => {
+    const api = makeApi();
+    const store = useAppStore();
+    store.init(api as AnyApi);
+    store.payload = makePayload({
+      workspaceGrid: { layout: "grid", cellWorkspaceIds: ["ws-A", "ws-B", "ws-C", "ws-D"] },
+      activeWorkspaceId: "ws-C",
+    });
+
+    await store.activateWorkspaceInGrid("ws-X");
+
+    expect(api.setGridCell).toHaveBeenCalledWith(2, "ws-X");
   });
 });
