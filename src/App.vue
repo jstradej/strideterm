@@ -138,7 +138,7 @@
     </aside>
 
     <main class="workspace">
-      <section class="workspace-main">
+      <section class="workspace-main" :class="{ 'workspace-main--grid': store.isGridVisible }">
         <WorkspaceHero />
 
         <div v-show="!store.isGridVisible" class="terminal-toolbar">

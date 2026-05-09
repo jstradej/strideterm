@@ -247,6 +247,8 @@
   display: flex;
   align-items: center;
   overflow: hidden;
+  container-type: inline-size;
+  container-name: workspace-cell-tabs;
 }
 
 .workspace-cell-header__btn {
@@ -308,6 +310,142 @@
 
 .tab-strip--compact .tab small {
   display: none;
+}
+
+.tab-strip-compact-picker__trigger {
+  display: none;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  width: 100%;
+  height: 18px;
+  min-width: 0;
+  border: 1px solid rgba(var(--tint), 0.08);
+  border-radius: 2px;
+  background: rgba(var(--tint), 0.04);
+  color: var(--text);
+  cursor: pointer;
+  font-size: 9px;
+  line-height: 1;
+  padding: 0 5px;
+}
+
+.tab-strip-compact-picker__trigger:hover {
+  background: rgba(var(--tint), 0.08);
+}
+
+.tab-strip-compact-picker__label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tab-strip-compact-picker__icon {
+  flex-shrink: 0;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.tab-strip-compact-picker__backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 8998;
+  background: transparent;
+}
+
+.tab-strip-compact-picker__dropdown {
+  position: fixed;
+  z-index: 8999;
+  overflow-y: auto;
+  padding: 3px 0;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--panel-elevated);
+  box-shadow: var(--shadow);
+}
+
+.tab-strip-compact-picker__item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-width: 0;
+  padding: 6px 8px;
+  border: none;
+  border-left: 2px solid transparent;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  font-size: 11px;
+  line-height: 1.2;
+  text-align: left;
+}
+
+.tab-strip-compact-picker__item:hover {
+  background: rgba(var(--tint), 0.06);
+}
+
+.tab-strip-compact-picker__item--active {
+  border-left-color: var(--accent);
+  background: rgba(var(--tint), 0.08);
+}
+
+.tab-strip-compact-picker__item--menu-target {
+  border-left-color: var(--accent);
+  background: color-mix(in srgb, var(--accent), transparent 88%);
+}
+
+.tab-strip-compact-picker__item-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tab-strip-compact-picker__item-status {
+  flex-shrink: 0;
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.tab-strip-compact-picker__item-menu {
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  margin: -3px -4px -3px 0;
+  border-radius: 3px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1;
+}
+
+.tab-strip-compact-picker__item-menu:hover {
+  background: rgba(var(--tint), 0.12);
+  color: var(--text);
+}
+
+@container workspace-cell-tabs (max-width: 420px) {
+  .tab-strip--compact .tab {
+    display: none;
+  }
+
+  .tab-strip--compact .tab-strip-compact-picker__trigger {
+    display: inline-flex;
+  }
+}
+
+@media (max-width: 768px), (max-height: 500px) {
+  .workspace-cell .tab-strip--compact .tab {
+    display: none;
+  }
+
+  .workspace-cell .tab-strip--compact .tab-strip-compact-picker__trigger {
+    display: inline-flex;
+  }
 }
 
 /* ── Workspace picker popover ─────────────────────────────────────── */

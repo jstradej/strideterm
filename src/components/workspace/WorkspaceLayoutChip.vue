@@ -11,6 +11,7 @@
       type="button"
       class="workspace-layout-chip"
       :class="{ 'workspace-layout-chip--active': currentLayout !== 'solo' }"
+      data-role="workspace-layout-chip"
       :title="layoutTitle"
       @click="onOpenPicker"
     >

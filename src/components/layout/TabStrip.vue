@@ -25,7 +25,7 @@
       :data-persistent="tab.persistent ? 'true' : 'false'"
       :title="tab.titleTooltip"
       :draggable="!compact && tab.persistent"
-      @click="store.activateView(tab.id).then(() => nextTick(() => termStore.focusActiveTerminal()))"
+      @click="activateTab(tab.id)"
       @dblclick="!compact && tab.persistent && $emit('edit-tab', tab.id)"
       @dragstart="!compact && dragDrop.onDragstart($event)"
       @contextmenu.prevent="
@@ -44,11 +44,51 @@
         >☰</span
       >
     </button>
+
+    <button
+      v-if="compact"
+      ref="compactPickerBtnRef"
+      type="button"
+      class="tab-strip-compact-picker__trigger"
+      :title="`Switch tab — current: ${compactPickerLabel}`"
+      @click.stop="toggleCompactPicker"
+    >
+      <span class="tab-strip-compact-picker__label">{{ compactPickerLabel }}</span>
+      <span class="tab-strip-compact-picker__icon" aria-hidden="true">☰</span>
+    </button>
+
+    <Teleport v-if="compact" to="body">
+      <div v-if="compactPickerOpen" class="tab-strip-compact-picker__backdrop" @click="closeCompactPicker"></div>
+      <div v-if="compactPickerOpen" class="tab-strip-compact-picker__dropdown" :style="compactPickerStyle">
+        <button
+          v-for="tab in tabModels"
+          :key="tab.id"
+          type="button"
+          class="tab-strip-compact-picker__item"
+          :class="{
+            'tab-strip-compact-picker__item--active': tab.active,
+            'tab-strip-compact-picker__item--menu-target': compactContextMenuViewId === tab.id,
+          }"
+          :title="tab.titleTooltip"
+          @click="activateTabFromCompactPicker(tab.id)"
+        >
+          <span class="tab-strip-compact-picker__item-title">{{ tab.title }}</span>
+          <small v-if="tab.taskBadge" class="tab-strip-compact-picker__item-status">{{ tab.taskBadge }}</small>
+          <small v-else class="tab-strip-compact-picker__item-status">{{ tab.status }}</small>
+          <span
+            class="tab-strip-compact-picker__item-menu"
+            title="Open the tab actions menu."
+            @click.stop="openCompactTabMenu($event, tab.id)"
+            >☰</span
+          >
+        </button>
+      </div>
+    </Teleport>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, ref, nextTick } from "vue";
+import { computed, ref, nextTick, watch } from "vue";
 import { useAppStore } from "../../stores/app.js";
 import { useTerminalStore } from "../../stores/terminal.js";
 import { useTabDragDrop } from "../../composables/useDragDrop.js";
@@ -83,6 +123,15 @@ const props = withDefaults(
 const store = useAppStore();
 const termStore = useTerminalStore();
 const stripRef = ref<HTMLElement | null>(null);
+const compactPickerBtnRef = ref<HTMLButtonElement | null>(null);
+const compactPickerOpen = ref(false);
+const compactContextMenuViewId = ref<string | null>(null);
+const compactPickerAnchor = ref<{
+  left: number;
+  right: number;
+  bottom: number;
+  width: number;
+} | null>(null);
 const dragDrop = useTabDragDrop(stripRef);
 
 // In compact mode for a non-active workspace, derive minimal tab models from persisted panels.
@@ -187,15 +236,103 @@ const tabModels = computed(() => {
   });
 });
 
+const activeTabModel = computed(() => tabModels.value.find((tab) => tab.active) || tabModels.value[0] || null);
+const compactPickerLabel = computed(() => activeTabModel.value?.title || "Tabs");
+const compactPickerStyle = computed(() => {
+  const anchor = compactPickerAnchor.value;
+  if (!anchor) return {};
+  const viewportWidth = typeof window === "undefined" ? 320 : window.innerWidth;
+  const viewportHeight = typeof window === "undefined" ? 480 : window.innerHeight;
+  const width = Math.min(Math.max(anchor.width, 180), Math.max(180, viewportWidth - 8));
+  const left = Math.min(Math.max(4, anchor.right - width), Math.max(4, viewportWidth - width - 4));
+  const top = Math.min(anchor.bottom + 4, Math.max(4, viewportHeight - 8));
+  return {
+    left: `${left}px`,
+    top: `${top}px`,
+    width: `${width}px`,
+    maxHeight: `${Math.max(120, viewportHeight - top - 8)}px`,
+  };
+});
+
 const emit = defineEmits<{
   (e: "edit-tab", viewId: string): void;
   (e: "contextmenu-tab", payload: { x: number; y: number; viewId: string }): void;
   (e: "menu-tab", payload: { x: number; y: number; viewId: string }): void;
 }>();
 
+watch(
+  () => store.contextMenu?.viewId || "",
+  (viewId) => {
+    if (!compactContextMenuViewId.value) return;
+    if (viewId === compactContextMenuViewId.value) return;
+    compactContextMenuViewId.value = null;
+    compactPickerOpen.value = false;
+  },
+);
+
 function onMenuClick(event: MouseEvent, viewId: string): void {
   const btn = (event.currentTarget || event.target) as Element;
   const rect = btn.getBoundingClientRect();
   emit("menu-tab", { x: rect.left, y: rect.bottom + 4, viewId });
+}
+
+async function ensureCompactWorkspaceActive(): Promise<void> {
+  if (!props.compact || !props.workspaceId) return;
+  const activeWsId = (store.payload as AnyApi)?.appState?.activeWorkspaceId;
+  if (activeWsId !== props.workspaceId) {
+    await store.activateWorkspace(props.workspaceId);
+  }
+}
+
+function activateTab(viewId: string): void {
+  void (async () => {
+    await ensureCompactWorkspaceActive();
+    await store.activateView(viewId);
+    await nextTick();
+    termStore.focusActiveTerminal();
+  })();
+}
+
+function updateCompactPickerAnchor(): void {
+  const rect = compactPickerBtnRef.value?.getBoundingClientRect();
+  compactPickerAnchor.value = rect
+    ? {
+        left: rect.left,
+        right: rect.right,
+        bottom: rect.bottom,
+        width: rect.width,
+      }
+    : null;
+}
+
+function toggleCompactPicker(): void {
+  if (compactPickerOpen.value) {
+    closeCompactPicker();
+    return;
+  }
+  updateCompactPickerAnchor();
+  compactPickerOpen.value = true;
+}
+
+function closeCompactPicker(): void {
+  if (compactContextMenuViewId.value && store.contextMenu?.viewId === compactContextMenuViewId.value) {
+    store.hideContextMenu();
+  }
+  compactContextMenuViewId.value = null;
+  compactPickerOpen.value = false;
+}
+
+async function activateTabFromCompactPicker(viewId: string): Promise<void> {
+  compactPickerOpen.value = false;
+  await ensureCompactWorkspaceActive();
+  activateTab(viewId);
+}
+
+async function openCompactTabMenu(event: MouseEvent, viewId: string): Promise<void> {
+  const btn = (event.currentTarget || event.target) as Element;
+  const rect = btn.getBoundingClientRect();
+  await ensureCompactWorkspaceActive();
+  compactContextMenuViewId.value = viewId;
+  store.showContextMenu(rect.left, rect.bottom + 4, viewId);
 }
 </script>

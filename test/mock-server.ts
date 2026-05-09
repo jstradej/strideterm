@@ -23,6 +23,34 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // a non-default port — useful when the default 1420 is already taken by an
 // unrelated dev session in another worktree.
 const VITE_ORIGIN = process.env.VITE_DEV_ORIGIN || `http://127.0.0.1:${process.env.VITE_DEV_PORT || "1420"}`;
+const WORKSPACE_GRID_SLOT_COUNTS: Record<string, number> = {
+  cols: 2,
+  rows: 2,
+  "top-split": 3,
+  "left-split": 3,
+  grid: 4,
+};
+
+function normalizeWorkspaceGridIds(layout: string, workspaceIds?: (string | null)[]): (string | null)[] | null {
+  const slots = WORKSPACE_GRID_SLOT_COUNTS[layout];
+  if (!slots) return null;
+  const ids: (string | null)[] = [];
+  for (let i = 0; i < slots; i += 1) {
+    ids.push(workspaceIds?.[i] ?? null);
+  }
+  return ids;
+}
+
+function compactWorkspaceGridIds(layout: string, workspaceIds?: (string | null)[]): (string | null)[] | null {
+  const slots = WORKSPACE_GRID_SLOT_COUNTS[layout];
+  if (!slots) return null;
+  const existing = (workspaceIds || []).filter((id): id is string => typeof id === "string");
+  const ids: (string | null)[] = [];
+  for (let i = 0; i < slots; i += 1) {
+    ids.push(existing[i] ?? null);
+  }
+  return ids;
+}
 
 function parseArgs(argv: string[]): { fixture: string; port: number } {
   let fixture = "empty-state";
@@ -146,6 +174,67 @@ export async function startMockServer({
         if (url.pathname.endsWith("/settings/update") && body.settings) {
           Object.assign(payload.appState.settings, body.settings);
           broadcast({ type: "state:updated", payload });
+        }
+
+        if (url.pathname.endsWith("/workspace-grid/enable")) {
+          const layout = String(body.layout || "");
+          const cellWorkspaceIds = normalizeWorkspaceGridIds(layout, body.workspaceIds);
+          if (cellWorkspaceIds) {
+            payload.appState.workspaceGrid = { layout, cellWorkspaceIds };
+            broadcast({ type: "state:updated", payload });
+          }
+        }
+
+        if (url.pathname.endsWith("/workspace-grid/disable")) {
+          payload.appState.workspaceGrid = null;
+          broadcast({ type: "state:updated", payload });
+        }
+
+        if (url.pathname.endsWith("/workspace-grid/set-layout")) {
+          const layout = String(body.layout || "");
+          const cellWorkspaceIds = compactWorkspaceGridIds(layout, payload.appState.workspaceGrid?.cellWorkspaceIds);
+          if (payload.appState.workspaceGrid && cellWorkspaceIds) {
+            payload.appState.workspaceGrid.layout = layout;
+            payload.appState.workspaceGrid.cellWorkspaceIds = cellWorkspaceIds;
+            broadcast({ type: "state:updated", payload });
+          }
+        }
+
+        if (url.pathname.endsWith("/workspace-grid/set-cell")) {
+          const grid = payload.appState.workspaceGrid;
+          const cellIndex = Number(body.cellIndex);
+          if (grid && Number.isInteger(cellIndex) && cellIndex >= 0 && cellIndex < grid.cellWorkspaceIds.length) {
+            const workspaceId = body.workspaceId ?? null;
+            if (workspaceId) {
+              const existing = grid.cellWorkspaceIds.indexOf(workspaceId);
+              if (existing >= 0 && existing !== cellIndex) grid.cellWorkspaceIds[existing] = null;
+            }
+            grid.cellWorkspaceIds[cellIndex] = workspaceId;
+            if (grid.cellWorkspaceIds.every((id: string | null) => id === null)) payload.appState.workspaceGrid = null;
+            broadcast({ type: "state:updated", payload });
+          }
+        }
+
+        if (url.pathname.endsWith("/workspace-grid/swap-cells")) {
+          const grid = payload.appState.workspaceGrid;
+          const a = Number(body.a);
+          const b = Number(body.b);
+          const ids = grid?.cellWorkspaceIds;
+          if (
+            ids &&
+            Number.isInteger(a) &&
+            Number.isInteger(b) &&
+            a >= 0 &&
+            b >= 0 &&
+            a < ids.length &&
+            b < ids.length &&
+            a !== b
+          ) {
+            const tmp = ids[a];
+            ids[a] = ids[b];
+            ids[b] = tmp;
+            broadcast({ type: "state:updated", payload });
+          }
         }
 
         // File read — return injected content if available

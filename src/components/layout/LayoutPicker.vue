@@ -77,8 +77,9 @@ function pickLayout(key: string): void {
 }
 
 function onDocumentClick(e: MouseEvent): void {
-  // Ignore clicks on the Split button itself (it triggers showLayoutPicker)
-  if ((e.target as Element).closest("[data-role='tab-actions']")) return;
+  // Ignore clicks on picker openers themselves; they trigger showLayoutPicker
+  // before this document handler sees the same click.
+  if ((e.target as Element).closest("[data-role='tab-actions'], [data-role='workspace-layout-chip']")) return;
   if (pickerRef.value && !pickerRef.value.contains(e.target as Node)) {
     store.hideLayoutPicker();
   }

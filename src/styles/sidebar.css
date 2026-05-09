@@ -904,6 +904,10 @@ body.platform-darwin .frame--sidebar-collapsed .sidebar__head {
   overflow: hidden;
 }
 
+.workspace-main.workspace-main--grid {
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
 .docker-manager {
   padding: 12px;
   display: grid;

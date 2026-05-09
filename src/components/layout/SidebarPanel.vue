@@ -341,7 +341,7 @@ const emit = defineEmits<{
 }>();
 
 async function onActivate(workspaceId: string): Promise<void> {
-  await store.activateWorkspaceInGrid(workspaceId);
+  await store.activateWorkspace(workspaceId);
   emit("activate", workspaceId);
 }
 
