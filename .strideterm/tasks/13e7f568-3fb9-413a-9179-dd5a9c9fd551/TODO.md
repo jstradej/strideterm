@@ -25,3 +25,4 @@
 - [x] Phase 7 E2E: workspace-grid.spec.ts + grid.json fixture covering grid show, cell render, solo toggle, grid restore, cell clear
 - [x] Round 2 fixes: TypeScript errors (TabStrip onDragend, WorkspaceCell activeViewId null, WorkspaceGridStage Number(index)); ESLint errors (ipc.ts eslint-disable comments); test helper ws() cast; prettier formatting
 - [x] Round 3 E2E: Added drag-drop describe block (synthetic DragEvent onto cell, verifies workspace name updates) and workspace-delete describe block (deleteWorkspace IPC, verifies slot cleared + workspace absent from sidebar)
+- [x] Round 4 fixes: enableWorkspaceGrid defaults to [activeWsId,null,null,null]; Ctrl+Shift+G uses layout "grid"; PaneStage imports SLOT_BOXES/gridAreaStyle from layout-geometry.ts; WorkspacePickerPopover defaults collapsed to all parent IDs; unit test updated

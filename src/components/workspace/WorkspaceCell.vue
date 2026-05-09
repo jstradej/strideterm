@@ -46,18 +46,29 @@
       @open-picker="onOpenPickerFromHeader"
       @clear="onClear"
       @swap="(targetIndex) => store.swapGridCells(cellIndex, targetIndex)"
-    />
+      @add-tab="onAddTab"
+    >
+      <TabStrip :workspace-id="workspaceId" compact />
+    </WorkspaceCellHeader>
 
-    <!-- Compact tab strip for this cell's workspace -->
-    <TabStrip :workspace-id="workspaceId" compact />
-
-    <!-- Active pane content -->
+    <!-- Active pane content. TerminalPane handles session swaps internally
+         via a watch on its sessionId prop — keying it on activeViewId here
+         caused the workspace-stage to briefly lose its 1fr height during
+         the unmount/remount cycle, which collapsed the surrounding grid
+         cells. The dynamic <component> is keyed only by `activeViewType`
+         so it remounts when the user crosses a real component boundary
+         (e.g. terminal → dashboard) but stays put when activeViewId
+         changes within the same component (which Vue prop-reactivity
+         already handles). -->
     <div class="workspace-cell__pane">
       <template v-if="activeViewType === 'terminal' && activeViewId">
         <TerminalPane :session-id="activeViewId" />
       </template>
       <template v-else-if="paneComponent">
-        <component :is="paneComponent" v-bind="paneProps" :show-header="false" />
+        <!-- :compact tells panes (TaskDashboardPane today, others later) to
+             switch to mobile-density chrome — grid cells are quarter-viewport,
+             so the dashboard's default 80 px header+tabs eats too much. -->
+        <component :is="paneComponent" :key="activeViewType" v-bind="paneProps" :show-header="false" :compact="true" />
       </template>
       <div v-else class="workspace-cell__no-content">
         <span>Select a tab</span>
@@ -183,6 +194,20 @@ function onMousedown(event: MouseEvent): void {
 
 function onClear(): void {
   store.setGridCell(props.cellIndex, null);
+}
+
+async function onAddTab(anchorRect: DOMRect): Promise<void> {
+  // Activate the cell's workspace first — the global TabPickerDropdown reads
+  // the active workspace to figure out which workspace receives the new tab.
+  // Without this step, clicking + on a non-focused cell would always land
+  // the new tab in the focused cell's workspace instead.
+  if (props.workspaceId && store.payload?.appState?.activeWorkspaceId !== props.workspaceId) {
+    await store.activateWorkspace(props.workspaceId);
+  }
+  // Hand the anchor up to App.vue, which owns the TabPickerDropdown anchor
+  // ref. Using a window event keeps this cell-level emit decoupled from the
+  // App.vue → TabActions chain that drives the toolbar's "+ Tab" button.
+  window.dispatchEvent(new CustomEvent("open-tab-picker", { detail: { anchorRect } }));
 }
 
 function onGridCellPickerEvent(event: Event): void {

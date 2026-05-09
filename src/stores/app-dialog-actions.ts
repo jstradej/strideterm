@@ -11,6 +11,7 @@ interface DialogActionsCtx {
   overlayProps: Ref<Record<string, unknown>>;
   contextMenu: Ref<{ x: number; y: number; viewId: string } | null>;
   layoutPickerAnchor: Ref<DOMRect | null>;
+  layoutPickerMode: Ref<"grid" | "split" | "auto">;
   payload: ShallowRef<StatePayload | null>;
   activeViewId: Ref<string | null>;
   activeSessionId: Ref<string | null>;
@@ -137,12 +138,14 @@ export function createDialogActions(ctx: DialogActionsCtx) {
 
   // --- Layout picker -----------------------------------------------------
 
-  function showLayoutPicker(anchorRect: DOMRect): void {
+  function showLayoutPicker(anchorRect: DOMRect, mode: "grid" | "split" | "auto" = "auto"): void {
     ctx.layoutPickerAnchor.value = anchorRect;
+    ctx.layoutPickerMode.value = mode;
   }
 
   function hideLayoutPicker(): void {
     ctx.layoutPickerAnchor.value = null;
+    ctx.layoutPickerMode.value = "auto";
   }
 
   // --- Tab edit dialog ---------------------------------------------------

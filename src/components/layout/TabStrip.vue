@@ -86,6 +86,15 @@ const stripRef = ref<HTMLElement | null>(null);
 const dragDrop = useTabDragDrop(stripRef);
 
 // In compact mode for a non-active workspace, derive minimal tab models from persisted panels.
+//
+// Tab IDs MUST be the full `${wsId}:${panelId}` session-id form, not the bare
+// panelId. The id is the value passed to `store.activateView(...)` on click,
+// and activateView routes it to backend `activateSession`, which calls
+// parseSessionId — that helper requires the workspace prefix. A bare panelId
+// is rejected, the backend returns the unchanged payload, and the cell's
+// pane never switches. (Also makes the `active` flag work at all: the
+// persisted `wsEntry.activeViewId` is itself the full session-id form, so
+// comparing it against the bare panelId always returned false.)
 const compactTabModels = computed(() => {
   if (!props.compact || !props.workspaceId) return null;
   const wsId = props.workspaceId;
@@ -96,22 +105,25 @@ const compactTabModels = computed(() => {
   if (!wsEntry) return [];
   const activeViewId = wsEntry.activeViewId || null;
   const panels: AnyApi[] = wsEntry.panels || [];
-  return panels.map((p: AnyApi) => ({
-    id: p.id,
-    title: p.title || p.id,
-    status: "",
-    tone: "idle",
-    active: p.id === activeViewId,
-    grouped: false,
-    persistent: true,
-    closable: true,
-    attention: false,
-    attentionFresh: false,
-    attentionTooltip: "",
-    taskBadge: "",
-    taskTooltip: "",
-    titleTooltip: p.title || p.id,
-  }));
+  return panels.map((p: AnyApi) => {
+    const viewId = `${wsId}:${p.id}`;
+    return {
+      id: viewId,
+      title: p.title || p.id,
+      status: "",
+      tone: "idle",
+      active: viewId === activeViewId,
+      grouped: false,
+      persistent: true,
+      closable: true,
+      attention: false,
+      attentionFresh: false,
+      attentionTooltip: "",
+      taskBadge: "",
+      taskTooltip: "",
+      titleTooltip: p.title || p.id,
+    };
+  });
 });
 
 const tabModels = computed(() => {

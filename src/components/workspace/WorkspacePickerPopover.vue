@@ -12,7 +12,7 @@
       />
       <div class="ws-picker__list">
         <template v-for="node in tree" :key="node.id">
-          <div class="ws-picker__row" :class="{ 'ws-picker__row--occupied': occupiedIds.has(node.id) }">
+          <div class="ws-picker__row" :class="{ 'ws-picker__row--current': node.id === currentCellId }">
             <button
               v-if="node.childCount > 0 && query === ''"
               type="button"
@@ -35,7 +35,7 @@
               <span class="ws-picker__name">{{ node.name }}</span>
               <span v-if="node.kindCounts" class="ws-picker__kind-counts">{{ node.kindCounts }}</span>
               <span v-if="node.breadcrumb && query" class="ws-picker__breadcrumb">(under {{ node.breadcrumb }})</span>
-              <span v-if="occupiedIds.has(node.id)" class="ws-picker__badge">in grid</span>
+              <span v-if="node.id === currentCellId" class="ws-picker__badge">current</span>
             </button>
           </div>
         </template>
@@ -80,7 +80,11 @@ const popoverStyle = ref<CSSProperties>({
 onMounted(async () => {
   searchRef.value?.focus();
   // Default: collapse all parents so only root-level entries are visible on open.
-  const ws: AnyApi[] = (store.payload as AnyApi)?.appState?.workspaces || [];
+  // Use the same active-profile filter that drives the sidebar — surfacing
+  // workspaces from other profiles in the cell picker would silently let the
+  // user pull a workspace into a grid that lives in a different profile and
+  // confuse the "switch profile = filter the visible list" mental model.
+  const ws: AnyApi[] = store.filteredWorkspaces || [];
   const parentIds = new Set<string>();
   for (const w of ws) {
     const pid = resolveParentId(w, ws);
@@ -126,14 +130,31 @@ function positionPopover(): void {
   };
 }
 
-const allWorkspaces = computed<AnyApi[]>(() => {
-  return (store.payload as AnyApi)?.appState?.workspaces || [];
+// Only workspaces that belong to the active profile show up here. Picking
+// one into a grid cell from a different profile would let the user populate
+// the grid with rows the sidebar then refuses to display — surprising and
+// not what "switch profile filters the workspace list" implies.
+const allWorkspaces = computed<AnyApi[]>(() => store.filteredWorkspaces || []);
+
+const currentCellId = computed<string | null>(() => {
+  const grid = store.workspaceGrid;
+  if (!grid) return null;
+  return (grid.cellWorkspaceIds as (string | null)[])[props.cellIndex] ?? null;
 });
 
+// Workspaces already occupying ANOTHER cell of the grid. We hide these from
+// the picker entirely — repurposing the picker as a "move between cells"
+// shortcut conflicts with the dedicated swap arrows in the cell header and
+// silently empties the source cell, which surprises users. Moving is still
+// available via header swap arrows or drag-and-drop from the sidebar.
 const occupiedIds = computed<Set<string>>(() => {
   const grid = store.workspaceGrid;
   if (!grid) return new Set();
-  return new Set((grid.cellWorkspaceIds as (string | null)[]).filter(Boolean) as string[]);
+  const ids = (grid.cellWorkspaceIds as (string | null)[]).filter(Boolean) as string[];
+  // Don't hide whatever already lives in *this* cell — picker should still
+  // confirm the current selection / let the user re-pick the same one.
+  const here = currentCellId.value;
+  return new Set(ids.filter((id) => id !== here));
 });
 
 interface TreeNode {
@@ -188,7 +209,10 @@ function buildKindCounts(childIds: string[], allWs: AnyApi[]): string {
 }
 
 const tree = computed<TreeNode[]>(() => {
-  const ws = allWorkspaces.value;
+  // Drop workspaces already living in another grid cell — see occupiedIds
+  // comment for why we hide rather than badge them. The active cell's own
+  // entry stays so the user can re-confirm it without surprise.
+  const ws = allWorkspaces.value.filter((w: AnyApi) => !occupiedIds.value.has(w.id));
   const q = query.value.toLowerCase();
 
   const childrenOf = new Map<string, string[]>();

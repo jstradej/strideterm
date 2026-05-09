@@ -39,6 +39,7 @@
           >
             <strong>{{ attention.count }}</strong> attention
           </span>
+          <WorkspaceLayoutChip />
         </div>
       </div>
     </template>
@@ -85,6 +86,7 @@
           >
             <strong>{{ attention.count }}</strong> attention
           </span>
+          <WorkspaceLayoutChip />
         </div>
       </div>
     </template>
@@ -95,6 +97,7 @@
 import { computed, inject, ref } from "vue";
 import { useAppStore } from "../../stores/app.js";
 import { safeColor, attentionTitle, isFreshAttention, isContainerRunning } from "../../app/helpers.js";
+import WorkspaceLayoutChip from "./WorkspaceLayoutChip.vue";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const api = inject<any>("api");

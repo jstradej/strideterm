@@ -14,35 +14,7 @@
           "
           @click="pickLayout(key)"
         >
-          <svg class="layout-thumb" viewBox="0 0 40 30">
-            <template v-if="key === 'cols'">
-              <rect x="1" y="1" width="18" height="28" rx="1.5" fill="currentColor" opacity="0.5"></rect>
-              <rect x="21" y="1" width="18" height="28" rx="1.5" fill="currentColor" opacity="0.3"></rect>
-            </template>
-            <template v-else-if="key === 'rows'">
-              <rect x="1" y="1" width="38" height="13" rx="1.5" fill="currentColor" opacity="0.5"></rect>
-              <rect x="1" y="16" width="38" height="13" rx="1.5" fill="currentColor" opacity="0.3"></rect>
-            </template>
-            <template v-else-if="key === 'top-split'">
-              <rect x="1" y="1" width="38" height="13" rx="1.5" fill="currentColor" opacity="0.5"></rect>
-              <rect x="1" y="16" width="18" height="13" rx="1.5" fill="currentColor" opacity="0.3"></rect>
-              <rect x="21" y="16" width="18" height="13" rx="1.5" fill="currentColor" opacity="0.3"></rect>
-            </template>
-            <template v-else-if="key === 'left-split'">
-              <rect x="1" y="1" width="18" height="28" rx="1.5" fill="currentColor" opacity="0.5"></rect>
-              <rect x="21" y="1" width="18" height="13" rx="1.5" fill="currentColor" opacity="0.3"></rect>
-              <rect x="21" y="16" width="18" height="13" rx="1.5" fill="currentColor" opacity="0.3"></rect>
-            </template>
-            <template v-else-if="key === 'grid'">
-              <rect x="1" y="1" width="18" height="13" rx="1.5" fill="currentColor" opacity="0.5"></rect>
-              <rect x="21" y="1" width="18" height="13" rx="1.5" fill="currentColor" opacity="0.3"></rect>
-              <rect x="1" y="16" width="18" height="13" rx="1.5" fill="currentColor" opacity="0.3"></rect>
-              <rect x="21" y="16" width="18" height="13" rx="1.5" fill="currentColor" opacity="0.3"></rect>
-            </template>
-            <template v-else>
-              <rect x="1" y="1" width="38" height="28" rx="1.5" fill="currentColor" opacity="0.5"></rect>
-            </template>
-          </svg>
+          <LayoutThumbnail :layout="key" />
           <span>{{ layout.label }}</span>
         </button>
       </div>
@@ -53,6 +25,7 @@
 <script setup lang="ts">
 import { ref, computed, watch, nextTick, onMounted, onBeforeUnmount, type CSSProperties } from "vue";
 import { useAppStore } from "../../stores/app.js";
+import LayoutThumbnail from "./LayoutThumbnail.vue";
 
 const LAYOUTS = {
   solo: { slots: 1, label: "Solo" },

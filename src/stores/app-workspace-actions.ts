@@ -67,6 +67,15 @@ interface WorkspaceActionsCtx {
    *  before forwarding to the IPC. Use this rather than the raw transport
    *  setGridLayout — see store.setGridLayout for why. */
   setGridLayout: (layout: string) => Promise<void>;
+  /** Wrapper that boots the workspace grid with the active workspace in
+   *  slot 0 (or honours the supplied preset). Used by pickLayout when the
+   *  picker was opened in `mode: "grid"` from a non-grid context. */
+  enableWorkspaceGrid: (layout: string, preset?: { workspaceIds: (string | null)[] }) => Promise<void>;
+  /** Which entry-point opened the layout picker. Drives pickLayout dispatch:
+   *   "grid"  — always operate on the multi-workspace grid;
+   *   "split" — always operate on the active workspace's tab-split;
+   *   "auto"  — legacy: tab-split unless the grid is already visible. */
+  layoutPickerMode: Ref<"grid" | "split" | "auto">;
   getApi: () => Transport;
   withSuppressedBroadcast: (fn: () => Promise<void>) => Promise<void>;
 }
@@ -361,19 +370,28 @@ export function createWorkspaceActions(ctx: WorkspaceActionsCtx) {
   // --- Layout / split ----------------------------------------------------
 
   function pickLayout(layout: string): void {
-    // When the workspace grid is visible, the picker controls the cross-workspace
-    // grid layout; the per-workspace splitGroup stays untouched. We dispatch
-    // through the store wrapper so it can re-anchor activeWorkspaceId before
-    // truncation drops cells beyond the new slot count — without that
-    // guard, a 4 → 2 cell shrink would evict the focused workspace and the
-    // entire grid would vanish.
-    if (ctx.isGridVisible.value) {
-      ctx.setGridLayout(layout).catch((err: unknown) => {
+    // The picker is shared between the terminal-toolbar Split button (which
+    // operates on the active workspace's tabs) and the WorkspaceLayoutChip in
+    // the hero strip (which operates on the multi-workspace grid). Dispatch
+    // by the picker's opener mode — see WorkspaceActionsCtx.layoutPickerMode.
+    const mode = ctx.layoutPickerMode.value;
+
+    if (mode === "grid" || (mode === "auto" && ctx.isGridVisible.value)) {
+      // When the grid is already visible, just re-shape it. Going through
+      // the store wrapper pre-empts active-cell truncation before truncation
+      // drops cells beyond the new slot count — without that guard a 4 → 2
+      // cell shrink would evict the focused workspace and the entire grid
+      // would vanish. When the grid is NOT visible yet (chip click in solo
+      // mode), boot it with the current workspace in slot 0.
+      const dispatch = ctx.isGridVisible.value ? ctx.setGridLayout(layout) : ctx.enableWorkspaceGrid(layout);
+      dispatch.catch((err: unknown) => {
         // eslint-disable-next-line no-console
-        console.error("[grid] setGridLayout failed:", err);
+        console.error("[grid] picker dispatch failed:", err);
       });
       return;
     }
+
+    // Tab-split path: build a split group from the active tab + siblings.
     const slots = LAYOUTS[layout]?.slots || 1;
     const tabs = ctx.workspaceTabs.value;
     const groupIds: string[] = [ctx.activeViewId.value!];

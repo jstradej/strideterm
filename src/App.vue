@@ -285,7 +285,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, inject, onErrorCaptured, onMounted, ref, watch } from "vue";
+import { computed, inject, onErrorCaptured, onMounted, onUnmounted, ref, watch } from "vue";
 import type { ComponentPublicInstance } from "vue";
 import type { Transport } from "./transport.js";
 import { useAppStore } from "./stores/app.js";
@@ -458,7 +458,21 @@ onMounted(() => {
   if (savedDockWidth && frameRef.value) {
     frameRef.value.style.setProperty("--notif-dock-width", `${savedDockWidth}px`);
   }
+  // Cell-header "+ Tab" buttons in the multi-workspace grid open the same
+  // TabPickerDropdown the toolbar's "+ Tab" button uses, but they live deep
+  // inside WorkspaceCell so we hand the anchor up via a window event rather
+  // than threading another emit through the grid stage.
+  window.addEventListener("open-tab-picker", onOpenTabPickerEvent);
 });
+
+onUnmounted(() => {
+  window.removeEventListener("open-tab-picker", onOpenTabPickerEvent);
+});
+
+function onOpenTabPickerEvent(event: Event): void {
+  const detail = (event as CustomEvent).detail as { anchorRect?: DOMRect } | undefined;
+  tabPickerAnchor.value = detail?.anchorRect ?? null;
+}
 
 onErrorCaptured((err, instance: ComponentPublicInstance | null, info) => {
   console.error(

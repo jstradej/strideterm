@@ -63,6 +63,14 @@ export const useAppStore = defineStore("app", () => {
   const selectedLanUrl = ref("");
   const contextMenu = ref<{ x: number; y: number; viewId: string } | null>(null); // { x, y, viewId } | null
   const layoutPickerAnchor = ref<DOMRect | null>(null); // DOMRect | null (for positioning)
+  // Which picker semantics to use when the user makes a selection:
+  //   "grid"  — always operate on the multi-workspace grid (enable / change layout)
+  //   "split" — always operate on the active workspace's tab-split group
+  //   "auto"  — legacy behaviour: dispatch by current state (grid layout if the
+  //             grid is visible, otherwise tab-split). Used by the
+  //             terminal-toolbar Split button.
+  // Set when the picker is opened, read by pickLayout.
+  const layoutPickerMode = ref<"grid" | "split" | "auto">("auto");
   const starFilterActive = ref(false);
 
   // --- Task recovery ---
@@ -825,6 +833,8 @@ export const useAppStore = defineStore("app", () => {
     optimisticallyDeletedIds,
     isGridVisible,
     setGridLayout,
+    enableWorkspaceGrid,
+    layoutPickerMode,
     getApi,
     withSuppressedBroadcast,
   });
@@ -834,6 +844,7 @@ export const useAppStore = defineStore("app", () => {
     overlayProps,
     contextMenu,
     layoutPickerAnchor,
+    layoutPickerMode,
     payload,
     activeViewId,
     activeSessionId,
@@ -958,6 +969,7 @@ export const useAppStore = defineStore("app", () => {
     selectedLanUrl,
     contextMenu,
     layoutPickerAnchor,
+    layoutPickerMode,
     starFilterActive,
     pendingWorkspaceActivationId,
     pendingViewActivationId,

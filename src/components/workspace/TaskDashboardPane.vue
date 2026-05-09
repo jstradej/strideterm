@@ -1,6 +1,9 @@
 <template>
-  <div class="workspace-pane__body workspace-pane__body--task-dashboard">
-    <div class="td">
+  <div
+    class="workspace-pane__body workspace-pane__body--task-dashboard"
+    :class="{ 'workspace-pane__body--compact': compact }"
+  >
+    <div class="td" :class="{ 'td--compact': compact }">
       <!-- Header with controls -->
       <div class="td__header">
         <div class="td__title">
@@ -173,7 +176,10 @@ import TaskDashboardStatusTab from "./TaskDashboardStatusTab.vue";
 import TaskDashboardFilesTab from "./TaskDashboardFilesTab.vue";
 import TaskDashboardLogTab from "./TaskDashboardLogTab.vue";
 
-withDefaults(defineProps<{ workspaceId: string; showHeader?: boolean }>(), { showHeader: false });
+withDefaults(defineProps<{ workspaceId: string; showHeader?: boolean; compact?: boolean }>(), {
+  showHeader: false,
+  compact: false,
+});
 
 const store = useAppStore();
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -549,8 +555,12 @@ function onRejectVerdict() {
   scrollbar-color: rgba(255, 255, 255, 0.15) transparent;
 }
 /* Non-files tabs need their own scroll container since .td__body is grid
-   and doesn't scroll. Files tab hides overflow (inner editor handles it). */
+   and doesn't scroll. Files tab hides overflow (inner editor handles it).
+   `flex: 1` makes the section claim the full body height — without it
+   the section sized to its natural content and left a visible gap below
+   in small grid cells where the dashboard didn't fill the row visually. */
 .td__body :deep(.td__section) {
+  flex: 1;
   overflow-y: auto;
   overflow-x: hidden;
   min-height: 0;
@@ -592,5 +602,90 @@ function onRejectVerdict() {
 }
 .td__link-btn:hover {
   opacity: 0.8;
+}
+
+/* ── Compact mode (workspace-grid cells) ─────────────────────────────
+   Mirrors the mobile.css density conventions: tighter padding, smaller
+   fonts, slimmer tab strip. The dashboard's full-width chrome would eat
+   ~80 px out of every grid cell — in a 4-cell layout that's a third of
+   the cell gone before any content shows. The .compact variant collapses
+   it to ~40 px while keeping every action reachable. */
+.td--compact .td__header {
+  padding: 4px 8px;
+  gap: 6px;
+}
+.td--compact .td__title {
+  gap: 5px;
+}
+.td--compact .td__title h2 {
+  font-size: 12px;
+  max-width: none;
+}
+.td--compact .td__badge {
+  font-size: 9px;
+  padding: 1px 4px;
+}
+.td--compact .td__round,
+.td--compact .td__elapsed {
+  font-size: 10px;
+}
+.td--compact .td__controls {
+  gap: 2px;
+}
+.td--compact .td__controls :deep(.button) {
+  padding: 1px 6px;
+  font-size: 10px;
+  height: auto;
+  min-height: 0;
+}
+.td--compact .td__tabs {
+  padding: 0 8px;
+}
+.td--compact .td__tab {
+  padding: 3px 7px;
+  font-size: 10px;
+}
+.td--compact .td__body {
+  padding: 8px;
+  font-size: 12px;
+}
+.td--compact :deep(.td__hero) {
+  padding: 12px 14px 14px;
+  gap: 8px;
+  margin: 4px 0 8px;
+  border-radius: 5px;
+}
+.td--compact :deep(.td__hero-eyebrow) {
+  font-size: 9px;
+}
+.td--compact :deep(.td__hero-desc) {
+  font-size: 13px;
+}
+.td--compact :deep(.td__hero-textarea) {
+  min-height: 50px;
+  font-size: 11px;
+  padding: 6px 8px;
+}
+.td--compact :deep(.td__hero-meta-item) {
+  min-width: 70px;
+  padding: 4px 8px;
+  gap: 1px;
+}
+.td--compact :deep(.td__hero-meta-label) {
+  font-size: 8px;
+}
+.td--compact :deep(.td__hero-meta-value) {
+  font-size: 11px;
+}
+.td--compact :deep(.td__hero-start) {
+  padding: 6px 14px;
+  font-size: 12px;
+}
+.td--compact :deep(.td__field) {
+  margin-bottom: 6px;
+}
+.td--compact :deep(.td__field > span) {
+  font-size: 9px;
+  margin-bottom: 2px;
 }
 </style>

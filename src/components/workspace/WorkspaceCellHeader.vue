@@ -3,16 +3,30 @@
     <button
       ref="pickerBtnRef"
       type="button"
-      class="workspace-cell-header__btn"
-      title="Pick a workspace for this cell"
+      class="workspace-cell-header__btn workspace-cell-header__picker"
+      :title="`Pick a workspace for this cell — currently: ${wsName}`"
       @click="onOpenPicker"
     >
-      ☰
-    </button>
-    <span class="workspace-cell-header__name" :title="wsName">
       <span v-if="wsIcon" class="workspace-cell-header__icon">{{ wsIcon }}</span>
-      {{ wsName }}
-    </span>
+      <span class="workspace-cell-header__name">{{ wsName }}</span>
+      <span class="workspace-cell-header__chev" aria-hidden="true">▾</span>
+    </button>
+
+    <!-- Tab strip is injected via slot from WorkspaceCell so the cell's
+         workspace tabs share the header row instead of stacking below it. -->
+    <div class="workspace-cell-header__tabs">
+      <slot />
+    </div>
+
+    <button
+      ref="addTabBtnRef"
+      type="button"
+      class="workspace-cell-header__btn"
+      title="Add a new tab to this workspace — pick a Shell, Claude Code, Codex, Gemini, Files, Browser, or any other tab template."
+      @click="onAddTab"
+    >
+      +
+    </button>
     <button
       v-for="action in swapActions"
       :key="action.targetIndex"
@@ -49,10 +63,12 @@ const emit = defineEmits<{
   (e: "open-picker", anchorRect: DOMRect): void;
   (e: "clear"): void;
   (e: "swap", targetIndex: number): void;
+  (e: "add-tab", anchorRect: DOMRect): void;
 }>();
 
 const store = useAppStore();
 const pickerBtnRef = ref<HTMLButtonElement | null>(null);
+const addTabBtnRef = ref<HTMLButtonElement | null>(null);
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyApi = any;
@@ -105,5 +121,10 @@ const swapActions = computed<SwapAction[]>(() => {
 function onOpenPicker(): void {
   if (!pickerBtnRef.value) return;
   emit("open-picker", pickerBtnRef.value.getBoundingClientRect());
+}
+
+function onAddTab(): void {
+  if (!addTabBtnRef.value) return;
+  emit("add-tab", addTabBtnRef.value.getBoundingClientRect());
 }
 </script>

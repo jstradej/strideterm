@@ -6,12 +6,16 @@
    `1fr` track defaults to its min-content size, which collapsed the
    bottom row of the grid when the cell content was unbreakable. The
    PaneStage uses the same trick. */
+/* Density target: mobile.css. The grid is meant to fit four workspaces in
+   one viewport, so we follow the same compact padding/gaps the mobile
+   layout uses (1–2 px instead of 6–10 px) — desktop users zooming into
+   four cells need every pixel of content area. */
 .workspace-grid {
   display: grid;
   height: 100%;
   min-height: 0;
-  gap: 3px;
-  padding: 3px;
+  gap: 2px;
+  padding: 2px;
   background: var(--bg);
   overflow: hidden;
   align-content: stretch;
@@ -64,10 +68,11 @@
   min-width: 0;
   min-height: 0;
   overflow: hidden;
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr);
   border: 1px solid var(--border);
-  border-radius: 4px;
+  border-radius: 3px;
 }
 
 .workspace-grid__cell--focused {
@@ -77,8 +82,8 @@
 /* ── Per-cell workspace container ──────────────────────────────────── */
 
 .workspace-cell {
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
   height: 100%;
   overflow: hidden;
   background: var(--bg);
@@ -88,11 +93,37 @@
   background: color-mix(in srgb, var(--accent), transparent 88%);
 }
 
+/* Force the embedded pane component to fill the available cell height.
+   Pane components (TaskDashboardPane, GitPane, FileManagerPane, …) render
+   a plain `.workspace-pane__body` as their root — without a sized parent
+   they collapse to natural content height and leave the bottom of the
+   cell empty. Using grid here guarantees the single rendered child
+   stretches across the row regardless of its intrinsic size. */
 .workspace-cell__pane {
-  flex: 1;
   min-height: 0;
+  min-width: 0;
   overflow: hidden;
   position: relative;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr);
+}
+
+/* Belt-and-braces: the parent grid track already stretches its single
+   item, but several pane bodies (task-dashboard, headless-judge, file
+   manager) ship their own `<style scoped>` sizing rules that depend on
+   the OWN root being sized like a flex/grid container. If the rendered
+   root is `.workspace-pane__body` without the modifier-specific scoped
+   rule (e.g. for terminal panes), `align-self: stretch` alone leaves the
+   element at content height because `.workspace-pane__body` declares no
+   height of its own. Pinning every direct child to the full track keeps
+   those panes filling the cell regardless of which scoped rules they
+   carry. */
+.workspace-cell__pane > * {
+  min-height: 0;
+  min-width: 0;
+  width: 100%;
+  height: 100%;
 }
 
 .workspace-cell__no-content {
@@ -101,7 +132,7 @@
   justify-content: center;
   height: 100%;
   color: var(--muted);
-  font-size: 12px;
+  font-size: 11px;
 }
 
 /* Drag-over highlight */
@@ -135,11 +166,11 @@
 .workspace-cell__pick-btn {
   background: none;
   border: 1px dashed var(--border);
-  border-radius: 4px;
+  border-radius: 3px;
   color: var(--muted);
   cursor: pointer;
-  font-size: 12px;
-  padding: 6px 12px;
+  font-size: 11px;
+  padding: 4px 10px;
   transition:
     border-color 0.15s,
     color 0.15s;
@@ -152,29 +183,70 @@
 
 /* ── Cell header ──────────────────────────────────────────────────── */
 
+/* Single row that combines the workspace picker (icon + name + chevron),
+   the workspace's compact tab strip, and the cell action buttons (swap
+   arrows + clear). Stacking the picker label and tabs in separate rows
+   wasted ~22 px of vertical real estate per cell — meaningful in a 2×2
+   grid where every cell is already a quarter of the viewport.
+
+   Heights/fonts mirror mobile.css density: 20 px row, 10 px text. */
 .workspace-cell-header {
   display: flex;
-  align-items: center;
-  gap: 4px;
-  padding: 2px 4px;
+  align-items: stretch;
+  gap: 2px;
+  padding: 0 2px;
   background: var(--panel);
   border-bottom: 1px solid var(--border);
-  min-height: 24px;
+  min-height: 20px;
+  height: 20px;
   flex-shrink: 0;
 }
 
+.workspace-cell-header__picker {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  flex-shrink: 0;
+  max-width: 45%;
+  border: none;
+  background: none;
+  color: var(--text);
+  cursor: pointer;
+  font: inherit;
+  font-size: 10px;
+  line-height: 1;
+  padding: 1px 5px;
+  border-radius: 2px;
+}
+
+.workspace-cell-header__picker:hover {
+  background: rgba(var(--tint), 0.06);
+}
+
+.workspace-cell-header__icon {
+  flex-shrink: 0;
+  font-size: 11px;
+}
+
 .workspace-cell-header__name {
-  flex: 1;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 11px;
-  color: var(--text);
 }
 
-.workspace-cell-header__icon {
-  margin-right: 3px;
+.workspace-cell-header__chev {
+  font-size: 8px;
+  color: var(--muted);
+  flex-shrink: 0;
+}
+
+.workspace-cell-header__tabs {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  overflow: hidden;
 }
 
 .workspace-cell-header__btn {
@@ -182,11 +254,12 @@
   border: none;
   color: var(--muted);
   cursor: pointer;
-  font-size: 12px;
-  padding: 1px 4px;
-  border-radius: 3px;
+  font-size: 11px;
+  padding: 0 3px;
+  border-radius: 2px;
   flex-shrink: 0;
   line-height: 1;
+  align-self: center;
   transition:
     color 0.1s,
     background 0.1s;
@@ -203,18 +276,21 @@
 
 /* ── Compact tab strip ────────────────────────────────────────────── */
 
+/* Lives inside .workspace-cell-header__tabs so the row already has its own
+   padding, background, and border — strip those here. */
 .tab-strip--compact {
-  flex-shrink: 0;
-  padding: 0 2px;
-  height: 22px;
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  height: 100%;
   overflow-x: auto;
   overflow-y: hidden;
   scrollbar-width: none;
   display: flex;
   align-items: center;
   gap: 1px;
-  background: var(--panel);
-  border-bottom: 1px solid var(--border);
+  background: transparent;
+  border-bottom: none;
 }
 
 .tab-strip--compact::-webkit-scrollbar {
@@ -222,11 +298,12 @@
 }
 
 .tab-strip--compact .tab {
-  padding: 2px 6px;
-  height: 18px;
-  font-size: 10px;
+  padding: 1px 5px;
+  height: 16px;
+  font-size: 9px;
   white-space: nowrap;
   flex-shrink: 0;
+  border-radius: 2px;
 }
 
 .tab-strip--compact .tab small {
@@ -275,8 +352,8 @@
   background: rgba(var(--tint), 0.06);
 }
 
-.ws-picker__row--occupied {
-  opacity: 0.55;
+.ws-picker__row--current {
+  background: color-mix(in srgb, var(--accent), transparent 90%);
 }
 
 .ws-picker__chevron {
@@ -318,7 +395,7 @@
   text-align: left;
 }
 
-.ws-picker__row--occupied .ws-picker__item {
+.ws-picker__row--current .ws-picker__item {
   border-left-color: var(--accent);
 }
 
