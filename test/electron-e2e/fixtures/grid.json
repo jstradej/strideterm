@@ -1,0 +1,99 @@
+{
+  "activeWorkspaceId": "ws-frontend",
+  "activeProjectId": "ws-frontend",
+  "activeProfileId": "default",
+  "settings": {
+    "theme": "dark",
+    "sidebarWidth": 220,
+    "sidebarCollapsed": false,
+    "remoteAccess": {
+      "enabled": false,
+      "host": "127.0.0.1",
+      "port": 0,
+      "token": "test-token",
+      "customPublicUrl": "",
+      "cloudflaredPath": ""
+    },
+    "integrations": {
+      "azureDevops": { "enabled": false, "connections": [], "reviewRoot": "", "defaultPollSeconds": 600 },
+      "github": { "enabled": false, "connections": [], "reviewRoot": "", "defaultPollSeconds": 600 },
+      "telegram": { "enabled": false, "defaultPollSeconds": 600, "connections": [] }
+    },
+    "tabTemplates": [
+      { "id": "shell", "title": "Shell", "command": "", "icon": "terminal" },
+      { "id": "claude", "title": "Claude Code", "command": "claude", "icon": "bot" }
+    ]
+  },
+  "tabTemplates": [
+    { "id": "shell", "title": "Shell", "command": "", "icon": "terminal" },
+    { "id": "claude", "title": "Claude Code", "command": "claude", "icon": "bot" }
+  ],
+  "profiles": [
+    {
+      "id": "default",
+      "name": "Default",
+      "color": "",
+      "workspaceIds": ["ws-frontend", "ws-backend", "ws-infra"],
+      "projectIds": ["ws-frontend", "ws-backend", "ws-infra"]
+    }
+  ],
+  "workspaces": [
+    {
+      "id": "ws-frontend",
+      "name": "Frontend App",
+      "icon": "FE",
+      "color": "#4a9eff",
+      "kind": "terminal",
+      "source": "manual",
+      "pluginId": "",
+      "cwd": "",
+      "notes": "",
+      "profileId": "default",
+      "connectionId": "",
+      "activePanelId": "panel-shell",
+      "panels": [
+        { "id": "panel-shell", "title": "Shell", "command": "", "launch": null, "shell": true, "startup": "manual" }
+      ]
+    },
+    {
+      "id": "ws-backend",
+      "name": "Backend API",
+      "icon": "BE",
+      "color": "#ff9f43",
+      "kind": "terminal",
+      "source": "manual",
+      "pluginId": "",
+      "cwd": "",
+      "notes": "",
+      "profileId": "default",
+      "connectionId": "",
+      "activePanelId": "panel-shell-2",
+      "panels": [
+        { "id": "panel-shell-2", "title": "Shell", "command": "", "launch": null, "shell": true, "startup": "manual" },
+        { "id": "panel-tests", "title": "Tests", "command": "", "launch": null, "shell": true, "startup": "manual" }
+      ]
+    },
+    {
+      "id": "ws-infra",
+      "name": "Infrastructure",
+      "icon": "IN",
+      "color": "#2ed573",
+      "kind": "terminal",
+      "source": "manual",
+      "pluginId": "",
+      "cwd": "",
+      "notes": "",
+      "profileId": "default",
+      "connectionId": "",
+      "activePanelId": "panel-shell-3",
+      "panels": [
+        { "id": "panel-shell-3", "title": "Shell", "command": "", "launch": null, "shell": true, "startup": "manual" }
+      ]
+    }
+  ],
+  "workspaceGrid": {
+    "layout": "cols",
+    "cellWorkspaceIds": ["ws-frontend", "ws-backend"]
+  },
+  "projects": []
+}

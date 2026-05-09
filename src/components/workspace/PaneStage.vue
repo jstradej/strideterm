@@ -50,7 +50,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, watch, nextTick, defineAsyncComponent } from "vue";
+import { computed, watch, nextTick } from "vue";
 import { useAppStore } from "../../stores/app.js";
 import { useTerminalStore } from "../../stores/terminal.js";
 import {
@@ -63,16 +63,7 @@ import {
 } from "../../app/helpers.js";
 import PaneShell from "../layout/PaneShell.vue";
 import TerminalPane from "./TerminalPane.vue";
-const GitPane = defineAsyncComponent(() => import("./GitPane.vue"));
-const DockerPane = defineAsyncComponent(() => import("./DockerPane.vue"));
-const AzureInboxPane = defineAsyncComponent(() => import("./AzureInboxPane.vue"));
-const AzureReviewPane = defineAsyncComponent(() => import("./AzureReviewPane.vue"));
-const GitHubInboxPane = defineAsyncComponent(() => import("./GitHubInboxPane.vue"));
-// GitHubReviewPane removed — AzureReviewPane is provider-aware and handles both Azure and GitHub reviews
-const BrowserPane = defineAsyncComponent(() => import("./BrowserPane.vue"));
-const FileManagerPane = defineAsyncComponent(() => import("./FileManagerPane.vue"));
-const TaskDashboardPane = defineAsyncComponent(() => import("./TaskDashboardPane.vue"));
-const HeadlessJudgePane = defineAsyncComponent(() => import("./HeadlessJudgePane.vue"));
+import { resolvePaneComponent, resolvePaneProps } from "../../app/pane-resolver.js";
 
 const AREA_NAMES = ["a", "b", "c", "d"];
 const AREA_LAYOUTS = new Set(["top-split", "left-split"]);
@@ -429,33 +420,12 @@ function nonTerminalPaneBaseActions(tab: Tab) {
   return [];
 }
 
-const PANE_COMPONENTS = {
-  git: GitPane,
-  docker: DockerPane,
-  azure: AzureInboxPane,
-  review: AzureReviewPane,
-  github: GitHubInboxPane,
-  browser: BrowserPane,
-  files: FileManagerPane,
-  "task-dashboard": TaskDashboardPane,
-  "headless-judge": HeadlessJudgePane,
-};
-
 function paneComponent(type: string) {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  return (PANE_COMPONENTS as Record<string, any>)[type] || null;
+  return resolvePaneComponent(type);
 }
 
 function paneProps(tab: Tab) {
-  if (tab.type === "git") return { workspaceId: tab.id.replace(/^git:/, "") };
-  if (tab.type === "docker") return { workspaceId: tab.id.replace(/^docker:/, "") };
-  if (tab.type === "azure") return { workspaceId: tab.id.replace(/^azure:/, "") };
-  if (tab.type === "github") return { workspaceId: tab.id.replace(/^github:/, "") };
-  if (tab.type === "review") return { workspaceId: tab.id.replace(/^review:/, "") };
-  if (tab.type === "files") return { workspaceId: tab.id.replace(/^files:/, "") };
-  if (tab.type === "task-dashboard") return { workspaceId: tab.id.replace(/^task-dashboard:/, "") };
-  if (tab.type === "headless-judge") return { sessionId: tab.id };
-  return { tab };
+  return resolvePaneProps(tab.type, tab.id) || { tab };
 }
 
 function onStageMousedown(event: MouseEvent) {

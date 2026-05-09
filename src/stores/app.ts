@@ -184,10 +184,7 @@ export const useAppStore = defineStore("app", () => {
 
   // --- Grid actions ---
 
-  async function enableWorkspaceGrid(
-    layout: string,
-    preset?: { workspaceIds: (string | null)[] },
-  ): Promise<void> {
+  async function enableWorkspaceGrid(layout: string, preset?: { workspaceIds: (string | null)[] }): Promise<void> {
     const ids = preset?.workspaceIds;
     if (ids) {
       const activeWsId = (payload.value as AnyApi)?.appState?.activeWorkspaceId;

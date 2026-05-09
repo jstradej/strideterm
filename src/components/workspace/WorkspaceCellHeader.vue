@@ -15,7 +15,8 @@
     <button
       type="button"
       class="workspace-cell-header__btn"
-      title="Swap this cell with another"
+      :class="{ 'workspace-cell-header__btn--swap-active': swapPending }"
+      :title="swapPending ? 'Cancel swap' : 'Swap this cell with another (click ↔ on a second cell to swap)'"
       @click="$emit('swap-start')"
     >
       ↔
@@ -39,6 +40,7 @@ const props = defineProps<{
   workspaceId: string;
   cellIndex: number;
   focused: boolean;
+  swapPending?: boolean;
 }>();
 
 defineEmits<{

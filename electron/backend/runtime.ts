@@ -3654,7 +3654,9 @@ export async function createRuntime({
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async enableWorkspaceGrid(layout: any, workspaceIds?: (string | null)[]) {
       await store.mutate((draft: AppState) => {
-        const slots = { cols: 2, rows: 2, "top-split": 3, "left-split": 3, grid: 4 }[String(layout)] as number | undefined;
+        const slots = { cols: 2, rows: 2, "top-split": 3, "left-split": 3, grid: 4 }[String(layout)] as
+          | number
+          | undefined;
         if (!slots) return;
         const ids: (string | null)[] = [];
         for (let i = 0; i < slots; i++) {
@@ -3678,7 +3680,9 @@ export async function createRuntime({
     async setGridLayout(layout: any) {
       await store.mutate((draft: AppState) => {
         if (!draft.workspaceGrid) return;
-        const slots = { cols: 2, rows: 2, "top-split": 3, "left-split": 3, grid: 4 }[String(layout)] as number | undefined;
+        const slots = { cols: 2, rows: 2, "top-split": 3, "left-split": 3, grid: 4 }[String(layout)] as
+          | number
+          | undefined;
         if (!slots) return;
         const existing = draft.workspaceGrid.cellWorkspaceIds.filter((id) => id !== null);
         const ids: (string | null)[] = [];

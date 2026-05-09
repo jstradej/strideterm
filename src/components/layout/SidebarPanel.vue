@@ -453,6 +453,24 @@ function onMenuAction(action: string): void {
 function openInGrid(parentId: string): void {
   const allWs = store.filteredWorkspaces;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const payload = store.payload as any;
+  const sessions = payload?.attention?.sessions || {};
+  const taskRunner = payload?.taskRunner || {};
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  function wsActivity(w: any): number {
+    if (taskRunner[w.id]?.state === "running") return Infinity;
+    let latest = 0;
+    for (const panel of w.panels || []) {
+      for (const key of [`${w.id}:${panel.id}`, panel.id]) {
+        const t = sessions[key]?.lastActivity ? new Date(sessions[key].lastActivity).getTime() : 0;
+        if (t > latest) latest = t;
+      }
+    }
+    return latest;
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const children = allWs.filter((w: any) => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const a = w as any;
@@ -461,10 +479,30 @@ function openInGrid(parentId: string): void {
       a.quickfix?.parentWorkspaceId === parentId ||
       a.task?.parentWorkspaceId === parentId
     );
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  }) as any[];
+
+  // Sort children: starred first, then by descending activity
+  children.sort((a, b) => {
+    const starA = a.starred ? 1 : 0;
+    const starB = b.starred ? 1 : 0;
+    if (starB !== starA) return starB - starA;
+    return wsActivity(b) - wsActivity(a);
   });
-  // Take up to 3 most recent children (prefer starred, then order as shown)
+
   const top3 = children.slice(0, 3).map((w) => w.id);
   const slots: (string | null)[] = [parentId, ...top3];
+
+  // Fill remaining slots with starred workspaces from same profile (not already included)
+  if (slots.length < 4) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const pinned = allWs.filter((w: any) => w.starred && !slots.includes(w.id));
+    for (const p of pinned) {
+      if (slots.length >= 4) break;
+      slots.push(p.id);
+    }
+  }
+
   while (slots.length < 4) slots.push(null);
   store.enableWorkspaceGrid("grid", { workspaceIds: slots.slice(0, 4) });
 }

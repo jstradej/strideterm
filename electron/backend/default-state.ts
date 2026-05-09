@@ -3,7 +3,14 @@ import os from "node:os";
 import path from "node:path";
 import { randomBytes } from "node:crypto";
 import { APP_CONFIG } from "../../config/app-config.js";
-import type { AppState, WorkspaceState, Profile, TabTemplate, WorkspaceGridState, WorkspaceGridLayout } from "../shared/types/state.js";
+import type {
+  AppState,
+  WorkspaceState,
+  Profile,
+  TabTemplate,
+  WorkspaceGridState,
+  WorkspaceGridLayout,
+} from "../shared/types/state.js";
 
 const UTF8_DECODER = (() => {
   try {

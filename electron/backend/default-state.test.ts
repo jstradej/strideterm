@@ -1,5 +1,11 @@
 import { describe, expect, test } from "vitest";
-import { createAccessToken, createDefaultState, normalizeWorkspace, normalizeState, normalizeWorkspaceGrid } from "./default-state.js";
+import {
+  createAccessToken,
+  createDefaultState,
+  normalizeWorkspace,
+  normalizeState,
+  normalizeWorkspaceGrid,
+} from "./default-state.js";
 
 describe("default state", () => {
   test("createAccessToken returns a non-trivial token", () => {
@@ -569,14 +575,9 @@ describe("default state", () => {
 });
 
 describe("normalizeWorkspaceGrid", () => {
-  const ws = (id: string, profileId = "default") => ({
-    id,
-    profileId,
-    name: id,
-    command: "",
-    panels: [],
-    icon: "",
-  });
+  const ws = (id: string, profileId = "default") =>
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ({ id, profileId, name: id, command: "", panels: [], icon: "" }) as any;
 
   test("returns null for null/non-object input", () => {
     expect(normalizeWorkspaceGrid(null, [], "default")).toBeNull();
@@ -624,11 +625,7 @@ describe("normalizeWorkspaceGrid", () => {
   });
 
   test("pads missing slots with null", () => {
-    const result = normalizeWorkspaceGrid(
-      { layout: "cols", cellWorkspaceIds: ["ws1"] },
-      [ws("ws1")],
-      "default",
-    );
+    const result = normalizeWorkspaceGrid({ layout: "cols", cellWorkspaceIds: ["ws1"] }, [ws("ws1")], "default");
     expect(result).not.toBeNull();
     expect(result!.cellWorkspaceIds).toEqual(["ws1", null]);
   });
@@ -636,11 +633,7 @@ describe("normalizeWorkspaceGrid", () => {
   test("returns a valid result for all supported layouts", () => {
     const workspaces = ["a", "b", "c", "d"].map((id) => ws(id));
     for (const layout of ["cols", "rows", "top-split", "left-split", "grid"]) {
-      const result = normalizeWorkspaceGrid(
-        { layout, cellWorkspaceIds: ["a", "b", "c", "d"] },
-        workspaces,
-        "default",
-      );
+      const result = normalizeWorkspaceGrid({ layout, cellWorkspaceIds: ["a", "b", "c", "d"] }, workspaces, "default");
       expect(result).not.toBeNull();
       expect(result!.layout).toBe(layout);
     }

@@ -17,18 +17,18 @@
     >
       + Pick workspace…
     </button>
-    <WorkspacePickerPopover
-      v-if="showPicker"
-      :cell-index="cellIndex"
-      @close="showPicker = false"
-    />
+    <WorkspacePickerPopover v-if="showPicker" :cell-index="cellIndex" @close="showPicker = false" />
   </div>
 
   <!-- Workspace slot -->
   <div
     v-else
     class="workspace-cell"
-    :class="{ 'workspace-cell--focused': focused, 'workspace-cell--drag-over': dragOver }"
+    :class="{
+      'workspace-cell--focused': focused,
+      'workspace-cell--drag-over': dragOver,
+      'workspace-cell--swap-pending': isSwapPending,
+    }"
     @mousedown.capture="onMousedown"
     @dragover.prevent="onDragover"
     @dragleave="onDragleave"
@@ -38,20 +38,18 @@
       :workspace-id="workspaceId"
       :cell-index="cellIndex"
       :focused="focused"
+      :swap-pending="isSwapPending"
       @open-picker="showPicker = true"
       @clear="onClear"
-      @swap-start="swapSource = cellIndex"
+      @swap-start="$emit('swap-start')"
     />
 
     <!-- Compact tab strip for this cell's workspace -->
-    <TabStrip
-      :workspace-id="workspaceId"
-      compact
-    />
+    <TabStrip :workspace-id="workspaceId" compact />
 
     <!-- Active pane content -->
     <div class="workspace-cell__pane">
-      <template v-if="activeViewType === 'terminal'">
+      <template v-if="activeViewType === 'terminal' && activeViewId">
         <TerminalPane :session-id="activeViewId" />
       </template>
       <template v-else-if="paneComponent">
@@ -62,16 +60,12 @@
       </div>
     </div>
 
-    <WorkspacePickerPopover
-      v-if="showPicker"
-      :cell-index="cellIndex"
-      @close="showPicker = false"
-    />
+    <WorkspacePickerPopover v-if="showPicker" :cell-index="cellIndex" @close="showPicker = false" />
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, ref, onMounted, onUnmounted, defineAsyncComponent } from "vue";
+import { computed, ref, onMounted, onUnmounted } from "vue";
 import { useAppStore } from "../../stores/app.js";
 import { useTerminalStore } from "../../stores/terminal.js";
 import {
@@ -84,39 +78,33 @@ import {
   isTaskDashboardViewId,
   isBrowserViewId,
 } from "../../app/helpers.js";
+import { resolvePaneComponent, resolvePaneProps } from "../../app/pane-resolver.js";
 import WorkspaceCellHeader from "./WorkspaceCellHeader.vue";
 import WorkspacePickerPopover from "./WorkspacePickerPopover.vue";
 import TabStrip from "../layout/TabStrip.vue";
 import TerminalPane from "./TerminalPane.vue";
 
-const GitPane = defineAsyncComponent(() => import("./GitPane.vue"));
-const DockerPane = defineAsyncComponent(() => import("./DockerPane.vue"));
-const AzureInboxPane = defineAsyncComponent(() => import("./AzureInboxPane.vue"));
-const AzureReviewPane = defineAsyncComponent(() => import("./AzureReviewPane.vue"));
-const GitHubInboxPane = defineAsyncComponent(() => import("./GitHubInboxPane.vue"));
-const BrowserPane = defineAsyncComponent(() => import("./BrowserPane.vue"));
-const FileManagerPane = defineAsyncComponent(() => import("./FileManagerPane.vue"));
-const TaskDashboardPane = defineAsyncComponent(() => import("./TaskDashboardPane.vue"));
-const HeadlessJudgePane = defineAsyncComponent(() => import("./HeadlessJudgePane.vue"));
-
 const props = defineProps<{
   workspaceId: string | null;
   cellIndex: number;
   focused: boolean;
+  swapPendingCell?: number | null;
 }>();
 
 const emit = defineEmits<{
   (e: "focus"): void;
+  (e: "swap-start"): void;
 }>();
 
 const store = useAppStore();
 const termStore = useTerminalStore();
 const showPicker = ref(false);
-const swapSource = ref<number | null>(null);
 const dragOver = ref(false);
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyApi = any;
+
+const isSwapPending = computed(() => props.swapPendingCell != null && props.swapPendingCell === props.cellIndex);
 
 const workspaceEntry = computed(() => {
   if (!props.workspaceId) return null;
@@ -155,35 +143,9 @@ const activeViewType = computed<string>(() => {
   return "terminal";
 });
 
-const paneComponent = computed(() => {
-  const type = activeViewType.value;
-  const map: Record<string, unknown> = {
-    git: GitPane,
-    docker: DockerPane,
-    azure: AzureInboxPane,
-    review: AzureReviewPane,
-    github: GitHubInboxPane,
-    browser: BrowserPane,
-    files: FileManagerPane,
-    "task-dashboard": TaskDashboardPane,
-    "headless-judge": HeadlessJudgePane,
-  };
-  return (map[type] as AnyApi) ?? null;
-});
+const paneComponent = computed(() => resolvePaneComponent(activeViewType.value));
 
-const paneProps = computed(() => {
-  const type = activeViewType.value;
-  const viewId = activeViewId.value || "";
-  if (type === "git") return { workspaceId: viewId.replace(/^git:/, "") };
-  if (type === "docker") return { workspaceId: viewId.replace(/^docker:/, "") };
-  if (type === "azure") return { workspaceId: viewId.replace(/^azure:/, "") };
-  if (type === "github") return { workspaceId: viewId.replace(/^github:/, "") };
-  if (type === "review") return { workspaceId: viewId.replace(/^review:/, "") };
-  if (type === "files") return { workspaceId: viewId.replace(/^files:/, "") };
-  if (type === "task-dashboard") return { workspaceId: viewId.replace(/^task-dashboard:/, "") };
-  if (type === "headless-judge") return { sessionId: viewId };
-  return {};
-});
+const paneProps = computed(() => resolvePaneProps(activeViewType.value, activeViewId.value || ""));
 
 function onMousedown(event: MouseEvent): void {
   if (!props.focused) {

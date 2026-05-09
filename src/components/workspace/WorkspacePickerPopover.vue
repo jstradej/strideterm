@@ -19,8 +19,11 @@
           @click="pick(node.id)"
         >
           <span class="ws-picker__indent" :style="`width:${node.depth * 12}px`"></span>
+          <span v-if="node.starred" class="ws-picker__star">★</span>
           <span class="ws-picker__icon">{{ node.icon }}</span>
           <span class="ws-picker__name">{{ node.name }}</span>
+          <span v-if="node.kindCounts" class="ws-picker__kind-counts">{{ node.kindCounts }}</span>
+          <span v-if="node.breadcrumb && query" class="ws-picker__breadcrumb">(under {{ node.breadcrumb }})</span>
           <span v-if="occupiedIds.has(node.id)" class="ws-picker__badge">in grid</span>
         </button>
         <button
@@ -83,6 +86,48 @@ interface TreeNode {
   color: string;
   depth: number;
   childCount: number;
+  kindCounts: string;
+  breadcrumb: string;
+  starred: boolean;
+}
+
+function getLastActivity(wsId: string, panels: AnyApi[]): number {
+  const sessions = (store.payload as AnyApi)?.attention?.sessions || {};
+  let latest = 0;
+  for (const panel of panels) {
+    for (const key of [`${wsId}:${panel.id}`, panel.id]) {
+      const s = sessions[key];
+      if (s?.lastActivity) {
+        const t = new Date(s.lastActivity).getTime();
+        if (t > latest) latest = t;
+      }
+    }
+  }
+  return latest;
+}
+
+function isRunningTask(wsId: string): boolean {
+  const tr = (store.payload as AnyApi)?.taskRunner?.[wsId];
+  return tr?.state === "running" || tr?.state === "evaluating" || tr?.state === "judge-evaluating";
+}
+
+function activityScore(ws: AnyApi): number {
+  if (isRunningTask(ws.id)) return Infinity;
+  return getLastActivity(ws.id, ws.panels || []);
+}
+
+function buildKindCounts(childIds: string[], allWs: AnyApi[]): string {
+  const counts: Record<string, number> = {};
+  for (const id of childIds) {
+    const w = allWs.find((x: AnyApi) => x.id === id);
+    if (!w) continue;
+    const kind = w.kind || "terminal";
+    counts[kind] = (counts[kind] || 0) + 1;
+  }
+  const parts = Object.entries(counts)
+    .filter(([k]) => k !== "terminal" && k !== "manual")
+    .map(([k, n]) => `${n} ${k}`);
+  return parts.length ? `(${parts.join(", ")})` : "";
 }
 
 const tree = computed<TreeNode[]>(() => {
@@ -101,10 +146,23 @@ const tree = computed<TreeNode[]>(() => {
     }
   }
 
+  // Sort children of each parent: starred first, then by descending activity
+  for (const [pid, kids] of childrenOf.entries()) {
+    const sorted = [...kids].sort((a, b) => {
+      const wa = ws.find((x: AnyApi) => x.id === a);
+      const wb = ws.find((x: AnyApi) => x.id === b);
+      const starA = wa?.starred ? 1 : 0;
+      const starB = wb?.starred ? 1 : 0;
+      if (starB !== starA) return starB - starA;
+      return activityScore(wb) - activityScore(wa);
+    });
+    childrenOf.set(pid, sorted);
+  }
+
   // Filter by query
   let filtered = ws;
   if (q) {
-    filtered = ws.filter((w) => w.name?.toLowerCase().includes(q));
+    filtered = ws.filter((w: AnyApi) => w.name?.toLowerCase().includes(q));
   }
 
   // Build ordered list with depth
@@ -114,26 +172,58 @@ const tree = computed<TreeNode[]>(() => {
   function visit(id: string, depth: number): void {
     if (visited.has(id)) return;
     visited.add(id);
-    const w = ws.find((x) => x.id === id);
+    const w = ws.find((x: AnyApi) => x.id === id);
     if (!w) return;
     const children = childrenOf.get(id) || [];
-    result.push({ id, name: w.name || id, icon: w.icon || "", color: w.color || "var(--accent)", depth, childCount: children.length });
+    const parentId = parentOf.get(id);
+    const parentWs = parentId ? ws.find((x: AnyApi) => x.id === parentId) : null;
+    result.push({
+      id,
+      name: w.name || id,
+      icon: w.icon || "",
+      color: w.color || "var(--accent)",
+      depth,
+      childCount: children.length,
+      kindCounts: buildKindCounts(children, ws),
+      breadcrumb: parentWs?.name || "",
+      starred: !!w.starred,
+    });
     if (!collapsed.value.has(id) || q) {
       for (const cid of children) visit(cid, depth + 1);
     }
   }
 
-  // Roots first (workspaces without a parent in the filtered set)
-  for (const w of filtered) {
+  // Roots: sort roots by starred first, then activity
+  const roots = filtered.filter((w: AnyApi) => {
     const pid = parentOf.get(w.id);
-    if (!pid || !ws.find((x) => x.id === pid)) {
-      visit(w.id, 0);
-    }
+    return !pid || !ws.find((x: AnyApi) => x.id === pid);
+  });
+  roots.sort((a: AnyApi, b: AnyApi) => {
+    const starA = a.starred ? 1 : 0;
+    const starB = b.starred ? 1 : 0;
+    if (starB !== starA) return starB - starA;
+    return activityScore(b) - activityScore(a);
+  });
+
+  for (const w of roots) {
+    visit(w.id, 0);
   }
   // Remaining (children of filtered-out parents)
   for (const w of filtered) {
     if (!visited.has(w.id)) {
-      result.push({ id: w.id, name: w.name || w.id, icon: w.icon || "", color: w.color || "var(--accent)", depth: 0, childCount: 0 });
+      const parentId = parentOf.get(w.id);
+      const parentWs = parentId ? ws.find((x: AnyApi) => x.id === parentId) : null;
+      result.push({
+        id: w.id,
+        name: w.name || w.id,
+        icon: w.icon || "",
+        color: w.color || "var(--accent)",
+        depth: 0,
+        childCount: 0,
+        kindCounts: "",
+        breadcrumb: parentWs?.name || "",
+        starred: !!w.starred,
+      });
     }
   }
   return result;
@@ -145,7 +235,7 @@ function resolveParentId(ws: AnyApi, allWs: AnyApi[]): string | null {
   if (ws.task?.parentWorkspaceId) return ws.task.parentWorkspaceId;
   if ((ws.notes || "").startsWith("Worktree of ")) {
     const parentName = ws.name.split(" / ")[0];
-    const parent = allWs.find((c) => c.name === parentName && c.id !== ws.id);
+    const parent = allWs.find((c: AnyApi) => c.name === parentName && c.id !== ws.id);
     return parent?.id || null;
   }
   return null;

@@ -636,27 +636,32 @@ export function registerIpc(
   ipcMain.handle("workspace-grid:enable", async (_event, payload) =>
     withOperationPromise({ opId: "workspace-grid:enable" }, () => {
       const parsed = validateIpc(workspaceGridEnableSchema, payload, "workspace-grid:enable");
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       return (runtime as any).enableWorkspaceGrid(parsed.layout, parsed.workspaceIds);
     }),
   );
   ipcMain.handle("workspace-grid:disable", async () =>
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     withOperationPromise({ opId: "workspace-grid:disable" }, () => (runtime as any).disableWorkspaceGrid()),
   );
   ipcMain.handle("workspace-grid:set-layout", async (_event, payload) =>
     withOperationPromise({ opId: "workspace-grid:set-layout" }, () => {
       const parsed = validateIpc(workspaceGridSetLayoutSchema, payload, "workspace-grid:set-layout");
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       return (runtime as any).setGridLayout(parsed.layout);
     }),
   );
   ipcMain.handle("workspace-grid:set-cell", async (_event, payload) =>
     withOperationPromise({ opId: "workspace-grid:set-cell" }, () => {
       const parsed = validateIpc(workspaceGridSetCellSchema, payload, "workspace-grid:set-cell");
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       return (runtime as any).setGridCell(parsed.cellIndex, parsed.workspaceId);
     }),
   );
   ipcMain.handle("workspace-grid:swap-cells", async (_event, payload) =>
     withOperationPromise({ opId: "workspace-grid:swap-cells" }, () => {
       const parsed = validateIpc(workspaceGridSwapCellsSchema, payload, "workspace-grid:swap-cells");
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       return (runtime as any).swapGridCells(parsed.a, parsed.b);
     }),
   );

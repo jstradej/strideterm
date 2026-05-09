@@ -7,7 +7,7 @@
     @dragover.prevent="!compact && dragDrop.onDragover($event)"
     @dragleave="!compact && dragDrop.onDragleave($event)"
     @drop="!compact && dragDrop.onDrop($event)"
-    @dragend="!compact && dragDrop.onDragend($event)"
+    @dragend="!compact && dragDrop.onDragend()"
   >
     <button
       v-for="tab in tabModels"
@@ -28,7 +28,9 @@
       @click="store.activateView(tab.id).then(() => nextTick(() => termStore.focusActiveTerminal()))"
       @dblclick="!compact && tab.persistent && $emit('edit-tab', tab.id)"
       @dragstart="!compact && dragDrop.onDragstart($event)"
-      @contextmenu.prevent="!compact && $emit('contextmenu-tab', { x: $event.clientX, y: $event.clientY, viewId: tab.id })"
+      @contextmenu.prevent="
+        !compact && $emit('contextmenu-tab', { x: $event.clientX, y: $event.clientY, viewId: tab.id })
+      "
     >
       <span>{{ tab.title }}</span>
       <small v-if="tab.taskBadge" class="tab__task-badge" :title="tab.taskTooltip">{{ tab.taskBadge }}</small>
