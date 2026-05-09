@@ -89,10 +89,6 @@
   background: var(--bg);
 }
 
-.workspace-cell--focused .workspace-cell-header {
-  background: color-mix(in srgb, var(--accent), transparent 88%);
-}
-
 /* Force the embedded pane component to fill the available cell height.
    Pane components (TaskDashboardPane, GitPane, FileManagerPane, …) render
    a plain `.workspace-pane__body` as their root — without a sized parent
@@ -310,6 +306,14 @@
 
 .tab-strip--compact .tab small {
   display: none;
+}
+
+/* In a split, only the focused cell can be "the" active cell — so a full
+   accent underline in a non-focused cell competes with the focused cell
+   for attention. Dim the active-tab underline there; the focused cell
+   keeps the full accent underline as its active-cell indicator. */
+.workspace-cell:not(.workspace-cell--focused) .tab-strip--compact .tab--active {
+  border-bottom-color: color-mix(in srgb, var(--accent), transparent 70%);
 }
 
 .tab-strip-compact-picker__trigger {
