@@ -26,6 +26,9 @@
         :class="['workspace-card__status-dot', `workspace-card__status-dot--${statusDot.state}`]"
         :title="statusDot.label"
       ></span>
+      <span v-if="workspace.slotIndex" class="workspace-card__slot" :title="`Grid slot ${workspace.slotIndex}`">{{
+        workspace.slotIndex
+      }}</span>
     </span>
     <button
       type="button"
@@ -134,6 +137,7 @@ interface WorkspaceCardData {
   title?: string;
   id: string;
   inGrid?: boolean;
+  slotIndex?: number;
 }
 
 const props = defineProps<{

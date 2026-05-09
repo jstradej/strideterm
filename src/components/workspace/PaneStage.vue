@@ -64,7 +64,7 @@ import {
 import PaneShell from "../layout/PaneShell.vue";
 import TerminalPane from "./TerminalPane.vue";
 import { resolvePaneComponent, resolvePaneProps } from "../../app/pane-resolver.js";
-import { SLOT_BOXES, gridAreaStyle as _gridAreaStyle, type SlotBox } from "../../app/layout-geometry.js";
+import { SLOT_BOXES, gridAreaStyle as _gridAreaStyle, swapDirection, swapArrow } from "../../app/layout-geometry.js";
 interface Tab {
   id: string;
   type: string;
@@ -72,36 +72,6 @@ interface Tab {
   status?: string;
   persistent?: boolean;
   url?: string;
-}
-
-function boxCenter(box: SlotBox) {
-  return { r: (box.rMin + box.rMax) / 2, c: (box.cMin + box.cMax) / 2 };
-}
-
-// Direction from src → tgt. If the target's extent covers the source's
-// center on an axis, that axis contributes 0 (the target spans past me —
-// it's neither to my left nor right, or neither above nor below).
-function swapDirection(srcBox: SlotBox, tgtBox: SlotBox) {
-  const src = boxCenter(srcBox);
-  let dr = 0;
-  if (tgtBox.rMax < src.r) dr = -1;
-  else if (tgtBox.rMin > src.r) dr = 1;
-  let dc = 0;
-  if (tgtBox.cMax < src.c) dc = -1;
-  else if (tgtBox.cMin > src.c) dc = 1;
-  return [dr, dc];
-}
-
-function swapArrow(dr: number, dc: number) {
-  if (dr < 0 && dc < 0) return "↖";
-  if (dr < 0 && dc > 0) return "↗";
-  if (dr > 0 && dc < 0) return "↙";
-  if (dr > 0 && dc > 0) return "↘";
-  if (dr < 0) return "↑";
-  if (dr > 0) return "↓";
-  if (dc < 0) return "←";
-  if (dc > 0) return "→";
-  return "⇄";
 }
 
 const store = useAppStore();

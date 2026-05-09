@@ -1026,6 +1026,86 @@ body.platform-darwin .frame--sidebar-collapsed .sidebar__head {
   border-left: 2px solid color-mix(in srgb, var(--accent), transparent 50%);
 }
 
+/* "In split" sidebar group ─────────────────────────────────────────── */
+
+.workspace-list__split-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 4px 0 8px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--accent), transparent 94%);
+  margin-bottom: 6px;
+  position: relative;
+}
+
+.workspace-list__split-group::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 6px;
+  bottom: 12px;
+  width: 3px;
+  background: color-mix(in srgb, var(--accent), transparent 50%);
+  border-radius: 0 2px 2px 0;
+}
+
+.workspace-list__split-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: 2px 8px 4px 12px;
+  padding: 0;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+
+.workspace-list__split-disband {
+  background: none;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 0 4px;
+  font-size: 12px;
+  line-height: 1;
+  border-radius: 3px;
+}
+
+.workspace-list__split-disband:hover {
+  color: var(--text);
+  background: rgba(var(--tint), 0.08);
+}
+
+.workspace-list__divider {
+  border: none;
+  border-top: 1px dashed var(--border);
+  margin: 4px 8px 0;
+}
+
+.workspace-list__split-group .workspace-card {
+  margin-left: 8px;
+}
+
+/* Slot index badge inside the workspace card (shown only when card is in
+   grid; expressed via the workspace.slotIndex prop). The parent
+   .workspace-card__badge is already position: relative — see further down
+   in this file — so absolute positioning anchors to the badge. */
+.workspace-card__slot {
+  position: absolute;
+  bottom: -2px;
+  right: -2px;
+  font-size: 9px;
+  font-weight: 700;
+  background: var(--accent);
+  color: var(--bg);
+  border-radius: 2px;
+  padding: 0 3px;
+  line-height: 1.4;
+  pointer-events: none;
+}
+
 .project--attention,
 .workspace-card--attention {
   box-shadow: inset 2px 0 0 rgba(255, 111, 141, 0.55);

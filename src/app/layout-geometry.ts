@@ -50,3 +50,32 @@ export function gridAreaStyle(index: number, layout: string): Record<string, str
   const area = AREA_NAMES[index];
   return area ? { gridArea: area } : {};
 }
+
+function boxCenter(box: SlotBox): { r: number; c: number } {
+  return { r: (box.rMin + box.rMax) / 2, c: (box.cMin + box.cMax) / 2 };
+}
+
+// Direction from src → tgt. If the target's extent covers the source's
+// center on an axis, that axis contributes 0.
+export function swapDirection(srcBox: SlotBox, tgtBox: SlotBox): [number, number] {
+  const src = boxCenter(srcBox);
+  let dr = 0;
+  if (tgtBox.rMax < src.r) dr = -1;
+  else if (tgtBox.rMin > src.r) dr = 1;
+  let dc = 0;
+  if (tgtBox.cMax < src.c) dc = -1;
+  else if (tgtBox.cMin > src.c) dc = 1;
+  return [dr, dc];
+}
+
+export function swapArrow(dr: number, dc: number): string {
+  if (dr < 0 && dc < 0) return "↖";
+  if (dr < 0 && dc > 0) return "↗";
+  if (dr > 0 && dc < 0) return "↙";
+  if (dr > 0 && dc > 0) return "↘";
+  if (dr < 0) return "↑";
+  if (dr > 0) return "↓";
+  if (dc < 0) return "←";
+  if (dc > 0) return "→";
+  return "⇄";
+}

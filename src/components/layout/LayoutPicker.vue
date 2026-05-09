@@ -7,10 +7,9 @@
           :key="key"
           type="button"
           :class="['layout-picker__item', currentLayout === key && 'layout-picker__item--active']"
-          :disabled="store.isGridVisible"
           :title="
             store.isGridVisible
-              ? 'Switch to solo workspace to use tab split'
+              ? `Switch the workspace grid to the ${layout.label} layout — ${layout.slots} workspaces side-by-side. Excess slots beyond ${layout.slots} are dropped; pick new workspaces for empty slots from the cell hamburger menu.`
               : `Switch the active workspace to the ${layout.label} layout — shows ${layout.slots} tabs side-by-side. Pick which tabs fill the slots from the tab bar; right-click an empty slot to add a tab.`
           "
           @click="pickLayout(key)"
@@ -69,7 +68,12 @@ const pickerRef = ref<HTMLElement | null>(null);
 
 const nonSoloLayouts = computed(() => Object.entries(LAYOUTS).filter(([key]) => key !== "solo"));
 
-const currentLayout = computed(() => store.splitGroup?.layout || "solo");
+const currentLayout = computed(() => {
+  // In workspace-grid mode the picker controls the grid layout, not the
+  // per-workspace splitGroup; reflect that so the active swatch matches.
+  if (store.isGridVisible) return store.workspaceGrid?.layout || "solo";
+  return store.splitGroup?.layout || "solo";
+});
 
 const pickerStyle = ref<CSSProperties>({ position: "fixed", top: "0px", right: "0px", zIndex: 9999 });
 

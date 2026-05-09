@@ -1,56 +1,60 @@
 <template>
-  <div class="ws-picker" @click.stop @keydown.esc.stop="$emit('close')">
-    <input
-      ref="searchRef"
-      v-model="query"
-      type="text"
-      class="ws-picker__search"
-      placeholder="Search workspaces…"
-      @keydown.esc.stop="$emit('close')"
-    />
-    <div class="ws-picker__list">
-      <template v-for="node in tree" :key="node.id">
-        <button
-          type="button"
-          class="ws-picker__item"
-          :class="{ 'ws-picker__item--occupied': occupiedIds.has(node.id) }"
-          :style="`--accent:${node.color}`"
-          :title="node.name"
-          @click="pick(node.id)"
-        >
-          <span class="ws-picker__indent" :style="`width:${node.depth * 12}px`"></span>
-          <span v-if="node.starred" class="ws-picker__star">★</span>
-          <span class="ws-picker__icon">{{ node.icon }}</span>
-          <span class="ws-picker__name">{{ node.name }}</span>
-          <span v-if="node.kindCounts" class="ws-picker__kind-counts">{{ node.kindCounts }}</span>
-          <span v-if="node.breadcrumb && query" class="ws-picker__breadcrumb">(under {{ node.breadcrumb }})</span>
-          <span v-if="occupiedIds.has(node.id)" class="ws-picker__badge">in grid</span>
-        </button>
-        <button
-          v-if="node.childCount > 0 && query === ''"
-          type="button"
-          class="ws-picker__toggle"
-          :title="collapsed.has(node.id) ? 'Expand' : 'Collapse'"
-          @click.stop="toggleCollapse(node.id)"
-        >
-          {{ collapsed.has(node.id) ? "▶" : "▼" }}
-        </button>
-      </template>
-      <p v-if="tree.length === 0" class="ws-picker__empty">No workspaces found</p>
+  <Teleport to="body">
+    <div class="ws-picker__backdrop" @click="$emit('close')" @contextmenu.prevent="$emit('close')"></div>
+    <div ref="rootRef" class="ws-picker" :style="popoverStyle" @click.stop @keydown.esc.stop="$emit('close')">
+      <input
+        ref="searchRef"
+        v-model="query"
+        type="text"
+        class="ws-picker__search"
+        placeholder="Search workspaces…"
+        @keydown.esc.stop="$emit('close')"
+      />
+      <div class="ws-picker__list">
+        <template v-for="node in tree" :key="node.id">
+          <div class="ws-picker__row" :class="{ 'ws-picker__row--occupied': occupiedIds.has(node.id) }">
+            <button
+              v-if="node.childCount > 0 && query === ''"
+              type="button"
+              class="ws-picker__chevron"
+              :title="collapsed.has(node.id) ? 'Expand' : 'Collapse'"
+              @click.stop="toggleCollapse(node.id)"
+            >
+              {{ collapsed.has(node.id) ? "▶" : "▼" }}
+            </button>
+            <span v-else class="ws-picker__chevron ws-picker__chevron--placeholder"></span>
+            <button
+              type="button"
+              class="ws-picker__item"
+              :style="`--accent:${node.color};padding-left:${4 + node.depth * 14}px`"
+              :title="node.name"
+              @click="pick(node.id)"
+            >
+              <span v-if="node.starred" class="ws-picker__star">★</span>
+              <span class="ws-picker__icon">{{ node.icon }}</span>
+              <span class="ws-picker__name">{{ node.name }}</span>
+              <span v-if="node.kindCounts" class="ws-picker__kind-counts">{{ node.kindCounts }}</span>
+              <span v-if="node.breadcrumb && query" class="ws-picker__breadcrumb">(under {{ node.breadcrumb }})</span>
+              <span v-if="occupiedIds.has(node.id)" class="ws-picker__badge">in grid</span>
+            </button>
+          </div>
+        </template>
+        <p v-if="tree.length === 0" class="ws-picker__empty">No workspaces found</p>
+      </div>
+      <div class="ws-picker__footer">
+        <button type="button" class="ws-picker__cancel" @click="$emit('close')">Cancel</button>
+      </div>
     </div>
-    <div class="ws-picker__footer">
-      <button type="button" class="ws-picker__cancel" @click="$emit('close')">Cancel</button>
-    </div>
-  </div>
-  <div class="ws-picker__backdrop" @click="$emit('close')"></div>
+  </Teleport>
 </template>
 
 <script setup lang="ts">
-import { computed, ref, onMounted } from "vue";
+import { computed, ref, onMounted, nextTick, type CSSProperties } from "vue";
 import { useAppStore } from "../../stores/app.js";
 
 const props = defineProps<{
   cellIndex: number;
+  anchorRect?: DOMRect | null;
 }>();
 
 const emit = defineEmits<{
@@ -64,8 +68,16 @@ const store = useAppStore();
 const query = ref("");
 const collapsed = ref(new Set<string>());
 const searchRef = ref<HTMLInputElement | null>(null);
+const rootRef = ref<HTMLElement | null>(null);
+const popoverStyle = ref<CSSProperties>({
+  position: "fixed",
+  visibility: "hidden",
+  top: "0",
+  left: "0",
+  zIndex: 9999,
+});
 
-onMounted(() => {
+onMounted(async () => {
   searchRef.value?.focus();
   // Default: collapse all parents so only root-level entries are visible on open.
   const ws: AnyApi[] = (store.payload as AnyApi)?.appState?.workspaces || [];
@@ -75,7 +87,44 @@ onMounted(() => {
     if (pid) parentIds.add(pid);
   }
   collapsed.value = parentIds;
+
+  await nextTick();
+  positionPopover();
 });
+
+function positionPopover(): void {
+  const el = rootRef.value;
+  if (!el) return;
+  const rect = el.getBoundingClientRect();
+  const margin = 6;
+  const vw = window.innerWidth;
+  const vh = window.innerHeight;
+  const anchor = props.anchorRect ?? null;
+
+  let top: number;
+  let left: number;
+  if (anchor) {
+    top = anchor.bottom + 4;
+    left = anchor.left;
+    if (left + rect.width + margin > vw) left = vw - rect.width - margin;
+    if (left < margin) left = margin;
+    if (top + rect.height + margin > vh) {
+      const aboveTop = anchor.top - rect.height - 4;
+      top = aboveTop >= margin ? aboveTop : Math.max(margin, vh - rect.height - margin);
+    }
+  } else {
+    // No anchor (e.g. keyboard shortcut). Center horizontally, anchor near top.
+    top = Math.max(margin, Math.min(60, vh - rect.height - margin));
+    left = Math.max(margin, (vw - rect.width) / 2);
+  }
+  popoverStyle.value = {
+    position: "fixed",
+    top: `${Math.round(top)}px`,
+    left: `${Math.round(left)}px`,
+    zIndex: 9999,
+    visibility: "visible",
+  };
+}
 
 const allWorkspaces = computed<AnyApi[]>(() => {
   return (store.payload as AnyApi)?.appState?.workspaces || [];

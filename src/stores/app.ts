@@ -770,6 +770,7 @@ export const useAppStore = defineStore("app", () => {
     overlay,
     overlayProps,
     optimisticallyDeletedIds,
+    isGridVisible,
     getApi,
     withSuppressedBroadcast,
   });

@@ -10,14 +10,20 @@
     @drop.prevent="onDrop"
   >
     <button
+      ref="emptyPickBtnRef"
       type="button"
       class="workspace-cell__pick-btn"
       title="Pick a workspace to display in this cell."
-      @click.stop="showPicker = true"
+      @click.stop="onOpenPickerFromEmpty"
     >
       + Pick workspace…
     </button>
-    <WorkspacePickerPopover v-if="showPicker" :cell-index="cellIndex" @close="showPicker = false" />
+    <WorkspacePickerPopover
+      v-if="showPicker"
+      :cell-index="cellIndex"
+      :anchor-rect="pickerAnchor"
+      @close="showPicker = false"
+    />
   </div>
 
   <!-- Workspace slot -->
@@ -27,7 +33,6 @@
     :class="{
       'workspace-cell--focused': focused,
       'workspace-cell--drag-over': dragOver,
-      'workspace-cell--swap-pending': isSwapPending,
     }"
     @mousedown.capture="onMousedown"
     @dragover.prevent="onDragover"
@@ -38,10 +43,9 @@
       :workspace-id="workspaceId"
       :cell-index="cellIndex"
       :focused="focused"
-      :swap-pending="isSwapPending"
-      @open-picker="showPicker = true"
+      @open-picker="onOpenPickerFromHeader"
       @clear="onClear"
-      @swap-start="$emit('swap-start')"
+      @swap="(targetIndex) => store.swapGridCells(cellIndex, targetIndex)"
     />
 
     <!-- Compact tab strip for this cell's workspace -->
@@ -60,7 +64,12 @@
       </div>
     </div>
 
-    <WorkspacePickerPopover v-if="showPicker" :cell-index="cellIndex" @close="showPicker = false" />
+    <WorkspacePickerPopover
+      v-if="showPicker"
+      :cell-index="cellIndex"
+      :anchor-rect="pickerAnchor"
+      @close="showPicker = false"
+    />
   </div>
 </template>
 
@@ -88,23 +97,35 @@ const props = defineProps<{
   workspaceId: string | null;
   cellIndex: number;
   focused: boolean;
-  swapPendingCell?: number | null;
 }>();
 
 const emit = defineEmits<{
   (e: "focus"): void;
-  (e: "swap-start"): void;
 }>();
 
 const store = useAppStore();
 const termStore = useTerminalStore();
 const showPicker = ref(false);
 const dragOver = ref(false);
+const pickerAnchor = ref<DOMRect | null>(null);
+const emptyPickBtnRef = ref<HTMLButtonElement | null>(null);
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyApi = any;
 
-const isSwapPending = computed(() => props.swapPendingCell != null && props.swapPendingCell === props.cellIndex);
+function onOpenPickerFromHeader(rect: DOMRect): void {
+  pickerAnchor.value = rect;
+  showPicker.value = true;
+}
+
+function onOpenPickerFromEmpty(): void {
+  if (!emptyPickBtnRef.value) {
+    pickerAnchor.value = null;
+  } else {
+    pickerAnchor.value = emptyPickBtnRef.value.getBoundingClientRect();
+  }
+  showPicker.value = true;
+}
 
 const workspaceEntry = computed(() => {
   if (!props.workspaceId) return null;
@@ -166,7 +187,11 @@ function onClear(): void {
 
 function onGridCellPickerEvent(event: Event): void {
   const detail = (event as CustomEvent).detail as { cellIndex: number };
-  if (detail.cellIndex === props.cellIndex) showPicker.value = true;
+  if (detail.cellIndex !== props.cellIndex) return;
+  // Keyboard shortcut path — clear any stale anchor so the popover centers
+  // itself near the top instead of jumping to the previous header button.
+  pickerAnchor.value = null;
+  showPicker.value = true;
 }
 
 onMounted(() => {

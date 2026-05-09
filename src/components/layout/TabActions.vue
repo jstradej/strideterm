@@ -10,11 +10,15 @@
       + Tab
     </button>
     <button
-      v-if="store.splitGroup && !isMobile"
+      v-if="(store.splitGroup || store.isGridVisible) && !isMobile"
       type="button"
       class="button button--ghost"
-      title="Disband the current split layout — the active view returns to a single full-width pane."
-      @click="$emit('disband-split')"
+      :title="
+        store.isGridVisible
+          ? 'Disband the workspace grid — the active workspace returns to a single full-width view.'
+          : 'Disband the current split layout — the active view returns to a single full-width pane.'
+      "
+      @click="onDisband"
     >
       Unsplit
     </button>
@@ -23,7 +27,11 @@
       type="button"
       class="button button--ghost"
       :class="{ 'button--active': currentLayout !== 'solo' }"
-      title="Choose a split layout (side by side, stacked, top + two below, left + two right, or 2×2 grid) so this workspace shows multiple tabs at once."
+      :title="
+        store.isGridVisible
+          ? 'Choose a workspace-grid layout (side by side, stacked, top + two below, left + two right, or 2×2 grid).'
+          : 'Choose a split layout (side by side, stacked, top + two below, left + two right, or 2×2 grid) so this workspace shows multiple tabs at once.'
+      "
       @click="$emit('open-layout-picker', $event)"
     >
       {{ currentLayout !== "solo" ? layouts[currentLayout]?.label || "Split" : "Split" }}
@@ -103,12 +111,13 @@ const gitAvailable = computed(() => {
 const layouts = LAYOUTS as Record<string, { slots: number; label: string } | undefined>;
 
 const currentLayout = computed(() => {
+  if (store.isGridVisible) return store.workspaceGrid?.layout || "solo";
   const sg = store.splitGroup;
   if (!sg) return "solo";
   return store.activeViewId && sg.viewIds.includes(store.activeViewId) ? sg.layout : "solo";
 });
 
-defineEmits<{
+const emit = defineEmits<{
   (e: "toggle-tab-picker", event: MouseEvent): void;
   (e: "disband-split"): void;
   (e: "open-layout-picker", event: MouseEvent): void;
@@ -118,4 +127,12 @@ defineEmits<{
   (e: "edit-workspace"): void;
   (e: "delete-workspace"): void;
 }>();
+
+function onDisband(): void {
+  if (store.isGridVisible) {
+    store.disableWorkspaceGrid();
+    return;
+  }
+  emit("disband-split");
+}
 </script>

@@ -1,41 +1,51 @@
 /* ── Workspace grid (multi-workspace split view) ───────────────────── */
 
+/* Use minmax(0, 1fr) for both axes so cells with overflow content (long
+   terminal lines, wide tab strips, deep task-dashboard panels) cannot
+   push their track past the equal share — without minmax(0, …) a single
+   `1fr` track defaults to its min-content size, which collapsed the
+   bottom row of the grid when the cell content was unbreakable. The
+   PaneStage uses the same trick. */
 .workspace-grid {
   display: grid;
   height: 100%;
+  min-height: 0;
   gap: 3px;
+  padding: 3px;
   background: var(--bg);
   overflow: hidden;
+  align-content: stretch;
+  justify-content: stretch;
 }
 
 /* Narrow/mobile degradation: single cell */
 .workspace-grid--solo {
-  grid-template-columns: 1fr;
-  grid-template-rows: 1fr;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
 }
 
 /* 2-column layout */
 .workspace-grid--cols {
-  grid-template-columns: 1fr 1fr;
-  grid-template-rows: 1fr;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-rows: minmax(0, 1fr);
 }
 
 /* 2-row layout */
 .workspace-grid--rows {
-  grid-template-columns: 1fr;
-  grid-template-rows: 1fr 1fr;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: repeat(2, minmax(0, 1fr));
 }
 
 /* 4-cell grid */
 .workspace-grid--grid {
-  grid-template-columns: 1fr 1fr;
-  grid-template-rows: 1fr 1fr;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-rows: repeat(2, minmax(0, 1fr));
 }
 
 /* Top cell spans full width, two below split half/half */
 .workspace-grid--top-split {
-  grid-template-columns: 1fr 1fr;
-  grid-template-rows: 1fr 1fr;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-rows: repeat(2, minmax(0, 1fr));
   grid-template-areas:
     "a a"
     "b c";
@@ -43,8 +53,8 @@
 
 /* Left cell spans full height, two on the right split top/bottom */
 .workspace-grid--left-split {
-  grid-template-columns: 1fr 1fr;
-  grid-template-rows: 1fr 1fr;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-rows: repeat(2, minmax(0, 1fr));
   grid-template-areas:
     "a b"
     "a c";
@@ -100,15 +110,15 @@
   outline-offset: -2px;
 }
 
-/* Swap-pending source cell */
-.workspace-cell--swap-pending {
-  outline: 2px solid var(--accent);
-  outline-offset: -2px;
+/* Swap arrows in the cell header */
+.workspace-cell-header__btn--swap {
+  font-size: 11px;
+  opacity: 0.7;
 }
 
-.workspace-cell-header__btn--swap-active {
+.workspace-cell-header__btn--swap:hover {
+  opacity: 1;
   color: var(--accent);
-  font-weight: bold;
 }
 
 /* Empty cell placeholder */
@@ -226,16 +236,12 @@
 /* ── Workspace picker popover ─────────────────────────────────────── */
 
 .ws-picker {
-  position: absolute;
-  top: 28px;
-  left: 0;
-  z-index: 200;
   background: var(--panel-elevated);
   border: 1px solid var(--border);
   border-radius: 6px;
   box-shadow: var(--shadow);
-  width: 260px;
-  max-height: 360px;
+  width: 320px;
+  max-height: 420px;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -258,27 +264,62 @@
   padding: 4px 0;
 }
 
+.ws-picker__row {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  transition: background 0.1s;
+}
+
+.ws-picker__row:hover {
+  background: rgba(var(--tint), 0.06);
+}
+
+.ws-picker__row--occupied {
+  opacity: 0.55;
+}
+
+.ws-picker__chevron {
+  flex-shrink: 0;
+  width: 18px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 9px;
+  padding: 0;
+}
+
+.ws-picker__chevron--placeholder {
+  cursor: default;
+}
+
+.ws-picker__chevron:hover:not(.ws-picker__chevron--placeholder) {
+  color: var(--text);
+}
+
 .ws-picker__item {
   display: flex;
   align-items: center;
   gap: 6px;
-  width: 100%;
+  flex: 1;
+  min-width: 0;
   background: none;
   border: none;
+  border-left: 2px solid transparent;
   color: var(--text);
   cursor: pointer;
   font-size: 12px;
   padding: 4px 10px;
   text-align: left;
-  transition: background 0.1s;
 }
 
-.ws-picker__item:hover {
-  background: rgba(var(--tint), 0.06);
-}
-
-.ws-picker__item--occupied {
-  opacity: 0.6;
+.ws-picker__row--occupied .ws-picker__item {
+  border-left-color: var(--accent);
 }
 
 .ws-picker__icon {
@@ -297,6 +338,9 @@
   font-size: 10px;
   color: var(--muted);
   flex-shrink: 0;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 0 4px;
 }
 
 .ws-picker__star {
@@ -319,17 +363,6 @@
   flex-shrink: 0;
   margin-left: 4px;
   font-style: italic;
-}
-
-.ws-picker__toggle {
-  background: none;
-  border: none;
-  color: var(--muted);
-  cursor: pointer;
-  font-size: 9px;
-  padding: 2px 6px;
-  position: absolute;
-  right: 8px;
 }
 
 .ws-picker__empty {
@@ -369,5 +402,6 @@
 .ws-picker__backdrop {
   position: fixed;
   inset: 0;
-  z-index: 199;
+  z-index: 9998;
+  background: transparent;
 }

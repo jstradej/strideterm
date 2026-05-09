@@ -62,6 +62,7 @@ interface WorkspaceActionsCtx {
   overlay: Ref<string | null>;
   overlayProps: Ref<Record<string, unknown>>;
   optimisticallyDeletedIds: Ref<Set<string>>;
+  isGridVisible: ComputedRef<boolean>;
   getApi: () => Transport;
   withSuppressedBroadcast: (fn: () => Promise<void>) => Promise<void>;
 }
@@ -356,6 +357,22 @@ export function createWorkspaceActions(ctx: WorkspaceActionsCtx) {
   // --- Layout / split ----------------------------------------------------
 
   function pickLayout(layout: string): void {
+    // When the workspace grid is visible, the picker controls the cross-workspace
+    // grid layout; the per-workspace splitGroup stays untouched. The backend
+    // re-shapes cellWorkspaceIds (truncate / pad with null) for the new slot count.
+    if (ctx.isGridVisible.value) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const api = ctx.getApi() as any;
+      if (api?.setGridLayout) {
+        api.setGridLayout(layout).catch((err: unknown) => {
+          // Layout failures shouldn't be silent — surface them in the console
+          // so we notice if the IPC call rejected (e.g. unknown layout key).
+          // eslint-disable-next-line no-console
+          console.error("[grid] setGridLayout failed:", err);
+        });
+      }
+      return;
+    }
     const slots = LAYOUTS[layout]?.slots || 1;
     const tabs = ctx.workspaceTabs.value;
     const groupIds: string[] = [ctx.activeViewId.value!];

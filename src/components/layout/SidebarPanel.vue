@@ -9,10 +9,40 @@
     @drop="dragDrop.onDrop"
     @dragend="dragDrop.onDragend"
   >
+    <!-- "In split" group: workspaces currently displayed in the workspace grid -->
+    <div
+      v-if="splitGroupCards.length > 0"
+      class="workspace-list__split-group"
+      :title="'These workspaces are pinned to slots in the active workspace grid. Click ✕ to disband the grid.'"
+    >
+      <p class="eyebrow workspace-list__split-title">
+        <span>In split ({{ splitGroupCards.length }})</span>
+        <button
+          type="button"
+          class="workspace-list__split-disband"
+          title="Disband the workspace grid — return to a single-workspace view."
+          @click="store.disableWorkspaceGrid()"
+        >
+          ✕
+        </button>
+      </p>
+      <WorkspaceCard
+        v-for="entry in splitGroupCards"
+        :key="`split-${entry.slotIndex}-${entry.card.id}`"
+        :workspace="{ ...entry.card, inGrid: true, slotIndex: entry.slotIndex + 1 }"
+        :data-workspace-id="entry.card.id"
+        @activate="onActivate(entry.card.id)"
+        @open-menu="onOpenMenu($event, entry.card)"
+        @toggle-star="handleToggleStar(entry.card)"
+        @task-toggle="handleTaskToggle(entry.card)"
+        @task-stop="handleTaskStop(entry.card)"
+      />
+      <hr class="workspace-list__divider" />
+    </div>
     <WorkspaceCard
-      v-for="ws in displayedCards"
+      v-for="ws in nonGridCards"
       :key="ws.id"
-      :workspace="{ ...ws, inGrid: gridCellIds.has(ws.id) }"
+      :workspace="ws"
       :data-workspace-id="ws.id"
       @activate="onActivate(ws.id)"
       @open-menu="onOpenMenu($event, ws)"
@@ -387,6 +417,34 @@ const gridCellIds = computed<Set<string>>(() => {
   const grid = store.workspaceGrid;
   if (!grid) return new Set();
   return new Set((grid.cellWorkspaceIds as (string | null)[]).filter(Boolean) as string[]);
+});
+
+// Cards for the workspaces currently in the grid, in slot order — rendered
+// in a dedicated "In split" section at the top of the sidebar so the user
+// can immediately see what is grouped vs. standalone. Always sourced from
+// the unfiltered workspaceCards so a non-starred grid workspace stays
+// visible even with the star filter on (the user explicitly placed it
+// in the grid; hiding it would be confusing).
+const splitGroupCards = computed<{ slotIndex: number; card: WorkspaceCardData }[]>(() => {
+  const grid = store.workspaceGrid;
+  if (!grid) return [];
+  const ids = grid.cellWorkspaceIds as (string | null)[];
+  const cardById = new Map(workspaceCards.value.map((c) => [c.id, c]));
+  const out: { slotIndex: number; card: WorkspaceCardData }[] = [];
+  ids.forEach((wsId, idx) => {
+    if (!wsId) return;
+    const card = cardById.get(wsId);
+    if (card) out.push({ slotIndex: idx, card });
+  });
+  return out;
+});
+
+// Cards that are NOT currently in the grid — shown in the regular list
+// underneath the "In split" group. When grid is empty, this returns the
+// full list (with inGrid:false on every card).
+const nonGridCards = computed<WorkspaceCardData[]>(() => {
+  const occ = gridCellIds.value;
+  return displayedCards.value.filter((c) => !occ.has(c.id)).map((c) => ({ ...c, inGrid: false }));
 });
 
 // --- Workspace actions menu ---
