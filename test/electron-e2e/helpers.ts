@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, "..", "..");
 
-export type FixtureName = "empty" | "seeded" | "grid";
+export type FixtureName = "empty" | "seeded" | "grid" | "multi-profile";
 
 export interface LaunchedApp {
   app: ElectronApplication;

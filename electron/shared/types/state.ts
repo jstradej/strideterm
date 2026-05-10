@@ -142,6 +142,35 @@ export interface Profile {
   color: string;
   workspaceIds: string[];
   projectIds?: string[];
+  /** Per-profile workspace grid layout (replaces global AppState.workspaceGrid). */
+  workspaceGrid?: WorkspaceGridState | null;
+}
+
+// ------- Window slot (per BrowserWindow persistent state) -------
+
+export interface WindowSlotBounds {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export interface WindowSlot {
+  /** Stable UUID assigned at window creation; survives app restarts. */
+  id: string;
+  /** Exclusive profile for this window — no two slots share the same profileId. */
+  profileId: string;
+  /** Workspace currently focused inside this window. */
+  activeWorkspaceId: string;
+  /** Session currently focused inside this window. */
+  activeSessionId: string;
+  /** Last persisted window bounds for restore. */
+  bounds: WindowSlotBounds;
+  /** Display ID for multi-monitor restore. */
+  displayId?: number;
+  isMaximized?: boolean;
+  /** Timestamp (ms since epoch) of last focus event — used to pick primaryWindow. */
+  lastFocusedAt?: number;
 }
 
 // ------- Workspace / Panel -------
@@ -311,7 +340,10 @@ export interface AppState {
   profiles: Profile[];
   workspaces: WorkspaceState[];
   ssh: SshAppState;
+  /** @deprecated Global grid moved to Profile.workspaceGrid; kept for downgrade compat. */
   workspaceGrid?: WorkspaceGridState | null;
+  /** Per-window state slots. Replaces the single-window global state. */
+  windowSlots: WindowSlot[];
   // Legacy aliases
   activeProjectId?: string;
   projects?: WorkspaceState[];

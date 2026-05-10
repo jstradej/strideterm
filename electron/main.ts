@@ -1,9 +1,10 @@
-import { app, BrowserWindow, ipcMain, nativeImage, nativeTheme, safeStorage } from "electron";
+import { app, BrowserWindow, ipcMain, nativeImage, nativeTheme, safeStorage, Menu } from "electron";
 import os from "node:os";
 import path from "node:path";
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
+import { randomUUID } from "node:crypto";
 import { createRuntime } from "./backend/runtime.js";
 import { registerIpc } from "./backend/ipc.js";
 import { startRemoteServer } from "./backend/remote-server.js";
@@ -12,6 +13,7 @@ import { createDefaultState, normalizeState } from "./backend/default-state.js";
 import { inheritShellPath } from "./backend/fix-path.js";
 import { APP_CONFIG, getRendererDevUrl } from "../config/app-config.js";
 import { getLogger, setLogDir, shutdownLogger } from "./backend/logger.js";
+import type { WindowSlot } from "./shared/types/state.js";
 
 // --- Custom data directory (--data-dir <path> or STRIDETERM_DATA_DIR env) ---
 function resolveDataDir(): string {
@@ -93,8 +95,39 @@ const isDev = !app.isPackaged;
 const rendererUrl = getRendererDevUrl();
 const forceDist = process.env.STRIDETERM_FORCE_DIST === "1" || process.env.STRIDETERM_SMOKE_TEST === "1";
 
+// --- Window registry ---
+// Maps stable windowId (UUID) → BrowserWindow
+const windowRegistry = new Map<string, BrowserWindow>();
+// Maps webContents ID → windowId (for IPC source-window resolution)
+const webContentsToWindowId = new Map<number, string>();
+// Per-window focus timestamps (ms since epoch) for primary-window selection
+const windowFocusedAt = new Map<string, number>();
+// Per-window attention count (for flash logic)
+const windowAttentionCount = new Map<string, number>();
+
+/** Return the window that had focus most recently (non-minimized preferred). */
+function getPrimaryWindow(): BrowserWindow | null {
+  let best: BrowserWindow | null = null;
+  let bestTime = -1;
+  for (const [id, win] of windowRegistry) {
+    if (win.isDestroyed()) continue;
+    if (win.isMinimized()) continue;
+    const t = windowFocusedAt.get(id) ?? 0;
+    if (t > bestTime) {
+      bestTime = t;
+      best = win;
+    }
+  }
+  if (!best) {
+    // Fallback: first non-destroyed window
+    for (const win of windowRegistry.values()) {
+      if (!win.isDestroyed()) return win;
+    }
+  }
+  return best;
+}
+
 interface RuntimeState {
-  window: BrowserWindow | null;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   runtime: any;
   runtimeReady: Promise<void>;
@@ -109,10 +142,11 @@ interface RuntimeState {
   unsubscribeRemoteConfig: (() => void) | null;
   unsubscribeStateUpdated: (() => void) | null;
   lastAttentionCount: number;
+  /** Convenience getter – returns the last-focused non-minimized window. */
+  readonly window: BrowserWindow | null;
 }
 
 const runtimeState: RuntimeState = {
-  window: null,
   runtime: null,
   runtimeReady: Promise.resolve(),
   runtimeInteractive: false,
@@ -125,6 +159,7 @@ const runtimeState: RuntimeState = {
   unsubscribeRemoteConfig: null,
   unsubscribeStateUpdated: null,
   lastAttentionCount: 0,
+  get window() { return getPrimaryWindow(); },
 };
 
 const mcpMode = parseReviewBridgeMcpArgs(process.argv.slice(1));
@@ -160,44 +195,70 @@ function createOverlayIcon(count: number, waitingCount: number): Electron.Native
   return nativeImage.createFromDataURL(`data:image/svg+xml;base64,${Buffer.from(svg).toString("base64")}`);
 }
 
+function getWindowProfileId(windowId: string): string {
+  const appState = runtimeState.runtime?.getPayload?.()?.appState as Record<string, unknown> | undefined;
+  const windowSlots = (appState?.windowSlots as Array<{ id: string; profileId: string }> | undefined) || [];
+  return windowSlots.find((s) => s.id === windowId)?.profileId || "default";
+}
+
 function updateNativeAttention(payload: Record<string, unknown> | null | undefined): void {
   if (!payload) return;
   const { count, waitingCount } = summarizeAttention(payload);
   const appState = payload.appState as Record<string, unknown> | undefined;
-  const activeProfileId = (appState?.activeProfileId as string | undefined) || "default";
   const profiles = (appState?.profiles as Array<{ id: string; name: string }> | undefined) || [];
-  const activeProfile = profiles.find((p) => p.id === activeProfileId);
-  const profileSuffix = activeProfile && activeProfileId !== "default" ? ` [${activeProfile.name}]` : "";
+  const workspaces = (appState?.workspaces as Array<{ id: string; profileId?: string }> | undefined) || [];
+  const byWorkspace = (payload.attention as Record<string, unknown> | undefined)?.byWorkspace as
+    | Record<string, { alerts?: { kind?: string }[] }>
+    | undefined;
   const dataDirSuffix = customDataDir ? ` (${path.basename(customDataDir)})` : "";
-  const baseTitle = APP_CONFIG.electron.title + profileSuffix + dataDirSuffix;
-  const title = count > 0 ? `(${count}) ${baseTitle}` : baseTitle;
 
+  // Global badge count = sum across all windows
   if (app.setBadgeCount) {
     app.setBadgeCount(count);
   }
 
-  if (!runtimeState.window || runtimeState.window.isDestroyed()) {
-    runtimeState.lastAttentionCount = count;
-    return;
-  }
+  // Per-window title + overlay icon + flash (§4.2: route to the window whose profile owns the alert)
+  for (const [windowId, win] of windowRegistry) {
+    if (win.isDestroyed()) continue;
+    const profileId = getWindowProfileId(windowId);
+    const activeProfile = profiles.find((p) => p.id === profileId);
+    const profileSuffix = activeProfile && profileId !== "default" ? ` [${activeProfile.name}]` : "";
 
-  runtimeState.window.setTitle(title);
+    // Compute alert count only for workspaces in this window's profile
+    const profileWsIds = new Set(workspaces.filter((ws) => (ws.profileId || "default") === profileId).map((ws) => ws.id));
+    let winCount = 0;
+    let winWaitingCount = 0;
+    if (byWorkspace) {
+      for (const [wsId, bucket] of Object.entries(byWorkspace)) {
+        if (!profileWsIds.has(wsId)) continue;
+        const alerts = bucket?.alerts || [];
+        winCount += alerts.length;
+        winWaitingCount += alerts.filter((a) => a.kind === "waiting").length;
+      }
+    }
 
-  if (process.platform === "win32") {
-    runtimeState.window.setOverlayIcon(
-      count > 0 ? createOverlayIcon(count, waitingCount) : null,
-      count > 0
-        ? `${count} workspace alert${count === 1 ? "" : "s"}${waitingCount ? `, ${waitingCount} waiting for input` : ""}`
-        : "",
-    );
-  }
+    const baseTitle = APP_CONFIG.electron.title + profileSuffix + dataDirSuffix;
+    const title = winCount > 0 ? `(${winCount}) ${baseTitle}` : baseTitle;
+    win.setTitle(title);
 
-  const shouldFlash = count > runtimeState.lastAttentionCount && !runtimeState.window.isFocused();
-  if (shouldFlash) {
-    log.debug("flashing taskbar", { count, waitingCount, prevCount: runtimeState.lastAttentionCount });
-    runtimeState.window.flashFrame(true);
-  } else if (count === 0 || runtimeState.window.isFocused()) {
-    runtimeState.window.flashFrame(false);
+    if (process.platform === "win32") {
+      win.setOverlayIcon(
+        winCount > 0 ? createOverlayIcon(winCount, winWaitingCount) : null,
+        winCount > 0
+          ? `${winCount} workspace alert${winCount === 1 ? "" : "s"}${winWaitingCount ? `, ${winWaitingCount} waiting for input` : ""}`
+          : "",
+      );
+    }
+
+    const prevCount = windowAttentionCount.get(windowId) ?? 0;
+    const shouldFlash = winCount > prevCount && !win.isFocused();
+    if (shouldFlash) {
+      log.debug("flashing taskbar", { windowId, winCount, winWaitingCount, prevCount });
+      win.flashFrame(true);
+    } else if (winCount === 0 || win.isFocused()) {
+      win.flashFrame(false);
+    }
+    windowAttentionCount.set(windowId, winCount);
   }
 
   if (count !== runtimeState.lastAttentionCount) {
@@ -207,22 +268,46 @@ function updateNativeAttention(payload: Record<string, unknown> | null | undefin
 }
 
 function syncTitleBarTheme(): void {
-  if (!runtimeState.window || runtimeState.window.isDestroyed() || process.platform === "darwin") return;
+  if (process.platform === "darwin") return;
   const isDark = nativeTheme.shouldUseDarkColors;
-  runtimeState.window.setTitleBarOverlay({
-    color: isDark ? APP_CONFIG.electron.backgroundColor : "#f7f7f9",
-    symbolColor: isDark ? "#dcdce0" : "#18181b",
-  });
+  for (const win of windowRegistry.values()) {
+    if (win.isDestroyed()) continue;
+    win.setTitleBarOverlay({
+      color: isDark ? APP_CONFIG.electron.backgroundColor : "#f7f7f9",
+      symbolColor: isDark ? "#dcdce0" : "#18181b",
+    });
+  }
 }
 
-function createWindow(): void {
+const distIndexUrl = new URL(`file://${path.join(app.getAppPath(), "dist", "index.html").replace(/\\/g, "/")}`).href;
+
+function isRendererOrigin(target: string): boolean {
+  if (!target) return false;
+  if (target.startsWith("file://")) {
+    return target === distIndexUrl;
+  }
+  try {
+    const url = new URL(target);
+    const allowed = new URL(rendererUrl);
+    return url.origin === allowed.origin;
+  } catch {
+    return false;
+  }
+}
+
+function createWindow(windowId?: string, slot?: Partial<WindowSlot>): void {
+  const id = windowId || randomUUID();
   const windowIconPath =
     process.platform === "win32"
       ? path.join(app.getAppPath(), "assets", "icon.ico")
       : path.join(app.getAppPath(), "assets", "icon.png");
-  runtimeState.window = new BrowserWindow({
-    width: APP_CONFIG.electron.windowWidth,
-    height: APP_CONFIG.electron.windowHeight,
+
+  const bounds = slot?.bounds;
+  const win = new BrowserWindow({
+    width: bounds?.width ?? APP_CONFIG.electron.windowWidth,
+    height: bounds?.height ?? APP_CONFIG.electron.windowHeight,
+    x: bounds?.x,
+    y: bounds?.y,
     minWidth: APP_CONFIG.electron.minWindowWidth,
     minHeight: APP_CONFIG.electron.minWindowHeight,
     title: APP_CONFIG.electron.title,
@@ -240,74 +325,53 @@ function createWindow(): void {
       preload: path.join(app.getAppPath(), "dist-electron", "electron", "preload.cjs"),
       contextIsolation: true,
       nodeIntegration: false,
-      // Run the renderer process under Chromium's OS sandbox. Sandboxed
-      // preloads must be CommonJS (Electron loads them via Node's CJS path
-      // regardless of the parent package.json `"type": "module"`), which is
-      // why the source lives in `electron/preload.cts` and ships as
-      // `dist-electron/electron/preload.cjs` — built by a dedicated
-      // `tsconfig.preload.json` so the rest of the backend stays ESM.
-      // The win: even an XSS that smuggles arbitrary JS into the renderer
-      // can't reach Node directly anymore (it would have to abuse a
-      // specific IPC handler instead), closing the foot-gun the Electron
-      // security checklist calls out for any app with `webviewTag: true`.
       sandbox: true,
       webviewTag: true,
-      // Keep requestAnimationFrame running when the window is occluded so the
-      // xterm.js WebGL renderer doesn't stall mid-scroll on macOS.
       backgroundThrottling: false,
-      // Pass startup flags into the preload process via process.argv so the
-      // bridge can expose them synchronously without an IPC round-trip on
-      // every terminal mount.
-      additionalArguments: webglDisabled ? ["--strideterm-disable-webgl"] : [],
+      additionalArguments: [
+        ...(webglDisabled ? ["--strideterm-disable-webgl"] : []),
+        `--strideterm-window-id=${id}`,
+      ],
     },
   });
 
-  // The strideterm renderer is single-page and never expects to navigate
-  // anywhere except its own bundle (Vite dev URL or the local dist/
-  // file). If something inside the renderer (or a buggy plugin) tries to
-  // navigate to an external origin, that almost always means a hijack
-  // attempt — the safe answer is to send the user to their default
-  // browser instead. The Electron security checklist calls this out as
-  // a required hardening step for `webviewTag: true` apps.
-  const distIndexUrl = new URL(`file://${path.join(app.getAppPath(), "dist", "index.html").replace(/\\/g, "/")}`).href;
-  const isRendererOrigin = (target: string): boolean => {
-    if (!target) return false;
-    // Production: only the bundled index.html is allowed. Refuse any
-    // other file:// URL so a hijack cannot pivot to e.g.
-    // `file:///c:/Users/.../secrets.txt`.
-    if (target.startsWith("file://")) {
-      return target === distIndexUrl;
-    }
-    try {
-      const url = new URL(target);
-      const allowed = new URL(rendererUrl);
-      return url.origin === allowed.origin;
-    } catch {
-      return false;
-    }
-  };
+  if (slot?.isMaximized) {
+    win.maximize();
+  }
 
-  runtimeState.window.webContents.on("will-navigate", (event, url) => {
+  // Register in window registry
+  windowRegistry.set(id, win);
+  webContentsToWindowId.set(win.webContents.id, id);
+  windowFocusedAt.set(id, Date.now());
+
+  // Persist bounds + save window slot on close
+  win.on("move", () => persistWindowSlot(id, win));
+  win.on("resize", () => persistWindowSlot(id, win));
+
+  win.on("focus", () => {
+    windowFocusedAt.set(id, Date.now());
+    win.flashFrame(false);
+  });
+
+  win.on("closed", () => {
+    windowRegistry.delete(id);
+    webContentsToWindowId.delete(win.webContents.id);
+    windowFocusedAt.delete(id);
+    windowAttentionCount.delete(id);
+    // Remove slot from persistent state
+    if (runtimeState.runtimeInteractive && runtimeState.runtime) {
+      runtimeState.runtime.removeWindowSlot?.(id).catch(() => {});
+    }
+  });
+
+  win.webContents.on("will-navigate", (event, url) => {
     if (!isRendererOrigin(url)) {
       log.warn("blocked main-window navigation away from renderer origin", { url: url.slice(0, 200) });
       event.preventDefault();
     }
   });
 
-  runtimeState.window.webContents.setWindowOpenHandler(({ url }) => {
-    // Open external links in the user's default browser instead of a new
-    // BrowserWindow that would inherit our preload + Node access.
-    //
-    // The bare `^https?://` regex prefix-matches but doesn't reject
-    // schemes that *contain* http (e.g. some platforms register
-    // `https-everywhere://`-style protocol handlers, or a malicious
-    // payload encodes `https://attacker/#javascript:…` to coax the user
-    // into running arbitrary JS via `shell.openExternal`). Parse the URL
-    // through WHATWG and assert the protocol is exactly http: or https:
-    // before handing it off; everything else (file:, ftp:, custom
-    // schemes) is dropped. We don't allowlist domains because legitimate
-    // outbound links span Azure DevOps, GitHub, user docs, Confluence,
-    // npm — too broad to enumerate and too easy to be wrong.
+  win.webContents.setWindowOpenHandler(({ url }) => {
     let parsed: URL;
     try {
       parsed = new URL(url);
@@ -323,17 +387,7 @@ function createWindow(): void {
     return { action: "deny" };
   });
 
-  // Lock down every <webview> the renderer attaches.
-  //
-  // BrowserPane uses the webview tag to embed arbitrary user-supplied
-  // URLs (Confluence, Azure Devops Wiki, etc). By default a webview can
-  // turn nodeIntegration back on or load a custom preload — that would
-  // give attacker-controlled web pages full Node access. We strip every
-  // dangerous webPreference at attach time and refuse to load anything
-  // that isn't a regular http/https URL. Without this handler, the
-  // upstream Electron security checklist explicitly flags `webviewTag:
-  // true` as unsafe.
-  runtimeState.window.webContents.on("will-attach-webview", (event, webPreferences, params) => {
+  win.webContents.on("will-attach-webview", (event, webPreferences, params) => {
     delete webPreferences.preload;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any -- legacy preload key still honoured by Electron
     delete (webPreferences as any).preloadURL;
@@ -350,46 +404,46 @@ function createWindow(): void {
     }
   });
 
-  // Show window as soon as the DOM is ready (splash screen HTML is visible),
-  // rather than waiting for ready-to-show which includes JS module loading.
-  runtimeState.window.webContents.once("dom-ready", () => {
-    runtimeState.window!.show();
+  win.webContents.once("dom-ready", () => {
+    win.show();
   });
 
-  runtimeState.window.on("focus", () => {
-    if (runtimeState.window && !runtimeState.window.isDestroyed()) {
-      runtimeState.window.flashFrame(false);
-    }
-  });
-
-  // Intercept Ctrl+1-9 before Chromium/xterm can eat them
-  runtimeState.window.webContents.on("before-input-event", (event, input) => {
+  // Intercept Ctrl+1-9 / Ctrl+Shift+N / Ctrl+W before Chromium/xterm can eat them
+  win.webContents.on("before-input-event", (event, input) => {
     if (input.type !== "keyDown") return;
 
-    // Ctrl+1-9 — switch workspace
+    // Ctrl+1-9 — switch workspace in this window
     if (input.control && !input.alt && !input.shift) {
       const digit =
         input.code?.match(/^Digit([1-9])$/)?.[1] || (input.key >= "1" && input.key <= "9" ? input.key : null);
       if (digit) {
         event.preventDefault();
         const appState = runtimeState.runtime?.getPayload?.()?.appState as
-          | { activeProfileId?: string; workspaces?: Array<{ id: string; profileId?: string }> }
+          | { windowSlots?: Array<{ id: string; profileId: string }>; workspaces?: Array<{ id: string; profileId?: string }> }
           | undefined;
-        const activeProfileId = appState?.activeProfileId || "default";
-        const workspaces = (appState?.workspaces || []).filter((w) => (w.profileId || "default") === activeProfileId);
+        const slot = (appState?.windowSlots || []).find((s) => s.id === id);
+        const profileId = slot?.profileId || "default";
+        const workspaces = (appState?.workspaces || []).filter((w) => (w.profileId || "default") === profileId);
         const workspace = workspaces[parseInt(digit, 10) - 1];
         if (workspace) {
-          runtimeState.runtime.activateWorkspace(workspace.id).catch(() => {});
+          runtimeState.runtime.activateWorkspaceInWindow(workspace.id, id).catch(() => {});
         }
         return;
       }
+    }
+
+    // Ctrl+Shift+N — open new window
+    if (input.control && input.shift && (input.key === "N" || input.key === "n")) {
+      event.preventDefault();
+      win.webContents.send("shortcut:new-window");
+      return;
     }
   });
 
   updateNativeAttention(runtimeState.runtime?.getPayload?.() as Record<string, unknown> | undefined);
 
   if (process.env.STRIDETERM_SMOKE_TEST === "1") {
-    runtimeState.window.webContents.once("did-finish-load", () => {
+    win.webContents.once("did-finish-load", () => {
       setTimeout(() => app.exit(0), APP_CONFIG.electron.smokeReadyExitMs);
     });
     setTimeout(() => app.exit(0), APP_CONFIG.electron.smokeHardExitMs);
@@ -399,7 +453,7 @@ function createWindow(): void {
 
   if (isDev && !forceDist) {
     let fellBackToDist = false;
-    runtimeState.window.webContents.on(
+    win.webContents.on(
       "did-fail-load",
       (_event, errorCode, errorDescription, validatedUrl, isMainFrame) => {
         if (!isMainFrame || fellBackToDist || validatedUrl !== rendererUrl) {
@@ -408,32 +462,53 @@ function createWindow(): void {
 
         fellBackToDist = true;
         console.warn(`Renderer URL failed (${errorCode}: ${errorDescription}). Falling back to dist build.`);
-        runtimeState.window!.loadFile(distIndexPath);
+        win.loadFile(distIndexPath);
       },
     );
 
-    runtimeState.window.loadURL(rendererUrl);
-    runtimeState.window.webContents.openDevTools({ mode: "detach" });
+    win.loadURL(rendererUrl);
+    win.webContents.openDevTools({ mode: "detach" });
     return;
   }
 
-  runtimeState.window.loadFile(distIndexPath);
+  win.loadFile(distIndexPath);
+}
+
+function persistWindowSlot(windowId: string, win: BrowserWindow): void {
+  if (!runtimeState.runtimeInteractive || !runtimeState.runtime || win.isDestroyed()) return;
+  if (win.isMinimized() || win.isMaximized()) return;
+  const b = win.getBounds();
+  runtimeState.runtime.updateWindowSlotBounds?.(windowId, b).catch(() => {});
+}
+
+function emitToWindow(windowId: string, channel: string, payload: unknown): void {
+  const win = windowRegistry.get(windowId);
+  if (!win || win.isDestroyed()) return;
+  try {
+    win.webContents.send(channel, payload);
+  } catch (error: unknown) {
+    const err = error as { code?: string; message?: string };
+    if (err?.code === "EPIPE" || err?.message?.includes("EPIPE")) return;
+    throw error;
+  }
 }
 
 function emitToRenderer(channel: string, payload: unknown): void {
-  if (!runtimeState.window || runtimeState.window.isDestroyed()) {
-    return;
-  }
-
-  try {
-    runtimeState.window.webContents.send(channel, payload);
-  } catch (error: unknown) {
-    const err = error as { code?: string; message?: string };
-    if (err?.code === "EPIPE" || err?.message?.includes("EPIPE")) {
-      return;
+  for (const win of windowRegistry.values()) {
+    if (win.isDestroyed()) continue;
+    try {
+      win.webContents.send(channel, payload);
+    } catch (error: unknown) {
+      const err = error as { code?: string; message?: string };
+      if (err?.code === "EPIPE" || err?.message?.includes("EPIPE")) continue;
+      throw error;
     }
-    throw error;
   }
+}
+
+// Expose for IPC handler access
+function getWindowIdByWebContentsId(webContentsId: number): string | undefined {
+  return webContentsToWindowId.get(webContentsId);
 }
 
 interface Panel {
@@ -695,10 +770,16 @@ async function startServices(): Promise<void> {
       // OS chrome / other windows) which is exactly what the user asked
       // for. Returns Buffer; the runtime hands it off to TelegramManager
       // which uploads via sendPhoto.
-      captureMainWindowPng: async (): Promise<Buffer> => {
-        const win = runtimeState.window;
+      captureMainWindowPng: async (windowId?: string): Promise<Buffer> => {
+        let win: BrowserWindow | null = null;
+        if (windowId) {
+          win = windowRegistry.get(windowId) ?? null;
+        }
         if (!win || win.isDestroyed()) {
-          throw new Error("Main window is not available for screenshot.");
+          win = getPrimaryWindow();
+        }
+        if (!win || win.isDestroyed()) {
+          throw new Error("No available window for screenshot.");
         }
         const image = await win.webContents.capturePage();
         return image.toPNG();
@@ -707,7 +788,11 @@ async function startServices(): Promise<void> {
   });
 
   unregisterBootstrapIpcHandlers();
-  runtimeState.disposeIpc = registerIpc(runtimeState.runtime, emitToRenderer, { includeStateGet: true });
+  runtimeState.disposeIpc = registerIpc(runtimeState.runtime, emitToRenderer, {
+    includeStateGet: true,
+    getWindowIdByWebContentsId,
+    emitToWindow,
+  });
   runtimeState.unsubscribeRemoteConfig = runtimeState.runtime.on("remote:config-changed", async () => {
     await restartRemoteServer().catch((error: Error) => {
       console.warn(`Remote access server restart failed: ${error.message}`);
@@ -754,15 +839,45 @@ if (mcpMode) {
 } else {
   registerBootstrapIpcHandlers();
 
+  // IPC: renderer requests its own windowId
+  ipcMain.handle("window:get-id", (event) => {
+    return webContentsToWindowId.get(event.sender.id) ?? "";
+  });
+
+  // IPC: renderer creates a new window for a given profileId
+  ipcMain.handle("window:create", async (event, profileId: string) => {
+    if (!profileId || typeof profileId !== "string") return { error: "profileId required" };
+    // Check exclusivity: refuse if profile already open
+    const appState = runtimeState.runtime?.getPayload?.()?.appState as Record<string, unknown> | undefined;
+    const windowSlots = (appState?.windowSlots as Array<{ id: string; profileId: string }> | undefined) || [];
+    const existing = windowSlots.find((s) => s.profileId === profileId);
+    if (existing && windowRegistry.has(existing.id)) {
+      const existingWin = windowRegistry.get(existing.id)!;
+      existingWin.focus();
+      return { error: `Profile is already open in another window`, windowId: existing.id };
+    }
+    // Create the window slot in state first
+    const newSlot = await runtimeState.runtime?.createWindowSlot?.(profileId).catch(() => null);
+    const newWindowId = newSlot?.id ?? randomUUID();
+    createWindow(newWindowId, newSlot ?? { profileId });
+    return { windowId: newWindowId };
+  });
+
+  // IPC: renderer closes its own window
+  ipcMain.handle("window:close", (event) => {
+    const windowId = webContentsToWindowId.get(event.sender.id);
+    if (windowId) {
+      const win = windowRegistry.get(windowId);
+      win?.close();
+    }
+  });
+
   app.on("second-instance", () => {
-    if (!runtimeState.window || runtimeState.window.isDestroyed()) {
-      return;
-    }
-    if (runtimeState.window.isMinimized()) {
-      runtimeState.window.restore();
-    }
-    runtimeState.window.show();
-    runtimeState.window.focus();
+    const primary = getPrimaryWindow();
+    if (!primary || primary.isDestroyed()) return;
+    if (primary.isMinimized()) primary.restore();
+    primary.show();
+    primary.focus();
   });
 
   app.whenReady().then(async () => {
@@ -776,7 +891,50 @@ if (mcpMode) {
     runtimeState.runtimeReady = startServices().catch((error: unknown) => {
       console.error(`Startup services failed: ${(error as Error)?.message || error}`);
     });
-    createWindow();
+
+    // Build application menu with "Window → New Window" item
+    const menuTemplate: Electron.MenuItemConstructorOptions[] = [
+      {
+        label: "Window",
+        submenu: [
+          {
+            label: "New Window",
+            accelerator: process.platform === "darwin" ? "Cmd+Shift+N" : "Ctrl+Shift+N",
+            click: () => {
+              const primary = getPrimaryWindow();
+              if (primary) {
+                primary.webContents.send("shortcut:new-window");
+              }
+            },
+          },
+          { role: "close", label: "Close Window", accelerator: process.platform === "darwin" ? "Cmd+Shift+W" : "Ctrl+Shift+W" },
+        ],
+      },
+    ];
+    Menu.setApplicationMenu(Menu.buildFromTemplate(menuTemplate));
+
+    // Restore windows from windowSlots persisted in state
+    const statePath = path.join(userDataPath, "strideterm-state.json");
+    let slotsToRestore: Array<{ id: string; profileId: string; bounds?: { x: number; y: number; width: number; height: number }; isMaximized?: boolean }> = [];
+    try {
+      const raw = await readFile(statePath, "utf8");
+      if (raw.trim()) {
+        const parsed = JSON.parse(raw) as Record<string, unknown>;
+        if (Array.isArray(parsed.windowSlots) && parsed.windowSlots.length > 0) {
+          slotsToRestore = parsed.windowSlots as typeof slotsToRestore;
+        }
+      }
+    } catch {
+      // Fall back to creating a single default window
+    }
+
+    if (slotsToRestore.length > 0) {
+      for (const slot of slotsToRestore) {
+        createWindow(slot.id, slot);
+      }
+    } else {
+      createWindow();
+    }
 
     app.on("activate", () => {
       if (BrowserWindow.getAllWindows().length === 0) {

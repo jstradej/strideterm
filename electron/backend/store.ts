@@ -3,6 +3,7 @@ import path from "node:path";
 import fs from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { randomUUID } from "node:crypto";
+import lockfile from "proper-lockfile";
 import { createDefaultState, normalizeState } from "./default-state.js";
 import { getLogger } from "./logger.js";
 
@@ -85,7 +86,26 @@ export async function createStore(statePath: string) {
 
   async function persist(): Promise<void> {
     await fs.mkdir(path.dirname(statePath), { recursive: true });
-    await atomicWriteFile(statePath, JSON.stringify(state, null, 2));
+    // Ensure the target file exists so proper-lockfile can lock it
+    if (!existsSync(statePath)) {
+      await atomicWriteFile(statePath, JSON.stringify(state, null, 2));
+    }
+    let release: (() => Promise<void>) | null = null;
+    try {
+      release = await lockfile.lock(statePath, {
+        retries: { retries: 10, minTimeout: 100, maxTimeout: 500 },
+        stale: 10000,
+        realpath: false,
+      });
+      await atomicWriteFile(statePath, JSON.stringify(state, null, 2));
+    } catch (error) {
+      // fail-soft: if the lock cannot be acquired (stale + another instance holds
+      // it), still write — the atomic tmp+rename prevents half-written files.
+      log.warn("state file lock failed, writing without lock", { err: (error as Error).message });
+      await atomicWriteFile(statePath, JSON.stringify(state, null, 2));
+    } finally {
+      await release?.().catch(() => {});
+    }
   }
 
   function enqueue<T>(operation: () => Promise<T>): Promise<T> {

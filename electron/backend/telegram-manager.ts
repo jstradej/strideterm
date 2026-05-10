@@ -125,6 +125,8 @@ interface TelegramCommandEvent {
   /** For send-task-file: how to deliver the file. `auto` picks photo/code-block/document
    *  by extension+size; `document` always uploads as a Telegram document attachment. */
   fileMode?: "auto" | "document";
+  /** For screenshot-current / screenshot-workspace: target windowId (undefined = primary). */
+  windowId?: string;
 }
 
 // Minimal Telegram API types
@@ -326,6 +328,7 @@ export class TelegramManager extends EventEmitter {
 
   /** Runtime-provided getter for current workspace list — used by /status and /task commands */
   private getWorkspaces: (() => TelegramWorkspaceInfo[]) | null = null;
+  private getWindowSlots: (() => { id: string; profileId: string }[]) | null = null;
 
   /** Runtime-provided getter for the active profile id — used by /task to filter candidates */
   private getActiveProfileId: (() => string) | null = null;
@@ -356,6 +359,11 @@ export class TelegramManager extends EventEmitter {
   /** Called by the runtime so /task can scope candidates to the user's current profile. */
   setActiveProfileGetter(fn: () => string): void {
     this.getActiveProfileId = fn;
+  }
+
+  /** Called by the runtime so /screenshot N can map window index to windowId. */
+  setWindowSlotsGetter(fn: () => { id: string; profileId: string }[]): void {
+    this.getWindowSlots = fn;
   }
 
   /** Called by the runtime so /prs can list open pull requests. */
@@ -1227,9 +1235,10 @@ export class TelegramManager extends EventEmitter {
       await this._handleTaskCommand(chatId, token, conn);
       return;
     }
-    if (lower === "/screenshot" || lower === "screenshot") {
-      log.info("telegram command: /screenshot", { chatId });
-      await this._handleScreenshotCommand(chatId, token);
+    if (lower === "/screenshot" || lower === "screenshot" || lower.startsWith("/screenshot ") || lower.startsWith("screenshot ")) {
+      const arg = text.trim().replace(/^\/?(screenshot)\s*/i, "").trim();
+      log.info("telegram command: /screenshot", { chatId, arg });
+      await this._handleScreenshotCommand(chatId, token, arg || undefined);
       return;
     }
     if (lower === "/prs" || lower === "prs") {
@@ -1683,14 +1692,47 @@ export class TelegramManager extends EventEmitter {
   }
 
   /**
-   * `/screenshot` flow. Two entry points:
-   *   - Current → emit `screenshot-current`, runtime captures whatever the
-   *     user currently sees in the desktop window
+   * `/screenshot [arg]` flow.
+   *   - No arg → interactive mode picker (current window or pick workspace)
+   *   - `/screenshot N` → capture window N (1-based index in windowSlots)
+   *   - `/screenshot ws-name` → capture the window showing that workspace
+   *   - Current → emit `screenshot-current`
    *   - Pick workspace → present workspace-selection (numbered list);
-   *     after pick, emit `screenshot-workspace` so the runtime briefly
-   *     activates that workspace, captures, then activates back
+   *     after pick, emit `screenshot-workspace`
    */
-  private async _handleScreenshotCommand(chatId: string, token: string): Promise<void> {
+  private async _handleScreenshotCommand(chatId: string, token: string, arg?: string): Promise<void> {
+    // Direct window targeting via /screenshot N or /screenshot workspace-name
+    if (arg) {
+      const slots = this.getWindowSlots?.() ?? [];
+      const workspaces = this.getWorkspaces?.() ?? [];
+      let resolvedWindowId: string | undefined;
+
+      const asNum = parseInt(arg, 10);
+      if (!isNaN(asNum) && asNum >= 1 && asNum <= slots.length) {
+        // /screenshot 1 → first window slot by order
+        resolvedWindowId = slots[asNum - 1]?.id;
+      } else {
+        // /screenshot ws-name → find workspace by name, then its profile's window
+        const wsMatch = workspaces.find((w) => w.name.toLowerCase() === arg.toLowerCase());
+        if (wsMatch) {
+          const wsProfileId = wsMatch.profileId || "default";
+          const slotForProfile = slots.find((s) => s.profileId === wsProfileId);
+          resolvedWindowId = slotForProfile?.id;
+        }
+      }
+
+      const cmd: TelegramCommandEvent = {
+        type: "screenshot-current",
+        workspaceId: "",
+        panelId: "",
+        chatId,
+        windowId: resolvedWindowId,
+      };
+      this.emit("command", cmd);
+      await this._sendText(token, chatId, "📸 Capturing screenshot…", false).catch(() => {});
+      return;
+    }
+
     const workspaces = this.getWorkspaces?.() ?? [];
     const activeProfile = this.getActiveProfileId?.() || "default";
     // For screenshots we WANT all workspaces — including children, tasks,

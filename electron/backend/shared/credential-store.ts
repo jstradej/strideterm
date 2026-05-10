@@ -3,6 +3,7 @@ import path from "node:path";
 import fs from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { randomUUID } from "node:crypto";
+import lockfile from "proper-lockfile";
 import { APP_CONFIG } from "../../../config/app-config.js";
 import { getLogger } from "../logger.js";
 
@@ -106,12 +107,7 @@ export async function createCredentialStore(
   let pending: Promise<unknown> = Promise.resolve(undefined);
   let warnedAboutPlaintext = false;
 
-  async function persist(): Promise<void> {
-    await fs.mkdir(path.dirname(filePath), { recursive: true });
-    // Atomic write: a crash mid-write would otherwise leave a truncated
-    // credentials file and lock the user out of every saved secret. The
-    // tmp + rename pattern guarantees the on-disk file is either the
-    // previous good state or the new good state, never a partial blob.
+  async function atomicWrite(): Promise<void> {
     const tmpPath = `${filePath}.tmp-${process.pid}-${randomUUID()}`;
     // mode 0o600: credentials.json contains user secrets (PATs, OAuth tokens,
     // SSH key passphrases). Without an explicit mode the default umask leaves
@@ -123,6 +119,30 @@ export async function createCredentialStore(
     // already existed the kernel may keep the previous mode bits. chmod
     // explicitly so a permissive ancestor file can't lock us into 0644.
     await fs.chmod(filePath, 0o600).catch(() => {});
+  }
+
+  async function persist(): Promise<void> {
+    await fs.mkdir(path.dirname(filePath), { recursive: true });
+    // Ensure the file exists before locking (proper-lockfile requires target to exist)
+    if (!existsSync(filePath)) {
+      await atomicWrite();
+      return;
+    }
+    let release: (() => Promise<void>) | null = null;
+    try {
+      release = await lockfile.lock(filePath, {
+        retries: { retries: 10, minTimeout: 100, maxTimeout: 500 },
+        stale: 10000,
+        realpath: false,
+      });
+      await atomicWrite();
+    } catch (error) {
+      // fail-soft: still write if lock acquisition fails
+      log.warn("credential file lock failed, writing without lock", { err: (error as Error).message });
+      await atomicWrite();
+    } finally {
+      await release?.().catch(() => {});
+    }
   }
 
   function enqueue(operation: () => Promise<void>): Promise<void> {

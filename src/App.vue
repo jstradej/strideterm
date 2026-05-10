@@ -409,17 +409,17 @@ function onToolbarQuickFix(): void {
 }
 
 function onToolbarCreateWorktree(): void {
-  const wsId = store.payload?.appState?.activeWorkspaceId;
+  const wsId = store.myActiveWorkspaceId;
   if (wsId) store.createWorktreeWithDialog(wsId);
 }
 
 function onToolbarEditWorkspace(): void {
-  const wsId = store.payload?.appState?.activeWorkspaceId;
+  const wsId = store.myActiveWorkspaceId;
   if (wsId) onEditWorkspace(wsId);
 }
 
 function onToolbarDeleteWorkspace(): void {
-  const wsId = store.payload?.appState?.activeWorkspaceId;
+  const wsId = store.myActiveWorkspaceId;
   if (wsId) store.deleteWorkspace(wsId);
 }
 
@@ -458,11 +458,12 @@ onMounted(() => {
   if (savedDockWidth && frameRef.value) {
     frameRef.value.style.setProperty("--notif-dock-width", `${savedDockWidth}px`);
   }
-  // Cell-header "+ Tab" buttons in the multi-workspace grid open the same
-  // TabPickerDropdown the toolbar's "+ Tab" button uses, but they live deep
-  // inside WorkspaceCell so we hand the anchor up via a window event rather
-  // than threading another emit through the grid stage.
   window.addEventListener("open-tab-picker", onOpenTabPickerEvent);
+  // Ctrl+Shift+N / Cmd+Shift+N from main process → open the new-window profile picker
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (window as any).strideterm?.onNewWindowShortcut?.(() => {
+    store.openNewWindowModal();
+  });
 });
 
 onUnmounted(() => {

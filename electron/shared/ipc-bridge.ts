@@ -287,6 +287,10 @@ export interface StridetermAPI {
   saveProfile: (profile: ProfilePayload) => Promise<unknown>;
   deleteProfile: (profileId: string) => Promise<unknown>;
   activateProfile: (profileId: string) => Promise<unknown>;
+  getWindowId: () => string | Promise<string>;
+  createWindow: (profileId: string) => Promise<{ windowId?: string; error?: string }>;
+  closeWindow: () => Promise<void>;
+  onNewWindowShortcut: (handler: () => void) => void;
 
   // File manager
   fileList: (p: FileList) => Promise<unknown>;
@@ -338,6 +342,7 @@ export interface StridetermAPI {
   // round-trip on hot paths (e.g. terminal mount).
   startupFlags: {
     disableWebgl: boolean;
+    windowId: string;
   };
 
   // Fire-and-forget log shipping: the renderer routes diagnostic output

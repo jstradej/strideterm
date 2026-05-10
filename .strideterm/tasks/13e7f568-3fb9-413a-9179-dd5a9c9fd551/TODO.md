@@ -26,3 +26,15 @@
 - [x] Round 2 fixes: TypeScript errors (TabStrip onDragend, WorkspaceCell activeViewId null, WorkspaceGridStage Number(index)); ESLint errors (ipc.ts eslint-disable comments); test helper ws() cast; prettier formatting
 - [x] Round 3 E2E: Added drag-drop describe block (synthetic DragEvent onto cell, verifies workspace name updates) and workspace-delete describe block (deleteWorkspace IPC, verifies slot cleared + workspace absent from sidebar)
 - [x] Round 4 fixes: enableWorkspaceGrid defaults to [activeWsId,null,null,null]; Ctrl+Shift+G uses layout "grid"; PaneStage imports SLOT_BOXES/gridAreaStyle from layout-geometry.ts; WorkspacePickerPopover defaults collapsed to all parent IDs; unit test updated
+- [x] Multi-instance Phase 1: proper-lockfile in store.ts + credential-store.ts; atomic tmp+rename for notify-urls.json
+- [x] Multi-window Phase 2 state model: WindowSlot interface, windowSlots[] in AppState, per-profile workspaceGrid, normalizeWindowSlots migration (default-state.ts)
+- [x] Multi-window Phase 2 window registry: Map<windowId,BrowserWindow> + reverse map, getPrimaryWindow, createWindow with UUID, per-window focus/move/resize/closed lifecycle (main.ts)
+- [x] Multi-window Phase 2 IPC source-aware: activate handlers use event.sender.id → windowId, per-window slot updates, dialog ownership via fromWebContents (ipc.ts)
+- [x] Multi-window Phase 2 preload + ipc-bridge: getWindowId, createWindow, closeWindow, onNewWindowShortcut, startupFlags.windowId
+- [x] Multi-window Phase 2 renderer store: myWindowId, myWindowSlot, myActiveWorkspaceId, myActiveProfileId; per-window filteredWorkspaces, workspaceGrid, attentionSummary, handleBroadcastPayload, activateWorkspace, activateView
+- [x] Multi-window Phase 2 New Window UX: NewWindowModal.vue (profile picker + occupied list), app-dialog-actions.ts openNewWindowModal, DialogOverlay.vue registration, App.vue onNewWindowShortcut wiring
+- [x] Multi-window Phase 2 Telegram screenshot per-window: /screenshot N and /screenshot ws-name arg parsing, windowId field on TelegramCommandEvent, setWindowSlotsGetter, captureMainWindowPng(windowId?) in runtime.ts
+- [x] Multi-window Phase 2 alert routing: updateNativeAttention per-window profile-scoped counts, flash only the window whose profile owns the alerts (main.ts)
+- [x] Multi-window Phase 2 Cmd+W cascade: tab→workspace→window close in useKeyboardShortcuts.ts; Cmd+Shift+W for direct window close
+- [x] Multi-window Phase 2 modal ownership audit: all dialog.showOpenDialog calls use fromWebContents(event.sender) (ipc.ts already correct)
+- [x] Multi-window Phase 2 E2E test: multi-window.spec.ts + multi-profile.json fixture (profile exclusivity, second window creation, per-window workspace filtering)

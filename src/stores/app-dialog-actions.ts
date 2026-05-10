@@ -832,6 +832,19 @@ export function createDialogActions(ctx: DialogActionsCtx) {
     openDialog("SshKeyGenerateDialog", { onCancel: closeDialog });
   }
 
+  function openNewWindowModal(): void {
+    const appState = ctx.payload.value?.appState || ({} as AnyApi);
+    openDialog("NewWindowModal", {
+      profiles: JSON.parse(JSON.stringify((appState as AnyApi).profiles || [])) as unknown[],
+      windowSlots: JSON.parse(JSON.stringify((appState as AnyApi).windowSlots || [])) as unknown[],
+      onCancel: closeDialog,
+      "onCreate-profile": () => {
+        closeDialog();
+        openProfilesDialog();
+      },
+    });
+  }
+
   return {
     openDialog,
     closeDialog,
@@ -847,6 +860,7 @@ export function createDialogActions(ctx: DialogActionsCtx) {
     openHelpDialog,
     openRemoteAccessDialog,
     openProfilesDialog,
+    openNewWindowModal,
     openAzureConnectionDialog,
     openGitHubConnectionDialog,
     openGitHubQuickFixWizard,

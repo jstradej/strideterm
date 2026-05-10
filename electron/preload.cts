@@ -6,8 +6,12 @@ import type { StridetermAPI } from "./shared/ipc-bridge.js";
 // Reading process.argv here is safe — preload runs in the renderer's Node
 // context but with the original argv. Synchronous read so the bridge can
 // expose the flag without forcing every consumer through an async getter.
+const windowIdArg = process.argv.find((arg) => arg.startsWith("--strideterm-window-id="));
+const startupWindowId = windowIdArg ? windowIdArg.slice("--strideterm-window-id=".length) : "";
+
 const startupFlags = {
   disableWebgl: process.argv.includes("--strideterm-disable-webgl"),
+  windowId: startupWindowId,
 };
 
 contextBridge.exposeInMainWorld("strideterm", {
@@ -175,6 +179,10 @@ contextBridge.exposeInMainWorld("strideterm", {
   saveProfile: (profile) => ipcRenderer.invoke("profile:save", profile),
   deleteProfile: (profileId) => ipcRenderer.invoke("profile:delete", profileId),
   activateProfile: (profileId) => ipcRenderer.invoke("profile:activate", profileId),
+  getWindowId: () => startupWindowId || ipcRenderer.invoke("window:get-id"),
+  createWindow: (profileId) => ipcRenderer.invoke("window:create", profileId),
+  closeWindow: () => ipcRenderer.invoke("window:close"),
+  onNewWindowShortcut: (handler) => ipcRenderer.on("shortcut:new-window", () => handler()),
   fileList: (p) => ipcRenderer.invoke("file:list", p),
   fileTree: (p) => ipcRenderer.invoke("file:tree", p),
   filePreview: (p) => ipcRenderer.invoke("file:preview", p),

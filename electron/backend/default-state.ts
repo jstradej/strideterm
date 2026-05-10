@@ -1,7 +1,7 @@
 /// <reference types="node" />
 import os from "node:os";
 import path from "node:path";
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { APP_CONFIG } from "../../config/app-config.js";
 import type {
   AppState,
@@ -10,6 +10,7 @@ import type {
   TabTemplate,
   WorkspaceGridState,
   WorkspaceGridLayout,
+  WindowSlot,
 } from "../shared/types/state.js";
 
 const UTF8_DECODER = (() => {
@@ -495,6 +496,7 @@ export function createDefaultState(): AppState & { activeProjectId: string; proj
     ],
     profiles: [{ id: "default", name: "Default", color: "#ffa424", workspaceIds: [] as string[] }],
     workspaces: [] as WorkspaceState[],
+    windowSlots: [] as WindowSlot[],
     ssh: {
       hosts: [],
       keys: [],
@@ -530,8 +532,77 @@ function normalizeProfiles(rawProfiles: any, defaults: { profiles: Profile[] }):
           : Array.isArray(profile.projectIds)
             ? (profile.projectIds as string[])
             : [],
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        workspaceGrid: (profile.workspaceGrid as any) ?? null,
       }))
     : defaults.profiles;
+}
+
+const DEFAULT_BOUNDS = { x: 100, y: 100, width: 1280, height: 800 };
+
+/**
+ * Normalise windowSlots:
+ * - Ensure no two slots share the same profileId (drop duplicates, log warn).
+ * - Fill missing fields with defaults.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function normalizeWindowSlots(rawSlots: any, profiles: Profile[], activeProfileId: string, activeWorkspaceId: string): WindowSlot[] {
+  if (!Array.isArray(rawSlots) || rawSlots.length === 0) {
+    // Migration: create one slot from the current global state
+    return [{
+      id: randomUUID(),
+      profileId: activeProfileId,
+      activeWorkspaceId,
+      activeSessionId: "",
+      bounds: { ...DEFAULT_BOUNDS },
+      lastFocusedAt: Date.now(),
+    }];
+  }
+
+  const seen = new Set<string>();
+  const result: WindowSlot[] = [];
+  for (const raw of rawSlots as Record<string, unknown>[]) {
+    const profileId = String(raw.profileId || activeProfileId);
+    if (seen.has(profileId)) {
+      console.warn("[default-state] duplicate profileId in windowSlots, dropping", { profileId });
+      continue;
+    }
+    if (!profiles.some((p) => p.id === profileId)) {
+      console.warn("[default-state] windowSlot references unknown profile, dropping", { profileId });
+      continue;
+    }
+    seen.add(profileId);
+    result.push({
+      id: String(raw.id || randomUUID()),
+      profileId,
+      activeWorkspaceId: String(raw.activeWorkspaceId || ""),
+      activeSessionId: String(raw.activeSessionId || ""),
+      bounds: raw.bounds && typeof raw.bounds === "object"
+        ? {
+            x: Number((raw.bounds as Record<string, unknown>).x) || DEFAULT_BOUNDS.x,
+            y: Number((raw.bounds as Record<string, unknown>).y) || DEFAULT_BOUNDS.y,
+            width: Number((raw.bounds as Record<string, unknown>).width) || DEFAULT_BOUNDS.width,
+            height: Number((raw.bounds as Record<string, unknown>).height) || DEFAULT_BOUNDS.height,
+          }
+        : { ...DEFAULT_BOUNDS },
+      displayId: typeof raw.displayId === "number" ? raw.displayId : undefined,
+      isMaximized: Boolean(raw.isMaximized),
+      lastFocusedAt: typeof raw.lastFocusedAt === "number" ? raw.lastFocusedAt : Date.now(),
+    });
+  }
+
+  if (result.length === 0) {
+    return [{
+      id: randomUUID(),
+      profileId: activeProfileId,
+      activeWorkspaceId,
+      activeSessionId: "",
+      bounds: { ...DEFAULT_BOUNDS },
+      lastFocusedAt: Date.now(),
+    }];
+  }
+
+  return result;
 }
 
 /**
@@ -1069,7 +1140,38 @@ export function normalizeState(rawState: any = {}): AppState & { activeProjectId
     },
   };
 
-  const workspaceGrid = normalizeWorkspaceGrid(rawState.workspaceGrid, workspaces, activeProfileId);
+  // Per-profile workspace grids.
+  // Migration: if profiles don't have workspaceGrid yet, move the global
+  // workspaceGrid to the active profile so it is preserved.
+  const profilesWithGrid: Profile[] = profiles.map((profile) => {
+    if (profile.workspaceGrid !== undefined) {
+      // Already migrated — just re-normalize the grid cells.
+      return {
+        ...profile,
+        workspaceGrid: normalizeWorkspaceGrid(profile.workspaceGrid, workspaces, profile.id),
+      };
+    }
+    if (profile.id === activeProfileId && rawState.workspaceGrid) {
+      // First-time migration: move the global grid under the active profile.
+      return {
+        ...profile,
+        workspaceGrid: normalizeWorkspaceGrid(rawState.workspaceGrid, workspaces, profile.id),
+      };
+    }
+    return { ...profile, workspaceGrid: null };
+  });
+
+  // Keep the deprecated global workspaceGrid for downgrade compatibility (the
+  // old version reads it from the top level if windowSlots don't exist).
+  const activeProfile = profilesWithGrid.find((p) => p.id === activeProfileId);
+  const workspaceGrid = activeProfile?.workspaceGrid ?? null;
+
+  const windowSlots = normalizeWindowSlots(
+    (rawState as Record<string, unknown>).windowSlots,
+    profilesWithGrid,
+    activeProfileId,
+    activeWorkspaceId,
+  );
 
   const normalized = {
     ...defaults,
@@ -1079,9 +1181,10 @@ export function normalizeState(rawState: any = {}): AppState & { activeProjectId
     activeProfileId,
     settings: normalizedSettings,
     tabTemplates,
-    profiles,
+    profiles: profilesWithGrid,
     workspaces,
     workspaceGrid,
+    windowSlots,
   };
 
   return {

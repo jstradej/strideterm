@@ -46,6 +46,9 @@ interface WorkspacePayloadCache {
 }
 
 export const useAppStore = defineStore("app", () => {
+  // --- This window's identity (injected via additionalArguments in preload) ---
+  const myWindowId = (window as AnyApi).strideterm?.startupFlags?.windowId || "";
+
   // --- Server payload (shallowRef for performance — never deeply reactive) ---
   const payload = shallowRef<StatePayload | null>(null);
 
@@ -126,11 +129,28 @@ export const useAppStore = defineStore("app", () => {
     return ws?.workspace || ws?.project || null;
   });
 
+  /** The window slot for this renderer instance. */
+  const myWindowSlot = computed(() => {
+    const slots = (payload.value?.appState as AnyApi)?.windowSlots as AnyApi[] | undefined;
+    if (!slots || !myWindowId) return null;
+    return slots.find((s: AnyApi) => s.id === myWindowId) ?? null;
+  });
+
+  /** ActiveWorkspaceId scoped to this window (falls back to global). */
+  const myActiveWorkspaceId = computed<string>(() => {
+    return myWindowSlot.value?.activeWorkspaceId || (payload.value?.appState?.activeWorkspaceId as string | undefined) || "";
+  });
+
+  /** ActiveProfileId scoped to this window (falls back to global). */
+  const myActiveProfileId = computed<string>(() => {
+    return myWindowSlot.value?.profileId || payload.value?.appState?.activeProfileId || "default";
+  });
+
   let _prevFilteredWsKey = "";
   let _prevFilteredWs: AnyApi[] = [];
   const filteredWorkspaces = computed(() => {
     const workspaces = payload.value?.appState?.workspaces || [];
-    const activeProfileId = payload.value?.appState?.activeProfileId || "default";
+    const activeProfileId = myActiveProfileId.value;
     const result = workspaces.filter((ws: AnyApi) => (ws.profileId || "default") === activeProfileId);
     // Include names and panel counts — these change on rename/add-tab/remove-tab
     const key = result
@@ -149,7 +169,7 @@ export const useAppStore = defineStore("app", () => {
   let _prevProfile: AnyApi = null;
   const activeProfile = computed(() => {
     const profiles = payload.value?.appState?.profiles || [];
-    const activeId = payload.value?.appState?.activeProfileId || "default";
+    const activeId = myActiveProfileId.value;
     const found = profiles.find((p: AnyApi) => p.id === activeId) || {
       id: "default",
       name: "Default",
@@ -165,14 +185,17 @@ export const useAppStore = defineStore("app", () => {
   // --- Workspace grid computed ---
 
   const workspaceGrid = computed(() => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    return (payload.value as AnyApi)?.appState?.workspaceGrid ?? null;
+    // Per-profile grid (preferred) — falls back to deprecated global grid
+    const profile = (payload.value?.appState?.profiles as AnyApi[] | undefined)?.find(
+      (p: AnyApi) => p.id === myActiveProfileId.value,
+    );
+    return (profile as AnyApi)?.workspaceGrid ?? (payload.value as AnyApi)?.appState?.workspaceGrid ?? null;
   });
 
   const isGridVisible = computed<boolean>(() => {
     const grid = workspaceGrid.value;
     if (!grid) return false;
-    const activeWsId = (payload.value as AnyApi)?.appState?.activeWorkspaceId;
+    const activeWsId = myActiveWorkspaceId.value;
     return activeWsId ? (grid.cellWorkspaceIds as (string | null)[]).includes(activeWsId) : false;
   });
 
@@ -186,14 +209,14 @@ export const useAppStore = defineStore("app", () => {
   const focusedGridCellIndex = computed<number>(() => {
     const grid = workspaceGrid.value;
     if (!grid) return -1;
-    const activeWsId = (payload.value as AnyApi)?.appState?.activeWorkspaceId;
+    const activeWsId = myActiveWorkspaceId.value;
     return activeWsId ? (grid.cellWorkspaceIds as (string | null)[]).indexOf(activeWsId) : -1;
   });
 
   // --- Grid actions ---
 
   async function enableWorkspaceGrid(layout: string, preset?: { workspaceIds: (string | null)[] }): Promise<void> {
-    const activeWsId: string | null = (payload.value as AnyApi)?.appState?.activeWorkspaceId ?? null;
+    const activeWsId: string | null = myActiveWorkspaceId.value || null;
     const ids: (string | null)[] = preset?.workspaceIds ?? [activeWsId, null, null, null];
     if (preset?.workspaceIds) {
       const firstNonNull = ids.find((id) => id != null);
@@ -215,7 +238,7 @@ export const useAppStore = defineStore("app", () => {
     // kept workspace before the layout change is committed, so the grid
     // stays visible across the layout swap.
     const grid = workspaceGrid.value;
-    const activeWsId = (payload.value as AnyApi)?.appState?.activeWorkspaceId;
+    const activeWsId = myActiveWorkspaceId.value;
     if (grid && activeWsId) {
       const slotCounts: Record<string, number> = {
         solo: 1,
@@ -289,7 +312,7 @@ export const useAppStore = defineStore("app", () => {
   const otherProfileAttentionCount = computed<number>(() => {
     const p = payload.value;
     if (!p) return 0;
-    const activeId = p.appState?.activeProfileId || "default";
+    const activeId = myActiveProfileId.value;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any -- runtime-only attention shape
     const byWorkspace = (p.attention as any)?.byWorkspace as Record<string, { alerts?: unknown[] }> | undefined;
     if (!byWorkspace) return 0;
@@ -358,7 +381,7 @@ export const useAppStore = defineStore("app", () => {
 
   // Keep per-workspace split cache in sync with current splitGroup
   watch(splitGroup, (next) => {
-    const wsId = payload.value?.appState?.activeWorkspaceId;
+    const wsId = myActiveWorkspaceId.value;
     if (!wsId) return;
     if (next) {
       _splitGroupCache.set(wsId, next);
@@ -424,7 +447,7 @@ export const useAppStore = defineStore("app", () => {
   /** Save workspace-specific payload parts for the current workspace. */
   function _cacheCurrentWorkspace(): void {
     const p = payload.value as AnyApi;
-    const wsId = p?.appState?.activeWorkspaceId;
+    const wsId = myActiveWorkspaceId.value;
     if (!wsId || !p?.workspace) return;
     _workspacePayloadCache.set(wsId, {
       workspace: p.workspace,
@@ -554,9 +577,21 @@ export const useAppStore = defineStore("app", () => {
 
     const cached = _workspacePayloadCache.get(workspaceId);
     const prevGit = (payload.value as AnyApi).git;
+    // Optimistically update per-window slot so myActiveWorkspaceId reflects the new workspace immediately
+    let updatedWindowSlots = appState.windowSlots as AnyApi[] | undefined;
+    if (myWindowId && Array.isArray(appState.windowSlots)) {
+      updatedWindowSlots = (appState.windowSlots as AnyApi[]).map((s: AnyApi) =>
+        s.id === myWindowId ? { ...s, activeWorkspaceId: workspaceId } : s,
+      );
+    }
     payload.value = {
       ...(payload.value as AnyApi),
-      appState: { ...appState, activeWorkspaceId: workspaceId, activeProjectId: workspaceId },
+      appState: {
+        ...appState,
+        activeWorkspaceId: workspaceId,
+        activeProjectId: workspaceId,
+        ...(updatedWindowSlots !== undefined ? { windowSlots: updatedWindowSlots } : {}),
+      },
       workspace: buildWorkspacePayloadSnapshot(workspaceId),
       // Restore cached workspace-specific data (docker, attention, active git)
       ...(cached
@@ -580,11 +615,17 @@ export const useAppStore = defineStore("app", () => {
   // --- Broadcast handler ---
   function handleBroadcastPayload(nextPayload: StatePayload): void {
     const pendingWsId = pendingWorkspaceActivationId.value;
-    const incomingWsId = (nextPayload as AnyApi)?.appState?.activeWorkspaceId || "";
     const isBootstrap = Boolean((nextPayload as AnyApi)?.meta?.bootstrap);
 
-    if (pendingWsId && incomingWsId && incomingWsId !== pendingWsId) return;
-    const completingActivation = pendingWsId && incomingWsId === pendingWsId && !isBootstrap;
+    // Derive the workspace ID that is active in THIS window from the incoming payload.
+    // In multi-window mode each window has its own slot; fall back to global for compat.
+    const incomingSlots = (nextPayload as AnyApi)?.appState?.windowSlots as AnyApi[] | undefined;
+    const incomingSlot = myWindowId && incomingSlots ? incomingSlots.find((s: AnyApi) => s.id === myWindowId) : null;
+    const incomingMyWsId: string =
+      incomingSlot?.activeWorkspaceId || (nextPayload as AnyApi)?.appState?.activeWorkspaceId || "";
+
+    if (pendingWsId && incomingMyWsId && incomingMyWsId !== pendingWsId) return;
+    const completingActivation = pendingWsId && incomingMyWsId === pendingWsId && !isBootstrap;
     if (completingActivation) {
       pendingWorkspaceActivationId.value = "";
     }
@@ -592,14 +633,13 @@ export const useAppStore = defineStore("app", () => {
     bootstrapError.value = "";
     clearRemoteConnectionIssue();
 
-    const workspaceChanged =
-      (nextPayload as AnyApi)?.appState?.activeWorkspaceId !== (payload.value as AnyApi)?.appState?.activeWorkspaceId;
+    const workspaceChanged = incomingMyWsId !== myActiveWorkspaceId.value;
     if (workspaceChanged || completingActivation) {
       // activateWorkspace() already cached the outgoing workspace's split
       // BEFORE optimistic activation swapped splitGroup.value. Caching here
       // would overwrite that with the NEW workspace's split under the OLD
       // workspace id — the same bug that ate the layout on every switch.
-      const nextWsId = (nextPayload as AnyApi)?.appState?.activeWorkspaceId;
+      const nextWsId = incomingMyWsId;
       const nextWsEntry = nextWsId
         ? ((nextPayload as AnyApi)?.appState?.workspaces || []).find((ws: AnyApi) => ws.id === nextWsId)
         : null;
@@ -633,7 +673,7 @@ export const useAppStore = defineStore("app", () => {
         (w: AnyApi) => !optimisticallyDeletedIds.value.has(w.id),
       );
       if (stripped.length !== ((nextPayload as AnyApi).appState.workspaces as AnyApi[]).length) {
-        const incomingActive = (nextPayload as AnyApi).appState.activeWorkspaceId;
+        const incomingActive = incomingMyWsId;
         const nextActiveId = optimisticallyDeletedIds.value.has(incomingActive)
           ? stripped[0]?.id || ""
           : incomingActive;
@@ -676,7 +716,7 @@ export const useAppStore = defineStore("app", () => {
   }
 
   async function activateWorkspace(workspaceId: string): Promise<void> {
-    const prevWsId = payload.value?.appState?.activeWorkspaceId;
+    const prevWsId = myActiveWorkspaceId.value;
     if (prevWsId && splitGroup.value) {
       _splitGroupCache.set(prevWsId, splitGroup.value);
     }
@@ -725,7 +765,7 @@ export const useAppStore = defineStore("app", () => {
       activeSessionId.value = null;
       // Persist the non-session active view so it's restored on workspace switch/restart.
       // Sessions already persist via api.activateSession below.
-      const wsId = payload.value?.appState?.activeWorkspaceId;
+      const wsId = myActiveWorkspaceId.value;
       if (wsId && (_api as AnyApi)?.setWorkspaceUIState) {
         (_api as AnyApi).setWorkspaceUIState(wsId, { activeViewId: viewId }).catch(() => {});
       }
@@ -976,6 +1016,11 @@ export const useAppStore = defineStore("app", () => {
     suppressBroadcast,
     lastError,
     recoveryCandidates,
+    // Per-window identity
+    myWindowId,
+    myWindowSlot,
+    myActiveWorkspaceId,
+    myActiveProfileId,
     // Computed
     activeWorkspace,
     filteredWorkspaces,

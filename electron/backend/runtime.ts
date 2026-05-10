@@ -3,7 +3,7 @@ import http from "node:http";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { watch, readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
+import { watch, readFileSync, writeFileSync, renameSync, existsSync, mkdirSync } from "node:fs";
 import type { FSWatcher } from "node:fs";
 import { readFile, writeFile, mkdir, readdir, access, rm, rename } from "node:fs/promises";
 import { EventEmitter } from "node:events";
@@ -247,7 +247,7 @@ interface RuntimeDependencies {
    * the headless remote-only build or in tests). Workspace-targeted captures
    * just call activateWorkspace before invoking this.
    */
-  captureMainWindowPng?: () => Promise<Buffer>;
+  captureMainWindowPng?: (windowId?: string) => Promise<Buffer>;
 }
 
 export async function createRuntime({
@@ -413,11 +413,13 @@ export async function createRuntime({
     }
   }
 
-  /** Write the shared file (not atomic — acceptable for this advisory data). */
+  /** Write the shared file atomically via tmp+rename to prevent torn writes. */
   function writeNotifyUrls(data: Record<string, string[]>): void {
     const dir = path.dirname(notifyUrlsPath);
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-    writeFileSync(notifyUrlsPath, JSON.stringify(data, null, 2), "utf8");
+    const tmpPath = `${notifyUrlsPath}.tmp-${process.pid}-${randomUUID()}`;
+    writeFileSync(tmpPath, JSON.stringify(data, null, 2), "utf8");
+    renameSync(tmpPath, notifyUrlsPath);
   }
 
   function registerNotifyUrl(cwd: string, url: string): void {
@@ -683,6 +685,9 @@ export async function createRuntime({
     }),
   );
   telegramManager.setActiveProfileGetter(() => getState().activeProfileId || "default");
+  telegramManager.setWindowSlotsGetter(() =>
+    (getState().windowSlots || []).map((s) => ({ id: s.id, profileId: s.profileId })),
+  );
   telegramManager.setPrInfosGetter(() => {
     const state = getState();
     const azurePrs = Object.entries(azure.getSnapshot()?.pullRequests || {}).map(
@@ -2094,7 +2099,7 @@ export async function createRuntime({
 
         let png: Buffer;
         try {
-          png = await captureFn();
+          png = await captureFn(cmd.windowId);
         } catch (err) {
           log.warn("telegram: screenshot capture failed", { err: (err as Error).message });
           if (cmd.chatId) {
@@ -3566,6 +3571,9 @@ export async function createRuntime({
       await store.mutate((draft: AppState) => {
         if (draft.workspaces.some((workspace) => workspace.id === workspaceId)) {
           draft.activeWorkspaceId = workspaceId;
+          // Also update the first window slot (primary window compat)
+          const firstSlot = (draft.windowSlots || [])[0];
+          if (firstSlot) firstSlot.activeWorkspaceId = workspaceId;
         }
       });
       // Proactively update visible sessions BEFORE starting terminals,
@@ -3652,7 +3660,7 @@ export async function createRuntime({
       return getPayload();
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    async enableWorkspaceGrid(layout: any, workspaceIds?: (string | null)[]) {
+    async enableWorkspaceGrid(layout: any, workspaceIds?: (string | null)[], windowId?: string) {
       await store.mutate((draft: AppState) => {
         const slots = { cols: 2, rows: 2, "top-split": 3, "left-split": 3, grid: 4 }[String(layout)] as
           | number
@@ -3662,14 +3670,27 @@ export async function createRuntime({
         for (let i = 0; i < slots; i++) {
           ids.push(workspaceIds?.[i] ?? null);
         }
-        draft.workspaceGrid = { layout, cellWorkspaceIds: ids };
+        const grid = { layout, cellWorkspaceIds: ids };
+        // Update per-profile grid if windowId is known
+        const profileId = windowId ? (draft.windowSlots || []).find((s) => s.id === windowId)?.profileId : null;
+        if (profileId) {
+          const profile = draft.profiles.find((p) => p.id === profileId);
+          if (profile) profile.workspaceGrid = grid;
+        }
+        // Keep deprecated global for downgrade compat
+        draft.workspaceGrid = grid;
       });
       broadcastState();
       return getPayload();
     },
 
-    async disableWorkspaceGrid() {
+    async disableWorkspaceGrid(windowId?: string) {
       await store.mutate((draft: AppState) => {
+        const profileId = windowId ? (draft.windowSlots || []).find((s) => s.id === windowId)?.profileId : null;
+        if (profileId) {
+          const profile = draft.profiles.find((p) => p.id === profileId);
+          if (profile) profile.workspaceGrid = null;
+        }
         draft.workspaceGrid = null;
       });
       broadcastState();
@@ -3677,46 +3698,58 @@ export async function createRuntime({
     },
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    async setGridLayout(layout: any) {
+    async setGridLayout(layout: any, windowId?: string) {
       await store.mutate((draft: AppState) => {
-        if (!draft.workspaceGrid) return;
+        const profileId = windowId ? (draft.windowSlots || []).find((s) => s.id === windowId)?.profileId : null;
+        const profile = profileId ? draft.profiles.find((p) => p.id === profileId) : null;
+        const grid = profile?.workspaceGrid ?? draft.workspaceGrid;
+        if (!grid) return;
         const slots = { cols: 2, rows: 2, "top-split": 3, "left-split": 3, grid: 4 }[String(layout)] as
           | number
           | undefined;
         if (!slots) return;
-        const existing = draft.workspaceGrid.cellWorkspaceIds.filter((id) => id !== null);
+        const existing = grid.cellWorkspaceIds.filter((id) => id !== null);
         const ids: (string | null)[] = [];
         let taken = 0;
         for (let i = 0; i < slots; i++) {
           ids.push(taken < existing.length ? (existing[taken++] ?? null) : null);
         }
-        draft.workspaceGrid.layout = layout;
-        draft.workspaceGrid.cellWorkspaceIds = ids;
+        const updated = { layout, cellWorkspaceIds: ids };
+        if (profile) profile.workspaceGrid = updated;
+        draft.workspaceGrid = updated;
       });
       broadcastState();
       return getPayload();
     },
 
-    async setGridCell(cellIndex: number, workspaceId: string | null) {
+    async setGridCell(cellIndex: number, workspaceId: string | null, windowId?: string) {
       await store.mutate((draft: AppState) => {
-        if (!draft.workspaceGrid) return;
-        const ids = draft.workspaceGrid.cellWorkspaceIds;
+        const profileId = windowId ? (draft.windowSlots || []).find((s) => s.id === windowId)?.profileId : null;
+        const profile = profileId ? draft.profiles.find((p) => p.id === profileId) : null;
+        const grid = profile?.workspaceGrid ?? draft.workspaceGrid;
+        if (!grid) return;
+        const ids = grid.cellWorkspaceIds;
         if (cellIndex < 0 || cellIndex >= ids.length) return;
         if (workspaceId) {
           const existing = ids.indexOf(workspaceId);
           if (existing >= 0 && existing !== cellIndex) ids[existing] = null;
         }
         ids[cellIndex] = workspaceId;
-        if (ids.every((id) => id === null)) draft.workspaceGrid = null;
+        const allNull = ids.every((id) => id === null);
+        if (profile) profile.workspaceGrid = allNull ? null : grid;
+        if (allNull) draft.workspaceGrid = null;
       });
       broadcastState();
       return getPayload();
     },
 
-    async swapGridCells(a: number, b: number) {
+    async swapGridCells(a: number, b: number, windowId?: string) {
       await store.mutate((draft: AppState) => {
-        if (!draft.workspaceGrid) return;
-        const ids = draft.workspaceGrid.cellWorkspaceIds;
+        const profileId = windowId ? (draft.windowSlots || []).find((s) => s.id === windowId)?.profileId : null;
+        const profile = profileId ? draft.profiles.find((p) => p.id === profileId) : null;
+        const grid = profile?.workspaceGrid ?? draft.workspaceGrid;
+        if (!grid) return;
+        const ids = grid.cellWorkspaceIds;
         if (a < 0 || a >= ids.length || b < 0 || b >= ids.length || a === b) return;
         const tmp = ids[a];
         ids[a] = ids[b];
@@ -3724,6 +3757,137 @@ export async function createRuntime({
       });
       broadcastState();
       return getPayload();
+    },
+
+    // --- Per-window activation methods ---
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async activateWorkspaceInWindow(workspaceId: any, windowId: string) {
+      await store.mutate((draft: AppState) => {
+        if (!draft.workspaces.some((ws) => ws.id === workspaceId)) return;
+        // Update per-window slot
+        const slot = (draft.windowSlots || []).find((s) => s.id === windowId);
+        if (slot) {
+          slot.activeWorkspaceId = workspaceId;
+        } else {
+          // Fallback: update global activeWorkspaceId
+          draft.activeWorkspaceId = workspaceId;
+        }
+      });
+      const workspace = findWorkspace(getState(), workspaceId);
+      if (workspace) {
+        updateVisibleSessions(
+          workspace.kind === "azure" || workspace.kind === "github"
+            ? []
+            : // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              workspace.panels.map((panel: any) => createSessionId(workspaceId, panel.id)),
+        );
+      }
+      if (workspace?.kind === "docker") {
+        await refreshDocker();
+      }
+      await refreshGit(workspaceId);
+      ensureVisibleSession(workspaceId);
+      broadcastState();
+      return getPayload();
+    },
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async activateSessionInWindow(sessionId: any, windowId: string) {
+      const descriptor = parseSessionId(sessionId);
+      if (!descriptor) return getPayload();
+      await store.mutate((draft: AppState) => {
+        const workspace = findWorkspace(draft, descriptor.workspaceId);
+        if (!workspace) return;
+        const slot = (draft.windowSlots || []).find((s) => s.id === windowId);
+        if (slot) {
+          slot.activeWorkspaceId = descriptor.workspaceId;
+          slot.activeSessionId = sessionId;
+        } else {
+          draft.activeWorkspaceId = descriptor.workspaceId;
+        }
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        if ((workspace as any).panels?.some((panel: any) => panel.id === descriptor.panelId)) {
+          workspace.activePanelId = descriptor.panelId;
+          workspace.activeViewId = sessionId;
+        }
+      });
+      sessions.ensureSession(getState(), sessionId);
+      broadcastState();
+      return getPayload();
+    },
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async activateProfileInWindow(profileId: any, windowId: string) {
+      const state = getState();
+      // Exclusivity check: refuse if profile is already in a DIFFERENT open window
+      const existing = (state.windowSlots || []).find(
+        (s) => s.profileId === profileId && s.id !== windowId,
+      );
+      if (existing) {
+        // Find window number for user-facing message (1-based creation order)
+        const slots = state.windowSlots || [];
+        const idx = slots.findIndex((s) => s.id === existing.id);
+        throw new Error(`Profile is already open in Window ${idx + 1}. Close that window first.`);
+      }
+      await store.mutate((draft: AppState) => {
+        const targetProfile = draft.profiles.find((p) => p.id === profileId);
+        if (!targetProfile) return;
+        const slot = (draft.windowSlots || []).find((s) => s.id === windowId);
+        if (slot) {
+          slot.profileId = profileId;
+          const profileWorkspaces = draft.workspaces.filter((w) => (w.profileId || "default") === profileId);
+          slot.activeWorkspaceId = profileWorkspaces[0]?.id || "";
+        } else {
+          // Fallback: update global (no slot = first window before migration)
+          draft.activeProfileId = profileId;
+          const profileWorkspaces = draft.workspaces.filter((w) => (w.profileId || "default") === profileId);
+          draft.activeWorkspaceId = profileWorkspaces[0]?.id || "";
+        }
+      });
+      await syncWorktrees();
+      sessions.syncWithState(getState());
+      ensureVisibleSession();
+      await refreshAzure();
+      scheduleAzurePolling();
+      broadcastState();
+      return getPayload();
+    },
+
+    // --- Window slot management ---
+
+    async createWindowSlot(profileId: string): Promise<{ id: string; profileId: string; bounds: { x: number; y: number; width: number; height: number } }> {
+      const newId = randomUUID();
+      const defaultBounds = { x: 100, y: 100, width: 1280, height: 800 };
+      await store.mutate((draft: AppState) => {
+        if (!Array.isArray(draft.windowSlots)) draft.windowSlots = [];
+        draft.windowSlots.push({
+          id: newId,
+          profileId,
+          activeWorkspaceId: draft.workspaces.find((w) => (w.profileId || "default") === profileId)?.id || "",
+          activeSessionId: "",
+          bounds: { ...defaultBounds },
+          lastFocusedAt: Date.now(),
+        });
+      });
+      broadcastState();
+      return { id: newId, profileId, bounds: defaultBounds };
+    },
+
+    async removeWindowSlot(windowId: string) {
+      await store.mutate((draft: AppState) => {
+        if (!Array.isArray(draft.windowSlots)) return;
+        draft.windowSlots = draft.windowSlots.filter((s) => s.id !== windowId);
+      });
+      broadcastState();
+    },
+
+    async updateWindowSlotBounds(windowId: string, bounds: { x: number; y: number; width: number; height: number }) {
+      await store.mutate((draft: AppState) => {
+        const slot = (draft.windowSlots || []).find((s) => s.id === windowId);
+        if (slot) slot.bounds = bounds;
+      });
+      // No broadcast needed for bounds update (not UI-visible)
     },
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -3805,9 +3969,38 @@ export async function createRuntime({
       }
 
       await store.mutate((draft: AppState) => {
+        const ws = draft.workspaces.find((item) => item.id === workspaceId);
         draft.workspaces = draft.workspaces.filter((item) => item.id !== workspaceId);
         if (draft.activeWorkspaceId === workspaceId) {
-          draft.activeWorkspaceId = draft.workspaces[0]?.id || "";
+          // Pick next-best in same profile
+          const profileId = ws ? (ws.profileId || "default") : "default";
+          const sibling = draft.workspaces.find((w) => (w.profileId || "default") === profileId);
+          draft.activeWorkspaceId = sibling?.id || draft.workspaces[0]?.id || "";
+        }
+        // Clear workspace from all window slots
+        for (const slot of draft.windowSlots || []) {
+          if (slot.activeWorkspaceId === workspaceId) {
+            const profileId = slot.profileId;
+            const sibling = draft.workspaces.find((w) => (w.profileId || "default") === profileId);
+            slot.activeWorkspaceId = sibling?.id || "";
+          }
+        }
+        // Clear workspace from per-profile grids
+        for (const profile of draft.profiles) {
+          if (!profile.workspaceGrid) continue;
+          const ids = profile.workspaceGrid.cellWorkspaceIds;
+          for (let i = 0; i < ids.length; i++) {
+            if (ids[i] === workspaceId) ids[i] = null;
+          }
+          if (ids.every((id) => id === null)) profile.workspaceGrid = null;
+        }
+        // Clear from deprecated global grid
+        if (draft.workspaceGrid) {
+          const ids = draft.workspaceGrid.cellWorkspaceIds;
+          for (let i = 0; i < ids.length; i++) {
+            if (ids[i] === workspaceId) ids[i] = null;
+          }
+          if (ids.every((id) => id === null)) draft.workspaceGrid = null;
         }
       });
 
@@ -4855,6 +5048,14 @@ export async function createRuntime({
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async deleteProfile(profileId: any) {
+      const state = getState();
+      // Refuse if profile is open in any window slot
+      const openSlot = (state.windowSlots || []).find((s) => s.profileId === profileId);
+      if (openSlot) {
+        const slots = state.windowSlots || [];
+        const idx = slots.findIndex((s) => s.id === openSlot.id);
+        throw new Error(`Profile is open in Window ${idx + 1}. Close that window first.`);
+      }
       await store.mutate((draft: AppState) => {
         draft.profiles = draft.profiles.filter((p) => p.id !== profileId);
         if (draft.profiles.length === 0) {

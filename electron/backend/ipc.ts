@@ -88,7 +88,15 @@ type Runtime = Awaited<ReturnType<typeof createRuntime>>;
 export function registerIpc(
   runtime: Runtime,
   emitToRenderer: (channel: string, payload: unknown) => void,
-  { includeStateGet = true }: { includeStateGet?: boolean } = {},
+  {
+    includeStateGet = true,
+    getWindowIdByWebContentsId,
+    emitToWindow,
+  }: {
+    includeStateGet?: boolean;
+    getWindowIdByWebContentsId?: (webContentsId: number) => string | undefined;
+    emitToWindow?: (windowId: string, channel: string, payload: unknown) => void;
+  } = {},
 ): () => void {
   const subscriptions = [
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -219,14 +227,18 @@ export function registerIpc(
     }),
   );
 
-  ipcMain.handle("workspace:activate", async (_event, workspaceId) =>
-    withOperationPromise({ workspaceId: String(workspaceId || ""), opId: "workspace:activate" }, () =>
-      runtime.activateWorkspace(workspaceId),
-    ),
-  );
-  ipcMain.handle("project:activate", async (_event, projectId) =>
-    withOperationPromise({ opId: "project:activate" }, () => runtime.activateProject(projectId)),
-  );
+  ipcMain.handle("workspace:activate", async (event, workspaceId) => {
+    const windowId = getWindowIdByWebContentsId?.(event.sender.id) ?? "";
+    return withOperationPromise({ workspaceId: String(workspaceId || ""), opId: "workspace:activate" }, () =>
+      windowId ? runtime.activateWorkspaceInWindow(workspaceId, windowId) : runtime.activateWorkspace(workspaceId),
+    );
+  });
+  ipcMain.handle("project:activate", async (event, projectId) => {
+    const windowId = getWindowIdByWebContentsId?.(event.sender.id) ?? "";
+    return withOperationPromise({ opId: "project:activate" }, () =>
+      windowId ? runtime.activateWorkspaceInWindow(projectId, windowId) : runtime.activateProject(projectId),
+    );
+  });
   ipcMain.handle("workspace:save", async (_event, workspace) =>
     withOperationPromise({ opId: "workspace:save" }, () =>
       runtime.saveWorkspace(validateIpc(workspaceSchema, workspace, "workspace:save")),
@@ -624,45 +636,53 @@ export function registerIpc(
     withOperationPromise({ opId: "telegram:refresh" }, () => runtime.refreshTelegramState()),
   );
 
-  ipcMain.handle("session:activate", async (_event, sessionId) =>
-    withOperationPromise({ opId: "session:activate" }, () => runtime.activateSession(sessionId)),
-  );
+  ipcMain.handle("session:activate", async (event, sessionId) => {
+    const windowId = getWindowIdByWebContentsId?.(event.sender.id) ?? "";
+    return withOperationPromise({ opId: "session:activate" }, () =>
+      windowId ? runtime.activateSessionInWindow(sessionId, windowId) : runtime.activateSession(sessionId),
+    );
+  });
   ipcMain.handle("workspace:set-ui-state", async (_event, workspaceId, uiState) =>
     withOperationPromise({ workspaceId: String(workspaceId || ""), opId: "workspace:set-ui-state" }, async () => {
       const parsed = validateIpc(workspaceUIStateSchema, { workspaceId, uiState }, "workspace:set-ui-state");
       return runtime.setWorkspaceUIState(parsed.workspaceId, parsed.uiState);
     }),
   );
-  ipcMain.handle("workspace-grid:enable", async (_event, payload) =>
+  ipcMain.handle("workspace-grid:enable", async (event, payload) =>
     withOperationPromise({ opId: "workspace-grid:enable" }, () => {
       const parsed = validateIpc(workspaceGridEnableSchema, payload, "workspace-grid:enable");
+      const windowId = getWindowIdByWebContentsId?.(event.sender.id) ?? "";
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      return (runtime as any).enableWorkspaceGrid(parsed.layout, parsed.workspaceIds);
+      return (runtime as any).enableWorkspaceGrid(parsed.layout, parsed.workspaceIds, windowId);
     }),
   );
-  ipcMain.handle("workspace-grid:disable", async () =>
+  ipcMain.handle("workspace-grid:disable", async (event) => {
+    const windowId = getWindowIdByWebContentsId?.(event.sender.id) ?? "";
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    withOperationPromise({ opId: "workspace-grid:disable" }, () => (runtime as any).disableWorkspaceGrid()),
-  );
-  ipcMain.handle("workspace-grid:set-layout", async (_event, payload) =>
+    return withOperationPromise({ opId: "workspace-grid:disable" }, () => (runtime as any).disableWorkspaceGrid(windowId));
+  });
+  ipcMain.handle("workspace-grid:set-layout", async (event, payload) =>
     withOperationPromise({ opId: "workspace-grid:set-layout" }, () => {
       const parsed = validateIpc(workspaceGridSetLayoutSchema, payload, "workspace-grid:set-layout");
+      const windowId = getWindowIdByWebContentsId?.(event.sender.id) ?? "";
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      return (runtime as any).setGridLayout(parsed.layout);
+      return (runtime as any).setGridLayout(parsed.layout, windowId);
     }),
   );
-  ipcMain.handle("workspace-grid:set-cell", async (_event, payload) =>
+  ipcMain.handle("workspace-grid:set-cell", async (event, payload) =>
     withOperationPromise({ opId: "workspace-grid:set-cell" }, () => {
       const parsed = validateIpc(workspaceGridSetCellSchema, payload, "workspace-grid:set-cell");
+      const windowId = getWindowIdByWebContentsId?.(event.sender.id) ?? "";
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      return (runtime as any).setGridCell(parsed.cellIndex, parsed.workspaceId);
+      return (runtime as any).setGridCell(parsed.cellIndex, parsed.workspaceId, windowId);
     }),
   );
-  ipcMain.handle("workspace-grid:swap-cells", async (_event, payload) =>
+  ipcMain.handle("workspace-grid:swap-cells", async (event, payload) =>
     withOperationPromise({ opId: "workspace-grid:swap-cells" }, () => {
       const parsed = validateIpc(workspaceGridSwapCellsSchema, payload, "workspace-grid:swap-cells");
+      const windowId = getWindowIdByWebContentsId?.(event.sender.id) ?? "";
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      return (runtime as any).swapGridCells(parsed.a, parsed.b);
+      return (runtime as any).swapGridCells(parsed.a, parsed.b, windowId);
     }),
   );
   ipcMain.handle("attention:sync", async (_event, payload) =>
@@ -1017,9 +1037,12 @@ export function registerIpc(
   ipcMain.handle("profile:delete", async (_event, profileId) =>
     withOperationPromise({ opId: "profile:delete" }, () => runtime.deleteProfile(profileId)),
   );
-  ipcMain.handle("profile:activate", async (_event, profileId) =>
-    withOperationPromise({ opId: "profile:activate" }, () => runtime.activateProfile(profileId)),
-  );
+  ipcMain.handle("profile:activate", async (event, profileId) => {
+    const windowId = getWindowIdByWebContentsId?.(event.sender.id) ?? "";
+    return withOperationPromise({ opId: "profile:activate" }, () =>
+      runtime.activateProfileInWindow(profileId, windowId),
+    );
+  });
 
   ipcMain.handle("notification:show-system", async (_event, payload) =>
     withOperationPromise({ opId: "notification:show-system" }, async () => {
@@ -1206,9 +1229,9 @@ export function registerIpc(
     }),
   );
 
-  ipcMain.handle("dialog:browse-directory", async (_event, defaultPath) =>
+  ipcMain.handle("dialog:browse-directory", async (event, defaultPath) =>
     withOperationPromise({ opId: "dialog:browse-directory" }, async () => {
-      const win = BrowserWindow.getFocusedWindow();
+      const win = BrowserWindow.fromWebContents(event.sender) ?? BrowserWindow.getFocusedWindow();
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const result = await dialog.showOpenDialog(win as any, {
         properties: ["openDirectory"],
@@ -1220,9 +1243,9 @@ export function registerIpc(
 
   ipcMain.handle(
     "dialog:browse-file",
-    async (_event, options: { defaultPath?: string; filters?: Electron.FileFilter[] } = {}) =>
+    async (event, options: { defaultPath?: string; filters?: Electron.FileFilter[] } = {}) =>
       withOperationPromise({ opId: "dialog:browse-file" }, async () => {
-        const win = BrowserWindow.getFocusedWindow();
+        const win = BrowserWindow.fromWebContents(event.sender) ?? BrowserWindow.getFocusedWindow();
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const result = await dialog.showOpenDialog(win as any, {
           properties: ["openFile"],
