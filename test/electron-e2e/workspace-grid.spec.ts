@@ -34,8 +34,10 @@ test.describe("Workspace grid — fixture pre-loads grid state", () => {
 
   test("grid layout container renders when workspaceGrid state is set", async () => {
     const { page } = launched!;
-    // Wait for app to load
-    await expect(page.getByText("Frontend App")).toBeVisible({ timeout: 15_000 });
+    // Wait for the sidebar workspace card to land — id-based so we don't
+    // collide with the same name appearing in the cell header AND the
+    // dimmed ghost in the tree (strict mode would error on multiple hits).
+    await expect(page.locator('[data-workspace-id="ws-frontend"]').first()).toBeVisible({ timeout: 15_000 });
     // The workspace-grid container should be present
     await expect(page.locator(".workspace-grid")).toBeVisible({ timeout: 5_000 });
     await captureStep(launched!, "grid-initial");
@@ -74,8 +76,11 @@ test.describe("Workspace grid — fixture pre-loads grid state", () => {
 
   test("clicking a grid workspace restores the grid view", async () => {
     const { page } = launched!;
-    // Click back to a workspace that is in the grid
-    await page.getByText("Frontend App").click();
+    // Click back to a workspace that is in the grid. The card now appears
+    // twice in the sidebar (once in the "In split" group, once as a ghost
+    // in the regular tree) so target by stable id rather than text — the
+    // text-based selector hits strict-mode "two elements" otherwise.
+    await page.locator('[data-workspace-id="ws-frontend"]').first().click();
     // Grid should reappear
     await expect(page.locator(".workspace-grid")).toBeVisible({ timeout: 5_000 });
     await captureStep(launched!, "grid-restored");
@@ -108,8 +113,12 @@ test.describe("Workspace grid — clear cell via × button", () => {
     // The cell should now show the "Pick workspace" button
     const cells = page.locator(".workspace-grid__cell");
     await expect(cells.nth(1).locator(".workspace-cell__pick-btn")).toBeVisible({ timeout: 5_000 });
-    // The Backend API workspace should still appear in the sidebar (workspace is NOT deleted)
-    await expect(page.getByText("Backend API")).toBeVisible();
+    // The Backend API workspace should still appear in the sidebar (workspace
+    // is NOT deleted). After the clear, ws-backend leaves the "In split"
+    // group and renders only as a regular tree card (one match) — but use
+    // .first() to stay robust against transient double-renders during the
+    // cell clear animation.
+    await expect(page.locator('[data-workspace-id="ws-backend"]').first()).toBeVisible();
     await captureStep(launched!, "grid-cell-cleared");
     assertNoRendererErrors(launched!);
   });

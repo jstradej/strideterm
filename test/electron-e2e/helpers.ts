@@ -16,11 +16,48 @@ export interface LaunchedApp {
   errors: string[];
 }
 
-export async function launchApp(fixture: FixtureName = "empty"): Promise<LaunchedApp> {
+export interface LaunchOptions {
+  /**
+   * Override the Electron BrowserWindow size. The default (1100×720) keeps
+   * deterministic screenshots across the OS matrix. Pass a smaller size
+   * to drive the renderer into its narrow / mobile layout — the helper
+   * also lowers the min-size envs so Electron actually honours the
+   * requested width/height instead of clamping to the desktop floor.
+   */
+  windowSize?: { width: number; height: number };
+}
+
+export async function launchApp(fixture: FixtureName = "empty", options: LaunchOptions = {}): Promise<LaunchedApp> {
   const dataDir = await mkdtemp(path.join(tmpdir(), "strideterm-e2e-"));
   // eslint-disable-next-line security/detect-non-literal-fs-filename -- dataDir is mkdtemp output
   await mkdir(dataDir, { recursive: true });
   await copyFile(path.join(__dirname, "fixtures", `${fixture}.json`), path.join(dataDir, "strideterm-state.json"));
+
+  const width = options.windowSize?.width ?? 1100;
+  const height = options.windowSize?.height ?? 720;
+  // Filter out the optional values from process.env so the resulting type
+  // satisfies Playwright's Record<string, string> contract — Electron's
+  // launch options reject `undefined` entries.
+  const env: Record<string, string> = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    if (typeof value === "string") env[key] = value;
+  }
+  env.STRIDETERM_FORCE_DIST = "1";
+  env.STRIDETERM_SHELL_INTEGRATION = "0";
+  env.ELECTRON_DISABLE_SECURITY_WARNINGS = "1";
+  // Pin window size for deterministic screenshots across the OS matrix.
+  // Default (1560×940) is wider than some CI virtual displays — the
+  // window then collapses to minWindowWidth and the sidebar ends up
+  // looking enormous. 1280×800 fits comfortably on every runner.
+  env.STRIDETERM_WINDOW_WIDTH = String(width);
+  env.STRIDETERM_WINDOW_HEIGHT = String(height);
+  // When the caller asks for a size below the production min-window floor
+  // (1100×720), drop the floor too — otherwise Electron silently clamps
+  // and the renderer never sees the narrow layout we wanted to test.
+  if (options.windowSize) {
+    env.STRIDETERM_MIN_WINDOW_WIDTH = String(width);
+    env.STRIDETERM_MIN_WINDOW_HEIGHT = String(height);
+  }
 
   const app = await electron.launch({
     // Pass the repo root (where package.json lives) — Electron reads the
@@ -28,18 +65,7 @@ export async function launchApp(fixture: FixtureName = "empty"): Promise<Launche
     // `app.getAppPath()` resolve to dist-electron/electron, which then
     // breaks the preload path (it gets joined onto itself).
     args: [REPO_ROOT, `--data-dir=${dataDir}`],
-    env: {
-      ...process.env,
-      STRIDETERM_FORCE_DIST: "1",
-      STRIDETERM_SHELL_INTEGRATION: "0",
-      ELECTRON_DISABLE_SECURITY_WARNINGS: "1",
-      // Pin window size for deterministic screenshots across the OS matrix.
-      // Default (1560×940) is wider than some CI virtual displays — the
-      // window then collapses to minWindowWidth and the sidebar ends up
-      // looking enormous. 1280×800 fits comfortably on every runner.
-      STRIDETERM_WINDOW_WIDTH: "1100",
-      STRIDETERM_WINDOW_HEIGHT: "720",
-    },
+    env,
     timeout: 60_000,
   });
 
