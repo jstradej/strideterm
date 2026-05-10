@@ -1028,6 +1028,21 @@ body.platform-darwin .frame--sidebar-collapsed .sidebar__head {
 
 .workspace-card--in-grid {
   border-left: 2px solid color-mix(in srgb, var(--accent), transparent 50%);
+  opacity: 0.55;
+}
+
+/* Cards inside the "In split" group at the top render at full strength —
+   they're the operational view (slot indices, disband). The dimmed ghost
+   is only the duplicate that stays in the tree to preserve parent/child
+   structure. */
+.workspace-list__split-group .workspace-card--in-grid {
+  opacity: 1;
+}
+
+/* The currently active grid cell shouldn't be dimmed in the tree either —
+   the user is working in it. */
+.workspace-card--in-grid.workspace-card--active {
+  opacity: 1;
 }
 
 /* "In split" sidebar group ─────────────────────────────────────────── */

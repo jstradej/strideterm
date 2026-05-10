@@ -40,7 +40,7 @@
       <hr class="workspace-list__divider" />
     </div>
     <WorkspaceCard
-      v-for="ws in nonGridCards"
+      v-for="ws in treeCards"
       :key="ws.id"
       :workspace="ws"
       :data-workspace-id="ws.id"
@@ -439,12 +439,27 @@ const splitGroupCards = computed<{ slotIndex: number; card: WorkspaceCardData }[
   return out;
 });
 
-// Cards that are NOT currently in the grid — shown in the regular list
-// underneath the "In split" group. When grid is empty, this returns the
-// full list (with inGrid:false on every card).
-const nonGridCards = computed<WorkspaceCardData[]>(() => {
+// Cards rendered in the regular tree underneath the "In split" group.
+// Always returns the full displayed list — grid workspaces stay in their
+// original parent/child position so the user can still see the hierarchy.
+// Cards that are in the grid get inGrid:true + a slotIndex, which the
+// CSS uses to render them as dimmed ghosts (with the slot indicator
+// badge). Click on a ghost still works → activateWorkspace focuses the
+// matching grid cell.
+const treeCards = computed<WorkspaceCardData[]>(() => {
   const occ = gridCellIds.value;
-  return displayedCards.value.filter((c) => !occ.has(c.id)).map((c) => ({ ...c, inGrid: false }));
+  const slotByWs = new Map<string, number>();
+  const grid = store.workspaceGrid;
+  if (grid) {
+    (grid.cellWorkspaceIds as (string | null)[]).forEach((id, idx) => {
+      if (id) slotByWs.set(id, idx + 1);
+    });
+  }
+  return displayedCards.value.map((c) => ({
+    ...c,
+    inGrid: occ.has(c.id),
+    slotIndex: slotByWs.get(c.id),
+  }));
 });
 
 // --- Workspace actions menu ---
