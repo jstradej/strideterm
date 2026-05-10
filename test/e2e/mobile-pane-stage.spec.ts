@@ -112,7 +112,15 @@ async function readAttachedSessionIds(page: Page): Promise<string[]> {
 test.describe("PaneStage mobile collapse", () => {
   let mock: Awaited<ReturnType<typeof startMockServer>>;
   test.beforeAll(async () => {
-    mock = await startMockServer({ fixture: "multi-workspace-split", delayApiStateMs: 200 });
+    mock = await startMockServer({
+      fixture: "multi-workspace-split",
+      delayApiStateMs: 200,
+      terminalOutput: {
+        "ws-frontend:panel-shell": "\r\n$ echo shell-ready\r\nshell-ready\r\n",
+        "ws-frontend:panel-claude": "\r\nClaude mock agent ready\r\n> ",
+        "ws-frontend:panel-dev": "\r\nVITE v8.0.10 ready in 421 ms\r\nLocal: http://localhost:1421/\r\n",
+      },
+    });
   });
   test.afterAll(async () => {
     await mock?.close();
@@ -130,6 +138,36 @@ test.describe("PaneStage mobile collapse", () => {
     await expect(stage).toHaveClass(/terminal-stage--top-split/);
     await expect(stage).toHaveClass(/terminal-stage--count-3/);
     await expect(page.locator(".workspace-pane")).toHaveCount(3);
+
+    assertNoErrors(page);
+  });
+
+  test("desktop split panes attach live terminals with mock output and full cell height", async ({ page }) => {
+    await page.setViewportSize(DESKTOP_VIEWPORT);
+    await openApp(page, mock);
+
+    const stage = page.locator(".terminal-stage");
+    await expect(stage).toHaveClass(/terminal-stage--top-split/);
+    await expect(page.locator(".workspace-pane")).toHaveCount(3);
+
+    await expect(page.locator(".terminal-host[data-session-id]")).toHaveCount(3);
+    await expect(page.locator('.terminal-host[data-session-id="ws-frontend:panel-shell"] .xterm-rows')).toContainText(
+      "shell-ready",
+    );
+    await expect(page.locator('.terminal-host[data-session-id="ws-frontend:panel-claude"] .xterm-rows')).toContainText(
+      "Claude mock agent ready",
+    );
+    await expect(page.locator('.terminal-host[data-session-id="ws-frontend:panel-dev"] .xterm-rows')).toContainText(
+      "VITE v8.0.10 ready",
+    );
+
+    const metrics = await paneTerminalMetrics(page);
+    expect(metrics).toHaveLength(3);
+    for (const metric of metrics) {
+      expect(metric.paneHeight).toBeGreaterThan(250);
+      expect(metric.hostHeight).toBeGreaterThan(200);
+      expect(metric.hostBottom).toBeLessThanOrEqual(metric.paneBottom + 1);
+    }
 
     assertNoErrors(page);
   });
@@ -216,6 +254,14 @@ test.describe("PaneStage mobile collapse", () => {
     const stage = page.locator(".terminal-stage");
     await expect(stage).toHaveClass(/terminal-stage--top-split/);
     await expect(page.locator(".workspace-pane")).toHaveCount(3);
+    await expect(page.locator(".terminal-host[data-session-id]")).toHaveCount(3);
+
+    const metrics = await paneTerminalMetrics(page);
+    expect(metrics).toHaveLength(3);
+    for (const metric of metrics) {
+      expect(metric.hostHeight).toBeGreaterThan(200);
+      expect(metric.hostBottom).toBeLessThanOrEqual(metric.paneBottom + 1);
+    }
 
     assertNoErrors(page);
   });
@@ -234,3 +280,21 @@ test.describe("PaneStage mobile collapse", () => {
     assertNoErrors(page);
   });
 });
+
+async function paneTerminalMetrics(page: Page): Promise<
+  Array<{ paneHeight: number; paneBottom: number; hostHeight: number; hostBottom: number }>
+> {
+  return page.locator(".workspace-pane").evaluateAll((panes) =>
+    panes.map((pane) => {
+      const host = pane.querySelector(".terminal-host") as HTMLElement | null;
+      const paneRect = (pane as HTMLElement).getBoundingClientRect();
+      const hostRect = host?.getBoundingClientRect() ?? new DOMRect();
+      return {
+        paneHeight: paneRect.height,
+        paneBottom: paneRect.bottom,
+        hostHeight: hostRect.height,
+        hostBottom: hostRect.bottom,
+      };
+    }),
+  );
+}

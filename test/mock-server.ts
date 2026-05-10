@@ -86,10 +86,12 @@ export async function startMockServer({
   port = 0,
   fileContents = {},
   delayApiStateMs = 0,
+  terminalOutput = {},
 }: {
   fixture?: string;
   port?: number;
   fileContents?: Record<string, string>;
+  terminalOutput?: Record<string, string>;
   /**
    * Delay the GET /api/state response by N ms. Useful for tests that need
    * the WebSocket `state:updated` broadcast to arrive before the HTTP
@@ -280,6 +282,12 @@ export async function startMockServer({
     }
   }
 
+  function sendTerminalOutput(ws: WebSocket): void {
+    for (const [sessionId, data] of Object.entries(terminalOutput)) {
+      ws.send(JSON.stringify({ type: "terminal:data", payload: { sessionId, data } }));
+    }
+  }
+
   server.on("upgrade", (req, socket, head) => {
     const url = new URL(req.url || "/", "http://localhost");
     if (url.pathname === "/ws") {
@@ -287,6 +295,7 @@ export async function startMockServer({
         sockets.add(ws);
         ws.on("close", () => sockets.delete(ws));
         ws.send(JSON.stringify({ type: "state:updated", payload }));
+        sendTerminalOutput(ws);
       });
       return;
     }

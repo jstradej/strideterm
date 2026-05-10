@@ -55,6 +55,50 @@ jobs:
           path: test-results/
           retention-days: 7
 
+  e2e-layout-cross-os:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Install Chromium (Linux deps)
+        if: runner.os == 'Linux'
+        run: npx playwright install --with-deps chromium
+      - name: Install Chromium
+        if: runner.os != 'Linux'
+        run: npx playwright install chromium
+      - name: Run cross-OS layout regression tests
+        run: >
+          npx playwright test
+          test/e2e/mobile-pane-stage.spec.ts
+          test/e2e/workspace-grid-layout.spec.ts
+          test/e2e/azure-inbox-mobile.spec.ts
+          test/e2e/azure-review-mobile.spec.ts
+          test/e2e/github-inbox-mobile.spec.ts
+          test/e2e/github-review-mobile.spec.ts
+      - name: Upload HTML report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: playwright-layout-report-${{ matrix.os }}
+          path: playwright-report/
+          retention-days: 14
+      - name: Upload failure screenshots
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: test-results-layout-${{ matrix.os }}
+          path: test-results/
+          retention-days: 7
+
   e2e-electron:
     strategy:
       fail-fast: false
