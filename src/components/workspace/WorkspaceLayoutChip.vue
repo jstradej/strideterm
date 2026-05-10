@@ -56,11 +56,15 @@ const store = useAppStore();
 const { isMobile } = useIsNarrow();
 const layoutBtnRef = ref<HTMLButtonElement | null>(null);
 
+// The chip represents the multi-workspace grid layout only — tab-split
+// (panes within a single workspace) is controlled by the terminal-toolbar
+// Split button. Mixing the two here was confusing: the chip would say
+// "Side by side" while the user was looking at a tab-split workspace,
+// and the Unsplit button would disband whichever was active. Keeping
+// the two affordances separate makes each control's scope obvious.
 const currentLayout = computed<LayoutKey>(() => {
   if (store.isGridVisible) return (store.workspaceGrid?.layout as LayoutKey) || "solo";
-  const sg = store.splitGroup;
-  if (!sg) return "solo";
-  return store.activeViewId && sg.viewIds.includes(store.activeViewId) ? (sg.layout as LayoutKey) : "solo";
+  return "solo";
 });
 
 const layoutLabel = computed(() => LAYOUTS[currentLayout.value]?.label || "Solo");
@@ -68,33 +72,24 @@ const layoutLabel = computed(() => LAYOUTS[currentLayout.value]?.label || "Solo"
 const layoutTitle = computed(() =>
   store.isGridVisible
     ? `Workspace grid layout: ${layoutLabel.value}. Click to switch between side-by-side, stacked, top-split, left-split, and 2×2 grid arrangements of multiple workspaces.`
-    : `Tab split layout: ${layoutLabel.value}. Click to split the active workspace's tabs across the cell — side-by-side, stacked, top-split, left-split, or 2×2 grid.`,
+    : "Workspace grid: not active. Click to arrange multiple workspaces side-by-side, stacked, or in a 2×2 grid. Tab-splitting (panes within one workspace) is on the terminal toolbar below.",
 );
 
-const canUnsplit = computed(() => store.isGridVisible || !!store.splitGroup);
+const canUnsplit = computed(() => store.isGridVisible);
 
-const unsplitTitle = computed(() =>
-  store.isGridVisible
-    ? "Disband the multi-workspace grid — the active workspace returns to a single full-width view. Cell assignments are forgotten."
-    : "Disband the current tab-split — the active tab returns to a single full-width pane and the other split tabs go back into the regular tab strip.",
+const unsplitTitle = computed(
+  () =>
+    "Disband the multi-workspace grid — the active workspace returns to a single full-width view. Cell assignments are forgotten.",
 );
 
 function onOpenPicker(): void {
   const rect = layoutBtnRef.value?.getBoundingClientRect();
   if (!rect) return;
-  // Always operate on the multi-workspace grid — the chip lives in the
-  // workspace hero and represents "how many workspaces are visible". Tab
-  // splitting stays on the terminal-toolbar Split button so the two
-  // affordances stop competing for the same picker.
   store.showLayoutPicker(rect, "grid");
 }
 
 function onUnsplit(): void {
-  if (store.isGridVisible) {
-    store.disableWorkspaceGrid();
-  } else {
-    store.disbandSplit();
-  }
+  store.disableWorkspaceGrid();
 }
 </script>
 
