@@ -6,6 +6,8 @@
       :model-value="modelValue"
       placeholder="-- select --"
       :options="optionList"
+      searchable
+      search-placeholder="Filter branches…"
       @change="onChange"
     />
     <slot name="after" />

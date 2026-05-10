@@ -95,6 +95,23 @@ export function createWorkspaceActions(ctx: WorkspaceActionsCtx) {
   }
 
   /**
+   * Clear the workspace.review marker so the workspace stops being treated as a
+   * PR review checkout. Also strips the auto-set "{Provider} review workspace
+   * for ..." notes prefix — the runtime's repair pass uses that prefix as a
+   * re-attach hint, so leaving it would let the next poll restore the marker.
+   * The PR data on the server is not touched.
+   */
+  async function detachWorkspaceReview(workspaceId: string): Promise<void> {
+    const ws = (ctx.payload.value?.appState?.workspaces || []).find((w: AnyApi) => w.id === workspaceId);
+    if (!ws) return;
+    const next: AnyApi = { ...(ws as AnyApi), review: null };
+    if (/^(Azure DevOps|GitHub) review workspace for /.test(String((ws as AnyApi).notes || ""))) {
+      next.notes = "";
+    }
+    ctx.payload.value = (await (ctx.getApi() as AnyApi).saveWorkspace(next)) as StatePayload;
+  }
+
+  /**
    * Optimistic workspace delete.
    *
    * Deleting a worktree-backed workspace (regular worktree, review checkout,
@@ -602,6 +619,7 @@ export function createWorkspaceActions(ctx: WorkspaceActionsCtx) {
 
   return {
     saveWorkspace,
+    detachWorkspaceReview,
     deleteWorkspace,
     forceRemoveWorkspace,
     closeTab,

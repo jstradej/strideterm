@@ -893,6 +893,12 @@ export function registerIpc(
       runtime.gitDiffPreview(validateIpc(gitDiffPreviewSchema, payload, "git:diff-preview")),
     ),
   );
+  ipcMain.handle("git:compare-branch", async (_event, payload) => {
+    const p = validateIpc(gitPayloadSchema, payload, "git:compare-branch");
+    return withOperationPromise({ workspaceId: p.workspaceId, opId: "git:compare-branch" }, () =>
+      runtime.gitCompareBranch(p),
+    );
+  });
   ipcMain.handle("git:merge-into-base", async (_event, payload) => {
     const p = validateIpc(gitPayloadSchema, payload, "git:merge-into-base");
     return withOperationPromise({ workspaceId: p.workspaceId, opId: "git:merge-into-base" }, () =>

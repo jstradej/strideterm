@@ -17,6 +17,8 @@
           :model-value="resolvedBaseBranch"
           placeholder="-- select --"
           :options="baseBranchOptionList"
+          searchable
+          search-placeholder="Filter branches…"
           @change="onTargetChange"
         />
       </span>

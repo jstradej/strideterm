@@ -52,6 +52,22 @@
           <h3>{{ effectiveBaseBranch || "?" }} &rarr; {{ snapshot.branch }}</h3>
         </div>
       </div>
+      <div v-if="isReviewWorkspace" class="git-info-banner" data-testid="review-detach-banner">
+        <strong>Linked to a PR review</strong>
+        <p>
+          Rebase, Merge, Push, and Force push are disabled while this workspace is linked to a pull request review.
+          Detaching makes it a regular workspace — the PR on the server is not touched.
+        </p>
+        <button
+          type="button"
+          data-testid="detach-review-button"
+          class="button button--ghost"
+          :disabled="!!gitUi.busyAction || detachingReview"
+          @click="onDetachReview"
+        >
+          {{ detachingReview ? "Detaching…" : "Detach from PR review" }}
+        </button>
+      </div>
       <div class="git-detail-list">
         <span><strong>Current branch:</strong> {{ snapshot.branch }}</span>
         <template v-if="isLinkedWorktree">
@@ -73,12 +89,26 @@
         <span><strong>Last fetch:</strong> {{ formatDateLabel(snapshot.lastFetchAt) }}</span>
       </div>
       <template v-if="effectiveBaseBranch">
+        <p class="git-card__hint git-card__hint--compare" data-testid="base-compare-status">
+          <template v-if="baseCompare.loading">Comparing with {{ effectiveBaseBranch }}…</template>
+          <template v-else-if="baseCompare.error">{{ baseCompare.error }}</template>
+          <template v-else-if="baseCompare.aheadCount === 0 && baseCompare.behindCount === 0">
+            Already up to date with {{ effectiveBaseBranch }} — nothing to rebase or merge.
+          </template>
+          <template v-else>
+            Current branch is
+            <strong v-if="baseCompare.aheadCount">{{ baseCompare.aheadCount }} ahead</strong>
+            <template v-if="baseCompare.aheadCount && baseCompare.behindCount">, </template>
+            <strong v-if="baseCompare.behindCount">{{ baseCompare.behindCount }} behind</strong>
+            {{ effectiveBaseBranch }}.
+          </template>
+        </p>
         <div v-if="!isReviewWorkspace" class="git-operation-actions">
           <button
             type="button"
             class="button"
-            :disabled="!!(gitUi.busyAction || operation.inProgress || !!gitUi.pendingAction)"
-            :title="`Rebase current branch onto local ${effectiveBaseBranch}`"
+            :disabled="rebaseDisabled"
+            :title="rebaseTitle"
             @click="gitUiStore.gitRebaseBase(workspaceId, effectiveBaseBranch)"
           >
             {{ gitUi.busyAction === "rebase" ? "Rebasing…" : `Rebase onto ${effectiveBaseBranch}` }}
@@ -87,8 +117,8 @@
             v-if="!isReviewWorkspace"
             type="button"
             class="button button--ghost"
-            :disabled="!!(gitUi.busyAction || operation.inProgress || !!gitUi.pendingAction)"
-            :title="`Merge local ${effectiveBaseBranch} into current branch`"
+            :disabled="mergeDisabled"
+            :title="mergeTitle"
             @click="gitUiStore.gitMergeBase(workspaceId, effectiveBaseBranch)"
           >
             {{ gitUi.busyAction === "merge" ? "Merging…" : `Merge ${effectiveBaseBranch} in` }}
@@ -165,6 +195,8 @@
               class="git-branch-select"
               placeholder="-- select branch --"
               :options="switchBranchOptionsList"
+              searchable
+              search-placeholder="Filter branches…"
             />
             <button
               type="button"
@@ -217,8 +249,9 @@
 </template>
 
 <script setup lang="ts">
-import { ref } from "vue";
+import { ref, computed, watch } from "vue";
 import { useGitUiStore } from "../../../stores/git-ui.js";
+import { useAppStore } from "../../../stores/app.js";
 import GitOperationCard from "./GitOperationCard.vue";
 import GitMergeBackCard from "./GitMergeBackCard.vue";
 import GitBaseBranchPicker from "./GitBaseBranchPicker.vue";
@@ -269,9 +302,22 @@ const props = withDefaults(
 );
 
 const gitUiStore = useGitUiStore();
+const appStore = useAppStore();
 
 const switchBranchTarget = ref("");
 const newBranchName = ref("");
+const detachingReview = ref(false);
+
+async function onDetachReview() {
+  if (detachingReview.value) return;
+  if (!window.confirm("Detach this workspace from its PR review? Git operations will be re-enabled.")) return;
+  detachingReview.value = true;
+  try {
+    await appStore.detachWorkspaceReview(props.workspaceId);
+  } finally {
+    detachingReview.value = false;
+  }
+}
 
 function formatDateLabel(value: string | undefined | null): string {
   if (!value) return "Not fetched yet";
@@ -296,4 +342,73 @@ function onCreateBranch() {
     newBranchName.value = "";
   }
 }
+
+// --- Compare against the (possibly overridden) base branch -----------------
+//
+// snapshot.compareWithBase always reflects snapshot.baseBranch. When the user
+// picks a different base in the picker (overrideBaseBranch ≠ snapshot.baseBranch),
+// we fetch fresh counts via gitFetchBaseComparison and read them from
+// gitUi.baseComparison. Re-fetched on snapshot.lastFetchAt so a Fetch updates
+// the chip without the user re-selecting the base.
+const baseCompare = computed(() => {
+  const base = props.effectiveBaseBranch;
+  const loading = !!props.gitUi?.baseComparisonLoading;
+  if (!base) return { loading: false, error: "", aheadCount: 0, behindCount: 0 };
+  const cached = props.gitUi?.baseComparison;
+  if (cached && cached.baseBranch === base) {
+    if (!cached.ok) {
+      return { loading, error: cached.error || "Failed to compare", aheadCount: 0, behindCount: 0 };
+    }
+    return { loading, error: "", aheadCount: cached.aheadCount || 0, behindCount: cached.behindCount || 0 };
+  }
+  // Fall back to the snapshot's compareWithBase if it matches — avoids a flash
+  // of "Comparing…" right after switching to this tab when the base hasn't
+  // been overridden.
+  const snap = props.snapshot;
+  if (snap?.compareWithBase?.baseBranch === base) {
+    return {
+      loading,
+      error: "",
+      aheadCount: snap.compareWithBase.aheadCount || 0,
+      behindCount: snap.compareWithBase.behindCount || 0,
+    };
+  }
+  return { loading: true, error: "", aheadCount: 0, behindCount: 0 };
+});
+
+const nothingToRebase = computed(
+  () => !baseCompare.value.loading && !baseCompare.value.error && baseCompare.value.behindCount === 0,
+);
+
+const rebaseDisabled = computed(() => {
+  if (props.gitUi.busyAction || props.operation.inProgress || props.gitUi.pendingAction) return true;
+  if (nothingToRebase.value) return true;
+  return false;
+});
+const rebaseTitle = computed(() => {
+  if (nothingToRebase.value) return `Already up to date with ${props.effectiveBaseBranch} — nothing to rebase.`;
+  return `Rebase current branch onto local ${props.effectiveBaseBranch}`;
+});
+const mergeDisabled = computed(() => {
+  if (props.gitUi.busyAction || props.operation.inProgress || props.gitUi.pendingAction) return true;
+  if (nothingToRebase.value) return true;
+  return false;
+});
+const mergeTitle = computed(() => {
+  if (nothingToRebase.value) return `Already up to date with ${props.effectiveBaseBranch} — nothing to merge.`;
+  return `Merge local ${props.effectiveBaseBranch} into current branch`;
+});
+
+watch(
+  () => [props.effectiveBaseBranch, props.snapshot?.branch, props.snapshot?.lastFetchAt],
+  ([base]) => {
+    if (!base) return;
+    // Skip the network call when the snapshot already has counts for this
+    // exact base — the snapshot is authoritative for the auto-detected base.
+    const snap = props.snapshot;
+    if (snap?.compareWithBase?.baseBranch === base) return;
+    gitUiStore.gitFetchBaseComparison(props.workspaceId, String(base));
+  },
+  { immediate: true },
+);
 </script>

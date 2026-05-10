@@ -149,6 +149,7 @@ contextBridge.exposeInMainWorld("strideterm", {
   gitContinueOperation: (payload) => ipcRenderer.invoke("git:continue", payload),
   gitAbortOperation: (payload) => ipcRenderer.invoke("git:abort", payload),
   gitDiffPreview: (payload) => ipcRenderer.invoke("git:diff-preview", payload),
+  gitCompareBranch: (payload) => ipcRenderer.invoke("git:compare-branch", payload),
   gitMergeCurrentIntoBase: (payload) => ipcRenderer.invoke("git:merge-into-base", payload),
   gitRemoveWorktree: (payload) => ipcRenderer.invoke("git:remove-worktree", payload),
   gitCommitAll: (payload) => ipcRenderer.invoke("git:commit-all", payload),

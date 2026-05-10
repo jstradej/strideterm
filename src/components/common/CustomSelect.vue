@@ -16,35 +16,39 @@
       <span class="custom-select__arrow" aria-hidden="true">▾</span>
     </button>
     <Teleport to="body">
-      <ul
-        v-if="open"
-        ref="listRef"
-        class="custom-select__list"
-        role="listbox"
-        tabindex="-1"
-        :style="listStyle"
-        @keydown="onListKeydown"
-      >
-        <li
-          v-for="(opt, idx) in options"
-          :key="opt.value"
-          :class="[
-            'custom-select__option',
-            {
-              'custom-select__option--selected': opt.value === modelValue,
-              'custom-select__option--active': idx === activeIndex,
-              'custom-select__option--disabled': opt.disabled,
-            },
-          ]"
-          role="option"
-          :aria-selected="opt.value === modelValue ? 'true' : 'false'"
-          :aria-disabled="opt.disabled ? 'true' : 'false'"
-          @mousedown.prevent="onOptionMousedown(opt)"
-          @mouseenter="onOptionMouseenter(idx, opt)"
-        >
-          {{ opt.label }}
-        </li>
-      </ul>
+      <div v-if="open" ref="listRef" class="custom-select__list" :style="listStyle" @keydown="onListKeydown">
+        <input
+          v-if="searchable"
+          ref="searchRef"
+          v-model="query"
+          type="text"
+          class="custom-select__search"
+          :placeholder="searchPlaceholder"
+          @keydown="onSearchKeydown"
+        />
+        <ul class="custom-select__options" role="listbox" tabindex="-1">
+          <li
+            v-for="(opt, idx) in filteredOptions"
+            :key="opt.value"
+            :class="[
+              'custom-select__option',
+              {
+                'custom-select__option--selected': opt.value === modelValue,
+                'custom-select__option--active': idx === activeIndex,
+                'custom-select__option--disabled': opt.disabled,
+              },
+            ]"
+            role="option"
+            :aria-selected="opt.value === modelValue ? 'true' : 'false'"
+            :aria-disabled="opt.disabled ? 'true' : 'false'"
+            @mousedown.prevent="onOptionMousedown(opt)"
+            @mouseenter="onOptionMouseenter(idx, opt)"
+          >
+            {{ opt.label }}
+          </li>
+          <li v-if="searchable && filteredOptions.length === 0" class="custom-select__empty">No matches</li>
+        </ul>
+      </div>
     </Teleport>
   </div>
 </template>
@@ -64,6 +68,8 @@ interface Props {
   placeholder?: string;
   disabled?: boolean;
   buttonClass?: string | string[] | Record<string, boolean>;
+  searchable?: boolean;
+  searchPlaceholder?: string;
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -72,6 +78,8 @@ const props = withDefaults(defineProps<Props>(), {
   placeholder: "Select…",
   disabled: false,
   buttonClass: "",
+  searchable: false,
+  searchPlaceholder: "Type to filter…",
 });
 
 const emit = defineEmits<{
@@ -81,10 +89,19 @@ const emit = defineEmits<{
 
 const open = ref(false);
 const activeIndex = ref(-1);
+const query = ref("");
 const rootRef = ref<HTMLElement | null>(null);
 const buttonRef = ref<HTMLButtonElement | null>(null);
-const listRef = ref<HTMLUListElement | null>(null);
+const listRef = ref<HTMLDivElement | null>(null);
+const searchRef = ref<HTMLInputElement | null>(null);
 const listStyle = ref<Record<string, string>>({});
+
+const filteredOptions = computed(() => {
+  if (!props.searchable) return props.options;
+  const q = query.value.trim().toLowerCase();
+  if (!q) return props.options;
+  return props.options.filter((opt) => opt.label.toLowerCase().includes(q));
+});
 
 const MAX_LIST_HEIGHT = 260;
 
@@ -114,10 +131,11 @@ const selectedLabel = computed(() => {
 });
 
 function firstEnabledIndex(from = 0, dir = 1) {
-  const n = props.options.length;
+  const list = filteredOptions.value;
+  const n = list.length;
   for (let i = 0; i < n; i++) {
     const idx = (from + i * dir + n) % n;
-    if (!props.options[idx]?.disabled) return idx;
+    if (!list[idx]?.disabled) return idx;
   }
   return -1;
 }
@@ -126,15 +144,21 @@ function openList() {
   if (props.disabled || open.value) return;
   updateListPosition();
   open.value = true;
-  const selIdx = props.options.findIndex((o) => o.value === props.modelValue);
-  activeIndex.value = selIdx >= 0 && !props.options[selIdx].disabled ? selIdx : firstEnabledIndex(0, 1);
-  nextTick(() => scrollActiveIntoView());
+  query.value = "";
+  const list = filteredOptions.value;
+  const selIdx = list.findIndex((o) => o.value === props.modelValue);
+  activeIndex.value = selIdx >= 0 && !list[selIdx].disabled ? selIdx : firstEnabledIndex(0, 1);
+  nextTick(() => {
+    scrollActiveIntoView();
+    if (props.searchable) searchRef.value?.focus();
+  });
 }
 
 function closeList() {
   if (!open.value) return;
   open.value = false;
   activeIndex.value = -1;
+  query.value = "";
 }
 
 function toggle() {
@@ -150,7 +174,7 @@ function select(value: string | number) {
 }
 
 function moveActive(dir: number) {
-  if (props.options.length === 0) return;
+  if (filteredOptions.value.length === 0) return;
   const start = activeIndex.value < 0 ? (dir > 0 ? -1 : 0) : activeIndex.value;
   activeIndex.value = firstEnabledIndex(start + dir, dir);
   scrollActiveIntoView();
@@ -158,7 +182,8 @@ function moveActive(dir: number) {
 
 function scrollActiveIntoView() {
   if (!listRef.value || activeIndex.value < 0) return;
-  const el = listRef.value.children[activeIndex.value];
+  const ul = listRef.value.querySelector(".custom-select__options");
+  const el = ul?.children[activeIndex.value] as HTMLElement | undefined;
   if (el?.scrollIntoView) el.scrollIntoView({ block: "nearest" });
 }
 
@@ -171,7 +196,7 @@ function onButtonKeydown(e: KeyboardEvent) {
     e.preventDefault();
     if (!open.value) openList();
     else if (activeIndex.value >= 0) {
-      const opt = props.options[activeIndex.value];
+      const opt = filteredOptions.value[activeIndex.value];
       if (opt && !opt.disabled) select(opt.value);
     }
   } else if (e.key === "Escape") {
@@ -189,6 +214,13 @@ function onButtonKeydown(e: KeyboardEvent) {
 
 function onListKeydown(e: KeyboardEvent) {
   onButtonKeydown(e);
+}
+
+function onSearchKeydown(e: KeyboardEvent) {
+  // Forward navigation/select keys to the list, but let typing pass through.
+  if (e.key === "ArrowDown" || e.key === "ArrowUp" || e.key === "Enter" || e.key === "Escape" || e.key === "Tab") {
+    onButtonKeydown(e);
+  }
 }
 
 function onOptionMousedown(opt: SelectOption) {
@@ -216,12 +248,24 @@ watch(
   () => props.options,
   () => {
     if (open.value) {
-      const n = props.options.length;
+      const n = filteredOptions.value.length;
       if (activeIndex.value >= n) activeIndex.value = firstEnabledIndex(0, 1);
     }
   },
   { deep: false },
 );
+
+watch(query, () => {
+  if (!open.value) return;
+  // Reset active index to first match when query changes.
+  const n = filteredOptions.value.length;
+  if (n === 0) {
+    activeIndex.value = -1;
+  } else if (activeIndex.value < 0 || activeIndex.value >= n) {
+    activeIndex.value = firstEnabledIndex(0, 1);
+  }
+  nextTick(() => scrollActiveIntoView());
+});
 
 function onReposition() {
   if (open.value) updateListPosition();
@@ -300,15 +344,42 @@ defineExpose({ focus: () => buttonRef.value?.focus() });
   right: 0;
   z-index: 10050;
   max-height: 260px;
-  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
   margin: 0;
-  padding: 4px 0;
-  list-style: none;
   background: var(--panel-elevated);
   border: 1px solid var(--border);
   border-radius: 4px;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
   font-size: 13px;
+  overflow: hidden;
+}
+.custom-select__search {
+  flex-shrink: 0;
+  padding: 6px 10px;
+  background: rgba(var(--tint), 0.05);
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  outline: none;
+}
+.custom-select__search:focus {
+  background: rgba(var(--tint), 0.08);
+}
+.custom-select__options {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  margin: 0;
+  padding: 4px 0;
+  list-style: none;
+}
+.custom-select__empty {
+  padding: 8px 10px;
+  color: var(--muted);
+  font-style: italic;
 }
 .custom-select__option {
   padding: 6px 10px;

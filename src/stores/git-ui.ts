@@ -48,6 +48,14 @@ interface GitUiState {
   remoteBranches?: unknown[];
   remoteBranchesLoading?: boolean;
   overrideBaseBranch?: string;
+  baseComparison?: {
+    baseBranch: string;
+    aheadCount: number;
+    behindCount: number;
+    ok: boolean;
+    error?: string;
+  } | null;
+  baseComparisonLoading?: boolean;
   activeReviewTab?: string;
   commentFilter?: string;
   commentSort?: string;
@@ -754,6 +762,52 @@ export const useGitUiStore = defineStore("git-ui", () => {
     ui.overrideBaseBranch = baseBranch || "";
   }
 
+  async function gitFetchBaseComparison(workspaceId: string, baseBranch: string): Promise<void> {
+    const ui = ensure(workspaceId);
+    if (!baseBranch) {
+      ui.baseComparison = null;
+      return;
+    }
+    const rootPath = getActiveRoot(workspaceId);
+    ui.baseComparisonLoading = true;
+    try {
+      const result = (await (_api as Transport & { gitCompareBranch: (p: unknown) => Promise<unknown> })
+        .gitCompareBranch!({ workspaceId, baseBranch, rootPath })) as {
+        ok?: boolean;
+        baseBranch?: string;
+        aheadCount?: number;
+        behindCount?: number;
+        error?: string;
+      } | null;
+      if (!result || !result.ok) {
+        ui.baseComparison = {
+          baseBranch,
+          aheadCount: 0,
+          behindCount: 0,
+          ok: false,
+          error: (result?.error as string) || "Failed to compare",
+        };
+      } else {
+        ui.baseComparison = {
+          baseBranch: result.baseBranch || baseBranch,
+          aheadCount: result.aheadCount || 0,
+          behindCount: result.behindCount || 0,
+          ok: true,
+        };
+      }
+    } catch (error) {
+      ui.baseComparison = {
+        baseBranch,
+        aheadCount: 0,
+        behindCount: 0,
+        ok: false,
+        error: (error as Error)?.message || "Failed to compare",
+      };
+    } finally {
+      ui.baseComparisonLoading = false;
+    }
+  }
+
   async function azureCreatePullRequest(
     workspaceId: string,
     {
@@ -936,6 +990,7 @@ export const useGitUiStore = defineStore("git-ui", () => {
     gitStash,
     gitStashPop,
     gitSetBaseBranch,
+    gitFetchBaseComparison,
     gitListTags,
     gitCreateTag,
     gitDeleteTag,

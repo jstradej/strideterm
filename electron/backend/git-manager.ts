@@ -693,6 +693,48 @@ export class GitManager extends EventEmitter {
     }
   }
 
+  async compareWithBranch(
+    workspace: WorkspaceRef | null,
+    { baseBranch = "", rootPath = "" }: { baseBranch?: string; rootPath?: string } = {},
+  ): Promise<{ ok: boolean; baseBranch: string; aheadCount: number; behindCount: number; error?: string }> {
+    const effectiveCwd = rootPath || workspace?.cwd || "";
+    if (!effectiveCwd || !baseBranch) {
+      return {
+        ok: false,
+        baseBranch,
+        aheadCount: 0,
+        behindCount: 0,
+        error: "Working directory or base branch missing",
+      };
+    }
+    try {
+      const branchResult = await this.execGit(effectiveCwd, ["rev-parse", "--abbrev-ref", "HEAD"]);
+      const currentBranch = branchResult.stdout.trim();
+      if (!currentBranch || currentBranch === "HEAD") {
+        return { ok: false, baseBranch, aheadCount: 0, behindCount: 0, error: "Detached HEAD" };
+      }
+      if (normalizeBranchName(baseBranch) === normalizeBranchName(currentBranch)) {
+        return { ok: true, baseBranch, aheadCount: 0, behindCount: 0 };
+      }
+      const result = await this.execGit(effectiveCwd, ["rev-list", "--left-right", "--count", `HEAD...${baseBranch}`]);
+      const counts = parseRevListCount(result.stdout);
+      return {
+        ok: true,
+        baseBranch,
+        aheadCount: counts.left || 0,
+        behindCount: counts.right || 0,
+      };
+    } catch (error) {
+      return {
+        ok: false,
+        baseBranch,
+        aheadCount: 0,
+        behindCount: 0,
+        error: extractErrorMessage(error),
+      };
+    }
+  }
+
   async readBaseComparison(cwd: string, baseBranch: string, currentBranch: string): Promise<Record<string, unknown>> {
     if (!baseBranch) {
       return {

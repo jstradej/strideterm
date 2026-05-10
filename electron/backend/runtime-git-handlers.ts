@@ -114,6 +114,12 @@ export function createGitHandlers(ctx: GitHandlerCtx) {
       return git.diffPreview(workspace, { ...payload, rootPath });
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async gitCompareBranch(payload: any = {}) {
+      const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId);
+      const rootPath = resolveRootPath(workspace, payload.rootPath);
+      return git.compareWithBranch(workspace, { baseBranch: payload.baseBranch || "", rootPath });
+    },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async gitMergeCurrentIntoBase(payload: any = {}) {
       const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId);
       const rootPath = resolveRootPath(workspace, payload.rootPath);

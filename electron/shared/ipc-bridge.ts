@@ -262,6 +262,7 @@ export interface StridetermAPI {
   gitContinueOperation: (payload: GitPayload) => Promise<unknown>;
   gitAbortOperation: (payload: GitPayload) => Promise<unknown>;
   gitDiffPreview: (payload: GitDiffPreview) => Promise<unknown>;
+  gitCompareBranch: (payload: GitPayload) => Promise<unknown>;
   gitMergeCurrentIntoBase: (payload: GitPayload) => Promise<unknown>;
   gitRemoveWorktree: (payload: RemoveWorktree) => Promise<unknown>;
   gitCommitAll: (payload: GitCommit) => Promise<unknown>;

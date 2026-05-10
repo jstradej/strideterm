@@ -290,6 +290,21 @@
         />
       </template>
 
+      <!-- Detach review link — workspace is linked to a PR review -->
+      <div v-if="canDetachReview" class="review-link-section">
+        <div class="review-link-banner">
+          <strong>Linked to PR review</strong>
+          <span class="review-link-banner__detail">{{ reviewLinkLabel }}</span>
+        </div>
+        <p class="review-link-hint">
+          Detaching makes this a normal workspace — git operations like Rebase, Merge, Push, and Force push become
+          available again. The PR data on the server is not touched. Click "Save workspace" to apply.
+        </p>
+        <button type="button" class="button button--ghost button--danger" @click="detachReview">
+          Detach from PR review
+        </button>
+      </div>
+
       <!-- Multi-repo detection banner (non-task, non-review, non-nested workspaces) -->
       <div v-if="showMultiRepoSection" class="multi-repo-section">
         <div class="multi-repo-banner">
@@ -792,6 +807,34 @@ const showMultiRepoSection = computed(
   () => !isReviewWorkspace.value && !isTask.value && !parentIsMultiRepo.value && childRepoCount.value >= 2,
 );
 const isReviewWorkspace = computed(() => isAzure.value || !!draft.review?.prKey);
+// True for workspaces linked to a specific PR (any provider, any checkout
+// mode). Azure parent workspaces (kind === "azure") don't have a prKey, so
+// they're correctly excluded.
+const canDetachReview = computed(() => !!draft.review?.prKey);
+const reviewLinkLabel = computed(() => {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const r = draft.review as any;
+  if (!r) return "";
+  const provider =
+    r.provider === "github" ? "GitHub" : r.provider === "azure-devops" ? "Azure DevOps" : r.provider || "";
+  const repo = r.repository?.name || "";
+  const prId = r.pullRequest?.number || r.pullRequest?.id || "";
+  const title = r.pullRequest?.title || "";
+  const head = [provider, repo].filter(Boolean).join(" ");
+  const tail = [prId ? `PR #${prId}` : "", title].filter(Boolean).join(" — ");
+  return [head, tail].filter(Boolean).join(" · ");
+});
+function detachReview() {
+  // Clear the review marker. Also strip the auto-set notes prefix (Azure /
+  // GitHub managed review checkouts add it on creation, and the lifecycle
+  // pass treats it as a re-attach hint), so the next backend poll doesn't
+  // re-attach the metadata.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (draft as any).review = null;
+  if (/^(Azure DevOps|GitHub) review workspace for /.test(draft.notes || "")) {
+    draft.notes = "";
+  }
+}
 const enableMultiRepo = computed({
   get: () => (draft.gitRoots?.length || 0) >= 2,
   set: (val) => {
@@ -1266,6 +1309,32 @@ function extractErrorMessage(err: unknown): string {
   border-radius: 4px;
   padding: 10px 12px;
   background: rgba(255, 255, 255, 0.02);
+}
+.review-link-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: flex-start;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 10px 12px;
+  background: rgba(255, 200, 100, 0.05);
+}
+.review-link-banner {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: baseline;
+  font-size: 13px;
+}
+.review-link-banner__detail {
+  color: var(--muted);
+}
+.review-link-hint {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
 }
 .multi-repo-banner {
   display: flex;
