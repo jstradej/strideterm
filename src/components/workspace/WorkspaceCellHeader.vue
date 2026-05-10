@@ -3,7 +3,7 @@
     <button
       ref="pickerBtnRef"
       type="button"
-      class="workspace-cell-header__btn workspace-cell-header__picker"
+      class="workspace-cell-header__picker"
       :title="`Pick a workspace for this cell — currently: ${wsName}`"
       @click="onOpenPicker"
     >
