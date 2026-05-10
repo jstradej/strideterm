@@ -10,19 +10,6 @@
       + Tab
     </button>
     <button
-      v-if="(store.splitGroup || store.isGridVisible) && !isMobile"
-      type="button"
-      class="button button--ghost"
-      :title="
-        store.isGridVisible
-          ? 'Disband the workspace grid — the active workspace returns to a single full-width view.'
-          : 'Disband the current split layout — the active view returns to a single full-width pane.'
-      "
-      @click="onDisband"
-    >
-      Unsplit
-    </button>
-    <button
       v-if="!isMobile"
       type="button"
       class="button button--ghost"
@@ -35,6 +22,19 @@
       @click="$emit('open-layout-picker', $event)"
     >
       {{ currentLayout !== "solo" ? layouts[currentLayout]?.label || "Split" : "Split" }}
+    </button>
+    <button
+      v-if="(store.splitGroup || store.isGridVisible) && !isMobile"
+      type="button"
+      class="button button--ghost"
+      :title="
+        store.isGridVisible
+          ? 'Disband the workspace grid — the active workspace returns to a single full-width view.'
+          : 'Disband the current split layout — the active view returns to a single full-width pane.'
+      "
+      @click="onDisband"
+    >
+      Unsplit
     </button>
 
     <span class="tab-actions__separator"></span>

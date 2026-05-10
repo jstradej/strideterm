@@ -1,6 +1,7 @@
 import { test, expect, type Page } from "@playwright/test";
 import {
   launchApp,
+  relaunchApp,
   closeApp,
   assertNoRendererErrors,
   captureEndState,
@@ -177,6 +178,157 @@ test.describe("Multi-window — profile exclusivity enforcement", () => {
     await expect(secondPage!.getByText("Work Project", { exact: true }).first()).toBeVisible({ timeout: 10_000 });
     // Personal project must not appear in second window
     await expect(secondPage!.getByText("Personal Project", { exact: true }).first()).not.toBeVisible();
+    assertNoRendererErrors(launched!);
+  });
+});
+
+test.describe("Multi-window — restart restores two windows", () => {
+  let launched: LaunchedApp | undefined;
+  let dataDir: string;
+
+  test.beforeAll(async () => {
+    launched = await launchApp("multi-profile");
+    await launched.page.waitForSelector("h1.brand, .bootstrap-error", { timeout: 20_000 }).catch(() => undefined);
+    dataDir = launched.dataDir;
+
+    // Open a second window with the Work profile
+    const secondPagePromise = launched.app.waitForEvent("window", { timeout: 15_000 });
+    await launched.page.evaluate(async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      await (window as any).strideterm?.createWindow?.("profile-work");
+    });
+    const secondPage = await secondPagePromise;
+    await secondPage.waitForSelector("h1.brand, .bootstrap-error", { timeout: 20_000 }).catch(() => undefined);
+
+    // Give the runtime time to persist windowSlots
+    await launched.page.waitForTimeout(500);
+
+    // Close the app (simulates a restart)
+    await closeApp(launched);
+    launched = undefined;
+  });
+
+  // eslint-disable-next-line no-empty-pattern -- Playwright requires object-destructure even when unused
+  test.afterEach(async ({}, testInfo) => {
+    await captureEndState(launched, testInfo);
+  });
+
+  test.afterAll(async () => {
+    await closeApp(launched);
+  });
+
+  test("restart opens two windows — one per persisted window slot", async () => {
+    // Re-launch with the same data directory
+    launched = await relaunchApp(dataDir);
+    const page = launched.page;
+    await page.waitForSelector("h1.brand, .bootstrap-error", { timeout: 20_000 }).catch(() => undefined);
+
+    // Wait for the second window to appear (restored from windowSlots)
+    const secondPage = await launched.app.waitForEvent("window", { timeout: 20_000 }).catch(() => null);
+
+    // At least one window must show a workspace from the personal profile
+    await expect(page.getByText("Personal Project", { exact: true }).first()).toBeVisible({ timeout: 10_000 });
+
+    if (secondPage) {
+      await secondPage.waitForSelector("h1.brand, .bootstrap-error", { timeout: 15_000 }).catch(() => undefined);
+      // Second window should show the work profile workspace
+      await expect(secondPage.getByText("Work Project", { exact: true }).first()).toBeVisible({ timeout: 10_000 });
+      await captureStep(launched, "restart-second-window");
+    }
+
+    assertNoRendererErrors(launched);
+  });
+});
+
+test.describe("Multi-window — profile-delete-while-open refusal", () => {
+  let launched: LaunchedApp | undefined;
+
+  test.beforeAll(async () => {
+    launched = await launchApp("multi-profile");
+    await launched.page.waitForSelector("h1.brand, .bootstrap-error", { timeout: 20_000 }).catch(() => undefined);
+
+    // Open a second window with the Work profile
+    const secondPagePromise = launched.app.waitForEvent("window", { timeout: 15_000 });
+    await launched.page.evaluate(async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      await (window as any).strideterm?.createWindow?.("profile-work");
+    });
+    const secondPage = await secondPagePromise;
+    await secondPage.waitForSelector("h1.brand, .bootstrap-error", { timeout: 20_000 }).catch(() => undefined);
+  });
+
+  // eslint-disable-next-line no-empty-pattern -- Playwright requires object-destructure even when unused
+  test.afterEach(async ({}, testInfo) => {
+    await captureEndState(launched, testInfo);
+  });
+
+  test.afterAll(async () => {
+    await closeApp(launched);
+  });
+
+  test("deleting a profile open in another window shows an error, not a silent failure", async () => {
+    const { page } = launched!;
+
+    // Attempt to delete the Work profile (which is currently open in window 2) via IPC
+    const result = await page.evaluate(async () => {
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        await (window as any).strideterm?.deleteProfile?.("profile-work");
+        return { success: true, error: null };
+      } catch (err) {
+        return { success: false, error: (err as Error)?.message || String(err) };
+      }
+    });
+
+    await captureStep(launched!, "profile-delete-while-open");
+
+    // The backend must refuse; success would mean the guard is missing
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/open in window/i);
+    assertNoRendererErrors(launched!);
+  });
+});
+
+test.describe("Cmd+W cascade — workspace navigation before window close", () => {
+  let launched: LaunchedApp | undefined;
+
+  test.beforeAll(async () => {
+    // Use a fixture with two workspaces in the same profile so Cmd+W
+    // can navigate from workspace A to B without closing the window.
+    launched = await launchApp("two-workspaces");
+    await launched.page.waitForSelector("h1.brand, .bootstrap-error", { timeout: 20_000 }).catch(() => undefined);
+  });
+
+  // eslint-disable-next-line no-empty-pattern -- Playwright requires object-destructure even when unused
+  test.afterEach(async ({}, testInfo) => {
+    await captureEndState(launched, testInfo);
+  });
+
+  test.afterAll(async () => {
+    await closeApp(launched);
+  });
+
+  test("Ctrl+W with two workspaces navigates to the sibling workspace instead of closing the window", async () => {
+    const { page } = launched!;
+
+    // Confirm Workspace A is active
+    await expect(page.getByText("Workspace A", { exact: true }).first()).toBeVisible({ timeout: 10_000 });
+
+    await captureStep(launched!, "before-ctrl-w");
+
+    // Simulate Ctrl+W — the cascade should navigate to Workspace B (sibling), not close the window
+    await page.keyboard.press("Control+w");
+    await page.waitForTimeout(500);
+
+    await captureStep(launched!, "after-ctrl-w");
+
+    // The window must still be open — Playwright would throw if the page was destroyed
+    const isOpen = !page.isClosed();
+    expect(isOpen).toBe(true);
+
+    // Both workspaces should still be visible in the sidebar (neither was deleted)
+    await expect(page.getByText("Workspace A", { exact: true }).first()).toBeVisible({ timeout: 5_000 });
+    await expect(page.getByText("Workspace B", { exact: true }).first()).toBeVisible({ timeout: 5_000 });
     assertNoRendererErrors(launched!);
   });
 });

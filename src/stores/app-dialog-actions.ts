@@ -395,7 +395,16 @@ export function createDialogActions(ctx: DialogActionsCtx) {
         }, 200);
       },
       onDelete: async (profileId: string) => {
-        ctx.payload.value = (await (ctx.getApi() as AnyApi).deleteProfile(profileId)) as StatePayload;
+        try {
+          ctx.payload.value = (await (ctx.getApi() as AnyApi).deleteProfile(profileId)) as StatePayload;
+        } catch (err) {
+          const msg = ((err as Error)?.message || String(err || ""))
+            .replace(/^Error invoking remote method '[^']+':\s*/, "")
+            .replace(/^Error:\s*/, "");
+          // Re-throw with clean message so ProfilesDialog shows it inline.
+          // The backend deliberately refuses: "Profile is open in Window N. Close that window first."
+          throw new Error(msg);
+        }
       },
     });
   }

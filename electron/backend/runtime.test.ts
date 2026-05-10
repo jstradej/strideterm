@@ -2229,7 +2229,7 @@ describe("runtime integration", () => {
     payload = await fixture.runtime.deleteProfile("focus");
     expect(payload.appState.activeProfileId).toBe("default");
     expect(payload.appState.profiles).toEqual([
-      { id: "default", name: "Default", color: "#ffa424", workspaceIds: [], projectIds: [] },
+      { id: "default", name: "Default", color: "#ffa424", workspaceIds: [], projectIds: [], workspaceGrid: null },
     ]);
   });
 

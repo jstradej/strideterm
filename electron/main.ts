@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, nativeImage, nativeTheme, safeStorage, Menu } from "electron";
+import { app, BrowserWindow, ipcMain, nativeImage, nativeTheme, safeStorage, Menu, screen } from "electron";
 import os from "node:os";
 import path from "node:path";
 import { existsSync } from "node:fs";
@@ -295,6 +295,50 @@ function isRendererOrigin(target: string): boolean {
   }
 }
 
+/**
+ * Resolve safe window bounds from a persisted slot.
+ * If the saved display is gone or the bounds are mostly off-screen, fall back
+ * to default size centered on the primary display.
+ */
+function resolveSafeBounds(slot?: Partial<WindowSlot>): { x?: number; y?: number; width: number; height: number } {
+  const defaultW = APP_CONFIG.electron.windowWidth;
+  const defaultH = APP_CONFIG.electron.windowHeight;
+  if (!slot?.bounds) return { width: defaultW, height: defaultH };
+
+  const { x, y, width, height } = slot.bounds;
+  const w = Math.max(width || defaultW, APP_CONFIG.electron.minWindowWidth);
+  const h = Math.max(height || defaultH, APP_CONFIG.electron.minWindowHeight);
+
+  // If displayId is set, try to find that display first; fall back to display at (x,y)
+  const displays = screen.getAllDisplays();
+  let targetDisplay = slot.displayId
+    ? displays.find((d) => d.id === slot.displayId)
+    : undefined;
+  if (!targetDisplay) {
+    // Find the display containing most of the window's area
+    targetDisplay = screen.getDisplayMatching({ x, y, width: w, height: h });
+  }
+  if (!targetDisplay) {
+    targetDisplay = screen.getPrimaryDisplay();
+  }
+
+  const { bounds: db, workArea: wa } = targetDisplay;
+  // Check if at least 100px of the window is visible on the target display
+  const visibleX = Math.max(x, db.x) < Math.min(x + w, db.x + db.width);
+  const visibleY = Math.max(y, db.y) < Math.min(y + h, db.y + db.height);
+  if (visibleX && visibleY) {
+    // Clamp so the title bar stays reachable
+    const clampedX = Math.max(wa.x, Math.min(x, wa.x + wa.width - 100));
+    const clampedY = Math.max(wa.y, Math.min(y, wa.y + wa.height - 40));
+    return { x: clampedX, y: clampedY, width: Math.min(w, wa.width), height: Math.min(h, wa.height) };
+  }
+
+  // Saved display gone or window off-screen — center on the target display's work area
+  const cx = wa.x + Math.max(0, Math.floor((wa.width - w) / 2));
+  const cy = wa.y + Math.max(0, Math.floor((wa.height - h) / 2));
+  return { x: cx, y: cy, width: Math.min(w, wa.width), height: Math.min(h, wa.height) };
+}
+
 function createWindow(windowId?: string, slot?: Partial<WindowSlot>): void {
   const id = windowId || randomUUID();
   const windowIconPath =
@@ -302,12 +346,12 @@ function createWindow(windowId?: string, slot?: Partial<WindowSlot>): void {
       ? path.join(app.getAppPath(), "assets", "icon.ico")
       : path.join(app.getAppPath(), "assets", "icon.png");
 
-  const bounds = slot?.bounds;
+  const safeBounds = resolveSafeBounds(slot);
   const win = new BrowserWindow({
-    width: bounds?.width ?? APP_CONFIG.electron.windowWidth,
-    height: bounds?.height ?? APP_CONFIG.electron.windowHeight,
-    x: bounds?.x,
-    y: bounds?.y,
+    width: safeBounds.width,
+    height: safeBounds.height,
+    x: safeBounds.x,
+    y: safeBounds.y,
     minWidth: APP_CONFIG.electron.minWindowWidth,
     minHeight: APP_CONFIG.electron.minWindowHeight,
     title: APP_CONFIG.electron.title,
@@ -478,7 +522,10 @@ function persistWindowSlot(windowId: string, win: BrowserWindow): void {
   if (!runtimeState.runtimeInteractive || !runtimeState.runtime || win.isDestroyed()) return;
   if (win.isMinimized() || win.isMaximized()) return;
   const b = win.getBounds();
-  runtimeState.runtime.updateWindowSlotBounds?.(windowId, b).catch(() => {});
+  const [wx, wy] = win.getPosition();
+  const display = screen.getDisplayNearestPoint({ x: wx, y: wy });
+  const displayId = display?.id;
+  runtimeState.runtime.updateWindowSlotBounds?.(windowId, b, displayId).catch(() => {});
 }
 
 function emitToWindow(windowId: string, channel: string, payload: unknown): void {
@@ -783,6 +830,17 @@ async function startServices(): Promise<void> {
         }
         const image = await win.webContents.capturePage();
         return image.toPNG();
+      },
+      // §4.2: find the window whose slot has this profileId and tell its renderer
+      // to navigate to the workspace/panel (flash is handled separately in updateNativeAttention).
+      navigateWindowToAlert: (workspaceId: string, panelId: string, profileId: string): void => {
+        for (const [wid, win] of windowRegistry) {
+          if (win.isDestroyed()) continue;
+          if (getWindowProfileId(wid) === profileId) {
+            emitToWindow(wid, "alert:navigate", { workspaceId, panelId });
+            break;
+          }
+        }
       },
     },
   });

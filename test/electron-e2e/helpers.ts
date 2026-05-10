@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, "..", "..");
 
-export type FixtureName = "empty" | "seeded" | "grid" | "multi-profile";
+export type FixtureName = "empty" | "seeded" | "grid" | "multi-profile" | "two-workspaces";
 
 export interface LaunchedApp {
   app: ElectronApplication;
@@ -76,6 +76,50 @@ export async function launchApp(fixture: FixtureName = "empty", options: LaunchO
     if (msg.type() === "error") {
       errors.push(`console.error: ${msg.text()}`);
     }
+    console.log(`[renderer:${msg.type()}] ${msg.text()}`);
+  });
+  page.on("pageerror", (err) => {
+    errors.push(`pageerror: ${err.message}`);
+    console.log(`[renderer:pageerror] ${err.message}`);
+  });
+
+  await page.waitForLoadState("load");
+  await page.waitForSelector("h1, h2", { timeout: 30_000 }).catch(() => undefined);
+  return { app, page, dataDir, errors };
+}
+
+/**
+ * Re-launch the app against an existing data directory (for restart-restore tests).
+ * The caller is responsible for closing the previous app instance first.
+ */
+export async function relaunchApp(dataDir: string, options: LaunchOptions = {}): Promise<LaunchedApp> {
+  const width = options.windowSize?.width ?? 1100;
+  const height = options.windowSize?.height ?? 720;
+  const env: Record<string, string> = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    if (typeof value === "string") env[key] = value;
+  }
+  env.STRIDETERM_FORCE_DIST = "1";
+  env.STRIDETERM_SHELL_INTEGRATION = "0";
+  env.ELECTRON_DISABLE_SECURITY_WARNINGS = "1";
+  env.STRIDETERM_WINDOW_WIDTH = String(width);
+  env.STRIDETERM_WINDOW_HEIGHT = String(height);
+  if (options.windowSize) {
+    env.STRIDETERM_MIN_WINDOW_WIDTH = String(width);
+    env.STRIDETERM_MIN_WINDOW_HEIGHT = String(height);
+  }
+
+  const app = await electron.launch({
+    args: [REPO_ROOT, `--data-dir=${dataDir}`],
+    env,
+    timeout: 60_000,
+  });
+
+  const page = await app.firstWindow({ timeout: 30_000 });
+  const errors: string[] = [];
+
+  page.on("console", (msg) => {
+    if (msg.type() === "error") errors.push(`console.error: ${msg.text()}`);
     console.log(`[renderer:${msg.type()}] ${msg.text()}`);
   });
   page.on("pageerror", (err) => {

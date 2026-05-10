@@ -79,6 +79,9 @@ export const useAppStore = defineStore("app", () => {
   // --- Task recovery ---
   const recoveryCandidates = ref<RecoveryCandidate[]>([]);
 
+  // --- Alert navigation (§4.2): sessionId to scroll into view after workspace activation ---
+  const pendingAlertSessionId = ref<string | null>(null);
+
   // --- Race condition prevention ---
   const pendingWorkspaceActivationId = ref("");
   const pendingViewActivationId = ref("");
@@ -1014,6 +1017,7 @@ export const useAppStore = defineStore("app", () => {
     pendingWorkspaceActivationId,
     pendingViewActivationId,
     suppressBroadcast,
+    pendingAlertSessionId,
     lastError,
     recoveryCandidates,
     // Per-window identity

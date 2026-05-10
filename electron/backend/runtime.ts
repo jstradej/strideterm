@@ -248,6 +248,9 @@ interface RuntimeDependencies {
    * just call activateWorkspace before invoking this.
    */
   captureMainWindowPng?: (windowId?: string) => Promise<Buffer>;
+
+  /** Emit alert:navigate to the window that owns `profileId` (§4.2). */
+  navigateWindowToAlert?: (workspaceId: string, panelId: string, profileId: string) => void;
 }
 
 export async function createRuntime({
@@ -1345,7 +1348,7 @@ export async function createRuntime({
     isKnownPluginProject,
   });
 
-  // Wrap raiseAlert to forward to Telegram when configured.
+  // Wrap raiseAlert to forward to Telegram and route §4.2 alert navigation.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   function raiseAlert(opts: any): boolean {
     const raised = raiseAlertBase(opts);
@@ -1372,6 +1375,11 @@ export async function createRuntime({
             err: (err as Error).message,
           });
         });
+      // §4.2: emit alert:navigate to the window that owns this workspace's profile
+      if (opts.projectId && opts.panelId && dependencies.navigateWindowToAlert) {
+        const profileId = (workspace as { profileId?: string } | undefined)?.profileId || "default";
+        dependencies.navigateWindowToAlert(opts.projectId, opts.panelId, profileId);
+      }
     }
     return raised;
   }
@@ -3882,10 +3890,13 @@ export async function createRuntime({
       broadcastState();
     },
 
-    async updateWindowSlotBounds(windowId: string, bounds: { x: number; y: number; width: number; height: number }) {
+    async updateWindowSlotBounds(windowId: string, bounds: { x: number; y: number; width: number; height: number }, displayId?: number) {
       await store.mutate((draft: AppState) => {
         const slot = (draft.windowSlots || []).find((s) => s.id === windowId);
-        if (slot) slot.bounds = bounds;
+        if (slot) {
+          slot.bounds = bounds;
+          if (displayId !== undefined) slot.displayId = displayId;
+        }
       });
       // No broadcast needed for bounds update (not UI-visible)
     },

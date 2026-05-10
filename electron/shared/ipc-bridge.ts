@@ -362,6 +362,7 @@ export interface StridetermAPI {
   onSshHostKeyChange: (handler: (payload: Record<string, unknown>) => void) => void;
   onSshState: (handler: (payload: Record<string, unknown>) => void) => void;
   onSshConnectionState: (handler: (payload: SshConnectionState) => void) => void;
+  onAlertNavigate: (handler: (payload: { workspaceId: string; panelId: string }) => void) => void;
 }
 
 // Re-export payload types needed by AttentionSync consumers
