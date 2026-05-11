@@ -3610,12 +3610,18 @@ export async function createRuntime({
               workspace.panels.map((panel: any) => createSessionId(workspaceId, panel.id)),
         );
       }
-      if (workspace?.kind === "docker") {
-        await refreshDocker();
-      }
-      await refreshGit(workspaceId);
       ensureVisibleSession(workspaceId);
       broadcastState();
+      // Refresh git/docker in the background so the IPC response returns
+      // immediately; fresh data arrives via their "updated" → broadcastState.
+      if (workspace?.kind === "docker") {
+        refreshDocker().catch((err: unknown) => {
+          log.warn("activateWorkspace: docker refresh failed", { err: (err as Error)?.message });
+        });
+      }
+      refreshGit(workspaceId).catch((err: unknown) => {
+        log.warn("activateWorkspace: git refresh failed", { err: (err as Error)?.message });
+      });
       return getPayload();
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -3806,12 +3812,18 @@ export async function createRuntime({
               workspace.panels.map((panel: any) => createSessionId(workspaceId, panel.id)),
         );
       }
-      if (workspace?.kind === "docker") {
-        await refreshDocker();
-      }
-      await refreshGit(workspaceId);
       ensureVisibleSession(workspaceId);
       broadcastState();
+      // Refresh git/docker in the background so the IPC response returns
+      // immediately; fresh data arrives via their "updated" → broadcastState.
+      if (workspace?.kind === "docker") {
+        refreshDocker().catch((err: unknown) => {
+          log.warn("activateWorkspaceInWindow: docker refresh failed", { err: (err as Error)?.message });
+        });
+      }
+      refreshGit(workspaceId).catch((err: unknown) => {
+        log.warn("activateWorkspaceInWindow: git refresh failed", { err: (err as Error)?.message });
+      });
       return getPayload();
     },
 

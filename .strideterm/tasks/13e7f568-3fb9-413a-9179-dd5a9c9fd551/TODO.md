@@ -9,13 +9,6 @@
 
 ## In Progress
 
-- [ ] Task 1: agent-task-runner.ts — /clear before each new round (judge "continue" path)
-- [ ] Task 2: brief not transferred after reset — header Start button bypasses onStartWithBrief
-- [ ] Task 3: remove starred-workspace priority in Ctrl+Shift+PgUp/PgDown (2 files)
-- [ ] Task 4: Cloudflare tunnel auto-reconnect on startup (default-state.ts, runtime.ts)
-- [ ] Task 5: fix CI npm audit failure — add fast-uri override to package.json
-- [ ] Task 6: performance investigation and fixes
-
 ## Done
 
 - [x] Phase 1: Data model (state.ts, default-state.ts, ipc-schemas.ts, runtime.ts, ipc.ts, remote-server.ts, ipc-bridge.ts, preload.cts, transport.ts)
@@ -52,3 +45,10 @@
 - [x] Round 4 fix: ProfilesDialog.vue accepts windowSlots prop — Activate button disabled with "Open in Window N" tooltip for profiles occupied by another window; app-dialog-actions.ts passes windowSlots
 - [x] Round 4 fix: Telegram screenshot routing unit tests — /screenshot 1 resolves to slot[0].id, /screenshot 2 to slot[1].id, /screenshot ws-name via profile lookup, out-of-range falls back to primary (4 new cases in telegram-manager.test.ts)
 - [x] Round 4 fix: E2E per-window capture tests — two new describe blocks in multi-window.spec.ts: per-window screenshot capture (BrowserWindow.capturePage per index) + native badge count (app.getBadgeCount() global sum)
+- [x] Task 1: agent-task-runner.ts — /clear before each new round (judge "continue" path) at lines 1977-1983
+- [x] Task 2: briefDraft exposed via defineExpose in TaskDashboardStatusTab.vue:226; header Start button in TaskDashboardPane.vue uses statusTabRef?.briefDraft?.value
+- [x] Task 3: starred-workspace priority removed from Ctrl+Shift+PgUp/PgDown — useKeyboardShortcuts.ts:164-169 and runtime-bindings.ts:401-407
+- [x] Task 4: Cloudflare tunnel auto-reconnect — autoTunnel field in state.ts:33, default-state.ts:442; set/clear in runtime.ts createCloudflareTunnel/stopCloudflareTunnel; auto-start on startup at runtime.ts:3423-3438
+- [x] Task 5: fast-uri >=3.1.2 override in package.json:199; npm audit --audit-level=high passes with 0 vulnerabilities
+- [x] Task 6: review-bridge poll 3s→15s (runtime.ts:3076); docker poll default 15s→30s (app-config.ts:47)
+- [x] Task 6 round2: Electron v42.0.0 / Chromium 132 — no known CPU regression; existing settings optimal (backgroundThrottling:false, contextIsolation:true, sandbox:true). Non-blocking git+docker refresh in activateWorkspace and activateWorkspaceInWindow (runtime.ts:3613-3625, 3815-3827) — IPC now returns immediately; git data follows via background "updated" event. spellcheck:false added to BrowserWindow webPreferences (main.ts:375) to eliminate per-keystroke spell-check overhead in terminals.

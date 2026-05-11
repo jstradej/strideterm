@@ -372,6 +372,7 @@ function createWindow(windowId?: string, slot?: Partial<WindowSlot>): void {
       sandbox: true,
       webviewTag: true,
       backgroundThrottling: false,
+      spellcheck: false,
       additionalArguments: [
         ...(webglDisabled ? ["--strideterm-disable-webgl"] : []),
         `--strideterm-window-id=${id}`,
