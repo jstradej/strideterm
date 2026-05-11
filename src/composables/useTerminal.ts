@@ -14,10 +14,7 @@ import { useTerminalStore } from "../stores/terminal.js";
  * Pass a getter (e.g. `() => props.sessionId`) so the watch fires on prop
  * changes; passing a static string only attaches once at mount.
  */
-export function useTerminal(
-  sessionId: string | (() => string),
-  paneBodyRef: Ref<HTMLDivElement | null | undefined>,
-) {
+export function useTerminal(sessionId: string | (() => string), paneBodyRef: Ref<HTMLDivElement | null | undefined>) {
   const termStore = useTerminalStore();
   const getId = typeof sessionId === "function" ? sessionId : () => sessionId;
 

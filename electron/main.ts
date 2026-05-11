@@ -159,7 +159,9 @@ const runtimeState: RuntimeState = {
   unsubscribeRemoteConfig: null,
   unsubscribeStateUpdated: null,
   lastAttentionCount: 0,
-  get window() { return getPrimaryWindow(); },
+  get window() {
+    return getPrimaryWindow();
+  },
 };
 
 const mcpMode = parseReviewBridgeMcpArgs(process.argv.slice(1));
@@ -225,7 +227,9 @@ function updateNativeAttention(payload: Record<string, unknown> | null | undefin
     const profileSuffix = activeProfile && profileId !== "default" ? ` [${activeProfile.name}]` : "";
 
     // Compute alert count only for workspaces in this window's profile
-    const profileWsIds = new Set(workspaces.filter((ws) => (ws.profileId || "default") === profileId).map((ws) => ws.id));
+    const profileWsIds = new Set(
+      workspaces.filter((ws) => (ws.profileId || "default") === profileId).map((ws) => ws.id),
+    );
     let winCount = 0;
     let winWaitingCount = 0;
     if (byWorkspace) {
@@ -311,9 +315,7 @@ function resolveSafeBounds(slot?: Partial<WindowSlot>): { x?: number; y?: number
 
   // If displayId is set, try to find that display first; fall back to display at (x,y)
   const displays = screen.getAllDisplays();
-  let targetDisplay = slot.displayId
-    ? displays.find((d) => d.id === slot.displayId)
-    : undefined;
+  let targetDisplay = slot.displayId ? displays.find((d) => d.id === slot.displayId) : undefined;
   if (!targetDisplay) {
     // Find the display containing most of the window's area
     targetDisplay = screen.getDisplayMatching({ x, y, width: w, height: h });
@@ -373,10 +375,7 @@ function createWindow(windowId?: string, slot?: Partial<WindowSlot>): void {
       webviewTag: true,
       backgroundThrottling: false,
       spellcheck: false,
-      additionalArguments: [
-        ...(webglDisabled ? ["--strideterm-disable-webgl"] : []),
-        `--strideterm-window-id=${id}`,
-      ],
+      additionalArguments: [...(webglDisabled ? ["--strideterm-disable-webgl"] : []), `--strideterm-window-id=${id}`],
     },
   });
 
@@ -464,7 +463,10 @@ function createWindow(windowId?: string, slot?: Partial<WindowSlot>): void {
       if (digit) {
         event.preventDefault();
         const appState = runtimeState.runtime?.getPayload?.()?.appState as
-          | { windowSlots?: Array<{ id: string; profileId: string }>; workspaces?: Array<{ id: string; profileId?: string }> }
+          | {
+              windowSlots?: Array<{ id: string; profileId: string }>;
+              workspaces?: Array<{ id: string; profileId?: string }>;
+            }
           | undefined;
         const slot = (appState?.windowSlots || []).find((s) => s.id === id);
         const profileId = slot?.profileId || "default";
@@ -498,18 +500,15 @@ function createWindow(windowId?: string, slot?: Partial<WindowSlot>): void {
 
   if (isDev && !forceDist) {
     let fellBackToDist = false;
-    win.webContents.on(
-      "did-fail-load",
-      (_event, errorCode, errorDescription, validatedUrl, isMainFrame) => {
-        if (!isMainFrame || fellBackToDist || validatedUrl !== rendererUrl) {
-          return;
-        }
+    win.webContents.on("did-fail-load", (_event, errorCode, errorDescription, validatedUrl, isMainFrame) => {
+      if (!isMainFrame || fellBackToDist || validatedUrl !== rendererUrl) {
+        return;
+      }
 
-        fellBackToDist = true;
-        console.warn(`Renderer URL failed (${errorCode}: ${errorDescription}). Falling back to dist build.`);
-        win.loadFile(distIndexPath);
-      },
-    );
+      fellBackToDist = true;
+      console.warn(`Renderer URL failed (${errorCode}: ${errorDescription}). Falling back to dist build.`);
+      win.loadFile(distIndexPath);
+    });
 
     win.loadURL(rendererUrl);
     win.webContents.openDevTools({ mode: "detach" });
@@ -966,7 +965,11 @@ if (mcpMode) {
               }
             },
           },
-          { role: "close", label: "Close Window", accelerator: process.platform === "darwin" ? "Cmd+Shift+W" : "Ctrl+Shift+W" },
+          {
+            role: "close",
+            label: "Close Window",
+            accelerator: process.platform === "darwin" ? "Cmd+Shift+W" : "Ctrl+Shift+W",
+          },
         ],
       },
     ];
@@ -974,7 +977,12 @@ if (mcpMode) {
 
     // Restore windows from windowSlots persisted in state
     const statePath = path.join(userDataPath, "strideterm-state.json");
-    let slotsToRestore: Array<{ id: string; profileId: string; bounds?: { x: number; y: number; width: number; height: number }; isMaximized?: boolean }> = [];
+    let slotsToRestore: Array<{
+      id: string;
+      profileId: string;
+      bounds?: { x: number; y: number; width: number; height: number };
+      isMaximized?: boolean;
+    }> = [];
     try {
       const raw = await readFile(statePath, "utf8");
       if (raw.trim()) {

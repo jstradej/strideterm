@@ -141,7 +141,9 @@ export const useAppStore = defineStore("app", () => {
 
   /** ActiveWorkspaceId scoped to this window (falls back to global). */
   const myActiveWorkspaceId = computed<string>(() => {
-    return myWindowSlot.value?.activeWorkspaceId || (payload.value?.appState?.activeWorkspaceId as string | undefined) || "";
+    return (
+      myWindowSlot.value?.activeWorkspaceId || (payload.value?.appState?.activeWorkspaceId as string | undefined) || ""
+    );
   });
 
   /** ActiveProfileId scoped to this window (falls back to global). */

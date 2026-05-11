@@ -546,18 +546,24 @@ const DEFAULT_BOUNDS = { x: 100, y: 100, width: 1280, height: 800 };
  * - Ensure no two slots share the same profileId (drop duplicates, log warn).
  * - Fill missing fields with defaults.
  */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function normalizeWindowSlots(rawSlots: any, profiles: Profile[], activeProfileId: string, activeWorkspaceId: string): WindowSlot[] {
+function normalizeWindowSlots(
+  rawSlots: any, // eslint-disable-line @typescript-eslint/no-explicit-any
+  profiles: Profile[],
+  activeProfileId: string,
+  activeWorkspaceId: string,
+): WindowSlot[] {
   if (!Array.isArray(rawSlots) || rawSlots.length === 0) {
     // Migration: create one slot from the current global state
-    return [{
-      id: randomUUID(),
-      profileId: activeProfileId,
-      activeWorkspaceId,
-      activeSessionId: "",
-      bounds: { ...DEFAULT_BOUNDS },
-      lastFocusedAt: Date.now(),
-    }];
+    return [
+      {
+        id: randomUUID(),
+        profileId: activeProfileId,
+        activeWorkspaceId,
+        activeSessionId: "",
+        bounds: { ...DEFAULT_BOUNDS },
+        lastFocusedAt: Date.now(),
+      },
+    ];
   }
 
   const seen = new Set<string>();
@@ -578,14 +584,15 @@ function normalizeWindowSlots(rawSlots: any, profiles: Profile[], activeProfileI
       profileId,
       activeWorkspaceId: String(raw.activeWorkspaceId || ""),
       activeSessionId: String(raw.activeSessionId || ""),
-      bounds: raw.bounds && typeof raw.bounds === "object"
-        ? {
-            x: Number((raw.bounds as Record<string, unknown>).x) || DEFAULT_BOUNDS.x,
-            y: Number((raw.bounds as Record<string, unknown>).y) || DEFAULT_BOUNDS.y,
-            width: Number((raw.bounds as Record<string, unknown>).width) || DEFAULT_BOUNDS.width,
-            height: Number((raw.bounds as Record<string, unknown>).height) || DEFAULT_BOUNDS.height,
-          }
-        : { ...DEFAULT_BOUNDS },
+      bounds:
+        raw.bounds && typeof raw.bounds === "object"
+          ? {
+              x: Number((raw.bounds as Record<string, unknown>).x) || DEFAULT_BOUNDS.x,
+              y: Number((raw.bounds as Record<string, unknown>).y) || DEFAULT_BOUNDS.y,
+              width: Number((raw.bounds as Record<string, unknown>).width) || DEFAULT_BOUNDS.width,
+              height: Number((raw.bounds as Record<string, unknown>).height) || DEFAULT_BOUNDS.height,
+            }
+          : { ...DEFAULT_BOUNDS },
       displayId: typeof raw.displayId === "number" ? raw.displayId : undefined,
       isMaximized: Boolean(raw.isMaximized),
       lastFocusedAt: typeof raw.lastFocusedAt === "number" ? raw.lastFocusedAt : Date.now(),
@@ -593,14 +600,16 @@ function normalizeWindowSlots(rawSlots: any, profiles: Profile[], activeProfileI
   }
 
   if (result.length === 0) {
-    return [{
-      id: randomUUID(),
-      profileId: activeProfileId,
-      activeWorkspaceId,
-      activeSessionId: "",
-      bounds: { ...DEFAULT_BOUNDS },
-      lastFocusedAt: Date.now(),
-    }];
+    return [
+      {
+        id: randomUUID(),
+        profileId: activeProfileId,
+        activeWorkspaceId,
+        activeSessionId: "",
+        bounds: { ...DEFAULT_BOUNDS },
+        lastFocusedAt: Date.now(),
+      },
+    ];
   }
 
   return result;

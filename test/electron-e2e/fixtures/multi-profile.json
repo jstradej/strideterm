@@ -19,9 +19,7 @@
       "github": { "enabled": false, "connections": [], "reviewRoot": "", "defaultPollSeconds": 600 },
       "telegram": { "enabled": false, "defaultPollSeconds": 600, "connections": [] }
     },
-    "tabTemplates": [
-      { "id": "shell", "title": "Shell", "command": "", "icon": "terminal" }
-    ]
+    "tabTemplates": [{ "id": "shell", "title": "Shell", "command": "", "icon": "terminal" }]
   },
   "profiles": [
     {

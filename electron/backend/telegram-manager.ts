@@ -1235,8 +1235,16 @@ export class TelegramManager extends EventEmitter {
       await this._handleTaskCommand(chatId, token, conn);
       return;
     }
-    if (lower === "/screenshot" || lower === "screenshot" || lower.startsWith("/screenshot ") || lower.startsWith("screenshot ")) {
-      const arg = text.trim().replace(/^\/?(screenshot)\s*/i, "").trim();
+    if (
+      lower === "/screenshot" ||
+      lower === "screenshot" ||
+      lower.startsWith("/screenshot ") ||
+      lower.startsWith("screenshot ")
+    ) {
+      const arg = text
+        .trim()
+        .replace(/^\/?(screenshot)\s*/i, "")
+        .trim();
       log.info("telegram command: /screenshot", { chatId, arg });
       await this._handleScreenshotCommand(chatId, token, arg || undefined);
       return;

@@ -658,8 +658,10 @@ export function registerIpc(
   );
   ipcMain.handle("workspace-grid:disable", async (event) => {
     const windowId = getWindowIdByWebContentsId?.(event.sender.id) ?? "";
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    return withOperationPromise({ opId: "workspace-grid:disable" }, () => (runtime as any).disableWorkspaceGrid(windowId));
+    return withOperationPromise({ opId: "workspace-grid:disable" }, () =>
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (runtime as any).disableWorkspaceGrid(windowId),
+    );
   });
   ipcMain.handle("workspace-grid:set-layout", async (event, payload) =>
     withOperationPromise({ opId: "workspace-grid:set-layout" }, () => {

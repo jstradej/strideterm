@@ -26,9 +26,7 @@
       </template>
       <template v-else>
         <p class="new-window-hint">All profiles are already open in a window.</p>
-        <button type="button" class="button button--ghost" @click="emit('create-profile')">
-          + Create new profile
-        </button>
+        <button type="button" class="button button--ghost" @click="emit('create-profile')">+ Create new profile</button>
       </template>
 
       <template v-if="occupiedProfiles.length > 0">

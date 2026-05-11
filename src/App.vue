@@ -466,14 +466,16 @@ onMounted(() => {
   });
   // §4.2: alert:navigate — focus workspace in grid + signal panel scroll
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  (window as any).strideterm?.onAlertNavigate?.(({ workspaceId, panelId }: { workspaceId: string; panelId: string }) => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const activeWsId = (store as any).myActiveWorkspaceId;
-    store.pendingAlertSessionId = `${workspaceId}:${panelId}`;
-    if (workspaceId && workspaceId !== activeWsId) {
-      store.activateWorkspace(workspaceId).catch(() => {});
-    }
-  });
+  (window as any).strideterm?.onAlertNavigate?.(
+    ({ workspaceId, panelId }: { workspaceId: string; panelId: string }) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const activeWsId = (store as any).myActiveWorkspaceId;
+      store.pendingAlertSessionId = `${workspaceId}:${panelId}`;
+      if (workspaceId && workspaceId !== activeWsId) {
+        store.activateWorkspace(workspaceId).catch(() => {});
+      }
+    },
+  );
 });
 
 onUnmounted(() => {

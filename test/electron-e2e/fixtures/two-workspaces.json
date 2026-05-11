@@ -19,9 +19,7 @@
       "github": { "enabled": false, "connections": [], "reviewRoot": "", "defaultPollSeconds": 600 },
       "telegram": { "enabled": false, "defaultPollSeconds": 600, "connections": [] }
     },
-    "tabTemplates": [
-      { "id": "shell", "title": "Shell", "command": "", "icon": "terminal" }
-    ]
+    "tabTemplates": [{ "id": "shell", "title": "Shell", "command": "", "icon": "terminal" }]
   },
   "profiles": [
     {
@@ -44,9 +42,7 @@
       "cwd": "",
       "notes": "",
       "profileId": "default",
-      "panels": [
-        { "id": "panel-a1", "title": "Shell A", "command": "", "startup": "shell" }
-      ]
+      "panels": [{ "id": "panel-a1", "title": "Shell A", "command": "", "startup": "shell" }]
     },
     {
       "id": "ws-b",
@@ -59,9 +55,7 @@
       "cwd": "",
       "notes": "",
       "profileId": "default",
-      "panels": [
-        { "id": "panel-b1", "title": "Shell B", "command": "", "startup": "shell" }
-      ]
+      "panels": [{ "id": "panel-b1", "title": "Shell B", "command": "", "startup": "shell" }]
     }
   ],
   "windowSlots": []

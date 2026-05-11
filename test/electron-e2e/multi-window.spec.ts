@@ -168,7 +168,10 @@ test.describe("Multi-window — profile exclusivity enforcement", () => {
     if (await overlay.isVisible({ timeout: 3_000 }).catch(() => false)) {
       await captureStep(launched!, "modal-with-occupied-profile");
       // Close it
-      await page.locator(".overlay .button--ghost", { hasText: "Close" }).click().catch(() => {});
+      await page
+        .locator(".overlay .button--ghost", { hasText: "Close" })
+        .click()
+        .catch(() => {});
     }
     assertNoRendererErrors(launched!);
   });

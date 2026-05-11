@@ -112,7 +112,8 @@ export function useKeyboardShortcuts(api: Transport, { onNewWorkspace }: { onNew
 
     // Cmd/Ctrl+W — cascade: close active tab → workspace → window
     if (!event.shiftKey && !event.altKey && event.key.toLowerCase() === "w") {
-      const activeWs = (appStore.payload as AnyApi)?.workspace?.workspace || (appStore.payload as AnyApi)?.workspace?.project;
+      const activeWs =
+        (appStore.payload as AnyApi)?.workspace?.workspace || (appStore.payload as AnyApi)?.workspace?.project;
       const activeViewId = appStore.activeViewId;
       const panels: AnyApi[] = activeWs?.panels || [];
       if (activeWs && activeViewId && panels.length > 1) {

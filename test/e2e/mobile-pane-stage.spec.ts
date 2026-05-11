@@ -281,9 +281,9 @@ test.describe("PaneStage mobile collapse", () => {
   });
 });
 
-async function paneTerminalMetrics(page: Page): Promise<
-  Array<{ paneHeight: number; paneBottom: number; hostHeight: number; hostBottom: number }>
-> {
+async function paneTerminalMetrics(
+  page: Page,
+): Promise<Array<{ paneHeight: number; paneBottom: number; hostHeight: number; hostBottom: number }>> {
   return page.locator(".workspace-pane").evaluateAll((panes) =>
     panes.map((pane) => {
       const host = pane.querySelector(".terminal-host") as HTMLElement | null;

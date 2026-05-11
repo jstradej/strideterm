@@ -3856,9 +3856,7 @@ export async function createRuntime({
     async activateProfileInWindow(profileId: any, windowId: string) {
       const state = getState();
       // Exclusivity check: refuse if profile is already in a DIFFERENT open window
-      const existing = (state.windowSlots || []).find(
-        (s) => s.profileId === profileId && s.id !== windowId,
-      );
+      const existing = (state.windowSlots || []).find((s) => s.profileId === profileId && s.id !== windowId);
       if (existing) {
         // Find window number for user-facing message (1-based creation order)
         const slots = state.windowSlots || [];
@@ -3891,7 +3889,9 @@ export async function createRuntime({
 
     // --- Window slot management ---
 
-    async createWindowSlot(profileId: string): Promise<{ id: string; profileId: string; bounds: { x: number; y: number; width: number; height: number } }> {
+    async createWindowSlot(
+      profileId: string,
+    ): Promise<{ id: string; profileId: string; bounds: { x: number; y: number; width: number; height: number } }> {
       const newId = randomUUID();
       const defaultBounds = { x: 100, y: 100, width: 1280, height: 800 };
       await store.mutate((draft: AppState) => {
@@ -3917,7 +3917,11 @@ export async function createRuntime({
       broadcastState();
     },
 
-    async updateWindowSlotBounds(windowId: string, bounds: { x: number; y: number; width: number; height: number }, displayId?: number) {
+    async updateWindowSlotBounds(
+      windowId: string,
+      bounds: { x: number; y: number; width: number; height: number },
+      displayId?: number,
+    ) {
       await store.mutate((draft: AppState) => {
         const slot = (draft.windowSlots || []).find((s) => s.id === windowId);
         if (slot) {
@@ -4011,7 +4015,7 @@ export async function createRuntime({
         draft.workspaces = draft.workspaces.filter((item) => item.id !== workspaceId);
         if (draft.activeWorkspaceId === workspaceId) {
           // Pick next-best in same profile
-          const profileId = ws ? (ws.profileId || "default") : "default";
+          const profileId = ws ? ws.profileId || "default" : "default";
           const sibling = draft.workspaces.find((w) => (w.profileId || "default") === profileId);
           draft.activeWorkspaceId = sibling?.id || draft.workspaces[0]?.id || "";
         }
