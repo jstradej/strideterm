@@ -41,6 +41,7 @@
       type="button"
       class="workspace-cell-header__btn workspace-cell-header__btn--danger"
       title="Remove workspace from this cell"
+      @mousedown.stop
       @click="$emit('clear')"
     >
       ×
@@ -102,7 +103,7 @@ const swapActions = computed<SwapAction[]>(() => {
   const srcIdx = props.cellIndex;
   if (!boxes[srcIdx]) return [];
   const out: SwapAction[] = [];
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
   const allWs = ((store.payload as AnyApi)?.appState?.workspaces || []) as AnyApi[];
   for (let i = 0; i < ids.length; i += 1) {
     if (i === srcIdx || !boxes[i]) continue;
