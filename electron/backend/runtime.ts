@@ -288,6 +288,16 @@ export async function createRuntime({
   const createPluginManagerImpl = dependencies.createPluginManager || createPluginManager;
   const execFileTextImpl = dependencies.execFileText || execFileText;
 
+  // Forward-declare plugin manager so getPayload() can read it safely even
+  // when broadcastState() fires via queueMicrotask during the createRuntime
+  // bootstrap (e.g. "logger reconfigured from stored settings" triggers a
+  // broadcast while the `await createPluginManagerImpl(...)` below is still
+  // pending). Declaring as `const` further down causes a TDZ ReferenceError
+  // in those microtasks; a `let` initialized to null lets the nullish check
+  // in getPayload do its job until the real manager is assigned.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let pluginManager: any = null;
+
   // Platform-optimized recursive directory removal.
   // On Windows, Node's fs.rm is slow on NTFS due to per-file stat calls. The
   // built-in `rd /s /q` operates at the filesystem driver level and is much
@@ -3401,7 +3411,7 @@ export async function createRuntime({
     }
   }
 
-  const pluginManager = await createPluginManagerImpl({
+  pluginManager = await createPluginManagerImpl({
     pluginsDir,
     builtinPluginsDir: builtinPluginsDir || null,
     runtime: null, // Will be set after construction
@@ -3893,7 +3903,21 @@ export async function createRuntime({
       profileId: string,
     ): Promise<{ id: string; profileId: string; bounds: { x: number; y: number; width: number; height: number } }> {
       const newId = randomUUID();
-      const defaultBounds = { x: 100, y: 100, width: 1280, height: 800 };
+      // Cascade offset new windows so they don't stack exactly on top of
+      // existing ones. Step of 32px is enough to expose the title bar of the
+      // window underneath without pushing the new window off-screen for
+      // typical 6-slot scenarios. resolveSafeBounds (main.ts) will clamp /
+      // re-center if the cascade walks past the work area.
+      const existingCount = (getState().windowSlots || []).length;
+      const baseX = 100;
+      const baseY = 100;
+      const step = 32;
+      const defaultBounds = {
+        x: baseX + existingCount * step,
+        y: baseY + existingCount * step,
+        width: 1280,
+        height: 800,
+      };
       await store.mutate((draft: AppState) => {
         if (!Array.isArray(draft.windowSlots)) draft.windowSlots = [];
         draft.windowSlots.push({

@@ -24,10 +24,6 @@
           </button>
         </div>
       </template>
-      <template v-else>
-        <p class="new-window-hint">All profiles are already open in a window.</p>
-        <button type="button" class="button button--ghost" @click="emit('create-profile')">+ Create new profile</button>
-      </template>
 
       <template v-if="occupiedProfiles.length > 0">
         <p class="new-window-occupied-label">Already open:</p>
@@ -44,6 +40,27 @@
           </div>
         </div>
       </template>
+
+      <p class="new-window-occupied-label">Or create a new profile:</p>
+      <div class="new-profile-row">
+        <input
+          v-model="newProfileName"
+          type="text"
+          maxlength="40"
+          placeholder="New profile name..."
+          class="new-profile-input"
+          :disabled="busy"
+          @keydown.enter="createProfileAndOpen"
+        />
+        <button
+          type="button"
+          class="button button--ghost"
+          :disabled="busy || !newProfileName.trim()"
+          @click="createProfileAndOpen"
+        >
+          + Add
+        </button>
+      </div>
 
       <div v-if="errorMessage" class="dialog__error" role="alert">
         <span class="dialog__error-icon" aria-hidden="true">⚠</span>
@@ -74,11 +91,12 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   cancel: [];
-  "create-profile": [];
+  "create-and-open": [profile: { id: string; name: string; color: string }];
 }>();
 
 const busy = ref(false);
 const errorMessage = ref("");
+const newProfileName = ref("");
 
 const occupiedProfileIds = computed<Set<string>>(() => {
   const slots = props.windowSlots || [];
@@ -113,6 +131,31 @@ async function openWindow(profileId: string): Promise<void> {
   } catch (err) {
     errorMessage.value = (err as Error)?.message || "Failed to open window";
   } finally {
+    busy.value = false;
+  }
+}
+
+async function createProfileAndOpen(): Promise<void> {
+  const name = newProfileName.value.trim().substring(0, 40);
+  if (!name) return;
+  // Block duplicate names — saveProfile would either silently overwrite or
+  // produce two profiles with the same display name depending on backend
+  // dedup. Either is confusing here, so reject up front.
+  if ((props.profiles || []).some((p) => p.name.toLowerCase() === name.toLowerCase())) {
+    errorMessage.value = `A profile named "${name}" already exists.`;
+    return;
+  }
+  busy.value = true;
+  errorMessage.value = "";
+  try {
+    const newProfile = { id: `profile-${crypto.randomUUID()}`, name, color: "#ffa424" };
+    emit("create-and-open", newProfile);
+    // The parent (app-dialog-actions.openNewWindowModal) is responsible for
+    // saving the profile + opening the window + closing the dialog. We stay
+    // busy until it does — but since the dialog will be unmounted, no need
+    // to clear busy on success.
+  } catch (err) {
+    errorMessage.value = (err as Error)?.message || "Failed to create profile";
     busy.value = false;
   }
 }
@@ -180,5 +223,24 @@ async function openWindow(profileId: string): Promise<void> {
 .profile-pick-badge {
   font-size: 11px;
   color: var(--muted);
+}
+.new-profile-row {
+  display: flex;
+  gap: 6px;
+  align-items: stretch;
+}
+.new-profile-input {
+  flex: 1;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+}
+.new-profile-input:focus {
+  outline: none;
+  border-color: var(--accent, #ffa424);
 }
 </style>

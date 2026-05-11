@@ -82,13 +82,46 @@ const log = getLogger("main");
 // path resolution issues after compilation to dist-electron/.
 const packageVersion = app.getVersion();
 
+// Diagnostic: trace every app.quit() / app.exit() caller. Multi-window debugging
+// needs to know which code path triggers shutdown when only one of several
+// windows is closed (Electron's before-quit handler runs async, so a callstack
+// captured inside the handler doesn't reach the original caller — we have to
+// snapshot it at the call site).
+const _origQuit = app.quit.bind(app);
+const _origExit = app.exit.bind(app);
+app.quit = (() => {
+  log.warn("app.quit() called", { stack: new Error("app.quit").stack });
+  _origQuit();
+}) as typeof app.quit;
+app.exit = ((code?: number) => {
+  log.warn("app.exit() called", { code, stack: new Error("app.exit").stack });
+  _origExit(code);
+}) as typeof app.exit;
+
 // Suppress EPIPE errors that occur when the renderer disconnects during dev reload
 process.on("uncaughtException", (error: NodeJS.ErrnoException) => {
   if (error?.code === "EPIPE" || error?.message?.includes("EPIPE")) {
     return;
   }
-  console.error("Uncaught exception:", error);
-  app.quit();
+  // Don't quit on uncaughtException: a recoverable bug deep in some background
+  // task (e.g. TDZ in runtime bootstrap, a stale event firing on a destroyed
+  // BrowserWindow) used to shut down every window the user had open, losing
+  // their work. Log loudly instead and let the user decide whether to restart.
+  log.error("uncaughtException (NOT quitting)", {
+    err: error?.message,
+    code: error?.code,
+    stack: error?.stack,
+  });
+  console.error("Uncaught exception (continuing):", error);
+});
+
+process.on("unhandledRejection", (reason: unknown) => {
+  const err = reason as { message?: string; stack?: string; code?: string } | undefined;
+  log.error("unhandledRejection", {
+    err: err?.message ?? String(reason),
+    code: err?.code,
+    stack: err?.stack,
+  });
 });
 
 const isDev = !app.isPackaged;
@@ -349,6 +382,12 @@ function createWindow(windowId?: string, slot?: Partial<WindowSlot>): void {
       : path.join(app.getAppPath(), "assets", "icon.png");
 
   const safeBounds = resolveSafeBounds(slot);
+  log.info("createWindow: starting", {
+    windowId: id,
+    profileId: slot?.profileId,
+    bounds: safeBounds,
+    existingWindowCount: windowRegistry.size,
+  });
   const win = new BrowserWindow({
     width: safeBounds.width,
     height: safeBounds.height,
@@ -383,10 +422,19 @@ function createWindow(windowId?: string, slot?: Partial<WindowSlot>): void {
     win.maximize();
   }
 
-  // Register in window registry
+  // Register in window registry. Capture webContents.id at construction time
+  // so the `closed` handler can clean up the reverse-map entry even after
+  // the BrowserWindow's webContents has been destroyed (accessing
+  // `win.webContents.id` after destruction throws "Object has been destroyed").
+  const webContentsId = win.webContents.id;
   windowRegistry.set(id, win);
-  webContentsToWindowId.set(win.webContents.id, id);
+  webContentsToWindowId.set(webContentsId, id);
   windowFocusedAt.set(id, Date.now());
+  log.info("createWindow: BrowserWindow constructed", {
+    windowId: id,
+    webContentsId,
+    registrySize: windowRegistry.size,
+  });
 
   // Persist bounds + save window slot on close
   win.on("move", () => persistWindowSlot(id, win));
@@ -397,9 +445,32 @@ function createWindow(windowId?: string, slot?: Partial<WindowSlot>): void {
     win.flashFrame(false);
   });
 
+  win.webContents.on("did-fail-load", (_event, errorCode, errorDescription, validatedUrl, isMainFrame) => {
+    if (!isMainFrame) return;
+    log.error("createWindow: did-fail-load", {
+      windowId: id,
+      errorCode,
+      errorDescription,
+      url: validatedUrl,
+    });
+  });
+
+  win.webContents.on("render-process-gone", (_event, details) => {
+    log.error("createWindow: render-process-gone", { windowId: id, ...details });
+  });
+
+  win.on("unresponsive", () => log.warn("createWindow: window unresponsive", { windowId: id }));
+  win.on("ready-to-show", () => log.debug("createWindow: ready-to-show", { windowId: id }));
+
   win.on("closed", () => {
+    const remaining = BrowserWindow.getAllWindows().filter((w) => !w.isDestroyed()).length;
+    log.info("createWindow: window closed", {
+      windowId: id,
+      remainingBrowserWindows: remaining,
+      registrySizeBefore: windowRegistry.size,
+    });
     windowRegistry.delete(id);
-    webContentsToWindowId.delete(win.webContents.id);
+    webContentsToWindowId.delete(webContentsId);
     windowFocusedAt.delete(id);
     windowAttentionCount.delete(id);
     // Remove slot from persistent state
@@ -449,6 +520,7 @@ function createWindow(windowId?: string, slot?: Partial<WindowSlot>): void {
   });
 
   win.webContents.once("dom-ready", () => {
+    log.info("createWindow: dom-ready, showing window", { windowId: id });
     win.show();
   });
 
@@ -507,14 +579,21 @@ function createWindow(windowId?: string, slot?: Partial<WindowSlot>): void {
 
       fellBackToDist = true;
       console.warn(`Renderer URL failed (${errorCode}: ${errorDescription}). Falling back to dist build.`);
+      log.warn("createWindow: dev renderer failed, falling back to dist", {
+        windowId: id,
+        errorCode,
+        errorDescription,
+      });
       win.loadFile(distIndexPath);
     });
 
+    log.debug("createWindow: loadURL (dev)", { windowId: id, url: rendererUrl });
     win.loadURL(rendererUrl);
     win.webContents.openDevTools({ mode: "detach" });
     return;
   }
 
+  log.debug("createWindow: loadFile (prod/dist)", { windowId: id, file: distIndexPath });
   win.loadFile(distIndexPath);
 }
 
@@ -904,7 +983,11 @@ if (mcpMode) {
 
   // IPC: renderer creates a new window for a given profileId
   ipcMain.handle("window:create", async (event, profileId: string) => {
-    if (!profileId || typeof profileId !== "string") return { error: "profileId required" };
+    log.info("window:create IPC received", { profileId, registrySize: windowRegistry.size });
+    if (!profileId || typeof profileId !== "string") {
+      log.warn("window:create: rejected, profileId required");
+      return { error: "profileId required" };
+    }
     // Check exclusivity: refuse if profile already open
     const appState = runtimeState.runtime?.getPayload?.()?.appState as Record<string, unknown> | undefined;
     const windowSlots = (appState?.windowSlots as Array<{ id: string; profileId: string }> | undefined) || [];
@@ -912,12 +995,35 @@ if (mcpMode) {
     if (existing && windowRegistry.has(existing.id)) {
       const existingWin = windowRegistry.get(existing.id)!;
       existingWin.focus();
+      log.info("window:create: profile already open, focusing existing", {
+        profileId,
+        existingWindowId: existing.id,
+      });
       return { error: `Profile is already open in another window`, windowId: existing.id };
     }
     // Create the window slot in state first
-    const newSlot = await runtimeState.runtime?.createWindowSlot?.(profileId).catch(() => null);
+    let newSlot: Awaited<ReturnType<typeof runtimeState.runtime.createWindowSlot>> | null = null;
+    try {
+      newSlot = (await runtimeState.runtime?.createWindowSlot?.(profileId)) ?? null;
+    } catch (err) {
+      log.error("window:create: createWindowSlot threw", {
+        profileId,
+        err: (err as Error)?.message,
+        stack: (err as Error)?.stack,
+      });
+    }
     const newWindowId = newSlot?.id ?? randomUUID();
-    createWindow(newWindowId, newSlot ?? { profileId });
+    log.info("window:create: invoking createWindow", { newWindowId, profileId, hasSlot: !!newSlot });
+    try {
+      createWindow(newWindowId, newSlot ?? { profileId });
+    } catch (err) {
+      log.error("window:create: createWindow threw", {
+        newWindowId,
+        err: (err as Error)?.message,
+        stack: (err as Error)?.stack,
+      });
+      return { error: `Failed to create window: ${(err as Error)?.message ?? "unknown"}` };
+    }
     return { windowId: newWindowId };
   });
 
@@ -930,9 +1036,16 @@ if (mcpMode) {
     }
   });
 
-  app.on("second-instance", () => {
+  app.on("second-instance", (_event, argv) => {
+    log.info("second-instance fired, focusing primary window", {
+      argv: argv.slice(0, 10),
+      registrySize: windowRegistry.size,
+    });
     const primary = getPrimaryWindow();
-    if (!primary || primary.isDestroyed()) return;
+    if (!primary || primary.isDestroyed()) {
+      log.warn("second-instance: no primary window to focus");
+      return;
+    }
     if (primary.isMinimized()) primary.restore();
     primary.show();
     primary.focus();
@@ -995,6 +1108,10 @@ if (mcpMode) {
       // Fall back to creating a single default window
     }
 
+    log.info("startup: restoring windows from state", {
+      count: slotsToRestore.length,
+      slotIds: slotsToRestore.map((s) => s.id),
+    });
     if (slotsToRestore.length > 0) {
       for (const slot of slotsToRestore) {
         createWindow(slot.id, slot);
@@ -1012,13 +1129,36 @@ if (mcpMode) {
 }
 
 app.on("window-all-closed", () => {
+  const live = Array.from(windowRegistry.values()).filter((w) => !w.isDestroyed());
+  log.info("window-all-closed fired", {
+    platform: process.platform,
+    registrySize: windowRegistry.size,
+    liveWindows: live.length,
+  });
+  // Safety net: if our registry still holds live BrowserWindows, do NOT quit.
+  // This guards against Electron firing window-all-closed when a hidden/destroyed
+  // window vanishes from getAllWindows() while a visible sibling is still up.
+  if (live.length > 0) {
+    log.warn("window-all-closed: registry still has live windows, suppressing quit", {
+      liveIds: live.map((w) => [...windowRegistry.entries()].find(([, v]) => v === w)?.[0]),
+    });
+    return;
+  }
   if (process.platform !== "darwin") {
     app.quit();
   }
 });
 
-app.on("before-quit", async () => {
-  log.info("app quitting");
+app.on("will-quit", (event) => {
+  log.info("will-quit fired", { defaultPrevented: event.defaultPrevented });
+});
+
+app.on("quit", (_event, exitCode) => {
+  log.info("quit fired", { exitCode });
+});
+
+app.on("before-quit", async (_event) => {
+  log.info("app quitting", { quitTrigger: new Error("trigger-trace").stack });
   runtimeState.unsubscribeStateUpdated?.();
   runtimeState.unsubscribeRemoteConfig?.();
   runtimeState.disposeIpc?.();

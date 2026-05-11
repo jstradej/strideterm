@@ -848,9 +848,14 @@ export function createDialogActions(ctx: DialogActionsCtx) {
       profiles: JSON.parse(JSON.stringify((appState as AnyApi).profiles || [])) as unknown[],
       windowSlots: JSON.parse(JSON.stringify((appState as AnyApi).windowSlots || [])) as unknown[],
       onCancel: closeDialog,
-      "onCreate-profile": () => {
+      "onCreate-and-open": async (profile: { id: string; name: string; color: string }) => {
+        // Save the new profile, then open a window for it. saveProfile drives
+        // the runtime state update; createWindow attaches a BrowserWindow to
+        // the profile via main.ts:window:create.
+        await (ctx.getApi() as AnyApi).saveProfile(profile);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        await (window as any).strideterm?.createWindow?.(profile.id);
         closeDialog();
-        openProfilesDialog();
       },
     });
   }
