@@ -138,10 +138,10 @@ test.describe("Task agent creation dialog", () => {
     const workerProviderSelect = workerSection.locator(".custom-select").first();
     await workerProviderSelect.click();
 
-    // OpenCode should be in the dropdown options
-    await expect(
-      page.locator(".custom-select__option, [class*='select__option']", { hasText: "OpenCode" }),
-    ).toBeVisible({
+    // OpenCode should be in the dropdown options. Use the option role
+    // directly to avoid matching the listbox container, which also has a
+    // class containing the substring "select__option".
+    await expect(page.getByRole("option", { name: "OpenCode" })).toBeVisible({
       timeout: 3_000,
     });
     assertNoErrors(page);

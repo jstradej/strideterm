@@ -404,7 +404,7 @@ export function createDialogActions(ctx: DialogActionsCtx) {
             .replace(/^Error:\s*/, "");
           // Re-throw with clean message so ProfilesDialog shows it inline.
           // The backend deliberately refuses: "Profile is open in Window N. Close that window first."
-          throw new Error(msg);
+          throw new Error(msg, { cause: err });
         }
       },
     });
