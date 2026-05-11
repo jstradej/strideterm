@@ -524,18 +524,26 @@ export function createDefaultState(): AppState & { activeProjectId: string; proj
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function normalizeProfiles(rawProfiles: any, defaults: { profiles: Profile[] }): Profile[] {
   return Array.isArray(rawProfiles) && rawProfiles.length
-    ? rawProfiles.map((profile: Record<string, unknown>) => ({
-        id: String(profile.id || `profile-${Date.now()}`),
-        name: String(profile.name || "Unnamed"),
-        color: String(profile.color || "#ffa424"),
-        workspaceIds: Array.isArray(profile.workspaceIds)
-          ? (profile.workspaceIds as string[])
-          : Array.isArray(profile.projectIds)
-            ? (profile.projectIds as string[])
-            : [],
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        workspaceGrid: (profile.workspaceGrid as any) ?? null,
-      }))
+    ? rawProfiles.map((profile: Record<string, unknown>) => {
+        const base: Profile = {
+          id: String(profile.id || `profile-${Date.now()}`),
+          name: String(profile.name || "Unnamed"),
+          color: String(profile.color || "#ffa424"),
+          workspaceIds: Array.isArray(profile.workspaceIds)
+            ? (profile.workspaceIds as string[])
+            : Array.isArray(profile.projectIds)
+              ? (profile.projectIds as string[])
+              : [],
+        };
+        // Preserve the distinction between "had no grid in saved state" (undefined)
+        // and "explicitly null" so the later migration step can tell whether the
+        // global workspaceGrid still needs to be moved into this profile.
+        if (profile.workspaceGrid !== undefined) {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          base.workspaceGrid = profile.workspaceGrid as any;
+        }
+        return base;
+      })
     : defaults.profiles;
 }
 

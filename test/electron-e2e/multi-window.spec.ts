@@ -57,19 +57,13 @@ test.describe("Multi-window — profile exclusivity and new-window flow", () => 
   });
 
   test("new-window modal opens and shows available profiles", async () => {
-    const { page } = launched!;
-    // Trigger the new-window modal via IPC (simulate the shortcut event in renderer)
-    await page.evaluate(() => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (window as any).strideterm?.onNewWindowShortcut?.(() => {});
-      window.dispatchEvent(new CustomEvent("strideterm:new-window"));
-    });
-
-    // Use the store directly to open the modal
-    await page.evaluate(() => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const store = (window as any).__pinia_stores?.get?.("app");
-      store?.openNewWindowModal?.();
+    const { app, page } = launched!;
+    // Trigger the real Ctrl+Shift+N path: the main process sends
+    // `shortcut:new-window` to the focused window, the renderer's
+    // `onNewWindowShortcut` handler in App.vue calls openNewWindowModal().
+    await app.evaluate(async ({ BrowserWindow }) => {
+      const win = BrowserWindow.getAllWindows()[0];
+      win?.webContents.send("shortcut:new-window");
     });
 
     // Wait for the modal overlay
