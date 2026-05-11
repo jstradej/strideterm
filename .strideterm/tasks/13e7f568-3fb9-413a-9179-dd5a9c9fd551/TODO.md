@@ -38,3 +38,10 @@
 - [x] Multi-window Phase 2 Cmd+W cascade: tab→workspace→window close in useKeyboardShortcuts.ts; Cmd+Shift+W for direct window close
 - [x] Multi-window Phase 2 modal ownership audit: all dialog.showOpenDialog calls use fromWebContents(event.sender) (ipc.ts already correct)
 - [x] Multi-window Phase 2 E2E test: multi-window.spec.ts + multi-profile.json fixture (profile exclusivity, second window creation, per-window workspace filtering)
+- [x] Round 3 fix: persistWindowSlot saves displayId via screen.getDisplayNearestPoint; updateWindowSlotBounds accepts displayId
+- [x] Round 3 fix: §4.2 alert:navigate IPC end-to-end (navigateWindowToAlert dep, App.vue activateWorkspace + pendingAlertSessionId, PaneStage scroll watcher)
+- [x] Round 3 fix: profile-delete-while-open: onDelete in app-dialog-actions wraps in try/catch with clean error re-throw; ProfilesDialog shows inline error
+- [x] Round 3 fix: E2E gaps — restart-restore describe, profile-delete-while-open describe, Cmd+W cascade describe, two-workspaces fixture, relaunchApp helper
+- [x] Round 4 fix: ProfilesDialog.vue accepts windowSlots prop — Activate button disabled with "Open in Window N" tooltip for profiles occupied by another window; app-dialog-actions.ts passes windowSlots
+- [x] Round 4 fix: Telegram screenshot routing unit tests — /screenshot 1 resolves to slot[0].id, /screenshot 2 to slot[1].id, /screenshot ws-name via profile lookup, out-of-range falls back to primary (4 new cases in telegram-manager.test.ts)
+- [x] Round 4 fix: E2E per-window capture tests — two new describe blocks in multi-window.spec.ts: per-window screenshot capture (BrowserWindow.capturePage per index) + native badge count (app.getBadgeCount() global sum)

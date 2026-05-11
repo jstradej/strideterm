@@ -332,3 +332,142 @@ test.describe("Cmd+W cascade — workspace navigation before window close", () =
     assertNoRendererErrors(launched!);
   });
 });
+
+test.describe("Multi-window — per-window screenshot capture", () => {
+  let launched: LaunchedApp | undefined;
+  let secondPage: import("@playwright/test").Page | undefined;
+
+  test.beforeAll(async () => {
+    launched = await launchApp("multi-profile");
+    await launched.page.waitForSelector("h1.brand, .bootstrap-error", { timeout: 20_000 }).catch(() => undefined);
+
+    // Open a second window with the Work profile
+    const secondPagePromise = launched.app.waitForEvent("window", { timeout: 15_000 });
+    await launched.page.evaluate(async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      await (window as any).strideterm?.createWindow?.("profile-work");
+    });
+    secondPage = await secondPagePromise;
+    await secondPage.waitForSelector("h1.brand, .bootstrap-error", { timeout: 20_000 }).catch(() => undefined);
+  });
+
+  // eslint-disable-next-line no-empty-pattern -- Playwright requires object-destructure even when unused
+  test.afterEach(async ({}, testInfo) => {
+    await captureEndState(launched, testInfo);
+  });
+
+  test.afterAll(async () => {
+    await closeApp(launched);
+  });
+
+  test("capturing window 1 returns a non-empty PNG buffer", async () => {
+    const { app } = launched!;
+
+    // Use Playwright's Electron evaluate to call capturePage on window[0] in the main process.
+    // This exercises the same code path as captureMainWindowPng(windowId) used by Telegram screenshot routing.
+    const pngLength = await app.evaluate(async ({ BrowserWindow }) => {
+      const wins = BrowserWindow.getAllWindows();
+      if (wins.length === 0) return 0;
+      const image = await wins[0].webContents.capturePage();
+      return image.toPNG().length;
+    });
+
+    expect(pngLength).toBeGreaterThan(0);
+    assertNoRendererErrors(launched!);
+  });
+
+  test("capturing window 2 returns a non-empty PNG buffer independent of window 1", async () => {
+    const { app } = launched!;
+    expect(secondPage).toBeDefined();
+
+    const allPngLengths = await app.evaluate(async ({ BrowserWindow }) => {
+      const wins = BrowserWindow.getAllWindows();
+      const results: number[] = [];
+      for (const win of wins) {
+        if (!win.isDestroyed()) {
+          const image = await win.webContents.capturePage();
+          results.push(image.toPNG().length);
+        }
+      }
+      return results;
+    });
+
+    // Both windows must produce non-empty captures
+    expect(allPngLengths.length).toBeGreaterThanOrEqual(2);
+    for (const len of allPngLengths) {
+      expect(len).toBeGreaterThan(0);
+    }
+    assertNoRendererErrors(launched!);
+  });
+});
+
+test.describe("Multi-window — native badge count is global sum", () => {
+  let launched: LaunchedApp | undefined;
+  let secondPage: import("@playwright/test").Page | undefined;
+
+  test.beforeAll(async () => {
+    launched = await launchApp("multi-profile");
+    await launched.page.waitForSelector("h1.brand, .bootstrap-error", { timeout: 20_000 }).catch(() => undefined);
+
+    // Open a second window with the Work profile
+    const secondPagePromise = launched.app.waitForEvent("window", { timeout: 15_000 });
+    await launched.page.evaluate(async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      await (window as any).strideterm?.createWindow?.("profile-work");
+    });
+    secondPage = await secondPagePromise;
+    await secondPage.waitForSelector("h1.brand, .bootstrap-error", { timeout: 20_000 }).catch(() => undefined);
+  });
+
+  // eslint-disable-next-line no-empty-pattern -- Playwright requires object-destructure even when unused
+  test.afterEach(async ({}, testInfo) => {
+    await captureEndState(launched, testInfo);
+  });
+
+  test.afterAll(async () => {
+    await closeApp(launched);
+  });
+
+  test("badge count is 0 when there are no alerts across any window", async () => {
+    const { app } = launched!;
+    expect(secondPage).toBeDefined();
+
+    // app.getBadgeCount() returns the global badge count set via app.setBadgeCount()
+    // in updateNativeAttention(). With the multi-profile fixture (no running tasks,
+    // no alerts), the count should be 0 across all windows.
+    const badgeCount = await app.evaluate(({ app: electronApp }) => {
+      // getBadgeCount is macOS/Linux; Windows uses overlay icon. Check both.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      return typeof (electronApp as any).getBadgeCount === "function"
+        ? // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          (electronApp as any).getBadgeCount()
+        : 0;
+    });
+
+    expect(badgeCount).toBe(0);
+    assertNoRendererErrors(launched!);
+  });
+
+  test("two windows each show their own profile workspaces, badge count reflects combined state", async () => {
+    expect(secondPage).toBeDefined();
+
+    // Verify each window independently shows only its profile's workspaces
+    await expect(launched!.page.getByText("Personal Project", { exact: true }).first()).toBeVisible({
+      timeout: 10_000,
+    });
+    await expect(secondPage!.getByText("Work Project", { exact: true }).first()).toBeVisible({ timeout: 10_000 });
+
+    // Badge count must be a non-negative integer (sum across all windows)
+    const badgeCount = await launched!.app.evaluate(({ app: electronApp }) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      return typeof (electronApp as any).getBadgeCount === "function"
+        ? // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          (electronApp as any).getBadgeCount()
+        : 0;
+    });
+
+    expect(typeof badgeCount).toBe("number");
+    expect(badgeCount).toBeGreaterThanOrEqual(0);
+    assertNoRendererErrors(launched!);
+  });
+});

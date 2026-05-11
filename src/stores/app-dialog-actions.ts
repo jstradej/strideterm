@@ -374,6 +374,7 @@ export function createDialogActions(ctx: DialogActionsCtx) {
       profiles: JSON.parse(JSON.stringify((appState as AnyApi).profiles || [])) as unknown[],
       activeProfileId: (appState as AnyApi).activeProfileId || "default",
       workspaces: (appState as AnyApi).workspaces || [],
+      windowSlots: (appState as AnyApi).windowSlots || [],
       onCancel: closeDialog,
       onSave: async (profile: AnyApi) => {
         ctx.payload.value = (await (ctx.getApi() as AnyApi).saveProfile(profile)) as StatePayload;

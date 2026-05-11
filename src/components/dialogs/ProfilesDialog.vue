@@ -34,7 +34,12 @@
                 v-if="profile.id !== activeProfileId"
                 type="button"
                 class="button button--ghost"
-                title="Switch to this profile — the sidebar will filter to show only its workspaces. Credentials and runtime managers are shared across all profiles in this install."
+                :disabled="occupiedByOtherWindow.has(profile.id)"
+                :title="
+                  occupiedByOtherWindow.has(profile.id)
+                    ? `Open in Window ${occupiedByOtherWindow.get(profile.id)}`
+                    : 'Switch to this profile — the sidebar will filter to show only its workspaces. Credentials and runtime managers are shared across all profiles in this install.'
+                "
                 @click="handleActivate(profile.id)"
               >
                 Activate
@@ -93,7 +98,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, useAttrs } from "vue";
+import { ref, reactive, computed, useAttrs } from "vue";
 
 defineOptions({ inheritAttrs: false });
 
@@ -109,16 +114,36 @@ interface WorkspaceEntry {
   profileId?: string;
 }
 
+interface WindowSlot {
+  id: string;
+  profileId: string;
+}
+
 interface Props {
   profiles?: Profile[];
   activeProfileId?: string;
   workspaces?: WorkspaceEntry[];
+  windowSlots?: WindowSlot[];
 }
 
 const props = withDefaults(defineProps<Props>(), {
   profiles: () => [],
   activeProfileId: "default",
   workspaces: () => [],
+  windowSlots: () => [],
+});
+
+// Profiles occupied by another window (not this window's active profile).
+// Maps profileId → 1-based window index.
+const occupiedByOtherWindow = computed<Map<string, number>>(() => {
+  const map = new Map<string, number>();
+  const slots = props.windowSlots || [];
+  slots.forEach((slot, idx) => {
+    if (slot.profileId !== props.activeProfileId) {
+      map.set(slot.profileId, idx + 1);
+    }
+  });
+  return map;
 });
 
 const emit = defineEmits<{

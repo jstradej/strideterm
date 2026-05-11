@@ -2690,6 +2690,109 @@ describe("/screenshot flow", () => {
     expect(emitted[0].type).toBe("screenshot-workspace");
     expect(emitted[0].workspaceId).toBe("task-1");
   });
+
+  test("/screenshot 1 emits screenshot-current with windowId resolved from first slot", async () => {
+    const cred = makeCredentialStore({ "cred:tg-1": "token123" });
+    const manager = new TelegramManager({ credentialStore: cred });
+    manager.configure([makeConnection()]);
+
+    const slot1 = { id: "win-uuid-1", profileId: "profile-personal" };
+    const slot2 = { id: "win-uuid-2", profileId: "profile-work" };
+    manager.setWindowSlotsGetter(() => [slot1, slot2]);
+    manager.setWorkspacesGetter(() => []);
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (manager as any)._apiCall = async () => ({ ok: true, result: { message_id: 1005 } });
+
+    const emitted: Array<Record<string, unknown>> = [];
+    manager.on("command", (cmd) => emitted.push(cmd as Record<string, unknown>));
+
+    const msg = { message_id: 301, chat: { id: 12345 }, text: "/screenshot 1" };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (manager as any)._handleMessage(msg, makeConnection(), "token123");
+
+    expect(emitted).toHaveLength(1);
+    expect(emitted[0].type).toBe("screenshot-current");
+    expect(emitted[0].windowId).toBe("win-uuid-1");
+  });
+
+  test("/screenshot 2 emits screenshot-current with windowId resolved from second slot", async () => {
+    const cred = makeCredentialStore({ "cred:tg-1": "token123" });
+    const manager = new TelegramManager({ credentialStore: cred });
+    manager.configure([makeConnection()]);
+
+    const slot1 = { id: "win-uuid-1", profileId: "profile-personal" };
+    const slot2 = { id: "win-uuid-2", profileId: "profile-work" };
+    manager.setWindowSlotsGetter(() => [slot1, slot2]);
+    manager.setWorkspacesGetter(() => []);
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (manager as any)._apiCall = async () => ({ ok: true, result: { message_id: 1006 } });
+
+    const emitted: Array<Record<string, unknown>> = [];
+    manager.on("command", (cmd) => emitted.push(cmd as Record<string, unknown>));
+
+    const msg = { message_id: 302, chat: { id: 12345 }, text: "/screenshot 2" };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (manager as any)._handleMessage(msg, makeConnection(), "token123");
+
+    expect(emitted).toHaveLength(1);
+    expect(emitted[0].type).toBe("screenshot-current");
+    expect(emitted[0].windowId).toBe("win-uuid-2");
+  });
+
+  test("/screenshot ws-name resolves window via workspace profile", async () => {
+    const cred = makeCredentialStore({ "cred:tg-1": "token123" });
+    const manager = new TelegramManager({ credentialStore: cred });
+    manager.configure([makeConnection()]);
+
+    const slot1 = { id: "win-uuid-1", profileId: "profile-personal" };
+    const slot2 = { id: "win-uuid-2", profileId: "profile-work" };
+    manager.setWindowSlotsGetter(() => [slot1, slot2]);
+    manager.setWorkspacesGetter(() => [
+      makeWorkspace({ id: "ws-personal", name: "personal-project", profileId: "profile-personal" }),
+      makeWorkspace({ id: "ws-work", name: "work-project", profileId: "profile-work" }),
+    ]);
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (manager as any)._apiCall = async () => ({ ok: true, result: { message_id: 1007 } });
+
+    const emitted: Array<Record<string, unknown>> = [];
+    manager.on("command", (cmd) => emitted.push(cmd as Record<string, unknown>));
+
+    // /screenshot work-project → workspace in profile-work → slot2 (win-uuid-2)
+    const msg = { message_id: 303, chat: { id: 12345 }, text: "/screenshot work-project" };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (manager as any)._handleMessage(msg, makeConnection(), "token123");
+
+    expect(emitted).toHaveLength(1);
+    expect(emitted[0].type).toBe("screenshot-current");
+    expect(emitted[0].windowId).toBe("win-uuid-2");
+  });
+
+  test("/screenshot with out-of-range index falls back to primary (no windowId set)", async () => {
+    const cred = makeCredentialStore({ "cred:tg-1": "token123" });
+    const manager = new TelegramManager({ credentialStore: cred });
+    manager.configure([makeConnection()]);
+
+    manager.setWindowSlotsGetter(() => [{ id: "win-uuid-1", profileId: "profile-personal" }]);
+    manager.setWorkspacesGetter(() => []);
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (manager as any)._apiCall = async () => ({ ok: true, result: { message_id: 1008 } });
+
+    const emitted: Array<Record<string, unknown>> = [];
+    manager.on("command", (cmd) => emitted.push(cmd as Record<string, unknown>));
+
+    // /screenshot 5 → only 1 slot, out of range → resolvedWindowId stays undefined
+    const msg = { message_id: 304, chat: { id: 12345 }, text: "/screenshot 5" };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (manager as any)._handleMessage(msg, makeConnection(), "token123");
+
+    expect(emitted).toHaveLength(1);
+    expect(emitted[0].type).toBe("screenshot-current");
+    expect(emitted[0].windowId).toBeUndefined();
+  });
 });
 
 // ---------------------------------------------------------------------------
