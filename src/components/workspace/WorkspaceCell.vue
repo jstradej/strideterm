@@ -180,13 +180,22 @@ const paneComponent = computed(() => resolvePaneComponent(activeViewType.value))
 const paneProps = computed(() => resolvePaneProps(activeViewType.value, activeViewId.value || ""));
 
 function onMousedown(event: MouseEvent): void {
+  // Header controls (×, +, picker, swap arrows) have their own intent —
+  // clearing a cell, opening a picker, etc. Activating the cell's
+  // workspace from mousedown.capture *before* the click handler runs
+  // races against those actions; in particular, "clear cell" then sees
+  // activeWorkspaceId == the just-cleared workspace and the entire grid
+  // hides because isGridVisible looks for active in cellWorkspaceIds.
+  const target = event.target as Element | null;
+  if (target?.closest(".workspace-cell-header__btn, .workspace-cell-header__picker")) return;
+
   if (!props.focused) {
     emit("focus");
     // Also focus the workspace
     if (props.workspaceId) store.activateWorkspace(props.workspaceId);
   }
   // If clicking inside terminal area, also focus terminal
-  const paneEl = (event.target as Element)?.closest(".workspace-cell__pane");
+  const paneEl = target?.closest(".workspace-cell__pane");
   if (paneEl && activeViewType.value === "terminal") {
     termStore.focusActiveTerminal();
   }
