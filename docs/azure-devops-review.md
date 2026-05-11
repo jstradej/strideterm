@@ -174,6 +174,8 @@ The Git tab adapts for review workspaces:
 
 - **Base branch** is set to `origin/{source-branch}` (where you push), not `origin/master`
 - **"Compare with base"** shows only unpushed commits, not the full diff against the merge target
+- **Base-compare chip** above the commit list shows the currently-compared base; click it to detach from the PR's tracked base and pick an arbitrary branch for an ad-hoc diff (handy when reviewing how a feature branch has drifted from `main` independently of the PR target). Click "Reset to PR base" on the chip to snap back.
+- **Searchable branch picker** — every branch dropdown (checkout, compare, base) filters as you type, so repos with hundreds of branches stay navigable.
 - **Unpushed commits** are highlighted with an orange border and "unpushed" badge
 - **Merge buttons are hidden** — merging into the target branch is done through Azure DevOps, not locally
 - **Rebase on target** is available in the Summary tab (rebases onto the PR target branch)

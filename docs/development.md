@@ -44,7 +44,7 @@ What it does:
 
 - Forces an isolated data directory at `~/.strideterm-dev` (via `STRIDETERM_DATA_DIR`) so a dev build can run side-by-side with a production install without clobbering state, credentials, logs, or the single-instance lock.
 - Kills stale Electron/Node processes, clears the Electron disk cache, and frees port 1420.
-- Starts Vite, runs the backend `tsc --watch`, and launches Electron once `dist-electron/electron/main.js` is on disk.
+- Starts four watchers in parallel — Vite dev server, backend `tsc --watch`, preload `tsc --watch`, and a `vite build --watch` for `dist/` so the bundle served to remote/mobile clients stays fresh — and launches Electron once `dist-electron/electron/main.js` is on disk.
 - **Auto-restarts Electron when the backend recompiles** (debounced) so new IPC handlers, runtime methods, and manager changes take effect without a manual restart. Disable with `-NoAutoRestart`.
 - Restarts Vite if it crashes, and cleans up everything on `Ctrl+C`.
 - Defaults the remote-access port to `43124` to avoid colliding with a running production instance on `43123`, and sets `STRIDETERM_LOG_LEVEL=trace` for verbose logs.
@@ -61,19 +61,21 @@ If `dev.ps1` is not an option (non-Windows, or you prefer manual control):
 # Start Vite (background), wait until it prints "ready in ..."
 npm run dev:web &
 
-# Then start the backend tsc watcher and Electron
+# Then start the backend + preload tsc watchers and Electron
 npm run dev:backend &
+npm run dev:preload &
 sleep 3 && npm run dev:electron &
 ```
 
-Avoid `npm run dev` from a non-interactive shell — `concurrently -k` kills all three processes when any one exits, which fights with backgrounded shells.
+Avoid `npm run dev` from a non-interactive shell — `concurrently -k` kills all four processes when any one exits, which fights with backgrounded shells.
 
 ## Commands
 
 ```bash
-npm run dev              # Concurrent Vite + TS backend watch + Electron (hot reload)
+npm run dev              # Concurrent Vite + backend tsc + preload tsc + Electron (hot reload)
 npm run dev:web          # Vite dev server only (port 1420)
 npm run dev:backend      # TypeScript backend watch
+npm run dev:preload      # TypeScript preload watch (electron/preload.cts)
 npm run dev:electron     # Electron only (connects to Vite dev server)
 npm start                # Build + run packaged Electron app
 
@@ -84,7 +86,13 @@ npm run typecheck        # Type-check all TS/Vue files
 npm test                 # All tests (UI + backend)
 npm run test:ui          # Vitest jsdom — src/**/*.test.ts
 npm run test:backend     # Vitest node  — electron/backend/**/*.test.ts
-npm run test:e2e         # Playwright E2E
+npm run test:e2e         # Playwright E2E (mock backend)
+npm run test:e2e:electron         # Playwright E2E against a real Electron build
+npm run test:e2e:electron:visual  # Visual regression — compare against committed screenshots
+npm run test:e2e:electron:update  # Visual regression — update the committed screenshots
+npm run perf             # Renderer performance probe
+npm run audit:security   # Dependency security audit
+npm run audit:package-age # Flag stale npm dependencies
 
 npm run build            # vue-tsc + Vite + tsc backend → dist/ + dist-electron/
 npm run dist             # Build + electron-builder (current platform)
@@ -112,7 +120,7 @@ E2E tests use fixture JSON files in `test/fixtures/` and a mock server that serv
 The app has three layers:
 
 - **Headless runtime** (`electron/backend/`) — pure TypeScript, no Electron dependency. Owns PTYs, state, Git/Docker/Azure DevOps/GitHub managers, and exposes the same API to both the Electron IPC layer and a remote HTTP/WS server.
-- **Electron adapter** (`electron/main.ts`, `electron/preload.ts`) — thin shell: window, native attention (taskbar flash, badge), IPC wiring.
+- **Electron adapter** (`electron/main.ts`, `electron/preload.ts`) — thin shell: a window registry of one or more `BrowserWindow` instances (each pinned to a profile via a `WindowSlot`), native attention (taskbar flash, badge), per-window IPC routing, cross-instance data-directory lock.
 - **Vue renderer** (`src/`) — Vue 3 + Pinia SPA. The `transport.ts` module abstracts Electron IPC vs remote HTTP/WS so stores work identically in both modes.
 
 See [architecture.md](architecture.md) for the full breakdown and key patterns.

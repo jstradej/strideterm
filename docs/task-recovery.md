@@ -65,8 +65,9 @@ tells the agent:
 
 - The app restarted during round N
 - Their role (Worker or Judge)
-- To check the task directory on disk (`TASK.md`, `TODO.md`, `HANDOFF.md`,
-  `WORK_LOCK`, possibly `verdict.json`)
+- To check the task directory on disk (`TASK.md` for the user brief,
+  `WORKER.md` for operational rules + verification, `TODO.md`,
+  `HANDOFF.md`, `WORK_LOCK`, possibly `verdict.json`)
 - Not to overwrite an already-complete `HANDOFF.md`
 - Not to revert / rebase / force-push existing commits — they represent real
   work

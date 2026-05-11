@@ -6,9 +6,9 @@ strIDEterm is a terminal-first workspace hub with a reusable backend runtime.
 
 Target shape:
 
-- one main desktop window
-- left workspace rail for switching and control
-- right workspace surface for the active workspace
+- one or more desktop windows, each pinned to a single profile (a profile is open in at most one window at a time)
+- left workspace rail for switching and control inside each window
+- right workspace surface for the active workspace, optionally split into a workspace grid of up to four cells
 - terminal sessions running inside the app
 - optional remote access to the same runtime over LAN or tunnel
 
@@ -56,7 +56,11 @@ Files:
 
 Responsibilities:
 
-- create the Electron window
+- manage N `BrowserWindow` instances via an in-process `windowRegistry`, each bound to one profile from `AppState.windowSlots`
+- create and restore window bounds + display assignment per slot; persist on move/resize/maximize
+- route IPC by source window: `emitToWindow(windowId, …)` for window-targeted events (e.g. shortcut intercepts, navigation), `emitToRenderer(…)` to broadcast to every window
+- intercept window-level shortcuts before Chromium / xterm consumes them (`Ctrl+1..9`, `Ctrl+Shift+N`)
+- coordinate a cross-window file lock via `proper-lockfile` so two instances on the same data directory cannot race on state writes
 - connect the runtime core to preload IPC
 - keep terminal input and resize on fire-and-forget IPC
 - expose request/response actions only where needed
@@ -119,7 +123,7 @@ Persisted data includes:
 
 - app settings (theme, cloudflared path)
 - remote access config and token
-- profiles with color and workspace bindings
+- profiles with color, workspace bindings, and a per-profile `workspaceGrid` (layout + cell→workspace map)
 - tab templates (user-editable presets)
 - ordered workspaces with profile assignment
 - per-workspace notes, path, color, and badge
@@ -127,6 +131,7 @@ Persisted data includes:
 - per-workspace tabs (terminal and browser), each with an optional `cwd` override to target a specific git root
 - per-workspace active tab
 - per-tab startup policy
+- `windowSlots`: one entry per opened window with `profileId` (exclusive), `activeWorkspaceId`, `activeSessionId`, last bounds, display ID, and `lastFocusedAt` for primary-window selection
 
 ### Runtime State
 
@@ -139,6 +144,46 @@ Runtime-only data includes:
 - connected remote clients
 
 This split lets the UI reconnect to the same logical workspace without serializing raw process state.
+
+## Window Management
+
+Files:
+
+- `electron/main.ts` (`windowRegistry`, `createWindowSlot`, `persistWindowSlot`, `emitToWindow`)
+- `electron/shared/types/state.ts` (`WindowSlot`, `WindowSlotBounds`)
+
+Responsibilities:
+
+- own the in-process registry mapping `windowId` → `BrowserWindow`
+- enforce **profile exclusivity**: a profile can be open in at most one window. Requesting a window for an already-open profile focuses the existing one instead of duplicating.
+- restore window bounds and target display from the previous session, with multi-monitor awareness (`screen.getDisplayNearestPoint`)
+- route attention/alert navigation to the window that owns the relevant profile (`navigateWindowToAlert`)
+- pick a "primary window" by `lastFocusedAt` for app-level events that don't belong to a specific window (legacy tray actions, global shortcuts triggered outside any window)
+
+Cross-instance safety:
+
+- `proper-lockfile` guards the data directory so two instances on the same `STRIDETERM_DATA_DIR` cannot race. Within one instance, all writes go through a single runtime regardless of how many windows are open.
+
+## Workspace Grid
+
+Files:
+
+- `electron/shared/types/state.ts` (`WorkspaceGridState`, `WorkspaceGridLayout`)
+- `src/components/workspace/WorkspaceGridStage.vue`
+- `src/components/layout/LayoutPicker.vue`, `WorkspacePickerPopover.vue`, `WorkspaceCellHeader.vue`
+- `src/composables/useKeyboardShortcuts.ts`
+- `src/app/layout-geometry.ts`
+
+Responsibilities:
+
+- pin up to four workspaces visible simultaneously inside one window
+- five layouts: `cols`, `rows`, `top-split`, `left-split`, `grid` (2×2). Each layout dictates the cell count and shape.
+- `cellWorkspaceIds: (string | null)[]` maps each cell index to a workspace (or null for an empty cell)
+- per-profile state: `Profile.workspaceGrid` — switching profiles swaps the grid. A global `AppState.workspaceGrid` is kept only as a deprecated downgrade-compat field.
+- focusing a cell activates the underlying workspace (and re-binds the active terminal); the per-workspace tab state is preserved when a workspace appears in the grid
+- driven by keyboard shortcuts (`Ctrl+Shift+G`, `Alt+1..4`, `Alt+Shift+1..4`, `Ctrl+\`) and drag-from-sidebar in the renderer
+
+The grid is a UI overlay on top of the regular workspace model — workspaces remain individually addressable from the sidebar and via per-window IPC.
 
 ## Git Manager Runtime
 
@@ -164,6 +209,7 @@ Current behavior:
 - every git write-action method accepts an optional `rootPath`; omitted = primary root (`gitRoots[0]` or `workspace.cwd`)
 - review workspaces (Azure DevOps / GitHub PR) are pinned single-root and bypass multi-repo routing
 - audit log entries for Azure-authed operations include the target `rootPath` so per-repo activity is traceable
+- the Git pane exposes a searchable branch picker (filter as you type) and a base-compare chip; in review workspaces the chip can detach the comparison from the PR's tracked base for ad-hoc diffs
 
 Detection flow for multi-repo workspaces:
 
@@ -225,9 +271,9 @@ A session is keyed by:
 
 Current behavior:
 
-- workspace activation selects the workspace
+- workspace activation selects the workspace (per window — each window has its own `activeWorkspaceId` in its `WindowSlot`)
 - all tabs with `startup: "default"` are started on workspace activation
-- one visible tab is considered active per workspace
+- one visible tab is considered active per workspace; when the workspace grid is enabled, up to four workspaces can be visible at once in one window, each with its own active tab
 - browser panels (URL commands) do not create PTY sessions; they render as embedded webviews
 
 ## Remote Access Model
@@ -240,6 +286,10 @@ Current remote access is LAN-first and locally hosted:
 - the desktop sidebar surfaces LAN URLs, token state, and a QR code
 - desktop can optionally prefer a custom public URL
 - desktop can optionally launch a Cloudflare Quick Tunnel when `cloudflared` is available
+
+Settings sanitizer:
+
+- `remote-server.ts` filters every settings update and HTTP/WS request from remote clients through a denylist: `autoTunnel`, `cloudflaredPath`, remote-access `enabled` / `host` / `port`, `token`, and top-level `externalPathOpener` are dropped before reaching the runtime. The desktop owner can change these only via local IPC. Endpoints that accept JSON payloads (workspace grid, task description, etc.) validate against shared Zod schemas; mismatches return 400 instead of being silently coerced.
 
 Use cases:
 

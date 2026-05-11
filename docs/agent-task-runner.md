@@ -1,6 +1,6 @@
 # Agent Task Runner
 
-The Agent Task Runner is a supervised coding loop that coordinates two AI agents (Worker + Judge) to complete coding tasks autonomously. It auto-detects verification commands from your project and pre-fills them as a checklist in TASK.md, then uses an independent judge to evaluate completion.
+The Agent Task Runner is a supervised coding loop that coordinates two AI agents (Worker + Judge) to complete coding tasks autonomously. It generates editable control files (`TASK.md` for your brief, `WORKER.md` for operational rules and a generic verification block, `JUDGE_PROMPT.md` for evaluation instructions) and uses an independent judge to evaluate completion.
 
 Worker and Judge each run one of the supported CLIs — **Claude Code**, **Codex CLI**, **Gemini CLI**, **GitHub Copilot**, or **OpenCode** — selected independently per role. You can mix providers (e.g. Claude Code as Worker + OpenCode as Judge) to take advantage of each model's strengths.
 
@@ -19,11 +19,11 @@ The Worker will start executing the task. When it goes idle, the Task Runner aut
 ## How It Works
 
 ```
-You write a task
+You write a task brief (TASK.md)
     |
     v
-[Worker] executes the task, commits changes
-    |     (runs verification checklist from TASK.md before finishing)
+[Worker] reads TASK.md + WORKER.md, executes the task, commits changes
+    |     (runs the verification steps from WORKER.md before finishing)
     |
     v  (worker goes idle)
 [Built-in checks] WORK_LOCK absent? TODO clear?
@@ -31,7 +31,7 @@ You write a task
     |-- FAIL --> re-prompt Worker with failure details
     |
     v  PASS
-[Judge] independently reviews git diff + task + verification checklist
+[Judge] independently reviews git diff + TASK.md + WORKER.md verification + JUDGE_PROMPT.md
     |
     |-- "continue" --> re-prompt Worker with feedback
     |
@@ -125,57 +125,54 @@ connections are removed after disconnect.
 
 All task state lives in `.strideterm/tasks/<taskId>/` inside your project directory. These files are auto-gitignored.
 
-| File                | Purpose                                         | Who writes it                | In Assignment tab |
-| ------------------- | ----------------------------------------------- | ---------------------------- | ----------------- |
-| **TASK.md**         | Task description, verification checklist, rules | Auto-generated, you can edit | Yes ("Task")      |
-| **JUDGE_PROMPT.md** | Customizable Judge evaluation instructions      | Auto-generated, you can edit | Yes ("Judge")     |
-| **TODO.md**         | Kanban board (To Do / In Progress / Done)       | Worker maintains             | No                |
-| **WORK_LOCK**       | Signal file: "work remains"                     | Worker deletes when done     | No                |
-| **JUDGE_TODO.md**   | Judge's evaluation scratchpad                   | Judge only                   | No                |
-| **verdict.json**    | Judge's completion verdict                      | Judge only                   | No                |
+| File                | Purpose                                                                                     | Who writes it                                 | In Assignment tab |
+| ------------------- | ------------------------------------------------------------------------------------------- | --------------------------------------------- | ----------------- |
+| **TASK.md**         | The task brief — what you want built. Just header + description.                            | Auto-generated, you can edit                  | Yes ("Task")      |
+| **WORKER.md**       | Operational rules + generic "Verification before completion" block for the Worker           | Auto-generated, you can edit                  | Yes ("Worker")    |
+| **JUDGE_PROMPT.md** | Customizable Judge evaluation instructions                                                  | Auto-generated, you can edit                  | Yes ("Judge")     |
+| **TODO.md**         | Kanban board (To Do / In Progress / Done)                                                   | Worker maintains                              | No                |
+| **WORK_LOCK**       | Signal file: "work remains"                                                                 | Worker deletes when done                      | No                |
+| **JUDGE_TODO.md**   | Judge's evaluation scratchpad                                                               | Judge only                                    | No                |
+| **verdict.json**    | Judge's completion verdict                                                                  | Judge only                                    | No                |
+| **HANDOFF.md**      | End-of-run or shower-mode summary so the next worker session can pick up where you left off | Worker writes on completion / context refresh | No                |
 
 ### Editing Control Files
 
-The **Assignment** tab in the Dashboard exposes the two files you actually write — the **Task** brief (TASK.md) and the **Judge** instructions (JUDGE_PROMPT.md). The other files are managed by the agents and aren't shown in the UI to keep editing focused on inputs. If you need to inspect or hand-edit them (rare — typically only after a Reset), open `.strideterm/tasks/<taskId>/` directly in your file system.
+The **Assignment** tab in the Dashboard exposes the three files you actually write — the **Task** brief (TASK.md), the **Worker** operational rules (WORKER.md), and the **Judge** instructions (JUDGE_PROMPT.md). The brief is always editable, even while the task is running. The other files are managed by the agents and aren't shown in the UI to keep editing focused on inputs. If you need to inspect or hand-edit them (rare — typically only after a Reset), open `.strideterm/tasks/<taskId>/` directly in your file system.
 
 Common edits:
 
-- **Task** brief — refine the description, add/remove verification steps, adjust rules
+- **Task** brief — refine what you want built. Concrete verification commands (e.g. `npm test`, `pytest -x`) live here, not in WORKER.md.
+- **Worker** rules — tweak the generic verification prose if your project has a non-standard healthy-state definition (rarely needed)
 - **Judge** instructions — see "Customizing the Judge" below
 
-### Verification Checklist
+### Verification
 
-When you create a task workspace, the Task Runner auto-detects your project's tooling (package.json, Cargo.toml, pyproject.toml, etc.) and pre-fills a **"Verification before completion"** section in TASK.md:
-
-```markdown
-## Verification before completion
-
-- [ ] Run `npm test` — must pass
-- [ ] Run `npm run lint` — must pass
-- [ ] Run `npx tsc --noEmit` — must pass
-```
-
-This checklist is **yours to edit** — add, remove, rewrite in your own language. Both the Worker and Judge read it:
-
-- The **Worker** runs each check before claiming completion
-- The **Judge** independently re-runs the checks to verify
-
-You don't need a special format — write in plain language:
+When you create a task workspace, the Task Runner writes a generic **"Verification before completion"** block into WORKER.md. It is **deliberately not stack-specific** — earlier versions tried to auto-detect `npm test` / `cargo test` / `pytest` from manifests, but the heuristic produced wrong commands on polyglot or non-standard repos and ran tools the user didn't actually want. The current block reads:
 
 ```markdown
 ## Verification before completion
 
-- [ ] Run the tests: `npm test`
-- [ ] Verify that `src/api/users.ts` exists
-- [ ] Confirm that existing tests still pass
+> Before finishing, check the project's own documentation (README,
+> agent guide such as CLAUDE.md or AGENTS.md) for what counts as a
+> healthy state, and run those checks. If the user's brief in
+> TASK.md above lists concrete steps, those take precedence.
+> If the project has no automated check setup, do a careful manual
+> review of every file you changed.
 ```
+
+**The intended workflow:**
+
+- Put concrete verification commands directly in your TASK.md brief (e.g. "When done, run `npm test`, `npm run lint`, and `npx tsc --noEmit` — all must pass").
+- The Worker will see them in the brief, run them before claiming completion, and the Judge will independently re-run them.
+- Leave WORKER.md's generic prose alone unless your project has a non-standard healthy-state definition the Worker needs spelled out.
 
 ### Two layers of verification
 
-1. **Worker self-verification** — the Worker reads the verification checklist in TASK.md and runs each check before finishing. This is the first line of defense.
+1. **Worker self-verification** — the Worker reads the brief in TASK.md (concrete commands, if any) and the generic block in WORKER.md, then runs the checks before finishing. This is the first line of defense.
 
 2. **Judge evaluation** (AI-based) — the Judge independently:
-   - **Re-runs the verification checklist** from TASK.md to confirm the Worker's claims
+   - **Re-runs the verification steps** the Worker followed, to confirm the Worker's claims
    - **Requirements check**: reads TASK.md and verifies every requirement point by point against the actual code changes (git diff)
    - **Code review**: reads the changed files and checks for bugs, edge cases, dead code, debug leftovers, and consistency with existing codebase style
 
@@ -291,11 +288,11 @@ Shows the execution pipeline (Worker -> Checks -> Judge -> Done) and a history o
 
 ### Assignment Tab
 
-Editor for the two files you actually write: the **Task** brief (TASK.md) and the **Judge** instructions (JUDGE_PROMPT.md). The Worker's TODO board, the Judge's audit notes, and the event log are not editable here — they're agent-managed and surfaced in Status / Log instead.
+Editor for the three files you actually write: the **Task** brief (TASK.md), the **Worker** operational rules (WORKER.md), and the **Judge** instructions (JUDGE_PROMPT.md). The brief is always editable — including while the task is running — so you can refine requirements mid-flight without resetting. The Worker's TODO board, the Judge's audit notes, and the event log are not editable here — they're agent-managed and surfaced in Status / Log instead.
 
 ### Config Tab
 
-Shows the task configuration (description, max rounds, selected providers) with a link that jumps you to the Task brief to edit verification steps.
+Shows the task configuration (description, max rounds, selected providers) with a link that jumps you to the Task brief to edit it.
 
 ### Log Tab
 
@@ -334,11 +331,12 @@ After stopping, completing, or failing a task, you'll see **Continue** and **Res
 1. Press **Pause** to pause the task (or wait for it to complete/fail)
 2. Press **Reset** — clears rounds, returns to idle
 3. Switch to the **Assignment** tab and refine your inputs:
-   - **Task** — change the assignment, update the verification checklist, or refine the description
+   - **Task** — change the assignment, update verification commands in the brief, or refine the description
+   - **Worker** — adjust the generic verification block (rarely needed)
    - **Judge** — adjust how strictly the work should be evaluated
 4. Press **Start** to run the task again with your updated inputs
 
-The Worker and Judge terminals stay open — only the round state is cleared. The Judge's last feedback (`lastJudgeInstructions`) is also preserved, so if you resume without editing files the next run benefits from prior context.
+Reset also clears any cached agent context so the next run starts fresh. The Worker and Judge terminals stay open — only the round state is cleared. The Judge's last feedback (`lastJudgeInstructions`) is also preserved, so if you resume without editing files the next run benefits from prior context.
 
 This makes the task workspace reusable: create it once, then reset and re-run as many times as you need with different task descriptions or criteria.
 
@@ -348,7 +346,7 @@ This makes the task workspace reusable: create it once, then reset and re-run as
 - **Customize the Judge**: If you have stricter standards (extra code-review rules, domain-specific checks), edit the Judge instructions in the Assignment tab before pressing Start
 - **Watch the first round**: Monitor the Worker's approach in round 1 and Pause if it's going in the wrong direction
 - **Use the terminal**: You can always type directly into the Worker or Judge terminal for course correction
-- **Review the verification checklist**: The auto-detected commands may not be perfect — review and adjust in TASK.md before starting
+- **Put verification commands in your brief**: the Task Runner does not auto-detect them. If you want `npm test` / `cargo test` / `pytest -x` to run before completion, write them into TASK.md.
 
 ---
 

@@ -7,16 +7,18 @@
 ## Features
 
 - **Workspaces** - organize projects into separate workspaces, each with its own terminal tabs, working directory, and settings
-- **Tab Templates** - quickly add Shell, Claude Code, Codex, Gemini CLI, GitHub Copilot, Dev Server, Files, and other preset tabs
+- **Tab Templates** - quickly add Shell, Claude Code, Codex, Gemini CLI, GitHub Copilot, OpenCode, Dev Server, Files, and other preset tabs
 - **File Manager** - browse, preview, and edit files with an expandable tree, resizable panels, and right-click context menu (copy, rename, delete)
 - **Embedded Browser** - open web pages directly in a tab with URL bar and navigation controls
-- **Profiles** - switch between different sets of workspaces (e.g. Work, Personal, Client projects) with colored profile bar
-- **Split Layouts** - arrange terminals in columns, rows, or a grid — see everything at once without switching tabs
+- **Profiles** - group workspaces (e.g. Work, Personal, Client projects) with a colored profile bar; each profile can be pinned to its own window for parallel use. Profiles are an organizational construct, not a security boundary — credentials, the state file, and runtime managers are shared across profiles in one install
+- **Workspace Grid (Split Panes)** - pin up to four workspaces side by side in five layouts (columns, rows, top-split, left-split, 2×2 grid). Drag workspaces from the sidebar into a cell, swap cells, or toggle the grid with `Ctrl+Shift+G`. The grid is saved per profile
+- **Tab Split Layouts** - within a single workspace, arrange terminal tabs in columns, rows, or a grid — see multiple tabs at once without switching
+- **Multiple Windows** - open additional windows with `Ctrl+Shift+N`, each pinned to one profile (a profile can be open in at most one window at a time). Window bounds and display assignment persist across restarts
 - **Git Integration** - branch info, dirty count, commit log, worktree creation, and Lazygit support
 - **Multi-repo Workspaces** - group sibling repositories (e.g. microservices) under one workspace via `gitRoots`; Git pane shows a repo switcher above the tabs, and a dedicated Bulk sub-tab runs Fetch all / Pull all (ff-only) across every repo with per-row status. Single-repo behavior is unchanged when `gitRoots` is empty or has a single entry.
 - **Azure DevOps PR Review** - pull request inbox grouped by repo, managed review workspaces, AI agent integration (review + fix code), push & publish workflow, and MCP bridge — see [docs](docs/azure-devops-review.md)
 - **GitHub PR Review** - pull request inbox, managed review workspaces with local checkout, comment and review submission (Approve / Request Changes / Comment), push & publish workflow, and MCP bridge for AI agents — see [docs](docs/github-pr-review.md)
-- **Agent Task Runner** - supervised coding loop with Worker + Judge agents (Claude Code, Codex CLI, Gemini CLI, or GitHub Copilot for either role): auto-detects project verification commands, runs deterministic checks between rounds, git-aware judge evaluation, periodic context refresh (shower mode), and a Dashboard UI for monitoring progress — see [docs](docs/agent-task-runner.md)
+- **Agent Task Runner** - supervised coding loop with Worker + Judge agents (Claude Code, Codex CLI, Gemini CLI, GitHub Copilot, or OpenCode for either role): runs deterministic checks between rounds, git-aware judge evaluation, periodic context refresh (shower mode), and a Dashboard UI for monitoring progress. The task brief and worker rules live in editable `TASK.md` / `WORKER.md` files — concrete verification commands belong in your brief, not auto-detected from the repo — see [docs](docs/agent-task-runner.md)
 - **Docker Manager** - list containers, run actions, open shells, and stream logs
 - **SSH Support** - connect to remote machines from a saved host book or ad-hoc, with built-in key manager, host key TOFU verification, `~/.ssh/config` import, SSH agent support, jump hosts, and three launch modes (built-in, system `ssh`, or WSL) — see [docs](docs/ssh.md)
 - **Remote Access** - access your workspace from any device via LAN or Cloudflare tunnel with QR code
@@ -28,7 +30,7 @@
   - Silence-based heuristics for AI agents with configurable timing
   - Optional notification hooks for [Claude Code](https://docs.anthropic.com/en/docs/claude-code/hooks), [Gemini CLI](https://geminicli.com/docs/hooks/), [Codex CLI](https://developers.openai.com/codex/hooks), and GitHub Copilot CLI — one click in Settings enables instant idle/waiting alerts. Codex requires v0.121.0+ on Windows; Copilot requires v1.0.32+.
   - Tunable per user via settings or environment variables
-- **Keyboard Shortcuts** - navigate workspaces, tabs, and layouts entirely from the keyboard for a fast, mouse-free workflow
+- **Keyboard Shortcuts** - navigate workspaces, tabs, windows, and the grid entirely from the keyboard — see the [shortcut reference](#keyboard-shortcuts) below
 - **Light/Dark Theme** - full theme support including terminal colors and title bar
 - **Drag & Drop** - reorder workspaces and tabs by dragging
 - **Mobile-Responsive Remote UI** - the web client served by the remote-access server adapts to phone-width viewports: the workspace sidebar, Git pane chrome, Azure DevOps / GitHub PR inbox and review panes, and per-tab actions all collapse into popovers and full-width controls so you can drive a workspace from a phone over LAN or a Cloudflare tunnel
@@ -194,7 +196,7 @@ STRIDETERM_REMOTE_HOST=127.0.0.1 npm start
 
 From another device: `http://<your-lan-ip>:43123/?token=<token>`
 
-**Security:** treat the remote token like a password. Use LAN mode only on trusted networks.
+**Security:** treat the remote token like a password. Use LAN mode only on trusted networks. Even with a valid token, remote clients cannot toggle Cloudflare auto-tunnel, repoint the `cloudflared` binary, change the bind host/port, rotate the token, or flip `externalPathOpener` — those settings are local-IPC only. Settings updates and HTTP endpoints exposed to remote clients are filtered through a server-side allowlist.
 
 ## Telegram Bot
 
@@ -210,14 +212,14 @@ The bot token is stored encrypted via the OS keychain, the chat-ID allowlist is 
 
 ## Agent Task Runner
 
-strIDEterm can run a supervised coding loop where a **Worker** agent implements your task while a **Judge** agent independently verifies the results. Worker and Judge can each be **Claude Code**, **Codex CLI**, **Gemini CLI**, or **GitHub Copilot** — mix and match (e.g. Claude worker + Copilot judge). Between rounds, the runner executes deterministic checks (tests, lint, build) and uses git diffs to give the judge full context.
+strIDEterm can run a supervised coding loop where a **Worker** agent implements your task while a **Judge** agent independently verifies the results. Worker and Judge can each be **Claude Code**, **Codex CLI**, **Gemini CLI**, **GitHub Copilot**, or **OpenCode** — mix and match (e.g. Claude worker + Copilot judge). Between rounds, the runner uses git diffs to give the judge full context of what changed.
 
 1. Create a task workspace from the sidebar context menu
 2. Pick the Worker and Judge providers and models (or use a custom CLI command)
-3. Describe what you want built — verification commands are auto-detected from your project
-4. Press Start — the Worker codes, checks run, the Judge reviews, repeat until done
+3. Describe what you want built. The runner pre-fills a generic verification block — concrete commands belong in your brief
+4. Press Start — the Worker codes, the Judge reviews, repeat until done
 
-Key features: auto-detected verify commands, TODO/WORK_LOCK file protocol, periodic context refresh (shower mode) for long tasks, and a Dashboard tab showing round-by-round progress with check results and judge feedback.
+Key features: editable `TASK.md` brief and `WORKER.md` rules, TODO/WORK_LOCK file protocol, periodic context refresh (shower mode) for long tasks, and a Dashboard tab showing round-by-round progress with judge feedback.
 
 Requires at least one of [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) (`claude`), [Codex CLI](https://developers.openai.com/codex/cli) (`codex`), [Gemini CLI](https://geminicli.com/) (`gemini`), [GitHub Copilot CLI](https://docs.github.com/en/copilot/github-copilot-in-the-cli) (`copilot`), or [OpenCode](https://opencode.ai/) (`opencode`) on your PATH. See [Agent Task Runner docs](docs/agent-task-runner.md) for full details.
 
@@ -238,6 +240,25 @@ All providers share a single notification script (`~/.strideterm/hooks/notify.mj
 **Without hooks** the Task Runner falls back to a silence-based heuristic (8 s default) for all four providers. OSC 133 shell integration only fires when a _shell_ returns to its prompt, so for interactive agent sessions (which never return to a prompt between turns) it doesn't help — hooks carry the primary signal. Hooks are optional but strongly recommended for long Judge reasoning passes where silence timers add up. Codex may also show _"hooks need review"_ after configuration; open `/hooks` in Codex and approve the two strIDEterm entries once.
 
 **Copilot note:** if the user has `disableAllHooks: true` set in `~/.copilot/config.json` (Copilot's global kill-switch), Settings shows a distinct _"Configured — hooks disabled"_ badge so you know installed entries won't fire until you clear the flag.
+
+## Keyboard Shortcuts
+
+| Shortcut                      | Action                                                                                                  |
+| ----------------------------- | ------------------------------------------------------------------------------------------------------- |
+| `Ctrl+1` … `Ctrl+9`           | Switch to the Nth workspace in the current profile                                                      |
+| `Ctrl+PgUp` / `Ctrl+PgDown`   | Cycle through tabs in the active workspace                                                              |
+| `Ctrl+Shift+PgUp` / `PgDown`  | Cycle through workspaces in the current profile                                                         |
+| `Ctrl+N`                      | Create a new workspace                                                                                  |
+| `Ctrl+W`                      | Cascading close: active tab → workspace (navigate to next) → window                                     |
+| `Ctrl+R`                      | Restart the active terminal session                                                                     |
+| `Ctrl+Shift+N`                | Open a new window (desktop) — picks a profile to pin. In the remote web UI: focus the notification dock |
+| `Ctrl+Shift+W`                | Close the current window (multi-window only)                                                            |
+| `Ctrl+Shift+G`                | Toggle the workspace grid (split panes across workspaces)                                               |
+| `Ctrl+\`                      | Cycle through grid layouts (cols → rows → grid → top-split → left-split)                                |
+| `Alt+1` … `Alt+4`             | Focus the Nth cell of the workspace grid                                                                |
+| `Alt+Shift+1` … `Alt+Shift+4` | Open the workspace picker for the Nth grid cell                                                         |
+
+On macOS, substitute `Cmd` for `Ctrl`. Shortcuts inside the terminal pane are intercepted before xterm consumes them so they always work regardless of which TUI is focused.
 
 ## Plugins
 
