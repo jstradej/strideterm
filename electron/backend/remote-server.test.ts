@@ -11,6 +11,7 @@ describe("sanitizeSettingsFromRemote", () => {
   test("drops every blocked remoteAccess field", () => {
     const settings = {
       remoteAccess: {
+        autoTunnel: true,
         cloudflaredPath: "/tmp/evil.sh",
         enabled: false,
         host: "0.0.0.0",
@@ -27,6 +28,16 @@ describe("sanitizeSettingsFromRemote", () => {
     expect(settings.remoteAccess).toEqual({ someUnknownFutureField: "kept" });
     // Non-remoteAccess settings are untouched.
     expect(settings.logLevel).toBe("debug");
+  });
+
+  test("REMOTE_BLOCKED_REMOTE_ACCESS_FIELDS includes autoTunnel", () => {
+    // Defensive — invariant M1/S1 ("any remoteAccess field affecting process
+    // spawn is blocklisted") is enforced by this entry being present. An
+    // attacker who can flip autoTunnel via /api/settings/update gets quiet
+    // persistence of the Cloudflare tunnel across desktop restarts. If a
+    // future refactor accidentally removes the entry, this test fires
+    // before the multi-transport gap reopens.
+    expect(REMOTE_BLOCKED_REMOTE_ACCESS_FIELDS).toContain("autoTunnel");
   });
 
   test("is a no-op when remoteAccess is missing", () => {

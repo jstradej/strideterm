@@ -8,7 +8,16 @@ import { existsSync } from "node:fs";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { WebSocketServer } from "ws";
 import * as fm from "./file-manager.js";
-import { wsTerminalInputSchema, wsTerminalResizeSchema } from "./ipc-schemas.js";
+import {
+  taskUpdateDescriptionSchema,
+  validateIpc,
+  workspaceGridEnableSchema,
+  workspaceGridSetCellSchema,
+  workspaceGridSetLayoutSchema,
+  workspaceGridSwapCellsSchema,
+  wsTerminalInputSchema,
+  wsTerminalResizeSchema,
+} from "./ipc-schemas.js";
 import { getLogger, createAuditLogger } from "./logger.js";
 
 /**
@@ -179,6 +188,19 @@ function writeHead(response: ServerResponse, statusCode: number, headers: Record
  * the "Copy share URL" feature.
  */
 export const REMOTE_BLOCKED_REMOTE_ACCESS_FIELDS: ReadonlyArray<string> = [
+  // `autoTunnel` gates whether the Cloudflare quick-tunnel is re-established
+  // on the next desktop startup (runtime.ts:3429). Starting a tunnel right
+  // now is already a legitimate remote action via POST /api/tunnel/create,
+  // but that path is overt — the user sees the tunnel state in the UI
+  // immediately. Flipping `autoTunnel` is the *quiet* version: an attacker
+  // with a leaked session can persist the tunnel across restarts without
+  // having to keep calling /api/tunnel/create, and the user only finds out
+  // when they notice cloudflared running on next launch. Per invariant M1/S1,
+  // any remoteAccess.* field that triggers process spawn is blocklisted; this
+  // field is the trigger. Legitimate writers (createCloudflareTunnel /
+  // stopCloudflareTunnel in runtime.ts) flip it as a server-side side-effect,
+  // never via /api/settings/update, so the blocklist costs no UX.
+  "autoTunnel",
   "cloudflaredPath",
   "enabled",
   "host",
@@ -892,7 +914,9 @@ async function handleApiRequest(runtime: Runtime, request: IncomingMessage, resp
       return;
     }
     if (request.method === "POST" && url.pathname === "/api/task/update-description") {
-      json(response, 200, await runtime.updateTaskDescription(body.workspaceId, body.description));
+      // OPEN-5: HTTP path was missing the Zod parse its IPC counterpart uses.
+      const parsed = validateIpc(taskUpdateDescriptionSchema, body, "POST /api/task/update-description");
+      json(response, 200, await runtime.updateTaskDescription(parsed.workspaceId, parsed.description));
       return;
     }
     if (request.method === "POST" && url.pathname === "/api/task-recovery/resolve") {
@@ -915,32 +939,35 @@ async function handleApiRequest(runtime: Runtime, request: IncomingMessage, resp
     }
 
     if (request.method === "POST" && url.pathname === "/api/workspace-grid/enable") {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      json(response, 200, await (runtime as any).enableWorkspaceGrid(body.layout, body.workspaceIds));
+      // Reuse the IPC schema so HTTP and IPC validate identically. windowId is
+      // intentionally not threaded through here — remote callers don't have a
+      // BrowserWindow context, so the runtime falls through to the legacy
+      // global workspaceGrid (see runtime.ts:enableWorkspaceGrid).
+      const parsed = validateIpc(workspaceGridEnableSchema, body, "POST /api/workspace-grid/enable");
+      json(response, 200, await runtime.enableWorkspaceGrid(parsed.layout, parsed.workspaceIds));
       return;
     }
 
     if (request.method === "POST" && url.pathname === "/api/workspace-grid/disable") {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      json(response, 200, await (runtime as any).disableWorkspaceGrid());
+      json(response, 200, await runtime.disableWorkspaceGrid());
       return;
     }
 
     if (request.method === "POST" && url.pathname === "/api/workspace-grid/set-layout") {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      json(response, 200, await (runtime as any).setGridLayout(body.layout));
+      const parsed = validateIpc(workspaceGridSetLayoutSchema, body, "POST /api/workspace-grid/set-layout");
+      json(response, 200, await runtime.setGridLayout(parsed.layout));
       return;
     }
 
     if (request.method === "POST" && url.pathname === "/api/workspace-grid/set-cell") {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      json(response, 200, await (runtime as any).setGridCell(body.cellIndex, body.workspaceId));
+      const parsed = validateIpc(workspaceGridSetCellSchema, body, "POST /api/workspace-grid/set-cell");
+      json(response, 200, await runtime.setGridCell(parsed.cellIndex, parsed.workspaceId));
       return;
     }
 
     if (request.method === "POST" && url.pathname === "/api/workspace-grid/swap-cells") {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      json(response, 200, await (runtime as any).swapGridCells(body.a, body.b));
+      const parsed = validateIpc(workspaceGridSwapCellsSchema, body, "POST /api/workspace-grid/swap-cells");
+      json(response, 200, await runtime.swapGridCells(parsed.a, parsed.b));
       return;
     }
 
