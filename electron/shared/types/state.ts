@@ -31,6 +31,7 @@ export interface RemoteAccessSettings {
   token: string;
   customPublicUrl: string;
   cloudflaredPath: string;
+  autoTunnel: boolean;
 }
 
 export interface ProviderDefaultConfig {

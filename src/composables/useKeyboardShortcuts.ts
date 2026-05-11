@@ -161,12 +161,11 @@ export function useKeyboardShortcuts(api: Transport, { onNewWorkspace }: { onNew
       event.preventDefault();
       event.stopImmediatePropagation();
       if (event.shiftKey) {
-        // Ctrl/Cmd+Shift+PgUp/PgDown — switch workspace.
-        // Cycles through starred workspaces if any exist, otherwise all.
+        // Ctrl/Cmd+Shift+PgUp/PgDown — switch workspace. Always cycles through
+        // all workspaces sequentially; star filtering happens via display, not navigation.
         const all = appStore.filteredWorkspaces as Array<{ id: string; starred?: boolean }>;
         if (all.length < 2) return;
-        const starred = all.filter((ws) => ws.starred);
-        const list = starred.length > 0 ? starred : all;
+        const list = all;
         const activeId = appStore.myActiveWorkspaceId || null;
         const currentIdx = list.findIndex((ws) => ws.id === activeId);
         const target =

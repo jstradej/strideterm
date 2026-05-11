@@ -3067,13 +3067,14 @@ export async function createRuntime({
     }
   }
 
-  // 2. PRAGMA data_version polling — reliable fallback, catches anything the watcher misses
+  // 2. PRAGMA data_version polling — reliable fallback, catches anything the watcher misses.
+  // 15 s is plenty for a backstop; the fs.watch above covers real-time updates.
   let reviewBridgePoll: ReturnType<typeof setInterval> | null = setInterval(() => {
     const currentVersion = reviewBridgeStore.getDataVersion?.() || 0;
     if (currentVersion !== reviewBridgeDataVersion) {
       onReviewBridgeChange();
     }
-  }, 3000);
+  }, 15000);
 
   async function refreshDocker() {
     return docker.refresh();
@@ -3421,6 +3422,20 @@ export async function createRuntime({
     scheduleGitHubPolling();
     await syncWorktrees();
     await tunnel.refreshAvailability();
+
+    // Re-establish Cloudflare tunnel if it was active before the last shutdown.
+    // Best-effort — a failure here is non-fatal; the user can create it manually.
+    const remoteConfig = getState().settings.remoteAccess;
+    if (remoteConfig.enabled && remoteConfig.autoTunnel) {
+      ensureRemoteOriginReady(remoteConfig)
+        .then((origin) => tunnel.startQuickTunnel(origin))
+        .then(() => broadcastState())
+        .catch((err: unknown) => {
+          log.warn("autoTunnel: failed to re-establish tunnel on startup", {
+            err: (err as Error)?.message,
+          });
+        });
+    }
 
     // Background: inspect remaining workspaces so they don't block first render
     if (activeId) {
@@ -4756,10 +4771,18 @@ export async function createRuntime({
       }
 
       await tunnel.startQuickTunnel(await ensureRemoteOriginReady(remoteConfig));
+      // Persist auto-start preference so the tunnel is re-established on next launch.
+      await store.mutate((draft: AppState) => {
+        draft.settings.remoteAccess.autoTunnel = true;
+      });
       return getPayload();
     },
     async stopCloudflareTunnel() {
       await tunnel.stop({ preserveAvailability: true });
+      // Clear auto-start preference — user explicitly stopped the tunnel.
+      await store.mutate((draft: AppState) => {
+        draft.settings.remoteAccess.autoTunnel = false;
+      });
       return getPayload();
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any

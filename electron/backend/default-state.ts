@@ -439,6 +439,7 @@ export function createDefaultState(): AppState & { activeProjectId: string; proj
         token: createAccessToken(),
         customPublicUrl: "",
         cloudflaredPath: "",
+        autoTunnel: false,
       },
       taskDefaults: {
         workerProvider: { providerId: "claude", model: "sonnet" },

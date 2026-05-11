@@ -9,6 +9,13 @@
 
 ## In Progress
 
+- [ ] Task 1: agent-task-runner.ts — /clear before each new round (judge "continue" path)
+- [ ] Task 2: brief not transferred after reset — header Start button bypasses onStartWithBrief
+- [ ] Task 3: remove starred-workspace priority in Ctrl+Shift+PgUp/PgDown (2 files)
+- [ ] Task 4: Cloudflare tunnel auto-reconnect on startup (default-state.ts, runtime.ts)
+- [ ] Task 5: fix CI npm audit failure — add fast-uri override to package.json
+- [ ] Task 6: performance investigation and fixes
+
 ## Done
 
 - [x] Phase 1: Data model (state.ts, default-state.ts, ipc-schemas.ts, runtime.ts, ipc.ts, remote-server.ts, ipc-bridge.ts, preload.cts, transport.ts)

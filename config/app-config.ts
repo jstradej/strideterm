@@ -44,7 +44,7 @@ export const APP_CONFIG = {
     repositoryUrl: envString("STRIDETERM_REPOSITORY_URL", "https://github.com/jstradej/strideterm"),
   },
   runtime: {
-    dockerPollMs: envNumber("STRIDETERM_DOCKER_POLL_MS", 15000),
+    dockerPollMs: envNumber("STRIDETERM_DOCKER_POLL_MS", 30000),
     gitPollMs: envNumber("STRIDETERM_GIT_POLL_MS", 60000),
     projectAlertLimit: envNumber("STRIDETERM_PROJECT_ALERT_LIMIT", 6),
   },

@@ -223,6 +223,8 @@ watch(
   },
 );
 
+defineExpose({ briefDraft });
+
 function onStart() {
   const draft = briefDraft.value.trim();
   if (draft) {

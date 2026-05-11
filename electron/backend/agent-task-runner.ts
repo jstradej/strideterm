@@ -1974,6 +1974,16 @@ export class AgentTaskRunner {
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           const prompt = buildJudgeFeedbackPrompt(task, verdict as any);
           const workerSessionId = `${workspaceId}:${task.workerPanelId}`;
+          // Clear worker context before each new round so the agent starts fresh
+          // without accumulating stale context from prior rounds.
+          try {
+            await this.#clearSessionContext(workerSessionId, workspace);
+          } catch (err: unknown) {
+            log.warn("worker context clear before new round failed (proceeding)", {
+              workspaceId,
+              err: (err as Error)?.message,
+            });
+          }
           await this.#injectPrompt(workerSessionId, prompt, workspace);
           this.#setTaskState(task, "running");
           if (lastRound) lastRound.action = "re-prompted";

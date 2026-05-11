@@ -23,7 +23,7 @@
             v-if="taskState?.state === 'idle'"
             class="button button--sm"
             title="Begin the task — sends prompt to Worker and starts the automation loop"
-            @click="onStart"
+            @click="onStartWithBrief(statusTabRef?.briefDraft?.value)"
           >
             Start
           </button>
@@ -86,6 +86,7 @@
 
         <TaskDashboardStatusTab
           v-if="activeTab === 'status'"
+          ref="statusTabRef"
           :task-state="taskState"
           :workspace-cwd="workspace?.cwd || ''"
           :task-id="taskState?.taskId || ''"
@@ -185,6 +186,7 @@ const store = useAppStore();
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const api = inject<any>("api");
 const activeTab = ref<string>("status");
+const statusTabRef = ref<InstanceType<typeof TaskDashboardStatusTab> | null>(null);
 
 const tabs = [
   { id: "status", label: "Status" },
