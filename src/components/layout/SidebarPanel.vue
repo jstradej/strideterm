@@ -233,7 +233,7 @@ const workspaceCards = computed((): WorkspaceCardData[] => {
   const github = payload.github as AzureDevopsWithPrs | undefined;
   return buildWorkspaceCards({
     workspaces: store.filteredWorkspaces,
-    activeWorkspaceId: payload.appState?.activeWorkspaceId || "",
+    activeWorkspaceId: store.myActiveWorkspaceId || "",
     getGitSnapshot: (id) => store.getGitSnapshot(id) as GitSnapshot | null | undefined,
     getWorkspaceAttention: (id) => store.getWorkspaceAttentionForId(id) as AttentionLike | null | undefined,
     taskRunnerSnapshot: (payload.taskRunner as Record<string, LiveTask>) || null,

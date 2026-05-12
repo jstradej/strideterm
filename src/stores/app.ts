@@ -485,8 +485,11 @@ export const useAppStore = defineStore("app", () => {
     });
   }
 
-  function buildWorkspacePayloadSnapshot(workspaceId: string): AnyApi {
-    const appState = payload.value?.appState;
+  function buildWorkspacePayloadSnapshot(
+    workspaceId: string,
+    sourcePayload: StatePayload | null = payload.value,
+  ): AnyApi {
+    const appState = sourcePayload?.appState;
     if (!appState) return null;
     const workspace = (appState.workspaces || []).find((ws: AnyApi) => ws.id === workspaceId);
     if (!workspace) return null;
@@ -511,6 +514,26 @@ export const useAppStore = defineStore("app", () => {
           status: "idle",
         })),
     };
+  }
+
+  function getWindowWorkspaceIdFromPayload(sourcePayload: StatePayload | null): string {
+    const appState = sourcePayload?.appState as AnyApi | undefined;
+    const slots = appState?.windowSlots as AnyApi[] | undefined;
+    const slot = myWindowId && slots ? slots.find((s: AnyApi) => s.id === myWindowId) : null;
+    return slot?.activeWorkspaceId || appState?.activeWorkspaceId || "";
+  }
+
+  function scopePayloadToWindow(sourcePayload: StatePayload): StatePayload {
+    const workspaceId = getWindowWorkspaceIdFromPayload(sourcePayload);
+    if (!workspaceId) return sourcePayload;
+    const currentWorkspaceId =
+      ((sourcePayload as AnyApi).workspace?.workspace || (sourcePayload as AnyApi).workspace?.project)?.id || "";
+    if (currentWorkspaceId === workspaceId) return sourcePayload;
+    const cached = _workspacePayloadCache.get(workspaceId);
+    return {
+      ...(sourcePayload as AnyApi),
+      workspace: cached?.workspace || buildWorkspacePayloadSnapshot(workspaceId, sourcePayload),
+    } as StatePayload;
   }
 
   function isSessionViewIdFor(viewId: string, workspaceId: string): boolean {
@@ -709,7 +732,7 @@ export const useAppStore = defineStore("app", () => {
     }
 
     if (pendingViewActivationId.value) {
-      const nextWorkspace = (nextPayload as AnyApi)?.workspace;
+      const nextWorkspace = (scopePayloadToWindow(nextPayload) as AnyApi)?.workspace;
       const nextTabs = nextWorkspace
         ? getWorkspaceTabs({
             workspace: nextWorkspace,
@@ -767,7 +790,7 @@ export const useAppStore = defineStore("app", () => {
       }
       if (mutated) optimisticallyDeletedIds.value = new Set(optimisticallyDeletedIds.value);
     }
-    payload.value = maybeApplyMockFromUrl(nextPayload as AnyApi) as StatePayload;
+    payload.value = maybeApplyMockFromUrl(scopePayloadToWindow(nextPayload) as AnyApi) as StatePayload;
     // Keep workspace cache fresh on every broadcast for the active workspace
     _cacheCurrentWorkspace();
   }
@@ -1048,7 +1071,7 @@ export const useAppStore = defineStore("app", () => {
           }
         }
 
-        payload.value = maybeApplyMockFromUrl(p as AnyApi) as StatePayload;
+        payload.value = maybeApplyMockFromUrl(scopePayloadToWindow(p as StatePayload) as AnyApi) as StatePayload;
         // Seed cache with the initial workspace state on bootstrap
         _cacheCurrentWorkspace();
         // Show recovery dialog if there are crash-recovery candidates.

@@ -156,6 +156,7 @@ describe("workspace grid store — computed properties", () => {
 describe("workspace grid store — per-profile grid resolution", () => {
   beforeEach(() => {
     setActivePinia(createPinia());
+    delete (window as AnyApi).strideterm;
   });
 
   function makeMultiProfilePayload(overrides: AnyApi = {}): StatePayload {
@@ -227,9 +228,157 @@ describe("workspace grid store — per-profile grid resolution", () => {
   });
 });
 
+describe("app store — multi-window payload scoping", () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    (window as AnyApi).strideterm = { startupFlags: { windowId: "win-a" } };
+  });
+
+  it("keeps this window rendered on its slot workspace when another window activates a different workspace", async () => {
+    let onStateUpdated: ((_payload: StatePayload) => void) | null = null;
+    const api = makeApi({
+      onStateUpdated: vi.fn((cb: (_payload: StatePayload) => void) => {
+        onStateUpdated = cb;
+      }),
+      getState: vi.fn(() => new Promise(() => undefined)),
+    });
+    const store = useAppStore();
+    store.init(api as AnyApi);
+    store.payload = {
+      appState: {
+        activeWorkspaceId: "ws-A",
+        activeProfileId: "default",
+        workspaces: [
+          {
+            id: "ws-A",
+            name: "Alpha",
+            cwd: "/a",
+            profileId: "default",
+            panels: [{ id: "shell-a", title: "Shell A", command: "", shell: true, startup: "default" }],
+            activePanelId: "shell-a",
+          },
+          {
+            id: "ws-B",
+            name: "Beta",
+            cwd: "/b",
+            profileId: "default",
+            panels: [{ id: "shell-b", title: "Shell B", command: "", shell: true, startup: "default" }],
+            activePanelId: "shell-b",
+          },
+        ],
+        windowSlots: [
+          { id: "win-a", profileId: "default", activeWorkspaceId: "ws-A" },
+          { id: "win-b", profileId: "default", activeWorkspaceId: "ws-B" },
+        ],
+      },
+      workspace: {
+        workspace: {
+          id: "ws-A",
+          name: "Alpha",
+          cwd: "/a",
+          panels: [{ id: "shell-a", title: "Shell A", command: "", shell: true, startup: "default" }],
+          activePanelId: "shell-a",
+        },
+        project: {
+          id: "ws-A",
+          name: "Alpha",
+          cwd: "/a",
+          panels: [{ id: "shell-a", title: "Shell A", command: "", shell: true, startup: "default" }],
+          activePanelId: "shell-a",
+        },
+        sessions: [{ sessionId: "ws-A:shell-a", panelId: "shell-a", title: "Shell A", status: "idle" }],
+      },
+    } as AnyApi;
+
+    expect(onStateUpdated).not.toBeNull();
+    (onStateUpdated as unknown as (_payload: StatePayload) => void)({
+      appState: {
+        ...(store.payload as AnyApi).appState,
+        activeWorkspaceId: "ws-B",
+      },
+      workspace: {
+        workspace: {
+          id: "ws-B",
+          name: "Beta",
+          cwd: "/b",
+          panels: [{ id: "shell-b", title: "Shell B", command: "", shell: true, startup: "default" }],
+          activePanelId: "shell-b",
+        },
+        project: {
+          id: "ws-B",
+          name: "Beta",
+          cwd: "/b",
+          panels: [{ id: "shell-b", title: "Shell B", command: "", shell: true, startup: "default" }],
+          activePanelId: "shell-b",
+        },
+        sessions: [{ sessionId: "ws-B:shell-b", panelId: "shell-b", title: "Shell B", status: "idle" }],
+      },
+    } as AnyApi);
+    await Promise.resolve();
+
+    expect(store.myActiveWorkspaceId).toBe("ws-A");
+    expect(store.activeWorkspace?.id).toBe("ws-A");
+    expect(store.workspaceTabs.map((tab: AnyApi) => tab.id)).toEqual(["ws-A:shell-a"]);
+  });
+
+  it.each([
+    ["azure", "azure:az-1"],
+    ["github", "github:gh-1"],
+  ])("forces the canonical %s inbox view id after activation", async (kind, expectedViewId) => {
+    const workspaceId = kind === "azure" ? "az-1" : "gh-1";
+    const nextPayload = {
+      appState: {
+        activeWorkspaceId: workspaceId,
+        activeProfileId: "default",
+        workspaces: [
+          {
+            id: workspaceId,
+            name: kind,
+            kind,
+            cwd: "",
+            profileId: "default",
+            panels: [{ id: "legacy-panel", title: "Legacy", command: "", shell: true, startup: "default" }],
+            activePanelId: "legacy-panel",
+          },
+        ],
+      },
+      workspace: {
+        workspace: {
+          id: workspaceId,
+          name: kind,
+          kind,
+          panels: [{ id: "legacy-panel", title: "Legacy", command: "", shell: true, startup: "default" }],
+          activePanelId: "legacy-panel",
+        },
+        project: {
+          id: workspaceId,
+          name: kind,
+          kind,
+          panels: [{ id: "legacy-panel", title: "Legacy", command: "", shell: true, startup: "default" }],
+          activePanelId: "legacy-panel",
+        },
+        sessions: [],
+      },
+    };
+    const api = makeApi({ activateWorkspace: vi.fn(async () => nextPayload) });
+    const store = useAppStore();
+    store.init(api as AnyApi);
+    store.payload = makePayload({
+      workspaces: nextPayload.appState.workspaces,
+      activeWorkspaceId: workspaceId,
+    });
+
+    await store.activateWorkspace(workspaceId);
+
+    expect(store.activeViewId).toBe(expectedViewId);
+    expect(store.activeSessionId).toBeNull();
+  });
+});
+
 describe("workspace grid store — actions", () => {
   beforeEach(() => {
     setActivePinia(createPinia());
+    delete (window as AnyApi).strideterm;
   });
 
   it("enableWorkspaceGrid defaults to [activeWorkspaceId, null, null, null] when no preset given", async () => {

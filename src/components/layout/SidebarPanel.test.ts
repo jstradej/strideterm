@@ -31,6 +31,7 @@ function makePayload(appStateOverrides: AnyApi = {}): StatePayload {
 describe("SidebarPanel — ghost rendering for grid workspaces", () => {
   beforeEach(() => {
     setActivePinia(createPinia());
+    delete (window as AnyApi).strideterm;
   });
 
   it("renders all workspaces in tree when grid is empty (no ghosts)", () => {
@@ -115,5 +116,44 @@ describe("SidebarPanel — ghost rendering for grid workspaces", () => {
     expect(cardsC[0].classes()).not.toContain("workspace-card--in-grid");
     expect(cardsD[0].classes()).not.toContain("workspace-card--in-grid");
     expect(cardsC[0].find(".workspace-card__slot").exists()).toBe(false);
+  });
+
+  it("renders split-group cards without inherited child indentation", () => {
+    const store = useAppStore();
+    store.payload = makePayload({
+      workspaces: [BASE_WORKSPACES[0], { ...BASE_WORKSPACES[1], name: "Alpha / branch", notes: "Worktree of Alpha" }],
+      workspaceGrid: { layout: "cols", cellWorkspaceIds: ["ws-A", "ws-B"] },
+      activeWorkspaceId: "ws-A",
+    });
+
+    const wrapper = mount(SidebarPanel);
+
+    const splitChild = wrapper.find('.workspace-list__split-group [data-workspace-id="ws-B"]');
+    const treeChild = wrapper.find('[data-role="workspace-list"] > [data-workspace-id="ws-B"]');
+    expect(splitChild.classes()).not.toContain("workspace-card--sub");
+    expect(treeChild.classes()).toContain("workspace-card--sub");
+  });
+});
+
+describe("SidebarPanel — multi-window active state", () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    (window as AnyApi).strideterm = { startupFlags: { windowId: "win-a" } };
+  });
+
+  it("highlights this window's slot workspace instead of the global last-active workspace", () => {
+    const store = useAppStore();
+    store.payload = makePayload({
+      activeWorkspaceId: "ws-B",
+      windowSlots: [
+        { id: "win-a", profileId: "default", activeWorkspaceId: "ws-A" },
+        { id: "win-b", profileId: "default", activeWorkspaceId: "ws-B" },
+      ],
+    });
+
+    const wrapper = mount(SidebarPanel);
+
+    expect(wrapper.find('[data-workspace-id="ws-A"]').classes()).toContain("workspace-card--active");
+    expect(wrapper.find('[data-workspace-id="ws-B"]').classes()).not.toContain("workspace-card--active");
   });
 });
