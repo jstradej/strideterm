@@ -436,7 +436,6 @@ export const useFileManagerStore = defineStore("fileManager", () => {
 
   async function openInExplorer(entry: FileEntry | null): Promise<void> {
     if (!_api) return;
-    const absPath = rootPath.value.replace(/\\/g, "/") + "/" + (entry?.relativePath || currentPath.value);
     try {
       await _api.fileOpenInExplorer({
         rootPath: rootPath.value,
@@ -449,6 +448,12 @@ export const useFileManagerStore = defineStore("fileManager", () => {
 
   function copyToClipboard(entry: FileEntry): void {
     clipboard.value = { entry, op: "copy" };
+    // Best-effort: also push the file onto the OS clipboard so the user can
+    // paste it into Finder / Explorer / Files. Remote (web) transport is a
+    // no-op for this; the in-app `clipboard` above still drives Paste here.
+    void _api?.fileClipboardCopy?.({ rootPath: rootPath.value, relativePath: entry.relativePath })?.catch?.(() => {
+      // swallow — text path was put on the OS clipboard regardless
+    });
   }
 
   function cutToClipboard(entry: FileEntry): void {

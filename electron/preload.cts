@@ -195,6 +195,7 @@ contextBridge.exposeInMainWorld("strideterm", {
   fileMove: (p) => ipcRenderer.invoke("file:move", p),
   fileCopy: (p) => ipcRenderer.invoke("file:copy", p),
   fileOpenInExplorer: (p) => ipcRenderer.invoke("file:open-in-explorer", p),
+  fileClipboardCopy: (p) => ipcRenderer.invoke("file:clipboard-copy", p),
   fileOpenInEditor: (p) => ipcRenderer.invoke("file:open-in-editor", p),
   fileInfo: (p) => ipcRenderer.invoke("file:info", p),
   fileGitStatus: (p) => ipcRenderer.invoke("file:git-status", p),

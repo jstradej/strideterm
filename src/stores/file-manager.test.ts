@@ -237,4 +237,45 @@ describe("file-manager store", () => {
     await store.pasteEntry("dest");
     expect(store.clipboard?.op).toBe("copy"); // copy stays
   });
+
+  it("copyToClipboard pushes the entry onto the OS clipboard via fileClipboardCopy", async () => {
+    const calls: AnyObj[] = [];
+    const { api } = makeFakeApi({
+      fileClipboardCopy: async (p: AnyObj) => {
+        calls.push(p);
+        return { ok: true };
+      },
+    });
+    const store = useFileManagerStore();
+    store.setApi(api);
+    await store.init("/repo");
+
+    store.copyToClipboard({ name: "f.txt", relativePath: "sub/f.txt", kind: "file" });
+    // Microtask drain so the fire-and-forget IPC promise resolves.
+    await Promise.resolve();
+    expect(store.clipboard?.op).toBe("copy");
+    expect(calls).toEqual([{ rootPath: "/repo", relativePath: "sub/f.txt" }]);
+  });
+
+  it("copyToClipboard tolerates a missing or rejecting fileClipboardCopy", async () => {
+    // Case 1: API doesn't implement fileClipboardCopy at all.
+    const { api: api1 } = makeFakeApi();
+    const store1 = useFileManagerStore();
+    store1.setApi(api1);
+    await store1.init("/r");
+    expect(() => store1.copyToClipboard({ name: "a", relativePath: "a", kind: "file" })).not.toThrow();
+    expect(store1.clipboard?.op).toBe("copy");
+
+    // Case 2: API rejects — in-app clipboard should still be set.
+    setActivePinia(createPinia());
+    const { api: api2 } = makeFakeApi({
+      fileClipboardCopy: () => Promise.reject(new Error("nope")),
+    });
+    const store2 = useFileManagerStore();
+    store2.setApi(api2);
+    await store2.init("/r");
+    store2.copyToClipboard({ name: "b", relativePath: "b", kind: "file" });
+    await Promise.resolve();
+    expect(store2.clipboard?.op).toBe("copy");
+  });
 });

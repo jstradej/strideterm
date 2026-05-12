@@ -1231,6 +1231,12 @@ async function handleApiRequest(runtime: Runtime, request: IncomingMessage, resp
       json(response, 200, { ok: true });
       return;
     }
+    if (request.method === "POST" && url.pathname === "/api/file/clipboard-copy") {
+      // OS-clipboard "copy file" is an Electron-only feature; noop for remote.
+      // The renderer-side in-app clipboard still works for paste-within-app.
+      json(response, 200, { ok: true });
+      return;
+    }
     if (request.method === "POST" && url.pathname === "/api/file/open-in-editor") {
       // Open-in-editor is an Electron-only feature; noop for remote.
       json(response, 200, { ok: true });

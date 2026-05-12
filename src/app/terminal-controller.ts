@@ -33,6 +33,8 @@ export interface TerminalView {
 
 type LogLevel = "info" | "warn" | "error" | "debug";
 
+const IS_MAC = typeof navigator !== "undefined" && navigator.userAgent.toLowerCase().includes("mac");
+
 interface TerminalControllerApi {
   resizeTerminal: (sessionId: string, size: { cols: number; rows: number }) => void;
   writeTerminal: (sessionId: string, data: string) => void;
@@ -439,6 +441,42 @@ export function createTerminalController({
       });
     }
     term.attachCustomKeyEventHandler((event) => {
+      // Mac: translate Cmd / Option + arrows and Backspace into the escape
+      // sequences readline-style CLIs (zsh, bash, Claude Code, fzf, …)
+      // actually understand. xterm.js leaves these unmapped by default, so
+      // without this Cmd+Left silently does nothing on macOS.
+      if (IS_MAC && event.type === "keydown") {
+        if (event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey) {
+          switch (event.key) {
+            case "ArrowLeft":
+              api.writeTerminal(sessionId, "\x1b[H"); // Home
+              return false;
+            case "ArrowRight":
+              api.writeTerminal(sessionId, "\x1b[F"); // End
+              return false;
+            case "Backspace":
+              api.writeTerminal(sessionId, "\x15"); // Ctrl+U — kill to start of line
+              return false;
+            default:
+              break;
+          }
+        }
+        if (event.altKey && !event.metaKey && !event.ctrlKey && !event.shiftKey) {
+          switch (event.key) {
+            case "ArrowLeft":
+              api.writeTerminal(sessionId, "\x1bb"); // ESC b — previous word
+              return false;
+            case "ArrowRight":
+              api.writeTerminal(sessionId, "\x1bf"); // ESC f — next word
+              return false;
+            case "Backspace":
+              api.writeTerminal(sessionId, "\x17"); // Ctrl+W — kill word backward
+              return false;
+            default:
+              break;
+          }
+        }
+      }
       if (!(event.ctrlKey || event.metaKey)) return true;
       if (!event.altKey && /^Digit[1-9]$/.test(event.code)) return false;
       if (event.key.toLowerCase() === "n" || event.key.toLowerCase() === "r") return false;

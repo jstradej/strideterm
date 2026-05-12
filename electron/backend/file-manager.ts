@@ -295,6 +295,10 @@ function safePath(rootPath: string, relativePath: string | null | undefined): st
   return resolved;
 }
 
+export function resolveWorkspaceAbsPath(rootPath: string, relativePath: string | null | undefined): string {
+  return safePath(rootPath, relativePath);
+}
+
 /**
  * Defence in depth against symlink escapes. `safePath` only checks the
  * logical path, so a symlink at `<root>/danger -> /etc` would resolve

@@ -305,6 +305,7 @@ export interface StridetermAPI {
   fileMove: (p: FileMove) => Promise<unknown>;
   fileCopy: (p: FileMove) => Promise<unknown>;
   fileOpenInExplorer: (p: FileRead) => Promise<unknown>;
+  fileClipboardCopy: (p: FileRead) => Promise<unknown>;
   fileOpenInEditor: (p: FileRead) => Promise<unknown>;
   fileInfo: (p: FileRead) => Promise<unknown>;
   fileGitStatus: (p: FileGitStatus) => Promise<unknown>;

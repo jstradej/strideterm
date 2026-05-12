@@ -1,8 +1,9 @@
 /// <reference types="node" />
-import { ipcMain, dialog, BrowserWindow, shell, Notification, app } from "electron";
+import { ipcMain, dialog, BrowserWindow, shell, clipboard, Notification, app } from "electron";
 import path, { join } from "node:path";
 import { homedir } from "node:os";
 import { stat } from "node:fs/promises";
+import { pathToFileURL } from "node:url";
 import type { createRuntime } from "./runtime.js";
 import { withOperationPromise } from "./effect/runtime.js";
 import * as fm from "./file-manager.js";
@@ -1153,9 +1154,50 @@ export function registerIpc(
       return fm.copyEntry(p.rootPath, p.fromPath, p.toPath);
     }),
   );
-  ipcMain.handle("file:open-in-explorer", async (_event, absPath) =>
+  ipcMain.handle("file:open-in-explorer", async (_event, payload) =>
     withOperationPromise({ opId: "file:open-in-explorer" }, async () => {
-      if (typeof absPath === "string") shell.showItemInFolder(absPath);
+      const p = validateIpc(fileReadSchema, payload, "file:open-in-explorer");
+      const absPath = fm.resolveWorkspaceAbsPath(p.rootPath, p.relativePath);
+      shell.showItemInFolder(absPath);
+    }),
+  );
+  ipcMain.handle("file:clipboard-copy", async (_event, payload) =>
+    withOperationPromise({ opId: "file:clipboard-copy" }, async () => {
+      const p = validateIpc(fileReadSchema, payload, "file:clipboard-copy");
+      const absPath = fm.resolveWorkspaceAbsPath(p.rootPath, p.relativePath);
+      // Always put the absolute path on the clipboard as plain text — works
+      // everywhere as a fallback (paste into a terminal, editor, address bar).
+      clipboard.writeText(absPath);
+      // Best-effort native "copy file" so OS file managers (Finder, Explorer,
+      // GNOME Files, etc.) accept the subsequent paste as a real file copy.
+      // Wrapped in try/catch — if a particular Electron build doesn't accept
+      // the raw format, the plain-text path above still got copied.
+      try {
+        if (process.platform === "darwin") {
+          // NSPasteboard accepts a single file URL via the public.file-url UTI.
+          const fileURL = pathToFileURL(absPath).href;
+          clipboard.writeBuffer("public.file-url", Buffer.from(fileURL, "utf8"));
+        } else if (process.platform === "win32") {
+          // CF_HDROP: DROPFILES header (20 bytes) + UTF-16LE filenames,
+          // null-separated and double-null-terminated.
+          const header = Buffer.alloc(20);
+          header.writeUInt32LE(20, 0); // pFiles offset
+          header.writeInt32LE(0, 4); // pt.x
+          header.writeInt32LE(0, 8); // pt.y
+          header.writeUInt32LE(0, 12); // fNC
+          header.writeUInt32LE(1, 16); // fWide = 1 (Unicode)
+          const list = Buffer.from(absPath + "\0\0", "utf16le");
+          clipboard.writeBuffer("CF_HDROP", Buffer.concat([header, list]));
+        } else {
+          // Linux/BSD: text/uri-list is the cross-DE standard; GNOME also
+          // honors x-special/gnome-copied-files for "Paste" in Files/Nautilus.
+          const fileURL = pathToFileURL(absPath).href;
+          clipboard.writeBuffer("text/uri-list", Buffer.from(fileURL + "\n", "utf8"));
+          clipboard.writeBuffer("x-special/gnome-copied-files", Buffer.from(`copy\n${fileURL}`, "utf8"));
+        }
+      } catch {
+        // Fall back to the plain-text path that was already written above.
+      }
     }),
   );
   ipcMain.handle("file:open-in-editor", async (_event, payload) =>
@@ -1470,6 +1512,7 @@ export function registerIpc(
     ipcMain.removeHandler("file:move");
     ipcMain.removeHandler("file:copy");
     ipcMain.removeHandler("file:open-in-explorer");
+    ipcMain.removeHandler("file:clipboard-copy");
     ipcMain.removeHandler("file:open-in-editor");
     ipcMain.removeHandler("file:info");
     ipcMain.removeHandler("file:commit-files");
