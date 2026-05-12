@@ -230,6 +230,71 @@ describe("file-manager core", () => {
     const final = await listDirectory(root, "");
     expect(final.entries.length).toBe(0);
   });
+
+  test("copyEntry auto-renames on same-directory paste (GNOME Files style)", async () => {
+    const root = path.join(tmpRoot, "copy-conflict-test");
+    await fs.mkdir(root, { recursive: true });
+    await createFile(root, "", "note.txt");
+    await writeFileContent(root, "note.txt", "original");
+
+    // First paste of "note.txt" onto itself → "note (copy).txt"
+    const r1 = await copyEntry(root, "note.txt", "note.txt");
+    expect(r1.entry.name).toBe("note (copy).txt");
+    expect((await readFileContent(root, "note (copy).txt")).content).toBe("original");
+
+    // Second paste of "note.txt" → "note (copy 2).txt" (skips the existing one)
+    const r2 = await copyEntry(root, "note.txt", "note.txt");
+    expect(r2.entry.name).toBe("note (copy 2).txt");
+
+    // Paste of "note (copy).txt" onto itself → "note (copy) (copy).txt"
+    // (we don't try to detect / normalise nested "(copy)" suffixes — Finder
+    // does the same).
+    const r3 = await copyEntry(root, "note (copy).txt", "note (copy).txt");
+    expect(r3.entry.name).toBe("note (copy) (copy).txt");
+  });
+
+  test("copyEntry preserves dotfile names without inventing extensions", async () => {
+    const root = path.join(tmpRoot, "copy-dotfile-test");
+    await fs.mkdir(root, { recursive: true });
+    await fs.writeFile(path.join(root, ".gitignore"), "node_modules\n");
+
+    const r = await copyEntry(root, ".gitignore", ".gitignore");
+    expect(r.entry.name).toBe(".gitignore (copy)");
+  });
+
+  test("copyEntry auto-renames directories on conflict", async () => {
+    const root = path.join(tmpRoot, "copy-dir-test");
+    await fs.mkdir(root, { recursive: true });
+    await createDirectory(root, "", "stuff");
+    await createFile(root, "stuff", "x.txt");
+
+    const r = await copyEntry(root, "stuff", "stuff");
+    expect(r.entry.name).toBe("stuff (copy)");
+    const inside = await listDirectory(root, "stuff (copy)");
+    expect(inside.entries.map((e) => e.name)).toContain("x.txt");
+  });
+
+  test("moveEntry refuses to overwrite an existing destination", async () => {
+    const root = path.join(tmpRoot, "move-conflict-test");
+    await fs.mkdir(root, { recursive: true });
+    await createFile(root, "", "a.txt");
+    await writeFileContent(root, "a.txt", "alpha");
+    await createFile(root, "", "b.txt");
+    await writeFileContent(root, "b.txt", "beta");
+
+    await expect(moveEntry(root, "a.txt", "b.txt")).rejects.toThrow(/already exists/i);
+    // b.txt must be untouched — both files still there, original content kept
+    expect((await readFileContent(root, "a.txt")).content).toBe("alpha");
+    expect((await readFileContent(root, "b.txt")).content).toBe("beta");
+  });
+
+  test("moveEntry refuses no-op rename to itself", async () => {
+    const root = path.join(tmpRoot, "move-self-test");
+    await fs.mkdir(root, { recursive: true });
+    await createFile(root, "", "same.txt");
+
+    await expect(moveEntry(root, "same.txt", "same.txt")).rejects.toThrow(/same/i);
+  });
 });
 
 describe("file-manager git integration", () => {

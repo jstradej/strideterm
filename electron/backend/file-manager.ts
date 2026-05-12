@@ -1,5 +1,6 @@
 /// <reference types="node" />
 import fs from "node:fs/promises";
+import { constants as fsConstants } from "node:fs";
 import path from "node:path";
 import { execFileText } from "./process-utils.js";
 import { guessLanguageFromPath } from "../../config/language-map.js";
@@ -662,22 +663,73 @@ export async function moveEntry(rootPath: string, fromPath: string, toPath: stri
   const absTo = safePath(rootPath, toPath);
   await assertRealPathInside(rootPath, absFrom);
   await assertRealPathInside(rootPath, absTo);
+  if (absFrom === absTo) {
+    throw new Error(`Source and destination are the same: ${path.basename(absTo)}`);
+  }
+  if (await pathExists(absTo)) {
+    throw new Error(`Destination already exists: ${path.basename(absTo)}`);
+  }
   await fs.rename(absFrom, absTo);
   return { entry: await statEntry(absTo, path.resolve(rootPath)) };
 }
 
 export async function copyEntry(rootPath: string, fromPath: string, toPath: string): Promise<EntryResult> {
   const absFrom = safePath(rootPath, fromPath);
-  const absTo = safePath(rootPath, toPath);
+  let absTo = safePath(rootPath, toPath);
   await assertRealPathInside(rootPath, absFrom);
+  // Same-directory paste (the GUI Ctrl+C → Ctrl+V) lands on the source's
+  // own path or an existing sibling. Auto-rename to "<name> (copy).<ext>",
+  // "<name> (copy 2).<ext>", … so the user gets the system file-manager UX
+  // instead of either a silent no-op or an overwrite.
+  if (absFrom === absTo || (await pathExists(absTo))) {
+    const destDir = path.dirname(absTo);
+    const newName = await findAvailableCopyName(destDir, path.basename(absTo));
+    absTo = path.join(destDir, newName);
+  }
   await assertRealPathInside(rootPath, absTo);
   const stat = await fs.stat(absFrom);
   if (stat.isDirectory()) {
-    await fs.cp(absFrom, absTo, { recursive: true });
+    // errorOnExist + force:false: belt-and-braces against a TOCTOU between
+    // pathExists() above and fs.cp here. Without it fs.cp silently merges
+    // into an existing directory, which would surprise the user.
+    await fs.cp(absFrom, absTo, { recursive: true, force: false, errorOnExist: true });
   } else {
-    await fs.copyFile(absFrom, absTo);
+    // COPYFILE_EXCL fails fast if the destination materialised after our
+    // existence check — better than silently overwriting another file.
+    await fs.copyFile(absFrom, absTo, fsConstants.COPYFILE_EXCL);
   }
   return { entry: await statEntry(absTo, path.resolve(rootPath)) };
+}
+
+async function pathExists(absPath: string): Promise<boolean> {
+  try {
+    await fs.access(absPath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Pick the next available "<base> (copy).<ext>" / "<base> (copy N).<ext>"
+ * inside `absDirPath` so a paste into the same directory doesn't clash.
+ *
+ * Mirrors GNOME Files' naming. `path.extname` returns "" for dotfiles like
+ * `.gitignore` (preserved as `.gitignore (copy)`) and the last segment for
+ * compound suffixes (`archive.tar.gz` becomes `archive.tar (copy).gz` —
+ * same compromise Finder makes). The 1000-iteration cap is a defensive
+ * upper bound; in practice users never reach it.
+ */
+async function findAvailableCopyName(absDirPath: string, originalName: string): Promise<string> {
+  const ext = path.extname(originalName);
+  const base = ext ? originalName.slice(0, -ext.length) : originalName;
+  for (let i = 1; i < 1000; i++) {
+    const candidate = i === 1 ? `${base} (copy)${ext}` : `${base} (copy ${i})${ext}`;
+    if (!(await pathExists(path.join(absDirPath, candidate)))) {
+      return candidate;
+    }
+  }
+  throw new Error(`Could not find a free "${originalName}" copy name after 1000 attempts`);
 }
 
 export async function getFileInfo(rootPath: string, relativePath: string): Promise<FileInfoResult> {

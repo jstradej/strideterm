@@ -471,14 +471,27 @@ export const useFileManagerStore = defineStore("fileManager", () => {
     const destPath = destDir ? `${destDir}/${entry.name}` : entry.name;
     try {
       if (op === "copy") {
+        // Backend auto-renames on conflict (foo.txt → "foo (copy).txt"),
+        // so this resolves to a new file even when pasting into the same
+        // directory. refresh() below brings the new entry into view.
         await _api.fileCopy({ rootPath: rootPath.value, fromPath: entry.relativePath, toPath: destPath });
       } else {
+        // Move refuses to overwrite — the backend throws "Destination already
+        // exists" / "Source and destination are the same" so the cut+paste
+        // doesn't silently obliterate the target file.
         await _api.fileMove({ rootPath: rootPath.value, fromPath: entry.relativePath, toPath: destPath });
         clipboard.value = null;
       }
       await refresh();
     } catch (err) {
-      error.value = (err as Error).message || "Failed to paste";
+      const msg = (err as Error).message || "Failed to paste";
+      error.value = msg;
+      try {
+        const { useNotificationStore } = await import("./notifications.js");
+        useNotificationStore().showError(op === "copy" ? "Copy failed" : "Move failed", msg);
+      } catch {
+        // notifications store optional during isolated unit tests
+      }
     }
   }
 
