@@ -2242,6 +2242,202 @@ describe("runtime integration", () => {
     expect(fixture.store.saveCalls).toBe(0);
   });
 
+  // Regression: per-window workspace activation must keep global activeWorkspaceId
+  // and activeProfileId in sync with the activated workspace. Otherwise:
+  //  - `getPayload()` builds `payload.workspace` from `state.activeWorkspaceId`
+  //    (via sessions.getWorkspace), so the renderer's main pane stays on the
+  //    previously-active workspace even though slot.activeWorkspaceId moved;
+  //  - `normalizeState` (default-state.ts) validates activeWorkspaceId against
+  //    the GLOBAL activeProfileId and resets it to that profile's first
+  //    workspace if the requested one doesn't belong — silently reverting the
+  //    activation when the slot's profile has drifted from the global.
+  test("activateWorkspaceInWindow mirrors slot updates into global activeWorkspaceId", async () => {
+    const fixture = await createFixture({
+      initialState: {
+        activeWorkspaceId: "frontend",
+        profiles: [{ id: "default", name: "Default", color: "#fff", workspaceIds: [], workspaceGrid: null }],
+        workspaces: [
+          {
+            id: "frontend",
+            name: "Frontend",
+            kind: "terminal",
+            cwd: "/tmp/frontend",
+            profileId: "default",
+            panels: [{ id: "p1", title: "Shell", command: "", shell: true, startup: "default" }],
+            activePanelId: "p1",
+          },
+          {
+            id: "backend",
+            name: "Backend",
+            kind: "terminal",
+            cwd: "/tmp/backend",
+            profileId: "default",
+            panels: [{ id: "p2", title: "Shell", command: "", shell: true, startup: "default" }],
+            activePanelId: "p2",
+          },
+        ],
+        windowSlots: [
+          {
+            id: "win-1",
+            profileId: "default",
+            activeWorkspaceId: "frontend",
+            activeSessionId: "",
+            bounds: { x: 0, y: 0, width: 1280, height: 800 },
+            lastFocusedAt: Date.now(),
+          },
+        ],
+      },
+    });
+    fixtures.push(fixture);
+
+    const payload = await fixture.runtime.activateWorkspaceInWindow("backend", "win-1");
+
+    // Slot updated as before.
+    expect(payload.appState.windowSlots?.find((s) => s.id === "win-1")?.activeWorkspaceId).toBe("backend");
+    // Global mirrored — guards against the bug where `payload.workspace` (built
+    // from sessions.getWorkspace(state.activeWorkspaceId)) stays on the previous
+    // workspace and the renderer main pane never visually switches.
+    expect(payload.appState.activeWorkspaceId).toBe("backend");
+  });
+
+  test("activateProfileInWindow mirrors slot profile change into global activeProfileId", async () => {
+    // Without the mirror, activateProfileInWindow only updates slot.profileId
+    // — the global activeProfileId drifts behind. Subsequent workspace
+    // activations land in normalizeState's validator with a mismatched
+    // global activeProfileId and the requested workspace gets reverted to
+    // the OLD profile's first workspace, manifesting as "I clicked the card
+    // but the main pane didn't switch".
+    const fixture = await createFixture({
+      initialState: {
+        activeProfileId: "profile-a",
+        activeWorkspaceId: "ws-a1",
+        profiles: [
+          { id: "profile-a", name: "A", color: "#fff", workspaceIds: [], workspaceGrid: null },
+          { id: "profile-b", name: "B", color: "#fff", workspaceIds: [], workspaceGrid: null },
+        ],
+        workspaces: [
+          {
+            id: "ws-a1",
+            name: "A1",
+            kind: "terminal",
+            cwd: "/tmp/a1",
+            profileId: "profile-a",
+            panels: [{ id: "p1", title: "Shell", command: "", shell: true, startup: "default" }],
+            activePanelId: "p1",
+          },
+          {
+            id: "ws-b1",
+            name: "B1",
+            kind: "terminal",
+            cwd: "/tmp/b1",
+            profileId: "profile-b",
+            panels: [{ id: "p2", title: "Shell", command: "", shell: true, startup: "default" }],
+            activePanelId: "p2",
+          },
+          {
+            id: "ws-b2",
+            name: "B2",
+            kind: "terminal",
+            cwd: "/tmp/b2",
+            profileId: "profile-b",
+            panels: [{ id: "p3", title: "Shell", command: "", shell: true, startup: "default" }],
+            activePanelId: "p3",
+          },
+        ],
+        windowSlots: [
+          {
+            id: "win-1",
+            profileId: "profile-a",
+            activeWorkspaceId: "ws-a1",
+            activeSessionId: "",
+            bounds: { x: 0, y: 0, width: 1280, height: 800 },
+            lastFocusedAt: Date.now(),
+          },
+        ],
+      },
+    });
+    fixtures.push(fixture);
+
+    const payload = await fixture.runtime.activateProfileInWindow("profile-b", "win-1");
+
+    expect(payload.appState.windowSlots?.find((s) => s.id === "win-1")?.profileId).toBe("profile-b");
+    expect(payload.appState.windowSlots?.find((s) => s.id === "win-1")?.activeWorkspaceId).toBe("ws-b1");
+    // Both globals must follow so the next workspace activation in the new
+    // profile isn't reverted by normalize.
+    expect(payload.appState.activeProfileId).toBe("profile-b");
+    expect(payload.appState.activeWorkspaceId).toBe("ws-b1");
+  });
+
+  test("activateWorkspaceInWindow on cross-profile target syncs global activeProfileId", async () => {
+    // Setup: slot is on profile A, global activeProfileId is stale on B (a
+    // realistic state after activateProfileInWindow drifted slot.profileId
+    // away from the global). Activating a workspace that lives in A must
+    // bring activeProfileId back to A — otherwise normalizeState resets
+    // activeWorkspaceId to B's first workspace and silently reverts the click.
+    const fixture = await createFixture({
+      initialState: {
+        activeProfileId: "profile-b",
+        activeWorkspaceId: "ws-b1",
+        profiles: [
+          { id: "profile-a", name: "A", color: "#fff", workspaceIds: [], workspaceGrid: null },
+          { id: "profile-b", name: "B", color: "#fff", workspaceIds: [], workspaceGrid: null },
+        ],
+        workspaces: [
+          {
+            id: "ws-a1",
+            name: "A1",
+            kind: "terminal",
+            cwd: "/tmp/a1",
+            profileId: "profile-a",
+            panels: [{ id: "p1", title: "Shell", command: "", shell: true, startup: "default" }],
+            activePanelId: "p1",
+          },
+          {
+            id: "ws-a2",
+            name: "A2",
+            kind: "terminal",
+            cwd: "/tmp/a2",
+            profileId: "profile-a",
+            panels: [{ id: "p2", title: "Shell", command: "", shell: true, startup: "default" }],
+            activePanelId: "p2",
+          },
+          {
+            id: "ws-b1",
+            name: "B1",
+            kind: "terminal",
+            cwd: "/tmp/b1",
+            profileId: "profile-b",
+            panels: [{ id: "p3", title: "Shell", command: "", shell: true, startup: "default" }],
+            activePanelId: "p3",
+          },
+        ],
+        windowSlots: [
+          {
+            id: "win-1",
+            profileId: "profile-a", // slot drifted away from global activeProfileId
+            activeWorkspaceId: "ws-a1",
+            activeSessionId: "",
+            bounds: { x: 0, y: 0, width: 1280, height: 800 },
+            lastFocusedAt: Date.now(),
+          },
+        ],
+      },
+    });
+    fixtures.push(fixture);
+
+    // Sanity: starting state has the drift
+    const before = fixture.store.getState();
+    expect(before.activeProfileId).toBe("profile-b");
+    expect(before.windowSlots?.[0].profileId).toBe("profile-a");
+
+    const payload = await fixture.runtime.activateWorkspaceInWindow("ws-a2", "win-1");
+
+    expect(payload.appState.windowSlots?.find((s) => s.id === "win-1")?.activeWorkspaceId).toBe("ws-a2");
+    // Global must follow the activated workspace so normalize doesn't revert.
+    expect(payload.appState.activeWorkspaceId).toBe("ws-a2");
+    expect(payload.appState.activeProfileId).toBe("profile-a");
+  });
+
   // ---------------------------------------------------------------------------
   // Plan § 6: Critical scenario regression tests.
   //

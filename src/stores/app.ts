@@ -49,6 +49,20 @@ export const useAppStore = defineStore("app", () => {
   // --- This window's identity (injected via additionalArguments in preload) ---
   const myWindowId = (window as AnyApi).strideterm?.startupFlags?.windowId || "";
 
+  // Structured renderer logging — routes through the preload's `log:renderer`
+  // channel into the main-process logger, where it appears in strideterm.log
+  // tagged `[renderer]`. Inlined here so the activation flow (and related
+  // multi-window/profile transitions) can be analysed from the dev log
+  // without attaching DevTools.
+
+  function rlog(level: "debug" | "info" | "warn" | "error", msg: string, meta?: Record<string, unknown>): void {
+    try {
+      (window as AnyApi).strideterm?.logRenderer?.(level, msg, { windowId: myWindowId, ...(meta || {}) });
+    } catch {
+      // Logging must never break callers; swallow IPC teardown / preload-gone cases.
+    }
+  }
+
   // --- Server payload (shallowRef for performance — never deeply reactive) ---
   const payload = shallowRef<StatePayload | null>(null);
 
@@ -190,11 +204,19 @@ export const useAppStore = defineStore("app", () => {
   // --- Workspace grid computed ---
 
   const workspaceGrid = computed(() => {
-    // Per-profile grid (preferred) — falls back to deprecated global grid
+    // Per-profile grid is authoritative once migration has run. `?? global`
+    // would leak the deprecated top-level grid (which the backend keeps in
+    // sync with the active profile) into OTHER profiles whose own grid is
+    // explicitly null — showing one profile's IN SPLIT cards while the user
+    // is in a different profile's window, and re-routing clicks into the
+    // wrong profile's workspaces. Only fall back when the profile field is
+    // truly absent (pre-migration).
     const profile = (payload.value?.appState?.profiles as AnyApi[] | undefined)?.find(
       (p: AnyApi) => p.id === myActiveProfileId.value,
     );
-    return (profile as AnyApi)?.workspaceGrid ?? (payload.value as AnyApi)?.appState?.workspaceGrid ?? null;
+    const profileGrid = (profile as AnyApi)?.workspaceGrid;
+    if (profile && profileGrid !== undefined) return profileGrid;
+    return (payload.value as AnyApi)?.appState?.workspaceGrid ?? null;
   });
 
   const isGridVisible = computed<boolean>(() => {
@@ -537,6 +559,17 @@ export const useAppStore = defineStore("app", () => {
     const fallbackViewId = wsEntry?.activePanelId ? `${workspaceId}:${wsEntry.activePanelId}` : "";
     let nextViewId = storedViewId || fallbackViewId || null;
 
+    // Azure / GitHub workspaces have exactly one virtual tab — `azure:<id>` or
+    // `github:<id>` (see src/app/selectors.ts). The persisted `activePanelId`
+    // is a terminal-panel reference that doesn't correspond to any real tab
+    // in the strip; without this override the inbox renders blank until the
+    // user manually clicks the only tab. Always force the canonical viewId.
+    if (wsEntry?.kind === "azure") {
+      nextViewId = `azure:${workspaceId}`;
+    } else if (wsEntry?.kind === "github") {
+      nextViewId = `github:${workspaceId}`;
+    }
+
     // Mobile override: on a phone-width viewport, task workspaces always
     // open on the Dashboard tab regardless of the persisted active view.
     // The 3-pane split collapses to one pane (forceSoloLayout) and the
@@ -572,8 +605,19 @@ export const useAppStore = defineStore("app", () => {
   function applyOptimisticWorkspaceActivation(workspaceId: string): boolean {
     const appState = payload.value?.appState;
     if (!appState || !(appState.workspaces || []).some((ws: AnyApi) => ws.id === workspaceId)) {
+      rlog("debug", "ws-activate optimistic: workspace missing in payload, bailing", {
+        workspaceId,
+        knownWorkspaceCount: appState?.workspaces?.length || 0,
+      });
       return false;
     }
+    rlog("debug", "ws-activate optimistic: applying", {
+      workspaceId,
+      prevMyActiveWsId: myActiveWorkspaceId.value,
+      prevPendingId: pendingWorkspaceActivationId.value,
+      myProfileId: myActiveProfileId.value,
+      slotProfileId: myWindowSlot.value?.profileId || null,
+    });
 
     // Cache current workspace state before switching away
     _cacheCurrentWorkspace();
@@ -629,9 +673,22 @@ export const useAppStore = defineStore("app", () => {
     const incomingMyWsId: string =
       incomingSlot?.activeWorkspaceId || (nextPayload as AnyApi)?.appState?.activeWorkspaceId || "";
 
-    if (pendingWsId && incomingMyWsId && incomingMyWsId !== pendingWsId) return;
+    if (pendingWsId && incomingMyWsId && incomingMyWsId !== pendingWsId) {
+      rlog("debug", "ws-activate broadcast: skipped, mismatched pending", {
+        pendingWsId,
+        incomingMyWsId,
+        incomingSlotProfileId: incomingSlot?.profileId || null,
+        bootstrap: isBootstrap,
+      });
+      return;
+    }
     const completingActivation = pendingWsId && incomingMyWsId === pendingWsId && !isBootstrap;
     if (completingActivation) {
+      rlog("debug", "ws-activate broadcast: completing pending", {
+        pendingWsId,
+        incomingMyWsId,
+        incomingSlotProfileId: incomingSlot?.profileId || null,
+      });
       pendingWorkspaceActivationId.value = "";
     }
 
@@ -667,7 +724,14 @@ export const useAppStore = defineStore("app", () => {
       if (!isBootstrap) pendingViewActivationId.value = "";
     }
 
-    if (suppressBroadcast.value) return;
+    if (suppressBroadcast.value) {
+      rlog("debug", "ws-activate broadcast: payload write suppressed", {
+        pendingWsId,
+        incomingMyWsId,
+        incomingSlotProfileId: incomingSlot?.profileId || null,
+      });
+      return;
+    }
     // Strip out workspaces that the user just optimistically deleted but the
     // backend hasn't finished removing yet. Without this, every interim
     // broadcast would re-introduce the workspace into the sidebar until the
@@ -722,12 +786,28 @@ export const useAppStore = defineStore("app", () => {
 
   async function activateWorkspace(workspaceId: string): Promise<void> {
     const prevWsId = myActiveWorkspaceId.value;
+    rlog("debug", "ws-activate: entry", {
+      workspaceId,
+      prevWsId,
+      myProfileId: myActiveProfileId.value,
+      slotProfileId: myWindowSlot.value?.profileId || null,
+      isGridVisible: isGridVisible.value,
+    });
     if (prevWsId && splitGroup.value) {
       _splitGroupCache.set(prevWsId, splitGroup.value);
     }
     applyOptimisticWorkspaceActivation(workspaceId);
     try {
       const nextPayload = (await _api!.activateWorkspace(workspaceId)) as StatePayload;
+      const nextSlots = (nextPayload as AnyApi)?.appState?.windowSlots as AnyApi[] | undefined;
+      const nextMySlot = myWindowId && nextSlots ? nextSlots.find((s: AnyApi) => s.id === myWindowId) : null;
+      rlog("debug", "ws-activate: ipc response", {
+        workspaceId,
+        pendingId: pendingWorkspaceActivationId.value,
+        globalActiveWsId: (nextPayload as AnyApi)?.appState?.activeWorkspaceId || null,
+        slotActiveWsId: nextMySlot?.activeWorkspaceId || null,
+        slotProfileId: nextMySlot?.profileId || null,
+      });
       if (
         !pendingWorkspaceActivationId.value ||
         (nextPayload as AnyApi)?.appState?.activeWorkspaceId === pendingWorkspaceActivationId.value
@@ -744,8 +824,19 @@ export const useAppStore = defineStore("app", () => {
           (ws: AnyApi) => ws.id === workspaceId,
         );
         applyWorkspaceUIStateFromEntry(wsEntry, workspaceId);
+      } else {
+        rlog("debug", "ws-activate: ipc response not adopted (global activeWsId !== pending)", {
+          workspaceId,
+          pendingId: pendingWorkspaceActivationId.value,
+          globalActiveWsId: (nextPayload as AnyApi)?.appState?.activeWorkspaceId || null,
+          note: "relies on broadcast (which is slot-aware) to update payload",
+        });
       }
-    } catch {
+    } catch (err) {
+      rlog("warn", "ws-activate: ipc threw", {
+        workspaceId,
+        err: (err as Error)?.message || String(err),
+      });
       pendingWorkspaceActivationId.value = "";
     }
   }

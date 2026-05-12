@@ -148,6 +148,85 @@ describe("workspace grid store — computed properties", () => {
   });
 });
 
+// Regression: when a window is on a profile whose `workspaceGrid` is explicitly
+// `null` (post-migration "no grid"), the deprecated top-level `appState.workspaceGrid`
+// (which the backend keeps in sync with the GLOBAL `activeProfileId`) MUST NOT
+// leak in. Otherwise the IN SPLIT sidebar section in profile A shows profile B's
+// workspaces and clicks re-route activations into the wrong profile.
+describe("workspace grid store — per-profile grid resolution", () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+  });
+
+  function makeMultiProfilePayload(overrides: AnyApi = {}): StatePayload {
+    return {
+      appState: {
+        workspaces: BASE_WORKSPACES,
+        activeWorkspaceId: "ws-A",
+        // Global active profile points at "other"; the deprecated global grid
+        // mirrors that profile's grid (this is what the prod state file shows
+        // once activateProfileInWindow has drifted slot.profileId away from
+        // global activeProfileId).
+        activeProfileId: "other",
+        workspaceGrid: { layout: "cols", cellWorkspaceIds: ["ws-C", "ws-D"] },
+        profiles: [
+          { id: "current", name: "Current", color: "#fff", workspaceIds: [], workspaceGrid: null },
+          {
+            id: "other",
+            name: "Other",
+            color: "#fff",
+            workspaceIds: [],
+            workspaceGrid: { layout: "cols", cellWorkspaceIds: ["ws-C", "ws-D"] },
+          },
+        ],
+        ...overrides,
+      },
+    } as AnyApi;
+  }
+
+  it("returns null for a profile whose workspaceGrid is explicitly null (does not leak global)", () => {
+    const store = useAppStore();
+    store.payload = makeMultiProfilePayload({ activeProfileId: "current" });
+    // myActiveProfileId falls back to appState.activeProfileId ("current") in tests
+    // because no window slot is set. The "current" profile has workspaceGrid: null,
+    // so the computed must NOT fall back to the deprecated global.
+    expect(store.workspaceGrid).toBeNull();
+  });
+
+  it("returns the profile's grid when set (ignoring global)", () => {
+    const store = useAppStore();
+    store.payload = makeMultiProfilePayload({ activeProfileId: "other" });
+    expect(store.workspaceGrid).toEqual({ layout: "cols", cellWorkspaceIds: ["ws-C", "ws-D"] });
+  });
+
+  it("falls back to the global only when the profile entry has no workspaceGrid field (pre-migration)", () => {
+    const store = useAppStore();
+    store.payload = {
+      appState: {
+        workspaces: BASE_WORKSPACES,
+        activeWorkspaceId: "ws-A",
+        activeProfileId: "legacy",
+        workspaceGrid: { layout: "cols", cellWorkspaceIds: ["ws-A", "ws-B"] },
+        // Profile entry omits `workspaceGrid` entirely — legacy compat path.
+        profiles: [{ id: "legacy", name: "Legacy", color: "#fff", workspaceIds: [] }],
+      },
+    } as AnyApi;
+    expect(store.workspaceGrid).toEqual({ layout: "cols", cellWorkspaceIds: ["ws-A", "ws-B"] });
+  });
+
+  it("isGridVisible is false in a null-grid profile even if global has matching cells", () => {
+    const store = useAppStore();
+    store.payload = makeMultiProfilePayload({
+      activeProfileId: "current",
+      // ws-A is in the GLOBAL grid (and would make isGridVisible=true if the
+      // fallback leaked) but it MUST NOT — "current" profile has no grid.
+      workspaceGrid: { layout: "cols", cellWorkspaceIds: ["ws-A", "ws-B"] },
+      activeWorkspaceId: "ws-A",
+    });
+    expect(store.isGridVisible).toBe(false);
+  });
+});
+
 describe("workspace grid store — actions", () => {
   beforeEach(() => {
     setActivePinia(createPinia());

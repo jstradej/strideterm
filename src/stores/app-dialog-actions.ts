@@ -370,9 +370,21 @@ export function createDialogActions(ctx: DialogActionsCtx) {
 
   function openProfilesDialog(): void {
     const appState = ctx.payload.value?.appState || ({} as AnyApi);
+    // Use THIS window's profile (per-window slot), not the global activeProfileId.
+    // Global can stay stale on the last-activated profile after that window is
+    // closed; the dialog uses activeProfileId to decide which row is "(active)"
+    // and which rows are "occupied by another window", so a stale value mis-
+    // marks both the closed window's profile (looks active, no Activate button)
+    // and this window's actual profile (looks occupied, Activate disabled).
+    const myWindowId = (window as AnyApi).strideterm?.startupFlags?.windowId || "";
+    const slots = ((appState as AnyApi).windowSlots || []) as Array<{ id: string; profileId: string }>;
+    const myProfileId =
+      (myWindowId && slots.find((s) => s.id === myWindowId)?.profileId) ||
+      (appState as AnyApi).activeProfileId ||
+      "default";
     openDialog("ProfilesDialog", {
       profiles: JSON.parse(JSON.stringify((appState as AnyApi).profiles || [])) as unknown[],
-      activeProfileId: (appState as AnyApi).activeProfileId || "default",
+      activeProfileId: myProfileId,
       workspaces: (appState as AnyApi).workspaces || [],
       windowSlots: (appState as AnyApi).windowSlots || [],
       onCancel: closeDialog,

@@ -61,6 +61,9 @@ watch(
         const tryFocus = () => {
           const dialog = document.querySelector(".overlay .dialog");
           if (dialog) {
+            // Dialogs whose first input is a rename-in-place (e.g. ProfilesDialog)
+            // opt out via data-no-autofocus so opening doesn't look like a rename.
+            if ((dialog as HTMLElement).dataset.noAutofocus !== undefined) return;
             const focusable = dialog.querySelector("input:not([type=hidden]), textarea, select, [autofocus]");
             if (focusable) {
               (focusable as HTMLElement).focus();

@@ -29,7 +29,7 @@
       <WorkspaceCard
         v-for="entry in splitGroupCards"
         :key="`split-${entry.slotIndex}-${entry.card.id}`"
-        :workspace="{ ...entry.card, inGrid: true, slotIndex: entry.slotIndex + 1 }"
+        :workspace="{ ...entry.card, depth: 0, inGrid: true, slotIndex: entry.slotIndex + 1 }"
         :data-workspace-id="entry.card.id"
         @activate="onActivate(entry.card.id)"
         @open-menu="onOpenMenu($event, entry.card)"
@@ -341,6 +341,20 @@ const emit = defineEmits<{
 }>();
 
 async function onActivate(workspaceId: string): Promise<void> {
+  // Diagnostic: log every sidebar click so the dev log shows whether activation
+  // was actually requested (vs e.g. swallowed by a parent handler). Routes
+  // through preload's `log:renderer` → main logger → strideterm.log.
+  try {
+    (
+      window as unknown as { strideterm?: { logRenderer?: (l: string, m: string, x?: unknown) => void } }
+    ).strideterm?.logRenderer?.("debug", "sidebar: onActivate clicked", {
+      workspaceId,
+      prevActiveWsId: store.myActiveWorkspaceId,
+      myProfileId: store.myActiveProfileId,
+    });
+  } catch {
+    // logging never throws
+  }
   await store.activateWorkspace(workspaceId);
   emit("activate", workspaceId);
 }

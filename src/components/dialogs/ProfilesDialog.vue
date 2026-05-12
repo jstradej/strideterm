@@ -1,5 +1,5 @@
 <template>
-  <div class="dialog">
+  <div class="dialog" data-no-autofocus>
     <div class="dialog__header">
       <div>
         <p class="eyebrow">Workspace</p>

@@ -3741,7 +3741,7 @@ export async function createRuntime({
       await store.mutate((draft: AppState) => {
         const profileId = windowId ? (draft.windowSlots || []).find((s) => s.id === windowId)?.profileId : null;
         const profile = profileId ? draft.profiles.find((p) => p.id === profileId) : null;
-        const grid = profile?.workspaceGrid ?? draft.workspaceGrid;
+        const grid = profile && profile.workspaceGrid !== undefined ? profile.workspaceGrid : draft.workspaceGrid;
         if (!grid) return;
         const slots = { cols: 2, rows: 2, "top-split": 3, "left-split": 3, grid: 4 }[String(layout)] as
           | number
@@ -3765,7 +3765,12 @@ export async function createRuntime({
       await store.mutate((draft: AppState) => {
         const profileId = windowId ? (draft.windowSlots || []).find((s) => s.id === windowId)?.profileId : null;
         const profile = profileId ? draft.profiles.find((p) => p.id === profileId) : null;
-        const grid = profile?.workspaceGrid ?? draft.workspaceGrid;
+        // `?? draft.workspaceGrid` would leak the deprecated global (which
+        // tracks the GLOBAL activeProfileId, not the slot's) into a window
+        // whose profile has its grid explicitly null — mutating the wrong
+        // profile's grid. Use the global only when the profile field is
+        // truly absent (pre-migration state).
+        const grid = profile && profile.workspaceGrid !== undefined ? profile.workspaceGrid : draft.workspaceGrid;
         if (!grid) return;
         const ids = grid.cellWorkspaceIds;
         if (cellIndex < 0 || cellIndex >= ids.length) return;
@@ -3786,7 +3791,7 @@ export async function createRuntime({
       await store.mutate((draft: AppState) => {
         const profileId = windowId ? (draft.windowSlots || []).find((s) => s.id === windowId)?.profileId : null;
         const profile = profileId ? draft.profiles.find((p) => p.id === profileId) : null;
-        const grid = profile?.workspaceGrid ?? draft.workspaceGrid;
+        const grid = profile && profile.workspaceGrid !== undefined ? profile.workspaceGrid : draft.workspaceGrid;
         if (!grid) return;
         const ids = grid.cellWorkspaceIds;
         if (a < 0 || a >= ids.length || b < 0 || b >= ids.length || a === b) return;
@@ -3802,15 +3807,46 @@ export async function createRuntime({
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async activateWorkspaceInWindow(workspaceId: any, windowId: string) {
+      const preState = getState();
+      const preSlot = (preState.windowSlots || []).find((s) => s.id === windowId);
+      const targetWs = preState.workspaces.find((ws) => ws.id === workspaceId);
+      log.debug("activateWorkspaceInWindow: entry", {
+        workspaceId,
+        windowId,
+        targetWsKind: targetWs?.kind || null,
+        targetWsProfileId: targetWs?.profileId || null,
+        slotProfileId: preSlot?.profileId || null,
+        slotPrevActiveWsId: preSlot?.activeWorkspaceId || null,
+        crossProfile: targetWs && preSlot ? (targetWs.profileId || "default") !== preSlot.profileId : null,
+      });
       await store.mutate((draft: AppState) => {
-        if (!draft.workspaces.some((ws) => ws.id === workspaceId)) return;
+        const targetWorkspace = draft.workspaces.find((ws) => ws.id === workspaceId);
+        if (!targetWorkspace) return;
         // Update per-window slot
         const slot = (draft.windowSlots || []).find((s) => s.id === windowId);
         if (slot) {
           slot.activeWorkspaceId = workspaceId;
-        } else {
-          // Fallback: update global activeWorkspaceId
-          draft.activeWorkspaceId = workspaceId;
+        }
+        // ALSO mirror to global activeWorkspaceId. `getPayload()` builds the
+        // `payload.workspace` snapshot from `sessions.getWorkspace(state)`,
+        // which defaults to `state.activeWorkspaceId`. Without this mirror the
+        // main pane (and any consumer reading the global field) stays on the
+        // previously-active workspace even though slot.activeWorkspaceId moved
+        // — the user clicks a card, the slot updates, but the renderer's
+        // payload.workspace is still the old one, so nothing visually changes.
+        // In multi-window setups this makes the global "track last-activated";
+        // each window still drives its own pane via slot.activeWorkspaceId.
+        draft.activeWorkspaceId = workspaceId;
+        // ALSO mirror activeProfileId. `normalizeState` (default-state.ts)
+        // validates activeWorkspaceId against the GLOBAL activeProfileId's
+        // workspaces and resets it to that profile's first workspace if the
+        // requested one doesn't belong. When the slot's profile has drifted
+        // away from the global (e.g. activateProfileInWindow updated only the
+        // slot), activating a workspace in the slot's profile would otherwise
+        // get silently reverted by normalize on the next mutate cycle.
+        const targetProfileId = targetWorkspace.profileId || "default";
+        if (draft.activeProfileId !== targetProfileId) {
+          draft.activeProfileId = targetProfileId;
         }
       });
       const workspace = findWorkspace(getState(), workspaceId);
@@ -3876,17 +3912,23 @@ export async function createRuntime({
       await store.mutate((draft: AppState) => {
         const targetProfile = draft.profiles.find((p) => p.id === profileId);
         if (!targetProfile) return;
+        const profileWorkspaces = draft.workspaces.filter((w) => (w.profileId || "default") === profileId);
+        const firstWorkspaceId = profileWorkspaces[0]?.id || "";
         const slot = (draft.windowSlots || []).find((s) => s.id === windowId);
         if (slot) {
           slot.profileId = profileId;
-          const profileWorkspaces = draft.workspaces.filter((w) => (w.profileId || "default") === profileId);
-          slot.activeWorkspaceId = profileWorkspaces[0]?.id || "";
-        } else {
-          // Fallback: update global (no slot = first window before migration)
-          draft.activeProfileId = profileId;
-          const profileWorkspaces = draft.workspaces.filter((w) => (w.profileId || "default") === profileId);
-          draft.activeWorkspaceId = profileWorkspaces[0]?.id || "";
+          slot.activeWorkspaceId = firstWorkspaceId;
         }
+        // ALWAYS mirror to globals (not just the no-slot fallback). Without
+        // this the global activeProfileId / activeWorkspaceId drift away from
+        // the slot the user is actually working in, and `normalizeState`
+        // (default-state.ts) — which validates activeWorkspaceId against the
+        // GLOBAL activeProfileId — silently reverts subsequent workspace
+        // activations whose workspace lives in the slot's (new) profile.
+        // In multi-window mode this makes the globals "track last-activated";
+        // each window still drives its own UI via its slot fields.
+        draft.activeProfileId = profileId;
+        draft.activeWorkspaceId = firstWorkspaceId;
       });
       await syncWorktrees();
       sessions.syncWithState(getState());
