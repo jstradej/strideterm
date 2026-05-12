@@ -2438,6 +2438,79 @@ describe("runtime integration", () => {
     expect(payload.appState.activeProfileId).toBe("profile-a");
   });
 
+  test("workspace grid operations without windowId target the active profile", async () => {
+    const fixture = await createFixture({
+      initialState: {
+        activeProfileId: "profile-b",
+        activeWorkspaceId: "ws-b1",
+        workspaceGrid: null,
+        profiles: [
+          { id: "profile-a", name: "A", color: "#fff", workspaceIds: [], workspaceGrid: null },
+          { id: "profile-b", name: "B", color: "#fff", workspaceIds: [], workspaceGrid: null },
+        ],
+        workspaces: [
+          {
+            id: "ws-a1",
+            name: "A1",
+            kind: "terminal",
+            cwd: "/tmp/a1",
+            profileId: "profile-a",
+            panels: [{ id: "p1", title: "Shell", command: "", shell: true, startup: "default" }],
+            activePanelId: "p1",
+          },
+          {
+            id: "ws-b1",
+            name: "B1",
+            kind: "terminal",
+            cwd: "/tmp/b1",
+            profileId: "profile-b",
+            panels: [{ id: "p2", title: "Shell", command: "", shell: true, startup: "default" }],
+            activePanelId: "p2",
+          },
+          {
+            id: "ws-b2",
+            name: "B2",
+            kind: "terminal",
+            cwd: "/tmp/b2",
+            profileId: "profile-b",
+            panels: [{ id: "p3", title: "Shell", command: "", shell: true, startup: "default" }],
+            activePanelId: "p3",
+          },
+        ],
+      },
+    });
+    fixtures.push(fixture);
+
+    let payload = await fixture.runtime.enableWorkspaceGrid("cols", ["ws-b1", "ws-b2"]);
+    expect(payload.appState.profiles.find((p) => p.id === "profile-a")?.workspaceGrid).toBeNull();
+    expect(payload.appState.profiles.find((p) => p.id === "profile-b")?.workspaceGrid).toEqual({
+      layout: "cols",
+      cellWorkspaceIds: ["ws-b1", "ws-b2"],
+    });
+
+    payload = await fixture.runtime.setGridCell(1, null);
+    expect(payload.appState.profiles.find((p) => p.id === "profile-b")?.workspaceGrid).toEqual({
+      layout: "cols",
+      cellWorkspaceIds: ["ws-b1", null],
+    });
+
+    payload = await fixture.runtime.setGridLayout("grid");
+    expect(payload.appState.profiles.find((p) => p.id === "profile-b")?.workspaceGrid).toEqual({
+      layout: "grid",
+      cellWorkspaceIds: ["ws-b1", null, null, null],
+    });
+
+    await fixture.runtime.setGridCell(2, "ws-b2");
+    payload = await fixture.runtime.swapGridCells(0, 2);
+    expect(payload.appState.profiles.find((p) => p.id === "profile-b")?.workspaceGrid).toEqual({
+      layout: "grid",
+      cellWorkspaceIds: ["ws-b2", null, "ws-b1", null],
+    });
+
+    payload = await fixture.runtime.disableWorkspaceGrid();
+    expect(payload.appState.profiles.find((p) => p.id === "profile-b")?.workspaceGrid).toBeNull();
+  });
+
   // ---------------------------------------------------------------------------
   // Plan § 6: Critical scenario regression tests.
   //

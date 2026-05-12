@@ -354,6 +354,7 @@ export const telegramConnectionSchema = z
     chatId: z.string().optional(),
     enabled: z.boolean().optional(),
     pollSeconds: z.number().int().min(1).max(3600).optional(),
+    profileId: z.string().optional(),
     forwardKinds: z.array(z.string()).optional(),
     agentCommand: z.string().optional(),
   })

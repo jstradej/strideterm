@@ -939,10 +939,8 @@ async function handleApiRequest(runtime: Runtime, request: IncomingMessage, resp
     }
 
     if (request.method === "POST" && url.pathname === "/api/workspace-grid/enable") {
-      // Reuse the IPC schema so HTTP and IPC validate identically. windowId is
-      // intentionally not threaded through here — remote callers don't have a
-      // BrowserWindow context, so the runtime falls through to the legacy
-      // global workspaceGrid (see runtime.ts:enableWorkspaceGrid).
+      // Remote callers don't have a BrowserWindow context; runtime scopes
+      // no-window grid mutations to the active profile.
       const parsed = validateIpc(workspaceGridEnableSchema, body, "POST /api/workspace-grid/enable");
       json(response, 200, await runtime.enableWorkspaceGrid(parsed.layout, parsed.workspaceIds));
       return;

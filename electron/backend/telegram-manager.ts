@@ -43,6 +43,7 @@ export interface TelegramConnectionConfig {
   chatId: string;
   enabled: boolean;
   pollSeconds: number;
+  profileId?: string;
   forwardKinds: string[];
   agentCommand?: string;
 }
@@ -217,6 +218,12 @@ export interface TelegramWorkspaceInfo {
   starred?: boolean;
 }
 
+export interface TelegramProfileInfo {
+  id: string;
+  name: string;
+  color?: string;
+}
+
 /**
  * Sort helper used by every Telegram listing of workspaces or worktrees:
  * starred entries first (★), then alphabetical by name. Mutates a copy and
@@ -241,6 +248,7 @@ interface PendingRequest {
     | "worktree-existing-pick"
     | "file-path-input"
     | "file-mode-selection"
+    | "profile-selection"
     | "screenshot-mode-selection"
     | "screenshot-workspace-pick"
     | "pr-selection";
@@ -272,6 +280,13 @@ interface PendingRequest {
   pendingFilePath?: string;
   /** For pr-selection: ordered list of PR choices shown to the user */
   prChoices?: TelegramPrInfo[];
+  /** For profile-selection: ordered list of profiles shown to the user */
+  profileChoices?: TelegramProfileInfo[];
+  /** Command to resume after choosing a profile for an unbound connection */
+  profileCommand?: {
+    type: "status" | "workspaces" | "task" | "menu" | "screenshot" | "prs";
+    screenshotArg?: string;
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -332,6 +347,7 @@ export class TelegramManager extends EventEmitter {
 
   /** Runtime-provided getter for the active profile id — used by /task to filter candidates */
   private getActiveProfileId: (() => string) | null = null;
+  private getProfiles: (() => TelegramProfileInfo[]) | null = null;
 
   /** Runtime-provided getter for current PR list — used by /prs command */
   private getPrInfos: (() => TelegramPrInfo[]) | null = null;
@@ -361,6 +377,10 @@ export class TelegramManager extends EventEmitter {
     this.getActiveProfileId = fn;
   }
 
+  setProfilesGetter(fn: () => TelegramProfileInfo[]): void {
+    this.getProfiles = fn;
+  }
+
   /** Called by the runtime so /screenshot N can map window index to windowId. */
   setWindowSlotsGetter(fn: () => { id: string; profileId: string }[]): void {
     this.getWindowSlots = fn;
@@ -380,6 +400,54 @@ export class TelegramManager extends EventEmitter {
     this.getTunnelInfo = fn;
   }
 
+  private _profileChoices(): TelegramProfileInfo[] {
+    const profiles = this.getProfiles?.() ?? [];
+    if (profiles.length > 0) return profiles;
+    const active = this.getActiveProfileId?.() || "default";
+    return [{ id: active, name: active }];
+  }
+
+  private _resolveConnectionProfileId(conn: TelegramConnectionConfig, explicitProfileId?: string): string | null {
+    if (explicitProfileId) return explicitProfileId;
+    const profiles = this._profileChoices();
+    if (conn.profileId && profiles.some((profile) => profile.id === conn.profileId)) return conn.profileId;
+    if (conn.profileId && profiles.length === 0) return conn.profileId;
+    if (profiles.length <= 1) return profiles[0]?.id || this.getActiveProfileId?.() || "default";
+    return null;
+  }
+
+  private async _resolveProfileOrPrompt(
+    chatId: string,
+    token: string,
+    conn: TelegramConnectionConfig,
+    command: PendingRequest["profileCommand"],
+    explicitProfileId?: string,
+  ): Promise<string | null> {
+    const resolved = this._resolveConnectionProfileId(conn, explicitProfileId);
+    if (resolved) return resolved;
+
+    const choices = this._profileChoices();
+    const lines = ["🧭 *Pick a profile*:", ""];
+    for (let i = 0; i < choices.length; i++) {
+      const profile = choices[i];
+      lines.push(`${i + 1}\\. *${escapeMarkdown(profile.name || profile.id)}*`);
+    }
+    lines.push("");
+    lines.push("Reply with a number\\.");
+
+    this.pendingRequests.set(chatId, {
+      type: "profile-selection",
+      workspaceId: "",
+      panelId: "",
+      createdAt: Date.now(),
+      profileChoices: choices,
+      profileCommand: command,
+      agentCommand: conn.agentCommand || undefined,
+    });
+    await this._sendText(token, chatId, lines.join("\n"), true);
+    return null;
+  }
+
   configure(connections: TelegramConnectionConfig[]): void {
     this.connections = connections.filter((c) => c.enabled && c.botTokenRef && c.chatId);
     log.debug("telegram configured", { count: this.connections.length });
@@ -392,6 +460,7 @@ export class TelegramManager extends EventEmitter {
       chatId: string;
       status: string;
       pollSeconds: number;
+      profileId?: string;
       forwardKinds: string[];
     }>;
   } {
@@ -406,6 +475,7 @@ export class TelegramManager extends EventEmitter {
         // "how often is this polling?" and "what kinds of alerts forward?"
         // without forcing a trip into Settings.
         pollSeconds: c.pollSeconds,
+        profileId: c.profileId || "",
         forwardKinds: Array.isArray(c.forwardKinds) ? [...c.forwardKinds] : [],
       })),
     };
@@ -1222,12 +1292,12 @@ export class TelegramManager extends EventEmitter {
     const lower = text.toLowerCase();
     if (lower === "/status" || lower === "status") {
       log.debug("telegram command: /status", { chatId });
-      await this._handleStatusCommand(chatId, token);
+      await this._handleStatusCommand(chatId, token, conn);
       return;
     }
     if (lower === "/workspaces" || lower === "workspaces") {
       log.debug("telegram command: /workspaces", { chatId });
-      await this._handleWorkspacesCommand(chatId, token);
+      await this._handleWorkspacesCommand(chatId, token, conn);
       return;
     }
     if (lower === "/task" || lower === "task") {
@@ -1246,7 +1316,7 @@ export class TelegramManager extends EventEmitter {
         .replace(/^\/?(screenshot)\s*/i, "")
         .trim();
       log.info("telegram command: /screenshot", { chatId, arg });
-      await this._handleScreenshotCommand(chatId, token, arg || undefined);
+      await this._handleScreenshotCommand(chatId, token, conn, arg || undefined);
       return;
     }
     if (lower === "/prs" || lower === "prs") {
@@ -1261,7 +1331,7 @@ export class TelegramManager extends EventEmitter {
     }
     if (lower === "/menu" || lower === "menu" || lower === "/start" || lower === "start") {
       log.info("telegram command: /menu", { chatId });
-      await this._handleMenuCommand(chatId, token);
+      await this._handleMenuCommand(chatId, token, conn);
       return;
     }
     if (lower === "/help" || lower === "help") {
@@ -1292,6 +1362,49 @@ export class TelegramManager extends EventEmitter {
     if (pending && Date.now() - pending.createdAt < PENDING_TIMEOUT_MS) {
       this.pendingRequests.delete(chatId);
       log.debug("telegram pending-state consumed by message", { chatId, type: pending.type });
+
+      if (pending.type === "profile-selection") {
+        const idx = parseInt(text.trim(), 10) - 1;
+        const choices = pending.profileChoices || [];
+        const chosen = choices[idx];
+        if (!chosen || !pending.profileCommand) {
+          log.info("telegram profile-selection: invalid choice", { input: text, choiceCount: choices.length });
+          await this._sendText(
+            token,
+            chatId,
+            `⚠️ Invalid choice\\. Enter a number 1–${escapeMarkdown(String(choices.length))}\\. Or run the command again\\.`,
+            true,
+          );
+          return;
+        }
+        const scopedConn = { ...conn, profileId: chosen.id };
+        switch (pending.profileCommand.type) {
+          case "status":
+            await this._handleStatusCommand(chatId, token, scopedConn, chosen.id);
+            return;
+          case "workspaces":
+            await this._handleWorkspacesCommand(chatId, token, scopedConn, chosen.id);
+            return;
+          case "task":
+            await this._handleTaskCommand(chatId, token, scopedConn, chosen.id);
+            return;
+          case "menu":
+            await this._handleMenuCommand(chatId, token, scopedConn, chosen.id);
+            return;
+          case "screenshot":
+            await this._handleScreenshotCommand(
+              chatId,
+              token,
+              scopedConn,
+              pending.profileCommand.screenshotArg,
+              chosen.id,
+            );
+            return;
+          case "prs":
+            await this._handlePrsCommand(chatId, token, scopedConn, chosen.id);
+            return;
+        }
+      }
 
       if (pending.type === "workspace-selection") {
         // User replied with a number to pick a workspace
@@ -1560,9 +1673,16 @@ export class TelegramManager extends EventEmitter {
 
   // --- Command handlers ---
 
-  private async _handleStatusCommand(chatId: string, token: string): Promise<void> {
+  private async _handleStatusCommand(
+    chatId: string,
+    token: string,
+    conn: TelegramConnectionConfig,
+    explicitProfileId?: string,
+  ): Promise<void> {
+    const profileId = await this._resolveProfileOrPrompt(chatId, token, conn, { type: "status" }, explicitProfileId);
+    if (!profileId) return;
     const workspaces = this.getWorkspaces?.() ?? [];
-    const taskWs = workspaces.filter((w) => w.kind === "task" && w.task);
+    const taskWs = workspaces.filter((w) => w.kind === "task" && w.task && (w.profileId || "default") === profileId);
 
     if (taskWs.length === 0) {
       await this._sendText(token, chatId, "📊 No task agents are running\\.", true);
@@ -1601,13 +1721,27 @@ export class TelegramManager extends EventEmitter {
     });
   }
 
-  private async _handleWorkspacesCommand(chatId: string, token: string): Promise<void> {
+  private async _handleWorkspacesCommand(
+    chatId: string,
+    token: string,
+    conn: TelegramConnectionConfig,
+    explicitProfileId?: string,
+  ): Promise<void> {
+    const profileId = await this._resolveProfileOrPrompt(
+      chatId,
+      token,
+      conn,
+      { type: "workspaces" },
+      explicitProfileId,
+    );
+    if (!profileId) return;
     const raw = this.getWorkspaces?.() ?? [];
-    if (raw.length === 0) {
+    const profileRaw = raw.filter((w) => (w.profileId || "default") === profileId);
+    if (profileRaw.length === 0) {
       await this._sendText(token, chatId, "🗂 No workspaces are open\\.", true);
       return;
     }
-    const workspaces = sortWorkspacesStarredFirst(raw);
+    const workspaces = sortWorkspacesStarredFirst(profileRaw);
 
     const lines = ["🗂 *Workspaces:*", ""];
     for (let i = 0; i < workspaces.length; i++) {
@@ -1621,7 +1755,14 @@ export class TelegramManager extends EventEmitter {
     await this._sendText(token, chatId, lines.join("\n"), true);
   }
 
-  private async _handleTaskCommand(chatId: string, token: string, conn: TelegramConnectionConfig): Promise<void> {
+  private async _handleTaskCommand(
+    chatId: string,
+    token: string,
+    conn: TelegramConnectionConfig,
+    explicitProfileId?: string,
+  ): Promise<void> {
+    const activeProfile = await this._resolveProfileOrPrompt(chatId, token, conn, { type: "task" }, explicitProfileId);
+    if (!activeProfile) return;
     // Rate-limit: prevent rapid-fire /task spam from creating many workspaces.
     const last = this.lastTaskCommandAt.get(chatId) ?? 0;
     const sinceMs = Date.now() - last;
@@ -1639,7 +1780,6 @@ export class TelegramManager extends EventEmitter {
     this.lastTaskCommandAt.set(chatId, Date.now());
 
     const workspaces = this.getWorkspaces?.() ?? [];
-    const activeProfile = this.getActiveProfileId?.() || "default";
     // Only TRUE top-level workspaces of the current profile can host a task:
     //  - parentWorkspaceId empty (excludes review/quickfix/task children AND
     //    worktree children, both of which the runtime getter marks)
@@ -1708,7 +1848,13 @@ export class TelegramManager extends EventEmitter {
    *   - Pick workspace → present workspace-selection (numbered list);
    *     after pick, emit `screenshot-workspace`
    */
-  private async _handleScreenshotCommand(chatId: string, token: string, arg?: string): Promise<void> {
+  private async _handleScreenshotCommand(
+    chatId: string,
+    token: string,
+    conn: TelegramConnectionConfig,
+    arg?: string,
+    explicitProfileId?: string,
+  ): Promise<void> {
     // Direct window targeting via /screenshot N or /screenshot workspace-name
     if (arg) {
       const slots = this.getWindowSlots?.() ?? [];
@@ -1741,8 +1887,15 @@ export class TelegramManager extends EventEmitter {
       return;
     }
 
+    const activeProfile = await this._resolveProfileOrPrompt(
+      chatId,
+      token,
+      conn,
+      { type: "screenshot", screenshotArg: arg },
+      explicitProfileId,
+    );
+    if (!activeProfile) return;
     const workspaces = this.getWorkspaces?.() ?? [];
-    const activeProfile = this.getActiveProfileId?.() || "default";
     // For screenshots we WANT all workspaces — including children, tasks,
     // PR reviews — because a user might legitimately want a screenshot of
     // any of them. Only filter by active profile to keep the list short.
@@ -1783,11 +1936,17 @@ export class TelegramManager extends EventEmitter {
    * Help row at the bottom. Telegram renders this nicely on mobile and
    * desktop alike.
    */
-  private async _handleMenuCommand(chatId: string, token: string): Promise<void> {
+  private async _handleMenuCommand(
+    chatId: string,
+    token: string,
+    conn: TelegramConnectionConfig,
+    explicitProfileId?: string,
+  ): Promise<void> {
+    const activeProfile = await this._resolveProfileOrPrompt(chatId, token, conn, { type: "menu" }, explicitProfileId);
+    if (!activeProfile) return;
     // Show a small live snapshot in the menu header so the user sees what
     // matters most at a glance without having to drill in.
     const workspaces = this.getWorkspaces?.() ?? [];
-    const activeProfile = this.getActiveProfileId?.() || "default";
     const profileWorkspaces = workspaces.filter((w) => (w.profileId || "default") === activeProfile);
     const activeTasks = profileWorkspaces.filter((w) => {
       const s = w.task?.state || "";
@@ -1949,8 +2108,19 @@ export class TelegramManager extends EventEmitter {
     }
   }
 
-  private async _handlePrsCommand(chatId: string, token: string, conn: TelegramConnectionConfig): Promise<void> {
-    const prs = this.getPrInfos?.() ?? [];
+  private async _handlePrsCommand(
+    chatId: string,
+    token: string,
+    conn: TelegramConnectionConfig,
+    explicitProfileId?: string,
+  ): Promise<void> {
+    const profileId = await this._resolveProfileOrPrompt(chatId, token, conn, { type: "prs" }, explicitProfileId);
+    if (!profileId) return;
+    const workspacesById = new Map((this.getWorkspaces?.() ?? []).map((w) => [w.id, w]));
+    const prs = (this.getPrInfos?.() ?? []).filter((pr) => {
+      const ws = workspacesById.get(pr.workspaceId);
+      return !ws || (ws.profileId || "default") === profileId;
+    });
     if (prs.length === 0) {
       await this._sendText(token, chatId, "✅ No pull requests require your attention right now\\.", true);
       return;
@@ -2227,7 +2397,7 @@ export class TelegramManager extends EventEmitter {
     // Workspace IDs are `workspace-<uuid>` (~46 chars) which fits with prefix
     // inside Telegram's 64-byte callback_data limit.
     if (data.startsWith("t:")) {
-      await this._handleTaskActionCallback(data, chatId, token, query.message.message_id);
+      await this._handleTaskActionCallback(data, chatId, token, query.message.message_id, conn);
       return;
     }
 
@@ -2472,13 +2642,14 @@ export class TelegramManager extends EventEmitter {
     chatId: string,
     token: string,
     messageId: number,
+    conn: TelegramConnectionConfig,
   ): Promise<void> {
     const parts = data.split(":");
     const op = parts[1] || "";
     const wsId = parts.slice(2).join(":");
 
     if (op === "b") {
-      await this._handleStatusCommand(chatId, token);
+      await this._handleStatusCommand(chatId, token, conn);
       return;
     }
     if (!wsId) {
@@ -2967,19 +3138,19 @@ export class TelegramManager extends EventEmitter {
     log.info("telegram /menu button clicked", { chatId, op });
     switch (op) {
       case "status":
-        await this._handleStatusCommand(chatId, token);
+        await this._handleStatusCommand(chatId, token, conn);
         return;
       case "task":
         await this._handleTaskCommand(chatId, token, conn);
         return;
       case "workspaces":
-        await this._handleWorkspacesCommand(chatId, token);
+        await this._handleWorkspacesCommand(chatId, token, conn);
         return;
       case "prs":
         await this._handlePrsCommand(chatId, token, conn);
         return;
       case "screenshot":
-        await this._handleScreenshotCommand(chatId, token);
+        await this._handleScreenshotCommand(chatId, token, conn);
         return;
       case "tunnel":
         await this._handleTunnelCommand(chatId, token);

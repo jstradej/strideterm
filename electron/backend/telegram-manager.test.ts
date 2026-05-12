@@ -974,6 +974,53 @@ describe("setWorkspacesGetter", () => {
     expect(sentTexts[0]).toContain("No task agents are running");
   });
 
+  test("/status is scoped to the connection profile", async () => {
+    const cred = makeCredentialStore({ "cred:tg-1": "token123" });
+    const manager = new TelegramManager({ credentialStore: cred });
+    manager.configure([makeConnection({ profileId: "work" })]);
+
+    manager.setProfilesGetter(() => [
+      { id: "personal", name: "Personal" },
+      { id: "work", name: "Work" },
+    ]);
+    manager.setActiveProfileGetter(() => "personal");
+    manager.setWorkspacesGetter(() => [
+      makeWorkspace({
+        id: "personal-task",
+        name: "personal-task",
+        kind: "task",
+        cwd: "/projects/personal",
+        profileId: "personal",
+        task: { state: "running", description: "Personal" },
+      }),
+      makeWorkspace({
+        id: "work-task",
+        name: "work-task",
+        kind: "task",
+        cwd: "/projects/work",
+        profileId: "work",
+        task: { state: "running", description: "Work" },
+      }),
+    ]);
+
+    const sentTexts: string[] = [];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (manager as any)._apiCall = async (_token: string, _method: string, body: Record<string, unknown>) => {
+      if (body.text) sentTexts.push(body.text as string);
+      return { ok: true, result: { message_id: 2031 } };
+    };
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (manager as any)._handleMessage(
+      { message_id: 21, chat: { id: 12345 }, text: "/status" },
+      makeConnection({ profileId: "work" }),
+      "token123",
+    );
+
+    expect(sentTexts[0]).toContain("work\\-task");
+    expect(sentTexts[0]).not.toContain("personal\\-task");
+  });
+
   test("/workspaces puts starred entries first and prefixes them with a star", async () => {
     const cred = makeCredentialStore({ "cred:tg-1": "token123" });
     const manager = new TelegramManager({ credentialStore: cred });
@@ -1050,6 +1097,39 @@ describe("setWorkspacesGetter", () => {
     expect(text).toContain("beta");
     expect(text).toContain("/projects/alpha");
     expect(text).toContain("/projects/beta");
+  });
+
+  test("/workspaces is scoped to the connection profile", async () => {
+    const cred = makeCredentialStore({ "cred:tg-1": "token123" });
+    const manager = new TelegramManager({ credentialStore: cred });
+    manager.configure([makeConnection({ profileId: "work" })]);
+
+    manager.setProfilesGetter(() => [
+      { id: "personal", name: "Personal" },
+      { id: "work", name: "Work" },
+    ]);
+    manager.setActiveProfileGetter(() => "personal");
+    manager.setWorkspacesGetter(() => [
+      makeWorkspace({ id: "personal-ws", name: "personal", kind: "manual", cwd: "/p/personal", profileId: "personal" }),
+      makeWorkspace({ id: "work-ws", name: "work", kind: "manual", cwd: "/p/work", profileId: "work" }),
+    ]);
+
+    const sentTexts: string[] = [];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (manager as any)._apiCall = async (_token: string, _method: string, body: Record<string, unknown>) => {
+      if (body.text) sentTexts.push(body.text as string);
+      return { ok: true, result: { message_id: 2032 } };
+    };
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (manager as any)._handleMessage(
+      { message_id: 31, chat: { id: 12345 }, text: "/workspaces" },
+      makeConnection({ profileId: "work" }),
+      "token123",
+    );
+
+    expect(sentTexts[0]).toContain("work");
+    expect(sentTexts[0]).not.toContain("personal");
   });
 
   test("/task prompts workspace selection and stores pending", async () => {
@@ -1296,6 +1376,84 @@ describe("/task candidate filter", () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const pending = (manager as any).pendingRequests.get("12345");
     expect(pending?.workspaceChoices?.map((w: TelegramWorkspaceInfo) => w.id)).toEqual(["active-1"]);
+  });
+
+  test("connection profile filter overrides the global active profile", async () => {
+    const cred = makeCredentialStore({ "cred:tg-1": "token123" });
+    const manager = new TelegramManager({ credentialStore: cred });
+    manager.configure([makeConnection({ profileId: "work" })]);
+
+    manager.setProfilesGetter(() => [
+      { id: "personal", name: "Personal" },
+      { id: "work", name: "Work" },
+    ]);
+    manager.setActiveProfileGetter(() => "personal");
+    manager.setWorkspacesGetter(() => [
+      makeWorkspace({ id: "personal-ws", name: "personal", kind: "manual", cwd: "/p/personal", profileId: "personal" }),
+      makeWorkspace({ id: "work-ws", name: "work", kind: "manual", cwd: "/p/work", profileId: "work" }),
+    ]);
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (manager as any)._apiCall = async () => ({ ok: true, result: { message_id: 405 } });
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (manager as any)._handleMessage(
+      { message_id: 105, chat: { id: 12345 }, text: "/task" },
+      makeConnection({ profileId: "work" }),
+      "token123",
+    );
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const pending = (manager as any).pendingRequests.get("12345");
+    expect(pending?.type).toBe("workspace-selection");
+    expect(pending?.workspaceChoices?.map((w: TelegramWorkspaceInfo) => w.id)).toEqual(["work-ws"]);
+  });
+
+  test("unbound connection prompts for a profile when multiple profiles exist", async () => {
+    const cred = makeCredentialStore({ "cred:tg-1": "token123" });
+    const manager = new TelegramManager({ credentialStore: cred });
+    manager.configure([makeConnection()]);
+
+    manager.setProfilesGetter(() => [
+      { id: "personal", name: "Personal" },
+      { id: "work", name: "Work" },
+    ]);
+    manager.setActiveProfileGetter(() => "personal");
+    manager.setWorkspacesGetter(() => [
+      makeWorkspace({ id: "personal-ws", name: "personal", kind: "manual", cwd: "/p/personal", profileId: "personal" }),
+      makeWorkspace({ id: "work-ws", name: "work", kind: "manual", cwd: "/p/work", profileId: "work" }),
+    ]);
+
+    const sentTexts: string[] = [];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (manager as any)._apiCall = async (_t: string, _m: string, body: Record<string, unknown>) => {
+      if (body.text) sentTexts.push(body.text as string);
+      return { ok: true, result: { message_id: 406 } };
+    };
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (manager as any)._handleMessage(
+      { message_id: 106, chat: { id: 12345 }, text: "/task" },
+      makeConnection(),
+      "token123",
+    );
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let pending = (manager as any).pendingRequests.get("12345");
+    expect(pending?.type).toBe("profile-selection");
+    expect(sentTexts.some((text) => text.includes("Pick a profile"))).toBe(true);
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (manager as any)._handleMessage(
+      { message_id: 107, chat: { id: 12345 }, text: "2" },
+      makeConnection(),
+      "token123",
+    );
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    pending = (manager as any).pendingRequests.get("12345");
+    expect(pending?.type).toBe("workspace-selection");
+    expect(pending?.workspaceChoices?.map((w: TelegramWorkspaceInfo) => w.id)).toEqual(["work-ws"]);
   });
 
   test("default profile: workspaces with no explicit profileId are treated as 'default'", async () => {
@@ -2437,6 +2595,53 @@ describe("/menu hub", () => {
     expect(sentBodies[0].reply_markup).toBeDefined();
   });
 
+  test("/menu summary is scoped to the connection profile", async () => {
+    const cred = makeCredentialStore({ "cred:tg-1": "token123" });
+    const manager = new TelegramManager({ credentialStore: cred });
+    manager.configure([makeConnection({ profileId: "work" })]);
+    manager.setProfilesGetter(() => [
+      { id: "personal", name: "Personal" },
+      { id: "work", name: "Work" },
+    ]);
+    manager.setActiveProfileGetter(() => "personal");
+    manager.setWorkspacesGetter(() => [
+      makeWorkspace({
+        id: "personal-task",
+        name: "personal",
+        kind: "task",
+        cwd: "/p/personal",
+        profileId: "personal",
+        task: { state: "running", description: "Personal" },
+      }),
+      makeWorkspace({
+        id: "work-task",
+        name: "work",
+        kind: "task",
+        cwd: "/p/work",
+        profileId: "work",
+        task: { state: "running", description: "Work" },
+      }),
+    ]);
+
+    const sentBodies: Array<Record<string, unknown>> = [];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (manager as any)._apiCall = async (_t: string, _m: string, body: Record<string, unknown>) => {
+      sentBodies.push(body);
+      return { ok: true, result: { message_id: 2001.1 } };
+    };
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (manager as any)._handleMessage(
+      { message_id: 402, chat: { id: 12345 }, text: "/menu" },
+      makeConnection({ profileId: "work" }),
+      "token123",
+    );
+
+    const text = String(sentBodies[0].text || "");
+    expect(text).toContain("Profile: *work*");
+    expect(text).toContain("Running: *1*");
+  });
+
   test("clicking mn:status dispatches to /status handler (lists task agents)", async () => {
     const cred = makeCredentialStore({ "cred:tg-1": "token123" });
     const manager = new TelegramManager({ credentialStore: cred });
@@ -2548,6 +2753,37 @@ describe("/screenshot flow", () => {
     const callbacks = markup.inline_keyboard.flatMap((row) => row.map((b) => b.callback_data));
     expect(callbacks).toContain("ss:c");
     expect(callbacks).toContain("ss:w");
+  });
+
+  test("/screenshot picker is scoped to the connection profile", async () => {
+    const cred = makeCredentialStore({ "cred:tg-1": "token123" });
+    const manager = new TelegramManager({ credentialStore: cred });
+    manager.configure([makeConnection({ profileId: "work" })]);
+
+    manager.setProfilesGetter(() => [
+      { id: "personal", name: "Personal" },
+      { id: "work", name: "Work" },
+    ]);
+    manager.setActiveProfileGetter(() => "personal");
+    manager.setWorkspacesGetter(() => [
+      makeWorkspace({ id: "personal-ws", name: "personal", cwd: "/p/personal", profileId: "personal" }),
+      makeWorkspace({ id: "work-ws", name: "work", cwd: "/p/work", profileId: "work" }),
+    ]);
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (manager as any)._apiCall = async () => ({ ok: true, result: { message_id: 1000.1 } });
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (manager as any)._handleMessage(
+      { message_id: 301, chat: { id: 12345 }, text: "/screenshot" },
+      makeConnection({ profileId: "work" }),
+      "token123",
+    );
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const pending = (manager as any).pendingRequests.get("12345");
+    expect(pending?.type).toBe("screenshot-mode-selection");
+    expect(pending?.workspaceChoices?.map((w: TelegramWorkspaceInfo) => w.id)).toEqual(["work-ws"]);
   });
 
   test("clicking Current (ss:c) emits screenshot-current immediately", async () => {

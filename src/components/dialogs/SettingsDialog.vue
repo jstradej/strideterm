@@ -40,7 +40,7 @@
     </div>
 
     <div v-else-if="activeTab === 'telegram'" class="settings-tab-content">
-      <SettingsTelegramTab :telegram-settings="settings.integrations?.telegram" />
+      <SettingsTelegramTab :telegram-settings="settings.integrations?.telegram" :profiles="profiles" />
     </div>
 
     <div v-else-if="activeTab === 'about'" class="settings-tab-content">
@@ -113,7 +113,14 @@ interface TelegramConnectionSetting {
   chatId: string;
   enabled: boolean;
   pollSeconds: number;
+  profileId?: string;
   forwardKinds: string[];
+}
+
+interface ProfileSetting {
+  id: string;
+  name: string;
+  color?: string;
 }
 
 interface SettingsObj {
@@ -161,6 +168,7 @@ interface TabTemplate {
 interface Props {
   settings?: SettingsObj;
   tabTemplates?: TabTemplate[];
+  profiles?: ProfileSetting[];
   appVersion?: string;
   repositoryUrl?: string;
   versionCheck?: { versionsBehind: number; latestVersion: string; latestUrl: string } | null;
@@ -172,6 +180,7 @@ interface Props {
 const props = withDefaults(defineProps<Props>(), {
   settings: () => ({}),
   tabTemplates: () => [],
+  profiles: () => [],
   appVersion: "",
   repositoryUrl: "",
   initialTab: "general",

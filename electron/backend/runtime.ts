@@ -698,6 +698,9 @@ export async function createRuntime({
     }),
   );
   telegramManager.setActiveProfileGetter(() => getState().activeProfileId || "default");
+  telegramManager.setProfilesGetter(() =>
+    (getState().profiles || []).map((p) => ({ id: p.id, name: p.name, color: p.color })),
+  );
   telegramManager.setWindowSlotsGetter(() =>
     (getState().windowSlots || []).map((s) => ({ id: s.id, profileId: s.profileId })),
   );
@@ -3565,6 +3568,13 @@ export async function createRuntime({
     getGitHubConnections,
   });
 
+  function resolveWorkspaceGridProfile(draft: AppState, windowId?: string) {
+    const profileId = windowId
+      ? (draft.windowSlots || []).find((s) => s.id === windowId)?.profileId
+      : draft.activeProfileId || "default";
+    return profileId ? draft.profiles.find((p) => p.id === profileId) || null : null;
+  }
+
   const returnObj = {
     ...providerHandlers,
     ...gitHandlers,
@@ -3710,13 +3720,8 @@ export async function createRuntime({
           ids.push(workspaceIds?.[i] ?? null);
         }
         const grid = { layout, cellWorkspaceIds: ids };
-        // Update per-profile grid if windowId is known
-        const profileId = windowId ? (draft.windowSlots || []).find((s) => s.id === windowId)?.profileId : null;
-        if (profileId) {
-          const profile = draft.profiles.find((p) => p.id === profileId);
-          if (profile) profile.workspaceGrid = grid;
-        }
-        // Keep deprecated global for downgrade compat
+        const profile = resolveWorkspaceGridProfile(draft, windowId);
+        if (profile) profile.workspaceGrid = grid;
         draft.workspaceGrid = grid;
       });
       broadcastState();
@@ -3725,11 +3730,8 @@ export async function createRuntime({
 
     async disableWorkspaceGrid(windowId?: string) {
       await store.mutate((draft: AppState) => {
-        const profileId = windowId ? (draft.windowSlots || []).find((s) => s.id === windowId)?.profileId : null;
-        if (profileId) {
-          const profile = draft.profiles.find((p) => p.id === profileId);
-          if (profile) profile.workspaceGrid = null;
-        }
+        const profile = resolveWorkspaceGridProfile(draft, windowId);
+        if (profile) profile.workspaceGrid = null;
         draft.workspaceGrid = null;
       });
       broadcastState();
@@ -3739,8 +3741,7 @@ export async function createRuntime({
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async setGridLayout(layout: any, windowId?: string) {
       await store.mutate((draft: AppState) => {
-        const profileId = windowId ? (draft.windowSlots || []).find((s) => s.id === windowId)?.profileId : null;
-        const profile = profileId ? draft.profiles.find((p) => p.id === profileId) : null;
+        const profile = resolveWorkspaceGridProfile(draft, windowId);
         const grid = profile && profile.workspaceGrid !== undefined ? profile.workspaceGrid : draft.workspaceGrid;
         if (!grid) return;
         const slots = { cols: 2, rows: 2, "top-split": 3, "left-split": 3, grid: 4 }[String(layout)] as
@@ -3763,8 +3764,7 @@ export async function createRuntime({
 
     async setGridCell(cellIndex: number, workspaceId: string | null, windowId?: string) {
       await store.mutate((draft: AppState) => {
-        const profileId = windowId ? (draft.windowSlots || []).find((s) => s.id === windowId)?.profileId : null;
-        const profile = profileId ? draft.profiles.find((p) => p.id === profileId) : null;
+        const profile = resolveWorkspaceGridProfile(draft, windowId);
         // `?? draft.workspaceGrid` would leak the deprecated global (which
         // tracks the GLOBAL activeProfileId, not the slot's) into a window
         // whose profile has its grid explicitly null — mutating the wrong
@@ -3781,7 +3781,7 @@ export async function createRuntime({
         ids[cellIndex] = workspaceId;
         const allNull = ids.every((id) => id === null);
         if (profile) profile.workspaceGrid = allNull ? null : grid;
-        if (allNull) draft.workspaceGrid = null;
+        draft.workspaceGrid = allNull ? null : grid;
       });
       broadcastState();
       return getPayload();
@@ -3789,8 +3789,7 @@ export async function createRuntime({
 
     async swapGridCells(a: number, b: number, windowId?: string) {
       await store.mutate((draft: AppState) => {
-        const profileId = windowId ? (draft.windowSlots || []).find((s) => s.id === windowId)?.profileId : null;
-        const profile = profileId ? draft.profiles.find((p) => p.id === profileId) : null;
+        const profile = resolveWorkspaceGridProfile(draft, windowId);
         const grid = profile && profile.workspaceGrid !== undefined ? profile.workspaceGrid : draft.workspaceGrid;
         if (!grid) return;
         const ids = grid.cellWorkspaceIds;
@@ -3798,6 +3797,7 @@ export async function createRuntime({
         const tmp = ids[a];
         ids[a] = ids[b];
         ids[b] = tmp;
+        draft.workspaceGrid = grid;
       });
       broadcastState();
       return getPayload();
@@ -4433,6 +4433,7 @@ export async function createRuntime({
         chatId,
         enabled: connection.enabled !== false,
         pollSeconds: Number(connection.pollSeconds) || getTelegramSettings().defaultPollSeconds || 5,
+        profileId: typeof connection.profileId === "string" ? connection.profileId.trim() : "",
         forwardKinds: Array.isArray(connection.forwardKinds) ? [...connection.forwardKinds] : [],
         agentCommand: typeof connection.agentCommand === "string" ? connection.agentCommand : "",
       };

@@ -65,6 +65,8 @@ export interface TelegramConnection {
   chatId: string;
   enabled: boolean;
   pollSeconds: number;
+  /** Profile this chat controls. Empty/undefined means ask when multiple profiles exist. */
+  profileId?: string;
   /** Which notification kinds to forward (empty = all) */
   forwardKinds: string[];
   /** Optional CLI command to run in non-interactive mode. Use {task} for the task text. E.g. "claude --non-interactive -p" */

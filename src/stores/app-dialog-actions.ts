@@ -340,6 +340,7 @@ export function createDialogActions(ctx: DialogActionsCtx) {
     openDialog("SettingsDialog", {
       settings: ctx.payload.value?.appState?.settings || {},
       tabTemplates: ctx.payload.value?.appState?.tabTemplates || [],
+      profiles: ctx.payload.value?.appState?.profiles || [],
       appVersion: (ctx.payload.value as AnyApi)?.meta?.appVersion || "",
       repositoryUrl: (ctx.payload.value as AnyApi)?.meta?.repositoryUrl || "",
       versionCheck: (ctx.payload.value as AnyApi)?.meta?.versionCheck || null,

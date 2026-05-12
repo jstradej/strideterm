@@ -69,6 +69,7 @@
             :detected-chats="detectedChats"
             :detect-info="detectInfoMessage"
             :is-edit="true"
+            :profile-options="profileOptions"
             @test="testConnection(editDraft)"
             @detect="detectChats(editDraft)"
             @pick-chat="(c: DetectedChat) => pickDetectedChat(editDraft, c)"
@@ -101,6 +102,7 @@
         :detected-chats="detectedChats"
         :detect-info="detectInfoMessage"
         :is-edit="false"
+        :profile-options="profileOptions"
         @test="testConnection(addDraft)"
         @detect="detectChats(addDraft)"
         @pick-chat="(c: DetectedChat) => pickDetectedChat(addDraft, c)"
@@ -122,8 +124,15 @@ interface TelegramConnection {
   chatId: string;
   enabled: boolean;
   pollSeconds: number;
+  profileId?: string;
   forwardKinds: string[];
   agentCommand?: string;
+}
+
+interface ProfileOption {
+  id: string;
+  name: string;
+  color?: string;
 }
 
 interface TelegramSettings {
@@ -134,15 +143,18 @@ interface TelegramSettings {
 
 interface Props {
   telegramSettings?: TelegramSettings | null;
+  profiles?: ProfileOption[];
 }
 
 const props = withDefaults(defineProps<Props>(), {
   telegramSettings: null,
+  profiles: () => [],
 });
 
 const api = inject<Transport>("api");
 
 const connections = ref<TelegramConnection[]>([...(props.telegramSettings?.connections || [])]);
+const profileOptions = ref<ProfileOption[]>([...(props.profiles || [])]);
 const editingId = ref<string | null>(null);
 const showAddForm = ref(false);
 const busy = ref(false);
@@ -167,6 +179,7 @@ function makeBlankDraft() {
     chatId: "",
     enabled: true,
     pollSeconds: props.telegramSettings?.defaultPollSeconds ?? 5,
+    profileId: "",
     forwardKinds: [] as string[],
     agentCommand: "",
   });
@@ -180,6 +193,7 @@ const editDraft = reactive({
   chatId: "",
   enabled: true,
   pollSeconds: 5,
+  profileId: "",
   forwardKinds: [] as string[],
   agentCommand: "",
 });
@@ -188,6 +202,13 @@ watch(
   () => props.telegramSettings?.connections,
   (val) => {
     connections.value = [...(val || [])];
+  },
+);
+
+watch(
+  () => props.profiles,
+  (val) => {
+    profileOptions.value = [...(val || [])];
   },
 );
 
@@ -207,6 +228,7 @@ function toggleEdit(id: string) {
   editDraft.chatId = conn.chatId;
   editDraft.enabled = conn.enabled;
   editDraft.pollSeconds = conn.pollSeconds;
+  editDraft.profileId = conn.profileId || "";
   editDraft.forwardKinds = [...conn.forwardKinds];
   editDraft.agentCommand = conn.agentCommand || "";
   editingId.value = id;
@@ -224,6 +246,7 @@ function openAddForm() {
   addDraft.chatId = "";
   addDraft.enabled = true;
   addDraft.pollSeconds = props.telegramSettings?.defaultPollSeconds ?? 5;
+  addDraft.profileId = "";
   addDraft.forwardKinds = [];
   showAddForm.value = true;
 }
@@ -243,6 +266,7 @@ type Draft = {
   chatId: string;
   enabled: boolean;
   pollSeconds: number;
+  profileId?: string;
   forwardKinds: string[];
   agentCommand?: string;
 };
@@ -354,6 +378,7 @@ async function saveConnection(draft: Draft) {
       chatId: draft.chatId || undefined,
       enabled: Boolean(draft.enabled),
       pollSeconds: Number(draft.pollSeconds),
+      profileId: draft.profileId || undefined,
       forwardKinds: Array.isArray(draft.forwardKinds) ? [...draft.forwardKinds] : [],
       agentCommand: draft.agentCommand || undefined,
     })) as { payload?: unknown } | undefined;
@@ -415,6 +440,7 @@ export const ConnectionForm = defineComponent({
     detectedChats: { type: Array as () => Array<Record<string, string>>, default: () => [] },
     detectInfo: { type: String, default: "" },
     isEdit: { type: Boolean, default: false },
+    profileOptions: { type: Array as () => Array<{ id: string; name: string; color?: string }>, default: () => [] },
   },
   emits: ["test", "save", "cancel", "delete", "detect", "pickChat"],
   setup(props, { emit }) {
@@ -463,6 +489,35 @@ export const ConnectionForm = defineComponent({
                   d.pollSeconds = Number((e.target as HTMLInputElement).value);
                 },
               }),
+            ],
+          ),
+          h(
+            "label",
+            {
+              class: "form-label",
+              title:
+                "Profile controlled by this Telegram chat. Leave unbound to ask for a profile when multiple profiles exist.",
+            },
+            [
+              h("span", "Profile"),
+              h(
+                "select",
+                {
+                  value: d.profileId || "",
+                  class: "settings-input",
+                  title:
+                    "Bind this chat to one profile. Unbound chats stay flexible but must pick a profile before scoped commands.",
+                  onChange: (e: Event) => {
+                    d.profileId = (e.target as HTMLSelectElement).value;
+                  },
+                },
+                [
+                  h("option", { value: "" }, "Ask when needed"),
+                  ...props.profileOptions.map((profile) =>
+                    h("option", { value: profile.id }, profile.name || profile.id),
+                  ),
+                ],
+              ),
             ],
           ),
         ]),

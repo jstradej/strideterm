@@ -1066,6 +1066,7 @@ export function normalizeState(rawState: any = {}): AppState & { activeProjectId
                 enabled: connection.enabled !== false,
                 pollSeconds:
                   Number(connection.pollSeconds) || defaults.settings.integrations.telegram.defaultPollSeconds,
+                profileId: typeof connection.profileId === "string" ? connection.profileId : "",
                 forwardKinds: Array.isArray(connection.forwardKinds) ? [...connection.forwardKinds] : [],
                 agentCommand: typeof connection.agentCommand === "string" ? connection.agentCommand : "",
               }),
