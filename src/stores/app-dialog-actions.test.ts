@@ -140,3 +140,94 @@ describe("createDialogActions.openProfilesDialog", () => {
     expect(ctx.overlay.value).toBeNull();
   });
 });
+
+describe("createDialogActions profile-aware saves", () => {
+  beforeEach(() => {
+    (window as AnyApi).strideterm = { startupFlags: { windowId: "win-b" } };
+  });
+
+  it("saves Azure connections under this desktop window's profile", async () => {
+    const saveAzureConnection = vi.fn((draft: AnyApi) => Promise.resolve({ payload: { ok: true, draft } }));
+    const ctx = makeCtx({
+      appState: {
+        profiles: [
+          { id: "profile-a", name: "A", color: "#fff" },
+          { id: "profile-b", name: "B", color: "#fff" },
+        ],
+        settings: { integrations: { azureDevops: { connections: [] } } },
+        windowSlots: [
+          { id: "win-a", profileId: "profile-a", activeWorkspaceId: "ws-a" },
+          { id: "win-b", profileId: "profile-b", activeWorkspaceId: "ws-b" },
+        ],
+      },
+    });
+    ctx.getApi = () => ({ isRemote: false, saveAzureConnection });
+    const actions = createDialogActions(ctx);
+
+    actions.openAzureConnectionDialog();
+    await (ctx.overlayProps.value.onSave as (draft: AnyApi) => Promise<void>)({ id: "az-1" });
+
+    expect(saveAzureConnection).toHaveBeenCalledWith(expect.objectContaining({ id: "az-1", profileId: "profile-b" }));
+  });
+
+  it("saves GitHub connections under the remote client's profile", async () => {
+    const saveGitHubConnection = vi.fn((draft: AnyApi) => Promise.resolve({ payload: { ok: true, draft } }));
+    const ctx = makeCtx({
+      remoteClient: { id: "remote-a", profileId: "profile-b", activeWorkspaceId: "ws-b", activeSessionId: "" },
+      appState: {
+        profiles: [
+          { id: "profile-a", name: "A", color: "#fff" },
+          { id: "profile-b", name: "B", color: "#fff" },
+        ],
+        settings: { integrations: { github: { connections: [] } } },
+        windowSlots: [{ id: "win-a", profileId: "profile-a", activeWorkspaceId: "ws-a" }],
+      },
+    });
+    ctx.getApi = () => ({ isRemote: true, saveGitHubConnection });
+    const actions = createDialogActions(ctx);
+
+    actions.openGitHubConnectionDialog();
+    await (ctx.overlayProps.value.onSave as (draft: AnyApi) => Promise<void>)({ id: "gh-1" });
+
+    expect(saveGitHubConnection).toHaveBeenCalledWith(expect.objectContaining({ id: "gh-1", profileId: "profile-b" }));
+  });
+
+  it("auto-detects task parent within this desktop window's profile", async () => {
+    const createTaskWorkspace = vi.fn((config: AnyApi) => Promise.resolve({ payload: { ok: true, config } }));
+    const ctx = makeCtx({
+      appState: {
+        profiles: [
+          { id: "profile-a", name: "A", color: "#fff" },
+          { id: "profile-b", name: "B", color: "#fff" },
+        ],
+        settings: {},
+        workspaces: [
+          { id: "ws-a", name: "Repo A", profileId: "profile-a", cwd: "C:\\repo", kind: "terminal", panels: [] },
+          { id: "ws-b", name: "Repo B", profileId: "profile-b", cwd: "C:\\repo", kind: "terminal", panels: [] },
+        ],
+        windowSlots: [
+          { id: "win-a", profileId: "profile-a", activeWorkspaceId: "ws-a" },
+          { id: "win-b", profileId: "profile-b", activeWorkspaceId: "ws-b" },
+        ],
+      },
+      workspace: {
+        workspace: { id: "ws-b", name: "Repo B", profileId: "profile-b", cwd: "C:\\repo", kind: "terminal" },
+      },
+    });
+    ctx.getApi = () => ({ isRemote: false, createTaskWorkspace });
+    const actions = createDialogActions(ctx);
+
+    actions.openTaskWorkspaceDialog();
+    await (ctx.overlayProps.value.onSubmit as (draft: AnyApi) => Promise<void>)({
+      cwd: "C:\\repo",
+      name: "Task",
+      icon: "T",
+      color: "#fff",
+      notes: "",
+      task: { description: "Do work", maxRounds: 10 },
+      panels: [],
+    });
+
+    expect(createTaskWorkspace).toHaveBeenCalledWith(expect.objectContaining({ parentWorkspaceId: "ws-b" }));
+  });
+});

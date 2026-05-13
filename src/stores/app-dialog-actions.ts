@@ -116,6 +116,20 @@ function hookApiForProvider(
 export function createDialogActions(ctx: DialogActionsCtx) {
   // --- Dialog / overlay --------------------------------------------------
 
+  function currentProfileId(): string {
+    const payload = ctx.payload.value as AnyApi;
+    const appState = payload?.appState || {};
+    const profiles = (appState.profiles || []) as AnyApi[];
+    const remoteProfileId = payload?.remoteClient?.profileId || "";
+    if (ctx.getApi().isRemote) {
+      if (remoteProfileId && profiles.some((profile) => profile.id === remoteProfileId)) return remoteProfileId;
+      return profiles[0]?.id || "default";
+    }
+    const slots = (appState.windowSlots || []) as Array<{ id: string; profileId?: string }>;
+    const windowId = (window as AnyApi).strideterm?.startupFlags?.windowId || "";
+    return (windowId && slots.find((slot) => slot.id === windowId)?.profileId) || profiles[0]?.id || "default";
+  }
+
   function openDialog(name: string, props: Record<string, unknown> = {}): void {
     ctx.overlay.value = name;
     ctx.overlayProps.value = props;
@@ -261,13 +275,7 @@ export function createDialogActions(ctx: DialogActionsCtx) {
         // normalizes it to "default" — landing the workspace on the wrong
         // profile silently.
         if (!draft.profileId) {
-          const _slots = (ctx.payload.value?.appState?.windowSlots || []) as Array<{ id: string; profileId?: string }>;
-          const _windowId = (window as AnyApi).strideterm?.startupFlags?.windowId || "";
-          draft.profileId =
-            (ctx.payload.value as AnyApi)?.remoteClient?.profileId ||
-            (_windowId && _slots.find((s) => s.id === _windowId)?.profileId) ||
-            _slots[0]?.profileId ||
-            "default";
+          draft.profileId = currentProfileId();
         }
         // Guard: preserve task workspace identity on edit (kind + task object must survive)
         if (!isNew && workspace.kind === "task" && workspace.task) {
@@ -467,7 +475,7 @@ export function createDialogActions(ctx: DialogActionsCtx) {
       defaultReviewRoot: (azureSettings as AnyApi).reviewRoot || "",
       onCancel: closeDialog,
       onSave: async (draft: AnyApi) => {
-        draft.profileId = ((ctx.payload.value?.appState?.windowSlots || [])[0] as AnyApi)?.profileId || "default";
+        draft.profileId = currentProfileId();
         const result = (await (ctx.getApi() as AnyApi).saveAzureConnection(draft)) as AnyApi;
         ctx.payload.value = (result.payload || result) as StatePayload;
         closeDialog();
@@ -483,7 +491,7 @@ export function createDialogActions(ctx: DialogActionsCtx) {
       defaultReviewRoot: (ghSettings as AnyApi).reviewRoot || "",
       onCancel: closeDialog,
       onSave: async (draft: AnyApi) => {
-        draft.profileId = ((ctx.payload.value?.appState?.windowSlots || [])[0] as AnyApi)?.profileId || "default";
+        draft.profileId = currentProfileId();
         const result = (await (ctx.getApi() as AnyApi).saveGitHubConnection(draft)) as AnyApi;
         ctx.payload.value = (result.payload || result) as StatePayload;
         closeDialog();
@@ -733,8 +741,7 @@ export function createDialogActions(ctx: DialogActionsCtx) {
               .replace(/[\\/]+$/, "")
               .replace(/\\/g, "/")
               .toLowerCase();
-            const activeProfileId =
-              ((ctx.payload.value?.appState?.windowSlots || [])[0] as AnyApi)?.profileId || "default";
+            const activeProfileId = currentProfileId();
             const workspaces = ctx.payload.value?.appState?.workspaces || [];
             const parent = workspaces.find(
               (ws: AnyApi) =>

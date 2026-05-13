@@ -273,4 +273,47 @@ describe("useAppStore — remote mode identity", () => {
     resolveActivate(payload);
     await activateTask;
   });
+
+  it("adopts remote activation HTTP responses scoped by remoteClient without waiting for WS", async () => {
+    const initialPayload = makeBasePayload({
+      remoteClient: { id: "sess1", profileId: "p1", activeWorkspaceId: "ws1", activeSessionId: "" },
+      appState: {
+        activeWorkspaceId: "ws1",
+        profiles: [{ id: "p1", name: "P1", color: "#fff", workspaceIds: [] }],
+        workspaces: [
+          { id: "ws1", name: "WS1", profileId: "p1", panels: [], kind: "terminal", cwd: "/tmp" },
+          { id: "ws2", name: "WS2", profileId: "p1", panels: [], kind: "terminal", cwd: "/tmp" },
+        ],
+        windowSlots: [{ id: "slot1", profileId: "p1", activeWorkspaceId: "ws1", activeSessionId: "" }],
+        settings: {},
+        tabTemplates: [],
+        ssh: {
+          hosts: [],
+          keys: [],
+          certificates: [],
+          knownHosts: {},
+          settings: { defaultAgentMode: "inherit", importedSshConfig: false },
+        },
+      },
+    });
+    const responsePayload = {
+      ...initialPayload,
+      remoteClient: { id: "sess1", profileId: "p1", activeWorkspaceId: "ws2", activeSessionId: "" },
+      workspace: { workspace: { id: "ws1", name: "WS1", profileId: "p1", panels: [], kind: "terminal", cwd: "/tmp" } },
+    };
+    const transport = makeRemoteTransport(initialPayload);
+    transport.activateWorkspace = vi.fn(() => Promise.resolve(responsePayload));
+    const store = useAppStore();
+
+    store.init(transport as AnyApi);
+    await Promise.resolve();
+    await Promise.resolve();
+    await store.activateWorkspace("ws2");
+
+    expect(store.myActiveWorkspaceId).toBe("ws2");
+    expect(store.pendingWorkspaceActivationId).toBe("");
+    expect(store.activeWorkspace.id).toBe("ws2");
+    expect((store as AnyApi).payload.remoteClient.activeWorkspaceId).toBe("ws2");
+    expect((store as AnyApi).payload.appState.activeWorkspaceId).toBe("ws1");
+  });
 });

@@ -869,18 +869,17 @@ export const useAppStore = defineStore("app", () => {
       const nextPayload = (await _api!.activateWorkspace(workspaceId)) as StatePayload;
       const nextSlots = (nextPayload as AnyApi)?.appState?.windowSlots as AnyApi[] | undefined;
       const nextMySlot = myWindowId && nextSlots ? nextSlots.find((s: AnyApi) => s.id === myWindowId) : null;
+      const responseMyWsId = getWindowWorkspaceIdFromPayload(nextPayload);
       rlog("debug", "ws-activate: ipc response", {
         workspaceId,
         pendingId: pendingWorkspaceActivationId.value,
         globalActiveWsId: (nextPayload as AnyApi)?.appState?.activeWorkspaceId || null,
+        responseMyWsId,
         slotActiveWsId: nextMySlot?.activeWorkspaceId || null,
         slotProfileId: nextMySlot?.profileId || null,
       });
-      if (
-        !pendingWorkspaceActivationId.value ||
-        (nextPayload as AnyApi)?.appState?.activeWorkspaceId === pendingWorkspaceActivationId.value
-      ) {
-        payload.value = maybeApplyMockFromUrl(nextPayload as AnyApi) as StatePayload;
+      if (!pendingWorkspaceActivationId.value || responseMyWsId === pendingWorkspaceActivationId.value) {
+        payload.value = maybeApplyMockFromUrl(scopePayloadToWindow(nextPayload) as AnyApi) as StatePayload;
         // Update cache with fresh server data for the newly activated workspace
         _cacheCurrentWorkspace();
         if (!(nextPayload as AnyApi)?.meta?.bootstrap) pendingWorkspaceActivationId.value = "";
@@ -897,6 +896,7 @@ export const useAppStore = defineStore("app", () => {
           workspaceId,
           pendingId: pendingWorkspaceActivationId.value,
           globalActiveWsId: (nextPayload as AnyApi)?.appState?.activeWorkspaceId || null,
+          responseMyWsId,
           note: "relies on broadcast (which is slot-aware) to update payload",
         });
       }
@@ -1089,7 +1089,7 @@ export const useAppStore = defineStore("app", () => {
       .then((nextPayload) => {
         const p = nextPayload as AnyApi;
         const pendingWsId = pendingWorkspaceActivationId.value;
-        const incomingWsId = p?.appState?.activeWorkspaceId || "";
+        const incomingWsId = getWindowWorkspaceIdFromPayload(p as StatePayload);
         const isBootstrap = Boolean(p?.meta?.bootstrap);
 
         if (pendingWsId && incomingWsId && incomingWsId !== pendingWsId) return;
