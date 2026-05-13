@@ -1,11 +1,25 @@
 import { describe, expect, test } from "vitest";
+import net from "node:net";
 import {
   REMOTE_BLOCKED_REMOTE_ACCESS_FIELDS,
   REMOTE_BLOCKED_TOP_LEVEL_FIELDS,
   buildSessionCookieAttrs,
   sanitizeSettingsFromRemote,
+  startRemoteServer,
   stripSecretsForRemote,
 } from "./remote-server.js";
+
+async function getFreePort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const server = net.createServer();
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      const port = typeof address === "object" && address ? address.port : 0;
+      server.close(() => resolve(port));
+    });
+  });
+}
 
 describe("sanitizeSettingsFromRemote", () => {
   test("drops every blocked remoteAccess field", () => {
@@ -173,5 +187,77 @@ describe("buildSessionCookieAttrs", () => {
 
   test("is case-insensitive", () => {
     expect(buildSessionCookieAttrs({ "x-forwarded-proto": "HTTPS" })).toBe("HttpOnly; SameSite=Strict; Path=/; Secure");
+  });
+});
+
+describe("remote token client profile context", () => {
+  test("keeps profile activation scoped to the token client id", async () => {
+    const port = await getFreePort();
+    const token = "test-token";
+    const payload = {
+      appState: {
+        settings: {
+          remoteAccess: { enabled: true, host: "127.0.0.1", port, token },
+        },
+        profiles: [
+          { id: "p1", name: "P1", color: "#fff", workspaceIds: [] },
+          { id: "p2", name: "P2", color: "#fff", workspaceIds: [] },
+        ],
+        workspaces: [
+          { id: "ws1", name: "WS1", profileId: "p1", panels: [] },
+          { id: "ws2", name: "WS2", profileId: "p2", panels: [] },
+        ],
+        windowSlots: [],
+      },
+    };
+    const runtime = {
+      getPayload: () => payload,
+      getInitialState: async () => payload,
+      setRemoteInfo: () => undefined,
+      listRemoteUrls: () => [],
+      on: () => () => undefined,
+      writeToSession: () => undefined,
+      resizeSession: () => undefined,
+      setRemoteClientRegistry: () => undefined,
+    };
+    const server = await startRemoteServer({
+      runtime: runtime as Parameters<typeof startRemoteServer>[0]["runtime"],
+      staticRoot: process.cwd(),
+    });
+    const baseUrl = `http://127.0.0.1:${port}`;
+    const headers = {
+      Authorization: `Bearer ${token}`,
+      "X-Strideterm-Client-Id": "mobile-client-a",
+    };
+
+    try {
+      const initial = (await (await fetch(`${baseUrl}/api/state`, { headers })).json()) as {
+        remoteClient?: { profileId?: string; activeWorkspaceId?: string };
+      };
+      expect(initial.remoteClient).toMatchObject({ profileId: "p1", activeWorkspaceId: "ws1" });
+
+      const activated = (await (
+        await fetch(`${baseUrl}/api/remote-client/profile/activate`, {
+          method: "POST",
+          headers: { ...headers, "Content-Type": "application/json" },
+          body: JSON.stringify({ profileId: "p2" }),
+        })
+      ).json()) as { remoteClient?: { profileId?: string; activeWorkspaceId?: string } };
+      expect(activated.remoteClient).toMatchObject({ profileId: "p2", activeWorkspaceId: "ws2" });
+
+      const sameClient = (await (await fetch(`${baseUrl}/api/state`, { headers })).json()) as {
+        remoteClient?: { profileId?: string; activeWorkspaceId?: string };
+      };
+      expect(sameClient.remoteClient).toMatchObject({ profileId: "p2", activeWorkspaceId: "ws2" });
+
+      const otherClient = (await (
+        await fetch(`${baseUrl}/api/state`, {
+          headers: { Authorization: `Bearer ${token}`, "X-Strideterm-Client-Id": "mobile-client-b" },
+        })
+      ).json()) as { remoteClient?: { profileId?: string; activeWorkspaceId?: string } };
+      expect(otherClient.remoteClient).toMatchObject({ profileId: "p1", activeWorkspaceId: "ws1" });
+    } finally {
+      await server.close();
+    }
   });
 });

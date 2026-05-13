@@ -126,6 +126,7 @@ export const useAppStore = defineStore("app", () => {
 
   // --- Internal api reference (set in init) ---
   let _api: Transport | null = null;
+  const isRemoteTransport = ref(false);
 
   /** Getter so action modules can access _api after init(). */
   function getApi(): Transport {
@@ -153,10 +154,29 @@ export const useAppStore = defineStore("app", () => {
     return slots.find((s: AnyApi) => s.id === myWindowId) ?? null;
   });
 
+  function resolveRemoteProfileId(sourcePayload: StatePayload | null = payload.value): string | null {
+    const profiles = (((sourcePayload as AnyApi)?.appState?.profiles || []) as AnyApi[]).filter(
+      (profile) => profile?.id,
+    );
+    const remoteProfileId = (sourcePayload as AnyApi)?.remoteClient?.profileId || "";
+    if (remoteProfileId && profiles.some((profile) => profile.id === remoteProfileId)) return remoteProfileId;
+    return profiles[0]?.id || null;
+  }
+
+  function resolveRemoteWorkspaceId(sourcePayload: StatePayload | null = payload.value): string {
+    const remoteClient = (sourcePayload as AnyApi)?.remoteClient;
+    const workspaces = ((sourcePayload as AnyApi)?.appState?.workspaces || []) as AnyApi[];
+    const profileId = resolveRemoteProfileId(sourcePayload);
+    const activeWorkspaceId = remoteClient?.activeWorkspaceId || "";
+    const activeWorkspace = activeWorkspaceId ? workspaces.find((ws: AnyApi) => ws.id === activeWorkspaceId) : null;
+    if (activeWorkspace && (activeWorkspace.profileId || "default") === profileId) return activeWorkspaceId;
+    return workspaces.find((ws: AnyApi) => (ws.profileId || "default") === profileId)?.id || "";
+  }
+
   /** ActiveWorkspaceId scoped to this window or remote client context. */
   const myActiveWorkspaceId = computed<string>(() => {
-    if (_api?.isRemote) {
-      return (payload.value as AnyApi)?.remoteClient?.activeWorkspaceId || "";
+    if (isRemoteTransport.value) {
+      return resolveRemoteWorkspaceId();
     }
     return (
       myWindowSlot.value?.activeWorkspaceId || (payload.value?.appState?.activeWorkspaceId as string | undefined) || ""
@@ -165,15 +185,15 @@ export const useAppStore = defineStore("app", () => {
 
   /** ActiveProfileId scoped to this window or remote client context. Null when no profile context is available. */
   const myActiveProfileId = computed<string | null>(() => {
-    if (_api?.isRemote) {
-      return (payload.value as AnyApi)?.remoteClient?.profileId || null;
+    if (isRemoteTransport.value) {
+      return resolveRemoteProfileId();
     }
     return myWindowSlot.value?.profileId || null;
   });
 
   /** ActiveSessionId scoped to this window or remote client context. */
   const myActiveSessionId = computed<string>(() => {
-    if (_api?.isRemote) {
+    if (isRemoteTransport.value) {
       return (payload.value as AnyApi)?.remoteClient?.activeSessionId || "";
     }
     return myWindowSlot.value?.activeSessionId || "";
@@ -203,11 +223,12 @@ export const useAppStore = defineStore("app", () => {
   const activeProfile = computed(() => {
     const profiles = payload.value?.appState?.profiles || [];
     const activeId = myActiveProfileId.value;
-    const found = profiles.find((p: AnyApi) => p.id === activeId) || {
-      id: "default",
-      name: "Default",
-      color: "#ffa424",
-    };
+    const found = profiles.find((p: AnyApi) => p.id === activeId) ||
+      profiles[0] || {
+        id: "default",
+        name: activeId || "Profile",
+        color: "#ffa424",
+      };
     const key = `${(found as AnyApi).id}:${(found as AnyApi).name}:${(found as AnyApi).color}`;
     if (key === _prevProfileKey && _prevProfile) return _prevProfile;
     _prevProfileKey = key;
@@ -531,8 +552,8 @@ export const useAppStore = defineStore("app", () => {
   }
 
   function getWindowWorkspaceIdFromPayload(sourcePayload: StatePayload | null): string {
-    if (_api?.isRemote) {
-      return (sourcePayload as AnyApi)?.remoteClient?.activeWorkspaceId || "";
+    if (isRemoteTransport.value) {
+      return resolveRemoteWorkspaceId(sourcePayload);
     }
     const appState = sourcePayload?.appState as AnyApi | undefined;
     const slots = appState?.windowSlots as AnyApi[] | undefined;
@@ -670,8 +691,10 @@ export const useAppStore = defineStore("app", () => {
     // In Electron mode, optimistically update the per-window slot.
     let updatedWindowSlots = appState.windowSlots as AnyApi[] | undefined;
     let updatedRemoteClient = (payload.value as AnyApi).remoteClient;
-    if (_api?.isRemote) {
-      updatedRemoteClient = updatedRemoteClient ? { ...updatedRemoteClient, activeWorkspaceId: workspaceId } : undefined;
+    if (isRemoteTransport.value) {
+      updatedRemoteClient = updatedRemoteClient
+        ? { ...updatedRemoteClient, activeWorkspaceId: workspaceId }
+        : undefined;
     } else if (myWindowId && Array.isArray(appState.windowSlots)) {
       updatedWindowSlots = (appState.windowSlots as AnyApi[]).map((s: AnyApi) =>
         s.id === myWindowId ? { ...s, activeWorkspaceId: workspaceId } : s,
@@ -714,7 +737,7 @@ export const useAppStore = defineStore("app", () => {
     // Derive the workspace ID that is active in THIS window / remote client from the incoming payload.
     const incomingSlots = (nextPayload as AnyApi)?.appState?.windowSlots as AnyApi[] | undefined;
     const incomingSlot = myWindowId && incomingSlots ? incomingSlots.find((s: AnyApi) => s.id === myWindowId) : null;
-    const incomingMyWsId: string = _api?.isRemote
+    const incomingMyWsId: string = isRemoteTransport.value
       ? (nextPayload as AnyApi)?.remoteClient?.activeWorkspaceId || ""
       : incomingSlot?.activeWorkspaceId || (nextPayload as AnyApi)?.appState?.activeWorkspaceId || "";
 
@@ -1042,6 +1065,7 @@ export const useAppStore = defineStore("app", () => {
   // --- Init ---
   function init(api: Transport): void {
     _api = api;
+    isRemoteTransport.value = !!api.isRemote;
 
     api.onStateUpdated((nextPayload) => handleBroadcastPayload(nextPayload));
 

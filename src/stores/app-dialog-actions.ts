@@ -379,13 +379,17 @@ export function createDialogActions(ctx: DialogActionsCtx) {
     const appState = ctx.payload.value?.appState || ({} as AnyApi);
     const api = ctx.getApi();
     const isRemote = api.isRemote;
+    const profiles = ((appState as AnyApi).profiles || []) as AnyApi[];
 
     // Determine the current profile for THIS viewer (window slot in Electron,
     // remoteClient context in remote mode).
     const myWindowId = (window as AnyApi).strideterm?.startupFlags?.windowId || "";
     const slots = ((appState as AnyApi).windowSlots || []) as Array<{ id: string; profileId: string }>;
+    const remoteProfileId = (ctx.payload.value as AnyApi)?.remoteClient?.profileId || "";
     const myCurrentProfileId = isRemote
-      ? (ctx.payload.value as AnyApi)?.remoteClient?.profileId || null
+      ? (remoteProfileId && profiles.some((profile) => profile.id === remoteProfileId)
+          ? remoteProfileId
+          : profiles[0]?.id) || null
       : (myWindowId && slots.find((s) => s.id === myWindowId)?.profileId) || slots[0]?.profileId || null;
 
     // Build desktopOccupancy map: profileId → 1-based window index.
@@ -398,10 +402,10 @@ export function createDialogActions(ctx: DialogActionsCtx) {
     });
 
     openDialog("ProfilesDialog", {
-      profiles: JSON.parse(JSON.stringify((appState as AnyApi).profiles || [])) as unknown[],
+      profiles: JSON.parse(JSON.stringify(profiles)) as unknown[],
       activeProfileId: myCurrentProfileId ?? undefined,
       workspaces: (appState as AnyApi).workspaces || [],
-      windowSlots: isRemote ? [] : ((appState as AnyApi).windowSlots || []),
+      windowSlots: isRemote ? [] : (appState as AnyApi).windowSlots || [],
       isRemote,
       desktopOccupancy,
       onCancel: closeDialog,
@@ -410,9 +414,25 @@ export function createDialogActions(ctx: DialogActionsCtx) {
       },
       onActivate: async (profileId: string) => {
         ctx.suppressBroadcast.value = true;
+        const previousPayload = ctx.payload.value;
+        if (isRemote && previousPayload) {
+          const firstWorkspace = ((previousPayload.appState?.workspaces || []) as AnyApi[]).find(
+            (ws: AnyApi) => (ws.profileId || "default") === profileId,
+          );
+          ctx.payload.value = {
+            ...(previousPayload as AnyApi),
+            remoteClient: {
+              ...((previousPayload as AnyApi).remoteClient || {}),
+              profileId,
+              activeWorkspaceId: firstWorkspace?.id || "",
+              activeSessionId: "",
+            },
+          } as StatePayload;
+        }
         try {
           ctx.payload.value = (await (api as AnyApi).activateProfile(profileId)) as StatePayload;
         } catch (err) {
+          if (previousPayload) ctx.payload.value = previousPayload;
           ctx.suppressBroadcast.value = false;
           throw err;
         }
@@ -713,7 +733,8 @@ export function createDialogActions(ctx: DialogActionsCtx) {
               .replace(/[\\/]+$/, "")
               .replace(/\\/g, "/")
               .toLowerCase();
-            const activeProfileId = ((ctx.payload.value?.appState?.windowSlots || [])[0] as AnyApi)?.profileId || "default";
+            const activeProfileId =
+              ((ctx.payload.value?.appState?.windowSlots || [])[0] as AnyApi)?.profileId || "default";
             const workspaces = ctx.payload.value?.appState?.workspaces || [];
             const parent = workspaces.find(
               (ws: AnyApi) =>
@@ -876,6 +897,7 @@ export function createDialogActions(ctx: DialogActionsCtx) {
     openDialog("NewWindowModal", {
       profiles: JSON.parse(JSON.stringify((appState as AnyApi).profiles || [])) as unknown[],
       windowSlots: JSON.parse(JSON.stringify((appState as AnyApi).windowSlots || [])) as unknown[],
+      workspaces: JSON.parse(JSON.stringify((appState as AnyApi).workspaces || [])) as unknown[],
       onCancel: closeDialog,
       "onCreate-and-open": async (profile: { id: string; name: string; color: string }) => {
         // Save the new profile, then open a window for it. saveProfile drives

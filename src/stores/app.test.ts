@@ -55,11 +55,25 @@ function makeBasePayload(overrides: AnyApi = {}): AnyApi {
       windowSlots: [{ id: "slot1", profileId: "p1", activeWorkspaceId: "ws1", activeSessionId: "" }],
       settings: {},
       tabTemplates: [],
-      ssh: { hosts: [], keys: [], certificates: [], knownHosts: {}, settings: { defaultAgentMode: "inherit", importedSshConfig: false } },
+      ssh: {
+        hosts: [],
+        keys: [],
+        certificates: [],
+        knownHosts: {},
+        settings: { defaultAgentMode: "inherit", importedSshConfig: false },
+      },
     },
     workspace: null,
     attention: { sessions: {}, alerts: [] },
-    docker: { available: false, backend: null, contexts: [], containers: [], lazydocker: { available: false, backend: null, error: "" }, error: "", lastUpdatedAt: null },
+    docker: {
+      available: false,
+      backend: null,
+      contexts: [],
+      containers: [],
+      lazydocker: { available: false, backend: null, error: "" },
+      error: "",
+      lastUpdatedAt: null,
+    },
     git: { workspaces: {}, activeWorkspace: null, connections: [] },
     azureDevops: { inboxItems: [], connections: [], lastUpdatedAt: null, error: "" },
     github: { inboxItems: [], connections: [], lastUpdatedAt: null, error: "" },
@@ -79,7 +93,7 @@ describe("useAppStore — remote mode identity", () => {
     // Each test gets a fresh Pinia so store state doesn't leak.
     setActivePinia(createPinia());
     // Provide a minimal window.strideterm stub (store reads windowId from it).
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
     (window as AnyApi).strideterm = { startupFlags: { windowId: "" } };
   });
 
@@ -98,7 +112,45 @@ describe("useAppStore — remote mode identity", () => {
     expect(store.myActiveProfileId).toBe("p2");
   });
 
-  it("myActiveProfileId returns null when remoteClient is absent", async () => {
+  it("keeps remote profile identity reactive when read before init", async () => {
+    const payload = makeBasePayload({
+      remoteClient: { id: "sess1", profileId: "p2", activeWorkspaceId: "ws3", activeSessionId: "" },
+      appState: {
+        activeWorkspaceId: "ws1",
+        profiles: [
+          { id: "p1", name: "P1", color: "#fff", workspaceIds: [] },
+          { id: "p2", name: "P2", color: "#fff", workspaceIds: [] },
+        ],
+        workspaces: [
+          { id: "ws1", name: "Workspace 1", profileId: "p1", panels: [], kind: "terminal", cwd: "/tmp" },
+          { id: "ws3", name: "Workspace 3", profileId: "p2", panels: [], kind: "terminal", cwd: "/tmp" },
+        ],
+        windowSlots: [],
+        settings: {},
+        tabTemplates: [],
+        ssh: {
+          hosts: [],
+          keys: [],
+          certificates: [],
+          knownHosts: {},
+          settings: { defaultAgentMode: "inherit", importedSshConfig: false },
+        },
+      },
+    });
+    const transport = makeRemoteTransport(payload);
+    const store = useAppStore();
+
+    expect(store.myActiveProfileId).toBeNull();
+
+    store.init(transport as AnyApi);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(store.myActiveProfileId).toBe("p2");
+    expect(store.filteredWorkspaces.map((ws: AnyApi) => ws.id)).toEqual(["ws3"]);
+  });
+
+  it("myActiveProfileId falls back to the first real profile when remoteClient is absent", async () => {
     const payload = makeBasePayload(); // no remoteClient
     const transport = makeRemoteTransport(payload);
     const store = useAppStore();
@@ -107,7 +159,62 @@ describe("useAppStore — remote mode identity", () => {
     await Promise.resolve();
     await Promise.resolve();
 
-    expect(store.myActiveProfileId).toBeNull();
+    expect(store.myActiveProfileId).toBe("p1");
+    expect(store.myActiveWorkspaceId).toBe("ws1");
+    expect(store.filteredWorkspaces.map((ws: AnyApi) => ws.id)).toEqual(["ws1", "ws2"]);
+  });
+
+  it("myActiveWorkspaceId ignores stale remote workspace ids from another profile", async () => {
+    const payload = makeBasePayload({
+      remoteClient: { id: "sess1", profileId: "p2", activeWorkspaceId: "ws1", activeSessionId: "" },
+      appState: {
+        activeWorkspaceId: "",
+        profiles: [
+          { id: "p1", name: "P1", color: "#fff", workspaceIds: [] },
+          { id: "p2", name: "P2", color: "#fff", workspaceIds: [] },
+        ],
+        workspaces: [
+          { id: "ws1", name: "Workspace 1", profileId: "p1", panels: [], kind: "terminal", cwd: "/tmp" },
+          { id: "ws3", name: "Workspace 3", profileId: "p2", panels: [], kind: "terminal", cwd: "/tmp" },
+        ],
+        windowSlots: [],
+        settings: {},
+        tabTemplates: [],
+        ssh: {
+          hosts: [],
+          keys: [],
+          certificates: [],
+          knownHosts: {},
+          settings: { defaultAgentMode: "inherit", importedSshConfig: false },
+        },
+      },
+    });
+    const transport = makeRemoteTransport(payload);
+    const store = useAppStore();
+
+    store.init(transport as AnyApi);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(store.myActiveProfileId).toBe("p2");
+    expect(store.myActiveWorkspaceId).toBe("ws3");
+    expect(store.filteredWorkspaces.map((ws: AnyApi) => ws.id)).toEqual(["ws3"]);
+  });
+
+  it("myActiveProfileId ignores stale remote profile ids that no longer exist", async () => {
+    const payload = makeBasePayload({
+      remoteClient: { id: "sess1", profileId: "deleted-profile", activeWorkspaceId: "", activeSessionId: "" },
+    });
+    const transport = makeRemoteTransport(payload);
+    const store = useAppStore();
+
+    store.init(transport as AnyApi);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(store.activeProfile.name).toBe("P1");
+    expect(store.myActiveProfileId).toBe("p1");
+    expect(store.filteredWorkspaces.map((ws: AnyApi) => ws.id)).toEqual(["ws1", "ws2"]);
   });
 
   it("optimistic workspace activation in remote mode updates remoteClient but not windowSlots", async () => {
@@ -124,14 +231,22 @@ describe("useAppStore — remote mode identity", () => {
         windowSlots: originalSlots,
         settings: {},
         tabTemplates: [],
-        ssh: { hosts: [], keys: [], certificates: [], knownHosts: {}, settings: { defaultAgentMode: "inherit", importedSshConfig: false } },
+        ssh: {
+          hosts: [],
+          keys: [],
+          certificates: [],
+          knownHosts: {},
+          settings: { defaultAgentMode: "inherit", importedSshConfig: false },
+        },
       },
     });
 
     // activateWorkspace will hang until we resolve it — leave it pending so
     // we can inspect the optimistic state before the response arrives.
     let resolveActivate!: (v: AnyApi) => void;
-    const activatePromise = new Promise<AnyApi>((res) => { resolveActivate = res; });
+    const activatePromise = new Promise<AnyApi>((res) => {
+      resolveActivate = res;
+    });
     const transport = makeRemoteTransport(payload);
     transport.activateWorkspace = vi.fn(() => activatePromise);
 

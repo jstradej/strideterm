@@ -75,6 +75,22 @@ function createEventHub(): EventHub {
   };
 }
 
+function createRemoteClientId(): string {
+  const cryptoApi = globalThis.crypto;
+  if (cryptoApi?.randomUUID) return cryptoApi.randomUUID();
+  if (cryptoApi?.getRandomValues) {
+    const bytes = new Uint8Array(16);
+    cryptoApi.getRandomValues(bytes);
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, "0"));
+    return `${hex.slice(0, 4).join("")}-${hex.slice(4, 6).join("")}-${hex.slice(6, 8).join("")}-${hex
+      .slice(8, 10)
+      .join("")}-${hex.slice(10, 16).join("")}`;
+  }
+  return `client-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
+}
+
 function bindElectronTransport(): Transport {
   return {
     ...window.strideterm,
@@ -93,6 +109,12 @@ export function createRemoteTransport(): Transport {
   const listeners = createEventHub();
   const query = new URLSearchParams(window.location.search);
   let token = query.get("token") || window.sessionStorage.getItem("strideterm-token") || "";
+  const clientIdStorageKey = "strideterm-remote-client-id";
+  let remoteClientId = window.sessionStorage.getItem(clientIdStorageKey) || "";
+  if (!remoteClientId) {
+    remoteClientId = createRemoteClientId();
+    window.sessionStorage.setItem(clientIdStorageKey, remoteClientId);
+  }
 
   function persistToken(nextToken: string): void {
     token = String(nextToken || "").trim();
@@ -169,9 +191,11 @@ export function createRemoteTransport(): Transport {
   // so dropping the `?token=` segment is enough to keep working without
   // re-emitting the master token. External callers that still hold the
   // token (e.g. API clients) keep the old `?token=` form.
-  const wsUrl = token
-    ? `${protocol}//${window.location.host}/ws?token=${encodeURIComponent(token)}`
-    : `${protocol}//${window.location.host}/ws`;
+  const wsQuery = new URLSearchParams();
+  if (token) wsQuery.set("token", token);
+  wsQuery.set("clientId", remoteClientId);
+  const wsSuffix = wsQuery.toString();
+  const wsUrl = `${protocol}//${window.location.host}/ws${wsSuffix ? `?${wsSuffix}` : ""}`;
   const ws = new WebSocket(wsUrl);
 
   ws.addEventListener("open", () => {
@@ -225,6 +249,7 @@ export function createRemoteTransport(): Transport {
     // header is correct here. If both are missing the server will
     // 401 and the existing error path surfaces it.
     const headers: Record<string, string> = { "Content-Type": "application/json" };
+    headers["X-Strideterm-Client-Id"] = remoteClientId;
     if (token) {
       headers.Authorization = `Bearer ${token}`;
     }

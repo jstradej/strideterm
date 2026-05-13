@@ -366,6 +366,14 @@ function getSessionFromRequest(headers: IncomingMessage["headers"]): string {
   return "";
 }
 
+function getClientIdFromRequest(requestUrl: string, headers: IncomingMessage["headers"]): string {
+  const header = headers["x-strideterm-client-id"];
+  const fromHeader = Array.isArray(header) ? header[0] : header;
+  const raw = fromHeader || new URL(requestUrl || "/", "http://localhost").searchParams.get("clientId") || "";
+  const normalized = String(raw).trim();
+  return /^[a-zA-Z0-9_-]{8,80}$/.test(normalized) ? normalized : "";
+}
+
 /**
  * Constant-time string comparison for token validation. Prevents timing
  * attacks where the attacker probes the token byte-by-byte by measuring
@@ -1393,6 +1401,18 @@ export async function startRemoteServer({
     return id;
   }
 
+  function sessionIdForRequest(requestUrl: string, headers: IncomingMessage["headers"]): string {
+    const cookieSessionId = getSessionFromRequest(headers);
+    if (cookieSessionId && activeSessions.has(cookieSessionId)) return cookieSessionId;
+    if (!tokensEqual(getTokenFromRequest(requestUrl, headers), token)) return "";
+    const clientId = getClientIdFromRequest(requestUrl, headers);
+    if (!clientId) return "";
+    const tokenSessionId = `token-client:${clientId}`;
+    activeSessions.add(tokenSessionId);
+    registry.getOrCreate(tokenSessionId, (runtime.getPayload() as Record<string, unknown>).appState);
+    return tokenSessionId;
+  }
+
   const server = http.createServer(async (request, response) => {
     const requestUrl = request.url || "/";
     const url = new URL(requestUrl, "http://localhost");
@@ -1424,7 +1444,7 @@ export async function startRemoteServer({
       });
 
       // Bump TTL and get session for per-client endpoints.
-      const apiSessionId = getSessionFromRequest(request.headers);
+      const apiSessionId = sessionIdForRequest(requestUrl, request.headers);
       if (apiSessionId && activeSessions.has(apiSessionId)) registry.bumpLastSeen(apiSessionId);
 
       // /api/state — return per-client composed payload when a session is known.
@@ -1434,7 +1454,7 @@ export async function startRemoteServer({
         return;
       }
 
-      // Remote-client-scoped activation endpoints — derive clientId from cookie.
+      // Remote-client-scoped activation endpoints — derive clientId from cookie or token client id.
       if (url.pathname.startsWith("/api/remote-client/")) {
         if (!apiSessionId || !activeSessions.has(apiSessionId)) {
           json(response, 401, { error: "No active session" });
@@ -1598,7 +1618,7 @@ export async function startRemoteServer({
         (ws as any).isAlive = true;
       });
       // Tag the socket with its session so per-client state can be composed on broadcast.
-      const wsSessionId = getSessionFromRequest(request.headers);
+      const wsSessionId = sessionIdForRequest(request.url || "/", request.headers);
       if (wsSessionId && activeSessions.has(wsSessionId)) {
         socketSession.set(ws, wsSessionId);
         registry.bumpLastSeen(wsSessionId);

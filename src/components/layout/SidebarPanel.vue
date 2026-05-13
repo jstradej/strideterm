@@ -271,9 +271,13 @@ const workspaceCards = computed((): WorkspaceCardData[] => {
 const hasAnyStarred = computed(() => store.filteredWorkspaces.some((ws) => ws.starred));
 
 // Auto-deactivate star filter when no starred workspaces remain
-watch(hasAnyStarred, (has) => {
-  if (!has) store.starFilterActive = false;
-});
+watch(
+  hasAnyStarred,
+  (has) => {
+    if (!has) store.starFilterActive = false;
+  },
+  { immediate: true },
+);
 
 const displayedCards = computed(() => {
   if (!store.starFilterActive) return workspaceCards.value;

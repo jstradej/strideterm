@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import { mount } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import SidebarPanel from "./SidebarPanel.vue";
@@ -156,5 +156,126 @@ describe("SidebarPanel — multi-window active state", () => {
 
     expect(wrapper.find('[data-workspace-id="ws-A"]').classes()).toContain("workspace-card--active");
     expect(wrapper.find('[data-workspace-id="ws-B"]').classes()).not.toContain("workspace-card--active");
+  });
+});
+
+describe("SidebarPanel — remote profile fallback", () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    (window as AnyApi).strideterm = { startupFlags: { windowId: "" } };
+  });
+
+  it("renders first real profile workspaces when remoteClient profile id is stale", async () => {
+    const store = useAppStore();
+    const payload = makePayload({
+      profiles: [
+        { id: "default", name: "Default 2" },
+        { id: "profile-asdf", name: "asdf" },
+      ],
+      workspaces: [
+        {
+          id: "ws-default-1",
+          name: "temp",
+          cwd: "/tmp",
+          panels: [{ id: "p1", title: "Shell" }],
+          icon: "PR",
+          color: "#fff",
+          profileId: "default",
+        },
+        {
+          id: "ws-default-2",
+          name: "GitHub",
+          cwd: "/tmp/gh",
+          panels: [],
+          icon: "GH",
+          color: "#fff",
+          profileId: "default",
+          kind: "github",
+        },
+        {
+          id: "ws-asdf-1",
+          name: "test",
+          cwd: "/tmp/test",
+          panels: [],
+          icon: "T",
+          color: "#fff",
+          profileId: "profile-asdf",
+        },
+      ],
+      windowSlots: [{ id: "desktop-win", profileId: "default", activeWorkspaceId: "ws-default-1" }],
+    }) as AnyApi;
+    payload.remoteClient = {
+      id: "mobile-session",
+      profileId: "deleted-profile",
+      activeWorkspaceId: "",
+      activeSessionId: "",
+    };
+    const transport = {
+      isRemote: true,
+      getState: vi.fn(() => Promise.resolve(payload)),
+      onStateUpdated: vi.fn(),
+      onConnectionState: vi.fn(),
+      activateWorkspace: vi.fn(() => Promise.resolve(payload)),
+      activateProfile: vi.fn(() => Promise.resolve(payload)),
+      activateSession: vi.fn(() => Promise.resolve(payload)),
+    };
+    store.init(transport as AnyApi);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const wrapper = mount(SidebarPanel);
+
+    const cards = wrapper.findAll("[data-workspace-id]");
+    expect(cards.map((card) => card.attributes("data-workspace-id"))).toEqual(["ws-default-1", "ws-default-2"]);
+    expect(wrapper.text()).toContain("temp");
+    expect(wrapper.text()).toContain("GitHub");
+    expect(wrapper.text()).not.toContain("test");
+  });
+
+  it("clears stale starred-only filter immediately when the active profile has no starred workspaces", async () => {
+    const store = useAppStore();
+    const payload = makePayload({
+      profiles: [{ id: "default", name: "Default 2" }],
+      workspaces: [
+        { id: "ws-default-1", name: "temp", cwd: "/tmp", panels: [], icon: "PR", color: "#fff", profileId: "default" },
+        {
+          id: "ws-default-2",
+          name: "GitHub",
+          cwd: "/tmp/gh",
+          panels: [],
+          icon: "GH",
+          color: "#fff",
+          profileId: "default",
+        },
+      ],
+      windowSlots: [{ id: "desktop-win", profileId: "default", activeWorkspaceId: "ws-default-1" }],
+    }) as AnyApi;
+    payload.remoteClient = {
+      id: "mobile-session",
+      profileId: "default",
+      activeWorkspaceId: "ws-default-1",
+      activeSessionId: "",
+    };
+    const transport = {
+      isRemote: true,
+      getState: vi.fn(() => Promise.resolve(payload)),
+      onStateUpdated: vi.fn(),
+      onConnectionState: vi.fn(),
+      activateWorkspace: vi.fn(() => Promise.resolve(payload)),
+      activateProfile: vi.fn(() => Promise.resolve(payload)),
+      activateSession: vi.fn(() => Promise.resolve(payload)),
+    };
+    store.starFilterActive = true;
+    store.init(transport as AnyApi);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const wrapper = mount(SidebarPanel);
+
+    expect(store.starFilterActive).toBe(false);
+    expect(wrapper.findAll("[data-workspace-id]").map((card) => card.attributes("data-workspace-id"))).toEqual([
+      "ws-default-1",
+      "ws-default-2",
+    ]);
   });
 });

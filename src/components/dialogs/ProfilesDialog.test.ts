@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { mount } from "@vue/test-utils";
 import ProfilesDialog from "./ProfilesDialog.vue";
 
@@ -75,7 +75,34 @@ describe("ProfilesDialog", () => {
     expect(activateBtn?.exists()).toBe(true);
     expect(activateBtn?.attributes("disabled")).toBeUndefined();
 
-    // Badge "Open on desktop Window 2" must appear somewhere in the card
+    // Badge "Window 2" must appear somewhere in the card
     expect(cardB.html()).toContain("Window 2");
+  });
+
+  it("calls remote activation without disabling profiles occupied by desktop windows", async () => {
+    const onActivate = vi.fn().mockResolvedValue(undefined);
+    const wrapper = mount(ProfilesDialog, {
+      props: {
+        profiles: [
+          { id: "profile-a", name: "A", color: "#fff" },
+          { id: "profile-b", name: "B", color: "#fff" },
+        ],
+        activeProfileId: "profile-a",
+        workspaces: [],
+        isRemote: true,
+        desktopOccupancy: new Map([["profile-b", 2]]),
+      },
+      attrs: {
+        onActivate,
+      },
+    });
+
+    const cardB = wrapper.findAll(".profile-card")[1];
+    const activateBtn = cardB.findAll("button").find((b) => b.text().includes("Activate"));
+    expect(activateBtn?.attributes("disabled")).toBeUndefined();
+
+    await activateBtn?.trigger("click");
+
+    expect(onActivate).toHaveBeenCalledWith("profile-b");
   });
 });

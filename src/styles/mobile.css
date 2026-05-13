@@ -117,8 +117,12 @@
     border-bottom: none;
     transform: translateX(-100%);
     transition: transform 0.22s ease;
-    grid-template-rows: auto minmax(0, 1fr) auto;
+    grid-template-rows: auto auto minmax(0, 1fr) auto auto;
     overflow: hidden;
+  }
+
+  .profile-bar-row {
+    align-self: start;
   }
 
   .sidebar--open {
@@ -310,14 +314,24 @@
   }
 
   /* ── Dialog mobile ── */
-  .dialog {
-    width: 100%;
-    max-height: calc(100dvh - 20px);
-    max-height: calc(100% - 20px);
+  .overlay {
+    align-items: start;
+    justify-items: center;
+    overflow: auto;
+    padding: 8px;
   }
 
-  .overlay {
-    padding: 10px;
+  .dialog {
+    width: 100%;
+    max-height: calc(100dvh - 16px);
+    max-height: calc(100% - 16px);
+    padding: 14px;
+  }
+
+  .dialog__header {
+    flex-direction: row;
+    align-items: center;
+    gap: 10px;
   }
 
   /* Hide the Remote Access compact card (QR + Configure) and the sidebar

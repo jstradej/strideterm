@@ -33,7 +33,8 @@
               v-if="isRemote && occupiedByOtherWindow.has(profile.id)"
               class="profile-desktop-badge"
               :title="`This profile is open on desktop Window ${occupiedByOtherWindow.get(profile.id)}`"
-            >Open on desktop Window {{ occupiedByOtherWindow.get(profile.id) }}</span>
+              >Window {{ occupiedByOtherWindow.get(profile.id) }}</span
+            >
             <div class="profile-card__actions">
               <button
                 v-if="profile.id !== activeProfileId"
@@ -247,14 +248,17 @@ async function addProfile() {
 <style scoped>
 .profiles-form {
   margin-top: 14px;
+  min-width: 0;
 }
 .profiles-description {
   color: var(--muted);
   font-size: 13px;
+  line-height: 1.35;
 }
 .profile-list {
   display: grid;
   gap: 8px;
+  min-width: 0;
 }
 .profile-card {
   border: 1px solid var(--border);
@@ -265,10 +269,11 @@ async function addProfile() {
   gap: 8px;
 }
 .profile-card__header {
-  display: flex;
-  justify-content: space-between;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: 8px;
+  min-width: 0;
 }
 .profile-card__footer {
   display: flex;
@@ -278,9 +283,10 @@ async function addProfile() {
 .profile-card__actions {
   display: flex;
   gap: 4px;
+  justify-content: flex-end;
+  min-width: 0;
 }
 .profile-name-input {
-  flex: 1;
   min-width: 0;
   background: transparent;
   border: 1px solid transparent;
@@ -298,13 +304,13 @@ async function addProfile() {
 .profile-active-badge {
   color: var(--accent);
   font-size: 11px;
-  flex-shrink: 0;
+  justify-self: start;
 }
 .profile-desktop-badge {
   color: var(--muted);
   font-size: 11px;
-  flex-shrink: 0;
   font-style: italic;
+  justify-self: start;
 }
 .text-muted {
   color: var(--muted);
@@ -336,5 +342,39 @@ async function addProfile() {
   color: inherit;
   font: inherit;
   font-size: 13px;
+}
+
+@media (max-width: 520px) {
+  .profiles-form {
+    margin-top: 10px;
+    gap: 8px;
+  }
+
+  .profile-card {
+    padding: 8px;
+  }
+
+  .profile-card__header {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 6px;
+  }
+
+  .profile-card__actions {
+    justify-content: stretch;
+  }
+
+  .profile-card__actions .button {
+    flex: 1 1 0;
+    min-width: 0;
+  }
+
+  .profile-name-input {
+    padding-left: 0;
+  }
+
+  .profile-active-badge,
+  .profile-desktop-badge {
+    grid-row: 2;
+  }
 }
 </style>

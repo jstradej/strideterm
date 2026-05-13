@@ -21,6 +21,7 @@
           >
             <span class="profile-pick-swatch" :style="{ background: profile.color || '#ffa424' }"></span>
             <span class="profile-pick-name">{{ profile.name }}</span>
+            <span class="profile-pick-count">{{ workspaceCount(profile.id) }}</span>
           </button>
         </div>
       </template>
@@ -36,6 +37,7 @@
           >
             <span class="profile-pick-swatch" :style="{ background: entry.profile.color || '#ffa424' }"></span>
             <span class="profile-pick-name">{{ entry.profile.name }}</span>
+            <span class="profile-pick-count">{{ workspaceCount(entry.profile.id) }}</span>
             <span class="profile-pick-badge">Window {{ entry.windowIndex }}</span>
           </div>
         </div>
@@ -84,9 +86,15 @@ interface WindowSlot {
   profileId: string;
 }
 
+interface WorkspaceEntry {
+  id: string;
+  profileId?: string;
+}
+
 const props = defineProps<{
   profiles?: Profile[];
   windowSlots?: WindowSlot[];
+  workspaces?: WorkspaceEntry[];
 }>();
 
 const emit = defineEmits<{
@@ -116,6 +124,11 @@ const occupiedProfiles = computed<{ profile: Profile; windowIndex: number }[]>((
       return { profile: p, windowIndex: slotIdx + 1 };
     });
 });
+
+function workspaceCount(profileId: string): string {
+  const count = (props.workspaces || []).filter((ws) => (ws.profileId || "default") === profileId).length;
+  return `${count} workspace${count === 1 ? "" : "s"}`;
+}
 
 async function openWindow(profileId: string): Promise<void> {
   busy.value = true;
@@ -219,10 +232,13 @@ async function createProfileAndOpen(): Promise<void> {
 .profile-pick-name {
   flex: 1;
   font-weight: 600;
+  min-width: 0;
 }
+.profile-pick-count,
 .profile-pick-badge {
   font-size: 11px;
   color: var(--muted);
+  white-space: nowrap;
 }
 .new-profile-row {
   display: flex;
