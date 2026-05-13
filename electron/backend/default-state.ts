@@ -935,10 +935,10 @@ export function normalizeState(rawState: any = {}): AppState & { activeProjectId
   const profiles = normalizeProfiles(rawState.profiles, defaults);
   // Derive activeProfileId from the active workspace's profile. Used internally for
   // normalizeWindowSlots and activeWorkspaceId validation; not included in the returned state.
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const activeWsId = rawState.activeWorkspaceId || rawState.activeProjectId || "";
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const activeWsProfileId = activeWsId ? (rawWorkspaces as any[]).find((w: any) => w.id === activeWsId)?.profileId || null : null;
+  const rawWsList = rawWorkspaces as any[];
+  const activeWsProfileId = activeWsId ? rawWsList.find((w) => w.id === activeWsId)?.profileId || null : null;
   const activeProfileId =
     (activeWsProfileId && profiles.some((p) => p.id === activeWsProfileId) ? activeWsProfileId : null) ||
     profiles[0]?.id ||

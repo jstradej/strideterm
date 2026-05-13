@@ -1029,8 +1029,7 @@ export class GitHubManager extends BaseProviderManager {
           ? profileWorkspaces.find((ws) => ws.id === summary.existingWorkspaceId)
           : null);
 
-    const reviewProfileId =
-      (existingWorkspace as SyncWorkspace | undefined)?.profileId || activeProfile;
+    const reviewProfileId = (existingWorkspace as SyncWorkspace | undefined)?.profileId || activeProfile;
     const parentGitHubWorkspace =
       state.workspaces.find((ws) => ws.kind === "github" && (ws.profileId || "default") === reviewProfileId) || null;
     const parentWorkspaceId =

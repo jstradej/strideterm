@@ -2,10 +2,12 @@ import { describe, expect, test } from "vitest";
 import { RemoteClientRegistry } from "./remote-client-registry.js";
 
 // Minimal AppState shape needed by the registry.
-function makeState(opts: {
-  profiles?: { id: string }[];
-  workspaces?: { id: string; profileId?: string }[];
-} = {}) {
+function makeState(
+  opts: {
+    profiles?: { id: string }[];
+    workspaces?: { id: string; profileId?: string }[];
+  } = {},
+) {
   return {
     profiles: opts.profiles ?? [{ id: "default" }],
     workspaces: opts.workspaces ?? [],

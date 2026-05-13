@@ -1848,7 +1848,8 @@ export class AzureDevOpsManager extends BaseProviderManager {
     // active profile breaks when the user triggers quickfix from a different
     // profile than the one the connection lives on (the workspace lands on
     // the wrong profile and goes invisible).
-    const activeProfile = (connection as { profileId?: string }).profileId || (state.windowSlots || [])[0]?.profileId || "default";
+    const activeProfile =
+      (connection as { profileId?: string }).profileId || (state.windowSlots || [])[0]?.profileId || "default";
     const parentAzureWorkspace: ReviewWorkspace | null =
       state.workspaces.find(
         (ws: ReviewWorkspace) => ws.kind === "azure" && (ws.profileId || "default") === activeProfile,
