@@ -204,7 +204,9 @@ export const useAppStore = defineStore("app", () => {
   const filteredWorkspaces = computed(() => {
     const workspaces = payload.value?.appState?.workspaces || [];
     const activeProfileId =
-      myActiveProfileId.value ?? (payload.value?.appState?.activeProfileId as string | undefined) ?? "default";
+      myActiveProfileId.value ??
+      ((payload.value?.appState?.profiles as AnyApi[] | undefined)?.[0] as AnyApi)?.id ??
+      "default";
     const result = workspaces.filter((ws: AnyApi) => (ws.profileId || "default") === activeProfileId);
     // Include names and panel counts — these change on rename/add-tab/remove-tab
     const key = result
