@@ -193,11 +193,11 @@ describe("buildSessionCookieAttrs", () => {
 describe("remote token client profile context", () => {
   test("keeps profile activation scoped to the token client id", async () => {
     const port = await getFreePort();
-    const token = "test-token";
+    const auth = "test-token";
     const payload = {
       appState: {
         settings: {
-          remoteAccess: { enabled: true, host: "127.0.0.1", port, token },
+          remoteAccess: { enabled: true, host: "127.0.0.1", port, token: auth },
         },
         profiles: [
           { id: "p1", name: "P1", color: "#fff", workspaceIds: [] },
@@ -226,7 +226,7 @@ describe("remote token client profile context", () => {
     });
     const baseUrl = `http://127.0.0.1:${port}`;
     const headers = {
-      Authorization: `Bearer ${token}`,
+      Authorization: `Bearer ${auth}`,
       "X-Strideterm-Client-Id": "mobile-client-a",
     };
 
@@ -252,7 +252,7 @@ describe("remote token client profile context", () => {
 
       const otherClient = (await (
         await fetch(`${baseUrl}/api/state`, {
-          headers: { Authorization: `Bearer ${token}`, "X-Strideterm-Client-Id": "mobile-client-b" },
+          headers: { Authorization: `Bearer ${auth}`, "X-Strideterm-Client-Id": "mobile-client-b" },
         })
       ).json()) as { remoteClient?: { profileId?: string; activeWorkspaceId?: string } };
       expect(otherClient.remoteClient).toMatchObject({ profileId: "p1", activeWorkspaceId: "ws1" });

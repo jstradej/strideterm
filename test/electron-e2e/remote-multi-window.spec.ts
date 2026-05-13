@@ -28,7 +28,7 @@ import {
 } from "./helpers.js";
 
 const REMOTE_PORT = 48891;
-const REMOTE_TOKEN = "e2e-remote-test-token";
+const REMOTE_AUTH = "e2e-remote-test-token";
 const SESSION_COOKIE = "strideterm_session";
 
 async function waitReady(page: Page): Promise<void> {
@@ -47,7 +47,10 @@ async function waitForRemoteServer(port: number, maxWaitMs = 15_000): Promise<vo
         res.resume();
         resolve(true);
       });
-      req.setTimeout(1000, () => { req.destroy(); resolve(false); });
+      req.setTimeout(1000, () => {
+        req.destroy();
+        resolve(false);
+      });
       req.on("error", () => resolve(false));
     });
     if (ok) return;
@@ -121,7 +124,7 @@ test.describe("Remote — per-client profile identity with two desktop windows",
     await waitReady(secondPage);
 
     // Bootstrap a remote browser session via the token-redirect flow.
-    remoteCookie = await bootstrapRemoteSession(REMOTE_PORT, REMOTE_TOKEN);
+    remoteCookie = await bootstrapRemoteSession(REMOTE_PORT, REMOTE_AUTH);
   });
 
   // eslint-disable-next-line no-empty-pattern -- Playwright requires object-destructure even when unused
@@ -232,14 +235,14 @@ test.describe("Remote — desktop profile exclusivity is unaffected by remote cl
 
     // Establish a remote session and also activate profile-work.
     // This must NOT affect the desktop exclusivity guard.
-    const cookie = await bootstrapRemoteSession(REMOTE_PORT, REMOTE_TOKEN);
+    const cookie = await bootstrapRemoteSession(REMOTE_PORT, REMOTE_AUTH);
     await remotePost(REMOTE_PORT, cookie, "/api/remote-client/profile/activate", { profileId: "profile-work" });
 
     // Attempt to create a THIRD window for profile-work (already in W2 on desktop).
     const result = await page.evaluate(async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const res = await (window as any).strideterm?.createWindow?.("profile-work");
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
       return res as { error?: string; windowId?: string };
     });
 
@@ -249,8 +252,8 @@ test.describe("Remote — desktop profile exclusivity is unaffected by remote cl
     expect(result?.error).toMatch(/already open/i);
 
     // Confirm no third window was created.
-    const windowCount = await launched!.app.evaluate(({ BrowserWindow }) =>
-      BrowserWindow.getAllWindows().filter((w) => !w.isDestroyed()).length,
+    const windowCount = await launched!.app.evaluate(
+      ({ BrowserWindow }) => BrowserWindow.getAllWindows().filter((w) => !w.isDestroyed()).length,
     );
     expect(windowCount).toBe(2);
 
