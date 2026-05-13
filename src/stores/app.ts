@@ -167,7 +167,8 @@ export const useAppStore = defineStore("app", () => {
     const remoteClient = (sourcePayload as AnyApi)?.remoteClient;
     const workspaces = ((sourcePayload as AnyApi)?.appState?.workspaces || []) as AnyApi[];
     const profileId = resolveRemoteProfileId(sourcePayload);
-    const activeWorkspaceId = remoteClient?.activeWorkspaceId || "";
+    const activeWorkspaceId =
+      remoteClient?.activeWorkspaceId || (sourcePayload as AnyApi)?.appState?.activeWorkspaceId || "";
     const activeWorkspace = activeWorkspaceId ? workspaces.find((ws: AnyApi) => ws.id === activeWorkspaceId) : null;
     if (activeWorkspace && (activeWorkspace.profileId || "default") === profileId) return activeWorkspaceId;
     return workspaces.find((ws: AnyApi) => (ws.profileId || "default") === profileId)?.id || "";
