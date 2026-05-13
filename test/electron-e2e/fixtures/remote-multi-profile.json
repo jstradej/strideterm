@@ -1,0 +1,83 @@
+{
+  "activeWorkspaceId": "ws-personal-1",
+  "activeProjectId": "ws-personal-1",
+  "activeProfileId": "profile-personal",
+  "settings": {
+    "theme": "dark",
+    "sidebarWidth": 220,
+    "sidebarCollapsed": false,
+    "remoteAccess": {
+      "enabled": true,
+      "host": "127.0.0.1",
+      "port": 48891,
+      "token": "e2e-remote-test-token",
+      "customPublicUrl": "",
+      "cloudflaredPath": ""
+    },
+    "integrations": {
+      "azureDevops": { "enabled": false, "connections": [], "reviewRoot": "", "defaultPollSeconds": 600 },
+      "github": { "enabled": false, "connections": [], "reviewRoot": "", "defaultPollSeconds": 600 },
+      "telegram": { "enabled": false, "defaultPollSeconds": 600, "connections": [] }
+    },
+    "tabTemplates": [{ "id": "shell", "title": "Shell", "command": "", "icon": "terminal" }]
+  },
+  "profiles": [
+    {
+      "id": "profile-personal",
+      "name": "Personal",
+      "color": "#4a9eff",
+      "workspaceIds": ["ws-personal-1"],
+      "projectIds": ["ws-personal-1"]
+    },
+    {
+      "id": "profile-work",
+      "name": "Work",
+      "color": "#ff6b6b",
+      "workspaceIds": ["ws-work-1"],
+      "projectIds": ["ws-work-1"]
+    }
+  ],
+  "workspaces": [
+    {
+      "id": "ws-personal-1",
+      "name": "Personal Project",
+      "icon": "P",
+      "color": "#4a9eff",
+      "kind": "terminal",
+      "source": "manual",
+      "pluginId": "",
+      "cwd": "",
+      "notes": "",
+      "profileId": "profile-personal",
+      "panels": [
+        {
+          "id": "panel-p1",
+          "title": "Shell",
+          "command": "",
+          "startup": "shell"
+        }
+      ]
+    },
+    {
+      "id": "ws-work-1",
+      "name": "Work Project",
+      "icon": "W",
+      "color": "#ff6b6b",
+      "kind": "terminal",
+      "source": "manual",
+      "pluginId": "",
+      "cwd": "",
+      "notes": "",
+      "profileId": "profile-work",
+      "panels": [
+        {
+          "id": "panel-w1",
+          "title": "Shell",
+          "command": "",
+          "startup": "shell"
+        }
+      ]
+    }
+  ],
+  "windowSlots": []
+}

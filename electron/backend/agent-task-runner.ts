@@ -325,7 +325,7 @@ export class AgentTaskRunner {
     workerProvider,
     judgeProvider,
   }: {
-    state: Pick<AppState, "activeProfileId"> & Partial<Pick<AppState, "workspaces">>;
+    state: Partial<Pick<AppState, "workspaces" | "windowSlots">>;
     description: string;
     cwd: string;
     parentWorkspaceId: string;
@@ -412,7 +412,7 @@ export class AgentTaskRunner {
       // parent. Falls back to active profile when there is no parent.
       profileId:
         (parentWorkspaceId && state.workspaces?.find((w) => w.id === parentWorkspaceId)?.profileId) ||
-        state.activeProfileId ||
+        (state.windowSlots || [])[0]?.profileId ||
         "default",
       connectionId: "",
       activePanelId: dashboardPanelId,

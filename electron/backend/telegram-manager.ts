@@ -403,6 +403,9 @@ export class TelegramManager extends EventEmitter {
   private _profileChoices(): TelegramProfileInfo[] {
     const profiles = this.getProfiles?.() ?? [];
     if (profiles.length > 0) return profiles;
+    // Fallback: derive from open window slots instead of the deprecated global activeProfileId
+    const slots = this.getWindowSlots?.() ?? [];
+    if (slots.length > 0) return slots.map((s) => ({ id: s.profileId, name: s.profileId }));
     const active = this.getActiveProfileId?.() || "default";
     return [{ id: active, name: active }];
   }
@@ -412,8 +415,18 @@ export class TelegramManager extends EventEmitter {
     const profiles = this._profileChoices();
     if (conn.profileId && profiles.some((profile) => profile.id === conn.profileId)) return conn.profileId;
     if (conn.profileId && profiles.length === 0) return conn.profileId;
-    if (profiles.length <= 1) return profiles[0]?.id || this.getActiveProfileId?.() || "default";
+    const slots = this.getWindowSlots?.() ?? [];
+    if (profiles.length <= 1) return profiles[0]?.id || slots[0]?.profileId || this.getActiveProfileId?.() || "default";
     return null;
+  }
+
+  /**
+   * Returns the window slot ID for the given profileId, or undefined if the
+   * profile is not open in any desktop window.
+   */
+  private _windowIdForProfile(profileId: string): string | undefined {
+    const slots = this.getWindowSlots?.() ?? [];
+    return slots.find((s) => s.profileId === profileId)?.id;
   }
 
   private async _resolveProfileOrPrompt(
@@ -1763,6 +1776,23 @@ export class TelegramManager extends EventEmitter {
   ): Promise<void> {
     const activeProfile = await this._resolveProfileOrPrompt(chatId, token, conn, { type: "task" }, explicitProfileId);
     if (!activeProfile) return;
+
+    // Require the resolved profile to be open in a desktop window. If no
+    // window is showing it, there is no context to run a task in — reject
+    // instead of silently creating a workspace nobody can see.
+    const taskWindowId = this._windowIdForProfile(activeProfile);
+    const slots = this.getWindowSlots?.() ?? [];
+    if (slots.length > 0 && !taskWindowId) {
+      log.warn("telegram: /task rejected — profile not open on desktop", { profileId: activeProfile });
+      await this._sendText(
+        token,
+        chatId,
+        `⚠️ Profile *${escapeMarkdown(activeProfile)}* is not open in any desktop window\\.`,
+        true,
+      );
+      return;
+    }
+
     // Rate-limit: prevent rapid-fire /task spam from creating many workspaces.
     const last = this.lastTaskCommandAt.get(chatId) ?? 0;
     const sinceMs = Date.now() - last;

@@ -149,26 +149,22 @@ describe("workspace grid store — computed properties", () => {
 });
 
 // Regression: when a window is on a profile whose `workspaceGrid` is explicitly
-// `null` (post-migration "no grid"), the deprecated top-level `appState.workspaceGrid`
-// (which the backend keeps in sync with the GLOBAL `activeProfileId`) MUST NOT
-// leak in. Otherwise the IN SPLIT sidebar section in profile A shows profile B's
-// workspaces and clicks re-route activations into the wrong profile.
+// `null` (post-migration "no grid"), the top-level `appState.workspaceGrid`
+// (which may reflect a different profile's grid) MUST NOT leak in. Otherwise
+// the IN SPLIT sidebar section in profile A shows profile B's workspaces and
+// clicks re-route activations into the wrong profile.
 describe("workspace grid store — per-profile grid resolution", () => {
   beforeEach(() => {
     setActivePinia(createPinia());
-    delete (window as AnyApi).strideterm;
+    (window as AnyApi).strideterm = { startupFlags: { windowId: "test-win" } };
   });
 
   function makeMultiProfilePayload(overrides: AnyApi = {}): StatePayload {
+    const profileId: string = overrides.activeProfileId ?? "other";
     return {
       appState: {
         workspaces: BASE_WORKSPACES,
         activeWorkspaceId: "ws-A",
-        // Global active profile points at "other"; the deprecated global grid
-        // mirrors that profile's grid (this is what the prod state file shows
-        // once activateProfileInWindow has drifted slot.profileId away from
-        // global activeProfileId).
-        activeProfileId: "other",
         workspaceGrid: { layout: "cols", cellWorkspaceIds: ["ws-C", "ws-D"] },
         profiles: [
           { id: "current", name: "Current", color: "#fff", workspaceIds: [], workspaceGrid: null },
@@ -180,6 +176,16 @@ describe("workspace grid store — per-profile grid resolution", () => {
             workspaceGrid: { layout: "cols", cellWorkspaceIds: ["ws-C", "ws-D"] },
           },
         ],
+        windowSlots: [
+          {
+            id: "test-win",
+            profileId,
+            activeWorkspaceId: "ws-A",
+            activeSessionId: "",
+            bounds: { x: 0, y: 0, width: 1280, height: 800 },
+            lastFocusedAt: 0,
+          },
+        ],
         ...overrides,
       },
     } as AnyApi;
@@ -188,9 +194,7 @@ describe("workspace grid store — per-profile grid resolution", () => {
   it("returns null for a profile whose workspaceGrid is explicitly null (does not leak global)", () => {
     const store = useAppStore();
     store.payload = makeMultiProfilePayload({ activeProfileId: "current" });
-    // myActiveProfileId falls back to appState.activeProfileId ("current") in tests
-    // because no window slot is set. The "current" profile has workspaceGrid: null,
-    // so the computed must NOT fall back to the deprecated global.
+    // "current" profile has workspaceGrid: null; must NOT fall back to the global grid.
     expect(store.workspaceGrid).toBeNull();
   });
 
@@ -206,10 +210,19 @@ describe("workspace grid store — per-profile grid resolution", () => {
       appState: {
         workspaces: BASE_WORKSPACES,
         activeWorkspaceId: "ws-A",
-        activeProfileId: "legacy",
         workspaceGrid: { layout: "cols", cellWorkspaceIds: ["ws-A", "ws-B"] },
         // Profile entry omits `workspaceGrid` entirely — legacy compat path.
         profiles: [{ id: "legacy", name: "Legacy", color: "#fff", workspaceIds: [] }],
+        windowSlots: [
+          {
+            id: "test-win",
+            profileId: "legacy",
+            activeWorkspaceId: "ws-A",
+            activeSessionId: "",
+            bounds: { x: 0, y: 0, width: 1280, height: 800 },
+            lastFocusedAt: 0,
+          },
+        ],
       },
     } as AnyApi;
     expect(store.workspaceGrid).toEqual({ layout: "cols", cellWorkspaceIds: ["ws-A", "ws-B"] });

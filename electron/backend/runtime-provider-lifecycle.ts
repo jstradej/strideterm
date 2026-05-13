@@ -67,7 +67,7 @@ export function createProviderLifecycle(ctx: ProviderLifecycleCtx) {
 
   // --- Azure DevOps ---
 
-  function getAzureWorkspace(profileId = getState().activeProfileId || "default"): WorkspaceState | null {
+  function getAzureWorkspace(profileId = (getState().windowSlots || [])[0]?.profileId || "default"): WorkspaceState | null {
     return (
       getState().workspaces.find(
         (workspace) => workspace.kind === "azure" && (workspace.profileId || "default") === profileId,
@@ -75,11 +75,11 @@ export function createProviderLifecycle(ctx: ProviderLifecycleCtx) {
     );
   }
 
-  async function ensureAzureWorkspace(profileId = getState().activeProfileId || "default"): Promise<WorkspaceState> {
+  async function ensureAzureWorkspace(profileId = (getState().windowSlots || [])[0]?.profileId || "default"): Promise<WorkspaceState> {
     const existing = getAzureWorkspace(profileId);
     log.debug("ensureAzureWorkspace: called", {
       requestedProfileId: profileId,
-      stateActiveProfileId: getState().activeProfileId || null,
+      stateActiveProfileId: (getState().windowSlots || [])[0]?.profileId || null,
       existingId: existing?.id || null,
       existingProfileId: existing?.profileId || null,
     });
@@ -122,7 +122,7 @@ export function createProviderLifecycle(ctx: ProviderLifecycleCtx) {
       connections: getAzureConnections(state),
       workspaces: state.workspaces,
       gitSnapshots: git.getProjectMap(),
-      activeProfileId: state.activeProfileId || "default",
+      activeProfileId: (state.windowSlots || [])[0]?.profileId || "default",
     });
     await repairAzureReviewWorkspaceMetadata();
 
@@ -316,13 +316,13 @@ export function createProviderLifecycle(ctx: ProviderLifecycleCtx) {
 
   // --- GitHub ---
 
-  function getGitHubWorkspace(profileId = getState().activeProfileId || "default"): WorkspaceState | null {
+  function getGitHubWorkspace(profileId = (getState().windowSlots || [])[0]?.profileId || "default"): WorkspaceState | null {
     return (
       getState().workspaces.find((ws) => ws.kind === "github" && (ws.profileId || "default") === profileId) || null
     );
   }
 
-  async function ensureGitHubWorkspace(profileId = getState().activeProfileId || "default"): Promise<WorkspaceState> {
+  async function ensureGitHubWorkspace(profileId = (getState().windowSlots || [])[0]?.profileId || "default"): Promise<WorkspaceState> {
     const existing = getGitHubWorkspace(profileId);
     if (existing) return existing;
     const panels = createAzureWorkspaceReviewPanels(getState().tabTemplates || []);
@@ -352,7 +352,7 @@ export function createProviderLifecycle(ctx: ProviderLifecycleCtx) {
       connections: getGitHubConnections(state),
       workspaces: state.workspaces,
       gitSnapshots: git.getProjectMap(),
-      activeProfileId: state.activeProfileId || "default",
+      activeProfileId: (state.windowSlots || [])[0]?.profileId || "default",
     });
 
     const refreshedState = getState();

@@ -89,7 +89,7 @@ function bindElectronTransport(): Transport {
   };
 }
 
-function createRemoteTransport(): Transport {
+export function createRemoteTransport(): Transport {
   const listeners = createEventHub();
   const query = new URLSearchParams(window.location.search);
   let token = query.get("token") || window.sessionStorage.getItem("strideterm-token") || "";
@@ -293,9 +293,12 @@ function createRemoteTransport(): Transport {
       return Promise.resolve();
     },
     getState: () => fetchJson("/api/state") as Promise<StatePayload>,
-    activateWorkspace: (workspaceId) => fetchJson("/api/workspace/activate", { workspaceId }),
     activateProject: (projectId) => fetchJson("/api/project/activate", { projectId }),
-    activateSession: (sessionId) => fetchJson("/api/session/activate", { sessionId }),
+    activateSession: (sessionId) => {
+      // sessionId format is "workspaceId:panelId" — derive workspaceId from it.
+      const workspaceId = String(sessionId || "").split(":")[0];
+      return fetchJson("/api/remote-client/session/activate", { workspaceId, sessionId });
+    },
     setWorkspaceUIState: (workspaceId, uiState) => fetchJson("/api/workspace/set-ui-state", { workspaceId, uiState }),
     enableWorkspaceGrid: (layout, workspaceIds) => fetchJson("/api/workspace-grid/enable", { layout, workspaceIds }),
     disableWorkspaceGrid: () => fetchJson("/api/workspace-grid/disable", {}),
@@ -447,7 +450,8 @@ function createRemoteTransport(): Transport {
     createWorktree: (payload) => fetchJson("/api/git/create-worktree", payload),
     saveProfile: (profile) => fetchJson("/api/profile/save", { profile }),
     deleteProfile: (profileId) => fetchJson("/api/profile/delete", { profileId }),
-    activateProfile: (profileId) => fetchJson("/api/profile/activate", { profileId }),
+    activateProfile: (profileId) => fetchJson("/api/remote-client/profile/activate", { profileId }),
+    activateWorkspace: (workspaceId) => fetchJson("/api/remote-client/workspace/activate", { workspaceId }),
     fileList: (p) => fetchJson("/api/file/list", p),
     fileTree: (p) => fetchJson("/api/file/tree", p),
     filePreview: (p) => fetchJson("/api/file/preview", p),

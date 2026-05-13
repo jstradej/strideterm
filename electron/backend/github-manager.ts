@@ -121,7 +121,7 @@ interface PrepareManagedReviewCheckoutOptions {
 interface OpenReviewWorkspaceOptions {
   state: {
     workspaces: SyncWorkspace[];
-    activeProfileId?: string;
+    windowSlots?: Array<{ profileId?: string }>;
     tabTemplates?: unknown[];
   };
   prKey: string;
@@ -131,7 +131,7 @@ interface OpenReviewWorkspaceOptions {
 interface OpenQuickFixWorkspaceOptions {
   state: {
     workspaces: SyncWorkspace[];
-    activeProfileId?: string;
+    windowSlots?: Array<{ profileId?: string }>;
     tabTemplates?: unknown[];
   };
   connectionId: string;
@@ -1020,7 +1020,7 @@ export class GitHubManager extends BaseProviderManager {
     const token = this.credentialStore.getSecret(connection.tokenRef || "");
     if (!token) throw new Error("PAT is missing.");
 
-    const activeProfile = state.activeProfileId || "default";
+    const activeProfile = (state.windowSlots || [])[0]?.profileId || "default";
     const profileWorkspaces = state.workspaces.filter((ws) => (ws.profileId || "default") === activeProfile);
     const existingWorkspace = workspaceId
       ? profileWorkspaces.find((ws) => ws.id === workspaceId)
@@ -1030,7 +1030,7 @@ export class GitHubManager extends BaseProviderManager {
           : null);
 
     const reviewProfileId =
-      (existingWorkspace as SyncWorkspace | undefined)?.profileId || state.activeProfileId || "default";
+      (existingWorkspace as SyncWorkspace | undefined)?.profileId || activeProfile;
     const parentGitHubWorkspace =
       state.workspaces.find((ws) => ws.kind === "github" && (ws.profileId || "default") === reviewProfileId) || null;
     const parentWorkspaceId =
@@ -1306,7 +1306,7 @@ export class GitHubManager extends BaseProviderManager {
     // Pin to the connection's profile — falling back to active profile breaks
     // when quickfix is invoked from a profile that doesn't own the connection
     // (the workspace ends up on the wrong profile and goes invisible).
-    const activeProfile = (connRec.profileId as string) || state.activeProfileId || "default";
+    const activeProfile = (connRec.profileId as string) || (state.windowSlots || [])[0]?.profileId || "default";
     const parentGitHubWorkspace =
       state.workspaces.find((ws) => ws.kind === "github" && (ws.profileId || "default") === activeProfile) || null;
     const reviewRoot = parentGitHubWorkspace?.cwd || (connRec.reviewRoot as string) || getDefaultReviewRoot();

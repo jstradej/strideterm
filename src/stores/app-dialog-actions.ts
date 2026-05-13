@@ -261,7 +261,13 @@ export function createDialogActions(ctx: DialogActionsCtx) {
         // normalizes it to "default" — landing the workspace on the wrong
         // profile silently.
         if (!draft.profileId) {
-          draft.profileId = ctx.payload.value?.appState?.activeProfileId || "default";
+          const _slots = (ctx.payload.value?.appState?.windowSlots || []) as Array<{ id: string; profileId?: string }>;
+          const _windowId = (window as AnyApi).strideterm?.startupFlags?.windowId || "";
+          draft.profileId =
+            (ctx.payload.value as AnyApi)?.remoteClient?.profileId ||
+            (_windowId && _slots.find((s) => s.id === _windowId)?.profileId) ||
+            _slots[0]?.profileId ||
+            "default";
         }
         // Guard: preserve task workspace identity on edit (kind + task object must survive)
         if (!isNew && workspace.kind === "task" && workspace.task) {
@@ -371,31 +377,41 @@ export function createDialogActions(ctx: DialogActionsCtx) {
 
   function openProfilesDialog(): void {
     const appState = ctx.payload.value?.appState || ({} as AnyApi);
-    // Use THIS window's profile (per-window slot), not the global activeProfileId.
-    // Global can stay stale on the last-activated profile after that window is
-    // closed; the dialog uses activeProfileId to decide which row is "(active)"
-    // and which rows are "occupied by another window", so a stale value mis-
-    // marks both the closed window's profile (looks active, no Activate button)
-    // and this window's actual profile (looks occupied, Activate disabled).
+    const api = ctx.getApi();
+    const isRemote = api.isRemote;
+
+    // Determine the current profile for THIS viewer (window slot in Electron,
+    // remoteClient context in remote mode).
     const myWindowId = (window as AnyApi).strideterm?.startupFlags?.windowId || "";
     const slots = ((appState as AnyApi).windowSlots || []) as Array<{ id: string; profileId: string }>;
-    const myProfileId =
-      (myWindowId && slots.find((s) => s.id === myWindowId)?.profileId) ||
-      (appState as AnyApi).activeProfileId ||
-      "default";
+    const myCurrentProfileId = isRemote
+      ? (ctx.payload.value as AnyApi)?.remoteClient?.profileId || null
+      : (myWindowId && slots.find((s) => s.id === myWindowId)?.profileId) || slots[0]?.profileId || null;
+
+    // Build desktopOccupancy map: profileId → 1-based window index.
+    // In remote mode this is info-only (no disable); in Electron it disables the button.
+    const desktopOccupancy = new Map<string, number>();
+    slots.forEach((slot, idx) => {
+      if (slot.profileId !== myCurrentProfileId) {
+        desktopOccupancy.set(slot.profileId, idx + 1);
+      }
+    });
+
     openDialog("ProfilesDialog", {
       profiles: JSON.parse(JSON.stringify((appState as AnyApi).profiles || [])) as unknown[],
-      activeProfileId: myProfileId,
+      activeProfileId: myCurrentProfileId ?? undefined,
       workspaces: (appState as AnyApi).workspaces || [],
-      windowSlots: (appState as AnyApi).windowSlots || [],
+      windowSlots: isRemote ? [] : ((appState as AnyApi).windowSlots || []),
+      isRemote,
+      desktopOccupancy,
       onCancel: closeDialog,
       onSave: async (profile: AnyApi) => {
-        ctx.payload.value = (await (ctx.getApi() as AnyApi).saveProfile(profile)) as StatePayload;
+        ctx.payload.value = (await (api as AnyApi).saveProfile(profile)) as StatePayload;
       },
       onActivate: async (profileId: string) => {
         ctx.suppressBroadcast.value = true;
         try {
-          ctx.payload.value = (await (ctx.getApi() as AnyApi).activateProfile(profileId)) as StatePayload;
+          ctx.payload.value = (await (api as AnyApi).activateProfile(profileId)) as StatePayload;
         } catch (err) {
           ctx.suppressBroadcast.value = false;
           throw err;
@@ -410,7 +426,7 @@ export function createDialogActions(ctx: DialogActionsCtx) {
       },
       onDelete: async (profileId: string) => {
         try {
-          ctx.payload.value = (await (ctx.getApi() as AnyApi).deleteProfile(profileId)) as StatePayload;
+          ctx.payload.value = (await (api as AnyApi).deleteProfile(profileId)) as StatePayload;
         } catch (err) {
           const msg = ((err as Error)?.message || String(err || ""))
             .replace(/^Error invoking remote method '[^']+':\s*/, "")
@@ -431,7 +447,7 @@ export function createDialogActions(ctx: DialogActionsCtx) {
       defaultReviewRoot: (azureSettings as AnyApi).reviewRoot || "",
       onCancel: closeDialog,
       onSave: async (draft: AnyApi) => {
-        draft.profileId = ctx.payload.value?.appState?.activeProfileId || "default";
+        draft.profileId = ((ctx.payload.value?.appState?.windowSlots || [])[0] as AnyApi)?.profileId || "default";
         const result = (await (ctx.getApi() as AnyApi).saveAzureConnection(draft)) as AnyApi;
         ctx.payload.value = (result.payload || result) as StatePayload;
         closeDialog();
@@ -447,7 +463,7 @@ export function createDialogActions(ctx: DialogActionsCtx) {
       defaultReviewRoot: (ghSettings as AnyApi).reviewRoot || "",
       onCancel: closeDialog,
       onSave: async (draft: AnyApi) => {
-        draft.profileId = ctx.payload.value?.appState?.activeProfileId || "default";
+        draft.profileId = ((ctx.payload.value?.appState?.windowSlots || [])[0] as AnyApi)?.profileId || "default";
         const result = (await (ctx.getApi() as AnyApi).saveGitHubConnection(draft)) as AnyApi;
         ctx.payload.value = (result.payload || result) as StatePayload;
         closeDialog();
@@ -697,7 +713,7 @@ export function createDialogActions(ctx: DialogActionsCtx) {
               .replace(/[\\/]+$/, "")
               .replace(/\\/g, "/")
               .toLowerCase();
-            const activeProfileId = ctx.payload.value?.appState?.activeProfileId || "default";
+            const activeProfileId = ((ctx.payload.value?.appState?.windowSlots || [])[0] as AnyApi)?.profileId || "default";
             const workspaces = ctx.payload.value?.appState?.workspaces || [];
             const parent = workspaces.find(
               (ws: AnyApi) =>

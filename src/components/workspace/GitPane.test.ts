@@ -103,6 +103,7 @@ function mountPane(workspaceId: string, workspaces: any[] = []) {
       workspaces,
       activeProfileId: "default",
       profiles: [{ id: "default", name: "Default", color: "#ffa424", workspaceIds: [] }],
+      windowSlots: [{ id: "win-test", profileId: "default", activeWorkspaceId: workspaceId }],
     },
     git: {
       workspaces: {
@@ -117,6 +118,8 @@ function mountPane(workspaceId: string, workspaces: any[] = []) {
 
 beforeEach(() => {
   setActivePinia(createPinia());
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (window as any).strideterm = { startupFlags: { windowId: "win-test" } };
 });
 
 describe("GitPane repo picker", () => {

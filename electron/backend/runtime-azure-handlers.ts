@@ -89,11 +89,11 @@ export function createAzureHandlers(ctx: AzureHandlerCtx) {
         ...normalizedInput,
         pat,
       });
-      const resolvedProfileId = connection.profileId || getState().activeProfileId || "default";
+      const resolvedProfileId = connection.profileId || (getState().windowSlots || [])[0]?.profileId || "default";
       log.debug("saveAzureConnection: profile resolution", {
         connectionId,
         incomingProfileId: connection.profileId || null,
-        stateActiveProfileId: getState().activeProfileId || null,
+        stateActiveProfileId: (getState().windowSlots || [])[0]?.profileId || null,
         resolvedProfileId,
         existingConnectionsForProfile: getAzureConnections(getState()).filter(
           (c: { profileId?: string }) => (c.profileId || "default") === resolvedProfileId,

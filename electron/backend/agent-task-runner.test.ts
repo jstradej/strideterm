@@ -48,7 +48,7 @@ function createMockDeps(workspaces: any[] = []): any {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function createTaskWorkspace(runner: any, overrides: any = {}) {
   const ws = runner.createTaskWorkspace({
-    state: { activeProfileId: "default" },
+    state: {},
     description: overrides.description || "Implement feature X",
     cwd: overrides.cwd || "/tmp/test-project",
     parentWorkspaceId: "",
@@ -103,7 +103,7 @@ describe("AgentTaskRunner", () => {
 
     test("uses custom name when provided", () => {
       const ws = runner.createTaskWorkspace({
-        state: { activeProfileId: "default" },
+        state: {},
         description: "Some task",
         cwd: "/tmp/test",
         parentWorkspaceId: "",
@@ -115,7 +115,7 @@ describe("AgentTaskRunner", () => {
 
     test("falls back to description-based name when name is empty", () => {
       const ws = runner.createTaskWorkspace({
-        state: { activeProfileId: "default" },
+        state: {},
         description: "Build pagination",
         cwd: "/tmp/test",
         parentWorkspaceId: "",
@@ -126,7 +126,7 @@ describe("AgentTaskRunner", () => {
 
     test("uses custom icon when provided", () => {
       const ws = runner.createTaskWorkspace({
-        state: { activeProfileId: "default" },
+        state: {},
         description: "Test",
         cwd: "/tmp/test",
         parentWorkspaceId: "",
@@ -141,7 +141,7 @@ describe("AgentTaskRunner", () => {
 
     test("uses custom color when provided", () => {
       const ws = runner.createTaskWorkspace({
-        state: { activeProfileId: "default" },
+        state: {},
         description: "Test",
         cwd: "/tmp/test",
         parentWorkspaceId: "",
@@ -152,7 +152,7 @@ describe("AgentTaskRunner", () => {
 
     test("uses custom notes when provided", () => {
       const ws = runner.createTaskWorkspace({
-        state: { activeProfileId: "default" },
+        state: {},
         description: "Test",
         cwd: "/tmp/test",
         parentWorkspaceId: "",
@@ -163,7 +163,7 @@ describe("AgentTaskRunner", () => {
 
     test("uses custom worker command when provided", () => {
       const ws = runner.createTaskWorkspace({
-        state: { activeProfileId: "default" },
+        state: {},
         description: "Test",
         cwd: "/tmp/test",
         parentWorkspaceId: "",
@@ -174,7 +174,7 @@ describe("AgentTaskRunner", () => {
 
     test("uses custom judge command when provided", () => {
       const ws = runner.createTaskWorkspace({
-        state: { activeProfileId: "default" },
+        state: {},
         description: "Test",
         cwd: "/tmp/test",
         parentWorkspaceId: "",
@@ -190,7 +190,7 @@ describe("AgentTaskRunner", () => {
 
     test("builds copilot worker/judge commands from explicit workerProvider", () => {
       const ws = runner.createTaskWorkspace({
-        state: { activeProfileId: "default" },
+        state: {},
         description: "Copilot task",
         cwd: "/tmp/test",
         parentWorkspaceId: "",
@@ -213,7 +213,7 @@ describe("AgentTaskRunner", () => {
 
     test("parses copilot providerId from legacy workerCommand string", () => {
       const ws = runner.createTaskWorkspace({
-        state: { activeProfileId: "default" },
+        state: {},
         description: "Legacy-string task",
         cwd: "/tmp/test",
         parentWorkspaceId: "",
@@ -408,7 +408,7 @@ describe("AgentTaskRunner", () => {
       try {
         const localRunner = new AgentTaskRunner();
         const ws = localRunner.createTaskWorkspace({
-          state: { activeProfileId: "default" },
+          state: {},
           description: "Override test",
           cwd: tmp,
           parentWorkspaceId: "",
@@ -448,7 +448,7 @@ describe("AgentTaskRunner", () => {
       try {
         const localRunner = new AgentTaskRunner();
         const ws = localRunner.createTaskWorkspace({
-          state: { activeProfileId: "default" },
+          state: {},
           description: "No-override test",
           cwd: tmp,
           parentWorkspaceId: "",
@@ -898,7 +898,7 @@ describe("AgentTaskRunner", () => {
 
     test("marks Windows Copilot judge workspaces as headless in snapshot", () => {
       const ws = runner.createTaskWorkspace({
-        state: { activeProfileId: "default" },
+        state: {},
         description: "Copilot judge",
         cwd: "/tmp/test",
         parentWorkspaceId: "",
@@ -934,7 +934,7 @@ describe("createTaskWorkspace - worktree fields", () => {
   test("worktree fields can be set after creation (as runtime does)", () => {
     const runner = new AgentTaskRunner();
     const ws = runner.createTaskWorkspace({
-      state: { activeProfileId: "default" },
+      state: {},
       description: "Test task",
       cwd: "/tmp/worktree-path",
       parentWorkspaceId: "",
@@ -952,7 +952,7 @@ describe("createTaskWorkspace - worktree fields", () => {
   test("worktree fields default to empty strings", () => {
     const runner = new AgentTaskRunner();
     const ws = runner.createTaskWorkspace({
-      state: { activeProfileId: "default" },
+      state: {},
       description: "Regular task",
       cwd: "/tmp/project",
       parentWorkspaceId: "",
@@ -967,7 +967,7 @@ describe("createTaskWorkspace - shower mode defaults", () => {
   test("includes showerInterval and lastShowerRound", () => {
     const runner = new AgentTaskRunner();
     const ws = runner.createTaskWorkspace({
-      state: { activeProfileId: "default" },
+      state: {},
       description: "Test task",
       cwd: "/tmp/test",
       parentWorkspaceId: "",
@@ -983,7 +983,7 @@ describe("startTask - prompt sent tracking", () => {
   test("sets promptSent to true when description is provided", async () => {
     const runner = new AgentTaskRunner();
     const ws = runner.createTaskWorkspace({
-      state: { activeProfileId: "default" },
+      state: {},
       description: "Test task",
       cwd: "/tmp/test",
       parentWorkspaceId: "",
@@ -1005,7 +1005,7 @@ describe("startTask - prompt sent tracking", () => {
     // so Start should always inject the prompt.
     const runner = new AgentTaskRunner();
     const ws = runner.createTaskWorkspace({
-      state: { activeProfileId: "default" },
+      state: {},
       description: "",
       cwd: "/tmp/test",
       parentWorkspaceId: "",
@@ -1032,7 +1032,7 @@ describe("resumeTask - late prompt delivery", () => {
     // receive the initial prompt so Resume isn't a silent no-op.
     const runner = new AgentTaskRunner();
     const ws = runner.createTaskWorkspace({
-      state: { activeProfileId: "default" },
+      state: {},
       description: "",
       cwd: "/tmp/test",
       parentWorkspaceId: "",
@@ -1075,7 +1075,7 @@ describe("resumeTask - late prompt delivery", () => {
     const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-typing-"));
     const runner = new AgentTaskRunner();
     const ws = runner.createTaskWorkspace({
-      state: { activeProfileId: "default" },
+      state: {},
       description: "",
       cwd: tmp,
       parentWorkspaceId: "",
@@ -1130,7 +1130,7 @@ describe("resumeTask - late prompt delivery", () => {
   test("uses paste style with single bulk write for Claude (no char-by-char overhead)", async () => {
     const runner = new AgentTaskRunner();
     const ws = runner.createTaskWorkspace({
-      state: { activeProfileId: "default" },
+      state: {},
       description: "",
       cwd: "/tmp/test",
       parentWorkspaceId: "",
@@ -1185,7 +1185,7 @@ describe("resumeTask - late prompt delivery", () => {
   test("does not re-send prompt on resume if it was already sent", async () => {
     const runner = new AgentTaskRunner();
     const ws = runner.createTaskWorkspace({
-      state: { activeProfileId: "default" },
+      state: {},
       description: "Real task",
       cwd: "/tmp/test",
       parentWorkspaceId: "",

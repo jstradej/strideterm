@@ -1330,7 +1330,7 @@ export class AzureDevOpsManager extends BaseProviderManager {
     prKey,
     workspaceId = "",
   }: {
-    state: { workspaces: ReviewWorkspace[]; activeProfileId?: string; tabTemplates?: unknown[] };
+    state: { workspaces: ReviewWorkspace[]; windowSlots?: Array<{ profileId?: string }>; tabTemplates?: unknown[] };
     prKey: string;
     workspaceId?: string;
   }) {
@@ -1347,7 +1347,7 @@ export class AzureDevOpsManager extends BaseProviderManager {
       throw new Error("PAT is missing.");
     }
 
-    const activeProfile = state.activeProfileId || "default";
+    const activeProfile = (state.windowSlots || [])[0]?.profileId || "default";
     const profileWorkspaces = state.workspaces.filter((ws) => (ws.profileId || "default") === activeProfile);
     const existingWorkspace: ReviewWorkspace | null | undefined = workspaceId
       ? profileWorkspaces.find((workspace) => workspace.id === workspaceId)
@@ -1356,7 +1356,7 @@ export class AzureDevOpsManager extends BaseProviderManager {
           ? profileWorkspaces.find((workspace) => workspace.id === summary.existingWorkspaceId)
           : null);
 
-    const reviewProfileId = existingWorkspace?.profileId || state.activeProfileId || "default";
+    const reviewProfileId = existingWorkspace?.profileId || activeProfile;
     const parentAzureWorkspace =
       state.workspaces.find(
         (workspace) => workspace.kind === "azure" && (workspace.profileId || "default") === reviewProfileId,
@@ -1833,7 +1833,7 @@ export class AzureDevOpsManager extends BaseProviderManager {
     baseBranch,
     newBranchName,
   }: {
-    state: { workspaces: ReviewWorkspace[]; activeProfileId?: string; tabTemplates?: unknown[] };
+    state: { workspaces: ReviewWorkspace[]; windowSlots?: Array<{ profileId?: string }>; tabTemplates?: unknown[] };
     connectionId: string;
     projectName: string;
     repositoryId: string;
@@ -1848,7 +1848,7 @@ export class AzureDevOpsManager extends BaseProviderManager {
     // active profile breaks when the user triggers quickfix from a different
     // profile than the one the connection lives on (the workspace lands on
     // the wrong profile and goes invisible).
-    const activeProfile = (connection as { profileId?: string }).profileId || state.activeProfileId || "default";
+    const activeProfile = (connection as { profileId?: string }).profileId || (state.windowSlots || [])[0]?.profileId || "default";
     const parentAzureWorkspace: ReviewWorkspace | null =
       state.workspaces.find(
         (ws: ReviewWorkspace) => ws.kind === "azure" && (ws.profileId || "default") === activeProfile,

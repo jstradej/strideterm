@@ -782,7 +782,7 @@ const parentWorkspace = computed(() => {
     .replace(/\\/g, "/")
     .toLowerCase();
   if (!normCwd) return null;
-  const activeProfileId = store.payload?.appState?.activeProfileId || "default";
+  const activeProfileId = store.myActiveProfileId || "default";
   return (
     (store.filteredWorkspaces || []).find(
       (ws) =>

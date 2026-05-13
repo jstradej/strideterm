@@ -8,6 +8,7 @@
       @click="$emit('click')"
     >
       {{ profile.name }}
+      <span v-if="isRemote" class="profile-bar__remote-badge" title="Viewing in remote browser client">Remote</span>
       <span
         v-if="otherProfileCount > 0"
         class="profile-bar__other-attention"
@@ -33,6 +34,7 @@ import { useAppStore } from "../../stores/app.js";
 const store = useAppStore();
 const profile = computed(() => store.activeProfile);
 const otherProfileCount = computed(() => store.otherProfileAttentionCount);
+const isRemote = computed(() => store.getApi()?.isRemote ?? false);
 
 defineEmits<{
   (e: "click"): void;
@@ -40,6 +42,22 @@ defineEmits<{
 </script>
 
 <style scoped>
+.profile-bar__remote-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 14px;
+  padding: 0 5px;
+  margin-left: 5px;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--profile-color, #ffa424);
+  border: 1px solid currentColor;
+  border-radius: 3px;
+  vertical-align: middle;
+  opacity: 0.7;
+}
 .profile-bar__other-attention {
   display: inline-flex;
   align-items: center;

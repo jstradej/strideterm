@@ -176,6 +176,18 @@ export interface WindowSlot {
   lastFocusedAt?: number;
 }
 
+// ------- Remote client session (runtime-only, not persisted) -------
+
+export interface RemoteClientSession {
+  /** Cookie session ID — server-only identity; never sent to the browser. */
+  id: string;
+  profileId: string;
+  activeWorkspaceId: string;
+  activeSessionId: string;
+  connectedAt: number;
+  lastSeenAt: number;
+}
+
 // ------- Workspace / Panel -------
 
 export interface PanelLaunch {
@@ -337,7 +349,6 @@ export interface WorkspaceGridState {
 
 export interface AppState {
   activeWorkspaceId: string;
-  activeProfileId: string;
   settings: Settings;
   tabTemplates: TabTemplate[];
   profiles: Profile[];
@@ -602,4 +613,11 @@ export interface StatePayload {
   remoteAccess: RemoteAccessState;
   agentNotifyHook: { enabled: boolean; port: number };
   taskRunner: Record<string, unknown>;
+  /** Per-remote-client context — only set when the payload is composed for a specific remote session. */
+  remoteClient?: {
+    id: string;
+    profileId: string;
+    activeWorkspaceId: string;
+    activeSessionId: string;
+  };
 }

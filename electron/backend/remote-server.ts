@@ -19,6 +19,7 @@ import {
   wsTerminalResizeSchema,
 } from "./ipc-schemas.js";
 import { getLogger, createAuditLogger } from "./logger.js";
+import { RemoteClientRegistry } from "./remote-client-registry.js";
 
 /**
  * Cookie carrying a per-session ID. Once the user has bootstrapped via the
@@ -1162,11 +1163,6 @@ async function handleApiRequest(runtime: Runtime, request: IncomingMessage, resp
       return;
     }
 
-    if (request.method === "POST" && url.pathname === "/api/profile/activate") {
-      json(response, 200, await runtime.activateProfile(body.profileId));
-      return;
-    }
-
     // --- File manager endpoints (read-only by default for remote) ---
     if (request.method === "POST" && url.pathname === "/api/file/list") {
       json(response, 200, await fm.listDirectory(body.rootPath as string, body.relativePath as string));
@@ -1367,6 +1363,14 @@ export async function startRemoteServer({
   // user revokes the token. See SESSION_COOKIE_NAME for the threat model.
   const activeSessions = new Set<string>();
 
+  // Per-session remote client contexts — profile / workspace / session the
+  // browser is currently looking at.  Never persisted; wiped on restart.
+  const registry = new RemoteClientRegistry();
+  registry.startCleanupSweep();
+  // Expose the registry so runtime can call fallback helpers when profiles /
+  // workspaces are deleted (runtime.setRemoteClientRegistry).
+  runtime.setRemoteClientRegistry?.(registry);
+
   function isAuthorized(requestUrl: string, headers: IncomingMessage["headers"]): boolean {
     // Master token (URL `?token=` or `Authorization: Bearer …`) — used
     // by the renderer's fetch path and by external callers like the
@@ -1384,6 +1388,8 @@ export async function startRemoteServer({
   function mintSession(): string {
     const id = randomBytes(32).toString("base64url");
     activeSessions.add(id);
+    // Bootstrap default profile / workspace context for this new session.
+    registry.getOrCreate(id, (runtime.getPayload() as Record<string, unknown>).appState);
     return id;
   }
 
@@ -1416,6 +1422,53 @@ export async function startRemoteServer({
           remoteAddress,
         });
       });
+
+      // Bump TTL and get session for per-client endpoints.
+      const apiSessionId = getSessionFromRequest(request.headers);
+      if (apiSessionId && activeSessions.has(apiSessionId)) registry.bumpLastSeen(apiSessionId);
+
+      // /api/state — return per-client composed payload when a session is known.
+      if (request.method === "GET" && url.pathname === "/api/state") {
+        const basePayload = stripSecretsForRemote(await runtime.getInitialState());
+        json(response, 200, apiSessionId ? registry.composePayload(apiSessionId, basePayload) : basePayload);
+        return;
+      }
+
+      // Remote-client-scoped activation endpoints — derive clientId from cookie.
+      if (url.pathname.startsWith("/api/remote-client/")) {
+        if (!apiSessionId || !activeSessions.has(apiSessionId)) {
+          json(response, 401, { error: "No active session" });
+          return;
+        }
+        const body = await readRequestBody(request);
+        try {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const appState = (runtime.getPayload() as any).appState;
+          if (request.method === "POST" && url.pathname === "/api/remote-client/profile/activate") {
+            registry.activateProfile(apiSessionId, String(body.profileId ?? ""), appState);
+          } else if (request.method === "POST" && url.pathname === "/api/remote-client/workspace/activate") {
+            registry.activateWorkspace(apiSessionId, String(body.workspaceId ?? ""), appState);
+          } else if (request.method === "POST" && url.pathname === "/api/remote-client/session/activate") {
+            registry.activateSession(
+              apiSessionId,
+              String(body.workspaceId ?? ""),
+              String(body.sessionId ?? ""),
+              appState,
+            );
+          } else {
+            json(response, 404, { error: "Not found" });
+            return;
+          }
+          // Push updated per-client state via WS to any open sockets of this session.
+          broadcastToSession(apiSessionId, stripSecretsForRemote(runtime.getPayload()));
+          // Return composed payload as the HTTP response.
+          json(response, 200, registry.composePayload(apiSessionId, stripSecretsForRemote(runtime.getPayload())));
+        } catch (err) {
+          json(response, 400, { error: (err as Error).message || "Activation failed" });
+        }
+        return;
+      }
+
       await handleApiRequest(runtime, request, response);
       return;
     }
@@ -1450,6 +1503,9 @@ export async function startRemoteServer({
 
   const wss = new WebSocketServer({ noServer: true });
   const sockets = new Set<import("ws").WebSocket>();
+  // Maps each WS socket to its cookie session ID so per-client payloads can
+  // be composed on every state:updated event.
+  const socketSession = new WeakMap<import("ws").WebSocket, string>();
 
   function broadcast(message: unknown): void {
     const payload = JSON.stringify(message);
@@ -1460,13 +1516,30 @@ export async function startRemoteServer({
     }
   }
 
+  /** Send a per-client composed state:updated to all sockets of `sessionId`. */
+  function broadcastToSession(sessionId: string, basePayload: unknown): void {
+    const composed = registry.composePayload(sessionId, basePayload);
+    const msg = JSON.stringify({ type: "state:updated", payload: composed });
+    for (const socket of sockets) {
+      if (socket.readyState !== socket.OPEN) continue;
+      if (socketSession.get(socket) !== sessionId) continue;
+      socket.send(msg);
+    }
+  }
+
   const unsubscribe = [
-    // state:updated carries the same payload shape as /api/state, so reuse
-    // the strip for every WS broadcast too — otherwise we'd just be moving
-    // the leak from HTTP to WS.
-    runtime.on("state:updated", (payload: unknown) =>
-      broadcast({ type: "state:updated", payload: stripSecretsForRemote(payload) }),
-    ),
+    // state:updated — compose per-client so each browser sees its own profile context.
+    runtime.on("state:updated", (payload: unknown) => {
+      const stripped = stripSecretsForRemote(payload);
+      for (const socket of sockets) {
+        if (socket.readyState !== socket.OPEN) continue;
+        const sessionId = socketSession.get(socket);
+        const msg = sessionId
+          ? JSON.stringify({ type: "state:updated", payload: registry.composePayload(sessionId, stripped) })
+          : JSON.stringify({ type: "state:updated", payload: stripped });
+        socket.send(msg);
+      }
+    }),
     runtime.on("terminal:data", (payload: unknown) => broadcast({ type: "terminal:data", payload })),
     runtime.on("terminal:exit", (payload: unknown) => broadcast({ type: "terminal:exit", payload })),
     runtime.on("ssh:auth-prompt", (payload: unknown) => broadcast({ type: "ssh:auth-prompt", payload })),
@@ -1524,14 +1597,24 @@ export async function startRemoteServer({
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         (ws as any).isAlive = true;
       });
+      // Tag the socket with its session so per-client state can be composed on broadcast.
+      const wsSessionId = getSessionFromRequest(request.headers);
+      if (wsSessionId && activeSessions.has(wsSessionId)) {
+        socketSession.set(ws, wsSessionId);
+        registry.bumpLastSeen(wsSessionId);
+      }
+      const baseInitial = stripSecretsForRemote(await runtime.getInitialState());
+      const initialPayload = wsSessionId ? registry.composePayload(wsSessionId, baseInitial) : baseInitial;
       ws.send(
         JSON.stringify({
           type: "state:updated",
-          payload: stripSecretsForRemote(await runtime.getInitialState()),
+          payload: initialPayload,
         }),
       );
 
       ws.on("message", (raw: Buffer) => {
+        // Every incoming message counts as activity — bump TTL.
+        if (wsSessionId) registry.bumpLastSeen(wsSessionId);
         try {
           const message = JSON.parse(raw.toString()) as { type: string };
           if (message.type === "terminal:input") {
@@ -1625,6 +1708,7 @@ export async function startRemoteServer({
   return {
     async close() {
       clearInterval(heartbeat);
+      registry.stopCleanupSweep();
       audit.close();
       unsubscribe.forEach((dispose) => dispose());
       for (const socket of sockets) {

@@ -47,6 +47,7 @@ import type { RecoveryCandidate } from "../shared/types/state.js";
 import { updateTaskDescriptionFile } from "./agent-task-files.js";
 import { getProvider, getAllProviders } from "./providers/provider-registry.js";
 import { classifyHookEvent } from "./notifications/classifier.js";
+import type { RemoteClientRegistry } from "./remote-client-registry.js";
 import {
   classifyCommand,
   allowT3ForCommandClass,
@@ -274,6 +275,9 @@ export async function createRuntime({
   // handlers (e.g. Telegram command dispatch) can call runtime methods.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let _rt: any = null;
+
+  // Injected by startRemoteServer after the HTTP server starts.
+  let _remoteClientRegistry: RemoteClientRegistry | null = null;
 
   const createStoreImpl = dependencies.createStore || createStore;
   const createCredentialStoreImpl = dependencies.createCredentialStore || createCredentialStore;
@@ -697,7 +701,8 @@ export async function createRuntime({
       };
     }),
   );
-  telegramManager.setActiveProfileGetter(() => getState().activeProfileId || "default");
+  // Use first open window slot's profileId rather than the deprecated global activeProfileId.
+  telegramManager.setActiveProfileGetter(() => (getState().windowSlots || [])[0]?.profileId || "default");
   telegramManager.setProfilesGetter(() =>
     (getState().profiles || []).map((p) => ({ id: p.id, name: p.name, color: p.color })),
   );
@@ -1113,7 +1118,7 @@ export async function createRuntime({
 
   function getAzureConnections(state = getState()) {
     const all = getAzureSettings(state).connections || [];
-    const activeProfile = state.activeProfileId || "default";
+    const activeProfile = (state.windowSlots || [])[0]?.profileId || "default";
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     return all.filter((c: any) => (c.profileId || "default") === activeProfile);
   }
@@ -1131,7 +1136,7 @@ export async function createRuntime({
 
   function getGitHubConnections(state = getState()) {
     const all = getGitHubSettings(state).connections || [];
-    const activeProfile = state.activeProfileId || "default";
+    const activeProfile = (state.windowSlots || [])[0]?.profileId || "default";
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     return all.filter((c: any) => (c.profileId || "default") === activeProfile);
   }
@@ -1169,7 +1174,7 @@ export async function createRuntime({
    * git tab can offer a unified dropdown.
    */
   function getAllProviderConnections(state = getState()) {
-    const activeProfile = state.activeProfileId || "default";
+    const activeProfile = (state.windowSlots || [])[0]?.profileId || "default";
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const matchProfile = (c: any) => (c.profileId || "default") === activeProfile;
 
@@ -3183,7 +3188,7 @@ export async function createRuntime({
     await store.mutate((draft: AppState) => {
       draft.workspaces = draft.workspaces.filter((w) => !removeIds.has(w.id));
       if (removeIds.has(draft.activeWorkspaceId)) {
-        const activeProfileId = draft.activeProfileId || "default";
+        const activeProfileId = (draft.windowSlots || [])[0]?.profileId || "default";
         const fallback = draft.workspaces.find((w) => (w.profileId || "default") === activeProfileId);
         draft.activeWorkspaceId = fallback?.id || draft.workspaces[0]?.id || "";
       }
@@ -3222,7 +3227,7 @@ export async function createRuntime({
     // When multiple workspaces share the same cwd (across profiles),
     // prefer the one in the active profile so new worktrees land in
     // the correct sidebar section.
-    const activeProfileId = state.activeProfileId || "default";
+    const activeProfileId = (state.windowSlots || [])[0]?.profileId || "default";
     const parentByTreeDir = new Map();
     for (const parent of parents) {
       if (!parent.cwd) continue;
@@ -3299,7 +3304,7 @@ export async function createRuntime({
         const removeSet = new Set(toRemove);
         draft.workspaces = draft.workspaces.filter((w) => !removeSet.has(w.id));
         if (removeSet.has(draft.activeWorkspaceId)) {
-          const activeProfileId = draft.activeProfileId || "default";
+          const activeProfileId = (draft.windowSlots || [])[0]?.profileId || "default";
           const fallback = draft.workspaces.find((w) => (w.profileId || "default") === activeProfileId);
           draft.activeWorkspaceId = fallback?.id || draft.workspaces[0]?.id || "";
         }
@@ -3571,7 +3576,7 @@ export async function createRuntime({
   function resolveWorkspaceGridProfile(draft: AppState, windowId?: string) {
     const profileId = windowId
       ? (draft.windowSlots || []).find((s) => s.id === windowId)?.profileId
-      : draft.activeProfileId || "default";
+      : (draft.windowSlots || [])[0]?.profileId || "default";
     return profileId ? draft.profiles.find((p) => p.id === profileId) || null : null;
   }
 
@@ -3592,6 +3597,40 @@ export async function createRuntime({
     setRemoteInfo(nextRemoteInfo: any) {
       remoteInfo = nextRemoteInfo;
       broadcastState();
+    },
+
+    /** Called by startRemoteServer to hand the registry handle to the runtime. */
+    setRemoteClientRegistry(registry: RemoteClientRegistry): void {
+      _remoteClientRegistry = registry;
+    },
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async activateProfileForRemoteClient(clientId: string, profileId: any): Promise<unknown> {
+      if (!_remoteClientRegistry) throw new Error("Remote client registry not initialised");
+      _remoteClientRegistry.activateProfile(clientId, profileId, getState());
+      broadcastState();
+      return _remoteClientRegistry.composePayload(clientId, getPayload());
+    },
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async activateWorkspaceForRemoteClient(clientId: string, workspaceId: any): Promise<unknown> {
+      if (!_remoteClientRegistry) throw new Error("Remote client registry not initialised");
+      _remoteClientRegistry.activateWorkspace(clientId, workspaceId, getState());
+      broadcastState();
+      return _remoteClientRegistry.composePayload(clientId, getPayload());
+    },
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async activateSessionForRemoteClient(clientId: string, workspaceId: any, sessionId: any): Promise<unknown> {
+      if (!_remoteClientRegistry) throw new Error("Remote client registry not initialised");
+      _remoteClientRegistry.activateSession(clientId, workspaceId, sessionId, getState());
+      broadcastState();
+      return _remoteClientRegistry.composePayload(clientId, getPayload());
+    },
+
+    composeStatePayloadForRemoteClient(clientId: string): unknown {
+      if (!_remoteClientRegistry) return getPayload();
+      return _remoteClientRegistry.composePayload(clientId, getPayload());
     },
     async getInitialState() {
       try {
@@ -3837,17 +3876,6 @@ export async function createRuntime({
         // In multi-window setups this makes the global "track last-activated";
         // each window still drives its own pane via slot.activeWorkspaceId.
         draft.activeWorkspaceId = workspaceId;
-        // ALSO mirror activeProfileId. `normalizeState` (default-state.ts)
-        // validates activeWorkspaceId against the GLOBAL activeProfileId's
-        // workspaces and resets it to that profile's first workspace if the
-        // requested one doesn't belong. When the slot's profile has drifted
-        // away from the global (e.g. activateProfileInWindow updated only the
-        // slot), activating a workspace in the slot's profile would otherwise
-        // get silently reverted by normalize on the next mutate cycle.
-        const targetProfileId = targetWorkspace.profileId || "default";
-        if (draft.activeProfileId !== targetProfileId) {
-          draft.activeProfileId = targetProfileId;
-        }
       });
       const workspace = findWorkspace(getState(), workspaceId);
       if (workspace) {
@@ -3919,15 +3947,6 @@ export async function createRuntime({
           slot.profileId = profileId;
           slot.activeWorkspaceId = firstWorkspaceId;
         }
-        // ALWAYS mirror to globals (not just the no-slot fallback). Without
-        // this the global activeProfileId / activeWorkspaceId drift away from
-        // the slot the user is actually working in, and `normalizeState`
-        // (default-state.ts) — which validates activeWorkspaceId against the
-        // GLOBAL activeProfileId — silently reverts subsequent workspace
-        // activations whose workspace lives in the slot's (new) profile.
-        // In multi-window mode this makes the globals "track last-activated";
-        // each window still drives its own UI via its slot fields.
-        draft.activeProfileId = profileId;
         draft.activeWorkspaceId = firstWorkspaceId;
       });
       await syncWorktrees();
@@ -4005,7 +4024,7 @@ export async function createRuntime({
         name: workspace?.name,
         kind: workspace?.kind,
         incomingProfileId: workspace?.profileId || null,
-        stateActiveProfileId: getState().activeProfileId || null,
+        stateActiveProfileId: (getState().windowSlots || [])[0]?.profileId || null,
         stateProfileIds: (getState().profiles || []).map((p) => p.id),
       });
       // Ensure the working directory exists (create if needed)
@@ -4121,6 +4140,8 @@ export async function createRuntime({
       }
       clearProjectAlerts(workspaceId);
       ensureVisibleSession();
+      // Fallback any remote clients that were on the deleted workspace.
+      _remoteClientRegistry?.fallbackDeletedWorkspace(workspaceId, getState());
       broadcastState();
 
       // Delete worktree files from disk if requested
@@ -5178,30 +5199,9 @@ export async function createRuntime({
         if (draft.profiles.length === 0) {
           draft.profiles.push({ id: "default", name: "Default", color: "#6366f1", workspaceIds: [] });
         }
-        if (draft.activeProfileId === profileId) {
-          draft.activeProfileId = draft.profiles[0]?.id || "default";
-        }
       });
-      broadcastState();
-      return getPayload();
-    },
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    async activateProfile(profileId: any) {
-      await store.mutate((draft: AppState) => {
-        if (draft.profiles.some((p) => p.id === profileId)) {
-          draft.activeProfileId = profileId;
-          // Set activeWorkspaceId to first workspace in new profile (or null)
-          const profileWorkspaces = draft.workspaces.filter((w) => (w.profileId || "default") === profileId);
-          const firstId = profileWorkspaces[0]?.id || "";
-          draft.activeWorkspaceId = firstId;
-          draft.activeProjectId = firstId;
-        }
-      });
-      await syncWorktrees();
-      sessions.syncWithState(getState());
-      ensureVisibleSession();
-      await refreshAzure();
-      scheduleAzurePolling();
+      // Fallback any remote clients that were on the deleted profile.
+      _remoteClientRegistry?.fallbackDeletedProfile(profileId, getState());
       broadcastState();
       return getPayload();
     },

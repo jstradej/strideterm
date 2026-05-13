@@ -2212,7 +2212,7 @@ describe("runtime integration", () => {
     });
   });
 
-  test("saves, activates, and deletes profiles while preserving a fallback default profile", async () => {
+  test("saves and deletes profiles while preserving a fallback default profile", async () => {
     const fixture = await createFixture();
     fixtures.push(fixture);
 
@@ -2223,11 +2223,7 @@ describe("runtime integration", () => {
     });
     expect(payload.appState.profiles.some((profile) => profile.id === "focus")).toBe(true);
 
-    payload = await fixture.runtime.activateProfile("focus");
-    expect(payload.appState.activeProfileId).toBe("focus");
-
     payload = await fixture.runtime.deleteProfile("focus");
-    expect(payload.appState.activeProfileId).toBe("default");
     expect(payload.appState.profiles).toEqual([
       { id: "default", name: "Default", color: "#ffa424", workspaceIds: [], projectIds: [], workspaceGrid: null },
     ]);
@@ -2243,14 +2239,11 @@ describe("runtime integration", () => {
   });
 
   // Regression: per-window workspace activation must keep global activeWorkspaceId
-  // and activeProfileId in sync with the activated workspace. Otherwise:
-  //  - `getPayload()` builds `payload.workspace` from `state.activeWorkspaceId`
-  //    (via sessions.getWorkspace), so the renderer's main pane stays on the
-  //    previously-active workspace even though slot.activeWorkspaceId moved;
-  //  - `normalizeState` (default-state.ts) validates activeWorkspaceId against
-  //    the GLOBAL activeProfileId and resets it to that profile's first
-  //    workspace if the requested one doesn't belong — silently reverting the
-  //    activation when the slot's profile has drifted from the global.
+  // in sync with the activated workspace. `getPayload()` builds `payload.workspace`
+  // from `state.activeWorkspaceId` (via sessions.getWorkspace), so the renderer's
+  // main pane stays on the previously-active workspace unless the global is updated.
+  // normalizeState derives the active profile from activeWorkspaceId, so keeping that
+  // field in sync also ensures subsequent normalization passes validate correctly.
   test("activateWorkspaceInWindow mirrors slot updates into global activeWorkspaceId", async () => {
     const fixture = await createFixture({
       initialState: {
@@ -2300,13 +2293,11 @@ describe("runtime integration", () => {
     expect(payload.appState.activeWorkspaceId).toBe("backend");
   });
 
-  test("activateProfileInWindow mirrors slot profile change into global activeProfileId", async () => {
-    // Without the mirror, activateProfileInWindow only updates slot.profileId
-    // — the global activeProfileId drifts behind. Subsequent workspace
-    // activations land in normalizeState's validator with a mismatched
-    // global activeProfileId and the requested workspace gets reverted to
-    // the OLD profile's first workspace, manifesting as "I clicked the card
-    // but the main pane didn't switch".
+  test("activateProfileInWindow keeps global activeWorkspaceId in sync with the new profile", async () => {
+    // activateProfileInWindow writes draft.activeWorkspaceId = firstWorkspaceInNewProfile.
+    // normalizeState derives the active profile from that workspace's profileId,
+    // so subsequent workspace activations are validated against the correct profile
+    // and do not get silently reverted by normalizeState.
     const fixture = await createFixture({
       initialState: {
         activeProfileId: "profile-a",
@@ -2362,18 +2353,14 @@ describe("runtime integration", () => {
 
     expect(payload.appState.windowSlots?.find((s) => s.id === "win-1")?.profileId).toBe("profile-b");
     expect(payload.appState.windowSlots?.find((s) => s.id === "win-1")?.activeWorkspaceId).toBe("ws-b1");
-    // Both globals must follow so the next workspace activation in the new
-    // profile isn't reverted by normalize.
-    expect(payload.appState.activeProfileId).toBe("profile-b");
     expect(payload.appState.activeWorkspaceId).toBe("ws-b1");
   });
 
-  test("activateWorkspaceInWindow on cross-profile target syncs global activeProfileId", async () => {
-    // Setup: slot is on profile A, global activeProfileId is stale on B (a
-    // realistic state after activateProfileInWindow drifted slot.profileId
-    // away from the global). Activating a workspace that lives in A must
-    // bring activeProfileId back to A — otherwise normalizeState resets
-    // activeWorkspaceId to B's first workspace and silently reverts the click.
+  test("activateWorkspaceInWindow on cross-profile target does not revert activeWorkspaceId", async () => {
+    // Activating a workspace in profile A writes draft.activeWorkspaceId = ws-a2;
+    // normalizeState then derives the active profile from ws-a2's profileId,
+    // so subsequent normalization passes validate activeWorkspaceId against A's
+    // workspaces and do not silently revert the click.
     const fixture = await createFixture({
       initialState: {
         activeProfileId: "profile-b",
@@ -2414,7 +2401,7 @@ describe("runtime integration", () => {
         windowSlots: [
           {
             id: "win-1",
-            profileId: "profile-a", // slot drifted away from global activeProfileId
+            profileId: "profile-a",
             activeWorkspaceId: "ws-a1",
             activeSessionId: "",
             bounds: { x: 0, y: 0, width: 1280, height: 800 },
@@ -2425,17 +2412,14 @@ describe("runtime integration", () => {
     });
     fixtures.push(fixture);
 
-    // Sanity: starting state has the drift
+    // Sanity: win-1 slot is on profile A
     const before = fixture.store.getState();
-    expect(before.activeProfileId).toBe("profile-b");
     expect(before.windowSlots?.[0].profileId).toBe("profile-a");
 
     const payload = await fixture.runtime.activateWorkspaceInWindow("ws-a2", "win-1");
 
     expect(payload.appState.windowSlots?.find((s) => s.id === "win-1")?.activeWorkspaceId).toBe("ws-a2");
-    // Global must follow the activated workspace so normalize doesn't revert.
     expect(payload.appState.activeWorkspaceId).toBe("ws-a2");
-    expect(payload.appState.activeProfileId).toBe("profile-a");
   });
 
   test("workspace grid operations without windowId target the active profile", async () => {

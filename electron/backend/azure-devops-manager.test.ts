@@ -393,7 +393,6 @@ describe("AzureDevOpsManager", () => {
 
     const result = (await manager.openReviewWorkspace({
       state: {
-        activeProfileId: "default",
         tabTemplates: [
           { id: "shell", title: "Shell", command: "" },
           { id: "claude", title: "Claude Code", command: "claude" },
@@ -438,7 +437,6 @@ describe("AzureDevOpsManager", () => {
 
     const result = (await manager.openReviewWorkspace({
       state: {
-        activeProfileId: "default",
         tabTemplates: [],
         workspaces: [
           {
@@ -554,7 +552,6 @@ describe("AzureDevOpsManager", () => {
 
     await manager.openReviewWorkspace({
       state: {
-        activeProfileId: "default",
         tabTemplates: [],
         workspaces: [],
       },
@@ -581,7 +578,6 @@ describe("AzureDevOpsManager", () => {
       });
       await manager.openReviewWorkspace({
         state: {
-          activeProfileId: "default",
           tabTemplates: [],
           workspaces: [],
         },
@@ -619,7 +615,6 @@ describe("AzureDevOpsManager", () => {
 
     const result = (await manager.openReviewWorkspace({
       state: {
-        activeProfileId: "default",
         tabTemplates: [],
         workspaces: [],
       },
@@ -665,7 +660,6 @@ describe("AzureDevOpsManager", () => {
     await expect(
       manager.openReviewWorkspace({
         state: {
-          activeProfileId: "default",
           tabTemplates: [],
           workspaces: [],
         },
@@ -768,7 +762,6 @@ describe("AzureDevOpsManager", () => {
     await expect(
       manager.openReviewWorkspace({
         state: {
-          activeProfileId: "default",
           tabTemplates: [],
           workspaces: [
             {

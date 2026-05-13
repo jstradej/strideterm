@@ -23,6 +23,7 @@ function makePayload(appStateOverrides: AnyApi = {}): StatePayload {
       activeProfileId: "default",
       profiles: [{ id: "default", name: "Default" }],
       workspaceGrid: null,
+      windowSlots: [{ id: "win-test", profileId: "default", activeWorkspaceId: "ws-A" }],
       ...appStateOverrides,
     },
   } as AnyApi;
@@ -31,7 +32,7 @@ function makePayload(appStateOverrides: AnyApi = {}): StatePayload {
 describe("SidebarPanel — ghost rendering for grid workspaces", () => {
   beforeEach(() => {
     setActivePinia(createPinia());
-    delete (window as AnyApi).strideterm;
+    (window as AnyApi).strideterm = { startupFlags: { windowId: "win-test" } };
   });
 
   it("renders all workspaces in tree when grid is empty (no ghosts)", () => {

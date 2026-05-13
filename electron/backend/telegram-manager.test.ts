@@ -7,6 +7,7 @@ import {
   sortWorkspacesStarredFirst,
 } from "./telegram-manager.js";
 import type { TelegramConnectionConfig, TelegramWorkspaceInfo } from "./telegram-manager.js";
+// TelegramWorkspaceInfo is used in the windowSlot validation tests at the bottom.
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -3282,5 +3283,102 @@ describe("/tunnel command", () => {
     expect(sentBodies).toHaveLength(1);
     const text = sentBodies[0].text as string;
     expect(text.toLowerCase()).toContain("not available");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Telegram dispatch — windowSlot validation (PR 3 audit)
+// ---------------------------------------------------------------------------
+
+describe("TelegramManager windowSlot validation for /task", () => {
+  function makeWorkspace(id: string, profileId: string): TelegramWorkspaceInfo {
+    return {
+      id,
+      name: `Workspace ${id}`,
+      profileId,
+      cwd: `/tmp/${id}`,
+      kind: "terminal",
+      parentWorkspaceId: "",
+      panels: [],
+      starred: false,
+    };
+  }
+
+  test("proceeds when profile p1 is in windowSlot W2 (targets W2)", async () => {
+    const cred = makeCredentialStore({ "cred:tg-1": "token123" });
+    const manager = new TelegramManager({ credentialStore: cred });
+    manager.setProfilesGetter(() => [
+      { id: "p1", name: "P1" },
+      { id: "p2", name: "P2" },
+    ]);
+    // p1 is in W2 (second slot), p2 is in W1 (first slot)
+    manager.setWindowSlotsGetter(() => [
+      { id: "w1", profileId: "p2" },
+      { id: "w2", profileId: "p1" },
+    ]);
+    manager.setWorkspacesGetter(() => [makeWorkspace("ws1", "p1")]);
+
+    const conn = makeConnection({ profileId: "p1" });
+    const commands: unknown[] = [];
+    manager.on("command", (cmd) => commands.push(cmd));
+
+    const sentTexts: string[] = [];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (manager as any)._sendText = vi.fn(async (_token: string, _chatId: string, text: string) => {
+      sentTexts.push(text);
+      return { ok: true, result: { message_id: 1 } };
+    });
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (manager as any)._handleTaskCommand("12345", "token123", conn);
+
+    // Should NOT reject with "not open" error — p1 is in W2
+    const rejectedByWindow = sentTexts.some((t) => t.toLowerCase().includes("not open"));
+    expect(rejectedByWindow).toBe(false);
+  });
+
+  test("rejects with error when profile has no windowSlot (no-op + error result)", async () => {
+    const cred = makeCredentialStore({ "cred:tg-1": "token123" });
+    const manager = new TelegramManager({ credentialStore: cred });
+    manager.setProfilesGetter(() => [
+      { id: "p1", name: "P1" },
+      { id: "p2", name: "P2" },
+    ]);
+    // Only p2 has a window slot — p1 does not
+    manager.setWindowSlotsGetter(() => [{ id: "w1", profileId: "p2" }]);
+    manager.setWorkspacesGetter(() => [makeWorkspace("ws1", "p1")]);
+
+    const conn = makeConnection({ profileId: "p1" });
+    const commands: unknown[] = [];
+    manager.on("command", (cmd) => commands.push(cmd));
+
+    const sentTexts: string[] = [];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (manager as any)._sendText = vi.fn(async (_token: string, _chatId: string, text: string) => {
+      sentTexts.push(text);
+      return { ok: true, result: { message_id: 1 } };
+    });
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (manager as any)._handleTaskCommand("12345", "token123", conn);
+
+    // Should reject with "not open" error
+    const rejectedByWindow = sentTexts.some((t) => t.toLowerCase().includes("not open"));
+    expect(rejectedByWindow).toBe(true);
+    // No command event should have been emitted
+    expect(commands).toHaveLength(0);
+  });
+
+  test("_windowIdForProfile returns slot id when profile is present", () => {
+    const cred = makeCredentialStore({});
+    const manager = new TelegramManager({ credentialStore: cred });
+    manager.setWindowSlotsGetter(() => [
+      { id: "w1", profileId: "p2" },
+      { id: "w2", profileId: "p1" },
+    ]);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect((manager as any)._windowIdForProfile("p1")).toBe("w2");
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect((manager as any)._windowIdForProfile("p99")).toBeUndefined();
   });
 });

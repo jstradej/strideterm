@@ -153,16 +153,30 @@ export const useAppStore = defineStore("app", () => {
     return slots.find((s: AnyApi) => s.id === myWindowId) ?? null;
   });
 
-  /** ActiveWorkspaceId scoped to this window (falls back to global). */
+  /** ActiveWorkspaceId scoped to this window or remote client context. */
   const myActiveWorkspaceId = computed<string>(() => {
+    if (_api?.isRemote) {
+      return (payload.value as AnyApi)?.remoteClient?.activeWorkspaceId || "";
+    }
     return (
       myWindowSlot.value?.activeWorkspaceId || (payload.value?.appState?.activeWorkspaceId as string | undefined) || ""
     );
   });
 
-  /** ActiveProfileId scoped to this window (falls back to global). */
-  const myActiveProfileId = computed<string>(() => {
-    return myWindowSlot.value?.profileId || payload.value?.appState?.activeProfileId || "default";
+  /** ActiveProfileId scoped to this window or remote client context. Null when no profile context is available. */
+  const myActiveProfileId = computed<string | null>(() => {
+    if (_api?.isRemote) {
+      return (payload.value as AnyApi)?.remoteClient?.profileId || null;
+    }
+    return myWindowSlot.value?.profileId || null;
+  });
+
+  /** ActiveSessionId scoped to this window or remote client context. */
+  const myActiveSessionId = computed<string>(() => {
+    if (_api?.isRemote) {
+      return (payload.value as AnyApi)?.remoteClient?.activeSessionId || "";
+    }
+    return myWindowSlot.value?.activeSessionId || "";
   });
 
   let _prevFilteredWsKey = "";
@@ -517,6 +531,9 @@ export const useAppStore = defineStore("app", () => {
   }
 
   function getWindowWorkspaceIdFromPayload(sourcePayload: StatePayload | null): string {
+    if (_api?.isRemote) {
+      return (sourcePayload as AnyApi)?.remoteClient?.activeWorkspaceId || "";
+    }
     const appState = sourcePayload?.appState as AnyApi | undefined;
     const slots = appState?.windowSlots as AnyApi[] | undefined;
     const slot = myWindowId && slots ? slots.find((s: AnyApi) => s.id === myWindowId) : null;
@@ -649,9 +666,13 @@ export const useAppStore = defineStore("app", () => {
 
     const cached = _workspacePayloadCache.get(workspaceId);
     const prevGit = (payload.value as AnyApi).git;
-    // Optimistically update per-window slot so myActiveWorkspaceId reflects the new workspace immediately
+    // In remote mode, update remoteClient context instead of windowSlots.
+    // In Electron mode, optimistically update the per-window slot.
     let updatedWindowSlots = appState.windowSlots as AnyApi[] | undefined;
-    if (myWindowId && Array.isArray(appState.windowSlots)) {
+    let updatedRemoteClient = (payload.value as AnyApi).remoteClient;
+    if (_api?.isRemote) {
+      updatedRemoteClient = updatedRemoteClient ? { ...updatedRemoteClient, activeWorkspaceId: workspaceId } : undefined;
+    } else if (myWindowId && Array.isArray(appState.windowSlots)) {
       updatedWindowSlots = (appState.windowSlots as AnyApi[]).map((s: AnyApi) =>
         s.id === myWindowId ? { ...s, activeWorkspaceId: workspaceId } : s,
       );
@@ -664,6 +685,7 @@ export const useAppStore = defineStore("app", () => {
         activeProjectId: workspaceId,
         ...(updatedWindowSlots !== undefined ? { windowSlots: updatedWindowSlots } : {}),
       },
+      ...(updatedRemoteClient !== undefined ? { remoteClient: updatedRemoteClient } : {}),
       workspace: buildWorkspacePayloadSnapshot(workspaceId),
       // Restore cached workspace-specific data (docker, attention, active git)
       ...(cached
@@ -689,12 +711,12 @@ export const useAppStore = defineStore("app", () => {
     const pendingWsId = pendingWorkspaceActivationId.value;
     const isBootstrap = Boolean((nextPayload as AnyApi)?.meta?.bootstrap);
 
-    // Derive the workspace ID that is active in THIS window from the incoming payload.
-    // In multi-window mode each window has its own slot; fall back to global for compat.
+    // Derive the workspace ID that is active in THIS window / remote client from the incoming payload.
     const incomingSlots = (nextPayload as AnyApi)?.appState?.windowSlots as AnyApi[] | undefined;
     const incomingSlot = myWindowId && incomingSlots ? incomingSlots.find((s: AnyApi) => s.id === myWindowId) : null;
-    const incomingMyWsId: string =
-      incomingSlot?.activeWorkspaceId || (nextPayload as AnyApi)?.appState?.activeWorkspaceId || "";
+    const incomingMyWsId: string = _api?.isRemote
+      ? (nextPayload as AnyApi)?.remoteClient?.activeWorkspaceId || ""
+      : incomingSlot?.activeWorkspaceId || (nextPayload as AnyApi)?.appState?.activeWorkspaceId || "";
 
     if (pendingWsId && incomingMyWsId && incomingMyWsId !== pendingWsId) {
       rlog("debug", "ws-activate broadcast: skipped, mismatched pending", {
@@ -1141,6 +1163,7 @@ export const useAppStore = defineStore("app", () => {
     myWindowSlot,
     myActiveWorkspaceId,
     myActiveProfileId,
+    myActiveSessionId,
     // Computed
     activeWorkspace,
     filteredWorkspaces,

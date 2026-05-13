@@ -29,14 +29,19 @@
               @keydown.enter="(e: Event) => (e.target as HTMLInputElement).blur()"
             />
             <span v-if="profile.id === activeProfileId" class="profile-active-badge">(active)</span>
+            <span
+              v-if="isRemote && occupiedByOtherWindow.has(profile.id)"
+              class="profile-desktop-badge"
+              :title="`This profile is open on desktop Window ${occupiedByOtherWindow.get(profile.id)}`"
+            >Open on desktop Window {{ occupiedByOtherWindow.get(profile.id) }}</span>
             <div class="profile-card__actions">
               <button
                 v-if="profile.id !== activeProfileId"
                 type="button"
                 class="button button--ghost"
-                :disabled="occupiedByOtherWindow.has(profile.id)"
+                :disabled="!isRemote && occupiedByOtherWindow.has(profile.id)"
                 :title="
-                  occupiedByOtherWindow.has(profile.id)
+                  !isRemote && occupiedByOtherWindow.has(profile.id)
                     ? `Open in Window ${occupiedByOtherWindow.get(profile.id)}`
                     : 'Switch to this profile — the sidebar will filter to show only its workspaces. Credentials and runtime managers are shared across all profiles in this install.'
                 "
@@ -124,6 +129,10 @@ interface Props {
   activeProfileId?: string;
   workspaces?: WorkspaceEntry[];
   windowSlots?: WindowSlot[];
+  /** True when rendered inside the remote web client. */
+  isRemote?: boolean;
+  /** profileId → 1-based desktop window index (used for badge in remote mode). */
+  desktopOccupancy?: Map<string, number>;
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -131,11 +140,17 @@ const props = withDefaults(defineProps<Props>(), {
   activeProfileId: "default",
   workspaces: () => [],
   windowSlots: () => [],
+  isRemote: false,
+  desktopOccupancy: () => new Map(),
 });
 
-// Profiles occupied by another window (not this window's active profile).
-// Maps profileId → 1-based window index.
+// Profiles occupied by another desktop window (not this viewer's active profile).
+// Maps profileId → 1-based window index.  Used differently in Electron vs remote:
+//   Electron → disable the Activate button
+//   Remote   → show "Open on desktop Window N" badge; button stays enabled
 const occupiedByOtherWindow = computed<Map<string, number>>(() => {
+  // In remote mode we get occupancy from the desktopOccupancy prop directly.
+  if (props.isRemote) return props.desktopOccupancy || new Map();
   const map = new Map<string, number>();
   const slots = props.windowSlots || [];
   slots.forEach((slot, idx) => {
@@ -284,6 +299,12 @@ async function addProfile() {
   color: var(--accent);
   font-size: 11px;
   flex-shrink: 0;
+}
+.profile-desktop-badge {
+  color: var(--muted);
+  font-size: 11px;
+  flex-shrink: 0;
+  font-style: italic;
 }
 .text-muted {
   color: var(--muted);

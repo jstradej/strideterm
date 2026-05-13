@@ -415,7 +415,6 @@ export function normalizeWorkspace(workspace: any, index = 0): WorkspaceState {
 export function createDefaultState(): AppState & { activeProjectId: string; projects: WorkspaceState[] } {
   const state = {
     activeWorkspaceId: "",
-    activeProfileId: "default",
     settings: {
       theme: APP_CONFIG.ui.defaultTheme,
       sidebarWidth: APP_CONFIG.ui.sidebarWidth,
@@ -934,22 +933,16 @@ export function normalizeState(rawState: any = {}): AppState & { activeProjectId
     else tabTemplates.push(opencodeTemplate);
   }
   const profiles = normalizeProfiles(rawState.profiles, defaults);
-  const rawActive = rawState.activeProfileId;
-  const activeProfileFound = profiles.some((profile) => profile.id === rawActive);
-  const activeProfileId = activeProfileFound ? rawActive : profiles[0]?.id || "default";
-  if (rawActive && !activeProfileFound) {
-    // The active profile id stored in raw state is no longer present in the
-    // normalized profiles list — this normalization step silently falls back
-    // to the first profile, which has bitten us before (workspace lands on
-    // "default" even though the user thinks "asdf" is active). Surface it
-    // loudly so the regression is obvious in the log next time.
-
-    console.warn("[default-state] activeProfileId not in profiles, falling back", {
-      rawActive,
-      profileIds: profiles.map((p) => p.id),
-      fallback: activeProfileId,
-    });
-  }
+  // Derive activeProfileId from the active workspace's profile. Used internally for
+  // normalizeWindowSlots and activeWorkspaceId validation; not included in the returned state.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const activeWsId = rawState.activeWorkspaceId || rawState.activeProjectId || "";
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const activeWsProfileId = activeWsId ? (rawWorkspaces as any[]).find((w: any) => w.id === activeWsId)?.profileId || null : null;
+  const activeProfileId =
+    (activeWsProfileId && profiles.some((p) => p.id === activeWsProfileId) ? activeWsProfileId : null) ||
+    profiles[0]?.id ||
+    "default";
 
   const VALID_LOG_LEVELS = ["error", "warn", "info", "debug", "trace"];
   const rawLogLevel = (rawState.settings || {}).logLevel;
@@ -1192,12 +1185,14 @@ export function normalizeState(rawState: any = {}): AppState & { activeProjectId
     activeWorkspaceId,
   );
 
+  // Drop activeProfileId from rawState so it is not re-serialized into the persisted file.
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  const { activeProfileId: _activeProfileIdDropped, ...rawStateWithoutProfileId } = rawState as Record<string, unknown>;
   const normalized = {
     ...defaults,
-    ...rawState,
+    ...rawStateWithoutProfileId,
     ssh,
     activeWorkspaceId,
-    activeProfileId,
     settings: normalizedSettings,
     tabTemplates,
     profiles: profilesWithGrid,

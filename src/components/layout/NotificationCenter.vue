@@ -676,7 +676,7 @@ function resolveJumpTarget(s: NotificationSession): { workspaceId: string; viewI
   if (direct) return { workspaceId: direct.id, viewId: "" };
   // No review workspace yet — fall back to the provider inbox.
   const inboxKind = s.meta?.provider === "github" ? "github" : "azure";
-  const activeProfile = appStore.payload?.appState?.activeProfileId || "default";
+  const activeProfile = appStore.myActiveProfileId || "default";
   const inbox = workspaces.find((w) => w.kind === inboxKind && (w.profileId || "default") === activeProfile);
   return { workspaceId: inbox?.id || "", viewId: "" };
 }

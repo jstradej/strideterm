@@ -86,11 +86,11 @@ export function createGitHubHandlers(ctx: GitHubHandlerCtx) {
       const tokenRef = connection.tokenRef || `cred:${connectionId}`;
       const pat = connection.pat || credentialStore.getSecret(tokenRef);
       const verification = await github.verifyConnection({ ...normalizedInput, pat });
-      const resolvedProfileId = connection.profileId || getState().activeProfileId || "default";
+      const resolvedProfileId = connection.profileId || (getState().windowSlots || [])[0]?.profileId || "default";
       log.debug("saveGitHubConnection: profile resolution", {
         connectionId,
         incomingProfileId: connection.profileId || null,
-        stateActiveProfileId: getState().activeProfileId || null,
+        stateActiveProfileId: (getState().windowSlots || [])[0]?.profileId || null,
         resolvedProfileId,
       });
       const normalizedConnection = {
