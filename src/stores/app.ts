@@ -742,7 +742,9 @@ export const useAppStore = defineStore("app", () => {
     const incomingSlots = (nextPayload as AnyApi)?.appState?.windowSlots as AnyApi[] | undefined;
     const incomingSlot = myWindowId && incomingSlots ? incomingSlots.find((s: AnyApi) => s.id === myWindowId) : null;
     const incomingMyWsId: string = isRemoteTransport.value
-      ? (nextPayload as AnyApi)?.remoteClient?.activeWorkspaceId || ""
+      ? (nextPayload as AnyApi)?.remoteClient?.activeWorkspaceId ||
+        (nextPayload as AnyApi)?.appState?.activeWorkspaceId ||
+        ""
       : incomingSlot?.activeWorkspaceId || (nextPayload as AnyApi)?.appState?.activeWorkspaceId || "";
 
     if (pendingWsId && incomingMyWsId && incomingMyWsId !== pendingWsId) {
@@ -768,8 +770,7 @@ export const useAppStore = defineStore("app", () => {
     clearRemoteConnectionIssue();
 
     const workspaceChanged = incomingMyWsId !== myActiveWorkspaceId.value;
-    const isInitialBroadcast = !payload.value;
-    if (workspaceChanged || completingActivation || isInitialBroadcast) {
+    if (workspaceChanged || completingActivation) {
       // activateWorkspace() already cached the outgoing workspace's split
       // BEFORE optimistic activation swapped splitGroup.value. Caching here
       // would overwrite that with the NEW workspace's split under the OLD
