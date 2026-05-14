@@ -184,9 +184,10 @@ function writeHead(response: ServerResponse, statusCode: number, headers: Record
  *     the legitimate user off; widening `host` increases exposure.
  *   - `token`: rotating invalidates every existing session and locks the
  *     legitimate user out until they walk back to the desktop.
- *
- * `customPublicUrl` is intentionally allowed — it's a display-only string for
- * the "Copy share URL" feature.
+ *   - `customPublicUrl`: display-only metadata, but the desktop "Copy share
+ *     URL" affordance reads it — rewriting it from a leaked session turns the
+ *     local user into an unwitting phishing courier. See the inline comment
+ *     in the array below for the full rationale.
  */
 export const REMOTE_BLOCKED_REMOTE_ACCESS_FIELDS: ReadonlyArray<string> = [
   // `autoTunnel` gates whether the Cloudflare quick-tunnel is re-established

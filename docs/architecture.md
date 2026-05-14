@@ -280,7 +280,8 @@ Current behavior:
 
 Current remote access is LAN-first and locally hosted:
 
-- runtime server binds to `0.0.0.0:43123` by default
+- off by default — the server is not started until the user enables remote access in Settings (or sets `STRIDETERM_REMOTE_ENABLED=true` before launch)
+- when enabled, the runtime server binds to `0.0.0.0:43123` by default
 - a random token is persisted in the state file
 - desktop and remote clients talk to the same runtime core
 - the desktop sidebar surfaces LAN URLs, token state, and a QR code
@@ -289,7 +290,7 @@ Current remote access is LAN-first and locally hosted:
 
 Settings sanitizer:
 
-- `remote-server.ts` filters every settings update and HTTP/WS request from remote clients through a denylist: `autoTunnel`, `cloudflaredPath`, remote-access `enabled` / `host` / `port`, `token`, and top-level `externalPathOpener` are dropped before reaching the runtime. The desktop owner can change these only via local IPC. Endpoints that accept JSON payloads (workspace grid, task description, etc.) validate against shared Zod schemas; mismatches return 400 instead of being silently coerced.
+- `remote-server.ts` filters every settings update and HTTP/WS request from remote clients through a denylist: `autoTunnel`, `cloudflaredPath`, `customPublicUrl`, remote-access `enabled` / `host` / `port`, `token`, and top-level `externalPathOpener` are dropped before reaching the runtime. The desktop owner can change these only via local IPC. Endpoints that accept JSON payloads (workspace grid, task description, etc.) validate against shared Zod schemas; mismatches return 400 instead of being silently coerced.
 
 Use cases:
 

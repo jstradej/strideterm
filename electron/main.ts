@@ -524,7 +524,7 @@ function createWindow(windowId?: string, slot?: Partial<WindowSlot>): void {
     win.show();
   });
 
-  // Intercept Ctrl+1-9 / Ctrl+Shift+N / Ctrl+W before Chromium/xterm can eat them
+  // Intercept Ctrl+1-9 / Ctrl+Shift+N before Chromium/xterm can eat them
   win.webContents.on("before-input-event", (event, input) => {
     if (input.type !== "keyDown") return;
 

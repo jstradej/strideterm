@@ -57,6 +57,7 @@ Each connection has its own filter, so different chats can subscribe to differen
 | `/status`     | List every task agent and its state. Tap a task for actions.                                                                                                                                  |
 | `/workspaces` | List every workspace in the active profile. Starred workspaces (⭐) appear first, then alphabetical.                                                                                          |
 | `/task`       | Start a new task agent. Picks workspace → worktree mode → branch → prompt. Starred workspaces are shown first in the picker.                                                                  |
+| `/prs`        | List open pull requests across configured Azure DevOps / GitHub connections and start a review workspace from chat.                                                                           |
 | `/screenshot` | Capture a PNG of the strIDEterm window (current or any workspace).                                                                                                                            |
 | `/tunnel`     | Send the strIDEterm remote-access URL to your phone — auto-picks the Cloudflare quick-tunnel URL when connected, otherwise LAN URLs, with the auth token already appended. Aliased as `/url`. |
 | `/help`       | Print the command list.                                                                                                                                                                       |
@@ -182,10 +183,10 @@ Telegram caps `callback_data` at 64 bytes. The bot uses compact prefixes:
 
 - `t:<op>:<workspaceId>` — task-action callback (pause, resume, stop, reset, edit, file, screenshot, …)
 - `m:<op>` — worktree-mode pick (`m:n` new, `m:d` direct, `m:e` existing list, `m:x:<idx>` chosen)
-- `mn:<op>` — main-menu button (`mn:status`, `mn:task`, `mn:screenshot`, `mn:workspaces`, `mn:help`)
+- `mn:<op>` — main-menu button (`mn:status`, `mn:task`, `mn:prs`, `mn:workspaces`, `mn:screenshot`, `mn:tunnel`, `mn:help`)
 - `ss:<op>` — screenshot mode (`ss:c` current, `ss:w` pick workspace)
-- `fm:<op>` — file delivery mode (`fm:a` auto, `fm:d` document)
-- single-letter ops (`c`, `d`, `s`, `o`, `x`) — confirm / dismiss / start-task / open-review / cancel
+- `fm:<op>` — file delivery mode (`fm:a` auto/preview, `fm:d` document)
+- single-letter ops (`c`, `d`, `s`, `o`, `ar`, `x`) — confirm / dismiss / start-task / open-review / auto-review / cancel
 
 This keeps every button under the byte limit even with full-uuid workspace IDs.
 

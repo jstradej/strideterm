@@ -147,7 +147,7 @@ All state is stored in `~/.strideterm/`:
 - `logs/` - structured application logs (winston, configurable level)
 - `plugins/` - user plugins directory
 
-Settings are accessible via the gear icon in the sidebar (General, Tab Templates, About tabs). strIDEterm checks for updates on startup and shows available releases in the About tab.
+Settings are accessible via the gear icon in the sidebar (General, Tab Templates, Git, SSH, Telegram, About). Notification timing and agent-hook setup live inside the **General** tab. strIDEterm checks for updates on startup and shows available releases in the About tab.
 
 ### Multiple Instances (Custom Data Directory)
 
@@ -184,19 +184,19 @@ STRIDETERM_DISABLE_WEBGL=1 strideterm
 
 ## Remote Access
 
-strIDEterm can expose the workspace over HTTP/WebSocket to another device.
+strIDEterm can expose the workspace over HTTP/WebSocket to another device. **Remote access is off by default** — turn it on in Settings, or set `STRIDETERM_REMOTE_ENABLED=true` before launch, so the server actually starts listening.
 
 ```bash
-# Default: accessible on LAN
-npm start
+# Enable remote access for this launch (LAN-accessible)
+STRIDETERM_REMOTE_ENABLED=true npm start
 
-# Desktop-only (no LAN access)
-STRIDETERM_REMOTE_HOST=127.0.0.1 npm start
+# Desktop-only (bind to loopback so nothing on the LAN can reach the port)
+STRIDETERM_REMOTE_ENABLED=true STRIDETERM_REMOTE_HOST=127.0.0.1 npm start
 ```
 
-From another device: `http://<your-lan-ip>:43123/?token=<token>`
+Once enabled, the server binds to `0.0.0.0:43123` by default. From another device: `http://<your-lan-ip>:43123/?token=<token>`
 
-**Security:** treat the remote token like a password. Use LAN mode only on trusted networks. Even with a valid token, remote clients cannot toggle Cloudflare auto-tunnel, repoint the `cloudflared` binary, change the bind host/port, rotate the token, or flip `externalPathOpener` — those settings are local-IPC only. Settings updates and HTTP endpoints exposed to remote clients are filtered through a server-side allowlist.
+**Security:** treat the remote token like a password. Use LAN mode only on trusted networks. Even with a valid token, remote clients cannot toggle Cloudflare auto-tunnel, repoint the `cloudflared` binary, change the bind host/port, rotate the token, edit `customPublicUrl`, or flip `externalPathOpener` — those settings are local-IPC only. Every settings update and HTTP/WS request from a remote client is filtered through a server-side **blocklist** (a fixed set of dangerous keys is dropped) and validated against shared Zod schemas before reaching the runtime.
 
 ## Telegram Bot
 
@@ -225,7 +225,7 @@ Requires at least one of [Claude Code CLI](https://docs.anthropic.com/en/docs/cl
 
 ## Agent Notification Hooks
 
-strIDEterm integrates with each supported agent CLI's hook system so you get instant alerts when an agent finishes a turn or needs input — no polling, no silence timers. One-click setup per provider in **Settings → Notifications**:
+strIDEterm integrates with each supported agent CLI's hook system so you get instant alerts when an agent finishes a turn or needs input — no polling, no silence timers. One-click setup per provider in **Settings → General** (under _Agent notification hook_):
 
 | Provider       | Config location                                                                            | Events registered                                  | Notes                                                                                                                                                               |
 | -------------- | ------------------------------------------------------------------------------------------ | -------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
