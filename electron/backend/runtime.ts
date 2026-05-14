@@ -4140,8 +4140,6 @@ export async function createRuntime({
       }
       clearProjectAlerts(workspaceId);
       ensureVisibleSession();
-      // Fallback any remote clients that were on the deleted workspace.
-      _remoteClientRegistry?.fallbackDeletedWorkspace(workspaceId, getState());
       broadcastState();
 
       // Delete worktree files from disk if requested

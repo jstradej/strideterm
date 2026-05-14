@@ -1469,24 +1469,40 @@ export async function startRemoteServer({
         try {
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           const appState = (runtime.getPayload() as any).appState;
+          // Workspace/session activate go through runtime.activate*InWindow,
+          // which mutates the bound desktop windowSlot and broadcasts state to
+          // every socket — mobile mirrors the slot via composePayload, so it
+          // automatically picks up the new active workspace/session. Profile
+          // activate only changes per-client binding, so we push state to this
+          // session explicitly.
+          let runtimeBroadcastsForUs = false;
           if (request.method === "POST" && url.pathname === "/api/remote-client/profile/activate") {
             registry.activateProfile(apiSessionId, String(body.profileId ?? ""), appState);
           } else if (request.method === "POST" && url.pathname === "/api/remote-client/workspace/activate") {
-            registry.activateWorkspace(apiSessionId, String(body.workspaceId ?? ""), appState);
+            const workspaceId = String(body.workspaceId ?? "");
+            const { windowId } = registry.activateWorkspace(apiSessionId, workspaceId, appState);
+            await runtime.activateWorkspaceInWindow(workspaceId, windowId);
+            runtimeBroadcastsForUs = true;
           } else if (request.method === "POST" && url.pathname === "/api/remote-client/session/activate") {
-            registry.activateSession(
+            const targetSessionId = String(body.sessionId ?? "");
+            const { windowId } = registry.activateSession(
               apiSessionId,
               String(body.workspaceId ?? ""),
-              String(body.sessionId ?? ""),
+              targetSessionId,
               appState,
             );
+            await runtime.activateSessionInWindow(targetSessionId, windowId);
+            runtimeBroadcastsForUs = true;
           } else {
             json(response, 404, { error: "Not found" });
             return;
           }
-          // Push updated per-client state via WS to any open sockets of this session.
-          broadcastToSession(apiSessionId, stripSecretsForRemote(runtime.getPayload()));
-          // Return composed payload as the HTTP response.
+          if (!runtimeBroadcastsForUs) {
+            // Profile activate: no runtime mutation, push per-client state so
+            // mobile sees the new profile binding (and the bound slot's active
+            // workspace) in remoteClient.
+            broadcastToSession(apiSessionId, stripSecretsForRemote(runtime.getPayload()));
+          }
           json(response, 200, registry.composePayload(apiSessionId, stripSecretsForRemote(runtime.getPayload())));
         } catch (err) {
           json(response, 400, { error: (err as Error).message || "Activation failed" });

@@ -2,13 +2,12 @@
  * RemoteClientRegistry — runtime-only registry of remote browser sessions.
  *
  * Each cookie session that has authenticated gets its own RemoteClientContext
- * tracking which profile / workspace / session the user is looking at.  This
- * context is purely in-process memory; it is never written to the persisted
- * AppState and disappears on server restart (same as the activeSessions set in
- * remote-server.ts).
- *
- * Desktop window slots remain the source of truth for the desktop UI. Remote
- * clients operate in parallel without stealing or moving desktop slots.
+ * tracking which desktop profile the user is bound to. The active workspace
+ * and session are NOT stored per-client: mobile mirrors the desktop windowSlot
+ * for the bound profile, so there is exactly one source of truth and no
+ * separate state to keep in sync. This context is purely in-process memory;
+ * it is never written to the persisted AppState and disappears on server
+ * restart (same as the activeSessions set in remote-server.ts).
  */
 
 /** 7 days — aligned with the session cookie expiry. */
@@ -19,8 +18,6 @@ const SWEEP_INTERVAL_MS = 60 * 60 * 1000;
 export interface RemoteClientContext {
   id: string;
   profileId: string;
-  activeWorkspaceId: string;
-  activeSessionId: string;
   connectedAt: number;
   lastSeenAt: number;
 }
@@ -42,13 +39,13 @@ export class RemoteClientRegistry {
     return ids;
   }
 
-  private firstWorkspaceId(appState: AnyState, profileId: string): string {
-    const workspaces: AnyState[] = appState?.workspaces || [];
-    return workspaces.find((w: AnyState) => (w.profileId || "default") === profileId)?.id || "";
-  }
-
   private fallbackProfileId(appState: AnyState): string {
     return this.openProfileIds(appState)[0] || "";
+  }
+
+  private slotForProfile(appState: AnyState, profileId: string): AnyState | undefined {
+    const slots: AnyState[] = appState?.windowSlots || [];
+    return slots.find((s: AnyState) => String(s?.profileId || "") === profileId);
   }
 
   /** Get-or-create a client context for `sessionId`. */
@@ -64,8 +61,6 @@ export class RemoteClientRegistry {
     const client: RemoteClientContext = {
       id: sessionId,
       profileId,
-      activeWorkspaceId: profileId ? this.firstWorkspaceId(appState, profileId) : "",
-      activeSessionId: "",
       connectedAt: Date.now(),
       lastSeenAt: Date.now(),
     };
@@ -83,8 +78,11 @@ export class RemoteClientRegistry {
   }
 
   // ---------------------------------------------------------------------------
-  // Activation methods — validate then mutate the client context.
-  // None of these touch AppState (windowSlots or activeProfileId).
+  // Activation methods — validate the request and return the desktop windowId
+  // to drive. The caller invokes runtime.activate*InWindow with that windowId;
+  // the runtime mutates the shared windowSlot and broadcasts. Mobile and
+  // desktop share the slot's active workspace/session, so there is no separate
+  // per-client state to mutate here.
   // ---------------------------------------------------------------------------
 
   activateProfile(sessionId: string, profileId: string, appState: AnyState): void {
@@ -92,12 +90,10 @@ export class RemoteClientRegistry {
     if (!client) throw new Error("Remote client session not found");
     if (!this.openProfileIds(appState).includes(profileId)) throw new Error("Profile is not open on desktop");
     client.profileId = profileId;
-    client.activeWorkspaceId = this.firstWorkspaceId(appState, profileId);
-    client.activeSessionId = "";
     client.lastSeenAt = Date.now();
   }
 
-  activateWorkspace(sessionId: string, workspaceId: string, appState: AnyState): void {
+  activateWorkspace(sessionId: string, workspaceId: string, appState: AnyState): { windowId: string } {
     const client = this.clients.get(sessionId);
     if (!client) throw new Error("Remote client session not found");
     const workspaces: AnyState[] = appState?.workspaces || [];
@@ -106,12 +102,18 @@ export class RemoteClientRegistry {
     if ((ws.profileId || "default") !== client.profileId) {
       throw new Error("Workspace does not belong to the active profile");
     }
-    client.activeWorkspaceId = workspaceId;
-    client.activeSessionId = "";
+    const slot = this.slotForProfile(appState, client.profileId);
+    if (!slot) throw new Error("Profile is not open on desktop");
     client.lastSeenAt = Date.now();
+    return { windowId: String(slot.id) };
   }
 
-  activateSession(sessionId: string, workspaceId: string, sessionToActivate: string, appState: AnyState): void {
+  activateSession(
+    sessionId: string,
+    workspaceId: string,
+    sessionToActivate: string,
+    appState: AnyState,
+  ): { windowId: string } {
     const client = this.clients.get(sessionId);
     if (!client) throw new Error("Remote client session not found");
     const workspaces: AnyState[] = appState?.workspaces || [];
@@ -123,14 +125,18 @@ export class RemoteClientRegistry {
     if (!sessionToActivate.startsWith(`${workspaceId}:`)) {
       throw new Error("Session does not belong to workspace");
     }
-    client.activeWorkspaceId = workspaceId;
-    client.activeSessionId = sessionToActivate;
+    const slot = this.slotForProfile(appState, client.profileId);
+    if (!slot) throw new Error("Profile is not open on desktop");
     client.lastSeenAt = Date.now();
+    return { windowId: String(slot.id) };
   }
 
   // ---------------------------------------------------------------------------
-  // Fallback helpers — called when a profile or workspace is deleted.
+  // Fallback helpers — called when a profile is deleted.
   // Returns the session IDs of affected clients (so the caller can push state).
+  // Deleted workspaces don't need a registry fallback: the runtime already
+  // rewrites slot.activeWorkspaceId in deleteWorkspace, and mobile derives its
+  // active workspace from that slot.
   // ---------------------------------------------------------------------------
 
   fallbackDeletedProfile(profileId: string, appState: AnyState): string[] {
@@ -139,24 +145,6 @@ export class RemoteClientRegistry {
     for (const [sid, client] of this.clients) {
       if (client.profileId === profileId) {
         client.profileId = fallbackProfileId;
-        client.activeWorkspaceId = fallbackProfileId ? this.firstWorkspaceId(appState, fallbackProfileId) : "";
-        client.activeSessionId = "";
-        affected.push(sid);
-      }
-    }
-    return affected;
-  }
-
-  fallbackDeletedWorkspace(workspaceId: string, appState: AnyState): string[] {
-    const affected: string[] = [];
-    const workspaces: AnyState[] = appState?.workspaces || [];
-    for (const [sid, client] of this.clients) {
-      if (client.activeWorkspaceId === workspaceId) {
-        const sibling = workspaces.find(
-          (w: AnyState) => (w.profileId || "default") === client.profileId && w.id !== workspaceId,
-        );
-        client.activeWorkspaceId = sibling?.id || "";
-        client.activeSessionId = "";
         affected.push(sid);
       }
     }
@@ -172,8 +160,9 @@ export class RemoteClientRegistry {
    *
    * 1. Reduces windowSlots to {id, profileId, windowIndex} — remote doesn't
    *    need bounds / lastFocusedAt.
-   * 2. Injects `remoteClient` from the registry (with automatic fallback if
-   *    the profile or workspace was deleted since last compose).
+   * 2. Injects `remoteClient` with profileId, and activeWorkspaceId/
+   *    activeSessionId mirrored from the bound desktop windowSlot. Mobile
+   *    and desktop always see the same active workspace for a given profile.
    */
   composePayload(sessionId: string, basePayload: unknown): unknown {
     const payload = basePayload as Record<string, unknown>;
@@ -188,28 +177,19 @@ export class RemoteClientRegistry {
     if (!client) {
       return { ...payload, appState: { ...appState, windowSlots: reducedSlots } };
     }
-    // Lazy fallback: profile no longer open in a desktop slot.
+    // Lazy fallback: client's profile no longer open in any desktop slot.
     if (!this.openProfileIds(appState).includes(client.profileId)) {
-      const fallbackProfileId = this.fallbackProfileId(appState);
-      client.profileId = fallbackProfileId;
-      client.activeWorkspaceId = fallbackProfileId ? this.firstWorkspaceId(appState, fallbackProfileId) : "";
-      client.activeSessionId = "";
+      client.profileId = this.fallbackProfileId(appState);
     }
-    // Lazy fallback: workspace deleted
-    const workspaces = (appState.workspaces as AnyState[]) || [];
-    if (client.activeWorkspaceId && !workspaces.some((w: AnyState) => w.id === client.activeWorkspaceId)) {
-      const sibling = workspaces.find((w: AnyState) => (w.profileId || "default") === client.profileId);
-      client.activeWorkspaceId = sibling?.id || "";
-      client.activeSessionId = "";
-    }
+    const boundSlot = this.slotForProfile(appState, client.profileId);
     return {
       ...payload,
       appState: { ...appState, windowSlots: reducedSlots },
       remoteClient: {
         id: client.id,
         profileId: client.profileId,
-        activeWorkspaceId: client.activeWorkspaceId,
-        activeSessionId: client.activeSessionId,
+        activeWorkspaceId: String(boundSlot?.activeWorkspaceId || ""),
+        activeSessionId: String(boundSlot?.activeSessionId || ""),
       },
     };
   }

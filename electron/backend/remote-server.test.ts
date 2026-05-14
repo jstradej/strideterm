@@ -208,8 +208,8 @@ describe("remote token client profile context", () => {
           { id: "ws2", name: "WS2", profileId: "p2", panels: [] },
         ],
         windowSlots: [
-          { id: "win-1", profileId: "p1" },
-          { id: "win-2", profileId: "p2" },
+          { id: "win-1", profileId: "p1", activeWorkspaceId: "ws1" },
+          { id: "win-2", profileId: "p2", activeWorkspaceId: "ws2" },
         ],
       },
     };
@@ -279,8 +279,8 @@ describe("remote token client profile context", () => {
           { id: "ws2", name: "WS2", profileId: "p2", panels: [] },
         ],
         windowSlots: [
-          { id: "win-1", profileId: "p1" },
-          { id: "win-2", profileId: "p2" },
+          { id: "win-1", profileId: "p1", activeWorkspaceId: "ws1" },
+          { id: "win-2", profileId: "p2", activeWorkspaceId: "ws2" },
         ],
       },
     };

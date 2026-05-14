@@ -1,26 +1,37 @@
 import { describe, expect, test } from "vitest";
 import { RemoteClientRegistry } from "./remote-client-registry.js";
 
-// Minimal AppState shape needed by the registry.
+// Minimal AppState shape needed by the registry. Each profile gets a
+// matching windowSlot by default (so the registry's "profile open on desktop"
+// invariants hold without callers spelling out slots every time).
 function makeState(
   opts: {
     profiles?: { id: string }[];
     workspaces?: { id: string; profileId?: string }[];
-    windowSlots?: { id: string; profileId: string }[];
+    windowSlots?: { id: string; profileId: string; activeWorkspaceId?: string; activeSessionId?: string }[];
   } = {},
 ) {
+  const profiles = opts.profiles ?? [{ id: "default" }];
+  const workspaces = opts.workspaces ?? [];
+  const defaultSlots = profiles.map((profile, idx) => {
+    const firstWs = workspaces.find((w) => (w.profileId || "default") === profile.id);
+    return {
+      id: `win-${idx + 1}`,
+      profileId: profile.id,
+      activeWorkspaceId: firstWs?.id ?? "",
+      activeSessionId: "",
+    };
+  });
   return {
-    profiles: opts.profiles ?? [{ id: "default" }],
-    workspaces: opts.workspaces ?? [],
-    windowSlots:
-      opts.windowSlots ??
-      (opts.profiles ?? [{ id: "default" }]).map((profile, idx) => ({ id: `win-${idx + 1}`, profileId: profile.id })),
+    profiles,
+    workspaces,
+    windowSlots: opts.windowSlots ?? defaultSlots,
   };
 }
 
 describe("RemoteClientRegistry", () => {
   describe("getOrCreate", () => {
-    test("creates a new client with the first open window profile/workspace as default", () => {
+    test("creates a new client bound to the first open desktop profile", () => {
       const registry = new RemoteClientRegistry();
       const state = makeState({
         profiles: [{ id: "p1" }, { id: "p2" }],
@@ -28,13 +39,11 @@ describe("RemoteClientRegistry", () => {
           { id: "ws1", profileId: "p1" },
           { id: "ws2", profileId: "p2" },
         ],
-        windowSlots: [{ id: "win-2", profileId: "p2" }],
+        windowSlots: [{ id: "win-2", profileId: "p2", activeWorkspaceId: "ws2" }],
       });
       const client = registry.getOrCreate("session1", state);
       expect(client.id).toBe("session1");
       expect(client.profileId).toBe("p2");
-      expect(client.activeWorkspaceId).toBe("ws2");
-      expect(client.activeSessionId).toBe("");
     });
 
     test("uses requested bootstrap profile when it is open on desktop", () => {
@@ -45,14 +54,9 @@ describe("RemoteClientRegistry", () => {
           { id: "ws1", profileId: "p1" },
           { id: "ws2", profileId: "p2" },
         ],
-        windowSlots: [
-          { id: "win-1", profileId: "p1" },
-          { id: "win-2", profileId: "p2" },
-        ],
       });
       const client = registry.getOrCreate("session1", state, "p2");
       expect(client.profileId).toBe("p2");
-      expect(client.activeWorkspaceId).toBe("ws2");
     });
 
     test("returns existing client on repeat call", () => {
@@ -66,7 +70,7 @@ describe("RemoteClientRegistry", () => {
   });
 
   describe("activateProfile", () => {
-    test("switches the client to a valid profile and resets workspace", () => {
+    test("switches the client to a valid profile", () => {
       const registry = new RemoteClientRegistry();
       const state = makeState({
         profiles: [{ id: "p1" }, { id: "p2" }],
@@ -74,17 +78,10 @@ describe("RemoteClientRegistry", () => {
           { id: "ws1", profileId: "p1" },
           { id: "ws2", profileId: "p2" },
         ],
-        windowSlots: [
-          { id: "win-1", profileId: "p1" },
-          { id: "win-2", profileId: "p2" },
-        ],
       });
       registry.getOrCreate("session1", state);
       registry.activateProfile("session1", "p2", state);
-      const client = registry.get("session1")!;
-      expect(client.profileId).toBe("p2");
-      expect(client.activeWorkspaceId).toBe("ws2");
-      expect(client.activeSessionId).toBe("");
+      expect(registry.get("session1")!.profileId).toBe("p2");
     });
 
     test("two clients, two profiles: activating profile on one does not change the other", () => {
@@ -99,9 +96,7 @@ describe("RemoteClientRegistry", () => {
       registry.getOrCreate("session1", state);
       registry.getOrCreate("session2", state);
       registry.activateProfile("session1", "p2", state);
-      // session1 moved to p2
       expect(registry.get("session1")!.profileId).toBe("p2");
-      // session2 stays on p1 (default, first profile)
       expect(registry.get("session2")!.profileId).toBe("p1");
     });
 
@@ -109,11 +104,10 @@ describe("RemoteClientRegistry", () => {
       const registry = new RemoteClientRegistry();
       const state = {
         ...makeState({ profiles: [{ id: "p1" }, { id: "p2" }], workspaces: [] }),
-        windowSlots: [{ id: "slot1", profileId: "p1" }],
+        windowSlots: [{ id: "slot1", profileId: "p1", activeWorkspaceId: "" }],
       };
       registry.getOrCreate("session1", state);
       expect(() => registry.activateProfile("session1", "p2", state)).toThrow("Profile is not open on desktop");
-      expect(state.windowSlots[0].profileId).toBe("p1");
     });
 
     test("throws when profile not found", () => {
@@ -133,7 +127,7 @@ describe("RemoteClientRegistry", () => {
   });
 
   describe("activateWorkspace", () => {
-    test("switches workspace within the client's active profile", () => {
+    test("returns the windowId for the bound profile's desktop slot", () => {
       const registry = new RemoteClientRegistry();
       const state = makeState({
         profiles: [{ id: "p1" }],
@@ -141,10 +135,11 @@ describe("RemoteClientRegistry", () => {
           { id: "ws1", profileId: "p1" },
           { id: "ws2", profileId: "p1" },
         ],
+        windowSlots: [{ id: "win-1", profileId: "p1", activeWorkspaceId: "ws1" }],
       });
       registry.getOrCreate("session1", state);
-      registry.activateWorkspace("session1", "ws2", state);
-      expect(registry.get("session1")!.activeWorkspaceId).toBe("ws2");
+      const result = registry.activateWorkspace("session1", "ws2", state);
+      expect(result.windowId).toBe("win-1");
     });
 
     test("rejects workspace from a different profile", () => {
@@ -156,7 +151,7 @@ describe("RemoteClientRegistry", () => {
           { id: "ws2", profileId: "p2" },
         ],
       });
-      registry.getOrCreate("session1", state); // starts on p1 / ws1
+      registry.getOrCreate("session1", state);
       expect(() => registry.activateWorkspace("session1", "ws2", state)).toThrow(
         "Workspace does not belong to the active profile",
       );
@@ -168,20 +163,37 @@ describe("RemoteClientRegistry", () => {
       registry.getOrCreate("session1", state);
       expect(() => registry.activateWorkspace("session1", "nonexistent", state)).toThrow("Workspace not found");
     });
-  });
 
-  describe("activateSession", () => {
-    test("activates a session that belongs to the workspace", () => {
+    test("throws when profile is no longer open in any desktop slot", () => {
       const registry = new RemoteClientRegistry();
       const state = makeState({
         profiles: [{ id: "p1" }],
         workspaces: [{ id: "ws1", profileId: "p1" }],
       });
       registry.getOrCreate("session1", state);
-      registry.activateSession("session1", "ws1", "ws1:panel1", state);
+      const stateAfterClose = { ...state, windowSlots: [] };
+      // Profile validation happens before slot lookup, so workspace-validation
+      // error wins when the workspace's profile is no longer the client's
+      // (after lazy fallback would run). Here we exercise the slot-lookup
+      // failure directly by keeping client's profileId but closing the slot.
       const client = registry.get("session1")!;
-      expect(client.activeWorkspaceId).toBe("ws1");
-      expect(client.activeSessionId).toBe("ws1:panel1");
+      client.profileId = "p1";
+      expect(() => registry.activateWorkspace("session1", "ws1", stateAfterClose)).toThrow(
+        "Profile is not open on desktop",
+      );
+    });
+  });
+
+  describe("activateSession", () => {
+    test("returns the windowId for a session that belongs to the workspace", () => {
+      const registry = new RemoteClientRegistry();
+      const state = makeState({
+        profiles: [{ id: "p1" }],
+        workspaces: [{ id: "ws1", profileId: "p1" }],
+      });
+      registry.getOrCreate("session1", state);
+      const result = registry.activateSession("session1", "ws1", "ws1:panel1", state);
+      expect(result.windowId).toBe("win-1");
     });
 
     test("rejects session that does not start with workspaceId:", () => {
@@ -205,7 +217,7 @@ describe("RemoteClientRegistry", () => {
           { id: "ws2", profileId: "p2" },
         ],
       });
-      registry.getOrCreate("session1", state); // on p1
+      registry.getOrCreate("session1", state);
       expect(() => registry.activateSession("session1", "ws2", "ws2:panel1", state)).toThrow(
         "Workspace does not belong to the active profile",
       );
@@ -213,7 +225,7 @@ describe("RemoteClientRegistry", () => {
   });
 
   describe("fallbackDeletedProfile", () => {
-    test("moves affected clients to the first remaining profile", () => {
+    test("moves affected clients to the first remaining open profile", () => {
       const registry = new RemoteClientRegistry();
       const stateWithP2 = makeState({
         profiles: [{ id: "p1" }, { id: "p2" }],
@@ -225,7 +237,6 @@ describe("RemoteClientRegistry", () => {
       registry.getOrCreate("session1", stateWithP2);
       registry.activateProfile("session1", "p2", stateWithP2);
 
-      // Now p2 is deleted — pass state without p2
       const stateAfterDelete = makeState({
         profiles: [{ id: "p1" }],
         workspaces: [{ id: "ws1", profileId: "p1" }],
@@ -233,7 +244,6 @@ describe("RemoteClientRegistry", () => {
       const affected = registry.fallbackDeletedProfile("p2", stateAfterDelete);
       expect(affected).toContain("session1");
       expect(registry.get("session1")!.profileId).toBe("p1");
-      expect(registry.get("session1")!.activeWorkspaceId).toBe("ws1");
     });
 
     test("returns empty array when no clients are on the deleted profile", () => {
@@ -246,49 +256,18 @@ describe("RemoteClientRegistry", () => {
     });
   });
 
-  describe("fallbackDeletedWorkspace", () => {
-    test("moves clients to sibling workspace when their active workspace is deleted", () => {
-      const registry = new RemoteClientRegistry();
-      const state = makeState({
-        profiles: [{ id: "p1" }],
-        workspaces: [
-          { id: "ws1", profileId: "p1" },
-          { id: "ws2", profileId: "p1" },
-        ],
-      });
-      registry.getOrCreate("session1", state); // starts on ws1
-      // Delete ws1 — pass state without ws1
-      const stateAfterDelete = makeState({
-        profiles: [{ id: "p1" }],
-        workspaces: [{ id: "ws2", profileId: "p1" }],
-      });
-      const affected = registry.fallbackDeletedWorkspace("ws1", stateAfterDelete);
-      expect(affected).toContain("session1");
-      expect(registry.get("session1")!.activeWorkspaceId).toBe("ws2");
-      expect(registry.get("session1")!.activeSessionId).toBe("");
-    });
-
-    test("sets empty workspace when no sibling exists", () => {
-      const registry = new RemoteClientRegistry();
-      const state = makeState({
-        profiles: [{ id: "p1" }],
-        workspaces: [{ id: "ws1", profileId: "p1" }],
-      });
-      registry.getOrCreate("session1", state);
-      const affected = registry.fallbackDeletedWorkspace("ws1", makeState({ profiles: [{ id: "p1" }] }));
-      expect(affected).toContain("session1");
-      expect(registry.get("session1")!.activeWorkspaceId).toBe("");
-    });
-  });
-
   describe("composePayload", () => {
-    test("injects remoteClient field for the requesting session", () => {
+    test("injects remoteClient with active workspace/session derived from the bound slot", () => {
       const registry = new RemoteClientRegistry();
       const state = makeState({
         profiles: [{ id: "p1" }, { id: "p2" }],
         workspaces: [
           { id: "ws1", profileId: "p1" },
           { id: "ws2", profileId: "p2" },
+        ],
+        windowSlots: [
+          { id: "win-1", profileId: "p1", activeWorkspaceId: "ws1", activeSessionId: "ws1:panel1" },
+          { id: "win-2", profileId: "p2", activeWorkspaceId: "ws2", activeSessionId: "" },
         ],
       });
       registry.getOrCreate("session1", state);
@@ -299,8 +278,37 @@ describe("RemoteClientRegistry", () => {
       const payload1 = registry.composePayload("session1", basePayload) as Record<string, unknown>;
       const payload2 = registry.composePayload("session2", basePayload) as Record<string, unknown>;
 
-      expect((payload1.remoteClient as Record<string, unknown>).profileId).toBe("p1");
-      expect((payload2.remoteClient as Record<string, unknown>).profileId).toBe("p2");
+      const rc1 = payload1.remoteClient as Record<string, unknown>;
+      expect(rc1.profileId).toBe("p1");
+      expect(rc1.activeWorkspaceId).toBe("ws1");
+      expect(rc1.activeSessionId).toBe("ws1:panel1");
+
+      const rc2 = payload2.remoteClient as Record<string, unknown>;
+      expect(rc2.profileId).toBe("p2");
+      expect(rc2.activeWorkspaceId).toBe("ws2");
+      expect(rc2.activeSessionId).toBe("");
+    });
+
+    test("mirrors desktop changes: composing again picks up the slot's new activeWorkspaceId", () => {
+      const registry = new RemoteClientRegistry();
+      const state = makeState({
+        profiles: [{ id: "p1" }],
+        workspaces: [
+          { id: "ws1", profileId: "p1" },
+          { id: "ws2", profileId: "p1" },
+        ],
+        windowSlots: [{ id: "win-1", profileId: "p1", activeWorkspaceId: "ws1" }],
+      });
+      registry.getOrCreate("session1", state);
+
+      // Desktop switches workspace in win-1.
+      const stateAfter = {
+        ...state,
+        windowSlots: [{ id: "win-1", profileId: "p1", activeWorkspaceId: "ws2", activeSessionId: "" }],
+      };
+      const result = registry.composePayload("session1", { appState: stateAfter }) as Record<string, unknown>;
+      const rc = result.remoteClient as Record<string, unknown>;
+      expect(rc.activeWorkspaceId).toBe("ws2");
     });
 
     test("reduces windowSlots to id/profileId/windowIndex only", () => {
@@ -311,8 +319,19 @@ describe("RemoteClientRegistry", () => {
         appState: {
           ...state,
           windowSlots: [
-            { id: "slot1", profileId: "p1", bounds: { x: 0, y: 0, width: 800, height: 600 }, lastFocusedAt: 123 },
-            { id: "slot2", profileId: "p1", bounds: { x: 100, y: 100, width: 800, height: 600 } },
+            {
+              id: "slot1",
+              profileId: "p1",
+              activeWorkspaceId: "",
+              bounds: { x: 0, y: 0, width: 800, height: 600 },
+              lastFocusedAt: 123,
+            },
+            {
+              id: "slot2",
+              profileId: "p1",
+              activeWorkspaceId: "",
+              bounds: { x: 100, y: 100, width: 800, height: 600 },
+            },
           ],
         },
       };
@@ -321,36 +340,11 @@ describe("RemoteClientRegistry", () => {
       expect(slots).toHaveLength(2);
       expect(slots[0]).toEqual({ id: "slot1", profileId: "p1", windowIndex: 1 });
       expect(slots[1]).toEqual({ id: "slot2", profileId: "p1", windowIndex: 2 });
-      // bounds/lastFocusedAt must not be included
       expect(Object.keys(slots[0] as object)).not.toContain("bounds");
       expect(Object.keys(slots[0] as object)).not.toContain("lastFocusedAt");
     });
 
-    test("lazy-falls-back profile when the stored profileId no longer exists", () => {
-      const registry = new RemoteClientRegistry();
-      const stateWithP2 = makeState({
-        profiles: [{ id: "p1" }, { id: "p2" }],
-        workspaces: [
-          { id: "ws1", profileId: "p1" },
-          { id: "ws2", profileId: "p2" },
-        ],
-      });
-      registry.getOrCreate("session1", stateWithP2);
-      registry.activateProfile("session1", "p2", stateWithP2);
-
-      // Compose with a payload where p2 was deleted
-      const basePayload = {
-        appState: {
-          profiles: [{ id: "p1" }],
-          workspaces: [{ id: "ws1", profileId: "p1" }],
-          windowSlots: [{ id: "win-1", profileId: "p1" }],
-        },
-      };
-      const result = registry.composePayload("session1", basePayload) as Record<string, unknown>;
-      expect((result.remoteClient as Record<string, unknown>).profileId).toBe("p1");
-    });
-
-    test("lazy-falls-back profile when its desktop slot closes but the profile still exists", () => {
+    test("lazy-falls-back profile when its desktop slot closes", () => {
       const registry = new RemoteClientRegistry();
       const initialState = makeState({
         profiles: [{ id: "p1" }, { id: "p2" }],
@@ -358,15 +352,11 @@ describe("RemoteClientRegistry", () => {
           { id: "ws1", profileId: "p1" },
           { id: "ws2", profileId: "p2" },
         ],
-        windowSlots: [
-          { id: "win-1", profileId: "p1" },
-          { id: "win-2", profileId: "p2" },
-        ],
       });
       registry.getOrCreate("session1", initialState);
       registry.activateProfile("session1", "p2", initialState);
 
-      // Window 2 closes; p2 still exists as a persisted profile but is no longer open on desktop.
+      // Window 2 closes.
       const basePayload = {
         appState: {
           profiles: [{ id: "p1" }, { id: "p2" }],
@@ -374,14 +364,13 @@ describe("RemoteClientRegistry", () => {
             { id: "ws1", profileId: "p1" },
             { id: "ws2", profileId: "p2" },
           ],
-          windowSlots: [{ id: "win-1", profileId: "p1" }],
+          windowSlots: [{ id: "win-1", profileId: "p1", activeWorkspaceId: "ws1" }],
         },
       };
       const result = registry.composePayload("session1", basePayload) as Record<string, unknown>;
-      const remoteClient = result.remoteClient as Record<string, unknown>;
-      expect(remoteClient.profileId).toBe("p1");
-      expect(remoteClient.activeWorkspaceId).toBe("ws1");
-      expect(remoteClient.activeSessionId).toBe("");
+      const rc = result.remoteClient as Record<string, unknown>;
+      expect(rc.profileId).toBe("p1");
+      expect(rc.activeWorkspaceId).toBe("ws1");
     });
 
     test("returns payload without remoteClient when session is not in registry", () => {
