@@ -1393,15 +1393,16 @@ export async function startRemoteServer({
     return false;
   }
 
-  function mintSession(): string {
+  function mintSession(requestedProfileId = ""): string {
     const id = randomBytes(32).toString("base64url");
     activeSessions.add(id);
     // Bootstrap default profile / workspace context for this new session.
-    registry.getOrCreate(id, (runtime.getPayload() as Record<string, unknown>).appState);
+    registry.getOrCreate(id, (runtime.getPayload() as Record<string, unknown>).appState, requestedProfileId);
     return id;
   }
 
   function sessionIdForRequest(requestUrl: string, headers: IncomingMessage["headers"]): string {
+    const url = new URL(requestUrl, "http://localhost");
     const cookieSessionId = getSessionFromRequest(headers);
     if (cookieSessionId && activeSessions.has(cookieSessionId)) return cookieSessionId;
     if (!tokensEqual(getTokenFromRequest(requestUrl, headers), token)) return "";
@@ -1409,7 +1410,11 @@ export async function startRemoteServer({
     if (!clientId) return "";
     const tokenSessionId = `token-client:${clientId}`;
     activeSessions.add(tokenSessionId);
-    registry.getOrCreate(tokenSessionId, (runtime.getPayload() as Record<string, unknown>).appState);
+    registry.getOrCreate(
+      tokenSessionId,
+      (runtime.getPayload() as Record<string, unknown>).appState,
+      url.searchParams.get("profileId") || "",
+    );
     return tokenSessionId;
   }
 
@@ -1505,7 +1510,7 @@ export async function startRemoteServer({
         response.end("Unauthorized");
         return;
       }
-      const sessionId = mintSession();
+      const sessionId = mintSession(url.searchParams.get("profileId") || "");
       writeHead(response, 302, {
         "Set-Cookie": `${SESSION_COOKIE_NAME}=${sessionId}; ${buildSessionCookieAttrs(request.headers)}`,
         Location: "/",

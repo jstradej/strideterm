@@ -284,7 +284,7 @@ interface PendingRequest {
   profileChoices?: TelegramProfileInfo[];
   /** Command to resume after choosing a profile for an unbound connection */
   profileCommand?: {
-    type: "status" | "workspaces" | "task" | "menu" | "screenshot" | "prs";
+    type: "status" | "workspaces" | "task" | "menu" | "screenshot" | "prs" | "tunnel";
     screenshotArg?: string;
   };
 }
@@ -401,22 +401,40 @@ export class TelegramManager extends EventEmitter {
   }
 
   private _profileChoices(): TelegramProfileInfo[] {
+    const slots = this.getWindowSlots?.();
     const profiles = this.getProfiles?.() ?? [];
+    const byId = new Map(profiles.map((profile) => [profile.id, profile]));
+    if (slots) {
+      return slots.map((slot, idx) => {
+        const profile = byId.get(slot.profileId);
+        const name = profile?.name || slot.profileId;
+        return {
+          id: slot.profileId,
+          name: slots.length > 1 ? `${name} (Window ${idx + 1})` : name,
+          color: profile?.color,
+        };
+      });
+    }
     if (profiles.length > 0) return profiles;
-    // Fallback: derive from open window slots instead of the deprecated global activeProfileId
-    const slots = this.getWindowSlots?.() ?? [];
-    if (slots.length > 0) return slots.map((s) => ({ id: s.profileId, name: s.profileId }));
     const active = this.getActiveProfileId?.() || "default";
     return [{ id: active, name: active }];
   }
 
   private _resolveConnectionProfileId(conn: TelegramConnectionConfig, explicitProfileId?: string): string | null {
+    const slots = this.getWindowSlots?.();
+    if (slots) {
+      const openProfileIds = new Set(slots.map((slot) => slot.profileId));
+      if (explicitProfileId) return openProfileIds.has(explicitProfileId) ? explicitProfileId : null;
+      if (conn.profileId) return openProfileIds.has(conn.profileId) ? conn.profileId : null;
+      if (slots.length === 1) return slots[0].profileId;
+      return null;
+    }
     if (explicitProfileId) return explicitProfileId;
     const profiles = this._profileChoices();
     if (conn.profileId && profiles.some((profile) => profile.id === conn.profileId)) return conn.profileId;
     if (conn.profileId && profiles.length === 0) return conn.profileId;
-    const slots = this.getWindowSlots?.() ?? [];
-    if (profiles.length <= 1) return profiles[0]?.id || slots[0]?.profileId || this.getActiveProfileId?.() || "default";
+    if (profiles.length <= 1)
+      return profiles[0]?.id || slots?.[0]?.profileId || this.getActiveProfileId?.() || "default";
     return null;
   }
 
@@ -436,10 +454,24 @@ export class TelegramManager extends EventEmitter {
     command: PendingRequest["profileCommand"],
     explicitProfileId?: string,
   ): Promise<string | null> {
+    const slots = this.getWindowSlots?.();
+    if (!explicitProfileId && conn.profileId && slots && !slots.some((slot) => slot.profileId === conn.profileId)) {
+      await this._sendText(
+        token,
+        chatId,
+        `⚠️ Profile *${escapeMarkdown(conn.profileId)}* is not open in any desktop window\\. Open it on desktop or unbind this Telegram chat\\.`,
+        true,
+      );
+      return null;
+    }
     const resolved = this._resolveConnectionProfileId(conn, explicitProfileId);
     if (resolved) return resolved;
 
     const choices = this._profileChoices();
+    if (choices.length === 0) {
+      await this._sendText(token, chatId, "⚠️ No desktop profile is currently open\\.", true);
+      return null;
+    }
     const lines = ["🧭 *Pick a profile*:", ""];
     for (let i = 0; i < choices.length; i++) {
       const profile = choices[i];
@@ -1339,7 +1371,7 @@ export class TelegramManager extends EventEmitter {
     }
     if (lower === "/tunnel" || lower === "tunnel" || lower === "/url" || lower === "url") {
       log.info("telegram command: /tunnel", { chatId });
-      await this._handleTunnelCommand(chatId, token);
+      await this._handleTunnelCommand(chatId, token, conn);
       return;
     }
     if (lower === "/menu" || lower === "menu" || lower === "/start" || lower === "start") {
@@ -1415,6 +1447,9 @@ export class TelegramManager extends EventEmitter {
             return;
           case "prs":
             await this._handlePrsCommand(chatId, token, scopedConn, chosen.id);
+            return;
+          case "tunnel":
+            await this._handleTunnelCommand(chatId, token, scopedConn, chosen.id);
             return;
         }
       }
@@ -2038,7 +2073,25 @@ export class TelegramManager extends EventEmitter {
    * decoration. Inline keyboard buttons let mobile users open the URL in
    * one tap (Telegram opens https links in the in-app browser).
    */
-  private async _handleTunnelCommand(chatId: string, token: string): Promise<void> {
+  private _withTunnelProfile(urlValue: string, profileId: string): string {
+    if (!urlValue || !profileId) return urlValue;
+    try {
+      const url = new URL(urlValue);
+      url.searchParams.set("profileId", profileId);
+      return url.toString();
+    } catch {
+      return urlValue;
+    }
+  }
+
+  private async _handleTunnelCommand(
+    chatId: string,
+    token: string,
+    conn: TelegramConnectionConfig,
+    explicitProfileId?: string,
+  ): Promise<void> {
+    const profileId = await this._resolveProfileOrPrompt(chatId, token, conn, { type: "tunnel" }, explicitProfileId);
+    if (!profileId) return;
     const info = this.getTunnelInfo?.();
     if (!info) {
       log.warn("telegram /tunnel: no getTunnelInfo configured");
@@ -2058,8 +2111,10 @@ export class TelegramManager extends EventEmitter {
       // their phone — the cloudflared snapshot only carries the public URL.
       cloudflareUrl += `?token=${encodeURIComponent(info.remoteToken)}`;
     }
+    cloudflareUrl = this._withTunnelProfile(cloudflareUrl, profileId);
+    const profileLanUrls = lanUrls.map((url) => this._withTunnelProfile(url, profileId));
 
-    if (!info.remoteEnabled && !cloudflareUrl && !lanUrls.length) {
+    if (!info.remoteEnabled && !cloudflareUrl && !profileLanUrls.length) {
       await this._sendText(
         token,
         chatId,
@@ -2088,9 +2143,9 @@ export class TelegramManager extends EventEmitter {
       lines.push("");
     }
 
-    if (lanUrls.length) {
-      lines.push(`📡 *LAN URL${lanUrls.length === 1 ? "" : "s"}:*`);
-      for (const url of lanUrls) {
+    if (profileLanUrls.length) {
+      lines.push(`📡 *LAN URL${profileLanUrls.length === 1 ? "" : "s"}:*`);
+      for (const url of profileLanUrls) {
         lines.push(`\`${escapeInlineCode(url)}\``);
       }
       lines.push("");
@@ -2108,7 +2163,7 @@ export class TelegramManager extends EventEmitter {
     if (cloudflareUrl) {
       buttons.push([{ text: "🌍 Open public URL", url: cloudflareUrl }]);
     }
-    for (const url of lanUrls.slice(0, 3)) {
+    for (const url of profileLanUrls.slice(0, 3)) {
       // Use the host portion as the button label so multi-NIC machines stay readable.
       let label = url;
       try {
@@ -3183,7 +3238,7 @@ export class TelegramManager extends EventEmitter {
         await this._handleScreenshotCommand(chatId, token, conn);
         return;
       case "tunnel":
-        await this._handleTunnelCommand(chatId, token);
+        await this._handleTunnelCommand(chatId, token, conn);
         return;
       case "help":
         await this._sendText(

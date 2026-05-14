@@ -155,12 +155,19 @@ export const useAppStore = defineStore("app", () => {
   });
 
   function resolveRemoteProfileId(sourcePayload: StatePayload | null = payload.value): string | null {
-    const profiles = (((sourcePayload as AnyApi)?.appState?.profiles || []) as AnyApi[]).filter(
-      (profile) => profile?.id,
-    );
+    const appState = (sourcePayload as AnyApi)?.appState || {};
+    const profiles = ((appState.profiles || []) as AnyApi[]).filter((profile) => profile?.id);
+    const slots = (appState.windowSlots || []) as AnyApi[];
+    const openProfileIds = slots.map((slot) => String(slot?.profileId || "")).filter(Boolean);
     const remoteProfileId = (sourcePayload as AnyApi)?.remoteClient?.profileId || "";
-    if (remoteProfileId && profiles.some((profile) => profile.id === remoteProfileId)) return remoteProfileId;
-    return profiles[0]?.id || null;
+    if (
+      remoteProfileId &&
+      openProfileIds.includes(remoteProfileId) &&
+      profiles.some((profile) => profile.id === remoteProfileId)
+    ) {
+      return remoteProfileId;
+    }
+    return openProfileIds.find((profileId) => profiles.some((profile) => profile.id === profileId)) || null;
   }
 
   function resolveRemoteWorkspaceId(sourcePayload: StatePayload | null = payload.value): string {
@@ -204,6 +211,7 @@ export const useAppStore = defineStore("app", () => {
   let _prevFilteredWs: AnyApi[] = [];
   const filteredWorkspaces = computed(() => {
     const workspaces = payload.value?.appState?.workspaces || [];
+    if (isRemoteTransport.value && !myActiveProfileId.value) return [];
     const activeProfileId =
       myActiveProfileId.value ??
       ((payload.value?.appState?.profiles as AnyApi[] | undefined)?.[0] as AnyApi)?.id ??

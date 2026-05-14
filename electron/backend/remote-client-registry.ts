@@ -32,21 +32,39 @@ export class RemoteClientRegistry {
   private readonly clients = new Map<string, RemoteClientContext>();
   private sweepTimer: ReturnType<typeof setInterval> | null = null;
 
+  private openProfileIds(appState: AnyState): string[] {
+    const slots: AnyState[] = appState?.windowSlots || [];
+    const ids: string[] = [];
+    for (const slot of slots) {
+      const profileId = String(slot?.profileId || "");
+      if (profileId && !ids.includes(profileId)) ids.push(profileId);
+    }
+    return ids;
+  }
+
+  private firstWorkspaceId(appState: AnyState, profileId: string): string {
+    const workspaces: AnyState[] = appState?.workspaces || [];
+    return workspaces.find((w: AnyState) => (w.profileId || "default") === profileId)?.id || "";
+  }
+
+  private fallbackProfileId(appState: AnyState): string {
+    return this.openProfileIds(appState)[0] || "";
+  }
+
   /** Get-or-create a client context for `sessionId`. */
-  getOrCreate(sessionId: string, appState: AnyState): RemoteClientContext {
+  getOrCreate(sessionId: string, appState: AnyState, requestedProfileId = ""): RemoteClientContext {
     const existing = this.clients.get(sessionId);
     if (existing) {
       existing.lastSeenAt = Date.now();
       return existing;
     }
-    const profiles: AnyState[] = appState?.profiles || [];
-    const firstProfile = profiles[0] || { id: "default" };
-    const workspaces: AnyState[] = appState?.workspaces || [];
-    const firstWs = workspaces.find((w: AnyState) => (w.profileId || "default") === firstProfile.id);
+    const openProfileIds = this.openProfileIds(appState);
+    const profileId =
+      requestedProfileId && openProfileIds.includes(requestedProfileId) ? requestedProfileId : openProfileIds[0] || "";
     const client: RemoteClientContext = {
       id: sessionId,
-      profileId: firstProfile.id,
-      activeWorkspaceId: firstWs?.id || "",
+      profileId,
+      activeWorkspaceId: profileId ? this.firstWorkspaceId(appState, profileId) : "",
       activeSessionId: "",
       connectedAt: Date.now(),
       lastSeenAt: Date.now(),
@@ -72,12 +90,9 @@ export class RemoteClientRegistry {
   activateProfile(sessionId: string, profileId: string, appState: AnyState): void {
     const client = this.clients.get(sessionId);
     if (!client) throw new Error("Remote client session not found");
-    const profiles: AnyState[] = appState?.profiles || [];
-    if (!profiles.some((p: AnyState) => p.id === profileId)) throw new Error("Profile not found");
-    const workspaces: AnyState[] = appState?.workspaces || [];
-    const firstWs = workspaces.find((w: AnyState) => (w.profileId || "default") === profileId);
+    if (!this.openProfileIds(appState).includes(profileId)) throw new Error("Profile is not open on desktop");
     client.profileId = profileId;
-    client.activeWorkspaceId = firstWs?.id || "";
+    client.activeWorkspaceId = this.firstWorkspaceId(appState, profileId);
     client.activeSessionId = "";
     client.lastSeenAt = Date.now();
   }
@@ -120,15 +135,11 @@ export class RemoteClientRegistry {
 
   fallbackDeletedProfile(profileId: string, appState: AnyState): string[] {
     const affected: string[] = [];
-    const profiles: AnyState[] = appState?.profiles || [];
-    const fallbackProfile = profiles[0];
-    if (!fallbackProfile) return affected;
-    const workspaces: AnyState[] = appState?.workspaces || [];
-    const fallbackWs = workspaces.find((w: AnyState) => (w.profileId || "default") === fallbackProfile.id);
+    const fallbackProfileId = this.fallbackProfileId(appState);
     for (const [sid, client] of this.clients) {
       if (client.profileId === profileId) {
-        client.profileId = fallbackProfile.id;
-        client.activeWorkspaceId = fallbackWs?.id || "";
+        client.profileId = fallbackProfileId;
+        client.activeWorkspaceId = fallbackProfileId ? this.firstWorkspaceId(appState, fallbackProfileId) : "";
         client.activeSessionId = "";
         affected.push(sid);
       }
@@ -177,17 +188,12 @@ export class RemoteClientRegistry {
     if (!client) {
       return { ...payload, appState: { ...appState, windowSlots: reducedSlots } };
     }
-    // Lazy fallback: profile deleted
-    const profiles = (appState.profiles as AnyState[]) || [];
-    if (!profiles.some((p: AnyState) => p.id === client.profileId)) {
-      const fallback = profiles[0];
-      if (fallback) {
-        const workspaces = (appState.workspaces as AnyState[]) || [];
-        const fw = workspaces.find((w: AnyState) => (w.profileId || "default") === fallback.id);
-        client.profileId = fallback.id;
-        client.activeWorkspaceId = fw?.id || "";
-        client.activeSessionId = "";
-      }
+    // Lazy fallback: profile no longer open in a desktop slot.
+    if (!this.openProfileIds(appState).includes(client.profileId)) {
+      const fallbackProfileId = this.fallbackProfileId(appState);
+      client.profileId = fallbackProfileId;
+      client.activeWorkspaceId = fallbackProfileId ? this.firstWorkspaceId(appState, fallbackProfileId) : "";
+      client.activeSessionId = "";
     }
     // Lazy fallback: workspace deleted
     const workspaces = (appState.workspaces as AnyState[]) || [];

@@ -331,6 +331,11 @@ export function createApiActions(ctx: ApiActionsCtx) {
   function getRemoteShareUrl(): string {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const p = ctx.payload.value as any;
+    const windowId = (window as AnyApi).strideterm?.startupFlags?.windowId || "";
+    const slots = (p?.appState?.windowSlots || []) as Array<{ id: string; profileId?: string }>;
+    const profileId = ctx.getApi().isRemote
+      ? ""
+      : (windowId && slots.find((slot) => slot.id === windowId)?.profileId) || slots[0]?.profileId || "";
     return withRemoteToken(
       preferredRemoteUrl({
         urls: p?.remoteAccess?.urls || [],
@@ -338,6 +343,7 @@ export function createApiActions(ctx: ApiActionsCtx) {
         customPublicUrl: p?.appState?.settings?.remoteAccess?.customPublicUrl || "",
       }),
       p?.appState?.settings?.remoteAccess?.token || "",
+      profileId,
     );
   }
 

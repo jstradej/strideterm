@@ -1410,7 +1410,7 @@ describe("/task candidate filter", () => {
     expect(pending?.workspaceChoices?.map((w: TelegramWorkspaceInfo) => w.id)).toEqual(["work-ws"]);
   });
 
-  test("unbound connection prompts for a profile when multiple profiles exist", async () => {
+  test("unbound connection prompts for a profile when multiple desktop profiles are open", async () => {
     const cred = makeCredentialStore({ "cred:tg-1": "token123" });
     const manager = new TelegramManager({ credentialStore: cred });
     manager.configure([makeConnection()]);
@@ -1418,6 +1418,10 @@ describe("/task candidate filter", () => {
     manager.setProfilesGetter(() => [
       { id: "personal", name: "Personal" },
       { id: "work", name: "Work" },
+    ]);
+    manager.setWindowSlotsGetter(() => [
+      { id: "win-personal", profileId: "personal" },
+      { id: "win-work", profileId: "work" },
     ]);
     manager.setActiveProfileGetter(() => "personal");
     manager.setWorkspacesGetter(() => [
@@ -3170,6 +3174,90 @@ describe("/tunnel command", () => {
     expect(text).not.toContain("trycloudflare");
   });
 
+  test("/tunnel appends the bound open desktop profile context to URLs", async () => {
+    const cred = makeCredentialStore({ "cred:tg-1": "token123" });
+    const manager = new TelegramManager({ credentialStore: cred });
+    manager.configure([makeConnection({ profileId: "work" })]);
+    manager.setProfilesGetter(() => [{ id: "work", name: "Work" }]);
+    manager.setWindowSlotsGetter(() => [{ id: "win-work", profileId: "work" }]);
+    manager.setTunnelInfoGetter(() => ({
+      remoteEnabled: true,
+      lanUrls: ["http://192.168.1.20:7333/?token=abc"],
+      cloudflareUrl: "https://blah-blah.trycloudflare.com",
+      remoteToken: "abc",
+      cloudflareStatus: "connected",
+      tunnelMode: "cloudflare",
+    }));
+
+    const sentBodies: Array<Record<string, unknown>> = [];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (manager as any)._apiCall = async (_t: string, _m: string, body: Record<string, unknown>) => {
+      sentBodies.push(body);
+      return { ok: true, result: { message_id: 8006 } };
+    };
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (manager as any)._handleMessage(
+      { message_id: 806, chat: { id: 12345 }, text: "/tunnel" },
+      makeConnection({ profileId: "work" }),
+      "token123",
+    );
+
+    const text = sentBodies[0].text as string;
+    expect(text).toContain("profileId=work");
+    const markup = sentBodies[0].reply_markup as { inline_keyboard: Array<Array<{ url: string }>> };
+    expect(
+      markup.inline_keyboard
+        .flatMap((row) => row.map((button) => button.url))
+        .every((url) => url.includes("profileId=work")),
+    ).toBe(true);
+  });
+
+  test("/tunnel prompts unbound chats when multiple desktop profiles are open", async () => {
+    const cred = makeCredentialStore({ "cred:tg-1": "token123" });
+    const manager = new TelegramManager({ credentialStore: cred });
+    manager.configure([makeConnection()]);
+    manager.setProfilesGetter(() => [
+      { id: "personal", name: "Personal" },
+      { id: "work", name: "Work" },
+    ]);
+    manager.setWindowSlotsGetter(() => [
+      { id: "win-personal", profileId: "personal" },
+      { id: "win-work", profileId: "work" },
+    ]);
+    manager.setTunnelInfoGetter(() => ({
+      remoteEnabled: true,
+      lanUrls: ["http://192.168.1.20:7333/?token=abc"],
+      cloudflareUrl: "",
+      remoteToken: "abc",
+      cloudflareStatus: "idle",
+      tunnelMode: "lan-only",
+    }));
+
+    const sentBodies: Array<Record<string, unknown>> = [];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (manager as any)._apiCall = async (_t: string, _m: string, body: Record<string, unknown>) => {
+      sentBodies.push(body);
+      return { ok: true, result: { message_id: 8007 } };
+    };
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (manager as any)._handleMessage(
+      { message_id: 807, chat: { id: 12345 }, text: "/tunnel" },
+      makeConnection(),
+      "token123",
+    );
+
+    expect(sentBodies).toHaveLength(1);
+    const text = sentBodies[0].text as string;
+    expect(text).toContain("Pick a profile");
+    expect(text).toContain("Personal");
+    expect(text).toContain("Window 1");
+    expect(text).toContain("Work");
+    expect(text).toContain("Window 2");
+    expect(text).not.toContain("192.168.1.20");
+  });
+
   test("/tunnel says remote access is off when nothing is configured", async () => {
     const cred = makeCredentialStore({ "cred:tg-1": "token123" });
     const manager = new TelegramManager({ credentialStore: cred });
@@ -3303,6 +3391,32 @@ describe("TelegramManager windowSlot validation for /task", () => {
       starred: false,
     };
   }
+
+  test("profile choices come only from open desktop windowSlots, not persisted profiles", () => {
+    const cred = makeCredentialStore({});
+    const manager = new TelegramManager({ credentialStore: cred });
+    manager.setProfilesGetter(() => [
+      { id: "p1", name: "P1" },
+      { id: "p2", name: "P2" },
+    ]);
+    manager.setWindowSlotsGetter(() => []);
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect((manager as any)._profileChoices()).toEqual([]);
+  });
+
+  test("explicit profile choices are rejected when the profile is no longer open on desktop", () => {
+    const cred = makeCredentialStore({});
+    const manager = new TelegramManager({ credentialStore: cred });
+    manager.setProfilesGetter(() => [
+      { id: "p1", name: "P1" },
+      { id: "p2", name: "P2" },
+    ]);
+    manager.setWindowSlotsGetter(() => [{ id: "w2", profileId: "p2" }]);
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect((manager as any)._resolveConnectionProfileId(makeConnection(), "p1")).toBeNull();
+  });
 
   test("proceeds when profile p1 is in windowSlot W2 (targets W2)", async () => {
     const cred = makeCredentialStore({ "cred:tg-1": "token123" });

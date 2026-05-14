@@ -19,7 +19,9 @@
           :style="{ borderColor: profile.id === activeProfileId ? 'var(--accent)' : 'var(--border)' }"
         >
           <div class="profile-card__header">
+            <span v-if="isRemote" class="profile-name-display">{{ profile.name }}</span>
             <input
+              v-else
               v-model="profile.name"
               class="profile-name-input"
               maxlength="40"
@@ -51,7 +53,7 @@
                 Activate
               </button>
               <button
-                v-if="localProfiles.length > 1"
+                v-if="!isRemote && localProfiles.length > 1"
                 type="button"
                 class="button button--ghost button--danger-text"
                 title="Delete this profile. Any workspaces assigned to it move back to the default profile — they are not deleted."
@@ -66,7 +68,7 @@
               >{{ workspaceCount(profile.id) }} workspace{{ workspaceCount(profile.id) !== 1 ? "s" : "" }}</small
             >
             <input
-              v-if="profile.id === activeProfileId"
+              v-if="!isRemote && profile.id === activeProfileId"
               type="color"
               :value="profile.color || '#ffa424'"
               class="profile-color-input"
@@ -76,7 +78,7 @@
           </div>
         </article>
       </div>
-      <div class="add-profile-row">
+      <div v-if="!isRemote" class="add-profile-row">
         <input
           v-model="newProfileName"
           placeholder="New profile name..."
@@ -300,6 +302,17 @@ async function addProfile() {
 .profile-name-input:focus {
   border-color: var(--border);
   background: rgba(255, 255, 255, 0.04);
+}
+.profile-name-display {
+  min-width: 0;
+  padding: 2px 6px;
+  font: inherit;
+  font-weight: 700;
+  color: var(--text);
+  font-size: 14px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .profile-active-badge {
   color: var(--accent);

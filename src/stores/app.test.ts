@@ -99,7 +99,28 @@ describe("useAppStore — remote mode identity", () => {
 
   it("myActiveProfileId reads remoteClient.profileId in remote mode", async () => {
     const payload = makeBasePayload({
-      remoteClient: { id: "sess1", profileId: "p2", activeWorkspaceId: "ws1", activeSessionId: "" },
+      remoteClient: { id: "sess1", profileId: "p2", activeWorkspaceId: "ws3", activeSessionId: "" },
+      appState: {
+        activeWorkspaceId: "",
+        profiles: [
+          { id: "p1", name: "P1", color: "#fff", workspaceIds: [] },
+          { id: "p2", name: "P2", color: "#fff", workspaceIds: [] },
+        ],
+        workspaces: [
+          { id: "ws1", name: "Workspace 1", profileId: "p1", panels: [], kind: "terminal", cwd: "/tmp" },
+          { id: "ws3", name: "Workspace 3", profileId: "p2", panels: [], kind: "terminal", cwd: "/tmp" },
+        ],
+        windowSlots: [{ id: "slot2", profileId: "p2", activeWorkspaceId: "ws3", activeSessionId: "" }],
+        settings: {},
+        tabTemplates: [],
+        ssh: {
+          hosts: [],
+          keys: [],
+          certificates: [],
+          knownHosts: {},
+          settings: { defaultAgentMode: "inherit", importedSshConfig: false },
+        },
+      },
     });
     const transport = makeRemoteTransport(payload);
     const store = useAppStore();
@@ -125,7 +146,7 @@ describe("useAppStore — remote mode identity", () => {
           { id: "ws1", name: "Workspace 1", profileId: "p1", panels: [], kind: "terminal", cwd: "/tmp" },
           { id: "ws3", name: "Workspace 3", profileId: "p2", panels: [], kind: "terminal", cwd: "/tmp" },
         ],
-        windowSlots: [],
+        windowSlots: [{ id: "slot2", profileId: "p2", activeWorkspaceId: "ws3", activeSessionId: "" }],
         settings: {},
         tabTemplates: [],
         ssh: {
@@ -150,8 +171,30 @@ describe("useAppStore — remote mode identity", () => {
     expect(store.filteredWorkspaces.map((ws: AnyApi) => ws.id)).toEqual(["ws3"]);
   });
 
-  it("myActiveProfileId falls back to the first real profile when remoteClient is absent", async () => {
-    const payload = makeBasePayload(); // no remoteClient
+  it("myActiveProfileId falls back to the first open desktop profile when remoteClient is absent", async () => {
+    const payload = makeBasePayload({
+      appState: {
+        activeWorkspaceId: "",
+        profiles: [
+          { id: "p1", name: "P1", color: "#fff", workspaceIds: [] },
+          { id: "p2", name: "P2", color: "#fff", workspaceIds: [] },
+        ],
+        workspaces: [
+          { id: "ws1", name: "Workspace 1", profileId: "p1", panels: [], kind: "terminal", cwd: "/tmp" },
+          { id: "ws3", name: "Workspace 3", profileId: "p2", panels: [], kind: "terminal", cwd: "/tmp" },
+        ],
+        windowSlots: [{ id: "slot2", profileId: "p2", activeWorkspaceId: "ws3", activeSessionId: "" }],
+        settings: {},
+        tabTemplates: [],
+        ssh: {
+          hosts: [],
+          keys: [],
+          certificates: [],
+          knownHosts: {},
+          settings: { defaultAgentMode: "inherit", importedSshConfig: false },
+        },
+      },
+    });
     const transport = makeRemoteTransport(payload);
     const store = useAppStore();
 
@@ -159,14 +202,88 @@ describe("useAppStore — remote mode identity", () => {
     await Promise.resolve();
     await Promise.resolve();
 
-    expect(store.myActiveProfileId).toBe("p1");
-    expect(store.myActiveWorkspaceId).toBe("ws1");
-    expect(store.filteredWorkspaces.map((ws: AnyApi) => ws.id)).toEqual(["ws1", "ws2"]);
+    expect(store.myActiveProfileId).toBe("p2");
+    expect(store.myActiveWorkspaceId).toBe("ws3");
+    expect(store.filteredWorkspaces.map((ws: AnyApi) => ws.id)).toEqual(["ws3"]);
   });
 
   it("myActiveWorkspaceId ignores stale remote workspace ids from another profile", async () => {
     const payload = makeBasePayload({
       remoteClient: { id: "sess1", profileId: "p2", activeWorkspaceId: "ws1", activeSessionId: "" },
+      appState: {
+        activeWorkspaceId: "",
+        profiles: [
+          { id: "p1", name: "P1", color: "#fff", workspaceIds: [] },
+          { id: "p2", name: "P2", color: "#fff", workspaceIds: [] },
+        ],
+        workspaces: [
+          { id: "ws1", name: "Workspace 1", profileId: "p1", panels: [], kind: "terminal", cwd: "/tmp" },
+          { id: "ws3", name: "Workspace 3", profileId: "p2", panels: [], kind: "terminal", cwd: "/tmp" },
+        ],
+        windowSlots: [{ id: "slot2", profileId: "p2", activeWorkspaceId: "ws3", activeSessionId: "" }],
+        settings: {},
+        tabTemplates: [],
+        ssh: {
+          hosts: [],
+          keys: [],
+          certificates: [],
+          knownHosts: {},
+          settings: { defaultAgentMode: "inherit", importedSshConfig: false },
+        },
+      },
+    });
+    const transport = makeRemoteTransport(payload);
+    const store = useAppStore();
+
+    store.init(transport as AnyApi);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(store.myActiveProfileId).toBe("p2");
+    expect(store.myActiveWorkspaceId).toBe("ws3");
+    expect(store.filteredWorkspaces.map((ws: AnyApi) => ws.id)).toEqual(["ws3"]);
+  });
+
+  it("myActiveProfileId ignores stale remote profile ids that are not open on desktop", async () => {
+    const payload = makeBasePayload({
+      remoteClient: { id: "sess1", profileId: "p1", activeWorkspaceId: "ws1", activeSessionId: "" },
+      appState: {
+        activeWorkspaceId: "",
+        profiles: [
+          { id: "p1", name: "P1", color: "#fff", workspaceIds: [] },
+          { id: "p2", name: "P2", color: "#fff", workspaceIds: [] },
+        ],
+        workspaces: [
+          { id: "ws1", name: "Workspace 1", profileId: "p1", panels: [], kind: "terminal", cwd: "/tmp" },
+          { id: "ws3", name: "Workspace 3", profileId: "p2", panels: [], kind: "terminal", cwd: "/tmp" },
+        ],
+        windowSlots: [{ id: "slot2", profileId: "p2", activeWorkspaceId: "ws3", activeSessionId: "" }],
+        settings: {},
+        tabTemplates: [],
+        ssh: {
+          hosts: [],
+          keys: [],
+          certificates: [],
+          knownHosts: {},
+          settings: { defaultAgentMode: "inherit", importedSshConfig: false },
+        },
+      },
+    });
+    const transport = makeRemoteTransport(payload);
+    const store = useAppStore();
+
+    store.init(transport as AnyApi);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(store.activeProfile.name).toBe("P2");
+    expect(store.myActiveProfileId).toBe("p2");
+    expect(store.filteredWorkspaces.map((ws: AnyApi) => ws.id)).toEqual(["ws3"]);
+  });
+
+  it("has no remote profile context when no desktop profile is open", async () => {
+    const payload = makeBasePayload({
+      remoteClient: { id: "sess1", profileId: "p1", activeWorkspaceId: "ws1", activeSessionId: "" },
       appState: {
         activeWorkspaceId: "",
         profiles: [
@@ -196,25 +313,9 @@ describe("useAppStore — remote mode identity", () => {
     await Promise.resolve();
     await Promise.resolve();
 
-    expect(store.myActiveProfileId).toBe("p2");
-    expect(store.myActiveWorkspaceId).toBe("ws3");
-    expect(store.filteredWorkspaces.map((ws: AnyApi) => ws.id)).toEqual(["ws3"]);
-  });
-
-  it("myActiveProfileId ignores stale remote profile ids that no longer exist", async () => {
-    const payload = makeBasePayload({
-      remoteClient: { id: "sess1", profileId: "deleted-profile", activeWorkspaceId: "", activeSessionId: "" },
-    });
-    const transport = makeRemoteTransport(payload);
-    const store = useAppStore();
-
-    store.init(transport as AnyApi);
-    await Promise.resolve();
-    await Promise.resolve();
-
-    expect(store.activeProfile.name).toBe("P1");
-    expect(store.myActiveProfileId).toBe("p1");
-    expect(store.filteredWorkspaces.map((ws: AnyApi) => ws.id)).toEqual(["ws1", "ws2"]);
+    expect(store.myActiveProfileId).toBeNull();
+    expect(store.myActiveWorkspaceId).toBe("");
+    expect(store.filteredWorkspaces).toEqual([]);
   });
 
   it("optimistic workspace activation in remote mode updates remoteClient but not windowSlots", async () => {

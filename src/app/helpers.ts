@@ -63,7 +63,7 @@ export function preferredRemoteUrl({ urls = [] as string[], tunnelUrl = "", cust
   return privateUrl || urls[0] || "";
 }
 
-export function withRemoteToken(value: unknown, token: string): string {
+export function withRemoteToken(value: unknown, token: string, profileId = ""): string {
   const normalized = normalizeAbsoluteUrl(value);
   if (!normalized) {
     return "";
@@ -73,6 +73,9 @@ export function withRemoteToken(value: unknown, token: string): string {
     const url = new URL(normalized);
     if (token) {
       url.searchParams.set("token", token);
+    }
+    if (profileId) {
+      url.searchParams.set("profileId", profileId);
     }
     return url.toString();
   } catch {

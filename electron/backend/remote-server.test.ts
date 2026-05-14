@@ -207,7 +207,10 @@ describe("remote token client profile context", () => {
           { id: "ws1", name: "WS1", profileId: "p1", panels: [] },
           { id: "ws2", name: "WS2", profileId: "p2", panels: [] },
         ],
-        windowSlots: [],
+        windowSlots: [
+          { id: "win-1", profileId: "p1" },
+          { id: "win-2", profileId: "p2" },
+        ],
       },
     };
     const runtime = {
@@ -256,6 +259,53 @@ describe("remote token client profile context", () => {
         })
       ).json()) as { remoteClient?: { profileId?: string; activeWorkspaceId?: string } };
       expect(otherClient.remoteClient).toMatchObject({ profileId: "p1", activeWorkspaceId: "ws1" });
+    } finally {
+      await server.close();
+    }
+  });
+
+  test("bootstraps token client from profileId query parameter when that profile is open", async () => {
+    const port = await getFreePort();
+    const auth = "test-token";
+    const payload = {
+      appState: {
+        settings: { remoteAccess: { enabled: true, host: "127.0.0.1", port, token: auth } },
+        profiles: [
+          { id: "p1", name: "P1", color: "#fff", workspaceIds: [] },
+          { id: "p2", name: "P2", color: "#fff", workspaceIds: [] },
+        ],
+        workspaces: [
+          { id: "ws1", name: "WS1", profileId: "p1", panels: [] },
+          { id: "ws2", name: "WS2", profileId: "p2", panels: [] },
+        ],
+        windowSlots: [
+          { id: "win-1", profileId: "p1" },
+          { id: "win-2", profileId: "p2" },
+        ],
+      },
+    };
+    const runtime = {
+      getPayload: () => payload,
+      getInitialState: async () => payload,
+      setRemoteInfo: () => undefined,
+      listRemoteUrls: () => [],
+      on: () => () => undefined,
+      writeToSession: () => undefined,
+      resizeSession: () => undefined,
+      setRemoteClientRegistry: () => undefined,
+    };
+    const server = await startRemoteServer({
+      runtime: runtime as Parameters<typeof startRemoteServer>[0]["runtime"],
+      staticRoot: process.cwd(),
+    });
+
+    try {
+      const initial = (await (
+        await fetch(`http://127.0.0.1:${port}/api/state?profileId=p2`, {
+          headers: { Authorization: `Bearer ${auth}`, "X-Strideterm-Client-Id": "mobile-client-c" },
+        })
+      ).json()) as { remoteClient?: { profileId?: string; activeWorkspaceId?: string } };
+      expect(initial.remoteClient).toMatchObject({ profileId: "p2", activeWorkspaceId: "ws2" });
     } finally {
       await server.close();
     }

@@ -105,4 +105,25 @@ describe("ProfilesDialog", () => {
 
     expect(onActivate).toHaveBeenCalledWith("profile-b");
   });
+
+  it("hides create edit delete controls in remote mode", () => {
+    const wrapper = mount(ProfilesDialog, {
+      props: {
+        profiles: [
+          { id: "profile-a", name: "A", color: "#fff" },
+          { id: "profile-b", name: "B", color: "#fff" },
+        ],
+        activeProfileId: "profile-a",
+        workspaces: [],
+        isRemote: true,
+        desktopOccupancy: new Map([["profile-b", 2]]),
+      },
+    });
+
+    expect(wrapper.find(".add-profile-row").exists()).toBe(false);
+    expect(wrapper.find(".profile-color-input").exists()).toBe(false);
+    expect(wrapper.findAll("button").some((button) => button.text().includes("Delete"))).toBe(false);
+    expect(wrapper.find(".profile-name-input").exists()).toBe(false);
+    expect(wrapper.find(".profile-name-display").text()).toBe("A");
+  });
 });

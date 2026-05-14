@@ -54,7 +54,7 @@ describe("createDialogActions.openProfilesDialog", () => {
     expect(ctx.overlayProps.value.activeProfileId).toBe("profile-a");
   });
 
-  it("uses the first real profile as active in remote mode when remoteClient is absent", () => {
+  it("uses the first open desktop profile as active in remote mode when remoteClient is absent", () => {
     const ctx = makeCtx({
       appState: {
         profiles: [
@@ -71,10 +71,11 @@ describe("createDialogActions.openProfilesDialog", () => {
     actions.openProfilesDialog();
 
     expect(ctx.overlay.value).toBe("ProfilesDialog");
-    expect(ctx.overlayProps.value.activeProfileId).toBe("profile-a");
+    expect(ctx.overlayProps.value.activeProfileId).toBe("profile-b");
+    expect(ctx.overlayProps.value.profiles).toEqual([{ id: "profile-b", name: "B", color: "#fff" }]);
   });
 
-  it("uses the first real profile as active in remote mode when remoteClient profile is stale", () => {
+  it("uses the first open desktop profile as active in remote mode when remoteClient profile is stale", () => {
     const ctx = makeCtx({
       remoteClient: { id: "session-a", profileId: "deleted-profile", activeWorkspaceId: "", activeSessionId: "" },
       appState: {
@@ -92,7 +93,8 @@ describe("createDialogActions.openProfilesDialog", () => {
     actions.openProfilesDialog();
 
     expect(ctx.overlay.value).toBe("ProfilesDialog");
-    expect(ctx.overlayProps.value.activeProfileId).toBe("profile-a");
+    expect(ctx.overlayProps.value.activeProfileId).toBe("profile-b");
+    expect(ctx.overlayProps.value.profiles).toEqual([{ id: "profile-b", name: "B", color: "#fff" }]);
   });
 
   it("optimistically scopes remote profile activation to the browser client", async () => {
@@ -114,7 +116,10 @@ describe("createDialogActions.openProfilesDialog", () => {
           { id: "ws-a", profileId: "profile-a", panels: [] },
           { id: "ws-b", profileId: "profile-b", panels: [] },
         ],
-        windowSlots: [{ id: "win-a", profileId: "profile-a", activeWorkspaceId: "ws-a" }],
+        windowSlots: [
+          { id: "win-a", profileId: "profile-a", activeWorkspaceId: "ws-a" },
+          { id: "win-b", profileId: "profile-b", activeWorkspaceId: "ws-b" },
+        ],
       },
     });
     ctx.getApi = () => ({ isRemote: true, activateProfile });
@@ -180,7 +185,7 @@ describe("createDialogActions profile-aware saves", () => {
           { id: "profile-b", name: "B", color: "#fff" },
         ],
         settings: { integrations: { github: { connections: [] } } },
-        windowSlots: [{ id: "win-a", profileId: "profile-a", activeWorkspaceId: "ws-a" }],
+        windowSlots: [{ id: "win-b", profileId: "profile-b", activeWorkspaceId: "ws-b" }],
       },
     });
     ctx.getApi = () => ({ isRemote: true, saveGitHubConnection });
@@ -190,6 +195,28 @@ describe("createDialogActions profile-aware saves", () => {
     await (ctx.overlayProps.value.onSave as (draft: AnyApi) => Promise<void>)({ id: "gh-1" });
 
     expect(saveGitHubConnection).toHaveBeenCalledWith(expect.objectContaining({ id: "gh-1", profileId: "profile-b" }));
+  });
+
+  it("falls back to the first open desktop profile for remote saves when remoteClient is stale", async () => {
+    const saveGitHubConnection = vi.fn((draft: AnyApi) => Promise.resolve({ payload: { ok: true, draft } }));
+    const ctx = makeCtx({
+      remoteClient: { id: "remote-a", profileId: "profile-b", activeWorkspaceId: "ws-b", activeSessionId: "" },
+      appState: {
+        profiles: [
+          { id: "profile-a", name: "A", color: "#fff" },
+          { id: "profile-b", name: "B", color: "#fff" },
+        ],
+        settings: { integrations: { github: { connections: [] } } },
+        windowSlots: [{ id: "win-a", profileId: "profile-a", activeWorkspaceId: "ws-a" }],
+      },
+    });
+    ctx.getApi = () => ({ isRemote: true, saveGitHubConnection });
+    const actions = createDialogActions(ctx);
+
+    actions.openGitHubConnectionDialog();
+    await (ctx.overlayProps.value.onSave as (draft: AnyApi) => Promise<void>)({ id: "gh-1" });
+
+    expect(saveGitHubConnection).toHaveBeenCalledWith(expect.objectContaining({ id: "gh-1", profileId: "profile-a" }));
   });
 
   it("auto-detects task parent within this desktop window's profile", async () => {

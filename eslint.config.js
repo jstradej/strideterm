@@ -43,13 +43,19 @@ export default [
   // --- Vue SFCs with TypeScript script blocks ---
   // eslint-plugin-vue handles the .vue file structure; we delegate the
   // <script setup lang="ts"> block to the TS parser via parserOptions.parser.
+  // projectService (vs. project) auto-discovers the right tsconfig per file
+  // and normalizes Windows paths — works around a lint-staged batch issue
+  // where a .vue file shared an invocation with a frontend .ts file and
+  // typescript-eslint's project cache mixed backslash and forward-slash
+  // paths.
   {
     files: ["src/**/*.vue"],
     plugins: { "@typescript-eslint": tseslint.plugin },
     languageOptions: {
       parserOptions: {
         parser: tseslint.parser,
-        project: "./tsconfig.frontend.json",
+        projectService: true,
+        tsconfigRootDir: import.meta.dirname,
         extraFileExtensions: [".vue"],
       },
     },

@@ -121,11 +121,21 @@ export function createDialogActions(ctx: DialogActionsCtx) {
     const appState = payload?.appState || {};
     const profiles = (appState.profiles || []) as AnyApi[];
     const remoteProfileId = payload?.remoteClient?.profileId || "";
-    if (ctx.getApi().isRemote) {
-      if (remoteProfileId && profiles.some((profile) => profile.id === remoteProfileId)) return remoteProfileId;
-      return profiles[0]?.id || "default";
-    }
     const slots = (appState.windowSlots || []) as Array<{ id: string; profileId?: string }>;
+    if (ctx.getApi().isRemote) {
+      const openProfileIds = new Set(slots.map((slot) => slot.profileId).filter(Boolean));
+      if (
+        remoteProfileId &&
+        openProfileIds.has(remoteProfileId) &&
+        profiles.some((profile) => profile.id === remoteProfileId)
+      ) {
+        return remoteProfileId;
+      }
+      return (
+        slots.find((slot) => slot.profileId && profiles.some((profile) => profile.id === slot.profileId))?.profileId ||
+        ""
+      );
+    }
     const windowId = (window as AnyApi).strideterm?.startupFlags?.windowId || "";
     return (windowId && slots.find((slot) => slot.id === windowId)?.profileId) || profiles[0]?.id || "default";
   }
@@ -393,11 +403,14 @@ export function createDialogActions(ctx: DialogActionsCtx) {
     // remoteClient context in remote mode).
     const myWindowId = (window as AnyApi).strideterm?.startupFlags?.windowId || "";
     const slots = ((appState as AnyApi).windowSlots || []) as Array<{ id: string; profileId: string }>;
+    const openProfileIds = new Set(slots.map((slot) => slot.profileId));
     const remoteProfileId = (ctx.payload.value as AnyApi)?.remoteClient?.profileId || "";
     const myCurrentProfileId = isRemote
-      ? (remoteProfileId && profiles.some((profile) => profile.id === remoteProfileId)
+      ? (remoteProfileId &&
+        openProfileIds.has(remoteProfileId) &&
+        profiles.some((profile) => profile.id === remoteProfileId)
           ? remoteProfileId
-          : profiles[0]?.id) || null
+          : slots[0]?.profileId) || null
       : (myWindowId && slots.find((s) => s.id === myWindowId)?.profileId) || slots[0]?.profileId || null;
 
     // Build desktopOccupancy map: profileId → 1-based window index.
@@ -409,8 +422,10 @@ export function createDialogActions(ctx: DialogActionsCtx) {
       }
     });
 
+    const visibleProfiles = isRemote ? profiles.filter((profile) => openProfileIds.has(profile.id)) : profiles;
+
     openDialog("ProfilesDialog", {
-      profiles: JSON.parse(JSON.stringify(profiles)) as unknown[],
+      profiles: JSON.parse(JSON.stringify(visibleProfiles)) as unknown[],
       activeProfileId: myCurrentProfileId ?? undefined,
       workspaces: (appState as AnyApi).workspaces || [],
       windowSlots: isRemote ? [] : (appState as AnyApi).windowSlots || [],

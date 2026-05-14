@@ -19,20 +19,28 @@ export function useRemoteConnection() {
 
   const urls = computed<string[]>(() => runtimeRemote.value.urls || []);
   const token = computed<string>(() => remoteConfig.value.token || "");
+  const shareProfileId = computed<string>(() => {
+    if ((store.getApi?.() as AnyRecord | undefined)?.isRemote) return "";
+    return store.myActiveProfileId || "";
+  });
 
   const lanUrl = computed(() => preferredRemoteUrl({ urls: urls.value }) || "");
   const tunnelUrl = computed(() => tunnel.value.publicUrl || "");
   const customPublicUrl = computed(() => remoteConfig.value.customPublicUrl || "");
 
-  const allLanShareUrls = computed(() => urls.value.map((url: string) => withRemoteToken(url, token.value)));
+  const allLanShareUrls = computed(() =>
+    urls.value.map((url: string) => withRemoteToken(url, token.value, shareProfileId.value)),
+  );
 
   const lanShareUrl = computed(() => {
     const sel = store.selectedLanUrl;
-    return sel && allLanShareUrls.value.includes(sel) ? sel : withRemoteToken(lanUrl.value, token.value);
+    return sel && allLanShareUrls.value.includes(sel)
+      ? sel
+      : withRemoteToken(lanUrl.value, token.value, shareProfileId.value);
   });
 
-  const tunnelShareUrl = computed(() => withRemoteToken(tunnelUrl.value, token.value));
-  const customShareUrl = computed(() => withRemoteToken(customPublicUrl.value, token.value));
+  const tunnelShareUrl = computed(() => withRemoteToken(tunnelUrl.value, token.value, shareProfileId.value));
+  const customShareUrl = computed(() => withRemoteToken(customPublicUrl.value, token.value, shareProfileId.value));
   const normalizedCustomUrl = computed(() => normalizeAbsoluteUrl(customPublicUrl.value));
 
   const activeShareUrl = computed(() => {
@@ -64,8 +72,8 @@ export function useRemoteConnection() {
     urls.value.length > 1
       ? urls.value.map((url: string) => ({
           host: summarizeRemoteHost(url),
-          shareUrl: withRemoteToken(url, token.value),
-          active: lanShareUrl.value === withRemoteToken(url, token.value),
+          shareUrl: withRemoteToken(url, token.value, shareProfileId.value),
+          active: lanShareUrl.value === withRemoteToken(url, token.value, shareProfileId.value),
         }))
       : [],
   );
