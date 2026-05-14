@@ -433,8 +433,7 @@ export class TelegramManager extends EventEmitter {
     const profiles = this._profileChoices();
     if (conn.profileId && profiles.some((profile) => profile.id === conn.profileId)) return conn.profileId;
     if (conn.profileId && profiles.length === 0) return conn.profileId;
-    if (profiles.length <= 1)
-      return profiles[0]?.id || slots?.[0]?.profileId || this.getActiveProfileId?.() || "default";
+    if (profiles.length <= 1) return profiles[0]?.id || this.getActiveProfileId?.() || "default";
     return null;
   }
 
