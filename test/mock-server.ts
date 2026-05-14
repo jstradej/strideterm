@@ -104,6 +104,17 @@ export async function startMockServer({
 } = {}): Promise<MockServerHandle> {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: fixture JSON is untyped server state blob
   const payload: any = JSON.parse(JSON.stringify(loadFixture(fixture)));
+  // Remote-mode frontend resolves activeProfileId from appState.windowSlots
+  // (see resolveRemoteProfileId in src/stores/app.ts). Production fills slots
+  // via normalizeWindowSlots in electron/backend/default-state.ts; mock-server
+  // mirrors that minimal shape so the reduced payload from composePayload's
+  // perspective is satisfied.
+  if (!Array.isArray(payload?.appState?.windowSlots) || payload.appState.windowSlots.length === 0) {
+    const activeProfileId = String(
+      payload.appState?.activeProfileId || payload.appState?.profiles?.[0]?.id || "default",
+    );
+    payload.appState.windowSlots = [{ id: "mock-window-1", profileId: activeProfileId, windowIndex: 1 }];
+  }
   const TOKEN = "test-token";
   const sockets = new Set<WebSocket>();
 

@@ -7,8 +7,9 @@
  *  - Switching profiles via the remote API does not evict or affect desktop windows.
  *  - Desktop window slots are the source of "badge" data (profile already open on
  *    desktop Window N) — the remote client sees this via the composed payload.
- *  - Closing a desktop window removes it from windowSlots; the remote client's
- *    own identity is unaffected.
+ *  - Closing a desktop window removes it from windowSlots; if that was the
+ *    remote client's bound profile, composePayload lazy-falls-back to the
+ *    first remaining open profile.
  *  - Desktop profile exclusivity is enforced against other desktop windows only;
  *    a remote client occupying a profile does not count as a window slot.
  *
@@ -178,7 +179,7 @@ test.describe("Remote — per-client profile identity with two desktop windows",
     assertNoRendererErrors(launched!);
   });
 
-  test("closing desktop W2 removes profile-work from windowSlots; remote identity stays", async () => {
+  test("closing desktop W2 lazy-falls-back remote to remaining open profile", async () => {
     // Remote is still on profile-work (from previous test). Close W2.
     await secondPage!.evaluate(() => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -190,15 +191,17 @@ test.describe("Remote — per-client profile identity with two desktop windows",
 
     const payload = await remoteGetState(REMOTE_PORT, remoteCookie);
 
-    // Remote's own identity is preserved: the registry only falls back when
-    // the profile is deleted entirely, not just when its desktop window closes.
-    expect(payload.remoteClient?.profileId).toBe("profile-work");
+    // Lazy fallback: profile-work is no longer in any windowSlot, so the
+    // registry switches the remote client to the only remaining open profile
+    // (profile-personal, still in W1). See unit test "lazy-falls-back profile
+    // when its desktop slot closes" in remote-client-registry.test.ts.
+    expect(payload.remoteClient?.profileId).toBe("profile-personal");
 
     // windowSlots no longer contains profile-work — badge data is gone.
     const slots: { profileId: string }[] = payload.appState?.windowSlots ?? [];
     expect(slots.some((s) => s.profileId === "profile-work")).toBe(false);
 
-    await captureStep(launched!, "w2-closed-badge-gone");
+    await captureStep(launched!, "w2-closed-falls-back");
     assertNoRendererErrors(launched!);
   });
 });
