@@ -768,7 +768,8 @@ export const useAppStore = defineStore("app", () => {
     clearRemoteConnectionIssue();
 
     const workspaceChanged = incomingMyWsId !== myActiveWorkspaceId.value;
-    if (workspaceChanged || completingActivation) {
+    const isInitialBroadcast = !payload.value;
+    if (workspaceChanged || completingActivation || isInitialBroadcast) {
       // activateWorkspace() already cached the outgoing workspace's split
       // BEFORE optimistic activation swapped splitGroup.value. Caching here
       // would overwrite that with the NEW workspace's split under the OLD
