@@ -32,6 +32,11 @@ function buildAzureSnapshot(): AnyRecord {
     orgUrl: "https://dev.azure.com/mock-org",
     login: "mock.user@example.com",
     enabled: true,
+    // Mock fixture defaults to the "default" profile so per-window filters
+    // (AzureInboxPane / selectors.getWorkspaceTabs) match it without
+    // needing custom test setup. Real backend snapshots include profileId
+    // since createConnectionSnapshot was updated to carry it.
+    profileId: "default",
     pollSeconds: 120,
     projectFilters: ["MockProject", "PlatformX"],
     status: "ok",
@@ -44,6 +49,12 @@ function buildAzureSnapshot(): AnyRecord {
 
   const prRow = (overrides: AnyRecord) => ({
     prKey: overrides.prKey,
+    // Tying PR summaries back to their connection is what lets the inbox
+    // filter ("show only PRs whose connection is in my profile") work.
+    // Production AzurePrSummary always carries this field; the mock used
+    // to omit it, which silently filtered every PR out post the filter
+    // landing.
+    connectionId: conn.id,
     project: { name: "MockProject" },
     repository: { name: "platform-api" },
     pullRequest: {
@@ -206,6 +217,8 @@ function buildGitHubSnapshot(): AnyRecord {
     hostUrl: "https://api.github.com",
     currentUserLogin: "mock-user",
     enabled: true,
+    // See buildAzureSnapshot for why profileId is needed on mock connections.
+    profileId: "default",
     pollSeconds: 120,
     ownerFilters: ["mock-org"],
     repositoryFilters: ["mock-org/strideterm"],
@@ -218,6 +231,8 @@ function buildGitHubSnapshot(): AnyRecord {
 
   const prRow = (overrides: AnyRecord) => ({
     prKey: overrides.prKey,
+    // See buildAzureSnapshot prRow comment.
+    connectionId: conn.id,
     repository: { fullName: "mock-org/strideterm" },
     pullRequest: {
       id: overrides.id,
