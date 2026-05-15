@@ -424,9 +424,13 @@ export const providerConfigSchema = z.object({
 });
 export type ProviderConfigPayload = z.infer<typeof providerConfigSchema>;
 
+// Kept aligned with src/app/task-brief.ts:TASK_BRIEF_MAX_CHARS so the UI
+// maxlength and the IPC validator agree on the same ceiling.
+const TASK_BRIEF_MAX_CHARS = 20000;
+
 export const taskWorkspaceCreateSchema = z.object({
   cwd: nonEmptyString,
-  description: z.string().optional().default(""),
+  description: z.string().max(TASK_BRIEF_MAX_CHARS).optional().default(""),
   parentWorkspaceId: z.string().optional(),
   maxRounds: z.number().int().min(1).max(100).optional(),
   useWorktree: z.boolean().optional(),
@@ -456,7 +460,7 @@ export type TaskRejectVerdict = z.infer<typeof taskRejectVerdictSchema>;
 
 export const taskUpdateDescriptionSchema = z.object({
   workspaceId: nonEmptyString,
-  description: z.string().max(20000),
+  description: z.string().max(TASK_BRIEF_MAX_CHARS),
 });
 export type TaskUpdateDescription = z.infer<typeof taskUpdateDescriptionSchema>;
 

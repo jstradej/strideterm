@@ -107,7 +107,7 @@ describe("WorkspaceDialog", () => {
 
     test("shows task assignment textarea", () => {
       const wrapper = mountDialog({ workspace: buildTaskDraft(), creating: true });
-      const ta = wrapper.findAll("textarea").find((w) => w.attributes("maxlength") === "5000");
+      const ta = wrapper.findAll("textarea").find((w) => w.attributes("maxlength") === "20000");
       expect(ta).toBeDefined();
     });
 

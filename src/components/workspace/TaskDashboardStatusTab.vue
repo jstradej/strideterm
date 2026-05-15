@@ -12,11 +12,21 @@
           v-model="briefDraft"
           class="td__hero-textarea"
           rows="4"
+          :maxlength="TASK_BRIEF_MAX_CHARS"
           placeholder="e.g. Add input validation to the signup form."
           title="Type the task brief, then press Start (or Ctrl+Enter / Cmd+Enter)"
           @keydown.ctrl.enter.exact.prevent="onStart"
           @keydown.meta.enter.exact.prevent="onStart"
         ></textarea>
+        <div class="td__hero-editor-meta">
+          <span class="td__hero-editor-tip">{{ TASK_BRIEF_HINT }}</span>
+          <span
+            class="td__hero-editor-counter"
+            :class="{ 'td__hero-editor-counter--near-limit': briefDraft.length > TASK_BRIEF_MAX_CHARS * 0.9 }"
+          >
+            {{ formatBriefCounter(briefDraft.length) }}
+          </span>
+        </div>
         <div class="td__hero-editor-hint">
           Edit and press Start &mdash; changes get saved to the brief on the way in. Need more space?
           <button
@@ -188,6 +198,7 @@
 
 <script setup lang="ts">
 import { computed, ref, inject, watch } from "vue";
+import { TASK_BRIEF_MAX_CHARS, TASK_BRIEF_HINT, formatBriefCounter } from "../../app/task-brief.js";
 
 const props = withDefaults(
   defineProps<{
@@ -589,6 +600,25 @@ function formatTime(iso: string | null | undefined): string {
   font-size: 11px;
   color: var(--muted, #888);
   opacity: 0.8;
+}
+.td__hero-editor-meta {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  justify-content: space-between;
+  font-size: 11px;
+  color: var(--muted, #888);
+  line-height: 1.4;
+}
+.td__hero-editor-tip {
+  flex: 1;
+}
+.td__hero-editor-counter {
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+}
+.td__hero-editor-counter--near-limit {
+  color: var(--accent, #ffa424);
 }
 .td__hero-meta {
   display: flex;

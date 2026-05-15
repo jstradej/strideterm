@@ -140,8 +140,15 @@
             v-model="draft.task.description"
             rows="4"
             placeholder="Describe the task for the Worker agent"
-            maxlength="5000"
+            :maxlength="TASK_BRIEF_MAX_CHARS"
           />
+          <span class="field-hint">{{ TASK_BRIEF_HINT }}</span>
+          <span
+            class="field-hint field-counter"
+            :class="{ 'field-counter--near-limit': taskDescriptionLength > TASK_BRIEF_MAX_CHARS * 0.9 }"
+          >
+            {{ formatBriefCounter(taskDescriptionLength) }}
+          </span>
         </label>
         <div class="grid">
           <label>
@@ -390,6 +397,7 @@ import type { Transport } from "../../transport.js";
 import { cloneWorkspace, createEmptyWorkspace } from "../../workspace-state.js";
 import { APP_CONFIG } from "../../../config/app-config.js";
 import { safeColor } from "../../app/helpers.js";
+import { TASK_BRIEF_MAX_CHARS, TASK_BRIEF_HINT, formatBriefCounter } from "../../app/task-brief.js";
 import { useAppStore } from "../../stores/app.js";
 import PanelEditor from "./PanelEditor.vue";
 import CustomSelect from "../common/CustomSelect.vue";
@@ -663,6 +671,7 @@ const isDocker = computed(() => draft.kind === "docker");
 const isAzure = computed(() => draft.kind === "azure" || draft.kind === "github");
 const isTask = computed(() => draft.kind === "task");
 const isCreatingTask = computed(() => isTask.value && props.creating);
+const taskDescriptionLength = computed(() => (draft.task?.description || "").length);
 
 const submitting = ref(false);
 // Inline error surface — shown as a banner above the footer when the parent
@@ -1245,6 +1254,14 @@ function extractErrorMessage(err: unknown): string {
   display: inline;
   margin: 0 0 0 4px;
   font-style: italic;
+}
+.field-counter {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  margin-top: 2px;
+}
+.field-counter--near-limit {
+  color: var(--accent, #ffa424);
 }
 .agent-config-section {
   border: 1px solid var(--border);
