@@ -102,7 +102,10 @@
           Browse
         </button>
       </div>
-      <small class="help-text">Used for Cloudflare Quick Tunnel detection and launch.</small>
+      <small class="help-text"
+        >Used for Cloudflare Quick Tunnel detection and launch. Leave empty to fall back to PATH. Download cloudflared
+        from <code>https://developers.cloudflare.com/tunnel/downloads/</code>.</small
+      >
     </div>
 
     <div>

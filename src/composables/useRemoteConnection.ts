@@ -81,8 +81,8 @@ export function useRemoteConnection() {
   const cloudflaredHint = computed(() => {
     if (tunnel.value.available || tunnelUrl.value) return "";
     return remoteConfig.value.cloudflaredPath
-      ? `Binary unavailable: ${remoteConfig.value.cloudflaredPath}`
-      : "cloudflared not found. Add it to PATH or set a binary path.";
+      ? `Binary unavailable: ${remoteConfig.value.cloudflaredPath} — download cloudflared from https://developers.cloudflare.com/tunnel/downloads/`
+      : "cloudflared not found. Add it to PATH, set a binary path, or download it from https://developers.cloudflare.com/tunnel/downloads/";
   });
 
   const hasPublicUrl = computed(() => Boolean(tunnelShareUrl.value || customShareUrl.value));
