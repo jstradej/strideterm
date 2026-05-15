@@ -1532,6 +1532,14 @@ export async function startRemoteServer({
         // Activation in window slot — same cross-profile rules as workspace.
         "/api/session/activate-in-window": (body, windowId) =>
           runtime.activateSessionInWindow(body.sessionId, windowId),
+        // Reorder must be slot-aware: the runtime's profile-safe branch only
+        // activates when windowId is supplied. Without it, the legacy global
+        // branch replaces the entire workspaces array with the caller's IDs
+        // and silently drops every workspace in other profiles.
+        "/api/workspace/reorder": (body, windowId) =>
+          runtime.reorderWorkspaces((body.workspaceIds || body.projectIds || []) as string[], windowId),
+        "/api/project/reorder": (body, windowId) =>
+          runtime.reorderWorkspaces((body.workspaceIds || body.projectIds || []) as string[], windowId),
         // Review-bridge handlers can publish comments to the PR provider
         // (pushAndPublishReview) and push to the git remote — both
         // externally visible side effects that must refuse cross-profile.

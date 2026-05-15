@@ -27,7 +27,7 @@ import { buildReviewAgentLaunch, buildMcpServerSpec } from "./review-bridge-agen
 import { AzureDevOpsManager } from "./azure-devops-manager.js";
 import { GitHubManager } from "./github-manager.js";
 import { createGitHubAuditLogStore } from "./github-audit-log-store.js";
-import { TelegramManager } from "./telegram-manager.js";
+import { TelegramManager, escapeMarkdown } from "./telegram-manager.js";
 import { resolveTelegramTaskTarget } from "./telegram-task-resolution.js";
 import { resolveWindowIdForTelegramCommand } from "./telegram-window-resolver.js";
 import { createTelegramAuditLogStore } from "./telegram-audit-log-store.js";
@@ -1816,6 +1816,43 @@ export async function createRuntime({
   // Resolution rules live in telegram-window-resolver (pure, unit-tested).
   const resolveTelegramWindowId = (c: { windowId?: string; profileId?: string }): string | undefined =>
     resolveWindowIdForTelegramCommand(c, getState().windowSlots || []);
+
+  /**
+   * Resolve a Telegram command's target window, but ABORT (send a chat
+   * error + return null) when the caller picked an explicit profile that
+   * isn't open in any desktop window. Falling back to preState.activeWorkspaceId
+   * silently captures / acts on the wrong window — the user picked a
+   * specific profile, doing anything else is a quiet contract violation.
+   *
+   * Returns:
+   *  - `undefined` when no profile binding was requested (legacy single-window flow)
+   *  - the resolved `windowId` string when binding succeeded
+   *  - `null` when binding was requested but failed (caller MUST return)
+   */
+  async function resolveTelegramWindowIdOrAbort(cmd: {
+    windowId?: string;
+    profileId?: string;
+    chatId?: string;
+  }): Promise<string | undefined | null> {
+    const resolved = resolveTelegramWindowId(cmd);
+    if (resolved) return resolved;
+    if (cmd.profileId) {
+      log.warn("telegram: profile not open in any desktop window", {
+        profileId: cmd.profileId,
+        chatId: cmd.chatId,
+      });
+      if (cmd.chatId) {
+        await telegramManager
+          .notifyChat(
+            cmd.chatId,
+            `⚠️ Profile *${escapeMarkdown(String(cmd.profileId))}* is not open in any desktop window\\.`,
+          )
+          .catch(() => {});
+      }
+      return null;
+    }
+    return undefined;
+  }
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   telegramManager.on("command", async (cmd: any) => {
     log.info("telegram: command dispatch", {
@@ -2194,7 +2231,9 @@ export async function createRuntime({
         // capture falls back to the primary BrowserWindow even when the user
         // picked a different profile from the Telegram menu, so the screenshot
         // is of the wrong window. See _windowIdForProfile / windowSlots.
-        const targetWindowId = resolveTelegramWindowId(cmd);
+        const resolvedWindowId = await resolveTelegramWindowIdOrAbort(cmd);
+        if (resolvedWindowId === null) return; // explicit profile not open — already notified
+        const targetWindowId = resolvedWindowId;
         const preState = getState();
         const slot = targetWindowId ? (preState.windowSlots || []).find((s) => s.id === targetWindowId) : undefined;
         // For per-window screenshots, originalActiveId is the workspace
@@ -2272,7 +2311,9 @@ export async function createRuntime({
           });
         }
       } else if (cmd.type === "open-pr-review" && cmd.prKey && cmd.provider) {
-        const targetWindowId = resolveTelegramWindowId(cmd);
+        const resolvedWindowId = await resolveTelegramWindowIdOrAbort(cmd);
+        if (resolvedWindowId === null) return; // explicit profile not open
+        const targetWindowId = resolvedWindowId;
         log.info("telegram: opening PR review from command", {
           prKey: cmd.prKey,
           provider: cmd.provider,
@@ -3984,6 +4025,27 @@ export async function createRuntime({
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async enableWorkspaceGrid(layout: any, workspaceIds?: (string | null)[], windowId?: string) {
+      // Validate workspace ↔ grid-profile match BEFORE mutation, mirroring
+      // setGridCell. Without this, a remote/mobile client can populate the
+      // grid of profile B with workspace IDs from profile A on the initial
+      // enable — setGridCell refuses individual placements, but enable
+      // accepted the array wholesale.
+      if (Array.isArray(workspaceIds) && workspaceIds.some(Boolean)) {
+        const state = getState();
+        const gridProfile = resolveWorkspaceGridProfile(state, windowId);
+        const gridProfileId = gridProfile?.id || null;
+        if (gridProfileId) {
+          for (const id of workspaceIds) {
+            if (!id) continue;
+            const ws = state.workspaces.find((w) => w.id === id);
+            if (ws && (ws.profileId || "default") !== gridProfileId) {
+              throw new Error(
+                `Cross-profile refused: workspace ${id} is in profile ${ws.profileId || "default"}, grid belongs to profile ${gridProfileId}.`,
+              );
+            }
+          }
+        }
+      }
       await store.mutate((draft: AppState) => {
         const slots = { cols: 2, rows: 2, "top-split": 3, "left-split": 3, grid: 4 }[String(layout)] as
           | number
