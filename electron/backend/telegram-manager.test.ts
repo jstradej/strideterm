@@ -3034,6 +3034,503 @@ describe("/screenshot flow", () => {
     expect(emitted[0].type).toBe("screenshot-current");
     expect(emitted[0].windowId).toBeUndefined();
   });
+
+  // -------------------------------------------------------------------------
+  // profile-routing emit contract — the user reported that picking a profile
+  // in /screenshot then hitting "Current workspace" captured the wrong window.
+  // Root cause was that emit sites dropped the profile scope; these tests
+  // pin the contract so the regression cannot come back silently.
+  // -------------------------------------------------------------------------
+
+  test("/screenshot stores activeProfileId in pending so ss:c can scope the capture later", async () => {
+    const cred = makeCredentialStore({ "cred:tg-1": "token123" });
+    const manager = new TelegramManager({ credentialStore: cred });
+    manager.configure([makeConnection({ profileId: "work" })]);
+
+    manager.setProfilesGetter(() => [
+      { id: "personal", name: "Personal" },
+      { id: "work", name: "Work" },
+    ]);
+    manager.setWindowSlotsGetter(() => [
+      { id: "win-personal", profileId: "personal" },
+      { id: "win-work", profileId: "work" },
+    ]);
+    manager.setWorkspacesGetter(() => [
+      makeWorkspace({ id: "work-ws", name: "work", cwd: "/p/work", profileId: "work" }),
+    ]);
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (manager as any)._apiCall = async () => ({ ok: true, result: { message_id: 1100 } });
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (manager as any)._handleMessage(
+      { message_id: 400, chat: { id: 12345 }, text: "/screenshot" },
+      makeConnection({ profileId: "work" }),
+      "token123",
+    );
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const pending = (manager as any).pendingRequests.get("12345");
+    expect(pending?.type).toBe("screenshot-mode-selection");
+    expect(pending?.activeProfileId).toBe("work");
+  });
+
+  test("ss:c emits screenshot-current with profileId from pending.activeProfileId", async () => {
+    const cred = makeCredentialStore({ "cred:tg-1": "token123" });
+    const manager = new TelegramManager({ credentialStore: cred });
+    manager.configure([makeConnection()]);
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (manager as any)._apiCall = async () => ({ ok: true, result: { message_id: 1101 } });
+
+    const chatId = "12345";
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (manager as any).pendingRequests.set(chatId, {
+      type: "screenshot-mode-selection",
+      workspaceId: "",
+      panelId: "",
+      createdAt: Date.now(),
+      workspaceChoices: [],
+      activeProfileId: "profile-work",
+    });
+
+    const emitted: Array<Record<string, unknown>> = [];
+    manager.on("command", (cmd) => emitted.push(cmd as Record<string, unknown>));
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (manager as any)._handleCallbackQuery(
+      { id: "cq", from: { id: 1 }, message: { message_id: 401, chat: { id: 12345 }, text: "" }, data: "ss:c" },
+      makeConnection(),
+      "token123",
+    );
+
+    expect(emitted).toHaveLength(1);
+    expect(emitted[0].type).toBe("screenshot-current");
+    // The critical assertion — runtime relies on this to resolve windowId.
+    expect(emitted[0].profileId).toBe("profile-work");
+  });
+
+  test("ss:c emits profileId=undefined when pending has no activeProfileId (single-profile install)", async () => {
+    const cred = makeCredentialStore({ "cred:tg-1": "token123" });
+    const manager = new TelegramManager({ credentialStore: cred });
+    manager.configure([makeConnection()]);
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (manager as any)._apiCall = async () => ({ ok: true, result: { message_id: 1102 } });
+
+    const chatId = "12345";
+    // Legacy pending state without activeProfileId — runtime falls back to
+    // primary window, which is correct for single-profile installs.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (manager as any).pendingRequests.set(chatId, {
+      type: "screenshot-mode-selection",
+      workspaceId: "",
+      panelId: "",
+      createdAt: Date.now(),
+      workspaceChoices: [],
+    });
+
+    const emitted: Array<Record<string, unknown>> = [];
+    manager.on("command", (cmd) => emitted.push(cmd as Record<string, unknown>));
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (manager as any)._handleCallbackQuery(
+      { id: "cq", from: { id: 1 }, message: { message_id: 402, chat: { id: 12345 }, text: "" }, data: "ss:c" },
+      makeConnection(),
+      "token123",
+    );
+
+    expect(emitted).toHaveLength(1);
+    expect(emitted[0].profileId).toBeUndefined();
+  });
+
+  test("numbered pick during screenshot-workspace-pick emits screenshot-workspace with profileId from chosen workspace", async () => {
+    const cred = makeCredentialStore({ "cred:tg-1": "token123" });
+    const manager = new TelegramManager({ credentialStore: cred });
+    manager.configure([makeConnection()]);
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (manager as any)._apiCall = async () => ({ ok: true, result: { message_id: 1103 } });
+
+    const chatId = "12345";
+    const ws1 = makeWorkspace({ id: "ws-1", name: "alpha", cwd: "/p/a", profileId: "profile-work" });
+    const ws2 = makeWorkspace({ id: "ws-2", name: "beta", cwd: "/p/b", profileId: "profile-work" });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (manager as any).pendingRequests.set(chatId, {
+      type: "screenshot-workspace-pick",
+      workspaceId: "",
+      panelId: "",
+      createdAt: Date.now(),
+      workspaceChoices: [ws1, ws2],
+      activeProfileId: "profile-work",
+    });
+
+    const emitted: Array<Record<string, unknown>> = [];
+    manager.on("command", (cmd) => emitted.push(cmd as Record<string, unknown>));
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (manager as any)._handleMessage(
+      { message_id: 403, chat: { id: 12345 }, text: "2" },
+      makeConnection(),
+      "token123",
+    );
+
+    expect(emitted).toHaveLength(1);
+    expect(emitted[0].type).toBe("screenshot-workspace");
+    expect(emitted[0].workspaceId).toBe("ws-2");
+    expect(emitted[0].profileId).toBe("profile-work");
+  });
+
+  test("numbered pick falls back to pending.activeProfileId when chosen workspace has no profileId field", async () => {
+    const cred = makeCredentialStore({ "cred:tg-1": "token123" });
+    const manager = new TelegramManager({ credentialStore: cred });
+    manager.configure([makeConnection()]);
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (manager as any)._apiCall = async () => ({ ok: true, result: { message_id: 1104 } });
+
+    const chatId = "12345";
+    const ws1 = makeWorkspace({ id: "ws-1", name: "alpha", cwd: "/p/a" }); // no profileId → "default" → fallback
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (manager as any).pendingRequests.set(chatId, {
+      type: "screenshot-workspace-pick",
+      workspaceId: "",
+      panelId: "",
+      createdAt: Date.now(),
+      workspaceChoices: [ws1],
+      activeProfileId: "profile-work",
+    });
+
+    const emitted: Array<Record<string, unknown>> = [];
+    manager.on("command", (cmd) => emitted.push(cmd as Record<string, unknown>));
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (manager as any)._handleMessage(
+      { message_id: 404, chat: { id: 12345 }, text: "1" },
+      makeConnection(),
+      "token123",
+    );
+
+    expect(emitted).toHaveLength(1);
+    // chosen.profileId is empty → "default" precedence kicks in first.
+    // Workspaces in screenshot pickers always come from a profile-filtered
+    // list, so in practice they carry profileId. The fallback chain still
+    // resolves: chosen.profileId || pending.activeProfileId || "default".
+    expect(emitted[0].profileId).toBe("profile-work");
+  });
+
+  test("per-task screenshot button (t:s:<wsId>) emits with profileId from the task's workspace", async () => {
+    const cred = makeCredentialStore({ "cred:tg-1": "token123" });
+    const manager = new TelegramManager({ credentialStore: cred });
+    manager.configure([makeConnection()]);
+
+    manager.setWorkspacesGetter(() => [
+      makeWorkspace({
+        id: "task-1",
+        name: "fix-auth",
+        kind: "task",
+        cwd: "/p/fix",
+        profileId: "profile-work",
+        task: { state: "running", description: "x" },
+      }),
+    ]);
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (manager as any)._apiCall = async () => ({ ok: true, result: { message_id: 1105 } });
+
+    const emitted: Array<Record<string, unknown>> = [];
+    manager.on("command", (cmd) => emitted.push(cmd as Record<string, unknown>));
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (manager as any)._handleCallbackQuery(
+      {
+        id: "cq",
+        from: { id: 1 },
+        message: { message_id: 405, chat: { id: 12345 }, text: "" },
+        data: "t:s:task-1",
+      },
+      makeConnection(),
+      "token123",
+    );
+
+    expect(emitted).toHaveLength(1);
+    expect(emitted[0].type).toBe("screenshot-workspace");
+    expect(emitted[0].workspaceId).toBe("task-1");
+    expect(emitted[0].profileId).toBe("profile-work");
+  });
+
+  test("per-task screenshot button emits profileId='default' when workspace has no explicit profile", async () => {
+    const cred = makeCredentialStore({ "cred:tg-1": "token123" });
+    const manager = new TelegramManager({ credentialStore: cred });
+    manager.configure([makeConnection()]);
+
+    // No profileId on the workspace → should fall back to "default" so runtime
+    // resolves to whichever slot is the default bucket (single-profile installs
+    // and legacy state both rely on this).
+    manager.setWorkspacesGetter(() => [
+      makeWorkspace({
+        id: "task-2",
+        name: "no-profile-task",
+        kind: "task",
+        cwd: "/p/np",
+        task: { state: "running", description: "x" },
+      }),
+    ]);
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (manager as any)._apiCall = async () => ({ ok: true, result: { message_id: 1106 } });
+
+    const emitted: Array<Record<string, unknown>> = [];
+    manager.on("command", (cmd) => emitted.push(cmd as Record<string, unknown>));
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (manager as any)._handleCallbackQuery(
+      {
+        id: "cq",
+        from: { id: 1 },
+        message: { message_id: 406, chat: { id: 12345 }, text: "" },
+        data: "t:s:task-2",
+      },
+      makeConnection(),
+      "token123",
+    );
+
+    expect(emitted).toHaveLength(1);
+    expect(emitted[0].profileId).toBe("default");
+  });
+
+  test("/screenshot <ws-name> direct path keeps explicit windowId (does NOT need profileId)", async () => {
+    // Regression guard: the direct /screenshot N | <name> path was correct
+    // before this fix, and the resolver gives windowId precedence over
+    // profileId. Make sure we didn't accidentally break it.
+    const cred = makeCredentialStore({ "cred:tg-1": "token123" });
+    const manager = new TelegramManager({ credentialStore: cred });
+    manager.configure([makeConnection()]);
+
+    manager.setWindowSlotsGetter(() => [
+      { id: "win-personal", profileId: "profile-personal" },
+      { id: "win-work", profileId: "profile-work" },
+    ]);
+    manager.setWorkspacesGetter(() => [
+      makeWorkspace({ id: "ws-work", name: "work-project", profileId: "profile-work" }),
+    ]);
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (manager as any)._apiCall = async () => ({ ok: true, result: { message_id: 1107 } });
+
+    const emitted: Array<Record<string, unknown>> = [];
+    manager.on("command", (cmd) => emitted.push(cmd as Record<string, unknown>));
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (manager as any)._handleMessage(
+      { message_id: 407, chat: { id: 12345 }, text: "/screenshot work-project" },
+      makeConnection(),
+      "token123",
+    );
+
+    expect(emitted).toHaveLength(1);
+    expect(emitted[0].type).toBe("screenshot-current");
+    expect(emitted[0].windowId).toBe("win-work");
+    // profileId is not set on the direct path — runtime uses windowId directly.
+    expect(emitted[0].profileId).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// open-pr-review profile-routing emit contract
+// Same bug class as the screenshot routing — runtime needs profileId to open
+// the PR review in the right window slot, so emit sites must always supply it.
+// ---------------------------------------------------------------------------
+
+describe("open-pr-review profile routing", () => {
+  test("'review' text reply on a PR notification stores pendingCmd with profileId from the alert's workspace", async () => {
+    const cred = makeCredentialStore({ "cred:tg-1": "token123" });
+    const manager = new TelegramManager({ credentialStore: cred });
+    manager.configure([makeConnection()]);
+
+    manager.setWorkspacesGetter(() => [
+      makeWorkspace({ id: "ws-work-inbox", name: "Work inbox", profileId: "profile-work" }),
+    ]);
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (manager as any)._apiCall = async () => ({ ok: true, result: { message_id: 500 } });
+
+    const conn = makeConnection();
+    const chatId = "12345";
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (manager as any).contextByMessageId.set(60, {
+      context: {
+        alertId: "alert-pr-1",
+        workspaceId: "ws-work-inbox",
+        panelId: "panel-1",
+        kind: "review",
+        prKey: "pr-42",
+        provider: "github",
+        connectionId: "gh-conn-1",
+      },
+      connectionId: conn.id,
+      at: Date.now(),
+    });
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (manager as any)._handleMessage(
+      {
+        message_id: 501,
+        chat: { id: 12345 },
+        text: "review",
+        reply_to_message: { message_id: 60 },
+      },
+      conn,
+      "token123",
+    );
+
+    // Confirmation flow stashes the cmd; profileId is preserved end-to-end.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const pending = (manager as any).pendingRequests.get(chatId);
+    expect(pending?.type).toBe("confirm-action");
+    expect(pending?.pendingCmd?.type).toBe("open-pr-review");
+    expect(pending?.pendingCmd?.profileId).toBe("profile-work");
+  });
+
+  test("clicking 'open PR' button on notification stores pendingCmd with profileId from the alert's workspace", async () => {
+    const cred = makeCredentialStore({ "cred:tg-1": "token123" });
+    const manager = new TelegramManager({ credentialStore: cred });
+    manager.configure([makeConnection()]);
+
+    manager.setWorkspacesGetter(() => [
+      makeWorkspace({ id: "ws-personal-inbox", name: "Personal inbox", profileId: "profile-personal" }),
+    ]);
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (manager as any)._apiCall = async () => ({ ok: true, result: { message_id: 502 } });
+
+    const conn = makeConnection();
+    const chatId = "12345";
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (manager as any).contextByMessageId.set(70, {
+      context: {
+        alertId: "alert-pr-2",
+        workspaceId: "ws-personal-inbox",
+        panelId: "panel-1",
+        kind: "review",
+        prKey: "pr-77",
+        provider: "azure-devops",
+        connectionId: "az-conn-1",
+      },
+      connectionId: conn.id,
+      at: Date.now(),
+    });
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (manager as any)._handleCallbackQuery(
+      { id: "cq", from: { id: 1 }, message: { message_id: 70, chat: { id: 12345 }, text: "" }, data: "o" },
+      conn,
+      "token123",
+    );
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const pending = (manager as any).pendingRequests.get(chatId);
+    expect(pending?.type).toBe("confirm-action");
+    expect(pending?.pendingCmd?.type).toBe("open-pr-review");
+    expect(pending?.pendingCmd?.prKey).toBe("pr-77");
+    expect(pending?.pendingCmd?.profileId).toBe("profile-personal");
+  });
+
+  test("confirming 'c' a stored open-pr-review pendingCmd emits the command with profileId intact", async () => {
+    // End-to-end guard: confirm-action -> emit must preserve every field on
+    // pendingCmd, including the new profileId. Spreading `...pending.pendingCmd`
+    // already does this, but pin the behavior so a future re-build of cmdToEmit
+    // can't silently drop the field.
+    const cred = makeCredentialStore({ "cred:tg-1": "token123" });
+    const manager = new TelegramManager({ credentialStore: cred });
+    manager.configure([makeConnection()]);
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (manager as any)._apiCall = async () => ({ ok: true, result: { message_id: 503 } });
+
+    const chatId = "12345";
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (manager as any).pendingRequests.set(chatId, {
+      type: "confirm-action",
+      workspaceId: "ws-work-inbox",
+      panelId: "panel-1",
+      createdAt: Date.now(),
+      pendingCmd: {
+        type: "open-pr-review",
+        workspaceId: "ws-work-inbox",
+        panelId: "panel-1",
+        prKey: "pr-42",
+        provider: "github",
+        connectionId: "gh-conn-1",
+        profileId: "profile-work",
+      },
+    });
+
+    const emitted: Array<Record<string, unknown>> = [];
+    manager.on("command", (cmd) => emitted.push(cmd as Record<string, unknown>));
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (manager as any)._handleCallbackQuery(
+      { id: "cq", from: { id: 1 }, message: { message_id: 80, chat: { id: 12345 }, text: "" }, data: "c" },
+      makeConnection(),
+      "token123",
+    );
+
+    expect(emitted).toHaveLength(1);
+    expect(emitted[0].type).toBe("open-pr-review");
+    expect(emitted[0].profileId).toBe("profile-work");
+    expect(emitted[0].prKey).toBe("pr-42");
+  });
+
+  test("'review' text reply on PR with workspace missing the profileId field defaults to 'default'", async () => {
+    // Legacy workspaces that predate per-profile organisation have no
+    // profileId field. The emit must still scope to *something* so runtime
+    // can look up the default slot; falling back to "default" matches the
+    // convention used elsewhere (slot.profileId || "default").
+    const cred = makeCredentialStore({ "cred:tg-1": "token123" });
+    const manager = new TelegramManager({ credentialStore: cred });
+    manager.configure([makeConnection()]);
+
+    manager.setWorkspacesGetter(() => [
+      makeWorkspace({ id: "legacy-ws", name: "legacy" }), // no profileId
+    ]);
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (manager as any)._apiCall = async () => ({ ok: true, result: { message_id: 504 } });
+
+    const conn = makeConnection();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (manager as any).contextByMessageId.set(90, {
+      context: {
+        alertId: "alert-pr-3",
+        workspaceId: "legacy-ws",
+        panelId: "panel-1",
+        kind: "review",
+        prKey: "pr-99",
+        provider: "github",
+      },
+      connectionId: conn.id,
+      at: Date.now(),
+    });
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (manager as any)._handleMessage(
+      {
+        message_id: 505,
+        chat: { id: 12345 },
+        text: "review",
+        reply_to_message: { message_id: 90 },
+      },
+      conn,
+      "token123",
+    );
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const pending = (manager as any).pendingRequests.get("12345");
+    expect(pending?.pendingCmd?.profileId).toBe("default");
+  });
 });
 
 // ---------------------------------------------------------------------------

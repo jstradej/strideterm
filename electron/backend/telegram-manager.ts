@@ -128,6 +128,10 @@ interface TelegramCommandEvent {
   fileMode?: "auto" | "document";
   /** For screenshot-current / screenshot-workspace: target windowId (undefined = primary). */
   windowId?: string;
+  /** User-selected profile for window-scoped actions (screenshot, open-pr-review).
+   *  Runtime resolves this to a windowId via state.windowSlots — same scope unit
+   *  the rest of the runtime (IPC, remote-server) already uses. */
+  profileId?: string;
 }
 
 // Minimal Telegram API types
@@ -262,6 +266,10 @@ interface PendingRequest {
   pendingCmd?: TelegramCommandEvent;
   /** For workspace-selection: ordered list of choices shown to the user */
   workspaceChoices?: TelegramWorkspaceInfo[];
+  /** For screenshot-mode-selection / screenshot-workspace-pick: profile the
+   *  user chose at the start of the flow. Carries through to emit time so the
+   *  `ss:c` (current-workspace) button knows which window to capture. */
+  activeProfileId?: string;
   /** For task-edit-description: what to do after saving the new description */
   followUp?: "none" | "resume" | "start";
   /** For worktree-* steps: accumulating task creation parameters */
@@ -1675,6 +1683,7 @@ export class TelegramManager extends EventEmitter {
           workspaceId: chosen.id,
           panelId: "",
           chatId,
+          profileId: chosen.profileId || pending.activeProfileId || "default",
         };
         this._audit({
           chatId,
@@ -1971,6 +1980,7 @@ export class TelegramManager extends EventEmitter {
       panelId: "",
       createdAt: Date.now(),
       workspaceChoices: candidates,
+      activeProfileId: activeProfile,
     });
 
     await this._apiCall(token, "sendMessage", {
@@ -2370,6 +2380,7 @@ export class TelegramManager extends EventEmitter {
     }
 
     if (lower === "review" && ctx.prKey && ctx.provider) {
+      const reviewWs = this.getWorkspaces?.().find((w) => w.id === ctx.workspaceId);
       const cmd: TelegramCommandEvent = {
         type: "open-pr-review",
         workspaceId: ctx.workspaceId,
@@ -2378,6 +2389,7 @@ export class TelegramManager extends EventEmitter {
         provider: ctx.provider,
         connectionId: ctx.connectionId,
         chatId,
+        profileId: reviewWs?.profileId || "default",
       };
       log.info("telegram reply: review (asking confirm)", { chatId, prKey: ctx.prKey, provider: ctx.provider });
       // Require confirmation before opening PR review
@@ -2640,6 +2652,7 @@ export class TelegramManager extends EventEmitter {
         await this._answerText(token, chatId, query.message.message_id, "⚠️ Notification has no PR context\\.");
         return;
       }
+      const reviewWs = this.getWorkspaces?.().find((w) => w.id === ctx.workspaceId);
       const cmd: TelegramCommandEvent = {
         type: "open-pr-review",
         workspaceId: ctx.workspaceId,
@@ -2647,6 +2660,7 @@ export class TelegramManager extends EventEmitter {
         prKey: ctx.prKey,
         provider: ctx.provider,
         connectionId: ctx.connectionId,
+        profileId: reviewWs?.profileId || "default",
       };
       log.info("telegram open-pr button: asking confirm", {
         chatId,
@@ -2803,6 +2817,7 @@ export class TelegramManager extends EventEmitter {
         workspaceId: wsId,
         panelId,
         chatId,
+        profileId: ws.profileId || "default",
       };
       this._audit({
         chatId,
@@ -3166,6 +3181,7 @@ export class TelegramManager extends EventEmitter {
         workspaceId: "",
         panelId: "",
         chatId,
+        profileId: pending.activeProfileId,
       };
       this._audit({
         chatId,

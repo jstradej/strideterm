@@ -29,6 +29,7 @@ import { GitHubManager } from "./github-manager.js";
 import { createGitHubAuditLogStore } from "./github-audit-log-store.js";
 import { TelegramManager } from "./telegram-manager.js";
 import { resolveTelegramTaskTarget } from "./telegram-task-resolution.js";
+import { resolveWindowIdForTelegramCommand } from "./telegram-window-resolver.js";
 import { createTelegramAuditLogStore } from "./telegram-audit-log-store.js";
 import { startNotifyServer, generateNotifySecret, buildNotifyUrl } from "./notify-server.js";
 import {
@@ -1730,6 +1731,13 @@ export async function createRuntime({
   // --- Telegram command dispatch ---
   // _rt is populated at the end of createRuntime(); commands always fire
   // asynchronously (after first Telegram poll), so _rt is guaranteed set.
+  //
+  // Telegram passes `profileId` (the user-facing scope) on window-affecting
+  // commands; runtime resolves it to a `windowId` here so the rest of the
+  // dispatch joins the same windowId-based plumbing IPC and remote-server use.
+  // Resolution rules live in telegram-window-resolver (pure, unit-tested).
+  const resolveTelegramWindowId = (c: { windowId?: string; profileId?: string }): string | undefined =>
+    resolveWindowIdForTelegramCommand(c, getState().windowSlots || []);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   telegramManager.on("command", async (cmd: any) => {
     log.info("telegram: command dispatch", {
@@ -1737,6 +1745,7 @@ export async function createRuntime({
       workspaceId: cmd.workspaceId,
       prKey: cmd.prKey,
       provider: cmd.provider,
+      profileId: cmd.profileId,
     });
     try {
       if (cmd.type === "start-task" && cmd.taskDescription && cmd.workspaceId) {
@@ -2103,11 +2112,17 @@ export async function createRuntime({
           }
           return;
         }
-        // Workspace-targeted: switch to that workspace, wait for renderer to
-        // catch up, capture, switch back. The brief flicker in the desktop
-        // app is the explicit cost of this feature — user requested it.
-        // Skip the round-trip if we're already on the target workspace.
-        const originalActiveId = getState().activeWorkspaceId;
+        // Scope to the user-selected profile's window. Without this the
+        // capture falls back to the primary BrowserWindow even when the user
+        // picked a different profile from the Telegram menu, so the screenshot
+        // is of the wrong window. See _windowIdForProfile / windowSlots.
+        const targetWindowId = resolveTelegramWindowId(cmd);
+        const preState = getState();
+        const slot = targetWindowId ? (preState.windowSlots || []).find((s) => s.id === targetWindowId) : undefined;
+        // For per-window screenshots, originalActiveId is the workspace
+        // currently shown in THAT window — not the global active. Falling
+        // back to global keeps single-window setups working.
+        const originalActiveId = slot?.activeWorkspaceId || preState.activeWorkspaceId;
         let targetWsId = "";
         let targetWsName = "current";
         if (cmd.type === "screenshot-workspace" && cmd.workspaceId) {
@@ -2125,8 +2140,13 @@ export async function createRuntime({
             log.warn("telegram: switching workspace for screenshot", {
               from: originalActiveId,
               to: targetWsId,
+              windowId: targetWindowId,
             });
-            await _rt?.activateWorkspace(targetWsId);
+            if (targetWindowId) {
+              await _rt?.activateWorkspaceInWindow(targetWsId, targetWindowId);
+            } else {
+              await _rt?.activateWorkspace(targetWsId);
+            }
             // Renderer needs time to lay out the panels and finish at least
             // one paint frame before capturePage produces a representative
             // image. 600ms is empirically enough for a typical workspace;
@@ -2141,7 +2161,7 @@ export async function createRuntime({
 
         let png: Buffer;
         try {
-          png = await captureFn(cmd.windowId);
+          png = await captureFn(targetWindowId);
         } catch (err) {
           log.warn("telegram: screenshot capture failed", { err: (err as Error).message });
           if (cmd.chatId) {
@@ -2149,7 +2169,11 @@ export async function createRuntime({
           }
           // Still try to switch back so user's UI returns to where they left it.
           if (targetWsId && originalActiveId && targetWsId !== originalActiveId) {
-            await _rt?.activateWorkspace(originalActiveId).catch(() => {});
+            if (targetWindowId) {
+              await _rt?.activateWorkspaceInWindow(originalActiveId, targetWindowId).catch(() => {});
+            } else {
+              await _rt?.activateWorkspace(originalActiveId).catch(() => {});
+            }
           }
           return;
         }
@@ -2162,16 +2186,24 @@ export async function createRuntime({
         // are logged but not surfaced to the user (their original workspace
         // is still selectable from the sidebar).
         if (targetWsId && originalActiveId && targetWsId !== originalActiveId) {
-          await _rt?.activateWorkspace(originalActiveId).catch((err: Error) => {
+          const switchBack = targetWindowId
+            ? _rt?.activateWorkspaceInWindow(originalActiveId, targetWindowId)
+            : _rt?.activateWorkspace(originalActiveId);
+          await switchBack?.catch((err: Error) => {
             log.warn("telegram: switch-back after screenshot failed", { err: err.message });
           });
         }
       } else if (cmd.type === "open-pr-review" && cmd.prKey && cmd.provider) {
-        log.info("telegram: opening PR review from command", { prKey: cmd.prKey, provider: cmd.provider });
+        const targetWindowId = resolveTelegramWindowId(cmd);
+        log.info("telegram: opening PR review from command", {
+          prKey: cmd.prKey,
+          provider: cmd.provider,
+          windowId: targetWindowId,
+        });
         if (cmd.provider === "github") {
-          await _rt?.openGitHubPullRequest({ prKey: cmd.prKey });
+          await _rt?.openGitHubPullRequest({ prKey: cmd.prKey }, targetWindowId);
         } else {
-          await _rt?.openAzurePullRequest({ prKey: cmd.prKey });
+          await _rt?.openAzurePullRequest({ prKey: cmd.prKey }, targetWindowId);
         }
       } else if (cmd.type === "dismiss") {
         // For PR alerts, drop from the manager's forwarded-PR LRU so the user
