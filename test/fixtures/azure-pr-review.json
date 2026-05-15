@@ -1,5 +1,8 @@
 {
-  "meta": { "appVersion": "1.3.1-test", "repositoryUrl": "https://github.com/example/strideterm" },
+  "meta": {
+    "appVersion": "1.3.1-test",
+    "repositoryUrl": "https://github.com/example/strideterm"
+  },
   "appState": {
     "activeWorkspaceId": "ws-azure-review",
     "activeProjectId": "ws-azure-review",
@@ -36,11 +39,30 @@
           "reviewRoot": "",
           "defaultPollSeconds": 60
         },
-        "github": { "enabled": false, "connections": [], "reviewRoot": "", "defaultPollSeconds": 60 }
+        "github": {
+          "enabled": false,
+          "connections": [],
+          "reviewRoot": "",
+          "defaultPollSeconds": 60
+        }
       },
-      "tabTemplates": [{ "id": "shell", "title": "Shell", "command": "", "icon": "terminal" }]
+      "tabTemplates": [
+        {
+          "id": "shell",
+          "title": "Shell",
+          "command": "",
+          "icon": "terminal"
+        }
+      ]
     },
-    "tabTemplates": [{ "id": "shell", "title": "Shell", "command": "", "icon": "terminal" }],
+    "tabTemplates": [
+      {
+        "id": "shell",
+        "title": "Shell",
+        "command": "",
+        "icon": "terminal"
+      }
+    ],
     "profiles": [
       {
         "id": "default",
@@ -54,7 +76,7 @@
       {
         "id": "ws-azure-review",
         "name": "PR #1001 review",
-        "icon": "🔷",
+        "icon": "\ud83d\udd37",
         "color": "#4a9eff",
         "kind": "terminal",
         "source": "manual",
@@ -66,9 +88,19 @@
         "activePanelId": "panel-shell",
         "activeViewId": "review:ws-azure-review",
         "panels": [
-          { "id": "panel-shell", "title": "Shell", "command": "", "launch": null, "shell": true, "startup": "default" }
+          {
+            "id": "panel-shell",
+            "title": "Shell",
+            "command": "",
+            "launch": null,
+            "shell": true,
+            "startup": "default"
+          }
         ],
-        "review": { "provider": "azure-devops", "prKey": "ado:1001" },
+        "review": {
+          "provider": "azure-devops",
+          "prKey": "ado:1001"
+        },
         "quickfix": null
       }
     ],
@@ -78,13 +110,23 @@
     "workspace": {
       "id": "ws-azure-review",
       "name": "PR #1001 review",
-      "icon": "🔷",
+      "icon": "\ud83d\udd37",
       "color": "#4a9eff",
       "kind": "terminal",
       "panels": [
-        { "id": "panel-shell", "title": "Shell", "command": "", "launch": null, "shell": true, "startup": "default" }
+        {
+          "id": "panel-shell",
+          "title": "Shell",
+          "command": "",
+          "launch": null,
+          "shell": true,
+          "startup": "default"
+        }
       ],
-      "review": { "provider": "azure-devops", "prKey": "ado:1001" }
+      "review": {
+        "provider": "azure-devops",
+        "prKey": "ado:1001"
+      }
     },
     "project": null,
     "sessions": [
@@ -99,9 +141,23 @@
       }
     ]
   },
-  "attention": { "byWorkspace": {}, "byProject": {}, "activeWorkspace": null, "activeProject": null },
-  "docker": { "containers": [], "available": false, "error": null },
-  "git": { "workspaces": {}, "projects": {}, "activeWorkspace": null, "activeProject": null },
+  "attention": {
+    "byWorkspace": {},
+    "byProject": {},
+    "activeWorkspace": null,
+    "activeProject": null
+  },
+  "docker": {
+    "containers": [],
+    "available": false,
+    "error": null
+  },
+  "git": {
+    "workspaces": {},
+    "projects": {},
+    "activeWorkspace": null,
+    "activeProject": null
+  },
   "azureDevops": {
     "connections": [
       {
@@ -114,10 +170,16 @@
         "projectFilters": ["MockProject"],
         "status": "ok",
         "lastSyncAt": "2026-05-04T11:55:00.000Z",
-        "lastError": ""
+        "lastError": "",
+        "profileId": "default"
       }
     ],
-    "inbox": { "needsMyReview": [], "myPullRequests": [], "recentlyUpdated": [], "needsAttention": [] },
+    "inbox": {
+      "needsMyReview": [],
+      "myPullRequests": [],
+      "recentlyUpdated": [],
+      "needsAttention": []
+    },
     "trackedPullRequests": {},
     "pullRequests": {
       "ado:1001": {
@@ -130,17 +192,34 @@
           "targetRefName": "refs/heads/main",
           "url": "https://dev.azure.com/mock-org/MockProject/_git/platform-api/pullrequest/1001",
           "mergeStatus": "succeeded",
-          "createdBy": { "displayName": "Alice Example", "uniqueName": "alice@example.com" }
+          "createdBy": {
+            "displayName": "Alice Example",
+            "uniqueName": "alice@example.com"
+          }
         },
-        "project": { "name": "MockProject" },
-        "repository": { "name": "platform-api" },
+        "project": {
+          "name": "MockProject"
+        },
+        "repository": {
+          "name": "platform-api"
+        },
         "role": "reviewer",
         "hasAttention": true,
         "attentionReason": "new comment",
         "reviewerSummary": {
           "reviewers": [
-            { "displayName": "You", "uniqueName": "mock.user@example.com", "vote": 0, "isRequired": true },
-            { "displayName": "Bob Reviewer", "uniqueName": "bob@example.com", "vote": 10, "isRequired": false }
+            {
+              "displayName": "You",
+              "uniqueName": "mock.user@example.com",
+              "vote": 0,
+              "isRequired": true
+            },
+            {
+              "displayName": "Bob Reviewer",
+              "uniqueName": "bob@example.com",
+              "vote": 10,
+              "isRequired": false
+            }
           ]
         },
         "checks": {
@@ -148,17 +227,49 @@
           "pendingCount": 1,
           "passedCount": 3,
           "checks": [
-            { "id": "ci/build", "name": "CI / build", "state": "passed", "durationMs": 124000 },
-            { "id": "ci/lint", "name": "CI / lint", "state": "passed", "durationMs": 14000 },
-            { "id": "ci/test-backend", "name": "CI / test-backend", "state": "passed", "durationMs": 49000 },
-            { "id": "ci/test-frontend", "name": "CI / test-frontend", "state": "pending", "durationMs": 0 }
+            {
+              "id": "ci/build",
+              "name": "CI / build",
+              "state": "passed",
+              "durationMs": 124000
+            },
+            {
+              "id": "ci/lint",
+              "name": "CI / lint",
+              "state": "passed",
+              "durationMs": 14000
+            },
+            {
+              "id": "ci/test-backend",
+              "name": "CI / test-backend",
+              "state": "passed",
+              "durationMs": 49000
+            },
+            {
+              "id": "ci/test-frontend",
+              "name": "CI / test-frontend",
+              "state": "pending",
+              "durationMs": 0
+            }
           ]
         },
         "changedFiles": [
-          { "path": "/electron/backend/telegram-manager.ts", "changeType": "edit" },
-          { "path": "/electron/backend/runtime.ts", "changeType": "edit" },
-          { "path": "/electron/backend/telegram-manager.test.ts", "changeType": "edit" },
-          { "path": "/src/components/workspace/AzureInboxPane.vue", "changeType": "edit" }
+          {
+            "path": "/electron/backend/telegram-manager.ts",
+            "changeType": "edit"
+          },
+          {
+            "path": "/electron/backend/runtime.ts",
+            "changeType": "edit"
+          },
+          {
+            "path": "/electron/backend/telegram-manager.test.ts",
+            "changeType": "edit"
+          },
+          {
+            "path": "/src/components/workspace/AzureInboxPane.vue",
+            "changeType": "edit"
+          }
         ],
         "threads": []
       }
@@ -171,14 +282,34 @@
   },
   "github": {
     "connections": [],
-    "inbox": { "needsMyReview": [], "myPullRequests": [], "recentlyUpdated": [], "needsAttention": [] },
+    "inbox": {
+      "needsMyReview": [],
+      "myPullRequests": [],
+      "recentlyUpdated": [],
+      "needsAttention": []
+    },
     "trackedPullRequests": {},
     "pullRequests": {},
-    "sync": { "running": false, "lastStartedAt": null, "lastCompletedAt": null }
+    "sync": {
+      "running": false,
+      "lastStartedAt": null,
+      "lastCompletedAt": null
+    }
   },
-  "reviewBridge": { "pullRequests": {}, "agentPrompts": [] },
+  "reviewBridge": {
+    "pullRequests": {},
+    "agentPrompts": []
+  },
   "plugins": [],
-  "environment": { "platform": "win32", "shell": "bash" },
+  "environment": {
+    "platform": "win32",
+    "shell": "bash"
+  },
   "themeSource": "dark",
-  "remoteAccess": { "enabled": true, "host": "127.0.0.1", "port": 3999, "urls": [] }
+  "remoteAccess": {
+    "enabled": true,
+    "host": "127.0.0.1",
+    "port": 3999,
+    "urls": []
+  }
 }

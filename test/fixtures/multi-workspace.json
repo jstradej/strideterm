@@ -20,7 +20,12 @@
         "cloudflaredPath": ""
       },
       "integrations": {
-        "azureDevops": { "enabled": false, "connections": [], "reviewRoot": "", "defaultPollSeconds": 60 },
+        "azureDevops": {
+          "enabled": false,
+          "connections": [],
+          "reviewRoot": "",
+          "defaultPollSeconds": 60
+        },
         "github": {
           "enabled": true,
           "connections": [
@@ -44,21 +49,81 @@
         }
       },
       "tabTemplates": [
-        { "id": "shell", "title": "Shell", "command": "", "icon": "terminal" },
-        { "id": "claude", "title": "Claude Code", "command": "claude", "icon": "bot" },
-        { "id": "codex", "title": "Codex", "command": "codex", "icon": "bot" },
-        { "id": "gemini", "title": "Gemini CLI", "command": "gemini", "icon": "bot" },
-        { "id": "copilot", "title": "GitHub Copilot", "command": "copilot", "icon": "bot" },
-        { "id": "opencode", "title": "OpenCode", "command": "opencode", "icon": "bot" }
+        {
+          "id": "shell",
+          "title": "Shell",
+          "command": "",
+          "icon": "terminal"
+        },
+        {
+          "id": "claude",
+          "title": "Claude Code",
+          "command": "claude",
+          "icon": "bot"
+        },
+        {
+          "id": "codex",
+          "title": "Codex",
+          "command": "codex",
+          "icon": "bot"
+        },
+        {
+          "id": "gemini",
+          "title": "Gemini CLI",
+          "command": "gemini",
+          "icon": "bot"
+        },
+        {
+          "id": "copilot",
+          "title": "GitHub Copilot",
+          "command": "copilot",
+          "icon": "bot"
+        },
+        {
+          "id": "opencode",
+          "title": "OpenCode",
+          "command": "opencode",
+          "icon": "bot"
+        }
       ]
     },
     "tabTemplates": [
-      { "id": "shell", "title": "Shell", "command": "", "icon": "terminal" },
-      { "id": "claude", "title": "Claude Code", "command": "claude", "icon": "bot" },
-      { "id": "codex", "title": "Codex", "command": "codex", "icon": "bot" },
-      { "id": "gemini", "title": "Gemini CLI", "command": "gemini", "icon": "bot" },
-      { "id": "copilot", "title": "GitHub Copilot", "command": "copilot", "icon": "bot" },
-      { "id": "opencode", "title": "OpenCode", "command": "opencode", "icon": "bot" }
+      {
+        "id": "shell",
+        "title": "Shell",
+        "command": "",
+        "icon": "terminal"
+      },
+      {
+        "id": "claude",
+        "title": "Claude Code",
+        "command": "claude",
+        "icon": "bot"
+      },
+      {
+        "id": "codex",
+        "title": "Codex",
+        "command": "codex",
+        "icon": "bot"
+      },
+      {
+        "id": "gemini",
+        "title": "Gemini CLI",
+        "command": "gemini",
+        "icon": "bot"
+      },
+      {
+        "id": "copilot",
+        "title": "GitHub Copilot",
+        "command": "copilot",
+        "icon": "bot"
+      },
+      {
+        "id": "opencode",
+        "title": "OpenCode",
+        "command": "opencode",
+        "icon": "bot"
+      }
     ],
     "profiles": [
       {
@@ -73,7 +138,7 @@
       {
         "id": "ws-frontend",
         "name": "Frontend App",
-        "icon": "🖥",
+        "icon": "\ud83d\udda5",
         "color": "#4a9eff",
         "kind": "terminal",
         "source": "manual",
@@ -84,7 +149,14 @@
         "connectionId": "",
         "activePanelId": "panel-shell",
         "panels": [
-          { "id": "panel-shell", "title": "Shell", "command": "", "launch": null, "shell": true, "startup": "default" },
+          {
+            "id": "panel-shell",
+            "title": "Shell",
+            "command": "",
+            "launch": null,
+            "shell": true,
+            "startup": "default"
+          },
           {
             "id": "panel-claude",
             "title": "Claude Code",
@@ -108,7 +180,7 @@
       {
         "id": "ws-backend",
         "name": "Backend API",
-        "icon": "⚙",
+        "icon": "\u2699",
         "color": "#ff9f43",
         "kind": "terminal",
         "source": "manual",
@@ -142,7 +214,7 @@
       {
         "id": "ws-infra",
         "name": "Infrastructure",
-        "icon": "🐳",
+        "icon": "\ud83d\udc33",
         "color": "#2ed573",
         "kind": "terminal",
         "source": "manual",
@@ -172,11 +244,18 @@
     "workspace": {
       "id": "ws-frontend",
       "name": "Frontend App",
-      "icon": "🖥",
+      "icon": "\ud83d\udda5",
       "color": "#4a9eff",
       "kind": "terminal",
       "panels": [
-        { "id": "panel-shell", "title": "Shell", "command": "", "launch": null, "shell": true, "startup": "default" },
+        {
+          "id": "panel-shell",
+          "title": "Shell",
+          "command": "",
+          "launch": null,
+          "shell": true,
+          "startup": "default"
+        },
         {
           "id": "panel-claude",
           "title": "Claude Code",
@@ -232,7 +311,11 @@
     "activeWorkspace": null,
     "activeProject": null
   },
-  "docker": { "containers": [], "available": false, "error": null },
+  "docker": {
+    "containers": [],
+    "available": false,
+    "error": null
+  },
   "git": {
     "workspaces": {
       "ws-frontend": {
@@ -276,21 +359,58 @@
   },
   "azureDevops": {
     "connections": [],
-    "inbox": { "needsMyReview": [], "myPullRequests": [], "recentlyUpdated": [], "needsAttention": [] },
+    "inbox": {
+      "needsMyReview": [],
+      "myPullRequests": [],
+      "recentlyUpdated": [],
+      "needsAttention": []
+    },
     "trackedPullRequests": {},
     "pullRequests": {},
-    "sync": { "running": false, "lastStartedAt": null, "lastCompletedAt": null }
+    "sync": {
+      "running": false,
+      "lastStartedAt": null,
+      "lastCompletedAt": null
+    }
   },
   "github": {
-    "connections": [{ "id": "gh-1", "label": "GitHub", "hostUrl": "https://github.com", "status": "connected" }],
-    "inbox": { "needsMyReview": [], "myPullRequests": [], "recentlyUpdated": [], "needsAttention": [] },
+    "connections": [
+      {
+        "id": "gh-1",
+        "label": "GitHub",
+        "hostUrl": "https://github.com",
+        "status": "connected",
+        "profileId": "default"
+      }
+    ],
+    "inbox": {
+      "needsMyReview": [],
+      "myPullRequests": [],
+      "recentlyUpdated": [],
+      "needsAttention": []
+    },
     "trackedPullRequests": {},
     "pullRequests": {},
-    "sync": { "running": false, "lastStartedAt": null, "lastCompletedAt": null }
+    "sync": {
+      "running": false,
+      "lastStartedAt": null,
+      "lastCompletedAt": null
+    }
   },
-  "reviewBridge": { "pullRequests": {}, "agentPrompts": [] },
+  "reviewBridge": {
+    "pullRequests": {},
+    "agentPrompts": []
+  },
   "plugins": [],
-  "environment": { "platform": "win32", "shell": "bash" },
+  "environment": {
+    "platform": "win32",
+    "shell": "bash"
+  },
   "themeSource": "dark",
-  "remoteAccess": { "enabled": true, "host": "127.0.0.1", "port": 3999, "urls": [] }
+  "remoteAccess": {
+    "enabled": true,
+    "host": "127.0.0.1",
+    "port": 3999,
+    "urls": []
+  }
 }

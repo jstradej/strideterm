@@ -1,5 +1,8 @@
 {
-  "meta": { "appVersion": "1.3.1-test", "repositoryUrl": "https://github.com/example/strideterm" },
+  "meta": {
+    "appVersion": "1.3.1-test",
+    "repositoryUrl": "https://github.com/example/strideterm"
+  },
   "appState": {
     "activeWorkspaceId": "ws-main",
     "activeProjectId": "ws-main",
@@ -17,7 +20,12 @@
         "cloudflaredPath": ""
       },
       "integrations": {
-        "azureDevops": { "enabled": false, "connections": [], "reviewRoot": "", "defaultPollSeconds": 60 },
+        "azureDevops": {
+          "enabled": false,
+          "connections": [],
+          "reviewRoot": "",
+          "defaultPollSeconds": 60
+        },
         "github": {
           "enabled": true,
           "connections": [
@@ -40,17 +48,37 @@
           "defaultPollSeconds": 60
         }
       },
-      "tabTemplates": [{ "id": "shell", "title": "Shell", "command": "", "icon": "terminal" }]
+      "tabTemplates": [
+        {
+          "id": "shell",
+          "title": "Shell",
+          "command": "",
+          "icon": "terminal"
+        }
+      ]
     },
-    "tabTemplates": [{ "id": "shell", "title": "Shell", "command": "", "icon": "terminal" }],
+    "tabTemplates": [
+      {
+        "id": "shell",
+        "title": "Shell",
+        "command": "",
+        "icon": "terminal"
+      }
+    ],
     "profiles": [
-      { "id": "default", "name": "Default", "color": "", "workspaceIds": ["ws-main"], "projectIds": ["ws-main"] }
+      {
+        "id": "default",
+        "name": "Default",
+        "color": "",
+        "workspaceIds": ["ws-main"],
+        "projectIds": ["ws-main"]
+      }
     ],
     "workspaces": [
       {
         "id": "ws-main",
         "name": "Main Project",
-        "icon": "📦",
+        "icon": "\ud83d\udce6",
         "color": "#4a9eff",
         "kind": "terminal",
         "source": "manual",
@@ -61,7 +89,14 @@
         "connectionId": "",
         "activePanelId": "panel-shell",
         "panels": [
-          { "id": "panel-shell", "title": "Shell", "command": "", "launch": null, "shell": true, "startup": "default" }
+          {
+            "id": "panel-shell",
+            "title": "Shell",
+            "command": "",
+            "launch": null,
+            "shell": true,
+            "startup": "default"
+          }
         ],
         "review": null,
         "quickfix": null
@@ -73,11 +108,18 @@
     "workspace": {
       "id": "ws-main",
       "name": "Main Project",
-      "icon": "📦",
+      "icon": "\ud83d\udce6",
       "color": "#4a9eff",
       "kind": "terminal",
       "panels": [
-        { "id": "panel-shell", "title": "Shell", "command": "", "launch": null, "shell": true, "startup": "default" }
+        {
+          "id": "panel-shell",
+          "title": "Shell",
+          "command": "",
+          "launch": null,
+          "shell": true,
+          "startup": "default"
+        }
       ]
     },
     "project": null,
@@ -93,15 +135,38 @@
       }
     ]
   },
-  "attention": { "byWorkspace": {}, "byProject": {}, "activeWorkspace": null, "activeProject": null },
-  "docker": { "containers": [], "available": false, "error": null },
-  "git": { "workspaces": {}, "projects": {}, "activeWorkspace": null, "activeProject": null },
+  "attention": {
+    "byWorkspace": {},
+    "byProject": {},
+    "activeWorkspace": null,
+    "activeProject": null
+  },
+  "docker": {
+    "containers": [],
+    "available": false,
+    "error": null
+  },
+  "git": {
+    "workspaces": {},
+    "projects": {},
+    "activeWorkspace": null,
+    "activeProject": null
+  },
   "azureDevops": {
     "connections": [],
-    "inbox": { "needsMyReview": [], "myPullRequests": [], "recentlyUpdated": [], "needsAttention": [] },
+    "inbox": {
+      "needsMyReview": [],
+      "myPullRequests": [],
+      "recentlyUpdated": [],
+      "needsAttention": []
+    },
     "trackedPullRequests": {},
     "pullRequests": {},
-    "sync": { "running": false, "lastStartedAt": null, "lastCompletedAt": null }
+    "sync": {
+      "running": false,
+      "lastStartedAt": null,
+      "lastCompletedAt": null
+    }
   },
   "github": {
     "connections": [
@@ -110,7 +175,8 @@
         "label": "GitHub",
         "hostUrl": "https://github.com",
         "status": "ok",
-        "lastSyncAt": "2026-03-28T14:30:00.000Z"
+        "lastSyncAt": "2026-03-28T14:30:00.000Z",
+        "profileId": "default"
       }
     ],
     "inbox": {
@@ -139,7 +205,10 @@
             "createdAt": "2026-03-25T10:00:00Z",
             "updatedAt": "2026-03-28T14:15:00Z"
           },
-          "author": { "login": "bob", "displayName": "Bob Smith" },
+          "author": {
+            "login": "bob",
+            "displayName": "Bob Smith"
+          },
           "role": "reviewer",
           "hasAttention": true,
           "attentionReason": "new comment",
@@ -153,7 +222,11 @@
             "pendingCount": 2,
             "totalCount": 3
           },
-          "checks": { "failedCount": 0, "pendingCount": 1, "passedCount": 8 }
+          "checks": {
+            "failedCount": 0,
+            "pendingCount": 1,
+            "passedCount": 8
+          }
         }
       ],
       "myPullRequests": [
@@ -181,7 +254,10 @@
             "createdAt": "2026-03-24T08:00:00Z",
             "updatedAt": "2026-03-28T11:00:00Z"
           },
-          "author": { "login": "alice", "displayName": "Alice Johnson" },
+          "author": {
+            "login": "alice",
+            "displayName": "Alice Johnson"
+          },
           "role": "author",
           "hasAttention": false,
           "attentionReason": "",
@@ -195,7 +271,11 @@
             "pendingCount": 0,
             "totalCount": 2
           },
-          "checks": { "failedCount": 0, "pendingCount": 0, "passedCount": 9 }
+          "checks": {
+            "failedCount": 0,
+            "pendingCount": 0,
+            "passedCount": 9
+          }
         },
         {
           "provider": "github",
@@ -221,7 +301,10 @@
             "createdAt": "2026-03-27T16:00:00Z",
             "updatedAt": "2026-03-28T09:00:00Z"
           },
-          "author": { "login": "alice", "displayName": "Alice Johnson" },
+          "author": {
+            "login": "alice",
+            "displayName": "Alice Johnson"
+          },
           "role": "author",
           "hasAttention": false,
           "attentionReason": "",
@@ -235,7 +318,11 @@
             "pendingCount": 0,
             "totalCount": 1
           },
-          "checks": { "failedCount": 2, "pendingCount": 0, "passedCount": 5 }
+          "checks": {
+            "failedCount": 2,
+            "pendingCount": 0,
+            "passedCount": 5
+          }
         }
       ],
       "recentlyUpdated": [],
@@ -249,9 +336,20 @@
       "lastCompletedAt": "2026-03-28T14:30:00.000Z"
     }
   },
-  "reviewBridge": { "pullRequests": {}, "agentPrompts": [] },
+  "reviewBridge": {
+    "pullRequests": {},
+    "agentPrompts": []
+  },
   "plugins": [],
-  "environment": { "platform": "win32", "shell": "bash" },
+  "environment": {
+    "platform": "win32",
+    "shell": "bash"
+  },
   "themeSource": "dark",
-  "remoteAccess": { "enabled": true, "host": "127.0.0.1", "port": 3999, "urls": [] }
+  "remoteAccess": {
+    "enabled": true,
+    "host": "127.0.0.1",
+    "port": 3999,
+    "urls": []
+  }
 }
