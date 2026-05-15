@@ -343,7 +343,8 @@ const azureData = computed<Record<string, any>>(() => appStore.payload?.azureDev
 // multi-window setups would see every other window's connections too.
 
 const connections = computed(() => {
-  const all = (azureData.value.connections || []) as Array<{ profileId?: string }>;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const all = (azureData.value.connections || []) as any[];
   const myProfileId = appStore.myActiveProfileId || "default";
   return all.filter((c) => (c.profileId || "default") === myProfileId);
 });

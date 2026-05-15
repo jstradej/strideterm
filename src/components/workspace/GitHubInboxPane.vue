@@ -299,7 +299,8 @@ const githubData = computed<Record<string, any>>(() => (appStore.payload?.github
 // Backend ships connections for every open profile (see getGitHubConnections).
 // Each window shows only its own profile's connections.
 const connections = computed(() => {
-  const all = (githubData.value.connections || []) as Array<{ profileId?: string }>;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const all = (githubData.value.connections || []) as any[];
   const myProfileId = appStore.myActiveProfileId || "default";
   return all.filter((c) => (c.profileId || "default") === myProfileId);
 });
