@@ -516,7 +516,16 @@ export function createDialogActions(ctx: DialogActionsCtx) {
 
   function openGitHubQuickFixWizard(): void {
     const ghSettings = (ctx.payload.value?.appState?.settings as AnyApi)?.integrations?.github || {};
-    const connections = ((ghSettings as AnyApi).connections || []).filter((c: AnyApi) => c.enabled !== false);
+    // Scope to this window's profile — the raw settings list aggregates
+    // connections across every profile, and the wizard's QuickFix create
+    // path is profile-bound (the workspace lands on the connection's
+    // profile). Without scoping, the user could pick a cross-profile
+    // connection and have the resulting workspace appear in a different
+    // window's sidebar.
+    const myProfileId = currentProfileId();
+    const connections = ((ghSettings as AnyApi).connections || [])
+      .filter((c: AnyApi) => c.enabled !== false)
+      .filter((c: AnyApi) => (c.profileId || "default") === myProfileId);
     if (!connections.length) {
       openGitHubConnectionDialog("");
       return;
@@ -540,7 +549,11 @@ export function createDialogActions(ctx: DialogActionsCtx) {
 
   function openQuickFixWizard(): void {
     const azureSettings = (ctx.payload.value?.appState?.settings as AnyApi)?.integrations?.azureDevops || {};
-    const connections = ((azureSettings as AnyApi).connections || []).filter((c: AnyApi) => c.enabled !== false);
+    // See openGitHubQuickFixWizard for the per-profile scoping rationale.
+    const myProfileId = currentProfileId();
+    const connections = ((azureSettings as AnyApi).connections || [])
+      .filter((c: AnyApi) => c.enabled !== false)
+      .filter((c: AnyApi) => (c.profileId || "default") === myProfileId);
     if (!connections.length) {
       openAzureConnectionDialog("");
       return;

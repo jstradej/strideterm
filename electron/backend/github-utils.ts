@@ -171,6 +171,7 @@ export function createConnectionSnapshot(
     currentUserLogin?: string;
     tokenRef?: string;
     enabled?: boolean;
+    profileId?: string;
     ownerFilters?: string[];
     repositoryFilters?: string[];
     pollSeconds?: number;
@@ -190,6 +191,7 @@ export function createConnectionSnapshot(
   currentUserLogin: string;
   tokenRef: string;
   enabled: boolean;
+  profileId: string;
   ownerFilters: string[];
   repositoryFilters: string[];
   pollSeconds: number;
@@ -207,6 +209,9 @@ export function createConnectionSnapshot(
     currentUserLogin: connection.currentUserLogin || "",
     tokenRef: connection.tokenRef || "",
     enabled: connection.enabled !== false,
+    // See azure-devops-utils createConnectionSnapshot for the rationale —
+    // frontend filters connections per window's profile.
+    profileId: connection.profileId || "default",
     ownerFilters: [...(connection.ownerFilters || [])],
     repositoryFilters: [...(connection.repositoryFilters || [])],
     pollSeconds: Number(connection.pollSeconds) || 120,

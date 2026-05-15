@@ -165,13 +165,32 @@ export function getWorkspaceTabs({
 
   if (activeWorkspace.kind === "azure") {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const inbox = (payload?.azureDevops as any)?.inbox;
+    const azureData = (payload?.azureDevops as any) || {};
+    const inbox = azureData.inbox;
+    // Scope the tab's "N reviews waiting" status to PRs from this workspace's
+    // own profile — the backend snapshot aggregates inbox across every open
+    // profile, so without scoping a Default 2 workspace tab would still show
+    // counts from an asdf-profile connection's PRs.
+    const workspaceProfileId = activeWorkspace.profileId || "default";
+
+    const myConnectionIds = new Set(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      ((azureData.connections || []) as any[])
+        .filter((c) => (c.profileId || "default") === workspaceProfileId)
+        .map((c) => c.id),
+    );
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const scopePrs = (prs: any) =>
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      Array.isArray(prs) ? (prs as any[]).filter((pr) => myConnectionIds.has(pr.connectionId)) : [];
+    const needsMyReview = scopePrs(inbox?.needsMyReview);
+    const needsAttention = scopePrs(inbox?.needsAttention);
     const azureTab: WorkspaceTab = {
       id: `azure:${activeWorkspace.id}`,
       type: "azure",
       title: "Azure DevOps",
-      status: `${(inbox?.needsMyReview?.length as number | undefined) || 0} reviews waiting`,
-      tone: ((inbox?.needsAttention?.length as number | undefined) || 0) > 0 ? "error" : "running",
+      status: `${needsMyReview.length} reviews waiting`,
+      tone: needsAttention.length > 0 ? "error" : "running",
       persistent: true,
       closable: false,
     };
@@ -180,13 +199,28 @@ export function getWorkspaceTabs({
 
   if (activeWorkspace.kind === "github") {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const inbox = (payload?.github as any)?.inbox;
+    const githubData = (payload?.github as any) || {};
+    const inbox = githubData.inbox;
+    // See azure branch above for rationale.
+    const workspaceProfileId = activeWorkspace.profileId || "default";
+    const myConnectionIds = new Set(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      ((githubData.connections || []) as any[])
+        .filter((c) => (c.profileId || "default") === workspaceProfileId)
+        .map((c) => c.id),
+    );
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const scopePrs = (prs: any) =>
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      Array.isArray(prs) ? (prs as any[]).filter((pr) => myConnectionIds.has(pr.connectionId)) : [];
+    const needsMyReview = scopePrs(inbox?.needsMyReview);
+    const needsAttention = scopePrs(inbox?.needsAttention);
     const githubTab: WorkspaceTab = {
       id: `github:${activeWorkspace.id}`,
       type: "github",
       title: "GitHub",
-      status: `${(inbox?.needsMyReview?.length as number | undefined) || 0} reviews waiting`,
-      tone: ((inbox?.needsAttention?.length as number | undefined) || 0) > 0 ? "error" : "running",
+      status: `${needsMyReview.length} reviews waiting`,
+      tone: needsAttention.length > 0 ? "error" : "running",
       persistent: true,
       closable: false,
     };

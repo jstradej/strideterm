@@ -304,7 +304,26 @@ const connections = computed(() => {
   const myProfileId = appStore.myActiveProfileId || "default";
   return all.filter((c) => (c.profileId || "default") === myProfileId);
 });
-const inbox = computed(() => githubData.value.inbox || {});
+// See AzureInboxPane: scope inbox PR lists to this window's profile, otherwise
+// PR counts and listings leak across profiles and clicking Review on a leaked
+// PR creates the review workspace on the connection's (other) profile.
+const myConnectionIds = computed(() => new Set(connections.value.map((c) => c.id)));
+const inbox = computed(() => {
+  const raw = githubData.value.inbox || {};
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const mine = (prs: any) =>
+    Array.isArray(prs)
+      ? // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (prs as any[]).filter((pr) => myConnectionIds.value.has(pr.connectionId))
+      : [];
+  return {
+    ...raw,
+    needsAttention: mine(raw.needsAttention),
+    needsMyReview: mine(raw.needsMyReview),
+    myPullRequests: mine(raw.myPullRequests),
+    recentlyUpdated: mine(raw.recentlyUpdated),
+  };
+});
 const reviewRoot = computed(() => appStore.payload?.appState?.settings?.integrations?.github?.reviewRoot || "");
 
 const inboxTabs = computed(() => [

@@ -348,7 +348,29 @@ const connections = computed(() => {
   const myProfileId = appStore.myActiveProfileId || "default";
   return all.filter((c) => (c.profileId || "default") === myProfileId);
 });
-const inbox = computed(() => azureData.value.inbox || {});
+// PR summaries in the backend snapshot aggregate across all profiles. Scope
+// them to this window by keeping only PRs whose connection belongs to the
+// filtered `connections` list. Without this, a window viewing profile A
+// still showed PR counts and listings for profile B's connections — and
+// clicking Review on one of those leaked PRs created the review sub-
+// workspace under profile B, surfacing the cross-profile leak visibly.
+const myConnectionIds = computed(() => new Set(connections.value.map((c) => c.id)));
+const inbox = computed(() => {
+  const raw = azureData.value.inbox || {};
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const mine = (prs: any) =>
+    Array.isArray(prs)
+      ? // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (prs as any[]).filter((pr) => myConnectionIds.value.has(pr.connectionId))
+      : [];
+  return {
+    ...raw,
+    needsAttention: mine(raw.needsAttention),
+    needsMyReview: mine(raw.needsMyReview),
+    myPullRequests: mine(raw.myPullRequests),
+    recentlyUpdated: mine(raw.recentlyUpdated),
+  };
+});
 const reviewRoot = computed(() => appStore.payload?.appState?.settings?.integrations?.azureDevops?.reviewRoot || "");
 
 const inboxTabs = computed(() => [

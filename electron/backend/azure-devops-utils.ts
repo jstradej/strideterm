@@ -388,6 +388,7 @@ export function createConnectionSnapshot(
     login?: string;
     tokenRef?: string;
     enabled?: boolean;
+    profileId?: string;
     projectFilters?: string[];
     repositoryFilters?: string[];
     pollSeconds?: number;
@@ -406,6 +407,7 @@ export function createConnectionSnapshot(
   login: string;
   tokenRef: string;
   enabled: boolean;
+  profileId: string;
   projectFilters: string[];
   repositoryFilters: string[];
   pollSeconds: number;
@@ -422,6 +424,11 @@ export function createConnectionSnapshot(
     login: connection.login || "",
     tokenRef: connection.tokenRef || "",
     enabled: connection.enabled !== false,
+    // Frontend filters connections per window's active profile (see
+    // AzureInboxPane). Without this, every connection looked unprofiled to
+    // the renderer and the filter either showed all or none depending on
+    // which slot the user's window happened to be on.
+    profileId: connection.profileId || "default",
     projectFilters: [...(connection.projectFilters || [])],
     repositoryFilters: [...(connection.repositoryFilters || [])],
     pollSeconds: Number(connection.pollSeconds) || 120,
