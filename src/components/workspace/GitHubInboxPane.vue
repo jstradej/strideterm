@@ -296,7 +296,13 @@ const activeTabInfo = computed(() => inboxTabs.value.find((t) => t.id === active
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const githubData = computed<Record<string, any>>(() => (appStore.payload?.github as any) || {});
-const connections = computed(() => githubData.value.connections || []);
+// Backend ships connections for every open profile (see getGitHubConnections).
+// Each window shows only its own profile's connections.
+const connections = computed(() => {
+  const all = (githubData.value.connections || []) as Array<{ profileId?: string }>;
+  const myProfileId = appStore.myActiveProfileId || "default";
+  return all.filter((c) => (c.profileId || "default") === myProfileId);
+});
 const inbox = computed(() => githubData.value.inbox || {});
 const reviewRoot = computed(() => appStore.payload?.appState?.settings?.integrations?.github?.reviewRoot || "");
 

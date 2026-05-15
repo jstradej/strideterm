@@ -552,10 +552,9 @@ async function handleApiRequest(runtime: Runtime, request: IncomingMessage, resp
       return;
     }
 
-    if (request.method === "POST" && url.pathname === "/api/azure/pull-request/open") {
-      json(response, 200, await runtime.openAzurePullRequest(body));
-      return;
-    }
+    // /api/azure/pull-request/open is handled in the outer dispatch so it can
+    // resolve the bound windowId from the remote-client registry; reaching
+    // here would mean the route bypassed that intercept.
 
     if (request.method === "POST" && url.pathname === "/api/azure/pull-request/comment") {
       json(response, 200, await runtime.commentAzurePullRequest(body));
@@ -661,10 +660,7 @@ async function handleApiRequest(runtime: Runtime, request: IncomingMessage, resp
       return;
     }
 
-    if (request.method === "POST" && url.pathname === "/api/azure/quickfix/create") {
-      json(response, 200, await runtime.azureQuickFixCreate(body));
-      return;
-    }
+    // /api/azure/quickfix/create is handled in the outer dispatch (slot-aware).
     if (request.method === "POST" && url.pathname === "/api/azure/rerun-check") {
       json(response, 200, await runtime.rerunAzureCheck(body.prKey, body.checkItem));
       return;
@@ -700,10 +696,9 @@ async function handleApiRequest(runtime: Runtime, request: IncomingMessage, resp
       json(response, 200, await runtime.markGitHubPullRequestSeen(body.prKey));
       return;
     }
-    if (request.method === "POST" && url.pathname === "/api/github/pull-request/open") {
-      json(response, 200, await runtime.openGitHubPullRequest(body));
-      return;
-    }
+    // /api/github/pull-request/open is handled in the outer dispatch so it
+    // can resolve the bound windowId from the remote-client registry.
+
     if (request.method === "POST" && url.pathname === "/api/github/pull-request/comment") {
       json(response, 200, await runtime.commentGitHubPullRequest(body));
       return;
@@ -744,10 +739,7 @@ async function handleApiRequest(runtime: Runtime, request: IncomingMessage, resp
       json(response, 200, await runtime.githubQuickFixListBranches(body));
       return;
     }
-    if (request.method === "POST" && url.pathname === "/api/github/quickfix/create") {
-      json(response, 200, await runtime.githubQuickFixCreate(body));
-      return;
-    }
+    // /api/github/quickfix/create is handled in the outer dispatch (slot-aware).
 
     // --- Telegram ---
     if (request.method === "POST" && url.pathname === "/api/telegram/verify-connection") {
@@ -895,10 +887,7 @@ async function handleApiRequest(runtime: Runtime, request: IncomingMessage, resp
       json(response, 200, await runtime.probeDirectory(String(body?.cwd || "")));
       return;
     }
-    if (request.method === "POST" && url.pathname === "/api/task/create") {
-      json(response, 200, await runtime.createTaskWorkspace(body));
-      return;
-    }
+    // /api/task/create is handled in the outer dispatch (slot-aware).
     if (request.method === "POST" && url.pathname === "/api/task/start") {
       json(response, 200, await runtime.startTask(body.workspaceId));
       return;
@@ -1157,10 +1146,7 @@ async function handleApiRequest(runtime: Runtime, request: IncomingMessage, resp
       return;
     }
 
-    if (request.method === "POST" && url.pathname === "/api/git/create-worktree") {
-      json(response, 200, await runtime.createWorktree(body));
-      return;
-    }
+    // /api/git/create-worktree is handled in the outer dispatch (slot-aware).
 
     if (request.method === "POST" && url.pathname === "/api/profile/save") {
       json(response, 200, await runtime.saveProfile(body.profile));
@@ -1508,6 +1494,33 @@ export async function startRemoteServer({
         } catch (err) {
           json(response, 400, { error: (err as Error).message || "Activation failed" });
         }
+        return;
+      }
+
+      // Slot-aware create/activate endpoints — mirror the new workspace into
+      // the bound desktop slot so the frontend selector (slot-first) follows.
+      // handleApiRequest doesn't have apiSessionId in scope, so we intercept
+      // here. See runtime-azure-handlers.openAzurePullRequest for the flicker
+      // this prevents.
+      const slotAwareRoute: Record<
+        string,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (body: any, windowId: string) => Promise<unknown>
+      > = {
+        "/api/azure/pull-request/open": (body, windowId) => runtime.openAzurePullRequest(body, windowId),
+        "/api/github/pull-request/open": (body, windowId) => runtime.openGitHubPullRequest(body, windowId),
+        "/api/azure/quickfix/create": (body, windowId) => runtime.azureQuickFixCreate(body, windowId),
+        "/api/github/quickfix/create": (body, windowId) => runtime.githubQuickFixCreate(body, windowId),
+        "/api/task/create": (body, windowId) => runtime.createTaskWorkspace(body, windowId),
+        "/api/git/create-worktree": (body, windowId) => runtime.createWorktree(body, windowId),
+      };
+      const slotAwareHandler = request.method === "POST" ? slotAwareRoute[url.pathname] : undefined;
+      if (slotAwareHandler) {
+        const body = await readRequestBody(request);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const appState = (runtime.getPayload() as any).appState;
+        const windowId = apiSessionId ? registry.getBoundWindowId(apiSessionId, appState) : "";
+        json(response, 200, await slotAwareHandler(body, windowId));
         return;
       }
 

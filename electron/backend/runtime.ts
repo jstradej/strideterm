@@ -1118,9 +1118,19 @@ export async function createRuntime({
 
   function getAzureConnections(state = getState()) {
     const all = getAzureSettings(state).connections || [];
-    const activeProfile = (state.windowSlots || [])[0]?.profileId || "default";
+    // Include connections for every profile that is open in some window.
+    // Using only windowSlots[0] hid the connection a user just saved when
+    // they were in a non-primary window (e.g. saving on profile "asdf" while
+    // windowSlots[0] is "default" — `getAzureConnections` returned [] and
+    // the snapshot showed "No Azure DevOps connections yet" in every window,
+    // even though the connection persisted to disk).
+    const openProfileIds = new Set(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (state.windowSlots || []).map((s: any) => String(s?.profileId || "default")),
+    );
+    if (openProfileIds.size === 0) return all;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    return all.filter((c: any) => (c.profileId || "default") === activeProfile);
+    return all.filter((c: any) => openProfileIds.has(String(c.profileId || "default")));
   }
 
   function getGitHubSettings(state = getState()) {
@@ -1136,9 +1146,15 @@ export async function createRuntime({
 
   function getGitHubConnections(state = getState()) {
     const all = getGitHubSettings(state).connections || [];
-    const activeProfile = (state.windowSlots || [])[0]?.profileId || "default";
+    // See getAzureConnections for why we union over all open windowSlot
+    // profiles rather than just slot[0].
+    const openProfileIds = new Set(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (state.windowSlots || []).map((s: any) => String(s?.profileId || "default")),
+    );
+    if (openProfileIds.size === 0) return all;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    return all.filter((c: any) => (c.profileId || "default") === activeProfile);
+    return all.filter((c: any) => openProfileIds.has(String(c.profileId || "default")));
   }
 
   function getTelegramSettings(state = getState()) {
@@ -5053,17 +5069,20 @@ export async function createRuntime({
       broadcastState();
       return getPayload();
     },
-    async createWorktree({
-      workspaceId,
-      projectId,
-      name,
-      rootPath,
-    }: {
-      workspaceId?: any; // eslint-disable-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: IPC payload, typed migration pending
-      projectId: any; // eslint-disable-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: IPC payload, typed migration pending
-      name: any; // eslint-disable-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: IPC payload, typed migration pending
-      rootPath?: any; // eslint-disable-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: IPC payload, typed migration pending
-    }) {
+    async createWorktree(
+      {
+        workspaceId,
+        projectId,
+        name,
+        rootPath,
+      }: {
+        workspaceId?: any; // eslint-disable-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: IPC payload, typed migration pending
+        projectId: any; // eslint-disable-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: IPC payload, typed migration pending
+        name: any; // eslint-disable-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: IPC payload, typed migration pending
+        rootPath?: any; // eslint-disable-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: IPC payload, typed migration pending
+      },
+      windowId?: string,
+    ) {
       const targetWorkspaceId = workspaceId || projectId;
       if (!name || !/^[a-zA-Z0-9._-]+$/.test(name)) {
         throw new Error("Worktree name must contain only alphanumeric characters, dots, hyphens, or underscores.");
@@ -5150,6 +5169,11 @@ export async function createRuntime({
           draft.workspaces.push(newProject);
         }
         draft.activeWorkspaceId = newProject.id;
+        // See openAzurePullRequest for why slot must be mirrored.
+        if (windowId) {
+          const slot = (draft.windowSlots || []).find((s) => s.id === windowId);
+          if (slot) slot.activeWorkspaceId = newProject.id;
+        }
       });
 
       sessions.syncWithState(getState());
@@ -5324,7 +5348,7 @@ export async function createRuntime({
       return probe(trimmed);
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    async createTaskWorkspace(config: any) {
+    async createTaskWorkspace(config: any, windowId?: string) {
       log.info("createTaskWorkspace", {
         cwd: config.cwd,
         hasDescription: !!config.description,
@@ -5455,9 +5479,16 @@ export async function createRuntime({
       await this.saveWorkspace(workspace);
       // Activate the new workspace unless the caller explicitly opted out
       // (e.g. Telegram-driven creation, where the user is in another workspace
-      // and shouldn't have their UI yanked away).
+      // and shouldn't have their UI yanked away). Use the slot-aware variant
+      // when the calling window is known — otherwise the global update alone
+      // leaves the per-window slot stuck on the previous workspace and the UI
+      // flickers (same root cause as openAzurePullRequest).
       if (config.activate !== false) {
-        await this.activateWorkspace(workspace.id);
+        if (windowId) {
+          await this.activateWorkspaceInWindow(workspace.id, windowId);
+        } else {
+          await this.activateWorkspace(workspace.id);
+        }
       } else {
         broadcastState();
       }

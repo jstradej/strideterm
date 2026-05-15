@@ -304,11 +304,12 @@ export function registerIpc(
   ipcMain.handle("azure:pull-request:seen", async (_event, prKey) =>
     withOperationPromise({ opId: "azure:pull-request:seen" }, () => runtime.markAzurePullRequestSeen(prKey)),
   );
-  ipcMain.handle("azure:pull-request:open", async (_event, payload) =>
-    withOperationPromise({ opId: "azure:pull-request:open" }, () =>
-      runtime.openAzurePullRequest(validateIpc(openPrSchema, payload, "azure:pull-request:open")),
-    ),
-  );
+  ipcMain.handle("azure:pull-request:open", async (event, payload) => {
+    const windowId = getWindowIdByWebContentsId?.(event.sender.id) ?? "";
+    return withOperationPromise({ opId: "azure:pull-request:open" }, () =>
+      runtime.openAzurePullRequest(validateIpc(openPrSchema, payload, "azure:pull-request:open"), windowId),
+    );
+  });
   ipcMain.handle("azure:pull-request:comment", async (_event, payload) =>
     withOperationPromise({ opId: "azure:pull-request:comment" }, () =>
       runtime.commentAzurePullRequest(validateIpc(azureCommentSchema, payload, "azure:pull-request:comment")),
@@ -502,11 +503,12 @@ export function registerIpc(
       ),
     ),
   );
-  ipcMain.handle("azure:quickfix:create", async (_event, payload) =>
-    withOperationPromise({ opId: "azure:quickfix:create" }, () =>
-      runtime.azureQuickFixCreate(validateIpc(quickFixCreateSchema, payload, "azure:quickfix:create")),
-    ),
-  );
+  ipcMain.handle("azure:quickfix:create", async (event, payload) => {
+    const windowId = getWindowIdByWebContentsId?.(event.sender.id) ?? "";
+    return withOperationPromise({ opId: "azure:quickfix:create" }, () =>
+      runtime.azureQuickFixCreate(validateIpc(quickFixCreateSchema, payload, "azure:quickfix:create"), windowId),
+    );
+  });
   ipcMain.handle("azure:rerun-check", async (_event, prKey, checkItem) =>
     withOperationPromise({ opId: "azure:rerun-check" }, async () => {
       const validated = validateIpc(rerunCheckSchema, { prKey, checkItem }, "azure:rerun-check");
@@ -544,11 +546,12 @@ export function registerIpc(
   ipcMain.handle("github:pull-request:seen", async (_event, prKey) =>
     withOperationPromise({ opId: "github:pull-request:seen" }, () => runtime.markGitHubPullRequestSeen(prKey)),
   );
-  ipcMain.handle("github:pull-request:open", async (_event, payload) =>
-    withOperationPromise({ opId: "github:pull-request:open" }, () =>
-      runtime.openGitHubPullRequest(validateIpc(openPrSchema, payload, "github:pull-request:open")),
-    ),
-  );
+  ipcMain.handle("github:pull-request:open", async (event, payload) => {
+    const windowId = getWindowIdByWebContentsId?.(event.sender.id) ?? "";
+    return withOperationPromise({ opId: "github:pull-request:open" }, () =>
+      runtime.openGitHubPullRequest(validateIpc(openPrSchema, payload, "github:pull-request:open"), windowId),
+    );
+  });
   ipcMain.handle("github:pull-request:comment", async (_event, payload) =>
     withOperationPromise({ opId: "github:pull-request:comment" }, () =>
       runtime.commentGitHubPullRequest(validateIpc(githubCommentSchema, payload, "github:pull-request:comment")),
@@ -607,11 +610,15 @@ export function registerIpc(
       ),
     ),
   );
-  ipcMain.handle("github:quickfix:create", async (_event, payload) =>
-    withOperationPromise({ opId: "github:quickfix:create" }, () =>
-      runtime.githubQuickFixCreate(validateIpc(githubQuickFixCreateSchema, payload, "github:quickfix:create")),
-    ),
-  );
+  ipcMain.handle("github:quickfix:create", async (event, payload) => {
+    const windowId = getWindowIdByWebContentsId?.(event.sender.id) ?? "";
+    return withOperationPromise({ opId: "github:quickfix:create" }, () =>
+      runtime.githubQuickFixCreate(
+        validateIpc(githubQuickFixCreateSchema, payload, "github:quickfix:create"),
+        windowId,
+      ),
+    );
+  });
 
   ipcMain.handle("telegram:verify-connection", async (_event, connection) =>
     withOperationPromise({ opId: "telegram:verify-connection" }, () =>
@@ -799,11 +806,12 @@ export function registerIpc(
   ipcMain.handle("fs:probe-directory", async (_event, cwd) =>
     withOperationPromise({ opId: "fs:probe-directory" }, () => runtime.probeDirectory(String(cwd || ""))),
   );
-  ipcMain.handle("task:create-workspace", async (_event, payload) =>
-    withOperationPromise({ opId: "task:create-workspace" }, () =>
-      runtime.createTaskWorkspace(validateIpc(taskWorkspaceCreateSchema, payload, "task:create-workspace")),
-    ),
-  );
+  ipcMain.handle("task:create-workspace", async (event, payload) => {
+    const windowId = getWindowIdByWebContentsId?.(event.sender.id) ?? "";
+    return withOperationPromise({ opId: "task:create-workspace" }, () =>
+      runtime.createTaskWorkspace(validateIpc(taskWorkspaceCreateSchema, payload, "task:create-workspace"), windowId),
+    );
+  });
   ipcMain.handle("task:start", async (_event, payload) => {
     const p = validateIpc(taskWorkspaceActionSchema, payload, "task:start");
     return withOperationPromise({ workspaceId: p.workspaceId, opId: "task:start" }, () =>
@@ -1020,12 +1028,13 @@ export function registerIpc(
       runtime.openLazygitSession(validateIpc(gitPayloadSchema, payload, "git:open-lazygit") as any),
     ),
   );
-  ipcMain.handle("git:create-worktree", async (_event, payload) =>
-    withOperationPromise({ opId: "git:create-worktree" }, () =>
+  ipcMain.handle("git:create-worktree", async (event, payload) => {
+    const windowId = getWindowIdByWebContentsId?.(event.sender.id) ?? "";
+    return withOperationPromise({ opId: "git:create-worktree" }, () =>
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      runtime.createWorktree(validateIpc(worktreeSchema, payload, "git:create-worktree") as any),
-    ),
-  );
+      runtime.createWorktree(validateIpc(worktreeSchema, payload, "git:create-worktree") as any, windowId),
+    );
+  });
   ipcMain.handle("plugins:list", async () =>
     withOperationPromise({ opId: "plugins:list" }, () => runtime.getPlugins()),
   );

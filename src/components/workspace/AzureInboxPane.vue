@@ -337,7 +337,16 @@ const openError = ref<string>("");
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const azureData = computed<Record<string, any>>(() => appStore.payload?.azureDevops || {});
-const connections = computed(() => azureData.value.connections || []);
+// Backend's snapshot now ships connections for every open profile so a save
+// in a non-primary window doesn't disappear (see getAzureConnections). Each
+// window shows only its own profile's connections — without this filter,
+// multi-window setups would see every other window's connections too.
+
+const connections = computed(() => {
+  const all = (azureData.value.connections || []) as Array<{ profileId?: string }>;
+  const myProfileId = appStore.myActiveProfileId || "default";
+  return all.filter((c) => (c.profileId || "default") === myProfileId);
+});
 const inbox = computed(() => azureData.value.inbox || {});
 const reviewRoot = computed(() => appStore.payload?.appState?.settings?.integrations?.azureDevops?.reviewRoot || "");
 

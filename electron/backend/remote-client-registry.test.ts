@@ -126,6 +126,53 @@ describe("RemoteClientRegistry", () => {
     });
   });
 
+  describe("getBoundWindowId", () => {
+    test("returns the windowId for the bound profile's desktop slot", () => {
+      const registry = new RemoteClientRegistry();
+      const state = makeState({
+        profiles: [{ id: "p1" }],
+        workspaces: [{ id: "ws1", profileId: "p1" }],
+        windowSlots: [{ id: "win-1", profileId: "p1", activeWorkspaceId: "ws1" }],
+      });
+      registry.getOrCreate("session1", state);
+      expect(registry.getBoundWindowId("session1", state)).toBe("win-1");
+    });
+
+    test("returns the slot matching the client's profile when multiple slots are open", () => {
+      const registry = new RemoteClientRegistry();
+      const state = makeState({
+        profiles: [{ id: "p1" }, { id: "p2" }],
+        workspaces: [
+          { id: "ws1", profileId: "p1" },
+          { id: "ws2", profileId: "p2" },
+        ],
+        windowSlots: [
+          { id: "win-1", profileId: "p1", activeWorkspaceId: "ws1" },
+          { id: "win-2", profileId: "p2", activeWorkspaceId: "ws2" },
+        ],
+      });
+      registry.getOrCreate("session1", state, "p2");
+      expect(registry.getBoundWindowId("session1", state)).toBe("win-2");
+    });
+
+    test("returns empty string when session is unknown", () => {
+      const registry = new RemoteClientRegistry();
+      const state = makeState({ profiles: [{ id: "p1" }] });
+      expect(registry.getBoundWindowId("ghost", state)).toBe("");
+    });
+
+    test("returns empty string when bound profile has no open slot", () => {
+      const registry = new RemoteClientRegistry();
+      const state = makeState({
+        profiles: [{ id: "p1" }],
+        workspaces: [{ id: "ws1", profileId: "p1" }],
+      });
+      registry.getOrCreate("session1", state);
+      const stateAfterClose = { ...state, windowSlots: [] };
+      expect(registry.getBoundWindowId("session1", stateAfterClose)).toBe("");
+    });
+  });
+
   describe("activateWorkspace", () => {
     test("returns the windowId for the bound profile's desktop slot", () => {
       const registry = new RemoteClientRegistry();

@@ -178,7 +178,7 @@ export function createGitHubHandlers(ctx: GitHubHandlerCtx) {
       return getPayload();
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    async openGitHubPullRequest(payload: any) {
+    async openGitHubPullRequest(payload: any, windowId?: string) {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       let result: any;
       try {
@@ -204,6 +204,15 @@ export function createGitHubHandlers(ctx: GitHubHandlerCtx) {
           draft.workspaces.push(normalized);
         }
         draft.activeWorkspaceId = normalized.id;
+        // See openAzurePullRequest for the rationale — the frontend selector
+        // prefers slot.activeWorkspaceId over the global field, so without
+        // this mirror the UI flickers between the parent inbox and the new
+        // review workspace.
+        if (windowId) {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const slot = (draft.windowSlots || []).find((s: any) => s.id === windowId);
+          if (slot) slot.activeWorkspaceId = normalized.id;
+        }
       });
       await refreshGit(result.workspace.id);
       await github.markPullRequestSeen(payload.prKey);
@@ -385,7 +394,7 @@ export function createGitHubHandlers(ctx: GitHubHandlerCtx) {
       return { branches: await github.listQuickFixBranches(payload.connectionId, payload.owner, payload.repo) };
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    async githubQuickFixCreate(payload: any) {
+    async githubQuickFixCreate(payload: any, windowId?: string) {
       const result = await github.openQuickFixWorkspace({
         state: getState(),
         connectionId: payload.connectionId,
@@ -400,6 +409,12 @@ export function createGitHubHandlers(ctx: GitHubHandlerCtx) {
         const normalized = normalizeWorkspace(result.workspace);
         draft.workspaces.push(normalized);
         draft.activeWorkspaceId = normalized.id;
+        // See openAzurePullRequest for why slot must be mirrored.
+        if (windowId) {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const slot = (draft.windowSlots || []).find((s: any) => s.id === windowId);
+          if (slot) slot.activeWorkspaceId = normalized.id;
+        }
       });
       await refreshGit(result.workspace.id);
       sessions.syncWithState(getState());

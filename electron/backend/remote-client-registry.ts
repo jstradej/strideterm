@@ -85,6 +85,22 @@ export class RemoteClientRegistry {
   // per-client state to mutate here.
   // ---------------------------------------------------------------------------
 
+  /**
+   * Lookup-only: returns the desktop windowId currently bound to this remote
+   * session (via the client's active profileId → matching slot). Returns ""
+   * when there is no session, no bound profile, or no open slot for that
+   * profile. Use this for endpoints that mutate per-slot state but are not
+   * themselves "activation" requests — e.g. opening a PR review workspace
+   * should mirror the new active workspace into the bound slot, otherwise the
+   * frontend selector (slot-first) keeps the old workspace and the UI flickers.
+   */
+  getBoundWindowId(sessionId: string, appState: AnyState): string {
+    const client = this.clients.get(sessionId);
+    if (!client) return "";
+    const slot = this.slotForProfile(appState, client.profileId);
+    return slot ? String(slot.id) : "";
+  }
+
   activateProfile(sessionId: string, profileId: string, appState: AnyState): void {
     const client = this.clients.get(sessionId);
     if (!client) throw new Error("Remote client session not found");

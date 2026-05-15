@@ -2056,6 +2056,93 @@ describe("runtime integration", () => {
     expect(projectWorkspaces[1].cwd).toBe(path.join(projectRoot, ".strideterm", "tree", "feature-x"));
   });
 
+  test("createWorktree mirrors active workspace into the caller's window slot", async () => {
+    // Guards the slot-mirroring fix for the UI-flicker bug: without this,
+    // creating a worktree only writes global activeWorkspaceId, the
+    // per-window slot stays on the parent workspace, and the frontend
+    // selector (slot-first) keeps showing the old workspace as active.
+    const projectRoot = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-worktree-slot-"));
+    tempPaths.push(projectRoot);
+    const fixture = await createFixture({
+      initialState: {
+        activeProjectId: "frontend",
+        projects: [
+          {
+            id: "frontend",
+            name: "Frontend",
+            kind: "terminal",
+            cwd: projectRoot,
+            profileId: "default",
+            activePanelId: "dev",
+            panels: [{ id: "dev", title: "Dev", command: "", shell: true, startup: "default" }],
+          },
+        ],
+        windowSlots: [
+          {
+            id: "win-1",
+            profileId: "default",
+            activeWorkspaceId: "frontend",
+            activeSessionId: "",
+            bounds: { x: 0, y: 0, width: 1280, height: 800 },
+            lastFocusedAt: Date.now(),
+          },
+        ],
+      },
+    });
+    fixtures.push(fixture);
+
+    const payload = await fixture.runtime.createWorktree({ projectId: "frontend", name: "feature-slot" }, "win-1");
+
+    const child = payload.appState.projects!.find((p) => p.name === "Frontend / feature-slot");
+    expect(child).toBeDefined();
+    expect(payload.appState.activeProjectId).toBe(child!.id);
+    expect(payload.appState.windowSlots?.find((s) => s.id === "win-1")?.activeWorkspaceId).toBe(child!.id);
+  });
+
+  test("createWorktree leaves window slot untouched when no windowId is given", async () => {
+    // Legacy callers (and the few server paths that can't resolve a bound
+    // window) must keep working — slot-aware mirroring is opt-in via the
+    // windowId parameter, not a behavior change for global activation.
+    const projectRoot = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-worktree-noslot-"));
+    tempPaths.push(projectRoot);
+    const fixture = await createFixture({
+      initialState: {
+        activeProjectId: "frontend",
+        projects: [
+          {
+            id: "frontend",
+            name: "Frontend",
+            kind: "terminal",
+            cwd: projectRoot,
+            profileId: "default",
+            activePanelId: "dev",
+            panels: [{ id: "dev", title: "Dev", command: "", shell: true, startup: "default" }],
+          },
+        ],
+        windowSlots: [
+          {
+            id: "win-1",
+            profileId: "default",
+            activeWorkspaceId: "frontend",
+            activeSessionId: "",
+            bounds: { x: 0, y: 0, width: 1280, height: 800 },
+            lastFocusedAt: Date.now(),
+          },
+        ],
+      },
+    });
+    fixtures.push(fixture);
+
+    const payload = await fixture.runtime.createWorktree({ projectId: "frontend", name: "feature-noslot" });
+
+    const child = payload.appState.projects!.find((p) => p.name === "Frontend / feature-noslot");
+    expect(child).toBeDefined();
+    expect(payload.appState.activeProjectId).toBe(child!.id);
+    // Slot was NOT updated — this matches the legacy behavior the bug
+    // reproduces; the slot-aware fix opts into the new behavior via windowId.
+    expect(payload.appState.windowSlots?.find((s) => s.id === "win-1")?.activeWorkspaceId).toBe("frontend");
+  });
+
   test("discovers worktrees per active profile when parent cwd is shared", async () => {
     const projectRoot = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-shared-project-"));
     tempPaths.push(projectRoot);

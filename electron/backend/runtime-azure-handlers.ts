@@ -191,7 +191,7 @@ export function createAzureHandlers(ctx: AzureHandlerCtx) {
       return getPayload();
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    async openAzurePullRequest(payload: any) {
+    async openAzurePullRequest(payload: any, windowId?: string) {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       let result: any;
       try {
@@ -217,6 +217,17 @@ export function createAzureHandlers(ctx: AzureHandlerCtx) {
           draft.workspaces.push(normalized);
         }
         draft.activeWorkspaceId = normalized.id;
+        // Mirror activation into the calling window's slot. The frontend
+        // selector prefers slot.activeWorkspaceId over the global field
+        // (see src/stores/app.ts getWindowWorkspaceIdFromPayload); without
+        // this the slot keeps pointing at the parent Azure DevOps workspace
+        // while global moves to the new review WS, and the UI flickers
+        // between the two as subsequent refresh broadcasts arrive.
+        if (windowId) {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const slot = (draft.windowSlots || []).find((s: any) => s.id === windowId);
+          if (slot) slot.activeWorkspaceId = normalized.id;
+        }
       });
       await refreshGit(result.workspace.id);
       await azure.markPullRequestSeen(payload.prKey);
@@ -412,7 +423,7 @@ export function createAzureHandlers(ctx: AzureHandlerCtx) {
       };
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    async azureQuickFixCreate(payload: any = {}) {
+    async azureQuickFixCreate(payload: any = {}, windowId?: string) {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       let result: any;
       try {
@@ -458,6 +469,12 @@ export function createAzureHandlers(ctx: AzureHandlerCtx) {
           draft.workspaces.push(normalized);
         }
         draft.activeWorkspaceId = normalized.id;
+        // See openAzurePullRequest for why slot must be mirrored.
+        if (windowId) {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const slot = (draft.windowSlots || []).find((s: any) => s.id === windowId);
+          if (slot) slot.activeWorkspaceId = normalized.id;
+        }
       });
       await refreshGit(result.workspace.id);
       sessions.syncWithState(getState());
