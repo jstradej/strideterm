@@ -118,6 +118,7 @@
           ]
         }
       ],
+      "artifactName": "${productName}-${version}-mac-${arch}.${ext}",
       "category": "public.app-category.developer-tools",
       "icon": "assets/icon.icns"
     },

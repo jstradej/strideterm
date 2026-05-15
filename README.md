@@ -49,13 +49,15 @@
 
 **[Download the latest release](https://github.com/jstradej/strideterm/releases/latest)** — pre-built installers are available for all major platforms:
 
-| Platform | Format                                           |
-| -------- | ------------------------------------------------ |
-| Windows  | NSIS installer (`.exe`) + portable               |
-| macOS    | DMG (`.dmg`) — x64 and arm64                     |
-| Linux    | AppImage (`.AppImage`) + Debian package (`.deb`) |
+| Platform | Format                                                                            |
+| -------- | --------------------------------------------------------------------------------- |
+| Windows  | NSIS installer (`.exe`) + portable                                                |
+| macOS    | DMG (`.dmg`) — `-mac-arm64` for Apple Silicon (M1/M2/M3/M4), `-mac-x64` for Intel |
+| Linux    | AppImage (`.AppImage`) + Debian package (`.deb`)                                  |
 
 Nightly builds from the latest `master` are also published on the [Releases page](https://github.com/jstradej/strideterm/releases).
+
+> **macOS — pick the right architecture:** Apple Silicon Macs (M1, M2, M3, M4) need the `-mac-arm64.dmg`; Intel Macs need the `-mac-x64.dmg`. The arm64 binary runs natively on Apple Silicon; the x64 binary runs through Rosetta 2 translation, which adds noticeable latency to the WebGL terminal renderer (laggy scroll, sluggish redraws). If you're not sure which Mac you have: **Apple menu → About This Mac → "Chip"** says "Apple M…" for arm64 or "Intel" for x64. To verify a running install: open Activity Monitor, find `strIDEterm`, and check the **Kind** column — `Apple` means native, `Intel` means Rosetta.
 
 > **Code signing:** the Windows installer is code-signed. macOS DMGs and Linux artifacts are not currently signed/notarized — on first launch macOS Gatekeeper will require **System Settings → Privacy & Security → Open Anyway** (or `xattr -dr com.apple.quarantine strIDEterm.app`), and Linux package managers may warn about the unsigned `.deb`.
 
@@ -92,24 +94,24 @@ strideterm
 </details>
 
 <details>
-<summary><b>macOS — Apple Silicon (arm64)</b></summary>
+<summary><b>macOS — Apple Silicon (arm64)</b> — M1, M2, M3, M4</summary>
 
 ```bash
 VER=$(curl -fsSL https://api.github.com/repos/jstradej/strideterm/releases/latest | grep -m1 '"tag_name":' | cut -d'"' -f4 | sed 's/^v//')
 curl -fL -o strIDEterm.dmg \
-  "https://github.com/jstradej/strideterm/releases/latest/download/strIDEterm-${VER}-arm64.dmg"
+  "https://github.com/jstradej/strideterm/releases/latest/download/strIDEterm-${VER}-mac-arm64.dmg"
 open strIDEterm.dmg
 ```
 
 </details>
 
 <details>
-<summary><b>macOS — Intel (x64)</b></summary>
+<summary><b>macOS — Intel (x64)</b> — Intel Macs only; do NOT use on Apple Silicon (Rosetta makes rendering slow and is being phased out by Apple)</summary>
 
 ```bash
 VER=$(curl -fsSL https://api.github.com/repos/jstradej/strideterm/releases/latest | grep -m1 '"tag_name":' | cut -d'"' -f4 | sed 's/^v//')
 curl -fL -o strIDEterm.dmg \
-  "https://github.com/jstradej/strideterm/releases/latest/download/strIDEterm-${VER}.dmg"
+  "https://github.com/jstradej/strideterm/releases/latest/download/strIDEterm-${VER}-mac-x64.dmg"
 open strIDEterm.dmg
 ```
 
