@@ -1063,8 +1063,26 @@ if (mcpMode) {
       console.error(`Startup services failed: ${(error as Error)?.message || error}`);
     });
 
-    // Build application menu with "Window → New Window" item
+    // Build application menu. On macOS, replacing the default menu (which is
+    // what we do here so "New Window" gets a proper accelerator) also
+    // disables the OS-supplied Edit → Copy/Paste/Cut/SelectAll bindings —
+    // Cmd+V then silently does nothing in the terminal because the
+    // keystroke never reaches the renderer. Adding an Edit submenu with the
+    // standard roles restores Cmd+C / Cmd+V / Cmd+X / Cmd+Z / Cmd+A on Mac
+    // and the equivalent Ctrl chord on Windows/Linux.
     const menuTemplate: Electron.MenuItemConstructorOptions[] = [
+      {
+        label: "Edit",
+        submenu: [
+          { role: "undo" },
+          { role: "redo" },
+          { type: "separator" },
+          { role: "cut" },
+          { role: "copy" },
+          { role: "paste" },
+          { role: "selectAll" },
+        ],
+      },
       {
         label: "Window",
         submenu: [
