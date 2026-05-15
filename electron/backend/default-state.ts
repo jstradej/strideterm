@@ -1099,12 +1099,33 @@ export function normalizeState(rawState: any = {}): AppState & { activeProjectId
           : defaults.settings.externalPathOpener.command,
     },
   };
+  // Reassign workspaces whose profileId points at a deleted profile to a
+  // surviving one (active profile, then "default", then first available).
+  // Without this, an orphan-profileId workspace is invisible to every
+  // profile filter and just sits in state taking up space — and worse,
+  // any UI/IPC path that compares (ws.profileId || "default") === "default"
+  // would silently accept it as a "default" workspace.
+  const validProfileIds = new Set(profiles.map((p) => p.id));
+  const orphanFallbackProfileId =
+    (validProfileIds.has(activeProfileId) ? activeProfileId : null) ||
+    (validProfileIds.has("default") ? "default" : null) ||
+    profiles[0]?.id ||
+    "default";
   const workspaces = groupChildWorkspaces(
     // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: raw JSON from disk has unknown workspace shape
     (rawWorkspaces as any[])
       // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: same raw JSON workspace
       .map((workspace: any, index: number) => normalizeWorkspace(workspace, index))
       .map((workspace) => {
+        // Repair orphan profileId. Preserve legitimate ones.
+        if (!validProfileIds.has(workspace.profileId || "default")) {
+          console.warn("[default-state] workspace references unknown profile, reattaching", {
+            workspaceId: workspace.id,
+            from: workspace.profileId,
+            to: orphanFallbackProfileId,
+          });
+          workspace = { ...workspace, profileId: orphanFallbackProfileId };
+        }
         if (workspace.kind === "azure" && !String(workspace.cwd || "").trim()) {
           return {
             ...workspace,

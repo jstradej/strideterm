@@ -326,6 +326,10 @@ describe("default state", () => {
 
   test("normalizeState groups worktrees under same-profile parent when duplicates exist", () => {
     const state = normalizeState({
+      profiles: [
+        { id: "profile-a", name: "A" },
+        { id: "profile-b", name: "B" },
+      ],
       workspaces: [
         { id: "st-other", name: "strideterm", profileId: "profile-a", cwd: "C:/work/strideterm" },
         {

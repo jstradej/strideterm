@@ -80,7 +80,7 @@ export function createAzureHandlers(ctx: AzureHandlerCtx) {
       return azure.verifyConnection(connection);
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    async saveAzureConnection(connection: any) {
+    async saveAzureConnection(connection: any, windowId?: string) {
       const normalizedInput = normalizeConnectionInput(connection);
       const connectionId = normalizedInput.id || `ado-${randomUUID()}`;
       const tokenRef = connection.tokenRef || `cred:${connectionId}`;
@@ -89,7 +89,21 @@ export function createAzureHandlers(ctx: AzureHandlerCtx) {
         ...normalizedInput,
         pat,
       });
-      const resolvedProfileId = connection.profileId || (getState().windowSlots || [])[0]?.profileId || "default";
+      // When the caller's window is known (IPC / slot-aware remote), pin the
+      // connection's profile to the bound profile. Without this guard, a
+      // remote on profile B that omits profileId would silently bind the
+      // connection to windowSlots[0]'s profile (typically "default").
+      const callerWindowProfileId = windowId
+        ? // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          (getState().windowSlots || []).find((s: any) => s.id === windowId)?.profileId || ""
+        : "";
+      if (callerWindowProfileId && connection.profileId && connection.profileId !== callerWindowProfileId) {
+        throw new Error(
+          `Cross-profile refused: saveAzureConnection payload targets profile ${connection.profileId}, window ${windowId} is bound to ${callerWindowProfileId}.`,
+        );
+      }
+      const resolvedProfileId =
+        connection.profileId || callerWindowProfileId || (getState().windowSlots || [])[0]?.profileId || "default";
       log.debug("saveAzureConnection: profile resolution", {
         connectionId,
         incomingProfileId: connection.profileId || null,
@@ -155,9 +169,22 @@ export function createAzureHandlers(ctx: AzureHandlerCtx) {
         verification,
       };
     },
-    async deleteAzureConnection(connectionId: string) {
+    async deleteAzureConnection(connectionId: string, windowId?: string) {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const connection = getAzureConnections().find((entry: any) => entry.id === connectionId);
+      // Cross-profile refuse: the connection has a profileId; a remote/IPC
+      // caller bound to another profile must not be able to delete it.
+      if (windowId && connection) {
+        const callerProfileId =
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          (getState().windowSlots || []).find((s: any) => s.id === windowId)?.profileId || "";
+        const connProfileId = (connection as { profileId?: string }).profileId || "default";
+        if (callerProfileId && callerProfileId !== connProfileId) {
+          throw new Error(
+            `Cross-profile refused: connection ${connectionId} is in profile ${connProfileId}, window ${windowId} is bound to ${callerProfileId}.`,
+          );
+        }
+      }
       if (connection?.tokenRef) {
         await credentialStore.deleteSecret(connection.tokenRef);
       }

@@ -1488,6 +1488,93 @@ export async function startRemoteServer({
         "/api/github/quickfix/create": (body, windowId) => runtime.githubQuickFixCreate(body, windowId),
         "/api/task/create": (body, windowId) => runtime.createTaskWorkspace(body, windowId),
         "/api/git/create-worktree": (body, windowId) => runtime.createWorktree(body, windowId),
+        // saveWorkspace can change profileId or overwrite an existing
+        // workspace; without slot-aware routing a remote on profile B
+        // could create entries in profile A or hijack profile-A workspaces.
+        "/api/workspace/save": (body, windowId) => runtime.saveWorkspace(body.workspace || body.project, windowId),
+        "/api/project/save": (body, windowId) => runtime.saveWorkspace(body.workspace || body.project, windowId),
+        "/api/workspace/set-ui-state": (body, windowId) =>
+          runtime.setWorkspaceUIState(body.workspaceId, body.uiState, windowId),
+        // Task lifecycle ops drive the runner against the workspace's cwd
+        // (edits TASK.md, signals PTY, etc). Cross-profile must refuse.
+        "/api/task/start": (body, windowId) => runtime.startTask(body.workspaceId, windowId),
+        "/api/task/stop": (body, windowId) => Promise.resolve(runtime.stopTask(body.workspaceId, windowId)),
+        "/api/task/pause": (body, windowId) => Promise.resolve(runtime.pauseTask(body.workspaceId, windowId)),
+        "/api/task/resume": (body, windowId) => Promise.resolve(runtime.resumeTask(body.workspaceId, windowId)),
+        "/api/task/reset": (body, windowId) => runtime.resetTask(body.workspaceId, windowId),
+        "/api/task/update-description": (body, windowId) =>
+          runtime.updateTaskDescription(body.workspaceId, body.description, windowId),
+        // Activation also moves slot.activeWorkspaceId for the bound slot
+        // (legacy activateWorkspace mirrors to windowSlots[0]) — must be
+        // refused when the target lives in another profile.
+        "/api/workspace/activate": (body, windowId) =>
+          runtime.activateWorkspace((body.workspaceId || body.projectId) as string, windowId),
+        "/api/project/activate": (body, windowId) =>
+          runtime.activateWorkspace((body.workspaceId || body.projectId) as string, windowId),
+        // Delete is irreversible — cross-profile delete is data loss in
+        // another profile.
+        "/api/workspace/delete": (body, windowId) =>
+          runtime.deleteWorkspace((body.workspaceId || body.projectId) as string, body || {}, windowId),
+        "/api/project/delete": (body, windowId) =>
+          runtime.deleteWorkspace((body.workspaceId || body.projectId) as string, body || {}, windowId),
+        // Connection save/delete pins connection.profileId to the bound
+        // window's profile; without slot-aware routing a remote on profile
+        // B that omits profileId silently lands the connection in
+        // windowSlots[0]'s profile (typically "default").
+        "/api/azure/save-connection": (body, windowId) =>
+          runtime.saveAzureConnection(body.connection || body, windowId),
+        "/api/azure/delete-connection": (body, windowId) =>
+          runtime.deleteAzureConnection(body.connectionId || body.id || "", windowId),
+        "/api/github/save-connection": (body, windowId) =>
+          runtime.saveGitHubConnection(body.connection || body, windowId),
+        "/api/github/delete-connection": (body, windowId) =>
+          runtime.deleteGitHubConnection(body.connectionId || body.id || "", windowId),
+        // Activation in window slot — same cross-profile rules as workspace.
+        "/api/session/activate-in-window": (body, windowId) =>
+          runtime.activateSessionInWindow(body.sessionId, windowId),
+        // Review-bridge handlers can publish comments to the PR provider
+        // (pushAndPublishReview) and push to the git remote — both
+        // externally visible side effects that must refuse cross-profile.
+        "/api/review-bridge/draft-comment/create": (body, windowId) =>
+          runtime.createReviewBridgeDraftComment(body, windowId),
+        "/api/review-bridge/draft/save": (body, windowId) => runtime.saveReviewBridgeDraft(body, windowId),
+        "/api/review-bridge/draft/queue": (body, windowId) => runtime.queueReviewBridgeDraft(body, windowId),
+        "/api/review-bridge/draft/delete": (body, windowId) => runtime.deleteReviewBridgeDraft(body, windowId),
+        "/api/review-bridge/comment/delete": (body, windowId) => runtime.deleteReviewBridgeComment(body, windowId),
+        "/api/review-bridge/comment/reply-with-changes": (body, windowId) =>
+          runtime.replyWithCodeChanges(body, windowId),
+        "/api/review-bridge/pull-request/push-and-publish": (body, windowId) =>
+          runtime.pushAndPublishReview(body, windowId),
+        // Git ops all mutate state in a workspace's cwd (and gitFetch/Push/Pull
+        // touch external remotes). Routing them through slotAwareRoute pins
+        // each request to the caller's bound profile so a remote/mobile
+        // client can't drive git on a workspace they don't see.
+        "/api/git/fetch": (body, windowId) => runtime.gitFetch(body, windowId),
+        "/api/git/pull": (body, windowId) => runtime.gitPull(body, windowId),
+        "/api/git/push": (body, windowId) => runtime.gitPush(body, windowId),
+        "/api/git/checkout-branch": (body, windowId) => runtime.gitCheckoutBranch(body, windowId),
+        "/api/git/create-branch": (body, windowId) => runtime.gitCreateBranch(body, windowId),
+        "/api/git/merge-into-current": (body, windowId) => runtime.gitMergeIntoCurrent(body, windowId),
+        "/api/git/rebase-onto": (body, windowId) => runtime.gitRebaseOnto(body, windowId),
+        "/api/git/continue": (body, windowId) => runtime.gitContinueOperation(body, windowId),
+        "/api/git/abort": (body, windowId) => runtime.gitAbortOperation(body, windowId),
+        "/api/git/diff-preview": (body, windowId) => runtime.gitDiffPreview(body, windowId),
+        "/api/git/compare-branch": (body, windowId) => runtime.gitCompareBranch(body, windowId),
+        "/api/git/merge-into-base": (body, windowId) => runtime.gitMergeCurrentIntoBase(body, windowId),
+        "/api/git/remove-worktree": (body, windowId) => runtime.gitRemoveWorktree(body, windowId),
+        "/api/git/commit-all": (body, windowId) => runtime.gitCommitAll(body, windowId),
+        "/api/git/stash": (body, windowId) => runtime.gitStash(body, windowId),
+        "/api/git/stash-pop": (body, windowId) => runtime.gitStashPop(body, windowId),
+        "/api/git/commit-diff": (body, windowId) => runtime.gitCommitDiff(body, windowId),
+        "/api/git/commit-info": (body, windowId) => runtime.gitCommitInfo(body, windowId),
+        "/api/git/log-page": (body, windowId) => runtime.gitLogPage(body, windowId),
+        "/api/git/list-tags": (body, windowId) => runtime.gitListTags(body, windowId),
+        "/api/git/create-tag": (body, windowId) => runtime.gitCreateTag(body, windowId),
+        "/api/git/delete-tag": (body, windowId) => runtime.gitDeleteTag(body, windowId),
+        "/api/git/push-tag": (body, windowId) => runtime.gitPushTag(body, windowId),
+        "/api/git/push-all-tags": (body, windowId) => runtime.gitPushAllTags(body, windowId),
+        "/api/git/delete-remote-tag": (body, windowId) => runtime.gitDeleteRemoteTag(body, windowId),
+        "/api/git/force-push-with-lease": (body, windowId) => runtime.gitForcePushWithLease(body, windowId),
         // Grid mutations resolve their target profile from windowId. Without
         // the slot-aware path a mobile client bound to profile B would mutate
         // profile A's grid (runtime falls back to windowSlots[0] when no

@@ -3233,11 +3233,25 @@ export async function createRuntime({
     return git.refreshWorkspaces ? git.refreshWorkspaces(workspaces) : git.refreshProjects(workspaces);
   }
 
-  function resolveGitWorkspace(workspaceId: string | null = null, projectId: string | null = null): WorkspaceState {
+  function resolveGitWorkspace(
+    workspaceId: string | null = null,
+    projectId: string | null = null,
+    windowId?: string,
+  ): WorkspaceState {
     const targetWorkspaceId = workspaceId || projectId || getState().activeWorkspaceId || getState().activeProjectId;
     const workspace = findWorkspace(getState(), targetWorkspaceId as string) as WorkspaceState | null;
     if (!workspace?.cwd) {
       throw new Error("Workspace not found or has no working directory.");
+    }
+    // When the caller's window is known, refuse cross-profile git ops.
+    // A remote client on profile B passing workspaceId from profile A would
+    // otherwise drive git fetch/push/checkout on a repo it has no
+    // visibility of (and possibly using profile-A's credentials).
+    const slotProfileId = getWindowProfileId(windowId);
+    if (slotProfileId && (workspace.profileId || "default") !== slotProfileId) {
+      throw new Error(
+        `Cross-profile refused: workspace ${workspace.id} is in profile ${workspace.profileId || "default"}, window ${windowId} is bound to ${slotProfileId}.`,
+      );
     }
     return workspace;
   }
@@ -3717,6 +3731,7 @@ export async function createRuntime({
     getAzureConnections,
     getGitHubSettings,
     getGitHubConnections,
+    assertWorkspaceInWindowProfile,
   });
 
   function resolveWorkspaceGridProfile(draft: AppState, windowId?: string) {
@@ -3859,7 +3874,14 @@ export async function createRuntime({
       return pruneOrphanedWorkspaces();
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    async activateWorkspace(workspaceId: any) {
+    async activateWorkspace(workspaceId: any, windowId?: string) {
+      // Refuse cross-profile activation. The IPC layer prefers
+      // activateWorkspaceInWindow when a windowId resolves; this legacy
+      // path is reached by remote /api/workspace/activate and a few
+      // internal code paths. Without the guard, a remote bound to
+      // profile B can activate a profile-A workspace globally and the
+      // primary slot also flips.
+      assertWorkspaceInWindowProfile(String(workspaceId), windowId);
       await store.mutate((draft: AppState) => {
         if (draft.workspaces.some((workspace) => workspace.id === workspaceId)) {
           draft.activeWorkspaceId = workspaceId;
@@ -3894,8 +3916,8 @@ export async function createRuntime({
       return getPayload();
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    async activateProject(projectId: any) {
-      return this.activateWorkspace(projectId);
+    async activateProject(projectId: any, windowId?: string) {
+      return this.activateWorkspace(projectId, windowId);
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async activateSession(sessionId: any) {
@@ -3923,10 +3945,13 @@ export async function createRuntime({
       return getPayload();
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    async setWorkspaceUIState(workspaceId: any, uiState: any) {
+    async setWorkspaceUIState(workspaceId: any, uiState: any, windowId?: string) {
       if (!workspaceId || !uiState || typeof uiState !== "object") {
         return getPayload();
       }
+      // Cross-profile guard: UI state mutations target a specific workspace
+      // and must not be honoured from a window bound to another profile.
+      assertWorkspaceInWindowProfile(String(workspaceId), windowId);
       const { activeViewId, splitLayout, splitViewIds, activeRootPath } = uiState;
       let changed = false;
       await store.mutate((draft: AppState) => {
@@ -4142,6 +4167,10 @@ export async function createRuntime({
     async activateSessionInWindow(sessionId: any, windowId: string) {
       const descriptor = parseSessionId(sessionId);
       if (!descriptor) return getPayload();
+      // Cross-profile refuse: the session belongs to a workspace, which has
+      // a profile. A remote/IPC caller binding window B must not be able to
+      // point slot-B at a session whose workspace lives in profile A.
+      assertWorkspaceInWindowProfile(descriptor.workspaceId, windowId);
       await store.mutate((draft: AppState) => {
         const workspace = findWorkspace(draft, descriptor.workspaceId);
         if (!workspace) return;
@@ -4255,7 +4284,7 @@ export async function createRuntime({
     },
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    async saveWorkspace(workspace: any) {
+    async saveWorkspace(workspace: any, windowId?: string) {
       log.debug("saveWorkspace: called", {
         workspaceId: workspace?.id,
         name: workspace?.name,
@@ -4264,6 +4293,34 @@ export async function createRuntime({
         stateActiveProfileId: (getState().windowSlots || [])[0]?.profileId || null,
         stateProfileIds: (getState().profiles || []).map((p) => p.id),
       });
+
+      // Cross-profile validation. saveWorkspace covers two paths:
+      // (1) edit existing — the workspace must already live in the caller
+      //     window's profile, AND the incoming profileId must match (no
+      //     stealth "move to another profile" via this endpoint);
+      // (2) create new — the incoming profileId must match the caller's
+      //     profile (no creating in someone else's profile).
+      const slotProfileId = getWindowProfileId(windowId);
+      if (slotProfileId) {
+        const incomingProfileId = workspace?.profileId || "default";
+        if (workspace?.id) {
+          const existing = getState().workspaces.find((w) => w.id === workspace.id);
+          if (existing) {
+            const existingProfileId = existing.profileId || "default";
+            if (existingProfileId !== slotProfileId) {
+              throw new Error(
+                `Cross-profile refused: workspace ${workspace.id} is in profile ${existingProfileId}, window ${windowId} is bound to ${slotProfileId}.`,
+              );
+            }
+          }
+        }
+        if (incomingProfileId !== slotProfileId) {
+          throw new Error(
+            `Cross-profile refused: saveWorkspace payload targets profile ${incomingProfileId}, window ${windowId} is bound to ${slotProfileId}.`,
+          );
+        }
+      }
+
       // Ensure the working directory exists (create if needed)
       if (workspace.cwd && workspace.kind !== "docker") {
         await mkdir(workspace.cwd, { recursive: true }).catch(() => {});
@@ -4318,13 +4375,15 @@ export async function createRuntime({
       return getPayload();
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    async saveProject(project: any) {
-      return this.saveWorkspace(project);
+    async saveProject(project: any, windowId?: string) {
+      return this.saveWorkspace(project, windowId);
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    async deleteWorkspace(workspaceId: any, options: any = {}) {
+    async deleteWorkspace(workspaceId: any, options: any = {}, windowId?: string) {
       const state = getState();
       const workspace = findWorkspace(state, workspaceId);
+      // Cross-profile delete is data loss in another profile. Refuse it.
+      assertWorkspaceInWindowProfile(String(workspaceId), windowId);
 
       // Clean up task runner files for task workspaces
       if (workspace?.kind === "task" && workspace.task?.taskId && workspace.cwd) {
@@ -4524,8 +4583,8 @@ export async function createRuntime({
       return result;
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    async deleteProject(projectId: any) {
-      return this.deleteWorkspace(projectId);
+    async deleteProject(projectId: any, options: any = {}, windowId?: string) {
+      return this.deleteWorkspace(projectId, options, windowId);
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async reorderWorkspaces(workspaceIds: any, windowId?: string) {
@@ -5791,32 +5850,38 @@ export async function createRuntime({
       return { workspaceId: workspace.id, cwdWarning, payload: getPayload() };
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    async startTask(workspaceId: any) {
+    async startTask(workspaceId: any, windowId?: string) {
+      assertWorkspaceInWindowProfile(String(workspaceId), windowId);
       const result = await taskRunner.startTask(workspaceId);
       return { ok: result, payload: getPayload() };
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    stopTask(workspaceId: any) {
+    stopTask(workspaceId: any, windowId?: string) {
+      assertWorkspaceInWindowProfile(String(workspaceId), windowId);
       const result = taskRunner.stopTask(workspaceId);
       return { ok: result, payload: getPayload() };
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    pauseTask(workspaceId: any) {
+    pauseTask(workspaceId: any, windowId?: string) {
+      assertWorkspaceInWindowProfile(String(workspaceId), windowId);
       const result = taskRunner.pauseTask(workspaceId);
       return { ok: result, payload: getPayload() };
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    resumeTask(workspaceId: any) {
+    resumeTask(workspaceId: any, windowId?: string) {
+      assertWorkspaceInWindowProfile(String(workspaceId), windowId);
       const result = taskRunner.resumeTask(workspaceId);
       return { ok: result, payload: getPayload() };
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    async resetTask(workspaceId: any) {
+    async resetTask(workspaceId: any, windowId?: string) {
+      assertWorkspaceInWindowProfile(String(workspaceId), windowId);
       const result = await taskRunner.resetTask(workspaceId);
       return { ok: result, payload: getPayload() };
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    async updateTaskDescription(workspaceId: any, description: any) {
+    async updateTaskDescription(workspaceId: any, description: any, windowId?: string) {
+      assertWorkspaceInWindowProfile(String(workspaceId), windowId);
       const id = String(workspaceId || "");
       const desc = String(description ?? "");
       const workspace = findWorkspace(getState(), id);

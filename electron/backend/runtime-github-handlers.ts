@@ -79,14 +79,25 @@ export function createGitHubHandlers(ctx: GitHubHandlerCtx) {
       return github.verifyConnection(connection);
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    async saveGitHubConnection(connection: any) {
+    async saveGitHubConnection(connection: any, windowId?: string) {
       const { normalizeConnectionInput: normalizeGH, deriveApiBaseUrl } = await import("./github-utils.js");
       const normalizedInput = normalizeGH(connection);
       const connectionId = normalizedInput.id || `gh-${randomUUID()}`;
       const tokenRef = connection.tokenRef || `cred:${connectionId}`;
       const pat = connection.pat || credentialStore.getSecret(tokenRef);
       const verification = await github.verifyConnection({ ...normalizedInput, pat });
-      const resolvedProfileId = connection.profileId || (getState().windowSlots || [])[0]?.profileId || "default";
+      // See saveAzureConnection — same cross-profile guard.
+      const callerWindowProfileId = windowId
+        ? // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          (getState().windowSlots || []).find((s: any) => s.id === windowId)?.profileId || ""
+        : "";
+      if (callerWindowProfileId && connection.profileId && connection.profileId !== callerWindowProfileId) {
+        throw new Error(
+          `Cross-profile refused: saveGitHubConnection payload targets profile ${connection.profileId}, window ${windowId} is bound to ${callerWindowProfileId}.`,
+        );
+      }
+      const resolvedProfileId =
+        connection.profileId || callerWindowProfileId || (getState().windowSlots || [])[0]?.profileId || "default";
       log.debug("saveGitHubConnection: profile resolution", {
         connectionId,
         incomingProfileId: connection.profileId || null,
@@ -141,9 +152,21 @@ export function createGitHubHandlers(ctx: GitHubHandlerCtx) {
       broadcastState();
       return { payload: getPayload(), verification };
     },
-    async deleteGitHubConnection(connectionId: string) {
+    async deleteGitHubConnection(connectionId: string, windowId?: string) {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const connection = getGitHubConnections().find((c: any) => c.id === connectionId);
+      // Cross-profile refuse — see deleteAzureConnection for the rationale.
+      if (windowId && connection) {
+        const callerProfileId =
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          (getState().windowSlots || []).find((s: any) => s.id === windowId)?.profileId || "";
+        const connProfileId = (connection as { profileId?: string }).profileId || "default";
+        if (callerProfileId && callerProfileId !== connProfileId) {
+          throw new Error(
+            `Cross-profile refused: connection ${connectionId} is in profile ${connProfileId}, window ${windowId} is bound to ${callerProfileId}.`,
+          );
+        }
+      }
       if (connection?.tokenRef) {
         await credentialStore.deleteSecret(connection.tokenRef);
       }

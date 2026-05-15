@@ -240,24 +240,28 @@ export function registerIpc(
       windowId ? runtime.activateWorkspaceInWindow(projectId, windowId) : runtime.activateProject(projectId),
     );
   });
-  ipcMain.handle("workspace:save", async (_event, workspace) =>
-    withOperationPromise({ opId: "workspace:save" }, () =>
-      runtime.saveWorkspace(validateIpc(workspaceSchema, workspace, "workspace:save")),
-    ),
-  );
-  ipcMain.handle("project:save", async (_event, project) =>
-    withOperationPromise({ opId: "project:save" }, () =>
-      runtime.saveProject(validateIpc(projectSchema, project, "project:save")),
-    ),
-  );
-  ipcMain.handle("workspace:delete", async (_event, workspaceId, options) =>
-    withOperationPromise({ workspaceId: String(workspaceId || ""), opId: "workspace:delete" }, () =>
-      runtime.deleteWorkspace(workspaceId, options || {}),
-    ),
-  );
-  ipcMain.handle("project:delete", async (_event, projectId) =>
-    withOperationPromise({ opId: "project:delete" }, () => runtime.deleteProject(projectId)),
-  );
+  ipcMain.handle("workspace:save", async (event, workspace) => {
+    const windowId = getWindowIdByWebContentsId?.(event.sender.id) ?? "";
+    return withOperationPromise({ opId: "workspace:save" }, () =>
+      runtime.saveWorkspace(validateIpc(workspaceSchema, workspace, "workspace:save"), windowId),
+    );
+  });
+  ipcMain.handle("project:save", async (event, project) => {
+    const windowId = getWindowIdByWebContentsId?.(event.sender.id) ?? "";
+    return withOperationPromise({ opId: "project:save" }, () =>
+      runtime.saveProject(validateIpc(projectSchema, project, "project:save"), windowId),
+    );
+  });
+  ipcMain.handle("workspace:delete", async (event, workspaceId, options) => {
+    const windowId = getWindowIdByWebContentsId?.(event.sender.id) ?? "";
+    return withOperationPromise({ workspaceId: String(workspaceId || ""), opId: "workspace:delete" }, () =>
+      runtime.deleteWorkspace(workspaceId, options || {}, windowId),
+    );
+  });
+  ipcMain.handle("project:delete", async (event, projectId) => {
+    const windowId = getWindowIdByWebContentsId?.(event.sender.id) ?? "";
+    return withOperationPromise({ opId: "project:delete" }, () => runtime.deleteProject(projectId, {}, windowId));
+  });
   ipcMain.handle("workspace:reorder", async (event, workspaceIds) => {
     const windowId = getWindowIdByWebContentsId?.(event.sender.id) ?? "";
     return withOperationPromise({ opId: "workspace:reorder" }, () =>
@@ -282,14 +286,18 @@ export function registerIpc(
       runtime.verifyAzureConnection(validateIpc(azureConnectionSchema, connection, "azure:verify-connection")),
     ),
   );
-  ipcMain.handle("azure:save-connection", async (_event, connection) =>
-    withOperationPromise({ opId: "azure:save-connection" }, () =>
-      runtime.saveAzureConnection(validateIpc(azureConnectionSchema, connection, "azure:save-connection")),
-    ),
-  );
-  ipcMain.handle("azure:delete-connection", async (_event, connectionId) =>
-    withOperationPromise({ opId: "azure:delete-connection" }, () => runtime.deleteAzureConnection(connectionId)),
-  );
+  ipcMain.handle("azure:save-connection", async (event, connection) => {
+    const windowId = getWindowIdByWebContentsId?.(event.sender.id) ?? "";
+    return withOperationPromise({ opId: "azure:save-connection" }, () =>
+      runtime.saveAzureConnection(validateIpc(azureConnectionSchema, connection, "azure:save-connection"), windowId),
+    );
+  });
+  ipcMain.handle("azure:delete-connection", async (event, connectionId) => {
+    const windowId = getWindowIdByWebContentsId?.(event.sender.id) ?? "";
+    return withOperationPromise({ opId: "azure:delete-connection" }, () =>
+      runtime.deleteAzureConnection(connectionId, windowId),
+    );
+  });
   ipcMain.handle("azure:refresh", async () =>
     withOperationPromise({ opId: "azure:refresh" }, () => runtime.refreshAzureState()),
   );
@@ -324,44 +332,60 @@ export function registerIpc(
       ),
     ),
   );
-  ipcMain.handle("review-bridge:draft-comment:create", async (_event, payload) =>
-    withOperationPromise({ opId: "review-bridge:draft-comment:create" }, () =>
+  ipcMain.handle("review-bridge:draft-comment:create", async (event, payload) => {
+    const windowId = getWindowIdByWebContentsId?.(event.sender.id) ?? "";
+    return withOperationPromise({ opId: "review-bridge:draft-comment:create" }, () =>
       runtime.createReviewBridgeDraftComment(
         validateIpc(reviewBridgeDraftCommentSchema, payload, "review-bridge:draft-comment:create"),
+        windowId,
       ),
-    ),
-  );
-  ipcMain.handle("review-bridge:draft:save", async (_event, payload) =>
-    withOperationPromise({ opId: "review-bridge:draft:save" }, () =>
-      runtime.saveReviewBridgeDraft(validateIpc(reviewBridgeDraftSchema, payload, "review-bridge:draft:save")),
-    ),
-  );
-  ipcMain.handle("review-bridge:draft:queue", async (_event, payload) =>
-    withOperationPromise({ opId: "review-bridge:draft:queue" }, () =>
-      runtime.queueReviewBridgeDraft(validateIpc(reviewBridgeQueueSchema, payload, "review-bridge:draft:queue")),
-    ),
-  );
-  ipcMain.handle("review-bridge:draft:delete", async (_event, payload) =>
-    withOperationPromise({ opId: "review-bridge:draft:delete" }, () =>
+    );
+  });
+  ipcMain.handle("review-bridge:draft:save", async (event, payload) => {
+    const windowId = getWindowIdByWebContentsId?.(event.sender.id) ?? "";
+    return withOperationPromise({ opId: "review-bridge:draft:save" }, () =>
+      runtime.saveReviewBridgeDraft(
+        validateIpc(reviewBridgeDraftSchema, payload, "review-bridge:draft:save"),
+        windowId,
+      ),
+    );
+  });
+  ipcMain.handle("review-bridge:draft:queue", async (event, payload) => {
+    const windowId = getWindowIdByWebContentsId?.(event.sender.id) ?? "";
+    return withOperationPromise({ opId: "review-bridge:draft:queue" }, () =>
+      runtime.queueReviewBridgeDraft(
+        validateIpc(reviewBridgeQueueSchema, payload, "review-bridge:draft:queue"),
+        windowId,
+      ),
+    );
+  });
+  ipcMain.handle("review-bridge:draft:delete", async (event, payload) => {
+    const windowId = getWindowIdByWebContentsId?.(event.sender.id) ?? "";
+    return withOperationPromise({ opId: "review-bridge:draft:delete" }, () =>
       runtime.deleteReviewBridgeDraft(
         validateIpc(reviewBridgeDeleteDraftSchema, payload, "review-bridge:draft:delete"),
+        windowId,
       ),
-    ),
-  );
-  ipcMain.handle("review-bridge:comment:delete", async (_event, payload) =>
-    withOperationPromise({ opId: "review-bridge:comment:delete" }, () =>
+    );
+  });
+  ipcMain.handle("review-bridge:comment:delete", async (event, payload) => {
+    const windowId = getWindowIdByWebContentsId?.(event.sender.id) ?? "";
+    return withOperationPromise({ opId: "review-bridge:comment:delete" }, () =>
       runtime.deleteReviewBridgeComment(
         validateIpc(reviewBridgeDeleteCommentSchema, payload, "review-bridge:comment:delete"),
+        windowId,
       ),
-    ),
-  );
-  ipcMain.handle("review-bridge:comment:reply-with-changes", async (_event, payload) =>
-    withOperationPromise({ opId: "review-bridge:comment:reply-with-changes" }, () =>
+    );
+  });
+  ipcMain.handle("review-bridge:comment:reply-with-changes", async (event, payload) => {
+    const windowId = getWindowIdByWebContentsId?.(event.sender.id) ?? "";
+    return withOperationPromise({ opId: "review-bridge:comment:reply-with-changes" }, () =>
       runtime.replyWithCodeChanges(
         validateIpc(reviewBridgeReplyWithChangesSchema, payload, "review-bridge:comment:reply-with-changes"),
+        windowId,
       ),
-    ),
-  );
+    );
+  });
   ipcMain.handle("review-bridge:agent-prompt:save", async (_event, payload) =>
     withOperationPromise({ opId: "review-bridge:agent-prompt:save" }, () =>
       runtime.saveAgentPrompt(validateIpc(agentPromptSaveSchema, payload, "review-bridge:agent-prompt:save")),
@@ -382,13 +406,15 @@ export function registerIpc(
       ),
     ),
   );
-  ipcMain.handle("review-bridge:pull-request:push-and-publish", async (_event, payload) =>
-    withOperationPromise({ opId: "review-bridge:pull-request:push-and-publish" }, () =>
+  ipcMain.handle("review-bridge:pull-request:push-and-publish", async (event, payload) => {
+    const windowId = getWindowIdByWebContentsId?.(event.sender.id) ?? "";
+    return withOperationPromise({ opId: "review-bridge:pull-request:push-and-publish" }, () =>
       runtime.pushAndPublishReview(
         validateIpc(reviewBridgePushAndPublishSchema, payload, "review-bridge:pull-request:push-and-publish"),
+        windowId,
       ),
-    ),
-  );
+    );
+  });
 
   // --- SSH ---
   ipcMain.handle("ssh:hosts:list", async () =>
@@ -524,14 +550,18 @@ export function registerIpc(
       runtime.verifyGitHubConnection(validateIpc(githubConnectionSchema, connection, "github:verify-connection")),
     ),
   );
-  ipcMain.handle("github:save-connection", async (_event, connection) =>
-    withOperationPromise({ opId: "github:save-connection" }, () =>
-      runtime.saveGitHubConnection(validateIpc(githubConnectionSchema, connection, "github:save-connection")),
-    ),
-  );
-  ipcMain.handle("github:delete-connection", async (_event, connectionId) =>
-    withOperationPromise({ opId: "github:delete-connection" }, () => runtime.deleteGitHubConnection(connectionId)),
-  );
+  ipcMain.handle("github:save-connection", async (event, connection) => {
+    const windowId = getWindowIdByWebContentsId?.(event.sender.id) ?? "";
+    return withOperationPromise({ opId: "github:save-connection" }, () =>
+      runtime.saveGitHubConnection(validateIpc(githubConnectionSchema, connection, "github:save-connection"), windowId),
+    );
+  });
+  ipcMain.handle("github:delete-connection", async (event, connectionId) => {
+    const windowId = getWindowIdByWebContentsId?.(event.sender.id) ?? "";
+    return withOperationPromise({ opId: "github:delete-connection" }, () =>
+      runtime.deleteGitHubConnection(connectionId, windowId),
+    );
+  });
   ipcMain.handle("github:refresh", async () =>
     withOperationPromise({ opId: "github:refresh" }, () => runtime.refreshGitHubState()),
   );
@@ -652,10 +682,11 @@ export function registerIpc(
       windowId ? runtime.activateSessionInWindow(sessionId, windowId) : runtime.activateSession(sessionId),
     );
   });
-  ipcMain.handle("workspace:set-ui-state", async (_event, workspaceId, uiState) =>
+  ipcMain.handle("workspace:set-ui-state", async (event, workspaceId, uiState) =>
     withOperationPromise({ workspaceId: String(workspaceId || ""), opId: "workspace:set-ui-state" }, async () => {
       const parsed = validateIpc(workspaceUIStateSchema, { workspaceId, uiState }, "workspace:set-ui-state");
-      return runtime.setWorkspaceUIState(parsed.workspaceId, parsed.uiState);
+      const windowId = getWindowIdByWebContentsId?.(event.sender.id) ?? "";
+      return runtime.setWorkspaceUIState(parsed.workspaceId, parsed.uiState, windowId);
     }),
   );
   ipcMain.handle("workspace-grid:enable", async (event, payload) =>
@@ -814,34 +845,39 @@ export function registerIpc(
       runtime.createTaskWorkspace(validateIpc(taskWorkspaceCreateSchema, payload, "task:create-workspace"), windowId),
     );
   });
-  ipcMain.handle("task:start", async (_event, payload) => {
+  ipcMain.handle("task:start", async (event, payload) => {
     const p = validateIpc(taskWorkspaceActionSchema, payload, "task:start");
+    const windowId = getWindowIdByWebContentsId?.(event.sender.id) ?? "";
     return withOperationPromise({ workspaceId: p.workspaceId, opId: "task:start" }, () =>
-      runtime.startTask(p.workspaceId),
+      runtime.startTask(p.workspaceId, windowId),
     );
   });
-  ipcMain.handle("task:stop", async (_event, payload) => {
+  ipcMain.handle("task:stop", async (event, payload) => {
     const p = validateIpc(taskWorkspaceActionSchema, payload, "task:stop");
+    const windowId = getWindowIdByWebContentsId?.(event.sender.id) ?? "";
     return withOperationPromise({ workspaceId: p.workspaceId, opId: "task:stop" }, () =>
-      runtime.stopTask(p.workspaceId),
+      runtime.stopTask(p.workspaceId, windowId),
     );
   });
-  ipcMain.handle("task:pause", async (_event, payload) => {
+  ipcMain.handle("task:pause", async (event, payload) => {
     const p = validateIpc(taskWorkspaceActionSchema, payload, "task:pause");
+    const windowId = getWindowIdByWebContentsId?.(event.sender.id) ?? "";
     return withOperationPromise({ workspaceId: p.workspaceId, opId: "task:pause" }, () =>
-      runtime.pauseTask(p.workspaceId),
+      runtime.pauseTask(p.workspaceId, windowId),
     );
   });
-  ipcMain.handle("task:resume", async (_event, payload) => {
+  ipcMain.handle("task:resume", async (event, payload) => {
     const p = validateIpc(taskWorkspaceActionSchema, payload, "task:resume");
+    const windowId = getWindowIdByWebContentsId?.(event.sender.id) ?? "";
     return withOperationPromise({ workspaceId: p.workspaceId, opId: "task:resume" }, () =>
-      runtime.resumeTask(p.workspaceId),
+      runtime.resumeTask(p.workspaceId, windowId),
     );
   });
-  ipcMain.handle("task:reset", async (_event, payload) => {
+  ipcMain.handle("task:reset", async (event, payload) => {
     const p = validateIpc(taskWorkspaceActionSchema, payload, "task:reset");
+    const windowId = getWindowIdByWebContentsId?.(event.sender.id) ?? "";
     return withOperationPromise({ workspaceId: p.workspaceId, opId: "task:reset" }, () =>
-      runtime.resetTask(p.workspaceId),
+      runtime.resetTask(p.workspaceId, windowId),
     );
   });
   ipcMain.handle("task:reject-verdict", async (_event, payload) =>
@@ -850,10 +886,11 @@ export function registerIpc(
       return runtime.rejectTaskVerdict(parsed.workspaceId, parsed.feedback);
     }),
   );
-  ipcMain.handle("task:update-description", async (_event, payload) => {
+  ipcMain.handle("task:update-description", async (event, payload) => {
     const p = validateIpc(taskUpdateDescriptionSchema, payload, "task:update-description");
+    const windowId = getWindowIdByWebContentsId?.(event.sender.id) ?? "";
     return withOperationPromise({ workspaceId: p.workspaceId, opId: "task:update-description" }, () =>
-      runtime.updateTaskDescription(p.workspaceId, p.description),
+      runtime.updateTaskDescription(p.workspaceId, p.description, windowId),
     );
   });
   ipcMain.handle("task:status", async (_event, workspaceId) =>
