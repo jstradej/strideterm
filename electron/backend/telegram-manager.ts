@@ -85,6 +85,11 @@ export interface TelegramAlertPayload {
   prKey?: string;
   provider?: string;
   connectionId?: string;
+  /** The profile that owns the workspace firing the alert. When set,
+   * forwardAlert only delivers to connections whose profileId matches —
+   * preventing chat A from receiving notifications about chat B's
+   * workspaces in a multi-profile install. */
+  workspaceProfileId?: string;
 }
 
 interface TelegramCommandEvent {
@@ -503,6 +508,26 @@ export class TelegramManager extends EventEmitter {
   configure(connections: TelegramConnectionConfig[]): void {
     this.connections = connections.filter((c) => c.enabled && c.botTokenRef && c.chatId);
     log.debug("telegram configured", { count: this.connections.length });
+    // In a multi-profile install an unbound connection (profileId="") is a
+    // footgun: forwardAlert maps it to "default", so the user expects
+    // alerts from every profile and only sees default's. Warn so the user
+    // (or settings UI surfaced via getSnapshot().connections[*].needsProfileBinding)
+    // knows to pick a profile explicitly.
+    const profiles = this.getProfiles?.() ?? [];
+    if (profiles.length > 1) {
+      for (const c of this.connections) {
+        if (!c.profileId) {
+          log.warn(
+            "telegram: connection has no profile binding in a multi-profile install — alerts will only route to 'default'",
+            {
+              connectionId: c.id,
+              label: c.label,
+              profileCount: profiles.length,
+            },
+          );
+        }
+      }
+    }
   }
 
   getSnapshot(): {
@@ -514,8 +539,10 @@ export class TelegramManager extends EventEmitter {
       pollSeconds: number;
       profileId?: string;
       forwardKinds: string[];
+      needsProfileBinding?: boolean;
     }>;
   } {
+    const profileCount = (this.getProfiles?.() ?? []).length;
     return {
       connections: this.connections.map((c) => ({
         id: c.id,
@@ -529,6 +556,10 @@ export class TelegramManager extends EventEmitter {
         pollSeconds: c.pollSeconds,
         profileId: c.profileId || "",
         forwardKinds: Array.isArray(c.forwardKinds) ? [...c.forwardKinds] : [],
+        // True when the user has 2+ profiles but this connection isn't
+        // bound to any — surface as a "Pick a profile" warning in the
+        // settings tab. With one profile the silent default is harmless.
+        needsProfileBinding: profileCount > 1 && !c.profileId,
       })),
     };
   }
@@ -834,6 +865,25 @@ export class TelegramManager extends EventEmitter {
     if (this.connections.length === 0) return;
 
     for (const conn of this.connections) {
+      // Profile isolation: when the alert carries a workspaceProfileId,
+      // only deliver to connections owned by the same profile. Legacy
+      // single-profile installs (workspaceProfileId="" and conn.profileId="")
+      // collapse to "default" === "default" and still match. The user with
+      // a per-profile Telegram bot in profiles A and B will only get alerts
+      // about workspaces they actually see in that profile.
+      if (payload.workspaceProfileId !== undefined) {
+        const alertProfile = payload.workspaceProfileId || "default";
+        const connProfile = conn.profileId || "default";
+        if (alertProfile !== connProfile) {
+          log.trace("telegram alert filtered out by profile mismatch", {
+            connectionId: conn.id,
+            connProfile,
+            alertProfile,
+            kind: payload.kind,
+          });
+          continue;
+        }
+      }
       const forwardKinds = conn.forwardKinds;
       if (forwardKinds.length > 0 && !forwardKinds.includes(payload.kind)) {
         log.trace("telegram alert filtered out by forwardKinds", {
@@ -2910,9 +2960,17 @@ export class TelegramManager extends EventEmitter {
     const all = this.getWorkspaces?.() ?? [];
     const namePrefix = `${parent.name} / `;
     const notesNeedle = `Worktree of ${parent.name}`;
+    const parentProfile = parent.profileId || "default";
     const matches = all.filter(
       (w) =>
-        w.id !== parent.id && ((w.notes || "").startsWith(notesNeedle) || w.name.startsWith(namePrefix)) && !!w.cwd,
+        w.id !== parent.id &&
+        ((w.notes || "").startsWith(notesNeedle) || w.name.startsWith(namePrefix)) &&
+        !!w.cwd &&
+        // Same-name workspaces in other profiles must not surface here —
+        // otherwise the user picks a cross-profile worktree as targetCwd
+        // and the task ends up running on a path from another profile's
+        // tree. Match the parent's profile strictly.
+        (w.profileId || "default") === parentProfile,
     );
     // Starred worktrees first so the user sees their pinned ones at the top.
     return sortWorkspacesStarredFirst(matches);

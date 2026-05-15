@@ -94,6 +94,13 @@ export function useNotificationCapture() {
       const workspaces = appStore.payload?.appState?.workspaces || [];
       const wsMap = new Map(workspaces.map((ws) => [ws.id, ws]));
 
+      // Scope notifications to THIS WINDOW's profile. In a multi-window
+      // multi-profile setup, the renderer in profile B otherwise pops a
+      // toast and writes a notifStore entry for every alert in profile A
+      // (which the user in B can't see in their sidebar). Mark them as
+      // seen so they don't fire later if the user switches profiles.
+      const activeProfileId = appStore.activeProfile?.id || "default";
+
       // --- Phase 1: Detect NEW alerts and create notifications ---
       for (const [wsId, entry] of Object.entries(byWs) as [string, AttentionAlertBucket][]) {
         for (const alert of entry?.alerts || []) {
@@ -105,6 +112,11 @@ export function useNotificationCapture() {
           if (inStartupGrace) continue;
 
           const ws = wsMap.get(wsId);
+          // Skip alerts whose workspace lives in another profile — the user
+          // in this window can't see that workspace, a toast/notification
+          // would just be noise. Unknown-workspace alerts (ws deleted)
+          // still surface as legacy fallback.
+          if (ws && (ws.profileId || "default") !== activeProfileId) continue;
           const wsName = ws?.name || wsId;
           const tabName = alert.title || alert.panelId || "";
 

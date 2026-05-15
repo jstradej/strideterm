@@ -49,15 +49,39 @@ interface WorkspaceTab {
 
 // ---------------------------------------------------------------------------
 
-export function summarizeAttention(payload: StatePayload | null | undefined): {
+export function summarizeAttention(
+  payload: StatePayload | null | undefined,
+  profileId?: string | null,
+): {
   count: number;
   waitingCount: number;
 } {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const byWorkspace = (payload?.attention as any)?.byWorkspace;
+  const byWorkspace = (payload?.attention as any)?.byWorkspace as Record<string, AttentionEntry> | undefined;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const byProject = (payload?.attention as any)?.byProject;
-  const alerts = Object.values((byWorkspace || byProject || {}) as Record<string, AttentionEntry>)
+  const byProject = (payload?.attention as any)?.byProject as Record<string, AttentionEntry> | undefined;
+  const buckets = (byWorkspace || byProject || {}) as Record<string, AttentionEntry>;
+
+  // When a profileId is supplied, restrict the count to workspaces in that
+  // profile. Without this filter the in-app title/badge in a multi-profile
+  // setup includes alerts from profiles the window can't see — the user in
+  // profile B sees "(5)" but only 3 are theirs.
+  let visibleEntries: AttentionEntry[];
+  if (profileId) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const workspaces = (payload?.appState?.workspaces as any[] | undefined) || [];
+    const idsInProfile = new Set(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      workspaces.filter((ws: any) => (ws.profileId || "default") === profileId).map((ws: any) => ws.id),
+    );
+    visibleEntries = Object.entries(buckets)
+      .filter(([wsId]) => idsInProfile.has(wsId))
+      .map(([, entry]) => entry);
+  } else {
+    visibleEntries = Object.values(buckets);
+  }
+
+  const alerts = visibleEntries
     .flatMap((entry) => entry?.alerts || [])
     .sort((left, right) => new Date(right.at ?? "").getTime() - new Date(left.at ?? "").getTime());
   return {

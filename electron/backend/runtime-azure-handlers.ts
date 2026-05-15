@@ -195,10 +195,16 @@ export function createAzureHandlers(ctx: AzureHandlerCtx) {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       let result: any;
       try {
+        const state = getState();
+        const callerProfileId = windowId
+          ? // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            (state.windowSlots || []).find((s: any) => s.id === windowId)?.profileId || ""
+          : "";
         result = await azure.openReviewWorkspace({
-          state: getState(),
+          state,
           prKey: payload.prKey,
           workspaceId: payload.workspaceId || "",
+          callerProfileId,
         });
       } catch (err) {
         const message =
@@ -217,16 +223,26 @@ export function createAzureHandlers(ctx: AzureHandlerCtx) {
           draft.workspaces.push(normalized);
         }
         draft.activeWorkspaceId = normalized.id;
-        // Mirror activation into the calling window's slot. The frontend
-        // selector prefers slot.activeWorkspaceId over the global field
-        // (see src/stores/app.ts getWindowWorkspaceIdFromPayload); without
-        // this the slot keeps pointing at the parent Azure DevOps workspace
-        // while global moves to the new review WS, and the UI flickers
-        // between the two as subsequent refresh broadcasts arrive.
+        // Mirror activation into the calling window's slot ONLY when the
+        // review workspace lives in the same profile as the slot. The
+        // review's profile is decided by the connection (see
+        // openReviewWorkspace), so a remote client bound to profile B that
+        // requests a PR open for a profile-A connection would otherwise
+        // swap a profile-A workspace into slot B. Frontend selector prefers
+        // slot.activeWorkspaceId, so without the guard the user in window B
+        // would silently jump into profile A's review.
         if (windowId) {
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           const slot = (draft.windowSlots || []).find((s: any) => s.id === windowId);
-          if (slot) slot.activeWorkspaceId = normalized.id;
+          if (slot && (normalized.profileId || "default") === slot.profileId) {
+            slot.activeWorkspaceId = normalized.id;
+          } else if (slot) {
+            log.info("openAzurePullRequest: skipping slot mirror (cross-profile)", {
+              windowId,
+              slotProfileId: slot.profileId,
+              workspaceProfileId: normalized.profileId || "default",
+            });
+          }
         }
       });
       await refreshGit(result.workspace.id);
@@ -426,9 +442,14 @@ export function createAzureHandlers(ctx: AzureHandlerCtx) {
     async azureQuickFixCreate(payload: any = {}, windowId?: string) {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       let result: any;
+      const state = getState();
+      const callerProfileId = windowId
+        ? // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          (state.windowSlots || []).find((s: any) => s.id === windowId)?.profileId || ""
+        : "";
       try {
         result = await azure.openQuickFixWorkspace({
-          state: getState(),
+          state,
           connectionId: payload.connectionId,
           projectName: payload.projectName,
           repositoryId: payload.repositoryId,
@@ -436,6 +457,7 @@ export function createAzureHandlers(ctx: AzureHandlerCtx) {
           remoteUrl: payload.remoteUrl,
           baseBranch: payload.baseBranch,
           newBranchName: payload.newBranchName,
+          callerProfileId,
         });
       } catch (err) {
         const message =
@@ -469,11 +491,19 @@ export function createAzureHandlers(ctx: AzureHandlerCtx) {
           draft.workspaces.push(normalized);
         }
         draft.activeWorkspaceId = normalized.id;
-        // See openAzurePullRequest for why slot must be mirrored.
+        // See openAzurePullRequest for the cross-profile guard rationale.
         if (windowId) {
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           const slot = (draft.windowSlots || []).find((s: any) => s.id === windowId);
-          if (slot) slot.activeWorkspaceId = normalized.id;
+          if (slot && (normalized.profileId || "default") === slot.profileId) {
+            slot.activeWorkspaceId = normalized.id;
+          } else if (slot) {
+            log.info("azureQuickFixCreate: skipping slot mirror (cross-profile)", {
+              windowId,
+              slotProfileId: slot.profileId,
+              workspaceProfileId: normalized.profileId || "default",
+            });
+          }
         }
       });
       await refreshGit(result.workspace.id);

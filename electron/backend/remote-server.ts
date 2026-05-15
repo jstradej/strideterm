@@ -937,36 +937,11 @@ async function handleApiRequest(runtime: Runtime, request: IncomingMessage, resp
       return;
     }
 
-    if (request.method === "POST" && url.pathname === "/api/workspace-grid/enable") {
-      // Remote callers don't have a BrowserWindow context; runtime scopes
-      // no-window grid mutations to the active profile.
-      const parsed = validateIpc(workspaceGridEnableSchema, body, "POST /api/workspace-grid/enable");
-      json(response, 200, await runtime.enableWorkspaceGrid(parsed.layout, parsed.workspaceIds));
-      return;
-    }
-
-    if (request.method === "POST" && url.pathname === "/api/workspace-grid/disable") {
-      json(response, 200, await runtime.disableWorkspaceGrid());
-      return;
-    }
-
-    if (request.method === "POST" && url.pathname === "/api/workspace-grid/set-layout") {
-      const parsed = validateIpc(workspaceGridSetLayoutSchema, body, "POST /api/workspace-grid/set-layout");
-      json(response, 200, await runtime.setGridLayout(parsed.layout));
-      return;
-    }
-
-    if (request.method === "POST" && url.pathname === "/api/workspace-grid/set-cell") {
-      const parsed = validateIpc(workspaceGridSetCellSchema, body, "POST /api/workspace-grid/set-cell");
-      json(response, 200, await runtime.setGridCell(parsed.cellIndex, parsed.workspaceId));
-      return;
-    }
-
-    if (request.method === "POST" && url.pathname === "/api/workspace-grid/swap-cells") {
-      const parsed = validateIpc(workspaceGridSwapCellsSchema, body, "POST /api/workspace-grid/swap-cells");
-      json(response, 200, await runtime.swapGridCells(parsed.a, parsed.b));
-      return;
-    }
+    // /api/workspace-grid/* — handled in the slot-aware route block at the
+    // server top level so we can resolve windowId from the bound session.
+    // The previous inline handlers here passed no windowId and the runtime
+    // fell back to windowSlots[0]'s profile, letting a remote client on
+    // profile B mutate profile A's grid.
 
     if (request.method === "POST" && url.pathname === "/api/attention/sync") {
       json(response, 200, await runtime.syncAttentionContext(body));
@@ -1513,6 +1488,27 @@ export async function startRemoteServer({
         "/api/github/quickfix/create": (body, windowId) => runtime.githubQuickFixCreate(body, windowId),
         "/api/task/create": (body, windowId) => runtime.createTaskWorkspace(body, windowId),
         "/api/git/create-worktree": (body, windowId) => runtime.createWorktree(body, windowId),
+        // Grid mutations resolve their target profile from windowId. Without
+        // the slot-aware path a mobile client bound to profile B would mutate
+        // profile A's grid (runtime falls back to windowSlots[0] when no
+        // windowId is supplied — see resolveWorkspaceGridProfile).
+        "/api/workspace-grid/enable": (body, windowId) => {
+          const parsed = validateIpc(workspaceGridEnableSchema, body, "POST /api/workspace-grid/enable");
+          return runtime.enableWorkspaceGrid(parsed.layout, parsed.workspaceIds, windowId);
+        },
+        "/api/workspace-grid/disable": (_body, windowId) => runtime.disableWorkspaceGrid(windowId),
+        "/api/workspace-grid/set-layout": (body, windowId) => {
+          const parsed = validateIpc(workspaceGridSetLayoutSchema, body, "POST /api/workspace-grid/set-layout");
+          return runtime.setGridLayout(parsed.layout, windowId);
+        },
+        "/api/workspace-grid/set-cell": (body, windowId) => {
+          const parsed = validateIpc(workspaceGridSetCellSchema, body, "POST /api/workspace-grid/set-cell");
+          return runtime.setGridCell(parsed.cellIndex, parsed.workspaceId, windowId);
+        },
+        "/api/workspace-grid/swap-cells": (body, windowId) => {
+          const parsed = validateIpc(workspaceGridSwapCellsSchema, body, "POST /api/workspace-grid/swap-cells");
+          return runtime.swapGridCells(parsed.a, parsed.b, windowId);
+        },
       };
       const slotAwareHandler = request.method === "POST" ? slotAwareRoute[url.pathname] : undefined;
       if (slotAwareHandler) {
@@ -1520,6 +1516,18 @@ export async function startRemoteServer({
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const appState = (runtime.getPayload() as any).appState;
         const windowId = apiSessionId ? registry.getBoundWindowId(apiSessionId, appState) : "";
+        // Slot-aware routes mutate state in the context of a specific window's
+        // profile. Without a resolvable windowId the runtime would either
+        // fall back to windowSlots[0] (wrong profile) or proceed without a
+        // profile scope (cross-profile leak). A token-only caller that
+        // skipped the session/client-id binding must NOT get to mutate.
+        if (!windowId) {
+          json(response, 400, {
+            error:
+              "Slot-aware operation requires a bound session — include the strideterm cookie or X-Strideterm-Client-Id header so the server can resolve which profile to act on.",
+          });
+          return;
+        }
         json(response, 200, await slotAwareHandler(body, windowId));
         return;
       }

@@ -302,7 +302,7 @@ export function buildPullRequestSummary({
   activeProfileId = "default",
   now: _now = () => Date.now(),
 }: {
-  connection: { id: string; label?: string; hostUrl?: string; currentUserLogin?: string };
+  connection: { id: string; label?: string; hostUrl?: string; currentUserLogin?: string; profileId?: string };
   pr: Record<string, unknown>;
   reviews?: Array<Record<string, unknown>>;
   reviewComments?: Array<Record<string, unknown>>;
@@ -313,6 +313,7 @@ export function buildPullRequestSummary({
   tracked?: Record<string, unknown>;
   workspaces?: Array<{ id: string; profileId?: string; [key: string]: unknown }>;
   gitSnapshots?: Record<string, unknown>;
+  /** Defensive fallback when connection.profileId is empty (legacy/pre-migration). */
   activeProfileId?: string;
   now?: () => number;
 }): { summary: Record<string, unknown>; internals: Record<string, unknown> } {
@@ -397,8 +398,11 @@ export function buildPullRequestSummary({
     checksFailed,
   });
 
-  // Workspace matching
-  const profileWorkspaces = workspaces.filter((ws) => (ws.profileId || "default") === activeProfileId);
+  // Workspace matching — scope to the connection's owning profile so a PR
+  // fetched via a profile-B connection looks up its review workspace among
+  // profile-B's workspaces, not whichever profile happens to be "active".
+  const summaryProfileId = connection.profileId || activeProfileId;
+  const profileWorkspaces = workspaces.filter((ws) => (ws.profileId || "default") === summaryProfileId);
   const reviewWorkspace = findWorkspaceForPullRequest(profileWorkspaces, prKey);
   const matchingWorkspace = findMatchingWorkspace(
     {
@@ -419,6 +423,10 @@ export function buildPullRequestSummary({
     provider: "github",
     prKey,
     connectionId: connection.id,
+    // See Azure counterpart — surfacing the connection's profile lets
+    // Telegram alert dispatch route by profile when the PR has no
+    // review/existing workspace yet.
+    profileId: connection.profileId || activeProfileId,
     connectionLabel: connection.label || connection.id,
     hostUrl,
     repository: {

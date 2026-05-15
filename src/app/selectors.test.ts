@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { getVisibleTabs, getWorkspacePanelByViewId, getWorkspaceTabs } from "./selectors.js";
+import { getVisibleTabs, getWorkspacePanelByViewId, getWorkspaceTabs, summarizeAttention } from "./selectors.js";
 import type { StatePayload, WorkspaceState } from "../../electron/shared/types/state.js";
 
 describe("workspace selectors", () => {
@@ -204,5 +204,52 @@ describe("getVisibleTabs", () => {
       forceSoloLayout: false,
     });
     expect(result.visibleTabs.map((t) => t.id)).toEqual(["task-1:dash", "task-1:worker", "task-1:judge"]);
+  });
+});
+
+describe("summarizeAttention", () => {
+  function makePayload(): StatePayload {
+    return {
+      appState: {
+        workspaces: [
+          { id: "ws-default", profileId: "default" },
+          { id: "ws-b", profileId: "profile-b" },
+        ],
+      },
+      attention: {
+        byWorkspace: {
+          "ws-default": {
+            alerts: [{ kind: "completed", at: "2024-01-01T00:00:00Z" }],
+          },
+          "ws-b": {
+            alerts: [
+              { kind: "waiting", at: "2024-01-01T00:01:00Z" },
+              { kind: "completed", at: "2024-01-01T00:02:00Z" },
+            ],
+          },
+        },
+      },
+    } as unknown as StatePayload;
+  }
+
+  test("counts all alerts when no profileId is provided (backwards compat)", () => {
+    const result = summarizeAttention(makePayload());
+    expect(result.count).toBe(3);
+    expect(result.waitingCount).toBe(1);
+  });
+
+  test("counts only alerts whose workspace lives in the given profile", () => {
+    // The fix: a window in profile-b sees only its own profile's alerts in
+    // the in-app badge / document title — not the global count that
+    // includes profile-default's noise.
+    const result = summarizeAttention(makePayload(), "profile-b");
+    expect(result.count).toBe(2);
+    expect(result.waitingCount).toBe(1);
+  });
+
+  test("returns zero when the profileId has no alerts", () => {
+    const result = summarizeAttention(makePayload(), "profile-c");
+    expect(result.count).toBe(0);
+    expect(result.waitingCount).toBe(0);
   });
 });

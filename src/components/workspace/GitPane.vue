@@ -653,10 +653,18 @@ const hasAzureConnection = computed(() => {
 });
 
 // Connection selection for authenticated git operations (push/fetch/PR).
-const availableConnections = computed(() =>
+// Scope to this workspace's profile — payload.git.connections now contains
+// connections from every open profile, so we must filter or the picker
+// would show cross-profile entries that resolveGitConnection refuses to
+// honour at op time.
+const availableConnections = computed(() => {
+  const wsProfileId = workspace.value?.profileId || "default";
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  ((appStore.payload?.git as any)?.connections || []).filter((c: any) => c.enabled),
-);
+  return ((appStore.payload?.git as any)?.connections || []).filter(
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (c: any) => c.enabled && (c.profileId || "default") === wsProfileId,
+  );
+});
 const activeConnectionId = computed(() => workspace.value?.connectionId || "");
 const activeConnectionLabel = computed(() => {
   if (!activeConnectionId.value) return "auto-detected";

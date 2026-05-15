@@ -126,6 +126,9 @@ interface OpenReviewWorkspaceOptions {
   };
   prKey: string;
   workspaceId?: string;
+  /** Profile of the window that initiated the action — used as defensive
+   * fallback when the connection has no profileId (legacy/pre-migration). */
+  callerProfileId?: string;
 }
 
 interface OpenQuickFixWorkspaceOptions {
@@ -140,6 +143,10 @@ interface OpenQuickFixWorkspaceOptions {
   remoteUrl: string;
   baseBranch: string;
   newBranchName: string;
+  /** Profile of the window that initiated the action. Refusing on mismatch
+   * keeps a remote/mobile client on profile B from spawning a profile-A
+   * quickfix workspace on disk. */
+  callerProfileId?: string;
 }
 
 interface DetectDeltasOptions {
@@ -1009,7 +1016,12 @@ export class GitHubManager extends BaseProviderManager {
   // Open review workspace
   // ---------------------------------------------------------------------------
 
-  async openReviewWorkspace({ state, prKey, workspaceId = "" }: OpenReviewWorkspaceOptions): Promise<{
+  async openReviewWorkspace({
+    state,
+    prKey,
+    workspaceId = "",
+    callerProfileId = "",
+  }: OpenReviewWorkspaceOptions): Promise<{
     workspace: Record<string, unknown>;
     created: boolean;
     attached: boolean;
@@ -1020,7 +1032,16 @@ export class GitHubManager extends BaseProviderManager {
     const token = this.credentialStore.getSecret(connection.tokenRef || "");
     if (!token) throw new Error("PAT is missing.");
 
-    const activeProfile = (state.windowSlots || [])[0]?.profileId || "default";
+    // Scope to the connection's profile — see Azure counterpart for the
+    // bug story (review landing in wrong profile on non-primary windows).
+    const connectionProfileId = (connection as { profileId?: string }).profileId || "";
+    if (callerProfileId && connectionProfileId && callerProfileId !== connectionProfileId) {
+      throw new Error(
+        `Cross-profile refused: connection ${connection.id} is in profile ${connectionProfileId}, caller window is bound to ${callerProfileId}.`,
+      );
+    }
+    const activeProfile =
+      connectionProfileId || callerProfileId || (state.windowSlots || [])[0]?.profileId || "default";
     const profileWorkspaces = state.workspaces.filter((ws) => (ws.profileId || "default") === activeProfile);
     const existingWorkspace = workspaceId
       ? profileWorkspaces.find((ws) => ws.id === workspaceId)
@@ -1295,6 +1316,7 @@ export class GitHubManager extends BaseProviderManager {
     remoteUrl,
     baseBranch,
     newBranchName,
+    callerProfileId = "",
   }: OpenQuickFixWorkspaceOptions): Promise<{
     workspace: Record<string, unknown>;
     parentWorkspaceId: string;
@@ -1305,7 +1327,14 @@ export class GitHubManager extends BaseProviderManager {
     // Pin to the connection's profile — falling back to active profile breaks
     // when quickfix is invoked from a profile that doesn't own the connection
     // (the workspace ends up on the wrong profile and goes invisible).
-    const activeProfile = (connRec.profileId as string) || (state.windowSlots || [])[0]?.profileId || "default";
+    const connectionProfileId = (connRec.profileId as string) || "";
+    if (callerProfileId && connectionProfileId && callerProfileId !== connectionProfileId) {
+      throw new Error(
+        `Cross-profile refused: connection ${connection.id} is in profile ${connectionProfileId}, caller window is bound to ${callerProfileId}.`,
+      );
+    }
+    const activeProfile =
+      connectionProfileId || callerProfileId || (state.windowSlots || [])[0]?.profileId || "default";
     const parentGitHubWorkspace =
       state.workspaces.find((ws) => ws.kind === "github" && (ws.profileId || "default") === activeProfile) || null;
     const reviewRoot = parentGitHubWorkspace?.cwd || (connRec.reviewRoot as string) || getDefaultReviewRoot();

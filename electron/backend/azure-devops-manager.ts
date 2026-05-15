@@ -1329,10 +1329,14 @@ export class AzureDevOpsManager extends BaseProviderManager {
     state,
     prKey,
     workspaceId = "",
+    callerProfileId = "",
   }: {
     state: { workspaces: ReviewWorkspace[]; windowSlots?: Array<{ profileId?: string }>; tabTemplates?: unknown[] };
     prKey: string;
     workspaceId?: string;
+    /** Profile of the window that initiated the action — used as defensive
+     * fallback when the connection has no profileId (legacy/pre-migration). */
+    callerProfileId?: string;
   }) {
     const summary = await this.ensurePullRequestDetail(prKey, {
       workspaces: state.workspaces,
@@ -1347,7 +1351,21 @@ export class AzureDevOpsManager extends BaseProviderManager {
       throw new Error("PAT is missing.");
     }
 
-    const activeProfile = (state.windowSlots || [])[0]?.profileId || "default";
+    // The review workspace belongs to the same profile as its connection.
+    // Using windowSlots[0]?.profileId as "active" silently lands the review
+    // on the wrong profile when the user clicked from a non-primary window.
+    const connectionProfileId = (connection as { profileId?: string }).profileId || "";
+    // Refuse upfront when the caller's window is bound to a different
+    // profile than the connection. Previously we just suppressed the slot
+    // mirror, but the PR review checkout (cloned repo on disk) still
+    // happened in the foreign profile.
+    if (callerProfileId && connectionProfileId && callerProfileId !== connectionProfileId) {
+      throw new Error(
+        `Cross-profile refused: connection ${connection.id} is in profile ${connectionProfileId}, caller window is bound to ${callerProfileId}.`,
+      );
+    }
+    const activeProfile =
+      connectionProfileId || callerProfileId || (state.windowSlots || [])[0]?.profileId || "default";
     const profileWorkspaces = state.workspaces.filter((ws) => (ws.profileId || "default") === activeProfile);
     const existingWorkspace: ReviewWorkspace | null | undefined = workspaceId
       ? profileWorkspaces.find((workspace) => workspace.id === workspaceId)
@@ -1832,6 +1850,7 @@ export class AzureDevOpsManager extends BaseProviderManager {
     remoteUrl,
     baseBranch,
     newBranchName,
+    callerProfileId = "",
   }: {
     state: { workspaces: ReviewWorkspace[]; windowSlots?: Array<{ profileId?: string }>; tabTemplates?: unknown[] };
     connectionId: string;
@@ -1841,6 +1860,10 @@ export class AzureDevOpsManager extends BaseProviderManager {
     remoteUrl: string;
     baseBranch: string;
     newBranchName: string;
+    /** Profile of the window that initiated the action. Refusing on
+     * mismatch keeps a remote/mobile client on profile B from spawning
+     * a profile-A quickfix workspace on disk. */
+    callerProfileId?: string;
   }): Promise<{ workspace: ReviewWorkspace; parentWorkspaceId: string }> {
     const { connection, token } = this.resolveAzureConnectionAndToken(connectionId);
 
@@ -1848,8 +1871,14 @@ export class AzureDevOpsManager extends BaseProviderManager {
     // active profile breaks when the user triggers quickfix from a different
     // profile than the one the connection lives on (the workspace lands on
     // the wrong profile and goes invisible).
+    const connectionProfileId = (connection as { profileId?: string }).profileId || "";
+    if (callerProfileId && connectionProfileId && callerProfileId !== connectionProfileId) {
+      throw new Error(
+        `Cross-profile refused: connection ${connection.id} is in profile ${connectionProfileId}, caller window is bound to ${callerProfileId}.`,
+      );
+    }
     const activeProfile =
-      (connection as { profileId?: string }).profileId || (state.windowSlots || [])[0]?.profileId || "default";
+      connectionProfileId || callerProfileId || (state.windowSlots || [])[0]?.profileId || "default";
     const parentAzureWorkspace: ReviewWorkspace | null =
       state.workspaces.find(
         (ws: ReviewWorkspace) => ws.kind === "azure" && (ws.profileId || "default") === activeProfile,

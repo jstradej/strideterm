@@ -1186,17 +1186,31 @@ export async function createRuntime({
 
   /**
    * Return all provider connections (Azure DevOps, GitHub, and future GitLab)
-   * visible to the active profile.  Each provider stores connections under
-   * its own settings key; this helper merges them into a single list so the
-   * git tab can offer a unified dropdown.
+   * visible to any profile currently open in some window. Used for the
+   * payload's connection listing — the renderer filters this further by
+   * its own window's profile when building the picker.
+   *
+   * Do NOT use for resolving the connection for a specific workspace's git
+   * op — use getProviderConnectionsForProfile(workspace.profileId) instead.
+   * Filtering by windowSlots[0]?.profileId (the previous behavior) silently
+   * dropped connections that belonged to a non-primary window's profile.
    */
   function getAllProviderConnections(state = getState()) {
-    const activeProfile = (state.windowSlots || [])[0]?.profileId || "default";
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const matchProfile = (c: any) => (c.profileId || "default") === activeProfile;
+    return [...getAzureConnections(state), ...getGitHubConnections(state)];
+  }
 
-    const azureConns = (getAzureSettings(state).connections || []).filter(matchProfile);
-    const githubConns = (getGitHubSettings(state).connections || []).filter(matchProfile);
+  /**
+   * Return provider connections owned by `profileId`. Right scope for
+   * authenticated git operations: a workspace's connection must come from
+   * the SAME profile as the workspace, never from "whichever profile happens
+   * to be in windowSlots[0]".
+   */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  function getProviderConnectionsForProfile(state: AppState, profileId: string): any[] {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const match = (c: any) => (c.profileId || "default") === profileId;
+    const azureConns = (getAzureSettings(state).connections || []).filter(match);
+    const githubConns = (getGitHubSettings(state).connections || []).filter(match);
     return [...azureConns, ...githubConns];
   }
 
@@ -1212,7 +1226,8 @@ export async function createRuntime({
     if (!connectionId) {
       return null;
     }
-    const connections = getAllProviderConnections();
+    const profileId = String(workspace?.profileId || "default");
+    const connections = getProviderConnectionsForProfile(getState(), profileId);
     return connections.find((c) => c.id === connectionId && c.enabled !== false) || null;
   }
 
@@ -1402,6 +1417,7 @@ export async function createRuntime({
           urgency: opts.urgency || "normal",
           title: opts.title || "",
           detail: opts.detail || "",
+          workspaceProfileId: (workspace as { profileId?: string } | undefined)?.profileId || "default",
         })
         .catch((err) => {
           log.warn("telegram forwardAlert from raiseAlert failed", {
@@ -1519,6 +1535,11 @@ export async function createRuntime({
           label: c.label || c.id,
           provider: c.provider || "azure-devops",
           enabled: c.enabled !== false,
+          // profileId is required so the renderer can scope the connection
+          // picker to the window's own profile — without it, every window
+          // sees the same flat list and a user in profile B could pick a
+          // profile-A connection that then fails to resolve at op time.
+          profileId: String(c.profileId || "default"),
         })),
       },
       azureDevops: azure.getSnapshot(),
@@ -1568,11 +1589,28 @@ export async function createRuntime({
       const pr = summary as any;
       if (!pr?.hasAttention || telegramManager.hasForwardedPr(prKey)) continue;
       telegramManager.markPrForwarded(prKey);
-      const azureWorkspace = state.workspaces.find((w: WorkspaceState) => w.kind === "azure");
+      // The connection's own profile is the authoritative source — fall
+      // back to a profile-scoped Azure inbox only when the PR summary
+      // doesn't carry profileId yet (legacy snapshots before the fix).
+      // Picking the first state.workspaces match silently routes alerts
+      // to whatever inbox sorts first when both profiles host one.
+      const prProfileIdHint = (pr?.profileId as string | undefined) || "";
+      const azureInboxForProfile = prProfileIdHint
+        ? state.workspaces.find(
+            (w: WorkspaceState) => w.kind === "azure" && (w.profileId || "default") === prProfileIdHint,
+          )
+        : null;
+      const azureWorkspace = azureInboxForProfile || state.workspaces.find((w: WorkspaceState) => w.kind === "azure");
       // Use review or existing workspace so auto-review can walk up to the parent cwd
       const prWorkspaceId = pr?.reviewWorkspaceId || pr?.existingWorkspaceId || azureWorkspace?.id || "azure";
       const prTitle = pr?.pullRequest?.title || prKey;
       log.info("telegram: forwarding Azure PR notification", { prKey, connectionId: pr?.connectionId });
+      const azurePrWs = state.workspaces.find((w) => w.id === prWorkspaceId);
+      const azurePrProfileId =
+        prProfileIdHint ||
+        (azurePrWs as { profileId?: string } | undefined)?.profileId ||
+        (azureWorkspace as { profileId?: string } | undefined)?.profileId ||
+        "default";
       telegramManager
         .forwardAlert({
           alertId: prKey,
@@ -1587,6 +1625,7 @@ export async function createRuntime({
           prKey,
           provider: "azure-devops",
           connectionId: pr?.connectionId || "",
+          workspaceProfileId: azurePrProfileId,
         })
         .catch((err) => {
           log.warn("telegram: Azure PR forward failed", { prKey, err: (err as Error).message });
@@ -1599,10 +1638,25 @@ export async function createRuntime({
       const pr = summary as any;
       if (!pr?.hasAttention || telegramManager.hasForwardedPr(prKey)) continue;
       telegramManager.markPrForwarded(prKey);
-      const githubWorkspace = state.workspaces.find((w: WorkspaceState) => w.kind === "github");
+      // See Azure counterpart for the rationale — prefer the connection's
+      // profile (carried on the PR summary) when picking the inbox parent.
+      const ghPrProfileIdHint = (pr?.profileId as string | undefined) || "";
+      const githubInboxForProfile = ghPrProfileIdHint
+        ? state.workspaces.find(
+            (w: WorkspaceState) => w.kind === "github" && (w.profileId || "default") === ghPrProfileIdHint,
+          )
+        : null;
+      const githubWorkspace =
+        githubInboxForProfile || state.workspaces.find((w: WorkspaceState) => w.kind === "github");
       const prWorkspaceId = pr?.reviewWorkspaceId || pr?.existingWorkspaceId || githubWorkspace?.id || "github";
       const prTitle = pr?.pullRequest?.title || prKey;
       log.info("telegram: forwarding GitHub PR notification", { prKey, connectionId: pr?.connectionId });
+      const githubPrWs = state.workspaces.find((w) => w.id === prWorkspaceId);
+      const githubPrProfileId =
+        ghPrProfileIdHint ||
+        (githubPrWs as { profileId?: string } | undefined)?.profileId ||
+        (githubWorkspace as { profileId?: string } | undefined)?.profileId ||
+        "default";
       telegramManager
         .forwardAlert({
           alertId: prKey,
@@ -1617,6 +1671,7 @@ export async function createRuntime({
           prKey,
           provider: "github",
           connectionId: pr?.connectionId || "",
+          workspaceProfileId: githubPrProfileId,
         })
         .catch((err) => {
           log.warn("telegram: GitHub PR forward failed", { prKey, err: (err as Error).message });
@@ -1640,13 +1695,35 @@ export async function createRuntime({
       provider: "azure-devops" | "github",
       workspaceFinder: () => WorkspaceState | undefined,
     ) {
+      const state = getState();
+      const inboxKind = provider === "azure-devops" ? "azure" : "github";
       for (const [prKey, summary] of Object.entries(prs)) {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const pr = summary as any;
         const checks: Array<{ id?: string; state?: string; name?: string }> = pr?.checks?.items || [];
         const prTitle: string = pr?.pullRequest?.title || prKey;
+        // Mirror the PR-attention dispatch: prefer the connection's profile
+        // (now carried on the summary as pr.profileId) over the first-match
+        // inbox lookup. When the PR has no review/existing workspace yet,
+        // the old fallback to workspaceFinder() returned whichever inbox
+        // sorted first in state.workspaces — silently routing pipeline
+        // alerts under the wrong profile.
+        const prProfileIdHint = (pr?.profileId as string | undefined) || "";
+        const inboxForProfile = prProfileIdHint
+          ? state.workspaces.find(
+              (w: WorkspaceState) => w.kind === inboxKind && (w.profileId || "default") === prProfileIdHint,
+            )
+          : undefined;
+        const fallbackInbox = workspaceFinder();
         const prWorkspaceId: string =
-          pr?.reviewWorkspaceId || pr?.existingWorkspaceId || workspaceFinder()?.id || provider;
+          pr?.reviewWorkspaceId || pr?.existingWorkspaceId || inboxForProfile?.id || fallbackInbox?.id || provider;
+        const prWs = state.workspaces.find((w) => w.id === prWorkspaceId);
+        const prProfileId =
+          prProfileIdHint ||
+          (prWs as { profileId?: string } | undefined)?.profileId ||
+          (inboxForProfile as { profileId?: string } | undefined)?.profileId ||
+          (fallbackInbox as { profileId?: string } | undefined)?.profileId ||
+          "default";
 
         for (const check of checks) {
           if (!check?.id) continue;
@@ -1684,6 +1761,7 @@ export async function createRuntime({
               prKey,
               provider,
               connectionId: pr?.connectionId || "",
+              workspaceProfileId: prProfileId,
             })
             .catch((err) => {
               log.warn("telegram: pipeline check forward failed", { prKey, err: (err as Error).message });
@@ -3235,9 +3313,23 @@ export async function createRuntime({
     const removeIds = new Set(toRemove.map((w) => w.id));
     await store.mutate((draft: AppState) => {
       draft.workspaces = draft.workspaces.filter((w) => !removeIds.has(w.id));
+      // Rewire each affected slot to a sibling in that slot's OWN profile.
+      // Picking from windowSlots[0]'s profile would push a wrong-profile
+      // workspace into the other window's pane.
+      for (const slot of draft.windowSlots || []) {
+        if (removeIds.has(slot.activeWorkspaceId)) {
+          const sibling = draft.workspaces.find((w) => (w.profileId || "default") === slot.profileId);
+          slot.activeWorkspaceId = sibling?.id || "";
+        }
+      }
       if (removeIds.has(draft.activeWorkspaceId)) {
-        const activeProfileId = (draft.windowSlots || [])[0]?.profileId || "default";
-        const fallback = draft.workspaces.find((w) => (w.profileId || "default") === activeProfileId);
+        // Legacy global field — mirror to the most-recently-focused slot's
+        // pick so it tracks user activity rather than slot order.
+        const primarySlot = [...(draft.windowSlots || [])].sort(
+          (a, b) => (b.lastFocusedAt || 0) - (a.lastFocusedAt || 0),
+        )[0];
+        const fallbackProfileId = primarySlot?.profileId || "default";
+        const fallback = draft.workspaces.find((w) => (w.profileId || "default") === fallbackProfileId);
         draft.activeWorkspaceId = fallback?.id || draft.workspaces[0]?.id || "";
       }
     });
@@ -3271,38 +3363,33 @@ export async function createRuntime({
     );
     const worktrees = state.workspaces.filter((w) => (w.notes || "").startsWith("Worktree of "));
 
-    // Build parent lookup: treeDir → parent workspace
-    // When multiple workspaces share the same cwd (across profiles),
-    // prefer the one in the active profile so new worktrees land in
-    // the correct sidebar section.
-    const activeProfileId = (state.windowSlots || [])[0]?.profileId || "default";
-    const parentByTreeDir = new Map();
-    for (const parent of parents) {
-      if (!parent.cwd) continue;
-      const treeDir = path.join(parent.cwd, ".strideterm", "tree");
-      const existing = parentByTreeDir.get(treeDir);
-      if (!existing || (parent.profileId || "default") === activeProfileId) {
-        parentByTreeDir.set(treeDir, parent);
-      }
-    }
-
     const toAdd: WorkspaceState[] = [];
     const toRemove: string[] = [];
     const toRepair: Array<{ id: string; profileId: string }> = [];
 
-    // Discover new worktrees on disk
-    for (const [treeDir, parent] of parentByTreeDir) {
-      let entries;
-      try {
-        entries = await readdir(treeDir, { withFileTypes: true });
-      } catch {
-        continue;
+    // Each parent is an independent observer of its own treeDir on disk.
+    // When two profiles both have a workspace at the same cwd, both scan the
+    // same directory and each gets its own worktree entries — profiles do
+    // not compete for ownership of on-disk worktrees.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const treeDirsScanned = new Map<string, any[]>();
+    for (const parent of parents) {
+      if (!parent.cwd) continue;
+      const treeDir = path.join(parent.cwd, ".strideterm", "tree");
+      let entries = treeDirsScanned.get(treeDir);
+      if (entries === undefined) {
+        try {
+          entries = (await readdir(treeDir, { withFileTypes: true })) as unknown as typeof entries;
+        } catch {
+          entries = [];
+        }
+        treeDirsScanned.set(treeDir, entries || []);
       }
-      for (const entry of entries) {
+      const parentProfileId = parent.profileId || "default";
+      for (const entry of entries || []) {
         if (!entry.isDirectory()) continue;
         const treePath = path.join(treeDir, entry.name);
         if (pendingWorktreeDeletions.has(path.resolve(treePath))) continue;
-        const parentProfileId = parent.profileId || "default";
         const existing = worktrees.find((w) => w.cwd === treePath && (w.profileId || "default") === parentProfileId);
         if (existing) {
           // Repair profileId if it drifted from parent
@@ -3351,9 +3438,20 @@ export async function createRuntime({
       if (toRemove.length > 0) {
         const removeSet = new Set(toRemove);
         draft.workspaces = draft.workspaces.filter((w) => !removeSet.has(w.id));
+        // Rewire each affected slot to a sibling in that slot's OWN profile.
+        for (const slot of draft.windowSlots || []) {
+          if (removeSet.has(slot.activeWorkspaceId)) {
+            const sibling = draft.workspaces.find((w) => (w.profileId || "default") === slot.profileId);
+            slot.activeWorkspaceId = sibling?.id || "";
+          }
+        }
         if (removeSet.has(draft.activeWorkspaceId)) {
-          const activeProfileId = (draft.windowSlots || [])[0]?.profileId || "default";
-          const fallback = draft.workspaces.find((w) => (w.profileId || "default") === activeProfileId);
+          // Legacy global field — mirror to the most-recently-focused slot.
+          const primarySlot = [...(draft.windowSlots || [])].sort(
+            (a, b) => (b.lastFocusedAt || 0) - (a.lastFocusedAt || 0),
+          )[0];
+          const fallbackProfileId = primarySlot?.profileId || "default";
+          const fallback = draft.workspaces.find((w) => (w.profileId || "default") === fallbackProfileId);
           draft.activeWorkspaceId = fallback?.id || draft.workspaces[0]?.id || "";
         }
       }
@@ -3628,6 +3726,64 @@ export async function createRuntime({
     return profileId ? draft.profiles.find((p) => p.id === profileId) || null : null;
   }
 
+  /**
+   * Return the profile a given window is bound to, or null when the window
+   * has no slot (legacy / pre-init callers). Helpers below use this to
+   * reject cross-profile slot-aware operations before any mutation runs.
+   */
+  function getWindowProfileId(windowId: string | undefined): string | null {
+    if (!windowId) return null;
+    const slot = (getState().windowSlots || []).find((s) => s.id === windowId);
+    return slot ? slot.profileId : null;
+  }
+
+  /**
+   * Refuse an operation when its target workspace lives in a different
+   * profile than the calling window. Previously these handlers only
+   * skipped the slot mirror on cross-profile, but the side effect (new
+   * worktree on disk, new task workspace, etc.) still happened in the
+   * foreign profile. The remote/mobile contract is "operate on the
+   * profile your session is bound to" — silently writing to another one
+   * is a bug, not a UX issue.
+   *
+   * No-op when no windowId is supplied (legacy in-process callers / tests
+   * that don't model windows).
+   */
+  function assertWorkspaceInWindowProfile(workspaceId: string, windowId: string | undefined): void {
+    const slotProfileId = getWindowProfileId(windowId);
+    if (!slotProfileId) return;
+    const ws = getState().workspaces.find((w) => w.id === workspaceId);
+    if (!ws) return; // the surrounding op will fail on its own
+    const wsProfileId = ws.profileId || "default";
+    if (wsProfileId !== slotProfileId) {
+      throw new Error(
+        `Cross-profile refused: workspace ${workspaceId} is in profile ${wsProfileId}, window ${windowId} is bound to ${slotProfileId}.`,
+      );
+    }
+  }
+
+  /**
+   * Same as assertWorkspaceInWindowProfile but for provider connections
+   * (Azure / GitHub). The connection's profileId determines which inbox
+   * the PR review / quickfix workspace will land under; honouring a
+   * request from a different-profile window means the caller is asking
+   * us to mutate state in a profile they don't own.
+   */
+  function assertConnectionInWindowProfile(
+    connection: { profileId?: string; id?: string } | null | undefined,
+    windowId: string | undefined,
+  ): void {
+    const slotProfileId = getWindowProfileId(windowId);
+    if (!slotProfileId) return;
+    if (!connection) return;
+    const connProfileId = connection.profileId || "default";
+    if (connProfileId !== slotProfileId) {
+      throw new Error(
+        `Cross-profile refused: connection ${connection.id || "?"} is in profile ${connProfileId}, window ${windowId} is bound to ${slotProfileId}.`,
+      );
+    }
+  }
+
   const returnObj = {
     ...providerHandlers,
     ...gitHandlers,
@@ -3695,6 +3851,12 @@ export async function createRuntime({
         log.error("getInitialState failed", { err: (error as Error).message });
         throw error;
       }
+    },
+    // Exposed for tests and explicit maintenance flows. Removes workspaces
+    // whose cwd no longer exists on disk and rewires per-window activeWorkspaceId
+    // to a sibling in the same profile.
+    async pruneOrphanedWorkspaces(): Promise<number> {
+      return pruneOrphanedWorkspaces();
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async activateWorkspace(workspaceId: any) {
@@ -3850,6 +4012,21 @@ export async function createRuntime({
     },
 
     async setGridCell(cellIndex: number, workspaceId: string | null, windowId?: string) {
+      // Validate workspace ↔ profile match BEFORE mutation. The grid is
+      // per-profile; a stale or crafted remote payload could try to place a
+      // workspace from profile A into profile B's grid (different cards
+      // would then show up in B's window with cwds the user didn't expect).
+      if (workspaceId) {
+        const state = getState();
+        const gridProfile = resolveWorkspaceGridProfile(state, windowId);
+        const gridProfileId = gridProfile?.id || null;
+        const ws = state.workspaces.find((w) => w.id === workspaceId);
+        if (ws && gridProfileId && (ws.profileId || "default") !== gridProfileId) {
+          throw new Error(
+            `Cross-profile refused: workspace ${workspaceId} is in profile ${ws.profileId || "default"}, grid belongs to profile ${gridProfileId}.`,
+          );
+        }
+      }
       await store.mutate((draft: AppState) => {
         const profile = resolveWorkspaceGridProfile(draft, windowId);
         // `?? draft.workspaceGrid` would leak the deprecated global (which
@@ -3897,6 +4074,7 @@ export async function createRuntime({
       const preState = getState();
       const preSlot = (preState.windowSlots || []).find((s) => s.id === windowId);
       const targetWs = preState.workspaces.find((ws) => ws.id === workspaceId);
+      const isCrossProfile = !!(targetWs && preSlot) && (targetWs.profileId || "default") !== preSlot.profileId;
       log.debug("activateWorkspaceInWindow: entry", {
         workspaceId,
         windowId,
@@ -3904,8 +4082,19 @@ export async function createRuntime({
         targetWsProfileId: targetWs?.profileId || null,
         slotProfileId: preSlot?.profileId || null,
         slotPrevActiveWsId: preSlot?.activeWorkspaceId || null,
-        crossProfile: targetWs && preSlot ? (targetWs.profileId || "default") !== preSlot.profileId : null,
+        crossProfile: isCrossProfile,
       });
+      // Refuse cross-profile activation. The whole purpose of the per-window
+      // API is to switch the slot — if the workspace lives in another profile,
+      // honouring the request would silently push a foreign-profile workspace
+      // into the calling slot. Remote callers can hit this with a crafted /
+      // stale workspaceId; the guard converts a silent corruption into an
+      // explicit error the caller can catch (see createTaskWorkspace below).
+      if (isCrossProfile) {
+        throw new Error(
+          `Workspace ${workspaceId} (profile ${targetWs?.profileId || "default"}) does not belong to window ${windowId}'s profile (${preSlot?.profileId || "default"}).`,
+        );
+      }
       await store.mutate((draft: AppState) => {
         const targetWorkspace = draft.workspaces.find((ws) => ws.id === workspaceId);
         if (!targetWorkspace) return;
@@ -4339,20 +4528,62 @@ export async function createRuntime({
       return this.deleteWorkspace(projectId);
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    async reorderWorkspaces(workspaceIds: any) {
+    async reorderWorkspaces(workspaceIds: any, windowId?: string) {
       await store.mutate((draft: AppState) => {
-        draft.workspaces = workspaceIds
+        // Scope the reorder to the caller window's profile. The old logic
+        // replaced the entire workspaces array with whatever IDs the caller
+        // sent — a profile-scoped frontend or mobile client would then
+        // accidentally drop every workspace in OTHER profiles whose IDs it
+        // never knew about. Preserve other-profile workspaces in their
+        // original positions and only reorder within the caller's profile.
+        const callerProfileId = windowId ? (draft.windowSlots || []).find((s) => s.id === windowId)?.profileId : null;
+        if (!callerProfileId) {
+          // Legacy fallback: no window context known — old global behavior.
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          .map((id: any) => draft.workspaces.find((workspace) => workspace.id === id))
-          .filter(Boolean);
+          draft.workspaces = (workspaceIds as any[])
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            .map((id: any) => draft.workspaces.find((workspace) => workspace.id === id))
+            .filter(Boolean) as typeof draft.workspaces;
+          return;
+        }
+        // Reorder only within callerProfileId. Other-profile workspaces
+        // stay where they were (preserve original slots in draft.workspaces).
+        const requested = new Set<string>(
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          (workspaceIds as any[]).filter((id) => {
+            const ws = draft.workspaces.find((w) => w.id === id);
+            return ws && (ws.profileId || "default") === callerProfileId;
+          }),
+        );
+        const orderedScoped = (workspaceIds as string[])
+          .map((id) => draft.workspaces.find((w) => w.id === id))
+          .filter((w): w is (typeof draft.workspaces)[number] => !!w && requested.has(w.id));
+        // Preserve workspaces NOT in callerProfileId in their original
+        // sequence, and slot the reordered-scoped workspaces into the
+        // positions originally held by callerProfile workspaces.
+        let scopedCursor = 0;
+        const next: typeof draft.workspaces = [];
+        for (const ws of draft.workspaces) {
+          if ((ws.profileId || "default") === callerProfileId) {
+            if (scopedCursor < orderedScoped.length) {
+              next.push(orderedScoped[scopedCursor++]);
+            }
+            // If callerProfile had more workspaces than the caller listed,
+            // the remainder is dropped (caller's intent) — but they were
+            // still in callerProfileId, so the caller had visibility.
+          } else {
+            next.push(ws);
+          }
+        }
+        draft.workspaces = next;
       });
 
       broadcastState();
       return getPayload();
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    async reorderProjects(projectIds: any) {
-      return this.reorderWorkspaces(projectIds);
+    async reorderProjects(projectIds: any, windowId?: string) {
+      return this.reorderWorkspaces(projectIds, windowId);
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async updateSettings(settings: any) {
@@ -5121,6 +5352,10 @@ export async function createRuntime({
       }
       const project = findWorkspace(getState(), targetWorkspaceId);
       if (!project?.cwd) throw new Error("Workspace has no working directory");
+      // Refuse upfront if the parent lives in a profile the caller's window
+      // isn't bound to — a remote/mobile client must not be able to spawn
+      // a worktree on disk in another profile just by passing its ID.
+      assertWorkspaceInWindowProfile(targetWorkspaceId, windowId);
 
       // Multi-repo: a rootPath must be chosen. Single-repo: fall back to workspace cwd.
       const normalizePath = (p: string) =>
@@ -5201,7 +5436,8 @@ export async function createRuntime({
           draft.workspaces.push(newProject);
         }
         draft.activeWorkspaceId = newProject.id;
-        // See openAzurePullRequest for why slot must be mirrored.
+        // Entry check (assertWorkspaceInWindowProfile) already refused any
+        // cross-profile request, so the mirror here is always in-profile.
         if (windowId) {
           const slot = (draft.windowSlots || []).find((s) => s.id === windowId);
           if (slot) slot.activeWorkspaceId = newProject.id;
@@ -5388,6 +5624,14 @@ export async function createRuntime({
       });
       const state = getState();
 
+      // Refuse upfront if the parent lives in another profile. Without this,
+      // a remote/mobile client bound to profile B could spawn a task
+      // workspace (and worktree on disk) under a profile-A parent just by
+      // passing its ID — the old logic only suppressed the slot mirror.
+      if (config.parentWorkspaceId) {
+        assertWorkspaceInWindowProfile(config.parentWorkspaceId, windowId);
+      }
+
       let effectiveCwd = config.cwd;
       let worktreeBase = "";
       let worktreeBranch = "";
@@ -5468,6 +5712,10 @@ export async function createRuntime({
         });
       }
 
+      const callerProfileId = windowId
+        ? // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          (state.windowSlots || []).find((s: any) => s.id === windowId)?.profileId || ""
+        : "";
       const workspace = taskRunner.createTaskWorkspace({
         state,
         description: config.description,
@@ -5482,6 +5730,7 @@ export async function createRuntime({
         judgeCommand: config.judgeCommand,
         workerProvider: config.workerProvider,
         judgeProvider: config.judgeProvider,
+        callerProfileId,
       });
 
       // Store worktree metadata in task object
@@ -5517,7 +5766,22 @@ export async function createRuntime({
       // flickers (same root cause as openAzurePullRequest).
       if (config.activate !== false) {
         if (windowId) {
-          await this.activateWorkspaceInWindow(workspace.id, windowId);
+          // activateWorkspaceInWindow refuses cross-profile mutation. That's
+          // expected when a remote/UI client triggers task creation under a
+          // parent in another profile (the new task inherits the parent's
+          // profile, not the caller's window). Treat that as "task created
+          // but don't yank the slot"; broadcastState so the new entry shows
+          // up everywhere it should.
+          try {
+            await this.activateWorkspaceInWindow(workspace.id, windowId);
+          } catch (err) {
+            log.info("createTaskWorkspace: skipping slot activation (cross-profile)", {
+              workspaceId: workspace.id,
+              windowId,
+              err: (err as Error).message,
+            });
+            broadcastState();
+          }
         } else {
           await this.activateWorkspace(workspace.id);
         }

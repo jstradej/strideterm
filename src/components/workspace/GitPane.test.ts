@@ -95,20 +95,30 @@ function makeSnapshot(rootPath: string = "/ms/api"): GitSnapshot {
   } as unknown as GitSnapshot;
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function mountPane(workspaceId: string, workspaces: any[] = []) {
+function mountPane(
+  workspaceId: string,
+  workspaces: any[] = [], // eslint-disable-line @typescript-eslint/no-explicit-any
+  options: { connections?: any[]; activeProfileId?: string } = {}, // eslint-disable-line @typescript-eslint/no-explicit-any
+) {
   const appStore = useAppStore();
+  const activeProfileId = options.activeProfileId ?? "default";
+  const profiles = [
+    { id: "default", name: "Default", color: "#ffa424", workspaceIds: [] },
+    { id: "profile-b", name: "Profile B", color: "#ffa424", workspaceIds: [] },
+    { id: "profile-c", name: "Profile C", color: "#ffa424", workspaceIds: [] },
+  ];
   appStore.payload = {
     appState: {
       workspaces,
-      activeProfileId: "default",
-      profiles: [{ id: "default", name: "Default", color: "#ffa424", workspaceIds: [] }],
-      windowSlots: [{ id: "win-test", profileId: "default", activeWorkspaceId: workspaceId }],
+      activeProfileId,
+      profiles,
+      windowSlots: [{ id: "win-test", profileId: activeProfileId, activeWorkspaceId: workspaceId }],
     },
     git: {
       workspaces: {
         [workspaceId]: makeSnapshot(),
       },
+      connections: options.connections || [],
     },
   } as unknown as StatePayload;
   return shallowMount(GitPane, {
@@ -149,6 +159,30 @@ describe("GitPane repo picker", () => {
     });
     const wrapper = mountPane("ws-review", [ws]);
     expect(wrapper.find(".git-repo-picker").exists()).toBe(false);
+  });
+
+  test("connection picker hides connections from other profiles", () => {
+    // payload.git.connections now contains connections from every open
+    // profile. The GitPane in a workspace belonging to profile-b must
+    // surface only profile-b's connections in the picker — otherwise the
+    // user could pick a profile-default connection that resolveGitConnection
+    // would then refuse to honour at op time (workspace.profileId mismatch).
+    const ws = buildWorkspace({ id: "ws-b", profileId: "profile-b" });
+    const wrapper = mountPane("ws-b", [ws], {
+      activeProfileId: "profile-b",
+      connections: [
+        { id: "conn-default", label: "Default Conn", profileId: "default", enabled: true, provider: "azure-devops" },
+        { id: "conn-b", label: "B Conn", profileId: "profile-b", enabled: true, provider: "azure-devops" },
+        { id: "conn-other", label: "Other Profile Conn", profileId: "profile-c", enabled: true, provider: "github" },
+      ],
+    });
+
+    const select = wrapper.findComponent({ name: "CustomSelect" });
+    expect(select.exists()).toBe(true);
+    const options = select.props("options") as Array<{ value: string; label: string }>;
+    const optionValues = options.map((o) => o.value).sort();
+    // Only profile-b connection plus the "" (system credentials) sentinel.
+    expect(optionValues).toEqual(["", "conn-b"]);
   });
 
   test("switching sub-tabs does not change activeRootPath", () => {

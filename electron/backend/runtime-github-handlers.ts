@@ -182,10 +182,16 @@ export function createGitHubHandlers(ctx: GitHubHandlerCtx) {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       let result: any;
       try {
+        const state = getState();
+        const callerProfileId = windowId
+          ? // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            (state.windowSlots || []).find((s: any) => s.id === windowId)?.profileId || ""
+          : "";
         result = await github.openReviewWorkspace({
-          state: getState(),
+          state,
           prKey: payload.prKey,
           workspaceId: payload.workspaceId || "",
+          callerProfileId,
         });
       } catch (err) {
         const message =
@@ -204,14 +210,20 @@ export function createGitHubHandlers(ctx: GitHubHandlerCtx) {
           draft.workspaces.push(normalized);
         }
         draft.activeWorkspaceId = normalized.id;
-        // See openAzurePullRequest for the rationale — the frontend selector
-        // prefers slot.activeWorkspaceId over the global field, so without
-        // this mirror the UI flickers between the parent inbox and the new
-        // review workspace.
+        // Mirror only when the review workspace's profile matches the slot's.
+        // See openAzurePullRequest for the full cross-profile bug story.
         if (windowId) {
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           const slot = (draft.windowSlots || []).find((s: any) => s.id === windowId);
-          if (slot) slot.activeWorkspaceId = normalized.id;
+          if (slot && (normalized.profileId || "default") === slot.profileId) {
+            slot.activeWorkspaceId = normalized.id;
+          } else if (slot) {
+            log.info("openGitHubPullRequest: skipping slot mirror (cross-profile)", {
+              windowId,
+              slotProfileId: slot.profileId,
+              workspaceProfileId: normalized.profileId || "default",
+            });
+          }
         }
       });
       await refreshGit(result.workspace.id);
@@ -395,25 +407,39 @@ export function createGitHubHandlers(ctx: GitHubHandlerCtx) {
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async githubQuickFixCreate(payload: any, windowId?: string) {
+      const state = getState();
+      const callerProfileId = windowId
+        ? // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          (state.windowSlots || []).find((s: any) => s.id === windowId)?.profileId || ""
+        : "";
       const result = await github.openQuickFixWorkspace({
-        state: getState(),
+        state,
         connectionId: payload.connectionId,
         owner: payload.owner,
         repo: payload.repo,
         remoteUrl: payload.remoteUrl,
         baseBranch: payload.baseBranch,
         newBranchName: payload.newBranchName,
+        callerProfileId,
       });
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       await store.mutate((draft: any) => {
         const normalized = normalizeWorkspace(result.workspace);
         draft.workspaces.push(normalized);
         draft.activeWorkspaceId = normalized.id;
-        // See openAzurePullRequest for why slot must be mirrored.
+        // See openAzurePullRequest for the cross-profile guard rationale.
         if (windowId) {
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           const slot = (draft.windowSlots || []).find((s: any) => s.id === windowId);
-          if (slot) slot.activeWorkspaceId = normalized.id;
+          if (slot && (normalized.profileId || "default") === slot.profileId) {
+            slot.activeWorkspaceId = normalized.id;
+          } else if (slot) {
+            log.info("githubQuickFixCreate: skipping slot mirror (cross-profile)", {
+              windowId,
+              slotProfileId: slot.profileId,
+              workspaceProfileId: normalized.profileId || "default",
+            });
+          }
         }
       });
       await refreshGit(result.workspace.id);

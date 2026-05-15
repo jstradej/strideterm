@@ -776,6 +776,42 @@ describe("AzureDevOpsManager", () => {
     ).rejects.toThrow('Matched workspace "Broken workspace" does not have a working directory.');
   });
 
+  test("openReviewWorkspace lands the new review on the connection's profile, not windowSlots[0]", async () => {
+    // Multi-window: windowSlots[0]=default, windowSlots[1]=profile-b. The
+    // connection lives on profile-b. Without the fix, openReviewWorkspace
+    // reads activeProfile from windowSlots[0] (= "default") and creates the
+    // review workspace on "default", invisible from profile-b's sidebar.
+    const profileBConnection = { ...connection, id: "ado-b", profileId: "profile-b", tokenRef: "cred:ado-b" };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: createManager.secrets has a strict literal type; widening is fine in test scope
+    const { manager } = createManager({ secrets: { "cred:ado-b": "pat-b" } as any });
+    await manager.sync({
+      connections: [profileBConnection],
+      workspaces: [],
+      gitSnapshots: {},
+    });
+    const result = (await manager.openReviewWorkspace({
+      state: {
+        tabTemplates: [],
+        windowSlots: [{ profileId: "default" }, { profileId: "profile-b" }],
+        workspaces: [
+          {
+            id: "azure-root-b",
+            kind: "azure",
+            profileId: "profile-b",
+            cwd: "C:/reviews-b",
+            panels: [{ id: "shell-template", title: "Shell", command: "" }],
+          },
+        ],
+      },
+      prKey: createPullRequestKey("ado-b", "repo-1", 123),
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: test assertion cast on untyped manager result
+    })) as any;
+
+    expect(result.created).toBe(true);
+    expect(result.workspace.profileId).toBe("profile-b");
+    expect(result.workspace.review.parentWorkspaceId).toBe("azure-root-b");
+  });
+
   test("sends comment and vote requests", async () => {
     const { manager, fetchImpl } = createManager();
     await manager.sync({

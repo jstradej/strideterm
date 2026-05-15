@@ -25,30 +25,41 @@ function isChildOf(child: WsLike, parentId: string): boolean {
   return false;
 }
 
-function getWorktreeGroup(workspaceId: string, workspaces: WsLike[]): string[] {
+export function getWorktreeGroup(workspaceId: string, workspaces: WsLike[]): string[] {
   const ws = workspaces.find((w) => w.id === workspaceId);
   if (!ws) return [workspaceId];
+
+  // Restrict the entire group lookup to workspaces in the same profile.
+  // Without this filter, legacy-worktree matching (name prefix / notes
+  // prefix) groups together workspaces from other profiles when names or
+  // cwds collide — drag-reorder then drags hidden-from-this-window
+  // entries along with the visible ones.
+  const profileId = ws.profileId || "default";
+  const sameProfile = workspaces.filter((w) => (w.profileId || "default") === profileId);
 
   // If this workspace is a child, find the parent and build group from there
   const explicitParentId = getParentWorkspaceId(ws);
   if (explicitParentId) {
-    const parent = workspaces.find((w) => w.id === explicitParentId);
-    if (parent) return getWorktreeGroup(parent.id, workspaces);
+    const parent = sameProfile.find((w) => w.id === explicitParentId);
+    if (parent) return getWorktreeGroup(parent.id, sameProfile);
   }
-  // Legacy worktree child — find parent by name
+  // Legacy worktree child — find parent by name within the same profile.
   if ((ws.notes || "").startsWith("Worktree of ")) {
     const parentName = ws.name.split(" / ")[0];
-    const parent = workspaces.find((w) => w.name === parentName && !(w.notes || "").startsWith("Worktree of "));
-    if (parent) return getWorktreeGroup(parent.id, workspaces);
+    const parent = sameProfile.find((w) => w.name === parentName && !(w.notes || "").startsWith("Worktree of "));
+    if (parent) return getWorktreeGroup(parent.id, sameProfile);
   }
 
-  // This is a root — collect all descendants recursively
+  // This is a root — collect all descendants recursively (same profile only).
   const groupIds = [ws.id];
-  collectDescendants(ws.id, ws.name, workspaces, groupIds);
+  collectDescendants(ws.id, ws.name, sameProfile, groupIds);
   return groupIds;
 }
 
 function collectDescendants(parentId: string, parentName: string, workspaces: WsLike[], result: string[]): void {
+  // `workspaces` is already pre-filtered to the parent's profile by the
+  // caller (see getWorktreeGroup) — the legacy `notes/name` heuristic
+  // therefore stays inside the parent's profile.
   const prefix = parentName + " / ";
   for (const w of workspaces) {
     if (result.includes(w.id)) continue;

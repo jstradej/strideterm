@@ -51,6 +51,12 @@
             >{{ conn.enabled ? "enabled" : "disabled" }}</span
           >
           <span
+            v-if="(props.profiles || []).length > 1 && !conn.profileId"
+            class="connection-item__badge badge--warn"
+            title="No profile binding selected. In a multi-profile install this chat will only receive alerts from the 'default' profile — alerts about workspaces in other profiles silently won't reach this bot. Expand to pick a profile."
+            >no profile</span
+          >
+          <span
             class="connection-item__chevron"
             :title="
               editingId === conn.id
@@ -834,6 +840,11 @@ export const ConnectionForm = defineComponent({
 .badge--off {
   background: rgba(255, 255, 255, 0.06);
   color: var(--muted);
+}
+
+.badge--warn {
+  background: rgba(255, 180, 0, 0.18);
+  color: #b07a00;
 }
 
 .connection-form {

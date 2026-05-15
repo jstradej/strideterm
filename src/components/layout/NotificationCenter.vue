@@ -389,7 +389,23 @@ function isSnoozed(s: NotificationSession): boolean {
 // Capped so the DOM doesn't grow unbounded for long-running sessions.
 const MAX_TIMELINE = 50;
 const visibleSessions = computed(() => {
-  const list = notifStore.sessions.filter((s) => !isSnoozed(s));
+  // Scope to this window's profile: notifStore is process-shared (loaded
+  // from localStorage on every BrowserWindow), so without this filter a
+  // window viewing profile B would also show profile A's notifications.
+  // Sessions whose workspace no longer exists are kept (legacy / deleted-
+  // workspace history) so the user doesn't lose record of them.
+  const activeProfileId = appStore.activeProfile?.id || "default";
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const workspaces = (appStore.payload?.appState?.workspaces || []) as any[];
+  const profileByWs = new Map<string, string>();
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  for (const ws of workspaces) profileByWs.set(ws.id, (ws as any).profileId || "default");
+  const list = notifStore.sessions.filter((s) => {
+    if (isSnoozed(s)) return false;
+    const owningProfile = profileByWs.get(s.workspaceId);
+    if (!owningProfile) return true; // unknown / deleted workspace — keep
+    return owningProfile === activeProfileId;
+  });
   return [...list]
     .sort((a, b) => new Date(b.latestAt).getTime() - new Date(a.latestAt).getTime())
     .slice(0, MAX_TIMELINE);

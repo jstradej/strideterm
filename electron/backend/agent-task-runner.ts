@@ -324,6 +324,7 @@ export class AgentTaskRunner {
     judgeCommand,
     workerProvider,
     judgeProvider,
+    callerProfileId = "",
   }: {
     state: Partial<Pick<AppState, "workspaces" | "windowSlots">>;
     description: string;
@@ -338,6 +339,10 @@ export class AgentTaskRunner {
     judgeCommand?: string;
     workerProvider?: ParsedProviderConfig;
     judgeProvider?: ParsedProviderConfig;
+    /** Profile of the window that initiated creation. Used when no parent
+     * is provided — picking windowSlots[0] instead silently puts the task
+     * on the wrong profile in multi-window setups. */
+    callerProfileId?: string;
   }): TaskWorkspaceState {
     const workspaceId = `workspace-${randomUUID()}`;
     const dashboardPanelId = `panel-${randomUUID()}`;
@@ -407,11 +412,13 @@ export class AgentTaskRunner {
       activeRootPath: "",
       notes: notes?.trim() || "",
       // Inherit the parent workspace's profile when one is provided —
-      // otherwise a Telegram-driven task creation lands on whatever profile
-      // the desktop UI happens to show, not on the profile that owns the
-      // parent. Falls back to active profile when there is no parent.
+      // otherwise use the calling window's profile. Falling back to
+      // windowSlots[0] silently lands the task on the wrong profile in
+      // multi-window setups (it picks the first window's profile, not the
+      // window the user actually clicked from).
       profileId:
         (parentWorkspaceId && state.workspaces?.find((w) => w.id === parentWorkspaceId)?.profileId) ||
+        callerProfileId ||
         (state.windowSlots || [])[0]?.profileId ||
         "default",
       connectionId: "",

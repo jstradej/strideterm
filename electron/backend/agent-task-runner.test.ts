@@ -211,6 +211,64 @@ describe("AgentTaskRunner", () => {
       expect(ws.task.judgeProviderConfig.providerId).toBe("copilot");
     });
 
+    test("inherits parent workspace's profileId when parent exists", () => {
+      const parent = {
+        id: "ws-parent",
+        profileId: "profile-b",
+        kind: "terminal",
+      };
+      const ws = runner.createTaskWorkspace({
+        state: {
+          workspaces: [parent],
+          windowSlots: [
+            { id: "win-default", profileId: "default" },
+            { id: "win-b", profileId: "profile-b" },
+          ],
+        },
+        description: "Task with parent",
+        cwd: "/tmp/test",
+        parentWorkspaceId: "ws-parent",
+        callerProfileId: "default", // intentionally mismatched — parent wins
+      });
+      expect(ws.profileId).toBe("profile-b");
+    });
+
+    test("falls back to callerProfileId when there is no parent (not windowSlots[0])", () => {
+      // Multi-window: windowSlots[0]=default, windowSlots[1]=profile-b.
+      // The user creates a task from window-b. Without the fix, the task
+      // lands on "default" (windowSlots[0]), invisible from profile-b's
+      // sidebar.
+      const ws = runner.createTaskWorkspace({
+        state: {
+          workspaces: [],
+          windowSlots: [
+            { id: "win-default", profileId: "default" },
+            { id: "win-b", profileId: "profile-b" },
+          ],
+        },
+        description: "Task without parent",
+        cwd: "/tmp/test",
+        parentWorkspaceId: "",
+        callerProfileId: "profile-b",
+      });
+      expect(ws.profileId).toBe("profile-b");
+    });
+
+    test("falls back to windowSlots[0] when no parent and no callerProfileId (legacy path)", () => {
+      // Defensive fallback for callers that haven't been updated to pass
+      // callerProfileId (e.g. tests, or legacy IPC paths without windowId).
+      const ws = runner.createTaskWorkspace({
+        state: {
+          workspaces: [],
+          windowSlots: [{ id: "win-only", profileId: "default" }],
+        },
+        description: "Legacy",
+        cwd: "/tmp/test",
+        parentWorkspaceId: "",
+      });
+      expect(ws.profileId).toBe("default");
+    });
+
     test("parses copilot providerId from legacy workerCommand string", () => {
       const ws = runner.createTaskWorkspace({
         state: {},

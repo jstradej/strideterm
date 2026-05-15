@@ -258,16 +258,18 @@ export function registerIpc(
   ipcMain.handle("project:delete", async (_event, projectId) =>
     withOperationPromise({ opId: "project:delete" }, () => runtime.deleteProject(projectId)),
   );
-  ipcMain.handle("workspace:reorder", async (_event, workspaceIds) =>
-    withOperationPromise({ opId: "workspace:reorder" }, () =>
-      runtime.reorderWorkspaces(validateIpc(workspaceReorderSchema, workspaceIds, "workspace:reorder")),
-    ),
-  );
-  ipcMain.handle("project:reorder", async (_event, projectIds) =>
-    withOperationPromise({ opId: "project:reorder" }, () =>
-      runtime.reorderProjects(validateIpc(workspaceReorderSchema, projectIds, "project:reorder")),
-    ),
-  );
+  ipcMain.handle("workspace:reorder", async (event, workspaceIds) => {
+    const windowId = getWindowIdByWebContentsId?.(event.sender.id) ?? "";
+    return withOperationPromise({ opId: "workspace:reorder" }, () =>
+      runtime.reorderWorkspaces(validateIpc(workspaceReorderSchema, workspaceIds, "workspace:reorder"), windowId),
+    );
+  });
+  ipcMain.handle("project:reorder", async (event, projectIds) => {
+    const windowId = getWindowIdByWebContentsId?.(event.sender.id) ?? "";
+    return withOperationPromise({ opId: "project:reorder" }, () =>
+      runtime.reorderProjects(validateIpc(workspaceReorderSchema, projectIds, "project:reorder"), windowId),
+    );
+  });
   ipcMain.handle("settings:update", async (_event, settings) =>
     withOperationPromise({ opId: "settings:update" }, async () => {
       const validated = validateIpc(settingsSchema, settings, "settings:update");
@@ -1056,11 +1058,17 @@ export function registerIpc(
     );
   });
 
-  ipcMain.handle("notification:show-system", async (_event, payload) =>
+  ipcMain.handle("notification:show-system", async (event, payload) =>
     withOperationPromise({ opId: "notification:show-system" }, async () => {
       if (!Notification.isSupported()) return;
       const validated = validateIpc(notificationShowSchema, payload || {}, "notification:show-system");
       const urgent = validated.urgency === "urgent" || validated.requireInteraction === true;
+      // Route click/flash back to the WINDOW THAT FIRED the notification.
+      // Using BrowserWindow.getAllWindows()[0] (the previous behavior) sent
+      // the user to whatever window happened to be first in the registry,
+      // which in multi-window setups silently jumped them out of the
+      // profile they were working in.
+      const senderWindow = BrowserWindow.fromWebContents(event.sender);
       const notif = new Notification({
         title: validated.title || "strIDEterm",
         body: validated.body || "",
@@ -1072,7 +1080,7 @@ export function registerIpc(
         timeoutType: urgent ? "never" : "default",
       });
       notif.on("click", () => {
-        const win = BrowserWindow.getAllWindows()[0];
+        const win = senderWindow && !senderWindow.isDestroyed() ? senderWindow : BrowserWindow.getAllWindows()[0];
         if (win) {
           if (win.isMinimized()) win.restore();
           win.focus();
@@ -1081,7 +1089,7 @@ export function registerIpc(
       notif.show();
       // Extra attention for urgent: flash taskbar until the window gets focus.
       if (urgent) {
-        const win = BrowserWindow.getAllWindows()[0];
+        const win = senderWindow && !senderWindow.isDestroyed() ? senderWindow : BrowserWindow.getAllWindows()[0];
         if (win && !win.isFocused() && typeof win.flashFrame === "function") {
           win.flashFrame(true);
         }

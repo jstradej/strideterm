@@ -165,6 +165,11 @@ class FakeSessionManager extends EventEmitter {
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  removeWorkspaceSessions(workspaceId: any) {
+    return this.removeProjectSessions(workspaceId);
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   resizeSession(sessionId: any, cols: any, rows: any) {
     this.resizeCalls.push({ sessionId, cols, rows });
   }
@@ -364,8 +369,8 @@ class FakeGitManager extends EventEmitter {
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  async fetch(workspace: any) {
-    this.actions.push({ kind: "fetch", workspaceId: workspace.id });
+  async fetch(workspace: any, options?: any) {
+    this.actions.push({ kind: "fetch", workspaceId: workspace.id, connection: options?.connection ?? null });
     return {
       ok: true,
       summary: "Fetch completed.",
@@ -2183,6 +2188,663 @@ describe("runtime integration", () => {
             profileId: "default",
             cwd: worktreePath,
             notes: "Worktree of Shared",
+            activePanelId: "shell",
+            panels: [{ id: "shell", title: "Shell", command: "", shell: true, startup: "default" }],
+          },
+        ],
+      },
+    });
+    fixtures.push(fixture);
+
+    const matchingWorktrees = fixture.runtime
+      .getPayload()
+      .appState.projects!.filter((project) => project.cwd === worktreePath);
+
+    expect(matchingWorktrees.map((project) => project.profileId).sort()).toEqual(["default", "profile-b"]);
+  });
+
+  test("pruneOrphanedWorkspaces clears per-slot activeWorkspaceId using each slot's own profile", async () => {
+    // Multi-window scenario: two profiles, each open in its own window. An
+    // orphaned workspace lives in profile B. When pruneOrphans removes it,
+    // every slot whose activeWorkspaceId pointed at the removed entry must
+    // fall back to a sibling IN THAT SLOT'S PROFILE — not to whatever
+    // windowSlots[0] happens to be (that's the bug; it would silently push
+    // the wrong-profile workspace into profile B's window).
+    const realRoot = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-prune-real-"));
+    tempPaths.push(realRoot);
+    const orphanRoot = path.join(realRoot, "gone");
+    // orphanRoot intentionally never created — that's what makes it an orphan.
+    const realRootB = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-prune-real-b-"));
+    tempPaths.push(realRootB);
+
+    const fixture = await createFixture({
+      initialState: {
+        activeProjectId: "ws-b-orphan",
+        profiles: [
+          { id: "default", name: "Default" },
+          { id: "profile-b", name: "Profile B" },
+        ],
+        projects: [
+          {
+            id: "ws-default-keep",
+            name: "Default Keep",
+            kind: "terminal",
+            profileId: "default",
+            cwd: realRoot,
+            activePanelId: "shell",
+            panels: [{ id: "shell", title: "Shell", command: "", shell: true, startup: "default" }],
+          },
+          {
+            id: "ws-b-orphan",
+            name: "B Orphan",
+            kind: "terminal",
+            profileId: "profile-b",
+            cwd: orphanRoot,
+            activePanelId: "shell",
+            panels: [{ id: "shell", title: "Shell", command: "", shell: true, startup: "default" }],
+          },
+          {
+            id: "ws-b-keep",
+            name: "B Keep",
+            kind: "terminal",
+            profileId: "profile-b",
+            cwd: realRootB,
+            activePanelId: "shell",
+            panels: [{ id: "shell", title: "Shell", command: "", shell: true, startup: "default" }],
+          },
+        ],
+        windowSlots: [
+          {
+            id: "win-default",
+            profileId: "default",
+            activeWorkspaceId: "ws-default-keep",
+            activeSessionId: "",
+            bounds: { x: 0, y: 0, width: 1280, height: 800 },
+            lastFocusedAt: 1000,
+          },
+          {
+            id: "win-b",
+            profileId: "profile-b",
+            activeWorkspaceId: "ws-b-orphan",
+            activeSessionId: "",
+            bounds: { x: 0, y: 0, width: 1280, height: 800 },
+            lastFocusedAt: 2000,
+          },
+        ],
+      },
+    });
+    fixtures.push(fixture);
+
+    const removed = await fixture.runtime.pruneOrphanedWorkspaces();
+    expect(removed).toBe(1);
+
+    const state = fixture.runtime.getPayload().appState;
+    expect(state.projects!.map((p) => p.id).sort()).toEqual(["ws-b-keep", "ws-default-keep"]);
+
+    const slotDefault = state.windowSlots!.find((s) => s.id === "win-default")!;
+    const slotB = state.windowSlots!.find((s) => s.id === "win-b")!;
+    expect(slotDefault.activeWorkspaceId).toBe("ws-default-keep");
+    // The buggy behavior would either leave this as the stale orphan id or
+    // pick a workspace from windowSlots[0]'s profile (ws-default-keep), both
+    // wrong. The fix must pick a sibling in profile-b.
+    expect(slotB.activeWorkspaceId).toBe("ws-b-keep");
+  });
+
+  test("resolveGitConnection uses the workspace's own profile, not windowSlots[0]", async () => {
+    // Two profiles each open in their own window, each owning their own
+    // Azure/GitHub connection. Without the fix, getAllProviderConnections
+    // filters by windowSlots[0]?.profileId, so a git operation in window B
+    // (profile-b) looks up its workspace's connectionId in a list that only
+    // contains profile-default's connections — finds nothing — and falls
+    // back to "no connection" / system git credentials, silently breaking
+    // authenticated git ops in the non-primary window.
+    const realRoot = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-provider-resolve-"));
+    tempPaths.push(realRoot);
+
+    const fixture = await createFixture({
+      initialState: {
+        activeProjectId: "ws-b",
+        profiles: [
+          { id: "default", name: "Default" },
+          { id: "profile-b", name: "Profile B" },
+        ],
+        settings: {
+          integrations: {
+            azureDevops: {
+              enabled: true,
+              reviewRoot: realRoot,
+              defaultPollSeconds: 120,
+              connections: [
+                {
+                  id: "azure-default",
+                  enabled: true,
+                  orgUrl: "https://dev.azure.com/acme",
+                  tokenRef: "cred:azure-default",
+                  profileId: "default",
+                },
+              ],
+            },
+            github: {
+              enabled: true,
+              reviewRoot: realRoot,
+              defaultPollSeconds: 120,
+              connections: [
+                {
+                  id: "github-b",
+                  enabled: true,
+                  hostUrl: "https://github.com",
+                  tokenRef: "cred:github-b",
+                  profileId: "profile-b",
+                },
+              ],
+            },
+          },
+        },
+        projects: [
+          {
+            id: "ws-default",
+            name: "Default Repo",
+            kind: "terminal",
+            profileId: "default",
+            cwd: realRoot,
+            connectionId: "azure-default",
+            activePanelId: "shell",
+            panels: [{ id: "shell", title: "Shell", command: "", shell: true, startup: "default" }],
+          },
+          {
+            id: "ws-b",
+            name: "B Repo",
+            kind: "terminal",
+            profileId: "profile-b",
+            cwd: realRoot,
+            connectionId: "github-b",
+            activePanelId: "shell",
+            panels: [{ id: "shell", title: "Shell", command: "", shell: true, startup: "default" }],
+          },
+        ],
+        windowSlots: [
+          {
+            id: "win-default",
+            profileId: "default",
+            activeWorkspaceId: "ws-default",
+            activeSessionId: "",
+            bounds: { x: 0, y: 0, width: 1280, height: 800 },
+            lastFocusedAt: 1000,
+          },
+          {
+            id: "win-b",
+            profileId: "profile-b",
+            activeWorkspaceId: "ws-b",
+            activeSessionId: "",
+            bounds: { x: 0, y: 0, width: 1280, height: 800 },
+            lastFocusedAt: 2000,
+          },
+        ],
+      },
+    });
+    fixtures.push(fixture);
+
+    // Clear any actions captured during init (refreshGit etc).
+    fixture.git.actions.length = 0;
+
+    await fixture.runtime.gitFetch({ workspaceId: "ws-b" });
+
+    const action = fixture.git.actions.find((a: { kind: string }) => a.kind === "fetch");
+    expect(action).toBeDefined();
+    // The bug: action.connection would be null because resolveGitConnection
+    // filters by windowSlots[0] = "default" and never finds "github-b".
+    expect(action.connection).not.toBeNull();
+    expect(action.connection.id).toBe("github-b");
+  });
+
+  test("payload.git.connections includes connections from every open profile", async () => {
+    // The renderer (any window) receives the same payload. The connections
+    // list must include every open profile's connections so each window can
+    // surface its own profile's connections in the UI. Filtering this list
+    // by windowSlots[0]?.profileId hides connections in non-primary windows.
+    const realRoot = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-provider-payload-"));
+    tempPaths.push(realRoot);
+
+    const fixture = await createFixture({
+      initialState: {
+        profiles: [
+          { id: "default", name: "Default" },
+          { id: "profile-b", name: "Profile B" },
+        ],
+        settings: {
+          integrations: {
+            azureDevops: {
+              enabled: true,
+              reviewRoot: realRoot,
+              defaultPollSeconds: 120,
+              connections: [
+                {
+                  id: "azure-default",
+                  enabled: true,
+                  orgUrl: "https://dev.azure.com/acme",
+                  tokenRef: "cred:azure-default",
+                  profileId: "default",
+                },
+                {
+                  id: "azure-b",
+                  enabled: true,
+                  orgUrl: "https://dev.azure.com/beta",
+                  tokenRef: "cred:azure-b",
+                  profileId: "profile-b",
+                },
+              ],
+            },
+          },
+        },
+        windowSlots: [
+          {
+            id: "win-default",
+            profileId: "default",
+            activeWorkspaceId: "",
+            activeSessionId: "",
+            bounds: { x: 0, y: 0, width: 1280, height: 800 },
+            lastFocusedAt: 1000,
+          },
+          {
+            id: "win-b",
+            profileId: "profile-b",
+            activeWorkspaceId: "",
+            activeSessionId: "",
+            bounds: { x: 0, y: 0, width: 1280, height: 800 },
+            lastFocusedAt: 2000,
+          },
+        ],
+      },
+    });
+    fixtures.push(fixture);
+
+    const payload = fixture.runtime.getPayload();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const connections = (payload.git as any).connections as Array<{ id: string; profileId?: string }>;
+    expect(connections.map((c) => c.id).sort()).toEqual(["azure-b", "azure-default"]);
+    // profileId must be exposed so the renderer can filter by the window's
+    // own profile when populating the connection picker.
+    const byId = new Map(connections.map((c) => [c.id, c]));
+    expect(byId.get("azure-default")?.profileId).toBe("default");
+    expect(byId.get("azure-b")?.profileId).toBe("profile-b");
+  });
+
+  test("syncWorktrees removal rewires each slot to a sibling in the slot's own profile", async () => {
+    // When a worktree disappears from disk, syncWorktrees removes its
+    // workspace entries from every profile that had one. The fix must
+    // re-point each window's slot.activeWorkspaceId at a sibling in
+    // THAT slot's profile — not at a workspace from windowSlots[0]'s
+    // profile (which would silently swap the wrong workspace into the
+    // other window's pane).
+    const parentRoot = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-syncwt-prune-"));
+    tempPaths.push(parentRoot);
+    // Worktree dir intentionally never created on disk → triggers removal path.
+    const missingWorktreePath = path.join(parentRoot, ".strideterm", "tree", "gone");
+
+    const fixture = await createFixture({
+      initialState: {
+        activeProjectId: "parent-default",
+        profiles: [
+          { id: "default", name: "Default" },
+          { id: "profile-b", name: "Profile B" },
+        ],
+        projects: [
+          {
+            id: "parent-default",
+            name: "Shared",
+            kind: "terminal",
+            profileId: "default",
+            cwd: parentRoot,
+            activePanelId: "shell",
+            panels: [{ id: "shell", title: "Shell", command: "", shell: true, startup: "default" }],
+          },
+          {
+            id: "parent-b",
+            name: "Shared",
+            kind: "terminal",
+            profileId: "profile-b",
+            cwd: parentRoot,
+            activePanelId: "shell",
+            panels: [{ id: "shell", title: "Shell", command: "", shell: true, startup: "default" }],
+          },
+          {
+            id: "wt-default",
+            name: "Shared / gone",
+            kind: "terminal",
+            profileId: "default",
+            cwd: missingWorktreePath,
+            notes: "Worktree of Shared",
+            activePanelId: "shell",
+            panels: [{ id: "shell", title: "Shell", command: "", shell: true, startup: "default" }],
+          },
+          {
+            id: "wt-b",
+            name: "Shared / gone",
+            kind: "terminal",
+            profileId: "profile-b",
+            cwd: missingWorktreePath,
+            notes: "Worktree of Shared",
+            activePanelId: "shell",
+            panels: [{ id: "shell", title: "Shell", command: "", shell: true, startup: "default" }],
+          },
+        ],
+        windowSlots: [
+          {
+            id: "win-default",
+            profileId: "default",
+            activeWorkspaceId: "wt-default",
+            activeSessionId: "",
+            bounds: { x: 0, y: 0, width: 1280, height: 800 },
+            lastFocusedAt: 1000,
+          },
+          {
+            id: "win-b",
+            profileId: "profile-b",
+            activeWorkspaceId: "wt-b",
+            activeSessionId: "",
+            bounds: { x: 0, y: 0, width: 1280, height: 800 },
+            lastFocusedAt: 2000,
+          },
+        ],
+      },
+    });
+    fixtures.push(fixture);
+
+    // createFixture's runtime init calls syncWorktrees, which detects both
+    // worktrees as missing on disk and removes them.
+    const state = fixture.runtime.getPayload().appState;
+    expect(state.projects!.map((p) => p.id).sort()).toEqual(["parent-b", "parent-default"]);
+
+    const slotDefault = state.windowSlots!.find((s) => s.id === "win-default")!;
+    const slotB = state.windowSlots!.find((s) => s.id === "win-b")!;
+    expect(slotDefault.activeWorkspaceId).toBe("parent-default");
+    expect(slotB.activeWorkspaceId).toBe("parent-b");
+  });
+
+  test("activateWorkspaceInWindow refuses cross-profile activation", async () => {
+    // A remote client bound to profile B (or a stale UI request) must not
+    // be able to point window-B's slot at a workspace that lives in
+    // profile A. The runtime previously logged this as "crossProfile" but
+    // honoured the request, silently swapping the user out of their
+    // profile. The guard makes the misuse an explicit error.
+    const fixture = await createFixture({
+      initialState: {
+        activeProjectId: "ws-a",
+        profiles: [
+          { id: "default", name: "Default" },
+          { id: "profile-b", name: "Profile B" },
+        ],
+        projects: [
+          {
+            id: "ws-a",
+            name: "A",
+            kind: "terminal",
+            profileId: "default",
+            cwd: "/tmp/a",
+            activePanelId: "shell",
+            panels: [{ id: "shell", title: "Shell", command: "", shell: true, startup: "default" }],
+          },
+          {
+            id: "ws-b",
+            name: "B",
+            kind: "terminal",
+            profileId: "profile-b",
+            cwd: "/tmp/b",
+            activePanelId: "shell",
+            panels: [{ id: "shell", title: "Shell", command: "", shell: true, startup: "default" }],
+          },
+        ],
+        windowSlots: [
+          {
+            id: "win-b",
+            profileId: "profile-b",
+            activeWorkspaceId: "ws-b",
+            activeSessionId: "",
+            bounds: { x: 0, y: 0, width: 1280, height: 800 },
+            lastFocusedAt: 1000,
+          },
+        ],
+      },
+    });
+    fixtures.push(fixture);
+
+    await expect(fixture.runtime.activateWorkspaceInWindow("ws-a", "win-b")).rejects.toThrow(
+      /does not belong to window win-b's profile/i,
+    );
+
+    const slot = fixture.runtime.getPayload().appState.windowSlots!.find((s) => s.id === "win-b")!;
+    expect(slot.activeWorkspaceId).toBe("ws-b"); // unchanged
+  });
+
+  test("setGridCell REFUSES placing a cross-profile workspace into another profile's grid", async () => {
+    // Crafted/stale remote payload places `workspaceId` from profile A
+    // into the grid resolved for profile B. The grid then renders cards
+    // with cwds from the wrong profile in the user's window.
+    const fixture = await createFixture({
+      initialState: {
+        activeProjectId: "ws-b",
+        profiles: [
+          { id: "default", name: "Default" },
+          { id: "profile-b", name: "Profile B" },
+        ],
+        projects: [
+          {
+            id: "ws-a",
+            name: "A",
+            kind: "terminal",
+            profileId: "default",
+            cwd: "/tmp/a",
+            activePanelId: "shell",
+            panels: [{ id: "shell", title: "Shell", command: "", shell: true, startup: "default" }],
+          },
+          {
+            id: "ws-b",
+            name: "B",
+            kind: "terminal",
+            profileId: "profile-b",
+            cwd: "/tmp/b",
+            activePanelId: "shell",
+            panels: [{ id: "shell", title: "Shell", command: "", shell: true, startup: "default" }],
+          },
+        ],
+        windowSlots: [
+          {
+            id: "win-b",
+            profileId: "profile-b",
+            activeWorkspaceId: "ws-b",
+            activeSessionId: "",
+            bounds: { x: 0, y: 0, width: 1280, height: 800 },
+            lastFocusedAt: 1000,
+          },
+        ],
+      },
+    });
+    fixtures.push(fixture);
+
+    // Enable a grid first (otherwise setGridCell is a no-op anyway).
+    await fixture.runtime.enableWorkspaceGrid("cols", ["ws-b", null], "win-b");
+
+    await expect(fixture.runtime.setGridCell(0, "ws-a", "win-b")).rejects.toThrow(/Cross-profile refused/i);
+  });
+
+  test("reorderWorkspaces preserves workspaces in other profiles when caller is profile-scoped", async () => {
+    // A profile-scoped frontend / mobile client sends only its profile's
+    // workspace IDs. Old behavior replaced the entire array with that
+    // list — silently dropping every workspace in OTHER profiles. Fix:
+    // reorder within caller's profile, preserve others in place.
+    const fixture = await createFixture({
+      initialState: {
+        activeProjectId: "ws-b1",
+        profiles: [
+          { id: "default", name: "Default" },
+          { id: "profile-b", name: "Profile B" },
+        ],
+        projects: [
+          {
+            id: "ws-default-1",
+            name: "D1",
+            kind: "terminal",
+            profileId: "default",
+            cwd: "/tmp/d1",
+            activePanelId: "shell",
+            panels: [{ id: "shell", title: "Shell", command: "", shell: true, startup: "default" }],
+          },
+          {
+            id: "ws-b1",
+            name: "B1",
+            kind: "terminal",
+            profileId: "profile-b",
+            cwd: "/tmp/b1",
+            activePanelId: "shell",
+            panels: [{ id: "shell", title: "Shell", command: "", shell: true, startup: "default" }],
+          },
+          {
+            id: "ws-b2",
+            name: "B2",
+            kind: "terminal",
+            profileId: "profile-b",
+            cwd: "/tmp/b2",
+            activePanelId: "shell",
+            panels: [{ id: "shell", title: "Shell", command: "", shell: true, startup: "default" }],
+          },
+          {
+            id: "ws-default-2",
+            name: "D2",
+            kind: "terminal",
+            profileId: "default",
+            cwd: "/tmp/d2",
+            activePanelId: "shell",
+            panels: [{ id: "shell", title: "Shell", command: "", shell: true, startup: "default" }],
+          },
+        ],
+        windowSlots: [
+          {
+            id: "win-b",
+            profileId: "profile-b",
+            activeWorkspaceId: "ws-b1",
+            activeSessionId: "",
+            bounds: { x: 0, y: 0, width: 1280, height: 800 },
+            lastFocusedAt: 1000,
+          },
+        ],
+      },
+    });
+    fixtures.push(fixture);
+
+    // Profile-b client sends only profile-b IDs in swapped order.
+    await fixture.runtime.reorderWorkspaces(["ws-b2", "ws-b1"], "win-b");
+
+    const ids = fixture.runtime.getPayload().appState.projects!.map((p) => p.id);
+    // Profile-default workspaces remain in their original positions; only
+    // profile-b workspaces are reordered (swapped) within their slots.
+    expect(ids).toEqual(["ws-default-1", "ws-b2", "ws-b1", "ws-default-2"]);
+  });
+
+  test("createWorktree REFUSES when the parent workspace lives in another profile (no on-disk side effect)", async () => {
+    // Remote/mobile client bound to profile B asks to create a worktree
+    // under a profile-A parent. Previously only the slot mirror was
+    // skipped — the worktree still got created on disk and as a workspace
+    // entry in profile A. That's a cross-profile write the caller had no
+    // business doing. The fix refuses at entry.
+    const projectRoot = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-wt-refuse-"));
+    tempPaths.push(projectRoot);
+    const fixture = await createFixture({
+      initialState: {
+        activeProjectId: "ws-a",
+        profiles: [
+          { id: "default", name: "Default" },
+          { id: "profile-b", name: "Profile B" },
+        ],
+        projects: [
+          {
+            id: "ws-a",
+            name: "A",
+            kind: "terminal",
+            profileId: "default",
+            cwd: projectRoot,
+            activePanelId: "shell",
+            panels: [{ id: "shell", title: "Shell", command: "", shell: true, startup: "default" }],
+          },
+          {
+            id: "ws-b",
+            name: "B",
+            kind: "terminal",
+            profileId: "profile-b",
+            cwd: "/tmp/some-other-b",
+            activePanelId: "shell",
+            panels: [{ id: "shell", title: "Shell", command: "", shell: true, startup: "default" }],
+          },
+        ],
+        windowSlots: [
+          {
+            id: "win-b",
+            profileId: "profile-b",
+            activeWorkspaceId: "ws-b",
+            activeSessionId: "",
+            bounds: { x: 0, y: 0, width: 1280, height: 800 },
+            lastFocusedAt: 1000,
+          },
+        ],
+      },
+    });
+    fixtures.push(fixture);
+
+    await expect(fixture.runtime.createWorktree({ projectId: "ws-a", name: "feat-noop" }, "win-b")).rejects.toThrow(
+      /Cross-profile refused/i,
+    );
+
+    // No worktree workspace was inserted, no git command was issued.
+    const wsAfter = fixture.runtime
+      .getPayload()
+      .appState.projects!.map((p) => p.id)
+      .sort();
+    expect(wsAfter).toEqual(["ws-a", "ws-b"]);
+    expect(
+      fixture.execFileText.mock.calls.some(
+        (call: unknown[]) => Array.isArray(call[1]) && (call[1] as unknown[])[0] === "worktree",
+      ),
+    ).toBe(false);
+  });
+
+  test("discovers worktrees for every profile sharing the parent cwd, regardless of which window is focused", async () => {
+    // Profiles are independent observers of the filesystem: when two profiles
+    // each have a workspace pointing at the same repo, a worktree that exists
+    // on disk should surface in BOTH profiles' sidebars, not just the one in
+    // windowSlots[0]'s profile. This is the symmetric case that the original
+    // "active-profile-wins" logic in syncWorktreesImpl quietly broke — the
+    // non-active profile silently lost its worktree entries on every sync.
+    const projectRoot = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-shared-symmetric-"));
+    tempPaths.push(projectRoot);
+    const worktreePath = path.join(projectRoot, ".strideterm", "tree", "feature-y");
+    await fs.mkdir(worktreePath, { recursive: true });
+
+    const fixture = await createFixture({
+      initialState: {
+        // Active profile is "default"; without the fix, "profile-b" never
+        // discovers its worktree because parentByTreeDir is overridden by
+        // the active-profile parent.
+        activeProfileId: "default",
+        activeProjectId: "parent-default",
+        profiles: [
+          { id: "default", name: "Default" },
+          { id: "profile-b", name: "Profile B" },
+        ],
+        projects: [
+          {
+            id: "parent-default",
+            name: "Shared",
+            kind: "terminal",
+            profileId: "default",
+            cwd: projectRoot,
+            activePanelId: "shell",
+            panels: [{ id: "shell", title: "Shell", command: "", shell: true, startup: "default" }],
+          },
+          {
+            id: "parent-b",
+            name: "Shared",
+            kind: "terminal",
+            profileId: "profile-b",
+            cwd: projectRoot,
             activePanelId: "shell",
             panels: [{ id: "shell", title: "Shell", command: "", shell: true, startup: "default" }],
           },

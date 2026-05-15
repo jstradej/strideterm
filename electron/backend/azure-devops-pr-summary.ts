@@ -67,13 +67,14 @@ export function buildPullRequestSummary({
   activeProfileId = "default",
   now: _now = () => Date.now(),
 }: {
-  connection: { id: string; label?: string; orgUrl?: string; login?: string };
+  connection: { id: string; label?: string; orgUrl?: string; login?: string; profileId?: string };
   pr: Record<string, unknown>;
   projectName: string;
   threads: Array<Record<string, unknown>>;
   tracked?: Record<string, unknown>;
   workspaces?: Array<{ id: string; profileId?: string; [key: string]: unknown }>;
   gitSnapshots?: Record<string, unknown>;
+  /** Defensive fallback when connection.profileId is empty (legacy/pre-migration). */
   activeProfileId?: string;
   now?: () => number;
 }): { summary: Record<string, unknown>; internals: Record<string, unknown> } {
@@ -130,7 +131,12 @@ export function buildPullRequestSummary({
     mergeStatusChanged,
     mergeStatus,
   });
-  const profileWorkspaces = workspaces.filter((ws) => (ws.profileId || "default") === activeProfileId);
+  // Each PR belongs to the connection it was fetched through. Scope the
+  // review/matching workspace lookup to the connection's profile so that a
+  // user in window A doesn't silently miss the review workspace that
+  // belongs to window B's profile (which is where the connection lives).
+  const summaryProfileId = connection.profileId || activeProfileId;
+  const profileWorkspaces = workspaces.filter((ws) => (ws.profileId || "default") === summaryProfileId);
   const reviewWorkspace = findWorkspaceForPullRequest(profileWorkspaces, prKey);
   const matchingWorkspace = findMatchingWorkspace(
     {
@@ -149,6 +155,11 @@ export function buildPullRequestSummary({
     provider: "azure-devops",
     prKey,
     connectionId: connection.id,
+    // Profile that owns this PR's connection. Telegram and other consumers
+    // route alerts by this — without it the fallback to "first Azure inbox
+    // workspace in any profile" lands the alert under the wrong profile
+    // when no review workspace exists yet.
+    profileId: connection.profileId || activeProfileId,
     connectionLabel: connection.label || connection.id,
     orgUrl: trimTrailingSlash(connection.orgUrl),
     project: {

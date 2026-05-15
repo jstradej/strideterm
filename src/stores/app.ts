@@ -372,7 +372,11 @@ export const useAppStore = defineStore("app", () => {
 
   let _prevAttention = { count: 0, waitingCount: 0 };
   const attentionSummary = computed(() => {
-    const next = summarizeAttention(payload.value);
+    // Scope to this window's active profile so the in-app badge / document
+    // title don't include alerts the user can't see (workspaces in other
+    // profiles). `otherProfileAttentionCount` separately exposes the
+    // out-of-profile count for the ProfileBar indicator.
+    const next = summarizeAttention(payload.value, myActiveProfileId.value || undefined);
     if (next.count === _prevAttention.count && next.waitingCount === _prevAttention.waitingCount) {
       return _prevAttention;
     }

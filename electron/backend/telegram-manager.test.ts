@@ -900,6 +900,94 @@ describe("forwardAlert", () => {
       manager.forwardAlert({ workspaceId: "ws-1", panelId: "p-1", kind: "completed", title: "Done" }),
     ).resolves.toBeUndefined();
   });
+
+  test("filters connections by workspaceProfileId so chat A never receives chat B's alerts", async () => {
+    // Two telegram connections, one per profile. A workspace in profile-b
+    // fires an alert. Without the fix, both connections receive it —
+    // including chat A, whose user has no idea what profile-b is.
+    const cred = makeCredentialStore({ "cred:tg-default": "tok-default", "cred:tg-b": "tok-b" });
+    const manager = new TelegramManager({ credentialStore: cred });
+    manager.configure([
+      makeConnection({ id: "tg-default", botTokenRef: "cred:tg-default", forwardKinds: [], profileId: "default" }),
+      makeConnection({ id: "tg-b", botTokenRef: "cred:tg-b", forwardKinds: [], profileId: "profile-b" }),
+    ]);
+
+    const calledWith: string[] = [];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (manager as any)._sendAlertToConnection = async (conn: TelegramConnectionConfig) => {
+      calledWith.push(conn.id);
+    };
+
+    await manager.forwardAlert({
+      workspaceId: "ws-1",
+      panelId: "p-1",
+      kind: "info",
+      title: "Hello from profile-b",
+      workspaceProfileId: "profile-b",
+    });
+
+    expect(calledWith).toEqual(["tg-b"]);
+  });
+
+  test("getSnapshot flags unbound connections as needsProfileBinding when 2+ profiles exist", () => {
+    // In a multi-profile install, an unbound connection silently routes
+    // alerts only to "default". The snapshot exposes a flag so settings
+    // can show a "Pick a profile" warning.
+    const cred = makeCredentialStore({ "cred:tg-1": "tok1", "cred:tg-2": "tok2" });
+    const manager = new TelegramManager({ credentialStore: cred });
+    manager.setProfilesGetter(() => [
+      { id: "default", name: "Default" },
+      { id: "profile-b", name: "Profile B" },
+    ]);
+    manager.configure([
+      makeConnection({ id: "tg-bound", botTokenRef: "cred:tg-1", profileId: "profile-b" }),
+      makeConnection({ id: "tg-unbound", botTokenRef: "cred:tg-2", profileId: "" }),
+    ]);
+
+    const snapshot = manager.getSnapshot();
+    const bound = snapshot.connections.find((c) => c.id === "tg-bound");
+    const unbound = snapshot.connections.find((c) => c.id === "tg-unbound");
+    expect(bound?.needsProfileBinding).toBe(false);
+    expect(unbound?.needsProfileBinding).toBe(true);
+  });
+
+  test("getSnapshot leaves needsProfileBinding=false for single-profile installs", () => {
+    const cred = makeCredentialStore({ "cred:tg-1": "tok1" });
+    const manager = new TelegramManager({ credentialStore: cred });
+    manager.setProfilesGetter(() => [{ id: "default", name: "Default" }]);
+    manager.configure([makeConnection({ id: "tg-unbound", botTokenRef: "cred:tg-1", profileId: "" })]);
+
+    const snapshot = manager.getSnapshot();
+    expect(snapshot.connections[0]?.needsProfileBinding).toBe(false);
+  });
+
+  test("legacy alerts with no workspaceProfileId fan out to every connection (backwards compat)", async () => {
+    // Older callers may not pass workspaceProfileId yet. To avoid silently
+    // dropping their alerts, the filter is skipped when the payload doesn't
+    // include the field at all.
+    const cred = makeCredentialStore({ "cred:tg-default": "tok-default", "cred:tg-b": "tok-b" });
+    const manager = new TelegramManager({ credentialStore: cred });
+    manager.configure([
+      makeConnection({ id: "tg-default", botTokenRef: "cred:tg-default", forwardKinds: [], profileId: "default" }),
+      makeConnection({ id: "tg-b", botTokenRef: "cred:tg-b", forwardKinds: [], profileId: "profile-b" }),
+    ]);
+
+    const calledWith: string[] = [];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (manager as any)._sendAlertToConnection = async (conn: TelegramConnectionConfig) => {
+      calledWith.push(conn.id);
+    };
+
+    await manager.forwardAlert({
+      workspaceId: "ws-1",
+      panelId: "p-1",
+      kind: "info",
+      title: "Legacy alert",
+      // no workspaceProfileId — caller hasn't migrated
+    });
+
+    expect(calledWith.sort()).toEqual(["tg-b", "tg-default"]);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -1542,6 +1630,54 @@ describe("worktree mode selection (post /task pick)", () => {
     expect(callbacks).toContain("m:n");
     expect(callbacks).toContain("m:d");
     expect(callbacks).toContain("m:e"); // existing-worktree button only when worktrees exist
+  });
+
+  test("existing-worktree picker excludes worktrees that belong to a different profile", async () => {
+    // Two profiles each have a workspace named "alpha". The Telegram bot
+    // is talking to profile-b. /task → /existing must not surface
+    // profile-default's alpha worktrees in profile-b's picker — picking
+    // one would set targetCwd to a path that profile-b doesn't own.
+    const cred = makeCredentialStore({ "cred:tg-1": "token123" });
+    const manager = new TelegramManager({ credentialStore: cred });
+    manager.configure([makeConnection({ profileId: "profile-b" })]);
+
+    const parentDefault = makeWorkspace({
+      id: "ws-default",
+      name: "alpha",
+      cwd: "/p/alpha",
+      profileId: "default",
+      kind: "manual",
+    });
+    const wtDefault = makeWorkspace({
+      id: "ws-default-wt",
+      name: "alpha / feature-default",
+      cwd: "/p/alpha/.strideterm/tree/feature-default",
+      profileId: "default",
+      kind: "manual",
+      notes: "Worktree of alpha",
+      parentWorkspaceId: "__worktree__",
+    });
+    const parentB = makeWorkspace({
+      id: "ws-b",
+      name: "alpha",
+      cwd: "/p/alpha",
+      profileId: "profile-b",
+      kind: "manual",
+    });
+    const wtB = makeWorkspace({
+      id: "ws-b-wt",
+      name: "alpha / feature-b",
+      cwd: "/p/alpha/.strideterm/tree/feature-b",
+      profileId: "profile-b",
+      kind: "manual",
+      notes: "Worktree of alpha",
+      parentWorkspaceId: "__worktree__",
+    });
+    manager.setWorkspacesGetter(() => [parentDefault, wtDefault, parentB, wtB]);
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const result = (manager as any)._findExistingWorktrees(parentB) as Array<{ id: string }>;
+    expect(result.map((r) => r.id).sort()).toEqual(["ws-b-wt"]);
   });
 
   test("clicking 'directly' (m:d) goes to task-description with useWorktree=false", async () => {
