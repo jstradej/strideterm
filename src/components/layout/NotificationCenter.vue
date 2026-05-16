@@ -184,7 +184,12 @@
       </div>
 
       <div v-if="activeTab === 'alerts'" ref="bodyRef" class="notification-center__body" @scroll="onBodyScroll">
-        <div v-if="notifStore.sessions.length === 0" class="notification-center__empty">No notifications yet.</div>
+        <!-- "No notifications" must reflect what the user sees, not the
+             process-shared store: if profile A has items but the active
+             profile is B with none, the timeline is empty and we should
+             say so. Using notifStore.sessions.length here would hide the
+             empty-state hint in that case. -->
+        <div v-if="timeline.length === 0" class="notification-center__empty">No notifications yet.</div>
 
         <!-- Flat chronological timeline with day-band separators.
              State is conveyed via icon + item modifier class (waiting/finished/
@@ -776,7 +781,10 @@ function onKeydown(ev: KeyboardEvent): void {
     case "A":
       if (ev.shiftKey) {
         ev.preventDefault();
-        notifStore.markAllRead();
+        // Keyboard parity with the "Ack finished" button — both must scope
+        // to the active profile so a Shift+A while viewing profile B
+        // doesn't silence profile A's unread badge in other windows.
+        ackFinishedInProfile();
       }
       break;
     case "Escape":

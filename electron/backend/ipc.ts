@@ -728,12 +728,16 @@ export function registerIpc(
       return (runtime as any).swapGridCells(parsed.a, parsed.b, windowId);
     }),
   );
-  ipcMain.handle("attention:sync", async (_event, payload) =>
-    withOperationPromise({ opId: "attention:sync" }, () =>
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      runtime.syncAttentionContext(validateIpc(attentionSyncSchema, payload || {}, "attention:sync") as any),
-    ),
-  );
+  ipcMain.handle("attention:sync", async (event, payload) => {
+    const windowId = getWindowIdByWebContentsId?.(event.sender.id) ?? "";
+    return withOperationPromise({ opId: "attention:sync" }, () =>
+      runtime.syncAttentionContext({
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        ...(validateIpc(attentionSyncSchema, payload || {}, "attention:sync") as any),
+        windowId: windowId || null,
+      }),
+    );
+  });
   ipcMain.handle("attention:clear-all", async (event) => {
     const windowId = getWindowIdByWebContentsId?.(event.sender.id) ?? "";
     return withOperationPromise({ opId: "attention:clear-all" }, () =>
@@ -741,13 +745,15 @@ export function registerIpc(
       (runtime as any).clearAllAttention(windowId || null),
     );
   });
-  ipcMain.handle("attention:clear-session", async (_event, sessionId, options) =>
-    withOperationPromise({ opId: "attention:clear-session" }, () =>
+  ipcMain.handle("attention:clear-session", async (event, sessionId, options) => {
+    const windowId = getWindowIdByWebContentsId?.(event.sender.id) ?? "";
+    return withOperationPromise({ opId: "attention:clear-session" }, () =>
       runtime.clearAlertForSession(String(sessionId || ""), {
         dismissed: options?.dismissed === true,
+        windowId: windowId || null,
       }),
-    ),
-  );
+    );
+  });
   ipcMain.handle("terminal:restart", async (_event, sessionId) =>
     withOperationPromise({ opId: "terminal:restart" }, () => runtime.restartSession(sessionId)),
   );

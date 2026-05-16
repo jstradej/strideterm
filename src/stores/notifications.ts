@@ -432,10 +432,19 @@ export const useNotificationStore = defineStore("notifications", () => {
   // attention even when the dock is closed behind a dialog). Callers should
   // use this instead of `console.error` for anything the user needs to act
   // on or recover from — failed IPC, backend validation errors, etc.
+  //
+  // `profileId` scopes the entry to a single profile so a window viewing
+  // profile B doesn't show errors raised in profile A. Defaults to the
+  // current window's active profile; callers acting on a specific workspace
+  // should pass that workspace's `profileId` instead.
   function showError(
     title: string,
     body: string,
-    { workspaceId = "", workspaceName = "" }: { workspaceId?: string; workspaceName?: string } = {},
+    {
+      workspaceId = "",
+      workspaceName = "",
+      profileId = "",
+    }: { workspaceId?: string; workspaceName?: string; profileId?: string } = {},
   ): NotificationEvent {
     const entry = addEvent({
       title,
@@ -446,6 +455,7 @@ export const useNotificationStore = defineStore("notifications", () => {
       workspaceId,
       workspaceName,
       category: "error",
+      meta: profileId ? { profileId } : null,
     });
     if (!pinned.value) {
       latestToast.value = { ...entry, category: "error" };
@@ -457,17 +467,25 @@ export const useNotificationStore = defineStore("notifications", () => {
    * Push a sticky toast. Returns the id so the caller can dismiss it
    * programmatically (e.g. once the underlying problem is resolved). The
    * toast also lands as a persistent dock entry so it survives page reload.
+   *
+   * `profileId` scopes the mirrored dock entry to a single profile —
+   * without it, the unknown-owner pass-through in useNotificationProfileScope
+   * would surface this error in every profile's notification panel.
+   * Persistent toasts themselves render globally (they're system-level
+   * "needs action" indicators that should stay visible across switches).
    */
   function pushPersistentToast({
     title,
     body,
     kind = "error",
     copyPath = "",
+    profileId = "",
   }: {
     title: string;
     body: string;
     kind?: NotificationKind;
     copyPath?: string;
+    profileId?: string;
   }): string {
     const id = crypto.randomUUID();
     persistentToasts.value = [
@@ -483,6 +501,7 @@ export const useNotificationStore = defineStore("notifications", () => {
       tier: 1,
       urgency: "normal",
       category: "error",
+      meta: profileId ? { profileId } : null,
     });
     return id;
   }

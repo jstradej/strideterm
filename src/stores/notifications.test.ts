@@ -197,6 +197,29 @@ describe("notification store (session-grouped)", () => {
       store.pushPersistentToast({ title: "x", body: "y" });
       expect(store.persistentToasts[0].kind).toBe("error");
     });
+
+    it("pushPersistentToast stamps meta.profileId on the mirrored dock entry", () => {
+      // Without the stamp, the mirrored entry falls into the unknown-owner
+      // bucket and useNotificationProfileScope shows it in every profile.
+      const store = useNotificationStore();
+      store.pushPersistentToast({ title: "Failed", body: "boom", profileId: "p1" });
+      expect(store.sessions).toHaveLength(1);
+      expect(store.sessions[0].meta?.profileId).toBe("p1");
+    });
+
+    it("showError stamps meta.profileId on the dock entry", () => {
+      const store = useNotificationStore();
+      store.showError("Bad", "thing", { profileId: "p2" });
+      expect(store.sessions).toHaveLength(1);
+      expect(store.sessions[0].meta?.profileId).toBe("p2");
+    });
+
+    it("showError without profileId leaves meta.profileId unset (legacy / unknown-owner path)", () => {
+      const store = useNotificationStore();
+      store.showError("Old caller", "no scope");
+      expect(store.sessions).toHaveLength(1);
+      expect(store.sessions[0].meta?.profileId).toBeUndefined();
+    });
   });
 
   describe("profile-scoped filters", () => {

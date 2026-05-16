@@ -36,10 +36,19 @@ export function resolveSessionProfileId(
 
 /**
  * Resolve which profile owns a review/pipeline event before it lands in the
- * store. Prefers the event's review/existing workspace, then falls back to
- * the originating connection's profile. Returns `""` if nothing matches.
+ * store. Prefers the authoritative `profileId` stamped by the backend
+ * (review-activity builder), then the event's review/existing workspace,
+ * then the originating connection's profile. Returns `""` only if every
+ * source fails — composables treat that as "unknown owner" and drop the
+ * event rather than silently routing it to the active profile.
  */
 export function resolveEventProfileId(ev: AnyApi, provider: string, payload: AnyApi): string {
+  // Backend-stamped profileId is authoritative. The PR summary builders
+  // (azure-devops-pr-summary, github-pr-summary) pull it from the owning
+  // connection, so it survives even when the review/existing workspace
+  // hasn't been created yet (or was just deleted).
+  const stamped = ev?.profileId;
+  if (stamped) return String(stamped);
   const wsId = ev?.reviewWorkspaceId || ev?.existingWorkspaceId || "";
   if (wsId) {
     const workspaces = (payload?.appState?.workspaces || []) as AnyApi[];

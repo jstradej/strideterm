@@ -937,25 +937,11 @@ async function handleApiRequest(runtime: Runtime, request: IncomingMessage, resp
       return;
     }
 
-    // /api/workspace-grid/* — handled in the slot-aware route block at the
-    // server top level so we can resolve windowId from the bound session.
-    // The previous inline handlers here passed no windowId and the runtime
-    // fell back to windowSlots[0]'s profile, letting a remote client on
-    // profile B mutate profile A's grid.
-
-    if (request.method === "POST" && url.pathname === "/api/attention/sync") {
-      json(response, 200, await runtime.syncAttentionContext(body));
-      return;
-    }
-
-    if (request.method === "POST" && url.pathname === "/api/attention/clear-session") {
-      json(
-        response,
-        200,
-        runtime.clearAlertForSession(String(body.sessionId || ""), { dismissed: body.dismissed === true }),
-      );
-      return;
-    }
+    // /api/workspace-grid/* and /api/attention/* — handled in the slot-aware
+    // route block at the server top level so we can resolve windowId from
+    // the bound session. The previous inline handlers passed no windowId and
+    // the runtime fell back to windowSlots[0]'s profile, letting a remote
+    // client on profile B mutate profile A's state.
 
     if (request.method === "POST" && url.pathname === "/api/terminal/restart") {
       json(response, 200, await runtime.restartSession(body.sessionId));
@@ -1606,6 +1592,26 @@ export async function startRemoteServer({
         // and runtime.clearAllAttention resolves the profile from it.
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         "/api/attention/clear-all": (_body, windowId) => (runtime as any).clearAllAttention(windowId),
+        // Same reasoning as clear-all: clear-session deletes a workspace's
+        // alert entry by sessionId — without scoping, a remote client on
+        // profile B could clear alerts on a workspace in profile A by
+        // submitting any sessionId. The runtime cross-checks the resolved
+        // profile against the workspace's profileId and refuses mismatches.
+        "/api/attention/clear-session": (body, windowId) =>
+          runtime.clearAlertForSession(String(body?.sessionId || ""), {
+            dismissed: body?.dismissed === true,
+            windowId,
+          }),
+        // Sync surfaces "user is currently looking at these tabs" and after
+        // ATTENTION_MIN_DISPLAY_MS turns visible sessions into cleared
+        // alerts. Without scoping, profile B could mark profile A's
+        // sessions visible and silently clear their bells.
+        "/api/attention/sync": (body, windowId) =>
+          runtime.syncAttentionContext({
+            visibleSessionIds: Array.isArray(body?.visibleSessionIds) ? body.visibleSessionIds : [],
+            windowFocused: body?.windowFocused !== false,
+            windowId,
+          }),
       };
       const slotAwareHandler = request.method === "POST" ? slotAwareRoute[url.pathname] : undefined;
       if (slotAwareHandler) {

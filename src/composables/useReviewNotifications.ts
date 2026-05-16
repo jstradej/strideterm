@@ -77,9 +77,13 @@ export function useReviewNotifications(latestToastRef: Ref<any> | null = null) {
       // Skip events that belong to a different profile. Review activity is
       // broadcast to every window, but the toast / sound / dock entry must
       // stay scoped — otherwise a window viewing profile B would surface
-      // PR pings from profile A.
+      // PR pings from profile A. When the owner can't be resolved at all
+      // (no backend stamp + no workspace/connection lookup hit), drop the
+      // event rather than fall back to the active profile, which would
+      // route it into whichever window happens to be looking.
       const eventProfileId = resolveEventProfileId(ev, provider, appStore.payload);
-      if (eventProfileId && eventProfileId !== activeProfileId) continue;
+      if (!eventProfileId) continue;
+      if (eventProfileId !== activeProfileId) continue;
 
       const viewId = ev.prKey || ev.id;
       const workspaceId = ev.reviewWorkspaceId || ev.existingWorkspaceId || "";
@@ -95,7 +99,7 @@ export function useReviewNotifications(latestToastRef: Ref<any> | null = null) {
         connectionId: ev.connectionId || "",
         reviewWorkspaceId: ev.reviewWorkspaceId || "",
         existingWorkspaceId: ev.existingWorkspaceId || "",
-        profileId: eventProfileId || activeProfileId,
+        profileId: eventProfileId,
       };
       const entry = notifStore.add({
         title,

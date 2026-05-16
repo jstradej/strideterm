@@ -21,6 +21,7 @@ function extractChecks(prs: Record<string, any>): Array<{
   prTitle: string;
   workspaceId: string;
   connectionId: string;
+  profileId: string;
   reviewWorkspaceId: string;
   existingWorkspaceId: string;
   checkId: string;
@@ -40,6 +41,11 @@ function extractChecks(prs: Record<string, any>): Array<{
         prTitle,
         workspaceId,
         connectionId: String(pr?.connectionId || ""),
+        // Carry the PR summary's profileId so resolveEventProfileId can
+        // route the pipeline ping authoritatively, even when the PR has no
+        // review/existing workspace yet (and the connection lookup in
+        // settings would race against a profile-filtered payload).
+        profileId: String(pr?.profileId || ""),
         reviewWorkspaceId: String(pr?.reviewWorkspaceId || ""),
         existingWorkspaceId: String(pr?.existingWorkspaceId || ""),
         checkId: String(check.id),
@@ -91,8 +97,12 @@ export function usePipelineNotifications() {
       // is broadcast to every window via the shared payload, but the toast
       // / sound / dock entry must stay scoped to the active profile so a
       // window viewing profile B doesn't ping for profile A's pipelines.
+      // Pass the PR's own profileId (carried from `pr.profileId` in extractChecks)
+      // so resolveEventProfileId doesn't need to fall back to the workspace
+      // lookup — that lookup races against profile-filtered payloads.
       const eventProfileId = resolveEventProfileId(
         {
+          profileId: check.profileId,
           reviewWorkspaceId: check.reviewWorkspaceId,
           existingWorkspaceId: check.existingWorkspaceId,
           connectionId: check.connectionId,
@@ -100,7 +110,11 @@ export function usePipelineNotifications() {
         provider,
         appStore.payload,
       );
-      if (eventProfileId && eventProfileId !== activeProfileId) continue;
+      // Drop checks whose profile we can't resolve — same reasoning as in
+      // useReviewNotifications: silent fallback to the active profile
+      // routes a profile-A ping into whichever window happens to be looking.
+      if (!eventProfileId) continue;
+      if (eventProfileId !== activeProfileId) continue;
 
       const icon = check.state === "succeeded" ? "✅" : "❌";
       const title = `${icon} ${check.checkName} — ${check.prTitle}`;
@@ -124,7 +138,7 @@ export function usePipelineNotifications() {
           checkId: check.checkId,
           checkName: check.checkName,
           checkState: check.state,
-          profileId: eventProfileId || activeProfileId,
+          profileId: eventProfileId,
         },
       });
 

@@ -91,9 +91,14 @@ async function openInInternalViewer(absPath: string): Promise<void> {
     import("../stores/file-manager.js"),
     import("../stores/notifications.js"),
   ]);
-  const ws = appMod.useAppStore().activeWorkspace;
+  const appStore = appMod.useAppStore();
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const profileId = ((appStore as any).activeProfile?.id as string) || "default";
+  const ws = appStore.activeWorkspace;
   if (!ws) {
-    notifMod.useNotificationStore().showError("Open in Files failed", "No active workspace to open the file in.");
+    notifMod
+      .useNotificationStore()
+      .showError("Open in Files failed", "No active workspace to open the file in.", { profileId });
     return;
   }
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- workspace.panels is loosely typed in the store
@@ -104,10 +109,11 @@ async function openInInternalViewer(absPath: string): Promise<void> {
       .showError(
         "Open in Files failed",
         "No Files tab in this workspace — open one first, or change the path-opener mode in Settings.",
+        { profileId },
       );
     return;
   }
-  await appMod.useAppStore().activateView(`files:${filesPanel.id}`);
+  await appStore.activateView(`files:${filesPanel.id}`);
   const fmStore = fmMod.useFileManagerStore();
   if (ws.cwd) {
     await fmStore.init(ws.cwd);
@@ -119,6 +125,7 @@ async function openInInternalViewer(absPath: string): Promise<void> {
       .showError(
         "Open in Files failed",
         `Couldn't navigate to ${absPath} — the file may be outside the workspace root.`,
+        { profileId },
       );
   }
 }
@@ -412,10 +419,16 @@ export function createTerminalController({
               void openPath({ path: m.path, line: m.line, column: m.column, workspaceCwd })
                 .then(async (result) => {
                   if (!result?.ok) {
-                    const { useNotificationStore } = await import("../stores/notifications.js");
+                    const [{ useNotificationStore }, { useAppStore }] = await Promise.all([
+                      import("../stores/notifications.js"),
+                      import("../stores/app.js"),
+                    ]);
+                    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                    const profileId = ((useAppStore() as any).activeProfile?.id as string) || "default";
                     useNotificationStore().showError(
                       "Open path failed",
                       `Couldn't open ${m.path}: ${result?.error || "unknown error"}`,
+                      { profileId },
                     );
                     return;
                   }
@@ -428,10 +441,16 @@ export function createTerminalController({
                   }
                 })
                 .catch(async (err: unknown) => {
-                  const { useNotificationStore } = await import("../stores/notifications.js");
+                  const [{ useNotificationStore }, { useAppStore }] = await Promise.all([
+                    import("../stores/notifications.js"),
+                    import("../stores/app.js"),
+                  ]);
+                  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                  const profileId = ((useAppStore() as any).activeProfile?.id as string) || "default";
                   useNotificationStore().showError(
                     "Open path failed",
                     `Couldn't open ${m.path}: ${(err as Error)?.message || String(err)}`,
+                    { profileId },
                   );
                 });
             },

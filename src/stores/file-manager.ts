@@ -487,8 +487,15 @@ export const useFileManagerStore = defineStore("fileManager", () => {
       const msg = (err as Error).message || "Failed to paste";
       error.value = msg;
       try {
-        const { useNotificationStore } = await import("./notifications.js");
-        useNotificationStore().showError(op === "copy" ? "Copy failed" : "Move failed", msg);
+        const [{ useNotificationStore }, { useAppStore }] = await Promise.all([
+          import("./notifications.js"),
+          import("./app.js"),
+        ]);
+        // Active-profile scope: the user clicked Paste in this window, so
+        // the failure belongs to whichever profile this window is showing.
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const profileId = ((useAppStore() as any).activeProfile?.id as string) || "default";
+        useNotificationStore().showError(op === "copy" ? "Copy failed" : "Move failed", msg, { profileId });
       } catch {
         // notifications store optional during isolated unit tests
       }

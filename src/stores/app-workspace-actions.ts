@@ -209,6 +209,9 @@ export function createWorkspaceActions(ctx: WorkspaceActionsCtx) {
             body: result.deleteWorkspaceError,
             kind: "error",
             copyPath: diskPath,
+            // Scope to the deleted workspace's own profile — other profiles
+            // never saw this workspace and shouldn't see its failure.
+            profileId: (ws as AnyApi).profileId || "default",
           });
         }
         // Success path: ignore. The next broadcast will reconcile the payload
@@ -230,6 +233,7 @@ export function createWorkspaceActions(ctx: WorkspaceActionsCtx) {
           body: message,
           kind: "error",
           copyPath: diskPath,
+          profileId: (ws as AnyApi).profileId || "default",
         });
       }
     })();
@@ -402,7 +406,6 @@ export function createWorkspaceActions(ctx: WorkspaceActionsCtx) {
       // mode), boot it with the current workspace in slot 0.
       const dispatch = ctx.isGridVisible.value ? ctx.setGridLayout(layout) : ctx.enableWorkspaceGrid(layout);
       dispatch.catch((err: unknown) => {
-        // eslint-disable-next-line no-console
         console.error("[grid] picker dispatch failed:", err);
       });
       return;
@@ -612,6 +615,7 @@ export function createWorkspaceActions(ctx: WorkspaceActionsCtx) {
           title: `Failed to remove "${wsName}"`,
           body: message,
           kind: "error",
+          profileId: (ws as AnyApi).profileId || "default",
         });
       }
     })();

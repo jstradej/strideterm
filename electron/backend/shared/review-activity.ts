@@ -21,6 +21,12 @@ import { parseDate } from "./provider-utils.js";
 interface ReviewSummaryRef {
   prKey: string;
   connectionId?: string;
+  // Profile that owns the PR's connection. The frontend stamps each session
+  // with this so a window viewing profile B doesn't toast / sound / dock
+  // events from profile A — without it the composables fall back to "active
+  // profile" when the workspace lookup fails (deleted workspace, race), and
+  // the event leaks into the wrong profile.
+  profileId?: string;
   role?: string;
   repository?: { fullName?: string; name?: string };
   pullRequest?: { number?: number; id?: number; title?: string; webUrl?: string };
@@ -32,6 +38,7 @@ interface ReviewSummaryRef {
 interface ConnectionRef {
   id: string;
   label?: string;
+  profileId?: string;
 }
 
 interface ConnectionState {
@@ -79,6 +86,7 @@ export function buildReviewActivityEvent({
   prKey: string;
   provider: string;
   connectionId: string | undefined;
+  profileId: string;
   kind: string;
   at: string;
   title: string;
@@ -98,6 +106,11 @@ export function buildReviewActivityEvent({
     prKey: summary.prKey,
     provider,
     connectionId: summary.connectionId,
+    // Stamp authoritatively from the summary (sourced from the PR's
+    // connection.profileId — see azure/github managers). Empty string means
+    // the backend didn't supply one; the composables treat that as
+    // "unknown" and drop the event rather than guessing the active profile.
+    profileId: summary.profileId || "",
     kind,
     at,
     title,
@@ -250,6 +263,7 @@ export function buildConnectionErrorEvent({
   prKey: string;
   provider: string;
   connectionId: string;
+  profileId: string;
   kind: string;
   at: string;
   title: string;
@@ -282,6 +296,11 @@ export function buildConnectionErrorEvent({
     prKey: `connection:${connection.id}`,
     provider,
     connectionId: connection.id,
+    // Connection errors belong to the profile that owns the connection —
+    // without it the renderer would have to guess (and currently falls back
+    // to the active profile, leaking a profile-A connection error into
+    // profile B's notification panel).
+    profileId: connection.profileId || "",
     kind: "connection-error",
     at,
     title: `${label}: connection error`,

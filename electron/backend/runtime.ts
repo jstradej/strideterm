@@ -5154,11 +5154,36 @@ export async function createRuntime({
      *   false → user clicked "Jump" or alert auto-cleared. Treated as
      *           engagement — resets the adaptive dismiss counter.
      */
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    clearAlertForSession(sessionId: any, { dismissed = false } = {}) {
+    clearAlertForSession(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      sessionId: any,
+      { dismissed = false, windowId = null }: { dismissed?: boolean; windowId?: string | null } = {},
+    ) {
       if (!sessionId) return getPayload();
       const descriptor = parseSessionId(sessionId);
       if (!descriptor) return getPayload();
+      // Refuse cross-profile clears. Without this, a remote client bound to
+      // profile B could clear alerts on a workspace in profile A by sending
+      // any sessionId — same class of leak as the (now scoped) clear-all.
+      // windowId === null preserves the legacy unscoped path for in-process
+      // callers that don't carry a window context.
+      if (windowId !== null) {
+        const state = getState();
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const slot = (state.windowSlots || []).find((s: any) => s.id === windowId);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const scopeProfileId: string = slot ? (slot as any).profileId || "default" : "default";
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const workspace = (state.workspaces || []).find((w: any) => w.id === descriptor.workspaceId);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const owning = workspace ? (workspace as any).profileId || "default" : null;
+        // Workspace deleted (owning === null) is allowed — the alert can't
+        // surface in any profile anyway.
+        if (owning !== null && owning !== scopeProfileId) {
+          log.debug("clearAlertForSession refused (cross-profile)", { sessionId, scopeProfileId, owning });
+          return getPayload();
+        }
+      }
       log.debug("clearAlertForSession", { sessionId, dismissed });
       clearProjectAlerts(descriptor.workspaceId, descriptor.panelId);
       resetSessionSignal(sessionId);
@@ -5244,10 +5269,38 @@ export async function createRuntime({
     syncAttentionContext({
       visibleSessionIds = [],
       windowFocused = true,
-    }: { visibleSessionIds?: string[]; windowFocused?: boolean } = {}) {
+      windowId = null,
+    }: { visibleSessionIds?: string[]; windowFocused?: boolean; windowId?: string | null } = {}) {
+      // When called with a windowId, drop any session that doesn't belong
+      // to the caller's profile before doing anything else — otherwise a
+      // remote client on profile B could mark profile A's sessions as
+      // visible/interacted and after ATTENTION_MIN_DISPLAY_MS even clear
+      // their alerts. Workspace deleted → no profile, no scope leak: keep
+      // as a legacy/cleanup case (the alert can't surface anywhere).
+      const state = getState();
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const slot = windowId ? (state.windowSlots || []).find((s: any) => s.id === windowId) : null;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const scopeProfileId: string | null = slot ? (slot as any).profileId || "default" : null;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const wsList = (state.workspaces || []) as any[];
+      const profileByWs = new Map<string, string>();
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      for (const ws of wsList) profileByWs.set(ws.id, (ws as any).profileId || "default");
+
+      const sessionInScope = (sid: string): boolean => {
+        if (scopeProfileId === null) return true;
+        const descriptor = parseSessionId(sid);
+        if (!descriptor) return false;
+        const owning = profileByWs.get(descriptor.workspaceId);
+        if (owning === undefined) return true; // workspace deleted — harmless
+        return owning === scopeProfileId;
+      };
+
       const nextIds = (Array.isArray(visibleSessionIds) ? visibleSessionIds : [])
         .map((sessionId) => String(sessionId || "").trim())
-        .filter(Boolean);
+        .filter(Boolean)
+        .filter(sessionInScope);
       updateVisibleSessions(nextIds);
 
       // Phase 2 § 3.2.5: if the window is focused, a visible session counts
@@ -5268,6 +5321,9 @@ export async function createRuntime({
       for (const sessionId of attentionContext.visibleSessionIds) {
         const descriptor = parseSessionId(sessionId);
         if (!descriptor) continue;
+        // updateVisibleSessions may have retained sessions from previous
+        // syncs that belonged to a different profile; double-check here.
+        if (!sessionInScope(sessionId)) continue;
         const current = projectAlerts.get(descriptor.workspaceId);
         const alert = current?.alerts?.find((a) => a.panelId === descriptor.panelId);
         if (alert && now - new Date(alert.at).getTime() >= ATTENTION_MIN_DISPLAY_MS) {

@@ -182,11 +182,12 @@ describe("useReviewNotifications — profile scoping", () => {
     wrapper.unmount();
   });
 
-  test("events with an unresolvable owner are not dropped (best-effort delivery)", async () => {
-    // If we can't determine the profile from workspace or connection, we
-    // accept the event — being too aggressive would silently lose pings
-    // for connections that haven't been wired up yet. The NotificationCenter
-    // filter falls back to showing them as "unknown owner".
+  test("events with an unresolvable owner are dropped", async () => {
+    // Backend stamps event.profileId from the owning connection, so a
+    // missing profileId here means every source failed: no stamp on the
+    // event, no workspace match, and no connection match. Routing such
+    // an event to the active profile would silently leak profile-A
+    // notifications into whichever window happens to be looking.
     const appStore = useAppStore();
     appStore.payload = buildPayload();
     const notifStore = useNotificationStore();
@@ -217,7 +218,49 @@ describe("useReviewNotifications — profile scoping", () => {
     await nextTick();
     await flushPromises();
 
-    expect(notifStore.sessions.map((s) => s.events[0].title)).toContain("unknown");
+    expect(notifStore.sessions.map((s) => s.events[0].title)).not.toContain("unknown");
+    wrapper.unmount();
+  });
+
+  test("events with backend-stamped profileId route by that stamp, not by lookup", async () => {
+    // The PR summary builder stamps event.profileId from connection.profileId
+    // even when the workspace lookup would race (deleted workspace, fresh
+    // connection without a review workspace yet). The composable must trust
+    // the stamp first.
+    const appStore = useAppStore();
+    appStore.payload = buildPayload();
+    const notifStore = useNotificationStore();
+
+    const { wrapper } = mountHarness();
+    vi.setSystemTime(new Date("2025-01-01T00:00:10Z"));
+
+    appStore.payload = buildPayload({
+      azureDevops: {
+        reviewActivity: [
+          {
+            id: "ev-stamped",
+            // No connection in payload, no workspace — only stamp.
+            connectionId: "gone",
+            profileId: "p1",
+            prKey: "pr-stamped",
+            title: "from stamp",
+            body: "",
+            reviewWorkspaceId: "",
+            existingWorkspaceId: "",
+          },
+        ],
+        connections: [],
+        inboxItems: [],
+        pullRequests: {},
+        lastUpdatedAt: null,
+        error: "",
+      },
+    });
+    await nextTick();
+    await flushPromises();
+
+    expect(notifStore.sessions.map((s) => s.events[0].title)).toContain("from stamp");
+    expect(notifStore.sessions[0].meta?.profileId).toBe("p1");
     wrapper.unmount();
   });
 });

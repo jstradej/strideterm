@@ -3997,6 +3997,182 @@ describe("clearAllAttention — profile scoping", () => {
   });
 });
 
+describe("clearAlertForSession + syncAttentionContext — profile scoping", () => {
+  // Same shape as clearAllAttention's tests: two profiles, two windows, two
+  // workspaces with raised alerts. The bug we're regression-testing is a
+  // remote/IPC caller on profile B passing any sessionId or visibleSessionIds
+  // and silencing profile A's bells.
+  async function createTwoProfileFixture() {
+    return createFixture({
+      initialState: {
+        activeProjectId: "ws-default",
+        profiles: [
+          { id: "default", name: "Default" },
+          { id: "profile-b", name: "Profile B" },
+        ],
+        projects: [
+          {
+            id: "ws-default",
+            name: "Default WS",
+            kind: "terminal",
+            profileId: "default",
+            cwd: "/tmp/wsd",
+            activePanelId: "shell",
+            panels: [{ id: "shell", title: "Shell", command: "", shell: true, startup: "default" }],
+          },
+          {
+            id: "ws-b",
+            name: "Profile B WS",
+            kind: "terminal",
+            profileId: "profile-b",
+            cwd: "/tmp/wsb",
+            activePanelId: "shell",
+            panels: [{ id: "shell", title: "Shell", command: "", shell: true, startup: "default" }],
+          },
+        ],
+        windowSlots: [
+          {
+            id: "win-default",
+            profileId: "default",
+            activeWorkspaceId: "ws-default",
+            activeSessionId: "",
+            bounds: { x: 0, y: 0, width: 1280, height: 800 },
+            lastFocusedAt: 1000,
+          },
+          {
+            id: "win-b",
+            profileId: "profile-b",
+            activeWorkspaceId: "ws-b",
+            activeSessionId: "",
+            bounds: { x: 0, y: 0, width: 1280, height: 800 },
+            lastFocusedAt: 2000,
+          },
+        ],
+      },
+    });
+  }
+
+  // Raise an attention alert on each of the two workspaces.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  async function raiseAlertsOnBoth(fixture: any): Promise<void> {
+    await fixture.runtime.syncAttentionContext({ visibleSessionIds: [] });
+    for (const sessionId of ["ws-default:shell", "ws-b:shell"]) {
+      fixture.sessionManager.emit("terminal:data", { sessionId, data: "$ " });
+    }
+    await vi.advanceTimersByTimeAsync(16_000);
+    fixture.runtime.writeToSession("ws-default:shell", "claude\r");
+    fixture.runtime.writeToSession("ws-b:shell", "claude\r");
+    fixture.runtime.notifyAgentHook("ws-default:shell", "idle_prompt");
+    fixture.runtime.notifyAgentHook("ws-b:shell", "idle_prompt");
+  }
+
+  test("clearAlertForSession refuses a cross-profile sessionId", async () => {
+    vi.useFakeTimers();
+    try {
+      const fixture = await createTwoProfileFixture();
+      fixtures.push(fixture);
+      await raiseAlertsOnBoth(fixture);
+
+      // Profile-b's window asks to clear profile-default's session — must
+      // refuse rather than wipe the default-profile alert.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (fixture.runtime as any).clearAlertForSession("ws-default:shell", { windowId: "win-b" });
+      const after = fixture.runtime.getPayload().attention.byWorkspace;
+      expect(after["ws-default"]).toBeDefined();
+      expect(after["ws-b"]).toBeDefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("clearAlertForSession allows same-profile sessionIds", async () => {
+    vi.useFakeTimers();
+    try {
+      const fixture = await createTwoProfileFixture();
+      fixtures.push(fixture);
+      await raiseAlertsOnBoth(fixture);
+
+      // Profile-b's window clears its own session — must work normally.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (fixture.runtime as any).clearAlertForSession("ws-b:shell", { windowId: "win-b" });
+      const after = fixture.runtime.getPayload().attention.byWorkspace;
+      expect(after["ws-default"]).toBeDefined();
+      expect(after["ws-b"]).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("clearAlertForSession without windowId preserves legacy unscoped behavior", async () => {
+    vi.useFakeTimers();
+    try {
+      const fixture = await createTwoProfileFixture();
+      fixtures.push(fixture);
+      await raiseAlertsOnBoth(fixture);
+
+      // No windowId → in-process / legacy caller, no scope check.
+      fixture.runtime.clearAlertForSession("ws-default:shell");
+      expect(fixture.runtime.getPayload().attention.byWorkspace["ws-default"]).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("syncAttentionContext ignores visibleSessionIds outside the caller's profile", async () => {
+    vi.useFakeTimers();
+    try {
+      const fixture = await createTwoProfileFixture();
+      fixtures.push(fixture);
+      await raiseAlertsOnBoth(fixture);
+
+      // Profile-b's window claims profile-default's session is visible.
+      // After ATTENTION_MIN_DISPLAY_MS (~6s) the unscoped code path would
+      // clear the default alert — the scoped path must not.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (fixture.runtime as any).syncAttentionContext({
+        visibleSessionIds: ["ws-default:shell"],
+        windowId: "win-b",
+      });
+      await vi.advanceTimersByTimeAsync(10_000);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (fixture.runtime as any).syncAttentionContext({
+        visibleSessionIds: ["ws-default:shell"],
+        windowId: "win-b",
+      });
+      expect(fixture.runtime.getPayload().attention.byWorkspace["ws-default"]).toBeDefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("syncAttentionContext clears alerts for same-profile visible sessions", async () => {
+    vi.useFakeTimers();
+    try {
+      const fixture = await createTwoProfileFixture();
+      fixtures.push(fixture);
+      await raiseAlertsOnBoth(fixture);
+
+      // Profile-b's window correctly reports its own session visible.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (fixture.runtime as any).syncAttentionContext({
+        visibleSessionIds: ["ws-b:shell"],
+        windowId: "win-b",
+      });
+      await vi.advanceTimersByTimeAsync(10_000);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (fixture.runtime as any).syncAttentionContext({
+        visibleSessionIds: ["ws-b:shell"],
+        windowId: "win-b",
+      });
+      const after = fixture.runtime.getPayload().attention.byWorkspace;
+      expect(after["ws-default"]).toBeDefined();
+      expect(after["ws-b"]).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Task-agent crash recovery (see docs/task-recovery.md)
 // ---------------------------------------------------------------------------

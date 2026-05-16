@@ -226,4 +226,114 @@ describe("usePipelineNotifications — profile scoping", () => {
     expect(notifStore.sessions[0].meta?.profileId).toBe("p1");
     wrapper.unmount();
   });
+
+  test("routes by PR's backend-stamped profileId even when the connection lookup fails", async () => {
+    // The PR summary carries profileId from the owning connection. Even
+    // when the connection is no longer in settings (profile-filtered
+    // payload, race after a profile switch), the composable must route
+    // by the summary's stamp rather than fall back to the active profile.
+    const appStore = useAppStore();
+    appStore.payload = buildPayload({
+      azureDevops: {
+        pullRequests: {
+          "pr-stamped": {
+            pullRequest: { title: "Stamped PR" },
+            connectionId: "conn-missing",
+            profileId: "p1",
+            reviewWorkspaceId: "",
+            existingWorkspaceId: "",
+            checks: { items: [{ id: "check-x", name: "build", state: "pending" }] },
+          },
+        },
+        reviewActivity: [],
+        connections: [],
+        inboxItems: [],
+        lastUpdatedAt: null,
+        error: "",
+      },
+    });
+
+    const notifStore = useNotificationStore();
+    const wrapper = mountHarness();
+    vi.setSystemTime(new Date("2025-01-01T00:00:10Z"));
+
+    appStore.payload = buildPayload({
+      azureDevops: {
+        pullRequests: {
+          "pr-stamped": {
+            pullRequest: { title: "Stamped PR" },
+            connectionId: "conn-missing",
+            profileId: "p1",
+            reviewWorkspaceId: "",
+            existingWorkspaceId: "",
+            checks: { items: [{ id: "check-x", name: "build", state: "succeeded" }] },
+          },
+        },
+        reviewActivity: [],
+        connections: [],
+        inboxItems: [],
+        lastUpdatedAt: null,
+        error: "",
+      },
+    });
+    await nextTick();
+    await flushPromises();
+
+    expect(notifStore.sessions.some((s) => s.events[0].title.includes("Stamped PR"))).toBe(true);
+    expect(notifStore.sessions[0].meta?.profileId).toBe("p1");
+    wrapper.unmount();
+  });
+
+  test("drops checks whose profile can't be resolved from any source", async () => {
+    // No backend stamp, no workspace, connection not in settings — every
+    // resolver fails. Falling back to active profile would route a stray
+    // ping into whichever window happens to be looking; we must drop.
+    const appStore = useAppStore();
+    appStore.payload = buildPayload({
+      azureDevops: {
+        pullRequests: {
+          "pr-orphan": {
+            pullRequest: { title: "Orphan PR" },
+            connectionId: "conn-missing",
+            reviewWorkspaceId: "",
+            existingWorkspaceId: "",
+            checks: { items: [{ id: "check-o", name: "build", state: "pending" }] },
+          },
+        },
+        reviewActivity: [],
+        connections: [],
+        inboxItems: [],
+        lastUpdatedAt: null,
+        error: "",
+      },
+    });
+
+    const notifStore = useNotificationStore();
+    const wrapper = mountHarness();
+    vi.setSystemTime(new Date("2025-01-01T00:00:10Z"));
+
+    appStore.payload = buildPayload({
+      azureDevops: {
+        pullRequests: {
+          "pr-orphan": {
+            pullRequest: { title: "Orphan PR" },
+            connectionId: "conn-missing",
+            reviewWorkspaceId: "",
+            existingWorkspaceId: "",
+            checks: { items: [{ id: "check-o", name: "build", state: "succeeded" }] },
+          },
+        },
+        reviewActivity: [],
+        connections: [],
+        inboxItems: [],
+        lastUpdatedAt: null,
+        error: "",
+      },
+    });
+    await nextTick();
+    await flushPromises();
+
+    expect(notifStore.sessions.some((s) => s.events[0].title.includes("Orphan PR"))).toBe(false);
+    wrapper.unmount();
+  });
 });
