@@ -3,6 +3,7 @@ import type { Ref } from "vue";
 import { useAppStore } from "../stores/app.js";
 import { useNotificationStore } from "../stores/notifications.js";
 import { fireNotificationAlert } from "./useNotificationSound.js";
+import { resolveEventProfileId } from "./useNotificationProfileScope.js";
 
 /**
  * Bridges backend `reviewActivity` deltas (emitted by Azure/GitHub sync) into
@@ -66,10 +67,19 @@ export function useReviewNotifications(latestToastRef: Ref<any> | null = null) {
     // top without bubbling mid-sequence.
     const ordered = [...events].reverse();
 
+    const activeProfileId = appStore.activeProfile?.id || "default";
+
     for (const ev of ordered) {
       if (!ev?.id || seenEventIds.has(ev.id)) continue;
       seenEventIds.add(ev.id);
       if (inStartupGrace) continue;
+
+      // Skip events that belong to a different profile. Review activity is
+      // broadcast to every window, but the toast / sound / dock entry must
+      // stay scoped — otherwise a window viewing profile B would surface
+      // PR pings from profile A.
+      const eventProfileId = resolveEventProfileId(ev, provider, appStore.payload);
+      if (eventProfileId && eventProfileId !== activeProfileId) continue;
 
       const viewId = ev.prKey || ev.id;
       const workspaceId = ev.reviewWorkspaceId || ev.existingWorkspaceId || "";
@@ -85,6 +95,7 @@ export function useReviewNotifications(latestToastRef: Ref<any> | null = null) {
         connectionId: ev.connectionId || "",
         reviewWorkspaceId: ev.reviewWorkspaceId || "",
         existingWorkspaceId: ev.existingWorkspaceId || "",
+        profileId: eventProfileId || activeProfileId,
       };
       const entry = notifStore.add({
         title,

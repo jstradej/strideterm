@@ -3874,6 +3874,129 @@ describe("runtime integration", () => {
   });
 });
 
+describe("clearAllAttention — profile scoping", () => {
+  test("with a windowId, only clears alerts whose workspace lives in that window's profile", async () => {
+    vi.useFakeTimers();
+    try {
+      // Two profiles, each with a workspace owning a live attention alert.
+      // A "Clear all" issued by profile-b's window must NOT wipe the
+      // default-profile alert — without this scoping, the bell on the
+      // default-profile window would silently fall to zero.
+      const fixture = await createFixture({
+        initialState: {
+          activeProjectId: "ws-default",
+          profiles: [
+            { id: "default", name: "Default" },
+            { id: "profile-b", name: "Profile B" },
+          ],
+          projects: [
+            {
+              id: "ws-default",
+              name: "Default WS",
+              kind: "terminal",
+              profileId: "default",
+              cwd: "/tmp/wsd",
+              activePanelId: "shell",
+              panels: [{ id: "shell", title: "Shell", command: "", shell: true, startup: "default" }],
+            },
+            {
+              id: "ws-b",
+              name: "Profile B WS",
+              kind: "terminal",
+              profileId: "profile-b",
+              cwd: "/tmp/wsb",
+              activePanelId: "shell",
+              panels: [{ id: "shell", title: "Shell", command: "", shell: true, startup: "default" }],
+            },
+          ],
+          windowSlots: [
+            {
+              id: "win-default",
+              profileId: "default",
+              activeWorkspaceId: "ws-default",
+              activeSessionId: "",
+              bounds: { x: 0, y: 0, width: 1280, height: 800 },
+              lastFocusedAt: 1000,
+            },
+            {
+              id: "win-b",
+              profileId: "profile-b",
+              activeWorkspaceId: "ws-b",
+              activeSessionId: "",
+              bounds: { x: 0, y: 0, width: 1280, height: 800 },
+              lastFocusedAt: 2000,
+            },
+          ],
+        },
+      });
+      fixtures.push(fixture);
+
+      // Raise an alert on each workspace.
+      await fixture.runtime.syncAttentionContext({ visibleSessionIds: [] });
+      for (const sessionId of ["ws-default:shell", "ws-b:shell"]) {
+        fixture.sessionManager.emit("terminal:data", { sessionId, data: "$ " });
+      }
+      await vi.advanceTimersByTimeAsync(16_000);
+      fixture.runtime.writeToSession("ws-default:shell", "claude\r");
+      fixture.runtime.writeToSession("ws-b:shell", "claude\r");
+      fixture.runtime.notifyAgentHook("ws-default:shell", "idle_prompt");
+      fixture.runtime.notifyAgentHook("ws-b:shell", "idle_prompt");
+      expect(fixture.runtime.getPayload().attention.byWorkspace["ws-default"]).toBeDefined();
+      expect(fixture.runtime.getPayload().attention.byWorkspace["ws-b"]).toBeDefined();
+
+      // Profile-b's window clicks "Clear all".
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (fixture.runtime as any).clearAllAttention("win-b");
+      const after = fixture.runtime.getPayload().attention.byWorkspace;
+      // Default-profile alert survives.
+      expect(after["ws-default"]).toBeDefined();
+      // Profile-b alert is gone.
+      expect(after["ws-b"]).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("without a windowId, falls back to the legacy global clear", async () => {
+    vi.useFakeTimers();
+    try {
+      // Back-compat: callers that pre-date the windowId argument (and any
+      // path the harness can't bind to a window) should still get the old
+      // global wipe rather than a silent no-op.
+      const fixture = await createFixture({
+        initialState: {
+          activeProjectId: "ws-default",
+          projects: [
+            {
+              id: "ws-default",
+              name: "Default WS",
+              kind: "terminal",
+              profileId: "default",
+              cwd: "/tmp/wsd",
+              activePanelId: "shell",
+              panels: [{ id: "shell", title: "Shell", command: "", shell: true, startup: "default" }],
+            },
+          ],
+        },
+      });
+      fixtures.push(fixture);
+
+      await fixture.runtime.syncAttentionContext({ visibleSessionIds: [] });
+      fixture.sessionManager.emit("terminal:data", { sessionId: "ws-default:shell", data: "$ " });
+      await vi.advanceTimersByTimeAsync(16_000);
+      fixture.runtime.writeToSession("ws-default:shell", "claude\r");
+      fixture.runtime.notifyAgentHook("ws-default:shell", "idle_prompt");
+      expect(fixture.runtime.getPayload().attention.byWorkspace["ws-default"]).toBeDefined();
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (fixture.runtime as any).clearAllAttention();
+      expect(fixture.runtime.getPayload().attention.byWorkspace["ws-default"]).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Task-agent crash recovery (see docs/task-recovery.md)
 // ---------------------------------------------------------------------------

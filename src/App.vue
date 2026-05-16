@@ -200,18 +200,16 @@
             v-if="!notifStore.pinned"
             type="button"
             class="notification-bell"
-            :class="{ 'notification-bell--has-unread': notifStore.unreadCount > 0 }"
+            :class="{ 'notification-bell--has-unread': profileUnreadCount > 0 }"
             data-role="notification-bell"
-            title="Open the notification panel — agent alerts, command-finished pings, PR review activity, and the Telegram bot status. The badge shows the unread count."
+            title="Open the notification panel — agent alerts, command-finished pings, PR review activity, and the Telegram bot status. The badge shows the unread count for this profile."
             @click="notifStore.togglePanel()"
           >
             🔔
             <span
               class="notification-bell__badge"
-              :class="{ 'notification-bell__badge--visible': notifStore.unreadCount > 0 }"
-              >{{
-                notifStore.unreadCount > 0 ? (notifStore.unreadCount > 9 ? "9+" : notifStore.unreadCount) : ""
-              }}</span
+              :class="{ 'notification-bell__badge--visible': profileUnreadCount > 0 }"
+              >{{ profileUnreadCount > 0 ? (profileUnreadCount > 9 ? "9+" : profileUnreadCount) : "" }}</span
             >
           </button>
 
@@ -318,11 +316,14 @@ import { useNotificationCapture } from "./composables/useNotificationCapture.js"
 import { useReviewNotifications } from "./composables/useReviewNotifications.js";
 import { usePipelineNotifications } from "./composables/usePipelineNotifications.js";
 import { useNotificationStore } from "./stores/notifications.js";
+import { useNotificationProfileScope } from "./composables/useNotificationProfileScope.js";
 import { useSshStore } from "./stores/ssh.js";
 
 const api = inject<Transport>("api");
 const store = useAppStore();
 const notifStore = useNotificationStore();
+const { sessionInActiveProfile } = useNotificationProfileScope();
+const profileUnreadCount = computed(() => notifStore.unreadCountFor(sessionInActiveProfile));
 const sshStore = useSshStore();
 const { latestToast } = useNotificationCapture();
 useReviewNotifications(latestToast);

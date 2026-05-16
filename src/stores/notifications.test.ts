@@ -199,6 +199,56 @@ describe("notification store (session-grouped)", () => {
     });
   });
 
+  describe("profile-scoped filters", () => {
+    // Sessions are stamped with `meta.profileId` at creation time by the
+    // review / pipeline composables. The store-level helpers stay agnostic
+    // of the profile concept and just accept a predicate — these tests
+    // verify the predicate-aware variants actually scope correctly so a
+    // window in profile B can't ack or clear profile A's sessions.
+
+    it("unreadCountFor counts only sessions matching the predicate", () => {
+      const store = useNotificationStore();
+      store.add({ title: "A", kind: "waiting", workspaceId: "wsA", viewId: "v1", meta: { profileId: "p1" } });
+      store.add({ title: "B", kind: "completed", workspaceId: "wsB", viewId: "v2", meta: { profileId: "p2" } });
+      store.add({ title: "C", kind: "waiting", workspaceId: "wsC", viewId: "v3", meta: { profileId: "p2" } });
+      expect(store.unreadCount).toBe(3);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const inP2 = (s: any) => s.meta?.profileId === "p2";
+      expect(store.unreadCountFor(inP2)).toBe(2);
+    });
+
+    it("markAllRead with a predicate only resolves matching sessions", () => {
+      const store = useNotificationStore();
+      store.add({ title: "A", kind: "waiting", workspaceId: "wsA", viewId: "v1", meta: { profileId: "p1" } });
+      store.add({ title: "B", kind: "waiting", workspaceId: "wsB", viewId: "v2", meta: { profileId: "p2" } });
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      store.markAllRead((s: any) => s.meta?.profileId === "p2");
+      const a = store.sessions.find((s) => s.workspaceId === "wsA")!;
+      const b = store.sessions.find((s) => s.workspaceId === "wsB")!;
+      expect(a.state).toBe("waiting"); // untouched — wrong profile
+      expect(b.state).toBe("resolved"); // matched
+    });
+
+    it("clearAll with a predicate keeps non-matching sessions", () => {
+      const store = useNotificationStore();
+      store.add({ title: "A", kind: "waiting", workspaceId: "wsA", viewId: "v1", meta: { profileId: "p1" } });
+      store.add({ title: "B", kind: "waiting", workspaceId: "wsB", viewId: "v2", meta: { profileId: "p2" } });
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      store.clearAll((s: any) => s.meta?.profileId === "p2");
+      expect(store.sessions).toHaveLength(1);
+      expect(store.sessions[0].workspaceId).toBe("wsA");
+    });
+
+    it("markAllRead with no predicate keeps the legacy global behavior", () => {
+      const store = useNotificationStore();
+      store.add({ title: "A", kind: "waiting", workspaceId: "wsA", viewId: "v1", meta: { profileId: "p1" } });
+      store.add({ title: "B", kind: "completed", workspaceId: "wsB", viewId: "v2", meta: { profileId: "p2" } });
+      store.markAllRead();
+      expect(store.waitingSessions).toHaveLength(0);
+      expect(store.finishedSessions).toHaveLength(0);
+    });
+  });
+
   it("clearOnBackend exists and tolerates missing api gracefully", async () => {
     const store = useNotificationStore();
     // No app store api is wired in this test harness — clearOnBackend must

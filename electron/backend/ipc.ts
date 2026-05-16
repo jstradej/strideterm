@@ -734,9 +734,13 @@ export function registerIpc(
       runtime.syncAttentionContext(validateIpc(attentionSyncSchema, payload || {}, "attention:sync") as any),
     ),
   );
-  ipcMain.handle("attention:clear-all", async () =>
-    withOperationPromise({ opId: "attention:clear-all" }, () => runtime.clearAllAttention()),
-  );
+  ipcMain.handle("attention:clear-all", async (event) => {
+    const windowId = getWindowIdByWebContentsId?.(event.sender.id) ?? "";
+    return withOperationPromise({ opId: "attention:clear-all" }, () =>
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (runtime as any).clearAllAttention(windowId || null),
+    );
+  });
   ipcMain.handle("attention:clear-session", async (_event, sessionId, options) =>
     withOperationPromise({ opId: "attention:clear-session" }, () =>
       runtime.clearAlertForSession(String(sessionId || ""), {

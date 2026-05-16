@@ -83,6 +83,8 @@ interface AddEventPayload {
   meta?: Record<string, any> | null;
 }
 
+type SessionFilter = (_s: NotificationSession) => boolean;
+
 function threadId(workspaceId: string, viewId: string): string {
   return `${workspaceId || ""}:${viewId || ""}`;
 }
@@ -293,9 +295,10 @@ export const useNotificationStore = defineStore("notifications", () => {
     saveToStorage(sessions.value);
   }
 
-  function markAllRead(): void {
+  function markAllRead(filter?: SessionFilter): void {
     let changed = false;
     for (const s of sessions.value) {
+      if (filter && !filter(s)) continue;
       if (s.state === "waiting" || s.state === "finished") {
         s.state = "resolved";
         changed = true;
@@ -305,6 +308,21 @@ export const useNotificationStore = defineStore("notifications", () => {
       sessions.value = [...sessions.value];
       saveToStorage(sessions.value);
     }
+  }
+
+  /**
+   * Profile-aware unread count. The bare `unreadCount` computed sums every
+   * session in the process-shared store; callers that should only see their
+   * own profile pass a predicate (e.g. App.vue bell, NotificationCenter
+   * header) so the badge doesn't light up for alerts the user can't see.
+   */
+  function unreadCountFor(filter: SessionFilter): number {
+    let n = 0;
+    for (const s of sessions.value) {
+      if (!filter(s)) continue;
+      if (s.state === "waiting" || s.state === "finished") n += 1;
+    }
+    return n;
   }
 
   function markRead(sessionId: string): void {
@@ -333,10 +351,16 @@ export const useNotificationStore = defineStore("notifications", () => {
     saveToStorage(sessions.value);
   }
 
-  function clearAll(): void {
-    sessions.value = [];
+  function clearAll(filter?: SessionFilter): void {
+    if (filter) {
+      sessions.value = sessions.value.filter((s) => !filter(s));
+    } else {
+      sessions.value = [];
+    }
     saveToStorage(sessions.value);
-    // Also clear backend attention alerts (bells on tabs/workspaces)
+    // Also clear backend attention alerts (bells on tabs/workspaces). The
+    // server resolves which profile to clear from the caller's bound
+    // session, so the request body stays empty regardless of `filter`.
     import("./app.js")
       .then(({ useAppStore }) => {
         const appStore = useAppStore();
@@ -487,6 +511,7 @@ export const useNotificationStore = defineStore("notifications", () => {
     setState,
     snooze,
     markAllRead,
+    unreadCountFor,
     markRead,
     remove,
     removeByViewId,

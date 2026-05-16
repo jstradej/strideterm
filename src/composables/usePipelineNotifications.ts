@@ -2,6 +2,7 @@ import { watch } from "vue";
 import { useAppStore } from "../stores/app.js";
 import { useNotificationStore } from "../stores/notifications.js";
 import { fireNotificationAlert } from "./useNotificationSound.js";
+import { resolveEventProfileId } from "./useNotificationProfileScope.js";
 
 /**
  * Watches Azure DevOps and GitHub PR check states for transitions from
@@ -19,6 +20,9 @@ function extractChecks(prs: Record<string, any>): Array<{
   prKey: string;
   prTitle: string;
   workspaceId: string;
+  connectionId: string;
+  reviewWorkspaceId: string;
+  existingWorkspaceId: string;
   checkId: string;
   checkName: string;
   state: string;
@@ -35,6 +39,9 @@ function extractChecks(prs: Record<string, any>): Array<{
         prKey,
         prTitle,
         workspaceId,
+        connectionId: String(pr?.connectionId || ""),
+        reviewWorkspaceId: String(pr?.reviewWorkspaceId || ""),
+        existingWorkspaceId: String(pr?.existingWorkspaceId || ""),
         checkId: String(check.id),
         checkName: String(check.name || check.displayName || "Check"),
         state: String(check.state || ""),
@@ -66,6 +73,8 @@ export function usePipelineNotifications() {
 
   function processChecks(prs: Record<string, unknown>, prefix: string) {
     const inStartupGrace = Date.now() - startupAt < STARTUP_GRACE_MS;
+    const provider = prefix === "azure" ? "azure-devops" : "github";
+    const activeProfileId = appStore.activeProfile?.id || "default";
 
     for (const check of extractChecks(prs)) {
       const key = `${prefix}:${check.prKey}:${check.checkId}`;
@@ -77,6 +86,21 @@ export function usePipelineNotifications() {
       const wasRunning = prev === "pending" || prev === "";
       const isTerminal = check.state === "succeeded" || check.state === "failed";
       if (!wasRunning || !isTerminal) continue;
+
+      // Skip checks whose PR belongs to a different profile. Pipeline state
+      // is broadcast to every window via the shared payload, but the toast
+      // / sound / dock entry must stay scoped to the active profile so a
+      // window viewing profile B doesn't ping for profile A's pipelines.
+      const eventProfileId = resolveEventProfileId(
+        {
+          reviewWorkspaceId: check.reviewWorkspaceId,
+          existingWorkspaceId: check.existingWorkspaceId,
+          connectionId: check.connectionId,
+        },
+        provider,
+        appStore.payload,
+      );
+      if (eventProfileId && eventProfileId !== activeProfileId) continue;
 
       const icon = check.state === "succeeded" ? "✅" : "❌";
       const title = `${icon} ${check.checkName} — ${check.prTitle}`;
@@ -94,12 +118,13 @@ export function usePipelineNotifications() {
         viewId: `pipeline:${check.prKey}:${check.checkId}`,
         category: "review",
         meta: {
-          provider: prefix === "azure" ? "azure-devops" : "github",
+          provider,
           prKey: check.prKey,
           kind: "pipeline",
           checkId: check.checkId,
           checkName: check.checkName,
           checkState: check.state,
+          profileId: eventProfileId || activeProfileId,
         },
       });
 

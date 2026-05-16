@@ -27,10 +27,10 @@
           >
             Alerts
             <span
-              v-if="notifStore.unreadCount > 0"
+              v-if="profileUnreadCount > 0"
               class="notification-center__title-badge"
-              :title="`${notifStore.unreadCount} unread`"
-              >{{ notifStore.unreadCount > 99 ? "99+" : notifStore.unreadCount }}</span
+              :title="`${profileUnreadCount} unread in this profile`"
+              >{{ profileUnreadCount > 99 ? "99+" : profileUnreadCount }}</span
             >
           </button>
           <button
@@ -45,21 +45,21 @@
         </div>
         <div class="notification-center__actions">
           <button
-            v-if="notifStore.unreadCount > 0 || notifStore.finishedSessions.length > 0"
+            v-if="profileUnreadCount > 0 || hasFinishedInProfile"
             type="button"
             class="notification-center__action"
-            title="Mark every unread / finished notification as read so the unread badge clears. Notifications stay in the history list — use Clear all to delete them."
-            @click="notifStore.markAllRead()"
+            title="Mark every unread / finished notification in this profile as read so the unread badge clears. Notifications stay in the history list — use Clear all to delete them."
+            @click="ackFinishedInProfile"
           >
             <span class="notification-center__action-icon" aria-hidden="true">✓</span>
             <span class="notification-center__action-label">Ack finished</span>
           </button>
           <button
-            v-if="notifStore.sessions.length > 0"
+            v-if="hasSessionsInProfile"
             type="button"
             class="notification-center__action notification-center__action--danger"
-            title="Permanently remove every notification from the history list (read and unread). This cannot be undone."
-            @click="notifStore.clearAll()"
+            title="Permanently remove every notification in this profile from the history list (read and unread). This cannot be undone."
+            @click="clearAllInProfile"
           >
             <span class="notification-center__action-icon" aria-hidden="true">🗑</span>
             <span class="notification-center__action-label">Clear all</span>
@@ -271,6 +271,7 @@
 import { ref, computed, onMounted, onUnmounted, nextTick, watch } from "vue";
 import { useNotificationStore } from "../../stores/notifications.js";
 import { useAppStore } from "../../stores/app.js";
+import { useNotificationProfileScope } from "../../composables/useNotificationProfileScope.js";
 
 interface NotificationSession {
   id: string;
@@ -292,6 +293,17 @@ interface NotificationSession {
 
 const notifStore = useNotificationStore();
 const appStore = useAppStore();
+const { sessionInActiveProfile } = useNotificationProfileScope();
+const profileUnreadCount = computed(() => notifStore.unreadCountFor(sessionInActiveProfile));
+const hasFinishedInProfile = computed(() => notifStore.finishedSessions.some((s) => sessionInActiveProfile(s)));
+const hasSessionsInProfile = computed(() => notifStore.sessions.some((s) => sessionInActiveProfile(s)));
+
+function ackFinishedInProfile(): void {
+  notifStore.markAllRead(sessionInActiveProfile);
+}
+function clearAllInProfile(): void {
+  notifStore.clearAll(sessionInActiveProfile);
+}
 const bodyRef = ref<HTMLElement | null>(null);
 const panelRef = ref<HTMLElement | null>(null);
 const selectedIndex = ref(0);
@@ -392,19 +404,12 @@ const visibleSessions = computed(() => {
   // Scope to this window's profile: notifStore is process-shared (loaded
   // from localStorage on every BrowserWindow), so without this filter a
   // window viewing profile B would also show profile A's notifications.
-  // Sessions whose workspace no longer exists are kept (legacy / deleted-
-  // workspace history) so the user doesn't lose record of them.
-  const activeProfileId = appStore.activeProfile?.id || "default";
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const workspaces = (appStore.payload?.appState?.workspaces || []) as any[];
-  const profileByWs = new Map<string, string>();
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  for (const ws of workspaces) profileByWs.set(ws.id, (ws as any).profileId || "default");
+  // Sessions whose workspace no longer exists *and* are not stamped with
+  // a profileId are kept (legacy / deleted-workspace history) so the
+  // user doesn't lose record of them.
   const list = notifStore.sessions.filter((s) => {
     if (isSnoozed(s)) return false;
-    const owningProfile = profileByWs.get(s.workspaceId);
-    if (!owningProfile) return true; // unknown / deleted workspace — keep
-    return owningProfile === activeProfileId;
+    return sessionInActiveProfile(s);
   });
   return [...list]
     .sort((a, b) => new Date(b.latestAt).getTime() - new Date(a.latestAt).getTime())

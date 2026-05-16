@@ -5171,23 +5171,72 @@ export async function createRuntime({
       broadcastState();
       return getPayload();
     },
-    clearAllAttention() {
-      log.debug("clearing all attention alerts");
-      projectAlerts.clear();
-      const now = Date.now();
-      for (const [, signal] of sessionSignals) {
-        cancelPromptTimer(signal);
-        // Only carry the post-clear cooldown on signals that were actually
-        // alerting — otherwise a stale buffer replay could re-alert. Fresh
-        // signals (never alerted, not waiting) have nothing to suppress, so
-        // applying lastAlertAt to them just silences valid future hooks for
-        // the next ~15s. Use `everAlerted` (not `lastAlertAt > 0`) because
-        // signals are seeded with lastAlertAt=createTime for warmup.
-        const wasActive = signal.waitingRaised || signal.everAlerted;
-        signal.busy = false;
-        signal.waitingRaised = false;
-        signal.lastOutputAt = 0;
-        if (wasActive) signal.lastAlertAt = now;
+    clearAllAttention(windowId: string | null = null) {
+      // Resolve the caller's profile from windowId. When supplied, only
+      // alerts whose workspace lives in that profile are cleared — without
+      // this scoping, "Clear all" from a window viewing profile B would
+      // wipe profile A's attention alerts too (the per-profile bell badges
+      // on other open windows would silently fall to zero). When windowId
+      // is null (legacy / no-context callers) the old global behavior is
+      // preserved.
+      const state = getState();
+
+      const slot = windowId
+        ? // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          (state.windowSlots || []).find((s: any) => s.id === windowId)
+        : null;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const scopeProfileId: string | null = slot ? (slot as any).profileId || "default" : null;
+
+      log.debug("clearing all attention alerts", { windowId, scopeProfileId });
+
+      if (scopeProfileId !== null) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const workspaces = (state.workspaces || []) as any[];
+        const profileByWs = new Map<string, string>();
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        for (const ws of workspaces) profileByWs.set(ws.id, (ws as any).profileId || "default");
+
+        // Drop alerts whose workspace belongs to the caller's profile (or
+        // whose workspace was already deleted — those have no owner and
+        // can't show in any profile, so they're safe to clear from the
+        // caller's "Clear all" without leaking).
+        for (const wsId of Array.from(projectAlerts.keys())) {
+          const owning = profileByWs.get(wsId);
+          if (owning === undefined || owning === scopeProfileId) {
+            projectAlerts.delete(wsId);
+          }
+        }
+
+        const now = Date.now();
+        for (const [sessionId, signal] of sessionSignals) {
+          const descriptor = parseSessionId(sessionId);
+          const owning = descriptor ? profileByWs.get(descriptor.workspaceId) : undefined;
+          if (owning !== undefined && owning !== scopeProfileId) continue;
+          cancelPromptTimer(signal);
+          const wasActive = signal.waitingRaised || signal.everAlerted;
+          signal.busy = false;
+          signal.waitingRaised = false;
+          signal.lastOutputAt = 0;
+          if (wasActive) signal.lastAlertAt = now;
+        }
+      } else {
+        projectAlerts.clear();
+        const now = Date.now();
+        for (const [, signal] of sessionSignals) {
+          cancelPromptTimer(signal);
+          // Only carry the post-clear cooldown on signals that were actually
+          // alerting — otherwise a stale buffer replay could re-alert. Fresh
+          // signals (never alerted, not waiting) have nothing to suppress, so
+          // applying lastAlertAt to them just silences valid future hooks for
+          // the next ~15s. Use `everAlerted` (not `lastAlertAt > 0`) because
+          // signals are seeded with lastAlertAt=createTime for warmup.
+          const wasActive = signal.waitingRaised || signal.everAlerted;
+          signal.busy = false;
+          signal.waitingRaised = false;
+          signal.lastOutputAt = 0;
+          if (wasActive) signal.lastAlertAt = now;
+        }
       }
       broadcastState();
       return getPayload();

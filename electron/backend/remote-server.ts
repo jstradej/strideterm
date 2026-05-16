@@ -948,11 +948,6 @@ async function handleApiRequest(runtime: Runtime, request: IncomingMessage, resp
       return;
     }
 
-    if (request.method === "POST" && url.pathname === "/api/attention/clear-all") {
-      json(response, 200, runtime.clearAllAttention());
-      return;
-    }
-
     if (request.method === "POST" && url.pathname === "/api/attention/clear-session") {
       json(
         response,
@@ -1604,6 +1599,13 @@ export async function startRemoteServer({
           const parsed = validateIpc(workspaceGridSwapCellsSchema, body, "POST /api/workspace-grid/swap-cells");
           return runtime.swapGridCells(parsed.a, parsed.b, windowId);
         },
+        // "Clear all" must stay scoped to the caller's profile — otherwise
+        // a Clear from profile B's window would wipe attention alerts on
+        // workspaces in profile A (and silence the bell on every other
+        // open window). Slot-aware routing supplies the bound windowId,
+        // and runtime.clearAllAttention resolves the profile from it.
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        "/api/attention/clear-all": (_body, windowId) => (runtime as any).clearAllAttention(windowId),
       };
       const slotAwareHandler = request.method === "POST" ? slotAwareRoute[url.pathname] : undefined;
       if (slotAwareHandler) {
