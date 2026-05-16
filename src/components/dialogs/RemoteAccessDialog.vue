@@ -169,15 +169,16 @@
           <button
             type="button"
             class="button"
-            :disabled="!(remoteConfig.enabled && tunnel.available)"
+            :disabled="!(remoteConfig.enabled && tunnel.available) || creatingTunnel"
             :title="
               tunnel.publicUrl
                 ? 'Tear down the current Cloudflare quick-tunnel and start a fresh one — useful if the existing URL stopped routing.'
                 : 'Spawn cloudflared to create a public Cloudflare quick-tunnel that proxies to your local remote-access server. No port forwarding needed.'
             "
-            @click="store.createCloudflareTunnel()"
+            @click="createTunnel"
           >
-            {{ tunnel.publicUrl ? "Recreate tunnel" : "Create tunnel" }}
+            <span v-if="creatingTunnel" class="button-spinner" aria-hidden="true"></span>
+            {{ creatingTunnel ? "Creating tunnel…" : tunnel.publicUrl ? "Recreate tunnel" : "Create tunnel" }}
           </button>
           <button
             type="button"
@@ -307,6 +308,22 @@ const lanPort = computed(() => String(runtimeRemote.value.port || remoteConfig.v
 
 const cloudflaredPathInput = ref(remoteConfig.value.cloudflaredPath || "");
 const customUrlInput = ref(customPublicUrl.value);
+const creatingTunnel = ref(false);
+
+async function createTunnel(): Promise<void> {
+  if (creatingTunnel.value) return;
+  creatingTunnel.value = true;
+  try {
+    await store.createCloudflareTunnel();
+  } catch (err) {
+    // Backend has already written the human-readable failure into
+    // tunnel.error via applyExternalError, so the inline-error <p>
+    // surfaces it automatically. Console.error is for the brave.
+    console.error("createCloudflareTunnel failed", err);
+  } finally {
+    creatingTunnel.value = false;
+  }
+}
 
 function copyActiveUrl(): void {
   const url = activeShareUrl.value;
@@ -333,3 +350,23 @@ function saveCustomUrl(): void {
   store.saveCustomPublicUrl(customUrlInput.value.trim());
 }
 </script>
+
+<style scoped>
+.button-spinner {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  margin-right: 6px;
+  vertical-align: -2px;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: remote-access-spin 0.7s linear infinite;
+}
+
+@keyframes remote-access-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+</style>

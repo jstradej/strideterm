@@ -556,6 +556,16 @@ class FakeTunnelManager extends EventEmitter {
     this.emit("updated", this.getSnapshot());
     return this.getSnapshot();
   }
+
+  applyExternalError(message: string) {
+    this.snapshot = { ...this.snapshot, status: "idle", error: message || "" };
+    this.emit("updated", this.getSnapshot());
+  }
+
+  applyExternalConnecting() {
+    this.snapshot = { ...this.snapshot, status: "connecting", error: "" };
+    this.emit("updated", this.getSnapshot());
+  }
 }
 
 function createPluginManagerStub() {

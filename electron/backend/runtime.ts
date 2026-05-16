@@ -188,24 +188,44 @@ function probeRemoteOrigin(originUrl: string, timeoutMs = 1200): Promise<number>
 
 async function checkRemoteOrigin(
   originUrl: string,
-  { attempts = 16, delayMs = 250, timeoutMs = 1200 } = {},
+  { attempts = 16, delayMs = 250, timeoutMs = 1200 }: { attempts?: number; delayMs?: number; timeoutMs?: number } = {},
 ): Promise<string> {
-  let lastError = null;
+  const probeLog = getLogger("runtime");
+  let lastError: unknown = null;
+
+  probeLog.debug("checkRemoteOrigin: probing origin", { originUrl, attempts, delayMs, timeoutMs });
 
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     try {
-      await probeRemoteOrigin(originUrl, timeoutMs);
+      const statusCode = await probeRemoteOrigin(originUrl, timeoutMs);
+      probeLog.debug("checkRemoteOrigin: origin reachable", { originUrl, attempt, statusCode });
       return originUrl;
     } catch (error) {
       lastError = error;
+      const errCode = (error as NodeJS.ErrnoException)?.code;
+      probeLog.trace("checkRemoteOrigin: attempt failed", {
+        originUrl,
+        attempt,
+        errCode,
+        errMessage: (error as Error)?.message,
+      });
       if (attempt < attempts - 1) {
         await new Promise((resolve) => setTimeout(resolve, delayMs));
       }
     }
   }
 
+  const lastErrCode = (lastError as NodeJS.ErrnoException)?.code;
+  const lastErrMessage = (lastError as Error)?.message;
+  probeLog.warn("checkRemoteOrigin: all probe attempts failed", {
+    originUrl,
+    attempts,
+    lastErrCode,
+    lastErrMessage,
+  });
+
   throw new Error(
-    `Remote access origin ${originUrl} is not responding${(lastError as Error)?.message ? ` (${(lastError as Error).message})` : ""}.`,
+    `Remote access origin ${originUrl} is not responding${lastErrMessage ? ` (${lastErrMessage})` : ""}.`,
   );
 }
 
@@ -611,6 +631,13 @@ export async function createRuntime({
   }
   const terminalEnvironment = getTerminalEnvironmentImpl();
   let remoteInfo: Record<string, unknown> | null = null;
+  // One-shot guard so the startup auto-tunnel restoration only triggers
+  // on the FIRST setRemoteInfo (i.e. the boot-time bind result). Subsequent
+  // toggles of remote access (user Disable → Enable) restart the server
+  // and call setRemoteInfo again, but we don't want those to re-spawn a
+  // tunnel — that matches the previous "fires once at app startup"
+  // behavior of runInitialRefresh.
+  let autoTunnelBootstrapped = false;
   let dockerPoll: ReturnType<typeof setInterval> | null = null;
   let gitPoll: ReturnType<typeof setInterval> | null = null;
   const attentionContext = createAttentionContext();
@@ -1901,125 +1928,87 @@ export async function createRuntime({
           });
         }
         const resolvedParentId = parentWorkspace.id;
-        if (cmd.agentCommand) {
-          // Run user-defined agent command in non-interactive mode.
-          //
-          // Split the template FIRST, then substitute {task} per token. This
-          // keeps the user-supplied taskDescription as a single argv entry
-          // even if it contains spaces or shell metacharacters; spawn() runs
-          // without a shell so there's no further interpretation.
-          // eslint-disable-next-line security/detect-unsafe-regex -- argv tokeniser; alternatives are mutually exclusive on first char so no exponential backtracking
-          const argvTpl = String(cmd.agentCommand).match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g) || [];
-          const argv = argvTpl.map((tok: string) => {
-            const stripped = tok.replace(/^["']|["']$/g, "");
-            return stripped.includes("{task}") ? stripped.replace(/\{task\}/g, cmd.taskDescription) : stripped;
-          });
-          const executable = argv[0];
-          const args = argv.slice(1);
-          if (!executable) {
-            log.warn("telegram: agent command empty after parse", { agentCommand: cmd.agentCommand });
-            return;
+        // Worktree mode: caller can either create a NEW git worktree
+        // (useWorktree=true + worktreeBranch), pick an EXISTING worktree
+        // (targetCwd overrides parent.cwd), or run the task DIRECTLY in
+        // the parent's cwd (default — no worktree). The validation of the
+        // branch name happens client-side in telegram-manager; the
+        // useWorktree path here just plumbs through.
+        const useWorktree = !!cmd.useWorktree;
+        const worktreeBranch = cmd.worktreeBranch?.trim() || "";
+        if (useWorktree && !worktreeBranch) {
+          log.warn("telegram: start-task with useWorktree but no branch", { workspaceId: cmd.workspaceId });
+          if (cmd.chatId) {
+            await telegramManager.notifyChat(cmd.chatId, "⚠️ Missing branch name for the new worktree\\.");
           }
-          log.info("telegram: spawning agent command", {
-            executable,
-            argCount: args.length,
-            cwd: parentWorkspace.cwd,
-            description: cmd.taskDescription?.slice(0, 80),
-          });
-          const child = spawn(executable, args, {
-            cwd: parentWorkspace.cwd,
-            detached: false,
-            stdio: "ignore",
-          });
-          child.on("error", (err) => {
-            log.warn("telegram: agent command spawn error", { executable, err: err.message });
-          });
-          child.on("exit", (code, signalName) => {
-            log.info("telegram: agent command exited", { executable, code, signal: signalName });
-          });
-        } else {
-          // Worktree mode: caller can either create a NEW git worktree
-          // (useWorktree=true + worktreeBranch), pick an EXISTING worktree
-          // (targetCwd overrides parent.cwd), or run the task DIRECTLY in
-          // the parent's cwd (default — no worktree). The validation of the
-          // branch name happens client-side in telegram-manager; the
-          // useWorktree path here just plumbs through.
-          const useWorktree = !!cmd.useWorktree;
-          const worktreeBranch = cmd.worktreeBranch?.trim() || "";
-          if (useWorktree && !worktreeBranch) {
-            log.warn("telegram: start-task with useWorktree but no branch", { workspaceId: cmd.workspaceId });
-            if (cmd.chatId) {
-              await telegramManager.notifyChat(cmd.chatId, "⚠️ Missing branch name for the new worktree\\.");
-            }
-            return;
-          }
-          // The task cwd is decided by `resolveTelegramTaskTarget` above:
-          //  - explicit `cmd.targetCwd` → used as-is (pick-existing-worktree),
-          //  - source workspace's cwd if it differs from the resolved root
-          //    (the "completion notification from a worktree task" case the
-          //    user reported as buggy),
-          //  - resolved root cwd otherwise.
-          // For "new worktree" mode we ignore the resolution result and keep
-          // the resolved root's cwd as the BASE for the new worktree — the
-          // git worktree is always cut off the project root, never off
-          // another worktree.
-          const taskCwd = useWorktree ? parentWorkspace.cwd : resolution.taskCwd;
-          log.warn("telegram: creating task workspace", {
+          return;
+        }
+        // The task cwd is decided by `resolveTelegramTaskTarget` above:
+        //  - explicit `cmd.targetCwd` → used as-is (pick-existing-worktree),
+        //  - source workspace's cwd if it differs from the resolved root
+        //    (the "completion notification from a worktree task" case the
+        //    user reported as buggy),
+        //  - resolved root cwd otherwise.
+        // For "new worktree" mode we ignore the resolution result and keep
+        // the resolved root's cwd as the BASE for the new worktree — the
+        // git worktree is always cut off the project root, never off
+        // another worktree.
+        const taskCwd = useWorktree ? parentWorkspace.cwd : resolution.taskCwd;
+        log.warn("telegram: creating task workspace", {
+          parentWorkspaceId: resolvedParentId,
+          parentName: parentWorkspace.name,
+          taskCwd,
+          useWorktree,
+          worktreeBranch: worktreeBranch || undefined,
+          cwdReason: resolution.cwdReason,
+          description: cmd.taskDescription?.slice(0, 80),
+        });
+        // activate:false — Telegram-driven creation must not yank the user
+        // out of the workspace they're currently in.
+        let result: { workspaceId: string; cwdWarning: string; payload: unknown } | undefined;
+        try {
+          result = await _rt?.createTaskWorkspace({
+            cwd: taskCwd,
+            description: cmd.taskDescription,
             parentWorkspaceId: resolvedParentId,
-            parentName: parentWorkspace.name,
-            taskCwd,
+            activate: false,
             useWorktree,
-            worktreeBranch: worktreeBranch || undefined,
-            cwdReason: resolution.cwdReason,
-            description: cmd.taskDescription?.slice(0, 80),
+            worktreeBranch: useWorktree ? worktreeBranch : undefined,
           });
-          // activate:false — Telegram-driven creation must not yank the user
-          // out of the workspace they're currently in.
-          let result: { workspaceId: string; cwdWarning: string; payload: unknown } | undefined;
-          try {
-            result = await _rt?.createTaskWorkspace({
-              cwd: taskCwd,
+        } catch (err) {
+          log.warn("telegram: createTaskWorkspace threw", {
+            workspaceId: cmd.workspaceId,
+            err: (err as Error).message,
+          });
+          if (cmd.chatId) {
+            await telegramManager.notifyChat(
+              cmd.chatId,
+              "⚠️ Task creation failed: ` " + (err as Error).message.replace(/`/g, "'") + " `",
+            );
+          }
+          return;
+        }
+        if (result?.workspaceId) {
+          // Don't auto-start. Ask the user via Telegram whether to start
+          // the task now or leave it idle so they can edit TASK.md first.
+          if (cmd.chatId) {
+            const promptCwd = useWorktree
+              ? `${parentWorkspace.cwd}\\.strideterm\\tree\\${worktreeBranch.replace(/\//g, "-")}`
+              : taskCwd;
+            await telegramManager.promptStartAfterCreate({
+              chatId: cmd.chatId,
+              workspaceId: result.workspaceId,
               description: cmd.taskDescription,
-              parentWorkspaceId: resolvedParentId,
-              activate: false,
-              useWorktree,
-              worktreeBranch: useWorktree ? worktreeBranch : undefined,
+              parentName: parentWorkspace.name,
+              cwd: promptCwd,
             });
-          } catch (err) {
-            log.warn("telegram: createTaskWorkspace threw", {
-              workspaceId: cmd.workspaceId,
-              err: (err as Error).message,
-            });
-            if (cmd.chatId) {
-              await telegramManager.notifyChat(
-                cmd.chatId,
-                "⚠️ Task creation failed: ` " + (err as Error).message.replace(/`/g, "'") + " `",
-              );
-            }
-            return;
-          }
-          if (result?.workspaceId) {
-            // Don't auto-start. Ask the user via Telegram whether to start
-            // the task now or leave it idle so they can edit TASK.md first.
-            if (cmd.chatId) {
-              const promptCwd = useWorktree
-                ? `${parentWorkspace.cwd}\\.strideterm\\tree\\${worktreeBranch.replace(/\//g, "-")}`
-                : taskCwd;
-              await telegramManager.promptStartAfterCreate({
-                chatId: cmd.chatId,
-                workspaceId: result.workspaceId,
-                description: cmd.taskDescription,
-                parentName: parentWorkspace.name,
-                cwd: promptCwd,
-              });
-            } else {
-              log.warn("telegram: start-task created workspace but no chatId for follow-up", {
-                workspaceId: result.workspaceId,
-              });
-            }
           } else {
-            log.warn("telegram: createTaskWorkspace returned no result", { workspaceId: cmd.workspaceId });
+            log.warn("telegram: start-task created workspace but no chatId for follow-up", {
+              workspaceId: result.workspaceId,
+            });
           }
+        } else {
+          log.warn("telegram: createTaskWorkspace returned no result", { workspaceId: cmd.workspaceId });
         }
       } else if (cmd.type === "start-existing-task" && cmd.workspaceId) {
         // Defensive guard against accidental object-shaped IDs (older Telegram
@@ -3642,19 +3631,15 @@ export async function createRuntime({
     await syncWorktrees();
     await tunnel.refreshAvailability();
 
-    // Re-establish Cloudflare tunnel if it was active before the last shutdown.
-    // Best-effort — a failure here is non-fatal; the user can create it manually.
-    const remoteConfig = getState().settings.remoteAccess;
-    if (remoteConfig.enabled && remoteConfig.autoTunnel) {
-      ensureRemoteOriginReady(remoteConfig)
-        .then((origin) => tunnel.startQuickTunnel(origin))
-        .then(() => broadcastState())
-        .catch((err: unknown) => {
-          log.warn("autoTunnel: failed to re-establish tunnel on startup", {
-            err: (err as Error)?.message,
-          });
-        });
-    }
+    // Auto-tunnel restoration was here previously, but it ran BEFORE the
+    // remote-access server had reported back via setRemoteInfo whether it
+    // actually bound its port. When another strideterm instance (commonly
+    // dev running alongside prod) was already holding port 43123, the
+    // probe would silently succeed against THAT process, cloudflared
+    // would tunnel into the wrong instance, and the user would only
+    // notice once the other instance shut down. Auto-tunnel now fires
+    // from setRemoteInfo on the first reported state — see the one-shot
+    // guard `autoTunnelBootstrapped` below.
 
     // Background: inspect remaining workspaces so they don't block first render
     if (activeId) {
@@ -3857,6 +3842,59 @@ export async function createRuntime({
     setRemoteInfo(nextRemoteInfo: any) {
       remoteInfo = nextRemoteInfo;
       broadcastState();
+
+      // Boot-time auto-tunnel: re-establish a Cloudflare quick-tunnel if
+      // the user had one running before the last shutdown. Gated on the
+      // remote-access server reporting its bind result so we never start
+      // cloudflared while THIS instance's server is dead (which would
+      // either probe-fail or — worse — quietly tunnel into a competing
+      // process that owns the port, e.g. a dev build running alongside).
+      if (autoTunnelBootstrapped) {
+        return;
+      }
+      autoTunnelBootstrapped = true;
+
+      const remoteConfig = getState().settings.remoteAccess;
+      if (!remoteConfig.enabled || !remoteConfig.autoTunnel) {
+        log.debug("autoTunnel: skipped — disabled or not requested", {
+          remoteEnabled: !!remoteConfig.enabled,
+          autoTunnel: !!remoteConfig.autoTunnel,
+        });
+        return;
+      }
+
+      const serverBound = nextRemoteInfo?.enabled === true;
+      if (!serverBound) {
+        const bindError =
+          typeof nextRemoteInfo?.error === "string" && nextRemoteInfo.error
+            ? nextRemoteInfo.error
+            : "Remote access server is not running";
+        const msg = `Cloudflare auto-tunnel skipped — ${bindError}. Stop the conflicting process (commonly a dev build of strideterm) or change STRIDETERM_REMOTE_PORT, then restart.`;
+        log.warn("autoTunnel: server did not bind, refusing to start cloudflared", {
+          bindError,
+          port: remoteConfig.port,
+          host: remoteConfig.host,
+        });
+        tunnel.applyExternalError(msg);
+        return;
+      }
+
+      log.info("autoTunnel: server bound, restoring tunnel", {
+        host: remoteConfig.host,
+        port: remoteConfig.port,
+      });
+      tunnel.applyExternalConnecting();
+      ensureRemoteOriginReady(remoteConfig)
+        .then((origin) => tunnel.startQuickTunnel(origin))
+        .then(() => {
+          log.info("autoTunnel: tunnel restored", { publicUrl: tunnel.getSnapshot().publicUrl });
+          broadcastState();
+        })
+        .catch((err: unknown) => {
+          const message = (err as Error)?.message || String(err);
+          log.warn("autoTunnel: failed to re-establish tunnel on startup", { err: message });
+          tunnel.applyExternalError(message);
+        });
     },
 
     /** Called by startRemoteServer to hand the registry handle to the runtime. */
@@ -4854,7 +4892,6 @@ export async function createRuntime({
         pollSeconds: Number(connection.pollSeconds) || getTelegramSettings().defaultPollSeconds || 5,
         profileId: typeof connection.profileId === "string" ? connection.profileId.trim() : "",
         forwardKinds: Array.isArray(connection.forwardKinds) ? [...connection.forwardKinds] : [],
-        agentCommand: typeof connection.agentCommand === "string" ? connection.agentCommand : "",
       };
 
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -5373,16 +5410,63 @@ export async function createRuntime({
     },
     async createCloudflareTunnel() {
       const remoteConfig = getState().settings.remoteAccess;
+      const originUrl = createTunnelOriginUrl(remoteConfig);
+      log.info("createCloudflareTunnel: requested", {
+        enabled: !!remoteConfig.enabled,
+        host: remoteConfig.host,
+        port: remoteConfig.port,
+        originUrl,
+      });
+
       if (!remoteConfig.enabled) {
-        throw new Error("Enable LAN remote access before creating a Cloudflare tunnel.");
+        const msg = "Enable LAN remote access before creating a Cloudflare tunnel.";
+        log.warn("createCloudflareTunnel: aborted — remote access disabled");
+        tunnel.applyExternalError(msg);
+        throw new Error(msg);
       }
 
-      await tunnel.startQuickTunnel(await ensureRemoteOriginReady(remoteConfig));
-      // Persist auto-start preference so the tunnel is re-established on next launch.
-      await store.mutate((draft: AppState) => {
-        draft.settings.remoteAccess.autoTunnel = true;
-      });
-      return getPayload();
+      // If the remote-access server failed to bind its port (typical cause:
+      // another strideterm instance — usually a dev build — already owns
+      // the port), don't pretend the tunnel can work. The origin probe
+      // would either time out, or worse, succeed against the competing
+      // process and silently route traffic into the wrong instance.
+      if (remoteInfo && remoteInfo.enabled === false) {
+        const bindError =
+          typeof remoteInfo.error === "string" && remoteInfo.error
+            ? remoteInfo.error
+            : "Remote access server is not running on this instance";
+        const msg = `Cannot create Cloudflare tunnel — ${bindError}. Stop the conflicting process (commonly a dev build of strideterm) or change STRIDETERM_REMOTE_PORT, then restart.`;
+        log.warn("createCloudflareTunnel: aborted — remote-access server not bound", {
+          bindError,
+          port: remoteConfig.port,
+          host: remoteConfig.host,
+        });
+        tunnel.applyExternalError(msg);
+        throw new Error(msg);
+      }
+
+      // Flip the UI chip to "connecting" before the ~4s origin probe so
+      // the user sees progress immediately. The renderer also tracks its
+      // own `creating` ref for the spinner; this covers concurrent UIs.
+      tunnel.applyExternalConnecting();
+
+      try {
+        log.info("createCloudflareTunnel: probing local origin", { originUrl });
+        const resolvedOrigin = await ensureRemoteOriginReady(remoteConfig);
+        log.info("createCloudflareTunnel: origin reachable, starting cloudflared", { originUrl: resolvedOrigin });
+        await tunnel.startQuickTunnel(resolvedOrigin);
+        await store.mutate((draft: AppState) => {
+          draft.settings.remoteAccess.autoTunnel = true;
+        });
+        const snap = tunnel.getSnapshot();
+        log.info("createCloudflareTunnel: success", { publicUrl: snap.publicUrl, localUrl: snap.localUrl });
+        return getPayload();
+      } catch (err) {
+        const message = (err as Error)?.message || String(err);
+        log.error("createCloudflareTunnel: failed", { err: message, originUrl });
+        tunnel.applyExternalError(message);
+        throw err instanceof Error ? err : new Error(message);
+      }
     },
     async stopCloudflareTunnel() {
       await tunnel.stop({ preserveAvailability: true });

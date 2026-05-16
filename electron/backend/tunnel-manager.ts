@@ -346,6 +346,31 @@ export class CloudflareTunnelManager extends EventEmitter {
     });
   }
 
+  // Surface a pre-flight failure from outside the manager (e.g. origin
+  // probe rejected before we even spawned cloudflared). Resets status to
+  // idle so the UI doesn't linger on "connecting…" and writes `error`
+  // so the inline error banner can render it.
+  applyExternalError(message: string): void {
+    this.snapshot = {
+      ...this.snapshot,
+      status: "idle",
+      error: message || "",
+    };
+    this.emit("updated", this.getSnapshot());
+  }
+
+  // Reflect "attempting to connect" in the snapshot before cloudflared
+  // is spawned — used while probing the local origin so the chip flips
+  // to "connecting" immediately instead of after the 4s preflight wait.
+  applyExternalConnecting(): void {
+    this.snapshot = {
+      ...this.snapshot,
+      status: "connecting",
+      error: "",
+    };
+    this.emit("updated", this.getSnapshot());
+  }
+
   async stop({
     preserveAvailability = false,
     quiet = false,
