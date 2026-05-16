@@ -136,6 +136,7 @@ interface SettingsObj {
     shellIntegration?: boolean;
     agentHook?: boolean;
     debug?: boolean;
+    agentsOnly?: boolean;
   };
   git?: { ui?: { showAllActions?: boolean } };
   externalPathOpener?: { mode?: string; command?: string };
@@ -212,6 +213,7 @@ const form = reactive({
     shellIntegration: props.settings.notifications?.shellIntegration ?? true,
     agentHook: props.settings.notifications?.agentHook ?? true,
     debug: props.settings.notifications?.debug ?? false,
+    agentsOnly: props.settings.notifications?.agentsOnly ?? true,
   },
   git: {
     ui: {
@@ -292,6 +294,7 @@ function handleSave() {
       shellIntegration: form.notifications.shellIntegration,
       agentHook: form.notifications.agentHook,
       debug: form.notifications.debug,
+      agentsOnly: form.notifications.agentsOnly,
     },
     tabTemplates: templates.filter((t) => t.title || t.command).map((t) => ({ ...toRaw(t) })),
     git: { ui: { showAllActions: form.git.ui.showAllActions } },
