@@ -243,8 +243,19 @@ export const REMOTE_BLOCKED_REMOTE_ACCESS_FIELDS: ReadonlyArray<string> = [
  *     `C:\\Users\\<me>\\malware.exe` (or any local binary they smuggled in
  *     via an earlier upload primitive) gets RCE the next time the local user
  *     clicks a path in their terminal.
+ *
+ *   - `terminalFontSizeLocal`: not a security threat — a transport-isolation
+ *     invariant. Desktop and remote/mobile clients each persist their own
+ *     terminal font size (`terminalFontSizeLocal` vs `terminalFontSizeRemote`)
+ *     so the two never overwrite each other when both are connected. Remote
+ *     clients may freely write the `Remote` key but must not touch the
+ *     `Local` one.
  */
-export const REMOTE_BLOCKED_TOP_LEVEL_FIELDS: ReadonlyArray<string> = ["externalPathOpener", "externalEditor"];
+export const REMOTE_BLOCKED_TOP_LEVEL_FIELDS: ReadonlyArray<string> = [
+  "externalPathOpener",
+  "externalEditor",
+  "terminalFontSizeLocal",
+];
 
 /**
  * Apply the same blocklist `/api/settings/update` enforces. Exported for

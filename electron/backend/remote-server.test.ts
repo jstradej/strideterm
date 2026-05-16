@@ -140,6 +140,24 @@ describe("sanitizeSettingsFromRemote", () => {
   test("REMOTE_BLOCKED_TOP_LEVEL_FIELDS includes externalEditor", () => {
     expect(REMOTE_BLOCKED_TOP_LEVEL_FIELDS).toContain("externalEditor");
   });
+
+  test("drops terminalFontSizeLocal but passes terminalFontSizeRemote through", () => {
+    const settings = {
+      terminalFontSizeLocal: 18,
+      terminalFontSizeRemote: 16,
+      theme: "dark",
+    };
+    const removed = sanitizeSettingsFromRemote(settings as Record<string, unknown>);
+    expect(removed).toContain("terminalFontSizeLocal");
+    expect(settings).not.toHaveProperty("terminalFontSizeLocal");
+    // Remote clients are allowed to set their own font size.
+    expect((settings as Record<string, unknown>).terminalFontSizeRemote).toBe(16);
+    expect((settings as Record<string, unknown>).theme).toBe("dark");
+  });
+
+  test("REMOTE_BLOCKED_TOP_LEVEL_FIELDS includes terminalFontSizeLocal", () => {
+    expect(REMOTE_BLOCKED_TOP_LEVEL_FIELDS).toContain("terminalFontSizeLocal");
+  });
 });
 
 describe("stripSecretsForRemote", () => {

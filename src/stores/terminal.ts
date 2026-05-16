@@ -1,10 +1,11 @@
 import { defineStore } from "pinia";
-import { shallowRef } from "vue";
+import { shallowRef, watch } from "vue";
 import { createTerminalController } from "../app/terminal-controller.js";
 import type { TerminalView } from "../app/terminal-controller.js";
 import { openTerminalLink, getWindowsPtyOptions, downloadTextFile, safeFilenamePart } from "../app/helpers.js";
 import type { Transport } from "../transport.js";
 import type { StatePayload } from "../../electron/shared/types/state.js";
+import { useAppStore } from "./app.js";
 
 function shortcutTabDirection(event: KeyboardEvent): number {
   const key = String(event?.key || "");
@@ -61,6 +62,25 @@ export const useTerminalStore = defineStore("terminal", () => {
     });
 
     window.addEventListener("strideterm:theme-changed", () => controller?.syncTheme());
+
+    const transportKey: "terminalFontSizeLocal" | "terminalFontSizeRemote" = api.isRemote
+      ? "terminalFontSizeRemote"
+      : "terminalFontSizeLocal";
+    let lastFontSize: number | undefined;
+    watch(
+      () => {
+        const s = useAppStore().payload?.appState?.settings as Record<string, unknown> | undefined;
+        const v = s?.[transportKey];
+        return typeof v === "number" ? v : undefined;
+      },
+      (next) => {
+        if (typeof next === "number" && next !== lastFontSize) {
+          lastFontSize = next;
+          controller?.syncFontSize(next);
+        }
+      },
+      { immediate: true },
+    );
   }
 
   function attachTerminalPane(sessionId: string, paneBody: HTMLDivElement): unknown {
@@ -110,6 +130,10 @@ export const useTerminalStore = defineStore("terminal", () => {
     return controller?.syncTheme();
   }
 
+  function syncFontSize(size: number): void {
+    controller?.syncFontSize(size);
+  }
+
   return {
     views,
     buffers,
@@ -124,5 +148,6 @@ export const useTerminalStore = defineStore("terminal", () => {
     writeToTerminal,
     disconnectHiddenPaneObservers,
     syncTheme,
+    syncFontSize,
   };
 });

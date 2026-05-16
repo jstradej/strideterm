@@ -36,6 +36,17 @@ Profiles group workspaces inside one installation. They are a UI/organizational 
 
 Switching profiles filters the visible workspace list — it does not swap stores or credentials. For true isolation (different creds, different data), use a separate data dir (dev vs prod, or `--data-dir`) or a different OS user.
 
+### Terminal font size — per-transport settings keys
+
+Two flat settings keys control terminal font size, separated by transport so desktop and remote/mobile clients are independent:
+
+- `terminalFontSizeLocal: number` — font size for Electron desktop windows. Range 8–32 px, default 13. Adjusted via Ctrl/Cmd + scroll wheel, Ctrl/Cmd + 0 (reset to 13), or the Settings dialog.
+- `terminalFontSizeRemote: number` — font size for remote/mobile web clients. Range 8–32 px, default 13. Adjusted via pinch gesture or the Settings dialog on the remote client.
+
+**Invariant:** `terminalFontSizeLocal` may only be written by desktop IPC (`settings:update`). Remote HTTP clients (`/api/settings/update`) are blocked from writing it — `sanitizeSettingsFromRemote()` in `remote-server.ts` drops the key. Remote clients may freely write `terminalFontSizeRemote`. This keeps desktop and remote/mobile font preferences isolated even when both are connected simultaneously.
+
+Migration: both keys are backfilled to 13 by `normalizeState()` in `default-state.ts` for any persisted state that predates this feature.
+
 ---
 
 # Behavioral Guidelines

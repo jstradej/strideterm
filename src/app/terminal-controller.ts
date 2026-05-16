@@ -52,6 +52,7 @@ interface TerminalControllerApi {
     disableWebgl?: boolean;
   };
   logRenderer?: (level: LogLevel, message: string, meta?: Record<string, unknown>) => void;
+  updateSettings?: (settings: Record<string, unknown>) => void;
 }
 
 /**
@@ -266,6 +267,45 @@ export function createTerminalController({
   downloadTextFile: (filename: string, content: string) => void;
   safeFilenamePart: (value: unknown, fallback?: string) => string;
 }) {
+  // ---------------------------------------------------------------------------
+  // Font size: per-transport zoom (Ctrl+wheel, Ctrl+0, pinch, Settings)
+  // ---------------------------------------------------------------------------
+
+  const FONT_SIZE_KEY = api.isRemote ? "terminalFontSizeRemote" : "terminalFontSizeLocal";
+
+  function readFontSize(): number {
+    const s = getPayload()?.appState?.settings as Record<string, unknown> | undefined;
+    const raw = s?.[FONT_SIZE_KEY];
+    return typeof raw === "number" ? raw : 13;
+  }
+
+  function setTerminalFontSize(view: TerminalView, size: number): void {
+    const clamped = Math.min(32, Math.max(8, Math.round(size)));
+    if ((view.term.options.fontSize ?? 13) === clamped) return;
+    view.term.options.fontSize = clamped;
+    const sid = view.mount.dataset.sessionId;
+    if (sid) scheduleSessionResize(sid, { force: true });
+  }
+
+  function syncFontSize(size: number): void {
+    for (const view of views.value.values()) {
+      setTerminalFontSize(view, size);
+    }
+  }
+
+  let applyFontSizeTimer: ReturnType<typeof setTimeout> | null = null;
+  function applyFontSize(size: number): void {
+    const clamped = Math.min(32, Math.max(8, Math.round(size)));
+    syncFontSize(clamped);
+    if (applyFontSizeTimer !== null) clearTimeout(applyFontSizeTimer);
+    applyFontSizeTimer = setTimeout(() => {
+      applyFontSizeTimer = null;
+      api.updateSettings?.({ [FONT_SIZE_KEY]: clamped });
+    }, 200);
+  }
+
+  // ---------------------------------------------------------------------------
+
   function focusActiveTerminal(): void {
     if (getOverlay()) return;
     const activeSessionId = getActiveSessionId();
@@ -359,11 +399,12 @@ export function createTerminalController({
     const mount = document.createElement("div");
     mount.className = "terminal-host";
     mount.dataset.sessionId = sessionId;
+    mount.style.touchAction = "none";
     const windowsPty = getWindowsPtyOptions(getPayload());
     const term = new Terminal({
       fontFamily:
         '"JetBrainsMono NFM", "CaskaydiaCove NFM", "MesloLGS NF", "FiraCode NFM", "Cascadia Mono NF", "Cascadia Code PL", "Cascadia Mono", "JetBrains Mono", "Fira Code", "Consolas", monospace',
-      fontSize: 13,
+      fontSize: readFontSize(),
       scrollback: appConfig.session?.scrollback ?? 3000,
       scrollSensitivity: 1.15,
       fastScrollModifier: "shift",
@@ -497,6 +538,15 @@ export function createTerminalController({
         }
       }
       if (!(event.ctrlKey || event.metaKey)) return true;
+      if (
+        !event.altKey &&
+        !event.shiftKey &&
+        (event.code === "Digit0" || event.code === "Numpad0") &&
+        event.type === "keydown"
+      ) {
+        applyFontSize(13);
+        return false;
+      }
       if (!event.altKey && /^Digit[1-9]$/.test(event.code)) return false;
       if (event.key.toLowerCase() === "n" || event.key.toLowerCase() === "r") return false;
       if (shortcutTabDirection(event) !== 0) return false;
@@ -522,6 +572,95 @@ export function createTerminalController({
         });
       }
     });
+    // Ctrl/Cmd + wheel → zoom in/out; no modifier → let xterm scroll normally.
+    term.attachCustomWheelEventHandler((e) => {
+      const zoomMod = IS_MAC ? e.ctrlKey || e.metaKey : e.ctrlKey;
+      if (!zoomMod) return true;
+      e.preventDefault();
+      e.stopPropagation();
+      const cur = (term.options.fontSize ?? 13) as number;
+      applyFontSize(cur + (e.deltaY < 0 ? 1 : -1));
+      return false;
+    });
+
+    // Touch scroll (1 finger) + pinch zoom (2 fingers).
+    const touch = {
+      mode: "none" as "none" | "scroll" | "pinch",
+      lastY: 0,
+      scrollAccum: 0,
+      startDist: 0,
+      startFont: 0,
+    };
+
+    function getTouchDist(e: TouchEvent): number {
+      const t0 = e.touches[0];
+      const t1 = e.touches[1];
+      return Math.hypot(t1.clientX - t0.clientX, t1.clientY - t0.clientY);
+    }
+
+    mount.addEventListener(
+      "touchstart",
+      (e) => {
+        e.preventDefault();
+        if (e.touches.length === 1) {
+          touch.mode = "scroll";
+          touch.lastY = e.touches[0].clientY;
+          touch.scrollAccum = 0;
+        } else if (e.touches.length === 2) {
+          const dist = getTouchDist(e);
+          if (dist < 40) {
+            touch.mode = "scroll";
+            touch.lastY = (e.touches[0].clientY + e.touches[1].clientY) / 2;
+            touch.scrollAccum = 0;
+          } else {
+            touch.mode = "pinch";
+            touch.startDist = dist;
+            touch.startFont = (term.options.fontSize ?? 13) as number;
+          }
+        } else {
+          touch.mode = "none";
+        }
+      },
+      { passive: false },
+    );
+
+    mount.addEventListener(
+      "touchmove",
+      (e) => {
+        e.preventDefault();
+        if (touch.mode === "scroll" && e.touches.length >= 1) {
+          const currentY = e.touches[0].clientY;
+          const dy = touch.lastY - currentY;
+          touch.lastY = currentY;
+          touch.scrollAccum += dy;
+          const fontSize = (term.options.fontSize ?? 13) as number;
+          const lineHeight = Math.max(8, fontSize * ((term.options.lineHeight as number) || 1));
+          const lines = Math.floor(Math.abs(touch.scrollAccum) / lineHeight);
+          if (lines > 0) {
+            const dir = touch.scrollAccum > 0 ? 1 : -1;
+            touch.scrollAccum -= dir * lines * lineHeight;
+            if (term.buffer.active.type === "alternate") {
+              const seq = dir > 0 ? "\x1b[B" : "\x1b[A";
+              for (let i = 0; i < lines; i++) api.writeTerminal(sessionId, seq);
+            } else {
+              term.scrollLines(dir * lines);
+            }
+          }
+        } else if (touch.mode === "pinch" && e.touches.length >= 2) {
+          const dist = getTouchDist(e);
+          if (dist < 40 || touch.startDist < 40) return;
+          applyFontSize(Math.round(touch.startFont * (dist / touch.startDist)));
+        }
+      },
+      { passive: false },
+    );
+
+    const resetTouch = () => {
+      touch.mode = "none";
+    };
+    mount.addEventListener("touchend", resetTouch, { passive: true });
+    mount.addEventListener("touchcancel", resetTouch, { passive: true });
+
     term.onData((data) => api.writeTerminal(sessionId, data));
     views.value.set(sessionId, {
       mount,
@@ -732,6 +871,7 @@ export function createTerminalController({
     pruneTerminalViews,
     scheduleActiveResize,
     scheduleAllVisibleResize,
+    syncFontSize,
     syncTheme() {
       const theme = resolveTerminalTheme(appConfig);
       for (const view of views.value.values()) {

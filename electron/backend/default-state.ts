@@ -473,6 +473,8 @@ export function createDefaultState(): AppState & { activeProjectId: string; proj
         mode: "system" as const,
         command: "",
       },
+      terminalFontSizeLocal: 13,
+      terminalFontSizeRemote: 13,
     },
     tabTemplates: [
       { id: "shell", title: "Shell", command: "", icon: "\u{1F4BB}" },
@@ -1100,6 +1102,14 @@ export function normalizeState(rawState: any = {}): AppState & { activeProjectId
           ? ((rawState.settings || {}).externalPathOpener || {}).command
           : defaults.settings.externalPathOpener.command,
     },
+    terminalFontSizeLocal: (() => {
+      const raw = (rawState.settings || {}).terminalFontSizeLocal;
+      return typeof raw === "number" && isFinite(raw) ? Math.min(32, Math.max(8, Math.round(raw))) : 13;
+    })(),
+    terminalFontSizeRemote: (() => {
+      const raw = (rawState.settings || {}).terminalFontSizeRemote;
+      return typeof raw === "number" && isFinite(raw) ? Math.min(32, Math.max(8, Math.round(raw))) : 13;
+    })(),
   };
   // Reassign workspaces whose profileId points at a deleted profile to a
   // surviving one (active profile, then "default", then first available).

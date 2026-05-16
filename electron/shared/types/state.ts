@@ -132,6 +132,10 @@ export interface Settings {
    */
   externalEditor: string;
   externalPathOpener: ExternalPathOpenerSettings;
+  /** Terminal font size for desktop (Electron) windows. Range 8–32, default 13. */
+  terminalFontSizeLocal: number;
+  /** Terminal font size for remote/mobile web clients. Range 8–32, default 13. */
+  terminalFontSizeRemote: number;
 }
 
 // ------- Tab templates -------

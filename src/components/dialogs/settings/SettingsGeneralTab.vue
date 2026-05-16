@@ -16,6 +16,23 @@
       </div>
     </div>
 
+    <div>
+      <span class="section-label">Terminal font size</span>
+      <input
+        v-model.number="form.terminalFontSize"
+        type="number"
+        min="8"
+        max="32"
+        step="1"
+        class="settings-input settings-input--narrow"
+        title="Font size for terminal windows (8–32 px). Also adjustable with Ctrl/Cmd + scroll wheel, Ctrl/Cmd + 0 to reset, or pinch on touch screens."
+      />
+      <small class="help-text">
+        Font size for terminal windows (8–32 px). Desktop and remote/mobile clients use separate values. Also: Ctrl/Cmd
+        + scroll to zoom, Ctrl/Cmd + 0 to reset to 13, pinch on touch screens.
+      </small>
+    </div>
+
     <div v-if="!api?.isRemote">
       <span class="section-label">External editor</span>
       <div class="input-with-action">
@@ -385,6 +402,10 @@ async function browseCloudflared() {
 
 .settings-input {
   padding: 6px 10px;
+}
+
+.settings-input--narrow {
+  width: 80px;
 }
 
 .settings-select {

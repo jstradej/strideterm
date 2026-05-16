@@ -235,6 +235,11 @@ const form = reactive({
     systemSshPath: props.settings.ssh?.systemSshPath || "",
     requireEncryptedStorage: props.settings.ssh?.requireEncryptedStorage ?? true,
   },
+  terminalFontSize: api?.isRemote
+    ? // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      ((props.settings as any).terminalFontSizeRemote ?? 13)
+    : // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      ((props.settings as any).terminalFontSizeLocal ?? 13),
 });
 
 // -- Version check --
@@ -309,6 +314,9 @@ function handleSave() {
       systemSshPath: form.ssh.systemSshPath,
       requireEncryptedStorage: form.ssh.requireEncryptedStorage,
     },
+    ...(api?.isRemote
+      ? { terminalFontSizeRemote: Number(form.terminalFontSize) || 13 }
+      : { terminalFontSizeLocal: Number(form.terminalFontSize) || 13 }),
   });
 }
 </script>

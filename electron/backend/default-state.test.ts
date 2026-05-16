@@ -576,6 +576,52 @@ describe("default state", () => {
     // Child should be grouped right after parent
     expect(ids.indexOf("child-task")).toBe(ids.indexOf("parent") + 1);
   });
+
+  describe("terminalFontSize settings", () => {
+    test("createDefaultState sets both font size keys to 13", () => {
+      const state = createDefaultState();
+      expect(state.settings.terminalFontSizeLocal).toBe(13);
+      expect(state.settings.terminalFontSizeRemote).toBe(13);
+    });
+
+    test("normalizeState backfills missing font size keys to 13", () => {
+      const state = normalizeState({ settings: { theme: "dark" } });
+      expect(state.settings.terminalFontSizeLocal).toBe(13);
+      expect(state.settings.terminalFontSizeRemote).toBe(13);
+    });
+
+    test("normalizeState preserves valid font size values", () => {
+      const state = normalizeState({
+        settings: { terminalFontSizeLocal: 18, terminalFontSizeRemote: 20 },
+      });
+      expect(state.settings.terminalFontSizeLocal).toBe(18);
+      expect(state.settings.terminalFontSizeRemote).toBe(20);
+    });
+
+    test("normalizeState clamps values below 8 up to 8", () => {
+      const state = normalizeState({
+        settings: { terminalFontSizeLocal: 4, terminalFontSizeRemote: 0 },
+      });
+      expect(state.settings.terminalFontSizeLocal).toBe(8);
+      expect(state.settings.terminalFontSizeRemote).toBe(8);
+    });
+
+    test("normalizeState clamps values above 32 down to 32", () => {
+      const state = normalizeState({
+        settings: { terminalFontSizeLocal: 100, terminalFontSizeRemote: 999 },
+      });
+      expect(state.settings.terminalFontSizeLocal).toBe(32);
+      expect(state.settings.terminalFontSizeRemote).toBe(32);
+    });
+
+    test("normalizeState falls back to 13 for non-numeric values", () => {
+      const state = normalizeState({
+        settings: { terminalFontSizeLocal: "big", terminalFontSizeRemote: null },
+      });
+      expect(state.settings.terminalFontSizeLocal).toBe(13);
+      expect(state.settings.terminalFontSizeRemote).toBe(13);
+    });
+  });
 });
 
 describe("normalizeWorkspaceGrid", () => {
