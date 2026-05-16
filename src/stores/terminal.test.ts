@@ -38,8 +38,8 @@ function makeApi(isRemote: boolean) {
 
 function initStore(isRemote: boolean) {
   const termStore = useTerminalStore();
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   termStore.init(
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     makeApi(isRemote) as any,
     {},
     {
