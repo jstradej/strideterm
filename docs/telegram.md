@@ -131,7 +131,7 @@ Entries are kept for 30 days and include timestamps, chat ID, workspace ID, the 
 - **Update replay protection** — `getUpdates` is called with the next-expected `offset` so a previously processed update can never be re-dispatched.
 - **Pending-state expiry** — every multi-step flow (workspace pick, branch input, description input) carries a `createdAt` and is dropped after `PENDING_TIMEOUT_MS` so a stale callback can't be weaponised.
 - **Rate limiting** — `/task` enforces `TASK_COMMAND_COOLDOWN_MS` per chat to stop rapid-fire workspace spam from a hijacked phone.
-- **Token redaction** — the audit-log layer strips the Telegram bot token from any URL it ends up persisting (via `redactTokenInUrl` in `shared/base-audit-log-store.ts`), so an outbound-fetch error message or HTTP 401 response can't double as a credential dump in `~/.strideterm/logs/`.
+- **Token redaction** — the Winston log layer (`electron/backend/logger.ts`) strips secrets from every line before it's written: Telegram bot tokens in `/bot<TOKEN>/` URL paths, `Authorization: Bearer …` headers, and `?token=…` / `?access_token=…` / `?api_key=…` query strings all become `[REDACTED]`. The Telegram audit log only persists the API method path (`/sendMessage`, `/getMe`, …), never the full URL, so an outbound-fetch error message or HTTP 401 response can't double as a credential dump in `~/.strideterm/logs/` or `telegram-audit-log.db`.
 
 ---
 
