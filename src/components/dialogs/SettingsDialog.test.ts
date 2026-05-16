@@ -116,6 +116,34 @@ describe("SettingsDialog — notifications.agentsOnly", () => {
   });
 });
 
+const FONT_SIZE_STUBS = {
+  SettingsHookProviderSection: true,
+  CustomSelect: true,
+  SettingsTemplatesTab: true,
+  SettingsGitTab: true,
+  SettingsSshTab: true,
+  SettingsTelegramTab: true,
+  SettingsAboutTab: true,
+};
+
+async function mountWithTransport(settings: AnySettings, isRemote: boolean) {
+  const wrapper = mount(SettingsDialog, {
+    props: { settings },
+    global: {
+      provide: {
+        api: {
+          isRemote,
+          getAgentNotifyHookStatus: async () => ({}),
+          getAgentNotifyHookMetrics: async () => null,
+        },
+      },
+      stubs: FONT_SIZE_STUBS,
+    },
+  });
+  await wrapper.vm.$nextTick();
+  return wrapper;
+}
+
 function lastSavedPayload(wrapper: VueWrapper): Record<string, unknown> {
   const events = wrapper.emitted("save") || [];
   const last = events.at(-1)?.[0] as Record<string, unknown> | undefined;
@@ -155,5 +183,35 @@ describe("SettingsDialog — dead field cleanup", () => {
     const ssh = lastSavedPayload(wrapper).ssh as Record<string, unknown>;
     expect(ssh).not.toHaveProperty("allowSystemSshFallback");
     expect(ssh.preferAgent).toBe(false);
+  });
+});
+
+describe("SettingsDialog — terminalFontSize", () => {
+  test("desktop: form initializes from terminalFontSizeLocal", async () => {
+    const wrapper = await mountWithTransport({ terminalFontSizeLocal: 18 }, false);
+    const input = wrapper.find(".settings-input--narrow");
+    expect((input.element as HTMLInputElement).value).toBe("18");
+  });
+
+  test("remote: form initializes from terminalFontSizeRemote", async () => {
+    const wrapper = await mountWithTransport({ terminalFontSizeRemote: 20 }, true);
+    const input = wrapper.find(".settings-input--narrow");
+    expect((input.element as HTMLInputElement).value).toBe("20");
+  });
+
+  test("desktop: Save emits terminalFontSizeLocal and not terminalFontSizeRemote", async () => {
+    const wrapper = await mountWithTransport({ terminalFontSizeLocal: 16 }, false);
+    await clickSave(wrapper);
+    const saved = lastSavedPayload(wrapper);
+    expect(saved).toHaveProperty("terminalFontSizeLocal", 16);
+    expect(saved).not.toHaveProperty("terminalFontSizeRemote");
+  });
+
+  test("remote: Save emits terminalFontSizeRemote and not terminalFontSizeLocal", async () => {
+    const wrapper = await mountWithTransport({ terminalFontSizeRemote: 22 }, true);
+    await clickSave(wrapper);
+    const saved = lastSavedPayload(wrapper);
+    expect(saved).toHaveProperty("terminalFontSizeRemote", 22);
+    expect(saved).not.toHaveProperty("terminalFontSizeLocal");
   });
 });
