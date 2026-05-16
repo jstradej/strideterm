@@ -8,6 +8,7 @@ import type { createRuntime } from "./runtime.js";
 import { withOperationPromise } from "./effect/runtime.js";
 import * as fm from "./file-manager.js";
 import { parseCommandTemplate, substituteCommandArg } from "./command-template.js";
+import { resolveTerminalOpenAction } from "./terminal-open-action.js";
 import { getLogger } from "./logger.js";
 import {
   validateIpc,
@@ -174,21 +175,46 @@ export function registerIpc(
         resolved = path.resolve(base, resolved);
       }
 
+      let statResult;
       try {
-        await stat(resolved);
+        statResult = await stat(resolved);
       } catch {
         return { ok: false, error: `File not found: ${resolved}` };
       }
 
       // eslint-disable-next-line @typescript-eslint/no-explicit-any -- runtime payload type is open by design
-      const opener = (runtime.getPayload() as any)?.appState?.settings?.externalPathOpener || {};
-      const mode: string = opener.mode === "command" || opener.mode === "internal" ? opener.mode : "system";
+      const settings = (runtime.getPayload() as any)?.appState?.settings || {};
+      const action = resolveTerminalOpenAction({
+        isDirectory: statResult.isDirectory(),
+        externalEditor: typeof settings.externalEditor === "string" ? settings.externalEditor : "",
+        externalPathOpener: settings.externalPathOpener || {},
+      });
 
       // Internal mode: just resolve and let the renderer navigate to its
       // FileManager pane. We don't have a direct way to drive the renderer
       // from main; the renderer reads the `internal: true` flag and dispatches.
-      if (mode === "internal") {
+      if (action.kind === "internal") {
         return { ok: true, internal: true, absPath: resolved, line: lineNum, column: columnNum };
+      }
+
+      // Editor mode: simple `externalEditor` field — tokenised argv-style,
+      // file path appended as the last argv slot (no placeholder substitution,
+      // no shell). Triggered only for files; directories took the fall-through.
+      if (action.kind === "editor") {
+        try {
+          const { spawn } = await import("node:child_process");
+          spawn(action.parsed.binary, [...action.parsed.args, resolved], {
+            detached: true,
+            stdio: "ignore",
+          }).unref();
+          return { ok: true, absPath: resolved };
+        } catch (err) {
+          return {
+            ok: false,
+            error: `Couldn't run "${action.parsed.binary}": ${(err as Error)?.message || String(err)}`,
+            absPath: resolved,
+          };
+        }
       }
 
       // Command mode: parse the user's command template and spawn it. The
@@ -196,9 +222,8 @@ export function registerIpc(
       // to `sh -c`. Placeholders ${path}/${line}/${column} are substituted in
       // each arg after tokenisation, so a malicious filename can't escape
       // its argv slot.
-      if (mode === "command") {
-        const template: string = typeof opener.command === "string" ? opener.command : "";
-        const parsed = parseCommandTemplate(template);
+      if (action.kind === "command") {
+        const parsed = parseCommandTemplate(action.template);
         if (!parsed) {
           return { ok: false, error: "Invalid command template (empty or unterminated quote)", absPath: resolved };
         }

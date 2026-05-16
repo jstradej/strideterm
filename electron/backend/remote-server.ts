@@ -233,11 +233,18 @@ export const REMOTE_BLOCKED_REMOTE_ACCESS_FIELDS: ReadonlyArray<string> = [
  *     user-configurable binary path pattern automatically belongs in the
  *     remote blocklist"), this entry is mandatory; do not relax it.
  *
- * The whole subtree is dropped (not per-field) because `mode` and `command`
- * are jointly part of the spawn chain — flipping `mode` from `"system"` to
- * `"command"` is half the exploit by itself.
+ *     The whole subtree is dropped (not per-field) because `mode` and
+ *     `command` are jointly part of the spawn chain — flipping `mode` from
+ *     `"system"` to `"command"` is half the exploit by itself.
+ *
+ *   - `externalEditor`: same threat as `externalPathOpener.command` — the
+ *     desktop spawns this binary with the clicked file path as argv on every
+ *     terminal path link click. A remote caller repointing it to
+ *     `C:\\Users\\<me>\\malware.exe` (or any local binary they smuggled in
+ *     via an earlier upload primitive) gets RCE the next time the local user
+ *     clicks a path in their terminal.
  */
-export const REMOTE_BLOCKED_TOP_LEVEL_FIELDS: ReadonlyArray<string> = ["externalPathOpener"];
+export const REMOTE_BLOCKED_TOP_LEVEL_FIELDS: ReadonlyArray<string> = ["externalPathOpener", "externalEditor"];
 
 /**
  * Apply the same blocklist `/api/settings/update` enforces. Exported for

@@ -468,6 +468,7 @@ export function createDefaultState(): AppState & { activeProjectId: string; proj
           showAllActions: false,
         },
       },
+      externalEditor: "",
       externalPathOpener: {
         mode: "system" as const,
         command: "",
@@ -947,10 +948,12 @@ export function normalizeState(rawState: any = {}): AppState & { activeProjectId
   const VALID_LOG_LEVELS = ["error", "warn", "info", "debug", "trace"];
   const rawLogLevel = (rawState.settings || {}).logLevel;
   const rawNotifications = (rawState.settings || {}).notifications || {};
+  const rawExternalEditor = (rawState.settings || {}).externalEditor;
   const normalizedSettings = {
     ...defaults.settings,
     ...(rawState.settings || {}),
     logLevel: VALID_LOG_LEVELS.includes(rawLogLevel) ? rawLogLevel : defaults.settings.logLevel,
+    externalEditor: typeof rawExternalEditor === "string" ? rawExternalEditor : defaults.settings.externalEditor,
     notifications: {
       promptQuietMs:
         Number(rawNotifications.promptQuietMs) > 0

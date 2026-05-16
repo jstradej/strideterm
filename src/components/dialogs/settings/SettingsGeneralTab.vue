@@ -16,10 +16,10 @@
       </div>
     </div>
 
-    <div>
+    <div v-if="!api?.isRemote">
       <span class="section-label">External editor</span>
       <div class="input-with-action">
-        <input v-model="form.externalEditor" placeholder="e.g. code, notepad++, vim" class="settings-input" />
+        <input v-model="form.externalEditor" placeholder="e.g. code, notepad++, vim --wait" class="settings-input" />
         <button
           v-if="api?.browseFile"
           type="button"
@@ -30,9 +30,15 @@
           Browse
         </button>
       </div>
-      <small class="help-text"
-        >Command or path used to open files from Git changes. Leave empty to use OS default.</small
-      >
+      <small class="help-text">
+        When set, clicking on a <strong>file</strong> path in terminal output spawns this binary with the file path
+        appended as the last argument (no shell). <code>code --wait</code> becomes
+        <code>spawn("code", ["--wait", &lt;path&gt;])</code>. Quote binaries with spaces:
+        <code>"C:\Program Files\App\app.exe"</code>. Directory clicks always use the OS default. For
+        <code>{{ "${path}:${line}" }}</code
+        >-style placeholders use "Terminal path links" → Custom command below. Leave empty to fall through to "Terminal
+        path links".
+      </small>
     </div>
 
     <!--

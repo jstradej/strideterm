@@ -115,3 +115,45 @@ describe("SettingsDialog — notifications.agentsOnly", () => {
     });
   });
 });
+
+function lastSavedPayload(wrapper: VueWrapper): Record<string, unknown> {
+  const events = wrapper.emitted("save") || [];
+  const last = events.at(-1)?.[0] as Record<string, unknown> | undefined;
+  if (!last) throw new Error("No save event emitted");
+  return last;
+}
+
+describe("SettingsDialog — externalEditor", () => {
+  test("Save round-trips externalEditor string", async () => {
+    const wrapper = await mountDialog({ externalEditor: "code --wait" });
+    await clickSave(wrapper);
+    expect(lastSavedPayload(wrapper).externalEditor).toBe("code --wait");
+  });
+
+  test("Save emits empty string when settings omit externalEditor", async () => {
+    const wrapper = await mountDialog({});
+    await clickSave(wrapper);
+    expect(lastSavedPayload(wrapper).externalEditor).toBe("");
+  });
+
+  test("input updates round-trip through Save", async () => {
+    const wrapper = await mountDialog({ externalEditor: "" });
+    const input = wrapper.find('input[placeholder^="e.g. code, notepad++"]');
+    expect(input.exists()).toBe(true);
+    await input.setValue('"C:\\Program Files\\App\\app.exe"');
+    await clickSave(wrapper);
+    expect(lastSavedPayload(wrapper).externalEditor).toBe('"C:\\Program Files\\App\\app.exe"');
+  });
+});
+
+describe("SettingsDialog — dead field cleanup", () => {
+  test("Save payload no longer contains ssh.allowSystemSshFallback", async () => {
+    const wrapper = await mountDialog({
+      ssh: { allowSystemSshFallback: true, preferAgent: false },
+    });
+    await clickSave(wrapper);
+    const ssh = lastSavedPayload(wrapper).ssh as Record<string, unknown>;
+    expect(ssh).not.toHaveProperty("allowSystemSshFallback");
+    expect(ssh.preferAgent).toBe(false);
+  });
+});

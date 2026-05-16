@@ -143,7 +143,6 @@ interface SettingsObj {
   ssh?: {
     preferAgent?: boolean;
     agentPath?: string;
-    allowSystemSshFallback?: boolean;
     certExpiryWarnHours?: number;
     defaultLaunchVia?: string;
     wslDefaultDistro?: string;
@@ -230,7 +229,6 @@ const form = reactive({
   ssh: {
     preferAgent: props.settings.ssh?.preferAgent ?? true,
     agentPath: props.settings.ssh?.agentPath ?? "",
-    allowSystemSshFallback: props.settings.ssh?.allowSystemSshFallback ?? true,
     certExpiryWarnHours: props.settings.ssh?.certExpiryWarnHours ?? 2,
     defaultLaunchVia: props.settings.ssh?.defaultLaunchVia || "ssh2",
     wslDefaultDistro: props.settings.ssh?.wslDefaultDistro || "",
@@ -305,7 +303,6 @@ function handleSave() {
     ssh: {
       preferAgent: form.ssh.preferAgent,
       agentPath: form.ssh.agentPath,
-      allowSystemSshFallback: form.ssh.allowSystemSshFallback,
       certExpiryWarnHours: form.ssh.certExpiryWarnHours,
       defaultLaunchVia: form.ssh.defaultLaunchVia,
       wslDefaultDistro: form.ssh.wslDefaultDistro,

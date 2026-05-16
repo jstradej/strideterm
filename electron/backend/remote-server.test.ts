@@ -121,6 +121,25 @@ describe("sanitizeSettingsFromRemote", () => {
     // this test fires before the multi-transport gap reopens.
     expect(REMOTE_BLOCKED_TOP_LEVEL_FIELDS).toContain("externalPathOpener");
   });
+
+  test("drops externalEditor — same spawn-chain threat as externalPathOpener", () => {
+    // `externalEditor` is the simple-field variant of the same primitive:
+    // desktop spawns this binary with the clicked file path as the final
+    // argv slot on every terminal path-link click. A remote caller
+    // repointing it to a smuggled-in binary path is identical RCE.
+    const settings = {
+      externalEditor: "C:\\Users\\me\\evil.exe",
+      theme: "dark",
+    };
+    const removed = sanitizeSettingsFromRemote(settings as Record<string, unknown>);
+    expect(removed).toContain("externalEditor");
+    expect(settings).not.toHaveProperty("externalEditor");
+    expect(settings.theme).toBe("dark");
+  });
+
+  test("REMOTE_BLOCKED_TOP_LEVEL_FIELDS includes externalEditor", () => {
+    expect(REMOTE_BLOCKED_TOP_LEVEL_FIELDS).toContain("externalEditor");
+  });
 });
 
 describe("stripSecretsForRemote", () => {

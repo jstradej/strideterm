@@ -122,6 +122,15 @@ export interface Settings {
   taskDefaults: TaskDefaults;
   integrations: IntegrationSettings;
   git: GitSettings;
+  /**
+   * Editor invoked when the user clicks on a *file* link in terminal output.
+   * Tokenised argv-style (no shell): `code --wait` becomes
+   * `spawn("code", ["--wait", <path>])`, with the resolved file path appended
+   * as the final argv slot. Quote binaries that contain spaces
+   * (`"C:\\Program Files\\App\\app.exe"`). Empty = fall through to
+   * `externalPathOpener`. Directory clicks ignore this field.
+   */
+  externalEditor: string;
   externalPathOpener: ExternalPathOpenerSettings;
 }
 

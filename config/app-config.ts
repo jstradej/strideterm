@@ -102,7 +102,6 @@ export const APP_CONFIG = {
     defaultConnectTimeoutMs: envNumber("STRIDETERM_SSH_CONNECT_TIMEOUT_MS", 20000),
     agentPath: envString("STRIDETERM_SSH_AGENT", ""),
     preferAgent: envBoolean("STRIDETERM_SSH_PREFER_AGENT", true),
-    allowSystemSshFallback: envBoolean("STRIDETERM_SSH_ALLOW_SYSTEM_SSH", true),
     certExpiryWarnHours: envNumber("STRIDETERM_SSH_CERT_WARN_HOURS", 2),
     systemSshPath: envString("STRIDETERM_SSH_BINARY", ""),
     wslDefaultDistro: envString("STRIDETERM_SSH_WSL_DISTRO", ""),

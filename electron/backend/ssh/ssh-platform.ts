@@ -13,12 +13,6 @@ interface SafeStorage {
   isEncryptionAvailable?(): boolean;
 }
 
-interface AppConfigLike {
-  ssh?: {
-    allowSystemSshFallback?: boolean;
-  };
-}
-
 export interface PlatformCapabilities {
   platform: string;
   arch: string;
@@ -71,9 +65,7 @@ function loadSafeStorage(): SafeStorage | null {
   }
 }
 
-export async function runPlatformPreflight(
-  appConfig: AppConfigLike = { ssh: { allowSystemSshFallback: true } },
-): Promise<PreflightResult> {
+export async function runPlatformPreflight(): Promise<PreflightResult> {
   const safeStorage = loadSafeStorage();
 
   const wslCaps = await detectWslDistros();
@@ -117,7 +109,7 @@ export async function runPlatformPreflight(
           : "Install the openssh package.",
     });
   }
-  if (!caps.systemSsh && appConfig.ssh?.allowSystemSshFallback) {
+  if (!caps.systemSsh) {
     warnings.push({
       level: "info",
       code: "NO_SYSTEM_SSH",
