@@ -45,7 +45,6 @@ export interface TelegramConnectionConfig {
   pollSeconds: number;
   profileId?: string;
   forwardKinds: string[];
-  agentCommand?: string;
 }
 
 export interface TelegramAlertContext {
@@ -115,7 +114,6 @@ interface TelegramCommandEvent {
   connectionId?: string;
   taskDescription?: string;
   alertId?: string;
-  agentCommand?: string;
   /** Chat that triggered this command — runtime uses it for follow-up messages. */
   chatId?: string;
   /** For update-task-description: action to chain after the description is saved. */
@@ -265,8 +263,6 @@ interface PendingRequest {
   panelId: string;
   alertId?: string;
   createdAt: number;
-  /** Carried from the connection that started this request so the user-defined agent command survives the chat-keyed flow */
-  agentCommand?: string;
   /** For confirm-action: the command to emit on confirm */
   pendingCmd?: TelegramCommandEvent;
   /** For workspace-selection: ordered list of choices shown to the user */
@@ -297,7 +293,7 @@ interface PendingRequest {
   profileChoices?: TelegramProfileInfo[];
   /** Command to resume after choosing a profile for an unbound connection */
   profileCommand?: {
-    type: "status" | "workspaces" | "task" | "menu" | "screenshot" | "prs" | "tunnel";
+    type: "status" | "workspaces" | "task" | "screenshot" | "prs" | "tunnel";
     screenshotArg?: string;
   };
 }
@@ -499,7 +495,6 @@ export class TelegramManager extends EventEmitter {
       createdAt: Date.now(),
       profileChoices: choices,
       profileCommand: command,
-      agentCommand: conn.agentCommand || undefined,
     });
     await this._sendText(token, chatId, lines.join("\n"), true);
     return null;
@@ -1433,7 +1428,7 @@ export class TelegramManager extends EventEmitter {
     }
     if (lower === "/menu" || lower === "menu" || lower === "/start" || lower === "start") {
       log.info("telegram command: /menu", { chatId });
-      await this._handleMenuCommand(chatId, token, conn);
+      await this._handleMenuCommand(chatId, token);
       return;
     }
     if (lower === "/help" || lower === "help") {
@@ -1490,9 +1485,6 @@ export class TelegramManager extends EventEmitter {
           case "task":
             await this._handleTaskCommand(chatId, token, scopedConn, chosen.id);
             return;
-          case "menu":
-            await this._handleMenuCommand(chatId, token, scopedConn, chosen.id);
-            return;
           case "screenshot":
             await this._handleScreenshotCommand(
               chatId,
@@ -1531,7 +1523,7 @@ export class TelegramManager extends EventEmitter {
           workspaceId: chosen.id,
           workspaceName: chosen.name,
         });
-        await this._presentWorktreeModeMenu(token, chatId, chosen, pending.agentCommand);
+        await this._presentWorktreeModeMenu(token, chatId, chosen);
         return;
       }
 
@@ -1589,7 +1581,6 @@ export class TelegramManager extends EventEmitter {
           workspaceId: draft.parentWorkspaceId,
           panelId: pending.panelId,
           createdAt: Date.now(),
-          agentCommand: pending.agentCommand,
           draftTask: { ...draft, useWorktree: true, worktreeBranch: branch },
         });
         const normalizedNote =
@@ -1617,7 +1608,6 @@ export class TelegramManager extends EventEmitter {
           panelId: pending.panelId,
           taskDescription: text,
           alertId: pending.alertId,
-          agentCommand: pending.agentCommand || undefined,
           chatId,
           useWorktree: draft?.useWorktree || false,
           worktreeBranch: draft?.worktreeBranch,
@@ -1767,7 +1757,7 @@ export class TelegramManager extends EventEmitter {
           alertId: entry.context.alertId,
         });
         const ctx = entry.context;
-        await this._dispatchTextReply(text, ctx, chatId, token, conn);
+        await this._dispatchTextReply(text, ctx, chatId, token);
         return;
       }
     }
@@ -1949,7 +1939,6 @@ export class TelegramManager extends EventEmitter {
       workspaceId: "",
       panelId: "",
       createdAt: Date.now(),
-      agentCommand: conn.agentCommand || undefined,
       workspaceChoices: candidates,
     });
 
@@ -2060,33 +2049,25 @@ export class TelegramManager extends EventEmitter {
    * Help row at the bottom. Telegram renders this nicely on mobile and
    * desktop alike.
    */
-  private async _handleMenuCommand(
-    chatId: string,
-    token: string,
-    conn: TelegramConnectionConfig,
-    explicitProfileId?: string,
-  ): Promise<void> {
-    const activeProfile = await this._resolveProfileOrPrompt(chatId, token, conn, { type: "menu" }, explicitProfileId);
-    if (!activeProfile) return;
-    // Show a small live snapshot in the menu header so the user sees what
-    // matters most at a glance without having to drill in.
+  private async _handleMenuCommand(chatId: string, token: string): Promise<void> {
     const workspaces = this.getWorkspaces?.() ?? [];
-    const profileWorkspaces = workspaces.filter((w) => (w.profileId || "default") === activeProfile);
-    const activeTasks = profileWorkspaces.filter((w) => {
+    const profileCount =
+      this._profileChoices().length || new Set(workspaces.map((w) => w.profileId || "default")).size || 1;
+    const activeTasks = workspaces.filter((w) => {
       const s = w.task?.state || "";
       return (
         w.kind === "task" && (s === "running" || s === "evaluating" || s === "judge-evaluating" || s === "refreshing")
       );
     });
-    const idleTasks = profileWorkspaces.filter((w) => w.kind === "task" && w.task?.state === "idle");
+    const idleTasks = workspaces.filter((w) => w.kind === "task" && w.task?.state === "idle");
 
     const lines = [
       "🤖 *strIDEterm bot — main menu*",
       "",
-      `📂 Profile: *${escapeMarkdown(activeProfile)}*`,
+      `📂 Profiles: *${profileCount}*`,
       `🔄 Running: *${activeTasks.length}* · ⏸ Idle tasks: *${idleTasks.length}*`,
       "",
-      "_Tap a button or type \\`/help\\` for the command list\\._",
+      "_Tap an action\\. Profile-specific actions will ask for a profile when needed\\._",
     ];
 
     await this._apiCall(token, "sendMessage", {
@@ -2286,7 +2267,6 @@ export class TelegramManager extends EventEmitter {
       workspaceId: "",
       panelId: "",
       createdAt: Date.now(),
-      agentCommand: conn.agentCommand || undefined,
       prChoices: prs,
     });
 
@@ -2397,7 +2377,6 @@ export class TelegramManager extends EventEmitter {
     ctx: TelegramAlertContext,
     chatId: string,
     token: string,
-    conn?: TelegramConnectionConfig,
   ): Promise<void> {
     const lower = text.toLowerCase().trim();
 
@@ -2462,7 +2441,6 @@ export class TelegramManager extends EventEmitter {
         panelId: ctx.panelId,
         taskDescription: text,
         alertId: ctx.alertId,
-        agentCommand: conn?.agentCommand || undefined,
         chatId,
       };
       log.info("telegram reply: start-task (asking confirm)", {
@@ -2681,7 +2659,6 @@ export class TelegramManager extends EventEmitter {
         workspaceId: ctx.workspaceId,
         panelId: ctx.panelId,
         createdAt: Date.now(),
-        agentCommand: conn.agentCommand || undefined,
       });
       log.info("telegram start-task button: awaiting description", {
         chatId,
@@ -2976,12 +2953,7 @@ export class TelegramManager extends EventEmitter {
     return sortWorkspacesStarredFirst(matches);
   }
 
-  private async _presentWorktreeModeMenu(
-    token: string,
-    chatId: string,
-    parent: TelegramWorkspaceInfo,
-    agentCommand?: string,
-  ): Promise<void> {
+  private async _presentWorktreeModeMenu(token: string, chatId: string, parent: TelegramWorkspaceInfo): Promise<void> {
     const existing = this._findExistingWorktrees(parent);
     const draft: PendingRequest["draftTask"] = {
       parentWorkspaceId: parent.id,
@@ -2995,7 +2967,6 @@ export class TelegramManager extends EventEmitter {
       workspaceId: parent.id,
       panelId: parent.panels[0]?.id || "",
       createdAt: Date.now(),
-      agentCommand,
       draftTask: draft,
       worktreeChoices: existing,
     });
@@ -3060,7 +3031,6 @@ export class TelegramManager extends EventEmitter {
         workspaceId: draft.parentWorkspaceId,
         panelId: pending.panelId,
         createdAt: Date.now(),
-        agentCommand: pending.agentCommand,
         draftTask: { ...draft, useWorktree: false },
       });
       await this._answerText(
@@ -3079,7 +3049,6 @@ export class TelegramManager extends EventEmitter {
         workspaceId: draft.parentWorkspaceId,
         panelId: pending.panelId,
         createdAt: Date.now(),
-        agentCommand: pending.agentCommand,
         draftTask: { ...draft, useWorktree: true },
       });
       await this._answerText(
@@ -3137,7 +3106,6 @@ export class TelegramManager extends EventEmitter {
         workspaceId: draft.parentWorkspaceId,
         panelId: pending.panelId,
         createdAt: Date.now(),
-        agentCommand: pending.agentCommand,
         draftTask: { ...draft, useWorktree: false, targetCwd: chosen.cwd },
       });
       await this._answerText(
@@ -3707,8 +3675,9 @@ export class TelegramManager extends EventEmitter {
   }
 
   private _pruneContextMap(): void {
-    if (this.contextByMessageId.size <= MAX_CONTEXT_ENTRIES) return;
     const cutoff = Date.now() - MAX_CONTEXT_AGE_MS;
+
+    if (this.contextByMessageId.size <= MAX_CONTEXT_ENTRIES) return;
     for (const [key, entry] of this.contextByMessageId) {
       if (entry.at < cutoff) {
         this.contextByMessageId.delete(key);

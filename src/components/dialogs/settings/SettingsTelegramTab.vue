@@ -132,7 +132,6 @@ interface TelegramConnection {
   pollSeconds: number;
   profileId?: string;
   forwardKinds: string[];
-  agentCommand?: string;
 }
 
 interface ProfileOption {
@@ -187,7 +186,6 @@ function makeBlankDraft() {
     pollSeconds: props.telegramSettings?.defaultPollSeconds ?? 5,
     profileId: "",
     forwardKinds: [] as string[],
-    agentCommand: "",
   });
 }
 
@@ -201,7 +199,6 @@ const editDraft = reactive({
   pollSeconds: 5,
   profileId: "",
   forwardKinds: [] as string[],
-  agentCommand: "",
 });
 
 watch(
@@ -236,7 +233,6 @@ function toggleEdit(id: string) {
   editDraft.pollSeconds = conn.pollSeconds;
   editDraft.profileId = conn.profileId || "";
   editDraft.forwardKinds = [...conn.forwardKinds];
-  editDraft.agentCommand = conn.agentCommand || "";
   editingId.value = id;
 }
 
@@ -274,7 +270,6 @@ type Draft = {
   pollSeconds: number;
   profileId?: string;
   forwardKinds: string[];
-  agentCommand?: string;
 };
 
 async function detectChats(draft: Draft) {
@@ -386,7 +381,6 @@ async function saveConnection(draft: Draft) {
       pollSeconds: Number(draft.pollSeconds),
       profileId: draft.profileId || undefined,
       forwardKinds: Array.isArray(draft.forwardKinds) ? [...draft.forwardKinds] : [],
-      agentCommand: draft.agentCommand || undefined,
     })) as { payload?: unknown } | undefined;
 
     // The dialog received its `settings` prop as a static snapshot at open
@@ -613,33 +607,6 @@ export const ConnectionForm = defineComponent({
                   ),
                 )
               : null,
-          ],
-        ),
-        h(
-          "label",
-          {
-            class: "form-label",
-            title:
-              "Optional CLI executed when you confirm a /task in Telegram. Use {task} as the placeholder for the task description (kept as a single argv slot — safe for spaces). Leave empty to use the built-in task runner with worktrees.",
-          },
-          [
-            h("span", "Agent command (optional)"),
-            h("input", {
-              value: d.agentCommand,
-              class: "settings-input",
-              placeholder: "claude --non-interactive -p {task}",
-              maxlength: 500,
-              title:
-                "Shell-style template; {task} is substituted with the task text. Runs without a shell, so quoting is for your own argument splitting only.",
-              onInput: (e: Event) => {
-                d.agentCommand = (e.target as HTMLInputElement).value;
-              },
-            }),
-            h(
-              "small",
-              { class: "help-text" },
-              "CLI command to run in non-interactive mode. Use {task} for the task text. Leave empty to use the built-in task runner.",
-            ),
           ],
         ),
         h(

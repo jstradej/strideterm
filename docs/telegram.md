@@ -12,7 +12,7 @@ When something noteworthy happens in strIDEterm — a task agent finishes, an ag
 
 - **Tap an inline button** — fires the action immediately for short, low-risk operations, or pops a confirmation prompt for destructive ones (stop, reset).
 - **Use Telegram Reply** — reply to a notification with free text and the bot routes it to the right workspace as a `custom-message` command.
-- **Type a slash command** — `/menu` (or `/start`, which is aliased to `/menu`), `/status`, `/workspaces`, `/task`, `/screenshot`, `/help`. `/menu` is the recommended entry point on mobile because tapping is faster than typing.
+- **Type a slash command** — `/menu` (or `/start`, which is aliased to `/menu`), `/status`, `/workspaces`, `/task`, `/prs`, `/screenshot`, `/tunnel`, `/help`. `/menu` is the recommended entry point on mobile because tapping is faster than typing.
 
 The whole feature works over Telegram's `getUpdates` long-polling API, so the strIDEterm machine only needs outbound HTTPS to `api.telegram.org`.
 
@@ -53,7 +53,7 @@ Each connection has its own filter, so different chats can subscribe to differen
 
 | Command       | What it does                                                                                                                                                                                  |
 | ------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `/menu`       | Interactive main menu with inline buttons (recommended on mobile).                                                                                                                            |
+| `/menu`       | Global interactive main menu with inline buttons (recommended on mobile). Profile-specific actions ask for a profile only when needed.                                                        |
 | `/status`     | List every task agent and its state. Tap a task for actions.                                                                                                                                  |
 | `/workspaces` | List every workspace in the active profile. Starred workspaces (⭐) appear first, then alphabetical.                                                                                          |
 | `/task`       | Start a new task agent. Picks workspace → worktree mode → branch → prompt. Starred workspaces are shown first in the picker.                                                                  |
@@ -63,6 +63,8 @@ Each connection has its own filter, so different chats can subscribe to differen
 | `/help`       | Print the command list.                                                                                                                                                                       |
 
 Slash-prefix is optional — both `/status` and `status` work, since mobile keyboards make `/` annoying to type.
+
+In multi-profile setups, `/menu` itself is not bound to a profile. Buttons such as **Status**, **New task**, **Workspaces**, **Pull requests**, **Screenshot**, or **Tunnel URL** use the same profile resolution as their matching slash command: a profile-bound Telegram connection runs directly, a single open profile runs directly, and an unbound chat with multiple open profiles asks you to pick one for that action.
 
 ### Task control from chat
 
@@ -96,8 +98,6 @@ Use Telegram's native **Reply** feature on a forwarded notification:
 - Reply to a PR-review alert → opens the review workspace.
 - Reply to an agent-waiting alert with text → forwards the text to the worker as a `custom-message` directive.
 - Reply to a finished-task alert → starts a new task on the same parent workspace using the reply as the description.
-
-Each connection can pin a per-bot **agent command** (e.g. `claude`, `codex`) that becomes the default agent for `/task`-initiated workspaces from that chat.
 
 ### Screenshots and file transfers
 
@@ -167,7 +167,7 @@ The runtime listens on `manager.on("command")` and dispatches each event to the 
 
 ### State and persistence
 
-- **Connections** (`integrations.telegram.connections` in the main state file) — id, label, chat ID, bot token reference, enabled, poll interval, forward filter, optional default agent command. Plain JSON, no secrets.
+- **Connections** (`integrations.telegram.connections` in the main state file) — id, label, chat ID, bot token reference, enabled, poll interval, forward filter. Plain JSON, no secrets.
 - **Bot tokens** — stored separately in `credentials.json` under refs of the form `cred:tg-<id>`, encrypted via `safeStorage`.
 - **Audit log** (`telegram-audit-log.db`, SQLite) — every operation with timing, status, and source.
 
@@ -207,7 +207,6 @@ Every payload goes through the same Zod-schema validation layer the rest of the 
 | ------------------------------------- | -------- | ----------------------------------------------------------------------------------------------------------------------- |
 | `pollSeconds` (per connection)        | `5`      | Interval between `getUpdates` calls.                                                                                    |
 | `forwardKinds` (per connection)       | `[]`     | Empty = forward all; otherwise list of alert kinds.                                                                     |
-| `agentCommand` (per connection)       | `""`     | Default agent for `/task`-initiated workspaces.                                                                         |
 | `TASK_COMMAND_COOLDOWN_MS` (constant) | `10_000` | Minimum gap between two `/task` invocations from a chat.                                                                |
 | `PENDING_TIMEOUT_MS` (constant)       | `10 min` | Multi-step flow expiry (workspace pick, branch input, …).                                                               |
 | `GETUPDATES_LONG_POLL_SEC` (constant) | `25`     | Telegram long-poll timeout. Paired with a `35 s` HTTP read timeout so the request can outlive the server's poll window. |

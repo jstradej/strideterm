@@ -356,7 +356,6 @@ export const telegramConnectionSchema = z
     pollSeconds: z.number().int().min(1).max(3600).optional(),
     profileId: z.string().optional(),
     forwardKinds: z.array(z.string()).optional(),
-    agentCommand: z.string().optional(),
   })
   .passthrough();
 export type TelegramConnectionPayload = z.infer<typeof telegramConnectionSchema>;

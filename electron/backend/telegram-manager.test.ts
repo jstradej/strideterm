@@ -2736,10 +2736,10 @@ describe("/menu hub", () => {
     expect(sentBodies[0].reply_markup).toBeDefined();
   });
 
-  test("/menu summary is scoped to the connection profile", async () => {
+  test("/menu summary is global and does not resolve a profile", async () => {
     const cred = makeCredentialStore({ "cred:tg-1": "token123" });
     const manager = new TelegramManager({ credentialStore: cred });
-    manager.configure([makeConnection({ profileId: "work" })]);
+    manager.configure([makeConnection()]);
     manager.setProfilesGetter(() => [
       { id: "personal", name: "Personal" },
       { id: "work", name: "Work" },
@@ -2774,13 +2774,15 @@ describe("/menu hub", () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     await (manager as any)._handleMessage(
       { message_id: 402, chat: { id: 12345 }, text: "/menu" },
-      makeConnection({ profileId: "work" }),
+      makeConnection(),
       "token123",
     );
 
     const text = String(sentBodies[0].text || "");
-    expect(text).toContain("Profile: *work*");
-    expect(text).toContain("Running: *1*");
+    expect(text).toContain("Profiles: *2*");
+    expect(text).toContain("Running: *2*");
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect((manager as any).pendingRequests.get("12345")).toBeUndefined();
   });
 
   test("clicking mn:status dispatches to /status handler (lists task agents)", async () => {
@@ -2858,6 +2860,49 @@ describe("/menu hub", () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const pending = (manager as any).pendingRequests.get("12345");
     expect(pending?.type).toBe("screenshot-mode-selection");
+  });
+
+  test("unbound multi-profile menu button asks for profile at action time", async () => {
+    const cred = makeCredentialStore({ "cred:tg-1": "token123" });
+    const manager = new TelegramManager({ credentialStore: cred });
+    manager.configure([makeConnection()]);
+    manager.setProfilesGetter(() => [
+      { id: "personal", name: "Personal" },
+      { id: "work", name: "Work" },
+    ]);
+    manager.setWindowSlotsGetter(() => [
+      { id: "win-personal", profileId: "personal" },
+      { id: "win-work", profileId: "work" },
+    ]);
+    manager.setWorkspacesGetter(() => [
+      makeWorkspace({
+        id: "task-work",
+        name: "work task",
+        kind: "task",
+        cwd: "/p/work",
+        profileId: "work",
+        task: { state: "idle", description: "check work" },
+      }),
+    ]);
+
+    const sentTexts: string[] = [];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (manager as any)._apiCall = async (_t: string, _m: string, body: Record<string, unknown>) => {
+      if (body.text) sentTexts.push(body.text as string);
+      return { ok: true, result: { message_id: 2005 } };
+    };
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (manager as any)._handleCallbackQuery(
+      { id: "cq", from: { id: 1 }, message: { message_id: 123, chat: { id: 12345 }, text: "" }, data: "mn:status" },
+      makeConnection(),
+      "token123",
+    );
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const pending = (manager as any).pendingRequests.get("12345");
+    expect(pending?.type).toBe("profile-selection");
+    expect(sentTexts.some((text) => text.includes("Pick a profile"))).toBe(true);
   });
 });
 
