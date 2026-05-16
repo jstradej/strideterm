@@ -3443,6 +3443,8 @@ export async function createRuntime({
           continue;
         }
         if (toAdd.some((w) => w.cwd === treePath && (w.profileId || "default") === parentProfileId)) continue;
+        // Skip directories already owned by a task workspace — the task entry takes priority.
+        if (state.workspaces.some((w) => w.kind === "task" && w.cwd === treePath)) continue;
         toAdd.push(
           normalizeWorkspace({
             id: `workspace-${randomUUID()}`,
@@ -6068,6 +6070,17 @@ export async function createRuntime({
       }
       // saveWorkspace normalizes and persists
       await this.saveWorkspace(workspace);
+      // If running in a git worktree, remove any "Worktree of" entry that
+      // syncWorktrees may have created for the same directory before the task
+      // workspace was registered (race-condition cleanup).
+      if (worktreeBase) {
+        const taskCwd = workspace.cwd || "";
+        await store.mutate((draft: AppState) => {
+          draft.workspaces = draft.workspaces.filter(
+            (w) => w.id === workspace.id || !(w.cwd === taskCwd && (w.notes || "").startsWith("Worktree of ")),
+          );
+        });
+      }
       // Activate the new workspace unless the caller explicitly opted out
       // (e.g. Telegram-driven creation, where the user is in another workspace
       // and shouldn't have their UI yanked away). Use the slot-aware variant

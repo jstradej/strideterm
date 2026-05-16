@@ -2870,6 +2870,102 @@ describe("runtime integration", () => {
     expect(matchingWorktrees.map((project) => project.profileId).sort()).toEqual(["default", "profile-b"]);
   });
 
+  test("syncWorktrees does not add 'Worktree of' entry when task workspace already claims the directory", async () => {
+    // When a task agent workspace exists at a .strideterm/tree/<branch> path,
+    // syncWorktrees must not create a duplicate plain "Worktree of" entry for
+    // the same directory.
+    const parentRoot = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-syncwt-taskdedup-"));
+    tempPaths.push(parentRoot);
+    const treePath = path.join(parentRoot, ".strideterm", "tree", "task-branch");
+    await fs.mkdir(treePath, { recursive: true });
+
+    const fixture = await createFixture({
+      initialState: {
+        activeProjectId: "parent",
+        projects: [
+          {
+            id: "parent",
+            name: "MyProject",
+            kind: "terminal",
+            cwd: parentRoot,
+            activePanelId: "shell",
+            panels: [{ id: "shell", title: "Shell", command: "", shell: true, startup: "default" }],
+          },
+          {
+            id: "task-ws",
+            name: "MyProject / task-branch",
+            kind: "task",
+            cwd: treePath,
+            task: { taskId: "task-ws", parentWorkspaceId: "parent" },
+            activePanelId: "shell",
+            panels: [{ id: "shell", title: "Shell", command: "", shell: true, startup: "default" }],
+          },
+        ],
+      },
+    });
+    fixtures.push(fixture);
+
+    const allProjects = fixture.runtime.getPayload().appState.projects!;
+    // No plain "Worktree of" duplicate should exist at the task workspace directory
+    const duplicates = allProjects.filter((p) => p.cwd === treePath && (p.notes || "").startsWith("Worktree of"));
+    expect(duplicates).toHaveLength(0);
+    // The task workspace itself must still be present
+    expect(allProjects.find((p) => p.id === "task-ws")).toBeDefined();
+  });
+
+  test("createTaskWorkspace removes pre-existing 'Worktree of' entry at the same worktree directory", async () => {
+    // When syncWorktrees creates a "Worktree of" entry before the task workspace
+    // is registered (race condition), createTaskWorkspace must clean it up.
+    const parentRoot = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-task-cleanup-"));
+    tempPaths.push(parentRoot);
+    const treePath = path.join(parentRoot, ".strideterm", "tree", "task-branch");
+    await fs.mkdir(treePath, { recursive: true });
+
+    const fixture = await createFixture({
+      initialState: {
+        activeProjectId: "parent",
+        projects: [
+          {
+            id: "parent",
+            name: "MyProject",
+            kind: "terminal",
+            cwd: parentRoot,
+            activePanelId: "shell",
+            panels: [{ id: "shell", title: "Shell", command: "", shell: true, startup: "default" }],
+          },
+          {
+            id: "plain-wt",
+            name: "MyProject / task-branch",
+            kind: "terminal",
+            cwd: treePath,
+            notes: "Worktree of MyProject",
+            activePanelId: "shell",
+            panels: [{ id: "shell", title: "Shell", command: "", shell: true, startup: "default" }],
+          },
+        ],
+      },
+    });
+    fixtures.push(fixture);
+
+    // The plain "Worktree of" entry is present before the task workspace is created
+    expect(fixture.runtime.getPayload().appState.projects!.find((p) => p.id === "plain-wt")).toBeDefined();
+
+    await fixture.runtime.createTaskWorkspace({
+      cwd: parentRoot,
+      useWorktree: true,
+      worktreeBranch: "task-branch",
+      parentWorkspaceId: "parent",
+      description: "Test task",
+      activate: false,
+    });
+
+    const after = fixture.runtime.getPayload().appState.projects!;
+    // The plain "Worktree of" duplicate must be gone
+    expect(after.find((p) => p.id === "plain-wt")).toBeUndefined();
+    // A task workspace at the same cwd must exist
+    expect(after.find((p) => p.kind === "task" && p.cwd === treePath)).toBeDefined();
+  });
+
   test("createWorktree on multi-repo workspace requires rootPath and runs inside the selected repo", async () => {
     const parentRoot = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-multirepo-"));
     tempPaths.push(parentRoot);
