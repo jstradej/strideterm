@@ -4174,3 +4174,38 @@ describe("TelegramManager windowSlot validation for /task", () => {
     expect((manager as any)._windowIdForProfile("p99")).toBeUndefined();
   });
 });
+
+// ---------------------------------------------------------------------------
+// _handleMenuCommand — /menu MarkdownV2 escape
+// ---------------------------------------------------------------------------
+
+describe("_handleMenuCommand — MarkdownV2 escape", () => {
+  test("/menu sends message successfully (no unescaped MarkdownV2 hyphens crash the send)", async () => {
+    const cred = makeCredentialStore({ "cred:tg-1": "token123" });
+    const manager = new TelegramManager({ credentialStore: cred });
+    manager.setWorkspacesGetter(() => []);
+    manager.setProfilesGetter(() => []);
+    manager.setWindowSlotsGetter(() => []);
+
+    const apiCalls: Array<{ method: string; params: Record<string, unknown> }> = [];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (manager as any)._apiCall = vi.fn(async (_token: string, method: string, params: Record<string, unknown>) => {
+      apiCalls.push({ method, params });
+      return { ok: true, result: { message_id: 1 } };
+    });
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (manager as any)._handleMenuCommand("12345", "token123");
+
+    // The api call must have been attempted (not swallowed by a .catch due to parse error)
+    expect(apiCalls).toHaveLength(1);
+    expect(apiCalls[0].method).toBe("sendMessage");
+
+    // The text must not contain unescaped hyphens inside italic spans (_..._).
+    // A hyphen immediately preceded by an unescaped letter inside an italic
+    // span would cause Telegram MarkdownV2 to reject the whole message.
+    const text = apiCalls[0].params.text as string;
+    expect(text).toContain("Profile\\-specific");
+    expect(text).not.toMatch(/_[^_]*[^\\]-[^_]*_/);
+  });
+});

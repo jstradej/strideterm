@@ -2067,7 +2067,7 @@ export class TelegramManager extends EventEmitter {
       `📂 Profiles: *${profileCount}*`,
       `🔄 Running: *${activeTasks.length}* · ⏸ Idle tasks: *${idleTasks.length}*`,
       "",
-      "_Tap an action\\. Profile-specific actions will ask for a profile when needed\\._",
+      "_Tap an action\\. Profile\\-specific actions will ask for a profile when needed\\._",
     ];
 
     await this._apiCall(token, "sendMessage", {
