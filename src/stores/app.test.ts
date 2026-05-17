@@ -431,6 +431,19 @@ describe("handleBroadcastPayload — optimistic-delete suppression", () => {
     vi.spyOn(window, "confirm").mockImplementation(() => true);
   });
 
+  // deleteWorkspace gates on an in-app ConfirmDialog overlay (see confirmInApp
+  // in app-workspace-actions). The store exposes overlay state on
+  // store.overlay / store.overlayProps; flushing the confirm here lets the
+  // optimistic strip proceed in tests.
+  async function answerConfirm(store: AnyApi, accept = true): Promise<void> {
+    await Promise.resolve();
+    expect(store.overlay).toBe("ConfirmDialog");
+    const props = store.overlayProps as AnyApi;
+    if (accept) props.onConfirm();
+    else props.onCancel();
+    await Promise.resolve();
+  }
+
   function buildInitialPayload(): AnyApi {
     return makeBasePayload({
       appState: {
@@ -476,6 +489,7 @@ describe("handleBroadcastPayload — optimistic-delete suppression", () => {
 
     // Fire optimistic delete — UI hides ws2 immediately, IPC is still in flight.
     void store.deleteWorkspace("ws2");
+    await answerConfirm(store, true);
     await Promise.resolve();
     expect(((store as AnyApi).payload.appState.workspaces as AnyApi[]).find((w) => w.id === "ws2")).toBeUndefined();
 
@@ -507,6 +521,7 @@ describe("handleBroadcastPayload — optimistic-delete suppression", () => {
     await Promise.resolve();
 
     void store.deleteWorkspace("ws2");
+    await answerConfirm(store, true);
     await Promise.resolve();
 
     // Backend confirms the delete by broadcasting a payload without ws2.
