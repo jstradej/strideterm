@@ -596,9 +596,15 @@ export function createTerminalController({
     });
 
     // Touch scroll (1 finger) + pinch zoom (2 fingers).
+    // touchstart calls preventDefault() to take ownership of all touch
+    // behaviour; that also suppresses the browser's tap-to-focus logic, so
+    // we detect "tap" ourselves (single touch that moved < 10 px) and call
+    // term.focus() manually to bring up the mobile keyboard.
     const touch = {
       mode: "none" as "none" | "scroll" | "pinch",
       lastY: 0,
+      startY: 0,
+      startX: 0,
       scrollAccum: 0,
       startDist: 0,
       startFont: 0,
@@ -617,12 +623,16 @@ export function createTerminalController({
         if (e.touches.length === 1) {
           touch.mode = "scroll";
           touch.lastY = e.touches[0].clientY;
+          touch.startY = e.touches[0].clientY;
+          touch.startX = e.touches[0].clientX;
           touch.scrollAccum = 0;
         } else if (e.touches.length === 2) {
           const dist = getTouchDist(e);
           if (dist < 40) {
             touch.mode = "scroll";
             touch.lastY = (e.touches[0].clientY + e.touches[1].clientY) / 2;
+            touch.startY = touch.lastY;
+            touch.startX = (e.touches[0].clientX + e.touches[1].clientX) / 2;
             touch.scrollAccum = 0;
           } else {
             touch.mode = "pinch";
@@ -667,11 +677,22 @@ export function createTerminalController({
       { passive: false },
     );
 
-    const resetTouch = () => {
-      touch.mode = "none";
-    };
-    mount.addEventListener("touchend", resetTouch, { passive: true });
-    mount.addEventListener("touchcancel", resetTouch, { passive: true });
+    mount.addEventListener(
+      "touchend",
+      (e) => {
+        if (touch.mode === "scroll" && e.changedTouches.length === 1) {
+          const dx = Math.abs(e.changedTouches[0].clientX - touch.startX);
+          const dy = Math.abs(e.changedTouches[0].clientY - touch.startY);
+          if (dx < 10 && dy < 10) {
+            // Tap: focus the terminal so the mobile keyboard reappears.
+            term.focus();
+          }
+        }
+        touch.mode = "none";
+      },
+      { passive: true },
+    );
+    mount.addEventListener("touchcancel", () => { touch.mode = "none"; }, { passive: true });
 
     term.onData((data) => api.writeTerminal(sessionId, data));
     views.value.set(sessionId, {
