@@ -77,12 +77,7 @@
   <!-- Workspace-activation loading overlay: visible during async activateWorkspace
        so mobile users have feedback during multi-second workspace switches. -->
   <Teleport to="body">
-    <div
-      v-if="activatingWorkspaceId"
-      class="overlay ws-activate-overlay"
-      role="status"
-      aria-label="Loading workspace"
-    >
+    <div v-if="activatingWorkspaceId" class="overlay ws-activate-overlay" role="status" aria-label="Loading workspace">
       <div class="ws-activate-spinner"></div>
     </div>
   </Teleport>

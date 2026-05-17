@@ -692,7 +692,13 @@ export function createTerminalController({
       },
       { passive: true },
     );
-    mount.addEventListener("touchcancel", () => { touch.mode = "none"; }, { passive: true });
+    mount.addEventListener(
+      "touchcancel",
+      () => {
+        touch.mode = "none";
+      },
+      { passive: true },
+    );
 
     term.onData((data) => api.writeTerminal(sessionId, data));
     views.value.set(sessionId, {

@@ -205,7 +205,10 @@ describe("SidebarPanel — workspace activate loading overlay", () => {
 
     let resolveActivate!: () => void;
     vi.spyOn(store, "activateWorkspace").mockImplementation(
-      () => new Promise<void>((resolve) => { resolveActivate = resolve; }),
+      () =>
+        new Promise<void>((resolve) => {
+          resolveActivate = resolve;
+        }),
     );
 
     const wrapper = mount(SidebarPanel, { attachTo: document.body });
