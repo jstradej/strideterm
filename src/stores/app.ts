@@ -824,6 +824,16 @@ export const useAppStore = defineStore("app", () => {
     // delete IPC call finally lands — visible as a "delete, flicker back,
     // then re-delete" cycle that defeats the whole optimistic UX.
     if (optimisticallyDeletedIds.value.size > 0 && (nextPayload as AnyApi)?.appState?.workspaces) {
+      // Snapshot the workspace IDs the BACKEND reports BEFORE we strip,
+      // because the "have I seen the delete land?" check below has to be
+      // answered from the backend's view, not from our locally rewritten
+      // payload. Earlier this read the stripped payload, so the very first
+      // interim broadcast (where the backend was still mid-delete) would
+      // clear the optimistic flag — and the next interim broadcast would
+      // flicker the deleted workspace back into the sidebar. With the
+      // longer backend pending window the same-cwd guard introduced, that
+      // flicker became multi-frame visible.
+      const incomingIds = ((nextPayload as AnyApi).appState.workspaces as AnyApi[]).map((w: AnyApi) => w.id);
       const stripped = ((nextPayload as AnyApi).appState.workspaces as AnyApi[]).filter(
         (w: AnyApi) => !optimisticallyDeletedIds.value.has(w.id),
       );
@@ -841,12 +851,13 @@ export const useAppStore = defineStore("app", () => {
           },
         } as StatePayload;
       }
-      // Once the broadcast itself has the workspace gone, the deletion has
-      // landed in the source-of-truth store; we can stop suppressing.
-      const stillPresent = ((nextPayload as AnyApi).appState.workspaces as AnyApi[]).map((w: AnyApi) => w.id);
+      // Once the BACKEND broadcast itself has the workspace gone, the
+      // deletion has landed in the source-of-truth store and we can stop
+      // suppressing. Use the pre-strip snapshot — the rewritten payload
+      // above is our local optimistic view, not the backend's report.
       let mutated = false;
       for (const pendingId of Array.from(optimisticallyDeletedIds.value)) {
-        if (!stillPresent.includes(pendingId)) {
+        if (!incomingIds.includes(pendingId)) {
           optimisticallyDeletedIds.value.delete(pendingId);
           mutated = true;
         }

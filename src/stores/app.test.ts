@@ -28,14 +28,19 @@ function makeRemoteTransport(initialPayload: AnyApi) {
 }
 
 function makeElectronTransport(initialPayload: AnyApi) {
+  let stateHandler: ((payload: AnyApi) => void) | null = null;
   return {
     isRemote: false,
     getState: vi.fn(() => Promise.resolve(initialPayload)),
-    onStateUpdated: vi.fn(),
+    onStateUpdated: (fn: (payload: AnyApi) => void) => {
+      stateHandler = fn;
+    },
     onConnectionState: vi.fn(),
     activateWorkspace: vi.fn(() => Promise.resolve(initialPayload)),
     activateProfile: vi.fn(() => Promise.resolve(initialPayload)),
     activateSession: vi.fn(() => Promise.resolve(initialPayload)),
+    // expose so tests can push interim payloads through the store's broadcast handler
+    _push: (p: AnyApi) => stateHandler?.(p),
   };
 }
 
@@ -416,5 +421,120 @@ describe("useAppStore — remote mode identity", () => {
     expect(store.activeWorkspace.id).toBe("ws2");
     expect((store as AnyApi).payload.remoteClient.activeWorkspaceId).toBe("ws2");
     expect((store as AnyApi).payload.appState.activeWorkspaceId).toBe("ws1");
+  });
+});
+
+describe("handleBroadcastPayload — optimistic-delete suppression", () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    (window as AnyApi).strideterm = { startupFlags: { windowId: "slot1" } };
+    vi.spyOn(window, "confirm").mockImplementation(() => true);
+  });
+
+  function buildInitialPayload(): AnyApi {
+    return makeBasePayload({
+      appState: {
+        activeWorkspaceId: "ws1",
+        profiles: [{ id: "p1", name: "P1", color: "#fff", workspaceIds: [] }],
+        workspaces: [
+          { id: "ws1", name: "WS 1", profileId: "p1", panels: [], kind: "terminal", cwd: "/tmp" },
+          { id: "ws2", name: "WS 2", profileId: "p1", panels: [], kind: "terminal", cwd: "/tmp" },
+        ],
+        windowSlots: [{ id: "slot1", profileId: "p1", activeWorkspaceId: "ws1", activeSessionId: "" }],
+        settings: {},
+        tabTemplates: [],
+        ssh: {
+          hosts: [],
+          keys: [],
+          certificates: [],
+          knownHosts: {},
+          settings: { defaultAgentMode: "inherit", importedSshConfig: false },
+        },
+      },
+    });
+  }
+
+  it("interim broadcast that still has the workspace keeps the optimistic flag (no UI flicker)", async () => {
+    // Regression: the broadcast handler used to compute `stillPresent` from
+    // the ALREADY-STRIPPED payload, so the first interim broadcast — the one
+    // where the backend hadn't finished the delete yet — would clear the
+    // optimistic flag prematurely. The NEXT interim broadcast (still carrying
+    // ws-A) would then no longer strip and the deleted workspace would
+    // flicker back into the sidebar. With the longer backend pending window
+    // introduced by the same-cwd guard, that flicker became visible for
+    // multiple frames.
+    const initial = buildInitialPayload();
+    const transport = makeElectronTransport(initial);
+    // Hang the delete IPC indefinitely so the backend "stays" mid-delete and
+    // the suppression flag has to do its job.
+    (transport as AnyApi).deleteWorkspace = vi.fn(() => new Promise(() => {}));
+
+    const store = useAppStore();
+    store.init(transport as AnyApi);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // Fire optimistic delete — UI hides ws2 immediately, IPC is still in flight.
+    void store.deleteWorkspace("ws2");
+    await Promise.resolve();
+    expect(((store as AnyApi).payload.appState.workspaces as AnyApi[]).find((w) => w.id === "ws2")).toBeUndefined();
+
+    // First interim broadcast: backend still reports ws2 (delete not yet committed).
+    transport._push(initial);
+    await Promise.resolve();
+    expect(((store as AnyApi).payload.appState.workspaces as AnyApi[]).find((w) => w.id === "ws2")).toBeUndefined();
+
+    // SECOND interim broadcast: same — still strips. This is the assertion
+    // that catches the original bug. Pre-fix, the first broadcast cleared
+    // the flag and this second broadcast would let ws2 re-surface.
+    transport._push(initial);
+    await Promise.resolve();
+    expect(((store as AnyApi).payload.appState.workspaces as AnyApi[]).find((w) => w.id === "ws2")).toBeUndefined();
+  });
+
+  it("broadcast without the workspace clears the optimistic flag (subsequent payloads are not stripped)", async () => {
+    // Symmetric to the test above: once the BACKEND broadcast no longer
+    // carries the workspace, the deletion has landed and the flag must
+    // release — otherwise a freshly-created workspace with the same id (or
+    // a re-arrived one after a profile switch) would be invisibly hidden.
+    const initial = buildInitialPayload();
+    const transport = makeElectronTransport(initial);
+    (transport as AnyApi).deleteWorkspace = vi.fn(() => new Promise(() => {}));
+
+    const store = useAppStore();
+    store.init(transport as AnyApi);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    void store.deleteWorkspace("ws2");
+    await Promise.resolve();
+
+    // Backend confirms the delete by broadcasting a payload without ws2.
+    const backendDone = makeBasePayload({
+      appState: {
+        ...(initial as AnyApi).appState,
+        workspaces: ((initial as AnyApi).appState.workspaces as AnyApi[]).filter((w) => w.id !== "ws2"),
+      },
+    });
+    transport._push(backendDone);
+    await Promise.resolve();
+    expect(((store as AnyApi).payload.appState.workspaces as AnyApi[]).find((w) => w.id === "ws2")).toBeUndefined();
+
+    // Now a fresh workspace with id "ws2" gets created (or re-emerges from a
+    // profile switch). The flag must have been cleared so it shows up.
+    const reborn = makeBasePayload({
+      appState: {
+        ...(initial as AnyApi).appState,
+        workspaces: [
+          { id: "ws1", name: "WS 1", profileId: "p1", panels: [], kind: "terminal", cwd: "/tmp" },
+          { id: "ws2", name: "Reborn WS 2", profileId: "p1", panels: [], kind: "terminal", cwd: "/tmp" },
+        ],
+      },
+    });
+    transport._push(reborn);
+    await Promise.resolve();
+    const rebornEntry = ((store as AnyApi).payload.appState.workspaces as AnyApi[]).find((w) => w.id === "ws2");
+    expect(rebornEntry).toBeDefined();
+    expect(rebornEntry?.name).toBe("Reborn WS 2");
   });
 });
