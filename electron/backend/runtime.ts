@@ -3311,6 +3311,111 @@ export async function createRuntime({
   }
 
   const pendingWorktreeDeletions = new Set(); // paths being deleted — skip in syncWorktrees
+  // Task workspaces currently being deleted, keyed by `${profileId} ${normalizedCwd}`.
+  // The guard window covers:
+  //   - the synchronous state lookup → store.mutate gap (workspace still in
+  //     state but flagged for deletion); and
+  //   - the asynchronous PTY tear-down inside sessions.removeWorkspaceSessions
+  //     (the old worker/judge processes may still hold file handles in the cwd
+  //     even after store.mutate has removed the workspace from state).
+  // We release the key in a finally block AFTER awaiting sessionsExited so a
+  // new task workspace at the same cwd cannot start until the OS has actually
+  // released the previous task's resources. Composite key keeps the guard
+  // profile-scoped — two profiles legitimately sharing a monorepo do not
+  // block each other.
+  const pendingTaskWorkspaceDeletions = new Set<string>();
+  function pendingTaskKey(profileId: string, normalizedCwd: string): string {
+    if (!normalizedCwd) return "";
+    return `${profileId || "default"} ${normalizedCwd}`;
+  }
+  // Subset of TaskStateKind values that indicate a task is actively touching
+  // the worktree. Other states (idle/paused/completed/failed) leave the
+  // filesystem inert, so multiple inert tasks at the same cwd are allowed to
+  // coexist — the guard only fires when one of them is doing real work.
+  const ACTIVE_TASK_STATES: ReadonlySet<string> = new Set(["running", "evaluating", "judge-evaluating", "refreshing"]);
+  function normalizeTaskCwd(cwd: string | undefined | null): string {
+    return String(cwd || "")
+      .replace(/[\\/]+$/, "")
+      .toLowerCase();
+  }
+  // Resolve the profile the caller is acting under. Used by every same-cwd
+  // guard so a task in profile A cannot block creation in profile B.
+  //   - windowId path: pick from windowSlots (Electron desktop / remote per
+  //     window). Same lookup the rest of the runtime uses.
+  //   - Telegram / API path: inherit from the parent workspace's profile, so
+  //     a task created from a remote command lands in the right profile and
+  //     is checked against the right set of in-profile conflicts.
+  //   - Last-resort fallback to "default" — matches how state normalization
+  //     fills missing profileId values elsewhere.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  function resolveCallerProfileId(state: any, windowId: string | undefined, parentWorkspaceId?: string): string {
+    if (windowId) {
+      const slot = (state.windowSlots || []).find(
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (s: any) => s.id === windowId,
+      );
+      if (slot?.profileId) return slot.profileId;
+    }
+    if (parentWorkspaceId) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const parent = (state.workspaces || []).find((w: any) => w.id === parentWorkspaceId);
+      if (parent?.profileId) return parent.profileId;
+    }
+    // Last-resort fallback aligned with taskRunner.createTaskWorkspace: when
+    // neither windowId nor parentWorkspaceId resolves, the workspace ends up
+    // in (state.windowSlots || [])[0]?.profileId. The guard must check the
+    // same profile, otherwise a legacy/programmatic create (e.g. an internal
+    // caller without window context) would consult the wrong profile and
+    // either false-allow or false-block.
+    return (state.windowSlots || [])[0]?.profileId || "default";
+  }
+  // Same-cwd guard shared by createTaskWorkspace, startTask, and resumeTask.
+  // Throws the user-facing message that bubbles up to the dialog's inline
+  // error banner (and Telegram bot replies). `selfWorkspaceId` is the
+  // workspace the caller already "owns" — start/resume must exempt their own
+  // workspace from the conflict check.
+  function assertNoConflictingActiveTask(
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    state: any,
+    intendedCwd: string,
+    callerProfileId: string,
+    selfWorkspaceId: string | null = null,
+  ): void {
+    const normalizedCwd = normalizeTaskCwd(intendedCwd);
+    if (!normalizedCwd) return;
+    if (pendingTaskWorkspaceDeletions.has(pendingTaskKey(callerProfileId, normalizedCwd))) {
+      log.warn("task guard: cwd is pending deletion of another task workspace", {
+        cwd: intendedCwd,
+        callerProfileId,
+      });
+      throw new Error(
+        "The previous task agent for this directory is still finishing cleanup. Wait a moment and try again.",
+      );
+    }
+
+    const conflicting = (state.workspaces || []).filter(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (ws: any) =>
+        ws.kind === "task" &&
+        ws.task &&
+        ws.id !== selfWorkspaceId &&
+        (ws.profileId || "default") === callerProfileId &&
+        ACTIVE_TASK_STATES.has(ws.task.state) &&
+        normalizeTaskCwd(ws.cwd) === normalizedCwd,
+    );
+    if (conflicting.length > 0) {
+      log.warn("task guard: duplicate cwd detected (active task)", {
+        cwd: intendedCwd,
+        callerProfileId,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        conflictingWorkspaces: conflicting.map((ws: any) => ws.id),
+      });
+      throw new Error(
+        `Another task agent ("${conflicting[0].name}") is currently running in this directory. ` +
+          "Stop or delete it first, or pick a different location.",
+      );
+    }
+  }
   let syncWorktreesRunning = false;
   async function syncWorktrees() {
     if (syncWorktreesRunning) return false;
@@ -4487,202 +4592,259 @@ export async function createRuntime({
       // Cross-profile delete is data loss in another profile. Refuse it.
       assertWorkspaceInWindowProfile(String(workspaceId), windowId);
 
-      // Clean up task runner files for task workspaces
-      if (workspace?.kind === "task" && workspace.task?.taskId && workspace.cwd) {
-        taskRunner.stopTask(workspaceId);
-        await taskRunner.cleanupTaskFiles(workspace.cwd, workspace.task.taskId);
-      }
+      // For task workspaces, mark (profile, cwd) as "being deleted" so a
+      // parallel createTaskWorkspace in the SAME profile over the same
+      // directory refuses with a clear "previous task still cleaning up"
+      // message instead of racing into a half-broken duplicate. The flag is
+      // held in a finally block all the way through sessions.removeWorkspaceSessions
+      // — releasing it earlier would leak file handles to a fresh task agent
+      // because the old worker/judge PTY processes outlive store.mutate.
+      const taskProfileId = workspace?.kind === "task" ? workspace.profileId || "default" : "";
+      const pendingKey =
+        workspace?.kind === "task" && workspace.cwd
+          ? pendingTaskKey(taskProfileId, normalizeTaskCwd(workspace.cwd))
+          : "";
+      if (pendingKey) pendingTaskWorkspaceDeletions.add(pendingKey);
 
-      await store.mutate((draft: AppState) => {
-        const ws = draft.workspaces.find((item) => item.id === workspaceId);
-        draft.workspaces = draft.workspaces.filter((item) => item.id !== workspaceId);
-        if (draft.activeWorkspaceId === workspaceId) {
-          // Pick next-best in same profile
-          const profileId = ws ? ws.profileId || "default" : "default";
-          const sibling = draft.workspaces.find((w) => (w.profileId || "default") === profileId);
-          draft.activeWorkspaceId = sibling?.id || draft.workspaces[0]?.id || "";
-        }
-        // Clear workspace from all window slots
-        for (const slot of draft.windowSlots || []) {
-          if (slot.activeWorkspaceId === workspaceId) {
-            const profileId = slot.profileId;
-            const sibling = draft.workspaces.find((w) => (w.profileId || "default") === profileId);
-            slot.activeWorkspaceId = sibling?.id || "";
-          }
-        }
-        // Clear workspace from per-profile grids
-        for (const profile of draft.profiles) {
-          if (!profile.workspaceGrid) continue;
-          const ids = profile.workspaceGrid.cellWorkspaceIds;
-          for (let i = 0; i < ids.length; i++) {
-            if (ids[i] === workspaceId) ids[i] = null;
-          }
-          if (ids.every((id) => id === null)) profile.workspaceGrid = null;
-        }
-        // Clear from deprecated global grid
-        if (draft.workspaceGrid) {
-          const ids = draft.workspaceGrid.cellWorkspaceIds;
-          for (let i = 0; i < ids.length; i++) {
-            if (ids[i] === workspaceId) ids[i] = null;
-          }
-          if (ids.every((id) => id === null)) draft.workspaceGrid = null;
-        }
-      });
+      // Holds the session-removal promise across the try/finally. For task
+      // workspaces, the finally awaits it before releasing the pending flag,
+      // so the cwd stays locked until OS-level file handles are released.
+      let sessionsExited: Promise<void> | null = null;
 
-      const sessionsExited = sessions.removeWorkspaceSessions(workspaceId);
-      for (const sessionId of [...sessionSignals.keys()]) {
-        if (sessionId.startsWith(`${workspaceId}:`)) {
-          clearActivityFade(sessionId);
-          deleteSessionSignal(sessionId);
-        }
-      }
-      clearProjectAlerts(workspaceId);
-      ensureVisibleSession();
-      broadcastState();
-
-      // Delete worktree files from disk if requested
-      let diskDeleteError = "";
-      if (options.deleteFromDisk && workspace) {
-        const allowedPaths = [workspace.review?.checkout?.rootPath, workspace.cwd, workspace.quickfix?.rootPath]
-          .map((p) => (p ? path.resolve(String(p).trim()) : ""))
-          .filter(Boolean);
-        const requestedPath = path.resolve(String(options.diskPath || allowedPaths[0] || "").trim());
-        const diskPath = allowedPaths.includes(requestedPath) ? requestedPath : "";
-        if (diskPath && path.isAbsolute(diskPath)) {
-          pendingWorktreeDeletions.add(diskPath);
-          const tDelete0 = Date.now();
-          log.debug("deleteWorkspace: starting disk delete", {
-            workspaceId,
-            workspaceName: workspace.name,
-            diskPath,
-            kind: workspace.kind,
-            isReview: !!workspace.review,
-            isTask: !!workspace.task,
-            isQuickfix: !!workspace.quickfix,
-          });
+      try {
+        // Task-file and stopTask cleanup is best-effort. A throw here used to
+        // skip store.mutate entirely, leaving the workspace stuck in state with
+        // no way to remove it short of restarting the app — and blocking every
+        // future task workspace at the same cwd. Catch and log so state is
+        // always cleared.
+        if (workspace?.kind === "task" && workspace.task?.taskId && workspace.cwd) {
           try {
-            const tWait0 = Date.now();
-            await sessionsExited;
-            log.debug("deleteWorkspace: PTY sessions exited", {
-              workspaceId,
-              waitMs: Date.now() - tWait0,
-            });
-            // On Windows, agent children (claude.exe, codex.exe, …) spawned by
-            // the killed PTY shell may outlive their parent for hundreds of
-            // milliseconds while still holding file handles inside the
-            // worktree. fs/rd will fail with EBUSY/EPERM until those handles
-            // are released. We don't taskkill the tree (too brutal — risks
-            // truncated agent state), instead we wait by probing: try to
-            // rename diskPath onto itself; on Windows this fails while any
-            // handle is open and succeeds once they're all released. Cap the
-            // wait at 5s; if it still locks, rmPath's own retry loop will
-            // either eventually succeed or the git fallback will run.
-            if (process.platform === "win32") {
-              const tProbe0 = Date.now();
-              const probeTimeout = 5000;
-              const probeInterval = 150;
-              let probedReady = false;
-              while (Date.now() - tProbe0 < probeTimeout) {
-                try {
-                  // rename(p, p) is a cheap OS-level lock probe — it touches
-                  // the directory entry without scanning contents.
-                  await rename(diskPath, diskPath);
-                  probedReady = true;
-                  break;
-                } catch {
-                  await new Promise((resolve) => setTimeout(resolve, probeInterval));
-                }
-              }
-              log.debug("deleteWorkspace: handle-release probe finished", {
-                workspaceId,
-                diskPath,
-                probeMs: Date.now() - tProbe0,
-                released: probedReady,
-              });
-            }
-
-            const cacheRepoPath = workspace.review?.checkout?.cacheRepoPath || "";
-            // Task worktrees store the base repo path explicitly
-            const taskWorktreeBase = workspace.task?.worktreeBase || "";
-            // workspace.cwd is like /repo/.strideterm/tree/branch-name — 3 levels up to repo root
-            const mainWorktreePath = workspace.cwd ? path.resolve(workspace.cwd, "..", "..", "..") : "";
-            const gitCwd = cacheRepoPath || taskWorktreeBase || mainWorktreePath;
-            log.debug("deleteWorkspace: resolved git cwd", { workspaceId, gitCwd, cacheRepoPath, taskWorktreeBase });
-            // Fast path: nuke the directory at the filesystem level, then ask
-            // git to prune stale metadata. `git worktree remove --force` walks
-            // the tree itself with per-file stat calls — markedly slower than
-            // platform-native `rd /s /q` (Windows) or fs.rm (POSIX) when the
-            // worktree has a fat node_modules / build dir. The previous order
-            // (git first, fs fallback) made every successful delete take the
-            // slow path. Only fall back to `git worktree remove --force` if
-            // rmPath couldn't finish (e.g. locked files held by AV).
-            let rmFailed = false;
-            let rmErr: unknown = null;
-            const tRm0 = Date.now();
-            try {
-              await rmPath(diskPath);
-              log.debug("deleteWorkspace: rmPath succeeded", { workspaceId, diskPath, ms: Date.now() - tRm0 });
-            } catch (err) {
-              rmFailed = true;
-              rmErr = err;
-              log.debug("deleteWorkspace: rmPath failed, trying git worktree remove --force", {
-                workspaceId,
-                diskPath,
-                ms: Date.now() - tRm0,
-                err: (err as Error)?.message?.slice(0, 200),
-              });
-            }
-            if (gitCwd) {
-              if (rmFailed) {
-                const tGit0 = Date.now();
-                try {
-                  await execFileTextImpl("git", ["worktree", "remove", "--force", diskPath], { cwd: gitCwd });
-                  log.debug("deleteWorkspace: git worktree remove --force succeeded", {
-                    workspaceId,
-                    diskPath,
-                    ms: Date.now() - tGit0,
-                  });
-                } catch (err) {
-                  log.warn("deleteWorkspace: git worktree remove --force also failed", {
-                    workspaceId,
-                    diskPath,
-                    ms: Date.now() - tGit0,
-                    err: (err as Error)?.message?.slice(0, 200),
-                    rmErr: (rmErr as Error)?.message?.slice(0, 200),
-                  });
-                }
-              }
-              // Prune the .git/worktrees admin entry. Doesn't need to block
-              // the response — it's just metadata cleanup.
-              execFileTextImpl("git", ["worktree", "prune"], { cwd: gitCwd }).catch(() => {});
-            } else if (rmFailed) {
-              // No git cwd to prune from — surface the rm failure.
-              throw new Error(`Failed to remove ${diskPath}`);
-            }
-            log.debug("deleteWorkspace: disk delete complete", {
-              workspaceId,
-              diskPath,
-              totalMs: Date.now() - tDelete0,
-              rmFailed,
-            });
+            taskRunner.stopTask(workspaceId);
           } catch (err) {
-            diskDeleteError = `Could not delete ${diskPath}: ${(err as any)?.message || err}`; // eslint-disable-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: unknown catch shape
-            log.warn("workspace disk delete failed", { diskPath, err: diskDeleteError });
-          } finally {
-            pendingWorktreeDeletions.delete(diskPath);
+            log.warn("deleteWorkspace: stopTask failed, continuing with state cleanup", {
+              workspaceId,
+              err: (err as Error)?.message,
+            });
+          }
+          try {
+            await taskRunner.cleanupTaskFiles(workspace.cwd, workspace.task.taskId);
+          } catch (err) {
+            log.warn("deleteWorkspace: cleanupTaskFiles failed, continuing with state cleanup", {
+              workspaceId,
+              err: (err as Error)?.message,
+            });
           }
         }
-      }
 
-      await refreshGit();
-      ensureVisibleSession();
-      broadcastState();
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const result: any = getPayload();
-      if (diskDeleteError) {
-        result.deleteWorkspaceError = diskDeleteError;
+        await store.mutate((draft: AppState) => {
+          const ws = draft.workspaces.find((item) => item.id === workspaceId);
+          draft.workspaces = draft.workspaces.filter((item) => item.id !== workspaceId);
+          if (draft.activeWorkspaceId === workspaceId) {
+            // Pick next-best in same profile
+            const profileId = ws ? ws.profileId || "default" : "default";
+            const sibling = draft.workspaces.find((w) => (w.profileId || "default") === profileId);
+            draft.activeWorkspaceId = sibling?.id || draft.workspaces[0]?.id || "";
+          }
+          // Clear workspace from all window slots
+          for (const slot of draft.windowSlots || []) {
+            if (slot.activeWorkspaceId === workspaceId) {
+              const profileId = slot.profileId;
+              const sibling = draft.workspaces.find((w) => (w.profileId || "default") === profileId);
+              slot.activeWorkspaceId = sibling?.id || "";
+            }
+          }
+          // Clear workspace from per-profile grids
+          for (const profile of draft.profiles) {
+            if (!profile.workspaceGrid) continue;
+            const ids = profile.workspaceGrid.cellWorkspaceIds;
+            for (let i = 0; i < ids.length; i++) {
+              if (ids[i] === workspaceId) ids[i] = null;
+            }
+            if (ids.every((id) => id === null)) profile.workspaceGrid = null;
+          }
+          // Clear from deprecated global grid
+          if (draft.workspaceGrid) {
+            const ids = draft.workspaceGrid.cellWorkspaceIds;
+            for (let i = 0; i < ids.length; i++) {
+              if (ids[i] === workspaceId) ids[i] = null;
+            }
+            if (ids.every((id) => id === null)) draft.workspaceGrid = null;
+          }
+        });
+
+        sessionsExited = sessions.removeWorkspaceSessions(workspaceId);
+        for (const sessionId of [...sessionSignals.keys()]) {
+          if (sessionId.startsWith(`${workspaceId}:`)) {
+            clearActivityFade(sessionId);
+            deleteSessionSignal(sessionId);
+          }
+        }
+        clearProjectAlerts(workspaceId);
+        ensureVisibleSession();
+        broadcastState();
+
+        // Delete worktree files from disk if requested
+        let diskDeleteError = "";
+        if (options.deleteFromDisk && workspace) {
+          const allowedPaths = [workspace.review?.checkout?.rootPath, workspace.cwd, workspace.quickfix?.rootPath]
+            .map((p) => (p ? path.resolve(String(p).trim()) : ""))
+            .filter(Boolean);
+          const requestedPath = path.resolve(String(options.diskPath || allowedPaths[0] || "").trim());
+          const diskPath = allowedPaths.includes(requestedPath) ? requestedPath : "";
+          if (diskPath && path.isAbsolute(diskPath)) {
+            pendingWorktreeDeletions.add(diskPath);
+            const tDelete0 = Date.now();
+            log.debug("deleteWorkspace: starting disk delete", {
+              workspaceId,
+              workspaceName: workspace.name,
+              diskPath,
+              kind: workspace.kind,
+              isReview: !!workspace.review,
+              isTask: !!workspace.task,
+              isQuickfix: !!workspace.quickfix,
+            });
+            try {
+              const tWait0 = Date.now();
+              await sessionsExited;
+              log.debug("deleteWorkspace: PTY sessions exited", {
+                workspaceId,
+                waitMs: Date.now() - tWait0,
+              });
+              // On Windows, agent children (claude.exe, codex.exe, …) spawned by
+              // the killed PTY shell may outlive their parent for hundreds of
+              // milliseconds while still holding file handles inside the
+              // worktree. fs/rd will fail with EBUSY/EPERM until those handles
+              // are released. We don't taskkill the tree (too brutal — risks
+              // truncated agent state), instead we wait by probing: try to
+              // rename diskPath onto itself; on Windows this fails while any
+              // handle is open and succeeds once they're all released. Cap the
+              // wait at 5s; if it still locks, rmPath's own retry loop will
+              // either eventually succeed or the git fallback will run.
+              if (process.platform === "win32") {
+                const tProbe0 = Date.now();
+                const probeTimeout = 5000;
+                const probeInterval = 150;
+                let probedReady = false;
+                while (Date.now() - tProbe0 < probeTimeout) {
+                  try {
+                    // rename(p, p) is a cheap OS-level lock probe — it touches
+                    // the directory entry without scanning contents.
+                    await rename(diskPath, diskPath);
+                    probedReady = true;
+                    break;
+                  } catch {
+                    await new Promise((resolve) => setTimeout(resolve, probeInterval));
+                  }
+                }
+                log.debug("deleteWorkspace: handle-release probe finished", {
+                  workspaceId,
+                  diskPath,
+                  probeMs: Date.now() - tProbe0,
+                  released: probedReady,
+                });
+              }
+
+              const cacheRepoPath = workspace.review?.checkout?.cacheRepoPath || "";
+              // Task worktrees store the base repo path explicitly
+              const taskWorktreeBase = workspace.task?.worktreeBase || "";
+              // workspace.cwd is like /repo/.strideterm/tree/branch-name — 3 levels up to repo root
+              const mainWorktreePath = workspace.cwd ? path.resolve(workspace.cwd, "..", "..", "..") : "";
+              const gitCwd = cacheRepoPath || taskWorktreeBase || mainWorktreePath;
+              log.debug("deleteWorkspace: resolved git cwd", { workspaceId, gitCwd, cacheRepoPath, taskWorktreeBase });
+              // Fast path: nuke the directory at the filesystem level, then ask
+              // git to prune stale metadata. `git worktree remove --force` walks
+              // the tree itself with per-file stat calls — markedly slower than
+              // platform-native `rd /s /q` (Windows) or fs.rm (POSIX) when the
+              // worktree has a fat node_modules / build dir. The previous order
+              // (git first, fs fallback) made every successful delete take the
+              // slow path. Only fall back to `git worktree remove --force` if
+              // rmPath couldn't finish (e.g. locked files held by AV).
+              let rmFailed = false;
+              let rmErr: unknown = null;
+              const tRm0 = Date.now();
+              try {
+                await rmPath(diskPath);
+                log.debug("deleteWorkspace: rmPath succeeded", { workspaceId, diskPath, ms: Date.now() - tRm0 });
+              } catch (err) {
+                rmFailed = true;
+                rmErr = err;
+                log.debug("deleteWorkspace: rmPath failed, trying git worktree remove --force", {
+                  workspaceId,
+                  diskPath,
+                  ms: Date.now() - tRm0,
+                  err: (err as Error)?.message?.slice(0, 200),
+                });
+              }
+              if (gitCwd) {
+                if (rmFailed) {
+                  const tGit0 = Date.now();
+                  try {
+                    await execFileTextImpl("git", ["worktree", "remove", "--force", diskPath], { cwd: gitCwd });
+                    log.debug("deleteWorkspace: git worktree remove --force succeeded", {
+                      workspaceId,
+                      diskPath,
+                      ms: Date.now() - tGit0,
+                    });
+                  } catch (err) {
+                    log.warn("deleteWorkspace: git worktree remove --force also failed", {
+                      workspaceId,
+                      diskPath,
+                      ms: Date.now() - tGit0,
+                      err: (err as Error)?.message?.slice(0, 200),
+                      rmErr: (rmErr as Error)?.message?.slice(0, 200),
+                    });
+                  }
+                }
+                // Prune the .git/worktrees admin entry. Doesn't need to block
+                // the response — it's just metadata cleanup.
+                execFileTextImpl("git", ["worktree", "prune"], { cwd: gitCwd }).catch(() => {});
+              } else if (rmFailed) {
+                // No git cwd to prune from — surface the rm failure.
+                throw new Error(`Failed to remove ${diskPath}`);
+              }
+              log.debug("deleteWorkspace: disk delete complete", {
+                workspaceId,
+                diskPath,
+                totalMs: Date.now() - tDelete0,
+                rmFailed,
+              });
+            } catch (err) {
+              diskDeleteError = `Could not delete ${diskPath}: ${(err as any)?.message || err}`; // eslint-disable-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: unknown catch shape
+              log.warn("workspace disk delete failed", { diskPath, err: diskDeleteError });
+            } finally {
+              pendingWorktreeDeletions.delete(diskPath);
+            }
+          }
+        }
+
+        await refreshGit();
+        ensureVisibleSession();
+        broadcastState();
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const result: any = getPayload();
+        if (diskDeleteError) {
+          result.deleteWorkspaceError = diskDeleteError;
+        }
+        return result;
+      } finally {
+        // Release the pending-delete flag only after the OS has finished
+        // tearing down the worker/judge PTY processes. Without the await,
+        // a fresh task at the same cwd could acquire it before claude.exe
+        // / codex.exe released their file handles — exactly the symptom
+        // the guard exists to prevent.
+        if (pendingKey) {
+          if (sessionsExited) {
+            try {
+              await sessionsExited;
+            } catch {
+              // Session-removal failure shouldn't keep the cwd locked
+              // forever; the workspace is already gone from state, so
+              // releasing the flag is the safer choice (user can retry).
+            }
+          }
+          pendingTaskWorkspaceDeletions.delete(pendingKey);
+        }
       }
-      return result;
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async deleteProject(projectId: any, options: any = {}, windowId?: string) {
@@ -5944,11 +6106,16 @@ export async function createRuntime({
         assertWorkspaceInWindowProfile(config.parentWorkspaceId, windowId);
       }
 
+      // Compute the *intended* effective cwd up-front so the same-cwd guard
+      // can fire BEFORE any worktree disk side effects. Previously the
+      // gitignore write, parent mkdir, and `git worktree add` all ran first;
+      // a same-cwd race in useWorktree mode would leave orphan files behind
+      // even though the create ultimately threw.
       let effectiveCwd = config.cwd;
       let worktreeBase = "";
       let worktreeBranch = "";
-
-      // --- Git worktree mode ---
+      let plannedBranch = "";
+      let plannedTreePath = "";
       if (config.useWorktree) {
         const branch = (config.worktreeBranch || "").trim();
         if (!branch || !/^[a-zA-Z0-9._/-]+$/.test(branch)) {
@@ -5956,10 +6123,26 @@ export async function createRuntime({
             "Worktree branch name must contain only alphanumeric characters, dots, hyphens, slashes, or underscores.",
           );
         }
-        // The flat segment used for the directory name (replace / with -)
         const dirName = branch.replace(/\//g, "-");
-        const treePath = path.join(config.cwd, ".strideterm", "tree", dirName);
+        plannedBranch = branch;
+        plannedTreePath = path.join(config.cwd, ".strideterm", "tree", dirName);
+        effectiveCwd = plannedTreePath;
+      }
 
+      // Refuse same-cwd duplicates that would race on the filesystem and
+      // produce a stuck UI. Profile-scoped: a task in profile A does not
+      // block a task in profile B at the same path (CLAUDE.md: "profiles
+      // are organizational, not storage isolation" — users with separate
+      // dev/work profiles legitimately share a monorepo).
+      const callerProfileId = resolveCallerProfileId(state, windowId, config.parentWorkspaceId);
+      assertNoConflictingActiveTask(state, effectiveCwd, callerProfileId);
+      // Preserved for the return shape — callers (telegram, etc.) historically
+      // received an empty string when no conflict was detected. Always empty
+      // now that conflicts throw, but kept for API stability.
+      const cwdWarning = "";
+
+      // --- Git worktree mode: actual disk operations (after guard) ---
+      if (config.useWorktree) {
         // Ensure .strideterm/ in .gitignore
         const gitignorePath = path.join(config.cwd, ".gitignore");
         let gitignoreContent = "";
@@ -5972,11 +6155,11 @@ export async function createRuntime({
         }
 
         // Ensure parent directory exists
-        await mkdir(path.dirname(treePath), { recursive: true });
+        await mkdir(path.dirname(plannedTreePath), { recursive: true });
 
         // Create the git worktree with a new branch
         try {
-          await execFileTextImpl("git", ["worktree", "add", treePath, "-b", branch], { cwd: config.cwd });
+          await execFileTextImpl("git", ["worktree", "add", plannedTreePath, "-b", plannedBranch], { cwd: config.cwd });
         } catch (err) {
           // execFileText rejects with { error, stdout, stderr } — the useful
           // message lives in stderr. err.message is undefined here, so don't
@@ -5984,7 +6167,7 @@ export async function createRuntime({
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           const stderr = (err as any)?.stderr?.trim() || (err as any)?.error?.message || (err as Error).message || "";
           if (stderr.includes("already exists")) {
-            await execFileTextImpl("git", ["worktree", "add", treePath, branch], { cwd: config.cwd });
+            await execFileTextImpl("git", ["worktree", "add", plannedTreePath, plannedBranch], { cwd: config.cwd });
           } else if (stderr.includes("not a git repository")) {
             // Most common user mistake — surface a clear, actionable message.
             throw new Error(
@@ -5997,37 +6180,13 @@ export async function createRuntime({
         }
 
         worktreeBase = config.cwd;
-        worktreeBranch = branch;
-        effectiveCwd = treePath;
-        log.info("createTaskWorkspace: worktree created", { treePath, branch, base: config.cwd });
-      }
-
-      // Check for other task workspaces with the same effective cwd that are currently active
-      const normalizedCwd = String(effectiveCwd || "")
-        .replace(/[\\/]+$/, "")
-        .toLowerCase();
-      const conflicting = state.workspaces.filter(
-        (ws) =>
-          ws.kind === "task" &&
-          ws.task &&
-          ws.task.state !== "idle" &&
-          String(ws.cwd || "")
-            .replace(/[\\/]+$/, "")
-            .toLowerCase() === normalizedCwd,
-      );
-      let cwdWarning = "";
-      if (conflicting.length > 0) {
-        cwdWarning = `Another task workspace ("${conflicting[0].name}") is active on the same directory. Running both may cause conflicts with tests and file operations.`;
-        log.warn("createTaskWorkspace: duplicate cwd detected", {
-          cwd: effectiveCwd,
-          conflictingWorkspaces: conflicting.map((ws) => ws.id),
+        worktreeBranch = plannedBranch;
+        log.info("createTaskWorkspace: worktree created", {
+          treePath: plannedTreePath,
+          branch: plannedBranch,
+          base: config.cwd,
         });
       }
-
-      const callerProfileId = windowId
-        ? // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          (state.windowSlots || []).find((s: any) => s.id === windowId)?.profileId || ""
-        : "";
       const workspace = taskRunner.createTaskWorkspace({
         state,
         description: config.description,
@@ -6116,6 +6275,17 @@ export async function createRuntime({
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async startTask(workspaceId: any, windowId?: string) {
       assertWorkspaceInWindowProfile(String(workspaceId), windowId);
+      // Close the loop: createTaskWorkspace allows multiple inert tasks at the
+      // same cwd, so the user could end up with two paused tasks pointing at
+      // the same directory. Starting one is fine; starting BOTH would put two
+      // worker agents in the same worktree, racing on TASK_LOG.jsonl and
+      // source files. Refuse the second start with the same message the
+      // create path uses, so the error is consistent across surfaces.
+      const state = getState();
+      const workspace = findWorkspace(state, String(workspaceId));
+      if (workspace?.kind === "task" && workspace.cwd) {
+        assertNoConflictingActiveTask(state, workspace.cwd, workspace.profileId || "default", workspace.id);
+      }
       const result = await taskRunner.startTask(workspaceId);
       return { ok: result, payload: getPayload() };
     },
@@ -6134,6 +6304,14 @@ export async function createRuntime({
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     resumeTask(workspaceId: any, windowId?: string) {
       assertWorkspaceInWindowProfile(String(workspaceId), windowId);
+      // Resume re-spawns worker/judge PTYs, so the same guard as startTask
+      // applies — refuse if another task in this profile is already actively
+      // touching the same cwd.
+      const state = getState();
+      const workspace = findWorkspace(state, String(workspaceId));
+      if (workspace?.kind === "task" && workspace.cwd) {
+        assertNoConflictingActiveTask(state, workspace.cwd, workspace.profileId || "default", workspace.id);
+      }
       const result = taskRunner.resumeTask(workspaceId);
       return { ok: result, payload: getPayload() };
     },

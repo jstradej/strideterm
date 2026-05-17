@@ -2966,6 +2966,508 @@ describe("runtime integration", () => {
     expect(after.find((p) => p.kind === "task" && p.cwd === treePath)).toBeDefined();
   });
 
+  // ── Same-cwd task-workspace duplicate-guard tests ──────────────────
+  // These tests cover the three guards that close the "delete-then-create
+  // race" footgun (two task agents fighting over the same directory):
+  //   1. createTaskWorkspace refuses while another task is actively working.
+  //   2. createTaskWorkspace refuses while a delete is mid-flight on the cwd.
+  //   3. Inactive task states (paused/completed/failed/idle) are allowed to
+  //      coexist — they don't write the worktree.
+  // Plus a resilience test: deleteWorkspace clears state.workspaces even if
+  // taskRunner cleanup throws, so the cwd never gets permanently locked.
+
+  // Helper: minimal task-workspace shape that survives normalizeState and
+  // exercises the same-cwd filter. State value drives the guard.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  function makeTaskWorkspace(id: string, name: string, cwd: string, state: string): any {
+    return {
+      id,
+      name,
+      kind: "task",
+      cwd,
+      activePanelId: "worker",
+      panels: [
+        { id: "worker", title: "Worker", command: "claude", shell: true, startup: "default" },
+        { id: "judge", title: "Judge", command: "claude", shell: true, startup: "default" },
+      ],
+      task: {
+        taskId: `${id}-tid`,
+        state,
+        workerPanelId: "worker",
+        judgePanelId: "judge",
+        currentRound: state === "running" ? 1 : 0,
+        description: "preexisting",
+      },
+    };
+  }
+
+  // AgentTaskRunner#reconcileOnStartup flips active task states to "paused"
+  // when the runtime initializes (it assumes the app just restarted so no
+  // PTY can still be doing work). To exercise the live-active conflict
+  // guard we have to flip the state back through the store *after* fixture
+  // setup — the same dance any real running task goes through.
+  async function setTaskStateAfterInit(
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    fixture: any,
+    workspaceId: string,
+    state: string,
+  ): Promise<void> {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await fixture.store.mutate((draft: any) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const ws = draft.workspaces.find((w: any) => w.id === workspaceId);
+      if (ws?.task) ws.task.state = state;
+    });
+  }
+
+  test("createTaskWorkspace refuses when an active running task exists at the same cwd", async () => {
+    const sharedCwd = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-cwd-running-"));
+    tempPaths.push(sharedCwd);
+
+    const fixture = await createFixture({
+      initialState: {
+        workspaces: [makeTaskWorkspace("task-a", "Active task", sharedCwd, "running")],
+      },
+    });
+    fixtures.push(fixture);
+    await setTaskStateAfterInit(fixture, "task-a", "running");
+
+    await expect(
+      fixture.runtime.createTaskWorkspace({
+        cwd: sharedCwd,
+        description: "second task",
+        activate: false,
+      }),
+    ).rejects.toThrow(/Another task agent .* is currently running/i);
+
+    // State must NOT contain a second task workspace.
+    const tasks = fixture.runtime.getPayload().appState.workspaces!.filter((w) => w.kind === "task");
+    expect(tasks).toHaveLength(1);
+    expect(tasks[0].id).toBe("task-a");
+  });
+
+  test.each(["evaluating", "judge-evaluating", "refreshing"] as const)(
+    "createTaskWorkspace refuses when a task in '%s' state exists at the same cwd",
+    async (taskState) => {
+      const sharedCwd = await fs.mkdtemp(path.join(os.tmpdir(), `strideterm-cwd-${taskState}-`));
+      tempPaths.push(sharedCwd);
+
+      const fixture = await createFixture({
+        initialState: {
+          workspaces: [makeTaskWorkspace("task-a", "Active task", sharedCwd, taskState)],
+        },
+      });
+      fixtures.push(fixture);
+      // Re-arm the active state — reconcileOnStartup forced it to "paused".
+      await setTaskStateAfterInit(fixture, "task-a", taskState);
+
+      await expect(
+        fixture.runtime.createTaskWorkspace({
+          cwd: sharedCwd,
+          description: "second task",
+          activate: false,
+        }),
+      ).rejects.toThrow(/currently running/i);
+    },
+  );
+
+  test.each(["paused", "completed", "failed", "idle"] as const)(
+    "createTaskWorkspace allows a second task when the existing one is '%s' (inert state)",
+    async (taskState) => {
+      // Inert states (paused/completed/failed/idle) don't write the worktree,
+      // so a second task workspace can coexist. The user might be parking an
+      // old run while starting a new one over the same dir — that's fine.
+      const sharedCwd = await fs.mkdtemp(path.join(os.tmpdir(), `strideterm-cwd-${taskState}-`));
+      tempPaths.push(sharedCwd);
+
+      const fixture = await createFixture({
+        initialState: {
+          workspaces: [makeTaskWorkspace("task-a", "Old task", sharedCwd, taskState)],
+        },
+      });
+      fixtures.push(fixture);
+
+      const result = await fixture.runtime.createTaskWorkspace({
+        cwd: sharedCwd,
+        description: "second task",
+        activate: false,
+      });
+
+      expect(result?.workspaceId).toBeTruthy();
+      // Both task workspaces should now exist at the same cwd.
+      const tasks = fixture.runtime
+        .getPayload()
+        .appState.workspaces!.filter((w) => w.kind === "task" && w.cwd === sharedCwd);
+      expect(tasks).toHaveLength(2);
+      // cwdWarning is preserved as empty string for API stability — callers
+      // should not see a stale "warning" payload now that conflicts throw.
+      expect(result?.cwdWarning).toBe("");
+    },
+  );
+
+  test("createTaskWorkspace refuses while a delete is still finishing cleanup at the same cwd", async () => {
+    // Reproduces the user-reported race: delete a task workspace, then immediately
+    // create another one over the same directory. Before the guard, the user could
+    // end up with two task workspaces fighting over the worktree, or the second
+    // one stuck because the first hadn't released its files yet.
+    //
+    // The trick: deleteWorkspace runs synchronously up to its first `await`
+    // (cleanupTaskFiles). By then pendingTaskWorkspaceDeletions has the cwd, so
+    // a synchronous create attempt that follows must see the pending flag and
+    // bail out with a "still finishing cleanup" message.
+    const sharedCwd = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-cwd-pending-"));
+    tempPaths.push(sharedCwd);
+
+    const fixture = await createFixture({
+      initialState: {
+        workspaces: [makeTaskWorkspace("task-a", "Old task", sharedCwd, "paused")],
+      },
+    });
+    fixtures.push(fixture);
+
+    // Kick off delete without awaiting — synchronously populates the pending set.
+    const deletePromise = fixture.runtime.deleteWorkspace("task-a");
+
+    // Immediate same-cwd create must hit the pending-delete guard.
+    await expect(
+      fixture.runtime.createTaskWorkspace({
+        cwd: sharedCwd,
+        description: "second task",
+        activate: false,
+      }),
+    ).rejects.toThrow(/still finishing cleanup/i);
+
+    // Let the delete settle before the fixture afterEach runs.
+    await deletePromise;
+  });
+
+  test("after deleteWorkspace completes, createTaskWorkspace at the same cwd succeeds", async () => {
+    // The pending-delete guard must release when cleanup finishes, otherwise the
+    // cwd would be locked until app restart — exactly the symptom the user
+    // reported. This test pairs with the race test above: same setup, but we
+    // wait for the delete to complete before creating.
+    const sharedCwd = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-cwd-released-"));
+    tempPaths.push(sharedCwd);
+
+    const fixture = await createFixture({
+      initialState: {
+        workspaces: [makeTaskWorkspace("task-a", "Old task", sharedCwd, "paused")],
+      },
+    });
+    fixtures.push(fixture);
+
+    await fixture.runtime.deleteWorkspace("task-a");
+
+    // Old workspace must be gone from state — the resilience fix guarantees
+    // state.mutate ran even if any cleanup step threw.
+    const afterDelete = fixture.runtime.getPayload().appState.workspaces!;
+    expect(afterDelete.find((w) => w.id === "task-a")).toBeUndefined();
+
+    // New task at the same cwd should now succeed.
+    const result = await fixture.runtime.createTaskWorkspace({
+      cwd: sharedCwd,
+      description: "fresh task",
+      activate: false,
+    });
+    expect(result?.workspaceId).toBeTruthy();
+    expect(result?.workspaceId).not.toBe("task-a");
+  });
+
+  test("error message names the conflicting task workspace so the user knows what to stop", async () => {
+    // UX assertion — the message must include the workspace name so the user
+    // can find it in the sidebar. Before the change, the warning was the only
+    // signal and got dropped by the dialog; now it's a thrown error that
+    // surfaces in the dialog's inline error banner.
+    const sharedCwd = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-cwd-name-"));
+    tempPaths.push(sharedCwd);
+
+    const fixture = await createFixture({
+      initialState: {
+        workspaces: [makeTaskWorkspace("task-a", "Refactor login flow", sharedCwd, "running")],
+      },
+    });
+    fixtures.push(fixture);
+    await setTaskStateAfterInit(fixture, "task-a", "running");
+
+    await expect(
+      fixture.runtime.createTaskWorkspace({
+        cwd: sharedCwd,
+        description: "second task",
+        activate: false,
+      }),
+    ).rejects.toThrow(/Refactor login flow/);
+  });
+
+  test("deleteWorkspace clears state even when the task workspace is missing taskId", async () => {
+    // Resilience: a task workspace persisted without task.taskId (corrupt state,
+    // backward-compat record, or partial migration) used to be reachable by the
+    // pre-cleanup code path. The hardened deleteWorkspace must still remove it
+    // from state.workspaces, not get stuck because of the unusual shape.
+    const sharedCwd = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-cwd-orphan-"));
+    tempPaths.push(sharedCwd);
+
+    const fixture = await createFixture({
+      initialState: {
+        workspaces: [
+          {
+            id: "task-orphan",
+            name: "Orphan task",
+            kind: "task",
+            cwd: sharedCwd,
+            activePanelId: "worker",
+            panels: [{ id: "worker", title: "Worker", command: "claude", shell: true, startup: "default" }],
+            // Note: task object present but no taskId — the cleanup branch is
+            // gated on `task.taskId && cwd`, so cleanup is skipped entirely.
+            task: { state: "idle", workerPanelId: "worker", judgePanelId: "worker", currentRound: 0 },
+          },
+        ],
+      },
+    });
+    fixtures.push(fixture);
+
+    await fixture.runtime.deleteWorkspace("task-orphan");
+
+    const after = fixture.runtime.getPayload().appState.workspaces!;
+    expect(after.find((w) => w.id === "task-orphan")).toBeUndefined();
+
+    // And the cwd must NOT be permanently locked — a new create succeeds.
+    const result = await fixture.runtime.createTaskWorkspace({
+      cwd: sharedCwd,
+      description: "fresh task",
+      activate: false,
+    });
+    expect(result?.workspaceId).toBeTruthy();
+  });
+
+  test("useWorktree create runs the guard BEFORE any disk side-effects (no orphan tree, no .gitignore mutation)", async () => {
+    // Regression: previously the gitignore write, parent mkdir and
+    // `git worktree add` all ran first, so a same-cwd conflict in useWorktree
+    // mode would throw but leave orphan files. The guard must compute the
+    // planned treePath synchronously and fire before any disk operations.
+    const parentRoot = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-wt-preflight-"));
+    tempPaths.push(parentRoot);
+    const branch = "task/feature-x";
+    const dirName = branch.replace(/\//g, "-");
+    const plannedTreePath = path.join(parentRoot, ".strideterm", "tree", dirName);
+
+    const execFileText = vi.fn().mockResolvedValue({ stdout: "", stderr: "" });
+    const fixture = await createFixture({
+      execFileTextImpl: execFileText,
+      initialState: {
+        workspaces: [
+          {
+            id: "parent",
+            name: "Parent",
+            kind: "terminal",
+            cwd: parentRoot,
+            activePanelId: "shell",
+            panels: [{ id: "shell", title: "Shell", command: "", shell: true, startup: "default" }],
+          },
+          makeTaskWorkspace("task-a", "Live task", plannedTreePath, "running"),
+        ],
+      },
+    });
+    fixtures.push(fixture);
+    await setTaskStateAfterInit(fixture, "task-a", "running");
+
+    // Make sure no .gitignore exists yet so we can prove the guard fired
+    // before the write would have happened.
+    await fs.rm(path.join(parentRoot, ".gitignore"), { force: true });
+
+    await expect(
+      fixture.runtime.createTaskWorkspace({
+        cwd: parentRoot,
+        useWorktree: true,
+        worktreeBranch: branch,
+        parentWorkspaceId: "parent",
+        description: "second task",
+        activate: false,
+      }),
+    ).rejects.toThrow(/currently running/i);
+
+    // Disk side-effects must NOT have happened:
+    //   - .gitignore stays absent
+    //   - The .strideterm/tree/<branch>/ dir is not created
+    //   - execFileText was never called for `git worktree add`
+    await expect(fs.access(path.join(parentRoot, ".gitignore"))).rejects.toThrow();
+    await expect(fs.access(plannedTreePath)).rejects.toThrow();
+    const gitCalls = execFileText.mock.calls.filter(
+      (c) => c[0] === "git" && Array.isArray(c[1]) && c[1][0] === "worktree",
+    );
+    expect(gitCalls).toHaveLength(0);
+  });
+
+  test("active task in profile A does not block creation in profile B at the same cwd", async () => {
+    // CLAUDE.md treats profiles as organizational, not storage isolation —
+    // two profiles legitimately sharing a monorepo must be able to run
+    // task agents at the same cwd in parallel. The guard scopes by profile,
+    // so an "Active task" in profile A is invisible to profile B's create.
+    const sharedCwd = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-profile-scope-"));
+    tempPaths.push(sharedCwd);
+
+    const fixture = await createFixture({
+      initialState: {
+        profiles: [
+          { id: "profile-a", name: "Profile A" },
+          { id: "profile-b", name: "Profile B" },
+        ],
+        windowSlots: [
+          { id: "win-a", profileId: "profile-a" },
+          { id: "win-b", profileId: "profile-b" },
+        ],
+        workspaces: [
+          {
+            ...makeTaskWorkspace("task-a", "A's task", sharedCwd, "running"),
+            profileId: "profile-a",
+          },
+        ],
+      },
+    });
+    fixtures.push(fixture);
+    await setTaskStateAfterInit(fixture, "task-a", "running");
+
+    // Sanity: same-profile create still blocks.
+    await expect(
+      fixture.runtime.createTaskWorkspace({ cwd: sharedCwd, description: "from A", activate: false }, "win-a"),
+    ).rejects.toThrow(/currently running/i);
+
+    // Profile-B create must succeed despite profile-A's running task.
+    const result = await fixture.runtime.createTaskWorkspace(
+      { cwd: sharedCwd, description: "from B", activate: false },
+      "win-b",
+    );
+    expect(result?.workspaceId).toBeTruthy();
+    const created = fixture.runtime.getPayload().appState.workspaces!.find((w) => w.id === result.workspaceId);
+    expect(created?.profileId).toBe("profile-b");
+  });
+
+  test("pending-delete flag is held until session removal resolves (not just store.mutate)", async () => {
+    // Reviewer-flagged race: releasing the pending flag right after
+    // store.mutate leaves a window in which the old worker/judge PTY
+    // processes are still alive and holding file handles in the cwd. The
+    // fix awaits sessions.removeWorkspaceSessions inside the finally so the
+    // lock persists until the OS has actually torn the processes down.
+    const sharedCwd = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-hold-until-exit-"));
+    tempPaths.push(sharedCwd);
+
+    const fixture = await createFixture({
+      initialState: {
+        workspaces: [makeTaskWorkspace("task-a", "Old task", sharedCwd, "paused")],
+      },
+    });
+    fixtures.push(fixture);
+
+    // Make the session-exit promise controllable from the test. `sessionsRequested`
+    // flips true the moment deleteWorkspace reaches removeWorkspaceSessions —
+    // by then store.mutate has already removed task-a from state, so any
+    // subsequent create observes the pending flag (not the still-present
+    // workspace).
+    let resolveSessions: () => void = () => {};
+    let sessionsRequested = false;
+    const sessionsExitPromise = new Promise<void>((resolve) => {
+      resolveSessions = resolve;
+    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    fixture.sessionManager.removeWorkspaceSessions = (workspaceId: any) => {
+      sessionsRequested = true;
+      // Still actually remove the in-memory sessions so the rest of the
+      // delete pipeline behaves normally — just defer the returned promise.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      for (const sessionId of [...fixture.sessionManager.sessions.keys()] as any[]) {
+        if (sessionId.startsWith(`${workspaceId}:`)) fixture.sessionManager.sessions.delete(sessionId);
+      }
+      fixture.sessionManager.removedProjects.push(workspaceId);
+      return sessionsExitPromise;
+    };
+
+    const deletePromise = fixture.runtime.deleteWorkspace("task-a");
+    // Drive microtasks until deleteWorkspace reaches removeWorkspaceSessions
+    // — that's the point where store.mutate has finished and the pending
+    // flag is in its hold-during-PTY-exit phase. Polling avoids hard-coding
+    // a number of `await Promise.resolve()` calls that would be brittle
+    // against future re-ordering inside deleteWorkspace.
+    for (let i = 0; i < 200 && !sessionsRequested; i++) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    expect(sessionsRequested).toBe(true);
+
+    expect(fixture.runtime.getPayload().appState.workspaces!.find((w) => w.id === "task-a")).toBeUndefined();
+    await expect(
+      fixture.runtime.createTaskWorkspace({
+        cwd: sharedCwd,
+        description: "racing create",
+        activate: false,
+      }),
+    ).rejects.toThrow(/still finishing cleanup/i);
+
+    // Release the PTY exit promise — pending flag should now drain and the
+    // delete promise should resolve.
+    resolveSessions();
+    await deletePromise;
+
+    // A subsequent create at the same cwd succeeds.
+    const result = await fixture.runtime.createTaskWorkspace({
+      cwd: sharedCwd,
+      description: "fresh task",
+      activate: false,
+    });
+    expect(result?.workspaceId).toBeTruthy();
+  });
+
+  test("startTask refuses when another task in the same profile is already active at the same cwd", async () => {
+    // createTaskWorkspace allows two paused tasks at the same cwd to coexist
+    // (paused is inert, no worker process running). Starting one is fine,
+    // but starting the SECOND would put two worker agents in the same dir.
+    // startTask must refuse the second start with the same message.
+    const sharedCwd = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-start-guard-"));
+    tempPaths.push(sharedCwd);
+
+    const fixture = await createFixture({
+      initialState: {
+        workspaces: [
+          makeTaskWorkspace("task-a", "Task A", sharedCwd, "paused"),
+          makeTaskWorkspace("task-b", "Task B", sharedCwd, "paused"),
+        ],
+      },
+    });
+    fixtures.push(fixture);
+
+    // Flip task-a to running (simulating a successful start). The runtime
+    // exposes setTaskStateAfterInit-equivalent behavior through the store.
+    await setTaskStateAfterInit(fixture, "task-a", "running");
+
+    await expect(fixture.runtime.startTask("task-b")).rejects.toThrow(/currently running/i);
+
+    // Sanity: starting task-a itself (already running) does NOT trip the
+    // guard — selfWorkspaceId excludes the calling workspace.
+    // taskRunner.startTask will no-op or return false depending on internal
+    // state; the important thing is that the cwd guard doesn't false-positive
+    // on the workspace's own active state.
+    await expect(fixture.runtime.startTask("task-a")).resolves.toBeDefined();
+  });
+
+  test("resumeTask refuses when another task in the same profile is actively touching the cwd", async () => {
+    // Same scenario as startTask, but exercising resumeTask. Resume re-spawns
+    // PTYs — the second resume would put two workers in the same directory.
+    const sharedCwd = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-resume-guard-"));
+    tempPaths.push(sharedCwd);
+
+    const fixture = await createFixture({
+      initialState: {
+        workspaces: [
+          makeTaskWorkspace("task-a", "Task A", sharedCwd, "paused"),
+          makeTaskWorkspace("task-b", "Task B", sharedCwd, "paused"),
+        ],
+      },
+    });
+    fixtures.push(fixture);
+    await setTaskStateAfterInit(fixture, "task-a", "running");
+
+    // resumeTask is synchronous (taskRunner.resumeTask is sync), so the
+    // guard throws synchronously rather than returning a rejected promise.
+    expect(() => fixture.runtime.resumeTask("task-b")).toThrow(/currently running/i);
+  });
+
   test("createWorktree on multi-repo workspace requires rootPath and runs inside the selected repo", async () => {
     const parentRoot = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-multirepo-"));
     tempPaths.push(parentRoot);
