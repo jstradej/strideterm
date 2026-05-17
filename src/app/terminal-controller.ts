@@ -344,6 +344,15 @@ export function createTerminalController({
       }
 
       view.fitAddon.fit();
+      // Force a repaint after fit(). fit() is a no-op when proposed
+      // dimensions match the current ones (and FitAddon also no-ops on a
+      // 0×0 container), so the internal xterm resize callback that would
+      // normally render the buffer never fires. On mobile, a viewport
+      // transition (orientation flip, iOS chrome bar toggle, breakpoint
+      // cross) can briefly hide the host and leave it blank afterwards;
+      // forcing refresh here is the standard xterm workaround for that
+      // class of bug (xterm.js issues #3029, #3653).
+      view.term.refresh(0, Math.max(0, view.term.rows - 1));
       const nextSizeKey = `${view.term.cols}x${view.term.rows}`;
       if (!force && nextSizeKey === view.lastSizeKey) {
         return;
