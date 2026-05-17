@@ -981,6 +981,15 @@ if (mcpMode) {
     return webContentsToWindowId.get(event.sender.id) ?? "";
   });
 
+  ipcMain.handle("window:focus-current", (event) => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    if (!win || win.isDestroyed()) return false;
+    if (win.isMinimized()) win.restore();
+    win.show();
+    win.focus();
+    return true;
+  });
+
   // IPC: renderer creates a new window for a given profileId
   ipcMain.handle("window:create", async (event, profileId: string) => {
     log.info("window:create IPC received", { profileId, registrySize: windowRegistry.size });

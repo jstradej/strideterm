@@ -231,6 +231,15 @@ describe("file-manager core", () => {
     expect(final.entries.length).toBe(0);
   });
 
+  test("readFileContent treats missing task log as an empty log", async () => {
+    const root = path.join(tmpRoot, "missing-task-log-test");
+    await fs.mkdir(root, { recursive: true });
+
+    const result = await readFileContent(root, ".strideterm/tasks/task-1/TASK_LOG.jsonl");
+
+    expect(result).toEqual({ content: "", size: 0, encoding: "utf-8" });
+  });
+
   test("copyEntry auto-renames on same-directory paste (GNOME Files style)", async () => {
     const root = path.join(tmpRoot, "copy-conflict-test");
     await fs.mkdir(root, { recursive: true });

@@ -606,7 +606,17 @@ export async function readFilePreview(rootPath: string, relativePath: string): P
 export async function readFileContent(rootPath: string, relativePath: string): Promise<FileContentResult> {
   const absFile = safePath(rootPath, relativePath);
   await assertRealPathInside(rootPath, absFile);
-  const content = await fs.readFile(absFile, "utf-8");
+  let content: string;
+  try {
+    content = await fs.readFile(absFile, "utf-8");
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException)?.code;
+    const normalizedRelativePath = relativePath.replace(/\\/g, "/");
+    if (code === "ENOENT" && /^\.strideterm\/tasks\/[^/]+\/TASK_LOG\.jsonl$/.test(normalizedRelativePath)) {
+      return { content: "", size: 0, encoding: "utf-8" };
+    }
+    throw err;
+  }
   return { content, size: Buffer.byteLength(content, "utf-8"), encoding: "utf-8" };
 }
 

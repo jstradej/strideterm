@@ -90,6 +90,42 @@ interface WorkspaceActionsCtx {
 export function createWorkspaceActions(ctx: WorkspaceActionsCtx) {
   // --- Workspace CRUD ----------------------------------------------------
 
+  function confirmInApp({
+    title,
+    message,
+    confirmLabel = "OK",
+    cancelLabel = "Cancel",
+    danger = false,
+  }: {
+    title: string;
+    message: string;
+    confirmLabel?: string;
+    cancelLabel?: string;
+    danger?: boolean;
+  }): Promise<boolean> {
+    return new Promise((resolve) => {
+      let done = false;
+      const finish = (value: boolean) => {
+        if (done) return;
+        done = true;
+        ctx.overlay.value = null;
+        ctx.overlayProps.value = {};
+        resolve(value);
+      };
+      ctx.overlay.value = "ConfirmDialog";
+      ctx.overlayProps.value = {
+        eyebrow: "Confirm",
+        title,
+        message,
+        confirmLabel,
+        cancelLabel,
+        danger,
+        onCancel: () => finish(false),
+        onConfirm: () => finish(true),
+      };
+    });
+  }
+
   async function saveWorkspace(draft: AnyApi): Promise<void> {
     ctx.payload.value = (await (ctx.getApi() as AnyApi).saveWorkspace(draft)) as StatePayload;
   }
@@ -136,7 +172,13 @@ export function createWorkspaceActions(ctx: WorkspaceActionsCtx) {
   async function deleteWorkspace(workspaceId: string): Promise<void> {
     const ws = (ctx.payload.value?.appState?.workspaces || []).find((w: AnyApi) => w.id === workspaceId);
     if (!ws) return;
-    if (!window.confirm(`Delete workspace "${(ws as AnyApi).name}"?`)) return;
+    const confirmed = await confirmInApp({
+      title: "Delete workspace",
+      message: `Delete workspace "${(ws as AnyApi).name}"?`,
+      confirmLabel: "Delete",
+      danger: true,
+    });
+    if (!confirmed) return;
 
     // Detect worktree-backed kinds — these own a directory on disk that we
     // need to offer to remove. This covers all four variants: plain
@@ -154,9 +196,13 @@ export function createWorkspaceActions(ctx: WorkspaceActionsCtx) {
 
     let deleteFromDisk = false;
     if (diskPath) {
-      deleteFromDisk = window.confirm(
-        `Also delete the worktree files from disk?\n\n${diskPath}\n\nOK = delete files, Cancel = keep files`,
-      );
+      deleteFromDisk = await confirmInApp({
+        title: "Delete worktree files?",
+        message: `Also delete the worktree files from disk?\n\n${diskPath}`,
+        confirmLabel: "Delete files",
+        cancelLabel: "Keep files",
+        danger: true,
+      });
     }
 
     // --- Optimistic UI removal ---------------------------------------------
@@ -583,7 +629,13 @@ export function createWorkspaceActions(ctx: WorkspaceActionsCtx) {
     const ws = (ctx.payload.value?.appState?.workspaces || []).find((w: AnyApi) => w.id === workspaceId);
     if (!ws) return;
     const wsName = (ws as AnyApi).name || "";
-    if (!window.confirm(`Remove "${wsName}" from the sidebar?\n\nFiles on disk are kept untouched.`)) return;
+    const confirmed = await confirmInApp({
+      title: "Remove workspace",
+      message: `Remove "${wsName}" from the sidebar?\n\nFiles on disk are kept untouched.`,
+      confirmLabel: "Remove",
+      danger: true,
+    });
+    if (!confirmed) return;
 
     const wasActive = ctx.payload.value?.appState?.activeWorkspaceId === workspaceId;
     const before = ctx.payload.value;

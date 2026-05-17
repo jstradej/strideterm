@@ -313,7 +313,10 @@ export function createTerminalController({
     if (!activeView) {
       return;
     }
-    window.requestAnimationFrame(() => activeView.term.focus());
+    window.requestAnimationFrame(() => {
+      if (getOverlay()) return;
+      activeView.term.focus();
+    });
   }
 
   function pruneTerminalViews(validSessionIds: Set<string>): void {

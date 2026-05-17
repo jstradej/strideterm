@@ -79,19 +79,27 @@ function makeCtx(initialPayload: AnyApi, apiOverrides: AnyApi = {}) {
   };
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  return { ctx: ctx as any, api, payload, optimisticallyDeletedIds };
+  return { ctx: ctx as any, api, payload, optimisticallyDeletedIds, overlay, overlayProps };
 }
 
 describe("createWorkspaceActions.deleteWorkspace (optimistic)", () => {
   beforeEach(() => {
     setActivePinia(createPinia());
     window.localStorage.clear();
-    vi.spyOn(window, "confirm").mockImplementation(() => true);
   });
 
   afterEach(() => {
     vi.restoreAllMocks();
   });
+
+  async function answerConfirm(ctx: AnyApi, accept = true): Promise<void> {
+    await Promise.resolve();
+    expect(ctx.overlay.value).toBe("ConfirmDialog");
+    const props = ctx.overlayProps.value as AnyApi;
+    if (accept) props.onConfirm();
+    else props.onCancel();
+    await Promise.resolve();
+  }
 
   it("removes the workspace from the local payload synchronously (no waiting on the IPC)", async () => {
     const initial = {
@@ -107,7 +115,9 @@ describe("createWorkspaceActions.deleteWorkspace (optimistic)", () => {
 
     // Fire the delete; do not await.
     const finished = actions.deleteWorkspace("ws-B");
-    // Yield once so the synchronous mutation lands.
+    await answerConfirm(ctx, true);
+    await answerConfirm(ctx, true);
+    // Yield once so the optimistic mutation lands.
     await Promise.resolve();
 
     // Sidebar tree no longer carries the workspace, *before* the IPC resolved.
@@ -129,7 +139,9 @@ describe("createWorkspaceActions.deleteWorkspace (optimistic)", () => {
     const { ctx, payload } = makeCtx(initial);
     const actions = createWorkspaceActions(ctx);
 
-    await actions.deleteWorkspace("ws-A");
+    const finished = actions.deleteWorkspace("ws-A");
+    await answerConfirm(ctx, true);
+    await finished;
     // Yield additional times for any nested microtasks.
     await Promise.resolve();
     await Promise.resolve();
@@ -147,7 +159,10 @@ describe("createWorkspaceActions.deleteWorkspace (optimistic)", () => {
     const { ctx, payload } = makeCtx(initial);
     const actions = createWorkspaceActions(ctx);
 
-    await actions.deleteWorkspace("ws-C");
+    const finished = actions.deleteWorkspace("ws-C");
+    await answerConfirm(ctx, true);
+    await answerConfirm(ctx, true);
+    await finished;
     await Promise.resolve();
 
     expect(payload.value.appState.activeWorkspaceId).toBe("ws-A");
@@ -165,7 +180,10 @@ describe("createWorkspaceActions.deleteWorkspace (optimistic)", () => {
     const { ctx, payload, optimisticallyDeletedIds } = makeCtx(initial);
     const actions = createWorkspaceActions(ctx);
 
-    await actions.deleteWorkspace(idToDelete);
+    const finished = actions.deleteWorkspace(idToDelete);
+    await answerConfirm(ctx, true);
+    await answerConfirm(ctx, true);
+    await finished;
     await Promise.resolve();
 
     expect(payload.value.appState.workspaces.find((w: AnyApi) => w.id === idToDelete)).toBeUndefined();
@@ -175,14 +193,15 @@ describe("createWorkspaceActions.deleteWorkspace (optimistic)", () => {
   });
 
   it("does nothing if the user declines the confirm prompt", async () => {
-    vi.spyOn(window, "confirm").mockImplementation(() => false);
     const initial = {
       appState: { workspaces: makeWorkspaces(), activeWorkspaceId: "ws-A" },
     };
     const { ctx, payload, api } = makeCtx(initial);
     const actions = createWorkspaceActions(ctx);
 
-    await actions.deleteWorkspace("ws-B");
+    const finished = actions.deleteWorkspace("ws-B");
+    await answerConfirm(ctx, false);
+    await finished;
     expect(payload.value.appState.workspaces).toHaveLength(5);
     expect(api.deleteWorkspace).not.toHaveBeenCalled();
   });
@@ -202,7 +221,10 @@ describe("createWorkspaceActions.deleteWorkspace (optimistic)", () => {
     const notifs = useNotificationStore();
 
     // Confirm both the delete prompt AND the "delete from disk" follow-up.
-    await actions.deleteWorkspace("ws-B");
+    const finished = actions.deleteWorkspace("ws-B");
+    await answerConfirm(ctx, true);
+    await answerConfirm(ctx, true);
+    await finished;
     // Wait for the lazy import + microtask flush.
     await new Promise((r) => setTimeout(r, 10));
 
@@ -227,7 +249,10 @@ describe("createWorkspaceActions.deleteWorkspace (optimistic)", () => {
     const actions = createWorkspaceActions(ctx);
     const notifs = useNotificationStore();
 
-    await actions.deleteWorkspace("ws-B");
+    const finished = actions.deleteWorkspace("ws-B");
+    await answerConfirm(ctx, true);
+    await answerConfirm(ctx, true);
+    await finished;
     await new Promise((r) => setTimeout(r, 10));
 
     expect(notifs.persistentToasts).toHaveLength(1);

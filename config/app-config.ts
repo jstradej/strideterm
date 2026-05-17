@@ -20,6 +20,8 @@ function envBoolean(name: string, fallback: boolean): boolean {
   return ["1", "true", "yes", "on"].includes(value.toLowerCase());
 }
 
+const isWindows = typeof process !== "undefined" && process.platform === "win32";
+
 export const APP_CONFIG = {
   renderer: {
     devHost: envString("STRIDETERM_RENDERER_HOST", "127.0.0.1"),
@@ -91,11 +93,12 @@ export const APP_CONFIG = {
     posixShellArgs: Object.freeze(["-l"] as const),
   },
   terminal: {
-    // Default: WebGL renderer enabled. Switched off automatically when the
-    // pre-flight detects no usable WebGL2 (e.g. broken macOS GPU drivers,
-    // software rasterizers). Forced off via STRIDETERM_DISABLE_WEBGL=1 or
-    // the --no-webgl CLI flag.
-    disableWebgl: envBoolean("STRIDETERM_DISABLE_WEBGL", false),
+    // Windows GPU drivers have produced native Electron access violations
+    // while disposing xterm's WebGL renderer during rapid workspace deletion.
+    // Keep the safer DOM renderer by default on Windows; users can opt back
+    // in with STRIDETERM_DISABLE_WEBGL=0. Other platforms keep WebGL enabled
+    // unless the env var or --no-webgl disables it.
+    disableWebgl: envBoolean("STRIDETERM_DISABLE_WEBGL", isWindows),
   },
   ssh: {
     defaultKeepaliveMs: envNumber("STRIDETERM_SSH_KEEPALIVE_MS", 30000),

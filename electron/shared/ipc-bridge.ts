@@ -288,6 +288,7 @@ export interface StridetermAPI {
   deleteProfile: (profileId: string) => Promise<unknown>;
   activateProfile: (profileId: string) => Promise<unknown>;
   getWindowId: () => string | Promise<string>;
+  focusWindow: () => Promise<boolean>;
   createWindow: (profileId: string) => Promise<{ windowId?: string; error?: string }>;
   closeWindow: () => Promise<void>;
   onNewWindowShortcut: (handler: () => void) => void;

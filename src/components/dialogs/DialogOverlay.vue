@@ -1,6 +1,15 @@
 <template>
   <Teleport to="body">
-    <div v-if="store.overlay" ref="overlayRef" class="overlay" tabindex="-1" @click.self="handleBackdropClick">
+    <div
+      v-if="store.overlay"
+      ref="overlayRef"
+      class="overlay"
+      tabindex="-1"
+      @click.self="handleBackdropClick"
+      @focusin.capture="releaseTerminalKeyboardCapture"
+      @mousedown.capture="handleOverlayPointerDown"
+      @pointerdown.capture="releaseTerminalKeyboardCapture"
+    >
       <component :is="dialogComponent" v-if="dialogComponent" v-bind="store.overlayProps" />
     </div>
   </Teleport>
@@ -29,6 +38,7 @@ const DIALOGS = {
   GitCommitInfoDialog: defineAsyncComponent(() => import("./GitCommitInfoDialog.vue")),
   RemoteAccessDialog: defineAsyncComponent(() => import("./RemoteAccessDialog.vue")),
   NewWindowModal: defineAsyncComponent(() => import("./NewWindowModal.vue")),
+  ConfirmDialog: defineAsyncComponent(() => import("./ConfirmDialog.vue")),
   SshHostsDialog: defineAsyncComponent(() => import("../ssh/SshHostsDialog.vue")),
   SshHostEditor: defineAsyncComponent(() => import("../ssh/SshHostEditor.vue")),
   SshKeyManager: defineAsyncComponent(() => import("../ssh/SshKeyManager.vue")),
@@ -46,15 +56,44 @@ const dialogComponent = computed(() =>
     : null,
 );
 
+function releaseTerminalKeyboardCapture() {
+  for (const textarea of document.querySelectorAll(".xterm-helper-textarea")) {
+    (textarea as HTMLElement).blur();
+  }
+}
+
+function requestHostWindowFocus() {
+  window.focus();
+  const api = (window as unknown as { strideterm?: { focusWindow?: () => Promise<unknown> } }).strideterm;
+  void api?.focusWindow?.().catch(() => {});
+}
+
+function findEditableTarget(target: EventTarget | null): HTMLElement | null {
+  if (!(target instanceof HTMLElement)) return null;
+  return target.closest("input, textarea, select, button, [contenteditable='true']");
+}
+
+function handleOverlayPointerDown(event: MouseEvent) {
+  requestHostWindowFocus();
+  releaseTerminalKeyboardCapture();
+  const editable = findEditableTarget(event.target);
+  if (!editable || editable.hasAttribute("disabled")) return;
+  requestAnimationFrame(() => {
+    requestHostWindowFocus();
+    releaseTerminalKeyboardCapture();
+    if (document.activeElement !== editable) {
+      editable.focus({ preventScroll: true });
+    }
+  });
+}
+
 // When a dialog opens, blur the active terminal so xterm.js releases keyboard capture
 watch(
   () => store.overlay,
   (overlay) => {
     if (overlay) {
-      // Blur xterm's hidden textarea to release keyboard events
-      const xtermTextarea = document.querySelector(".xterm-helper-textarea");
-      if (xtermTextarea) (xtermTextarea as HTMLElement).blur();
-      window.focus();
+      releaseTerminalKeyboardCapture();
+      requestHostWindowFocus();
       // After the dialog component mounts, focus the first visible input/textarea.
       // Use a rAF retry loop instead of a fixed timeout — works reliably on slow machines
       // where async dialog components take variable time to mount.

@@ -180,6 +180,7 @@ contextBridge.exposeInMainWorld("strideterm", {
   deleteProfile: (profileId) => ipcRenderer.invoke("profile:delete", profileId),
   activateProfile: (profileId) => ipcRenderer.invoke("profile:activate", profileId),
   getWindowId: () => startupWindowId || ipcRenderer.invoke("window:get-id"),
+  focusWindow: () => ipcRenderer.invoke("window:focus-current"),
   createWindow: (profileId) => ipcRenderer.invoke("window:create", profileId),
   closeWindow: () => ipcRenderer.invoke("window:close"),
   onNewWindowShortcut: (handler) => ipcRenderer.on("shortcut:new-window", () => handler()),
