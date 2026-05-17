@@ -19,6 +19,25 @@
   display: none;
 }
 
+.ws-activate-overlay {
+  background: rgba(5, 10, 18, 0.6);
+}
+
+.ws-activate-spinner {
+  width: 36px;
+  height: 36px;
+  border: 3px solid rgba(255, 255, 255, 0.15);
+  border-top-color: var(--accent, #7aa2f7);
+  border-radius: 50%;
+  animation: ws-activate-spin 0.7s linear infinite;
+}
+
+@keyframes ws-activate-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .boot-shell {
   width: 100%;
   height: 100%;

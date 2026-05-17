@@ -74,6 +74,19 @@
     </div>
   </div>
 
+  <!-- Workspace-activation loading overlay: visible during async activateWorkspace
+       so mobile users have feedback during multi-second workspace switches. -->
+  <Teleport to="body">
+    <div
+      v-if="activatingWorkspaceId"
+      class="overlay ws-activate-overlay"
+      role="status"
+      aria-label="Loading workspace"
+    >
+      <div class="ws-activate-spinner"></div>
+    </div>
+  </Teleport>
+
   <!-- Workspace actions menu -->
   <Teleport to="body">
     <div
@@ -207,6 +220,7 @@ interface PluginEntry {
 const store = useAppStore();
 const listRef = ref<HTMLElement | null>(null);
 const dragDrop = useWorkspaceDragDrop(listRef);
+const activatingWorkspaceId = ref<string | null>(null);
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function resolveParentId(ws: any, allWs: any[]): string | null {
@@ -359,11 +373,17 @@ async function onActivate(workspaceId: string): Promise<void> {
   } catch {
     // logging never throws
   }
-  // Emit immediately so the mobile sidebar drawer closes without waiting for
-  // the server round-trip. The optimistic UI update in activateWorkspace already
-  // makes the new workspace appear selected — the user gets instant feedback.
-  emit("activate", workspaceId);
-  await store.activateWorkspace(workspaceId);
+  // Show loading overlay before the async round-trip so mobile users have
+  // feedback during multi-second activations (the overlay disappears in finally).
+  activatingWorkspaceId.value = workspaceId;
+  try {
+    // Emit immediately so the mobile sidebar drawer closes without waiting for
+    // the server round-trip.
+    emit("activate", workspaceId);
+    await store.activateWorkspace(workspaceId);
+  } finally {
+    activatingWorkspaceId.value = null;
+  }
 }
 
 const api = inject<Transport>("api");

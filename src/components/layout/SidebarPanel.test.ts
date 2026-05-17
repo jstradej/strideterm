@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { mount } from "@vue/test-utils";
+import { mount, flushPromises } from "@vue/test-utils";
+import { nextTick } from "vue";
 import { createPinia, setActivePinia } from "pinia";
 import SidebarPanel from "./SidebarPanel.vue";
 import { useAppStore } from "../../stores/app.js";
@@ -176,7 +177,7 @@ describe("SidebarPanel — workspace activate emits immediately (mobile sidebar 
       await new Promise(() => {}); // never resolves
     });
 
-    const wrapper = mount(SidebarPanel);
+    const wrapper = mount(SidebarPanel, { attachTo: document.body });
 
     // Click on workspace ws-B (not the active one) to trigger onActivate.
     await wrapper.find('[data-workspace-id="ws-B"]').trigger("click");
@@ -186,6 +187,41 @@ describe("SidebarPanel — workspace activate emits immediately (mobile sidebar 
     const emitted = wrapper.emitted("activate");
     expect(emitted).toBeTruthy();
     expect(emitted![0]).toEqual(["ws-B"]);
+
+    // Unmount to clean up Teleport content from document.body.
+    wrapper.unmount();
+  });
+});
+
+describe("SidebarPanel — workspace activate loading overlay", () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    (window as AnyApi).strideterm = { startupFlags: { windowId: "win-test" } };
+  });
+
+  it("shows loading overlay while activateWorkspace is pending, hides it after resolve", async () => {
+    const store = useAppStore();
+    store.payload = makePayload();
+
+    let resolveActivate!: () => void;
+    vi.spyOn(store, "activateWorkspace").mockImplementation(
+      () => new Promise<void>((resolve) => { resolveActivate = resolve; }),
+    );
+
+    const wrapper = mount(SidebarPanel, { attachTo: document.body });
+
+    await wrapper.find('[data-workspace-id="ws-B"]').trigger("click");
+
+    // Overlay must be present in the document while activation is pending.
+    expect(document.querySelector(".ws-activate-overlay")).not.toBeNull();
+
+    // Resolve activation — overlay must disappear after the promise chain settles.
+    resolveActivate();
+    await flushPromises();
+    await nextTick();
+    expect(document.querySelector(".ws-activate-overlay")).toBeNull();
+
+    wrapper.unmount();
   });
 });
 
