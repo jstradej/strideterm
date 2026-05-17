@@ -159,6 +159,36 @@ describe("SidebarPanel — multi-window active state", () => {
   });
 });
 
+describe("SidebarPanel — workspace activate emits immediately (mobile sidebar close)", () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    (window as AnyApi).strideterm = { startupFlags: { windowId: "win-test" } };
+  });
+
+  it("emits 'activate' before store.activateWorkspace resolves", async () => {
+    const store = useAppStore();
+    store.payload = makePayload();
+
+    // Never-resolving promise so we can check ordering synchronously.
+    let activateStarted = false;
+    vi.spyOn(store, "activateWorkspace").mockImplementation(async () => {
+      activateStarted = true;
+      await new Promise(() => {}); // never resolves
+    });
+
+    const wrapper = mount(SidebarPanel);
+
+    // Click on workspace ws-B (not the active one) to trigger onActivate.
+    await wrapper.find('[data-workspace-id="ws-B"]').trigger("click");
+
+    // The 'activate' event must have been emitted even though activateWorkspace is still pending.
+    expect(activateStarted).toBe(true);
+    const emitted = wrapper.emitted("activate");
+    expect(emitted).toBeTruthy();
+    expect(emitted![0]).toEqual(["ws-B"]);
+  });
+});
+
 describe("SidebarPanel — remote profile fallback", () => {
   beforeEach(() => {
     setActivePinia(createPinia());

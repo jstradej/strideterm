@@ -359,8 +359,11 @@ async function onActivate(workspaceId: string): Promise<void> {
   } catch {
     // logging never throws
   }
-  await store.activateWorkspace(workspaceId);
+  // Emit immediately so the mobile sidebar drawer closes without waiting for
+  // the server round-trip. The optimistic UI update in activateWorkspace already
+  // makes the new workspace appear selected — the user gets instant feedback.
   emit("activate", workspaceId);
+  await store.activateWorkspace(workspaceId);
 }
 
 const api = inject<Transport>("api");
