@@ -106,6 +106,50 @@ describe("ProfilesDialog", () => {
     expect(onActivate).toHaveBeenCalledWith("profile-b");
   });
 
+  it("shows Switching… and disables all Activate buttons while activation is in progress", async () => {
+    let resolveActivate!: () => void;
+    const onActivate = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveActivate = resolve;
+        }),
+    );
+    const wrapper = mount(ProfilesDialog, {
+      props: {
+        profiles: [
+          { id: "profile-a", name: "A", color: "#fff" },
+          { id: "profile-b", name: "B", color: "#fff" },
+          { id: "profile-c", name: "C", color: "#fff" },
+        ],
+        activeProfileId: "profile-a",
+        workspaces: [],
+        windowSlots: [],
+        isRemote: false,
+      },
+      attrs: { onActivate },
+    });
+
+    const cards = wrapper.findAll(".profile-card");
+    // Click Activate on profile-b (second card)
+    const activateBtnB = cards[1].findAll("button").find((b) => b.text().includes("Activate"));
+    await activateBtnB?.trigger("click");
+
+    // While activation is pending: the clicked button shows "Switching…"
+    // and all Activate buttons are disabled
+    const activateBtnBNow = cards[1].findAll("button").find((b) => b.text().includes("Switching"));
+    expect(activateBtnBNow?.exists()).toBe(true);
+    expect(activateBtnBNow?.attributes("disabled")).toBe("");
+
+    const activateBtnC = cards[2].findAll("button").find((b) => b.text() === "Activate");
+    expect(activateBtnC?.attributes("disabled")).toBe("");
+
+    // Resolve activation; buttons return to normal
+    resolveActivate();
+    await wrapper.vm.$nextTick();
+    const activateBtnBAfter = cards[1].findAll("button").find((b) => b.text() === "Activate");
+    expect(activateBtnBAfter?.attributes("disabled")).toBeUndefined();
+  });
+
   it("hides create edit delete controls in remote mode", () => {
     const wrapper = mount(ProfilesDialog, {
       props: {

@@ -42,7 +42,7 @@
                 v-if="profile.id !== activeProfileId"
                 type="button"
                 class="button button--ghost"
-                :disabled="!isRemote && occupiedByOtherWindow.has(profile.id)"
+                :disabled="(!isRemote && occupiedByOtherWindow.has(profile.id)) || activatingProfileId !== null"
                 :title="
                   !isRemote && occupiedByOtherWindow.has(profile.id)
                     ? `Open in Window ${occupiedByOtherWindow.get(profile.id)}`
@@ -50,7 +50,7 @@
                 "
                 @click="handleActivate(profile.id)"
               >
-                Activate
+                {{ activatingProfileId === profile.id ? "Switching…" : "Activate" }}
               </button>
               <button
                 v-if="!isRemote && localProfiles.length > 1"
@@ -172,6 +172,7 @@ const attrs = useAttrs();
 const localProfiles = reactive(props.profiles.map((p) => ({ ...p })));
 const newProfileName = ref("");
 const errorMessage = ref("");
+const activatingProfileId = ref<string | null>(null);
 
 function workspaceCount(profileId: string) {
   return props.workspaces.filter((ws) => (ws.profileId || "default") === profileId).length;
@@ -213,10 +214,13 @@ async function onProfileColorChange(profile: Profile, color: string) {
 
 async function handleActivate(profileId: string) {
   errorMessage.value = "";
+  activatingProfileId.value = profileId;
   try {
     await (attrs.onActivate as ((id: string) => Promise<void>) | undefined)?.(profileId);
   } catch (err) {
     handleError(err);
+  } finally {
+    activatingProfileId.value = null;
   }
 }
 
