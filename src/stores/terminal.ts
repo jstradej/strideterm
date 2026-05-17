@@ -31,6 +31,7 @@ export const useTerminalStore = defineStore("terminal", () => {
   const buffers = shallowRef(new Map<string, string>()); // sessionId → queued data string
 
   let controller: ReturnType<typeof createTerminalController> | null = null;
+  let reconnectFitTimer = 0;
 
   function init(
     api: Transport,
@@ -59,6 +60,15 @@ export const useTerminalStore = defineStore("terminal", () => {
 
     api.onTerminalExit!(({ sessionId, exitCode }) => {
       controller!.handleTerminalExit({ sessionId, exitCode });
+    });
+
+    api.onConnectionState?.((connection) => {
+      if (!connection?.connected || !connection.reconnected) {
+        return;
+      }
+      controller?.scheduleAllVisibleResize();
+      window.clearTimeout(reconnectFitTimer);
+      reconnectFitTimer = window.setTimeout(() => controller?.scheduleAllVisibleResize(), 150);
     });
 
     window.addEventListener("strideterm:theme-changed", () => controller?.syncTheme());

@@ -4,6 +4,7 @@ import { nextTick } from "vue";
 
 // vi.hoisted ensures the spy is created before the vi.mock factory runs.
 const syncFontSizeMock = vi.hoisted(() => vi.fn());
+const scheduleAllVisibleResizeMock = vi.hoisted(() => vi.fn());
 
 vi.mock("../app/terminal-controller.js", () => ({
   createTerminalController: () => ({
@@ -14,7 +15,7 @@ vi.mock("../app/terminal-controller.js", () => ({
     attachTerminalPane: vi.fn(),
     focusActiveTerminal: vi.fn(),
     scheduleActiveResize: vi.fn(),
-    scheduleAllVisibleResize: vi.fn(),
+    scheduleAllVisibleResize: scheduleAllVisibleResizeMock,
     pruneTerminalViews: vi.fn(),
     exportTerminalTranscript: vi.fn(),
     clearTerminalViewport: vi.fn(),
@@ -29,10 +30,17 @@ import { useAppStore } from "./app.js";
 type AnyRecord = Record<string, any>;
 
 function makeApi(isRemote: boolean) {
+  const connectionHandlers: Array<(payload: AnyRecord) => void> = [];
   return {
     isRemote,
     onTerminalData: vi.fn(),
     onTerminalExit: vi.fn(),
+    onConnectionState: vi.fn((handler: (payload: AnyRecord) => void) => {
+      connectionHandlers.push(handler);
+    }),
+    emitConnectionState: (payload: AnyRecord) => {
+      for (const handler of connectionHandlers) handler(payload);
+    },
   };
 }
 
@@ -56,6 +64,8 @@ describe("useTerminalStore — font size watch", () => {
     setActivePinia(createPinia());
     (window as AnyRecord).strideterm = { startupFlags: { windowId: "" } };
     syncFontSizeMock.mockClear();
+    scheduleAllVisibleResizeMock.mockClear();
+    vi.useRealTimers();
   });
 
   test("desktop: calls syncFontSize when terminalFontSizeLocal changes", async () => {
@@ -92,5 +102,27 @@ describe("useTerminalStore — font size watch", () => {
     appStore.payload = { appState: { settings: { terminalFontSizeLocal: 16 } } } as any;
     await nextTick();
     expect(syncFontSizeMock).not.toHaveBeenCalled();
+  });
+
+  test("remote: forces visible terminal resize after websocket reconnect", () => {
+    vi.useFakeTimers();
+    const termStore = useTerminalStore();
+    const api = makeApi(true);
+    termStore.init(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      api as any,
+      {},
+      {
+        getActiveSessionId: () => null,
+        getOverlay: () => null,
+        getPayload: () => null,
+      },
+    );
+
+    api.emitConnectionState({ connected: true, reconnected: true });
+
+    expect(scheduleAllVisibleResizeMock).toHaveBeenCalledTimes(1);
+    vi.advanceTimersByTime(150);
+    expect(scheduleAllVisibleResizeMock).toHaveBeenCalledTimes(2);
   });
 });

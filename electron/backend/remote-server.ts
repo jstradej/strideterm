@@ -5,7 +5,7 @@ import http from "node:http";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import fs from "node:fs/promises";
 import { existsSync } from "node:fs";
-import { randomBytes, timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { WebSocketServer } from "ws";
 import * as fm from "./file-manager.js";
 import {
@@ -391,6 +391,13 @@ function getClientIdFromRequest(requestUrl: string, headers: IncomingMessage["he
   const raw = fromHeader || new URL(requestUrl || "/", "http://localhost").searchParams.get("clientId") || "";
   const normalized = String(raw).trim();
   return /^[a-zA-Z0-9_-]{8,80}$/.test(normalized) ? normalized : "";
+}
+
+function remoteSessionRef(sessionId: string): string {
+  if (!sessionId) return "none";
+  const kind = sessionId.startsWith("token-client:") ? "token-client" : "cookie";
+  const digest = createHash("sha256").update(sessionId).digest("hex").slice(0, 12);
+  return `${kind}:${digest}`;
 }
 
 /**
@@ -1741,6 +1748,10 @@ export async function startRemoteServer({
     // renderer's `new WebSocket(url)` call no longer needs the token
     // in the URL once the user has bootstrapped.
     if (url.pathname !== "/ws" || !isAuthorized(request.url || "/", request.headers)) {
+      log.warn("WebSocket upgrade rejected: unauthorized", {
+        path: url.pathname,
+        remoteAddress: request.socket?.remoteAddress,
+      });
       socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
       socket.destroy();
       return;
@@ -1773,7 +1784,6 @@ export async function startRemoteServer({
     }
 
     wss.handleUpgrade(request, socket, head, async (ws) => {
-      log.debug("WebSocket client connected", { remoteAddress: request.socket?.remoteAddress });
       sockets.add(ws);
       // eslint-disable-next-line @typescript-eslint/no-explicit-any -- isAlive is the heartbeat flag attached to the ws instance
       (ws as any).isAlive = true;
@@ -1787,6 +1797,11 @@ export async function startRemoteServer({
         socketSession.set(ws, wsSessionId);
         registry.bumpLastSeen(wsSessionId);
       }
+      log.info("WebSocket client connected", {
+        remoteAddress: request.socket?.remoteAddress,
+        sessionRef: remoteSessionRef(wsSessionId),
+        total: sockets.size,
+      });
       const baseInitial = stripSecretsForRemote(await runtime.getInitialState());
       const initialPayload = wsSessionId ? registry.composePayload(wsSessionId, baseInitial) : baseInitial;
       ws.send(
@@ -1804,22 +1819,61 @@ export async function startRemoteServer({
           if (message.type === "terminal:input") {
             const parsed = wsTerminalInputSchema.safeParse(message);
             if (parsed.success) {
+              log.debug("WebSocket terminal input", {
+                sessionRef: remoteSessionRef(wsSessionId),
+                terminalSessionId: parsed.data.sessionId,
+                bytes: Buffer.byteLength(parsed.data.data || "", "utf8"),
+              });
               runtime.writeToSession(parsed.data.sessionId, parsed.data.data);
+            } else {
+              log.warn("WebSocket terminal input rejected: invalid payload", {
+                sessionRef: remoteSessionRef(wsSessionId),
+              });
             }
           } else if (message.type === "terminal:resize") {
             const parsed = wsTerminalResizeSchema.safeParse(message);
             if (parsed.success) {
+              log.debug("WebSocket terminal resize", {
+                sessionRef: remoteSessionRef(wsSessionId),
+                terminalSessionId: parsed.data.sessionId,
+                cols: parsed.data.cols,
+                rows: parsed.data.rows,
+              });
               runtime.resizeSession(parsed.data.sessionId, { cols: parsed.data.cols, rows: parsed.data.rows });
+            } else {
+              log.warn("WebSocket terminal resize rejected: invalid payload", {
+                sessionRef: remoteSessionRef(wsSessionId),
+              });
             }
           }
-        } catch {
-          // Ignore malformed remote messages.
+        } catch (err) {
+          log.warn("WebSocket message ignored: malformed JSON", {
+            sessionRef: remoteSessionRef(wsSessionId),
+            err: (err as Error)?.message || String(err),
+          });
         }
       });
 
-      ws.on("close", () => {
-        log.debug("WebSocket client disconnected", { remaining: sockets.size - 1 });
+      ws.on("error", (err) => {
+        log.warn("WebSocket client error", {
+          sessionRef: remoteSessionRef(wsSessionId),
+          err: (err as Error)?.message || String(err),
+        });
+      });
+
+      ws.on("close", (code, reason) => {
         sockets.delete(ws);
+        const meta = {
+          sessionRef: remoteSessionRef(wsSessionId),
+          code,
+          reason: reason?.toString("utf8") || "",
+          remaining: sockets.size,
+        };
+        if (code === 1000 || code === 1001) {
+          log.info("WebSocket client disconnected", meta);
+        } else {
+          log.warn("WebSocket client disconnected unexpectedly", meta);
+        }
       });
     });
   });
@@ -1834,7 +1888,10 @@ export async function startRemoteServer({
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const live = (ws as any).isAlive;
       if (!live) {
-        log.debug("WebSocket heartbeat timeout — terminating client");
+        log.warn("WebSocket heartbeat timeout — terminating client", {
+          sessionRef: remoteSessionRef(socketSession.get(ws) || ""),
+          remaining: Math.max(0, sockets.size - 1),
+        });
         sockets.delete(ws);
         ws.terminate();
         continue;

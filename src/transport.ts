@@ -18,6 +18,9 @@ interface ConnectionStatePayload {
   connected: boolean;
   message?: string;
   code?: number;
+  reconnecting?: boolean;
+  reconnected?: boolean;
+  attempt?: number;
 }
 
 interface EventHub {
@@ -184,25 +187,77 @@ export function createRemoteTransport(): Transport {
     return error;
   }
 
+  interface WsMessage {
+    type: string;
+    sessionId: string;
+    cols?: number;
+    rows?: number;
+    data?: string;
+  }
+
   const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-  // After the share-URL bootstrap, the token is gone from the URL and a
-  // session cookie has taken over (server: SESSION_COOKIE_NAME). The
-  // browser attaches that cookie to WS upgrade requests automatically,
-  // so dropping the `?token=` segment is enough to keep working without
-  // re-emitting the master token. External callers that still hold the
-  // token (e.g. API clients) keep the old `?token=` form.
-  const wsQuery = new URLSearchParams();
-  if (token) wsQuery.set("token", token);
-  wsQuery.set("clientId", remoteClientId);
-  const wsSuffix = wsQuery.toString();
-  const wsUrl = `${protocol}//${window.location.host}/ws${wsSuffix ? `?${wsSuffix}` : ""}`;
-  const ws = new WebSocket(wsUrl);
+  const reconnectBaseDelayMs = 500;
+  const reconnectMaxDelayMs = 10_000;
+  const pendingWsMessages: WsMessage[] = [];
+  let ws: WebSocket | null = null;
+  let reconnectTimer = 0;
+  let reconnectAttempt = 0;
+  let openedOnce = false;
 
-  ws.addEventListener("open", () => {
-    emitConnectionState({ connected: true, message: "" });
-  });
+  function buildWsUrl(): string {
+    // After the share-URL bootstrap, the token is gone from the URL and a
+    // session cookie has taken over (server: SESSION_COOKIE_NAME). The
+    // browser attaches that cookie to WS upgrade requests automatically,
+    // so dropping the `?token=` segment is enough to keep working without
+    // re-emitting the master token. External callers that still hold the
+    // token (e.g. API clients) keep the old `?token=` form.
+    const wsQuery = new URLSearchParams();
+    if (token) wsQuery.set("token", token);
+    wsQuery.set("clientId", remoteClientId);
+    const wsSuffix = wsQuery.toString();
+    return `${protocol}//${window.location.host}/ws${wsSuffix ? `?${wsSuffix}` : ""}`;
+  }
 
-  ws.addEventListener("message", (event: MessageEvent) => {
+  function flushPendingWsMessages(): void {
+    const current = ws;
+    if (!current || current.readyState !== WebSocket.OPEN) {
+      return;
+    }
+    while (pendingWsMessages.length > 0 && current.readyState === WebSocket.OPEN) {
+      current.send(JSON.stringify(pendingWsMessages.shift()));
+    }
+  }
+
+  function refreshStateAfterReconnect(): void {
+    void fetchJson("/api/state")
+      .then((payload) => {
+        listeners.stateUpdated.forEach((handler) => handler(payload as StatePayload));
+      })
+      .catch(() => {
+        // fetchJson already emits the remote connection issue.
+      });
+  }
+
+  function scheduleReconnect(error: RemoteError, code = 0): void {
+    if (reconnectTimer) {
+      return;
+    }
+    reconnectAttempt += 1;
+    const delay = Math.min(reconnectMaxDelayMs, reconnectBaseDelayMs * 2 ** Math.min(reconnectAttempt - 1, 5));
+    emitConnectionState({
+      connected: false,
+      reconnecting: true,
+      message: `${error.message} Reconnecting in ${Math.round(delay / 1000)}s...`,
+      code,
+      attempt: reconnectAttempt,
+    });
+    reconnectTimer = window.setTimeout(() => {
+      reconnectTimer = 0;
+      connectWebSocket();
+    }, delay);
+  }
+
+  function handleWsMessage(event: MessageEvent): void {
     const message = JSON.parse(event.data as string) as { type: string; payload: unknown };
     if (message.type === "state:updated") {
       emitConnectionState({ connected: true, message: "" });
@@ -226,20 +281,52 @@ export function createRemoteTransport(): Transport {
     if (message.type === "ssh:connection-state") {
       listeners.sshConnectionState.forEach((handler) => handler(message.payload as SshConnectionState));
     }
-  });
+  }
 
-  ws.addEventListener("close", (event: CloseEvent) => {
-    const error = createRemoteIssue({
-      kind: "ws-closed",
-      rawMessage: event.reason || "",
+  function connectWebSocket(): void {
+    const nextWs = new WebSocket(buildWsUrl());
+    ws = nextWs;
+
+    nextWs.addEventListener("open", () => {
+      if (ws !== nextWs) return;
+      const reconnected = openedOnce;
+      openedOnce = true;
+      reconnectAttempt = 0;
+      emitConnectionState({ connected: true, message: "", reconnected });
+      flushPendingWsMessages();
+      if (reconnected) {
+        refreshStateAfterReconnect();
+      }
     });
-    emitConnectionState({ connected: false, message: error.message, code: event.code || 0 });
-  });
 
-  ws.addEventListener("error", () => {
-    const error = createRemoteIssue({ kind: "ws-error" });
-    emitConnectionState({ connected: false, message: error.message, code: 0 });
-  });
+    nextWs.addEventListener("message", (event) => {
+      if (ws !== nextWs) return;
+      handleWsMessage(event);
+    });
+
+    nextWs.addEventListener("close", (event: CloseEvent) => {
+      if (ws !== nextWs) return;
+      const error = createRemoteIssue({
+        kind: "ws-closed",
+        rawMessage: event.reason || "",
+      });
+      scheduleReconnect(error, event.code || 0);
+    });
+
+    nextWs.addEventListener("error", () => {
+      if (ws !== nextWs) return;
+      const error = createRemoteIssue({ kind: "ws-error" });
+      emitConnectionState({
+        connected: false,
+        reconnecting: true,
+        message: error.message,
+        code: 0,
+        attempt: reconnectAttempt + 1,
+      });
+    });
+  }
+
+  connectWebSocket();
 
   async function fetchJson(pathname: string, payload?: unknown): Promise<unknown> {
     // Without a token we fall through to the cookie-based path: the
@@ -284,27 +371,13 @@ export function createRemoteTransport(): Transport {
     return response.json() as Promise<unknown>;
   }
 
-  interface WsMessage {
-    type: string;
-    sessionId: string;
-    cols?: number;
-    rows?: number;
-    data?: string;
-  }
-
   function send(message: WsMessage): void {
-    if (ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify(message));
+    const current = ws;
+    if (current?.readyState === WebSocket.OPEN) {
+      current.send(JSON.stringify(message));
       return;
     }
-
-    ws.addEventListener(
-      "open",
-      () => {
-        ws.send(JSON.stringify(message));
-      },
-      { once: true },
-    );
+    pendingWsMessages.push(message);
   }
 
   return {
