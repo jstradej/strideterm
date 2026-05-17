@@ -74,7 +74,7 @@ const popoverStyle = ref<CSSProperties>({
   visibility: "hidden",
   top: "0",
   left: "0",
-  zIndex: 9999,
+  zIndex: 8999,
 });
 
 onMounted(async () => {
@@ -125,7 +125,7 @@ function positionPopover(): void {
     position: "fixed",
     top: `${Math.round(top)}px`,
     left: `${Math.round(left)}px`,
-    zIndex: 9999,
+    zIndex: 8999,
     visibility: "visible",
   };
 }

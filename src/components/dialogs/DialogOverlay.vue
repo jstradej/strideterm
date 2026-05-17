@@ -1,13 +1,13 @@
 <template>
   <Teleport to="body">
-    <div v-if="store.overlay" class="overlay" @click.self="handleBackdropClick">
+    <div v-if="store.overlay" ref="overlayRef" class="overlay" tabindex="-1" @click.self="handleBackdropClick">
       <component :is="dialogComponent" v-if="dialogComponent" v-bind="store.overlayProps" />
     </div>
   </Teleport>
 </template>
 
 <script setup lang="ts">
-import { computed, defineAsyncComponent, watch, nextTick, onBeforeUnmount } from "vue";
+import { computed, defineAsyncComponent, watch, nextTick, onBeforeUnmount, ref } from "vue";
 import { useAppStore } from "../../stores/app.js";
 
 const DIALOGS = {
@@ -38,6 +38,7 @@ const DIALOGS = {
 };
 
 const store = useAppStore();
+const overlayRef = ref<HTMLElement | null>(null);
 
 const dialogComponent = computed(() =>
   store.overlay
@@ -53,24 +54,34 @@ watch(
       // Blur xterm's hidden textarea to release keyboard events
       const xtermTextarea = document.querySelector(".xterm-helper-textarea");
       if (xtermTextarea) (xtermTextarea as HTMLElement).blur();
+      window.focus();
       // After the dialog component mounts, focus the first visible input/textarea.
       // Use a rAF retry loop instead of a fixed timeout — works reliably on slow machines
       // where async dialog components take variable time to mount.
       nextTick(() => {
         let attempts = 0;
         const tryFocus = () => {
-          const dialog = document.querySelector(".overlay .dialog");
+          const dialog = overlayRef.value?.querySelector(".dialog");
           if (dialog) {
             // Dialogs whose first input is a rename-in-place (e.g. ProfilesDialog)
             // opt out via data-no-autofocus so opening doesn't look like a rename.
             if ((dialog as HTMLElement).dataset.noAutofocus !== undefined) return;
-            const focusable = dialog.querySelector("input:not([type=hidden]), textarea, select, [autofocus]");
+            const focusable = dialog.querySelector(
+              [
+                "[autofocus]",
+                "input:not([type=hidden]):not(:disabled)",
+                "textarea:not(:disabled)",
+                "select:not(:disabled)",
+                "button:not(:disabled)",
+              ].join(", "),
+            );
             if (focusable) {
-              (focusable as HTMLElement).focus();
-              return;
+              (focusable as HTMLElement).focus({ preventScroll: true });
+              if (document.activeElement === focusable || dialog.contains(document.activeElement)) return;
             }
           }
-          if (++attempts < 10) requestAnimationFrame(tryFocus);
+          overlayRef.value?.focus({ preventScroll: true });
+          if (++attempts < 30) requestAnimationFrame(tryFocus);
         };
         requestAnimationFrame(tryFocus);
       });

@@ -141,6 +141,8 @@ export function createDialogActions(ctx: DialogActionsCtx) {
   }
 
   function openDialog(name: string, props: Record<string, unknown> = {}): void {
+    ctx.contextMenu.value = null;
+    ctx.layoutPickerAnchor.value = null;
     ctx.overlay.value = name;
     ctx.overlayProps.value = props;
   }
