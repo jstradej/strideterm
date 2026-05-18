@@ -133,7 +133,15 @@ function createWinstonLogger({ level, maxSizeMb, maxFiles }: LogConfig): winston
         filename: path.join(LOG_DIR, "strideterm.log"),
         maxsize: maxSizeMb * 1024 * 1024,
         maxFiles,
-        tailable: true,
+        // tailable: true would rename strideterm.log → strideterm1.log on every
+        // rotation, but Windows blocks renaming a file that still has an open
+        // handle (winston's own writer). winston then retries forever via
+        // fs.rename + suppressedCallback, which on a busy dev session burned
+        // ~1.4 % CPU constantly in the libuv thread pool. With tailable off
+        // winston rotates forward (new chunk lands in strideterm1.log, old
+        // strideterm.log stays put), so the active file handle never needs to
+        // move.
+        tailable: false,
       }),
       new winston.transports.File({
         filename: path.join(LOG_DIR, "strideterm-error.log"),

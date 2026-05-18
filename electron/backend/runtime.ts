@@ -3304,8 +3304,16 @@ export async function createRuntime({
     return docker.refresh();
   }
 
-  async function refreshGit(projectId: string | null = null) {
-    git.invalidateSnapshotCache?.(projectId || null);
+  async function refreshGit(projectId: string | null = null, options: { useCache?: boolean } = {}) {
+    // useCache=true skips invalidation so refreshWorkspaces' internal
+    // snapshotCache (8 s TTL by default) can short-circuit when a recent
+    // snapshot already exists. Used by the startup background warmup so a
+    // first-time refresh populates the cache and re-entries within the TTL
+    // are essentially free — without this the loop blindly re-spawned ~14
+    // git processes per workspace even though the data hadn't changed.
+    if (!options.useCache) {
+      git.invalidateSnapshotCache?.(projectId || null);
+    }
     const state = getState();
     const workspaces = state.workspaces.filter(
       (workspace) => (!projectId || workspace.id === projectId) && workspace.kind !== "azure",
@@ -3798,15 +3806,32 @@ export async function createRuntime({
     // from setRemoteInfo on the first reported state — see the one-shot
     // guard `autoTunnelBootstrapped` below.
 
-    // Background: inspect remaining workspaces so they don't block first render
+    // Background: inspect remaining workspaces so they don't block first render.
+    //
+    // Two scoping decisions that keep startup CPU bounded:
+    //   1. Only workspaces in the SAME profile as the active workspace. The user
+    //      can only see one profile at a time, so eagerly refreshing the other
+    //      profiles' workspaces is pure CPU burn — they'll be activated lazily
+    //      anyway. Cut this from "every git workspace across every profile" to
+    //      "every git workspace in this profile" (often ~halves the work).
+    //   2. useCache=true so the first pass populates each workspace's snapshot
+    //      cache without an explicit invalidation. A second startup refresh
+    //      within the cache TTL (8 s) becomes a no-op instead of re-spawning
+    //      14+ git processes per workspace.
     if (activeId) {
+      const initialState = getState();
+      const activeProfileId = initialState.workspaces.find((w) => w.id === activeId)?.profileId || "default";
       queueMicrotask(async () => {
         const others = getState().workspaces.filter(
-          (ws) => ws.id !== activeId && ws.kind !== "azure" && ws.kind !== "github",
+          (ws) =>
+            ws.id !== activeId &&
+            ws.kind !== "azure" &&
+            ws.kind !== "github" &&
+            (ws.profileId || "default") === activeProfileId,
         );
         for (const ws of others) {
           try {
-            await refreshGit(ws.id);
+            await refreshGit(ws.id, { useCache: true });
             broadcastState();
           } catch {
             // Non-fatal — background refresh; user can click Refresh if needed

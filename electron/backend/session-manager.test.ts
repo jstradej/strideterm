@@ -161,6 +161,19 @@ describe("SessionManager", () => {
     expect(() => manager.resizeSession("workspace-a:shell", 120, 40)).not.toThrow();
   });
 
+  test("skips native resize when effective pty size is unchanged", () => {
+    const manager = new SessionManager();
+
+    manager.ensureSession(createState() as Parameters<typeof manager.ensureSession>[0], "workspace-a:shell");
+    handles[0].resize = vi.fn();
+
+    manager.resizeSession("workspace-a:shell", 120, 40);
+    manager.resizeSession("workspace-a:shell", 120, 40);
+
+    expect(handles[0].resize).toHaveBeenCalledTimes(1);
+    expect(handles[0].resize).toHaveBeenCalledWith(120, 40);
+  });
+
   test("injects shell integration env vars when enabled", () => {
     const manager = new SessionManager();
     // eslint-disable-next-line @typescript-eslint/no-explicit-any

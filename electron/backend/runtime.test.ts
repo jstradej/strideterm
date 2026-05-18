@@ -269,12 +269,19 @@ class FakeGitManager extends EventEmitter {
   declare refreshArgs: any[];
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   declare actions: any[];
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  declare invalidateCalls: any[];
 
   constructor() {
     super();
     this.snapshots = new Map();
     this.refreshArgs = [];
     this.actions = [];
+    this.invalidateCalls = [];
+  }
+
+  invalidateSnapshotCache(workspaceId: string | null = null, rootPath: string | null = null) {
+    this.invalidateCalls.push({ workspaceId, rootPath });
   }
 
   getProjectMap() {
@@ -4966,5 +4973,121 @@ describe("task recovery: sequential resolve", () => {
     // Then resolve the second one — list drains
     await fixture.runtime.resolveTaskRecovery({ "ws-b": "skip" });
     expect(fixture.runtime.getPayload().meta.recoveryCandidates).toHaveLength(0);
+  });
+});
+
+// Drain queueMicrotask + setImmediate yields enough times to let the startup
+// background refresh loop walk every queued workspace.
+async function drainBackgroundLoop(iterations = 30): Promise<void> {
+  for (let i = 0; i < iterations; i++) {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+}
+
+describe("startup git refresh — scoping + cache reuse", () => {
+  test("background warmup only refreshes workspaces in the active profile", async () => {
+    // Active workspace lives in profile-a. The other workspace in profile-a
+    // should get a background refresh. The two workspaces under profile-b
+    // belong to a profile the user can't see right now — refreshing them at
+    // startup would burn ~14 git spawns per workspace for no observable
+    // benefit. The scope guard in runInitialRefresh keeps this off.
+    const fixture = await createFixture({
+      initialState: {
+        activeWorkspaceId: "ws-a-1",
+        profiles: [
+          { id: "profile-a", name: "Profile A" },
+          { id: "profile-b", name: "Profile B" },
+        ],
+        workspaces: [
+          {
+            id: "ws-a-1",
+            name: "A1",
+            kind: "terminal",
+            profileId: "profile-a",
+            cwd: "/tmp/a1",
+            activePanelId: "shell",
+            panels: [{ id: "shell", title: "Shell", command: "", shell: true, startup: "default" }],
+          },
+          {
+            id: "ws-a-2",
+            name: "A2",
+            kind: "terminal",
+            profileId: "profile-a",
+            cwd: "/tmp/a2",
+            activePanelId: "shell",
+            panels: [{ id: "shell", title: "Shell", command: "", shell: true, startup: "default" }],
+          },
+          {
+            id: "ws-b-1",
+            name: "B1",
+            kind: "terminal",
+            profileId: "profile-b",
+            cwd: "/tmp/b1",
+            activePanelId: "shell",
+            panels: [{ id: "shell", title: "Shell", command: "", shell: true, startup: "default" }],
+          },
+          {
+            id: "ws-b-2",
+            name: "B2",
+            kind: "terminal",
+            profileId: "profile-b",
+            cwd: "/tmp/b2",
+            activePanelId: "shell",
+            panels: [{ id: "shell", title: "Shell", command: "", shell: true, startup: "default" }],
+          },
+        ],
+      },
+    });
+    fixtures.push(fixture);
+    await drainBackgroundLoop();
+
+    const refreshedIds = fixture.git.refreshArgs.flat();
+    expect(refreshedIds).toContain("ws-a-1"); // foreground refresh for active
+    expect(refreshedIds).toContain("ws-a-2"); // background warmup, same profile
+    expect(refreshedIds).not.toContain("ws-b-1"); // different profile — skipped
+    expect(refreshedIds).not.toContain("ws-b-2");
+  });
+
+  test("background warmup skips invalidateSnapshotCache so the snapshot TTL still applies", async () => {
+    // refreshGit invalidates the snapshot cache by default — without the
+    // useCache opt-out the background loop would wipe and re-fetch every
+    // workspace even when GitManager's own 8s TTL already had fresh data
+    // from the foreground refresh.
+    const fixture = await createFixture({
+      initialState: {
+        activeWorkspaceId: "ws-a-1",
+        profiles: [{ id: "profile-a", name: "Profile A" }],
+        workspaces: [
+          {
+            id: "ws-a-1",
+            name: "A1",
+            kind: "terminal",
+            profileId: "profile-a",
+            cwd: "/tmp/a1",
+            activePanelId: "shell",
+            panels: [{ id: "shell", title: "Shell", command: "", shell: true, startup: "default" }],
+          },
+          {
+            id: "ws-a-2",
+            name: "A2",
+            kind: "terminal",
+            profileId: "profile-a",
+            cwd: "/tmp/a2",
+            activePanelId: "shell",
+            panels: [{ id: "shell", title: "Shell", command: "", shell: true, startup: "default" }],
+          },
+        ],
+      },
+    });
+    fixtures.push(fixture);
+    await drainBackgroundLoop();
+
+    const invalidatedIds = fixture.git.invalidateCalls.map((call: { workspaceId: string | null }) => call.workspaceId);
+    // Foreground refresh of the active workspace went through the normal
+    // (invalidating) path.
+    expect(invalidatedIds).toContain("ws-a-1");
+    // Background warmup ran refreshGit("ws-a-2", { useCache: true }) — that
+    // workspace's cache slot must never have been invalidated.
+    expect(invalidatedIds).not.toContain("ws-a-2");
   });
 });

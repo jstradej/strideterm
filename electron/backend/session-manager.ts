@@ -866,11 +866,20 @@ export class SessionManager extends EventEmitter {
       return;
     }
 
-    session.cols = cols;
-    session.rows = rows;
+    const nextCols = Math.max(cols, APP_CONFIG.session.minCols);
+    const nextRows = Math.max(rows, APP_CONFIG.session.minRows);
+    if (
+      Math.max(session.cols, APP_CONFIG.session.minCols) === nextCols &&
+      Math.max(session.rows, APP_CONFIG.session.minRows) === nextRows
+    ) {
+      return;
+    }
+
+    session.cols = nextCols;
+    session.rows = nextRows;
 
     if (session.kind === "ssh") {
-      this.sshManager?.resize(sessionId, cols, rows);
+      this.sshManager?.resize(sessionId, nextCols, nextRows);
       return;
     }
 
@@ -878,10 +887,7 @@ export class SessionManager extends EventEmitter {
     if (!ptySession.processHandle) return;
 
     try {
-      ptySession.processHandle.resize(
-        Math.max(cols, APP_CONFIG.session.minCols),
-        Math.max(rows, APP_CONFIG.session.minRows),
-      );
+      ptySession.processHandle.resize(nextCols, nextRows);
     } catch (error: unknown) {
       log.warn("resize failure", { sessionId, err: (error as Error)?.message || String(error) });
     }

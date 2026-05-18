@@ -454,6 +454,11 @@ export class GitManager extends EventEmitter {
     try {
       const rootResult = await this.execGit(rootPath, ["rev-parse", "--show-toplevel"]);
       const root = rootResult.stdout.trim();
+      // Batch every independent read into one Promise.all. Previously
+      // getStashCount and the two readDiffStat calls ran sequentially after
+      // this block — they don't depend on parsed status, so moving them up
+      // shortens the per-workspace inspect chain by three awaits per
+      // refreshGit cycle.
       const [
         branchResult,
         remoteResult,
@@ -466,6 +471,9 @@ export class GitManager extends EventEmitter {
         gitCommonDirResult,
         worktreeListResult,
         branchListResult,
+        stashCount,
+        stagedDiffStat,
+        unstagedDiffStat,
       ] = await Promise.all([
         this.execGit(rootPath, ["rev-parse", "--abbrev-ref", "HEAD"]).catch(() => ({
           stdout: "HEAD",
@@ -489,6 +497,9 @@ export class GitManager extends EventEmitter {
         this.execGit(rootPath, ["for-each-ref", "--format=%(refname:short)", "refs/heads", "refs/remotes"]).catch(
           () => ({ stdout: "", stderr: "" }),
         ),
+        this.getStashCount(rootPath),
+        this.readDiffStat(rootPath, ["diff", "--cached", "--shortstat"]),
+        this.readDiffStat(rootPath, ["diff", "--shortstat"]),
       ]);
 
       const gitDir = resolveGitPath(rootPath, gitDirResult.stdout);
@@ -516,13 +527,11 @@ export class GitManager extends EventEmitter {
       const baseBranch = reviewSourceRef
         ? `origin/${reviewSourceRef}`
         : await this.detectBestBaseBranch(rootPath, branch, upstream, branchNames);
-      const [compareWithBase, stashCount] = await Promise.all([
-        this.readBaseComparison(rootPath, baseBranch, branch),
-        this.getStashCount(rootPath),
-      ]);
+      // readBaseComparison depends on baseBranch (resolved just above) so it
+      // can't fold into the batched Promise.all up top; stashCount + diffStat
+      // already happened there.
+      const compareWithBase = await this.readBaseComparison(rootPath, baseBranch, branch);
       const operationState = await this.inspectOperationState(rootPath, { gitDir, gitCommonDir });
-      const stagedDiffStat = await this.readDiffStat(rootPath, ["diff", "--cached", "--shortstat"]);
-      const unstagedDiffStat = await this.readDiffStat(rootPath, ["diff", "--shortstat"]);
       const untrackedDiffStat = summarizeNameStatusEntries(untracked.map((entry) => ({ code: "?", path: entry.path })));
       // Check if this worktree's branch has been merged into the base branch.
       // Only mark as merged if: not the main worktree, not dirty, HEAD is ancestor of baseBranch,
