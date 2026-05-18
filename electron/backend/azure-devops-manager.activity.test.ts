@@ -223,6 +223,39 @@ describe("AzureDevOpsManager review-activity deltas", () => {
     expect(snapshot.reviewActivity[0].body).toContain("line 12");
   });
 
+  test("second sync aggregates multiple new comments on one PR into one event", async () => {
+    const world = {
+      nowIso: "2026-03-17T10:00:00.000Z",
+      pullRequests: [basePullRequest()],
+      comments: [],
+    };
+    const { manager } = makeManager(world);
+    await manager.sync({ connections: [connection], workspaces: [], gitSnapshots: {} });
+
+    world.nowIso = "2026-03-17T10:05:00.000Z";
+    for (let i = 1; i <= 5; i++) {
+      world.comments.push(
+        commentFrom({
+          id: 200 + i,
+          author: { id: "author-2", displayName: "Bob", uniqueName: "bob@example.com" },
+          content: `Comment ${i}`,
+          at: `2026-03-17T10:0${i}:00.000Z`,
+        }),
+      );
+    }
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const snapshot = (await manager.sync({ connections: [connection], workspaces: [], gitSnapshots: {} })) as any;
+    const commentEvents = snapshot.reviewActivity.filter(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (ev: any) => ev.prKey === prKey && ev.kind === "pr-new-comment",
+    );
+
+    expect(commentEvents).toHaveLength(1);
+    expect(commentEvents[0].title).toContain("5 new comments");
+    expect(commentEvents[0].body).toContain("Comment");
+  });
+
   test("second sync ignores comments authored by the current user", async () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const world: any = {

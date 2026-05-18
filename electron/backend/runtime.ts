@@ -1647,8 +1647,19 @@ export async function createRuntime({
     };
   }
 
-  // Dedup of PR keys already forwarded to Telegram is owned by TelegramManager
-  // (bounded LRU). Runtime just asks via hasForwardedPr / markPrForwarded.
+  // Telegram PR alerts mirror the same reviewActivity stream that feeds the
+  // renderer notification center. Seed the current rolling history once per
+  // process so app startup doesn't replay old PR activity into Telegram.
+  const forwardedReviewActivityEventIds = new Map<string, number>();
+  let seededReviewActivityForTelegram = false;
+
+  function markReviewActivityForwarded(eventId: string): void {
+    forwardedReviewActivityEventIds.set(eventId, Date.now());
+    if (forwardedReviewActivityEventIds.size > 1000) {
+      const first = forwardedReviewActivityEventIds.keys().next().value;
+      if (first !== undefined) forwardedReviewActivityEventIds.delete(first);
+    }
+  }
 
   function checkAndForwardPrNotificationsToTelegram(): void {
     if (telegramManager.getSnapshot().connections.length === 0) return;
@@ -1656,101 +1667,71 @@ export async function createRuntime({
     const azureSnapshot = azure.getSnapshot();
     const githubSnapshot = github.getSnapshot();
 
-    // Check Azure PRs with attention
-    for (const [prKey, summary] of Object.entries(azureSnapshot?.pullRequests || {})) {
+    function forwardReviewActivity(provider: "azure-devops" | "github", events: unknown[]): void {
+      if (!Array.isArray(events) || events.length === 0) return;
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const pr = summary as any;
-      if (!pr?.hasAttention || telegramManager.hasForwardedPr(prKey)) continue;
-      telegramManager.markPrForwarded(prKey);
-      // The connection's own profile is the authoritative source — fall
-      // back to a profile-scoped Azure inbox only when the PR summary
-      // doesn't carry profileId yet (legacy snapshots before the fix).
-      // Picking the first state.workspaces match silently routes alerts
-      // to whatever inbox sorts first when both profiles host one.
-      const prProfileIdHint = (pr?.profileId as string | undefined) || "";
-      const azureInboxForProfile = prProfileIdHint
-        ? state.workspaces.find(
-            (w: WorkspaceState) => w.kind === "azure" && (w.profileId || "default") === prProfileIdHint,
-          )
-        : null;
-      const azureWorkspace = azureInboxForProfile || state.workspaces.find((w: WorkspaceState) => w.kind === "azure");
-      // Use review or existing workspace so auto-review can walk up to the parent cwd
-      const prWorkspaceId = pr?.reviewWorkspaceId || pr?.existingWorkspaceId || azureWorkspace?.id || "azure";
-      const prTitle = pr?.pullRequest?.title || prKey;
-      log.info("telegram: forwarding Azure PR notification", { prKey, connectionId: pr?.connectionId });
-      const azurePrWs = state.workspaces.find((w) => w.id === prWorkspaceId);
-      const azurePrProfileId =
-        prProfileIdHint ||
-        (azurePrWs as { profileId?: string } | undefined)?.profileId ||
-        (azureWorkspace as { profileId?: string } | undefined)?.profileId ||
-        "default";
-      telegramManager
-        .forwardAlert({
-          alertId: prKey,
-          workspaceId: prWorkspaceId,
-          panelId: "inbox",
-          workspaceName: azureWorkspace?.name || "Azure DevOps",
-          panelTitle: "Inbox",
-          kind: "review",
-          urgency: "normal",
-          title: `PR Review: ${prTitle}`,
-          detail: pr?.attentionReason || "Needs review",
-          prKey,
-          provider: "azure-devops",
-          connectionId: pr?.connectionId || "",
-          workspaceProfileId: azurePrProfileId,
-          workspaceProfileName: resolveProfileDisplayName(azurePrProfileId),
-        })
-        .catch((err) => {
-          log.warn("telegram: Azure PR forward failed", { prKey, err: (err as Error).message });
+      for (const ev of events as any[]) {
+        const eventId = String(ev?.id || "");
+        if (!eventId) continue;
+        if (ev?.kind === "connection-error") continue;
+        if (!ev?.prKey) continue;
+
+        if (!seededReviewActivityForTelegram) {
+          markReviewActivityForwarded(eventId);
+          continue;
+        }
+        if (forwardedReviewActivityEventIds.has(eventId)) continue;
+        markReviewActivityForwarded(eventId);
+
+        const profileId = String(ev.profileId || "");
+        if (!profileId) continue;
+        const providerKind = provider === "azure-devops" ? "azure" : "github";
+        const providerLabel = provider === "azure-devops" ? "Azure DevOps" : "GitHub";
+        const workspaceId = String(ev.reviewWorkspaceId || ev.existingWorkspaceId || "");
+        const workspace =
+          (workspaceId ? state.workspaces.find((w) => w.id === workspaceId) : undefined) ||
+          state.workspaces.find(
+            (w: WorkspaceState) => w.kind === providerKind && (w.profileId || "default") === profileId,
+          );
+        const targetWorkspaceId = workspaceId || workspace?.id || providerKind;
+
+        log.info("telegram: forwarding review activity notification", {
+          eventId,
+          prKey: ev.prKey,
+          provider,
+          connectionId: ev.connectionId,
         });
+        telegramManager
+          .forwardAlert({
+            alertId: eventId,
+            workspaceId: targetWorkspaceId,
+            panelId: "inbox",
+            workspaceName: workspace?.name || providerLabel,
+            panelTitle: "Inbox",
+            kind: "review",
+            urgency: ev.urgency === "urgent" ? "urgent" : "normal",
+            title: String(ev.title || "Pull request update"),
+            detail: String(ev.body || ev.pullRequestTitle || ""),
+            prKey: String(ev.prKey || ""),
+            provider,
+            connectionId: String(ev.connectionId || ""),
+            workspaceProfileId: profileId,
+            workspaceProfileName: resolveProfileDisplayName(profileId),
+          })
+          .catch((err) => {
+            log.warn("telegram: review activity forward failed", {
+              eventId,
+              prKey: ev.prKey,
+              err: (err as Error).message,
+            });
+          });
+      }
     }
 
-    // Check GitHub PRs with attention
-    for (const [prKey, summary] of Object.entries(githubSnapshot?.pullRequests || {})) {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const pr = summary as any;
-      if (!pr?.hasAttention || telegramManager.hasForwardedPr(prKey)) continue;
-      telegramManager.markPrForwarded(prKey);
-      // See Azure counterpart for the rationale — prefer the connection's
-      // profile (carried on the PR summary) when picking the inbox parent.
-      const ghPrProfileIdHint = (pr?.profileId as string | undefined) || "";
-      const githubInboxForProfile = ghPrProfileIdHint
-        ? state.workspaces.find(
-            (w: WorkspaceState) => w.kind === "github" && (w.profileId || "default") === ghPrProfileIdHint,
-          )
-        : null;
-      const githubWorkspace =
-        githubInboxForProfile || state.workspaces.find((w: WorkspaceState) => w.kind === "github");
-      const prWorkspaceId = pr?.reviewWorkspaceId || pr?.existingWorkspaceId || githubWorkspace?.id || "github";
-      const prTitle = pr?.pullRequest?.title || prKey;
-      log.info("telegram: forwarding GitHub PR notification", { prKey, connectionId: pr?.connectionId });
-      const githubPrWs = state.workspaces.find((w) => w.id === prWorkspaceId);
-      const githubPrProfileId =
-        ghPrProfileIdHint ||
-        (githubPrWs as { profileId?: string } | undefined)?.profileId ||
-        (githubWorkspace as { profileId?: string } | undefined)?.profileId ||
-        "default";
-      telegramManager
-        .forwardAlert({
-          alertId: prKey,
-          workspaceId: prWorkspaceId,
-          panelId: "inbox",
-          workspaceName: githubWorkspace?.name || "GitHub",
-          panelTitle: "Inbox",
-          kind: "review",
-          urgency: "normal",
-          title: `PR Review: ${prTitle}`,
-          detail: pr?.attentionReason || "Needs review",
-          prKey,
-          provider: "github",
-          connectionId: pr?.connectionId || "",
-          workspaceProfileId: githubPrProfileId,
-          workspaceProfileName: resolveProfileDisplayName(githubPrProfileId),
-        })
-        .catch((err) => {
-          log.warn("telegram: GitHub PR forward failed", { prKey, err: (err as Error).message });
-        });
+    forwardReviewActivity("azure-devops", azureSnapshot?.reviewActivity || []);
+    forwardReviewActivity("github", githubSnapshot?.reviewActivity || []);
+    if (!seededReviewActivityForTelegram) {
+      seededReviewActivityForTelegram = true;
     }
   }
 
