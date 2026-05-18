@@ -986,29 +986,6 @@ async function startServices(): Promise<void> {
         const image = await win.webContents.capturePage();
         return image.toPNG();
       },
-      // §4.2: find the window whose slot has this profileId and tell its renderer
-      // to navigate to the workspace/panel (flash is handled separately in updateNativeAttention).
-      // For alerts originating in a profile that's currently closed, defer to
-      // ensureWindowForProfile (below) which spawns the right window. We do
-      // this opportunistically — alerts are best-effort UX hints, not the
-      // primary entry point, so we don't block on the spawn.
-      navigateWindowToAlert: (workspaceId: string, panelId: string, profileId: string): void => {
-        const existing = findWindowForProfile(profileId);
-        if (existing) {
-          emitToWindow(existing.windowId, "alert:navigate", { workspaceId, panelId });
-          return;
-        }
-        // Auto-spawn for cross-profile alerts (e.g. background PR poll in a
-        // profile whose window the user closed). Fire-and-forget — alerts
-        // from the background poll fan in faster than spawn completes, so
-        // we don't await; the new window picks up workspace state from the
-        // shared backend once it renders.
-        ensureWindowForProfile(profileId)
-          .then((wid) => {
-            if (wid) emitToWindow(wid, "alert:navigate", { workspaceId, panelId });
-          })
-          .catch((err) => log.warn("navigateWindowToAlert: spawn failed", { err: (err as Error)?.message }));
-      },
       ensureWindowForProfile,
     },
   });

@@ -421,16 +421,4 @@ watch(
     termStore.focusActiveTerminal();
   },
 );
-
-// §4.2: scroll the alerted panel into view when alert:navigate targets this workspace
-watch(
-  () => store.pendingAlertSessionId,
-  async (sessionId) => {
-    if (!sessionId) return;
-    store.pendingAlertSessionId = null;
-    await nextTick();
-    const el = document.querySelector(`[data-view-id="${sessionId}"]`);
-    el?.scrollIntoView?.({ block: "nearest", behavior: "smooth" });
-  },
-);
 </script>

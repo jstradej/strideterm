@@ -271,9 +271,6 @@ interface RuntimeDependencies {
    */
   captureMainWindowPng?: (windowId?: string) => Promise<Buffer>;
 
-  /** Emit alert:navigate to the window that owns `profileId` (§4.2). */
-  navigateWindowToAlert?: (workspaceId: string, panelId: string, profileId: string) => void;
-
   /**
    * Ensure a desktop window exists for `profileId`, returning its `windowId`.
    * Implementation contract (see main.ts):
@@ -1499,11 +1496,6 @@ export async function createRuntime({
             err: (err as Error).message,
           });
         });
-      // §4.2: emit alert:navigate to the window that owns this workspace's profile
-      if (opts.projectId && opts.panelId && dependencies.navigateWindowToAlert) {
-        const profileId = (workspace as { profileId?: string } | undefined)?.profileId || "default";
-        dependencies.navigateWindowToAlert(opts.projectId, opts.panelId, profileId);
-      }
     }
     return raised;
   }
