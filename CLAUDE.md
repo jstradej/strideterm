@@ -18,6 +18,21 @@ Dev is started with `.\dev.ps1` (interactive PowerShell, not from the Bash tool)
 
 `--data-dir <path>` overrides both. Check `dev.ps1` and `electron/main.ts` if unsure where something landed.
 
+### Never run plain `npm run build` while the user's dev loop is active
+
+The user develops with `.\dev.ps1`, which runs `vite build --watch` with `VITE_BUILD_WATCH=1`. That env var:
+
+- skips `emptyOutDir` so the watcher keeps writing into a live `dist/` that the remote-server serves to open mobile/web sessions
+- emits chunks **without content hashes** (`assets/[name].js`) so a rebuild overwrites in place instead of leaving orphan hashed files behind
+
+Running plain `npm run build` from a Claude tool call (no env var, default config) breaks both: it wipes `dist/`, then produces hashed chunks like `DockerPane-XXXX.js`. Any browser page already loaded on the remote client references the previous chunk names and 404s — and because the 404 response carries `text/plain`, Chrome's strict-MIME check fires the noisy "Refused to apply style from … because its MIME type ('text/plain') is not a supported stylesheet" error that buries the real cause.
+
+Rules:
+
+- **For verification, use `npm run typecheck`** — it doesn't touch `dist/`.
+- **If a real build is genuinely needed, set the env var explicitly:** `VITE_BUILD_WATCH=1 npx vite build`. This matches what `dev.ps1` does and stays compatible with a live watch.
+- **Never run plain `npm run build`** while `dev.ps1` may be open. If unsure whether it's running, ask first or pick the typecheck-only path.
+
 ### Cross-platform & multi-agent
 
 Users run on **Windows, macOS, and Linux**, and may drive the app from multiple **AI agents** (Claude Code, Codex, Gemini, etc.). Most functionality is intentionally generic:

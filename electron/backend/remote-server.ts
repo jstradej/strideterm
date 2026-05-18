@@ -9,6 +9,19 @@ import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { WebSocketServer } from "ws";
 import * as fm from "./file-manager.js";
 import {
+  dockerActionSchema,
+  dockerComposeActionSchema,
+  dockerInspectSchema,
+  dockerLogsCloseSchema,
+  dockerLogsOpenSchema,
+  dockerLogsUpdateSchema,
+  dockerPruneSchema,
+  dockerRemoveSchema,
+  dockerResourceRefSchema,
+  dockerStatsSchema,
+  dockerSystemDfSchema,
+  dockerTopSchema,
+  dockerVolumeBrowseSchema,
   taskUpdateDescriptionSchema,
   validateIpc,
   workspaceGridEnableSchema,
@@ -458,8 +471,16 @@ async function serveStatic(staticRoot: string, requestUrl: string, response: Ser
     // script". Return 404 instead so a stale chunk after a fresh build
     // surfaces as a clean error rather than a misleading HTML response.
     if (url.pathname.startsWith("/assets/") || /\.[a-zA-Z0-9]+$/.test(url.pathname)) {
-      writeHead(response, 404, { "Content-Type": "text/plain; charset=utf-8" });
-      response.end("Not found");
+      // Return 404 *with the requested file's MIME* so the browser surfaces a
+      // plain "asset 404" rather than the extra-loud "Refused to apply style
+      // because MIME ('text/plain') is wrong" message that fires whenever a
+      // 404 carries text/plain for a <link rel=stylesheet> or module script.
+      // The latter masks the real problem (stale chunk hash after rebuild) in
+      // a wall of MIME-policy text.
+      const ext = path.extname(url.pathname);
+      const ct = CONTENT_TYPES[ext] || "text/plain; charset=utf-8";
+      writeHead(response, 404, { "Content-Type": ct });
+      response.end("");
       return;
     }
     finalPath = path.join(staticRoot, "index.html");
@@ -476,7 +497,12 @@ async function serveStatic(staticRoot: string, requestUrl: string, response: Ser
   }
 }
 
-async function handleApiRequest(runtime: Runtime, request: IncomingMessage, response: ServerResponse): Promise<void> {
+async function handleApiRequest(
+  runtime: Runtime,
+  request: IncomingMessage,
+  response: ServerResponse,
+  broadcast: (message: unknown) => void = () => {},
+): Promise<void> {
   const url = new URL(request.url!, "http://localhost");
 
   try {
@@ -1107,8 +1133,159 @@ async function handleApiRequest(runtime: Runtime, request: IncomingMessage, resp
       return;
     }
 
+    // Docker endpoints are validated through the same zod schemas as the
+    // Electron IPC channel so a remote/mobile client can't bypass the
+    // argv-safety guards (no leading '-', length caps, character whitelists)
+    // that the desktop path already enforces. The runtime methods themselves
+    // trust their inputs — validation lives here at the trust boundary.
     if (request.method === "POST" && url.pathname === "/api/docker/action") {
-      json(response, 200, await runtime.dockerAction(body.action, body.containerId));
+      const v = validateIpc(dockerActionSchema, body, "POST /api/docker/action");
+      json(response, 200, await runtime.dockerAction(v.action, v.containerId, v.backendId, v.contextName));
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/docker/logs/open") {
+      // Wire the streamer's onData/onClose callbacks to WebSocket broadcasts.
+      // Buffers come over WS as utf8 strings — docker log payloads are ANSI
+      // text and the renderer's writeData() already accepts strings, so we
+      // avoid the base64 round-trip. (Binary log payloads would still survive
+      // as latin-1-ish noise; acceptable for an MVP that runs against text
+      // logs in practice.)
+      const v = validateIpc(dockerLogsOpenSchema, body, "POST /api/docker/logs/open");
+      await runtime.dockerLogsOpen(
+        v.sessionId,
+        v.containerId,
+        v.backendId,
+        v.contextName,
+        (sid: string, data: Buffer) =>
+          broadcast({ type: "docker:logs:write", payload: { sessionId: sid, data: data.toString("utf8") } }),
+        (sid: string, code: number | null) =>
+          broadcast({ type: "docker:logs:close", payload: { sessionId: sid, code } }),
+        { timestamps: v.timestamps, tail: v.tail },
+      );
+      json(response, 200, { ok: true });
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/docker/logs/update") {
+      const v = validateIpc(dockerLogsUpdateSchema, body, "POST /api/docker/logs/update");
+      const ok = runtime.dockerLogsUpdate(v.sessionId, { timestamps: v.timestamps, tail: v.tail });
+      json(response, 200, { ok });
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/docker/logs/close") {
+      const v = validateIpc(dockerLogsCloseSchema, body, "POST /api/docker/logs/close");
+      runtime.dockerLogsClose(v.sessionId);
+      json(response, 200, { ok: true });
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/docker/inspect") {
+      const v = validateIpc(dockerInspectSchema, body, "POST /api/docker/inspect");
+      json(response, 200, await runtime.dockerInspect(v.containerId, v.backendId, v.contextName));
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/docker/top") {
+      const v = validateIpc(dockerTopSchema, body, "POST /api/docker/top");
+      json(response, 200, await runtime.dockerTop(v.containerId, v.backendId, v.contextName));
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/docker/stats") {
+      const v = validateIpc(dockerStatsSchema, body, "POST /api/docker/stats");
+      json(response, 200, await runtime.dockerStats(v.containerId, v.backendId, v.contextName));
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/docker/image/inspect") {
+      const v = validateIpc(dockerResourceRefSchema, body, "POST /api/docker/image/inspect");
+      json(response, 200, await runtime.dockerImageInspect(v.resource, v.backendId, v.contextName));
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/docker/volume/inspect") {
+      const v = validateIpc(dockerResourceRefSchema, body, "POST /api/docker/volume/inspect");
+      json(response, 200, await runtime.dockerVolumeInspect(v.resource, v.backendId, v.contextName));
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/docker/network/inspect") {
+      const v = validateIpc(dockerResourceRefSchema, body, "POST /api/docker/network/inspect");
+      json(response, 200, await runtime.dockerNetworkInspect(v.resource, v.backendId, v.contextName));
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/docker/image/remove") {
+      const v = validateIpc(dockerRemoveSchema, body, "POST /api/docker/image/remove");
+      json(response, 200, await runtime.dockerImageRemove(v.resource, v.backendId, v.contextName, !!v.force));
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/docker/volume/remove") {
+      const v = validateIpc(dockerRemoveSchema, body, "POST /api/docker/volume/remove");
+      json(response, 200, await runtime.dockerVolumeRemove(v.resource, v.backendId, v.contextName, !!v.force));
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/docker/network/remove") {
+      const v = validateIpc(dockerRemoveSchema, body, "POST /api/docker/network/remove");
+      json(response, 200, await runtime.dockerNetworkRemove(v.resource, v.backendId, v.contextName));
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/docker/image/pull") {
+      const v = validateIpc(dockerResourceRefSchema, body, "POST /api/docker/image/pull");
+      json(response, 200, await runtime.dockerImagePull(v.resource, v.backendId, v.contextName));
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/docker/image/prune") {
+      const v = validateIpc(dockerPruneSchema, body, "POST /api/docker/image/prune");
+      json(response, 200, await runtime.dockerImagePrune(v.backendId, v.contextName, !!v.all));
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/docker/volume/prune") {
+      const v = validateIpc(dockerPruneSchema, body, "POST /api/docker/volume/prune");
+      json(response, 200, await runtime.dockerVolumePrune(v.backendId, v.contextName));
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/docker/network/prune") {
+      const v = validateIpc(dockerPruneSchema, body, "POST /api/docker/network/prune");
+      json(response, 200, await runtime.dockerNetworkPrune(v.backendId, v.contextName));
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/docker/builder/prune") {
+      const v = validateIpc(dockerPruneSchema, body, "POST /api/docker/builder/prune");
+      json(response, 200, await runtime.dockerBuilderPrune(v.backendId, v.contextName, !!v.all));
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/docker/system/df") {
+      const v = validateIpc(dockerSystemDfSchema, body, "POST /api/docker/system/df");
+      json(response, 200, await runtime.dockerSystemDf(v.backendId, v.contextName));
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/docker/volume/list") {
+      const v = validateIpc(dockerVolumeBrowseSchema, body, "POST /api/docker/volume/list");
+      json(response, 200, await runtime.dockerVolumeList(v.volumeName, v.backendId, v.contextName, v.subPath));
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/docker/volume/read") {
+      const v = validateIpc(dockerVolumeBrowseSchema, body, "POST /api/docker/volume/read");
+      json(response, 200, await runtime.dockerVolumeReadFile(v.volumeName, v.backendId, v.contextName, v.subPath));
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/docker/compose-action") {
+      const v = validateIpc(dockerComposeActionSchema, body, "POST /api/docker/compose-action");
+      json(response, 200, await runtime.dockerComposeAction(v.action, v.backendId, v.contextName, v.projectName));
       return;
     }
 
@@ -1660,7 +1837,7 @@ export async function startRemoteServer({
         return;
       }
 
-      await handleApiRequest(runtime, request, response);
+      await handleApiRequest(runtime, request, response, broadcast);
       return;
     }
 

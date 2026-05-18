@@ -245,9 +245,32 @@ export const gitTagSchema = z.object({
 });
 export type GitTag = z.infer<typeof gitTagSchema>;
 
+// Safe identifier: alphanumeric + dash/underscore/colon, max 128 chars, cannot start with '-'.
+const safeDockerId = z
+  .string()
+  .min(1)
+  .max(128)
+  .refine((v) => !v.startsWith("-"), { message: "Docker ID cannot start with '-'" });
+
+// Docker volume names per docker source: `[a-zA-Z0-9][a-zA-Z0-9_.-]+`. We're a
+// bit looser (allow leading underscore) but explicitly reject ':' so an
+// attacker can't smuggle a host-path remount via `-v <name>:/_vol:ro`.
+const safeDockerVolumeName = z
+  .string()
+  .min(1)
+  .max(255)
+  .refine((v) => !v.startsWith("-") && !v.includes(":") && !v.includes("/"), {
+    message: "Volume name cannot start with '-' or contain ':' or '/'",
+  });
+
 export const dockerActionSchema = z.object({
   action: nonEmptyString,
-  containerId: nonEmptyString,
+  // Container IDs/names are alphanumeric (`[a-zA-Z0-9][a-zA-Z0-9_.-]+`) per
+  // docker. Reuse safeDockerId so a `-rf`-style argv injection is blocked at
+  // the IPC boundary even though execFile already prevents shell injection.
+  containerId: safeDockerId,
+  backendId: z.string().optional(),
+  contextName: safeDockerId.optional(),
 });
 export type DockerAction = z.infer<typeof dockerActionSchema>;
 
@@ -256,9 +279,139 @@ export const dockerSessionSchema = z
     workspaceId: nonEmptyString,
     containerId: z.string().optional(),
     mode: z.string().optional(),
+    backendId: z.string().optional(),
+    contextName: safeDockerId.optional(),
   })
   .passthrough();
 export type DockerSession = z.infer<typeof dockerSessionSchema>;
+
+/**
+ * Tail param accepts either a positive integer (capped at 1_000_000 so we
+ * don't accidentally start a "replay the whole log file" DoS) or the literal
+ * "all". The default is filled in by DockerLogSession.
+ */
+const tailParam = z.union([z.literal("all"), z.number().int().positive().max(1_000_000)]);
+
+export const dockerLogsOpenSchema = z.object({
+  sessionId: nonEmptyString,
+  containerId: safeDockerId,
+  backendId: z.string().min(1),
+  contextName: safeDockerId,
+  timestamps: z.boolean().optional(),
+  tail: tailParam.optional(),
+});
+export type DockerLogsOpen = z.infer<typeof dockerLogsOpenSchema>;
+
+export const dockerLogsUpdateSchema = z.object({
+  sessionId: nonEmptyString,
+  timestamps: z.boolean().optional(),
+  tail: tailParam.optional(),
+});
+export type DockerLogsUpdate = z.infer<typeof dockerLogsUpdateSchema>;
+
+export const dockerLogsCloseSchema = z.object({
+  sessionId: nonEmptyString,
+});
+export type DockerLogsClose = z.infer<typeof dockerLogsCloseSchema>;
+
+export const dockerComposeActionSchema = z.object({
+  action: z.enum(["start", "stop", "restart"]),
+  backendId: z.string().min(1),
+  contextName: safeDockerId,
+  projectName: nonEmptyString,
+});
+export type DockerComposeAction = z.infer<typeof dockerComposeActionSchema>;
+
+export const dockerInspectSchema = z.object({
+  containerId: safeDockerId,
+  backendId: z.string().min(1),
+  contextName: safeDockerId,
+});
+export type DockerInspect = z.infer<typeof dockerInspectSchema>;
+
+export const dockerTopSchema = dockerInspectSchema;
+export type DockerTop = DockerInspect;
+
+export const dockerStatsSchema = dockerInspectSchema;
+export type DockerStats = DockerInspect;
+
+export const dockerShellOpenSchema = z.object({
+  sessionId: nonEmptyString,
+  containerId: safeDockerId,
+  backendId: z.string().min(1),
+  contextName: safeDockerId,
+  cols: z.number().int().positive().max(1000).optional(),
+  rows: z.number().int().positive().max(1000).optional(),
+});
+export type DockerShellOpen = z.infer<typeof dockerShellOpenSchema>;
+
+export const dockerShellWriteSchema = z.object({
+  sessionId: nonEmptyString,
+  data: z.string().max(1024 * 1024),
+});
+export type DockerShellWrite = z.infer<typeof dockerShellWriteSchema>;
+
+export const dockerShellResizeSchema = z.object({
+  sessionId: nonEmptyString,
+  cols: z.number().int().positive().max(1000),
+  rows: z.number().int().positive().max(1000),
+});
+export type DockerShellResize = z.infer<typeof dockerShellResizeSchema>;
+
+export const dockerShellCloseSchema = z.object({
+  sessionId: nonEmptyString,
+});
+export type DockerShellClose = z.infer<typeof dockerShellCloseSchema>;
+
+export const dockerResourceRefSchema = z.object({
+  /** Image ID, volume name, or network ID. Allow @, :, /, _, ., - in addition
+   * to the strict alphanumeric set so we can target e.g. `repo/name:tag`. */
+  resource: z
+    .string()
+    .min(1)
+    .max(256)
+    .refine((v) => !v.startsWith("-"), { message: "Resource ref cannot start with '-'" }),
+  backendId: z.string().min(1),
+  contextName: safeDockerId,
+});
+export type DockerResourceRef = z.infer<typeof dockerResourceRefSchema>;
+
+export const dockerRemoveSchema = dockerResourceRefSchema.extend({
+  force: z.boolean().optional(),
+});
+export type DockerRemove = z.infer<typeof dockerRemoveSchema>;
+
+export const dockerSystemDfSchema = z.object({
+  backendId: z.string().min(1).optional(),
+  contextName: safeDockerId.optional(),
+});
+export type DockerSystemDf = z.infer<typeof dockerSystemDfSchema>;
+
+/**
+ * Prune actions (image / volume / network / builder). `all` is only meaningful
+ * for image and builder prune; ignored for volume / network.
+ */
+export const dockerPruneSchema = z.object({
+  backendId: z.string().min(1),
+  contextName: safeDockerId,
+  all: z.boolean().optional(),
+});
+export type DockerPrune = z.infer<typeof dockerPruneSchema>;
+
+export const dockerVolumeBrowseSchema = z.object({
+  volumeName: safeDockerVolumeName,
+  backendId: z.string().min(1),
+  contextName: safeDockerId,
+  // Cap path length defensively. The deeper guard against `..` lives in
+  // DockerManager.sanitizeVolumePath; here we only reject obviously bogus
+  // input before it crosses the IPC boundary.
+  subPath: z
+    .string()
+    .max(1024)
+    .refine((v) => !v.includes("\0"), { message: "NUL bytes are not allowed in paths" })
+    .default("/"),
+});
+export type DockerVolumeBrowse = z.infer<typeof dockerVolumeBrowseSchema>;
 
 export const terminalResizeSchema = z.object({
   cols: z.number().int().positive(),

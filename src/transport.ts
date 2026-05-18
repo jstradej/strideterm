@@ -32,6 +32,8 @@ interface EventHub {
   sshHostKeyChange: Set<Handler<Record<string, unknown>>>;
   sshState: Set<Handler<Record<string, unknown>>>;
   sshConnectionState: Set<Handler<SshConnectionState>>;
+  dockerLogsWrite: Set<Handler<{ sessionId: string; data: string }>>;
+  dockerLogsClose: Set<Handler<{ sessionId: string; code: number | null }>>;
 }
 
 /** Extended transport interface covering both Electron and remote modes.
@@ -75,6 +77,8 @@ function createEventHub(): EventHub {
     sshHostKeyChange: new Set(),
     sshState: new Set(),
     sshConnectionState: new Set(),
+    dockerLogsWrite: new Set(),
+    dockerLogsClose: new Set(),
   };
 }
 
@@ -280,6 +284,14 @@ export function createRemoteTransport(): Transport {
     }
     if (message.type === "ssh:connection-state") {
       listeners.sshConnectionState.forEach((handler) => handler(message.payload as SshConnectionState));
+    }
+    if (message.type === "docker:logs:write") {
+      listeners.dockerLogsWrite.forEach((handler) => handler(message.payload as { sessionId: string; data: string }));
+    }
+    if (message.type === "docker:logs:close") {
+      listeners.dockerLogsClose.forEach((handler) =>
+        handler(message.payload as { sessionId: string; code: number | null }),
+      );
     }
   }
 
@@ -541,9 +553,51 @@ export function createRemoteTransport(): Transport {
     gitPushAllTags: (payload) => fetchJson("/api/git/push-all-tags", payload),
     gitDeleteRemoteTag: (payload) => fetchJson("/api/git/delete-remote-tag", payload),
     gitForcePushWithLease: (payload) => fetchJson("/api/git/force-push-with-lease", payload),
-    dockerAction: (action, containerId) => fetchJson("/api/docker/action", { action, containerId }),
+    // Forward the whole payload so backendId/contextName/workspaceId reach the
+    // server (the desktop preload does the same). The HTTP handler picks the
+    // fields it cares about; extras like workspaceId are ignored harmlessly.
+    dockerAction: (payload: unknown) => fetchJson("/api/docker/action", payload),
     openDockerSession: (payload) => fetchJson("/api/docker/open-session", payload),
     openLazydockerSession: (payload) => fetchJson("/api/docker/open-lazydocker", payload),
+    dockerLogsOpen: (payload) => fetchJson("/api/docker/logs/open", payload),
+    dockerLogsUpdate: (payload) => fetchJson("/api/docker/logs/update", payload) as Promise<{ ok: boolean }>,
+    dockerLogsClose: (payload) => fetchJson("/api/docker/logs/close", payload),
+    dockerComposeAction: (payload) => fetchJson("/api/docker/compose-action", payload),
+    // `fetchJson` returns `Promise<unknown>`; the StridetermAPI signatures
+    // are stricter (Promise<string>, Promise<{...}>). We cast at the boundary
+    // — runtime types match because the server returns the same JSON shape
+    // that the Electron preload exposes.
+    dockerInspect: (payload) => fetchJson("/api/docker/inspect", payload) as Promise<string>,
+    dockerTop: (payload) => fetchJson("/api/docker/top", payload) as Promise<string>,
+    dockerStats: (payload) =>
+      fetchJson("/api/docker/stats", payload) as Promise<{
+        cpuPerc: string;
+        memUsage: string;
+        memPerc: string;
+        netIO: string;
+        blockIO: string;
+        pids: string;
+      } | null>,
+    dockerImageInspect: (payload) => fetchJson("/api/docker/image/inspect", payload) as Promise<string>,
+    dockerVolumeInspect: (payload) => fetchJson("/api/docker/volume/inspect", payload) as Promise<string>,
+    dockerNetworkInspect: (payload) => fetchJson("/api/docker/network/inspect", payload) as Promise<string>,
+    dockerImageRemove: (payload) => fetchJson("/api/docker/image/remove", payload),
+    dockerVolumeRemove: (payload) => fetchJson("/api/docker/volume/remove", payload),
+    dockerNetworkRemove: (payload) => fetchJson("/api/docker/network/remove", payload),
+    dockerImagePull: (payload) => fetchJson("/api/docker/image/pull", payload),
+    dockerImagePrune: (payload) => fetchJson("/api/docker/image/prune", payload),
+    dockerVolumePrune: (payload) => fetchJson("/api/docker/volume/prune", payload),
+    dockerNetworkPrune: (payload) => fetchJson("/api/docker/network/prune", payload),
+    dockerBuilderPrune: (payload) => fetchJson("/api/docker/builder/prune", payload),
+    dockerSystemDf: (payload) => fetchJson("/api/docker/system/df", payload) as Promise<string>,
+    dockerVolumeList: (payload) => fetchJson("/api/docker/volume/list", payload) as Promise<string>,
+    dockerVolumeRead: (payload) => fetchJson("/api/docker/volume/read", payload) as Promise<string>,
+    // Log stream subscription — the server pushes "docker:logs:write" and
+    // "docker:logs:close" messages over the WS for every connected client.
+    onDockerLogsWrite: (handler: (payload: { sessionId: string; data: string }) => void) =>
+      listeners.dockerLogsWrite.add(handler),
+    onDockerLogsClose: (handler: (payload: { sessionId: string; code: number | null }) => void) =>
+      listeners.dockerLogsClose.add(handler),
     openLazygitSession: (payload) => fetchJson("/api/git/open-lazygit", payload),
     createWorktree: (payload) => fetchJson("/api/git/create-worktree", payload),
     saveProfile: (profile) => fetchJson("/api/profile/save", { profile }),

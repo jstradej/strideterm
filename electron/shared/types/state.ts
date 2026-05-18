@@ -391,6 +391,34 @@ export interface AttentionState {
   alerts: Alert[];
 }
 
+export type DockerBackendId = string;
+
+export interface DockerBackend {
+  id: DockerBackendId;
+  type: "host" | "wsl";
+  label: string;
+  available: "pending" | "ok" | "error";
+  error?: string;
+}
+
+export interface DockerLabels {
+  composeProject?: string;
+  composeService?: string;
+  composeWorkingDir?: string;
+  composeConfigFiles?: string;
+  raw: Record<string, string>;
+}
+
+export interface DockerContext {
+  Name: string;
+  DockerEndpoint: string;
+  Current: boolean;
+  backendId: DockerBackendId;
+  available: "pending" | "ok" | "error";
+  error?: string;
+  containerCount?: number;
+}
+
 export interface DockerContainer {
   ID: string;
   Names: string;
@@ -403,21 +431,52 @@ export interface DockerContainer {
   Status: string;
   State: string;
   Size: string;
+  Labels: string;
+  parsedLabels?: DockerLabels;
+  health?: "healthy" | "unhealthy" | "starting" | "none";
+  backendId: DockerBackendId;
+  contextName: string;
   [key: string]: unknown;
 }
 
-export interface DockerLazydockerState {
-  available: boolean;
-  backend: "host" | "wsl" | null;
-  error: string;
+export interface DockerImage {
+  ID: string;
+  Repository: string;
+  Tag: string;
+  CreatedSince: string;
+  Size: string;
+  backendId: DockerBackendId;
+  contextName: string;
+}
+
+export interface DockerVolume {
+  Name: string;
+  Driver: string;
+  Mountpoint?: string;
+  Scope?: string;
+  backendId: DockerBackendId;
+  contextName: string;
+}
+
+export interface DockerNetwork {
+  ID: string;
+  Name: string;
+  Driver: string;
+  Scope?: string;
+  CreatedAt?: string;
+  backendId: DockerBackendId;
+  contextName: string;
 }
 
 export interface DockerState {
   available: boolean;
-  backend: "host" | "wsl" | null;
-  contexts: unknown[];
+  backends: DockerBackend[];
+  contexts: DockerContext[];
   containers: DockerContainer[];
-  lazydocker: DockerLazydockerState;
+  images: DockerImage[];
+  volumes: DockerVolume[];
+  networks: DockerNetwork[];
+  lazydocker: Record<DockerBackendId, { available: boolean; error: string }>;
   error: string;
   lastUpdatedAt: string | null;
 }

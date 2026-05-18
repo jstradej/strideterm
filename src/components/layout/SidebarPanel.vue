@@ -110,7 +110,7 @@
         &#x1F33F; New worktree
       </button>
       <button
-        v-if="wsMenu.ws.kind !== 'task'"
+        v-if="wsMenu.ws.kind !== 'task' && wsMenu.ws.kind !== 'docker'"
         type="button"
         class="context-menu__item"
         title="Spawn a task workspace bound to this project — runs a supervised Worker + Judge AI loop with auto-detected verification commands."

@@ -50,6 +50,22 @@ import {
   gitTagSchema,
   dockerActionSchema,
   dockerSessionSchema,
+  dockerLogsOpenSchema,
+  dockerLogsUpdateSchema,
+  dockerLogsCloseSchema,
+  dockerComposeActionSchema,
+  dockerInspectSchema,
+  dockerTopSchema,
+  dockerStatsSchema,
+  dockerShellOpenSchema,
+  dockerShellWriteSchema,
+  dockerShellResizeSchema,
+  dockerShellCloseSchema,
+  dockerResourceRefSchema,
+  dockerRemoveSchema,
+  dockerSystemDfSchema,
+  dockerPruneSchema,
+  dockerVolumeBrowseSchema,
   terminalResizeSchema,
   profileSchema,
   workspaceReorderSchema,
@@ -1078,10 +1094,16 @@ export function registerIpc(
       runtime.gitForcePushWithLease(p),
     );
   });
-  ipcMain.handle("docker:action", async (_event, action, containerId) =>
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  ipcMain.handle("docker:action", async (_event, actionOrPayload: any, containerIdArg?: any) =>
     withOperationPromise({ opId: "docker:action" }, async () => {
-      const validated = validateIpc(dockerActionSchema, { action, containerId }, "docker:action");
-      return runtime.dockerAction(validated.action, validated.containerId);
+      // Accept both old 2-arg form (action, containerId) and new object form.
+      const raw =
+        typeof actionOrPayload === "object" && actionOrPayload !== null
+          ? actionOrPayload
+          : { action: actionOrPayload, containerId: containerIdArg };
+      const validated = validateIpc(dockerActionSchema, raw, "docker:action");
+      return runtime.dockerAction(validated.action, validated.containerId, validated.backendId, validated.contextName);
     }),
   );
   ipcMain.handle("docker:open-session", async (_event, payload) =>
@@ -1095,6 +1117,185 @@ export function registerIpc(
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       runtime.openLazydockerSession(validateIpc(gitPayloadSchema, payload, "docker:open-lazydocker") as any),
     ),
+  );
+  ipcMain.handle("docker:logs:open", async (_event, payload) =>
+    withOperationPromise({ opId: "docker:logs:open" }, async () => {
+      const validated = validateIpc(dockerLogsOpenSchema, payload, "docker:logs:open");
+      await runtime.dockerLogsOpen(
+        validated.sessionId,
+        validated.containerId,
+        validated.backendId,
+        validated.contextName,
+        (sessionId: string, data: Buffer) => emitToRenderer("docker:logs:write", { sessionId, data }),
+        (sessionId: string, code: number | null) => emitToRenderer("docker:logs:close", { sessionId, code }),
+        { timestamps: validated.timestamps, tail: validated.tail },
+      );
+      return { ok: true };
+    }),
+  );
+  ipcMain.handle("docker:logs:update", async (_event, payload) =>
+    withOperationPromise({ opId: "docker:logs:update" }, async () => {
+      const v = validateIpc(dockerLogsUpdateSchema, payload, "docker:logs:update");
+      const ok = runtime.dockerLogsUpdate(v.sessionId, { timestamps: v.timestamps, tail: v.tail });
+      return { ok };
+    }),
+  );
+  ipcMain.handle("docker:logs:close", async (_event, payload) =>
+    withOperationPromise({ opId: "docker:logs:close" }, async () => {
+      const validated = validateIpc(dockerLogsCloseSchema, payload, "docker:logs:close");
+      runtime.dockerLogsClose(validated.sessionId);
+      return { ok: true };
+    }),
+  );
+  ipcMain.handle("docker:compose-action", async (_event, payload) =>
+    withOperationPromise({ opId: "docker:compose-action" }, async () => {
+      const validated = validateIpc(dockerComposeActionSchema, payload, "docker:compose-action");
+      return runtime.dockerComposeAction(
+        validated.action,
+        validated.backendId,
+        validated.contextName,
+        validated.projectName,
+      );
+    }),
+  );
+  ipcMain.handle("docker:inspect", async (_event, payload) =>
+    withOperationPromise({ opId: "docker:inspect" }, async () => {
+      const v = validateIpc(dockerInspectSchema, payload, "docker:inspect");
+      return runtime.dockerInspect(v.containerId, v.backendId, v.contextName);
+    }),
+  );
+  ipcMain.handle("docker:top", async (_event, payload) =>
+    withOperationPromise({ opId: "docker:top" }, async () => {
+      const v = validateIpc(dockerTopSchema, payload, "docker:top");
+      return runtime.dockerTop(v.containerId, v.backendId, v.contextName);
+    }),
+  );
+  ipcMain.handle("docker:stats", async (_event, payload) =>
+    withOperationPromise({ opId: "docker:stats" }, async () => {
+      const v = validateIpc(dockerStatsSchema, payload, "docker:stats");
+      return runtime.dockerStats(v.containerId, v.backendId, v.contextName);
+    }),
+  );
+  ipcMain.handle("docker:shell:open", async (_event, payload) =>
+    withOperationPromise({ opId: "docker:shell:open" }, async () => {
+      const v = validateIpc(dockerShellOpenSchema, payload, "docker:shell:open");
+      await runtime.dockerShellOpen(
+        v.sessionId,
+        v.containerId,
+        v.backendId,
+        v.contextName,
+        v.cols ?? 80,
+        v.rows ?? 24,
+        (sid: string, data: string) => emitToRenderer("docker:shell:data", { sessionId: sid, data }),
+        (sid: string, code: number | null) => emitToRenderer("docker:shell:close", { sessionId: sid, code }),
+      );
+      return { ok: true };
+    }),
+  );
+  ipcMain.handle("docker:shell:write", async (_event, payload) =>
+    withOperationPromise({ opId: "docker:shell:write" }, async () => {
+      const v = validateIpc(dockerShellWriteSchema, payload, "docker:shell:write");
+      runtime.dockerShellWrite(v.sessionId, v.data);
+      return { ok: true };
+    }),
+  );
+  ipcMain.handle("docker:shell:resize", async (_event, payload) =>
+    withOperationPromise({ opId: "docker:shell:resize" }, async () => {
+      const v = validateIpc(dockerShellResizeSchema, payload, "docker:shell:resize");
+      runtime.dockerShellResize(v.sessionId, v.cols, v.rows);
+      return { ok: true };
+    }),
+  );
+  ipcMain.handle("docker:shell:close", async (_event, payload) =>
+    withOperationPromise({ opId: "docker:shell:close" }, async () => {
+      const v = validateIpc(dockerShellCloseSchema, payload, "docker:shell:close");
+      runtime.dockerShellClose(v.sessionId);
+      return { ok: true };
+    }),
+  );
+  ipcMain.handle("docker:image:inspect", async (_event, payload) =>
+    withOperationPromise({ opId: "docker:image:inspect" }, async () => {
+      const v = validateIpc(dockerResourceRefSchema, payload, "docker:image:inspect");
+      return runtime.dockerImageInspect(v.resource, v.backendId, v.contextName);
+    }),
+  );
+  ipcMain.handle("docker:volume:inspect", async (_event, payload) =>
+    withOperationPromise({ opId: "docker:volume:inspect" }, async () => {
+      const v = validateIpc(dockerResourceRefSchema, payload, "docker:volume:inspect");
+      return runtime.dockerVolumeInspect(v.resource, v.backendId, v.contextName);
+    }),
+  );
+  ipcMain.handle("docker:network:inspect", async (_event, payload) =>
+    withOperationPromise({ opId: "docker:network:inspect" }, async () => {
+      const v = validateIpc(dockerResourceRefSchema, payload, "docker:network:inspect");
+      return runtime.dockerNetworkInspect(v.resource, v.backendId, v.contextName);
+    }),
+  );
+  ipcMain.handle("docker:image:remove", async (_event, payload) =>
+    withOperationPromise({ opId: "docker:image:remove" }, async () => {
+      const v = validateIpc(dockerRemoveSchema, payload, "docker:image:remove");
+      return runtime.dockerImageRemove(v.resource, v.backendId, v.contextName, !!v.force);
+    }),
+  );
+  ipcMain.handle("docker:volume:remove", async (_event, payload) =>
+    withOperationPromise({ opId: "docker:volume:remove" }, async () => {
+      const v = validateIpc(dockerRemoveSchema, payload, "docker:volume:remove");
+      return runtime.dockerVolumeRemove(v.resource, v.backendId, v.contextName, !!v.force);
+    }),
+  );
+  ipcMain.handle("docker:network:remove", async (_event, payload) =>
+    withOperationPromise({ opId: "docker:network:remove" }, async () => {
+      const v = validateIpc(dockerRemoveSchema, payload, "docker:network:remove");
+      return runtime.dockerNetworkRemove(v.resource, v.backendId, v.contextName);
+    }),
+  );
+  ipcMain.handle("docker:image:pull", async (_event, payload) =>
+    withOperationPromise({ opId: "docker:image:pull" }, async () => {
+      const v = validateIpc(dockerResourceRefSchema, payload, "docker:image:pull");
+      return runtime.dockerImagePull(v.resource, v.backendId, v.contextName);
+    }),
+  );
+  ipcMain.handle("docker:image:prune", async (_event, payload) =>
+    withOperationPromise({ opId: "docker:image:prune" }, async () => {
+      const v = validateIpc(dockerPruneSchema, payload, "docker:image:prune");
+      return runtime.dockerImagePrune(v.backendId, v.contextName, !!v.all);
+    }),
+  );
+  ipcMain.handle("docker:volume:prune", async (_event, payload) =>
+    withOperationPromise({ opId: "docker:volume:prune" }, async () => {
+      const v = validateIpc(dockerPruneSchema, payload, "docker:volume:prune");
+      return runtime.dockerVolumePrune(v.backendId, v.contextName);
+    }),
+  );
+  ipcMain.handle("docker:network:prune", async (_event, payload) =>
+    withOperationPromise({ opId: "docker:network:prune" }, async () => {
+      const v = validateIpc(dockerPruneSchema, payload, "docker:network:prune");
+      return runtime.dockerNetworkPrune(v.backendId, v.contextName);
+    }),
+  );
+  ipcMain.handle("docker:builder:prune", async (_event, payload) =>
+    withOperationPromise({ opId: "docker:builder:prune" }, async () => {
+      const v = validateIpc(dockerPruneSchema, payload, "docker:builder:prune");
+      return runtime.dockerBuilderPrune(v.backendId, v.contextName, !!v.all);
+    }),
+  );
+  ipcMain.handle("docker:system:df", async (_event, payload) =>
+    withOperationPromise({ opId: "docker:system:df" }, async () => {
+      const v = validateIpc(dockerSystemDfSchema, payload, "docker:system:df");
+      return runtime.dockerSystemDf(v.backendId, v.contextName);
+    }),
+  );
+  ipcMain.handle("docker:volume:list", async (_event, payload) =>
+    withOperationPromise({ opId: "docker:volume:list" }, async () => {
+      const v = validateIpc(dockerVolumeBrowseSchema, payload, "docker:volume:list");
+      return runtime.dockerVolumeList(v.volumeName, v.backendId, v.contextName, v.subPath);
+    }),
+  );
+  ipcMain.handle("docker:volume:read", async (_event, payload) =>
+    withOperationPromise({ opId: "docker:volume:read" }, async () => {
+      const v = validateIpc(dockerVolumeBrowseSchema, payload, "docker:volume:read");
+      return runtime.dockerVolumeReadFile(v.volumeName, v.backendId, v.contextName, v.subPath);
+    }),
   );
   ipcMain.handle("git:open-lazygit", async (_event, payload) =>
     withOperationPromise({ opId: "git:open-lazygit" }, () =>
@@ -1579,6 +1780,31 @@ export function registerIpc(
     ipcMain.removeHandler("docker:action");
     ipcMain.removeHandler("docker:open-session");
     ipcMain.removeHandler("docker:open-lazydocker");
+    ipcMain.removeHandler("docker:logs:open");
+    ipcMain.removeHandler("docker:logs:close");
+    ipcMain.removeHandler("docker:logs:update");
+    ipcMain.removeHandler("docker:compose-action");
+    ipcMain.removeHandler("docker:inspect");
+    ipcMain.removeHandler("docker:top");
+    ipcMain.removeHandler("docker:stats");
+    ipcMain.removeHandler("docker:shell:open");
+    ipcMain.removeHandler("docker:shell:write");
+    ipcMain.removeHandler("docker:shell:resize");
+    ipcMain.removeHandler("docker:shell:close");
+    ipcMain.removeHandler("docker:image:inspect");
+    ipcMain.removeHandler("docker:volume:inspect");
+    ipcMain.removeHandler("docker:network:inspect");
+    ipcMain.removeHandler("docker:image:remove");
+    ipcMain.removeHandler("docker:volume:remove");
+    ipcMain.removeHandler("docker:network:remove");
+    ipcMain.removeHandler("docker:image:pull");
+    ipcMain.removeHandler("docker:image:prune");
+    ipcMain.removeHandler("docker:volume:prune");
+    ipcMain.removeHandler("docker:network:prune");
+    ipcMain.removeHandler("docker:builder:prune");
+    ipcMain.removeHandler("docker:system:df");
+    ipcMain.removeHandler("docker:volume:list");
+    ipcMain.removeHandler("docker:volume:read");
     ipcMain.removeHandler("git:open-lazygit");
     ipcMain.removeHandler("git:create-worktree");
     ipcMain.removeHandler("plugins:list");

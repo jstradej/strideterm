@@ -3,6 +3,17 @@ import type { Ref } from "vue";
 import type { StatePayload } from "../../electron/shared/types/state.js";
 import type { Transport } from "../transport.js";
 
+/**
+ * Mirror of the backend `PruneResult` shape (electron/backend/docker-manager).
+ * Duplicated here to avoid pulling backend types into the renderer bundle.
+ */
+export interface DockerPruneResult {
+  kind: "image" | "volume" | "network" | "builder";
+  deletedNames: string[];
+  reclaimed: string;
+  raw: string;
+}
+
 interface ApiActionsCtx {
   payload: Ref<StatePayload | null>;
   activeViewId: Ref<string | null>;
@@ -362,12 +373,19 @@ export function createApiActions(ctx: ApiActionsCtx) {
     ctx.payload.value = (await (ctx.getApi() as AnyApi).refreshDocker()) as StatePayload;
   }
 
-  async function dockerShell(workspaceId: string, containerId: string): Promise<void> {
+  async function dockerShell(
+    workspaceId: string,
+    containerId: string,
+    backendId?: string,
+    contextName?: string,
+  ): Promise<void> {
     if (!workspaceId || !containerId) return;
     ctx.payload.value = (await (ctx.getApi() as AnyApi).openDockerSession({
       workspaceId,
       containerId,
       mode: "shell",
+      backendId,
+      contextName,
     })) as StatePayload;
     ctx.activeViewId.value = `${workspaceId}:shell-${containerId}`;
   }
@@ -382,18 +400,239 @@ export function createApiActions(ctx: ApiActionsCtx) {
     ctx.activeViewId.value = `${workspaceId}:logs-${containerId}`;
   }
 
-  async function dockerAction(action: string, workspaceId: string, containerId: string): Promise<void> {
+  async function dockerAction(
+    action: string,
+    workspaceId: string,
+    containerId: string,
+    backendId?: string,
+    contextName?: string,
+  ): Promise<void> {
     if (!workspaceId || !containerId) return;
-    if (action === "docker-remove" && !window.confirm("Remove this container permanently?")) return;
-    ctx.payload.value = (await (ctx.getApi() as AnyApi).dockerAction(
-      action.replace("docker-", ""),
+    const cleanAction = action.replace("docker-", "");
+    ctx.payload.value = (await (ctx.getApi() as AnyApi).dockerAction({
+      action: cleanAction,
       containerId,
-    )) as StatePayload;
+      backendId,
+      contextName,
+    })) as StatePayload;
   }
 
-  async function openLazydocker(workspaceId: string): Promise<void> {
+  async function dockerLogsOpen(
+    sessionId: string,
+    containerId: string,
+    backendId: string,
+    contextName: string,
+    options?: { timestamps?: boolean; tail?: number | "all" },
+  ): Promise<void> {
+    await (ctx.getApi() as AnyApi).dockerLogsOpen({
+      sessionId,
+      containerId,
+      backendId,
+      contextName,
+      timestamps: options?.timestamps,
+      tail: options?.tail,
+    });
+  }
+
+  async function dockerLogsUpdate(
+    sessionId: string,
+    options: { timestamps?: boolean; tail?: number | "all" },
+  ): Promise<boolean> {
+    const r = (await (ctx.getApi() as AnyApi).dockerLogsUpdate({ sessionId, ...options })) as { ok: boolean };
+    return !!r?.ok;
+  }
+
+  async function dockerLogsClose(sessionId: string): Promise<void> {
+    await (ctx.getApi() as AnyApi).dockerLogsClose({ sessionId });
+  }
+
+  async function dockerComposeAction(
+    action: string,
+    backendId: string,
+    contextName: string,
+    projectName: string,
+  ): Promise<void> {
+    ctx.payload.value = (await (ctx.getApi() as AnyApi).dockerComposeAction({
+      action,
+      backendId,
+      contextName,
+      projectName,
+    })) as StatePayload;
+  }
+
+  async function dockerInspect(containerId: string, backendId: string, contextName: string): Promise<string> {
+    return (await (ctx.getApi() as AnyApi).dockerInspect({ containerId, backendId, contextName })) as string;
+  }
+
+  async function dockerTop(containerId: string, backendId: string, contextName: string): Promise<string> {
+    return (await (ctx.getApi() as AnyApi).dockerTop({ containerId, backendId, contextName })) as string;
+  }
+
+  async function dockerStats(
+    containerId: string,
+    backendId: string,
+    contextName: string,
+  ): Promise<{
+    cpuPerc: string;
+    memUsage: string;
+    memPerc: string;
+    netIO: string;
+    blockIO: string;
+    pids: string;
+  } | null> {
+    return (await (ctx.getApi() as AnyApi).dockerStats({ containerId, backendId, contextName })) as {
+      cpuPerc: string;
+      memUsage: string;
+      memPerc: string;
+      netIO: string;
+      blockIO: string;
+      pids: string;
+    } | null;
+  }
+
+  async function dockerImageInspect(imageId: string, backendId: string, contextName: string): Promise<string> {
+    return (await (ctx.getApi() as AnyApi).dockerImageInspect({ resource: imageId, backendId, contextName })) as string;
+  }
+
+  async function dockerVolumeInspect(volumeName: string, backendId: string, contextName: string): Promise<string> {
+    return (await (ctx.getApi() as AnyApi).dockerVolumeInspect({
+      resource: volumeName,
+      backendId,
+      contextName,
+    })) as string;
+  }
+
+  async function dockerNetworkInspect(networkId: string, backendId: string, contextName: string): Promise<string> {
+    return (await (ctx.getApi() as AnyApi).dockerNetworkInspect({
+      resource: networkId,
+      backendId,
+      contextName,
+    })) as string;
+  }
+
+  async function dockerImageRemove(
+    imageId: string,
+    backendId: string,
+    contextName: string,
+    force = false,
+  ): Promise<void> {
+    ctx.payload.value = (await (ctx.getApi() as AnyApi).dockerImageRemove({
+      resource: imageId,
+      backendId,
+      contextName,
+      force,
+    })) as StatePayload;
+  }
+
+  async function dockerVolumeRemove(
+    volumeName: string,
+    backendId: string,
+    contextName: string,
+    force = false,
+  ): Promise<void> {
+    ctx.payload.value = (await (ctx.getApi() as AnyApi).dockerVolumeRemove({
+      resource: volumeName,
+      backendId,
+      contextName,
+      force,
+    })) as StatePayload;
+  }
+
+  async function dockerNetworkRemove(networkId: string, backendId: string, contextName: string): Promise<void> {
+    ctx.payload.value = (await (ctx.getApi() as AnyApi).dockerNetworkRemove({
+      resource: networkId,
+      backendId,
+      contextName,
+    })) as StatePayload;
+  }
+
+  async function dockerImagePull(reference: string, backendId: string, contextName: string): Promise<void> {
+    ctx.payload.value = (await (ctx.getApi() as AnyApi).dockerImagePull({
+      resource: reference,
+      backendId,
+      contextName,
+    })) as StatePayload;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Prune actions. Each returns the PruneResult so the caller can show a toast
+  // / dialog with the reclaimed-size and deleted-names. Payload is refreshed
+  // server-side; we replace ctx.payload here to avoid stale UI.
+  // ---------------------------------------------------------------------------
+  async function dockerImagePrune(backendId: string, contextName: string, all: boolean): Promise<DockerPruneResult> {
+    const r = (await (ctx.getApi() as AnyApi).dockerImagePrune({ backendId, contextName, all })) as {
+      payload: StatePayload;
+      result: DockerPruneResult;
+    };
+    ctx.payload.value = r.payload;
+    return r.result;
+  }
+
+  async function dockerVolumePrune(backendId: string, contextName: string): Promise<DockerPruneResult> {
+    const r = (await (ctx.getApi() as AnyApi).dockerVolumePrune({ backendId, contextName })) as {
+      payload: StatePayload;
+      result: DockerPruneResult;
+    };
+    ctx.payload.value = r.payload;
+    return r.result;
+  }
+
+  async function dockerNetworkPrune(backendId: string, contextName: string): Promise<DockerPruneResult> {
+    const r = (await (ctx.getApi() as AnyApi).dockerNetworkPrune({ backendId, contextName })) as {
+      payload: StatePayload;
+      result: DockerPruneResult;
+    };
+    ctx.payload.value = r.payload;
+    return r.result;
+  }
+
+  async function dockerBuilderPrune(backendId: string, contextName: string, all: boolean): Promise<DockerPruneResult> {
+    const r = (await (ctx.getApi() as AnyApi).dockerBuilderPrune({ backendId, contextName, all })) as {
+      payload: StatePayload;
+      result: DockerPruneResult;
+    };
+    ctx.payload.value = r.payload;
+    return r.result;
+  }
+
+  async function dockerSystemDf(backendId?: string, contextName?: string): Promise<string> {
+    return (await (ctx.getApi() as AnyApi).dockerSystemDf({ backendId, contextName })) as string;
+  }
+
+  async function dockerVolumeList(
+    volumeName: string,
+    backendId: string,
+    contextName: string,
+    subPath: string,
+  ): Promise<string> {
+    return (await (ctx.getApi() as AnyApi).dockerVolumeList({
+      volumeName,
+      backendId,
+      contextName,
+      subPath,
+    })) as string;
+  }
+
+  async function dockerVolumeRead(
+    volumeName: string,
+    backendId: string,
+    contextName: string,
+    subPath: string,
+  ): Promise<string> {
+    return (await (ctx.getApi() as AnyApi).dockerVolumeRead({
+      volumeName,
+      backendId,
+      contextName,
+      subPath,
+    })) as string;
+  }
+
+  async function openLazydocker(workspaceId: string, backendId?: string): Promise<void> {
     if (!workspaceId) return;
-    ctx.payload.value = (await (ctx.getApi() as AnyApi).openLazydockerSession({ workspaceId })) as StatePayload;
+    ctx.payload.value = (await (ctx.getApi() as AnyApi).openLazydockerSession({
+      workspaceId,
+      backendId,
+    })) as StatePayload;
     ctx.activeViewId.value = `${workspaceId}:lazydocker`;
   }
 
@@ -478,6 +717,27 @@ export function createApiActions(ctx: ApiActionsCtx) {
     dockerShell,
     dockerLogs,
     dockerAction,
+    dockerLogsOpen,
+    dockerLogsUpdate,
+    dockerLogsClose,
+    dockerComposeAction,
+    dockerInspect,
+    dockerTop,
+    dockerStats,
+    dockerImageInspect,
+    dockerVolumeInspect,
+    dockerNetworkInspect,
+    dockerImageRemove,
+    dockerVolumeRemove,
+    dockerNetworkRemove,
+    dockerImagePull,
+    dockerImagePrune,
+    dockerVolumePrune,
+    dockerNetworkPrune,
+    dockerBuilderPrune,
+    dockerSystemDf,
+    dockerVolumeList,
+    dockerVolumeRead,
     openLazydocker,
     // Profile / settings
     saveProfile,

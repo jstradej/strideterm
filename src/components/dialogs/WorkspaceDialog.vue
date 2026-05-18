@@ -8,7 +8,10 @@
       <button type="button" class="button button--ghost" @click="emit('cancel')">Close</button>
     </div>
     <form class="form" @submit.prevent="handleSubmit">
-      <label>
+      <!-- Docker workspaces don't run shells from a cwd and don't probe git,
+           so the directory field is just noise. Hide it entirely; defaults to
+           empty on submit (see handleSubmit). -->
+      <label v-if="!isDocker">
         <span
           >{{
             isAzure

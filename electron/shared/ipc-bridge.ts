@@ -249,6 +249,87 @@ export interface StridetermAPI {
   dockerAction: (action: string, containerId: string) => Promise<unknown>;
   openDockerSession: (payload: DockerSession) => Promise<unknown>;
   openLazydockerSession: (payload: DockerSession) => Promise<unknown>;
+  dockerLogsOpen: (payload: {
+    sessionId: string;
+    containerId: string;
+    backendId: string;
+    contextName: string;
+    timestamps?: boolean;
+    tail?: number | "all";
+  }) => Promise<unknown>;
+  dockerLogsUpdate: (payload: {
+    sessionId: string;
+    timestamps?: boolean;
+    tail?: number | "all";
+  }) => Promise<{ ok: boolean }>;
+  dockerLogsClose: (payload: { sessionId: string }) => Promise<unknown>;
+  dockerComposeAction: (payload: {
+    action: string;
+    backendId: string;
+    contextName: string;
+    projectName: string;
+  }) => Promise<unknown>;
+  dockerInspect: (payload: { containerId: string; backendId: string; contextName: string }) => Promise<string>;
+  dockerTop: (payload: { containerId: string; backendId: string; contextName: string }) => Promise<string>;
+  dockerStats: (payload: { containerId: string; backendId: string; contextName: string }) => Promise<{
+    cpuPerc: string;
+    memUsage: string;
+    memPerc: string;
+    netIO: string;
+    blockIO: string;
+    pids: string;
+  } | null>;
+  dockerShellOpen: (payload: {
+    sessionId: string;
+    containerId: string;
+    backendId: string;
+    contextName: string;
+    cols?: number;
+    rows?: number;
+  }) => Promise<unknown>;
+  dockerShellWrite: (payload: { sessionId: string; data: string }) => Promise<unknown>;
+  dockerShellResize: (payload: { sessionId: string; cols: number; rows: number }) => Promise<unknown>;
+  dockerShellClose: (payload: { sessionId: string }) => Promise<unknown>;
+  dockerImageInspect: (payload: { resource: string; backendId: string; contextName: string }) => Promise<string>;
+  dockerVolumeInspect: (payload: { resource: string; backendId: string; contextName: string }) => Promise<string>;
+  dockerNetworkInspect: (payload: { resource: string; backendId: string; contextName: string }) => Promise<string>;
+  dockerImageRemove: (payload: {
+    resource: string;
+    backendId: string;
+    contextName: string;
+    force?: boolean;
+  }) => Promise<unknown>;
+  dockerVolumeRemove: (payload: {
+    resource: string;
+    backendId: string;
+    contextName: string;
+    force?: boolean;
+  }) => Promise<unknown>;
+  dockerNetworkRemove: (payload: { resource: string; backendId: string; contextName: string }) => Promise<unknown>;
+  dockerImagePull: (payload: { resource: string; backendId: string; contextName: string }) => Promise<unknown>;
+  dockerImagePrune: (payload: { backendId: string; contextName: string; all?: boolean }) => Promise<unknown>;
+  dockerVolumePrune: (payload: { backendId: string; contextName: string }) => Promise<unknown>;
+  dockerNetworkPrune: (payload: { backendId: string; contextName: string }) => Promise<unknown>;
+  dockerBuilderPrune: (payload: { backendId: string; contextName: string; all?: boolean }) => Promise<unknown>;
+  dockerSystemDf: (payload: { backendId?: string; contextName?: string }) => Promise<string>;
+  dockerVolumeList: (payload: {
+    volumeName: string;
+    backendId: string;
+    contextName: string;
+    subPath: string;
+  }) => Promise<string>;
+  dockerVolumeRead: (payload: {
+    volumeName: string;
+    backendId: string;
+    contextName: string;
+    subPath: string;
+  }) => Promise<string>;
+  // `data` is Buffer over Electron IPC but a utf8 string over the remote
+  // WebSocket transport — the renderer's writeData() accepts both shapes.
+  onDockerLogsWrite: (handler: (payload: { sessionId: string; data: Buffer | string }) => void) => void;
+  onDockerLogsClose: (handler: (payload: { sessionId: string; code: number | null }) => void) => void;
+  onDockerShellData: (handler: (payload: { sessionId: string; data: string }) => void) => void;
+  onDockerShellClose: (handler: (payload: { sessionId: string; code: number | null }) => void) => void;
 
   // Git
   refreshGit: (projectId?: string) => Promise<unknown>;
