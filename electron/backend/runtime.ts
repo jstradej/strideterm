@@ -755,20 +755,34 @@ export async function createRuntime({
   );
   telegramManager.setPrInfosGetter(() => {
     const state = getState();
+    const resolveProviderPrWorkspace = (
+      provider: "azure" | "github",
+      pr: { profileId?: string; reviewWorkspaceId?: string; existingWorkspaceId?: string },
+    ) => {
+      const explicitWorkspaceId = pr.reviewWorkspaceId || pr.existingWorkspaceId || "";
+      const explicitWorkspace = explicitWorkspaceId
+        ? state.workspaces.find((w: WorkspaceState) => w.id === explicitWorkspaceId)
+        : undefined;
+      const profileId = pr.profileId || explicitWorkspace?.profileId || "";
+      const providerWorkspace = profileId
+        ? state.workspaces.find((w: WorkspaceState) => w.kind === provider && (w.profileId || "default") === profileId)
+        : undefined;
+      return {
+        profileId,
+        workspaceId: explicitWorkspaceId || providerWorkspace?.id || "",
+      };
+    };
     const azurePrs = Object.entries(azure.getSnapshot()?.pullRequests || {}).map(
       ([prKey, summary]: [string, unknown]) => {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const pr = summary as any;
-        const wsId =
-          pr?.reviewWorkspaceId ||
-          pr?.existingWorkspaceId ||
-          state.workspaces.find((w: WorkspaceState) => w.kind === "azure")?.id ||
-          "azure";
+        const target = resolveProviderPrWorkspace("azure", pr || {});
         return {
           prKey,
           provider: "azure-devops" as const,
           connectionId: pr?.connectionId || "",
-          workspaceId: wsId,
+          profileId: target.profileId,
+          workspaceId: target.workspaceId,
           title: pr?.pullRequest?.title || prKey,
           hasAttention: !!pr?.hasAttention,
           attentionReason: pr?.attentionReason || "",
@@ -782,16 +796,13 @@ export async function createRuntime({
       ([prKey, summary]: [string, unknown]) => {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const pr = summary as any;
-        const wsId =
-          pr?.reviewWorkspaceId ||
-          pr?.existingWorkspaceId ||
-          state.workspaces.find((w: WorkspaceState) => w.kind === "github")?.id ||
-          "github";
+        const target = resolveProviderPrWorkspace("github", pr || {});
         return {
           prKey,
           provider: "github" as const,
           connectionId: pr?.connectionId || "",
-          workspaceId: wsId,
+          profileId: target.profileId,
+          workspaceId: target.workspaceId,
           title: pr?.pullRequest?.title || prKey,
           hasAttention: !!pr?.hasAttention,
           attentionReason: pr?.attentionReason || "",

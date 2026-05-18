@@ -206,6 +206,8 @@ export interface TelegramPrInfo {
   prKey: string;
   provider: "azure-devops" | "github";
   connectionId: string;
+  /** Profile that owns the provider connection / PR summary. */
+  profileId: string;
   /** ID of the workspace used when forwarding this PR alert */
   workspaceId: string;
   title: string;
@@ -2282,11 +2284,7 @@ export class TelegramManager extends EventEmitter {
   ): Promise<void> {
     const profileId = await this._resolveProfileOrPrompt(chatId, token, conn, { type: "prs" }, explicitProfileId);
     if (!profileId) return;
-    const workspacesById = new Map((this.getWorkspaces?.() ?? []).map((w) => [w.id, w]));
-    const prs = (this.getPrInfos?.() ?? []).filter((pr) => {
-      const ws = workspacesById.get(pr.workspaceId);
-      return !ws || (ws.profileId || "default") === profileId;
-    });
+    const prs = (this.getPrInfos?.() ?? []).filter((pr) => pr.profileId === profileId);
     if (prs.length === 0) {
       await this._sendText(token, chatId, "✅ No pull requests require your attention right now\\.", true);
       return;
@@ -2343,6 +2341,7 @@ export class TelegramManager extends EventEmitter {
       prKey: pr.prKey,
       provider: pr.provider,
       connectionId: pr.connectionId,
+      profileId: pr.profileId,
     };
 
     const result = await this._apiCall<TgSendMessageResult>(token, "sendMessage", {

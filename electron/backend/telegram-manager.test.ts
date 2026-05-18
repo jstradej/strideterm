@@ -6,7 +6,7 @@ import {
   normalizeBranchName,
   sortWorkspacesStarredFirst,
 } from "./telegram-manager.js";
-import type { TelegramConnectionConfig, TelegramWorkspaceInfo } from "./telegram-manager.js";
+import type { TelegramConnectionConfig, TelegramPrInfo, TelegramWorkspaceInfo } from "./telegram-manager.js";
 // TelegramWorkspaceInfo is used in the windowSlot validation tests at the bottom.
 
 // ---------------------------------------------------------------------------
@@ -3972,6 +3972,83 @@ describe("auto-review profile routing", () => {
     expect(confirm?.type).toBe("confirm-action");
     expect(confirm?.pendingCmd?.profileId).toBe("profile-team");
     expect(confirm?.pendingCmd?.taskDescription).toBe("rebuild docs");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// /prs — profile-scoped PR selection
+// ---------------------------------------------------------------------------
+
+describe("/prs command", () => {
+  test("filters PRs by TelegramPrInfo.profileId, not by fallback workspace profile", async () => {
+    const cred = makeCredentialStore({ "cred:tg-1": "token123" });
+    const manager = new TelegramManager({ credentialStore: cred });
+    manager.configure([makeConnection()]);
+    manager.setProfilesGetter(() => [
+      { id: "default", name: "Default" },
+      { id: "work", name: "Work" },
+    ]);
+    manager.setWorkspacesGetter(() => [
+      makeWorkspace({ id: "azure-default", name: "Azure Default", kind: "azure", profileId: "default" }),
+    ]);
+    manager.setPrInfosGetter(() => [
+      {
+        prKey: "ado:1",
+        provider: "azure-devops",
+        connectionId: "ado-work",
+        profileId: "work",
+        workspaceId: "azure-default",
+        title: "Work PR without review workspace",
+        hasAttention: true,
+      },
+      {
+        prKey: "ado:2",
+        provider: "azure-devops",
+        connectionId: "ado-default",
+        profileId: "default",
+        workspaceId: "azure-default",
+        title: "Default PR",
+        hasAttention: true,
+      },
+    ]);
+
+    const sentBodies: Array<Record<string, unknown>> = [];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (manager as any)._apiCall = async (_t: string, _m: string, body: Record<string, unknown>) => {
+      sentBodies.push(body);
+      return { ok: true, result: { message_id: 720 } };
+    };
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (manager as any)._handlePrsCommand("12345", "token123", makeConnection(), "work");
+
+    const text = String(sentBodies.at(-1)?.text || "");
+    expect(text).toContain("Work PR without review workspace");
+    expect(text).not.toContain("Default PR");
+  });
+
+  test("PR action menu preserves profileId for Open Review and Auto-review callbacks", async () => {
+    const cred = makeCredentialStore({ "cred:tg-1": "token123" });
+    const manager = new TelegramManager({ credentialStore: cred });
+    const pr: TelegramPrInfo = {
+      prKey: "gh:77",
+      provider: "github",
+      connectionId: "gh-work",
+      profileId: "work",
+      workspaceId: "github-work",
+      title: "Route me in Work",
+      hasAttention: true,
+    };
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (manager as any)._apiCall = async () => ({ ok: true, result: { message_id: 721 } });
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (manager as any)._presentPrActionsMenu("token123", "12345", pr);
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const entry = (manager as any).contextByMessageId.get(721);
+    expect(entry?.context?.profileId).toBe("work");
   });
 });
 
