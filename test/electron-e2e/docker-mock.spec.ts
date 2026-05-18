@@ -61,9 +61,24 @@ test.describe("Docker workspace (mocked state)", () => {
     // compose project plus the Images/Volumes/Networks groups. We assert
     // their labels are present without forcing expand state.
     await expect(page.getByRole("treeitem").filter({ hasText: "mock-app" }).first()).toBeVisible();
-    await expect(page.getByRole("treeitem").filter({ hasText: /Images \(3\)/ }).first()).toBeVisible();
-    await expect(page.getByRole("treeitem").filter({ hasText: /Volumes \(1\)/ }).first()).toBeVisible();
-    await expect(page.getByRole("treeitem").filter({ hasText: /Networks \(2\)/ }).first()).toBeVisible();
+    await expect(
+      page
+        .getByRole("treeitem")
+        .filter({ hasText: /Images \(3\)/ })
+        .first(),
+    ).toBeVisible();
+    await expect(
+      page
+        .getByRole("treeitem")
+        .filter({ hasText: /Volumes \(1\)/ })
+        .first(),
+    ).toBeVisible();
+    await expect(
+      page
+        .getByRole("treeitem")
+        .filter({ hasText: /Networks \(2\)/ })
+        .first(),
+    ).toBeVisible();
 
     await captureStep(launched!, "docker-mock-tree-roots");
     assertNoRendererErrors(launched!);

@@ -32,14 +32,7 @@
       />
       <!-- Hover guide + dot -->
       <template v-if="hoverPoint && hoverIndex !== null">
-        <line
-          class="sparkline__guide"
-          :x1="hoverPoint.x"
-          :x2="hoverPoint.x"
-          :y1="0"
-          :y2="VIEW_H"
-          :stroke="stroke"
-        />
+        <line class="sparkline__guide" :x1="hoverPoint.x" :x2="hoverPoint.x" :y1="0" :y2="VIEW_H" :stroke="stroke" />
         <circle class="sparkline__dot" :cx="hoverPoint.x" :cy="hoverPoint.y" r="3.5" :fill="stroke" />
       </template>
       <!-- Empty state -->

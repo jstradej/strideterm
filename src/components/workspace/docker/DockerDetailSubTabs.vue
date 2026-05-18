@@ -84,9 +84,7 @@ const ALL_TABS: Array<{ id: SubTabKind; label: string }> = [
 // than ship a "click to attach…" that stays stuck forever.
 // Detecting via `window.strideterm` (preload script) avoids needing Pinia
 // in unit tests — same signal that the Transport's `isRemote` boolean uses.
-const isRemote = computed(
-  () => typeof window !== "undefined" && !(window as { strideterm?: unknown }).strideterm,
-);
+const isRemote = computed(() => typeof window !== "undefined" && !(window as { strideterm?: unknown }).strideterm);
 
 const tabs = computed(() => (isRemote.value ? ALL_TABS.filter((t) => t.id !== "shell") : ALL_TABS));
 

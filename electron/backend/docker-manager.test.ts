@@ -523,4 +523,3 @@ describe("parsePruneOutput", () => {
     expect(parsePruneOutput("   \n  \n", "volume").reclaimed).toBe("");
   });
 });
-
