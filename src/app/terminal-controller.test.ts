@@ -69,12 +69,13 @@ function buildController({ getOverlay }: { getOverlay: () => unknown }) {
     getPayload: () => null,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     api: {} as any,
-    appConfig: {},
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    appConfig: {} as any,
     openTerminalLink: vi.fn(),
     getWindowsPtyOptions: vi.fn(),
     shortcutTabDirection: () => 0,
     downloadTextFile: vi.fn(),
-    safeFilenamePart: (value: string) => value,
+    safeFilenamePart: (value: unknown) => String(value),
   });
 
   return { controller, focus };
@@ -96,7 +97,8 @@ describe("createTerminalController", () => {
 
     controller.focusActiveTerminal();
     overlay = "WorkspaceDialog";
-    queuedFrame?.(0);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (queuedFrame as any)?.(0);
 
     expect(focus).not.toHaveBeenCalled();
   });

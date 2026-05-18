@@ -1,0 +1,162 @@
+{
+  "available": true,
+  "backends": [
+    {
+      "id": "host",
+      "type": "host",
+      "label": "Host",
+      "available": "ok"
+    }
+  ],
+  "contexts": [
+    {
+      "Name": "default",
+      "DockerEndpoint": "unix:///var/run/docker.sock",
+      "Current": true,
+      "backendId": "host",
+      "available": "ok",
+      "containerCount": 3
+    }
+  ],
+  "containers": [
+    {
+      "ID": "c1aaaaaaaaaa",
+      "Names": "web",
+      "Image": "nginx:latest",
+      "ImageID": "sha256:nginxIMAGEID",
+      "Command": "/docker-entrypoint.sh nginx -g 'daemon off;'",
+      "Created": 1715000000,
+      "RunningFor": "2 hours ago",
+      "Ports": "0.0.0.0:8080->80/tcp",
+      "Status": "Up 2 hours (healthy)",
+      "State": "running",
+      "Size": "0B",
+      "Labels": "com.docker.compose.project=mock-app,com.docker.compose.service=web",
+      "parsedLabels": {
+        "composeProject": "mock-app",
+        "composeService": "web",
+        "raw": {
+          "com.docker.compose.project": "mock-app",
+          "com.docker.compose.service": "web"
+        }
+      },
+      "health": "healthy",
+      "backendId": "host",
+      "contextName": "default"
+    },
+    {
+      "ID": "c2bbbbbbbbbb",
+      "Names": "api",
+      "Image": "node:20-alpine",
+      "ImageID": "sha256:nodeIMAGEID",
+      "Command": "node server.js",
+      "Created": 1715000100,
+      "RunningFor": "2 hours ago",
+      "Ports": "0.0.0.0:3000->3000/tcp",
+      "Status": "Up 2 hours",
+      "State": "running",
+      "Size": "0B",
+      "Labels": "com.docker.compose.project=mock-app,com.docker.compose.service=api",
+      "parsedLabels": {
+        "composeProject": "mock-app",
+        "composeService": "api",
+        "raw": {
+          "com.docker.compose.project": "mock-app",
+          "com.docker.compose.service": "api"
+        }
+      },
+      "health": "none",
+      "backendId": "host",
+      "contextName": "default"
+    },
+    {
+      "ID": "c3cccccccccc",
+      "Names": "db",
+      "Image": "postgres:16",
+      "ImageID": "sha256:postgresIMAGEID",
+      "Command": "postgres",
+      "Created": 1715000200,
+      "RunningFor": "3 hours ago",
+      "Ports": "5432/tcp",
+      "Status": "Exited (0) 5 minutes ago",
+      "State": "exited",
+      "Size": "0B",
+      "Labels": "com.docker.compose.project=mock-app,com.docker.compose.service=db",
+      "parsedLabels": {
+        "composeProject": "mock-app",
+        "composeService": "db",
+        "raw": {
+          "com.docker.compose.project": "mock-app",
+          "com.docker.compose.service": "db"
+        }
+      },
+      "health": "none",
+      "backendId": "host",
+      "contextName": "default"
+    }
+  ],
+  "images": [
+    {
+      "ID": "sha256:nginxIMAGEID",
+      "Repository": "nginx",
+      "Tag": "latest",
+      "CreatedSince": "2 weeks ago",
+      "Size": "187MB",
+      "backendId": "host",
+      "contextName": "default"
+    },
+    {
+      "ID": "sha256:nodeIMAGEID",
+      "Repository": "node",
+      "Tag": "20-alpine",
+      "CreatedSince": "1 week ago",
+      "Size": "164MB",
+      "backendId": "host",
+      "contextName": "default"
+    },
+    {
+      "ID": "sha256:postgresIMAGEID",
+      "Repository": "postgres",
+      "Tag": "16",
+      "CreatedSince": "3 weeks ago",
+      "Size": "438MB",
+      "backendId": "host",
+      "contextName": "default"
+    }
+  ],
+  "volumes": [
+    {
+      "Name": "mock-app_pgdata",
+      "Driver": "local",
+      "Mountpoint": "/var/lib/docker/volumes/mock-app_pgdata/_data",
+      "Scope": "local",
+      "backendId": "host",
+      "contextName": "default"
+    }
+  ],
+  "networks": [
+    {
+      "ID": "n1111111",
+      "Name": "mock-app_default",
+      "Driver": "bridge",
+      "Scope": "local",
+      "CreatedAt": "2024-05-01T12:00:00Z",
+      "backendId": "host",
+      "contextName": "default"
+    },
+    {
+      "ID": "n2222222",
+      "Name": "bridge",
+      "Driver": "bridge",
+      "Scope": "local",
+      "CreatedAt": "2024-04-01T08:00:00Z",
+      "backendId": "host",
+      "contextName": "default"
+    }
+  ],
+  "lazydocker": {
+    "host": { "available": false, "error": "Lazydocker not installed in mock backend." }
+  },
+  "error": "",
+  "lastUpdatedAt": null
+}

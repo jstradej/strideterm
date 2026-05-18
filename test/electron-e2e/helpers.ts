@@ -7,7 +7,15 @@ import { fileURLToPath } from "node:url";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, "..", "..");
 
-export type FixtureName = "empty" | "seeded" | "grid" | "multi-profile" | "two-workspaces" | "remote-multi-profile";
+export type FixtureName =
+  | "empty"
+  | "seeded"
+  | "grid"
+  | "multi-profile"
+  | "two-workspaces"
+  | "remote-multi-profile"
+  | "docker-workspace"
+  | "docker-mock-workspace";
 
 export interface LaunchedApp {
   app: ElectronApplication;
@@ -25,6 +33,14 @@ export interface LaunchOptions {
    * requested width/height instead of clamping to the desktop floor.
    */
   windowSize?: { width: number; height: number };
+  /**
+   * Path to a Docker mock-state JSON file. When set, the backend's
+   * DockerManager.refresh() short-circuits to this file instead of probing
+   * the docker CLI — lets CI runners without docker exercise the Docker UI
+   * deterministically. The file shape mirrors `DockerState` (see
+   * `fixtures/docker-mock-state.json` for the canonical example).
+   */
+  dockerMockFile?: string;
 }
 
 export async function launchApp(fixture: FixtureName = "empty", options: LaunchOptions = {}): Promise<LaunchedApp> {
@@ -57,6 +73,9 @@ export async function launchApp(fixture: FixtureName = "empty", options: LaunchO
   if (options.windowSize) {
     env.STRIDETERM_MIN_WINDOW_WIDTH = String(width);
     env.STRIDETERM_MIN_WINDOW_HEIGHT = String(height);
+  }
+  if (options.dockerMockFile) {
+    env.STRIDETERM_DOCKER_MOCK_FILE = options.dockerMockFile;
   }
 
   const app = await electron.launch({

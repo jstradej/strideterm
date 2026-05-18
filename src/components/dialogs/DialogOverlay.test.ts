@@ -62,7 +62,8 @@ describe("DialogOverlay", () => {
     overlay?.append(assignment);
     expect(assignment).not.toBeNull();
     assignment.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
-    queuedFrame?.(0);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (queuedFrame as any)?.(0);
 
     expect(xtermBlur).toHaveBeenCalled();
     expect(focusWindow).toHaveBeenCalled();
