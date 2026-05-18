@@ -273,6 +273,22 @@ interface RuntimeDependencies {
 
   /** Emit alert:navigate to the window that owns `profileId` (§4.2). */
   navigateWindowToAlert?: (workspaceId: string, panelId: string, profileId: string) => void;
+
+  /**
+   * Ensure a desktop window exists for `profileId`, returning its `windowId`.
+   * Implementation contract (see main.ts):
+   *  - If a window already owns the profile, focus it and return its id.
+   *  - Otherwise create a new window slot for the profile, spawn its
+   *    BrowserWindow, wait for the renderer to finish loading, and return
+   *    the new id.
+   *
+   * Used by Telegram command dispatch so a click on a notification for a
+   * profile that isn't currently open just-works instead of erroring out.
+   * Returns null when window creation fails (e.g. headless / test runtime
+   * without the Electron dep injected) — callers fall back to the legacy
+   * "abort with chat error" path.
+   */
+  ensureWindowForProfile?: (profileId: string) => Promise<string | null>;
 }
 
 export async function createRuntime({
@@ -1425,6 +1441,23 @@ export async function createRuntime({
     isKnownPluginProject,
   });
 
+  /**
+   * Resolve a profile's display name from its id. Returns the id as fallback
+   * so the Telegram alert text always shows *something* — even for profile
+   * records that have lost their `name` (e.g. stale state from a renamed
+   * profile). The "default" profile gets a capitalised label so the alert
+   * doesn't display the raw string "default".
+   */
+  function resolveProfileDisplayName(profileId: string | undefined): string {
+    const id = profileId || "default";
+    const state = getState();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const profile = (state.profiles || []).find((p: any) => p.id === id);
+    if (profile?.name) return profile.name;
+    if (id === "default") return "Default";
+    return id;
+  }
+
   // Wrap raiseAlert to forward to Telegram and route §4.2 alert navigation.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   function raiseAlert(opts: any): boolean {
@@ -1433,6 +1466,7 @@ export async function createRuntime({
       const state = getState();
       const workspace = state.workspaces.find((w) => w.id === opts.projectId);
       const panel = workspace?.panels.find((p) => p.id === opts.panelId);
+      const profileId = (workspace as { profileId?: string } | undefined)?.profileId || "default";
       telegramManager
         .forwardAlert({
           alertId: opts.sessionId || `${opts.projectId}:${opts.panelId}`,
@@ -1444,7 +1478,8 @@ export async function createRuntime({
           urgency: opts.urgency || "normal",
           title: opts.title || "",
           detail: opts.detail || "",
-          workspaceProfileId: (workspace as { profileId?: string } | undefined)?.profileId || "default",
+          workspaceProfileId: profileId,
+          workspaceProfileName: resolveProfileDisplayName(profileId),
         })
         .catch((err) => {
           log.warn("telegram forwardAlert from raiseAlert failed", {
@@ -1653,6 +1688,7 @@ export async function createRuntime({
           provider: "azure-devops",
           connectionId: pr?.connectionId || "",
           workspaceProfileId: azurePrProfileId,
+          workspaceProfileName: resolveProfileDisplayName(azurePrProfileId),
         })
         .catch((err) => {
           log.warn("telegram: Azure PR forward failed", { prKey, err: (err as Error).message });
@@ -1699,6 +1735,7 @@ export async function createRuntime({
           provider: "github",
           connectionId: pr?.connectionId || "",
           workspaceProfileId: githubPrProfileId,
+          workspaceProfileName: resolveProfileDisplayName(githubPrProfileId),
         })
         .catch((err) => {
           log.warn("telegram: GitHub PR forward failed", { prKey, err: (err as Error).message });
@@ -1785,6 +1822,7 @@ export async function createRuntime({
               urgency: curState === "failed" ? "urgent" : "normal",
               title: `${icon} ${checkName} — ${prTitle}`,
               detail,
+              workspaceProfileName: resolveProfileDisplayName(prProfileId),
               prKey,
               provider,
               connectionId: pr?.connectionId || "",
@@ -1845,16 +1883,26 @@ export async function createRuntime({
     resolveWindowIdForTelegramCommand(c, getState().windowSlots || []);
 
   /**
-   * Resolve a Telegram command's target window, but ABORT (send a chat
-   * error + return null) when the caller picked an explicit profile that
-   * isn't open in any desktop window. Falling back to preState.activeWorkspaceId
-   * silently captures / acts on the wrong window — the user picked a
-   * specific profile, doing anything else is a quiet contract violation.
+   * Resolve a Telegram command's target window. When the caller picked a
+   * specific profile that isn't currently in any desktop window, spawn a
+   * new window for that profile instead of aborting — the user clicked a
+   * Telegram button which is an unambiguous "go here" intent, and forcing
+   * them to manually open the right profile first defeats the point of
+   * remote control.
+   *
+   * Spawn flow (via dependencies.ensureWindowForProfile):
+   *  1. Look for an existing window bound to the profile; focus it.
+   *  2. Otherwise create a new window slot + BrowserWindow and wait for
+   *     the renderer to load before returning the new windowId.
+   *
+   * Falls back to the legacy abort-with-chat-error path when the runtime
+   * was created without ensureWindowForProfile (headless build / tests).
    *
    * Returns:
-   *  - `undefined` when no profile binding was requested (legacy single-window flow)
-   *  - the resolved `windowId` string when binding succeeded
-   *  - `null` when binding was requested but failed (caller MUST return)
+   *  - `undefined` when no profile binding was requested (legacy fallback)
+   *  - resolved `windowId` string on success (existing or freshly spawned)
+   *  - `null` when binding was requested but no window could be obtained
+   *    (caller MUST return — error was already messaged to the user)
    */
   async function resolveTelegramWindowIdOrAbort(cmd: {
     windowId?: string;
@@ -1864,7 +1912,25 @@ export async function createRuntime({
     const resolved = resolveTelegramWindowId(cmd);
     if (resolved) return resolved;
     if (cmd.profileId) {
-      log.warn("telegram: profile not open in any desktop window", {
+      // Try to auto-spawn a window for the missing profile. This is the
+      // common path: a PR alert from a profile that's currently closed,
+      // user clicks "Open Review", we open the right window for them.
+      if (dependencies.ensureWindowForProfile) {
+        log.info("telegram: profile not open — auto-spawning window", {
+          profileId: cmd.profileId,
+          chatId: cmd.chatId,
+        });
+        try {
+          const newWindowId = await dependencies.ensureWindowForProfile(String(cmd.profileId));
+          if (newWindowId) return newWindowId;
+        } catch (err) {
+          log.warn("telegram: ensureWindowForProfile threw", {
+            profileId: cmd.profileId,
+            err: (err as Error)?.message,
+          });
+        }
+      }
+      log.warn("telegram: profile not open and auto-spawn unavailable", {
         profileId: cmd.profileId,
         chatId: cmd.chatId,
       });
@@ -1872,7 +1938,7 @@ export async function createRuntime({
         await telegramManager
           .notifyChat(
             cmd.chatId,
-            `⚠️ Profile *${escapeMarkdown(String(cmd.profileId))}* is not open in any desktop window\\.`,
+            `⚠️ Could not open a window for profile *${escapeMarkdown(String(cmd.profileId))}*\\.`,
           )
           .catch(() => {});
       }

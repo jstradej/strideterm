@@ -236,6 +236,82 @@ function getWindowProfileId(windowId: string): string {
   return windowSlots.find((s) => s.id === windowId)?.profileId || "default";
 }
 
+/** Find the live BrowserWindow currently bound to a profile, if any. */
+function findWindowForProfile(profileId: string): { windowId: string; win: BrowserWindow } | null {
+  for (const [wid, win] of windowRegistry) {
+    if (win.isDestroyed()) continue;
+    if (getWindowProfileId(wid) === profileId) return { windowId: wid, win };
+  }
+  return null;
+}
+
+/**
+ * Ensure a desktop window exists for `profileId`. If one already does, focus
+ * it and return its id. Otherwise create a new window slot in state, spawn a
+ * BrowserWindow for it, and wait until the renderer is ready to receive IPC.
+ *
+ * Used by the runtime (Telegram dispatch, alert navigation) so a click on a
+ * notification for a closed profile just opens the right window. Returns
+ * null only when the underlying runtime isn't ready yet (very early startup).
+ */
+async function ensureWindowForProfile(profileId: string): Promise<string | null> {
+  if (!profileId) return null;
+  const existing = findWindowForProfile(profileId);
+  if (existing) {
+    if (existing.win.isMinimized()) existing.win.restore();
+    existing.win.focus();
+    return existing.windowId;
+  }
+  if (!runtimeState.runtimeInteractive || !runtimeState.runtime) {
+    log.warn("ensureWindowForProfile: runtime not ready", { profileId });
+    return null;
+  }
+  let newSlot: { id?: string; profileId?: string } | null = null;
+  try {
+    newSlot = (await runtimeState.runtime.createWindowSlot?.(profileId)) ?? null;
+  } catch (err) {
+    log.error("ensureWindowForProfile: createWindowSlot threw", {
+      profileId,
+      err: (err as Error)?.message,
+    });
+  }
+  const newWindowId = newSlot?.id ?? randomUUID();
+  log.info("ensureWindowForProfile: spawning new window", { profileId, newWindowId });
+  try {
+    createWindow(newWindowId, newSlot ?? { profileId });
+  } catch (err) {
+    log.error("ensureWindowForProfile: createWindow threw", {
+      profileId,
+      newWindowId,
+      err: (err as Error)?.message,
+    });
+    return null;
+  }
+  // Wait for the renderer to finish loading so the subsequent IPC actually
+  // hits a live process. Without this, the first activateWorkspace / alert
+  // navigation fires before the window registers its IPC listeners and the
+  // event is silently dropped.
+  const win = windowRegistry.get(newWindowId);
+  if (win) {
+    await new Promise<void>((resolve) => {
+      if (!win.webContents.isLoading()) {
+        resolve();
+        return;
+      }
+      let settled = false;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        resolve();
+      };
+      win.webContents.once("did-finish-load", finish);
+      // Hard cap so a stuck renderer doesn't hang the Telegram dispatch.
+      setTimeout(finish, 8_000);
+    });
+  }
+  return newWindowId;
+}
+
 function updateNativeAttention(payload: Record<string, unknown> | null | undefined): void {
   if (!payload) return;
   const { count, waitingCount } = summarizeAttention(payload);
@@ -912,15 +988,28 @@ async function startServices(): Promise<void> {
       },
       // §4.2: find the window whose slot has this profileId and tell its renderer
       // to navigate to the workspace/panel (flash is handled separately in updateNativeAttention).
+      // For alerts originating in a profile that's currently closed, defer to
+      // ensureWindowForProfile (below) which spawns the right window. We do
+      // this opportunistically — alerts are best-effort UX hints, not the
+      // primary entry point, so we don't block on the spawn.
       navigateWindowToAlert: (workspaceId: string, panelId: string, profileId: string): void => {
-        for (const [wid, win] of windowRegistry) {
-          if (win.isDestroyed()) continue;
-          if (getWindowProfileId(wid) === profileId) {
-            emitToWindow(wid, "alert:navigate", { workspaceId, panelId });
-            break;
-          }
+        const existing = findWindowForProfile(profileId);
+        if (existing) {
+          emitToWindow(existing.windowId, "alert:navigate", { workspaceId, panelId });
+          return;
         }
+        // Auto-spawn for cross-profile alerts (e.g. background PR poll in a
+        // profile whose window the user closed). Fire-and-forget — alerts
+        // from the background poll fan in faster than spawn completes, so
+        // we don't await; the new window picks up workspace state from the
+        // shared backend once it renders.
+        ensureWindowForProfile(profileId)
+          .then((wid) => {
+            if (wid) emitToWindow(wid, "alert:navigate", { workspaceId, panelId });
+          })
+          .catch((err) => log.warn("navigateWindowToAlert: spawn failed", { err: (err as Error)?.message }));
       },
+      ensureWindowForProfile,
     },
   });
 

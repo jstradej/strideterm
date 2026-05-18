@@ -22,7 +22,7 @@ const MAX_EVENTS_PER_SESSION = 20;
 
 type NotificationState = "waiting" | "finished" | "resolved" | "snoozed";
 type NotificationUrgency = "normal" | "urgent";
-type NotificationKind = "waiting" | "completed" | "info" | "review" | "error" | "warning" | string;
+type NotificationKind = "waiting" | "completed" | "subagent_done" | "info" | "review" | "error" | "warning" | string;
 
 /**
  * A toast that does not auto-dismiss. Used for errors the user must act on
@@ -132,7 +132,12 @@ function savePinned(value: boolean): void {
 function kindToState(kind: NotificationKind): NotificationState {
   // Review activity and info/completed events don't block on user input —
   // they land in "Finished" so the user can ack them at their convenience.
-  return kind === "completed" || kind === "info" || kind === "review" ? "finished" : "waiting";
+  // SubagentStop is treated the same: a sub-agent finishing within a turn
+  // never expects user input, so it shouldn't sit in "Waiting" tying up
+  // attention.
+  return kind === "completed" || kind === "info" || kind === "review" || kind === "subagent_done"
+    ? "finished"
+    : "waiting";
 }
 
 export const useNotificationStore = defineStore("notifications", () => {

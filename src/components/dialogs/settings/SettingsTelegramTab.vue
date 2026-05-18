@@ -52,9 +52,9 @@
           >
           <span
             v-if="(props.profiles || []).length > 1 && !conn.profileId"
-            class="connection-item__badge badge--warn"
-            title="No profile binding selected. In a multi-profile install this chat will only receive alerts from the 'default' profile — alerts about workspaces in other profiles silently won't reach this bot. Expand to pick a profile."
-            >no profile</span
+            class="connection-item__badge badge--global"
+            title="Global delivery — this connection receives alerts from every profile. The profile name is included in each Telegram message so you can tell at a glance where the alert came from. Bind to a specific profile to filter."
+            >global</span
           >
           <span
             class="connection-item__chevron"
@@ -496,7 +496,7 @@ export const ConnectionForm = defineComponent({
             {
               class: "form-label",
               title:
-                "Profile controlled by this Telegram chat. Leave unbound to ask for a profile when multiple profiles exist.",
+                "Which profile's alerts this bot delivers. Leave on 'All profiles' for one global bot that sees everything (profile name appears in each message). Bind to a specific profile only if you run multiple separate bots.",
             },
             [
               h("span", "Profile"),
@@ -506,13 +506,13 @@ export const ConnectionForm = defineComponent({
                   value: d.profileId || "",
                   class: "settings-input",
                   title:
-                    "Bind this chat to one profile. Unbound chats stay flexible but must pick a profile before scoped commands.",
+                    "Global = receive alerts from every profile (default, recommended for one bot). Specific profile = strict isolation, alerts from other profiles never reach this chat.",
                   onChange: (e: Event) => {
                     d.profileId = (e.target as HTMLSelectElement).value;
                   },
                 },
                 [
-                  h("option", { value: "" }, "Ask when needed"),
+                  h("option", { value: "" }, "All profiles (global)"),
                   ...props.profileOptions.map((profile) =>
                     h("option", { value: profile.id }, profile.name || profile.id),
                   ),
@@ -812,6 +812,11 @@ export const ConnectionForm = defineComponent({
 .badge--warn {
   background: rgba(255, 180, 0, 0.18);
   color: #b07a00;
+}
+
+.badge--global {
+  background: rgba(100, 160, 255, 0.16);
+  color: #4a90e2;
 }
 
 .connection-form {

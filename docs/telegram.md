@@ -43,11 +43,22 @@ When no connection is configured the panel shows a short pitch and a primary **S
 
 - `completed` — agent or shell command finished
 - `waiting` — agent paused waiting for input
+- `subagent_done` — a sub-agent (Task tool) finished within the current turn — one ping per subagent, with only a Dismiss button to keep the chat tidy during complex turns
 - `review` — Azure DevOps or GitHub PR alert (new comment, your review requested, …)
+- `pipeline` — CI pipeline check completed
 - `error` — error-class notifications
 - `info` — neutral info notifications
 
 Each connection has its own filter, so different chats can subscribe to different alert flavours.
+
+### Profile binding
+
+In a multi-profile install a Telegram connection's **Profile** setting controls which profile's alerts arrive in that chat:
+
+- **All profiles (global, default)** — the connection receives alerts from every profile. The profile name is shown on each Telegram message so you can tell at a glance where the alert came from. This is what you want when you have a single bot for everything.
+- **Specific profile** — strict isolation. Only alerts from workspaces in that profile reach the chat, and follow-up commands from this chat always target that profile's window.
+
+When you click a Telegram action (Open PR review, Auto-review, New task, …) for a profile that isn't currently open in any desktop window, strIDEterm spawns a fresh window for that profile and runs the action there. You don't have to remember which profile lives in which window.
 
 ### Bot commands
 

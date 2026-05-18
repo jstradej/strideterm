@@ -58,8 +58,19 @@ describe("classifyHookEvent — Stop hook", () => {
 });
 
 describe("classifyHookEvent — SubagentStop", () => {
-  test("SubagentStop → system-only (internal handoff)", () => {
-    expect(classifyHookEvent("SubagentStop")).toEqual({ userFacing: false });
+  test("SubagentStop → user-facing, T1, normal, subagent_done", () => {
+    expect(classifyHookEvent("SubagentStop")).toMatchObject({
+      userFacing: true,
+      tier: 1,
+      urgency: "normal",
+      kind: "subagent_done",
+    });
+  });
+
+  test("SubagentStop kind is distinct from completed (so users can filter independently)", () => {
+    const sub = classifyHookEvent("SubagentStop");
+    const stop = classifyHookEvent("Stop");
+    expect(sub.kind).not.toBe(stop.kind);
   });
 });
 

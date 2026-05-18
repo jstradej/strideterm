@@ -15,7 +15,7 @@ export interface Classification {
   userFacing: boolean;
   tier?: 1 | 2 | 3;
   urgency?: "normal" | "urgent";
-  kind?: "waiting" | "completed" | "info";
+  kind?: "waiting" | "completed" | "info" | "subagent_done";
   detail?: string;
 }
 
@@ -89,8 +89,18 @@ export function classifyHookEvent(hook: unknown, subtype?: unknown): Classificat
   }
 
   if (hookName === "SubagentStop") {
-    // Sub-task handoff — internal. Task runner may consume; never alerts.
-    return SYSTEM_ONLY;
+    // Sub-agent finished within a turn (e.g. a Task tool completed). Task
+    // runner gets first dibs via onSubagentStop — when it consumes the hook
+    // for a task workspace, this user-facing branch never fires.
+    // Distinct kind so users can filter subagent pings out of Telegram
+    // without also dropping turn-end Stop notifications.
+    return {
+      userFacing: true,
+      tier: 1,
+      urgency: "normal",
+      kind: "subagent_done",
+      detail: "hook:SubagentStop",
+    };
   }
 
   if (hookName === "UserPromptSubmit") {

@@ -43,6 +43,19 @@ export interface TelegramConnectionConfig {
   chatId: string;
   enabled: boolean;
   pollSeconds: number;
+  /**
+   * Profile binding.
+   *  - Empty / undefined → **global**: this connection receives alerts from
+   *    every profile (the common single-bot scenario). Window-scoped commands
+   *    issued from this chat fall through to per-command profile selection.
+   *  - Explicit profile id (e.g. "default", "profile-abc") → strict isolation:
+   *    only alerts whose workspace lives in that profile are delivered, and
+   *    window-scoped commands target that profile.
+   *
+   * Note: prior to 2.2.15 an empty string silently mapped to "default" inside
+   * forwardAlert(). The mapping is now inverted (empty = global) so the user
+   * with a single bot is served well by default. See release notes.
+   */
   profileId?: string;
   forwardKinds: string[];
 }
@@ -68,6 +81,11 @@ export interface TelegramAlertContext {
   panelTitle?: string;
   /** Alert title (used for auto-review to populate the task description) */
   title?: string;
+  /** Profile id that owns the workspace this alert came from. Stored so a
+   * later callback (e.g. auto-review button) can route the resulting command
+   * to the correct desktop window even when a global bot receives alerts
+   * from multiple profiles. */
+  profileId?: string;
 }
 
 export interface TelegramAlertPayload {
@@ -84,11 +102,19 @@ export interface TelegramAlertPayload {
   prKey?: string;
   provider?: string;
   connectionId?: string;
-  /** The profile that owns the workspace firing the alert. When set,
-   * forwardAlert only delivers to connections whose profileId matches —
-   * preventing chat A from receiving notifications about chat B's
-   * workspaces in a multi-profile install. */
+  /** The profile that owns the workspace firing the alert. Used for two
+   * things:
+   *  1. Per-profile connection filtering — connections bound to a specific
+   *     profile only receive matching alerts. Global connections (no
+   *     profileId) receive every alert regardless of this field.
+   *  2. Routing follow-up commands (auto-review, open PR review, start
+   *     task) back to the desktop window that owns the originating profile,
+   *     spawning a new window for that profile when none is open. */
   workspaceProfileId?: string;
+  /** Display name of the owning profile. Shown verbatim in the alert text
+   * so the user can see at a glance which profile the notification came
+   * from — important when one bot receives alerts from every profile. */
+  workspaceProfileName?: string;
 }
 
 interface TelegramCommandEvent {
@@ -291,6 +317,12 @@ interface PendingRequest {
   prChoices?: TelegramPrInfo[];
   /** For profile-selection: ordered list of profiles shown to the user */
   profileChoices?: TelegramProfileInfo[];
+  /** Profile id inherited from the alert that started this request flow.
+   * Preserved across the "press button → type description → confirm" round
+   * trip so the eventual start-task command targets the correct profile/
+   * window — without this the user has to be in the originating window's
+   * profile when they confirm, which defeats the point of a global bot. */
+  profileId?: string;
   /** Command to resume after choosing a profile for an unbound connection */
   profileCommand?: {
     type: "status" | "workspaces" | "task" | "screenshot" | "prs" | "tunnel";
@@ -503,26 +535,6 @@ export class TelegramManager extends EventEmitter {
   configure(connections: TelegramConnectionConfig[]): void {
     this.connections = connections.filter((c) => c.enabled && c.botTokenRef && c.chatId);
     log.debug("telegram configured", { count: this.connections.length });
-    // In a multi-profile install an unbound connection (profileId="") is a
-    // footgun: forwardAlert maps it to "default", so the user expects
-    // alerts from every profile and only sees default's. Warn so the user
-    // (or settings UI surfaced via getSnapshot().connections[*].needsProfileBinding)
-    // knows to pick a profile explicitly.
-    const profiles = this.getProfiles?.() ?? [];
-    if (profiles.length > 1) {
-      for (const c of this.connections) {
-        if (!c.profileId) {
-          log.warn(
-            "telegram: connection has no profile binding in a multi-profile install — alerts will only route to 'default'",
-            {
-              connectionId: c.id,
-              label: c.label,
-              profileCount: profiles.length,
-            },
-          );
-        }
-      }
-    }
   }
 
   getSnapshot(): {
@@ -537,7 +549,6 @@ export class TelegramManager extends EventEmitter {
       needsProfileBinding?: boolean;
     }>;
   } {
-    const profileCount = (this.getProfiles?.() ?? []).length;
     return {
       connections: this.connections.map((c) => ({
         id: c.id,
@@ -551,10 +562,10 @@ export class TelegramManager extends EventEmitter {
         pollSeconds: c.pollSeconds,
         profileId: c.profileId || "",
         forwardKinds: Array.isArray(c.forwardKinds) ? [...c.forwardKinds] : [],
-        // True when the user has 2+ profiles but this connection isn't
-        // bound to any — surface as a "Pick a profile" warning in the
-        // settings tab. With one profile the silent default is harmless.
-        needsProfileBinding: profileCount > 1 && !c.profileId,
+        // Connections without an explicit profile binding behave as global
+        // (deliver from every profile). The old "needs binding" warning is
+        // no longer applicable; left as false for renderer back-compat.
+        needsProfileBinding: false,
       })),
     };
   }
@@ -860,19 +871,24 @@ export class TelegramManager extends EventEmitter {
     if (this.connections.length === 0) return;
 
     for (const conn of this.connections) {
-      // Profile isolation: when the alert carries a workspaceProfileId,
-      // only deliver to connections owned by the same profile. Legacy
-      // single-profile installs (workspaceProfileId="" and conn.profileId="")
-      // collapse to "default" === "default" and still match. The user with
-      // a per-profile Telegram bot in profiles A and B will only get alerts
-      // about workspaces they actually see in that profile.
-      if (payload.workspaceProfileId !== undefined) {
+      // Profile binding semantics:
+      //   conn.profileId empty / undefined  → global: deliver every alert.
+      //                                       (The common case: one bot,
+      //                                       user wants everything in it.)
+      //   conn.profileId set to an id       → strict: only alerts whose
+      //                                       workspace lives in the same
+      //                                       profile are delivered.
+      //
+      // Pre-2.2.15 an empty conn.profileId silently collapsed to "default",
+      // which made global delivery impossible. The text added to the alert
+      // body (Profile/Workspace/Panel) makes the origin obvious even when
+      // one bot is fed from multiple profiles.
+      if (conn.profileId && payload.workspaceProfileId !== undefined) {
         const alertProfile = payload.workspaceProfileId || "default";
-        const connProfile = conn.profileId || "default";
-        if (alertProfile !== connProfile) {
+        if (alertProfile !== conn.profileId) {
           log.trace("telegram alert filtered out by profile mismatch", {
             connectionId: conn.id,
-            connProfile,
+            connProfile: conn.profileId,
             alertProfile,
             kind: payload.kind,
           });
@@ -926,6 +942,11 @@ export class TelegramManager extends EventEmitter {
       workspaceName: payload.workspaceName,
       panelTitle: payload.panelTitle,
       title: payload.title,
+      // Preserve the alert's origin profile so callback handlers (auto-review,
+      // open PR, start-task) can route the follow-up command back to the
+      // correct desktop window — even when a global bot delivers alerts
+      // from profiles the user isn't currently looking at.
+      profileId: payload.workspaceProfileId,
     };
     const keyboard = this._buildKeyboard(payload);
 
@@ -984,11 +1005,17 @@ export class TelegramManager extends EventEmitter {
     const icon = this._kindIcon(payload.kind);
     const workspace = payload.workspaceName ? escapeMarkdown(payload.workspaceName) : "";
     const panel = payload.panelTitle ? escapeMarkdown(payload.panelTitle) : "";
+    const profile = payload.workspaceProfileName ? escapeMarkdown(payload.workspaceProfileName) : "";
     const title = escapeMarkdown(payload.title);
     const rawDetail = payload.detail ? this._humanizeDetail(payload.detail) : "";
 
+    // Context lines below the title. With one global bot serving multiple
+    // profiles, "Profile / Workspace / Panel" is the only way the user can
+    // tell at a glance which session the alert came from — and it makes the
+    // message useful as a standalone screenshot.
     const lines: string[] = [];
     lines.push(`${icon} *${title}*`);
+    if (profile) lines.push(`🧭 ${profile}`);
     if (workspace || panel) {
       const loc = [workspace, panel].filter(Boolean).join(" › ");
       lines.push(`📍 ${loc}`);
@@ -1018,6 +1045,9 @@ export class TelegramManager extends EventEmitter {
     if (payload.kind === "completed" || payload.kind === "waiting") {
       lines.push("");
       lines.push(`_Reply with a task description to start a new task, or press a button below\\._`);
+    } else if (payload.kind === "subagent_done") {
+      lines.push("");
+      lines.push(`_Sub\\-agent finished within the current turn\\._`);
     } else if (payload.kind === "review" || (payload.prKey && payload.provider)) {
       lines.push("");
       lines.push(
@@ -1045,6 +1075,14 @@ export class TelegramManager extends EventEmitter {
       ];
     }
 
+    if (kind === "subagent_done") {
+      // Subagents finish frequently during a complex turn — a verbose
+      // keyboard on every one of them would drown the chat. A single
+      // dismiss button keeps the UI clean while the full keyboard
+      // re-appears on the eventual Stop alert when the whole turn ends.
+      return [[{ text: "✓ Dismiss", callback_data: "d" }]];
+    }
+
     if ((kind === "review" || prKey) && provider) {
       return [
         [
@@ -1064,6 +1102,8 @@ export class TelegramManager extends EventEmitter {
         return "✅";
       case "waiting":
         return "⏳";
+      case "subagent_done":
+        return "🤖";
       case "review":
         return "🔍";
       case "pipeline":
@@ -1612,6 +1652,7 @@ export class TelegramManager extends EventEmitter {
           useWorktree: draft?.useWorktree || false,
           worktreeBranch: draft?.worktreeBranch,
           targetCwd: draft?.targetCwd,
+          profileId: pending.profileId,
         };
         const ws = this.getWorkspaces?.().find((w) => w.id === pending.workspaceId);
         const confirmText = this._buildStartTaskConfirmText(text, ws, draft);
@@ -2418,7 +2459,7 @@ export class TelegramManager extends EventEmitter {
         provider: ctx.provider,
         connectionId: ctx.connectionId,
         chatId,
-        profileId: reviewWs?.profileId || "default",
+        profileId: ctx.profileId || reviewWs?.profileId || "default",
       };
       log.info("telegram reply: review (asking confirm)", { chatId, prKey: ctx.prKey, provider: ctx.provider });
       // Require confirmation before opening PR review
@@ -2442,6 +2483,7 @@ export class TelegramManager extends EventEmitter {
         taskDescription: text,
         alertId: ctx.alertId,
         chatId,
+        profileId: ctx.profileId,
       };
       log.info("telegram reply: start-task (asking confirm)", {
         chatId,
@@ -2659,6 +2701,7 @@ export class TelegramManager extends EventEmitter {
         workspaceId: ctx.workspaceId,
         panelId: ctx.panelId,
         createdAt: Date.now(),
+        profileId: ctx.profileId,
       });
       log.info("telegram start-task button: awaiting description", {
         chatId,
@@ -2679,6 +2722,10 @@ export class TelegramManager extends EventEmitter {
         await this._answerText(token, chatId, query.message.message_id, "⚠️ Notification has no PR context\\.");
         return;
       }
+      // Prefer the alert's stored profileId (captured at forwardAlert time
+      // from payload.workspaceProfileId) — it's the source of truth for
+      // "where this notification came from". Fall back to re-deriving from
+      // the workspace for older alerts whose ctx predates profileId.
       const reviewWs = this.getWorkspaces?.().find((w) => w.id === ctx.workspaceId);
       const cmd: TelegramCommandEvent = {
         type: "open-pr-review",
@@ -2687,7 +2734,7 @@ export class TelegramManager extends EventEmitter {
         prKey: ctx.prKey,
         provider: ctx.provider,
         connectionId: ctx.connectionId,
-        profileId: reviewWs?.profileId || "default",
+        profileId: ctx.profileId || reviewWs?.profileId || "default",
       };
       log.info("telegram open-pr button: asking confirm", {
         chatId,
@@ -2714,6 +2761,12 @@ export class TelegramManager extends EventEmitter {
       const prTitle = ctx.title || ctx.prKey;
       const providerLabel = ctx.provider === "azure-devops" ? "Azure DevOps" : "GitHub";
       const reviewDesc = `Review PR "${prTitle}" (${providerLabel}): analyze the changed files for bugs, security issues, and code quality. Summarize findings and leave inline review comments.`;
+      // Inherit the alert's profileId so the auto-review task workspace
+      // opens in the same desktop window that owns the PR's profile —
+      // not in whichever window happens to be primary at the moment.
+      // Pre-2.2.15 auto-review silently landed in "default" because the
+      // command was emitted without profileId.
+      const reviewWs = this.getWorkspaces?.().find((w) => w.id === ctx.workspaceId);
       const cmd: TelegramCommandEvent = {
         type: "start-task",
         workspaceId: ctx.workspaceId,
@@ -2723,6 +2776,7 @@ export class TelegramManager extends EventEmitter {
         connectionId: ctx.connectionId,
         taskDescription: reviewDesc,
         chatId,
+        profileId: ctx.profileId || reviewWs?.profileId || undefined,
       };
       log.info("telegram auto-review button: asking confirm", {
         chatId,

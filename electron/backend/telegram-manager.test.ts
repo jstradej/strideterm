@@ -834,6 +834,58 @@ describe("_buildAlertText detail formatting", () => {
     expect(text).toContain("```");
     expect(text).toContain("\\`npm install\\`");
   });
+
+  test("includes profile / workspace / panel context lines so the screenshot is self-explanatory", () => {
+    // With one global bot serving many profiles, the alert text is the only
+    // way to tell at a glance "which profile / workspace / panel did this
+    // come from" — important when forwarding the screenshot to a colleague.
+    const cred = makeCredentialStore({});
+    const manager = new TelegramManager({ credentialStore: cred });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const text = (manager as any)._buildAlertText({
+      kind: "completed",
+      workspaceId: "ws-1",
+      panelId: "p-1",
+      title: "Task done",
+      workspaceProfileName: "MessageHub",
+      workspaceName: "strideterm",
+      panelTitle: "claude",
+    });
+    expect(text).toContain("MessageHub");
+    expect(text).toContain("strideterm");
+    expect(text).toContain("claude");
+    // Profile line is its own row (compass), not crammed into the location row.
+    expect(text.split("\n").some((line: string) => line.includes("🧭") && line.includes("MessageHub"))).toBe(true);
+  });
+
+  test("omits profile line when workspaceProfileName is missing (legacy callers)", () => {
+    const cred = makeCredentialStore({});
+    const manager = new TelegramManager({ credentialStore: cred });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const text = (manager as any)._buildAlertText({
+      kind: "completed",
+      workspaceId: "ws-1",
+      panelId: "p-1",
+      title: "Task done",
+      workspaceName: "strideterm",
+    });
+    expect(text).not.toContain("🧭");
+    expect(text).toContain("strideterm");
+  });
+
+  test("subagent_done renders with robot icon and minimal hint", () => {
+    const cred = makeCredentialStore({});
+    const manager = new TelegramManager({ credentialStore: cred });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const text = (manager as any)._buildAlertText({
+      kind: "subagent_done",
+      workspaceId: "ws-1",
+      panelId: "p-1",
+      title: "Subagent done",
+    });
+    expect(text).toMatch(/🤖.*Subagent done/);
+    expect(text).toContain("Sub\\-agent finished");
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -929,10 +981,50 @@ describe("forwardAlert", () => {
     expect(calledWith).toEqual(["tg-b"]);
   });
 
-  test("getSnapshot flags unbound connections as needsProfileBinding when 2+ profiles exist", () => {
-    // In a multi-profile install, an unbound connection silently routes
-    // alerts only to "default". The snapshot exposes a flag so settings
-    // can show a "Pick a profile" warning.
+  test("global connections (profileId empty) receive every alert regardless of workspaceProfileId", async () => {
+    // Post-2.2.15: empty profileId means "global" — the connection serves
+    // every profile in the install. This is the recommended default for
+    // single-bot users, who want one chat to surface alerts from every
+    // profile (the profile name now ships in the message body).
+    const cred = makeCredentialStore({ "cred:tg-global": "tok-g", "cred:tg-b": "tok-b" });
+    const manager = new TelegramManager({ credentialStore: cred });
+    manager.configure([
+      makeConnection({ id: "tg-global", botTokenRef: "cred:tg-global", forwardKinds: [], profileId: "" }),
+      makeConnection({ id: "tg-b", botTokenRef: "cred:tg-b", forwardKinds: [], profileId: "profile-b" }),
+    ]);
+
+    const calledWith: string[] = [];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (manager as any)._sendAlertToConnection = async (conn: TelegramConnectionConfig) => {
+      calledWith.push(conn.id);
+    };
+
+    await manager.forwardAlert({
+      workspaceId: "ws-a",
+      panelId: "p-1",
+      kind: "completed",
+      title: "Hello from default",
+      workspaceProfileId: "default",
+    });
+    await manager.forwardAlert({
+      workspaceId: "ws-b",
+      panelId: "p-2",
+      kind: "completed",
+      title: "Hello from profile-b",
+      workspaceProfileId: "profile-b",
+    });
+
+    // The global connection receives both. The profile-b-bound one only
+    // sees its own profile's alert.
+    expect(calledWith.filter((id) => id === "tg-global")).toHaveLength(2);
+    expect(calledWith.filter((id) => id === "tg-b")).toEqual(["tg-b"]);
+  });
+
+  test("getSnapshot reports needsProfileBinding=false in all cases (post-2.2.15 global default)", () => {
+    // Pre-2.2.15 a multi-profile install with an unbound connection raised
+    // a "Pick a profile" warning. Now empty profileId is an intentional
+    // configuration (global delivery), so the flag is always false. The
+    // field is left in the snapshot shape for renderer backwards compat.
     const cred = makeCredentialStore({ "cred:tg-1": "tok1", "cred:tg-2": "tok2" });
     const manager = new TelegramManager({ credentialStore: cred });
     manager.setProfilesGetter(() => [
@@ -945,20 +1037,9 @@ describe("forwardAlert", () => {
     ]);
 
     const snapshot = manager.getSnapshot();
-    const bound = snapshot.connections.find((c) => c.id === "tg-bound");
-    const unbound = snapshot.connections.find((c) => c.id === "tg-unbound");
-    expect(bound?.needsProfileBinding).toBe(false);
-    expect(unbound?.needsProfileBinding).toBe(true);
-  });
-
-  test("getSnapshot leaves needsProfileBinding=false for single-profile installs", () => {
-    const cred = makeCredentialStore({ "cred:tg-1": "tok1" });
-    const manager = new TelegramManager({ credentialStore: cred });
-    manager.setProfilesGetter(() => [{ id: "default", name: "Default" }]);
-    manager.configure([makeConnection({ id: "tg-unbound", botTokenRef: "cred:tg-1", profileId: "" })]);
-
-    const snapshot = manager.getSnapshot();
-    expect(snapshot.connections[0]?.needsProfileBinding).toBe(false);
+    for (const c of snapshot.connections) {
+      expect(c.needsProfileBinding).toBe(false);
+    }
   });
 
   test("legacy alerts with no workspaceProfileId fan out to every connection (backwards compat)", async () => {
@@ -3711,6 +3792,186 @@ describe("open-pr-review profile routing", () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const pending = (manager as any).pendingRequests.get("12345");
     expect(pending?.pendingCmd?.profileId).toBe("default");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Auto-review profile routing
+// Pre-2.2.15 auto-review silently dropped profileId, so the task workspace
+// always landed in "default" even when the PR originated elsewhere. The
+// stored ctx.profileId (captured at forwardAlert time) is now the source of
+// truth for routing the resulting start-task command.
+// ---------------------------------------------------------------------------
+
+describe("auto-review profile routing", () => {
+  test("'auto-review' button inherits profileId from the alert's stored ctx", async () => {
+    const cred = makeCredentialStore({ "cred:tg-1": "token123" });
+    const manager = new TelegramManager({ credentialStore: cred });
+    manager.configure([makeConnection()]);
+
+    manager.setWorkspacesGetter(() => [
+      makeWorkspace({ id: "ws-personal-inbox", name: "Personal inbox", profileId: "profile-personal" }),
+    ]);
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (manager as any)._apiCall = async () => ({ ok: true, result: { message_id: 600 } });
+
+    const conn = makeConnection();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (manager as any).contextByMessageId.set(120, {
+      context: {
+        alertId: "alert-ar-1",
+        workspaceId: "ws-personal-inbox",
+        panelId: "panel-1",
+        kind: "review",
+        prKey: "pr-99",
+        provider: "github",
+        connectionId: "gh-conn-1",
+        title: "Fix the auth bug",
+        profileId: "profile-personal",
+      },
+      connectionId: conn.id,
+      at: Date.now(),
+    });
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (manager as any)._handleCallbackQuery(
+      { id: "cq", from: { id: 1 }, message: { message_id: 120, chat: { id: 12345 }, text: "" }, data: "ar" },
+      conn,
+      "token123",
+    );
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const pending = (manager as any).pendingRequests.get("12345");
+    expect(pending?.type).toBe("confirm-action");
+    expect(pending?.pendingCmd?.type).toBe("start-task");
+    expect(pending?.pendingCmd?.profileId).toBe("profile-personal");
+    expect(pending?.pendingCmd?.prKey).toBe("pr-99");
+  });
+
+  test("'auto-review' falls back to workspace.profileId when ctx.profileId is missing (legacy alert)", async () => {
+    // Older alerts cached before 2.2.15 don't have ctx.profileId. We still
+    // want auto-review to route correctly, so the workspace's profile is
+    // the documented fallback.
+    const cred = makeCredentialStore({ "cred:tg-1": "token123" });
+    const manager = new TelegramManager({ credentialStore: cred });
+    manager.configure([makeConnection()]);
+
+    manager.setWorkspacesGetter(() => [
+      makeWorkspace({ id: "ws-work-inbox", name: "Work inbox", profileId: "profile-work" }),
+    ]);
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (manager as any)._apiCall = async () => ({ ok: true, result: { message_id: 601 } });
+
+    const conn = makeConnection();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (manager as any).contextByMessageId.set(121, {
+      context: {
+        alertId: "alert-ar-2",
+        workspaceId: "ws-work-inbox",
+        panelId: "panel-1",
+        kind: "review",
+        prKey: "pr-101",
+        provider: "azure-devops",
+        connectionId: "az-conn-1",
+        // No profileId — legacy ctx
+      },
+      connectionId: conn.id,
+      at: Date.now(),
+    });
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (manager as any)._handleCallbackQuery(
+      { id: "cq", from: { id: 1 }, message: { message_id: 121, chat: { id: 12345 }, text: "" }, data: "ar" },
+      conn,
+      "token123",
+    );
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const pending = (manager as any).pendingRequests.get("12345");
+    expect(pending?.pendingCmd?.profileId).toBe("profile-work");
+  });
+
+  test("forwardAlert stores workspaceProfileId in the context map so callbacks can read it back", async () => {
+    // The bridge between forwardAlert (writes ctx) and _handleCallbackQuery
+    // (reads ctx) is the contextByMessageId map. Pin the contract so a
+    // future refactor of either side can't silently drop profileId.
+    const cred = makeCredentialStore({ "cred:tg-1": "tok1" });
+    const manager = new TelegramManager({ credentialStore: cred });
+    manager.configure([makeConnection({ id: "tg-1", botTokenRef: "cred:tg-1", profileId: "" })]);
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (manager as any)._sendMessage = async () => ({ ok: true, result: { message_id: 999 } });
+
+    await manager.forwardAlert({
+      workspaceId: "ws-q",
+      panelId: "p-1",
+      kind: "review",
+      title: "PR Review: foo",
+      prKey: "pr-1",
+      provider: "github",
+      workspaceProfileId: "profile-team",
+    });
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const entry = (manager as any).contextByMessageId.get(999);
+    expect(entry?.context?.profileId).toBe("profile-team");
+  });
+
+  test("'new task' button (s) stores pending task-description with profileId from ctx", async () => {
+    // The "🚀 New Task" button on a completed-alert opens a description
+    // dialog. The pending request must remember the originating profile so
+    // the eventual start-task command routes the right window — otherwise
+    // the global bot's "reply with description" round-trip would drop it.
+    const cred = makeCredentialStore({ "cred:tg-1": "token123" });
+    const manager = new TelegramManager({ credentialStore: cred });
+    manager.configure([makeConnection()]);
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (manager as any)._apiCall = async () => ({ ok: true, result: { message_id: 700 } });
+
+    const conn = makeConnection();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (manager as any).contextByMessageId.set(150, {
+      context: {
+        alertId: "alert-completed",
+        workspaceId: "ws-build",
+        panelId: "panel-1",
+        kind: "completed",
+        profileId: "profile-team",
+      },
+      connectionId: conn.id,
+      at: Date.now(),
+    });
+
+    // Click "🚀 New Task"
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (manager as any)._handleCallbackQuery(
+      { id: "cq", from: { id: 1 }, message: { message_id: 150, chat: { id: 12345 }, text: "" }, data: "s" },
+      conn,
+      "token123",
+    );
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const pending = (manager as any).pendingRequests.get("12345");
+    expect(pending?.type).toBe("task-description");
+    expect(pending?.profileId).toBe("profile-team");
+
+    // Now type the description — that should produce a confirm-action whose
+    // pendingCmd carries profileId all the way through.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (manager as any)._handleMessage(
+      { message_id: 151, chat: { id: 12345 }, text: "rebuild docs" },
+      conn,
+      "token123",
+    );
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const confirm = (manager as any).pendingRequests.get("12345");
+    expect(confirm?.type).toBe("confirm-action");
+    expect(confirm?.pendingCmd?.profileId).toBe("profile-team");
+    expect(confirm?.pendingCmd?.taskDescription).toBe("rebuild docs");
   });
 });
 
