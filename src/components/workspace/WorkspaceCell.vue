@@ -51,18 +51,12 @@
       <TabStrip :workspace-id="workspaceId" compact />
     </WorkspaceCellHeader>
 
-    <!-- Active pane content. TerminalPane handles session swaps internally
-         via a watch on its sessionId prop — keying it on activeViewId here
-         caused the workspace-stage to briefly lose its 1fr height during
-         the unmount/remount cycle, which collapsed the surrounding grid
-         cells. The dynamic <component> is keyed only by `activeViewType`
-         so it remounts when the user crosses a real component boundary
-         (e.g. terminal → dashboard) but stays put when activeViewId
-         changes within the same component (which Vue prop-reactivity
-         already handles). -->
+    <!-- Active pane content. The container owns the stable 1fr sizing; terminal
+         sessions get a keyed component so Vue runs a normal unmount/mount when
+         the cell switches tabs instead of rebinding xterm mid-update. -->
     <div class="workspace-cell__pane">
       <template v-if="activeViewType === 'terminal' && activeViewId">
-        <TerminalPane :session-id="activeViewId" />
+        <TerminalPane :key="activeViewId" :session-id="activeViewId" />
       </template>
       <template v-else-if="paneComponent">
         <!-- :compact tells panes (TaskDashboardPane today, others later) to

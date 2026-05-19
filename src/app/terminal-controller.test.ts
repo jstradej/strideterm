@@ -15,10 +15,17 @@ vi.mock("@xterm/xterm", () => ({
     paste = vi.fn();
     open = vi.fn();
     focus = vi.fn();
+    resize = vi.fn((cols: number, rows: number) => {
+      this.cols = cols;
+      this.rows = rows;
+    });
     write = vi.fn();
     writeln = vi.fn();
+    refresh = vi.fn();
+    clearTextureAtlas = vi.fn();
     scrollLines = vi.fn();
     onData = vi.fn(() => ({ dispose: vi.fn() }));
+    dispose = vi.fn();
     buffer = { active: { type: "normal", viewportY: 0, baseY: 0, length: 0 } };
     options = { fontSize: 13, lineHeight: 1 };
     cols = 80;
@@ -82,7 +89,9 @@ function buildController({ getOverlay }: { getOverlay: () => unknown }) {
 }
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.restoreAllMocks();
+  document.body.innerHTML = "";
 });
 
 describe("createTerminalController", () => {
@@ -106,7 +115,6 @@ describe("createTerminalController", () => {
 
 function buildTouchController() {
   const views = { value: new Map() };
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const controller = createTerminalController({
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     views: views as any,
@@ -118,14 +126,32 @@ function buildTouchController() {
     // isRemote: true skips WebGL, link provider, and openTerminalPath registration.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     api: { writeTerminal: vi.fn(), isRemote: true } as any,
-    appConfig: {},
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    appConfig: {} as any,
     openTerminalLink: vi.fn(),
     getWindowsPtyOptions: vi.fn(() => null),
     shortcutTabDirection: () => 0,
     downloadTextFile: vi.fn(),
-    safeFilenamePart: (value: string) => value,
+    safeFilenamePart: (value: unknown) => String(value),
   });
   return { controller, views };
+}
+
+function touchPoint(target: EventTarget, clientX: number, clientY: number): Touch {
+  return {
+    identifier: 1,
+    target,
+    clientX,
+    clientY,
+    pageX: clientX,
+    pageY: clientY,
+    screenX: clientX,
+    screenY: clientY,
+    radiusX: 1,
+    radiusY: 1,
+    rotationAngle: 0,
+    force: 0,
+  } as Touch;
 }
 
 describe("touch tap-to-focus", () => {
@@ -141,15 +167,15 @@ describe("touch tap-to-focus", () => {
       new TouchEvent("touchstart", {
         bubbles: true,
         cancelable: true,
-        touches: [{ identifier: 1, target: mount, clientX: 100, clientY: 200 }],
-        changedTouches: [{ identifier: 1, target: mount, clientX: 100, clientY: 200 }],
+        touches: [touchPoint(mount, 100, 200)],
+        changedTouches: [touchPoint(mount, 100, 200)],
       }),
     );
     mount.dispatchEvent(
       new TouchEvent("touchend", {
         bubbles: true,
         touches: [],
-        changedTouches: [{ identifier: 1, target: mount, clientX: 104, clientY: 203 }],
+        changedTouches: [touchPoint(mount, 104, 203)],
       }),
     );
 
@@ -168,18 +194,186 @@ describe("touch tap-to-focus", () => {
       new TouchEvent("touchstart", {
         bubbles: true,
         cancelable: true,
-        touches: [{ identifier: 1, target: mount, clientX: 100, clientY: 200 }],
-        changedTouches: [{ identifier: 1, target: mount, clientX: 100, clientY: 200 }],
+        touches: [touchPoint(mount, 100, 200)],
+        changedTouches: [touchPoint(mount, 100, 200)],
       }),
     );
     mount.dispatchEvent(
       new TouchEvent("touchend", {
         bubbles: true,
         touches: [],
-        changedTouches: [{ identifier: 1, target: mount, clientX: 100, clientY: 260 }],
+        changedTouches: [touchPoint(mount, 100, 260)],
       }),
     );
 
     expect(term.focus).not.toHaveBeenCalled();
+  });
+});
+
+function buildAttachController(apiOverrides: Record<string, unknown> = {}) {
+  const views = { value: new Map() };
+  const buffers = { value: new Map() };
+  const api = {
+    resizeTerminal: vi.fn(),
+    writeTerminal: vi.fn(),
+    isRemote: true,
+    ...apiOverrides,
+  };
+  const controller = createTerminalController({
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    views: views as any,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    buffers: buffers as any,
+    getActiveSessionId: () => null,
+    getOverlay: () => null,
+    getPayload: () => null,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    api: api as any,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    appConfig: {} as any,
+    openTerminalLink: vi.fn(),
+    getWindowsPtyOptions: vi.fn(() => null),
+    shortcutTabDirection: () => 0,
+    downloadTextFile: vi.fn(),
+    safeFilenamePart: (value: unknown) => String(value),
+  });
+  return { controller, views, buffers, api };
+}
+
+function installFakeResizeObserver() {
+  const instances: Array<{
+    observe: ReturnType<typeof vi.fn>;
+    disconnect: ReturnType<typeof vi.fn>;
+    trigger: (_width: number, _height: number) => void;
+  }> = [];
+  class FakeResizeObserver {
+    observe = vi.fn();
+    disconnect = vi.fn();
+    constructor(private readonly _callback: ResizeObserverCallback) {
+      instances.push({
+        observe: this.observe,
+        disconnect: this.disconnect,
+        trigger: (width: number, height: number) => {
+          this._callback(
+            [{ contentRect: { width, height } as DOMRectReadOnly } as ResizeObserverEntry],
+            this as unknown as ResizeObserver,
+          );
+        },
+      });
+    }
+  }
+  const previous = globalThis.ResizeObserver;
+  globalThis.ResizeObserver = FakeResizeObserver as unknown as typeof ResizeObserver;
+  return {
+    instances,
+    restore() {
+      if (previous) {
+        globalThis.ResizeObserver = previous;
+      } else {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        delete (globalThis as any).ResizeObserver;
+      }
+    },
+  };
+}
+
+describe("terminal pane reattach", () => {
+  test("removes the previous terminal host when the pane rebinds to another session", () => {
+    const resizeObserver = installFakeResizeObserver();
+    try {
+      const { controller, views } = buildAttachController();
+      const paneBody = document.createElement("div");
+      document.body.append(paneBody);
+
+      controller.attachTerminalPane("workspace-1:shell-1", paneBody);
+      const firstObserver = resizeObserver.instances.at(-1)!;
+      controller.attachTerminalPane("workspace-1:shell-2", paneBody);
+
+      const hosts = paneBody.querySelectorAll(".terminal-host");
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const firstView = (views.value as any).get("workspace-1:shell-1")!;
+      expect(hosts).toHaveLength(1);
+      expect((hosts[0] as HTMLElement).dataset.sessionId).toBe("workspace-1:shell-2");
+      expect(firstView.mount.isConnected).toBe(false);
+      expect(firstObserver.disconnect).toHaveBeenCalledTimes(1);
+    } finally {
+      resizeObserver.restore();
+    }
+  });
+
+  test("detaches a terminal host without disposing the terminal view", () => {
+    const resizeObserver = installFakeResizeObserver();
+    try {
+      const { controller, views } = buildAttachController();
+      const sessionId = "workspace-1:shell-1";
+      const paneBody = document.createElement("div");
+      document.body.append(paneBody);
+
+      controller.attachTerminalPane(sessionId, paneBody);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const view = (views.value as any).get(sessionId)!;
+      const observer = resizeObserver.instances.at(-1)!;
+
+      controller.detachTerminalPane(sessionId, paneBody);
+
+      expect(view.mount.isConnected).toBe(false);
+      expect(observer.disconnect).toHaveBeenCalledTimes(1);
+      expect(view.resizeObserver).toBeNull();
+      expect(view.term.dispose).not.toHaveBeenCalled();
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      expect((views.value as any).has(sessionId)).toBe(true);
+    } finally {
+      resizeObserver.restore();
+    }
+  });
+
+  test("loads backend replay on first attach when no live terminal data was received", async () => {
+    const resizeObserver = installFakeResizeObserver();
+    try {
+      const getTerminalReplay = vi.fn().mockResolvedValue({ data: "boot prompt\r\n" });
+      const { controller, views } = buildAttachController({ getTerminalReplay });
+      const sessionId = "workspace-1:shell-1";
+      const paneBody = document.createElement("div");
+      document.body.append(paneBody);
+
+      controller.attachTerminalPane(sessionId, paneBody);
+      await Promise.resolve();
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const view = (views.value as any).get(sessionId)!;
+      expect(getTerminalReplay).toHaveBeenCalledWith(sessionId);
+      expect(view.term.write).toHaveBeenCalledWith("boot prompt\r\n");
+    } finally {
+      resizeObserver.restore();
+    }
+  });
+
+  test("skips backend replay if live terminal data arrives before replay resolves", async () => {
+    const resizeObserver = installFakeResizeObserver();
+    try {
+      let resolveReplay: (value: { data: string }) => void = () => {};
+      const getTerminalReplay = vi.fn(
+        () =>
+          new Promise<{ data: string }>((resolve) => {
+            resolveReplay = resolve;
+          }),
+      );
+      const { controller, views } = buildAttachController({ getTerminalReplay });
+      const sessionId = "workspace-1:shell-1";
+      const paneBody = document.createElement("div");
+      document.body.append(paneBody);
+
+      controller.attachTerminalPane(sessionId, paneBody);
+      controller.handleTerminalData({ sessionId, data: "live\r\n" });
+      resolveReplay({ data: "replay\r\n" });
+      await Promise.resolve();
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const view = (views.value as any).get(sessionId)!;
+      expect(view.term.write).toHaveBeenCalledTimes(1);
+      expect(view.term.write).toHaveBeenCalledWith("live\r\n");
+    } finally {
+      resizeObserver.restore();
+    }
   });
 });

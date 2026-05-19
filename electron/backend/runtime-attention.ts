@@ -29,7 +29,7 @@ interface AttentionContext {
 }
 
 interface SessionsManager {
-  ensureSession(state: AppState, sessionId: string): void;
+  ensureSession(state: AppState, sessionId: string): Promise<unknown>;
   resolveDefaultSessionId(state: AppState, workspaceId: string): string | null;
 }
 
@@ -78,6 +78,11 @@ interface CreateRuntimeAttentionManagerOptions {
   attentionContext: AttentionContext;
   broadcastState: () => void;
   isKnownPluginProject: (project: WorkspaceState) => boolean;
+  // Task workspaces flagged as recovery candidates must NOT auto-spawn their
+  // worker/judge PTYs — the user picks resume/skip from the recovery dialog
+  // and the runner handles the spawn itself. Returns an empty set when no
+  // candidates are pending (the common case).
+  getRecoveryCandidateIds?: () => Set<string>;
 }
 
 export function createRuntimeAttentionManager({
@@ -96,6 +101,7 @@ export function createRuntimeAttentionManager({
   attentionContext,
   broadcastState,
   isKnownPluginProject,
+  getRecoveryCandidateIds,
 }: CreateRuntimeAttentionManagerOptions) {
   const projectAlerts = new Map<string, ProjectAlertBucket>();
   const sessionSignals = new Map<string, SessionSignal>();
@@ -366,9 +372,24 @@ export function createRuntimeAttentionManager({
     const state = getState();
     const workspace = state.workspaces.find((item) => item.id === workspaceId);
     if (!workspace || workspace.kind === "azure") return null;
+    const recoveryIds = getRecoveryCandidateIds?.() || new Set<string>();
+    if (recoveryIds.has(workspace.id)) {
+      // Task workspace pending recovery: the dialog owns the spawn decision.
+      return sessions.resolveDefaultSessionId(state, workspaceId);
+    }
     for (const panel of workspace.panels) {
       if (panel.startup === APP_CONFIG.ui.defaultPanelStartup && !/^https?:\/\//i.test(panel.command || "")) {
-        sessions.ensureSession(state, `${workspace.id}:${panel.id}`);
+        const sessionId = `${workspace.id}:${panel.id}`;
+        // ensureSession is fire-and-forget here. If it rejects synchronously
+        // wrapped in an async, the unhandled rejection vanishes — and the
+        // user sees "0 running" with no clue why. Surface it at error level
+        // so it shows up even on a "error"-only log level.
+        sessions.ensureSession(state, sessionId).catch((err: unknown) => {
+          log.error("ensureVisibleSession: ensureSession failed", {
+            sessionId,
+            err: (err as Error)?.message || String(err),
+          });
+        });
       }
     }
     return sessions.resolveDefaultSessionId(state, workspaceId);

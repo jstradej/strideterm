@@ -129,11 +129,18 @@ describe("SessionManager", () => {
   });
 
   test("uses session launch overrides for review-aware agent sessions", () => {
+    // Use os.tmpdir() so the cwd actually exists on disk — SessionManager
+    // now validates cwd before pty.spawn and falls back to $HOME when the
+    // directory is missing, which would otherwise mask the override here.
+    const reviewCwd = (() => {
+      const os = require("node:os") as typeof import("node:os");
+      return os.tmpdir();
+    })();
     const manager = new SessionManager({
       getSessionLaunch: () => ({
         file: "claude",
         args: ["--mcp-config", '{"mcpServers":{}}'],
-        cwd: "/tmp/review-worktree",
+        cwd: reviewCwd,
         env: {
           STRIDETERM_REVIEW_MCP: "1",
         },
@@ -146,8 +153,27 @@ describe("SessionManager", () => {
     expect(spawnCalls).toHaveLength(1);
     expect(spawnCalls[0].file).toBe("claude");
     expect(spawnCalls[0].args).toEqual(["--mcp-config", '{"mcpServers":{}}']);
-    expect(spawnCalls[0].options.cwd).toBe("/tmp/review-worktree");
+    expect(spawnCalls[0].options.cwd).toBe(reviewCwd);
     expect((spawnCalls[0].options.env as Record<string, string>).STRIDETERM_REVIEW_MCP).toBe("1");
+  });
+
+  test("falls back to $HOME when workspace cwd is missing on disk", async () => {
+    const os = require("node:os") as typeof import("node:os");
+    const manager = new SessionManager();
+    const dataEvents: Array<{ sessionId: string; data: string }> = [];
+    manager.on("terminal:data", (payload) => dataEvents.push(payload));
+
+    // createState's cwd /home/user/workspace doesn't exist on the CI box —
+    // SessionManager should swap it for os.homedir() and emit a banner so the
+    // user knows their shell didn't open where they expected.
+    manager.ensureSession(createState() as Parameters<typeof manager.ensureSession>[0], "workspace-a:shell");
+
+    expect(spawnCalls).toHaveLength(1);
+    expect(spawnCalls[0].options.cwd).toBe(os.homedir());
+    // The warning banner is emitted via setTimeout — give it a tick to fire.
+    await new Promise((r) => setTimeout(r, 250));
+    const banner = dataEvents.find((e) => e.data.includes("does not exist"));
+    expect(banner?.data).toContain("/home/user/workspace");
   });
 
   test("ignores resize errors after a pty has already exited", () => {

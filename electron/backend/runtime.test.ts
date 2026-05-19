@@ -775,6 +775,19 @@ describe("runtime integration", () => {
     expect(fixture.runtime.getPayload().environment).toMatchObject(detectTerminalEnvironment());
   });
 
+  test("keeps a bounded terminal replay tail for renderer startup attach", async () => {
+    const fixture = await createFixture();
+    fixtures.push(fixture);
+
+    fixture.sessionManager.emit("terminal:data", { sessionId: "backend:shell", data: "hello " });
+    fixture.sessionManager.emit("terminal:data", { sessionId: "backend:shell", data: "prompt\r\n" });
+
+    expect(fixture.runtime.getTerminalReplay("backend:shell")).toEqual({ data: "hello prompt\r\n" });
+
+    await fixture.runtime.restartSession("backend:shell");
+    expect(fixture.runtime.getTerminalReplay("backend:shell")).toEqual({ data: "" });
+  });
+
   test("closes the review bridge store on shutdown", async () => {
     const fixture = await createFixture();
     await fixture.runtime.stop();
@@ -3718,6 +3731,123 @@ describe("runtime integration", () => {
     expect(payload.appState.windowSlots?.find((s) => s.id === "win-1")?.profileId).toBe("profile-b");
     expect(payload.appState.windowSlots?.find((s) => s.id === "win-1")?.activeWorkspaceId).toBe("ws-b1");
     expect(payload.appState.activeWorkspaceId).toBe("ws-b1");
+  });
+
+  test("activateProfileInWindow spawns PTYs for the new active workspace's default-startup panels", async () => {
+    // After profile switch the window shows the new profile's first workspace.
+    // Its default-startup panels must already be running by the time the IPC
+    // call returns — otherwise the renderer paints empty panes with "0 running"
+    // while it waits for the user to interact with each tab.
+    const fixture = await createFixture({
+      initialState: {
+        activeProfileId: "profile-a",
+        activeWorkspaceId: "ws-a1",
+        profiles: [
+          { id: "profile-a", name: "A", color: "#fff", workspaceIds: [], workspaceGrid: null },
+          { id: "profile-b", name: "B", color: "#fff", workspaceIds: [], workspaceGrid: null },
+        ],
+        workspaces: [
+          {
+            id: "ws-a1",
+            name: "A1",
+            kind: "terminal",
+            cwd: "/tmp/a1",
+            profileId: "profile-a",
+            panels: [{ id: "p-a1", title: "Shell", command: "", shell: true, startup: "default" }],
+            activePanelId: "p-a1",
+          },
+          {
+            id: "ws-b1",
+            name: "B1",
+            kind: "terminal",
+            cwd: "/tmp/b1",
+            profileId: "profile-b",
+            panels: [
+              { id: "p-b1-shell", title: "Shell", command: "", shell: true, startup: "default" },
+              { id: "p-b1-claude", title: "Claude", command: "claude", shell: true, startup: "default" },
+            ],
+            activePanelId: "p-b1-shell",
+          },
+        ],
+        windowSlots: [
+          {
+            id: "win-1",
+            profileId: "profile-a",
+            activeWorkspaceId: "ws-a1",
+            activeSessionId: "",
+            bounds: { x: 0, y: 0, width: 1280, height: 800 },
+            lastFocusedAt: Date.now(),
+          },
+        ],
+      },
+    });
+    fixtures.push(fixture);
+
+    const payload = await fixture.runtime.activateProfileInWindow("profile-b", "win-1");
+
+    expect(payload.appState.activeWorkspaceId).toBe("ws-b1");
+    expect(fixture.sessionManager.sessions.get("ws-b1:p-b1-shell")?.status).toBe("running");
+    expect(fixture.sessionManager.sessions.get("ws-b1:p-b1-claude")?.status).toBe("running");
+    const wsSessions = payload.workspace?.sessions || [];
+    const running = wsSessions.filter((s: { status: string }) => s.status === "running");
+    expect(running).toHaveLength(2);
+  });
+
+  test("createWindowSlot spawns PTYs for the new window's first workspace", async () => {
+    // Opening a new window for another profile from the sidebar lands the
+    // user on that profile's first workspace. Without spawning here the
+    // window paints empty panes with "0 running" until the user clicks away
+    // and back — the per-window flow has no other trigger that calls
+    // ensureSession on the freshly chosen active workspace.
+    const fixture = await createFixture({
+      initialState: {
+        activeProfileId: "profile-a",
+        activeWorkspaceId: "ws-a1",
+        profiles: [
+          { id: "profile-a", name: "A", color: "#fff", workspaceIds: [], workspaceGrid: null },
+          { id: "profile-b", name: "B", color: "#fff", workspaceIds: [], workspaceGrid: null },
+        ],
+        workspaces: [
+          {
+            id: "ws-a1",
+            name: "A1",
+            kind: "terminal",
+            cwd: "/tmp/a1",
+            profileId: "profile-a",
+            panels: [{ id: "p-a1", title: "Shell", command: "", shell: true, startup: "default" }],
+            activePanelId: "p-a1",
+          },
+          {
+            id: "ws-b1",
+            name: "B1",
+            kind: "terminal",
+            cwd: "/tmp/b1",
+            profileId: "profile-b",
+            panels: [
+              { id: "p-b1-shell", title: "Shell", command: "", shell: true, startup: "default" },
+              { id: "p-b1-claude", title: "Claude", command: "claude", shell: true, startup: "default" },
+            ],
+            activePanelId: "p-b1-shell",
+          },
+        ],
+        windowSlots: [
+          {
+            id: "win-1",
+            profileId: "profile-a",
+            activeWorkspaceId: "ws-a1",
+            activeSessionId: "",
+            bounds: { x: 0, y: 0, width: 1280, height: 800 },
+            lastFocusedAt: Date.now(),
+          },
+        ],
+      },
+    });
+    fixtures.push(fixture);
+
+    await fixture.runtime.createWindowSlot("profile-b");
+
+    expect(fixture.sessionManager.sessions.get("ws-b1:p-b1-shell")?.status).toBe("running");
+    expect(fixture.sessionManager.sessions.get("ws-b1:p-b1-claude")?.status).toBe("running");
   });
 
   test("activateWorkspaceInWindow on cross-profile target does not revert activeWorkspaceId", async () => {

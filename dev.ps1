@@ -129,6 +129,47 @@ function Start-ElectronProcess {
         -PassThru -NoNewWindow
 }
 
+function Get-LatestDistElectronWriteUtc {
+    $watchPath = Join-Path $PSScriptRoot 'dist-electron'
+    if (-not (Test-Path $watchPath)) {
+        return [DateTime]::MinValue
+    }
+    $latest = [DateTime]::MinValue
+    Get-ChildItem -Path $watchPath -Recurse -File -Include '*.js','*.cjs' -ErrorAction SilentlyContinue | ForEach-Object {
+        if ($_.LastWriteTimeUtc -gt $latest) {
+            $latest = $_.LastWriteTimeUtc
+        }
+    }
+    return $latest
+}
+
+function Wait-DistElectronQuiet([int]$QuietMs = 2500, [int]$TimeoutSeconds = 45) {
+    $watchPath = Join-Path $PSScriptRoot 'dist-electron'
+    if (-not (Test-Path $watchPath)) {
+        return
+    }
+
+    Write-Step "Waiting for dist-electron watcher emit to settle (${QuietMs}ms quiet window)..."
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    $latest = Get-LatestDistElectronWriteUtc
+    $quietSince = Get-Date
+    while ((Get-Date) -lt $deadline) {
+        Start-Sleep -Milliseconds 250
+        $nextLatest = Get-LatestDistElectronWriteUtc
+        if ($nextLatest -gt $latest) {
+            $latest = $nextLatest
+            $quietSince = Get-Date
+            continue
+        }
+        if (((Get-Date) - $quietSince).TotalMilliseconds -ge $QuietMs) {
+            Write-Ok 'dist-electron is quiet; starting Electron against a coherent backend build.'
+            return
+        }
+    }
+
+    Write-Warn "Timed out waiting for dist-electron to settle after ${TimeoutSeconds}s; starting Electron anyway."
+}
+
 function Restart-Electron {
     if (-not $script:electronProc) { return }
     Write-Step 'Backend rebuilt — restarting Electron...'
@@ -446,6 +487,15 @@ else {
 }
 
 # --- Step 5: Start Electron -----------------------------------------------
+
+# `tsc --watch` does an initial emit even after the one-shot compile above.
+# If Electron starts while that emit is rewriting dist-electron, Node's ESM
+# loader can observe a mixed module graph (for example provider-registry.js
+# fresh while copilot-provider.js is still the previous content) and crash with
+# a missing named export. Wait for the watcher writes to go quiet before the
+# first Electron boot; the later FileSystemWatcher debounce handles rebuilds
+# after Electron is already running.
+Wait-DistElectronQuiet
 
 Write-Step 'Starting Electron...'
 $script:electronProc = Start-ElectronProcess

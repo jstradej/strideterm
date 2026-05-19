@@ -86,6 +86,7 @@ export const APP_CONFIG = {
     defaultRows: envNumber("STRIDETERM_TERM_ROWS", 34),
     minCols: envNumber("STRIDETERM_TERM_MIN_COLS", 20),
     minRows: envNumber("STRIDETERM_TERM_MIN_ROWS", 8),
+    replayMaxChars: envNumber("STRIDETERM_TERM_REPLAY_MAX_CHARS", 200_000),
     shellLaunchDelayMs: envNumber("STRIDETERM_SHELL_LAUNCH_DELAY_MS", 50),
     windowsShellFile: envString("STRIDETERM_WINDOWS_SHELL", "pwsh.exe"),
     windowsShellArgs: Object.freeze(["-NoLogo"] as const),

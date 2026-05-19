@@ -401,12 +401,29 @@ function onPaneAction(
   }
 }
 
-// Prune terminal views when tabs change (remove orphaned terminal instances)
+function liveTerminalSessionIds(): Set<string> {
+  const payload = store.payload as any; // eslint-disable-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: server state blob
+  const activeProfileId = store.myActiveProfileId || "default";
+  const ids = new Set<string>();
+  const workspaces = (payload?.appState?.workspaces || []) as any[]; // eslint-disable-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT
+  for (const workspace of workspaces) {
+    if ((workspace.profileId || "default") !== activeProfileId) continue;
+    for (const panel of workspace.panels || []) {
+      const command = String(panel.command || "");
+      if (/^https?:\/\//i.test(command) || command === "__files__" || command === "__task-dashboard__") continue;
+      ids.add(`${workspace.id}:${panel.id}`);
+    }
+  }
+  return ids;
+}
+
+// Prune terminal views only when sessions disappear from the active profile.
+// Workspace switches must keep xterm buffers alive; PTYs do not replay old
+// output when the renderer recreates a disposed terminal view.
 watch(
-  () => store.workspaceTabs,
-  (tabs) => {
-    const validSessionIds = new Set(tabs.filter((t) => t.type === "terminal").map((t) => t.id));
-    termStore.pruneTerminalViews(validSessionIds);
+  () => [store.payload?.appState?.workspaces, store.myActiveProfileId],
+  () => {
+    termStore.pruneTerminalViews(liveTerminalSessionIds());
   },
 );
 

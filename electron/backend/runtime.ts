@@ -658,6 +658,29 @@ export async function createRuntime({
   let dockerPoll: ReturnType<typeof setInterval> | null = null;
   let gitPoll: ReturnType<typeof setInterval> | null = null;
   const attentionContext = createAttentionContext();
+  const terminalReplayBuffers = new Map<string, string>();
+  const terminalReplayMaxChars = Math.max(0, APP_CONFIG.session.replayMaxChars || 0);
+
+  function appendTerminalReplay(sessionId: string, data: string): void {
+    if (!terminalReplayMaxChars || !sessionId || !data) return;
+    const next = `${terminalReplayBuffers.get(sessionId) || ""}${data}`;
+    terminalReplayBuffers.set(
+      sessionId,
+      next.length > terminalReplayMaxChars ? next.slice(next.length - terminalReplayMaxChars) : next,
+    );
+  }
+
+  function clearTerminalReplay(sessionId: string): void {
+    terminalReplayBuffers.delete(sessionId);
+  }
+
+  function clearWorkspaceTerminalReplay(workspaceId: string): void {
+    for (const sessionId of terminalReplayBuffers.keys()) {
+      if (sessionId.startsWith(`${workspaceId}:`)) {
+        terminalReplayBuffers.delete(sessionId);
+      }
+    }
+  }
 
   // --- Claude CLI availability (persisted; only re-checked when not yet found) ---
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -1451,6 +1474,7 @@ export async function createRuntime({
     attentionContext,
     broadcastState,
     isKnownPluginProject,
+    getRecoveryCandidateIds: () => new Set(_recoveryCandidates.map((c) => c.workspaceId)),
   });
 
   /**
@@ -2417,6 +2441,7 @@ export async function createRuntime({
       });
     },
     async restartSession(sessionId) {
+      clearTerminalReplay(String(sessionId || ""));
       await sessions.restartSession(getState(), sessionId);
       resetSessionSignal(sessionId);
     },
@@ -2713,6 +2738,7 @@ export async function createRuntime({
     const panel = (project as any)?.panels?.find((item: any) => item.id === descriptor?.panelId) || null;
     const rawText = String(payload.data || "");
     const cleanText = rawText ? stripAnsi(rawText) : "";
+    appendTerminalReplay(String(payload.sessionId || ""), rawText);
 
     // Rate-limit detection runs for ANY agent in ANY tab — Docker shells,
     // plugin panels, plain terminals, task workers. Hitting a provider limit
@@ -3242,6 +3268,7 @@ export async function createRuntime({
     }
     clearActivityFade(payload.sessionId);
     deleteSessionSignal(payload.sessionId);
+    clearTerminalReplay(payload.sessionId);
     lastRateLimitAlertAt.delete(payload.sessionId);
     clearRateLimitSuspicion(payload.sessionId);
     events.emit("terminal:exit", payload);
@@ -3553,6 +3580,7 @@ export async function createRuntime({
         }
       }
       sessions.removeWorkspaceSessions(ws.id);
+      clearWorkspaceTerminalReplay(ws.id);
       clearProjectAlerts(ws.id);
     }
     log.info("pruneOrphanedWorkspaces removed orphans", {
@@ -3676,6 +3704,9 @@ export async function createRuntime({
         draft.workspaces.push(workspace);
       }
     });
+    for (const workspaceId of toRemove) {
+      clearWorkspaceTerminalReplay(workspaceId);
+    }
 
     return true;
   }
@@ -3855,16 +3886,20 @@ export async function createRuntime({
   if (deferInitialRefresh) {
     scheduleAzurePolling();
     scheduleGitHubPolling();
+    // Spawn PTYs for the active workspace BEFORE the slow refreshes so the
+    // first paint doesn't sit at "0 running" while Docker/Git/Azure/GitHub
+    // refresh — and so a hang in one of those refreshes doesn't strand
+    // the user with empty panes for the whole session.
+    ensureVisibleSession();
+    broadcastState();
     runInitialRefresh()
-      .then(() => {
-        ensureVisibleSession();
-        broadcastState();
-      })
+      .then(() => broadcastState())
       .catch((error) => {
         log.warn("initial refresh error", { err: error.message });
         broadcastState();
       });
   } else {
+    ensureVisibleSession();
     await runInitialRefresh();
   }
 
@@ -4024,6 +4059,9 @@ export async function createRuntime({
     getRemoteInfo() {
       return remoteInfo;
     },
+    getTerminalReplay(sessionId: string) {
+      return { data: terminalReplayBuffers.get(String(sessionId || "")) || "" };
+    },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     setRemoteInfo(nextRemoteInfo: any) {
       remoteInfo = nextRemoteInfo;
@@ -4118,12 +4156,16 @@ export async function createRuntime({
     },
     async getInitialState() {
       try {
+        // Spawn PTYs first so the renderer can paint live terminals while the
+        // heavier refreshes (docker, git, worktrees) run. Without this, the
+        // panes sit empty for the seconds it takes those refreshes to finish
+        // — or forever if one of them hangs (network, broken git repo).
+        ensureVisibleSession();
         if (findWorkspace(getState(), getState().activeWorkspaceId)?.kind === "docker") {
           await refreshDocker();
         }
         await refreshGit(getState().activeWorkspaceId);
         await syncWorktrees();
-        ensureVisibleSession();
         const payload = getPayload();
         log.info("initial state ready", { workspaceCount: payload.appState?.workspaces?.length ?? 0 });
         return payload;
@@ -4501,12 +4543,21 @@ export async function createRuntime({
         }
         draft.activeWorkspaceId = firstWorkspaceId;
       });
-      await syncWorktrees();
+      // PTY spawn must not wait on FS/network refreshes — otherwise the new
+      // profile's active workspace sits at "0 running" while syncWorktrees
+      // scans disks and Azure does network. Spawn first, then refresh.
       sessions.syncWithState(getState());
       ensureVisibleSession();
-      await refreshAzure();
-      scheduleAzurePolling();
       broadcastState();
+      syncWorktrees().catch((err: unknown) => {
+        log.warn("activateProfileInWindow: syncWorktrees failed", { err: (err as Error)?.message });
+      });
+      refreshAzure()
+        .catch((err: unknown) => {
+          log.warn("activateProfileInWindow: refreshAzure failed", { err: (err as Error)?.message });
+        })
+        .finally(() => broadcastState());
+      scheduleAzurePolling();
       return getPayload();
     },
 
@@ -4531,17 +4582,29 @@ export async function createRuntime({
         width: 1280,
         height: 800,
       };
+      const newActiveWorkspaceId =
+        getState().workspaces.find((w) => (w.profileId || "default") === profileId)?.id || "";
       await store.mutate((draft: AppState) => {
         if (!Array.isArray(draft.windowSlots)) draft.windowSlots = [];
         draft.windowSlots.push({
           id: newId,
           profileId,
-          activeWorkspaceId: draft.workspaces.find((w) => (w.profileId || "default") === profileId)?.id || "",
+          activeWorkspaceId: newActiveWorkspaceId,
           activeSessionId: "",
           bounds: { ...defaultBounds },
           lastFocusedAt: Date.now(),
         });
       });
+      // Spawn PTYs for the new window's active workspace. Without this the
+      // freshly opened window paints terminal panes with "0 running" — the
+      // backend has no clue it needs to start anything, because nothing in
+      // the per-window flow calls ensureSession until the user navigates a
+      // workspace tab. (activeWorkspaceId at the global level may belong to
+      // a different window's profile, so the implicit-default path is
+      // wrong here.)
+      if (newActiveWorkspaceId) {
+        ensureVisibleSession(newActiveWorkspaceId);
+      }
       broadcastState();
       return { id: newId, profileId, bounds: defaultBounds };
     },
@@ -5212,6 +5275,7 @@ export async function createRuntime({
       clearAlertSession(sessionId);
       clearActivityFade(sessionId);
       deleteSessionSignal(sessionId);
+      clearTerminalReplay(String(sessionId || ""));
       sessions.removeSession(sessionId);
       broadcastState();
       return getPayload();
@@ -5619,6 +5683,7 @@ export async function createRuntime({
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async restartSession(sessionId: any) {
       const descriptor = parseSessionId(sessionId);
+      clearTerminalReplay(String(sessionId || ""));
       await store.mutate((draft: AppState) => {
         if (!descriptor) {
           return;

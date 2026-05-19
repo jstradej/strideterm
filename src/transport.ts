@@ -3,6 +3,7 @@
   StatePayload,
   TerminalSize,
   TerminalDataPayload,
+  TerminalReplayPayload,
   TerminalExitPayload,
 } from "../electron/shared/ipc-bridge.js";
 import type { ProfilePayload } from "../electron/backend/ipc-schemas.js";
@@ -59,6 +60,7 @@ export interface Transport extends Partial<
   writeTerminal: (sessionId: string, data: string) => void;
   activateWorkspace: (workspaceId: string) => Promise<unknown>;
   restartTerminal: (sessionId: string) => Promise<unknown>;
+  getTerminalReplay: (sessionId: string) => Promise<TerminalReplayPayload>;
   regenerateRemoteToken: () => Promise<unknown>;
   saveProfile: (profile: ProfilePayload) => Promise<unknown>;
   deleteProfile: (profileId: string) => Promise<unknown>;
@@ -465,6 +467,8 @@ export function createRemoteTransport(): Transport {
     updateTaskDescription: (payload) => fetchJson("/api/task/update-description", payload),
     resolveTaskRecovery: (decisions) => fetchJson("/api/task-recovery/resolve", decisions),
     getTaskStatus: (workspaceId) => fetchJson("/api/task/status", { workspaceId }),
+    getTerminalReplay: (sessionId) =>
+      fetchJson("/api/terminal/replay", { sessionId }) as Promise<TerminalReplayPayload>,
     verifyAzureConnection: (connection) => fetchJson("/api/azure/verify-connection", { connection }),
     saveAzureConnection: (connection) => fetchJson("/api/azure/save-connection", { connection }),
     deleteAzureConnection: (connectionId) => fetchJson("/api/azure/delete-connection", { connectionId }),

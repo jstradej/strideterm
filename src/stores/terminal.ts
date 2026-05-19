@@ -97,6 +97,10 @@ export const useTerminalStore = defineStore("terminal", () => {
     return controller?.attachTerminalPane(sessionId, paneBody);
   }
 
+  function detachTerminalPane(sessionId: string, paneBody?: Element | null): void {
+    controller?.detachTerminalPane(sessionId, paneBody);
+  }
+
   function focusActiveTerminal(): void {
     controller?.focusActiveTerminal();
   }
@@ -149,6 +153,7 @@ export const useTerminalStore = defineStore("terminal", () => {
     buffers,
     init,
     attachTerminalPane,
+    detachTerminalPane,
     focusActiveTerminal,
     scheduleActiveResize,
     scheduleAllVisibleResize,

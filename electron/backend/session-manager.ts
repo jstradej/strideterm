@@ -483,11 +483,27 @@ export class SessionManager extends EventEmitter {
     const shellIntEnabled = state.settings?.notifications?.shellIntegration !== false;
     const integrationEnv = shellIntegrationEnv(launcher.file, shellIntEnabled);
 
+    // Validate cwd before handing it to pty.spawn — on Windows an invalid
+    // cwd produces a cryptic "Cannot create process, error code: 267"
+    // (ERROR_DIRECTORY) and the panel stays empty with no obvious hint why.
+    // Fallback to the user's home so the shell at least opens; the warning
+    // banner below tells the user which dir was missing.
+    const requestedCwd = launchOverride?.cwd || panel.cwd || workspace.cwd || "";
+    const cwdMissing = requestedCwd && !existsSync(requestedCwd);
+    if (cwdMissing) {
+      log.error("session cwd missing — falling back to home", {
+        sessionId: key,
+        requestedCwd,
+        fallbackCwd: os.homedir(),
+      });
+    }
+    const effectiveCwd = cwdMissing ? os.homedir() : requestedCwd;
+
     log.debug("spawning session", {
       sessionId: key,
       file: launcher.file,
       args: launcher.args,
-      cwd: launchOverride?.cwd || panel.cwd || workspace.cwd,
+      cwd: effectiveCwd,
       shellIntegration: shellIntEnabled,
     });
 
@@ -497,7 +513,7 @@ export class SessionManager extends EventEmitter {
         name: APP_CONFIG.session.termName,
         cols: APP_CONFIG.session.defaultCols,
         rows: APP_CONFIG.session.defaultRows,
-        cwd: launchOverride?.cwd || panel.cwd || workspace.cwd,
+        cwd: effectiveCwd,
         env: {
           ...process.env,
           ...integrationEnv,
@@ -514,7 +530,10 @@ export class SessionManager extends EventEmitter {
       });
     } catch (error: unknown) {
       const message = (error as Error)?.message || String(error);
-      log.warn("PTY spawn failed", { sessionId: key, file: launcher.file, err: message });
+      // Logged at error level: a failed spawn leaves the panel showing "0 running"
+      // with an empty terminal viewport — visible to the user, so they deserve
+      // to see it in the log even when the level is set to "error".
+      log.error("PTY spawn failed", { sessionId: key, file: launcher.file, err: message });
       this.emit("terminal:data", {
         sessionId: key,
         data: `\r\n\x1b[31mFailed to launch terminal: ${message}\x1b[0m\r\n`,
@@ -551,6 +570,20 @@ export class SessionManager extends EventEmitter {
     });
 
     this.sessions.set(key, session);
+
+    if (cwdMissing) {
+      // Surface the fallback in the terminal viewport so the user sees why
+      // their prompt opened in $HOME instead of the workspace's cwd.
+      setTimeout(
+        () => {
+          this.emit("terminal:data", {
+            sessionId: key,
+            data: `\r\n\x1b[33mWarning: workspace cwd "${requestedCwd}" does not exist — opened in ${effectiveCwd}.\x1b[0m\r\n`,
+          });
+        },
+        Math.max(APP_CONFIG.session.shellLaunchDelayMs - 10, 10),
+      );
+    }
 
     const injectedCommand =
       typeof launchOverride?.command === "string" && launchOverride.command.trim()

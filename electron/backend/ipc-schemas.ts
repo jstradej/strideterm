@@ -419,6 +419,11 @@ export const terminalResizeSchema = z.object({
 });
 export type TerminalResize = z.infer<typeof terminalResizeSchema>;
 
+export const terminalSessionSchema = z.object({
+  sessionId: nonEmptyString,
+});
+export type TerminalSession = z.infer<typeof terminalSessionSchema>;
+
 export const profileSchema = z
   .object({
     id: z.string().optional(),
