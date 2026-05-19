@@ -150,6 +150,49 @@ describe("AgentTaskRunner", () => {
       expect(ws.color).toBe("#FF0000");
     });
 
+    test("inherits parent workspace's color when parent exists and no explicit color is passed", () => {
+      const parent = {
+        id: "ws-parent",
+        profileId: "default",
+        color: "#00AA88",
+        kind: "terminal",
+      };
+      const ws = runner.createTaskWorkspace({
+        state: { workspaces: [parent] },
+        description: "Task with parent",
+        cwd: "/tmp/test",
+        parentWorkspaceId: "ws-parent",
+      });
+      expect(ws.color).toBe("#00AA88");
+    });
+
+    test("explicit color overrides parent workspace's color", () => {
+      const parent = {
+        id: "ws-parent",
+        profileId: "default",
+        color: "#00AA88",
+        kind: "terminal",
+      };
+      const ws = runner.createTaskWorkspace({
+        state: { workspaces: [parent] },
+        description: "Task with parent",
+        cwd: "/tmp/test",
+        parentWorkspaceId: "ws-parent",
+        color: "#FF0000",
+      });
+      expect(ws.color).toBe("#FF0000");
+    });
+
+    test("falls back to default purple when there is no parent and no explicit color", () => {
+      const ws = runner.createTaskWorkspace({
+        state: {},
+        description: "Test",
+        cwd: "/tmp/test",
+        parentWorkspaceId: "",
+      });
+      expect(ws.color).toBe("#7C4DFF");
+    });
+
     test("uses custom notes when provided", () => {
       const ws = runner.createTaskWorkspace({
         state: {},

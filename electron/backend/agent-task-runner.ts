@@ -403,7 +403,11 @@ export class AgentTaskRunner {
       id: workspaceId,
       name: name?.trim() || autoName,
       icon: icon?.trim() || "\u{1F916}", // 🤖
-      color: color || "#7C4DFF",
+      // Inherit the parent workspace's accent so task entries visually
+      // belong to their parent in the sidebar. Same lookup pattern as
+      // profileId below.
+      color:
+        color || (parentWorkspaceId && state.workspaces?.find((w) => w.id === parentWorkspaceId)?.color) || "#7C4DFF",
       kind: "task",
       source: "manual",
       pluginId: "",
