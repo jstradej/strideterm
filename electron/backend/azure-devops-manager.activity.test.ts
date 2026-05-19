@@ -227,7 +227,7 @@ describe("AzureDevOpsManager review-activity deltas", () => {
     const world = {
       nowIso: "2026-03-17T10:00:00.000Z",
       pullRequests: [basePullRequest()],
-      comments: [],
+      comments: [] as ReturnType<typeof commentFrom>[],
     };
     const { manager } = makeManager(world);
     await manager.sync({ connections: [connection], workspaces: [], gitSnapshots: {} });
@@ -261,7 +261,7 @@ describe("AzureDevOpsManager review-activity deltas", () => {
     const world: any = {
       nowIso: "2026-03-17T10:00:00.000Z",
       pullRequests: [basePullRequest()],
-      comments: [],
+      comments: [] as ReturnType<typeof commentFrom>[],
     };
     const { manager } = makeManager(world);
     await manager.sync({ connections: [connection], workspaces: [], gitSnapshots: {} });
@@ -285,7 +285,7 @@ describe("AzureDevOpsManager review-activity deltas", () => {
     const world = {
       nowIso: "2026-03-17T10:00:00.000Z",
       pullRequests: [basePullRequest()],
-      comments: [],
+      comments: [] as ReturnType<typeof commentFrom>[],
     };
     const { manager } = makeManager(world);
     await manager.sync({ connections: [connection], workspaces: [], gitSnapshots: {} });
@@ -315,7 +315,7 @@ describe("AzureDevOpsManager review-activity deltas", () => {
     const world = {
       nowIso: "2026-03-17T10:00:00.000Z",
       pullRequests: [basePullRequest()],
-      comments: [],
+      comments: [] as ReturnType<typeof commentFrom>[],
     };
     const { manager } = makeManager(world);
     await manager.sync({ connections: [connection], workspaces: [], gitSnapshots: {} });
@@ -342,7 +342,7 @@ describe("AzureDevOpsManager review-activity deltas", () => {
     const world = {
       nowIso: "2026-03-17T10:00:00.000Z",
       pullRequests: [basePullRequest()],
-      comments: [],
+      comments: [] as ReturnType<typeof commentFrom>[],
     };
     const { manager } = makeManager(world);
     await manager.sync({ connections: [connection], workspaces: [], gitSnapshots: {} });
@@ -370,7 +370,7 @@ describe("AzureDevOpsManager review-activity deltas", () => {
     const world = {
       nowIso: "2026-03-17T10:00:00.000Z",
       pullRequests: [basePullRequest()],
-      comments: [],
+      comments: [] as ReturnType<typeof commentFrom>[],
     };
     const { manager } = makeManager(world);
     await manager.sync({ connections: [connection], workspaces: [], gitSnapshots: {} });
@@ -405,7 +405,7 @@ describe("AzureDevOpsManager review-activity deltas", () => {
     const world = {
       nowIso: "2026-03-17T10:00:00.000Z",
       pullRequests: [basePullRequest()],
-      comments: [],
+      comments: [] as ReturnType<typeof commentFrom>[],
     };
     const reviewStore = createReviewStore({});
     const manager = new AzureDevOpsManager({
@@ -443,7 +443,7 @@ describe("AzureDevOpsManager review-activity deltas", () => {
     const world = {
       nowIso: "2026-03-17T10:00:00.000Z",
       pullRequests: [basePullRequest()],
-      comments: [],
+      comments: [] as ReturnType<typeof commentFrom>[],
     };
     const reviewStore = createReviewStore({});
     const credentialStore = {
@@ -495,7 +495,7 @@ describe("AzureDevOpsManager review-activity deltas", () => {
     const world = {
       nowIso: "2026-03-17T10:00:00.000Z",
       pullRequests: [basePullRequest()],
-      comments: [],
+      comments: [] as ReturnType<typeof commentFrom>[],
     };
     const { manager } = makeManager(world);
     await manager.sync({ connections: [worldConnection], workspaces: [], gitSnapshots: {} });
