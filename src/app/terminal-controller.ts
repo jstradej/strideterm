@@ -38,6 +38,7 @@ const IS_MAC = typeof navigator !== "undefined" && navigator.userAgent.toLowerCa
 interface TerminalControllerApi {
   resizeTerminal: (sessionId: string, size: { cols: number; rows: number }) => void;
   writeTerminal: (sessionId: string, data: string) => void;
+  getTerminalReplay?: (sessionId: string) => Promise<{ data: string }>;
   /** Optional — desktop only. Path link clicks are no-ops in remote mode. */
   openTerminalPath?: (request: { path: string; workspaceCwd?: string; line?: number; column?: number }) => Promise<{
     ok: boolean;
@@ -47,6 +48,10 @@ interface TerminalControllerApi {
     line?: number;
     column?: number;
   }>;
+  /** Optional — desktop only. Resolves an image-in-clipboard paste to a file path. */
+  pasteClipboardImageForTerminal?: () => Promise<
+    { ok: true; path: string; source?: string } | { ok: false; reason?: string }
+  >;
   isRemote?: boolean;
   startupFlags?: {
     disableWebgl?: boolean;
@@ -306,6 +311,8 @@ export function createTerminalController({
 
   // ---------------------------------------------------------------------------
 
+  const sessionsWithRendererData = new Set<string>();
+
   function focusActiveTerminal(): void {
     if (getOverlay()) return;
     const activeSessionId = getActiveSessionId();
@@ -331,6 +338,7 @@ export function createTerminalController({
       view.mount.remove();
       views.value.delete(sessionId);
       buffers.value.delete(sessionId);
+      sessionsWithRendererData.delete(sessionId);
     }
   }
 
@@ -572,27 +580,143 @@ export function createTerminalController({
       if (event.key.toLowerCase() === "v") return false;
       return true;
     });
-    // Right-click: copy selection or paste (PuTTY-style)
+    // Image-aware paste shared between Ctrl/Cmd+V, Shift+Insert, and
+    // right-click. When the clipboard holds a screenshot (or a file
+    // path pointing at an image), xterm's text-only paste does nothing
+    // and the user sees the keystroke vanish. The backend resolves the
+    // clipboard to a path (existing file or freshly saved PNG) so a
+    // CLI like Claude Code / Codex can read it off disk. Returns true
+    // when an image was handled — callers fall back to plain text
+    // paste otherwise. Desktop only; remote clients can't see the
+    // host's filesystem.
+    const pasteImage = api.pasteClipboardImageForTerminal;
+    const canPasteImage = !api.isRemote && typeof pasteImage === "function";
+    // Read the master switch live each time — the user can toggle it
+    // in Settings without restarting, and the renderer's settings
+    // payload is updated as soon as `settings:update` round-trips. We
+    // default true so an unmigrated state file (pre-feature) doesn't
+    // surprise the user by silently dropping image paste.
+    function isImagePasteEnabled(): boolean {
+      const s = getPayload()?.appState?.settings as Record<string, unknown> | undefined;
+      return s?.clipboardImagePasteEnabled !== false;
+    }
+    async function reportImagePasteError(body: string): Promise<void> {
+      try {
+        const [{ useNotificationStore }, { useAppStore }] = await Promise.all([
+          import("../stores/notifications.js"),
+          import("../stores/app.js"),
+        ]);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const profileId = ((useAppStore() as any).activeProfile?.id as string) || "default";
+        useNotificationStore().showError("Paste image failed", body, { profileId });
+      } catch {
+        // Notification store init failed — at this point we already
+        // logged via api.logRenderer, so swallow to avoid recursing.
+      }
+    }
+    async function tryImagePasteToTerminal(): Promise<boolean> {
+      if (!canPasteImage || !pasteImage) return false;
+      if (!isImagePasteEnabled()) return false;
+      let result: Awaited<ReturnType<typeof pasteImage>>;
+      try {
+        result = await pasteImage();
+      } catch (err) {
+        const msg = (err as Error)?.message || String(err);
+        api.logRenderer?.("error", "[clipboard-paste] IPC threw", { error: msg });
+        void reportImagePasteError(`Couldn't paste image into terminal: ${msg}`);
+        return false;
+      }
+      if (!result?.ok) {
+        const reason = "reason" in result ? result.reason : undefined;
+        // "no-image" is the expected path for right-click on a
+        // text-only clipboard — stay silent so the caller can fall
+        // back to text paste. Any other reason means the backend
+        // actually tried to save and failed (mkdir / write); surface
+        // it so the keystroke doesn't vanish without a trace.
+        if (reason && reason !== "no-image") {
+          api.logRenderer?.("error", "[clipboard-paste] backend reported error", { reason });
+          void reportImagePasteError(
+            `Couldn't save screenshot to the clipboard-image folder: ${reason}. ` +
+              `Check Settings → General → Clipboard image paste folder.`,
+          );
+        }
+        return false;
+      }
+      // Quote the path so spaces survive; double quotes inside a
+      // path are illegal on Windows and rare elsewhere, but escape
+      // them defensively.
+      const quoted = `"${result.path.replace(/"/g, '\\"')}"`;
+      api.writeTerminal(sessionId, quoted);
+      return true;
+    }
+
+    // Right-click: copy selection, paste image if present, else paste text (PuTTY-style)
     mount.addEventListener("contextmenu", (event) => {
       event.preventDefault();
       if (term.hasSelection()) {
         navigator.clipboard.writeText(term.getSelection());
         term.clearSelection();
-      } else {
+        return;
+      }
+      void tryImagePasteToTerminal().then((handled) => {
+        if (handled) return;
         navigator.clipboard.readText().then((text) => {
           if (text) term.paste(text);
         });
-      }
+      });
     });
+    // Keyboard paste (Ctrl/Cmd+V, Shift+Insert): the browser fires a
+    // `paste` event on the focused xterm helper textarea. We intercept
+    // during capture phase on `mount` so the inner xterm listener
+    // never runs when we're handling an image — `stopImmediatePropagation`
+    // keeps xterm from inserting the (empty) text payload.
+    if (canPasteImage) {
+      mount.addEventListener(
+        "paste",
+        (event) => {
+          if (!isImagePasteEnabled()) return;
+          const cd = event.clipboardData;
+          if (!cd) return;
+          let hasImage = false;
+          for (let i = 0; i < cd.items.length; i += 1) {
+            if (cd.items[i].type.startsWith("image/")) {
+              hasImage = true;
+              break;
+            }
+          }
+          if (!hasImage) return;
+          event.preventDefault();
+          event.stopImmediatePropagation();
+          void tryImagePasteToTerminal();
+        },
+        { capture: true },
+      );
+    }
     // Ctrl/Cmd + wheel → zoom in/out; no modifier → let xterm scroll normally.
+    //
+    // We register a capture-phase listener on the mount in addition to xterm's
+    // own `attachCustomWheelEventHandler`. The capture-phase listener fires
+    // before any handler attached to inner xterm elements (viewport, screen,
+    // canvas), and `stopImmediatePropagation()` keeps them from running at
+    // all. Without this, Ctrl+wheel up could still hit xterm's scrollback path
+    // and move through history while we were also zooming — the user-visible
+    // "sometimes scrolls, sometimes zooms" flicker.
+    mount.addEventListener(
+      "wheel",
+      (e) => {
+        const zoomMod = IS_MAC ? e.ctrlKey || e.metaKey : e.ctrlKey;
+        if (!zoomMod) return;
+        e.preventDefault();
+        e.stopPropagation();
+        e.stopImmediatePropagation();
+        const cur = (term.options.fontSize ?? 13) as number;
+        applyFontSize(cur + (e.deltaY < 0 ? 1 : -1));
+      },
+      { capture: true, passive: false },
+    );
     term.attachCustomWheelEventHandler((e) => {
       const zoomMod = IS_MAC ? e.ctrlKey || e.metaKey : e.ctrlKey;
-      if (!zoomMod) return true;
-      e.preventDefault();
-      e.stopPropagation();
-      const cur = (term.options.fontSize ?? 13) as number;
-      applyFontSize(cur + (e.deltaY < 0 ? 1 : -1));
-      return false;
+      return !zoomMod;
     });
 
     // Touch scroll (1 finger) + pinch zoom (2 fingers).
@@ -776,6 +900,12 @@ export function createTerminalController({
 
   function attachTerminalPane(sessionId: string, paneBody: Element): TerminalView {
     const view = ensureTerminal(sessionId);
+    for (const [otherSessionId, otherView] of views.value.entries()) {
+      if (otherSessionId === sessionId || otherView.mount.parentElement !== paneBody) {
+        continue;
+      }
+      detachTerminalPane(otherSessionId, paneBody);
+    }
     paneBody.append(view.mount);
     if (!view.opened) {
       view.term.open(view.mount);
@@ -784,6 +914,25 @@ export function createTerminalController({
       if (queued) {
         view.term.write(queued);
         buffers.value.delete(sessionId);
+        sessionsWithRendererData.add(sessionId);
+      } else if (api.getTerminalReplay && !sessionsWithRendererData.has(sessionId)) {
+        const expectedView = view;
+        void api
+          .getTerminalReplay(sessionId)
+          .then((replay) => {
+            if (sessionsWithRendererData.has(sessionId)) return;
+            if (views.value.get(sessionId) !== expectedView || !expectedView.opened) return;
+            const data = replay?.data || "";
+            if (!data) return;
+            expectedView.term.write(data);
+            sessionsWithRendererData.add(sessionId);
+          })
+          .catch((err: unknown) => {
+            api.logRenderer?.("warn", "[terminal] replay load failed", {
+              sessionId,
+              error: (err as Error)?.message || String(err),
+            });
+          });
       }
       scheduleDeferredTerminalFits(sessionId);
       // Switch to the GPU renderer for smooth scrolling under heavy TUI traffic
@@ -820,6 +969,21 @@ export function createTerminalController({
     view.resizeObserver.observe(paneBody);
     scheduleSessionResize(sessionId, { force: true });
     return view;
+  }
+
+  function detachTerminalPane(sessionId: string, paneBody?: Element | null): void {
+    const view = views.value.get(sessionId);
+    if (!view) {
+      return;
+    }
+    if (paneBody && view.mount.parentElement !== paneBody) {
+      return;
+    }
+    window.cancelAnimationFrame(view.resizeFrame || 0);
+    view.resizeFrame = null;
+    view.resizeObserver?.disconnect();
+    view.resizeObserver = null;
+    view.mount.remove();
   }
 
   function getTerminalTranscript(sessionId: string, { lineCount = 500 } = {}): string {
@@ -869,6 +1033,7 @@ export function createTerminalController({
   }
 
   function handleTerminalData({ sessionId, data }: { sessionId: string; data: string }): void {
+    sessionsWithRendererData.add(sessionId);
     const view = views.value.get(sessionId);
     if (!view || !view.opened) {
       buffers.value.set(sessionId, `${buffers.value.get(sessionId) || ""}${data}`);
@@ -901,6 +1066,7 @@ export function createTerminalController({
   return {
     attachTerminalPane,
     clearTerminalViewport,
+    detachTerminalPane,
     disconnectHiddenPaneObservers,
     ensureTerminal,
     exportTerminalTranscript,

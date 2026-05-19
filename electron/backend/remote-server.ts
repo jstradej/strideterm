@@ -23,6 +23,7 @@ import {
   dockerTopSchema,
   dockerVolumeBrowseSchema,
   taskUpdateDescriptionSchema,
+  terminalSessionSchema,
   validateIpc,
   workspaceGridEnableSchema,
   workspaceGridSetCellSchema,
@@ -263,11 +264,28 @@ export const REMOTE_BLOCKED_REMOTE_ACCESS_FIELDS: ReadonlyArray<string> = [
  *     so the two never overwrite each other when both are connected. Remote
  *     clients may freely write the `Remote` key but must not touch the
  *     `Local` one.
+ *
+ *   - `clipboardImagePasteDir`: filesystem path that the desktop main
+ *     process writes PNGs into when the user pastes a screenshot. A
+ *     remote caller repointing it (e.g. into a Startup folder or to
+ *     overwrite a sensitive file via a chosen filename) turns paste-
+ *     into-terminal into an arbitrary file-write primitive. Per
+ *     invariant S1 ("any user-configurable filesystem path the desktop
+ *     later writes to belongs in the remote blocklist"), this entry is
+ *     mandatory.
  */
 export const REMOTE_BLOCKED_TOP_LEVEL_FIELDS: ReadonlyArray<string> = [
   "externalPathOpener",
   "externalEditor",
   "terminalFontSizeLocal",
+  // `clipboardImagePasteDir` decides where the desktop main process
+  // writes PNGs on Ctrl+V of a screenshot. A remote caller repointing
+  // it (e.g. to `C:\\Users\\<me>\\AppData\\Roaming\\Microsoft\\Windows\\Start Menu\\Programs\\Startup\\`)
+  // turns a benign local action into arbitrary file writes at attacker-
+  // controlled paths on the next paste. Per invariant S1 (any user-
+  // configurable filesystem path that the desktop later writes to
+  // belongs in the remote blocklist), this entry is mandatory.
+  "clipboardImagePasteDir",
 ];
 
 /**
@@ -996,6 +1014,12 @@ async function handleApiRequest(
 
     if (request.method === "POST" && url.pathname === "/api/terminal/restart") {
       json(response, 200, await runtime.restartSession(body.sessionId));
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/terminal/replay") {
+      const parsed = validateIpc(terminalSessionSchema, body, "/api/terminal/replay");
+      json(response, 200, runtime.getTerminalReplay(parsed.sessionId));
       return;
     }
 

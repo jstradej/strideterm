@@ -17,6 +17,7 @@ const startupFlags = {
 contextBridge.exposeInMainWorld("strideterm", {
   openExternal: (url) => ipcRenderer.invoke("shell:open-external", url),
   openTerminalPath: (request) => ipcRenderer.invoke("terminal:open-path", request),
+  pasteClipboardImageForTerminal: () => ipcRenderer.invoke("clipboard:paste-image"),
   showSystemNotification: (payload) => ipcRenderer.invoke("notification:show-system", payload),
   checkForUpdates: () => ipcRenderer.invoke("app:check-for-updates"),
   checkCommand: (command) => ipcRenderer.invoke("app:check-command", command),
@@ -141,6 +142,7 @@ contextBridge.exposeInMainWorld("strideterm", {
   stopCloudflareTunnel: () => ipcRenderer.invoke("tunnel:stop"),
   restartTerminal: (sessionId) => ipcRenderer.invoke("terminal:restart", sessionId),
   closeTerminal: (sessionId) => ipcRenderer.invoke("terminal:close", sessionId),
+  getTerminalReplay: (sessionId) => ipcRenderer.invoke("terminal:replay", { sessionId }),
   refreshDocker: () => ipcRenderer.invoke("docker:refresh"),
   dockerLogsOpen: (payload) => ipcRenderer.invoke("docker:logs:open", payload),
   dockerLogsUpdate: (payload) => ipcRenderer.invoke("docker:logs:update", payload),

@@ -136,6 +136,24 @@ export interface Settings {
   terminalFontSizeLocal: number;
   /** Terminal font size for remote/mobile web clients. Range 8–32, default 13. */
   terminalFontSizeRemote: number;
+  /**
+   * Master switch for the image-aware terminal paste. When false, Ctrl+V
+   * / Shift+Insert / right-click in a terminal behave like vanilla xterm
+   * — bitmaps in the clipboard get silently dropped (xterm's text-only
+   * paste) instead of being saved to disk and pathed into the terminal.
+   * Default true.
+   */
+  clipboardImagePasteEnabled: boolean;
+  /**
+   * Folder where `clipboard:paste-image` saves PNGs when the user pastes
+   * a screenshot into a terminal. Supports a leading `~/` for the home
+   * directory. Empty string = use OS default (`~/Desktop` on macOS,
+   * `~/Pictures/Screenshots` on Windows/Linux). Desktop-only: the
+   * remote/HTTP transport blocks writes to this key — without that, a
+   * remote attacker could repoint the path to a sensitive location and
+   * trigger writes there on the next desktop paste.
+   */
+  clipboardImagePasteDir: string;
 }
 
 // ------- Tab templates -------

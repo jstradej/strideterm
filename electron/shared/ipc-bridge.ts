@@ -87,6 +87,10 @@ export interface TerminalDataPayload {
   data: string;
 }
 
+export interface TerminalReplayPayload {
+  data: string;
+}
+
 export interface TerminalExitPayload {
   sessionId: string;
   exitCode: number;
@@ -104,6 +108,15 @@ export interface StridetermAPI {
     line?: number;
     column?: number;
   }>;
+  /**
+   * Resolve a paste-into-terminal request when the OS clipboard holds an
+   * image. Returns a file path the renderer can type into the terminal —
+   * either the existing path already in the clipboard (Snipping Tool /
+   * ShareX etc.) or a freshly saved PNG in ~/Pictures/Screenshots.
+   */
+  pasteClipboardImageForTerminal: () => Promise<
+    { ok: true; path: string; source: "clipboard-path" | "saved" } | { ok: false; reason?: string }
+  >;
   showSystemNotification: (payload: NotificationShow) => Promise<unknown>;
   checkForUpdates: () => Promise<unknown>;
   checkCommand: (command: string) => Promise<unknown>;
@@ -241,6 +254,7 @@ export interface StridetermAPI {
   // Terminal
   restartTerminal: (sessionId: string) => Promise<unknown>;
   closeTerminal: (sessionId: string) => Promise<unknown>;
+  getTerminalReplay: (sessionId: string) => Promise<TerminalReplayPayload>;
   resizeTerminal: (sessionId: string, size: TerminalSize) => void;
   writeTerminal: (sessionId: string, data: string) => void;
 

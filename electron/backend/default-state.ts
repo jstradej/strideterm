@@ -475,6 +475,8 @@ export function createDefaultState(): AppState & { activeProjectId: string; proj
       },
       terminalFontSizeLocal: 13,
       terminalFontSizeRemote: 13,
+      clipboardImagePasteEnabled: true,
+      clipboardImagePasteDir: "",
     },
     tabTemplates: [
       { id: "shell", title: "Shell", command: "", icon: "\u{1F4BB}" },
@@ -1109,6 +1111,14 @@ export function normalizeState(rawState: any = {}): AppState & { activeProjectId
     terminalFontSizeRemote: (() => {
       const raw = (rawState.settings || {}).terminalFontSizeRemote;
       return typeof raw === "number" && isFinite(raw) ? Math.min(32, Math.max(8, Math.round(raw))) : 13;
+    })(),
+    clipboardImagePasteEnabled: (() => {
+      const raw = (rawState.settings || {}).clipboardImagePasteEnabled;
+      return typeof raw === "boolean" ? raw : true;
+    })(),
+    clipboardImagePasteDir: (() => {
+      const raw = (rawState.settings || {}).clipboardImagePasteDir;
+      return typeof raw === "string" ? raw : "";
     })(),
   };
   // Reassign workspaces whose profileId points at a deleted profile to a

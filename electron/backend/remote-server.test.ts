@@ -158,6 +158,21 @@ describe("sanitizeSettingsFromRemote", () => {
   test("REMOTE_BLOCKED_TOP_LEVEL_FIELDS includes terminalFontSizeLocal", () => {
     expect(REMOTE_BLOCKED_TOP_LEVEL_FIELDS).toContain("terminalFontSizeLocal");
   });
+
+  test("drops clipboardImagePasteDir — remote must not repoint desktop file writes", () => {
+    const settings = {
+      clipboardImagePasteDir: "C:\\Users\\victim\\AppData\\Roaming\\Microsoft\\Windows\\Start Menu\\Programs\\Startup",
+      theme: "dark",
+    };
+    const removed = sanitizeSettingsFromRemote(settings as Record<string, unknown>);
+    expect(removed).toContain("clipboardImagePasteDir");
+    expect(settings).not.toHaveProperty("clipboardImagePasteDir");
+    expect((settings as Record<string, unknown>).theme).toBe("dark");
+  });
+
+  test("REMOTE_BLOCKED_TOP_LEVEL_FIELDS includes clipboardImagePasteDir", () => {
+    expect(REMOTE_BLOCKED_TOP_LEVEL_FIELDS).toContain("clipboardImagePasteDir");
+  });
 });
 
 describe("stripSecretsForRemote", () => {

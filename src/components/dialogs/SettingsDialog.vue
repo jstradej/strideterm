@@ -127,6 +127,8 @@ interface SettingsObj {
   theme?: string;
   logLevel?: string;
   externalEditor?: string;
+  clipboardImagePasteEnabled?: boolean;
+  clipboardImagePasteDir?: string;
   remoteAccess?: { cloudflaredPath?: string };
   notifications?: {
     promptQuietMs?: number;
@@ -201,6 +203,8 @@ const form = reactive({
   theme: props.settings.theme || "dark",
   logLevel: props.settings.logLevel || "warn",
   externalEditor: props.settings.externalEditor || "",
+  clipboardImagePasteEnabled: props.settings.clipboardImagePasteEnabled !== false,
+  clipboardImagePasteDir: props.settings.clipboardImagePasteDir || "",
   remoteAccess: {
     cloudflaredPath: props.settings.remoteAccess?.cloudflaredPath || "",
   },
@@ -288,6 +292,8 @@ function handleSave() {
     theme: form.theme,
     logLevel: form.logLevel,
     externalEditor: form.externalEditor,
+    clipboardImagePasteEnabled: form.clipboardImagePasteEnabled,
+    clipboardImagePasteDir: form.clipboardImagePasteDir,
     remoteAccess: { cloudflaredPath: form.remoteAccess.cloudflaredPath },
     notifications: {
       promptQuietMs: form.notifications.promptQuietMs,

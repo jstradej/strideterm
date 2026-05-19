@@ -2,8 +2,8 @@
 import { ipcMain, dialog, BrowserWindow, shell, clipboard, Notification, app } from "electron";
 import path, { join } from "node:path";
 import { homedir } from "node:os";
-import { stat } from "node:fs/promises";
-import { pathToFileURL } from "node:url";
+import { stat, mkdir, writeFile } from "node:fs/promises";
+import { pathToFileURL, fileURLToPath } from "node:url";
 import type { createRuntime } from "./runtime.js";
 import { withOperationPromise } from "./effect/runtime.js";
 import * as fm from "./file-manager.js";
@@ -67,6 +67,7 @@ import {
   dockerPruneSchema,
   dockerVolumeBrowseSchema,
   terminalResizeSchema,
+  terminalSessionSchema,
   profileSchema,
   workspaceReorderSchema,
   attentionSyncSchema,
@@ -801,6 +802,12 @@ export function registerIpc(
   ipcMain.handle("terminal:close", async (_event, sessionId) =>
     withOperationPromise({ opId: "terminal:close" }, () => runtime.closeSession(sessionId)),
   );
+  ipcMain.handle("terminal:replay", async (_event, payload) =>
+    withOperationPromise({ opId: "terminal:replay" }, () => {
+      const parsed = validateIpc(terminalSessionSchema, payload, "terminal:replay");
+      return runtime.getTerminalReplay(parsed.sessionId);
+    }),
+  );
   ipcMain.handle("remote:token:regenerate", async () =>
     withOperationPromise({ opId: "remote:token:regenerate" }, () => runtime.regenerateRemoteToken()),
   );
@@ -1490,6 +1497,123 @@ export function registerIpc(
       }
     }),
   );
+  // Image-aware terminal paste. When the user presses Ctrl/Cmd+V in a
+  // terminal and the clipboard holds an image (e.g. Snipping Tool /
+  // Print Screen / ShareX / Greenshot), xterm's text-only paste does
+  // nothing. This handler returns a usable file path the renderer can
+  // type into the terminal instead — Claude Code, Codex, etc. then
+  // read the image off disk.
+  //
+  // Resolution order:
+  //   1. If the clipboard already contains a file path (CF_HDROP on
+  //      Windows, public.file-url on macOS, text/uri-list on Linux)
+  //      that points to an existing image file, return it as-is —
+  //      avoids saving the screenshot twice when the source tool
+  //      (ShareX etc.) already wrote it to disk.
+  //   2. Otherwise read the raw bitmap from the clipboard, save it as
+  //      a PNG to ~/Pictures/Screenshots/strideterm-<timestamp>.png
+  //      (created if missing) and return the new path.
+  //   3. If neither path nor bitmap is in the clipboard, return
+  //      { ok: false } so the renderer falls back to plain-text paste.
+  ipcMain.handle("clipboard:paste-image", async () =>
+    withOperationPromise({ opId: "clipboard:paste-image" }, async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- runtime payload type is open by design
+      const settings = (runtime.getPayload() as any)?.appState?.settings || {};
+      // Master switch — when off, defense-in-depth bail before we touch
+      // the clipboard or the filesystem. The renderer also skips its
+      // paste interception in this state, so a well-behaved client never
+      // hits this handler; an old/buggy one still can't accidentally
+      // write a PNG to disk.
+      if (settings.clipboardImagePasteEnabled === false) {
+        return { ok: false, reason: "disabled" };
+      }
+
+      const IMAGE_EXTS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tif", ".tiff"]);
+
+      function pathFromClipboard(): string | null {
+        try {
+          if (process.platform === "win32") {
+            const buf = clipboard.readBuffer("CF_HDROP");
+            if (!buf || buf.length < 20) return null;
+            const offset = buf.readUInt32LE(0);
+            const wide = buf.readUInt32LE(16) !== 0;
+            const tail = buf.subarray(offset);
+            const text = wide ? tail.toString("utf16le") : tail.toString("ascii");
+            const first = text.split("\0").filter(Boolean)[0];
+            return first || null;
+          }
+          if (process.platform === "darwin") {
+            const buf = clipboard.readBuffer("public.file-url");
+            if (!buf || buf.length === 0) return null;
+            const url = buf.toString("utf8").trim();
+            if (!url.startsWith("file:")) return null;
+            return fileURLToPath(new URL(url));
+          }
+          const buf = clipboard.readBuffer("text/uri-list");
+          if (!buf || buf.length === 0) return null;
+          const first = buf
+            .toString("utf8")
+            .split("\n")
+            .map((s) => s.trim())
+            .find((s) => s && !s.startsWith("#"));
+          if (!first || !first.startsWith("file:")) return null;
+          return fileURLToPath(new URL(first));
+        } catch {
+          return null;
+        }
+      }
+
+      const clipPath = pathFromClipboard();
+      if (clipPath) {
+        const ext = path.extname(clipPath).toLowerCase();
+        if (IMAGE_EXTS.has(ext)) {
+          try {
+            const s = await stat(clipPath);
+            if (s.isFile()) {
+              return { ok: true, path: clipPath, source: "clipboard-path" };
+            }
+          } catch {
+            // Path was in the clipboard but the file is gone — fall through to bitmap save.
+          }
+        }
+      }
+
+      const img = clipboard.readImage();
+      if (img.isEmpty()) {
+        return { ok: false, reason: "no-image" };
+      }
+      // Resolve the target directory. Honour `clipboardImagePasteDir` if
+      // the user set it (with `~/` expansion for cross-platform comfort);
+      // otherwise fall back to a sensible OS default — macOS users expect
+      // screenshots on Desktop, Windows/Linux on Pictures/Screenshots.
+      const configured =
+        typeof settings.clipboardImagePasteDir === "string" ? settings.clipboardImagePasteDir.trim() : "";
+      function osDefaultDir(): string {
+        if (process.platform === "darwin") return path.join(homedir(), "Desktop");
+        return path.join(homedir(), "Pictures", "Screenshots");
+      }
+      function expandHome(p: string): string {
+        if (p === "~") return homedir();
+        if (p.startsWith("~/") || p.startsWith("~\\")) return path.join(homedir(), p.slice(2));
+        return p;
+      }
+      const dir = configured ? expandHome(configured) : osDefaultDir();
+      try {
+        await mkdir(dir, { recursive: true });
+      } catch (err) {
+        return { ok: false, reason: `mkdir-failed:${(err as Error)?.message || "unknown"}` };
+      }
+      // ISO-ish timestamp, filename-safe (no colons/dots).
+      const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+      const dest = path.join(dir, `strideterm-${ts}.png`);
+      try {
+        await writeFile(dest, img.toPNG());
+      } catch (err) {
+        return { ok: false, reason: `write-failed:${(err as Error)?.message || "unknown"}` };
+      }
+      return { ok: true, path: dest, source: "saved" };
+    }),
+  );
   ipcMain.handle("file:open-in-editor", async (_event, payload) =>
     withOperationPromise({ opId: "file:open-in-editor" }, async () => {
       const { absPath, editor } = payload || {};
@@ -1725,6 +1849,7 @@ export function registerIpc(
     ipcMain.removeHandler("notifications:metrics");
     ipcMain.removeHandler("terminal:restart");
     ipcMain.removeHandler("terminal:close");
+    ipcMain.removeHandler("terminal:replay");
     ipcMain.removeHandler("remote:token:regenerate");
     ipcMain.removeHandler("tunnel:refresh");
     ipcMain.removeHandler("tunnel:create");
@@ -1828,6 +1953,7 @@ export function registerIpc(
     ipcMain.removeHandler("file:copy");
     ipcMain.removeHandler("file:open-in-explorer");
     ipcMain.removeHandler("file:clipboard-copy");
+    ipcMain.removeHandler("clipboard:paste-image");
     ipcMain.removeHandler("file:open-in-editor");
     ipcMain.removeHandler("file:info");
     ipcMain.removeHandler("file:commit-files");

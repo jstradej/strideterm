@@ -107,6 +107,48 @@
       </small>
     </div>
 
+    <div v-if="!api?.isRemote">
+      <span class="section-label">Clipboard image paste</span>
+      <div class="settings-check" title="Master switch for the image-aware terminal paste behaviour described below.">
+        <label class="settings-check__row">
+          <input v-model="form.clipboardImagePasteEnabled" type="checkbox" />
+          <span>Save pasted screenshots and type the file path into the terminal</span>
+        </label>
+        <small class="settings-check__help">
+          When you press Ctrl/Cmd+V (or right-click paste) and the clipboard holds a screenshot, the image is saved as
+          <code>strideterm-&lt;timestamp&gt;.png</code> and the path is typed into the terminal — so CLIs like Claude
+          Code or Codex can read it off disk. Files already on disk that are also present in the clipboard (Snipping
+          Tool, ShareX, Greenshot) are used in place — no duplicate save. Turn this off for plain xterm paste behaviour.
+        </small>
+      </div>
+      <div class="clipboard-paste-dir" :class="{ 'clipboard-paste-dir--dim': !form.clipboardImagePasteEnabled }">
+        <div class="input-with-action">
+          <input
+            v-model="form.clipboardImagePasteDir"
+            :placeholder="`Leave empty for OS default (${clipboardImagePasteDefault})`"
+            class="settings-input"
+            :disabled="!form.clipboardImagePasteEnabled"
+            title="Folder where strIDEterm saves a PNG when you paste a screenshot into a terminal. The terminal then receives the file path so CLI tools like Claude Code can read the image. Leave empty to use the platform default."
+          />
+          <button
+            v-if="api?.browseDirectory"
+            type="button"
+            class="button button--ghost input-with-action__btn"
+            :disabled="!form.clipboardImagePasteEnabled"
+            title="Pick the folder where pasted clipboard screenshots get saved."
+            @click="browseClipboardImageDir"
+          >
+            Browse
+          </button>
+        </div>
+        <small class="help-text">
+          Folder where the screenshot file is saved. Leave empty to use the OS default (<code>~/Desktop</code> on macOS,
+          <code>~/Pictures/Screenshots</code> on Windows/Linux). A leading <code>~/</code> is expanded to your home
+          directory.
+        </small>
+      </div>
+    </div>
+
     <div>
       <span class="section-label">Cloudflared binary</span>
       <div class="input-with-action">
@@ -373,12 +415,42 @@ async function browseCloudflared() {
   const selected = await props.api.browseFile({ defaultPath: form.remoteAccess.cloudflaredPath });
   if (selected) form.remoteAccess.cloudflaredPath = selected;
 }
+
+// Hint text only — backend has the authoritative copy of this default.
+// Keep the two in sync if either changes.
+const clipboardImagePasteDefault = computed(() => {
+  const ua = typeof navigator !== "undefined" ? navigator.userAgent.toLowerCase() : "";
+  return ua.includes("mac") ? "~/Desktop" : "~/Pictures/Screenshots";
+});
+
+async function browseClipboardImageDir() {
+  if (!props.api?.browseDirectory) return;
+  const selected = (await props.api.browseDirectory(form.clipboardImagePasteDir || undefined)) as string | undefined;
+  if (selected) form.clipboardImagePasteDir = selected;
+}
 </script>
 
 <style scoped>
 .settings-general-tab {
   display: grid;
   gap: 20px;
+}
+
+/* Visual separator between top-level sections — keeps the increasingly
+   long General tab scannable. Last child has no border so the dialog
+   footer doesn't sit on a double line. */
+.settings-general-tab > div:not(:last-child) {
+  padding-bottom: 20px;
+  border-bottom: 1px solid var(--border);
+}
+
+.clipboard-paste-dir {
+  margin-top: 12px;
+  transition: opacity 0.12s ease;
+}
+
+.clipboard-paste-dir--dim {
+  opacity: 0.5;
 }
 
 .section-label {

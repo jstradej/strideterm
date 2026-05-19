@@ -622,6 +622,54 @@ describe("default state", () => {
       expect(state.settings.terminalFontSizeRemote).toBe(13);
     });
   });
+
+  describe("clipboardImagePasteDir setting", () => {
+    test("createDefaultState leaves clipboardImagePasteDir empty (OS default at use site)", () => {
+      const state = createDefaultState();
+      expect(state.settings.clipboardImagePasteDir).toBe("");
+    });
+
+    test("normalizeState backfills missing clipboardImagePasteDir to empty string", () => {
+      const state = normalizeState({ settings: { theme: "dark" } });
+      expect(state.settings.clipboardImagePasteDir).toBe("");
+    });
+
+    test("normalizeState preserves a string value", () => {
+      const state = normalizeState({
+        settings: { clipboardImagePasteDir: "~/Pictures/shots" },
+      });
+      expect(state.settings.clipboardImagePasteDir).toBe("~/Pictures/shots");
+    });
+
+    test("normalizeState falls back to empty string for non-string values", () => {
+      const state = normalizeState({
+        settings: { clipboardImagePasteDir: 42 },
+      });
+      expect(state.settings.clipboardImagePasteDir).toBe("");
+    });
+  });
+
+  describe("clipboardImagePasteEnabled setting", () => {
+    test("createDefaultState turns clipboardImagePasteEnabled on", () => {
+      const state = createDefaultState();
+      expect(state.settings.clipboardImagePasteEnabled).toBe(true);
+    });
+
+    test("normalizeState backfills missing key to true (pre-feature state files keep the new behaviour)", () => {
+      const state = normalizeState({ settings: { theme: "dark" } });
+      expect(state.settings.clipboardImagePasteEnabled).toBe(true);
+    });
+
+    test("normalizeState preserves an explicit false", () => {
+      const state = normalizeState({ settings: { clipboardImagePasteEnabled: false } });
+      expect(state.settings.clipboardImagePasteEnabled).toBe(false);
+    });
+
+    test("normalizeState falls back to true for non-boolean values", () => {
+      const state = normalizeState({ settings: { clipboardImagePasteEnabled: "yes" } });
+      expect(state.settings.clipboardImagePasteEnabled).toBe(true);
+    });
+  });
 });
 
 describe("normalizeWorkspaceGrid", () => {
