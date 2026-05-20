@@ -14,6 +14,7 @@ import { APP_CONFIG } from "../../config/app-config.js";
 import { getLogger } from "./logger.js";
 import { runEffect } from "./effect/runtime.js";
 import { PtySpawnError } from "./effect/errors/session-errors.js";
+import { tryDirectShellSpawn } from "./direct-shell-spawn.js";
 import type { SshManager } from "./ssh/ssh-manager.js";
 
 const log = getLogger("session-mgr");
@@ -468,6 +469,15 @@ export class SessionManager extends EventEmitter {
         sessionId: key,
       }) || null;
 
+    // If panel.command is a bare shell invocation (e.g. `wsl -- bash -lic "…"`,
+    // `pwsh -NoLogo`, `bash --login`), spawn that shell as the direct PTY
+    // child instead of typing the command into the OS default shell. Avoids
+    // the double-PTY layering (ConPTY → default shell → wsl/pwsh/…) that
+    // breaks SIGWINCH propagation on Windows — inner shell would otherwise
+    // stick at the default 80×24 and `tput lines` would lie.
+    const directShellLauncher =
+      !launchOverride?.file && !panel.launch?.file ? tryDirectShellSpawn(panel.command) : null;
+
     const launcher: { file: string; args: string[] } = launchOverride?.file
       ? {
           file: launchOverride.file,
@@ -478,7 +488,7 @@ export class SessionManager extends EventEmitter {
             file: panel.launch.file,
             args: [...(panel.launch.args || [])],
           }
-        : shellConfig();
+        : (directShellLauncher ?? shellConfig());
 
     const shellIntEnabled = state.settings?.notifications?.shellIntegration !== false;
     const integrationEnv = shellIntegrationEnv(launcher.file, shellIntEnabled);
@@ -588,7 +598,7 @@ export class SessionManager extends EventEmitter {
     const injectedCommand =
       typeof launchOverride?.command === "string" && launchOverride.command.trim()
         ? launchOverride.command
-        : !panel.launch?.file && !launchOverride?.file
+        : !panel.launch?.file && !launchOverride?.file && !directShellLauncher
           ? panel.command
           : "";
 
