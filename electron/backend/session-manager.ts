@@ -15,6 +15,7 @@ import { getLogger } from "./logger.js";
 import { runEffect } from "./effect/runtime.js";
 import { PtySpawnError } from "./effect/errors/session-errors.js";
 import { tryDirectShellSpawn } from "./direct-shell-spawn.js";
+import { applyShellIntegrationLaunch } from "./shell-integration-launch.js";
 import type { SshManager } from "./ssh/ssh-manager.js";
 
 const log = getLogger("session-mgr");
@@ -478,7 +479,7 @@ export class SessionManager extends EventEmitter {
     const directShellLauncher =
       !launchOverride?.file && !panel.launch?.file ? tryDirectShellSpawn(panel.command) : null;
 
-    const launcher: { file: string; args: string[] } = launchOverride?.file
+    let launcher: { file: string; args: string[] } = launchOverride?.file
       ? {
           file: launchOverride.file,
           args: [...(launchOverride.args || [])],
@@ -491,7 +492,16 @@ export class SessionManager extends EventEmitter {
         : (directShellLauncher ?? shellConfig());
 
     const shellIntEnabled = state.settings?.notifications?.shellIntegration !== false;
-    const integrationEnv = shellIntegrationEnv(launcher.file, shellIntEnabled);
+    const baseIntegrationEnv = shellIntegrationEnv(launcher.file, shellIntEnabled);
+    // Wire shell-integration into the launcher in the cleanest per-shell way:
+    //  - bash/sh: BASH_ENV already invisible, no change
+    //  - zsh: ZDOTDIR loader (replaces the visible typed `source <path>`)
+    //  - pwsh/powershell: -NoExit -Command "& '<path>'" args (replaces visible `.`)
+    // The result tells us whether to skip the legacy typed-source block below.
+    const integrationLaunch = applyShellIntegrationLaunch(launcher, baseIntegrationEnv);
+    launcher = integrationLaunch.launcher;
+    const integrationEnv = integrationLaunch.env;
+    const skipTypedSource = integrationLaunch.skipTypedSource;
 
     // Validate cwd before handing it to pty.spawn — on Windows an invalid
     // cwd produces a cryptic "Cannot create process, error code: 267"
@@ -602,10 +612,12 @@ export class SessionManager extends EventEmitter {
           ? panel.command
           : "";
 
-    // Auto-source shell integration for zsh and PowerShell.
-    // Bash is handled via PROMPT_COMMAND env var; these shells need explicit sourcing.
+    // Fallback typed-source path. Only fires for shells we don't know how to
+    // integrate cleanly (i.e. neither bash/sh via BASH_ENV, nor zsh via
+    // ZDOTDIR loader, nor pwsh via -Command). applyShellIntegrationLaunch
+    // returns skipTypedSource=false only in that defensive case.
     const integrationScript = integrationEnv.STRIDETERM_SHELL_INTEGRATION_SCRIPT;
-    if (integrationScript && session.status === "running" && session.processHandle) {
+    if (!skipTypedSource && integrationScript && session.status === "running" && session.processHandle) {
       const base = shellBasename(launcher.file);
       let sourceCmd = "";
       if (base === "zsh") {
