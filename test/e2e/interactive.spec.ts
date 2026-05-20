@@ -185,12 +185,14 @@ test.describe("Settings dialog", () => {
     assertNoErrors(page);
   });
 
-  test("Close button dismisses overlay completely", async ({ page }) => {
+  test("Escape dismisses overlay completely", async ({ page }) => {
     await openApp(page, mock);
     await page.locator("button[title^='Open the Settings dialog']").click();
     await expect(page.locator(".overlay")).toBeVisible({ timeout: 3_000 });
 
-    await page.locator(".overlay").getByText("Close").click();
+    // Esc is the canonical dismiss affordance; the in-dialog Close button
+    // was removed across all dialogs.
+    await page.keyboard.press("Escape");
     await expect(page.locator(".overlay")).not.toBeVisible({ timeout: 3_000 });
     // Settings button should still work after closing
     await page.locator("button[title^='Open the Settings dialog']").click();

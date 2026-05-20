@@ -147,11 +147,11 @@ test.describe("Task agent creation dialog", () => {
     assertNoErrors(page);
   });
 
-  test("closes dialog on Cancel", async ({ page }) => {
+  test("closes dialog on Escape", async ({ page }) => {
     await openApp(page, mock);
     await page.locator("button[title^='Create a task workspace']").click();
     await expect(page.locator(".overlay")).toBeVisible({ timeout: 3_000 });
-    await page.locator(".overlay").getByText("Close").click();
+    await page.keyboard.press("Escape");
     await expect(page.locator(".overlay")).not.toBeVisible({ timeout: 3_000 });
     assertNoErrors(page);
   });

@@ -80,8 +80,9 @@ test.describe("Multi-workspace state", () => {
     await page.locator("button[title^='Open the Settings dialog']").click();
     await expect(page.locator(".overlay")).toBeVisible({ timeout: 3_000 });
     await expect(page.locator(".overlay h2")).toHaveText("Settings");
-    // Close it
-    await page.locator(".overlay").getByText("Close").click();
+    // Close it — Esc is the canonical close affordance (no more Close button
+    // in the dialog header; backdrop click also disabled).
+    await page.keyboard.press("Escape");
     await expect(page.locator(".overlay")).not.toBeVisible({ timeout: 3_000 });
     assertNoErrors(page);
   });
