@@ -478,6 +478,18 @@ export function createDefaultState(): AppState & { activeProjectId: string; proj
       clipboardImagePasteEnabled: true,
       clipboardImagePasteDir: "",
     },
+    // Tab templates surface in Settings → Tab Templates and in the "+" tab
+    // quick-add dropdown. The `command` field has two runtime modes,
+    // distinguished by tryDirectShellSpawn (electron/backend/direct-shell-spawn.ts):
+    //  - shells in the allowlist (wsl / pwsh / powershell / cmd / bash / sh /
+    //    zsh / fish, no top-level shell operators) are spawned as the direct
+    //    PTY child. No typed injection happens; ConPTY → that shell, one layer.
+    //  - everything else (claude, codex, npm run dev, docker compose up, …)
+    //    spawns the OS default shell and types the command into it after a
+    //    short delay — needed for PATH lookup, aliases, and shell features.
+    // Keep this distinction in mind when adding templates: a "shell-like"
+    // template means just the binary name + flags; a "command-in-a-shell"
+    // template can use pipes, &&, env vars, etc.
     tabTemplates: [
       { id: "shell", title: "Shell", command: "", icon: "\u{1F4BB}" },
       { id: "powershell", title: "PowerShell", command: "powershell", icon: "\u{1F537}", platforms: ["win32"] },
