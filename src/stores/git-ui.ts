@@ -394,7 +394,7 @@ export const useGitUiStore = defineStore("git-ui", () => {
 
   async function gitLoadGraph(
     workspaceId: string,
-    opts: { limit?: number; includeRemotes?: boolean } = {},
+    opts: { limit?: number; includeRemotes?: boolean; branch?: string } = {},
   ): Promise<void> {
     if (!_api) return;
     const ui = ensure(workspaceId);
@@ -407,6 +407,7 @@ export const useGitUiStore = defineStore("git-ui", () => {
         rootPath,
         limit: opts.limit || 300,
         includeRemotes: opts.includeRemotes !== false,
+        branch: opts.branch || "",
       })) as { ok?: boolean; head?: string; commits?: unknown[]; refs?: Record<string, string>; error?: string };
       if (result?.ok) {
         ui.graph = {

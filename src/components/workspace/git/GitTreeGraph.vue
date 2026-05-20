@@ -1,100 +1,130 @@
 <template>
-  <div class="git-tree" :class="{ 'git-tree--loading': loading }">
+  <div class="git-tree" :class="{ 'git-tree--loading': loading, 'git-tree--compact': compact }">
     <div v-if="loading && !nodes.length" class="git-tree__placeholder">Loading commit graph…</div>
     <div v-else-if="error" class="git-tree__placeholder git-tree__placeholder--error">{{ error }}</div>
     <div v-else-if="!nodes.length" class="git-tree__placeholder">No commits found.</div>
-    <div
-      v-else
-      ref="scrollRef"
-      class="git-tree__scroll"
-      role="tree"
-      aria-label="Commit graph"
-      tabindex="0"
-      @keydown="onKeydown"
-    >
+    <template v-else>
+      <!-- Column header. Hidden in compact (mobile) mode where there's only one
+           text column anyway. Sticky so it stays visible during long scrolls. -->
+      <div v-if="!compact" class="git-tree__header">
+        <span class="git-tree__hcell git-tree__hcell--graph" :style="{ width: `${graphWidth}px` }"></span>
+        <span class="git-tree__hcell git-tree__hcell--subject">Subject</span>
+        <span class="git-tree__hcell git-tree__hcell--author">Author</span>
+        <span class="git-tree__hcell git-tree__hcell--date">Date</span>
+        <span class="git-tree__hcell git-tree__hcell--hash">Hash</span>
+      </div>
       <div
-        class="git-tree__viewport"
-        :style="{
-          height: `${nodes.length * ROW_HEIGHT}px`,
-          width: `${graphWidth + 600}px`,
-        }"
+        ref="scrollRef"
+        class="git-tree__scroll"
+        role="tree"
+        aria-label="Commit graph"
+        tabindex="0"
+        @keydown="onKeydown"
       >
-        <!-- SVG paints lanes + edges + dots; rows on top are normal DOM
-             so we get text wrapping, hover/tooltip, native click targets,
-             and selection styling. Same approach as JetBrains' VCS Log.
+        <!-- The viewport holds the row container; the SVG is absolutely
+             positioned over the leftmost column so lines align with each
+             row's vertical center. -->
+        <div class="git-tree__viewport" :style="{ minHeight: `${nodes.length * ROW_HEIGHT}px` }">
+          <!--
+            SVG paints lanes + edges + dots; rows on top are normal DOM
+            so we get text wrapping, hover/tooltip, native click targets,
+            and selection styling. Same approach as JetBrains' VCS Log.
 
-             Off-the-shelf options evaluated and rejected:
-               - @gitgraph/js / @gitgraph/react: renders synthetic in-memory
-                 history only (no `git log` input), no Vue binding, no
-                 virtualization. Wrong shape for our IPC-driven data.
-               - vue-git-graph / git-graph-vue: unmaintained (last release
-                 3+ years ago), no TS types, no keyboard nav, would still
-                 force us to write the lane algorithm.
-               - gitgraph.js (1.x): deprecated by upstream in favor of
-                 @gitgraph/* family above.
-             Our SVG renderer is ~600 lines, type-safe, virtualization-ready,
-             matches our theme tokens, and ships zero new dependencies. -->
-        <svg
-          class="git-tree__svg"
-          :width="graphWidth"
-          :height="nodes.length * ROW_HEIGHT"
-          :viewBox="`0 0 ${graphWidth} ${nodes.length * ROW_HEIGHT}`"
-          aria-hidden="true"
-        >
-          <g v-for="edge in edges" :key="edge.id">
-            <path :d="edge.d" :stroke="edge.color" stroke-width="1.6" fill="none" stroke-linecap="round" />
-          </g>
-          <g v-for="node in nodes" :key="`dot:${node.hash}`">
-            <circle
-              :cx="laneX(node.lane)"
-              :cy="node.y + ROW_HEIGHT / 2"
-              :r="node.isHead ? 5 : 4"
-              :fill="laneColor(node.lane)"
-              :stroke="node.isHead ? '#ffffff' : 'transparent'"
-              stroke-width="1.5"
-            />
-            <circle
-              v-if="node.isHead"
-              :cx="laneX(node.lane)"
-              :cy="node.y + ROW_HEIGHT / 2"
-              r="8"
-              fill="none"
-              :stroke="laneColor(node.lane)"
-              stroke-width="1.2"
-              opacity="0.55"
-            />
-          </g>
-        </svg>
+            Off-the-shelf options evaluated and rejected:
+              - @gitgraph/js / @gitgraph/react: renders synthetic in-memory
+                history only (no `git log` input), no Vue binding, no
+                virtualization. Wrong shape for our IPC-driven data.
+              - vue-git-graph / git-graph-vue: unmaintained (last release
+                3+ years ago), no TS types, no keyboard nav, would still
+                force us to write the lane algorithm.
+              - gitgraph.js (1.x): deprecated by upstream in favor of
+                @gitgraph/* family above.
+            Our SVG renderer is type-safe, virtualization-ready, matches
+            our theme tokens, and ships zero new dependencies.
+          -->
+          <svg
+            class="git-tree__svg"
+            :width="graphWidth"
+            :height="nodes.length * ROW_HEIGHT"
+            :viewBox="`0 0 ${graphWidth} ${nodes.length * ROW_HEIGHT}`"
+            aria-hidden="true"
+          >
+            <g v-for="edge in edges" :key="edge.id">
+              <path :d="edge.d" :stroke="edge.color" :stroke-width="EDGE_WIDTH" fill="none" stroke-linecap="round" />
+            </g>
+            <g v-for="node in nodes" :key="`dot:${node.hash}`">
+              <circle
+                v-if="node.isHead"
+                :cx="laneX(node.lane)"
+                :cy="node.y + ROW_HEIGHT / 2"
+                :r="DOT_RADIUS + 4"
+                fill="none"
+                :stroke="laneColor(node.lane)"
+                stroke-width="1.2"
+                opacity="0.55"
+              />
+              <circle
+                :cx="laneX(node.lane)"
+                :cy="node.y + ROW_HEIGHT / 2"
+                :r="node.isMerge ? DOT_RADIUS - 0.5 : DOT_RADIUS"
+                :fill="node.isMerge ? 'var(--surface, #1d2026)' : laneColor(node.lane)"
+                :stroke="laneColor(node.lane)"
+                stroke-width="1.6"
+              />
+            </g>
+          </svg>
 
-        <div
-          v-for="node in nodes"
-          :key="`row:${node.hash}`"
-          :class="['git-tree__row', { 'git-tree__row--selected': node.hash === selectedHash }]"
-          :style="{ top: `${node.y}px`, height: `${ROW_HEIGHT}px`, paddingLeft: `${graphWidth + 6}px` }"
-          role="treeitem"
-          :aria-selected="node.hash === selectedHash ? 'true' : 'false'"
-          :title="`${node.shortHash} — ${node.subject}\n${node.author} • ${node.relativeDate}`"
-          @click="select(node)"
-          @dblclick="onDoubleClick(node)"
-        >
-          <span class="git-tree__cell git-tree__cell--refs">
-            <span
-              v-for="ref in node.refs"
-              :key="ref.label"
-              :class="['git-tree__ref', `git-tree__ref--${ref.kind}`]"
-              :title="ref.title"
-            >
-              <span class="git-tree__ref-icon" aria-hidden="true">{{ ref.icon }}</span>
-              {{ ref.label }}
+          <div
+            v-for="node in nodes"
+            :key="`row:${node.hash}`"
+            :class="['git-tree__row', { 'git-tree__row--selected': node.hash === selectedHash }]"
+            :style="{
+              top: `${node.y}px`,
+              height: `${ROW_HEIGHT}px`,
+              paddingLeft: `${graphWidth + 4}px`,
+              borderLeftColor: node.hash === selectedHash ? laneColor(node.lane) : 'transparent',
+            }"
+            role="treeitem"
+            :aria-selected="node.hash === selectedHash ? 'true' : 'false'"
+            :title="rowTooltip(node)"
+            @click="select(node)"
+            @dblclick="onDoubleClick(node)"
+          >
+            <span class="git-tree__cell git-tree__cell--subject">
+              <span
+                v-for="ref in node.refs"
+                :key="ref.label"
+                :class="['git-tree__ref', `git-tree__ref--${ref.kind}`]"
+                :title="ref.title"
+              >
+                <span class="git-tree__ref-icon" aria-hidden="true">{{ ref.icon }}</span>
+                <span class="git-tree__ref-label">{{ ref.label }}</span>
+              </span>
+              <span class="git-tree__subject" :class="{ 'git-tree__subject--merge': node.isMerge }">{{
+                node.subject
+              }}</span>
             </span>
-          </span>
-          <span class="git-tree__cell git-tree__cell--subject">{{ node.subject }}</span>
-          <span class="git-tree__cell git-tree__cell--author">{{ node.author }}</span>
-          <span class="git-tree__cell git-tree__cell--date">{{ node.relativeDate }}</span>
-          <span class="git-tree__cell git-tree__cell--hash">{{ node.shortHash }}</span>
+            <span v-if="!compact" class="git-tree__cell git-tree__cell--author">{{ node.author }}</span>
+            <span v-if="!compact" class="git-tree__cell git-tree__cell--date" :title="node.isoDate">{{
+              node.relativeDate
+            }}</span>
+            <span
+              v-if="!compact"
+              class="git-tree__cell git-tree__cell--hash"
+              :title="`Click to copy ${node.hash}`"
+              @click.stop="copyHash(node.hash)"
+              >{{ node.shortHash }}</span
+            >
+            <span
+              v-if="compact"
+              class="git-tree__cell git-tree__cell--mobile-meta"
+              :title="`${node.author} • ${node.isoDate}`"
+              >{{ node.relativeDate }}</span
+            >
+          </div>
         </div>
       </div>
-    </div>
+    </template>
     <div v-if="loading && nodes.length" class="git-tree__refresh-overlay" aria-hidden="true">refreshing…</div>
   </div>
 </template>
@@ -121,15 +151,29 @@ const props = withDefaults(
     selectedHash?: string;
     loading?: boolean;
     error?: string;
+    compact?: boolean;
   }>(),
-  { commits: () => [], head: "", refs: () => ({}), selectedHash: "", loading: false, error: "" },
+  {
+    commits: () => [],
+    head: "",
+    refs: () => ({}),
+    selectedHash: "",
+    loading: false,
+    error: "",
+    compact: false,
+  },
 );
 
 const emit = defineEmits<{ (e: "select", hash: string): void; (e: "open", hash: string): void }>();
 
-const ROW_HEIGHT = 26;
-const LANE_GAP = 16;
-const LANE_START_X = 14;
+// Layout constants — tightened (vs the earlier draft) to match JetBrains'
+// VCS Log row density. ROW_HEIGHT=22 fits ~26 rows in a 600px viewport
+// without feeling cramped; LANE_GAP=14 keeps multi-branch graphs readable.
+const ROW_HEIGHT = 22;
+const LANE_GAP = 14;
+const LANE_START_X = 12;
+const DOT_RADIUS = 4.2;
+const EDGE_WIDTH = 1.7;
 
 // Branch lane colors — picked for high contrast against both light and dark
 // backgrounds. Cycled by index, just like IDEA / Wappler / gitkraken.
@@ -169,9 +213,11 @@ interface GraphNode {
   subject: string;
   author: string;
   relativeDate: string;
+  isoDate: string;
   lane: number;
   y: number;
   isHead: boolean;
+  isMerge: boolean;
   refs: GraphRefBadge[];
 }
 
@@ -181,30 +227,9 @@ interface GraphEdge {
   color: string;
 }
 
-// --- Graph layout (lane assignment + edge paths) -------------------------
-//
-// Algorithm (linearized "sand-pile" walk):
-//   • Walk commits in input order (already date-ordered).
-//   • Maintain a list of "active lanes" — each holding the next hash we
-//     expect to see in that lane.
-//   • For each commit C with hash h and parents [p1, p2, …]:
-//       - Find existing lanes whose tip == h. The leftmost one becomes
-//         C's home lane; any others merge into it (draw a converging edge
-//         and free those lanes).
-//       - If no lane was reserved for h (root commit, or a topo branch we
-//         haven't entered yet), claim the leftmost free lane.
-//       - Replace the home lane's tip with p1 (first parent — keeps the
-//         "main" line straight); for each additional parent open a new
-//         lane on its right.
-//       - Carry over every other active lane to the next row at the same
-//         column (vertical edge segment).
-//
-// Result: per-row node lane + a list of straight/curved edges for the SVG.
-// Worst-case columns ≈ max concurrent open branches.
-
 interface LaneState {
-  tip: string; // hash this lane is currently expecting
-  color: number; // color index (kept stable across the lane's life)
+  tip: string;
+  color: number;
 }
 
 interface LayoutResult {
@@ -213,8 +238,21 @@ interface LayoutResult {
   width: number;
 }
 
+// Build lane assignment + edge paths.
+//
+// We walk commits in date order (newest first). Each "active lane" remembers
+// the hash it is currently expecting. For commit C:
+//   1. find lanes whose tip == C.hash — leftmost becomes C's home lane.
+//      Other matching lanes merge into it (one curve drawn per merger).
+//   2. if no lane was waiting for C, claim the leftmost free lane.
+//   3. replace home lane's tip with C's first parent (keeps the line
+//      straight); for each additional parent, open a new lane on the
+//      right and draw a branch-out curve.
+//   4. continue every other still-active lane straight to the next row.
+//
+// Width = (max active lane + 1) × LANE_GAP + padding.
 function buildLayout(commits: RawCommit[], head: string): LayoutResult {
-  if (!commits.length) return { nodes: [], edges: [], width: 60 };
+  if (!commits.length) return { nodes: [], edges: [], width: 40 };
 
   const nodes: GraphNode[] = [];
   const edges: GraphEdge[] = [];
@@ -222,16 +260,10 @@ function buildLayout(commits: RawCommit[], head: string): LayoutResult {
   let maxLane = 0;
   let nextColor = 0;
 
-  // Reserve colors for known heads so the main branch keeps lane color
-  // 0 (amber) even when the first commit we see isn't actually on it.
-  // First commit in the list is treated as the most-recent point of the
-  // graph, so amber will follow that lane.
-
   for (let i = 0; i < commits.length; i++) {
     const commit = commits[i];
     const y = i * ROW_HEIGHT;
 
-    // 1) find existing lanes that resolve to this commit
     const reservingLanes: number[] = [];
     for (let l = 0; l < lanes.length; l++) {
       const lane = lanes[l];
@@ -243,65 +275,44 @@ function buildLayout(commits: RawCommit[], head: string): LayoutResult {
     if (reservingLanes.length) {
       homeLane = reservingLanes[0];
       homeColor = lanes[homeLane]!.color;
-      // close any duplicate lanes — draw their tail into homeLane
       for (let k = 1; k < reservingLanes.length; k++) {
         const closingLane = reservingLanes[k];
-        const prevPos = lanes[closingLane]!;
-        // edge from closingLane (at row i, top) merging into homeLane bottom
+        const closingColor = lanes[closingLane]!.color;
+        // Curve from the lane's position one row up down into the dot.
         edges.push({
           id: `m:${commit.hash}:${closingLane}->${homeLane}`,
           d: laneMergePath(closingLane, homeLane, y),
-          color: laneColor(prevPos.color),
+          color: laneColor(closingColor),
         });
         lanes[closingLane] = null;
       }
     } else {
-      // no reservation — open a new lane to host this commit
       const free = lanes.findIndex((l) => l === null);
       homeLane = free >= 0 ? free : lanes.length;
-      // For the very first iteration, force color 0 (head/main alignment).
       if (i === 0 && head && commit.hash === head) {
         homeColor = 0;
         nextColor = Math.max(nextColor, 1);
       } else {
         homeColor = nextColor++;
       }
-      if (free >= 0) {
-        lanes[free] = { tip: "", color: homeColor };
-      } else {
-        lanes.push({ tip: "", color: homeColor });
-      }
+      if (free >= 0) lanes[free] = { tip: "", color: homeColor };
+      else lanes.push({ tip: "", color: homeColor });
     }
 
     maxLane = Math.max(maxLane, homeLane);
 
-    // 2) draw the vertical "carry over" edges from every still-active lane
-    //    into the next row (we'll close them next iteration if they hit).
-    //    Skip homeLane — it will be redirected below to its first parent.
-
-    // 3) replace homeLane.tip with first parent (keeps the line straight)
-    //    and open new lanes for additional parents.
     const parents = commit.parents || [];
     const firstParent = parents[0] || "";
-    if (firstParent) {
-      lanes[homeLane] = { tip: firstParent, color: homeColor };
-    } else {
-      // root commit — close the lane
-      lanes[homeLane] = null;
-    }
+    if (firstParent) lanes[homeLane] = { tip: firstParent, color: homeColor };
+    else lanes[homeLane] = null;
 
     for (let p = 1; p < parents.length; p++) {
       const parentHash = parents[p];
-      // open a fresh lane to the right of homeLane for this parent
       const free = lanes.findIndex((l) => l === null);
       const newLane = free >= 0 ? free : lanes.length;
       const newColor = nextColor++;
-      if (free >= 0) {
-        lanes[free] = { tip: parentHash, color: newColor };
-      } else {
-        lanes.push({ tip: parentHash, color: newColor });
-      }
-      // edge from commit dot diagonally out to newLane
+      if (free >= 0) lanes[free] = { tip: parentHash, color: newColor };
+      else lanes.push({ tip: parentHash, color: newColor });
       edges.push({
         id: `b:${commit.hash}->${parentHash}:${newLane}`,
         d: laneBranchPath(homeLane, newLane, y),
@@ -310,31 +321,27 @@ function buildLayout(commits: RawCommit[], head: string): LayoutResult {
       maxLane = Math.max(maxLane, newLane);
     }
 
-    // 4) After updating lanes for this row, draw vertical/curved continuation
-    //    edges from this row's tops down to the next row's bottom for every
-    //    active lane (including homeLane). We don't know yet which ones will
-    //    merge in row i+1 — those will draw additional merge segments next
-    //    iteration. The straight carry-over still looks correct.
     if (i + 1 < commits.length) {
       const yNext = (i + 1) * ROW_HEIGHT;
+      const yMid = y + ROW_HEIGHT / 2;
+      const yMidNext = yNext + ROW_HEIGHT / 2;
       for (let l = 0; l < lanes.length; l++) {
         const lane = lanes[l];
         if (!lane) continue;
-        // Don't double-draw the homeLane-first-parent vertical when the
-        // parent is the next commit in the list — it produces a cleaner
-        // line than two overlapping segments.
         if (l === homeLane) {
-          // straight down from commit dot to next row bottom
+          // straight line from THIS dot to next row's vertical center
           edges.push({
             id: `s:${commit.hash}:${l}`,
-            d: `M ${laneX(l)} ${y + ROW_HEIGHT / 2} L ${laneX(l)} ${yNext + ROW_HEIGHT / 2}`,
+            d: `M ${laneX(l)} ${yMid} L ${laneX(l)} ${yMidNext}`,
             color: laneColor(lane.color),
           });
         } else {
-          // vertical from top of this row through bottom of next
+          // vertical from top of this row to mid of next (line passes
+          // *through* this row without a dot — that's by design, this
+          // lane is just passing by)
           edges.push({
             id: `v:${commit.hash}:${l}`,
-            d: `M ${laneX(l)} ${y} L ${laneX(l)} ${yNext + ROW_HEIGHT / 2}`,
+            d: `M ${laneX(l)} ${y} L ${laneX(l)} ${yMidNext}`,
             color: laneColor(lane.color),
           });
         }
@@ -348,37 +355,41 @@ function buildLayout(commits: RawCommit[], head: string): LayoutResult {
       subject: commit.subject,
       author: commit.author,
       relativeDate: commit.relativeDate,
+      isoDate: commit.isoDate,
       lane: homeLane,
       y,
       isHead: head === commit.hash,
+      isMerge: (commit.parents || []).length >= 2,
       refs: classifyRefs(commit.refs || []),
     });
   }
 
-  // Trim trailing nulls so width is accurate
   while (lanes.length && lanes[lanes.length - 1] === null) lanes.pop();
   const widthLanes = Math.max(maxLane + 1, 1);
-  return { nodes, edges, width: LANE_START_X + widthLanes * LANE_GAP + 10 };
+  return { nodes, edges, width: LANE_START_X + widthLanes * LANE_GAP + 6 };
 }
 
 function laneMergePath(fromLane: number, toLane: number, y: number): string {
-  // diagonal merge into the dot at (toLane, y + ROW_HEIGHT/2)
+  // Curve coming in from a previously-active lane (drawn one row above)
+  // into the dot of the current row.
   const x1 = laneX(fromLane);
   const x2 = laneX(toLane);
   const yTop = y - ROW_HEIGHT / 2;
   const yMid = y + ROW_HEIGHT / 2;
-  const midY = (yTop + yMid) / 2;
-  return `M ${x1} ${yTop} C ${x1} ${midY} ${x2} ${midY} ${x2} ${yMid}`;
+  const cY1 = yTop + (yMid - yTop) * 0.55;
+  const cY2 = yTop + (yMid - yTop) * 0.45;
+  return `M ${x1} ${yTop} C ${x1} ${cY1} ${x2} ${cY2} ${x2} ${yMid}`;
 }
 
 function laneBranchPath(fromLane: number, toLane: number, y: number): string {
-  // diagonal branch-out from commit dot to the new lane below
+  // Branch-out from current dot to a new lane on the row below.
   const x1 = laneX(fromLane);
   const x2 = laneX(toLane);
   const yMid = y + ROW_HEIGHT / 2;
   const yBot = y + ROW_HEIGHT + ROW_HEIGHT / 2;
-  const midY = (yMid + yBot) / 2;
-  return `M ${x1} ${yMid} C ${x1} ${midY} ${x2} ${midY} ${x2} ${yBot}`;
+  const cY1 = yMid + (yBot - yMid) * 0.45;
+  const cY2 = yMid + (yBot - yMid) * 0.55;
+  return `M ${x1} ${yMid} C ${x1} ${cY1} ${x2} ${cY2} ${x2} ${yBot}`;
 }
 
 function classifyRefs(refs: string[]): GraphRefBadge[] {
@@ -395,7 +406,6 @@ function classifyRefs(refs: string[]): GraphRefBadge[] {
       out.push({ label: ref, kind: "branch", icon: "⎇", title: `Local branch ${ref}` });
     }
   }
-  // Always lead with HEAD so the eye finds the active commit instantly
   out.sort((a, b) => (a.kind === "head" ? -1 : b.kind === "head" ? 1 : 0));
   return out;
 }
@@ -407,14 +417,25 @@ const graphWidth = computed(() => layout.value.width);
 
 const scrollRef = ref<HTMLElement | null>(null);
 
+function rowTooltip(node: GraphNode): string {
+  return `${node.shortHash} — ${node.subject}\n${node.author} • ${node.relativeDate}${
+    node.refs.length ? `\n${node.refs.map((r) => r.label).join(", ")}` : ""
+  }`;
+}
+
 function select(node: GraphNode) {
-  if (props.selectedHash !== node.hash) {
-    emit("select", node.hash);
-  }
+  if (props.selectedHash !== node.hash) emit("select", node.hash);
 }
 
 function onDoubleClick(node: GraphNode) {
   emit("open", node.hash);
+}
+
+function copyHash(hash: string) {
+  if (typeof navigator === "undefined" || !navigator.clipboard) return;
+  navigator.clipboard.writeText(hash).catch(() => {
+    // best-effort, no toast — clipboard rejection is harmless here
+  });
 }
 
 function onKeydown(event: KeyboardEvent) {
@@ -430,10 +451,15 @@ function onKeydown(event: KeyboardEvent) {
     if (next) emit("select", next.hash);
   } else if (event.key === "Enter") {
     if (cur >= 0) emit("open", nodes.value[cur].hash);
+  } else if (event.key === "Home") {
+    event.preventDefault();
+    emit("select", nodes.value[0].hash);
+  } else if (event.key === "End") {
+    event.preventDefault();
+    emit("select", nodes.value[nodes.value.length - 1].hash);
   }
 }
 
-// Auto-scroll the selected row into view when selection changes from outside.
 watch(
   () => props.selectedHash,
   (hash) => {
@@ -462,6 +488,33 @@ watch(
   overflow: hidden;
 }
 
+.git-tree__header {
+  display: grid;
+  grid-template-columns: var(--graph-col, 60px) minmax(160px, 1fr) minmax(80px, max-content) minmax(
+      60px,
+      max-content
+    ) minmax(50px, max-content);
+  gap: 10px;
+  padding: 4px 10px 4px 4px;
+  background: rgba(255, 255, 255, 0.03);
+  border-bottom: 1px solid var(--border);
+  font-size: 10px;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  color: var(--muted);
+  font-weight: 600;
+  flex: 0 0 auto;
+}
+
+.git-tree--compact .git-tree__header {
+  display: none;
+}
+
+.git-tree__hcell--graph {
+  /* spacer — actual width set inline so it matches the SVG */
+  display: inline-block;
+}
+
 .git-tree__scroll {
   flex: 1;
   min-height: 0;
@@ -478,6 +531,7 @@ watch(
 
 .git-tree__viewport {
   position: relative;
+  min-width: 100%;
 }
 
 .git-tree__svg {
@@ -492,15 +546,21 @@ watch(
   left: 0;
   right: 0;
   display: grid;
-  grid-template-columns:
-    minmax(110px, max-content) minmax(120px, 1fr) minmax(100px, max-content) minmax(70px, max-content)
-    minmax(60px, max-content);
+  grid-template-columns: minmax(200px, 1fr) minmax(80px, max-content) minmax(60px, max-content) minmax(
+      50px,
+      max-content
+    );
   gap: 10px;
   align-items: center;
   padding-right: 10px;
   cursor: pointer;
   white-space: nowrap;
+  border-left: 2px solid transparent;
   border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+}
+
+.git-tree--compact .git-tree__row {
+  grid-template-columns: 1fr minmax(60px, max-content);
 }
 
 .git-tree__row:hover {
@@ -514,14 +574,32 @@ watch(
 .git-tree__cell {
   overflow: hidden;
   text-overflow: ellipsis;
+  min-width: 0;
 }
 
 .git-tree__cell--subject {
   color: var(--text);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: nowrap;
+}
+
+.git-tree__subject {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.git-tree__subject--merge {
+  color: var(--muted);
+  font-style: italic;
 }
 
 .git-tree__cell--author,
-.git-tree__cell--date {
+.git-tree__cell--date,
+.git-tree__cell--mobile-meta {
   color: var(--muted);
   font-size: 11px;
 }
@@ -530,14 +608,11 @@ watch(
   color: var(--accent);
   font-family: var(--font-mono, ui-monospace, "SF Mono", monospace);
   font-weight: 600;
+  cursor: copy;
 }
 
-.git-tree__cell--refs {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  flex-wrap: nowrap;
-  overflow-x: hidden;
+.git-tree__cell--hash:hover {
+  text-decoration: underline;
 }
 
 .git-tree__ref {
@@ -545,20 +620,25 @@ watch(
   align-items: center;
   gap: 3px;
   font-size: 10px;
-  padding: 1px 6px;
+  padding: 1px 5px;
   border-radius: 3px;
   background: rgba(255, 255, 255, 0.06);
   color: var(--muted);
-  text-transform: none;
-  letter-spacing: 0;
   font-weight: 600;
-  max-width: 220px;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  max-width: 180px;
+  flex: 0 0 auto;
+  line-height: 1.4;
 }
 
 .git-tree__ref-icon {
-  font-size: 10px;
+  font-size: 9px;
+  flex: 0 0 auto;
+}
+
+.git-tree__ref-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .git-tree__ref--head {
@@ -589,6 +669,8 @@ watch(
   color: var(--muted);
   font-style: italic;
   font-size: 12px;
+  padding: 16px;
+  text-align: center;
 }
 
 .git-tree__placeholder--error {

@@ -42,6 +42,7 @@
             :selected-hash="selectedHash"
             :loading="graphLoading"
             :error="graphError"
+            :compact="isMobile"
             @select="onSelectCommit"
             @open="onOpenCommitDialog"
           />
@@ -103,7 +104,7 @@ const props = withDefaults(
 
 const appStore = useAppStore();
 const gitUiStore = useGitUiStore();
-const { isNarrow } = useIsNarrow();
+const { isNarrow, isMobile } = useIsNarrow();
 
 const includeRemotes = ref(true);
 const limit = ref<number>(300);
