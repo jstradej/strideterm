@@ -232,5 +232,68 @@ export function createGitHandlers(ctx: GitHandlerCtx) {
       const rootPath = resolveRootPath(workspace, payload.rootPath);
       return runGitWorkspaceAction(workspace, git.forcePushWithLease(workspace, { connection, rootPath }));
     },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async gitListBranches(payload: any = {}, windowId?: string) {
+      const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId, windowId);
+      const rootPath = resolveRootPath(workspace, payload.rootPath);
+      return git.listBranches(workspace, { rootPath });
+    },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async gitDeleteBranch(payload: any = {}, windowId?: string) {
+      const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId, windowId);
+      const rootPath = resolveRootPath(workspace, payload.rootPath);
+      return runGitWorkspaceAction(
+        workspace,
+        git.deleteBranch(workspace, { branch: payload.branch, force: !!payload.force, rootPath }),
+      );
+    },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async gitDeleteRemoteBranch(payload: any = {}, windowId?: string) {
+      const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId, windowId);
+      const connection = resolveGitConnection(workspace);
+      const rootPath = resolveRootPath(workspace, payload.rootPath);
+      return runGitWorkspaceAction(
+        workspace,
+        git.deleteRemoteBranch(workspace, {
+          branch: payload.branch,
+          remote: payload.remote || "origin",
+          connection,
+          rootPath,
+        }),
+      );
+    },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async gitRenameBranch(payload: any = {}, windowId?: string) {
+      const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId, windowId);
+      const rootPath = resolveRootPath(workspace, payload.rootPath);
+      return runGitWorkspaceAction(
+        workspace,
+        git.renameBranch(workspace, { branch: payload.branch, newName: payload.newName, rootPath }),
+      );
+    },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async gitCheckoutRemoteBranch(payload: any = {}, windowId?: string) {
+      const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId, windowId);
+      const rootPath = resolveRootPath(workspace, payload.rootPath);
+      return runGitWorkspaceAction(
+        workspace,
+        git.checkoutRemoteBranch(workspace, {
+          remoteBranch: payload.remoteBranch,
+          localBranch: payload.localBranch || "",
+          rootPath,
+        }),
+      );
+    },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async gitLogGraph(payload: any = {}, windowId?: string) {
+      const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId, windowId);
+      const rootPath = resolveRootPath(workspace, payload.rootPath);
+      return git.logGraph(workspace, {
+        rootPath,
+        limit: payload.limit || 300,
+        includeRemotes: payload.includeRemotes !== false,
+        branch: payload.branch || "",
+      });
+    },
   };
 }

@@ -2211,6 +2211,417 @@ export class GitManager extends EventEmitter {
     });
   }
 
+  // ─── Branch list & graph (Branches sub-tab / commit tree visualization) ──
+
+  /**
+   * Enumerate local and remote branches with last-commit metadata and
+   * ahead/behind counts vs the current HEAD. Powers the JetBrains-style
+   * Branches sub-tab. Single batched read per branch via for-each-ref so
+   * the call is bounded by O(branches) and not O(branches × commits).
+   */
+  async listBranches(
+    workspace: WorkspaceRef | null,
+    { rootPath = "" }: { rootPath?: string } = {},
+  ): Promise<{
+    ok: boolean;
+    current: string;
+    upstream: string;
+    local: Array<{
+      name: string;
+      isCurrent: boolean;
+      upstream: string;
+      ahead: number;
+      behind: number;
+      lastCommit: string;
+      lastSubject: string;
+      lastAuthor: string;
+      lastRelativeDate: string;
+      merged: boolean;
+    }>;
+    remotes: Array<{
+      name: string;
+      remote: string;
+      shortName: string;
+      lastCommit: string;
+      lastSubject: string;
+      lastAuthor: string;
+      lastRelativeDate: string;
+    }>;
+    error?: string;
+  }> {
+    const cwd = rootPath || workspace?.cwd || "";
+    const empty = { ok: false, current: "", upstream: "", local: [], remotes: [] };
+    if (!cwd) return { ...empty, error: "Missing rootPath" };
+
+    try {
+      const fmt = [
+        "%(refname)", // 0 full ref
+        "%(refname:short)", // 1 short name
+        "%(HEAD)", // 2 "*" if HEAD
+        "%(upstream:short)", // 3 upstream short (locals only)
+        "%(upstream:track,nobracket)", // 4 e.g. "ahead 2, behind 1" (locals)
+        "%(objectname:short)", // 5 short commit hash
+        "%(contents:subject)", // 6 subject
+        "%(authorname)", // 7 author
+        "%(committerdate:relative)", // 8 relative date
+      ].join("%09");
+
+      const [localResult, remoteResult, currentBranchResult, upstreamResult] = await Promise.all([
+        this.execGit(cwd, ["for-each-ref", `--format=${fmt}`, "--sort=-committerdate", "refs/heads"]).catch(() => ({
+          stdout: "",
+          stderr: "",
+        })),
+        this.execGit(cwd, [
+          "for-each-ref",
+          `--format=${fmt}`,
+          "--sort=-committerdate",
+          "refs/remotes",
+        ]).catch(() => ({ stdout: "", stderr: "" })),
+        this.execGit(cwd, ["rev-parse", "--abbrev-ref", "HEAD"]).catch(() => ({ stdout: "HEAD", stderr: "" })),
+        this.execGit(cwd, ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"]).catch(() => ({
+          stdout: "",
+          stderr: "",
+        })),
+      ]);
+
+      const current = currentBranchResult.stdout.trim();
+      const upstream = upstreamResult.stdout.trim();
+
+      // Parse local branches. We capture ahead/behind from upstream:track but
+      // also resolve a synthetic "vs HEAD" pair so the UI can show how each
+      // branch relates to the currently checked-out one (matches IDEA's
+      // "compare with current" tooltip).
+      const localLines = String(localResult.stdout || "")
+        .split(/\r?\n/)
+        .filter(Boolean);
+      const local = localLines.map((line) => {
+        const parts = line.split("\t");
+        const fullRef = parts[0] || "";
+        const shortName = parts[1] || fullRef.replace(/^refs\/heads\//, "");
+        const isCurrent = (parts[2] || "").trim() === "*";
+        const upstreamShort = (parts[3] || "").trim();
+        const track = (parts[4] || "").trim();
+        let ahead = 0;
+        let behind = 0;
+        // upstream:track,nobracket emits e.g. "ahead 3", "behind 1",
+        // "ahead 2, behind 1", or "" / "gone".
+        const aheadMatch = /ahead\s+(\d+)/.exec(track);
+        const behindMatch = /behind\s+(\d+)/.exec(track);
+        if (aheadMatch) ahead = parseInt(aheadMatch[1], 10) || 0;
+        if (behindMatch) behind = parseInt(behindMatch[1], 10) || 0;
+        return {
+          name: shortName,
+          isCurrent,
+          upstream: upstreamShort,
+          ahead,
+          behind,
+          lastCommit: parts[5] || "",
+          lastSubject: parts[6] || "",
+          lastAuthor: parts[7] || "",
+          lastRelativeDate: parts[8] || "",
+          merged: false,
+        };
+      });
+
+      // Per-branch ahead/behind vs HEAD (current branch). This is what
+      // IDEA's "Compare with current" surfaces. Done in parallel so we
+      // don't pay N round-trips serially for a 50-branch repo.
+      if (current && current !== "HEAD") {
+        await Promise.all(
+          local.map(async (entry) => {
+            if (entry.isCurrent || entry.name === current) return;
+            try {
+              const result = await this.execGit(cwd, [
+                "rev-list",
+                "--left-right",
+                "--count",
+                `${current}...${entry.name}`,
+              ]);
+              const counts = parseRevListCount(result.stdout);
+              // left = current ahead of entry; right = entry ahead of current
+              // We expose ahead/behind from the *entry's* perspective only
+              // when we don't already have upstream tracking info.
+              if (!entry.upstream) {
+                entry.ahead = counts.right;
+                entry.behind = counts.left;
+              }
+              // merged: HEAD reaches entry.name with 0 remaining
+              entry.merged = counts.right === 0;
+            } catch {
+              // ignore — branch refs may not be reachable
+            }
+          }),
+        );
+      }
+
+      // Parse remote branches; skip "<remote>/HEAD" symbolic ref to avoid
+      // duplicates pointing at the default branch.
+      const remoteLines = String(remoteResult.stdout || "")
+        .split(/\r?\n/)
+        .filter(Boolean);
+      const remotes = remoteLines
+        .map((line) => {
+          const parts = line.split("\t");
+          const shortName = parts[1] || "";
+          const slash = shortName.indexOf("/");
+          const remote = slash >= 0 ? shortName.slice(0, slash) : "";
+          const branchShort = slash >= 0 ? shortName.slice(slash + 1) : shortName;
+          return {
+            name: shortName,
+            remote,
+            shortName: branchShort,
+            lastCommit: parts[5] || "",
+            lastSubject: parts[6] || "",
+            lastAuthor: parts[7] || "",
+            lastRelativeDate: parts[8] || "",
+          };
+        })
+        .filter((entry) => entry.shortName && entry.shortName !== "HEAD");
+
+      return { ok: true, current, upstream, local, remotes };
+    } catch (error) {
+      return { ...empty, error: extractErrorMessage(error) };
+    }
+  }
+
+  async deleteBranch(
+    workspace: WorkspaceRef,
+    { branch, force = false, rootPath = "" }: { branch?: string; force?: boolean; rootPath?: string } = {},
+  ): Promise<Record<string, unknown>> {
+    const name = String(branch || "").trim();
+    if (!name) {
+      return createStructuredResult({ ok: false, summary: "Branch name is required." });
+    }
+    if (name.startsWith("-")) {
+      return createStructuredResult({ ok: false, summary: "Invalid branch name." });
+    }
+    return this.runWriteAction(workspace, {
+      type: "delete-branch",
+      label: `Delete branch ${name}`,
+      allowDirty: true,
+      skipPreflight: true,
+      run: async (cwd) => this.execGit(cwd, ["branch", force ? "-D" : "-d", name]),
+      rootPath,
+    });
+  }
+
+  async deleteRemoteBranch(
+    workspace: WorkspaceRef,
+    {
+      branch,
+      remote = "origin",
+      connection = null,
+      rootPath = "",
+    }: { branch?: string; remote?: string; connection?: Connection | null; rootPath?: string } = {},
+  ): Promise<Record<string, unknown>> {
+    const name = String(branch || "").trim();
+    const remoteName = String(remote || "origin").trim();
+    if (!name) {
+      return createStructuredResult({ ok: false, summary: "Branch name is required." });
+    }
+    if (name.startsWith("-") || remoteName.startsWith("-")) {
+      return createStructuredResult({ ok: false, summary: "Invalid branch or remote name." });
+    }
+    return this.runWriteAction(workspace, {
+      type: "delete-remote-branch",
+      label: `Delete remote branch ${remoteName}/${name}`,
+      allowDirty: true,
+      skipPreflight: true,
+      run: async (cwd) =>
+        this.execAuthGit(cwd, ["push", remoteName, `:refs/heads/${name}`], { connection }),
+      connection,
+      rootPath,
+    });
+  }
+
+  async renameBranch(
+    workspace: WorkspaceRef,
+    {
+      branch,
+      newName,
+      rootPath = "",
+    }: { branch?: string; newName?: string; rootPath?: string } = {},
+  ): Promise<Record<string, unknown>> {
+    const from = String(branch || "").trim();
+    const to = String(newName || "").trim();
+    if (!to) {
+      return createStructuredResult({ ok: false, summary: "New branch name is required." });
+    }
+    if (from.startsWith("-") || to.startsWith("-")) {
+      return createStructuredResult({ ok: false, summary: "Invalid branch name." });
+    }
+    const args = from ? ["branch", "-m", from, to] : ["branch", "-m", to];
+    return this.runWriteAction(workspace, {
+      type: "rename-branch",
+      label: from ? `Rename branch ${from} → ${to}` : `Rename current branch → ${to}`,
+      allowDirty: true,
+      skipPreflight: true,
+      run: async (cwd) => this.execGit(cwd, args),
+      rootPath,
+    });
+  }
+
+  async checkoutRemoteBranch(
+    workspace: WorkspaceRef,
+    {
+      remoteBranch,
+      localBranch = "",
+      rootPath = "",
+    }: { remoteBranch?: string; localBranch?: string; rootPath?: string } = {},
+  ): Promise<Record<string, unknown>> {
+    const remote = String(remoteBranch || "").trim();
+    if (!remote) {
+      return createStructuredResult({ ok: false, summary: "Remote branch is required." });
+    }
+    if (remote.startsWith("-")) {
+      return createStructuredResult({ ok: false, summary: "Invalid remote branch." });
+    }
+    // Derive a sensible local name when caller didn't pin one: strip the
+    // leading "<remote>/" segment so "origin/feat-x" → "feat-x".
+    const derived = localBranch.trim() || remote.replace(/^[^/]+\//, "");
+    if (!derived || derived.startsWith("-")) {
+      return createStructuredResult({ ok: false, summary: "Invalid local branch name." });
+    }
+    return this.runWriteAction(workspace, {
+      type: "checkout-remote",
+      label: `Checkout ${remote}`,
+      skipPreflight: true,
+      run: async (cwd) => this.execGit(cwd, ["checkout", "-b", derived, "--track", remote]),
+      rootPath,
+    });
+  }
+
+  /**
+   * Topology log for the commit graph visualization. Returns commits with
+   * full parents and decoration so the renderer can build the lanes itself
+   * (so we can be JetBrains/Wappler-style without depending on git's own
+   * --graph ASCII art). Includes all local and remote branches plus HEAD
+   * by default so the picture matches IDEA's unified Log view.
+   *
+   * Output is deliberately compact — only the fields the SVG renderer
+   * needs — and capped via `limit`. Caller decides how many commits to
+   * render at once.
+   */
+  async logGraph(
+    workspace: WorkspaceRef | null,
+    {
+      rootPath = "",
+      limit = 300,
+      includeRemotes = true,
+      branch = "",
+    }: { rootPath?: string; limit?: number; includeRemotes?: boolean; branch?: string } = {},
+  ): Promise<{
+    ok: boolean;
+    head: string;
+    commits: Array<{
+      hash: string;
+      shortHash: string;
+      parents: string[];
+      subject: string;
+      author: string;
+      relativeDate: string;
+      isoDate: string;
+      refs: string[];
+    }>;
+    refs: Record<string, string>;
+    error?: string;
+  }> {
+    const cwd = rootPath || workspace?.cwd || "";
+    if (!cwd) return { ok: false, head: "", commits: [], refs: {}, error: "Missing rootPath" };
+    const safeLimit = Math.max(1, Math.min(2000, Math.floor(limit)));
+
+    // Choose what to walk:
+    //   - branch (string)            → just that ref
+    //   - includeRemotes=false       → only local heads + HEAD
+    //   - default                    → all heads + remotes + HEAD (IDEA "Log")
+    let walkArgs: string[];
+    if (branch && !branch.startsWith("-")) {
+      walkArgs = [branch];
+    } else if (includeRemotes) {
+      walkArgs = ["--branches", "--remotes", "--tags", "HEAD"];
+    } else {
+      walkArgs = ["--branches", "HEAD"];
+    }
+
+    // Use a unit-separator we can split on safely (subjects often contain
+    // tabs / pipes / commas). The 0x1f character is unlikely in real text.
+    const SEP = "";
+    const fmt = ["%H", "%h", "%P", "%s", "%an", "%cr", "%cI", "%D"].join(SEP);
+
+    try {
+      const result = await this.execGit(cwd, [
+        "log",
+        `--pretty=format:${fmt}`,
+        "--date-order",
+        "-n",
+        String(safeLimit),
+        ...walkArgs,
+      ]);
+      const refs: Record<string, string> = {};
+      const lines = String(result.stdout || "")
+        .split(/\r?\n/)
+        .filter(Boolean);
+      const commits = lines.map((line) => {
+        const [hash = "", shortHash = "", parentList = "", subject = "", author = "", relativeDate = "", isoDate = "", decoration = ""] =
+          line.split(SEP);
+        const parents = parentList
+          .split(/\s+/)
+          .map((p) => p.trim())
+          .filter(Boolean);
+        // %D emits "HEAD -> main, origin/main, tag: v1" — split into clean
+        // refs while remembering HEAD's resolved branch ("main" above).
+        const decoTokens = decoration
+          .split(",")
+          .map((t) => t.trim())
+          .filter(Boolean);
+        const cleanRefs: string[] = [];
+        for (const token of decoTokens) {
+          if (token.startsWith("HEAD -> ")) {
+            const target = token.slice(8).trim();
+            cleanRefs.push("HEAD");
+            cleanRefs.push(target);
+            refs["HEAD"] = hash;
+            refs[target] = hash;
+          } else if (token === "HEAD") {
+            cleanRefs.push("HEAD");
+            refs["HEAD"] = hash;
+          } else if (token.startsWith("tag: ")) {
+            const tagName = token.slice(5).trim();
+            cleanRefs.push(`tag:${tagName}`);
+            refs[`tag:${tagName}`] = hash;
+          } else {
+            cleanRefs.push(token);
+            refs[token] = hash;
+          }
+        }
+        return {
+          hash,
+          shortHash,
+          parents,
+          subject,
+          author,
+          relativeDate,
+          isoDate,
+          refs: cleanRefs,
+        };
+      });
+      // Resolve HEAD even when the decoration didn't include it (e.g. on
+      // detached HEAD where %D only shows the surrounding branch).
+      let head = refs["HEAD"] || "";
+      if (!head) {
+        try {
+          const headResult = await this.execGit(cwd, ["rev-parse", "HEAD"]);
+          head = headResult.stdout.trim();
+        } catch {
+          // ignore
+        }
+      }
+      return { ok: true, head, commits, refs };
+    } catch (error) {
+      return { ok: false, head: "", commits: [], refs: {}, error: extractErrorMessage(error) };
+    }
+  }
+
   async restoreStridetermStash(cwd: string): Promise<string> {
     try {
       const result = await this.execGit(cwd, ["stash", "list"]);

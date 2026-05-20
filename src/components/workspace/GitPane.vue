@@ -240,6 +240,24 @@
           :switch-branch-options-list="switchBranchOptionsList"
         />
 
+        <!-- ===== Branches tab (JetBrains-style branch list) ===== -->
+        <GitBranchesTab
+          v-else-if="activeTab === 'branches'"
+          :workspace-id="workspaceId"
+          :snapshot="snapshot"
+          :git-ui="gitUi"
+          :is-review-workspace="isReviewWorkspace"
+        />
+
+        <!-- ===== Graph tab (commit tree visualization) ===== -->
+        <GitGraphTab
+          v-else-if="activeTab === 'graph'"
+          :workspace-id="workspaceId"
+          :snapshot="snapshot"
+          :git-ui="gitUi"
+          :active-root-path="activeRootPath"
+        />
+
         <!-- ===== Changes tab ===== -->
         <GitChangesTab
           v-else-if="activeTab === 'changes'"
@@ -353,6 +371,8 @@ import { useAppStore } from "../../stores/app.js";
 import { useGitUiStore } from "../../stores/git-ui.js";
 import PaneShell from "../layout/PaneShell.vue";
 import GitBranchTab from "./git/GitBranchTab.vue";
+import GitBranchesTab from "./git/GitBranchesTab.vue";
+import GitGraphTab from "./git/GitGraphTab.vue";
 import GitChangesTab from "./git/GitChangesTab.vue";
 import GitHistoryTab from "./git/GitHistoryTab.vue";
 import GitPullRequestTab from "./git/GitPullRequestTab.vue";
@@ -691,11 +711,13 @@ watch(snapshot, (newSnapshot) => {
 const tabs = computed(() => {
   const list = [
     { id: "branch", label: "Branch", badge: operation.value.inProgress ? "!" : "" },
+    { id: "branches", label: "Branches", badge: "" },
     {
       id: "changes",
       label: "Changes",
       badge: (snapshot.value?.dirtyCount || 0) > 0 ? String(snapshot.value?.dirtyCount ?? 0) : "",
     },
+    { id: "graph", label: "Graph", badge: "" },
     { id: "history", label: "History", badge: "" },
     { id: "pr", label: "Pull Request", badge: "" },
     { id: "tags", label: "Tags", badge: "" },

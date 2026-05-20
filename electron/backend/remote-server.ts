@@ -1168,6 +1168,36 @@ async function handleApiRequest(
       return;
     }
 
+    if (request.method === "POST" && url.pathname === "/api/git/list-branches") {
+      json(response, 200, await runtime.gitListBranches(body));
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/git/delete-branch") {
+      json(response, 200, await runtime.gitDeleteBranch(body));
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/git/delete-remote-branch") {
+      json(response, 200, await runtime.gitDeleteRemoteBranch(body));
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/git/rename-branch") {
+      json(response, 200, await runtime.gitRenameBranch(body));
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/git/checkout-remote-branch") {
+      json(response, 200, await runtime.gitCheckoutRemoteBranch(body));
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/git/log-graph") {
+      json(response, 200, await runtime.gitLogGraph(body));
+      return;
+    }
+
     // Docker endpoints are validated through the same zod schemas as the
     // Electron IPC channel so a remote/mobile client can't bypass the
     // argv-safety guards (no leading '-', length caps, character whitelists)
@@ -1801,6 +1831,12 @@ export async function startRemoteServer({
         "/api/git/push-all-tags": (body, windowId) => runtime.gitPushAllTags(body, windowId),
         "/api/git/delete-remote-tag": (body, windowId) => runtime.gitDeleteRemoteTag(body, windowId),
         "/api/git/force-push-with-lease": (body, windowId) => runtime.gitForcePushWithLease(body, windowId),
+        "/api/git/list-branches": (body, windowId) => runtime.gitListBranches(body, windowId),
+        "/api/git/delete-branch": (body, windowId) => runtime.gitDeleteBranch(body, windowId),
+        "/api/git/delete-remote-branch": (body, windowId) => runtime.gitDeleteRemoteBranch(body, windowId),
+        "/api/git/rename-branch": (body, windowId) => runtime.gitRenameBranch(body, windowId),
+        "/api/git/checkout-remote-branch": (body, windowId) => runtime.gitCheckoutRemoteBranch(body, windowId),
+        "/api/git/log-graph": (body, windowId) => runtime.gitLogGraph(body, windowId),
         // Grid mutations resolve their target profile from windowId. Without
         // the slot-aware path a mobile client bound to profile B would mutate
         // profile A's grid (runtime falls back to windowSlots[0] when no

@@ -48,6 +48,12 @@ import {
   gitLogPageSchema,
   gitCommitSchema,
   gitTagSchema,
+  gitBranchListSchema,
+  gitBranchDeleteSchema,
+  gitRemoteBranchDeleteSchema,
+  gitBranchRenameSchema,
+  gitCheckoutRemoteSchema,
+  gitLogGraphSchema,
   dockerActionSchema,
   dockerSessionSchema,
   dockerLogsOpenSchema,
@@ -1101,6 +1107,40 @@ export function registerIpc(
       runtime.gitForcePushWithLease(p),
     );
   });
+  ipcMain.handle("git:list-branches", async (_event, payload) =>
+    withOperationPromise({ opId: "git:list-branches" }, () =>
+      runtime.gitListBranches(validateIpc(gitBranchListSchema, payload, "git:list-branches")),
+    ),
+  );
+  ipcMain.handle("git:delete-branch", async (_event, payload) => {
+    const p = validateIpc(gitBranchDeleteSchema, payload, "git:delete-branch");
+    return withOperationPromise({ workspaceId: p.workspaceId, opId: "git:delete-branch" }, () =>
+      runtime.gitDeleteBranch(p),
+    );
+  });
+  ipcMain.handle("git:delete-remote-branch", async (_event, payload) => {
+    const p = validateIpc(gitRemoteBranchDeleteSchema, payload, "git:delete-remote-branch");
+    return withOperationPromise({ workspaceId: p.workspaceId, opId: "git:delete-remote-branch" }, () =>
+      runtime.gitDeleteRemoteBranch(p),
+    );
+  });
+  ipcMain.handle("git:rename-branch", async (_event, payload) => {
+    const p = validateIpc(gitBranchRenameSchema, payload, "git:rename-branch");
+    return withOperationPromise({ workspaceId: p.workspaceId, opId: "git:rename-branch" }, () =>
+      runtime.gitRenameBranch(p),
+    );
+  });
+  ipcMain.handle("git:checkout-remote-branch", async (_event, payload) => {
+    const p = validateIpc(gitCheckoutRemoteSchema, payload, "git:checkout-remote-branch");
+    return withOperationPromise({ workspaceId: p.workspaceId, opId: "git:checkout-remote-branch" }, () =>
+      runtime.gitCheckoutRemoteBranch(p),
+    );
+  });
+  ipcMain.handle("git:log-graph", async (_event, payload) =>
+    withOperationPromise({ opId: "git:log-graph" }, () =>
+      runtime.gitLogGraph(validateIpc(gitLogGraphSchema, payload, "git:log-graph")),
+    ),
+  );
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   ipcMain.handle("docker:action", async (_event, actionOrPayload: any, containerIdArg?: any) =>
     withOperationPromise({ opId: "docker:action" }, async () => {

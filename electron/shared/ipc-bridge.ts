@@ -373,6 +373,16 @@ export interface StridetermAPI {
   gitPushAllTags: (payload: GitPayload) => Promise<unknown>;
   gitDeleteRemoteTag: (payload: GitTag) => Promise<unknown>;
   gitForcePushWithLease: (payload: GitPayload) => Promise<unknown>;
+  gitListBranches: (payload: GitPayload) => Promise<unknown>;
+  gitDeleteBranch: (payload: GitPayload & { branch: string; force?: boolean }) => Promise<unknown>;
+  gitDeleteRemoteBranch: (payload: GitPayload & { branch: string; remote?: string }) => Promise<unknown>;
+  gitRenameBranch: (payload: GitPayload & { branch?: string; newName: string }) => Promise<unknown>;
+  gitCheckoutRemoteBranch: (
+    payload: GitPayload & { remoteBranch: string; localBranch?: string },
+  ) => Promise<unknown>;
+  gitLogGraph: (
+    payload: GitPayload & { limit?: number; includeRemotes?: boolean; branch?: string },
+  ) => Promise<unknown>;
   openLazygitSession: (payload: GitPayload) => Promise<unknown>;
   createWorktree: (payload: WorktreePayload) => Promise<unknown>;
 

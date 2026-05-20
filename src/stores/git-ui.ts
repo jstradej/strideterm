@@ -47,6 +47,24 @@ interface GitUiState {
   tagsError?: string;
   remoteBranches?: unknown[];
   remoteBranchesLoading?: boolean;
+  branchesLoading?: boolean;
+  branchesError?: string;
+  branchList?: {
+    current: string;
+    upstream: string;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    local: any[];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    remotes: any[];
+  };
+  graphLoading?: boolean;
+  graphError?: string;
+  graph?: {
+    head: string;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    commits: any[];
+    refs: Record<string, string>;
+  };
   overrideBaseBranch?: string;
   baseComparison?: {
     baseBranch: string;
@@ -302,6 +320,108 @@ export const useGitUiStore = defineStore("git-ui", () => {
         rootPath,
       }),
     );
+  }
+
+  // --- Branch list & graph (Branches sub-tab) ---
+
+  async function gitListBranches(workspaceId: string): Promise<void> {
+    if (!_api) return;
+    const ui = ensure(workspaceId);
+    ui.branchesLoading = true;
+    try {
+      const rootPath = getActiveRoot(workspaceId);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const result = (await (_api as any).gitListBranches({ workspaceId, rootPath })) as any;
+      if (result?.ok) {
+        ui.branchList = {
+          current: result.current || "",
+          upstream: result.upstream || "",
+          local: result.local || [],
+          remotes: result.remotes || [],
+        };
+        ui.branchesError = "";
+      } else {
+        ui.branchList = { current: "", upstream: "", local: [], remotes: [] };
+        ui.branchesError = result?.error || "Failed to load branches.";
+      }
+    } catch (error) {
+      ui.branchList = { current: "", upstream: "", local: [], remotes: [] };
+      ui.branchesError = (error as Error)?.message || "Failed to load branches.";
+    } finally {
+      ui.branchesLoading = false;
+    }
+  }
+
+  async function gitDeleteBranch(workspaceId: string, branch: string, force: boolean): Promise<void> {
+    const rootPath = getActiveRoot(workspaceId);
+    await runGitAction(workspaceId, "delete-branch", () =>
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (_api as any).gitDeleteBranch({ workspaceId, branch, force, rootPath }),
+    );
+    await gitListBranches(workspaceId);
+  }
+
+  async function gitDeleteRemoteBranch(workspaceId: string, branch: string, remote: string): Promise<void> {
+    const rootPath = getActiveRoot(workspaceId);
+    await runGitAction(workspaceId, "delete-remote-branch", () =>
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (_api as any).gitDeleteRemoteBranch({ workspaceId, branch, remote, rootPath }),
+    );
+    await gitListBranches(workspaceId);
+  }
+
+  async function gitRenameBranch(workspaceId: string, branch: string, newName: string): Promise<void> {
+    const rootPath = getActiveRoot(workspaceId);
+    await runGitAction(workspaceId, "rename-branch", () =>
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (_api as any).gitRenameBranch({ workspaceId, branch, newName, rootPath }),
+    );
+    await gitListBranches(workspaceId);
+  }
+
+  async function gitCheckoutRemoteBranch(
+    workspaceId: string,
+    remoteBranch: string,
+    localBranch: string,
+  ): Promise<void> {
+    const rootPath = getActiveRoot(workspaceId);
+    await runGitAction(workspaceId, "checkout-remote", () =>
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (_api as any).gitCheckoutRemoteBranch({ workspaceId, remoteBranch, localBranch, rootPath }),
+    );
+    await gitListBranches(workspaceId);
+  }
+
+  async function gitLoadGraph(workspaceId: string, opts: { limit?: number; includeRemotes?: boolean } = {}): Promise<void> {
+    if (!_api) return;
+    const ui = ensure(workspaceId);
+    ui.graphLoading = true;
+    try {
+      const rootPath = getActiveRoot(workspaceId);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const result = (await (_api as any).gitLogGraph({
+        workspaceId,
+        rootPath,
+        limit: opts.limit || 300,
+        includeRemotes: opts.includeRemotes !== false,
+      })) as { ok?: boolean; head?: string; commits?: unknown[]; refs?: Record<string, string>; error?: string };
+      if (result?.ok) {
+        ui.graph = {
+          head: result.head || "",
+          commits: result.commits || [],
+          refs: result.refs || {},
+        };
+        ui.graphError = "";
+      } else {
+        ui.graph = { head: "", commits: [], refs: {} };
+        ui.graphError = result?.error || "Failed to load graph.";
+      }
+    } catch (error) {
+      ui.graph = { head: "", commits: [], refs: {} };
+      ui.graphError = (error as Error)?.message || "Failed to load graph.";
+    } finally {
+      ui.graphLoading = false;
+    }
   }
 
   async function bulkFetch(workspaceId: string): Promise<void> {
@@ -965,6 +1085,12 @@ export const useGitUiStore = defineStore("git-ui", () => {
     revealRoot,
     gitCheckoutBranch,
     gitCreateBranch,
+    gitListBranches,
+    gitDeleteBranch,
+    gitDeleteRemoteBranch,
+    gitRenameBranch,
+    gitCheckoutRemoteBranch,
+    gitLoadGraph,
     setPendingGitAction,
     setPendingDestructiveAction,
     clearPendingGitAction,

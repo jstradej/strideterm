@@ -245,6 +245,53 @@ export const gitTagSchema = z.object({
 });
 export type GitTag = z.infer<typeof gitTagSchema>;
 
+export const gitBranchListSchema = z.object({
+  workspaceId: nonEmptyString,
+  rootPath: z.string().optional(),
+});
+export type GitBranchList = z.infer<typeof gitBranchListSchema>;
+
+export const gitBranchDeleteSchema = z.object({
+  workspaceId: nonEmptyString,
+  branch: safeGitRef,
+  force: z.boolean().optional(),
+  rootPath: z.string().optional(),
+});
+export type GitBranchDelete = z.infer<typeof gitBranchDeleteSchema>;
+
+export const gitRemoteBranchDeleteSchema = z.object({
+  workspaceId: nonEmptyString,
+  branch: safeGitRef,
+  remote: safeGitRef.optional(),
+  rootPath: z.string().optional(),
+});
+export type GitRemoteBranchDelete = z.infer<typeof gitRemoteBranchDeleteSchema>;
+
+export const gitBranchRenameSchema = z.object({
+  workspaceId: nonEmptyString,
+  branch: safeGitRef.optional(),
+  newName: safeGitRef,
+  rootPath: z.string().optional(),
+});
+export type GitBranchRename = z.infer<typeof gitBranchRenameSchema>;
+
+export const gitCheckoutRemoteSchema = z.object({
+  workspaceId: nonEmptyString,
+  remoteBranch: safeGitRef,
+  localBranch: safeGitRef.optional(),
+  rootPath: z.string().optional(),
+});
+export type GitCheckoutRemote = z.infer<typeof gitCheckoutRemoteSchema>;
+
+export const gitLogGraphSchema = z.object({
+  workspaceId: nonEmptyString,
+  rootPath: z.string().optional(),
+  limit: z.number().int().min(1).max(2000).optional(),
+  includeRemotes: z.boolean().optional(),
+  branch: safeGitRef.optional(),
+});
+export type GitLogGraph = z.infer<typeof gitLogGraphSchema>;
+
 // Safe identifier: alphanumeric + dash/underscore/colon, max 128 chars, cannot start with '-'.
 const safeDockerId = z
   .string()
