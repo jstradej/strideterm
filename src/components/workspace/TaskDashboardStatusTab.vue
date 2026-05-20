@@ -99,6 +99,85 @@
       </div>
     </div>
 
+    <!-- Completion hero — shown after Worker finishes (verdict 'completed' /
+         'failed'). Mirrors the idle hero so the user has a clear "what's next"
+         affordance instead of staring at a frozen pipeline. Primary action is
+         a fresh run with an editable brief; secondary is overriding the judge's
+         verdict via Send back. -->
+    <div v-if="showCompletionHero" class="td__hero td__hero--done">
+      <div class="td__hero-eyebrow" :class="completionEyebrowClass">{{ completionEyebrow }}</div>
+
+      <div class="td__hero-editor">
+        <label class="td__hero-editor-label" for="td-done-brief">What's next? Edit the brief and start again:</label>
+        <textarea
+          id="td-done-brief"
+          v-model="briefDraft"
+          class="td__hero-textarea"
+          rows="4"
+          :maxlength="TASK_BRIEF_MAX_CHARS"
+          placeholder="e.g. Add input validation to the signup form."
+          title="Edit the brief, then press Start new run (or Ctrl+Enter / Cmd+Enter)"
+          @keydown.ctrl.enter.exact.prevent="onStartNew"
+          @keydown.meta.enter.exact.prevent="onStartNew"
+        ></textarea>
+        <div class="td__hero-editor-meta">
+          <span class="td__hero-editor-tip">{{ TASK_BRIEF_HINT }}</span>
+          <span
+            class="td__hero-editor-counter"
+            :class="{ 'td__hero-editor-counter--near-limit': briefDraft.length > TASK_BRIEF_MAX_CHARS * 0.9 }"
+          >
+            {{ formatBriefCounter(briefDraft.length) }}
+          </span>
+        </div>
+      </div>
+
+      <div class="td__hero-actions">
+        <button
+          type="button"
+          class="button td__hero-start"
+          :class="{ 'td__hero-start--disabled': !canStart }"
+          :disabled="!canStart"
+          :title="
+            canStart
+              ? 'Clears rounds and starts a fresh run with the brief above (Ctrl+Enter)'
+              : 'Write a task brief first'
+          "
+          @click="onStartNew"
+        >
+          <span class="td__hero-start-icon" aria-hidden="true">&#9654;</span>
+          Start new run
+        </button>
+        <button
+          type="button"
+          class="button button--ghost td__hero-secondary"
+          title="Override the verdict and send the Worker back with feedback for one more round — keeps the current history"
+          @click="$emit('reject-verdict')"
+        >
+          Send Worker back
+        </button>
+      </div>
+
+      <div class="td__hero-footer">
+        <button
+          type="button"
+          class="td__link-btn"
+          title="Open the Task tab to write or edit the brief in a full editor"
+          @click="$emit('open-assignment')"
+        >
+          Open Task tab
+        </button>
+        <span class="td__hero-sep">&middot;</span>
+        <button
+          type="button"
+          class="td__link-btn"
+          title="Open the Config tab to change Worker/Judge agents or max rounds"
+          @click="$emit('open-config')"
+        >
+          Adjust config
+        </button>
+      </div>
+    </div>
+
     <!-- Pipeline flow — horizontal -->
     <div v-if="!showIdleHero" class="td__pipeline">
       <template v-for="(step, i) in pipelineSteps" :key="step.id">
@@ -214,6 +293,8 @@ const props = withDefaults(
 
 const emit = defineEmits<{
   (e: "start", brief?: string): void;
+  (e: "start-new", brief?: string): void;
+  (e: "reject-verdict"): void;
   (e: "open-assignment"): void;
   (e: "open-config"): void;
 }>();
@@ -245,6 +326,15 @@ function onStart() {
   }
 }
 
+// "Start new run" from the completion hero — clears rounds and runs again with
+// the (possibly edited) brief. The parent owns the reset+update+start sequence;
+// here we just hand off the draft. Gated on a non-empty brief, same as idle.
+function onStartNew() {
+  const draft = briefDraft.value.trim();
+  if (!draft) return;
+  emit("start-new", draft);
+}
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const api = inject<any>("api");
 const selectedRound = ref<number | null>(null);
@@ -257,6 +347,17 @@ const roundsChronological = computed(() => props.taskState?.rounds || []);
 // After Reset, rounds are cleared too, so the hero re-appears on each fresh
 // run — matching the "always idle && empty" intent.
 const showIdleHero = computed(() => props.taskState?.state === "idle" && !roundsChronological.value.length);
+
+// Completion hero — terminal verdict state. Mirrors idle hero structure so
+// the user has a consistent "edit brief + start" affordance instead of
+// landing on a static pipeline with no obvious next action.
+const showCompletionHero = computed(
+  () => props.taskState?.state === "completed" || props.taskState?.state === "failed",
+);
+const completionEyebrow = computed(() => (props.taskState?.state === "failed" ? "Task failed" : "Task complete"));
+const completionEyebrowClass = computed(() =>
+  props.taskState?.state === "failed" ? "td__hero-eyebrow--failed" : "td__hero-eyebrow--complete",
+);
 
 // Start is gated on having a brief — either in persisted state or freshly
 // typed into the inline editor. The textarea is the primary path for new
@@ -701,6 +802,34 @@ function formatTime(iso: string | null | undefined): string {
 }
 .td__link-btn:hover {
   opacity: 0.8;
+}
+
+/* ── Completion hero (variant of .td__hero) ──────────────────── */
+/* Tighter padding than idle hero — pipeline + rounds stay visible
+   below, so the hero should invite, not dominate. */
+.td__hero--done {
+  padding: 18px 20px 16px;
+  gap: 10px;
+  background: radial-gradient(circle at 50% 0%, rgba(60, 200, 120, 0.08), transparent 60%), rgba(255, 255, 255, 0.02);
+}
+.td__hero-eyebrow--complete {
+  color: rgba(60, 200, 120, 0.95);
+}
+.td__hero-eyebrow--failed {
+  color: rgba(230, 110, 110, 0.95);
+}
+.td__hero-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  justify-content: center;
+  margin-top: 2px;
+}
+.td__hero-secondary {
+  padding: 9px 16px;
+  font-size: 13px;
+  font-weight: 600;
 }
 
 /* ── Horizontal pipeline ──────────────────────────────────────── */

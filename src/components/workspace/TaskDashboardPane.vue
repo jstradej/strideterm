@@ -93,6 +93,8 @@
           :worker-provider-label="workerProviderLabel"
           :judge-provider-label="judgeProviderLabel"
           @start="onStartWithBrief"
+          @start-new="onStartNewRun"
+          @reject-verdict="onRejectVerdict"
           @open-assignment="openAssignment"
           @open-config="activeTab = 'config'"
         />
@@ -351,6 +353,32 @@ async function onStartWithBrief(brief?: string) {
     }
   }
   await onStart();
+}
+
+// "Start new run" from the completion hero — reset (clear rounds), persist the
+// edited brief if it changed, then start fresh. Without the reset the runtime
+// would resume the existing task as round N+1; we want a clean slate so the
+// user gets the same shape as the initial run.
+async function onStartNewRun(brief?: string) {
+  const id = wsId();
+  if (!api || !id) return;
+  const trimmed = (brief || "").trim();
+  if (!trimmed) return;
+  try {
+    const reset = await api.resetTask({ workspaceId: id });
+    if (reset?.payload) store.handleBroadcastPayload(reset.payload);
+    const current = (taskState.value?.description || "").trim();
+    if (trimmed !== current) {
+      const r = await api.updateTaskDescription({ workspaceId: id, description: trimmed });
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const payload = (r as any)?.payload;
+      if (payload) store.handleBroadcastPayload(payload);
+    }
+    await store.startTaskWithHookCheck(id);
+    activeTab.value = "status";
+  } catch (err) {
+    console.error("[task-dashboard] start-new failed:", err);
+  }
 }
 
 async function onStart() {
