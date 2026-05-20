@@ -5,7 +5,6 @@
         <p class="eyebrow">Agent Task Runner</p>
         <h2>Agent hooks not configured</h2>
       </div>
-      <button type="button" class="button button--ghost" @click="emit('cancel')">Close</button>
     </div>
     <div class="form">
       <p class="info-box info-box--warning">

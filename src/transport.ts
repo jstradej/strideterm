@@ -46,6 +46,11 @@ export interface Transport extends Partial<
   Omit<StridetermAPI, "onConnectionState" | "onSwitchWorkspace" | "onSwitchProject" | "onSwitchTab">
 > {
   isRemote: boolean;
+  /** Manual state refresh — refetches /api/state and broadcasts the result.
+   * Provided by the remote transport (no-op or absent for the Electron one,
+   * where state is push-updated). Used by the mobile pull-up-to-refresh
+   * gesture. */
+  refresh?: () => Promise<void>;
   getRemoteToken: () => string;
   setRemoteToken: (token: string) => void;
   onConnectionState: (handler: Handler<ConnectionStatePayload>) => void;
@@ -342,6 +347,92 @@ export function createRemoteTransport(): Transport {
 
   connectWebSocket();
 
+  // --------------------------------------------------------------------
+  // Resume-from-background handling.
+  //
+  // Mobile Safari and Chrome aggressively suspend JS in backgrounded tabs.
+  // While suspended:
+  //  - WebSocket pings/pongs don't process. The server's heartbeat fires
+  //    at MAX_MISSED_PONGS and terminates the socket; the close event
+  //    queues but the renderer is frozen and can't run scheduleReconnect.
+  //  - The kernel may drop the underlying TCP connection silently — when
+  //    the tab thaws, ws.readyState is still OPEN but no traffic flows.
+  //
+  // Without active recovery the UI appears frozen on return: no terminal
+  // output arrives, the cached payload is stale, sends queue forever.
+  //
+  // We listen to both visibilitychange→visible and pageshow (the latter
+  // fires after bfcache restore where the page literally was suspended).
+  // The probe is: if the socket isn't OPEN, trigger a reconnect; if it
+  // is OPEN, do a /api/state round-trip to verify the connection is
+  // genuinely alive AND to flush whatever state we missed while away.
+  // If the probe fails, close the socket so the existing close→reconnect
+  // path kicks in.
+  // --------------------------------------------------------------------
+  // visibilitychange, pageshow, and focus can all fire within ~50 ms of
+  // each other when a backgrounded tab regains focus. Without throttling
+  // that's 3 simultaneous /api/state requests on every tab-switch —
+  // wasteful on mobile data and creates a small thundering-herd on the
+  // notify server. 2 s window dedupes them without delaying a genuine
+  // resume probe perceptibly.
+  const PROBE_THROTTLE_MS = 2_000;
+  let lastProbeAt = 0;
+  function probeAfterResume(): void {
+    if (typeof document === "undefined") return;
+    if (document.visibilityState !== "visible") return;
+    const now = Date.now();
+    if (now - lastProbeAt < PROBE_THROTTLE_MS) return;
+    lastProbeAt = now;
+    const current = ws;
+    if (!current) {
+      // No socket at all — shouldn't happen post-construction, but be safe.
+      connectWebSocket();
+      return;
+    }
+    if (current.readyState === WebSocket.CLOSED || current.readyState === WebSocket.CLOSING) {
+      // Browser delivered the close event but the reconnect timer may
+      // have been suspended along with the renderer. Kick one off if
+      // there isn't already a pending reconnect.
+      if (!reconnectTimer) {
+        const error = createRemoteIssue({ kind: "ws-closed", rawMessage: "Resumed from suspended tab" });
+        scheduleReconnect(error);
+      }
+      return;
+    }
+    if (current.readyState !== WebSocket.OPEN) {
+      // CONNECTING — the existing open/close handlers will resolve it.
+      return;
+    }
+    // Technically OPEN but might be a zombie. Verify via /api/state and
+    // re-sync the payload in one shot. On failure, close the socket so
+    // the close handler queues a reconnect.
+    void fetchJson("/api/state")
+      .then((payload) => {
+        emitConnectionState({ connected: true, message: "" });
+        listeners.stateUpdated.forEach((handler) => handler(payload as StatePayload));
+      })
+      .catch(() => {
+        // fetchJson already emitted a connection-issue state. Close the
+        // zombie socket; close handler will schedule reconnect.
+        try {
+          current.close();
+        } catch {
+          // Already gone — close handler will fire (or already did).
+        }
+      });
+  }
+
+  if (typeof document !== "undefined") {
+    document.addEventListener("visibilitychange", probeAfterResume);
+  }
+  if (typeof window !== "undefined") {
+    // pageshow fires on bfcache restore — visibilitychange may NOT fire in
+    // that path on some browsers, so we listen to both.
+    window.addEventListener("pageshow", probeAfterResume);
+    // focus event covers desktop alt-tab back to a stale tab.
+    window.addEventListener("focus", probeAfterResume);
+  }
+
   async function fetchJson(pathname: string, payload?: unknown): Promise<unknown> {
     // Without a token we fall through to the cookie-based path: the
     // bootstrap redirect set `strideterm_session=…; HttpOnly` and the
@@ -396,6 +487,41 @@ export function createRemoteTransport(): Transport {
 
   return {
     isRemote: true,
+    /**
+     * Manual state refresh. Fetches /api/state from the server and emits
+     * the result through the standard stateUpdated listeners, same as a
+     * reconnect would. Used by the mobile pull-to-refresh gesture (swipe
+     * up at end of terminal) and by any future "refresh" UI affordance.
+     *
+     * Also kicks the WebSocket if it isn't currently OPEN — a refresh
+     * gesture is the strongest user-initiated "something looks wrong"
+     * signal we get, so we use it to push reconnect along instead of
+     * waiting for the next heartbeat / visibility probe.
+     *
+     * Failures are swallowed: fetchJson already emitted a connection-
+     * issue state, and the close → reconnect path will recover. Nothing
+     * more to do at this layer.
+     */
+    refresh: async (): Promise<void> => {
+      const current = ws;
+      if (!current) {
+        connectWebSocket();
+      } else if (current.readyState !== WebSocket.OPEN && current.readyState !== WebSocket.CONNECTING) {
+        // CLOSED/CLOSING: schedule a reconnect if one isn't already queued.
+        if (!reconnectTimer) {
+          const error = createRemoteIssue({ kind: "ws-closed", rawMessage: "Manual refresh requested" });
+          scheduleReconnect(error);
+        }
+      }
+      try {
+        const payload = (await fetchJson("/api/state")) as StatePayload;
+        emitConnectionState({ connected: true, message: "" });
+        listeners.stateUpdated.forEach((handler) => handler(payload));
+      } catch {
+        // fetchJson already emitted a connection-issue state; the resume
+        // probe / reconnect path will recover. Nothing more to do here.
+      }
+    },
     openExternal: (url: string) => {
       const nextUrl = String(url || "").trim();
       if (!nextUrl) {

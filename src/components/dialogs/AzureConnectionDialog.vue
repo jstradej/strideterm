@@ -5,14 +5,6 @@
         <p class="eyebrow">Azure DevOps</p>
         <h2>{{ connection ? "Edit connection" : "Add connection" }}</h2>
       </div>
-      <button
-        type="button"
-        class="button button--ghost"
-        title="Close this dialog without saving any changes."
-        @click="emit('cancel')"
-      >
-        Close
-      </button>
     </div>
     <form class="form" @submit.prevent="handleSubmit">
       <div class="grid grid--two-col">

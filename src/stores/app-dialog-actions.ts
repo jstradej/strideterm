@@ -191,6 +191,14 @@ export function createDialogActions(ctx: DialogActionsCtx) {
         return;
       }
     }
+    // Snapshot whether the tab has a live PTY *before* opening the dialog —
+    // saveWorkspace could in theory mutate the session list, so we capture the
+    // pre-save state. Used after Save to decide if the reload prompt makes
+    // sense (no point asking when nothing is running).
+    const workspaceData = (ctx.payload.value as AnyApi)?.workspace;
+    const hasLiveSession = !!((workspaceData?.sessions as AnyApi[] | undefined) || []).find(
+      (s: AnyApi) => s.sessionId === viewId,
+    );
     openDialog("EditTabDialog", {
       eyebrow: "Workspace",
       mode: "edit",
@@ -211,6 +219,31 @@ export function createDialogActions(ctx: DialogActionsCtx) {
           p.id === target.panel.id ? { ...p, title: nextTitle, command: nextCommand } : p,
         );
         ctx.payload.value = (await (ctx.getApi() as AnyApi).saveWorkspace(nextWorkspace)) as StatePayload;
+        // If the command changed and a live PTY is running, ask whether to
+        // reload now. The saved command otherwise only takes effect the next
+        // time the tab is launched, which is surprising when you just clicked
+        // Save and watched the tab keep running the previous command.
+        if (!sameCommand && hasLiveSession) {
+          openDialog("ConfirmDialog", {
+            eyebrow: "Tab",
+            title: "Reload tab now?",
+            message:
+              "The command changed. Reload now to apply it, or keep the running tab as-is — the new command will be used the next time this tab is launched.",
+            confirmLabel: "Reload now",
+            cancelLabel: "Apply on next launch",
+            onCancel: closeDialog,
+            onConfirm: async () => {
+              closeDialog();
+              try {
+                ctx.payload.value = (await (ctx.getApi() as AnyApi).restartTerminal(viewId)) as StatePayload;
+                ctx.activeViewId.value = viewId;
+              } catch (err) {
+                console.error("[edit-tab] reload after save failed:", err);
+              }
+            },
+          });
+          return;
+        }
         closeDialog();
       },
     });

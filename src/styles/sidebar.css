@@ -87,7 +87,7 @@
   top: 0;
   right: 0;
   bottom: 0;
-  width: 10px;
+  width: 6px;
   cursor: col-resize;
   z-index: 50;
   background: transparent;
@@ -256,6 +256,24 @@ body.platform-darwin .frame--sidebar-collapsed .sidebar__head {
   color: #f5c542;
 }
 
+/* "New workspace" (+) is the primary call-to-action in the sidebar header —
+   without this it disappears between the star / settings / help glyphs.
+   Accent-tinted background + border make it pop without breaking the icon-
+   strip rhythm. */
+.sidebar__icon-btn--primary {
+  color: var(--accent);
+  border: 1px solid color-mix(in srgb, var(--accent), transparent 55%);
+  background: color-mix(in srgb, var(--accent), transparent 85%);
+  font-weight: 700;
+  font-size: 18px;
+}
+
+.sidebar__icon-btn--primary:hover {
+  background: color-mix(in srgb, var(--accent), transparent 60%);
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
 .button {
   border: 0;
   cursor: pointer;
@@ -312,6 +330,57 @@ body.platform-darwin .frame--sidebar-collapsed .sidebar__head {
   border-top: 1px solid var(--border);
   display: grid;
   gap: 4px;
+}
+
+/* "+ add new workspace" tile — sits at the end of the workspace list, just
+   above the Available plugins section. Dashed border + plus sign makes it
+   read as a "create new" affordance rather than another workspace. */
+.workspace-new-tile {
+  margin-top: 6px;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px dashed color-mix(in srgb, var(--text), transparent 65%);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted);
+  text-align: left;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  transition:
+    border-color 0.12s,
+    color 0.12s,
+    background 0.12s;
+}
+
+.workspace-new-tile:hover,
+.workspace-new-tile:focus-visible {
+  border-color: var(--accent);
+  color: var(--text);
+  background: color-mix(in srgb, var(--accent), transparent 92%);
+  outline: none;
+}
+
+.workspace-new-tile__plus {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+  border-radius: 4px;
+  border: 1px dashed color-mix(in srgb, var(--text), transparent 55%);
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.workspace-new-tile:hover .workspace-new-tile__plus,
+.workspace-new-tile:focus-visible .workspace-new-tile__plus {
+  border-color: var(--accent);
+  color: var(--accent);
 }
 
 .workspace-suggestions__title {
@@ -1550,8 +1619,14 @@ body.platform-darwin .frame--sidebar-collapsed .sidebar__head {
 .frame--sidebar-collapsed .workspace-card__meta small,
 .frame--sidebar-collapsed .workspace-card__actions,
 .frame--sidebar-collapsed .workspace-suggestions__title,
-.frame--sidebar-collapsed .workspace-suggestion__meta {
+.frame--sidebar-collapsed .workspace-suggestion__meta,
+.frame--sidebar-collapsed .workspace-new-tile__label {
   display: none;
+}
+
+.frame--sidebar-collapsed .workspace-new-tile {
+  justify-content: center;
+  padding: 6px;
 }
 
 .frame--sidebar-collapsed .workspace-card__attention {
@@ -1711,8 +1786,14 @@ body.platform-darwin .frame--sidebar-collapsed .sidebar__head {
   .workspace-card__meta small,
   .workspace-card__actions,
   .workspace-suggestions__title,
-  .workspace-suggestion__meta {
+  .workspace-suggestion__meta,
+  .workspace-new-tile__label {
     display: none;
+  }
+
+  .workspace-new-tile {
+    justify-content: center;
+    padding: 6px 4px;
   }
 
   .workspace-card__title-row strong {

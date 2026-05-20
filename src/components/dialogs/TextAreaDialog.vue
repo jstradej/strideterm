@@ -5,7 +5,6 @@
         <p class="eyebrow">{{ eyebrow }}</p>
         <h2>{{ title }}</h2>
       </div>
-      <button type="button" class="button button--ghost" @click="emit('cancel')">Close</button>
     </div>
     <form class="form" @submit.prevent="handleSubmit">
       <label>

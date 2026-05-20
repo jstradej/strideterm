@@ -11,11 +11,15 @@
       <p class="profiles-description">
         Each profile has its own set of workspaces. Switch profiles to work on different projects.
       </p>
-      <div class="profile-list">
+      <!-- Arrow-key navigation between profile cards. Tab still walks every
+           focusable element in document order; ↑/↓ jump card-to-card by
+           focusing each card's primary action (rename input or Activate). -->
+      <div ref="profileListRef" class="profile-list" @keydown="onProfileListKeydown">
         <article
           v-for="profile in localProfiles"
           :key="profile.id"
           class="profile-card"
+          :data-profile-id="profile.id"
           :style="{ borderColor: profile.id === activeProfileId ? 'var(--accent)' : 'var(--border)' }"
         >
           <div class="profile-card__header">
@@ -106,7 +110,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, computed, useAttrs } from "vue";
+import { ref, reactive, computed, onMounted, useAttrs } from "vue";
 
 defineOptions({ inheritAttrs: false });
 
@@ -249,6 +253,81 @@ async function addProfile() {
     handleError(err);
   }
 }
+
+// --- Keyboard navigation ----------------------------------------------------
+// The dialog opts out of DialogOverlay's auto-focus (data-no-autofocus on the
+// root) because focusing the rename input on open looks like a rename in
+// progress. Instead we focus the first "Activate" button so the user can
+// switch profiles with arrow keys + Enter without grabbing the mouse.
+
+const profileListRef = ref<HTMLElement | null>(null);
+
+function focusableButtonsInCard(card: HTMLElement): HTMLButtonElement[] {
+  return Array.from(card.querySelectorAll<HTMLButtonElement>("button:not(:disabled)"));
+}
+
+function getProfileCards(): HTMLElement[] {
+  return Array.from(profileListRef.value?.querySelectorAll<HTMLElement>(".profile-card") || []);
+}
+
+function findActiveCardIndex(): number {
+  const cards = getProfileCards();
+  const active = document.activeElement as HTMLElement | null;
+  if (!active) return -1;
+  return cards.findIndex((card) => card.contains(active));
+}
+
+function focusCardAt(index: number): void {
+  const cards = getProfileCards();
+  if (cards.length === 0) return;
+  const safe = Math.max(0, Math.min(cards.length - 1, index));
+  const card = cards[safe];
+  if (!card) return;
+  // Prefer the Activate button (the primary action); fall back to whatever
+  // is focusable in the card if Activate isn't there (e.g. the active card).
+  const activateBtn = card.querySelector<HTMLButtonElement>("button:not(:disabled)");
+  const target = activateBtn || focusableButtonsInCard(card)[0];
+  target?.focus({ preventScroll: false });
+}
+
+function onProfileListKeydown(event: KeyboardEvent): void {
+  // Don't hijack arrow keys inside inputs / colour picker — those want them
+  // for native text navigation.
+  const tag = (event.target as HTMLElement | null)?.tagName;
+  if (tag === "INPUT" || tag === "TEXTAREA") return;
+  if (event.key !== "ArrowUp" && event.key !== "ArrowDown" && event.key !== "Home" && event.key !== "End") return;
+  const cards = getProfileCards();
+  if (cards.length === 0) return;
+  event.preventDefault();
+  const current = findActiveCardIndex();
+  if (event.key === "ArrowDown") focusCardAt(current < 0 ? 0 : current + 1);
+  else if (event.key === "ArrowUp") focusCardAt(current < 0 ? cards.length - 1 : current - 1);
+  else if (event.key === "Home") focusCardAt(0);
+  else if (event.key === "End") focusCardAt(cards.length - 1);
+}
+
+onMounted(() => {
+  // Defer until DialogOverlay's focus retry loop has finished (it bails early
+  // on data-no-autofocus, but the rAF cadence still matters) so we don't race
+  // against it.
+  requestAnimationFrame(() => {
+    if (!profileListRef.value) return;
+    // Prefer the first non-active profile's Activate button — that's the
+    // most common destination ("switch to another profile"). Fall back to
+    // the first focusable button anywhere in the list.
+    const firstActivate = profileListRef.value.querySelector<HTMLButtonElement>(
+      ".profile-card__actions button:not(:disabled)",
+    );
+    if (firstActivate) {
+      firstActivate.focus({ preventScroll: true });
+      return;
+    }
+    // No actionable profile — focus the "+ Add" input so the user can type
+    // immediately. Falls back to nothing if !isRemote prevents the row.
+    const addInput = document.querySelector<HTMLInputElement>(".add-profile-input");
+    addInput?.focus({ preventScroll: true });
+  });
+});
 </script>
 
 <style scoped>
@@ -306,6 +385,13 @@ async function addProfile() {
 .profile-name-input:focus {
   border-color: var(--border);
   background: rgba(255, 255, 255, 0.04);
+}
+/* Visible focus ring for keyboard nav between cards — without this, the
+   arrow-key handler moves focus invisibly and the user has no idea which
+   card is selected. */
+.profile-card__actions button:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent), transparent 60%);
 }
 .profile-name-display {
   min-width: 0;

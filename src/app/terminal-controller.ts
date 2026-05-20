@@ -258,6 +258,7 @@ export function createTerminalController({
   shortcutTabDirection,
   downloadTextFile,
   safeFilenamePart,
+  onOverscrollRefresh,
 }: {
   views: Ref<Map<string, TerminalView>>;
   buffers: Ref<Map<string, string>>;
@@ -271,6 +272,11 @@ export function createTerminalController({
   shortcutTabDirection: (event: KeyboardEvent) => number;
   downloadTextFile: (filename: string, content: string) => void;
   safeFilenamePart: (value: unknown, fallback?: string) => string;
+  /** Called when the user does a long swipe past the bottom of the terminal
+   * scroll buffer — i.e. they tried to scroll further toward newer content
+   * but there's nothing more. Acts as a manual pull-up-to-refresh gesture
+   * on mobile remote clients. Optional — desktop and tests don't wire it. */
+  onOverscrollRefresh?: () => void;
 }) {
   // ---------------------------------------------------------------------------
   // Font size: per-transport zoom (Ctrl+wheel, Ctrl+0, pinch, Settings)
@@ -732,7 +738,17 @@ export function createTerminalController({
       scrollAccum: 0,
       startDist: 0,
       startFont: 0,
+      // Pull-up-to-refresh: when the user keeps swiping toward newer
+      // content but viewportY can't go any further (already at bottom of
+      // buffer), we accumulate the wasted pixels here. If the total
+      // crosses OVERSCROLL_REFRESH_PX before touchend, we treat the
+      // gesture as "refresh now" and call onOverscrollRefresh.
+      overscrollAccum: 0,
     };
+    // Distance threshold for the refresh gesture. ~100 px is large enough
+    // that an accidental tail of a normal scroll won't trigger it but small
+    // enough to be a comfortable single swipe on a phone.
+    const OVERSCROLL_REFRESH_PX = 100;
 
     function getTouchDist(e: TouchEvent): number {
       const t0 = e.touches[0];
@@ -750,6 +766,7 @@ export function createTerminalController({
           touch.startY = e.touches[0].clientY;
           touch.startX = e.touches[0].clientX;
           touch.scrollAccum = 0;
+          touch.overscrollAccum = 0;
         } else if (e.touches.length === 2) {
           const dist = getTouchDist(e);
           if (dist < 40) {
@@ -758,6 +775,7 @@ export function createTerminalController({
             touch.startY = touch.lastY;
             touch.startX = (e.touches[0].clientX + e.touches[1].clientX) / 2;
             touch.scrollAccum = 0;
+            touch.overscrollAccum = 0;
           } else {
             touch.mode = "pinch";
             touch.startDist = dist;
@@ -789,7 +807,21 @@ export function createTerminalController({
               const seq = dir > 0 ? "\x1b[B" : "\x1b[A";
               for (let i = 0; i < lines; i++) api.writeTerminal(sessionId, seq);
             } else {
+              const oldViewportY = term.buffer.active.viewportY;
               term.scrollLines(dir * lines);
+              const newViewportY = term.buffer.active.viewportY;
+              // Pull-up-to-refresh detection. When the user keeps swiping
+              // toward newer content (dir > 0 = swipe up in our inverted
+              // touch model) but xterm refused to advance — i.e. we're
+              // already pegged at buffer.baseY — count the unspent travel.
+              // Reset on any successful scroll or any swipe in the opposite
+              // direction, so a normal scroll back-and-forth never triggers
+              // refresh by accident.
+              if (dir > 0 && oldViewportY === newViewportY) {
+                touch.overscrollAccum += lines * lineHeight;
+              } else {
+                touch.overscrollAccum = 0;
+              }
             }
           }
         } else if (touch.mode === "pinch" && e.touches.length >= 2) {
@@ -804,6 +836,16 @@ export function createTerminalController({
     mount.addEventListener(
       "touchend",
       (e) => {
+        // Pull-up-to-refresh: if the user travelled past the bottom of the
+        // scroll buffer by more than the threshold during this gesture,
+        // fire the refresh callback instead of (and before) any other
+        // touchend interpretation.
+        if (touch.overscrollAccum >= OVERSCROLL_REFRESH_PX && onOverscrollRefresh) {
+          touch.overscrollAccum = 0;
+          touch.mode = "none";
+          onOverscrollRefresh();
+          return;
+        }
         if (touch.mode === "scroll" && e.changedTouches.length === 1) {
           const dx = Math.abs(e.changedTouches[0].clientX - touch.startX);
           const dy = Math.abs(e.changedTouches[0].clientY - touch.startY);

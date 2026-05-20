@@ -5,7 +5,6 @@
       ref="overlayRef"
       class="overlay"
       tabindex="-1"
-      @click.self="handleBackdropClick"
       @focusin.capture="releaseTerminalKeyboardCapture"
       @mousedown.capture="handleOverlayPointerDown"
       @pointerdown.capture="releaseTerminalKeyboardCapture"

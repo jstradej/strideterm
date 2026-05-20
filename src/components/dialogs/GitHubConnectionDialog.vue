@@ -5,7 +5,6 @@
         <p class="eyebrow">GitHub</p>
         <h2>{{ connection ? "Edit connection" : "Add connection" }}</h2>
       </div>
-      <button type="button" class="button button--ghost" @click="emit('cancel')">Close</button>
     </div>
     <form class="form" @submit.prevent="handleSubmit">
       <div class="grid">

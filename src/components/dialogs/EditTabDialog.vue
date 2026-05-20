@@ -5,7 +5,6 @@
         <p class="eyebrow">{{ eyebrow }}</p>
         <h2>{{ mode === "new" ? "New tab" : "Edit tab" }}</h2>
       </div>
-      <button type="button" class="button button--ghost" @click="emit('cancel')">Close</button>
     </div>
 
     <form class="form edit-tab-dialog__form" @submit.prevent="handleSubmit">
@@ -172,10 +171,80 @@
       </template>
 
       <template v-else>
-        <label class="field">
-          <span>Command</span>
-          <input v-model="commandInput" placeholder="optional boot command" maxlength="500" />
-        </label>
+        <!-- Launch mode: plain shell vs. WSL helper. The WSL helper builds
+             the `wsl -- bash -lic "cd … && …; exec bash"` boilerplate from
+             structured fields so users don't have to remember the quoting. -->
+        <div class="segmented" role="tablist" aria-label="Launch mode">
+          <button
+            type="button"
+            role="tab"
+            :aria-selected="launchMode === 'shell'"
+            :class="['segmented__btn', { 'segmented__btn--active': launchMode === 'shell' }]"
+            title="Run the command directly in your default shell. Standard single-line command field."
+            @click="setLaunchMode('shell')"
+          >
+            💻 Shell
+          </button>
+          <button
+            type="button"
+            role="tab"
+            :aria-selected="launchMode === 'wsl'"
+            :class="['segmented__btn', { 'segmented__btn--active': launchMode === 'wsl' }]"
+            title="Wrap your command in `wsl -- bash -lic '…'` with optional distro, working directory, and keep-shell-open flag — strIDEterm builds the full command for you."
+            @click="setLaunchMode('wsl')"
+          >
+            🐧 WSL
+          </button>
+        </div>
+
+        <template v-if="launchMode === 'shell'">
+          <label class="field">
+            <span>Command</span>
+            <input v-model="commandInput" placeholder="optional boot command" maxlength="500" />
+          </label>
+        </template>
+        <template v-else>
+          <div class="wsl-grid">
+            <label class="field">
+              <span>Distro (optional)</span>
+              <input
+                v-model="wsl.distro"
+                placeholder="e.g. Ubuntu-22.04 — leave blank for default"
+                maxlength="60"
+                title="Optional WSL distribution name (passed as `wsl -d <distro>`). Leave blank to use your configured default distro."
+              />
+            </label>
+            <label class="field">
+              <span>Working directory (optional)</span>
+              <input
+                v-model="wsl.cwd"
+                placeholder="/home/you"
+                maxlength="500"
+                title="Optional `cd <path>` to run before your command. Use a Linux-style path inside the WSL distro."
+              />
+            </label>
+          </div>
+          <label class="field">
+            <span>Command</span>
+            <input
+              v-model="wsl.command"
+              placeholder="claude --dangerously-skip-permissions"
+              maxlength="500"
+              title="The actual command to run inside the WSL shell — no quoting needed, strIDEterm handles it."
+            />
+          </label>
+          <label class="wsl-keep-open">
+            <input v-model="wsl.keepOpen" type="checkbox" />
+            <span>
+              Keep shell open after the command exits
+              <small>Appends `; exec bash` so the WSL terminal stays open instead of closing on exit.</small>
+            </span>
+          </label>
+          <div class="wsl-preview" :title="'This is the actual command strIDEterm will run when the tab launches.'">
+            <span class="wsl-preview__label">Generated command</span>
+            <code class="wsl-preview__code">{{ generatedWslCommand || "(empty — nothing will run)" }}</code>
+          </div>
+        </template>
       </template>
 
       <footer class="dialog__footer edit-tab-dialog__footer">
@@ -195,6 +264,7 @@ import { computed, onMounted, reactive, ref, watch } from "vue";
 import { useSshStore } from "../../stores/ssh.js";
 import { useAppStore } from "../../stores/app.js";
 import CustomSelect from "../common/CustomSelect.vue";
+import { buildWslCommand, parseWslCommand, type WslState } from "./wsl-launcher.js";
 
 const BADGE_ICONS = [
   "\u{1F4BB}",
@@ -339,6 +409,48 @@ const quick = reactive({
   keyRef: "",
   error: "",
 });
+
+// --- WSL launcher helper -----------------------------------------------------
+// Generates / parses the boilerplate `wsl [-d <distro>] -- bash -lic "…"`
+// command so users don't have to memorise the quoting. The "Generated command"
+// preview shows exactly what will land in the panel.command field on submit.
+
+const wsl = reactive<WslState>({
+  distro: "",
+  cwd: "",
+  command: "",
+  keepOpen: true,
+});
+const launchMode = ref<"shell" | "wsl">("shell");
+
+const generatedWslCommand = computed(() => buildWslCommand(wsl));
+
+function setLaunchMode(mode: "shell" | "wsl"): void {
+  if (launchMode.value === mode) return;
+  if (mode === "wsl") {
+    // Seed WSL fields from the current command if it already looks WSL-y;
+    // otherwise treat the current text as the inner command so users don't
+    // lose what they typed when toggling.
+    const parsed = parseWslCommand(commandInput.value);
+    if (parsed) {
+      wsl.distro = parsed.distro;
+      wsl.cwd = parsed.cwd;
+      wsl.command = parsed.command;
+      wsl.keepOpen = parsed.keepOpen;
+    } else if (commandInput.value.trim() && !wsl.command) {
+      wsl.command = commandInput.value.trim();
+    }
+  } else {
+    // Switching back to shell: surface the generated WSL command in the
+    // single-line field so the user keeps something useful, but only if
+    // their shell field is empty (don't clobber a manual edit).
+    const generated = buildWslCommand(wsl);
+    if (generated && !commandInput.value.trim()) {
+      commandInput.value = generated;
+    }
+  }
+  launchMode.value = mode;
+}
 const saveToBook = ref(false);
 const savedHostName = ref("");
 
@@ -390,6 +502,29 @@ onMounted(async () => {
       selectedSshHostId.value = sshHosts.value[0].id;
       onHostSelected();
     }
+  } else {
+    // Auto-detect a previously-saved WSL launcher command so the dialog
+    // opens with the structured fields pre-filled instead of the raw
+    // `wsl -- bash -lic "…"` string. Without this, editing a WSL tab would
+    // require re-toggling launch mode every time.
+    const parsed = parseWslCommand(commandInput.value);
+    if (parsed) {
+      wsl.distro = parsed.distro;
+      wsl.cwd = parsed.cwd;
+      wsl.command = parsed.command;
+      wsl.keepOpen = parsed.keepOpen;
+      launchMode.value = "wsl";
+    } else if (/^wsl(\s|$)/i.test(commandInput.value.trim())) {
+      // Bare `wsl` (from the WSL tab template) or `wsl -d <distro>` — open the
+      // structured editor with whatever distro flag we can extract, no inner
+      // command yet. keepOpen=false so an empty form doesn't replace the
+      // command with `wsl -- bash -lic "exec bash"` on save; the original
+      // bare `wsl` is preserved by handleSubmit when no fields are filled.
+      const distroMatch = /^wsl\s+-d\s+(\S+)/i.exec(commandInput.value.trim());
+      if (distroMatch) wsl.distro = distroMatch[1];
+      wsl.keepOpen = false;
+      launchMode.value = "wsl";
+    }
   }
   requestAnimationFrame(() => {
     titleRef.value?.focus();
@@ -426,9 +561,21 @@ async function handleSubmit() {
     // CustomSelect has no native `required`, so guard the saved-host path
     // explicitly — we don't want to submit a saved-host tab with no host id.
     if (tabType.value === "ssh" && sshMode.value === "saved" && !selectedSshHostId.value) return;
+    // For local tabs in WSL mode, emit the generated wsl wrapper instead of
+    // the shell field. The shell field is hidden in WSL mode so its value is
+    // stale and irrelevant.
+    // In WSL mode, prefer the generated wrapper — but fall back to the
+    // original command field when nothing was typed into the structured
+    // editor (e.g. user opened a bare `wsl` tab, looked at it, hit Save
+    // without changes). Without the fallback we'd silently rewrite a bare
+    // `wsl` into the empty-but-non-empty form `wsl -- bash -lic ""`.
+    const effectiveCommand =
+      tabType.value === "local" && launchMode.value === "wsl"
+        ? generatedWslCommand.value || commandInput.value.trim()
+        : commandInput.value.trim();
     emit("submit", {
       title: nextTitle,
-      command: commandInput.value.trim(),
+      command: effectiveCommand,
       kind: tabType.value === "ssh" ? "ssh" : undefined,
       sshHostId: tabType.value === "ssh" ? selectedSshHostId.value : undefined,
     });
@@ -631,6 +778,66 @@ async function handleSubmit() {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 2fr) 80px;
   gap: 10px;
+}
+
+/* WSL launcher: two-column layout for distro + cwd, then full-width command,
+   keep-open checkbox, and a read-only preview of the generated command so the
+   user can see exactly what will end up in the panel.command field. */
+.wsl-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr);
+  gap: 10px;
+}
+.wsl-keep-open {
+  display: flex !important;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 0;
+  cursor: pointer;
+  padding: 6px 0;
+}
+.wsl-keep-open input[type="checkbox"] {
+  width: auto;
+  padding: 0;
+  margin: 2px 0 0 0;
+  flex-shrink: 0;
+  accent-color: var(--accent);
+}
+.wsl-keep-open span {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 13px;
+  text-transform: none;
+  letter-spacing: normal;
+  color: var(--text);
+  font-weight: 500;
+}
+.wsl-keep-open small {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 400;
+}
+.wsl-preview {
+  display: grid;
+  gap: 4px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.02);
+}
+.wsl-preview__label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--muted);
+}
+.wsl-preview__code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  color: var(--text);
+  word-break: break-all;
+  white-space: pre-wrap;
 }
 
 /* Save-row: checkbox toggle on the left, name input expanding to the right. */

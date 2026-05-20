@@ -6,7 +6,26 @@ import winston from "winston";
 import { APP_CONFIG } from "../../config/app-config.js";
 import { operationContextStorage } from "./effect/operation-context.js";
 
-let LOG_DIR = path.join(os.homedir(), ".strideterm", "logs");
+// In a Vitest worker we deliberately redirect to a per-process temp dir so
+// running `npm run test:backend` doesn't append `ws1:p1` / `workspace-a` /
+// `wrong-secret` / `/tmp/test` lines to the user's production
+// ~/.strideterm/logs/strideterm.log. Without this, every test run pollutes
+// real diagnostic output — and because file paths live for the lifetime of
+// the singleton logger, setLogDir() called later can't unspoil writes that
+// already happened during module import.
+//
+// Vitest sets process.env.VITEST="true" in workers; we also honour an
+// explicit STRIDETERM_LOG_DIR override for any other "don't write to ~"
+// scenario (CI without a real home, sandbox runs, etc).
+function defaultLogDir(): string {
+  if (process.env.STRIDETERM_LOG_DIR) return process.env.STRIDETERM_LOG_DIR;
+  if (process.env.VITEST === "true" || process.env.NODE_ENV === "test") {
+    return path.join(os.tmpdir(), `strideterm-test-logs-${process.pid}`);
+  }
+  return path.join(os.homedir(), ".strideterm", "logs");
+}
+
+let LOG_DIR = defaultLogDir();
 
 /**
  * Override the log directory. Must be called before initLogger().
@@ -153,8 +172,11 @@ function createWinstonLogger({ level, maxSizeMb, maxFiles }: LogConfig): winston
     ],
   });
 
-  // In dev mode also log to console (respects the same level).
-  if (process.env.NODE_ENV !== "production" && !process.env.STRIDETERM_NO_CONSOLE_LOG) {
+  // In dev mode also log to console (respects the same level). Tests get
+  // suppressed regardless — vitest reporters interleave their own output and
+  // raw winston lines just add noise.
+  const isTest = process.env.VITEST === "true" || process.env.NODE_ENV === "test";
+  if (!isTest && process.env.NODE_ENV !== "production" && !process.env.STRIDETERM_NO_CONSOLE_LOG) {
     instance.add(
       new winston.transports.Console({
         format: winston.format.combine(

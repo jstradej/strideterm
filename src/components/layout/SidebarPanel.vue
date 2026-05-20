@@ -50,6 +50,15 @@
       @task-toggle="handleTaskToggle(ws)"
       @task-stop="handleTaskStop(ws)"
     />
+    <button
+      type="button"
+      class="workspace-new-tile"
+      title="Create a new empty workspace — opens the workspace editor with a blank draft. Pick a name, icon, working directory, and tabs."
+      @click="onCreateEmptyWorkspace"
+    >
+      <span class="workspace-new-tile__plus" aria-hidden="true">+</span>
+      <span class="workspace-new-tile__label">add new workspace</span>
+    </button>
     <div v-if="suggestions.length" class="workspace-suggestions">
       <p class="eyebrow workspace-suggestions__title">Available plugins</p>
       <button
@@ -352,6 +361,12 @@ const emit = defineEmits<{
   (e: "activate", id: string): void;
   (e: "create-task"): void;
 }>();
+
+function onCreateEmptyWorkspace(): void {
+  // Skip the New Workspace picker — go straight to the empty-workspace editor.
+  // The picker is still reachable via the "+" button in the sidebar header.
+  store.openWorkspaceDialog();
+}
 
 async function onActivate(workspaceId: string): Promise<void> {
   // Diagnostic: log every sidebar click so the dev log shows whether activation

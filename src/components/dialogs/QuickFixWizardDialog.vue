@@ -5,14 +5,6 @@
         <p class="eyebrow">{{ providerLabel }}</p>
         <h2>New Branch</h2>
       </div>
-      <button
-        type="button"
-        class="button button--ghost"
-        title="Close the wizard without creating a workspace."
-        @click="emit('cancel')"
-      >
-        Close
-      </button>
     </div>
 
     <!-- Step indicator -->

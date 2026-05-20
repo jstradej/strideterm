@@ -45,7 +45,7 @@ test.describe("Visual snapshots @visual", () => {
     await expect(page.locator(".overlay h2")).toHaveText("Settings");
     await settleForScreenshot(page);
     await expect(page).toHaveScreenshot("empty-settings-general.png");
-    await page.locator(".overlay").getByRole("button", { name: "Close" }).first().click();
+    await page.locator(".overlay").getByRole("button", { name: "Cancel" }).first().click();
   });
 
   test("empty: help dialog", async () => {

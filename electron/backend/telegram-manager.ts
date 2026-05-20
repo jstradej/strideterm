@@ -351,6 +351,22 @@ const DEFAULT_HTTP_TIMEOUT_MS = 15_000;
 // HTTP retry: 200 ms exponential, max 3 retries; skipped for auth/rate-limit/4xx errors.
 const telegramRetry = Schedule.both(Schedule.exponential("200 millis"), Schedule.recurs(3));
 
+/**
+ * Detect a deliberate AbortController.abort() result — either a native
+ * AbortError or the Effect-wrapped message that bubbles up from fetch.
+ * Used to suppress noisy warn-level logs when polling is restarted on
+ * settings update / shutdown.
+ */
+function isAbortError(err: unknown): boolean {
+  if (!err) return false;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const anyErr = err as any;
+  if (anyErr?.name === "AbortError") return true;
+  if (anyErr?.cause?.name === "AbortError") return true;
+  const msg: string = String(anyErr?.message || "");
+  return /this operation was aborted|aborterror/i.test(msg);
+}
+
 // Compact callback action codes (kept short to fit in Telegram's 64 B limit).
 type CallbackAction = "s" | "o" | "d" | "c" | "x" | "ar";
 const CALLBACK_ACTION_LABEL: Record<CallbackAction, string> = {
@@ -370,6 +386,10 @@ export class TelegramManager extends EventEmitter {
   private pollOffsets: Map<string, number> = new Map();
   private running: boolean = false;
   private currentPollAbort: AbortController | null = null;
+  /** Consecutive poll failures per connection — used to back off when the
+   * network is flaky so we don't hammer Telegram with `getUpdates` calls
+   * that are about to fail anyway. Reset on the first successful poll. */
+  private consecutivePollFailures: Map<string, number> = new Map();
 
   /** Maps Telegram message_id → alert context, per connection */
   private contextByMessageId: Map<number, { context: TelegramAlertContext; connectionId: string; at: number }> =
@@ -536,6 +556,17 @@ export class TelegramManager extends EventEmitter {
 
   configure(connections: TelegramConnectionConfig[]): void {
     this.connections = connections.filter((c) => c.enabled && c.botTokenRef && c.chatId);
+    // Drop poll-failure / poll-offset entries for connections that aren't
+    // around anymore — without this, removing & re-creating a connection
+    // with the same id would inherit a stale backoff multiplier or a
+    // stale update cursor.
+    const activeIds = new Set(this.connections.map((c) => c.id));
+    for (const id of [...this.consecutivePollFailures.keys()]) {
+      if (!activeIds.has(id)) this.consecutivePollFailures.delete(id);
+    }
+    for (const id of [...this.pollOffsets.keys()]) {
+      if (!activeIds.has(id)) this.pollOffsets.delete(id);
+    }
     log.debug("telegram configured", { count: this.connections.length });
   }
 
@@ -1348,7 +1379,28 @@ export class TelegramManager extends EventEmitter {
     if (this.pollTimer !== null) {
       clearTimeout(this.pollTimer);
     }
-    const delay = this.connections.length > 0 ? Math.min(...this.connections.map((c) => c.pollSeconds * 1000)) : 30000;
+    const baseDelay =
+      this.connections.length > 0 ? Math.min(...this.connections.map((c) => c.pollSeconds * 1000)) : 30000;
+    // Exponential backoff when the most-failed connection keeps erroring,
+    // capped at 5 min so we still recover within a reasonable window after
+    // the network comes back. Cautious by design — we never poll *faster*
+    // than the configured pollSeconds, only slower when things are broken,
+    // so we never risk hammering Telegram. Jitter (±15 %) avoids every
+    // connection retrying in lock-step after a global network blip.
+    const worstFailures = Math.max(0, ...Array.from(this.consecutivePollFailures.values()));
+    const backoffMultiplier = Math.min(2 ** worstFailures, 10); // 1, 2, 4, 8, 10, 10…
+    // Jitter only when we're already backing off — keeps the happy-path
+    // timing deterministic for tests and predictable for users, but
+    // de-synchronises retries after a global blip so we don't thundering-
+    // herd Telegram when the network returns.
+    const jitter = worstFailures > 0 ? 0.85 + Math.random() * 0.3 : 1;
+    const delay = Math.min(baseDelay * backoffMultiplier * jitter, 5 * 60 * 1000);
+    if (worstFailures > 0) {
+      log.debug("telegram poll backoff applied", {
+        consecutiveFailures: worstFailures,
+        delayMs: Math.round(delay),
+      });
+    }
     this.pollTimer = setTimeout(() => {
       this.pollTimer = null;
       this._poll().catch((err) => {
@@ -1362,7 +1414,20 @@ export class TelegramManager extends EventEmitter {
 
     for (const conn of this.connections) {
       await this._pollConnection(conn).catch((err) => {
-        log.warn("telegram poll connection error", { connectionId: conn.id, err: (err as Error).message });
+        // Don't warn on aborts — those are deliberate (settings update,
+        // shutdown, restart) and would spam the log every time the user
+        // tweaks Telegram config.
+        if (isAbortError(err)) {
+          log.debug("telegram poll connection aborted", { connectionId: conn.id });
+          return;
+        }
+        const prev = this.consecutivePollFailures.get(conn.id) ?? 0;
+        this.consecutivePollFailures.set(conn.id, prev + 1);
+        log.warn("telegram poll connection error", {
+          connectionId: conn.id,
+          err: (err as Error).message,
+          consecutiveFailures: prev + 1,
+        });
       });
     }
 
@@ -1389,6 +1454,10 @@ export class TelegramManager extends EventEmitter {
       },
       { httpTimeoutMs: GETUPDATES_HTTP_TIMEOUT_MS, retry: false, signal: this.currentPollAbort?.signal },
     );
+
+    // Successful round-trip — clear any prior failure streak so backoff
+    // resets to the configured pollSeconds.
+    this.consecutivePollFailures.delete(conn.id);
 
     if (!result.ok || !result.result) {
       log.debug("telegram getUpdates returned non-ok", { description: result.description });
@@ -3676,7 +3745,15 @@ export class TelegramManager extends EventEmitter {
               return `Telegram network error: ${(err.cause as Error)?.message || String(err.cause)}`;
           }
         })();
-        log.warn("telegram apiCall failed", { method, tag: err._tag, message });
+        // Deliberate aborts (settings update, shutdown, restart) come through
+        // as TelegramNetworkError → "This operation was aborted". They are
+        // expected control flow, not failures — keep them out of warn-level
+        // logs to avoid drowning real problems in restart noise.
+        if (err._tag === "TelegramNetworkError" && isAbortError(err.cause)) {
+          log.debug("telegram apiCall aborted", { method });
+        } else {
+          log.warn("telegram apiCall failed", { method, tag: err._tag, message });
+        }
         return Effect.fail(new Error(message)) as Effect.Effect<T, Error>;
       }),
     ) as Promise<T>;

@@ -5,7 +5,6 @@
         <p class="eyebrow">Git</p>
         <h2>New worktree</h2>
       </div>
-      <button type="button" class="button button--ghost" @click="emit('cancel')">Close</button>
     </div>
     <form class="form" @submit.prevent="handleSubmit">
       <label v-if="repoChoices.length > 1">

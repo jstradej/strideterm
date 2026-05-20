@@ -31,7 +31,7 @@
         <div class="sidebar__tools">
           <button
             type="button"
-            class="sidebar__icon-btn"
+            class="sidebar__icon-btn sidebar__icon-btn--primary"
             title="Open the New Workspace picker — pick an empty workspace, an Agent Task Runner, or one of the installed plugin templates (Azure DevOps, GitHub, Docker, System Monitor)."
             @click="store.openNewWorkspaceFlow()"
           >
@@ -53,20 +53,6 @@
           </button>
           <button
             type="button"
-            class="sidebar__icon-btn sidebar__collapse-btn"
-            data-role="sidebar-collapse"
-            :title="
-              store.sidebarCollapsed
-                ? 'Expand the sidebar back to its full width — workspace names, summaries, and the Configure button reappear.'
-                : 'Shrink the sidebar to a slim icon strip so the active workspace gets more horizontal room. Workspace cards collapse to icons; click one to switch.'
-            "
-            :aria-label="sidebarCollapseLabel"
-            @click="toggleSidebarCollapse"
-          >
-            {{ store.sidebarCollapsed ? "▶" : "◀" }}
-          </button>
-          <button
-            type="button"
             class="sidebar__icon-btn"
             title="Open the Settings dialog (theme, notifications, agent hooks, SSH, tab templates, Telegram bot, and About)."
             @click="store.openSettingsDialog()"
@@ -80,6 +66,23 @@
             @click="store.openHelpDialog()"
           >
             ?
+          </button>
+          <!-- Collapse sits at the far right (after Help) so the desktop chrome
+               ends with the shrink action, mirroring the expand-from-icon strip
+               on the other side. On mobile the close (✕) takes over via CSS. -->
+          <button
+            type="button"
+            class="sidebar__icon-btn sidebar__collapse-btn"
+            data-role="sidebar-collapse"
+            :title="
+              store.sidebarCollapsed
+                ? 'Expand the sidebar back to its full width — workspace names, summaries, and the Configure button reappear.'
+                : 'Shrink the sidebar to a slim icon strip so the active workspace gets more horizontal room. Workspace cards collapse to icons; click one to switch.'
+            "
+            :aria-label="sidebarCollapseLabel"
+            @click="toggleSidebarCollapse"
+          >
+            {{ store.sidebarCollapsed ? "▶" : "◀" }}
           </button>
           <button
             type="button"
@@ -196,6 +199,23 @@
           </div>
           <div v-if="mobileTabOpen" class="mobile-tab-picker__backdrop" @click="mobileTabOpen = false"></div>
 
+          <!-- Mobile: explicit "show keyboard" button. The tap-to-focus path
+               in the terminal touch handler can miss when the synthesized
+               click is suppressed by preventDefault, leaving the user with a
+               visible terminal but no way to type. This button is a
+               deterministic focus path: it picks the active xterm helper
+               textarea and focuses it, which triggers the IME on Android /
+               iOS reliably. -->
+          <button
+            type="button"
+            class="mobile-keyboard-btn"
+            title="Open the on-screen keyboard and focus the active terminal — use when the keyboard doesn't appear after tapping the terminal."
+            aria-label="Show keyboard"
+            @click="showMobileKeyboard"
+          >
+            ⌨
+          </button>
+
           <button
             v-if="!notifStore.pinned"
             type="button"
@@ -267,6 +287,17 @@
   <!-- Sticky toasts (background-deletion errors, etc.). These never auto-hide
        so the user can take action even if the original flow has moved on. -->
   <PersistentToastStack />
+
+  <!-- Manual refresh indicator — shown briefly when the user triggers the
+       pull-up-to-refresh gesture on a mobile terminal. Plain visual ack so
+       the user knows the swipe-past-bottom was registered (the actual state
+       update happens silently via the WS once /api/state lands). -->
+  <Transition name="refresh-banner">
+    <div v-if="showRefreshBanner" class="manual-refresh-banner" role="status" aria-live="polite">
+      <span class="manual-refresh-banner__spinner" aria-hidden="true">⟳</span>
+      <span>Refreshing…</span>
+    </div>
+  </Transition>
 
   <!-- SSH modal prompts rendered as teleported overlays driven by the SSH
        store. They sit outside the normal DialogOverlay because they're
@@ -398,6 +429,37 @@ function closeSidebar(): void {
   sidebarOpen.value = false;
 }
 
+// Mobile keyboard rescue. xterm.js renders an invisible helper textarea
+// that receives the IME input; tapping the terminal canvas should focus
+// it (and on mobile the OS pops up the on-screen keyboard), but the touch
+// handler in terminal-controller.ts preventDefaults touchstart to take
+// over pinch/scroll, which suppresses the synthesized click and forces
+// the controller to detect "tap" itself from touchend coordinates. That
+// detection can miss (multi-finger touches, fast double-taps, dragged
+// fingers under 10 px). When it does, the user is left looking at a
+// visible terminal with no way to type. This button finds the active
+// xterm helper textarea by DOM query and focuses it directly — that
+// always brings up the IME because the focus call happens inside a real
+// `click` event handler, which counts as a user gesture.
+function showMobileKeyboard(): void {
+  // Only act when the active pane actually has a terminal in it. Falling
+  // back to the first xterm anywhere on the page is wrong — the user
+  // would land typing into a hidden background tab's terminal, which is
+  // both surprising and a subtle security issue (keystrokes routed to
+  // the wrong workspace). When there's no terminal in the active pane
+  // (Files, Docker, Git, Azure, etc.) the button is a no-op.
+  const active = document.querySelector<HTMLTextAreaElement>(".workspace-pane--active .xterm-helper-textarea");
+  if (!active) return;
+  // scrollIntoView is harmless here and helps when the keyboard slides up
+  // and would otherwise cover the cursor.
+  try {
+    active.scrollIntoView({ block: "nearest", inline: "nearest" });
+  } catch {
+    // Older WebViews — ignore.
+  }
+  active.focus({ preventScroll: false });
+}
+
 function onEditWorkspace(workspaceId: string): void {
   const ws = (store.payload?.appState?.workspaces || []).find((w) => w.id === workspaceId);
   if (ws) store.openWorkspaceDialog(ws);
@@ -450,6 +512,20 @@ function onOpenLayoutPicker(event: MouseEvent): void {
   store.showLayoutPicker((btn ? btn.getBoundingClientRect() : null) as any);
 }
 
+// Pull-up-to-refresh visual ack. The terminal controller dispatches
+// `strideterm:manual-refresh` when the user swipes past the buffer
+// bottom; we flash a banner for ~1.2 s so the gesture has a visible
+// confirmation. The actual state refetch is owned by transport.refresh().
+const showRefreshBanner = ref(false);
+let refreshBannerTimer = 0;
+function onManualRefreshEvent(): void {
+  showRefreshBanner.value = true;
+  window.clearTimeout(refreshBannerTimer);
+  refreshBannerTimer = window.setTimeout(() => {
+    showRefreshBanner.value = false;
+  }, 1200);
+}
+
 onMounted(() => {
   const savedWidth = readSidebarWidth();
   if (savedWidth && frameRef.value) {
@@ -460,6 +536,7 @@ onMounted(() => {
     frameRef.value.style.setProperty("--notif-dock-width", `${savedDockWidth}px`);
   }
   window.addEventListener("open-tab-picker", onOpenTabPickerEvent);
+  window.addEventListener("strideterm:manual-refresh", onManualRefreshEvent);
   // Ctrl+Shift+N / Cmd+Shift+N from main process → open the new-window profile picker
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (window as any).strideterm?.onNewWindowShortcut?.(() => {
@@ -469,6 +546,8 @@ onMounted(() => {
 
 onUnmounted(() => {
   window.removeEventListener("open-tab-picker", onOpenTabPickerEvent);
+  window.removeEventListener("strideterm:manual-refresh", onManualRefreshEvent);
+  window.clearTimeout(refreshBannerTimer);
 });
 
 function onOpenTabPickerEvent(event: Event): void {
@@ -544,5 +623,57 @@ useNotificationDockResize(frameRef);
   100% {
     width: 97%;
   }
+}
+
+/* Pull-up-to-refresh banner. Sits at the top of the viewport so it doesn't
+   overlap the just-bottom area the user was swiping. The spinner glyph
+   rotates while visible to make the ack feel like work-in-progress.
+   `env(safe-area-inset-top)` keeps the banner below an iPhone notch /
+   Dynamic Island instead of disappearing under it. */
+.manual-refresh-banner {
+  position: fixed;
+  top: calc(12px + env(safe-area-inset-top, 0px));
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 10000;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--panel), #000 20%);
+  border: 1px solid var(--accent);
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+  pointer-events: none;
+}
+.manual-refresh-banner__spinner {
+  display: inline-block;
+  color: var(--accent);
+  font-size: 15px;
+  animation: refresh-spin 0.8s linear infinite;
+}
+@keyframes refresh-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.refresh-banner-enter-active,
+.refresh-banner-leave-active {
+  transition:
+    opacity 0.15s ease,
+    transform 0.15s ease;
+}
+.refresh-banner-enter-from,
+.refresh-banner-leave-to {
+  opacity: 0;
+  transform: translate(-50%, -8px);
+}
+.refresh-banner-enter-to,
+.refresh-banner-leave-from {
+  opacity: 1;
+  transform: translate(-50%, 0);
 }
 </style>

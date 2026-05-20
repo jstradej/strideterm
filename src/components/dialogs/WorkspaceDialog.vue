@@ -5,7 +5,6 @@
         <p class="eyebrow">{{ isCreatingTask ? "Agent Task Runner" : "Workspace" }}</p>
         <h2>{{ isCreatingTask ? "Create task workspace" : workspace ? "Edit workspace" : "Add workspace" }}</h2>
       </div>
-      <button type="button" class="button button--ghost" @click="emit('cancel')">Close</button>
     </div>
     <form class="form" @submit.prevent="handleSubmit">
       <!-- Docker workspaces don't run shells from a cwd and don't probe git,

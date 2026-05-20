@@ -58,7 +58,7 @@ test.describe("Electron shell — empty state", () => {
     await expect(page.locator(".overlay h2")).toHaveText("Settings");
     await expect(page.getByText("Theme", { exact: false }).first()).toBeVisible({ timeout: 5_000 });
     await captureStep(launched!, "settings-general-open");
-    await page.locator(".overlay").getByRole("button", { name: "Close" }).first().click();
+    await page.locator(".overlay").getByRole("button", { name: "Cancel" }).first().click();
     await expect(page.locator(".overlay")).not.toBeVisible({ timeout: 5_000 });
     assertNoRendererErrors(launched!);
   });
@@ -69,7 +69,7 @@ test.describe("Electron shell — empty state", () => {
     await page.locator(".settings-tab-btn", { hasText: "About" }).click();
     await expect(page.locator(".settings-tab-content")).toBeVisible();
     await captureStep(launched!, "settings-about-open");
-    await page.locator(".overlay").getByRole("button", { name: "Close" }).first().click();
+    await page.locator(".overlay").getByRole("button", { name: "Cancel" }).first().click();
     await expect(page.locator(".overlay")).not.toBeVisible();
     assertNoRendererErrors(launched!);
   });

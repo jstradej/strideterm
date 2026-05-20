@@ -23,6 +23,11 @@
   display: none;
 }
 
+/* ── Mobile keyboard rescue button (hidden on desktop) ── */
+.mobile-keyboard-btn {
+  display: none;
+}
+
 .sidebar-backdrop {
   display: none;
 }
@@ -184,6 +189,28 @@
   }
 
   .mobile-tab-picker__trigger:hover {
+    background: rgba(var(--tint), 0.08);
+  }
+
+  /* Keyboard rescue button — same look as the hamburger so the toolbar reads
+     as a uniform action row. Sits between the tab picker (margin-left:auto)
+     and the notification bell. */
+  .mobile-keyboard-btn {
+    display: grid;
+    place-items: center;
+    width: 34px;
+    height: 34px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: var(--panel);
+    color: var(--text);
+    font-size: 18px;
+    line-height: 1;
+    cursor: pointer;
+    flex-shrink: 0;
+  }
+  .mobile-keyboard-btn:hover,
+  .mobile-keyboard-btn:active {
     background: rgba(var(--tint), 0.08);
   }
 

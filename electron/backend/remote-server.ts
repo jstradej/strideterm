@@ -89,13 +89,24 @@ const log = getLogger("remote-server");
 
 /**
  * Heartbeat interval for remote WebSocket clients. Each tick we send a
- * ping; any client that didn't pong since the previous tick is terminated.
- * 30s is short enough to evict dead clients before they accumulate, long
- * enough to be a rounding error on traffic. Idle real clients stay alive
- * because pong is automatic — only sockets the kernel can no longer
- * deliver to are dropped.
+ * ping; we only terminate a client after WS_HEARTBEAT_MAX_MISSED consecutive
+ * ticks with no pong, not on the first miss.
+ *
+ * 20s is short enough to keep most NAT mappings (typical home-router UDP/TCP
+ * keepalive is 30–60s) and long enough to be a rounding error on traffic.
+ * The previous 30s "one strike and you're out" config evicted mobile clients
+ * on a single sub-second network blip — a phone briefly losing 4G on a
+ * subway stop reliably tripped a termination, then the client reconnected,
+ * which spammed `WebSocket heartbeat timeout` warnings every few minutes
+ * and silently lost any in-flight push notifications during the gap.
+ *
+ * MAX_MISSED=3 means a client must be unreachable for ~60s before we drop
+ * it — still bounded so leaked tokens / kernel-dead sockets clean up, but
+ * forgiving enough that flaky mobile networks don't get into reconnect
+ * loops.
  */
-const WS_HEARTBEAT_INTERVAL_MS = 30_000;
+const WS_HEARTBEAT_INTERVAL_MS = 20_000;
+const WS_HEARTBEAT_MAX_MISSED = 3;
 
 const CONTENT_TYPES: Record<string, string> = {
   ".css": "text/css; charset=utf-8",
@@ -1986,11 +1997,13 @@ export async function startRemoteServer({
 
     wss.handleUpgrade(request, socket, head, async (ws) => {
       sockets.add(ws);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- isAlive is the heartbeat flag attached to the ws instance
-      (ws as any).isAlive = true;
+      // Tolerant heartbeat: count consecutive missed pongs instead of the
+      // binary alive/dead flag. A pong on any tick resets the counter.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- missedPongs is the heartbeat counter attached to the ws instance
+      (ws as any).missedPongs = 0;
       ws.on("pong", () => {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        (ws as any).isAlive = true;
+        (ws as any).missedPongs = 0;
       });
       // Tag the socket with its session so per-client state can be composed on broadcast.
       const wsSessionId = sessionIdForRequest(request.url || "/", request.headers);
@@ -2079,18 +2092,21 @@ export async function startRemoteServer({
     });
   });
 
-  // Drop dead WebSocket clients: each tick we ping every connection, and on
-  // the next tick terminate any that didn't pong back. Without this a NAT
-  // box quietly losing the connection leaves the socket sitting in `sockets`
-  // forever, and a leaked-token attacker reusing an idle channel would never
-  // be evicted by token regeneration alone.
+  // Drop dead WebSocket clients: each tick we ping every connection and bump
+  // its missed-pong counter. Pong handlers reset it. Only after
+  // WS_HEARTBEAT_MAX_MISSED consecutive ticks with no pong do we terminate —
+  // that handles NAT boxes silently dropping the connection (the counter
+  // climbs) without punishing real clients for a single 20s network blip.
+  // Without this, a leaked-token attacker reusing an idle channel would
+  // never be evicted by token regeneration alone.
   const heartbeat = setInterval(() => {
     for (const ws of sockets) {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const live = (ws as any).isAlive;
-      if (!live) {
+      const missed = (ws as any).missedPongs ?? 0;
+      if (missed >= WS_HEARTBEAT_MAX_MISSED) {
         log.warn("WebSocket heartbeat timeout — terminating client", {
           sessionRef: remoteSessionRef(socketSession.get(ws) || ""),
+          missedPongs: missed,
           remaining: Math.max(0, sockets.size - 1),
         });
         sockets.delete(ws);
@@ -2098,11 +2114,12 @@ export async function startRemoteServer({
         continue;
       }
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (ws as any).isAlive = false;
+      (ws as any).missedPongs = missed + 1;
       try {
         ws.ping();
       } catch {
-        // Ping on a half-closed socket throws; the next tick will reap it.
+        // Ping on a half-closed socket throws; the next tick will reap it
+        // once missedPongs crosses the threshold.
       }
     }
   }, WS_HEARTBEAT_INTERVAL_MS);

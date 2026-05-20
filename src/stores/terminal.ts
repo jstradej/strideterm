@@ -52,6 +52,17 @@ export const useTerminalStore = defineStore("terminal", () => {
       shortcutTabDirection,
       downloadTextFile,
       safeFilenamePart,
+      // Pull-up-to-refresh on remote/mobile: when the user keeps swiping
+      // past the bottom of the terminal buffer (no more newer content),
+      // fetch a fresh /api/state. Local Electron transport doesn't expose
+      // `refresh` because the desktop already gets push updates over IPC,
+      // so the gesture is a no-op there.
+      onOverscrollRefresh: api.refresh
+        ? () => {
+            window.dispatchEvent(new CustomEvent("strideterm:manual-refresh"));
+            void api.refresh!();
+          }
+        : undefined,
     });
 
     api.onTerminalData!(({ sessionId, data }) => {

@@ -5,7 +5,6 @@
         <p class="eyebrow">Application</p>
         <h2>Settings</h2>
       </div>
-      <button type="button" class="button button--ghost" @click="emit('cancel')">Close</button>
     </div>
 
     <!-- Tab bar -->
