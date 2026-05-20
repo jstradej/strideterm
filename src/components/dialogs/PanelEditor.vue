@@ -143,9 +143,19 @@
               <small>Appends `; exec bash` so the WSL terminal stays open instead of closing on exit.</small>
             </span>
           </label>
-          <div class="wsl-preview" title="This is the actual command strIDEterm will run when the tab launches.">
+          <div
+            class="wsl-preview"
+            title="The actual command strIDEterm will run. The structured fields above are just a helper — you can edit this directly for anything they don't cover (e.g. extra wsl flags)."
+          >
             <span class="wsl-preview__label">Generated command</span>
-            <code class="wsl-preview__code">{{ wslPreviewFor(panel) }}</code>
+            <input
+              :value="panel.command"
+              class="wsl-preview__code wsl-preview__code--input"
+              placeholder="(empty — nothing will run)"
+              maxlength="500"
+              spellcheck="false"
+              @input="panel.command = ($event.target as HTMLInputElement).value"
+            />
           </div>
         </template>
 
@@ -339,10 +349,6 @@ function getLaunchMode(panel: PanelEntry): "shell" | "wsl" {
 function wslStateFor(panel: PanelEntry): WslState {
   ensurePanelMode(panel);
   return wslStates[panel.id];
-}
-
-function wslPreviewFor(panel: PanelEntry): string {
-  return buildWslCommand(wslStateFor(panel)) || panel.command.trim() || "(empty — nothing will run)";
 }
 
 function setLaunchMode(panel: PanelEntry, mode: "shell" | "wsl") {
@@ -599,5 +605,19 @@ function removePanel(panelId: string) {
   color: var(--text);
   word-break: break-all;
   white-space: pre-wrap;
+}
+/* Editable form of the preview — same monospace look, but a real input so
+   the user can override anything the structured fields can't express. */
+.wsl-preview__code--input {
+  width: 100%;
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: rgba(var(--tint), 0.04);
+  outline: none;
+}
+.wsl-preview__code--input:focus {
+  border-color: var(--accent);
+  background: rgba(var(--tint), 0.06);
 }
 </style>

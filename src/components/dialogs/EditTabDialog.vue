@@ -240,9 +240,18 @@
               <small>Appends `; exec bash` so the WSL terminal stays open instead of closing on exit.</small>
             </span>
           </label>
-          <div class="wsl-preview" :title="'This is the actual command strIDEterm will run when the tab launches.'">
+          <div
+            class="wsl-preview"
+            title="The actual command strIDEterm will run. The structured fields above are just a helper — you can edit this directly for anything they don't cover (e.g. extra wsl flags)."
+          >
             <span class="wsl-preview__label">Generated command</span>
-            <code class="wsl-preview__code">{{ generatedWslCommand || "(empty — nothing will run)" }}</code>
+            <input
+              v-model="generatedWslCommand"
+              class="wsl-preview__code wsl-preview__code--input"
+              placeholder="(empty — nothing will run)"
+              maxlength="500"
+              spellcheck="false"
+            />
           </div>
         </template>
       </template>
@@ -260,7 +269,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref, watch } from "vue";
+import { computed, nextTick, onMounted, reactive, ref, watch } from "vue";
 import { useSshStore } from "../../stores/ssh.js";
 import { useAppStore } from "../../stores/app.js";
 import CustomSelect from "../common/CustomSelect.vue";
@@ -423,7 +432,22 @@ const wsl = reactive<WslState>({
 });
 const launchMode = ref<"shell" | "wsl">("shell");
 
-const generatedWslCommand = computed(() => buildWslCommand(wsl));
+// The generated command is normally derived from the structured fields, but
+// the user can also type into it directly — necessary for edge cases the
+// structured editor can't express (extra wsl flags, custom shell, …). We
+// track manual edits in `generatedWslOverride`; any subsequent change to a
+// structured field invalidates the override so the computed re-derives
+// from `buildWslCommand(wsl)`. Last-edit-wins.
+const generatedWslOverride = ref<string | null>(null);
+const generatedWslCommand = computed<string>({
+  get: () => generatedWslOverride.value ?? buildWslCommand(wsl),
+  set: (val) => {
+    generatedWslOverride.value = val;
+  },
+});
+watch([() => wsl.distro, () => wsl.cwd, () => wsl.command, () => wsl.keepOpen], () => {
+  generatedWslOverride.value = null;
+});
 
 function setLaunchMode(mode: "shell" | "wsl"): void {
   if (launchMode.value === mode) return;
@@ -443,8 +467,10 @@ function setLaunchMode(mode: "shell" | "wsl"): void {
   } else {
     // Switching back to shell: surface the generated WSL command in the
     // single-line field so the user keeps something useful, but only if
-    // their shell field is empty (don't clobber a manual edit).
-    const generated = buildWslCommand(wsl);
+    // their shell field is empty (don't clobber a manual edit). Use the
+    // computed (override-aware) value so a manually-edited generated
+    // command also rides along.
+    const generated = generatedWslCommand.value;
     if (generated && !commandInput.value.trim()) {
       commandInput.value = generated;
     }
@@ -517,13 +543,18 @@ onMounted(async () => {
     } else if (/^wsl(\s|$)/i.test(commandInput.value.trim())) {
       // Bare `wsl` (from the WSL tab template) or `wsl -d <distro>` — open the
       // structured editor with whatever distro flag we can extract, no inner
-      // command yet. keepOpen=false so an empty form doesn't replace the
-      // command with `wsl -- bash -lic "exec bash"` on save; the original
-      // bare `wsl` is preserved by handleSubmit when no fields are filled.
+      // command yet. keepOpen=false so the derived "Generated command" stays
+      // empty until the user fills something in; we then seed the override
+      // with the original text so the editable preview shows what they had,
+      // not a blank or an unrelated wrapper.
       const distroMatch = /^wsl\s+-d\s+(\S+)/i.exec(commandInput.value.trim());
       if (distroMatch) wsl.distro = distroMatch[1];
       wsl.keepOpen = false;
       launchMode.value = "wsl";
+      // Wait for the wsl-field watcher to flush (it clears the override) so
+      // our preserved value isn't immediately wiped.
+      await nextTick();
+      generatedWslOverride.value = commandInput.value.trim();
     }
   }
   requestAnimationFrame(() => {
@@ -838,6 +869,20 @@ async function handleSubmit() {
   color: var(--text);
   word-break: break-all;
   white-space: pre-wrap;
+}
+/* Editable form of the preview — same monospace look, but a real input so
+   the user can override anything the structured fields can't express. */
+.wsl-preview__code--input {
+  width: 100%;
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: rgba(var(--tint), 0.04);
+  outline: none;
+}
+.wsl-preview__code--input:focus {
+  border-color: var(--accent);
+  background: rgba(var(--tint), 0.06);
 }
 
 /* Save-row: checkbox toggle on the left, name input expanding to the right. */
