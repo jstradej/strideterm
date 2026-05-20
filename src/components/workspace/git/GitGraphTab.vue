@@ -63,11 +63,7 @@
             </Pane>
             <Pane :size="60" :min-size="20">
               <div class="git-graph__commit-diff">
-                <MonacoDiffPanel
-                  v-if="selectedCommitFile"
-                  :payload="commitDiffPayload"
-                  :loading="commitDiffLoading"
-                />
+                <MonacoDiffPanel v-if="selectedCommitFile" :payload="commitDiffPayload" :loading="commitDiffLoading" />
                 <div v-else class="git-graph__placeholder">
                   {{ selectedHash ? "Pick a file to view its diff." : "" }}
                 </div>

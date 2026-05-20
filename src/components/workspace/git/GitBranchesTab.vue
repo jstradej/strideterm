@@ -9,9 +9,7 @@
           placeholder="Filter branches…"
           aria-label="Filter branches"
         />
-        <span v-if="search" class="git-branches__search-clear" role="button" tabindex="0" @click="search = ''"
-          >×</span
-        >
+        <span v-if="search" class="git-branches__search-clear" role="button" tabindex="0" @click="search = ''">×</span>
       </div>
       <label class="git-branches__filter">
         <input v-model="showRemotes" type="checkbox" />
@@ -55,7 +53,9 @@
         @keydown.enter="onCreateBranch"
         @keydown.escape="cancelNewBranch"
       />
-      <small v-if="startFrom" class="git-branches__form-hint">from <strong>{{ startFrom }}</strong></small>
+      <small v-if="startFrom" class="git-branches__form-hint"
+        >from <strong>{{ startFrom }}</strong></small
+      >
       <button
         type="button"
         class="button button--small"
@@ -79,9 +79,7 @@
             <span class="git-branches__section-count">{{ filteredLocal.length }}</span>
           </h3>
         </header>
-        <div v-if="!branchList.local.length && !branchesLoading" class="git-branches__empty">
-          No local branches.
-        </div>
+        <div v-if="!branchList.local.length && !branchesLoading" class="git-branches__empty">No local branches.</div>
         <ul v-else class="git-branches__list" role="list">
           <li
             v-for="b in filteredLocal"
@@ -92,20 +90,33 @@
             ]"
           >
             <div class="git-branches__row-main">
-              <span class="git-branches__row-marker" :class="{ 'git-branches__row-marker--current': b.isCurrent }"
+              <span
+                class="git-branches__row-marker"
+                :class="{ 'git-branches__row-marker--current': b.isCurrent }"
                 aria-hidden="true"
                 >{{ b.isCurrent ? "●" : "○" }}</span
               >
               <span class="git-branches__row-name" :title="b.name">{{ b.name }}</span>
               <span v-if="b.isCurrent" class="git-branches__badge git-branches__badge--current">HEAD</span>
-              <span v-if="b.merged && !b.isCurrent" class="git-branches__badge git-branches__badge--merged">merged</span>
-              <span v-if="b.upstream" class="git-branches__badge git-branches__badge--upstream" :title="`Tracks ${b.upstream}`"
+              <span v-if="b.merged && !b.isCurrent" class="git-branches__badge git-branches__badge--merged"
+                >merged</span
+              >
+              <span
+                v-if="b.upstream"
+                class="git-branches__badge git-branches__badge--upstream"
+                :title="`Tracks ${b.upstream}`"
                 >↥ {{ b.upstream }}</span
               >
-              <span v-if="b.ahead > 0" class="git-branches__counter" :title="`${b.ahead} commit(s) on this branch but not on ${b.isCurrent || !branchList.current ? 'upstream' : branchList.current}`"
+              <span
+                v-if="b.ahead > 0"
+                class="git-branches__counter"
+                :title="`${b.ahead} commit(s) on this branch but not on ${b.isCurrent || !branchList.current ? 'upstream' : branchList.current}`"
                 >▲ {{ b.ahead }}</span
               >
-              <span v-if="b.behind > 0" class="git-branches__counter" :title="`${b.behind} commit(s) on the other side but not here`"
+              <span
+                v-if="b.behind > 0"
+                class="git-branches__counter"
+                :title="`${b.behind} commit(s) on the other side but not here`"
                 >▼ {{ b.behind }}</span
               >
             </div>
@@ -121,7 +132,11 @@
                 type="button"
                 class="button button--ghost button--small"
                 :disabled="!!gitUi.busyAction || isDirty"
-                :title="isDirty ? 'Disabled — commit or stash your uncommitted changes before checking out another branch.' : `git checkout ${b.name} — make this branch HEAD.`"
+                :title="
+                  isDirty
+                    ? 'Disabled — commit or stash your uncommitted changes before checking out another branch.'
+                    : `git checkout ${b.name} — make this branch HEAD.`
+                "
                 @click="onCheckout(b.name)"
               >
                 Checkout
@@ -169,7 +184,11 @@
                 type="button"
                 class="button button--ghost button--small button--danger"
                 :disabled="!!gitUi.busyAction"
-                :title="b.merged ? `Delete branch ${b.name} (merged into current).` : `Delete branch ${b.name}. Has unmerged commits — will require Force delete.`"
+                :title="
+                  b.merged
+                    ? `Delete branch ${b.name} (merged into current).`
+                    : `Delete branch ${b.name}. Has unmerged commits — will require Force delete.`
+                "
                 @click="onDeleteLocal(b)"
               >
                 Delete
@@ -188,9 +207,7 @@
             <span class="git-branches__section-count">{{ filteredRemotes.length }}</span>
           </h3>
         </header>
-        <div v-if="!branchList.remotes.length && !branchesLoading" class="git-branches__empty">
-          No remote branches.
-        </div>
+        <div v-if="!branchList.remotes.length && !branchesLoading" class="git-branches__empty">No remote branches.</div>
         <ul v-else class="git-branches__list" role="list">
           <li
             v-for="r in filteredRemotes"
@@ -223,7 +240,11 @@
                 type="button"
                 class="button button--ghost button--small"
                 :disabled="!!gitUi.busyAction || isDirty"
-                :title="isDirty ? 'Disabled — commit or stash your uncommitted changes first.' : `git checkout -b ${r.shortName} --track ${r.name}`"
+                :title="
+                  isDirty
+                    ? 'Disabled — commit or stash your uncommitted changes first.'
+                    : `git checkout -b ${r.shortName} --track ${r.name}`
+                "
                 @click="onCheckoutRemote(r)"
               >
                 Checkout
@@ -296,15 +317,17 @@ interface RemoteBranch {
   lastRelativeDate: string;
 }
 
-const branchList = computed<{ current: string; upstream: string; local: LocalBranch[]; remotes: RemoteBranch[] }>(() => {
-  const bl = props.gitUi?.branchList || {};
-  return {
-    current: bl.current || "",
-    upstream: bl.upstream || "",
-    local: (bl.local as LocalBranch[]) || [],
-    remotes: (bl.remotes as RemoteBranch[]) || [],
-  };
-});
+const branchList = computed<{ current: string; upstream: string; local: LocalBranch[]; remotes: RemoteBranch[] }>(
+  () => {
+    const bl = props.gitUi?.branchList || {};
+    return {
+      current: bl.current || "",
+      upstream: bl.upstream || "",
+      local: (bl.local as LocalBranch[]) || [],
+      remotes: (bl.remotes as RemoteBranch[]) || [],
+    };
+  },
+);
 
 const isDirty = computed(() => !!props.snapshot?.dirty);
 

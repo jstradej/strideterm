@@ -21,7 +21,19 @@
       >
         <!-- SVG paints lanes + edges + dots; rows on top are normal DOM
              so we get text wrapping, hover/tooltip, native click targets,
-             and selection styling. Same approach as JetBrains' VCS Log. -->
+             and selection styling. Same approach as JetBrains' VCS Log.
+
+             Off-the-shelf options evaluated and rejected:
+               - @gitgraph/js / @gitgraph/react: renders synthetic in-memory
+                 history only (no `git log` input), no Vue binding, no
+                 virtualization. Wrong shape for our IPC-driven data.
+               - vue-git-graph / git-graph-vue: unmaintained (last release
+                 3+ years ago), no TS types, no keyboard nav, would still
+                 force us to write the lane algorithm.
+               - gitgraph.js (1.x): deprecated by upstream in favor of
+                 @gitgraph/* family above.
+             Our SVG renderer is ~600 lines, type-safe, virtualization-ready,
+             matches our theme tokens, and ships zero new dependencies. -->
         <svg
           class="git-tree__svg"
           :width="graphWidth"
@@ -480,7 +492,9 @@ watch(
   left: 0;
   right: 0;
   display: grid;
-  grid-template-columns: minmax(110px, max-content) minmax(120px, 1fr) minmax(100px, max-content) minmax(70px, max-content) minmax(60px, max-content);
+  grid-template-columns:
+    minmax(110px, max-content) minmax(120px, 1fr) minmax(100px, max-content) minmax(70px, max-content)
+    minmax(60px, max-content);
   gap: 10px;
   align-items: center;
   padding-right: 10px;

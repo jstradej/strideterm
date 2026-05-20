@@ -2271,12 +2271,10 @@ export class GitManager extends EventEmitter {
           stdout: "",
           stderr: "",
         })),
-        this.execGit(cwd, [
-          "for-each-ref",
-          `--format=${fmt}`,
-          "--sort=-committerdate",
-          "refs/remotes",
-        ]).catch(() => ({ stdout: "", stderr: "" })),
+        this.execGit(cwd, ["for-each-ref", `--format=${fmt}`, "--sort=-committerdate", "refs/remotes"]).catch(() => ({
+          stdout: "",
+          stderr: "",
+        })),
         this.execGit(cwd, ["rev-parse", "--abbrev-ref", "HEAD"]).catch(() => ({ stdout: "HEAD", stderr: "" })),
         this.execGit(cwd, ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"]).catch(() => ({
           stdout: "",
@@ -2427,8 +2425,7 @@ export class GitManager extends EventEmitter {
       label: `Delete remote branch ${remoteName}/${name}`,
       allowDirty: true,
       skipPreflight: true,
-      run: async (cwd) =>
-        this.execAuthGit(cwd, ["push", remoteName, `:refs/heads/${name}`], { connection }),
+      run: async (cwd) => this.execAuthGit(cwd, ["push", remoteName, `:refs/heads/${name}`], { connection }),
       connection,
       rootPath,
     });
@@ -2436,11 +2433,7 @@ export class GitManager extends EventEmitter {
 
   async renameBranch(
     workspace: WorkspaceRef,
-    {
-      branch,
-      newName,
-      rootPath = "",
-    }: { branch?: string; newName?: string; rootPath?: string } = {},
+    { branch, newName, rootPath = "" }: { branch?: string; newName?: string; rootPath?: string } = {},
   ): Promise<Record<string, unknown>> {
     const from = String(branch || "").trim();
     const to = String(newName || "").trim();
@@ -2562,8 +2555,16 @@ export class GitManager extends EventEmitter {
         .split(/\r?\n/)
         .filter(Boolean);
       const commits = lines.map((line) => {
-        const [hash = "", shortHash = "", parentList = "", subject = "", author = "", relativeDate = "", isoDate = "", decoration = ""] =
-          line.split(SEP);
+        const [
+          hash = "",
+          shortHash = "",
+          parentList = "",
+          subject = "",
+          author = "",
+          relativeDate = "",
+          isoDate = "",
+          decoration = "",
+        ] = line.split(SEP);
         const parents = parentList
           .split(/\s+/)
           .map((p) => p.trim())
