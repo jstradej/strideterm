@@ -490,10 +490,9 @@ watch(
 
 .git-tree__header {
   display: grid;
-  grid-template-columns: var(--graph-col, 60px) minmax(160px, 1fr) minmax(80px, max-content) minmax(
-      60px,
-      max-content
-    ) minmax(50px, max-content);
+  grid-template-columns:
+    var(--graph-col, 60px) minmax(160px, 1fr) minmax(80px, max-content) minmax(60px, max-content)
+    minmax(50px, max-content);
   gap: 10px;
   padding: 4px 10px 4px 4px;
   background: rgba(255, 255, 255, 0.03);

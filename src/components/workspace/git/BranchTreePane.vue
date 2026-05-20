@@ -32,40 +32,18 @@
 <script setup lang="ts">
 import { reactive, watch } from "vue";
 import BranchTreeNode from "./BranchTreeNode.vue";
+import type { BranchTreeNode as BranchTreeNodeData } from "./branch-tree-types";
 
-export interface BranchTreeNodeMeta {
-  ahead?: number;
-  behind?: number;
-  upstream?: string;
-  merged?: boolean;
-  remote?: string;
-  lastCommit?: string;
-  lastSubject?: string;
-  lastAuthor?: string;
-  lastRelativeDate?: string;
-  isCurrent?: boolean;
-  hasLocal?: boolean;
-  count?: number;
-  tag?: boolean;
-}
-
-export type BranchTreeNodeKind = "section" | "folder" | "branch-local" | "branch-remote" | "tag";
-
-export interface BranchTreeNode {
-  key: string;
-  kind: BranchTreeNodeKind;
-  label: string;
-  ref?: string;
-  icon?: string;
-  isCurrent?: boolean;
-  upstream?: string;
-  meta?: BranchTreeNodeMeta;
-  children?: BranchTreeNode[];
-}
+// Re-export the named types so existing imports
+// (`import BranchTreePane, { type BranchTreeNode } from "./BranchTreePane.vue"`)
+// keep working through vue-tsc. Plain `tsc` (used by tsconfig.tests.json)
+// can't resolve named exports from `.vue` files, so tests import from
+// `./branch-tree-types` directly.
+export type { BranchTreeNode, BranchTreeNodeKind, BranchTreeNodeMeta } from "./branch-tree-types";
 
 const props = withDefaults(
   defineProps<{
-    tree: BranchTreeNode[];
+    tree: BranchTreeNodeData[];
     loading?: boolean;
     selectedRef?: string;
     head?: string;
@@ -94,7 +72,7 @@ const emit = defineEmits<{
 // as well, but the user can collapse them and the choice sticks.
 const expanded = reactive<Record<string, boolean>>({});
 
-function ensureDefault(nodes: BranchTreeNode[]) {
+function ensureDefault(nodes: BranchTreeNodeData[]) {
   for (const node of nodes) {
     if (!(node.key in expanded)) expanded[node.key] = true;
     if (node.children?.length) ensureDefault(node.children);

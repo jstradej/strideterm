@@ -107,7 +107,7 @@
 
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, ref } from "vue";
-import type { BranchTreeNode as BranchTreeNodeType } from "./BranchTreePane.vue";
+import type { BranchTreeNode as BranchTreeNodeType } from "./branch-tree-types";
 
 const props = defineProps<{
   node: BranchTreeNodeType;
