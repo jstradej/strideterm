@@ -46,7 +46,7 @@ describe("applyShellIntegrationLaunch — bash / sh", () => {
 });
 
 describe("applyShellIntegrationLaunch — zsh", () => {
-  test("sets ZDOTDIR to the loader dir and writes the loader .zshrc", () => {
+  test("sets ZDOTDIR to the loader dir and writes all 5 zsh init files", () => {
     const launcher = { file: "/bin/zsh", args: ["-l"] };
     const env = {
       STRIDETERM_SHELL_INTEGRATION: "1",
@@ -56,10 +56,18 @@ describe("applyShellIntegrationLaunch — zsh", () => {
     expect(result.launcher).toEqual(launcher);
     expect(result.env.ZDOTDIR).toBe(path.join(dataDir, "runtime", "zsh-init"));
     expect(result.skipTypedSource).toBe(true);
-    const loader = readFileSync(path.join(result.env.ZDOTDIR, ".zshrc"), "utf8");
-    // Sanity: the loader sources both user's .zshrc and our integration.
-    expect(loader).toContain('source "$_strideterm_user_zdotdir/.zshrc"');
-    expect(loader).toContain('source "$STRIDETERM_SHELL_INTEGRATION_SCRIPT"');
+    // All five files zsh reads must exist as chain stubs, otherwise zsh
+    // silently skips the user's real .zshenv / .zprofile / .zlogin / .zlogout.
+    const dir = result.env.ZDOTDIR;
+    const envFile = readFileSync(path.join(dir, ".zshenv"), "utf8");
+    expect(envFile).toContain("_strideterm_chain()");
+    expect(envFile).toContain("_strideterm_chain .zshenv");
+    expect(readFileSync(path.join(dir, ".zprofile"), "utf8")).toContain("_strideterm_chain .zprofile");
+    const rcFile = readFileSync(path.join(dir, ".zshrc"), "utf8");
+    expect(rcFile).toContain("_strideterm_chain .zshrc");
+    expect(rcFile).toContain('source "$STRIDETERM_SHELL_INTEGRATION_SCRIPT"');
+    expect(readFileSync(path.join(dir, ".zlogin"), "utf8")).toContain("_strideterm_chain .zlogin");
+    expect(readFileSync(path.join(dir, ".zlogout"), "utf8")).toContain("_strideterm_chain .zlogout");
   });
 
   test("preserves __STRIDETERM_ORIGINAL_ZDOTDIR carried in env", () => {
@@ -85,14 +93,14 @@ describe("applyShellIntegrationLaunch — pwsh / powershell", () => {
   test("pwsh.exe gets -NoExit -Command appended", () => {
     const launcher = { file: "pwsh.exe", args: [] };
     const result = applyShellIntegrationLaunch(launcher, envForPwsh());
-    expect(result.launcher.args).toEqual(["-NoExit", "-Command", `& '${SCRIPT_PATH}'`]);
+    expect(result.launcher.args).toEqual(["-NoExit", "-Command", `. '${SCRIPT_PATH}'`]);
     expect(result.skipTypedSource).toBe(true);
   });
 
   test("powershell (Windows PowerShell 5.1) is treated the same", () => {
     const launcher = { file: "powershell.exe", args: ["-NoLogo"] };
     const result = applyShellIntegrationLaunch(launcher, envForPwsh());
-    expect(result.launcher.args).toEqual(["-NoLogo", "-NoExit", "-Command", `& '${SCRIPT_PATH}'`]);
+    expect(result.launcher.args).toEqual(["-NoLogo", "-NoExit", "-Command", `. '${SCRIPT_PATH}'`]);
   });
 
   test("respects user-supplied -Command — no injection", () => {
@@ -127,7 +135,7 @@ describe("applyShellIntegrationLaunch — pwsh / powershell", () => {
       STRIDETERM_SHELL_INTEGRATION_SCRIPT: "C:\\path\\with'quote\\pwsh.ps1",
     };
     const result = applyShellIntegrationLaunch(launcher, env);
-    expect(result.launcher.args[2]).toBe(`& 'C:\\path\\with''quote\\pwsh.ps1'`);
+    expect(result.launcher.args[2]).toBe(`. 'C:\\path\\with''quote\\pwsh.ps1'`);
   });
 });
 
@@ -169,12 +177,19 @@ describe("pwshHasOwnEntryPoint", () => {
 });
 
 describe("ensureZshLoaderDir", () => {
-  test("creates the dir and writes a valid .zshrc", () => {
+  test("creates the dir and writes all 5 init files with chain helpers", () => {
     const dir = ensureZshLoaderDir();
-    expect(existsSync(path.join(dir, ".zshrc"))).toBe(true);
-    const contents = readFileSync(path.join(dir, ".zshrc"), "utf8");
-    expect(contents).toContain('export ZDOTDIR="$__STRIDETERM_ORIGINAL_ZDOTDIR"');
-    expect(contents).toContain('source "$STRIDETERM_SHELL_INTEGRATION_SCRIPT"');
+    for (const name of [".zshenv", ".zprofile", ".zshrc", ".zlogin", ".zlogout"]) {
+      expect(existsSync(path.join(dir, name))).toBe(true);
+    }
+    // .zshenv defines the shared helper and chains user's .zshenv
+    const envFile = readFileSync(path.join(dir, ".zshenv"), "utf8");
+    expect(envFile).toContain("_strideterm_chain()");
+    expect(envFile).toContain('user_zdotdir="${__STRIDETERM_ORIGINAL_ZDOTDIR:-$HOME}"');
+    expect(envFile).toContain("_strideterm_chain .zshenv");
+    // .zshrc additionally sources our integration script
+    const rcFile = readFileSync(path.join(dir, ".zshrc"), "utf8");
+    expect(rcFile).toContain('source "$STRIDETERM_SHELL_INTEGRATION_SCRIPT"');
   });
 
   test("is idempotent (writes deterministic content)", () => {

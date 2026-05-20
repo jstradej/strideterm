@@ -34,23 +34,50 @@ export interface ShellIntegrationLaunchResult {
   skipTypedSource: boolean;
 }
 
-const ZSH_LOADER_SCRIPT = `# strIDEterm zsh init loader (auto-generated; safe to delete).
-# Sourced because ZDOTDIR points here. Loads the user's real .zshrc first,
-# then strIDEterm's integration. Restores ZDOTDIR for child processes.
-_strideterm_user_zdotdir="\${__STRIDETERM_ORIGINAL_ZDOTDIR:-$HOME}"
-if [[ -n "$__STRIDETERM_ORIGINAL_ZDOTDIR" ]]; then
-  export ZDOTDIR="$__STRIDETERM_ORIGINAL_ZDOTDIR"
-  unset __STRIDETERM_ORIGINAL_ZDOTDIR
-else
-  unset ZDOTDIR
-fi
-if [[ -f "$_strideterm_user_zdotdir/.zshrc" ]]; then
-  source "$_strideterm_user_zdotdir/.zshrc"
-fi
-if [[ -n "$STRIDETERM_SHELL_INTEGRATION_SCRIPT" ]]; then
+// zsh reads init files from $ZDOTDIR in this order:
+//   .zshenv  (always)
+//   .zprofile (login shells)
+//   .zshrc   (interactive shells)
+//   .zlogin  (login shells)
+//   .zlogout (login shell exit)
+// We override ZDOTDIR to a loader dir, so all five must be present here as
+// chaining stubs — otherwise zsh silently skips the user's real dotfiles
+// for everything but .zshrc (and the typical login-shell PATH / env setup
+// in .zshenv / .zprofile gets lost). The shared `_strideterm_chain` helper
+// is defined in .zshenv (always loaded first) and reused by the others.
+
+const ZSH_ENV_LOADER = `# strIDEterm zsh init loader (.zshenv — auto-generated; safe to delete).
+# Defines a helper that sources the same file from the user's real ZDOTDIR,
+# then chains this file. Subsequent loader files (.zprofile, .zshrc, etc.)
+# reuse the helper.
+_strideterm_chain() {
+  local user_zdotdir="\${__STRIDETERM_ORIGINAL_ZDOTDIR:-$HOME}"
+  local target="$user_zdotdir/$1"
+  if [[ -r "$target" ]]; then
+    source "$target"
+  fi
+}
+_strideterm_chain .zshenv
+`;
+
+const ZSH_PROFILE_LOADER = `# strIDEterm zsh init loader (.zprofile — auto-generated; safe to delete).
+_strideterm_chain .zprofile
+`;
+
+const ZSH_RC_LOADER = `# strIDEterm zsh init loader (.zshrc — auto-generated; safe to delete).
+# Sources user's real .zshrc first, then strIDEterm's OSC 133 integration.
+_strideterm_chain .zshrc
+if [[ -n "$STRIDETERM_SHELL_INTEGRATION_SCRIPT" && -r "$STRIDETERM_SHELL_INTEGRATION_SCRIPT" ]]; then
   source "$STRIDETERM_SHELL_INTEGRATION_SCRIPT"
 fi
-unset _strideterm_user_zdotdir
+`;
+
+const ZSH_LOGIN_LOADER = `# strIDEterm zsh init loader (.zlogin — auto-generated; safe to delete).
+_strideterm_chain .zlogin
+`;
+
+const ZSH_LOGOUT_LOADER = `# strIDEterm zsh init loader (.zlogout — auto-generated; safe to delete).
+_strideterm_chain .zlogout
 `;
 
 function shellBasename(filePath: string): string {
@@ -77,16 +104,24 @@ function pwshHasOwnEntryPoint(args: readonly string[]): boolean {
 }
 
 /**
- * Path to the dir used as ZDOTDIR for zsh sessions. Ensures the loader
- * .zshrc exists on disk and is current.
+ * Path to the dir used as ZDOTDIR for zsh sessions. Ensures all five zsh
+ * loader files exist on disk and are current. Cheap to rewrite every time
+ * (tiny files), so we always overwrite to avoid stale content from older
+ * versions.
  */
 export function ensureZshLoaderDir(): string {
   const dir = path.join(strideDataDir(), "runtime", "zsh-init");
   mkdirSync(dir, { recursive: true });
-  const zshrcPath = path.join(dir, ".zshrc");
-  // Rewrite every time so a stale loader from a previous version doesn't
-  // linger. The file is tiny so the I/O cost is negligible.
-  writeFileSync(zshrcPath, ZSH_LOADER_SCRIPT, { mode: 0o644 });
+  const files: ReadonlyArray<[string, string]> = [
+    [".zshenv", ZSH_ENV_LOADER],
+    [".zprofile", ZSH_PROFILE_LOADER],
+    [".zshrc", ZSH_RC_LOADER],
+    [".zlogin", ZSH_LOGIN_LOADER],
+    [".zlogout", ZSH_LOGOUT_LOADER],
+  ];
+  for (const [name, body] of files) {
+    writeFileSync(path.join(dir, name), body, { mode: 0o644 });
+  }
   return dir;
 }
 
@@ -140,7 +175,13 @@ export function applyShellIntegrationLaunch(
     // Escape single quotes for pwsh single-quoted string literal: '' inside
     // '...' represents one literal single quote.
     const escapedPath = scriptPath.replace(/'/g, "''");
-    const nextArgs = [...launcher.args, "-NoExit", "-Command", `& '${escapedPath}'`];
+    // Dot-source (`.`), NOT call operator (`&`). `&` runs the script in a
+    // child scope, so the global `function prompt { … }` defined in pwsh.ps1
+    // would vanish when the script returns and OSC 133 D/A/B sequences would
+    // never fire at subsequent prompts. Dot-source runs in the caller's
+    // scope, which for `-Command` is the global one. (VSCode and Windows
+    // Terminal use the same idiom for their pwsh integrations.)
+    const nextArgs = [...launcher.args, "-NoExit", "-Command", `. '${escapedPath}'`];
     return {
       launcher: { file: launcher.file, args: nextArgs },
       env,
