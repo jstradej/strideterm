@@ -163,7 +163,7 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
-    "@effect/language-service": "0.86.1",
+    "@effect/language-service": "0.86.2",
     "@eslint/js": "^10.0.1",
     "@playwright/test": "^1.60.0",
     "@types/node": "25.9.0",
