@@ -115,10 +115,6 @@
 
       <p v-if="error" class="git-commit-dialog__error">{{ error }}</p>
     </div>
-
-    <footer class="dialog__footer">
-      <button type="button" class="button" @click="emit('close')">Done</button>
-    </footer>
   </div>
 </template>
 

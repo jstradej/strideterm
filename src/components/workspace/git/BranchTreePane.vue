@@ -14,6 +14,7 @@
         :is-dirty="isDirty"
         :expanded="expanded"
         :compact="compact"
+        :can-create-pr="canCreatePr"
         @select="(ref) => emit('select', ref)"
         @toggle="onToggle"
         @checkout="(ref) => emit('checkout', ref)"
@@ -24,6 +25,7 @@
         @delete-remote="(ref) => emit('delete-remote', ref)"
         @merge="(ref) => emit('merge', ref)"
         @rebase="(ref) => emit('rebase', ref)"
+        @create-pr="(ref) => emit('create-pr', ref)"
       />
     </ul>
   </div>
@@ -50,8 +52,9 @@ const props = withDefaults(
     busy?: boolean;
     isDirty?: boolean;
     compact?: boolean;
+    canCreatePr?: boolean;
   }>(),
-  { loading: false, selectedRef: "", head: "", busy: false, isDirty: false, compact: false },
+  { loading: false, selectedRef: "", head: "", busy: false, isDirty: false, compact: false, canCreatePr: false },
 );
 
 const emit = defineEmits<{
@@ -64,6 +67,7 @@ const emit = defineEmits<{
   (e: "delete-remote", ref: string): void;
   (e: "merge", ref: string): void;
   (e: "rebase", ref: string): void;
+  (e: "create-pr", ref: string): void;
 }>();
 
 // Persistent collapse state, keyed by node.key. Sections and the first

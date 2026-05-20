@@ -50,7 +50,15 @@
             aria-hidden="true"
           >
             <g v-for="edge in edges" :key="edge.id">
-              <path :d="edge.d" :stroke="edge.color" :stroke-width="EDGE_WIDTH" fill="none" stroke-linecap="round" />
+              <path
+                :d="edge.d"
+                :stroke="edge.color"
+                :stroke-width="EDGE_WIDTH"
+                fill="none"
+                stroke-linecap="round"
+                :stroke-dasharray="edge.dashed ? '3 3' : undefined"
+                :opacity="edge.dashed ? 0.55 : 1"
+              />
             </g>
             <g v-for="node in nodes" :key="`dot:${node.hash}`">
               <circle
@@ -63,13 +71,19 @@
                 stroke-width="1.2"
                 opacity="0.55"
               />
+              <!-- Filled dot for every commit, merge or not. Earlier draft
+                   used a hollow ring for merges, which stacks into a column
+                   of donuts when many merges live next to each other (very
+                   common with feature-branch workflows). JetBrains' VCS Log
+                   also uses identical filled dots — topology conveys merge,
+                   not the dot's interior. -->
               <circle
                 :cx="laneX(node.lane)"
                 :cy="node.y + ROW_HEIGHT / 2"
-                :r="node.isMerge ? DOT_RADIUS - 0.5 : DOT_RADIUS"
-                :fill="node.isMerge ? 'var(--surface, #1d2026)' : laneColor(node.lane)"
+                :r="DOT_RADIUS"
+                :fill="laneColor(node.lane)"
                 :stroke="laneColor(node.lane)"
-                stroke-width="1.6"
+                stroke-width="1"
               />
             </g>
           </svg>
@@ -89,6 +103,7 @@
             :title="rowTooltip(node)"
             @click="select(node)"
             @dblclick="onDoubleClick(node)"
+            @contextmenu="onContextMenu($event, node)"
           >
             <span class="git-tree__cell git-tree__cell--subject">
               <span
@@ -152,6 +167,11 @@ const props = withDefaults(
     loading?: boolean;
     error?: string;
     compact?: boolean;
+    // Render everything in a single column with straight verticals. Used when
+    // an author / path filter has been applied — the parent chain is broken
+    // by the filter so the topological lane layout would be misleading. This
+    // mirrors what JetBrains' Log shows under User filter.
+    flat?: boolean;
   }>(),
   {
     commits: () => [],
@@ -161,10 +181,15 @@ const props = withDefaults(
     loading: false,
     error: "",
     compact: false,
+    flat: false,
   },
 );
 
-const emit = defineEmits<{ (e: "select", hash: string): void; (e: "open", hash: string): void }>();
+const emit = defineEmits<{
+  (e: "select", hash: string): void;
+  (e: "open", hash: string): void;
+  (e: "contextmenu", payload: { hash: string; x: number; y: number }): void;
+}>();
 
 // Layout constants — tightened (vs the earlier draft) to match JetBrains'
 // VCS Log row density. ROW_HEIGHT=22 fits ~26 rows in a 600px viewport
@@ -225,6 +250,9 @@ interface GraphEdge {
   id: string;
   d: string;
   color: string;
+  // Dashed signals "this segment crosses commits hidden by the active filter"
+  // — used only in flat mode where the parent chain is interrupted.
+  dashed?: boolean;
 }
 
 interface LaneState {
@@ -251,8 +279,62 @@ interface LayoutResult {
 //   4. continue every other still-active lane straight to the next row.
 //
 // Width = (max active lane + 1) × LANE_GAP + padding.
-function buildLayout(commits: RawCommit[], head: string): LayoutResult {
+function buildLayout(commits: RawCommit[], head: string, flat: boolean): LayoutResult {
   if (!commits.length) return { nodes: [], edges: [], width: 40 };
+
+  // Filtered view (User / Path) breaks the parent chain — lanes derived from
+  // partial history would scatter into orphan verticals (see image #17). In
+  // flat mode we render every commit on lane 0 with a single connecting line,
+  // matching JetBrains' Log under filter (image #18). On top of the plain
+  // column we add two topology hints so the result is more than a flat list:
+  //   - chain-break segments render dashed (parent of Ci isn't Ci+1 → some
+  //     filtered-out commits sit between them in the real graph)
+  //   - merge commits get a small right-side stub indicating a secondary
+  //     parent that lives off-canvas (analogous to the partial fragments
+  //     JetBrains paints under a User filter — image #20)
+  if (flat) {
+    const nodes: GraphNode[] = commits.map((commit, i) => ({
+      hash: commit.hash,
+      shortHash: commit.shortHash,
+      parents: commit.parents || [],
+      subject: commit.subject,
+      author: commit.author,
+      relativeDate: commit.relativeDate,
+      isoDate: commit.isoDate,
+      lane: 0,
+      y: i * ROW_HEIGHT,
+      isHead: head === commit.hash,
+      isMerge: (commit.parents || []).length >= 2,
+      refs: classifyRefs(commit.refs || []),
+    }));
+    const edges: GraphEdge[] = [];
+    const lane0X = laneX(0);
+    const stubX = lane0X + LANE_GAP * 0.9; // tail end of the merge-stub arc
+    for (let i = 0; i < commits.length; i++) {
+      const yMid = i * ROW_HEIGHT + ROW_HEIGHT / 2;
+      // Merge-parent stub: a tiny arc emerging from the dot to the right,
+      // signalling that this commit has another parent we can't show because
+      // it was dropped by the filter. Only rendered for merge commits.
+      if ((commits[i].parents || []).length >= 2) {
+        const stubY = yMid - ROW_HEIGHT * 0.35;
+        edges.push({
+          id: `flat-merge:${commits[i].hash}`,
+          d: `M ${lane0X} ${yMid} C ${lane0X} ${stubY} ${stubX} ${stubY} ${stubX} ${stubY - 2}`,
+          color: laneColor(1),
+        });
+      }
+      if (i + 1 >= commits.length) continue;
+      const yMidNext = (i + 1) * ROW_HEIGHT + ROW_HEIGHT / 2;
+      const chainIntact = (commits[i].parents || []).includes(commits[i + 1].hash);
+      edges.push({
+        id: `flat:${commits[i].hash}->${commits[i + 1].hash}`,
+        d: `M ${lane0X} ${yMid} L ${lane0X} ${yMidNext}`,
+        color: laneColor(0),
+        dashed: !chainIntact,
+      });
+    }
+    return { nodes, edges, width: LANE_START_X + LANE_GAP * 2 };
+  }
 
   const nodes: GraphNode[] = [];
   const edges: GraphEdge[] = [];
@@ -278,7 +360,9 @@ function buildLayout(commits: RawCommit[], head: string): LayoutResult {
       for (let k = 1; k < reservingLanes.length; k++) {
         const closingLane = reservingLanes[k];
         const closingColor = lanes[closingLane]!.color;
-        // Curve from the lane's position one row up down into the dot.
+        // Curve from the closing lane's mid-of-previous-row down into the
+        // current commit's dot. The straight pass-through above this point
+        // is owned by the *previous* row's outgoing edges (see below).
         edges.push({
           id: `m:${commit.hash}:${closingLane}->${homeLane}`,
           d: laneMergePath(closingLane, homeLane, y),
@@ -306,6 +390,10 @@ function buildLayout(commits: RawCommit[], head: string): LayoutResult {
     if (firstParent) lanes[homeLane] = { tip: firstParent, color: homeColor };
     else lanes[homeLane] = null;
 
+    // Track lanes opened by this iteration's branch-out curves so the
+    // inter-row pass-through doesn't double-draw their segment.
+    const newlyOpened = new Set<number>();
+
     for (let p = 1; p < parents.length; p++) {
       const parentHash = parents[p];
       const free = lanes.findIndex((l) => l === null);
@@ -318,33 +406,43 @@ function buildLayout(commits: RawCommit[], head: string): LayoutResult {
         d: laneBranchPath(homeLane, newLane, y),
         color: laneColor(newColor),
       });
+      newlyOpened.add(newLane);
       maxLane = Math.max(maxLane, newLane);
     }
 
+    // Per-interval pass-through edges from THIS row's mid to NEXT row's mid.
+    // Each row interval (i mid → i+1 mid) gets exactly one segment per lane.
+    // We skip:
+    //   - newlyOpened lanes — the branch curve already owns this interval
+    //   - "futureClosers": lanes that will be merge-curve sources at i+1
+    //     (any lane reserving the next hash except the future home; that
+    //     includes the CURRENT home lane when multiple lanes reserve)
+    // Without futureClosers handling, the straight pass-through and the next
+    // row's merge curve both paint the same interval → the visible "ghost
+    // verticals" you see next to short-lived feature branches.
     if (i + 1 < commits.length) {
       const yNext = (i + 1) * ROW_HEIGHT;
       const yMid = y + ROW_HEIGHT / 2;
       const yMidNext = yNext + ROW_HEIGHT / 2;
+      const nextHash = commits[i + 1].hash;
+      let futureHome = -1;
+      const futureClosers = new Set<number>();
+      for (let l = 0; l < lanes.length; l++) {
+        if (lanes[l]?.tip === nextHash) {
+          if (futureHome < 0) futureHome = l;
+          else futureClosers.add(l);
+        }
+      }
       for (let l = 0; l < lanes.length; l++) {
         const lane = lanes[l];
         if (!lane) continue;
-        if (l === homeLane) {
-          // straight line from THIS dot to next row's vertical center
-          edges.push({
-            id: `s:${commit.hash}:${l}`,
-            d: `M ${laneX(l)} ${yMid} L ${laneX(l)} ${yMidNext}`,
-            color: laneColor(lane.color),
-          });
-        } else {
-          // vertical from top of this row to mid of next (line passes
-          // *through* this row without a dot — that's by design, this
-          // lane is just passing by)
-          edges.push({
-            id: `v:${commit.hash}:${l}`,
-            d: `M ${laneX(l)} ${y} L ${laneX(l)} ${yMidNext}`,
-            color: laneColor(lane.color),
-          });
-        }
+        if (newlyOpened.has(l)) continue;
+        if (futureClosers.has(l)) continue;
+        edges.push({
+          id: `s:${commit.hash}:${l}`,
+          d: `M ${laneX(l)} ${yMid} L ${laneX(l)} ${yMidNext}`,
+          color: laneColor(lane.color),
+        });
       }
     }
 
@@ -369,26 +467,35 @@ function buildLayout(commits: RawCommit[], head: string): LayoutResult {
   return { nodes, edges, width: LANE_START_X + widthLanes * LANE_GAP + 6 };
 }
 
+// Control-point offset (fraction of the interval). 0.5 is a true smooth S
+// with a horizontal midsection — too "bouncy" at our row height. Tighter
+// values (0.3–0.4) produce a near-diagonal that matches JetBrains' style.
+const CURVE_TIGHTEN = 0.38;
+
 function laneMergePath(fromLane: number, toLane: number, y: number): string {
-  // Curve coming in from a previously-active lane (drawn one row above)
-  // into the dot of the current row.
+  // Curve from the closing lane's mid-of-previous-row into the current
+  // commit's dot. Tight control points keep the line close to a diagonal
+  // while preserving vertical tangents at both endpoints.
   const x1 = laneX(fromLane);
   const x2 = laneX(toLane);
   const yTop = y - ROW_HEIGHT / 2;
   const yMid = y + ROW_HEIGHT / 2;
-  const cY1 = yTop + (yMid - yTop) * 0.55;
-  const cY2 = yTop + (yMid - yTop) * 0.45;
+  const span = yMid - yTop;
+  const cY1 = yTop + span * CURVE_TIGHTEN;
+  const cY2 = yMid - span * CURVE_TIGHTEN;
   return `M ${x1} ${yTop} C ${x1} ${cY1} ${x2} ${cY2} ${x2} ${yMid}`;
 }
 
 function laneBranchPath(fromLane: number, toLane: number, y: number): string {
-  // Branch-out from current dot to a new lane on the row below.
+  // Branch-out from current dot to the new lane's dot on the row below.
+  // Symmetric to laneMergePath.
   const x1 = laneX(fromLane);
   const x2 = laneX(toLane);
   const yMid = y + ROW_HEIGHT / 2;
   const yBot = y + ROW_HEIGHT + ROW_HEIGHT / 2;
-  const cY1 = yMid + (yBot - yMid) * 0.45;
-  const cY2 = yMid + (yBot - yMid) * 0.55;
+  const span = yBot - yMid;
+  const cY1 = yMid + span * CURVE_TIGHTEN;
+  const cY2 = yBot - span * CURVE_TIGHTEN;
   return `M ${x1} ${yMid} C ${x1} ${cY1} ${x2} ${cY2} ${x2} ${yBot}`;
 }
 
@@ -410,7 +517,7 @@ function classifyRefs(refs: string[]): GraphRefBadge[] {
   return out;
 }
 
-const layout = computed(() => buildLayout(props.commits || [], props.head || ""));
+const layout = computed(() => buildLayout(props.commits || [], props.head || "", !!props.flat));
 const nodes = computed(() => layout.value.nodes);
 const edges = computed(() => layout.value.edges);
 const graphWidth = computed(() => layout.value.width);
@@ -429,6 +536,14 @@ function select(node: GraphNode) {
 
 function onDoubleClick(node: GraphNode) {
   emit("open", node.hash);
+}
+
+function onContextMenu(event: MouseEvent, node: GraphNode) {
+  event.preventDefault();
+  // Select the commit under the cursor so the menu's actions clearly target
+  // the right row even if the user right-clicks without left-clicking first.
+  if (props.selectedHash !== node.hash) emit("select", node.hash);
+  emit("contextmenu", { hash: node.hash, x: event.clientX, y: event.clientY });
 }
 
 function copyHash(hash: string) {

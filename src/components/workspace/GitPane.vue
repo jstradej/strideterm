@@ -246,16 +246,13 @@
           :workspace-id="workspaceId"
           :snapshot="snapshot"
           :git-ui="gitUi"
-          :is-review-workspace="isReviewWorkspace"
-        />
-
-        <!-- ===== Graph tab (commit tree visualization) ===== -->
-        <GitGraphTab
-          v-else-if="activeTab === 'graph'"
-          :workspace-id="workspaceId"
-          :snapshot="snapshot"
-          :git-ui="gitUi"
           :active-root-path="activeRootPath"
+          :is-review-workspace="isReviewWorkspace"
+          :has-azure-connection="hasAzureConnection"
+          :active-connection-id="activeConnectionId"
+          :base-branch="effectiveBaseBranch"
+          :compare="compare"
+          :base-branch-options="baseBranchOptions"
         />
 
         <!-- ===== Changes tab ===== -->
@@ -294,27 +291,6 @@
           :active-connection-id="activeConnectionId"
           :active-connection-label="activeConnectionLabel"
         />
-
-        <!-- ===== Tags tab ===== -->
-        <template v-else-if="activeTab === 'tags'">
-          <div class="git-section">
-            <article class="git-card">
-              <div class="section-head">
-                <div>
-                  <p class="eyebrow">Tags</p>
-                  <h3>{{ snapshot.branch }} &mdash; {{ (gitUi.tags || []).length }} tag(s)</h3>
-                </div>
-              </div>
-              <GitTagList
-                :workspace-id="workspaceId"
-                :git-ui="gitUi"
-                :snapshot="snapshot"
-                :is-review-workspace="isReviewWorkspace"
-              />
-            </article>
-            <GitOperationCard :snapshot="snapshot" :workspace-id="workspaceId" :git-ui="gitUi" />
-          </div>
-        </template>
 
         <!-- ===== Worktrees tab ===== -->
         <template v-else-if="activeTab === 'worktrees'">
@@ -372,13 +348,11 @@ import { useGitUiStore } from "../../stores/git-ui.js";
 import PaneShell from "../layout/PaneShell.vue";
 import GitBranchTab from "./git/GitBranchTab.vue";
 import GitBranchesTab from "./git/GitBranchesTab.vue";
-import GitGraphTab from "./git/GitGraphTab.vue";
 import GitChangesTab from "./git/GitChangesTab.vue";
 import GitHistoryTab from "./git/GitHistoryTab.vue";
 import GitPullRequestTab from "./git/GitPullRequestTab.vue";
 import GitWorktreeList from "./git/GitWorktreeList.vue";
 import GitOperationCard from "./git/GitOperationCard.vue";
-import GitTagList from "./git/GitTagList.vue";
 import BulkRepoTable from "./git/BulkRepoTable.vue";
 import CustomSelect from "../common/CustomSelect.vue";
 import { useIsNarrow } from "../../composables/useIsNarrow.js";
@@ -462,7 +436,14 @@ const isLinkedWorktree = computed(() => snapshot.value?.isWorktree && !snapshot.
 const operation = computed(() => snapshot.value?.operationState || {});
 const baseBranch = computed(() => snapshot.value?.baseBranch || snapshot.value?.compareWithBase?.baseBranch || "");
 const compare = computed(() => snapshot.value?.compareWithBase || {});
-const activeTab = computed(() => gitUi.value.activeTab || "branch");
+// The legacy "graph" and "tags" tabs were folded into "branches" — anything
+// persisted with those ids is silently redirected so users don't land on a
+// blank pane after the consolidation.
+const activeTab = computed(() => {
+  const t = gitUi.value.activeTab || "branch";
+  if (t === "graph" || t === "tags") return "branches";
+  return t;
+});
 
 const showAllActions = computed(() => appStore.payload?.appState?.settings?.git?.ui?.showAllActions === true);
 
@@ -717,10 +698,8 @@ const tabs = computed(() => {
       label: "Changes",
       badge: (snapshot.value?.dirtyCount || 0) > 0 ? String(snapshot.value?.dirtyCount ?? 0) : "",
     },
-    { id: "graph", label: "Graph", badge: "" },
     { id: "history", label: "History", badge: "" },
     { id: "pr", label: "Pull Request", badge: "" },
-    { id: "tags", label: "Tags", badge: "" },
     { id: "worktrees", label: "Worktrees", badge: "" },
   ];
   if (isMultiRepo.value) {

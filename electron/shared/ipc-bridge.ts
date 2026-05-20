@@ -379,7 +379,16 @@ export interface StridetermAPI {
   gitRenameBranch: (payload: GitPayload & { branch?: string; newName: string }) => Promise<unknown>;
   gitCheckoutRemoteBranch: (payload: GitPayload & { remoteBranch: string; localBranch?: string }) => Promise<unknown>;
   gitLogGraph: (
-    payload: GitPayload & { limit?: number; includeRemotes?: boolean; branch?: string },
+    payload: GitPayload & {
+      limit?: number;
+      includeRemotes?: boolean;
+      branch?: string;
+      sinceDate?: string;
+      untilDate?: string;
+      paths?: string[];
+      topoOrder?: boolean;
+      author?: string;
+    },
   ) => Promise<unknown>;
   openLazygitSession: (payload: GitPayload) => Promise<unknown>;
   createWorktree: (payload: WorktreePayload) => Promise<unknown>;

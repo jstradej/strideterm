@@ -13,10 +13,35 @@
         />
         <span v-if="search" class="git-branches__search-clear" role="button" tabindex="0" @click="search = ''">×</span>
       </div>
-      <label v-if="!isMobile" class="git-branches__filter" title="Include remote-tracking branches in the tree.">
-        <input v-model="showRemotes" type="checkbox" />
-        Remotes
-      </label>
+      <!-- Tree section chips (Local / Remote / Tags). Replace the older
+           Remotes checkbox — chips read cleaner and let us add Tags in the
+           same control row now that the Tags tab is gone. -->
+      <div v-if="!isMobile" class="git-branches__chips" role="group" aria-label="Tree sections">
+        <button
+          type="button"
+          :class="['git-branches__chip', showLocal && 'git-branches__chip--on']"
+          title="Show local branches in the tree."
+          @click="showLocal = !showLocal"
+        >
+          Local
+        </button>
+        <button
+          type="button"
+          :class="['git-branches__chip', showRemotes && 'git-branches__chip--on']"
+          title="Show remote-tracking branches in the tree (and walk them when loading the graph)."
+          @click="showRemotes = !showRemotes"
+        >
+          Remote
+        </button>
+        <button
+          type="button"
+          :class="['git-branches__chip', showTags && 'git-branches__chip--on']"
+          title="Show tags as a section in the tree."
+          @click="showTags = !showTags"
+        >
+          Tags
+        </button>
+      </div>
       <label v-if="!isMobile" class="git-branches__filter" title="Show only branches whose tip is reachable from HEAD.">
         <input v-model="showMerged" type="checkbox" />
         Merged only
@@ -73,6 +98,14 @@
       <p>{{ branchesError }}</p>
     </div>
 
+    <!-- Cold-start spinner: visible while the very first branch + graph fetch
+         for this workspace is still pending. Subsequent refreshes are
+         surfaced inline by GitTreeGraph's own loading state. -->
+    <div v-if="isInitialLoading" class="git-branches__loading" role="status" aria-live="polite">
+      <span class="git-branches__spinner" aria-hidden="true"></span>
+      <span>Loading branches…</span>
+    </div>
+
     <!-- Inline "new branch" prompt -->
     <div v-if="newBranchVisible" class="git-branches__inline-form">
       <input
@@ -110,6 +143,7 @@
             :head="branchList.current"
             :busy="!!gitUi.busyAction"
             :is-dirty="isDirty"
+            :can-create-pr="hasAzureConnection"
             @select="onSelectRef"
             @checkout="onCheckout"
             @checkout-remote="onCheckoutRemote"
@@ -119,23 +153,137 @@
             @delete-remote="onDeleteRemote"
             @merge="onMergeInto"
             @rebase="onRebaseOnto"
+            @create-pr="onCreatePrForBranch"
           />
         </Pane>
         <Pane :size="40" :min-size="20">
           <div class="git-branches__commits-pane">
             <div class="git-branches__pane-head">
-              <strong>{{ selectedRef ? `Commits on ${selectedRef}` : "All commits" }}</strong>
+              <strong>
+                <template v-if="compareBase">{{ compareBase }} … HEAD</template>
+                <template v-else-if="selectedRef">Commits on {{ selectedRef }}</template>
+                <template v-else>All commits</template>
+              </strong>
               <span v-if="loadedCount" class="git-branches__pane-count">{{ loadedCount }}</span>
+              <template v-if="compareBase">
+                <GitDiffStat v-if="compareDiffStat" :stat="compareDiffStat" />
+                <span v-if="compareAhead" class="git-branches__pane-count" :title="`Ahead of ${compareBase}`"
+                  >↑ {{ compareAhead }}</span
+                >
+                <span v-if="compareBehind" class="git-branches__pane-count" :title="`Behind ${compareBase}`"
+                  >↓ {{ compareBehind }}</span
+                >
+              </template>
               <span v-if="graphError" class="git-branches__pane-error">— {{ graphError }}</span>
-              <span v-if="selectedRef" class="git-branches__pane-spacer"></span>
+              <span v-if="selectedRef || compareBase" class="git-branches__pane-spacer"></span>
               <button
-                v-if="selectedRef"
+                v-if="selectedRef && !compareBase"
                 type="button"
                 class="button button--ghost button--small"
                 title="Clear branch filter — show commits from all refs."
                 @click="onSelectRef('')"
               >
                 Show all
+              </button>
+              <button
+                v-if="compareBase"
+                type="button"
+                class="button button--ghost button--small"
+                title="Exit compare-with-base mode."
+                @click="compareBase = ''"
+              >
+                Exit compare
+              </button>
+            </div>
+            <!-- JetBrains-style filter row: User / Date / Paths / Sort.
+                 Backend filters (Date, Paths, Sort) re-fetch the graph; User
+                 is applied client-side over the already-loaded commits. -->
+            <div class="git-branches__filters">
+              <CustomSelect
+                v-model="userFilter"
+                :options="userSelectOptions"
+                :searchable="availableAuthors.length > 8"
+                search-placeholder="Filter authors…"
+                class="git-branches__cselect git-branches__cselect--user"
+              />
+              <CustomSelect
+                v-model="dateFilter"
+                :options="dateSelectOptions"
+                class="git-branches__cselect git-branches__cselect--date"
+              />
+              <template v-if="dateFilter === 'custom'">
+                <input
+                  v-model="customSince"
+                  type="date"
+                  class="git-branches__filter-date"
+                  title="Since (inclusive)"
+                />
+                <span class="git-branches__filter-sep">→</span>
+                <input
+                  v-model="customUntil"
+                  type="date"
+                  class="git-branches__filter-date"
+                  title="Until (inclusive)"
+                />
+              </template>
+              <div class="git-branches__filter-paths">
+                <span
+                  v-for="p in pathsFilter"
+                  :key="p"
+                  class="git-branches__path-chip"
+                  :title="`Filtering on ${p}`"
+                >
+                  {{ p }}
+                  <button
+                    type="button"
+                    class="git-branches__path-chip-x"
+                    aria-label="Remove path filter"
+                    @click="removePathFilter(p)"
+                  >
+                    ×
+                  </button>
+                </span>
+                <input
+                  v-model="pathsInput"
+                  type="text"
+                  class="git-branches__filter-paths-input"
+                  placeholder="+ path…"
+                  title="Limit to commits touching this path (relative). Press Enter to add."
+                  @keydown.enter.prevent="addPathFilter"
+                />
+              </div>
+              <button
+                type="button"
+                class="button button--ghost button--small"
+                :class="topoOrder && 'git-branches__sort-active'"
+                :title="
+                  topoOrder
+                    ? 'Topological order (--topo-order). Click to switch to date order.'
+                    : 'Date order (--date-order). Click to switch to topological order.'
+                "
+                @click="topoOrder = !topoOrder"
+              >
+                Sort: {{ topoOrder ? "Topo" : "Date" }}
+              </button>
+              <CustomSelect
+                v-model="graphLimit"
+                :options="limitSelectOptions"
+                class="git-branches__cselect git-branches__cselect--limit"
+              />
+              <CustomSelect
+                v-if="(baseBranchOptions || []).length > 0"
+                v-model="compareBase"
+                :options="compareBaseOptions"
+                class="git-branches__cselect git-branches__cselect--compare"
+              />
+              <button
+                v-if="hasActiveFilters"
+                type="button"
+                class="button button--ghost button--small"
+                title="Clear all commit filters"
+                @click="resetFilters"
+              >
+                Clear
               </button>
             </div>
             <GitTreeGraph
@@ -145,8 +293,10 @@
               :selected-hash="selectedHash"
               :loading="graphLoading"
               :error="graphError"
+              :flat="graphFlatMode"
               @select="onSelectCommit"
               @open="onOpenCommitDialog"
+              @contextmenu="onCommitContextMenu"
             />
           </div>
         </Pane>
@@ -226,6 +376,7 @@
         :busy="!!gitUi.busyAction"
         :is-dirty="isDirty"
         :compact="true"
+        :can-create-pr="hasAzureConnection"
         @select="onMobileSelectRef"
         @checkout="onCheckout"
         @checkout-remote="onCheckoutRemote"
@@ -235,6 +386,7 @@
         @delete-remote="onDeleteRemote"
         @merge="onMergeInto"
         @rebase="onRebaseOnto"
+        @create-pr="onCreatePrForBranch"
       />
 
       <div v-else-if="mobileView === 'commits'" class="git-branches__commits-pane">
@@ -258,8 +410,10 @@
           :loading="graphLoading"
           :error="graphError"
           :compact="true"
+          :flat="graphFlatMode"
           @select="onMobileSelectCommit"
           @open="onOpenCommitDialog"
+          @contextmenu="onCommitContextMenu"
         />
       </div>
 
@@ -294,6 +448,17 @@
         </div>
       </div>
     </div>
+
+    <GitCommitContextMenu
+      v-if="ctxMenu"
+      :x="ctxMenu.x"
+      :y="ctxMenu.y"
+      :short-hash="ctxMenu.shortHash"
+      :subject="ctxMenu.subject"
+      :items="ctxMenu.items"
+      @pick="onMenuPick"
+      @close="ctxMenu = null"
+    />
   </div>
 </template>
 
@@ -308,6 +473,9 @@ import GitOperationCard from "./GitOperationCard.vue";
 import GitTreeGraph from "./GitTreeGraph.vue";
 import GitChangeTree from "./GitChangeTree.vue";
 import BranchTreePane, { type BranchTreeNode } from "./BranchTreePane.vue";
+import CustomSelect from "../../common/CustomSelect.vue";
+import GitCommitContextMenu from "./GitCommitContextMenu.vue";
+import GitDiffStat from "./GitDiffStat.vue";
 
 const MonacoDiffPanel = defineAsyncComponent(() => import("../../shared/MonacoDiffPanel.vue"));
 
@@ -320,8 +488,22 @@ const props = withDefaults(
     gitUi: Record<string, any>;
     activeRootPath?: string;
     isReviewWorkspace?: boolean;
+    hasAzureConnection?: boolean;
+    activeConnectionId?: string;
+    baseBranch?: string;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    compare?: Record<string, any>;
+    baseBranchOptions?: string[];
   }>(),
-  { activeRootPath: "", isReviewWorkspace: false },
+  {
+    activeRootPath: "",
+    isReviewWorkspace: false,
+    hasAzureConnection: false,
+    activeConnectionId: "",
+    baseBranch: "",
+    compare: () => ({}),
+    baseBranchOptions: () => [],
+  },
 );
 
 const appStore = useAppStore();
@@ -329,7 +511,9 @@ const gitUiStore = useGitUiStore();
 const { isMobile } = useIsNarrow();
 
 const search = ref("");
+const showLocal = ref(true);
 const showRemotes = ref(true);
+const showTags = ref(false);
 const showMerged = ref(false);
 const newBranchVisible = ref(false);
 const newBranchName = ref("");
@@ -344,6 +528,15 @@ const selectedRef = ref<string>("");
 
 const branchesLoading = computed(() => props.gitUi?.branchesLoading === true);
 const branchesError = computed(() => String(props.gitUi?.branchesError || ""));
+
+// True while the first branch list AND first graph fetch are both pending —
+// we hide the (empty) panes behind a spinner instead of flashing "No commits
+// found" / "No branches" during the cold start.
+const isInitialLoading = computed(() => {
+  const haveBranches = !!props.gitUi?.branchList;
+  const haveGraph = (props.gitUi?.graph?.commits?.length ?? 0) > 0 || !!props.gitUi?.graphError;
+  return (branchesLoading.value && !haveBranches) || (props.gitUi?.graphLoading === true && !haveGraph);
+});
 
 interface LocalBranch {
   name: string;
@@ -502,34 +695,36 @@ const branchTree = computed<BranchTreeNode[]>(() => {
   }
 
   // ---- Local ----
-  const locals = branchList.value.local
-    .filter((b) => !showMerged.value || b.merged || b.isCurrent)
-    .map((b) => ({
-      shortName: b.name,
-      ref: b.name,
-      kind: "branch-local" as const,
-      meta: {
-        ahead: b.ahead,
-        behind: b.behind,
-        upstream: b.upstream,
-        merged: b.merged,
-        lastCommit: b.lastCommit,
-        lastSubject: b.lastSubject,
-        lastAuthor: b.lastAuthor,
-        lastRelativeDate: b.lastRelativeDate,
-        isCurrent: b.isCurrent,
-      },
-    }));
-  const localTree = buildForest(locals, "local");
-  if (localTree.length) {
-    out.push({
-      key: "local",
-      kind: "section",
-      label: "Local",
-      icon: "⌥",
-      children: localTree,
-      meta: { count: locals.length },
-    });
+  if (showLocal.value) {
+    const locals = branchList.value.local
+      .filter((b) => !showMerged.value || b.merged || b.isCurrent)
+      .map((b) => ({
+        shortName: b.name,
+        ref: b.name,
+        kind: "branch-local" as const,
+        meta: {
+          ahead: b.ahead,
+          behind: b.behind,
+          upstream: b.upstream,
+          merged: b.merged,
+          lastCommit: b.lastCommit,
+          lastSubject: b.lastSubject,
+          lastAuthor: b.lastAuthor,
+          lastRelativeDate: b.lastRelativeDate,
+          isCurrent: b.isCurrent,
+        },
+      }));
+    const localTree = buildForest(locals, "local");
+    if (localTree.length) {
+      out.push({
+        key: "local",
+        kind: "section",
+        label: "Local",
+        icon: "⌥",
+        children: localTree,
+        meta: { count: locals.length },
+      });
+    }
   }
 
   // ---- Remotes ----
@@ -570,7 +765,9 @@ const branchTree = computed<BranchTreeNode[]>(() => {
   }
 
   // ---- Tags ----
-  const tagNames = tags.value.map((t) => t.name).filter((n) => !q || n.toLowerCase().includes(q));
+  const tagNames = showTags.value
+    ? tags.value.map((t) => t.name).filter((n) => !q || n.toLowerCase().includes(q))
+    : [];
   if (tagNames.length) {
     const mapped = tagNames.map((name) => ({
       shortName: name,
@@ -606,10 +803,135 @@ interface GraphCommit {
 
 const graphLoading = computed(() => props.gitUi?.graphLoading === true);
 const graphError = computed(() => String(props.gitUi?.graphError || ""));
-const commits = computed<GraphCommit[]>(() => (props.gitUi?.graph?.commits as GraphCommit[]) || []);
+const rawCommits = computed<GraphCommit[]>(() => (props.gitUi?.graph?.commits as GraphCommit[]) || []);
 const head = computed(() => String(props.gitUi?.graph?.head || ""));
 const refs = computed<Record<string, string>>(() => (props.gitUi?.graph?.refs as Record<string, string>) || {});
+
+// --- Commit-list filters (JetBrains-style) ------------------------------
+// All four filters (User / Date / Paths / Sort) hit the backend so the lane
+// layout is built from a consistent set of commits. Filtering client-side
+// shredded the parent chain — branches that should merge into mainline lost
+// their endpoint and rendered as orphan verticals (see the "Filter by user
+// breaks the graph" issue).
+
+const userFilter = ref<string>("");
+const dateFilter = ref<"all" | "today" | "week" | "month" | "custom">("all");
+const customSince = ref<string>(""); // YYYY-MM-DD
+const customUntil = ref<string>(""); // YYYY-MM-DD
+const pathsFilter = ref<string[]>([]);
+const pathsInput = ref<string>("");
+const topoOrder = ref<boolean>(false);
+const graphLimit = ref<number>(500);
+const limitOptions = [100, 300, 500, 1000, 2000];
+
+// "Compare with base" — ported from the History tab. When set, the graph
+// walks `base..HEAD` instead of the whole repo so the user sees only commits
+// that are part of the current branch's diff against base. We DON'T silently
+// remove History yet; this just gives Branches the same capability so the
+// user can decide whether History is still pulling its weight.
+const compareBase = ref<string>("");
+const compareAhead = computed<number>(() => {
+  const cmp = props.compare || {};
+  return (compareBase.value && cmp.baseBranch === compareBase.value && typeof cmp.aheadCount === "number"
+    ? cmp.aheadCount
+    : 0) as number;
+});
+const compareBehind = computed<number>(() => {
+  const cmp = props.compare || {};
+  return (compareBase.value && cmp.baseBranch === compareBase.value && typeof cmp.behindCount === "number"
+    ? cmp.behindCount
+    : 0) as number;
+});
+const compareDiffStat = computed<Record<string, unknown> | null>(() => {
+  const cmp = props.compare || {};
+  if (!compareBase.value || cmp.baseBranch !== compareBase.value) return null;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return ((cmp as any).diffStat as Record<string, unknown>) || null;
+});
+
+const compareBaseOptions = computed(() => [
+  { value: "", label: "Compare: off" },
+  ...((props.baseBranchOptions || []) as string[]).map((b) => ({ value: b, label: `Compare: ${b}` })),
+]);
+
+// Author dropdown is populated from the last unfiltered fetch — we cache it
+// in `knownAuthors` so switching User doesn't shrink the dropdown to just
+// the currently-selected author. Repopulated whenever we load a graph that
+// wasn't itself author-filtered.
+const knownAuthors = ref<string[]>([]);
+watch(rawCommits, (commits) => {
+  if (userFilter.value) return; // current set already narrowed — don't overwrite
+  const set = new Set<string>();
+  for (const c of commits) if (c.author) set.add(c.author);
+  if (set.size) knownAuthors.value = Array.from(set).sort((a, b) => a.localeCompare(b));
+});
+const availableAuthors = computed<string[]>(() => knownAuthors.value);
+
+const userSelectOptions = computed(() => [
+  { value: "", label: "User: All" },
+  ...availableAuthors.value.map((a) => ({ value: a, label: a })),
+]);
+
+const dateSelectOptions = [
+  { value: "all", label: "Date: All" },
+  { value: "today", label: "Today" },
+  { value: "week", label: "This week" },
+  { value: "month", label: "This month" },
+  { value: "custom", label: "Custom…" },
+];
+
+const limitSelectOptions = computed(() => limitOptions.map((n) => ({ value: n, label: `Limit: ${n.toLocaleString()}` })));
+
+// Server already filtered by --author, so the rendered commits ARE the raw
+// fetch result. No client-side filtering — that would re-fragment the chain.
+const commits = computed<GraphCommit[]>(() => rawCommits.value);
+
 const loadedCount = computed(() => commits.value.length);
+
+function resolveDateRange(): { since: string; until: string } {
+  if (dateFilter.value === "custom") {
+    return { since: customSince.value, until: customUntil.value };
+  }
+  if (dateFilter.value === "today") return { since: "midnight", until: "" };
+  if (dateFilter.value === "week") return { since: "1 week ago", until: "" };
+  if (dateFilter.value === "month") return { since: "1 month ago", until: "" };
+  return { since: "", until: "" };
+}
+
+function addPathFilter() {
+  const p = pathsInput.value.trim().replace(/^[\\/]+|[\\/]+$/g, "");
+  if (!p || p.includes("..")) return;
+  if (!pathsFilter.value.includes(p)) pathsFilter.value = [...pathsFilter.value, p];
+  pathsInput.value = "";
+}
+
+function removePathFilter(p: string) {
+  pathsFilter.value = pathsFilter.value.filter((x) => x !== p);
+}
+
+function resetFilters() {
+  userFilter.value = "";
+  dateFilter.value = "all";
+  customSince.value = "";
+  customUntil.value = "";
+  pathsFilter.value = [];
+  pathsInput.value = "";
+  topoOrder.value = false;
+}
+
+const hasActiveFilters = computed(
+  () =>
+    !!userFilter.value ||
+    dateFilter.value !== "all" ||
+    pathsFilter.value.length > 0 ||
+    topoOrder.value,
+);
+
+// User/Path filters drop commits from the middle of the chain, which leaves
+// the lane builder with parents it can never reach — branches render as
+// orphan verticals. Switch the graph into a flat single-column view in those
+// cases; date / sort / branch filters still keep the topology meaningful.
+const graphFlatMode = computed(() => !!userFilter.value || pathsFilter.value.length > 0);
 
 const selectedHash = computed(() => String(props.gitUi?.selectedCommit || ""));
 const selectedCommitInfo = computed<GraphCommit | null>(
@@ -629,10 +951,24 @@ function refreshBranches() {
 }
 
 function refreshGraph() {
+  const { since, until } = resolveDateRange();
+  // Compare-with-base wins over a single-branch selection — both translate to
+  // git log walk args, and base..HEAD is more specific (and what the user
+  // explicitly asked for via the picker).
+  let branchSpec = selectedRef.value || "";
+  if (compareBase.value) {
+    const head = String(props.snapshot?.branch || branchList.value.current || "HEAD");
+    branchSpec = `${compareBase.value}..${head}`;
+  }
   gitUiStore.gitLoadGraph(props.workspaceId, {
-    limit: 500,
+    limit: graphLimit.value,
     includeRemotes: showRemotes.value,
-    branch: selectedRef.value || "",
+    branch: branchSpec,
+    sinceDate: since,
+    untilDate: until,
+    paths: pathsFilter.value,
+    topoOrder: topoOrder.value,
+    author: userFilter.value,
   });
 }
 
@@ -653,6 +989,14 @@ watch(
 );
 
 watch(showRemotes, () => refreshGraph());
+
+// Backend-side filters: refetch when they change. User filter is client-side
+// and lives only in `commits` computed — no refetch needed.
+watch(
+  [dateFilter, customSince, customUntil, pathsFilter, topoOrder, graphLimit, userFilter, compareBase],
+  () => refreshGraph(),
+  { deep: true },
+);
 
 watch(
   () => props.gitUi?.activeTab,
@@ -718,38 +1062,64 @@ async function onCheckoutRemote(remoteRef: string) {
   refreshAll();
 }
 
-async function onDeleteLocal(ref: string) {
+function onDeleteLocal(ref: string) {
   const entry = branchList.value.local.find((b) => b.name === ref);
   if (!entry) return;
   const force = !entry.merged;
   const verb = force ? "Force delete" : "Delete";
-  if (
-    !window.confirm(`${verb} branch '${entry.name}'?${force ? "\nIt has unmerged commits — they will be lost." : ""}`)
-  )
-    return;
-  await gitUiStore.gitDeleteBranch(props.workspaceId, entry.name, force);
-  refreshAll();
+  appStore.openDialog("ConfirmDialog", {
+    eyebrow: "Git",
+    title: `${verb} branch?`,
+    message: force
+      ? `Branch '${entry.name}' has unmerged commits — they will be lost.`
+      : `Branch '${entry.name}' will be removed.`,
+    confirmLabel: verb,
+    danger: true,
+    onCancel: () => appStore.closeDialog(),
+    onConfirm: async () => {
+      appStore.closeDialog();
+      await gitUiStore.gitDeleteBranch(props.workspaceId, entry.name, force);
+      refreshAll();
+    },
+  });
 }
 
-async function onDeleteRemote(remoteRef: string) {
+function onDeleteRemote(remoteRef: string) {
   const slash = remoteRef.indexOf("/");
   const remoteName = slash >= 0 ? remoteRef.slice(0, slash) : "origin";
   const shortName = slash >= 0 ? remoteRef.slice(slash + 1) : remoteRef;
-  if (
-    !window.confirm(
-      `Delete branch '${shortName}' on remote '${remoteName}'?\nThis runs git push ${remoteName} :${shortName} and CANNOT be undone server-side.`,
-    )
-  )
-    return;
-  await gitUiStore.gitDeleteRemoteBranch(props.workspaceId, shortName, remoteName);
-  refreshAll();
+  appStore.openDialog("ConfirmDialog", {
+    eyebrow: "Git",
+    title: "Delete remote branch?",
+    message: `Branch '${shortName}' on remote '${remoteName}' will be deleted via git push ${remoteName} :${shortName}. This cannot be undone server-side.`,
+    confirmLabel: "Delete",
+    danger: true,
+    onCancel: () => appStore.closeDialog(),
+    onConfirm: async () => {
+      appStore.closeDialog();
+      await gitUiStore.gitDeleteRemoteBranch(props.workspaceId, shortName, remoteName);
+      refreshAll();
+    },
+  });
 }
 
-async function onRename(ref: string) {
-  const next = window.prompt(`Rename branch '${ref}' to:`, ref);
-  if (!next || next.trim() === ref) return;
-  await gitUiStore.gitRenameBranch(props.workspaceId, ref, next.trim());
-  refreshAll();
+function onRename(ref: string) {
+  appStore.openDialog("TextInputDialog", {
+    eyebrow: "Git",
+    title: `Rename branch '${ref}'`,
+    label: "New name",
+    value: ref,
+    placeholder: "feature/my-branch",
+    submitLabel: "Rename",
+    onCancel: () => appStore.closeDialog(),
+    onSubmit: async (next: string) => {
+      appStore.closeDialog();
+      const trimmed = next.trim();
+      if (!trimmed || trimmed === ref) return;
+      await gitUiStore.gitRenameBranch(props.workspaceId, ref, trimmed);
+      refreshAll();
+    },
+  });
 }
 
 function onMergeInto(ref: string) {
@@ -760,7 +1130,7 @@ function onRebaseOnto(ref: string) {
   gitUiStore.gitRebaseBase(props.workspaceId, ref);
 }
 
-// --- Commit selection + file diff (mirrors GitGraphTab) -----------------
+// --- Commit selection + file diff ---------------------------------------
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const commitFiles = ref<any[]>([]);
@@ -860,6 +1230,226 @@ function onOpenCommitDialog(hash: string) {
   });
 }
 
+// --- Commit context menu ------------------------------------------------
+// Right-click on any commit row in GitTreeGraph opens this menu. Subset of
+// the JetBrains menu — backend-missing actions (cherry-pick, revert, reset,
+// rebase-from-here) are deferred until those handlers exist.
+
+interface CtxMenuState {
+  hash: string;
+  shortHash: string;
+  subject: string;
+  x: number;
+  y: number;
+  items: Array<{ id: string; label: string }>;
+}
+const ctxMenu = ref<CtxMenuState | null>(null);
+
+// Compose the menu per-row so context-sensitive items (Create PR) only show
+// when they make sense for THAT commit. PR creation needs:
+//  - an Azure connection mapped to this repo's remote
+//  - this commit to be the tip of the local branch (so push/PR has a defined
+//    source branch). Right-clicking an internal commit would force us to
+//    invent a branch — JetBrains punts on this case the same way.
+function buildMenuItemsFor(entry: GraphCommit): Array<{ id: string; label: string }> {
+  const items = [
+    { id: "details", label: "Show commit details…" },
+    { id: "copyHash", label: "Copy commit hash" },
+    { id: "copyShort", label: "Copy short hash" },
+    { id: "copySubject", label: "Copy subject" },
+    { id: "checkout", label: "Checkout this commit" },
+    { id: "newBranch", label: "New branch from here…" },
+    { id: "newTag", label: "New tag here…" },
+  ];
+  const headHash = String(props.snapshot?.headCommit || props.snapshot?.headHash || "");
+  const isHeadCommit = !!headHash && headHash === entry.hash;
+  if (props.hasAzureConnection && isHeadCommit) {
+    items.push({ id: "createPr", label: "Create pull request from this branch…" });
+  }
+  return items;
+}
+
+function onCommitContextMenu(payload: { hash: string; x: number; y: number }) {
+  const entry = commits.value.find((c) => c.hash === payload.hash);
+  if (!entry) return;
+  ctxMenu.value = {
+    hash: entry.hash,
+    shortHash: entry.shortHash || shortHashOf(entry.hash),
+    subject: entry.subject || "",
+    x: payload.x,
+    y: payload.y,
+    items: buildMenuItemsFor(entry),
+  };
+}
+
+async function copyToClipboard(text: string) {
+  if (typeof navigator === "undefined" || !navigator.clipboard) return;
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch {
+    // best-effort
+  }
+}
+
+async function onMenuPick(id: string) {
+  const menu = ctxMenu.value;
+  if (!menu) return;
+  const entry = commits.value.find((c) => c.hash === menu.hash) || null;
+  ctxMenu.value = null;
+  if (!entry) return;
+  switch (id) {
+    case "details":
+      onOpenCommitDialog(entry.hash);
+      return;
+    case "copyHash":
+      await copyToClipboard(entry.hash);
+      return;
+    case "copyShort":
+      await copyToClipboard(entry.shortHash || shortHashOf(entry.hash));
+      return;
+    case "copySubject":
+      await copyToClipboard(entry.subject || "");
+      return;
+    case "checkout":
+      appStore.openDialog("ConfirmDialog", {
+        eyebrow: "Git",
+        title: "Checkout commit?",
+        message: `Switch HEAD to ${entry.shortHash || shortHashOf(entry.hash)}? You'll be in detached-HEAD state until you check out a branch.`,
+        confirmLabel: "Checkout",
+        onCancel: () => appStore.closeDialog(),
+        onConfirm: async () => {
+          appStore.closeDialog();
+          await gitUiStore.gitCheckoutBranch(props.workspaceId, entry.hash);
+          refreshAll();
+        },
+      });
+      return;
+    case "newBranch":
+      appStore.openDialog("TextInputDialog", {
+        eyebrow: "Git",
+        title: `New branch at ${entry.shortHash || shortHashOf(entry.hash)}`,
+        label: "Branch name",
+        value: "",
+        placeholder: "feature/my-branch",
+        submitLabel: "Create",
+        onCancel: () => appStore.closeDialog(),
+        onSubmit: async (name: string) => {
+          appStore.closeDialog();
+          const trimmed = name.trim();
+          if (!trimmed) return;
+          await gitUiStore.gitCreateBranch(props.workspaceId, trimmed, entry.hash);
+          refreshAll();
+        },
+      });
+      return;
+    case "newTag":
+      appStore.openDialog("TextInputDialog", {
+        eyebrow: "Git",
+        title: `New tag at ${entry.shortHash || shortHashOf(entry.hash)}`,
+        label: "Tag name",
+        value: "",
+        placeholder: "v1.0.0",
+        submitLabel: "Create",
+        onCancel: () => appStore.closeDialog(),
+        onSubmit: async (name: string) => {
+          appStore.closeDialog();
+          const trimmed = name.trim();
+          if (!trimmed) return;
+          await gitUiStore.gitCreateTag(props.workspaceId, trimmed, "", entry.hash);
+          refreshAll();
+        },
+      });
+      return;
+    case "createPr":
+      openCreatePullRequestDialog();
+      return;
+  }
+}
+
+// Branch-tree context menu → "Create pull request…". Routes through the same
+// dialog as the commit menu, just with the chosen branch ref as source.
+// Strips the remote prefix only when the ref matches an actual remote-tracking
+// branch — "feature/login" must NOT be turned into "login".
+function onCreatePrForBranch(branchRef: string) {
+  const remoteHit = branchList.value.remotes.find((r) => r.name === branchRef);
+  const sourceBranch = remoteHit ? remoteHit.shortName : branchRef;
+  openCreatePullRequestDialog(sourceBranch);
+}
+
+// Build & open the CreatePullRequestDialog. Closes over the local notification
+// store so backend failures are surfaced both as inline dialog errors AND as a
+// top-level toast — the user can dismiss the dialog and still see what broke.
+function openCreatePullRequestDialog(sourceBranchOverride = "") {
+  const sourceBranch = sourceBranchOverride || String(props.snapshot?.branch || branchList.value.current || "");
+  if (!sourceBranch) {
+    void showToast("Cannot create PR — current branch is unknown.", "error");
+    return;
+  }
+  // Kick off branch list fetch immediately; dialog binds to gitUi.remoteBranches.
+  if (!props.gitUi.remoteBranches?.length) {
+    void gitUiStore.azureListRemoteBranches(props.workspaceId);
+  }
+  appStore.openDialog("CreatePullRequestDialog", {
+    workspaceId: props.workspaceId,
+    sourceBranch,
+    defaultTargetBranch: props.baseBranch || "",
+    remoteBranches: props.gitUi.remoteBranches || [],
+    loadingBranches: !!props.gitUi.remoteBranchesLoading,
+    provider: "azure",
+    onCancel: () => appStore.closeDialog(),
+    onRefreshBranches: () => {
+      void gitUiStore.azureListRemoteBranches(props.workspaceId);
+    },
+    onSubmit: async (payload: { title: string; description: string; targetBranch: string; isDraft: boolean }) => {
+      await gitUiStore.azureCreatePullRequest(props.workspaceId, {
+        title: payload.title,
+        description: payload.description,
+        sourceBranch,
+        targetBranch: payload.targetBranch,
+        isDraft: payload.isDraft,
+        connectionId: props.activeConnectionId || "",
+      });
+      const result = props.gitUi.lastResult;
+      if (result?.ok) {
+        appStore.closeDialog();
+        const id = result.pullRequestId;
+        const url = result.url || "";
+        await showToast(`PR #${id ?? ""} created.` + (url ? " Open in browser:" : ""), "success", url);
+      } else {
+        const msg = result?.summary || "Failed to create pull request.";
+        // Leave the dialog open so the user can correct title / target and
+        // retry — they don't want to retype everything after a server error.
+        await showToast(msg, "error");
+      }
+    },
+  });
+}
+
+async function showToast(body: string, kind: "info" | "error" | "success" = "info", url = "") {
+  try {
+    const notifStore = (await import("../../../stores/notifications.js")).useNotificationStore();
+    const title = kind === "error" ? "Pull request failed" : kind === "success" ? "Pull request created" : "Git";
+    const bodyWithUrl = url ? `${body} ${url}` : body;
+    if (kind === "error") {
+      notifStore.showError(title, bodyWithUrl, { workspaceId: props.workspaceId });
+    } else {
+      // addEvent surfaces a transient toast + dock entry for success/info paths.
+      notifStore.addEvent({
+        title,
+        body: bodyWithUrl,
+        kind: kind === "success" ? "info" : kind,
+        tier: 1,
+        urgency: "normal",
+        workspaceId: props.workspaceId,
+        workspaceName: "",
+        category: "info",
+      });
+    }
+  } catch (err) {
+    console.warn("[branches] toast notification failed:", err);
+  }
+}
+
 watch(
   () => selectedHash.value,
   (hash) => {
@@ -906,8 +1496,9 @@ watch(
 
 .git-branches__search {
   position: relative;
-  flex: 1 1 220px;
+  flex: 1 1 180px;
   max-width: 360px;
+  min-width: 140px;
 }
 
 .git-branches--mobile .git-branches__search {
@@ -952,6 +1543,46 @@ watch(
   color: var(--muted);
   cursor: pointer;
   user-select: none;
+  white-space: nowrap;
+  flex: 0 0 auto;
+}
+
+.git-branches__chips {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+}
+
+.git-branches__chip {
+  font-size: 11px;
+  height: 24px;
+  padding: 0 9px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--muted);
+  border-radius: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition:
+    background-color 0.12s ease,
+    color 0.12s ease,
+    border-color 0.12s ease;
+}
+
+.git-branches__chip:hover {
+  background: rgba(var(--tint), 0.06);
+  color: var(--text);
+}
+
+.git-branches__chip--on {
+  background: rgba(255, 164, 36, 0.18);
+  border-color: rgba(255, 164, 36, 0.45);
+  color: var(--accent);
+}
+
+.git-branches__chip--on:hover {
+  background: rgba(255, 164, 36, 0.25);
 }
 
 .git-branches__filter input {
@@ -1069,6 +1700,148 @@ watch(
 
 .git-branches__pane-spacer {
   flex: 1;
+}
+
+/* ----- Commit filter row (JetBrains-style) -------------------------- */
+.git-branches__filters {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  background: rgba(var(--tint), 0.02);
+  flex: 0 0 auto;
+}
+
+.git-branches__filter-date {
+  font-size: 12px;
+  height: 24px;
+  padding: 0 6px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: rgba(0, 0, 0, 0.25);
+  color: var(--text);
+  width: 130px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Tighten CustomSelect button when used as a filter chip — the component
+   defaults to width:100% which would let it grab the whole flex row. */
+.git-branches__cselect {
+  flex: 0 0 auto;
+  width: auto;
+}
+.git-branches__cselect :deep(.custom-select__button) {
+  padding: 3px 8px;
+  font-size: 12px;
+  background: rgba(0, 0, 0, 0.25);
+  height: 24px;
+  line-height: 1;
+}
+.git-branches__cselect--user :deep(.custom-select__button) {
+  min-width: 110px;
+  max-width: 180px;
+}
+.git-branches__cselect--date :deep(.custom-select__button) {
+  min-width: 110px;
+}
+.git-branches__cselect--limit :deep(.custom-select__button) {
+  min-width: 110px;
+}
+.git-branches__cselect--compare :deep(.custom-select__button) {
+  min-width: 150px;
+  max-width: 220px;
+}
+
+.git-branches__filter-sep {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.git-branches__filter-paths {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 1 1 160px;
+  min-width: 140px;
+  flex-wrap: wrap;
+  padding: 2px 4px;
+  border: 1px solid var(--border);
+  background: rgba(0, 0, 0, 0.25);
+  border-radius: 4px;
+  min-height: 24px;
+}
+
+.git-branches__filter-paths-input {
+  flex: 1;
+  min-width: 80px;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  font-size: 12px;
+  outline: none;
+  padding: 2px 4px;
+}
+
+.git-branches__path-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 4px 1px 6px;
+  border-radius: 3px;
+  background: rgba(255, 164, 36, 0.18);
+  color: var(--accent);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.git-branches__path-chip-x {
+  border: none;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+  padding: 0 2px;
+}
+
+.git-branches__path-chip-x:hover {
+  color: #fff;
+}
+
+.git-branches__sort-active {
+  background: rgba(255, 164, 36, 0.18) !important;
+  color: var(--accent) !important;
+}
+
+.git-branches__loading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 18px 14px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.git-branches__spinner {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border: 2px solid rgba(255, 255, 255, 0.18);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: git-branches-spin 0.8s linear infinite;
+}
+
+@keyframes git-branches-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .git-branches__commits-pane > .git-tree,

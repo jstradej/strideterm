@@ -98,8 +98,31 @@ describe("git-ui store", () => {
         sourceBranch: "feature/test",
         targetBranch: "main",
         connectionId: "ado-1",
+        isDraft: false,
         rootPath: "/repo/b",
       });
+    });
+
+    test("azureCreatePullRequest forwards isDraft when provided", async () => {
+      const mockApi = {
+        azureCreatePullRequest: vi.fn().mockResolvedValue({ result: { ok: true, pullRequestId: 7 }, payload: null }),
+      } as unknown as Transport;
+      const store = useGitUiStore();
+      store.init(mockApi);
+      store.setActiveRoot("ws1", "/repo/b");
+
+      await store.azureCreatePullRequest("ws1", {
+        title: "WIP",
+        description: "",
+        sourceBranch: "feature/test",
+        targetBranch: "main",
+        connectionId: "ado-1",
+        isDraft: true,
+      });
+
+      expect(mockApi.azureCreatePullRequest).toHaveBeenCalledWith(
+        expect.objectContaining({ isDraft: true, title: "WIP" }),
+      );
     });
 
     test("azureListRemoteBranches includes the active rootPath", async () => {

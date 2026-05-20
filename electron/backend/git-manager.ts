@@ -2502,7 +2502,22 @@ export class GitManager extends EventEmitter {
       limit = 300,
       includeRemotes = true,
       branch = "",
-    }: { rootPath?: string; limit?: number; includeRemotes?: boolean; branch?: string } = {},
+      sinceDate = "",
+      untilDate = "",
+      paths = [],
+      topoOrder = false,
+      author = "",
+    }: {
+      rootPath?: string;
+      limit?: number;
+      includeRemotes?: boolean;
+      branch?: string;
+      sinceDate?: string;
+      untilDate?: string;
+      paths?: string[];
+      topoOrder?: boolean;
+      author?: string;
+    } = {},
   ): Promise<{
     ok: boolean;
     head: string;
@@ -2541,14 +2556,30 @@ export class GitManager extends EventEmitter {
     const SEP = "";
     const fmt = ["%H", "%h", "%P", "%s", "%an", "%cr", "%cI", "%D"].join(SEP);
 
+    // Optional filters — keep all guarded so empty/invalid inputs don't change
+    // the command. safeDateExpr/safeRepoPath already rejected '-' prefixes,
+    // but we still pass these as separate argv items (never concatenated into
+    // a single shell string) so a malformed date can't smuggle a flag.
+    const filterArgs: string[] = [];
+    if (sinceDate.trim()) filterArgs.push(`--since=${sinceDate.trim()}`);
+    if (untilDate.trim()) filterArgs.push(`--until=${untilDate.trim()}`);
+    // --author matches against the commit's "Author <email>" line; git treats
+    // the pattern as a fixed-string substring (no need to escape regex).
+    if (author.trim()) filterArgs.push(`--author=${author.trim()}`);
+
+    // -- <paths> must come AFTER all rev-walking args; collect them separately.
+    const pathArgs = (paths || []).map((p) => p.trim()).filter((p) => p && !p.startsWith("-"));
+
     try {
       const result = await this.execGit(cwd, [
         "log",
         `--pretty=format:${fmt}`,
-        "--date-order",
+        topoOrder ? "--topo-order" : "--date-order",
         "-n",
         String(safeLimit),
+        ...filterArgs,
         ...walkArgs,
+        ...(pathArgs.length ? ["--", ...pathArgs] : []),
       ]);
       const refs: Record<string, string> = {};
       const lines = String(result.stdout || "")

@@ -251,6 +251,9 @@ export const useGitUiStore = defineStore("git-ui", () => {
 
       return response?.payload || null;
     } catch (error) {
+      // Surface to console as well — the in-app GitOperationCard banner reads
+      // ui.lastResult, but DevTools is where we want a stack trace.
+      console.error(`[git-ui] action "${busyAction}" failed for workspace ${workspaceId}:`, error);
       ui.lastResult = {
         ok: false,
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -394,7 +397,16 @@ export const useGitUiStore = defineStore("git-ui", () => {
 
   async function gitLoadGraph(
     workspaceId: string,
-    opts: { limit?: number; includeRemotes?: boolean; branch?: string } = {},
+    opts: {
+      limit?: number;
+      includeRemotes?: boolean;
+      branch?: string;
+      sinceDate?: string;
+      untilDate?: string;
+      paths?: string[];
+      topoOrder?: boolean;
+      author?: string;
+    } = {},
   ): Promise<void> {
     if (!_api) return;
     const ui = ensure(workspaceId);
@@ -408,6 +420,11 @@ export const useGitUiStore = defineStore("git-ui", () => {
         limit: opts.limit || 300,
         includeRemotes: opts.includeRemotes !== false,
         branch: opts.branch || "",
+        sinceDate: opts.sinceDate || "",
+        untilDate: opts.untilDate || "",
+        paths: Array.isArray(opts.paths) ? opts.paths.filter(Boolean) : [],
+        topoOrder: opts.topoOrder === true,
+        author: opts.author || "",
       })) as { ok?: boolean; head?: string; commits?: unknown[]; refs?: Record<string, string>; error?: string };
       if (result?.ok) {
         ui.graph = {
@@ -419,10 +436,12 @@ export const useGitUiStore = defineStore("git-ui", () => {
       } else {
         ui.graph = { head: "", commits: [], refs: {} };
         ui.graphError = result?.error || "Failed to load graph.";
+        if (ui.graphError) console.warn(`[git-ui] gitLoadGraph(${workspaceId}) reported error:`, ui.graphError);
       }
     } catch (error) {
       ui.graph = { head: "", commits: [], refs: {} };
       ui.graphError = (error as Error)?.message || "Failed to load graph.";
+      console.error(`[git-ui] gitLoadGraph(${workspaceId}) threw:`, error);
     } finally {
       ui.graphLoading = false;
     }
@@ -821,13 +840,14 @@ export const useGitUiStore = defineStore("git-ui", () => {
     }
   }
 
-  async function gitCreateTag(workspaceId: string, tagName: string, message: string): Promise<void> {
+  async function gitCreateTag(workspaceId: string, tagName: string, message: string, commit = ""): Promise<void> {
     const rootPath = getActiveRoot(workspaceId);
     await runGitAction(workspaceId, "create-tag", () =>
       (_api as Transport & { gitCreateTag: (p: unknown) => Promise<unknown> }).gitCreateTag!({
         workspaceId,
         tagName,
         message: message || "",
+        commit: commit || "",
         rootPath,
       }),
     );
@@ -940,12 +960,14 @@ export const useGitUiStore = defineStore("git-ui", () => {
       sourceBranch,
       targetBranch,
       connectionId,
+      isDraft = false,
     }: {
       title: string;
       description: string;
       sourceBranch: string;
       targetBranch: string;
       connectionId: string;
+      isDraft?: boolean;
     },
   ): Promise<unknown> {
     const rootPath = getActiveRoot(workspaceId);
@@ -957,6 +979,7 @@ export const useGitUiStore = defineStore("git-ui", () => {
         sourceBranch,
         targetBranch,
         connectionId,
+        isDraft,
         rootPath,
       }),
     );

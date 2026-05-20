@@ -38,6 +38,7 @@ const DIALOGS = {
   RemoteAccessDialog: defineAsyncComponent(() => import("./RemoteAccessDialog.vue")),
   NewWindowModal: defineAsyncComponent(() => import("./NewWindowModal.vue")),
   ConfirmDialog: defineAsyncComponent(() => import("./ConfirmDialog.vue")),
+  CreatePullRequestDialog: defineAsyncComponent(() => import("./CreatePullRequestDialog.vue")),
   SshHostsDialog: defineAsyncComponent(() => import("../ssh/SshHostsDialog.vue")),
   SshHostEditor: defineAsyncComponent(() => import("../ssh/SshHostEditor.vue")),
   SshKeyManager: defineAsyncComponent(() => import("../ssh/SshKeyManager.vue")),

@@ -293,6 +293,11 @@ export function createGitHandlers(ctx: GitHandlerCtx) {
         limit: payload.limit || 300,
         includeRemotes: payload.includeRemotes !== false,
         branch: payload.branch || "",
+        sinceDate: payload.sinceDate || "",
+        untilDate: payload.untilDate || "",
+        paths: Array.isArray(payload.paths) ? payload.paths : [],
+        topoOrder: payload.topoOrder === true,
+        author: payload.author || "",
       });
     },
   };

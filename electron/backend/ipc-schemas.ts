@@ -283,12 +283,41 @@ export const gitCheckoutRemoteSchema = z.object({
 });
 export type GitCheckoutRemote = z.infer<typeof gitCheckoutRemoteSchema>;
 
+// ISO 8601 date or git-friendly relative ("2 weeks ago"). Rejects flags to
+// prevent injection — same defence as safeGitRef.
+const safeDateExpr = z
+  .string()
+  .max(64)
+  .refine((v) => !v.startsWith("-"), { message: "Date cannot start with '-'" });
+
+// Repository-relative path. Reject "-" prefix and any "../" escape; keep
+// max length sane.
+const safeRepoPath = z
+  .string()
+  .min(1)
+  .max(512)
+  .refine((v) => !v.startsWith("-") && !v.includes(".."), {
+    message: "Invalid repo-relative path",
+  });
+
+// Author filter for git log --author=<pattern>. Rejects leading '-' to keep
+// the value from being interpreted as a flag once it lands in execFile argv.
+const safeAuthorPattern = z
+  .string()
+  .max(128)
+  .refine((v) => !v.startsWith("-"), { message: "Author cannot start with '-'" });
+
 export const gitLogGraphSchema = z.object({
   workspaceId: nonEmptyString,
   rootPath: z.string().optional(),
   limit: z.number().int().min(1).max(2000).optional(),
   includeRemotes: z.boolean().optional(),
   branch: safeGitRef.optional(),
+  sinceDate: safeDateExpr.optional(),
+  untilDate: safeDateExpr.optional(),
+  paths: z.array(safeRepoPath).max(32).optional(),
+  topoOrder: z.boolean().optional(),
+  author: safeAuthorPattern.optional(),
 });
 export type GitLogGraph = z.infer<typeof gitLogGraphSchema>;
 

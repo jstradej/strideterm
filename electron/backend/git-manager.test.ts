@@ -1440,4 +1440,93 @@ describe("GitManager", () => {
       expect(result.ok).toBe(true);
     });
   });
+
+  // ─── logGraph filter args ──────────────────────────────────────────
+  describe("logGraph filter wiring", () => {
+    function captureLogArgs(): { mgr: GitManager; calls: string[][] } {
+      const calls: string[][] = [];
+      const execGitImpl = vi.fn(async (_cwd: string, args: string[]) => {
+        calls.push(args);
+        if (args[0] === "log") return { stdout: "", stderr: "" };
+        if (args[0] === "rev-parse" && args[1] === "HEAD") return { stdout: "deadbeef\n", stderr: "" };
+        return { stdout: "", stderr: "" };
+      });
+      const mgr = new GitManager({ execGitImpl });
+      return { mgr, calls };
+    }
+
+    test("forwards --since / --until / --topo-order / --author and trailing -- <paths>", async () => {
+      const { mgr, calls } = captureLogArgs();
+      await mgr.logGraph(
+        { id: "ws1", cwd: "/repo" },
+        {
+          rootPath: "/repo",
+          sinceDate: "2 weeks ago",
+          untilDate: "2026-01-01",
+          paths: ["src/foo.ts", "docs/bar.md"],
+          topoOrder: true,
+          author: "alice",
+        },
+      );
+      const logCall = calls.find((c) => c[0] === "log");
+      expect(logCall, "git log was not invoked").toBeTruthy();
+      expect(logCall).toContain("--topo-order");
+      expect(logCall).toContain("--since=2 weeks ago");
+      expect(logCall).toContain("--until=2026-01-01");
+      expect(logCall).toContain("--author=alice");
+      // -- separator must come AFTER walk args so the paths aren't parsed as refs.
+      const dashIdx = logCall!.indexOf("--");
+      expect(dashIdx).toBeGreaterThan(0);
+      expect(logCall!.slice(dashIdx + 1)).toEqual(["src/foo.ts", "docs/bar.md"]);
+    });
+
+    test("omits all filter args when none provided", async () => {
+      const { mgr, calls } = captureLogArgs();
+      await mgr.logGraph({ id: "ws1", cwd: "/repo" }, { rootPath: "/repo" });
+      const logCall = calls.find((c) => c[0] === "log");
+      expect(logCall).toBeTruthy();
+      expect(logCall!.some((a) => a.startsWith("--since="))).toBe(false);
+      expect(logCall!.some((a) => a.startsWith("--until="))).toBe(false);
+      expect(logCall!.some((a) => a.startsWith("--author="))).toBe(false);
+      expect(logCall).toContain("--date-order");
+      expect(logCall).not.toContain("--topo-order");
+    });
+
+    test("drops paths starting with '-' (defense in depth even after schema validation)", async () => {
+      const { mgr, calls } = captureLogArgs();
+      // Bypassing the schema directly here to exercise the inner guard.
+      await mgr.logGraph(
+        { id: "ws1", cwd: "/repo" },
+        { rootPath: "/repo", paths: ["-rf", "src/ok.ts"] as string[] },
+      );
+      const logCall = calls.find((c) => c[0] === "log");
+      const dashIdx = logCall!.indexOf("--");
+      expect(logCall!.slice(dashIdx + 1)).toEqual(["src/ok.ts"]);
+    });
+  });
+
+  // ─── createTag at a specific commit ────────────────────────────────
+  describe("createTag commit pinning", () => {
+    test("annotated tag at HEAD when commit omitted", async () => {
+      const args: string[][] = [];
+      const execGitImpl = vi.fn(async (_cwd: string, a: string[]) => {
+        args.push(a);
+        return { stdout: "", stderr: "" };
+      });
+      const mgr = new GitManager({ execGitImpl });
+      await mgr.createTag({ id: "ws1", cwd: "/repo" }, { tagName: "v1.0.0", message: "release" });
+      expect(args[0]).toEqual(["tag", "-a", "v1.0.0", "-m", "release"]);
+    });
+
+    test("lightweight tag pinned to a commit hash when commit provided", async () => {
+      const args: string[][] = [];
+      const execGitImpl = vi.fn(async (_cwd: string, a: string[]) => {
+        args.push(a);
+        return { stdout: "", stderr: "" };
+      });
+      const mgr = new GitManager({ execGitImpl });
+      await mgr.createTag({ id: "ws1", cwd: "/repo" }, { tagName: "v1.0.0", commit: "abc1234" });
+      expect(args[0]).toEqual(["tag", "v1.0.0", "abc1234"]);
+    });
+  });
 });

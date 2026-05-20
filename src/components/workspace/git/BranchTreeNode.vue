@@ -72,6 +72,7 @@
         :is-dirty="isDirty"
         :expanded="expanded"
         :compact="compact"
+        :can-create-pr="canCreatePr"
         @select="(ref) => emit('select', ref)"
         @toggle="(k) => emit('toggle', k)"
         @checkout="(ref) => emit('checkout', ref)"
@@ -82,6 +83,7 @@
         @delete-remote="(ref) => emit('delete-remote', ref)"
         @merge="(ref) => emit('merge', ref)"
         @rebase="(ref) => emit('rebase', ref)"
+        @create-pr="(ref) => emit('create-pr', ref)"
       />
     </ul>
 
@@ -118,6 +120,7 @@ const props = defineProps<{
   isDirty: boolean;
   expanded: Record<string, boolean>;
   compact: boolean;
+  canCreatePr?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -131,6 +134,7 @@ const emit = defineEmits<{
   (e: "delete-remote", ref: string): void;
   (e: "merge", ref: string): void;
   (e: "rebase", ref: string): void;
+  (e: "create-pr", ref: string): void;
 }>();
 
 const menuOpen = ref(false);
@@ -232,6 +236,10 @@ const actions = computed<MenuAction[]>(() => {
       list.push({ id: "merge", label: `Merge ${ref} into ${headRef || "HEAD"}`, disabled: props.busy || !headRef });
       list.push({ id: "rebase", label: `Rebase ${headRef || "HEAD"} onto ${ref}`, disabled: props.busy || !headRef });
     }
+    if (props.canCreatePr) {
+      list.push({ id: "_divPr", label: "", divider: true });
+      list.push({ id: "create-pr", label: "Create pull request…", disabled: props.busy });
+    }
     list.push({ id: "_div1", label: "", divider: true });
     list.push({ id: "delete", label: "Delete branch", disabled: props.busy || !!props.node.isCurrent, danger: true });
   } else if (props.node.kind === "branch-remote" && props.node.ref) {
@@ -240,6 +248,10 @@ const actions = computed<MenuAction[]>(() => {
     if (props.head) {
       list.push({ id: "merge", label: `Merge into ${props.head}`, disabled: props.busy });
       list.push({ id: "rebase", label: `Rebase ${props.head} onto this`, disabled: props.busy });
+    }
+    if (props.canCreatePr) {
+      list.push({ id: "_divPr", label: "", divider: true });
+      list.push({ id: "create-pr", label: "Create pull request…", disabled: props.busy });
     }
     list.push({ id: "_div1", label: "", divider: true });
     list.push({ id: "delete-remote", label: "Delete on remote…", disabled: props.busy, danger: true });
@@ -344,6 +356,9 @@ function runAction(id: string) {
       break;
     case "rebase":
       emit("rebase", ref);
+      break;
+    case "create-pr":
+      emit("create-pr", ref);
       break;
   }
 }

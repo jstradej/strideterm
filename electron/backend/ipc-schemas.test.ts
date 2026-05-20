@@ -8,6 +8,7 @@ import {
   gitPayloadSchema,
   gitDiffPreviewSchema,
   gitLogPageSchema,
+  gitLogGraphSchema,
   terminalResizeSchema,
   profileSchema,
   worktreeSchema,
@@ -170,6 +171,62 @@ describe("ipc-schemas", () => {
 
     test("rejects negative skip", () => {
       expect(() => validateIpc(gitLogPageSchema, { workspaceId: "ws-1", skip: -1 }, "test")).toThrow();
+    });
+  });
+
+  describe("gitLogGraphSchema", () => {
+    test("accepts minimal payload", () => {
+      const result = validateIpc(gitLogGraphSchema, { workspaceId: "ws-1" }, "git:log-graph");
+      expect(result.workspaceId).toBe("ws-1");
+    });
+
+    test("accepts full filter set", () => {
+      const result = validateIpc(
+        gitLogGraphSchema,
+        {
+          workspaceId: "ws-1",
+          limit: 500,
+          includeRemotes: true,
+          branch: "main",
+          sinceDate: "2 weeks ago",
+          untilDate: "2026-01-01",
+          paths: ["src/foo.ts", "docs/README.md"],
+          topoOrder: true,
+          author: "alice@example.com",
+        },
+        "git:log-graph",
+      );
+      expect(result.sinceDate).toBe("2 weeks ago");
+      expect(result.paths).toEqual(["src/foo.ts", "docs/README.md"]);
+      expect(result.topoOrder).toBe(true);
+      expect(result.author).toBe("alice@example.com");
+    });
+
+    test("rejects sinceDate starting with '-' (flag-injection guard)", () => {
+      expect(() =>
+        validateIpc(gitLogGraphSchema, { workspaceId: "ws-1", sinceDate: "--malicious" }, "test"),
+      ).toThrow();
+    });
+
+    test("rejects path containing '..' (traversal guard)", () => {
+      expect(() => validateIpc(gitLogGraphSchema, { workspaceId: "ws-1", paths: ["../etc/passwd"] }, "test")).toThrow();
+    });
+
+    test("rejects path starting with '-' (flag-injection guard)", () => {
+      expect(() => validateIpc(gitLogGraphSchema, { workspaceId: "ws-1", paths: ["-rf"] }, "test")).toThrow();
+    });
+
+    test("rejects more than 32 paths", () => {
+      const paths = Array.from({ length: 33 }, (_, i) => `f${i}.ts`);
+      expect(() => validateIpc(gitLogGraphSchema, { workspaceId: "ws-1", paths }, "test")).toThrow();
+    });
+
+    test("rejects author starting with '-' (flag-injection guard)", () => {
+      expect(() => validateIpc(gitLogGraphSchema, { workspaceId: "ws-1", author: "-x" }, "test")).toThrow();
+    });
+
+    test("clamps limit to <= 2000", () => {
+      expect(() => validateIpc(gitLogGraphSchema, { workspaceId: "ws-1", limit: 9999 }, "test")).toThrow();
     });
   });
 
