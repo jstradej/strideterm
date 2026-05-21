@@ -692,7 +692,7 @@ watch(snapshot, (newSnapshot) => {
 
 const tabs = computed(() => {
   const list = [
-    { id: "branch", label: "Branch", badge: operation.value.inProgress ? "!" : "" },
+    { id: "branch", label: "Overview", badge: operation.value.inProgress ? "!" : "" },
     { id: "branches", label: "Branches", badge: "" },
     {
       id: "changes",
