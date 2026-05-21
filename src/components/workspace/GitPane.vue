@@ -273,21 +273,6 @@
           :is-review-workspace="isReviewWorkspace"
         />
 
-        <!-- ===== History tab ===== -->
-        <GitHistoryTab
-          v-else-if="activeTab === 'history'"
-          :workspace-id="workspaceId"
-          :snapshot="snapshot"
-          :git-ui="gitUi"
-          :compare="compare"
-          :effective-base-branch="effectiveBaseBranch"
-          :base-branch-options="baseBranchOptions"
-          :default-branch="defaultBranch"
-          :default-remote="defaultRemote"
-          :remote-names="remoteNames"
-          :active-root-path="activeRootPath"
-        />
-
         <!-- ===== Pull Request tab ===== -->
         <GitPullRequestTab
           v-else-if="activeTab === 'pr'"
@@ -358,7 +343,6 @@ import PaneShell from "../layout/PaneShell.vue";
 import GitBranchTab from "./git/GitBranchTab.vue";
 import GitBranchesTab from "./git/GitBranchesTab.vue";
 import GitChangesTab from "./git/GitChangesTab.vue";
-import GitHistoryTab from "./git/GitHistoryTab.vue";
 import GitPullRequestTab from "./git/GitPullRequestTab.vue";
 import GitWorktreeList from "./git/GitWorktreeList.vue";
 import GitOperationCard from "./git/GitOperationCard.vue";
@@ -452,12 +436,13 @@ const remoteNames = computed<string[]>(() =>
   Object.keys(snapshot.value?.remotes || {}).filter((k) => k && !k.includes(":")),
 );
 const compare = computed(() => snapshot.value?.compareWithBase || {});
-// The legacy "graph" and "tags" tabs were folded into "branches" — anything
-// persisted with those ids is silently redirected so users don't land on a
-// blank pane after the consolidation.
+// The legacy "graph", "tags", and "history" tabs were folded into
+// "branches" — anything persisted with those ids is silently redirected so
+// users don't land on a blank pane after the consolidation. History was
+// the last to go once Branches got the Flat view + Compare picker.
 const activeTab = computed(() => {
   const t = gitUi.value.activeTab || "branch";
-  if (t === "graph" || t === "tags") return "branches";
+  if (t === "graph" || t === "tags" || t === "history") return "branches";
   return t;
 });
 
@@ -714,7 +699,6 @@ const tabs = computed(() => {
       label: "Changes",
       badge: (snapshot.value?.dirtyCount || 0) > 0 ? String(snapshot.value?.dirtyCount ?? 0) : "",
     },
-    { id: "history", label: "History", badge: "" },
     { id: "pr", label: "Pull Request", badge: "" },
     { id: "worktrees", label: "Worktrees", badge: "" },
   ];
@@ -845,10 +829,9 @@ const switchBranchOptionsList = computed(() => switchBranchOptions.value.map((b)
   }
 }
 
-/* Changes & History tab layout (the rest lives in the tab components
-   themselves so scoped styles target their inner DOM correctly). */
-:deep(.git-section--changes),
-:deep(.git-section--history) {
+/* Changes tab layout (the rest lives in the tab components themselves so
+   scoped styles target their inner DOM correctly). */
+:deep(.git-section--changes) {
   display: flex !important;
   flex-direction: column;
   grid-template-columns: none !important;

@@ -461,12 +461,7 @@ select option:checked {
     grid-template-columns: 1fr;
   }
 
-  .git-section--changes,
-  .git-section--history {
-    grid-template-columns: 1fr;
-  }
-
-  .git-history__panels {
+  .git-section--changes {
     grid-template-columns: 1fr;
   }
 

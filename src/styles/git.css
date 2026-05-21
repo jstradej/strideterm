@@ -92,33 +92,6 @@
   overflow: hidden;
 }
 
-.git-section--history {
-  grid-template-columns: 1fr;
-  grid-template-rows: auto minmax(0, 1fr);
-  align-content: stretch;
-  overflow: hidden;
-}
-
-.git-history__header {
-  min-height: 0;
-}
-
-.git-history__panels {
-  display: grid;
-  grid-template-columns: minmax(250px, 1fr) minmax(300px, 1.5fr);
-  gap: 8px;
-  min-height: 0;
-}
-
-.git-history__log,
-.git-history__detail {
-  overflow-y: auto;
-  min-height: 0;
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  background: rgba(var(--tint), 0.03);
-}
-
 .git-log-table {
   width: 100%;
   border-collapse: collapse;
@@ -182,17 +155,6 @@
   width: 110px;
   color: var(--muted);
   font-size: 11px;
-}
-
-.git-history__detail {
-  padding: 10px;
-}
-
-.git-history__detail .git-output {
-  max-height: none;
-  border: none;
-  background: none;
-  padding: 0;
 }
 
 .git-section__files,
