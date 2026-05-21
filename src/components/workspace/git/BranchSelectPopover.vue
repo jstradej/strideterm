@@ -33,7 +33,7 @@
           </li>
           <template v-for="(row, idx) in visibleRows" :key="row.key">
             <li
-              :class="rowClass(idx, row.ref || '')"
+              :class="rowClass(idx, row.ref || '', row.isSection)"
               role="option"
               :aria-selected="row.ref === modelValue ? 'true' : 'false'"
               @mousedown.prevent="onRowMousedown(row)"
@@ -49,6 +49,7 @@
               <span v-else class="branch-picker__toggle branch-picker__toggle--leaf" />
               <span :class="['branch-picker__icon', `branch-picker__icon--${row.iconKind}`]">{{ row.icon }}</span>
               <span class="branch-picker__label" :title="row.title">{{ row.label }}</span>
+              <span v-if="row.isSection && row.count != null" class="branch-picker__count">{{ row.count }}</span>
               <span v-if="row.isDefault" class="branch-picker__pill branch-picker__pill--default">default</span>
             </li>
           </template>
@@ -68,6 +69,7 @@ interface Props {
   options?: string[];
   defaultBranch?: string; // e.g. "master" — short name w/o remote
   defaultRemote?: string; // e.g. "origin"
+  remoteNames?: string[]; // names of all configured remotes ("origin", "vk", "jstradej", …)
   placeholder?: string;
   disabled?: boolean;
   buttonClass?: string | string[] | Record<string, boolean>;
@@ -82,6 +84,7 @@ const props = withDefaults(defineProps<Props>(), {
   options: () => [],
   defaultBranch: "",
   defaultRemote: "",
+  remoteNames: () => [],
   placeholder: "Select…",
   disabled: false,
   buttonClass: "",
@@ -117,17 +120,33 @@ const defaultFullRef = computed<string>(() => {
   return "";
 });
 
+// A ref like "origin/master" or "vk/feature/auth" is "remote" — its first
+// path segment matches a configured remote name. Plain "develop" or
+// "feature/auth" (when "feature" isn't a remote name) is local. This drives
+// the icon + colour so the user can visually separate the two without
+// reading the full path.
+const remoteSet = computed<Set<string>>(() => new Set(props.remoteNames || []));
+function isRemoteRef(refOrSegment: string): boolean {
+  if (!refOrSegment) return false;
+  const firstSlash = refOrSegment.indexOf("/");
+  const head = firstSlash >= 0 ? refOrSegment.slice(0, firstSlash) : refOrSegment;
+  return remoteSet.value.has(head);
+}
+
 // ---- Tree model ---------------------------------------------------------
 interface TreeRow {
   key: string;
   depth: number;
   isFolder: boolean;
+  isSection?: boolean; // top-level "Local" / "Remote · <name>" header
   expanded: boolean;
   label: string;
   icon: string;
   iconKind: string;
   ref?: string;
   isDefault?: boolean;
+  isRemote?: boolean;
+  count?: number;
   title: string;
 }
 
@@ -139,39 +158,75 @@ interface BuildNode {
   children: BuildNode[];
 }
 
-// Build a "/"-split forest from the options. Each leaf carries the full ref.
-const tree = computed<BuildNode[]>(() => {
-  const root: BuildNode[] = [];
-  const dirMap = new Map<string, BuildNode>(); // path -> folder node
-  for (const refName of props.options) {
-    const parts = refName.split("/").filter(Boolean);
-    if (!parts.length) continue;
-    let parent: BuildNode[] = root;
-    let path = "";
-    for (let i = 0; i < parts.length - 1; i++) {
-      const seg = parts[i];
-      path = path ? `${path}/${seg}` : seg;
-      let folder = dirMap.get(path);
-      if (!folder) {
-        folder = { key: `dir:${path}`, label: seg, segment: seg, children: [] };
-        dirMap.set(path, folder);
-        parent.push(folder);
-      }
-      parent = folder.children;
-    }
-    const leafLabel = parts[parts.length - 1];
-    parent.push({
-      key: `leaf:${refName}`,
-      label: leafLabel,
-      segment: leafLabel,
-      ref: refName,
-      children: [],
-    });
-  }
-  // Sort: folders alphabetically, leaves alphabetically; default leaf floats
-  // up within its folder.
+interface SectionNode {
+  key: string;
+  label: string;
+  iconKind: "local-section" | "remote-section";
+  count: number;
+  children: BuildNode[];
+}
+
+// Group refs into sections: "Local" (no remote prefix) and one "Remote · X"
+// per configured remote. Inside each section refs are split by "/" into a
+// sub-forest as before, but the remote prefix is stripped from labels so
+// folders/leaves under "Remote · origin" show "feature/auth" / "master"
+// instead of "origin/feature/auth" / "origin/master". The leaf's ref keeps
+// the full name so selection still emits the canonical ref.
+const sections = computed<SectionNode[]>(() => {
   const dflt = defaultFullRef.value;
-  function sortNode(nodes: BuildNode[]) {
+  const localBucket: Array<{ fullRef: string; strippedPath: string }> = [];
+  const remoteBuckets = new Map<string, Array<{ fullRef: string; strippedPath: string }>>();
+
+  for (const refName of props.options) {
+    if (!refName) continue;
+    const firstSlash = refName.indexOf("/");
+    const head = firstSlash >= 0 ? refName.slice(0, firstSlash) : refName;
+    if (firstSlash >= 0 && remoteSet.value.has(head)) {
+      const list = remoteBuckets.get(head) || [];
+      list.push({ fullRef: refName, strippedPath: refName.slice(firstSlash + 1) });
+      remoteBuckets.set(head, list);
+    } else {
+      localBucket.push({ fullRef: refName, strippedPath: refName });
+    }
+  }
+
+  function buildForest(
+    entries: Array<{ fullRef: string; strippedPath: string }>,
+    prefix: string,
+  ): BuildNode[] {
+    const root: BuildNode[] = [];
+    const dirMap = new Map<string, BuildNode>();
+    for (const { fullRef, strippedPath } of entries) {
+      const parts = strippedPath.split("/").filter(Boolean);
+      if (!parts.length) continue;
+      let parent = root;
+      let path = "";
+      for (let i = 0; i < parts.length - 1; i++) {
+        const seg = parts[i];
+        path = path ? `${path}/${seg}` : seg;
+        const dirKey = `${prefix}:dir:${path}`;
+        let folder = dirMap.get(dirKey);
+        if (!folder) {
+          folder = { key: dirKey, label: seg, segment: seg, children: [] };
+          dirMap.set(dirKey, folder);
+          parent.push(folder);
+        }
+        parent = folder.children;
+      }
+      const leafLabel = parts[parts.length - 1];
+      parent.push({
+        key: `${prefix}:leaf:${fullRef}`,
+        label: leafLabel,
+        segment: leafLabel,
+        ref: fullRef,
+        children: [],
+      });
+    }
+    sortNodes(root);
+    return root;
+  }
+
+  function sortNodes(nodes: BuildNode[]): void {
     const folders = nodes.filter((n) => n.children.length > 0);
     const leaves = nodes.filter((n) => n.children.length === 0);
     folders.sort((a, b) => a.label.localeCompare(b.label));
@@ -182,14 +237,42 @@ const tree = computed<BuildNode[]>(() => {
     });
     nodes.length = 0;
     nodes.push(...folders, ...leaves);
-    for (const f of folders) sortNode(f.children);
+    for (const f of folders) sortNodes(f.children);
   }
-  sortNode(root);
-  return root;
+
+  const out: SectionNode[] = [];
+  if (localBucket.length) {
+    out.push({
+      key: "section:local",
+      label: "Local",
+      iconKind: "local-section",
+      count: localBucket.length,
+      children: buildForest(localBucket, "local"),
+    });
+  }
+  // Origin first (the conventional primary), then others alphabetically — same
+  // precedence used elsewhere (listBranches, readSymbolicDefault).
+  const remoteOrder = Array.from(remoteBuckets.keys()).sort((a, b) => {
+    if (a === "origin" && b !== "origin") return -1;
+    if (b === "origin" && a !== "origin") return 1;
+    return a.localeCompare(b);
+  });
+  for (const name of remoteOrder) {
+    const bucket = remoteBuckets.get(name) || [];
+    if (!bucket.length) continue;
+    out.push({
+      key: `section:remote:${name}`,
+      label: `Remote · ${name}`,
+      iconKind: "remote-section",
+      count: bucket.length,
+      children: buildForest(bucket, `remote:${name}`),
+    });
+  }
+  return out;
 });
 
-// Flatten the tree to visible rows, honoring collapse state and search.
-// Search mode: ignore folders, show matching leaves flat with full ref label.
+// Flatten the section tree to visible rows, honoring collapse state and
+// search. Search mode skips sections and shows matching leaves flat.
 const visibleRows = computed<TreeRow[]>(() => {
   const q = query.value.trim().toLowerCase();
   const dflt = defaultFullRef.value;
@@ -200,16 +283,18 @@ const visibleRows = computed<TreeRow[]>(() => {
       for (const n of nodes) {
         if (n.ref) {
           if (n.ref.toLowerCase().includes(q)) {
+            const remote = isRemoteRef(n.ref);
             rows.push({
               key: n.key,
               depth: 0,
               isFolder: false,
               expanded: true,
               label: n.ref,
-              icon: "⎇",
-              iconKind: "branch",
+              icon: remote ? "☁" : "⎇",
+              iconKind: remote ? "remote" : "branch",
               ref: n.ref,
               isDefault: n.ref === dflt,
+              isRemote: remote,
               title: n.ref,
             });
           }
@@ -218,12 +303,11 @@ const visibleRows = computed<TreeRow[]>(() => {
         }
       }
     }
-    collect(tree.value);
-    // Default-first sort already encoded in tree order; preserve that.
+    for (const section of sections.value) collect(section.children);
     return rows;
   }
 
-  function walk(nodes: BuildNode[], depth: number): void {
+  function walk(nodes: BuildNode[], depth: number, isRemoteContext: boolean): void {
     for (const n of nodes) {
       const isFolder = n.children.length > 0;
       if (isFolder) {
@@ -238,7 +322,7 @@ const visibleRows = computed<TreeRow[]>(() => {
           iconKind: "folder",
           title: n.label,
         });
-        if (expanded) walk(n.children, depth + 1);
+        if (expanded) walk(n.children, depth + 1, isRemoteContext);
       } else if (n.ref) {
         rows.push({
           key: n.key,
@@ -246,16 +330,33 @@ const visibleRows = computed<TreeRow[]>(() => {
           isFolder: false,
           expanded: true,
           label: n.label,
-          icon: "⎇",
-          iconKind: "branch",
+          icon: isRemoteContext ? "☁" : "⎇",
+          iconKind: isRemoteContext ? "remote" : "branch",
           ref: n.ref,
           isDefault: n.ref === dflt,
+          isRemote: isRemoteContext,
           title: n.ref,
         });
       }
     }
   }
-  walk(tree.value, 0);
+
+  for (const section of sections.value) {
+    const expanded = !collapsed[section.key];
+    rows.push({
+      key: section.key,
+      depth: 0,
+      isFolder: true,
+      isSection: true,
+      expanded,
+      label: section.label,
+      icon: section.iconKind === "remote-section" ? "☁" : "⎇",
+      iconKind: section.iconKind,
+      count: section.count,
+      title: section.label,
+    });
+    if (expanded) walk(section.children, 1, section.iconKind === "remote-section");
+  }
   return rows;
 });
 
@@ -269,10 +370,11 @@ function indentStyle(depth: number): Record<string, string> {
   return { width: `${depth * 12}px` };
 }
 
-function rowClass(idx: number, refValue: string): Record<string, boolean> {
+function rowClass(idx: number, refValue: string, isSection?: boolean): Record<string, boolean> {
   return {
     "branch-picker__row": true,
-    "branch-picker__row--active": activeIndex.value === idx,
+    "branch-picker__row--section": !!isSection,
+    "branch-picker__row--active": activeIndex.value === idx && !isSection,
     "branch-picker__row--selected": !!refValue && refValue === props.modelValue,
     "branch-picker__row--off-selected": idx === -1 && !props.modelValue,
   };
@@ -585,11 +687,52 @@ defineExpose({ focus: (): void => buttonRef.value?.focus() });
 .branch-picker__icon--branch {
   color: #6dc070;
 }
+.branch-picker__icon--remote {
+  color: #80a8e0;
+}
 .branch-picker__icon--folder {
   color: var(--muted);
 }
 .branch-picker__icon--off {
   color: var(--muted);
+}
+.branch-picker__icon--local-section {
+  color: #6dc070;
+}
+.branch-picker__icon--remote-section {
+  color: #80a8e0;
+}
+
+.branch-picker__row--section {
+  padding-top: 6px;
+  padding-bottom: 6px;
+  border-top: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.025);
+  color: var(--muted);
+  font-size: 10px;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  font-weight: 700;
+  cursor: pointer;
+}
+.branch-picker__row--section:first-child {
+  border-top: none;
+}
+/* Even when the user is keyboard-navigating, sections shouldn't look picked. */
+.branch-picker__row--section.branch-picker__row--selected,
+.branch-picker__row--section.branch-picker__row--off-selected {
+  background: rgba(255, 255, 255, 0.025);
+  color: var(--muted);
+}
+
+.branch-picker__count {
+  flex: 0 0 auto;
+  font-size: 10px;
+  padding: 0 6px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
 }
 .branch-picker__label {
   flex: 1 1 auto;

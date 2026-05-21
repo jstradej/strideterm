@@ -82,6 +82,7 @@
           :options="baseBranchOptions"
           :default-branch="defaultBranch"
           :default-remote="defaultRemote"
+          :remote-names="remoteNames"
           @update:model-value="(v) => gitUiStore.gitSetBaseBranch(workspaceId, v)"
         />
         <span><strong>Upstream:</strong> {{ snapshot.upstream || "none" }}</span>
@@ -247,6 +248,7 @@
       :base-branch-options="baseBranchOptions"
       :default-branch="defaultBranch"
       :default-remote="defaultRemote"
+      :remote-names="remoteNames"
       :is-linked-worktree="isLinkedWorktree"
     />
   </div>
@@ -286,6 +288,7 @@ const props = withDefaults(
     baseBranchOptions?: string[];
     defaultBranch?: string;
     defaultRemote?: string;
+    remoteNames?: string[];
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     switchBranchOptionsList?: any[];
   }>(),
@@ -305,6 +308,7 @@ const props = withDefaults(
     baseBranchOptions: () => [],
     defaultBranch: "",
     defaultRemote: "",
+    remoteNames: () => [],
     switchBranchOptionsList: () => [],
   },
 );

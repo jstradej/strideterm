@@ -174,15 +174,34 @@
                 <template v-else-if="selectedRef">Commits on {{ selectedRef }}</template>
                 <template v-else>All commits</template>
               </strong>
-              <span v-if="loadedCount" class="git-branches__pane-count">{{ loadedCount }}</span>
+              <span
+                v-if="loadedCount"
+                class="git-branches__pane-count"
+                :title="`${loadedCount} commit(s) shown`"
+                >{{ loadedCount }} {{ loadedCount === 1 ? "commit" : "commits" }}</span
+              >
               <template v-if="compareBase">
                 <GitDiffStat v-if="compareDiffStat" :stat="compareDiffStat" />
-                <span v-if="compareAhead" class="git-branches__pane-count" :title="`Ahead of ${compareBase}`"
-                  >↑ {{ compareAhead }}</span
+                <span
+                  v-if="compareCountsLoading"
+                  class="git-branches__pane-count git-branches__pane-count--muted"
+                  title="Computing ahead/behind counts…"
+                  >ahead/behind …</span
                 >
-                <span v-if="compareBehind" class="git-branches__pane-count" :title="`Behind ${compareBase}`"
-                  >↓ {{ compareBehind }}</span
-                >
+                <template v-else>
+                  <span
+                    v-if="compareAhead > 0"
+                    class="git-branches__pane-count git-branches__pane-count--ahead"
+                    :title="`Your branch has ${compareAhead} commit(s) that ${compareBase} doesn't.`"
+                    >{{ compareAhead }} ahead</span
+                  >
+                  <span
+                    v-if="compareBehind > 0"
+                    class="git-branches__pane-count git-branches__pane-count--behind"
+                    :title="behindTooltip"
+                    >{{ compareBehind }} behind</span
+                  >
+                </template>
               </template>
               <span v-if="graphError" class="git-branches__pane-error">— {{ graphError }}</span>
               <span v-if="selectedRef || compareBase" class="git-branches__pane-spacer"></span>
@@ -286,6 +305,7 @@
                 :options="(baseBranchOptions || []) as string[]"
                 :default-branch="branchList.defaultBranch"
                 :default-remote="branchList.defaultRemote"
+                :remote-names="effectiveRemoteNames"
                 button-label-prefix="Compare: "
                 off-label="Compare: off"
                 off-value=""
@@ -293,6 +313,14 @@
                 search-placeholder="Filter branches…"
                 class="git-branches__cselect git-branches__cselect--compare"
               />
+              <label
+                v-if="compareBase"
+                class="git-branches__filter git-branches__filter--inline"
+                title="Switch from base..HEAD (only your work) to base...HEAD (your work + commits on base since fork)."
+              >
+                <input v-model="includeBaseUpdates" type="checkbox" />
+                Include base updates
+              </label>
               <button
                 v-if="hasActiveFilters"
                 type="button"
@@ -303,7 +331,29 @@
                 Clear
               </button>
             </div>
+            <div
+              v-if="showCompareEmptyState"
+              class="git-branches__compare-empty"
+              role="status"
+              aria-live="polite"
+            >
+              <span class="git-branches__compare-empty-icon" aria-hidden="true">✓</span>
+              <div class="git-branches__compare-empty-text">
+                <strong>No commits ahead of {{ compareBase }}.</strong>
+                <span>Your branch has nothing this base doesn't already have.</span>
+              </div>
+              <button
+                v-if="!includeBaseUpdates"
+                type="button"
+                class="button button--ghost button--small"
+                title="Switch to walking base...HEAD so you also see commits on the base since fork."
+                @click="includeBaseUpdates = true"
+              >
+                Include base updates
+              </button>
+            </div>
             <GitTreeGraph
+              v-else
               :commits="commits"
               :head="head"
               :refs="refs"
@@ -512,6 +562,9 @@ const props = withDefaults(
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     compare?: Record<string, any>;
     baseBranchOptions?: string[];
+    defaultBranch?: string;
+    defaultRemote?: string;
+    remoteNames?: string[];
   }>(),
   {
     activeRootPath: "",
@@ -521,6 +574,9 @@ const props = withDefaults(
     baseBranch: "",
     compare: () => ({}),
     baseBranchOptions: () => [],
+    defaultBranch: "",
+    defaultRemote: "",
+    remoteNames: () => [],
   },
 );
 
@@ -621,6 +677,17 @@ const tags = computed<TagEntry[]>(() => (props.gitUi?.tags as TagEntry[]) || [])
 const isDirty = computed(() => !!props.snapshot?.dirty);
 
 const localShortNames = computed(() => new Set(branchList.value.local.map((b) => b.name)));
+
+// Names of all remotes for the local/remote distinction in BranchSelectPopover.
+// Always merge the parent's prop (from snapshot.remotes) with names observed
+// in branchList.remotes — `git remote -v` may list a subset (e.g. only
+// origin) while the user has tracking branches from other remotes (`vk/…`,
+// `jveselka/…`). Union covers both.
+const effectiveRemoteNames = computed<string[]>(() => {
+  const fromProps = props.remoteNames || [];
+  const fromBranchList = branchList.value.remotes.map((r) => r.remote);
+  return Array.from(new Set([...fromProps, ...fromBranchList].filter(Boolean)));
+});
 
 // --- Build the hierarchical branch tree ----------------------------------
 //
@@ -905,22 +972,46 @@ const graphLimit = ref<number>(500);
 const limitOptions = [100, 300, 500, 1000, 2000];
 
 // "Compare with base" — ported from the History tab. When set, the graph
-// walks `base..HEAD` instead of the whole repo so the user sees only commits
-// that are part of the current branch's diff against base. We DON'T silently
-// remove History yet; this just gives Branches the same capability so the
-// user can decide whether History is still pulling its weight.
+// walks `base..HEAD` (or `base...HEAD` if includeBaseUpdates is on) instead
+// of the whole repo, so the user sees only commits that are part of the
+// current branch's diff against base.
 const compareBase = ref<string>("");
-const compareAhead = computed<number>(() => {
+// When on, walk `base...HEAD` (3-dot symmetric difference) instead of
+// `base..HEAD`. User sees both their work AND base updates they're missing.
+const includeBaseUpdates = ref<boolean>(false);
+// Pick the freshest ahead/behind counts for the CURRENT compareBase.
+//
+// Two sources:
+//   1. props.compare = snapshot.compareWithBase — computed by inspectWorkspace
+//      against snapshot.baseBranch (the heuristic / symbolic default).
+//   2. gitUi.baseComparison — populated on-demand by gitFetchBaseComparison
+//      whenever the user picks a base that the snapshot doesn't already cover.
+//
+// Whichever one matches `compareBase` wins. If neither matches yet, return
+// null so the UI can show a `…` placeholder instead of misleading zeros.
+const compareCounts = computed<{ ahead: number; behind: number; ok: boolean } | null>(() => {
+  if (!compareBase.value) return null;
   const cmp = props.compare || {};
-  return (compareBase.value && cmp.baseBranch === compareBase.value && typeof cmp.aheadCount === "number"
-    ? cmp.aheadCount
-    : 0) as number;
+  if (cmp.baseBranch === compareBase.value && typeof cmp.aheadCount === "number") {
+    return { ahead: cmp.aheadCount || 0, behind: cmp.behindCount || 0, ok: true };
+  }
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const bc = (props.gitUi?.baseComparison as any) || null;
+  if (bc && bc.baseBranch === compareBase.value && bc.ok) {
+    return { ahead: bc.aheadCount || 0, behind: bc.behindCount || 0, ok: true };
+  }
+  return null;
 });
-const compareBehind = computed<number>(() => {
-  const cmp = props.compare || {};
-  return (compareBase.value && cmp.baseBranch === compareBase.value && typeof cmp.behindCount === "number"
-    ? cmp.behindCount
-    : 0) as number;
+const compareAhead = computed<number>(() => compareCounts.value?.ahead ?? 0);
+const compareBehind = computed<number>(() => compareCounts.value?.behind ?? 0);
+const compareCountsLoading = computed<boolean>(
+  () => !!compareBase.value && compareCounts.value === null && !!props.gitUi?.baseComparisonLoading,
+);
+const behindTooltip = computed<string>(() => {
+  const base = compareBase.value;
+  const behind = compareBehind.value;
+  const hint = includeBaseUpdates.value ? "" : " Turn on 'Include base updates' to see them.";
+  return `${base} has ${behind} commit(s) your branch doesn't.${hint}`;
 });
 const compareDiffStat = computed<Record<string, unknown> | null>(() => {
   const cmp = props.compare || {};
@@ -929,39 +1020,31 @@ const compareDiffStat = computed<Record<string, unknown> | null>(() => {
   return ((cmp as any).diffStat as Record<string, unknown>) || null;
 });
 
-// Resolve the symbolic default branch (from `git symbolic-ref refs/remotes/<r>/HEAD`)
-// against the available baseBranchOptions. The options can be either short
-// names ("master") or remote-prefixed ("origin/master") depending on what
-// inspectWorkspace returned, so we try both forms.
-function resolveDefaultBaseRef(): string {
-  const dflt = branchList.value.defaultBranch;
-  const remote = branchList.value.defaultRemote;
-  if (!dflt) return "";
-  const opts = (props.baseBranchOptions || []) as string[];
-  const full = remote ? `${remote}/${dflt}` : "";
-  if (full && opts.includes(full)) return full;
-  if (opts.includes(dflt)) return dflt;
-  return "";
-}
-
-// Auto-fill the compare base with the symbolic default branch on first load
-// of each workspace. Tracked per-workspace so switching repos re-fills, but
-// the user's explicit choice within a workspace is sticky.
-const compareBaseAutoFilledFor = ref<string>("");
+// On first load of each workspace, auto-select HEAD in the tree so the
+// commits pane shows "Commits on <current-branch>" instead of the full repo
+// log. Sticky once the user picks something else — only re-runs when the
+// workspace changes.
+const selectedRefInitFor = ref<string>("");
 watch(
-  () => [props.workspaceId, branchList.value.defaultBranch, props.baseBranchOptions] as const,
-  () => {
-    if (!branchList.value.defaultBranch) return;
-    if (compareBaseAutoFilledFor.value === props.workspaceId) return;
-    if (compareBase.value) {
-      // Whether the user picked it or we did, treat this workspace as handled.
-      compareBaseAutoFilledFor.value = props.workspaceId;
-      return;
-    }
-    const resolved = resolveDefaultBaseRef();
-    if (!resolved) return;
-    compareBase.value = resolved;
-    compareBaseAutoFilledFor.value = props.workspaceId;
+  () => [props.workspaceId, branchList.value.current] as const,
+  ([workspaceId, current]) => {
+    if (!current) return;
+    if (selectedRefInitFor.value === workspaceId) return;
+    selectedRefInitFor.value = String(workspaceId);
+    if (!selectedRef.value) selectedRef.value = String(current);
+  },
+  { immediate: true },
+);
+
+// Fetch ahead/behind counts whenever the user picks a base that isn't the
+// snapshot's pre-computed one. Skip when snapshot.compareWithBase already
+// covers it — that's authoritative and free.
+watch(
+  () => [compareBase.value, props.workspaceId] as const,
+  ([base]) => {
+    if (!base) return;
+    if (props.compare?.baseBranch === base) return;
+    void gitUiStore.gitFetchBaseComparison(props.workspaceId, base);
   },
   { immediate: true },
 );
@@ -1013,6 +1096,13 @@ const limitSelectOptions = computed(() => limitOptions.map((n) => ({ value: n, l
 const commits = computed<GraphCommit[]>(() => rawCommits.value);
 
 const loadedCount = computed(() => commits.value.length);
+
+// Distinguishes "branch is up to date with base" from a still-loading or
+// errored graph. Without this users see a blank pane and assume the feature
+// broke, when in reality they have no commits to show.
+const showCompareEmptyState = computed(
+  () => !!compareBase.value && !graphLoading.value && !graphError.value && commits.value.length === 0,
+);
 
 function resolveDateRange(): { since: string; until: string } {
   if (dateFilter.value === "custom") {
@@ -1080,11 +1170,14 @@ function refreshGraph() {
   const { since, until } = resolveDateRange();
   // Compare-with-base wins over a single-branch selection — both translate to
   // git log walk args, and base..HEAD is more specific (and what the user
-  // explicitly asked for via the picker).
+  // explicitly asked for via the picker). When the user opts in to
+  // `includeBaseUpdates`, switch to the 3-dot symmetric difference so commits
+  // that landed on base since fork show up alongside the local work.
   let branchSpec = selectedRef.value || "";
   if (compareBase.value) {
     const head = String(props.snapshot?.branch || branchList.value.current || "HEAD");
-    branchSpec = `${compareBase.value}..${head}`;
+    const dots = includeBaseUpdates.value ? "..." : "..";
+    branchSpec = `${compareBase.value}${dots}${head}`;
   }
   gitUiStore.gitLoadGraph(props.workspaceId, {
     limit: graphLimit.value,
@@ -1130,10 +1223,16 @@ function scheduleFilteredGraphRefresh() {
 }
 
 watch(
-  [dateFilter, customSince, customUntil, pathsFilter, topoOrder, graphLimit, userFilter, compareBase],
+  [dateFilter, customSince, customUntil, pathsFilter, topoOrder, graphLimit, userFilter, compareBase, includeBaseUpdates],
   () => scheduleFilteredGraphRefresh(),
   { deep: true },
 );
+
+// Switching compare bases makes "include base updates" meaningless until the
+// user re-enables it for the new base — auto-reset on compareBase change.
+watch(compareBase, () => {
+  includeBaseUpdates.value = false;
+});
 
 onBeforeUnmount(() => {
   if (filterDebounceTimer) {
@@ -1834,6 +1933,20 @@ watch(
   font-variant-numeric: tabular-nums;
 }
 
+.git-branches__pane-count--ahead {
+  background: rgba(76, 175, 80, 0.18);
+  color: #6dc070;
+}
+.git-branches__pane-count--behind {
+  background: rgba(76, 110, 175, 0.22);
+  color: #80a8e0;
+}
+.git-branches__pane-count--muted {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--muted);
+  font-style: italic;
+}
+
 .git-branches__pane-error {
   color: #e07b8e;
   font-size: 11px;
@@ -2096,6 +2209,42 @@ watch(
   font-style: italic;
   padding: 12px;
   text-align: center;
+}
+
+.git-branches__compare-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  flex: 1;
+  min-height: 0;
+  padding: 24px 16px;
+  color: var(--text);
+  text-align: center;
+}
+.git-branches__compare-empty-icon {
+  width: 36px;
+  height: 36px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: rgba(76, 175, 80, 0.18);
+  color: #6dc070;
+  font-size: 20px;
+  font-weight: 700;
+}
+.git-branches__compare-empty-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 13px;
+  max-width: 360px;
+}
+.git-branches__compare-empty-text span {
+  color: var(--muted);
+  font-size: 12px;
 }
 
 /* ===== Mobile / minimal layout ===== */

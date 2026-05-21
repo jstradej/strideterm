@@ -8,6 +8,7 @@
         :options="baseBranchOptions"
         :default-branch="defaultBranch"
         :default-remote="defaultRemote"
+        :remote-names="remoteNames"
         @update:model-value="(v) => gitUiStore.gitSetBaseBranch(workspaceId, v)"
       />
       <template v-if="effectiveBaseBranch">
@@ -96,6 +97,7 @@ const props = withDefaults(
     baseBranchOptions?: string[];
     defaultBranch?: string;
     defaultRemote?: string;
+    remoteNames?: string[];
     activeRootPath?: string;
   }>(),
   {
@@ -104,6 +106,7 @@ const props = withDefaults(
     baseBranchOptions: () => [],
     defaultBranch: "",
     defaultRemote: "",
+    remoteNames: () => [],
     activeRootPath: "",
   },
 );

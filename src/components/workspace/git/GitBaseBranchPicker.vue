@@ -8,6 +8,7 @@
       :options="props.options || []"
       :default-branch="defaultBranch"
       :default-remote="defaultRemote"
+      :remote-names="remoteNames"
       search-placeholder="Filter branches…"
       @update:model-value="onChange"
     />
@@ -25,6 +26,7 @@ const props = withDefaults(
     label?: string;
     defaultBranch?: string;
     defaultRemote?: string;
+    remoteNames?: string[];
   }>(),
   {
     modelValue: "",
@@ -32,6 +34,7 @@ const props = withDefaults(
     label: "Base branch",
     defaultBranch: "",
     defaultRemote: "",
+    remoteNames: () => [],
   },
 );
 

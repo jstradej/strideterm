@@ -239,6 +239,7 @@
           :base-branch-options="baseBranchOptions"
           :default-branch="defaultBranch"
           :default-remote="defaultRemote"
+          :remote-names="remoteNames"
           :switch-branch-options-list="switchBranchOptionsList"
         />
 
@@ -257,6 +258,7 @@
           :base-branch-options="baseBranchOptions"
           :default-branch="defaultBranch"
           :default-remote="defaultRemote"
+          :remote-names="remoteNames"
         />
 
         <!-- ===== Changes tab ===== -->
@@ -282,6 +284,7 @@
           :base-branch-options="baseBranchOptions"
           :default-branch="defaultBranch"
           :default-remote="defaultRemote"
+          :remote-names="remoteNames"
           :active-root-path="activeRootPath"
         />
 
@@ -443,6 +446,11 @@ const operation = computed(() => snapshot.value?.operationState || {});
 const baseBranch = computed(() => snapshot.value?.baseBranch || snapshot.value?.compareWithBase?.baseBranch || "");
 const defaultBranch = computed(() => String(snapshot.value?.defaultBranch || ""));
 const defaultRemote = computed(() => String(snapshot.value?.defaultRemote || ""));
+// Keys of snapshot.remotes are the real remote names. Skip "pushurl:"/"fetch:"
+// suffixed entries that show up in some `git remote -v` parses.
+const remoteNames = computed<string[]>(() =>
+  Object.keys(snapshot.value?.remotes || {}).filter((k) => k && !k.includes(":")),
+);
 const compare = computed(() => snapshot.value?.compareWithBase || {});
 // The legacy "graph" and "tags" tabs were folded into "branches" — anything
 // persisted with those ids is silently redirected so users don't land on a

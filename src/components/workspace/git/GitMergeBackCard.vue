@@ -19,6 +19,7 @@
           :options="props.baseBranchOptions || []"
           :default-branch="defaultBranch"
           :default-remote="defaultRemote"
+          :remote-names="effectiveRemoteNames"
           search-placeholder="Filter branches…"
           @update:model-value="onTargetChange"
         />
@@ -240,6 +241,7 @@ const props = withDefaults(
     baseBranchOptions?: string[];
     defaultBranch?: string;
     defaultRemote?: string;
+    remoteNames?: string[];
     isLinkedWorktree?: boolean;
   }>(),
   {
@@ -249,6 +251,7 @@ const props = withDefaults(
     baseBranchOptions: () => [],
     defaultBranch: "",
     defaultRemote: "",
+    remoteNames: () => [],
     isLinkedWorktree: false,
   },
 );
@@ -270,6 +273,16 @@ const isCleanupMode = computed(
 function onTargetChange(value: string) {
   localOverride.value = value;
 }
+
+// Prefer the explicit prop (kept in sync by GitPane), fall back to keys of
+// snapshot.remotes so the picker still distinguishes local/remote even when
+// callers haven't wired remoteNames yet.
+const effectiveRemoteNames = computed<string[]>(() => {
+  if (props.remoteNames && props.remoteNames.length) return props.remoteNames;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const r = (props.snapshot?.remotes || {}) as Record<string, any>;
+  return Object.keys(r).filter((k) => k && !k.includes(":"));
+});
 
 const potentialConflicts = computed(() => compare.value.potentialConflicts || []);
 
