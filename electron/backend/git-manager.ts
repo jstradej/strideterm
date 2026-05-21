@@ -546,7 +546,14 @@ export class GitManager extends EventEmitter {
       }
       const baseBranch = reviewSourceRef
         ? `origin/${reviewSourceRef}`
-        : await this.detectBestBaseBranch(rootPath, branch, upstream, branchNames, parsedRemotes);
+        : await this.detectBestBaseBranch(
+            rootPath,
+            branch,
+            upstream,
+            branchNames,
+            parsedRemotes,
+            symbolicDefaultFull, // already resolved above; thread through to skip duplicate symbolic-ref calls
+          );
       // readBaseComparison depends on baseBranch (resolved just above) so it
       // can't fold into the batched Promise.all up top; stashCount + diffStat
       // already happened there.
@@ -1972,8 +1979,15 @@ export class GitManager extends EventEmitter {
     upstream: string,
     branchNames: string[] = [],
     remotes: Record<string, string> = {},
+    precomputedSymbolicDefault?: string,
   ): Promise<string> {
-    const symbolicDefault = await this.readSymbolicDefaultRemoteBranch(cwd, remotes);
+    // Allow callers (inspectWorkspace) that already resolved the symbolic
+    // default to pass it in — avoids a duplicate `git symbolic-ref` call
+    // every inspect tick. Pass `""` to opt out without re-running.
+    const symbolicDefault =
+      precomputedSymbolicDefault !== undefined
+        ? precomputedSymbolicDefault
+        : await this.readSymbolicDefaultRemoteBranch(cwd, remotes);
     const candidates = await this.buildExpandedBaseBranchCandidates(cwd, currentBranch, upstream, branchNames);
     if (!candidates.length) {
       return symbolicDefault || preferBaseBranch(currentBranch, upstream, branchNames);

@@ -329,12 +329,28 @@ export const useGitUiStore = defineStore("git-ui", () => {
 
   // --- Branch list & graph (Branches sub-tab) ---
 
-  async function gitListBranches(workspaceId: string): Promise<void> {
+  // Skip a refetch when the same workspace+rootPath was hit recently and the
+  // caller didn't explicitly ask for fresh data. Mutations (checkout, merge,
+  // etc.) pass force=true so they always re-read.
+  const FRESH_TTL_MS = 15_000;
+
+  async function gitListBranches(workspaceId: string, opts: { force?: boolean } = {}): Promise<void> {
     if (!_api) return;
     const ui = ensure(workspaceId);
+    const rootPath = getActiveRoot(workspaceId);
+    const now = Date.now();
+    if (
+      !opts.force &&
+      !ui.branchesLoading &&
+      ui.branchList &&
+      ui.branchListKey === rootPath &&
+      typeof ui.branchListFetchedAt === "number" &&
+      now - (ui.branchListFetchedAt as number) < FRESH_TTL_MS
+    ) {
+      return;
+    }
     ui.branchesLoading = true;
     try {
-      const rootPath = getActiveRoot(workspaceId);
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const result = (await (_api as any).gitListBranches({ workspaceId, rootPath })) as any;
       if (result?.ok) {
@@ -347,13 +363,19 @@ export const useGitUiStore = defineStore("git-ui", () => {
           defaultRemote: result.defaultRemote || "",
         };
         ui.branchesError = "";
+        ui.branchListKey = rootPath;
+        ui.branchListFetchedAt = Date.now();
       } else {
         ui.branchList = { current: "", upstream: "", local: [], remotes: [], defaultBranch: "", defaultRemote: "" };
         ui.branchesError = result?.error || "Failed to load branches.";
+        ui.branchListKey = undefined;
+        ui.branchListFetchedAt = undefined;
       }
     } catch (error) {
       ui.branchList = { current: "", upstream: "", local: [], remotes: [], defaultBranch: "", defaultRemote: "" };
       ui.branchesError = (error as Error)?.message || "Failed to load branches.";
+      ui.branchListKey = undefined;
+      ui.branchListFetchedAt = undefined;
     } finally {
       ui.branchesLoading = false;
     }
@@ -410,26 +432,52 @@ export const useGitUiStore = defineStore("git-ui", () => {
       paths?: string[];
       topoOrder?: boolean;
       author?: string;
+      force?: boolean;
     } = {},
   ): Promise<void> {
     if (!_api) return;
     const ui = ensure(workspaceId);
+    const rootPath = getActiveRoot(workspaceId);
+    const payload = {
+      workspaceId,
+      rootPath,
+      limit: opts.limit || 300,
+      includeRemotes: opts.includeRemotes !== false,
+      branch: opts.branch || "",
+      sinceDate: opts.sinceDate || "",
+      untilDate: opts.untilDate || "",
+      paths: Array.isArray(opts.paths) ? opts.paths.filter(Boolean) : [],
+      topoOrder: opts.topoOrder === true,
+      author: opts.author || "",
+    };
+    // Cache key includes every param that influences the git log walk — any
+    // change of these means a different commit set and we must re-fetch.
+    // workspaceId is the bucket itself so we don't include it in the key.
+    const { workspaceId: _ignored, ...payloadForKey } = payload;
+    void _ignored;
+    const cacheKey = JSON.stringify(payloadForKey);
+    const now = Date.now();
+    if (
+      !opts.force &&
+      !ui.graphLoading &&
+      ui.graph &&
+      Array.isArray(ui.graph.commits) &&
+      ui.graphKey === cacheKey &&
+      typeof ui.graphFetchedAt === "number" &&
+      now - (ui.graphFetchedAt as number) < FRESH_TTL_MS
+    ) {
+      return;
+    }
     ui.graphLoading = true;
     try {
-      const rootPath = getActiveRoot(workspaceId);
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const result = (await (_api as any).gitLogGraph({
-        workspaceId,
-        rootPath,
-        limit: opts.limit || 300,
-        includeRemotes: opts.includeRemotes !== false,
-        branch: opts.branch || "",
-        sinceDate: opts.sinceDate || "",
-        untilDate: opts.untilDate || "",
-        paths: Array.isArray(opts.paths) ? opts.paths.filter(Boolean) : [],
-        topoOrder: opts.topoOrder === true,
-        author: opts.author || "",
-      })) as { ok?: boolean; head?: string; commits?: unknown[]; refs?: Record<string, string>; error?: string };
+      const result = (await (_api as any).gitLogGraph(payload)) as {
+        ok?: boolean;
+        head?: string;
+        commits?: unknown[];
+        refs?: Record<string, string>;
+        error?: string;
+      };
       if (result?.ok) {
         ui.graph = {
           head: result.head || "",
@@ -437,14 +485,20 @@ export const useGitUiStore = defineStore("git-ui", () => {
           refs: result.refs || {},
         };
         ui.graphError = "";
+        ui.graphKey = cacheKey;
+        ui.graphFetchedAt = Date.now();
       } else {
         ui.graph = { head: "", commits: [], refs: {} };
         ui.graphError = result?.error || "Failed to load graph.";
+        ui.graphKey = undefined;
+        ui.graphFetchedAt = undefined;
         if (ui.graphError) console.warn(`[git-ui] gitLoadGraph(${workspaceId}) reported error:`, ui.graphError);
       }
     } catch (error) {
       ui.graph = { head: "", commits: [], refs: {} };
       ui.graphError = (error as Error)?.message || "Failed to load graph.";
+      ui.graphKey = undefined;
+      ui.graphFetchedAt = undefined;
       console.error(`[git-ui] gitLoadGraph(${workspaceId}) threw:`, error);
     } finally {
       ui.graphLoading = false;
@@ -910,13 +964,32 @@ export const useGitUiStore = defineStore("git-ui", () => {
     ui.overrideBaseBranch = baseBranch || "";
   }
 
-  async function gitFetchBaseComparison(workspaceId: string, baseBranch: string): Promise<void> {
+  async function gitFetchBaseComparison(
+    workspaceId: string,
+    baseBranch: string,
+    opts: { force?: boolean } = {},
+  ): Promise<void> {
     const ui = ensure(workspaceId);
     if (!baseBranch) {
       ui.baseComparison = null;
       return;
     }
     const rootPath = getActiveRoot(workspaceId);
+    const cacheKey = `${rootPath}::${baseBranch}`;
+    const now = Date.now();
+    // Skip when the same base was just compared (in-flight or fresh). The
+    // watches in GitBranchesTab and GitBranchTab fire this whenever
+    // compareBase/effectiveBaseBranch changes — without dedup we'd thrash on
+    // re-renders.
+    if (
+      !opts.force &&
+      ui.baseComparisonKey === cacheKey &&
+      (ui.baseComparisonLoading || (typeof ui.baseComparisonFetchedAt === "number" &&
+        now - (ui.baseComparisonFetchedAt as number) < FRESH_TTL_MS))
+    ) {
+      return;
+    }
+    ui.baseComparisonKey = cacheKey;
     ui.baseComparisonLoading = true;
     try {
       const result = (await (_api as Transport & { gitCompareBranch: (p: unknown) => Promise<unknown> })
@@ -953,6 +1026,7 @@ export const useGitUiStore = defineStore("git-ui", () => {
       };
     } finally {
       ui.baseComparisonLoading = false;
+      ui.baseComparisonFetchedAt = Date.now();
     }
   }
 

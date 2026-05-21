@@ -70,7 +70,7 @@
         class="button button--small"
         :disabled="branchesLoading || graphLoading"
         title="Re-list branches and re-read the commit topology. Local only — no fetch."
-        @click="refreshAll"
+        @click="refreshAll(true)"
       >
         {{ branchesLoading || graphLoading ? "Loading…" : "Refresh" }}
       </button>
@@ -294,6 +294,18 @@
               >
                 Sort: {{ topoOrder ? "Topo" : "Date" }}
               </button>
+              <button
+                type="button"
+                class="button button--ghost button--small"
+                :title="
+                  viewMode === 'graph'
+                    ? 'Show commits as a flat list (History-style). Same data, simpler view.'
+                    : 'Show commits as a graph with branch lanes and topology.'
+                "
+                @click="viewMode = viewMode === 'graph' ? 'flat' : 'graph'"
+              >
+                View: {{ viewMode === "graph" ? "Graph" : "Flat" }}
+              </button>
               <CustomSelect
                 v-model="graphLimit"
                 :options="limitSelectOptions"
@@ -353,7 +365,7 @@
               </button>
             </div>
             <GitTreeGraph
-              v-else
+              v-else-if="viewMode === 'graph'"
               :commits="commits"
               :head="head"
               :refs="refs"
@@ -365,6 +377,20 @@
               @open="onOpenCommitDialog"
               @contextmenu="onCommitContextMenu"
             />
+            <div v-else class="git-branches__flat-log">
+              <div v-if="graphLoading && !commits.length" class="git-branches__placeholder">Loading…</div>
+              <GitCommitLog
+                v-else
+                :commits="commits"
+                :selected-commit="selectedShortHash"
+                :ahead-count="0"
+                :has-more="false"
+                :loading-more="false"
+                :page-size="100"
+                @select="onSelectCommitShort"
+                @show-info="onShowCommitInfoFlat"
+              />
+            </div>
           </div>
         </Pane>
         <Pane :size="38" :min-size="20">
@@ -538,6 +564,7 @@ import { useGitUiStore } from "../../../stores/git-ui.js";
 import { useIsNarrow } from "../../../composables/useIsNarrow.js";
 import GitOperationCard from "./GitOperationCard.vue";
 import GitTreeGraph from "./GitTreeGraph.vue";
+import GitCommitLog from "./GitCommitLog.vue";
 import GitChangeTree from "./GitChangeTree.vue";
 import BranchTreePane, { type BranchTreeNode } from "./BranchTreePane.vue";
 import CustomSelect from "../../common/CustomSelect.vue";
@@ -979,6 +1006,9 @@ const compareBase = ref<string>("");
 // When on, walk `base...HEAD` (3-dot symmetric difference) instead of
 // `base..HEAD`. User sees both their work AND base updates they're missing.
 const includeBaseUpdates = ref<boolean>(false);
+// Graph (lanes/topology) vs Flat (plain commit list, History-style). Same
+// underlying data — toggle just swaps the renderer.
+const viewMode = ref<"graph" | "flat">("graph");
 // Pick the freshest ahead/behind counts for the CURRENT compareBase.
 //
 // Two sources:
@@ -1020,10 +1050,12 @@ const compareDiffStat = computed<Record<string, unknown> | null>(() => {
   return ((cmp as any).diffStat as Record<string, unknown>) || null;
 });
 
-// On first load of each workspace, auto-select HEAD in the tree so the
-// commits pane shows "Commits on <current-branch>" instead of the full repo
-// log. Sticky once the user picks something else — only re-runs when the
-// workspace changes.
+// Once branches have loaded (HEAD known), auto-select HEAD in the tree AND
+// trigger the initial graph fetch. Per-workspace one-shot — switching back
+// to a workspace that's already been initialized won't re-overwrite a
+// user's manual pick. Combining the auto-init and the initial fetch in one
+// watch avoids the previous "fetch graph with empty branchSpec, then set
+// selectedRef = HEAD, then have a stale graph mislabeled" sequence.
 const selectedRefInitFor = ref<string>("");
 watch(
   () => [props.workspaceId, branchList.value.current] as const,
@@ -1032,8 +1064,8 @@ watch(
     if (selectedRefInitFor.value === workspaceId) return;
     selectedRefInitFor.value = String(workspaceId);
     if (!selectedRef.value) selectedRef.value = String(current);
+    refreshGraph();
   },
-  { immediate: true },
 );
 
 // Fetch ahead/behind counts whenever the user picks a base that isn't the
@@ -1159,14 +1191,14 @@ function shortHashOf(hash: string): string {
   return hash.length > 7 ? hash.slice(0, 7) : hash;
 }
 
-function refreshBranches() {
-  gitUiStore.gitListBranches(props.workspaceId);
+function refreshBranches(force = false) {
+  gitUiStore.gitListBranches(props.workspaceId, { force });
   if (!tags.value.length && !props.gitUi?.tagsLoading) {
     gitUiStore.gitListTags(props.workspaceId);
   }
 }
 
-function refreshGraph() {
+function refreshGraph(force = false) {
   const { since, until } = resolveDateRange();
   // Compare-with-base wins over a single-branch selection — both translate to
   // git log walk args, and base..HEAD is more specific (and what the user
@@ -1188,24 +1220,23 @@ function refreshGraph() {
     paths: pathsFilter.value,
     topoOrder: topoOrder.value,
     author: userFilter.value,
+    force,
   });
 }
 
-function refreshAll() {
-  refreshBranches();
-  refreshGraph();
+function refreshAll(force = false) {
+  refreshBranches(force);
+  refreshGraph(force);
 }
 
-// Single tuple watcher avoids the double-fetch we'd get from separate
-// watchers on workspaceId and activeRootPath firing in the same tick during
-// workspace switch.
+// Workspace mount / switch: fetch branches only. The graph is fetched by
+// the watch above once branchList.current is known — that lets us walk
+// `selectedRef = HEAD` from the start instead of "all commits" first.
 watch(
   () => [props.workspaceId, props.activeRootPath] as const,
-  () => refreshAll(),
+  () => refreshBranches(),
   { immediate: true },
 );
-
-watch(showRemotes, () => refreshGraph());
 
 // Backend-side filters: refetch when they change. User filter is client-side
 // and lives only in `commits` computed — no refetch needed.
@@ -1223,7 +1254,19 @@ function scheduleFilteredGraphRefresh() {
 }
 
 watch(
-  [dateFilter, customSince, customUntil, pathsFilter, topoOrder, graphLimit, userFilter, compareBase, includeBaseUpdates],
+  [
+    dateFilter,
+    customSince,
+    customUntil,
+    pathsFilter,
+    topoOrder,
+    graphLimit,
+    userFilter,
+    compareBase,
+    includeBaseUpdates,
+    selectedRef,
+    showRemotes,
+  ],
   () => scheduleFilteredGraphRefresh(),
   { deep: true },
 );
@@ -1255,9 +1298,9 @@ watch(
 function onSelectRef(ref: string) {
   selectedRef.value = ref;
   // Clear current commit selection so the diff pane doesn't show a commit
-  // unrelated to the new branch view.
+  // unrelated to the new branch view. Graph refresh fires via the watcher
+  // tuple — no need to call refreshGraph() here.
   gitUiStore.gitSelectCommit(props.workspaceId, "");
-  refreshGraph();
 }
 
 function onMobileSelectRef(ref: string) {
@@ -1282,12 +1325,12 @@ async function onCreateBranch() {
   if (!name) return;
   await gitUiStore.gitCreateBranch(props.workspaceId, name, startFrom.value);
   cancelNewBranch();
-  refreshAll();
+  refreshAll(true);
 }
 
 async function onCheckout(ref: string) {
   await gitUiStore.gitCheckoutBranch(props.workspaceId, ref);
-  refreshAll();
+  refreshAll(true);
 }
 
 async function onCheckoutRemote(remoteRef: string) {
@@ -1296,7 +1339,7 @@ async function onCheckoutRemote(remoteRef: string) {
   const shortName = slash >= 0 ? remoteRef.slice(slash + 1) : remoteRef;
   const localBranch = localShortNames.value.has(shortName) ? `${remoteName}-${shortName}` : shortName;
   await gitUiStore.gitCheckoutRemoteBranch(props.workspaceId, remoteRef, localBranch);
-  refreshAll();
+  refreshAll(true);
 }
 
 function onDeleteLocal(ref: string) {
@@ -1316,7 +1359,7 @@ function onDeleteLocal(ref: string) {
     onConfirm: async () => {
       appStore.closeDialog();
       await gitUiStore.gitDeleteBranch(props.workspaceId, entry.name, force);
-      refreshAll();
+      refreshAll(true);
     },
   });
 }
@@ -1335,7 +1378,7 @@ function onDeleteRemote(remoteRef: string) {
     onConfirm: async () => {
       appStore.closeDialog();
       await gitUiStore.gitDeleteRemoteBranch(props.workspaceId, shortName, remoteName);
-      refreshAll();
+      refreshAll(true);
     },
   });
 }
@@ -1354,7 +1397,7 @@ function onRename(ref: string) {
       const trimmed = next.trim();
       if (!trimmed || trimmed === ref) return;
       await gitUiStore.gitRenameBranch(props.workspaceId, ref, trimmed);
-      refreshAll();
+      refreshAll(true);
     },
   });
 }
@@ -1437,6 +1480,17 @@ async function loadCommitFileDiff(hash: string, relativePath: string) {
 function onSelectCommit(hash: string) {
   if (!hash) return;
   gitUiStore.gitSelectCommit(props.workspaceId, hash);
+}
+
+// GitCommitLog uses shortHash everywhere — bridge to the full-hash store.
+const selectedShortHash = computed(() => shortHashOf(selectedHash.value));
+function onSelectCommitShort(shortHash: string) {
+  if (!shortHash) return;
+  const entry = commits.value.find((c) => c.shortHash === shortHash || c.hash === shortHash);
+  if (entry) onSelectCommit(entry.hash);
+}
+function onShowCommitInfoFlat(entry: GraphCommit) {
+  onOpenCommitDialog(entry?.hash || entry?.shortHash || "");
 }
 
 function onMobileSelectCommit(hash: string) {
@@ -1557,7 +1611,7 @@ async function onMenuPick(id: string) {
         onConfirm: async () => {
           appStore.closeDialog();
           await gitUiStore.gitCheckoutBranch(props.workspaceId, entry.hash);
-          refreshAll();
+          refreshAll(true);
         },
       });
       return;
@@ -1575,7 +1629,7 @@ async function onMenuPick(id: string) {
           const trimmed = name.trim();
           if (!trimmed) return;
           await gitUiStore.gitCreateBranch(props.workspaceId, trimmed, entry.hash);
-          refreshAll();
+          refreshAll(true);
         },
       });
       return;
@@ -1593,7 +1647,7 @@ async function onMenuPick(id: string) {
           const trimmed = name.trim();
           if (!trimmed) return;
           await gitUiStore.gitCreateTag(props.workspaceId, trimmed, "", entry.hash);
-          refreshAll();
+          refreshAll(true);
         },
       });
       return;
@@ -2209,6 +2263,13 @@ watch(
   font-style: italic;
   padding: 12px;
   text-align: center;
+}
+
+.git-branches__flat-log {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 0 6px 8px;
 }
 
 .git-branches__compare-empty {
