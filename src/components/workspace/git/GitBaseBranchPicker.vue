@@ -1,52 +1,43 @@
 <template>
   <span class="git-detail-list__row">
     <strong>{{ label }}:</strong>
-    <CustomSelect
+    <BranchSelectPopover
       class="git-branch-select"
       :model-value="modelValue"
       placeholder="-- select --"
-      :options="optionList"
-      searchable
+      :options="props.options || []"
+      :default-branch="defaultBranch"
+      :default-remote="defaultRemote"
       search-placeholder="Filter branches…"
-      @change="onChange"
+      @update:model-value="onChange"
     />
     <slot name="after" />
   </span>
 </template>
 
 <script setup lang="ts">
-import { computed } from "vue";
-import CustomSelect from "../../common/CustomSelect.vue";
+import BranchSelectPopover from "./BranchSelectPopover.vue";
 
-const props = withDefaults(defineProps<{ modelValue?: string; options?: string[]; label?: string }>(), {
-  modelValue: "",
-  options: () => [],
-  label: "Base branch",
-});
+const props = withDefaults(
+  defineProps<{
+    modelValue?: string;
+    options?: string[];
+    label?: string;
+    defaultBranch?: string;
+    defaultRemote?: string;
+  }>(),
+  {
+    modelValue: "",
+    options: () => [],
+    label: "Base branch",
+    defaultBranch: "",
+    defaultRemote: "",
+  },
+);
 
 const emit = defineEmits<{ (e: "update:modelValue", value: string): void }>();
 
-const PRIORITY = ["main", "develop", "master"];
-
-const sortedOptions = computed(() => {
-  const out = [...props.options];
-  out.sort((a: string, b: string) => {
-    const ai = PRIORITY.indexOf(a);
-    const bi = PRIORITY.indexOf(b);
-    if (ai >= 0 && bi >= 0) return ai - bi;
-    if (ai >= 0) return -1;
-    if (bi >= 0) return 1;
-    const aRemote = a.startsWith("origin/");
-    const bRemote = b.startsWith("origin/");
-    if (aRemote !== bRemote) return aRemote ? 1 : -1;
-    return a.localeCompare(b);
-  });
-  return out;
-});
-
-const optionList = computed(() => sortedOptions.value.map((b: string) => ({ value: b, label: b })));
-
-function onChange(value: string | number) {
-  emit("update:modelValue", String(value));
+function onChange(value: string) {
+  emit("update:modelValue", value);
 }
 </script>

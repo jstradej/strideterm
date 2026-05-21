@@ -80,6 +80,8 @@
           v-else
           :model-value="effectiveBaseBranch"
           :options="baseBranchOptions"
+          :default-branch="defaultBranch"
+          :default-remote="defaultRemote"
           @update:model-value="(v) => gitUiStore.gitSetBaseBranch(workspaceId, v)"
         />
         <span><strong>Upstream:</strong> {{ snapshot.upstream || "none" }}</span>
@@ -243,6 +245,8 @@
       :git-ui="gitUi"
       :effective-base-branch="effectiveBaseBranch"
       :base-branch-options="baseBranchOptions"
+      :default-branch="defaultBranch"
+      :default-remote="defaultRemote"
       :is-linked-worktree="isLinkedWorktree"
     />
   </div>
@@ -280,6 +284,8 @@ const props = withDefaults(
     showMergeBack?: boolean;
     effectiveBaseBranch?: string;
     baseBranchOptions?: string[];
+    defaultBranch?: string;
+    defaultRemote?: string;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     switchBranchOptionsList?: any[];
   }>(),
@@ -297,6 +303,8 @@ const props = withDefaults(
     showMergeBack: false,
     effectiveBaseBranch: "",
     baseBranchOptions: () => [],
+    defaultBranch: "",
+    defaultRemote: "",
     switchBranchOptionsList: () => [],
   },
 );

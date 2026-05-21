@@ -46,23 +46,33 @@
         <input v-model="showMerged" type="checkbox" />
         Merged only
       </label>
+      <CustomSelect
+        v-if="!isMobile"
+        v-model="branchDateFilter"
+        :options="branchDateSelectOptions"
+        class="git-branches__cselect git-branches__cselect--date"
+      />
+      <input
+        v-if="!isMobile && branchDateFilter === 'custom'"
+        v-model="branchCustomSince"
+        type="date"
+        class="git-branches__filter-date"
+        title="Show only branches updated on or after this date."
+      />
+      <CustomSelect
+        v-if="!isMobile"
+        v-model="branchSort"
+        :options="branchSortSelectOptions"
+        class="git-branches__cselect git-branches__cselect--sort"
+      />
       <button
         type="button"
-        class="button button--ghost button--small"
+        class="button button--small"
         :disabled="branchesLoading || graphLoading"
         title="Re-list branches and re-read the commit topology. Local only — no fetch."
         @click="refreshAll"
       >
         {{ branchesLoading || graphLoading ? "Loading…" : "Refresh" }}
-      </button>
-      <button
-        type="button"
-        class="button button--small"
-        :disabled="!!gitUi.busyAction"
-        title="Create a new branch at HEAD and switch to it."
-        @click="onNewBranchPrompt()"
-      >
-        + New branch
       </button>
     </div>
 
@@ -270,10 +280,17 @@
                 :options="limitSelectOptions"
                 class="git-branches__cselect git-branches__cselect--limit"
               />
-              <CustomSelect
+              <BranchSelectPopover
                 v-if="(baseBranchOptions || []).length > 0"
                 v-model="compareBase"
-                :options="compareBaseOptions"
+                :options="(baseBranchOptions || []) as string[]"
+                :default-branch="branchList.defaultBranch"
+                :default-remote="branchList.defaultRemote"
+                button-label-prefix="Compare: "
+                off-label="Compare: off"
+                off-value=""
+                placeholder="Compare: off"
+                search-placeholder="Filter branches…"
                 class="git-branches__cselect git-branches__cselect--compare"
               />
               <button
@@ -463,7 +480,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, defineAsyncComponent, ref, watch } from "vue";
+import { computed, defineAsyncComponent, onBeforeUnmount, ref, watch } from "vue";
 import { Splitpanes, Pane } from "splitpanes";
 import "splitpanes/dist/splitpanes.css";
 import { useAppStore } from "../../../stores/app.js";
@@ -474,6 +491,7 @@ import GitTreeGraph from "./GitTreeGraph.vue";
 import GitChangeTree from "./GitChangeTree.vue";
 import BranchTreePane, { type BranchTreeNode } from "./BranchTreePane.vue";
 import CustomSelect from "../../common/CustomSelect.vue";
+import BranchSelectPopover from "./BranchSelectPopover.vue";
 import GitCommitContextMenu from "./GitCommitContextMenu.vue";
 import GitDiffStat from "./GitDiffStat.vue";
 
@@ -515,6 +533,16 @@ const showLocal = ref(true);
 const showRemotes = ref(true);
 const showTags = ref(false);
 const showMerged = ref(false);
+// Filter branches by last-activity date. Cutoff is derived from a unix
+// timestamp on each entry (`lastCommitTimestamp`) so we can use the same
+// comparison for relative ("last week") and absolute ("since YYYY-MM-DD")
+// modes.
+const branchDateFilter = ref<"all" | "day" | "week" | "month" | "custom">("all");
+const branchCustomSince = ref<string>(""); // YYYY-MM-DD when branchDateFilter === "custom"
+// Leaf sort order inside each folder/section. "name" keeps the current
+// alphabetic+current-pinned behavior; "newest"/"oldest" sort by
+// lastCommitTimestamp.
+const branchSort = ref<"name" | "newest" | "oldest">("name");
 const newBranchVisible = ref(false);
 const newBranchName = ref("");
 const startFrom = ref("");
@@ -548,6 +576,7 @@ interface LocalBranch {
   lastSubject: string;
   lastAuthor: string;
   lastRelativeDate: string;
+  lastCommitTimestamp: number;
   merged: boolean;
 }
 interface RemoteBranch {
@@ -558,6 +587,8 @@ interface RemoteBranch {
   lastSubject: string;
   lastAuthor: string;
   lastRelativeDate: string;
+  lastCommitTimestamp: number;
+  isDefault: boolean;
 }
 interface TagEntry {
   name: string;
@@ -566,17 +597,24 @@ interface TagEntry {
   subject?: string;
 }
 
-const branchList = computed<{ current: string; upstream: string; local: LocalBranch[]; remotes: RemoteBranch[] }>(
-  () => {
-    const bl = props.gitUi?.branchList || {};
-    return {
-      current: bl.current || "",
-      upstream: bl.upstream || "",
-      local: (bl.local as LocalBranch[]) || [],
-      remotes: (bl.remotes as RemoteBranch[]) || [],
-    };
-  },
-);
+const branchList = computed<{
+  current: string;
+  upstream: string;
+  local: LocalBranch[];
+  remotes: RemoteBranch[];
+  defaultBranch: string;
+  defaultRemote: string;
+}>(() => {
+  const bl = props.gitUi?.branchList || {};
+  return {
+    current: bl.current || "",
+    upstream: bl.upstream || "",
+    local: (bl.local as LocalBranch[]) || [],
+    remotes: (bl.remotes as RemoteBranch[]) || [],
+    defaultBranch: bl.defaultBranch || "",
+    defaultRemote: bl.defaultRemote || "",
+  };
+});
 
 const tags = computed<TagEntry[]>(() => (props.gitUi?.tags as TagEntry[]) || []);
 
@@ -597,9 +635,33 @@ const localShortNames = computed(() => new Set(branchList.value.local.map((b) =>
 // `search` filters branch/tag names case-insensitively; folders are kept
 // when at least one descendant matches.
 
+// Epoch-seconds cutoff for the branch date filter. 0 means "no filter".
+// Custom mode reads the date input as local midnight; invalid input → no
+// filter rather than dropping every branch silently.
+function branchDateCutoff(): number {
+  const now = Math.floor(Date.now() / 1000);
+  switch (branchDateFilter.value) {
+    case "day":
+      return now - 86400;
+    case "week":
+      return now - 7 * 86400;
+    case "month":
+      return now - 30 * 86400;
+    case "custom": {
+      if (!branchCustomSince.value) return 0;
+      const t = Date.parse(branchCustomSince.value);
+      return Number.isNaN(t) ? 0 : Math.floor(t / 1000);
+    }
+    default:
+      return 0;
+  }
+}
+
 const branchTree = computed<BranchTreeNode[]>(() => {
   const q = search.value.trim().toLowerCase();
   const head = branchList.value.current;
+  const cutoff = branchDateCutoff();
+  const sortMode = branchSort.value;
   const out: BranchTreeNode[] = [];
 
   if (head) {
@@ -685,6 +747,13 @@ const branchTree = computed<BranchTreeNode[]>(() => {
       const leaves = node.children!.filter((c) => c.kind !== "folder");
       folders.sort((a, b) => a.label.localeCompare(b.label));
       leaves.sort((a, b) => {
+        if (sortMode === "newest" || sortMode === "oldest") {
+          const ta = a.meta?.lastCommitTimestamp || 0;
+          const tb = b.meta?.lastCommitTimestamp || 0;
+          if (ta !== tb) return sortMode === "newest" ? tb - ta : ta - tb;
+          return a.label.localeCompare(b.label);
+        }
+        // "name" mode — current branch always floats to the top.
         if (a.isCurrent && !b.isCurrent) return -1;
         if (!a.isCurrent && b.isCurrent) return 1;
         return a.label.localeCompare(b.label);
@@ -698,6 +767,11 @@ const branchTree = computed<BranchTreeNode[]>(() => {
   if (showLocal.value) {
     const locals = branchList.value.local
       .filter((b) => !showMerged.value || b.merged || b.isCurrent)
+      // Date cutoff: drop branches older than the cutoff EXCEPT the current
+      // branch — hiding HEAD while it's still checked out is jarring. A
+      // timestamp of 0 means "unknown" (old git output); we drop those when
+      // the user has actively asked for a recent-activity filter.
+      .filter((b) => cutoff === 0 || b.isCurrent || (b.lastCommitTimestamp > 0 && b.lastCommitTimestamp >= cutoff))
       .map((b) => ({
         shortName: b.name,
         ref: b.name,
@@ -711,6 +785,7 @@ const branchTree = computed<BranchTreeNode[]>(() => {
           lastSubject: b.lastSubject,
           lastAuthor: b.lastAuthor,
           lastRelativeDate: b.lastRelativeDate,
+          lastCommitTimestamp: b.lastCommitTimestamp,
           isCurrent: b.isCurrent,
         },
       }));
@@ -731,6 +806,9 @@ const branchTree = computed<BranchTreeNode[]>(() => {
   if (showRemotes.value) {
     const byRemote = new Map<string, RemoteBranch[]>();
     for (const r of branchList.value.remotes) {
+      // Same cutoff as locals. Remote tips don't have an "isCurrent"
+      // escape hatch, so they're filtered strictly.
+      if (cutoff !== 0 && !(r.lastCommitTimestamp > 0 && r.lastCommitTimestamp >= cutoff)) continue;
       const list = byRemote.get(r.remote) || [];
       list.push(r);
       byRemote.set(r.remote, list);
@@ -748,7 +826,9 @@ const branchTree = computed<BranchTreeNode[]>(() => {
           lastSubject: r.lastSubject,
           lastAuthor: r.lastAuthor,
           lastRelativeDate: r.lastRelativeDate,
+          lastCommitTimestamp: r.lastCommitTimestamp,
           hasLocal: localShortNames.value.has(r.shortName),
+          isDefault: r.isDefault,
         },
       }));
       const subTree = buildForest(mapped, `remote:${remoteName}`);
@@ -849,10 +929,42 @@ const compareDiffStat = computed<Record<string, unknown> | null>(() => {
   return ((cmp as any).diffStat as Record<string, unknown>) || null;
 });
 
-const compareBaseOptions = computed(() => [
-  { value: "", label: "Compare: off" },
-  ...((props.baseBranchOptions || []) as string[]).map((b) => ({ value: b, label: `Compare: ${b}` })),
-]);
+// Resolve the symbolic default branch (from `git symbolic-ref refs/remotes/<r>/HEAD`)
+// against the available baseBranchOptions. The options can be either short
+// names ("master") or remote-prefixed ("origin/master") depending on what
+// inspectWorkspace returned, so we try both forms.
+function resolveDefaultBaseRef(): string {
+  const dflt = branchList.value.defaultBranch;
+  const remote = branchList.value.defaultRemote;
+  if (!dflt) return "";
+  const opts = (props.baseBranchOptions || []) as string[];
+  const full = remote ? `${remote}/${dflt}` : "";
+  if (full && opts.includes(full)) return full;
+  if (opts.includes(dflt)) return dflt;
+  return "";
+}
+
+// Auto-fill the compare base with the symbolic default branch on first load
+// of each workspace. Tracked per-workspace so switching repos re-fills, but
+// the user's explicit choice within a workspace is sticky.
+const compareBaseAutoFilledFor = ref<string>("");
+watch(
+  () => [props.workspaceId, branchList.value.defaultBranch, props.baseBranchOptions] as const,
+  () => {
+    if (!branchList.value.defaultBranch) return;
+    if (compareBaseAutoFilledFor.value === props.workspaceId) return;
+    if (compareBase.value) {
+      // Whether the user picked it or we did, treat this workspace as handled.
+      compareBaseAutoFilledFor.value = props.workspaceId;
+      return;
+    }
+    const resolved = resolveDefaultBaseRef();
+    if (!resolved) return;
+    compareBase.value = resolved;
+    compareBaseAutoFilledFor.value = props.workspaceId;
+  },
+  { immediate: true },
+);
 
 // Author dropdown is populated from the last unfiltered fetch — we cache it
 // in `knownAuthors` so switching User doesn't shrink the dropdown to just
@@ -878,6 +990,20 @@ const dateSelectOptions = [
   { value: "week", label: "This week" },
   { value: "month", label: "This month" },
   { value: "custom", label: "Custom…" },
+];
+
+const branchDateSelectOptions = [
+  { value: "all", label: "Updated: Any time" },
+  { value: "day", label: "Last day" },
+  { value: "week", label: "Last week" },
+  { value: "month", label: "Last month" },
+  { value: "custom", label: "Since…" },
+];
+
+const branchSortSelectOptions = [
+  { value: "name", label: "Sort: Name" },
+  { value: "newest", label: "Sort: Newest" },
+  { value: "oldest", label: "Sort: Oldest" },
 ];
 
 const limitSelectOptions = computed(() => limitOptions.map((n) => ({ value: n, label: `Limit: ${n.toLocaleString()}` })));
@@ -977,26 +1103,44 @@ function refreshAll() {
   refreshGraph();
 }
 
+// Single tuple watcher avoids the double-fetch we'd get from separate
+// watchers on workspaceId and activeRootPath firing in the same tick during
+// workspace switch.
 watch(
-  () => props.workspaceId,
+  () => [props.workspaceId, props.activeRootPath] as const,
   () => refreshAll(),
   { immediate: true },
-);
-
-watch(
-  () => props.activeRootPath,
-  () => refreshAll(),
 );
 
 watch(showRemotes, () => refreshGraph());
 
 // Backend-side filters: refetch when they change. User filter is client-side
 // and lives only in `commits` computed — no refetch needed.
+//
+// Debounced so that typing into the custom-date inputs (one keystroke per
+// character) doesn't fire a full `git log` per keystroke; the same handler
+// also coalesces rapid filter chip toggles into a single fetch.
+let filterDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+function scheduleFilteredGraphRefresh() {
+  if (filterDebounceTimer) clearTimeout(filterDebounceTimer);
+  filterDebounceTimer = setTimeout(() => {
+    filterDebounceTimer = null;
+    refreshGraph();
+  }, 250);
+}
+
 watch(
   [dateFilter, customSince, customUntil, pathsFilter, topoOrder, graphLimit, userFilter, compareBase],
-  () => refreshGraph(),
+  () => scheduleFilteredGraphRefresh(),
   { deep: true },
 );
+
+onBeforeUnmount(() => {
+  if (filterDebounceTimer) {
+    clearTimeout(filterDebounceTimer);
+    filterDebounceTimer = null;
+  }
+});
 
 watch(
   () => props.gitUi?.activeTab,
@@ -1020,12 +1164,6 @@ function onSelectRef(ref: string) {
 function onMobileSelectRef(ref: string) {
   onSelectRef(ref);
   if (ref) mobileView.value = "commits";
-}
-
-function onNewBranchPrompt() {
-  startFrom.value = "";
-  newBranchName.value = "";
-  newBranchVisible.value = true;
 }
 
 function onNewBranchFrom(ref: string) {
@@ -1389,10 +1527,14 @@ function openCreatePullRequestDialog(sourceBranchOverride = "") {
   if (!props.gitUi.remoteBranches?.length) {
     void gitUiStore.azureListRemoteBranches(props.workspaceId);
   }
+  // Target: prefer the symbolic default branch (origin/HEAD) — that's the
+  // remote's authoritative "where PRs go". Falls back to the heuristic
+  // baseBranch from inspectWorkspace when no symbolic default is configured.
+  const defaultTargetBranch = branchList.value.defaultBranch || props.baseBranch || "";
   appStore.openDialog("CreatePullRequestDialog", {
     workspaceId: props.workspaceId,
     sourceBranch,
-    defaultTargetBranch: props.baseBranch || "",
+    defaultTargetBranch,
     remoteBranches: props.gitUi.remoteBranches || [],
     loadingBranches: !!props.gitUi.remoteBranchesLoading,
     provider: "azure",
@@ -1752,6 +1894,9 @@ watch(
 .git-branches__cselect--compare :deep(.custom-select__button) {
   min-width: 150px;
   max-width: 220px;
+}
+.git-branches__cselect--sort :deep(.custom-select__button) {
+  min-width: 110px;
 }
 
 .git-branches__filter-sep {

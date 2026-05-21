@@ -1529,4 +1529,394 @@ describe("GitManager", () => {
       expect(args[0]).toEqual(["tag", "v1.0.0", "abc1234"]);
     });
   });
+
+  // ─── listBranches ──────────────────────────────────────────────────
+  describe("listBranches", () => {
+    const BRANCH_FMT = [
+      "%(refname)",
+      "%(refname:short)",
+      "%(HEAD)",
+      "%(upstream:short)",
+      "%(upstream:track,nobracket)",
+      "%(objectname:short)",
+      "%(contents:subject)",
+      "%(authorname)",
+      "%(committerdate:relative)",
+      "%(committerdate:unix)",
+    ].join("%09");
+
+    test("parses local + remote branches with ahead/behind from upstream:track", async () => {
+      const cwd = "/repo";
+      const execGitImpl = createExecMock({
+        [`${cwd}::for-each-ref --format=${BRANCH_FMT} --sort=-committerdate refs/heads`]: {
+          stdout: [
+            "refs/heads/main\tmain\t*\torigin/main\t\tabc1234\tInit\tAlice\t2 hours ago\t1700000000",
+            "refs/heads/feature/foo\tfeature/foo\t \torigin/feature/foo\tahead 2, behind 1\tdef5678\tWork\tBob\t1 day ago\t1699900000",
+            "refs/heads/lonely\tlonely\t \t\t\t999aaaa\tNo upstream\tAlice\t3 days ago\t1699700000",
+          ].join("\n"),
+          stderr: "",
+        },
+        [`${cwd}::for-each-ref --format=${BRANCH_FMT} --sort=-committerdate refs/remotes`]: {
+          stdout: [
+            "refs/remotes/origin/main\torigin/main\t \t\t\tabc1234\tInit\tAlice\t2 hours ago\t1700000000",
+            "refs/remotes/origin/HEAD\torigin/HEAD\t \t\t\tabc1234\t\t\t\t",
+            "refs/remotes/origin/feature/foo\torigin/feature/foo\t \t\t\tdef5678\tWork\tBob\t1 day ago\t1699900000",
+          ].join("\n"),
+          stderr: "",
+        },
+        [`${cwd}::rev-parse --abbrev-ref HEAD`]: { stdout: "main\n", stderr: "" },
+        [`${cwd}::rev-parse --abbrev-ref --symbolic-full-name @{upstream}`]: {
+          stdout: "origin/main\n",
+          stderr: "",
+        },
+        // Per-branch rev-list vs current — entries that aren't isCurrent and aren't named "current".
+        [`${cwd}::rev-list --left-right --count main...feature/foo`]: { stdout: "1\t3\n", stderr: "" },
+        [`${cwd}::rev-list --left-right --count main...lonely`]: { stdout: "0\t5\n", stderr: "" },
+        // Symbolic ref for origin's default branch — points to origin/main.
+        [`${cwd}::symbolic-ref --short refs/remotes/origin/HEAD`]: { stdout: "origin/main\n", stderr: "" },
+      });
+      const mgr = new GitManager({ execGitImpl });
+
+      const result = await mgr.listBranches({ id: "ws-1", cwd }, { rootPath: cwd });
+
+      expect(result.ok).toBe(true);
+      expect(result.current).toBe("main");
+      expect(result.upstream).toBe("origin/main");
+
+      expect(result.local).toHaveLength(3);
+      const mainEntry = result.local.find((b) => b.name === "main")!;
+      expect(mainEntry.isCurrent).toBe(true);
+      expect(mainEntry.upstream).toBe("origin/main");
+
+      const fooEntry = result.local.find((b) => b.name === "feature/foo")!;
+      // upstream:track wins over the per-branch vs HEAD fallback when upstream is set.
+      expect(fooEntry.ahead).toBe(2);
+      expect(fooEntry.behind).toBe(1);
+      // merged reflects "branch fully reachable from HEAD" — right side of rev-list == 0.
+      // foo is 3 commits ahead of main (right=3), so NOT merged.
+      expect(fooEntry.merged).toBe(false);
+
+      const lonelyEntry = result.local.find((b) => b.name === "lonely")!;
+      // No upstream → falls back to rev-list count vs HEAD. left=current ahead, right=entry ahead.
+      // We stub "0\t5\n" → counts = { left: 0, right: 5 }; entry "ahead" = right, "behind" = left.
+      expect(lonelyEntry.upstream).toBe("");
+      expect(lonelyEntry.ahead).toBe(5);
+      expect(lonelyEntry.behind).toBe(0);
+      // right === 0 means merged; here right is 5 so NOT merged.
+      expect(lonelyEntry.merged).toBe(false);
+
+      // Remote dedup: "origin/HEAD" should be filtered out, leaving 2 remotes.
+      expect(result.remotes).toHaveLength(2);
+      expect(result.remotes.map((r) => r.shortName)).toEqual(["main", "feature/foo"]);
+      expect(result.remotes[0]).toMatchObject({ remote: "origin", shortName: "main" });
+
+      // origin/HEAD → origin/main, so the symbolic default lands on the main remote entry.
+      const remoteMain = result.remotes.find((r) => r.name === "origin/main")!;
+      expect(remoteMain.isDefault).toBe(true);
+      const remoteFoo = result.remotes.find((r) => r.name === "origin/feature/foo")!;
+      expect(remoteFoo.isDefault).toBe(false);
+      expect(result.defaultBranch).toBe("main");
+      expect(result.defaultRemote).toBe("origin");
+    });
+
+    test("returns error when rootPath is missing", async () => {
+      const mgr = new GitManager({ execGitImpl: vi.fn() });
+      const result = await mgr.listBranches(null, {});
+      expect(result.ok).toBe(false);
+      expect(result.error).toContain("Missing rootPath");
+    });
+
+    test("returns ok with empty arrays on git failure", async () => {
+      const execGitImpl = vi.fn().mockRejectedValue({ stderr: "fatal: not a git repository", stdout: "" });
+      const mgr = new GitManager({ execGitImpl });
+      // Each .catch() wraps the for-each-ref call to a stdout="" fallback rather
+      // than throwing; the test confirms the outer ok:true path with empty data.
+      const result = await mgr.listBranches({ id: "ws-1", cwd: "/repo" }, { rootPath: "/repo" });
+      expect(result.ok).toBe(true);
+      expect(result.local).toEqual([]);
+      expect(result.remotes).toEqual([]);
+    });
+
+    test("merged flag is true when current has no commits past entry tip", async () => {
+      const cwd = "/repo";
+      const execGitImpl = createExecMock({
+        [`${cwd}::for-each-ref --format=${BRANCH_FMT} --sort=-committerdate refs/heads`]: {
+          stdout: [
+            "refs/heads/main\tmain\t*\t\t\tabc1234\tInit\tAlice\t2 hours ago\t1700000000",
+            "refs/heads/merged-feature\tmerged-feature\t \t\t\tdef5678\tDone\tBob\t1 day ago\t1699900000",
+          ].join("\n"),
+          stderr: "",
+        },
+        [`${cwd}::for-each-ref --format=${BRANCH_FMT} --sort=-committerdate refs/remotes`]: {
+          stdout: "",
+          stderr: "",
+        },
+        [`${cwd}::rev-parse --abbrev-ref HEAD`]: { stdout: "main\n", stderr: "" },
+        [`${cwd}::rev-parse --abbrev-ref --symbolic-full-name @{upstream}`]: { stdout: "", stderr: "" },
+        // merged-feature is fully reachable from main → right (entry ahead of current) === 0.
+        [`${cwd}::rev-list --left-right --count main...merged-feature`]: { stdout: "3\t0\n", stderr: "" },
+      });
+      const mgr = new GitManager({ execGitImpl });
+
+      const result = await mgr.listBranches({ id: "ws-1", cwd }, { rootPath: cwd });
+
+      const merged = result.local.find((b) => b.name === "merged-feature")!;
+      expect(merged.merged).toBe(true);
+    });
+  });
+
+  // ─── detectBestBaseBranch ───────────────────────────────────────────────
+  describe("detectBestBaseBranch", () => {
+    test("picks the closest fork point — feature off feature, not hardcoded master", async () => {
+      const cwd = "/repo";
+      // Current branch "feature/auth-fix" was forked from "feature/auth" (3 commits ago).
+      // "feature/auth" itself diverged from "master" 30 commits ago.
+      // The legacy heuristic would have only considered master/origin/master/develop
+      // and picked master — this test guards the regression.
+      const execGitImpl = createExecMock({
+        // No remotes configured for the symbolic-ref lookup in this scenario.
+        [`${cwd}::merge-base HEAD feature/auth`]: { stdout: "aaaaaaa\n", stderr: "" },
+        [`${cwd}::rev-list --count aaaaaaa..HEAD`]: { stdout: "3\n", stderr: "" },
+        // master and origin/master point to the same commit → same merge-base
+        // and same rev-list key. Single mock entry serves both candidates.
+        [`${cwd}::merge-base HEAD master`]: { stdout: "bbbbbbb\n", stderr: "" },
+        [`${cwd}::merge-base HEAD origin/master`]: { stdout: "bbbbbbb\n", stderr: "" },
+        [`${cwd}::rev-list --count bbbbbbb..HEAD`]: { stdout: "33\n", stderr: "" },
+      });
+      const mgr = new GitManager({ execGitImpl });
+
+      const result = await mgr.detectBestBaseBranch(
+        cwd,
+        "feature/auth-fix",
+        "",
+        ["feature/auth", "master", "origin/master"],
+        {}, // no remotes → no symbolic-ref calls
+      );
+      expect(result).toBe("feature/auth");
+    });
+
+    test("ties broken by symbolic default remote branch", async () => {
+      const cwd = "/repo";
+      // Brand-new branch with no commits past HEAD vs. master AND origin/HEAD-default "develop".
+      // Distance is the same (0) on both — symbolic default ("origin/develop") must win.
+      const execGitImpl = createExecMock({
+        [`${cwd}::symbolic-ref --short refs/remotes/origin/HEAD`]: { stdout: "origin/develop\n", stderr: "" },
+        [`${cwd}::merge-base HEAD master`]: { stdout: "ccccccc\n", stderr: "" },
+        [`${cwd}::merge-base HEAD origin/develop`]: { stdout: "ccccccc\n", stderr: "" },
+        [`${cwd}::rev-list --count ccccccc..HEAD`]: { stdout: "0\n", stderr: "" },
+      });
+      const mgr = new GitManager({ execGitImpl });
+
+      const result = await mgr.detectBestBaseBranch(
+        cwd,
+        "feature/brandnew",
+        "",
+        ["master", "origin/develop"],
+        { origin: "https://example.com/repo.git" },
+      );
+      expect(result).toBe("origin/develop");
+    });
+
+    test("falls back to symbolic default when no candidate is reachable", async () => {
+      const cwd = "/repo";
+      // Every merge-base call returns empty — no shared ancestry (orphan branch scenario).
+      const execGitImpl = createExecMock({
+        [`${cwd}::symbolic-ref --short refs/remotes/origin/HEAD`]: { stdout: "origin/master\n", stderr: "" },
+        [`${cwd}::merge-base HEAD master`]: { stdout: "\n", stderr: "" },
+        [`${cwd}::merge-base HEAD origin/master`]: { stdout: "\n", stderr: "" },
+      });
+      const mgr = new GitManager({ execGitImpl });
+
+      const result = await mgr.detectBestBaseBranch(
+        cwd,
+        "orphan",
+        "",
+        ["master", "origin/master"],
+        { origin: "https://example.com/repo.git" },
+      );
+      expect(result).toBe("origin/master");
+    });
+  });
+
+  // ─── deleteBranch / deleteRemoteBranch / renameBranch / checkoutRemoteBranch ─
+  describe("branch mutations", () => {
+    function makeMgr() {
+      const calls: string[][] = [];
+      const execGitImpl = vi.fn(async (_cwd: string, args: string[]) => {
+        calls.push(args);
+        return { stdout: "", stderr: "" };
+      });
+      const mgr = new GitManager({ execGitImpl });
+      // runWriteAction's snapshot preflight runs through inspectWorkspace.
+      // Stub it so we don't have to mock the full inspect call chain.
+      mgr.inspectWorkspace = vi.fn().mockResolvedValue({
+        available: true,
+        branch: "main",
+        baseBranch: "main",
+        upstream: "origin/main",
+        dirty: false,
+        operationState: { kind: "idle", inProgress: false, conflicts: [] },
+        remotes: { origin: "https://example.com/repo.git" },
+      });
+      return { mgr, calls };
+    }
+
+    describe("deleteBranch", () => {
+      test("uses -d for safe delete (non-force)", async () => {
+        const { mgr, calls } = makeMgr();
+        const result = await mgr.deleteBranch({ id: "ws-1", cwd: "/repo" }, { branch: "feature/foo" });
+        expect(result.ok).toBe(true);
+        expect(calls).toContainEqual(["branch", "-d", "feature/foo"]);
+      });
+
+      test("uses -D when force=true", async () => {
+        const { mgr, calls } = makeMgr();
+        const result = await mgr.deleteBranch(
+          { id: "ws-1", cwd: "/repo" },
+          { branch: "feature/foo", force: true },
+        );
+        expect(result.ok).toBe(true);
+        expect(calls).toContainEqual(["branch", "-D", "feature/foo"]);
+      });
+
+      test("rejects empty branch name", async () => {
+        const { mgr } = makeMgr();
+        const result = await mgr.deleteBranch({ id: "ws-1", cwd: "/repo" }, { branch: "" });
+        expect(result.ok).toBe(false);
+        expect(result.summary).toContain("required");
+      });
+
+      test("rejects branch starting with '-' (flag-injection guard)", async () => {
+        const { mgr, calls } = makeMgr();
+        const result = await mgr.deleteBranch({ id: "ws-1", cwd: "/repo" }, { branch: "-D" });
+        expect(result.ok).toBe(false);
+        expect(result.summary).toContain("Invalid");
+        expect(calls.some((args) => args[0] === "branch")).toBe(false);
+      });
+    });
+
+    describe("deleteRemoteBranch", () => {
+      test("pushes refs/heads/<branch> deletion to the named remote", async () => {
+        const { mgr, calls } = makeMgr();
+        const result = await mgr.deleteRemoteBranch(
+          { id: "ws-1", cwd: "/repo" },
+          { branch: "feature/foo", remote: "upstream" },
+        );
+        expect(result.ok).toBe(true);
+        expect(calls).toContainEqual(["push", "upstream", ":refs/heads/feature/foo"]);
+      });
+
+      test("defaults remote to 'origin' when not supplied", async () => {
+        const { mgr, calls } = makeMgr();
+        const result = await mgr.deleteRemoteBranch({ id: "ws-1", cwd: "/repo" }, { branch: "feature/foo" });
+        expect(result.ok).toBe(true);
+        expect(calls).toContainEqual(["push", "origin", ":refs/heads/feature/foo"]);
+      });
+
+      test("rejects branch starting with '-'", async () => {
+        const { mgr, calls } = makeMgr();
+        const result = await mgr.deleteRemoteBranch(
+          { id: "ws-1", cwd: "/repo" },
+          { branch: "-rf", remote: "origin" },
+        );
+        expect(result.ok).toBe(false);
+        expect(calls.some((args) => args[0] === "push")).toBe(false);
+      });
+
+      test("rejects remote starting with '-'", async () => {
+        const { mgr, calls } = makeMgr();
+        const result = await mgr.deleteRemoteBranch(
+          { id: "ws-1", cwd: "/repo" },
+          { branch: "feature/foo", remote: "--upload-pack=evil" },
+        );
+        expect(result.ok).toBe(false);
+        expect(calls.some((args) => args[0] === "push")).toBe(false);
+      });
+    });
+
+    describe("renameBranch", () => {
+      test("renames named branch with branch -m old new", async () => {
+        const { mgr, calls } = makeMgr();
+        const result = await mgr.renameBranch(
+          { id: "ws-1", cwd: "/repo" },
+          { branch: "old-name", newName: "new-name" },
+        );
+        expect(result.ok).toBe(true);
+        expect(calls).toContainEqual(["branch", "-m", "old-name", "new-name"]);
+      });
+
+      test("renames current branch with branch -m new (when old branch omitted)", async () => {
+        const { mgr, calls } = makeMgr();
+        const result = await mgr.renameBranch({ id: "ws-1", cwd: "/repo" }, { newName: "new-name" });
+        expect(result.ok).toBe(true);
+        expect(calls).toContainEqual(["branch", "-m", "new-name"]);
+      });
+
+      test("rejects empty newName", async () => {
+        const { mgr } = makeMgr();
+        const result = await mgr.renameBranch({ id: "ws-1", cwd: "/repo" }, { branch: "old", newName: "" });
+        expect(result.ok).toBe(false);
+        expect(result.summary).toContain("required");
+      });
+
+      test("rejects newName starting with '-'", async () => {
+        const { mgr, calls } = makeMgr();
+        const result = await mgr.renameBranch({ id: "ws-1", cwd: "/repo" }, { branch: "old", newName: "-D" });
+        expect(result.ok).toBe(false);
+        expect(calls.some((args) => args[0] === "branch")).toBe(false);
+      });
+    });
+
+    describe("checkoutRemoteBranch", () => {
+      test("derives local branch name by stripping the leading <remote>/ segment", async () => {
+        const { mgr, calls } = makeMgr();
+        const result = await mgr.checkoutRemoteBranch(
+          { id: "ws-1", cwd: "/repo" },
+          { remoteBranch: "origin/feature/foo" },
+        );
+        expect(result.ok).toBe(true);
+        expect(calls).toContainEqual(["checkout", "-b", "feature/foo", "--track", "origin/feature/foo"]);
+      });
+
+      test("uses explicit localBranch when caller supplies one", async () => {
+        const { mgr, calls } = makeMgr();
+        const result = await mgr.checkoutRemoteBranch(
+          { id: "ws-1", cwd: "/repo" },
+          { remoteBranch: "origin/feature/foo", localBranch: "origin-feature-foo" },
+        );
+        expect(result.ok).toBe(true);
+        expect(calls).toContainEqual([
+          "checkout",
+          "-b",
+          "origin-feature-foo",
+          "--track",
+          "origin/feature/foo",
+        ]);
+      });
+
+      test("rejects empty remoteBranch", async () => {
+        const { mgr } = makeMgr();
+        const result = await mgr.checkoutRemoteBranch({ id: "ws-1", cwd: "/repo" }, { remoteBranch: "" });
+        expect(result.ok).toBe(false);
+        expect(result.summary).toContain("required");
+      });
+
+      test("rejects remoteBranch starting with '-'", async () => {
+        const { mgr, calls } = makeMgr();
+        const result = await mgr.checkoutRemoteBranch({ id: "ws-1", cwd: "/repo" }, { remoteBranch: "-rf" });
+        expect(result.ok).toBe(false);
+        expect(calls.some((args) => args[0] === "checkout")).toBe(false);
+      });
+
+      test("rejects localBranch starting with '-'", async () => {
+        const { mgr, calls } = makeMgr();
+        const result = await mgr.checkoutRemoteBranch(
+          { id: "ws-1", cwd: "/repo" },
+          { remoteBranch: "origin/feature", localBranch: "-D" },
+        );
+        expect(result.ok).toBe(false);
+        expect(calls.some((args) => args[0] === "checkout")).toBe(false);
+      });
+    });
+  });
 });

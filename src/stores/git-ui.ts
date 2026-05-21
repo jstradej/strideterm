@@ -56,6 +56,8 @@ interface GitUiState {
     local: any[];
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     remotes: any[];
+    defaultBranch: string;
+    defaultRemote: string;
   };
   graphLoading?: boolean;
   graphError?: string;
@@ -341,14 +343,16 @@ export const useGitUiStore = defineStore("git-ui", () => {
           upstream: result.upstream || "",
           local: result.local || [],
           remotes: result.remotes || [],
+          defaultBranch: result.defaultBranch || "",
+          defaultRemote: result.defaultRemote || "",
         };
         ui.branchesError = "";
       } else {
-        ui.branchList = { current: "", upstream: "", local: [], remotes: [] };
+        ui.branchList = { current: "", upstream: "", local: [], remotes: [], defaultBranch: "", defaultRemote: "" };
         ui.branchesError = result?.error || "Failed to load branches.";
       }
     } catch (error) {
-      ui.branchList = { current: "", upstream: "", local: [], remotes: [] };
+      ui.branchList = { current: "", upstream: "", local: [], remotes: [], defaultBranch: "", defaultRemote: "" };
       ui.branchesError = (error as Error)?.message || "Failed to load branches.";
     } finally {
       ui.branchesLoading = false;

@@ -1,0 +1,614 @@
+<template>
+  <div ref="rootRef" :class="['branch-picker', { 'branch-picker--open': open, 'branch-picker--disabled': disabled }]">
+    <button
+      ref="buttonRef"
+      type="button"
+      :class="['branch-picker__button', buttonClass]"
+      :disabled="disabled"
+      :aria-expanded="open ? 'true' : 'false'"
+      aria-haspopup="listbox"
+      @click="toggle"
+      @keydown="onButtonKeydown"
+    >
+      <span class="branch-picker__value" :class="{ 'branch-picker__value--placeholder': !buttonText }">
+        {{ buttonText || placeholder }}
+      </span>
+      <span class="branch-picker__arrow" aria-hidden="true">▾</span>
+    </button>
+    <Teleport to="body">
+      <div v-if="open" ref="listRef" class="branch-picker__popover" :style="popoverStyle">
+        <input
+          ref="searchRef"
+          v-model="query"
+          type="text"
+          class="branch-picker__search"
+          :placeholder="searchPlaceholder"
+          @keydown="onSearchKeydown"
+        />
+        <ul class="branch-picker__list" role="listbox" tabindex="-1">
+          <li v-if="offLabel" class="branch-picker__row" :class="rowClass(-1, offValue)" @mousedown.prevent="select(offValue)" @mouseenter="activeIndex = -1">
+            <span class="branch-picker__indent" :style="indentStyle(0)" />
+            <span class="branch-picker__icon branch-picker__icon--off">∅</span>
+            <span class="branch-picker__label">{{ offLabel }}</span>
+          </li>
+          <template v-for="(row, idx) in visibleRows" :key="row.key">
+            <li
+              :class="rowClass(idx, row.ref || '')"
+              role="option"
+              :aria-selected="row.ref === modelValue ? 'true' : 'false'"
+              @mousedown.prevent="onRowMousedown(row)"
+              @mouseenter="activeIndex = idx"
+            >
+              <span class="branch-picker__indent" :style="indentStyle(row.depth)" />
+              <span
+                v-if="row.isFolder"
+                class="branch-picker__toggle"
+                @mousedown.stop.prevent="toggleFolder(row.key)"
+                >{{ row.expanded ? "▾" : "▸" }}</span
+              >
+              <span v-else class="branch-picker__toggle branch-picker__toggle--leaf" />
+              <span :class="['branch-picker__icon', `branch-picker__icon--${row.iconKind}`]">{{ row.icon }}</span>
+              <span class="branch-picker__label" :title="row.title">{{ row.label }}</span>
+              <span v-if="row.isDefault" class="branch-picker__pill branch-picker__pill--default">default</span>
+            </li>
+          </template>
+          <li v-if="visibleRows.length === 0 && !offLabel" class="branch-picker__empty">No matches</li>
+          <li v-else-if="visibleRows.length === 0 && offLabel && query.trim()" class="branch-picker__empty">No matches</li>
+        </ul>
+      </div>
+    </Teleport>
+  </div>
+</template>
+
+<script setup lang="ts">
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
+
+interface Props {
+  modelValue?: string;
+  options?: string[];
+  defaultBranch?: string; // e.g. "master" — short name w/o remote
+  defaultRemote?: string; // e.g. "origin"
+  placeholder?: string;
+  disabled?: boolean;
+  buttonClass?: string | string[] | Record<string, boolean>;
+  buttonLabelPrefix?: string; // e.g. "Compare: "
+  offValue?: string;
+  offLabel?: string; // shows a pinned "Off" row at the top when set
+  searchPlaceholder?: string;
+}
+
+const props = withDefaults(defineProps<Props>(), {
+  modelValue: "",
+  options: () => [],
+  defaultBranch: "",
+  defaultRemote: "",
+  placeholder: "Select…",
+  disabled: false,
+  buttonClass: "",
+  buttonLabelPrefix: "",
+  offValue: "",
+  offLabel: "",
+  searchPlaceholder: "Filter branches…",
+});
+
+const emit = defineEmits<{
+  "update:modelValue": [value: string];
+  change: [value: string];
+}>();
+
+const open = ref(false);
+const query = ref("");
+const activeIndex = ref(-1);
+const rootRef = ref<HTMLElement | null>(null);
+const buttonRef = ref<HTMLButtonElement | null>(null);
+const listRef = ref<HTMLDivElement | null>(null);
+const searchRef = ref<HTMLInputElement | null>(null);
+const popoverStyle = ref<Record<string, string>>({});
+const collapsed = reactive<Record<string, boolean>>({}); // expand default, collapse on demand
+
+// ---- Resolve a "fully-qualified" default ref against the options. The
+// backend gives us defaultBranch + defaultRemote separately ("master" +
+// "origin"); options can hold either form. Try both.
+const defaultFullRef = computed<string>(() => {
+  if (!props.defaultBranch) return "";
+  const full = props.defaultRemote ? `${props.defaultRemote}/${props.defaultBranch}` : "";
+  if (full && props.options.includes(full)) return full;
+  if (props.options.includes(props.defaultBranch)) return props.defaultBranch;
+  return "";
+});
+
+// ---- Tree model ---------------------------------------------------------
+interface TreeRow {
+  key: string;
+  depth: number;
+  isFolder: boolean;
+  expanded: boolean;
+  label: string;
+  icon: string;
+  iconKind: string;
+  ref?: string;
+  isDefault?: boolean;
+  title: string;
+}
+
+interface BuildNode {
+  key: string;
+  label: string;
+  segment: string;
+  ref?: string;
+  children: BuildNode[];
+}
+
+// Build a "/"-split forest from the options. Each leaf carries the full ref.
+const tree = computed<BuildNode[]>(() => {
+  const root: BuildNode[] = [];
+  const dirMap = new Map<string, BuildNode>(); // path -> folder node
+  for (const refName of props.options) {
+    const parts = refName.split("/").filter(Boolean);
+    if (!parts.length) continue;
+    let parent: BuildNode[] = root;
+    let path = "";
+    for (let i = 0; i < parts.length - 1; i++) {
+      const seg = parts[i];
+      path = path ? `${path}/${seg}` : seg;
+      let folder = dirMap.get(path);
+      if (!folder) {
+        folder = { key: `dir:${path}`, label: seg, segment: seg, children: [] };
+        dirMap.set(path, folder);
+        parent.push(folder);
+      }
+      parent = folder.children;
+    }
+    const leafLabel = parts[parts.length - 1];
+    parent.push({
+      key: `leaf:${refName}`,
+      label: leafLabel,
+      segment: leafLabel,
+      ref: refName,
+      children: [],
+    });
+  }
+  // Sort: folders alphabetically, leaves alphabetically; default leaf floats
+  // up within its folder.
+  const dflt = defaultFullRef.value;
+  function sortNode(nodes: BuildNode[]) {
+    const folders = nodes.filter((n) => n.children.length > 0);
+    const leaves = nodes.filter((n) => n.children.length === 0);
+    folders.sort((a, b) => a.label.localeCompare(b.label));
+    leaves.sort((a, b) => {
+      if (a.ref === dflt && b.ref !== dflt) return -1;
+      if (b.ref === dflt && a.ref !== dflt) return 1;
+      return a.label.localeCompare(b.label);
+    });
+    nodes.length = 0;
+    nodes.push(...folders, ...leaves);
+    for (const f of folders) sortNode(f.children);
+  }
+  sortNode(root);
+  return root;
+});
+
+// Flatten the tree to visible rows, honoring collapse state and search.
+// Search mode: ignore folders, show matching leaves flat with full ref label.
+const visibleRows = computed<TreeRow[]>(() => {
+  const q = query.value.trim().toLowerCase();
+  const dflt = defaultFullRef.value;
+  const rows: TreeRow[] = [];
+
+  if (q) {
+    function collect(nodes: BuildNode[]): void {
+      for (const n of nodes) {
+        if (n.ref) {
+          if (n.ref.toLowerCase().includes(q)) {
+            rows.push({
+              key: n.key,
+              depth: 0,
+              isFolder: false,
+              expanded: true,
+              label: n.ref,
+              icon: "⎇",
+              iconKind: "branch",
+              ref: n.ref,
+              isDefault: n.ref === dflt,
+              title: n.ref,
+            });
+          }
+        } else {
+          collect(n.children);
+        }
+      }
+    }
+    collect(tree.value);
+    // Default-first sort already encoded in tree order; preserve that.
+    return rows;
+  }
+
+  function walk(nodes: BuildNode[], depth: number): void {
+    for (const n of nodes) {
+      const isFolder = n.children.length > 0;
+      if (isFolder) {
+        const expanded = !collapsed[n.key];
+        rows.push({
+          key: n.key,
+          depth,
+          isFolder: true,
+          expanded,
+          label: n.label,
+          icon: expanded ? "📂" : "📁",
+          iconKind: "folder",
+          title: n.label,
+        });
+        if (expanded) walk(n.children, depth + 1);
+      } else if (n.ref) {
+        rows.push({
+          key: n.key,
+          depth,
+          isFolder: false,
+          expanded: true,
+          label: n.label,
+          icon: "⎇",
+          iconKind: "branch",
+          ref: n.ref,
+          isDefault: n.ref === dflt,
+          title: n.ref,
+        });
+      }
+    }
+  }
+  walk(tree.value, 0);
+  return rows;
+});
+
+const buttonText = computed<string>(() => {
+  const v = props.modelValue;
+  if (!v) return props.offLabel || "";
+  return props.buttonLabelPrefix ? `${props.buttonLabelPrefix}${v}` : v;
+});
+
+function indentStyle(depth: number): Record<string, string> {
+  return { width: `${depth * 12}px` };
+}
+
+function rowClass(idx: number, refValue: string): Record<string, boolean> {
+  return {
+    "branch-picker__row": true,
+    "branch-picker__row--active": activeIndex.value === idx,
+    "branch-picker__row--selected": !!refValue && refValue === props.modelValue,
+    "branch-picker__row--off-selected": idx === -1 && !props.modelValue,
+  };
+}
+
+function toggleFolder(key: string): void {
+  collapsed[key] = !collapsed[key];
+}
+
+function onRowMousedown(row: TreeRow): void {
+  if (row.isFolder) {
+    toggleFolder(row.key);
+    return;
+  }
+  if (row.ref !== undefined) select(row.ref);
+}
+
+function select(value: string): void {
+  emit("update:modelValue", value);
+  emit("change", value);
+  closePopover();
+  buttonRef.value?.focus();
+}
+
+const MAX_LIST_HEIGHT = 320;
+
+function updatePosition(): void {
+  if (!buttonRef.value) return;
+  const rect = buttonRef.value.getBoundingClientRect();
+  const vh = window.innerHeight;
+  const vw = window.innerWidth;
+  const spaceBelow = vh - rect.bottom - 8;
+  const spaceAbove = rect.top - 8;
+  const flipAbove = spaceBelow < Math.min(MAX_LIST_HEIGHT, 200) && spaceAbove > spaceBelow;
+  const maxHeight = Math.max(200, Math.min(MAX_LIST_HEIGHT, flipAbove ? spaceAbove : spaceBelow));
+  popoverStyle.value = {
+    position: "fixed",
+    left: `${rect.left}px`,
+    minWidth: `${Math.max(220, rect.width)}px`,
+    maxWidth: `${Math.max(220, vw - rect.left - 8)}px`,
+    width: "max-content",
+    maxHeight: `${maxHeight}px`,
+    ...(flipAbove ? { bottom: `${vh - rect.top + 3}px` } : { top: `${rect.bottom + 3}px` }),
+  };
+}
+
+function openPopover(): void {
+  if (props.disabled || open.value) return;
+  updatePosition();
+  open.value = true;
+  query.value = "";
+  // Set active to the currently-selected row if visible.
+  const currentRefIdx = visibleRows.value.findIndex((r) => r.ref === props.modelValue);
+  activeIndex.value = currentRefIdx;
+  nextTick(() => {
+    searchRef.value?.focus();
+    scrollActiveIntoView();
+  });
+}
+
+function closePopover(): void {
+  if (!open.value) return;
+  open.value = false;
+  query.value = "";
+  activeIndex.value = -1;
+}
+
+function toggle(): void {
+  if (open.value) closePopover();
+  else openPopover();
+}
+
+function scrollActiveIntoView(): void {
+  if (!listRef.value || activeIndex.value < 0) return;
+  const ul = listRef.value.querySelector(".branch-picker__list");
+  if (!ul) return;
+  // Account for the optional pinned "Off" row at position 0.
+  const offsetForOff = props.offLabel ? 1 : 0;
+  const el = ul.children[activeIndex.value + offsetForOff] as HTMLElement | undefined;
+  if (el?.scrollIntoView) el.scrollIntoView({ block: "nearest" });
+}
+
+function moveActive(dir: number): void {
+  const total = visibleRows.value.length;
+  if (total === 0) return;
+  let next = activeIndex.value + dir;
+  // Skip past folders so Enter doesn't accidentally "select" a folder.
+  while (next >= 0 && next < total && visibleRows.value[next].isFolder) {
+    next += dir;
+  }
+  if (next < 0) next = 0;
+  if (next >= total) next = total - 1;
+  activeIndex.value = next;
+  scrollActiveIntoView();
+}
+
+function commitActive(): void {
+  if (activeIndex.value < 0) {
+    if (props.offLabel) select(props.offValue);
+    return;
+  }
+  const row = visibleRows.value[activeIndex.value];
+  if (!row) return;
+  if (row.isFolder) {
+    toggleFolder(row.key);
+    return;
+  }
+  if (row.ref !== undefined) select(row.ref);
+}
+
+function onButtonKeydown(e: KeyboardEvent): void {
+  if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+    e.preventDefault();
+    if (!open.value) openPopover();
+    else moveActive(e.key === "ArrowDown" ? 1 : -1);
+  } else if (e.key === "Enter" || e.key === " ") {
+    e.preventDefault();
+    if (!open.value) openPopover();
+    else commitActive();
+  } else if (e.key === "Escape") {
+    if (open.value) {
+      e.preventDefault();
+      e.stopPropagation();
+      closePopover();
+    }
+  } else if (e.key === "Tab") {
+    closePopover();
+  }
+}
+
+function onSearchKeydown(e: KeyboardEvent): void {
+  if (e.key === "ArrowDown" || e.key === "ArrowUp" || e.key === "Enter" || e.key === "Escape" || e.key === "Tab") {
+    onButtonKeydown(e);
+  }
+}
+
+function onDocumentMousedown(e: MouseEvent): void {
+  if (!open.value) return;
+  const inRoot = rootRef.value && rootRef.value.contains(e.target as Node);
+  const inList = listRef.value && listRef.value.contains(e.target as Node);
+  if (!inRoot && !inList) closePopover();
+}
+
+function onWindowBlur(): void {
+  closePopover();
+}
+
+function onReposition(): void {
+  if (open.value) updatePosition();
+}
+
+watch(query, () => {
+  if (!open.value) return;
+  const n = visibleRows.value.length;
+  activeIndex.value = n > 0 ? 0 : -1;
+  // Skip leading folders.
+  if (n > 0) {
+    while (activeIndex.value < n && visibleRows.value[activeIndex.value].isFolder) activeIndex.value++;
+    if (activeIndex.value >= n) activeIndex.value = -1;
+  }
+  nextTick(() => scrollActiveIntoView());
+});
+
+onMounted(() => {
+  document.addEventListener("mousedown", onDocumentMousedown);
+  window.addEventListener("blur", onWindowBlur);
+  window.addEventListener("resize", onReposition);
+  window.addEventListener("scroll", onReposition, true);
+});
+
+onBeforeUnmount(() => {
+  document.removeEventListener("mousedown", onDocumentMousedown);
+  window.removeEventListener("blur", onWindowBlur);
+  window.removeEventListener("resize", onReposition);
+  window.removeEventListener("scroll", onReposition, true);
+});
+
+defineExpose({ focus: (): void => buttonRef.value?.focus() });
+</script>
+
+<style scoped>
+.branch-picker {
+  position: relative;
+  display: inline-block;
+  width: 100%;
+}
+.branch-picker__button {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  padding: 4px 8px;
+  background: rgba(0, 0, 0, 0.25);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.2;
+  height: 24px;
+  cursor: pointer;
+  text-align: left;
+}
+.branch-picker__button:hover:not(:disabled) {
+  background: rgba(var(--tint), 0.08);
+}
+.branch-picker__button:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
+.branch-picker--disabled .branch-picker__button,
+.branch-picker__button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.branch-picker__value {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.branch-picker__value--placeholder {
+  color: var(--muted);
+}
+.branch-picker__arrow {
+  flex-shrink: 0;
+  color: var(--muted);
+  font-size: 10px;
+}
+.branch-picker__popover {
+  z-index: 10050;
+  display: flex;
+  flex-direction: column;
+  background: var(--panel-elevated, #1d2026);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+  font-size: 12px;
+  overflow: hidden;
+}
+.branch-picker__search {
+  flex-shrink: 0;
+  padding: 6px 10px;
+  background: rgba(var(--tint), 0.05);
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  outline: none;
+}
+.branch-picker__search:focus {
+  background: rgba(var(--tint), 0.08);
+}
+.branch-picker__list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  margin: 0;
+  padding: 4px 0;
+  list-style: none;
+  font-variant-numeric: tabular-nums;
+}
+.branch-picker__empty {
+  padding: 10px;
+  color: var(--muted);
+  font-style: italic;
+  text-align: center;
+}
+.branch-picker__row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  color: var(--text);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.branch-picker__row--active:not(.branch-picker__row--selected):not(.branch-picker__row--off-selected) {
+  background: rgba(var(--tint), 0.12);
+}
+.branch-picker__row--selected,
+.branch-picker__row--off-selected {
+  background: rgba(255, 164, 36, 0.18);
+  color: var(--accent);
+  font-weight: 600;
+}
+.branch-picker__indent {
+  flex: 0 0 auto;
+}
+.branch-picker__toggle {
+  flex: 0 0 12px;
+  width: 12px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 10px;
+}
+.branch-picker__toggle--leaf {
+  visibility: hidden;
+}
+.branch-picker__icon {
+  flex: 0 0 14px;
+  width: 14px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--muted);
+}
+.branch-picker__icon--branch {
+  color: #6dc070;
+}
+.branch-picker__icon--folder {
+  color: var(--muted);
+}
+.branch-picker__icon--off {
+  color: var(--muted);
+}
+.branch-picker__label {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.branch-picker__pill {
+  flex: 0 0 auto;
+  font-size: 10px;
+  padding: 0 6px;
+  border-radius: 8px;
+  background: rgba(var(--tint), 0.12);
+  color: var(--muted);
+}
+.branch-picker__pill--default {
+  background: rgba(76, 175, 80, 0.18);
+  color: #6dc070;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+}
+</style>

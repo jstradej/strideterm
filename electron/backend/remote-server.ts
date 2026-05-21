@@ -22,6 +22,12 @@ import {
   dockerSystemDfSchema,
   dockerTopSchema,
   dockerVolumeBrowseSchema,
+  gitBranchDeleteSchema,
+  gitBranchListSchema,
+  gitBranchRenameSchema,
+  gitCheckoutRemoteSchema,
+  gitLogGraphSchema,
+  gitRemoteBranchDeleteSchema,
   taskUpdateDescriptionSchema,
   terminalSessionSchema,
   validateIpc,
@@ -1169,32 +1175,38 @@ async function handleApiRequest(
     }
 
     if (request.method === "POST" && url.pathname === "/api/git/list-branches") {
-      json(response, 200, await runtime.gitListBranches(body));
+      const v = validateIpc(gitBranchListSchema, body, "POST /api/git/list-branches");
+      json(response, 200, await runtime.gitListBranches(v));
       return;
     }
 
     if (request.method === "POST" && url.pathname === "/api/git/delete-branch") {
-      json(response, 200, await runtime.gitDeleteBranch(body));
+      const v = validateIpc(gitBranchDeleteSchema, body, "POST /api/git/delete-branch");
+      json(response, 200, await runtime.gitDeleteBranch(v));
       return;
     }
 
     if (request.method === "POST" && url.pathname === "/api/git/delete-remote-branch") {
-      json(response, 200, await runtime.gitDeleteRemoteBranch(body));
+      const v = validateIpc(gitRemoteBranchDeleteSchema, body, "POST /api/git/delete-remote-branch");
+      json(response, 200, await runtime.gitDeleteRemoteBranch(v));
       return;
     }
 
     if (request.method === "POST" && url.pathname === "/api/git/rename-branch") {
-      json(response, 200, await runtime.gitRenameBranch(body));
+      const v = validateIpc(gitBranchRenameSchema, body, "POST /api/git/rename-branch");
+      json(response, 200, await runtime.gitRenameBranch(v));
       return;
     }
 
     if (request.method === "POST" && url.pathname === "/api/git/checkout-remote-branch") {
-      json(response, 200, await runtime.gitCheckoutRemoteBranch(body));
+      const v = validateIpc(gitCheckoutRemoteSchema, body, "POST /api/git/checkout-remote-branch");
+      json(response, 200, await runtime.gitCheckoutRemoteBranch(v));
       return;
     }
 
     if (request.method === "POST" && url.pathname === "/api/git/log-graph") {
-      json(response, 200, await runtime.gitLogGraph(body));
+      const v = validateIpc(gitLogGraphSchema, body, "POST /api/git/log-graph");
+      json(response, 200, await runtime.gitLogGraph(v));
       return;
     }
 
@@ -1831,12 +1843,24 @@ export async function startRemoteServer({
         "/api/git/push-all-tags": (body, windowId) => runtime.gitPushAllTags(body, windowId),
         "/api/git/delete-remote-tag": (body, windowId) => runtime.gitDeleteRemoteTag(body, windowId),
         "/api/git/force-push-with-lease": (body, windowId) => runtime.gitForcePushWithLease(body, windowId),
-        "/api/git/list-branches": (body, windowId) => runtime.gitListBranches(body, windowId),
-        "/api/git/delete-branch": (body, windowId) => runtime.gitDeleteBranch(body, windowId),
-        "/api/git/delete-remote-branch": (body, windowId) => runtime.gitDeleteRemoteBranch(body, windowId),
-        "/api/git/rename-branch": (body, windowId) => runtime.gitRenameBranch(body, windowId),
-        "/api/git/checkout-remote-branch": (body, windowId) => runtime.gitCheckoutRemoteBranch(body, windowId),
-        "/api/git/log-graph": (body, windowId) => runtime.gitLogGraph(body, windowId),
+        "/api/git/list-branches": (body, windowId) =>
+          runtime.gitListBranches(validateIpc(gitBranchListSchema, body, "POST /api/git/list-branches"), windowId),
+        "/api/git/delete-branch": (body, windowId) =>
+          runtime.gitDeleteBranch(validateIpc(gitBranchDeleteSchema, body, "POST /api/git/delete-branch"), windowId),
+        "/api/git/delete-remote-branch": (body, windowId) =>
+          runtime.gitDeleteRemoteBranch(
+            validateIpc(gitRemoteBranchDeleteSchema, body, "POST /api/git/delete-remote-branch"),
+            windowId,
+          ),
+        "/api/git/rename-branch": (body, windowId) =>
+          runtime.gitRenameBranch(validateIpc(gitBranchRenameSchema, body, "POST /api/git/rename-branch"), windowId),
+        "/api/git/checkout-remote-branch": (body, windowId) =>
+          runtime.gitCheckoutRemoteBranch(
+            validateIpc(gitCheckoutRemoteSchema, body, "POST /api/git/checkout-remote-branch"),
+            windowId,
+          ),
+        "/api/git/log-graph": (body, windowId) =>
+          runtime.gitLogGraph(validateIpc(gitLogGraphSchema, body, "POST /api/git/log-graph"), windowId),
         // Grid mutations resolve their target profile from windowId. Without
         // the slot-aware path a mobile client bound to profile B would mutate
         // profile A's grid (runtime falls back to windowSlots[0] when no

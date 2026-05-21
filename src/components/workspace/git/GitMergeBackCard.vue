@@ -11,15 +11,16 @@
       <span class="git-detail-list__row">
         <strong>Target branch:</strong>
         <template v-if="isLinkedWorktree">{{ resolvedBaseBranch || "?" }}</template>
-        <CustomSelect
+        <BranchSelectPopover
           v-else
           class="git-branch-select"
           :model-value="resolvedBaseBranch"
           placeholder="-- select --"
-          :options="baseBranchOptionList"
-          searchable
+          :options="props.baseBranchOptions || []"
+          :default-branch="defaultBranch"
+          :default-remote="defaultRemote"
           search-placeholder="Filter branches…"
-          @change="onTargetChange"
+          @update:model-value="onTargetChange"
         />
       </span>
     </div>
@@ -224,7 +225,7 @@
 import { computed, ref } from "vue";
 import { useAppStore } from "../../../stores/app.js";
 import { useGitUiStore } from "../../../stores/git-ui.js";
-import CustomSelect from "../../common/CustomSelect.vue";
+import BranchSelectPopover from "./BranchSelectPopover.vue";
 
 const props = withDefaults(
   defineProps<{
@@ -237,6 +238,8 @@ const props = withDefaults(
     gitUi?: Record<string, any>;
     effectiveBaseBranch?: string;
     baseBranchOptions?: string[];
+    defaultBranch?: string;
+    defaultRemote?: string;
     isLinkedWorktree?: boolean;
   }>(),
   {
@@ -244,6 +247,8 @@ const props = withDefaults(
     gitUi: () => ({}),
     effectiveBaseBranch: "",
     baseBranchOptions: () => [],
+    defaultBranch: "",
+    defaultRemote: "",
     isLinkedWorktree: false,
   },
 );
@@ -262,11 +267,10 @@ const isCleanupMode = computed(
   () => props.snapshot.branchMerged === true && (compare.value.aheadCount || 0) === 0 && props.isLinkedWorktree,
 );
 
-function onTargetChange(value: string | number) {
-  localOverride.value = String(value);
+function onTargetChange(value: string) {
+  localOverride.value = value;
 }
 
-const baseBranchOptionList = computed(() => props.baseBranchOptions.map((b: string) => ({ value: b, label: b })));
 const potentialConflicts = computed(() => compare.value.potentialConflicts || []);
 
 const workspaceIdsByPath = computed(

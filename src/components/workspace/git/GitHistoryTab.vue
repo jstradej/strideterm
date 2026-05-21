@@ -6,6 +6,8 @@
         label="Compare with base"
         :model-value="effectiveBaseBranch"
         :options="baseBranchOptions"
+        :default-branch="defaultBranch"
+        :default-remote="defaultRemote"
         @update:model-value="(v) => gitUiStore.gitSetBaseBranch(workspaceId, v)"
       />
       <template v-if="effectiveBaseBranch">
@@ -92,9 +94,18 @@ const props = withDefaults(
     compare?: Record<string, any>;
     effectiveBaseBranch?: string;
     baseBranchOptions?: string[];
+    defaultBranch?: string;
+    defaultRemote?: string;
     activeRootPath?: string;
   }>(),
-  { compare: () => ({}), effectiveBaseBranch: "", baseBranchOptions: () => [], activeRootPath: "" },
+  {
+    compare: () => ({}),
+    effectiveBaseBranch: "",
+    baseBranchOptions: () => [],
+    defaultBranch: "",
+    defaultRemote: "",
+    activeRootPath: "",
+  },
 );
 
 const appStore = useAppStore();

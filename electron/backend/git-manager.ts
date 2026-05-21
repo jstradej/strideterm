@@ -31,7 +31,6 @@ import {
   parseWorktreeList,
   readBranchList,
   preferBaseBranch,
-  buildBaseBranchCandidates,
   buildOperationState,
   extractErrorMessage,
   createOperationWarnings,
@@ -524,9 +523,30 @@ export class GitManager extends EventEmitter {
       const reviewSourceRef = String(workspace.review?.pullRequest?.sourceRefName || "")
         .replace(/^refs\/heads\//, "")
         .trim();
+      const parsedRemotes = parseGitRemotes(remoteResult.stdout);
+      // Surface the symbolic default branch on the snapshot — every consumer
+      // (History, MergeBack, Compare picker on every tab) should be able to
+      // read it without first running listBranches.
+      const symbolicDefaultFull = await this.readSymbolicDefaultRemoteBranch(rootPath, parsedRemotes);
+      let defaultRemoteName = "";
+      let defaultBranchShort = "";
+      if (symbolicDefaultFull) {
+        // Split "origin/master" → ("origin", "master"). The remote name is
+        // the prefix that matches an actual remote — handles remotes whose
+        // names contain a slash by checking longest-prefix-first.
+        const remoteKeys = Object.keys(parsedRemotes || {}).filter((k) => k && !k.includes(":"));
+        remoteKeys.sort((a, b) => b.length - a.length);
+        for (const r of remoteKeys) {
+          if (symbolicDefaultFull.startsWith(`${r}/`)) {
+            defaultRemoteName = r;
+            defaultBranchShort = symbolicDefaultFull.slice(r.length + 1);
+            break;
+          }
+        }
+      }
       const baseBranch = reviewSourceRef
         ? `origin/${reviewSourceRef}`
-        : await this.detectBestBaseBranch(rootPath, branch, upstream, branchNames);
+        : await this.detectBestBaseBranch(rootPath, branch, upstream, branchNames, parsedRemotes);
       // readBaseComparison depends on baseBranch (resolved just above) so it
       // can't fold into the batched Promise.all up top; stashCount + diffStat
       // already happened there.
@@ -614,7 +634,7 @@ export class GitManager extends EventEmitter {
         root,
         repository: path.basename(root),
         branch,
-        remotes: parseGitRemotes(remoteResult.stdout),
+        remotes: parsedRemotes,
         commitCount: parseIntSafe(commitCountResult.stdout),
         dirty: dirtyCount > 0,
         dirtyCount,
@@ -640,6 +660,8 @@ export class GitManager extends EventEmitter {
         siblingWorktrees,
         upstream,
         baseBranch,
+        defaultBranch: defaultBranchShort,
+        defaultRemote: defaultRemoteName,
         branchNames,
         stashCount,
         aheadCount: parsedStatus.aheadCount,
@@ -1897,15 +1919,64 @@ export class GitManager extends EventEmitter {
     });
   }
 
+  /**
+   * Find the symbolic default branch of the most-relevant remote. Returns
+   * the full short-name including remote prefix (e.g. "origin/master"), or
+   * "" if no remote has `refs/remotes/<remote>/HEAD` configured.
+   *
+   * Local-only read (no fetch). Origin wins, then remaining remotes
+   * alphabetically — same precedence as listBranches uses.
+   */
+  async readSymbolicDefaultRemoteBranch(cwd: string, remotes: Record<string, string> = {}): Promise<string> {
+    const names = Object.keys(remotes || {}).filter((n) => n && !n.includes(":"));
+    if (!names.length) return "";
+    const ordered = names.includes("origin")
+      ? ["origin", ...names.filter((n) => n !== "origin").sort()]
+      : [...names].sort();
+    for (const remote of ordered) {
+      try {
+        const result = await this.execGit(cwd, ["symbolic-ref", "--short", `refs/remotes/${remote}/HEAD`]);
+        const value = result.stdout.trim();
+        if (value) return value;
+      } catch {
+        // No symbolic HEAD set for this remote — try the next one.
+      }
+    }
+    return "";
+  }
+
+  /**
+   * Pick the best base branch for the current HEAD.
+   *
+   * Strategy:
+   *   1. Build candidates from ALL local + remote branches (cap top-50 by
+   *      committerdate on huge repos so this stays bounded).
+   *   2. For each candidate, measure `rev-list --count <merge-base>..HEAD` —
+   *      the number of commits HEAD has past the fork point. The candidate
+   *      with the smallest distance is the closest ancestor.
+   *   3. Ties are broken by: symbolic default remote > hardcoded
+   *      main/master/develop list > upstream > alphabetical. This means a
+   *      brand-new branch (distance 0 to several refs) lands on the most
+   *      "canonical" one instead of an arbitrary alphabetical pick.
+   *   4. If no candidate has a reachable merge-base (rare — empty repo,
+   *      orphan branch), fall back to the symbolic default, then the legacy
+   *      hardcoded preferBaseBranch heuristic.
+   *
+   * This replaces the old hardcoded-candidates approach which silently
+   * skipped any branch outside ["main", "master", "develop"], so creating a
+   * feature off another feature picked the wrong base.
+   */
   async detectBestBaseBranch(
     cwd: string,
     currentBranch: string,
     upstream: string,
     branchNames: string[] = [],
+    remotes: Record<string, string> = {},
   ): Promise<string> {
-    const candidates = buildBaseBranchCandidates(currentBranch, upstream, branchNames);
+    const symbolicDefault = await this.readSymbolicDefaultRemoteBranch(cwd, remotes);
+    const candidates = await this.buildExpandedBaseBranchCandidates(cwd, currentBranch, upstream, branchNames);
     if (!candidates.length) {
-      return preferBaseBranch(currentBranch, upstream, branchNames);
+      return symbolicDefault || preferBaseBranch(currentBranch, upstream, branchNames);
     }
 
     const distances = await Promise.all(
@@ -1914,17 +1985,91 @@ export class GitManager extends EventEmitter {
           const result = await this.execGit(cwd, ["merge-base", "HEAD", candidate]);
           const mergeBase = result.stdout.trim();
           if (!mergeBase) return { candidate, distance: Infinity };
-
           const countResult = await this.execGit(cwd, ["rev-list", "--count", `${mergeBase}..HEAD`]);
-          return { candidate, distance: parseInt(countResult.stdout.trim(), 10) || Infinity };
+          const parsed = parseInt(countResult.stdout.trim(), 10);
+          return { candidate, distance: Number.isFinite(parsed) ? parsed : Infinity };
         } catch {
           return { candidate, distance: Infinity };
         }
       }),
     );
 
-    const best = distances.reduce((a, b) => (a.distance <= b.distance ? a : b));
-    return best.distance < Infinity ? best.candidate : preferBaseBranch(currentBranch, upstream, branchNames);
+    const reachable = distances.filter((d) => d.distance < Infinity);
+    if (!reachable.length) {
+      return symbolicDefault || preferBaseBranch(currentBranch, upstream, branchNames);
+    }
+
+    const HARDCODED_PRIORITY = ["main", "origin/main", "master", "origin/master", "develop", "origin/develop"];
+    const tieBreakRank = (name: string): number => {
+      if (symbolicDefault && name === symbolicDefault) return 0;
+      const idx = HARDCODED_PRIORITY.indexOf(name);
+      if (idx >= 0) return 1 + idx; // 1..6
+      if (upstream && name === upstream) return 100;
+      return 1000;
+    };
+
+    reachable.sort((a, b) => {
+      if (a.distance !== b.distance) return a.distance - b.distance;
+      const ta = tieBreakRank(a.candidate);
+      const tb = tieBreakRank(b.candidate);
+      if (ta !== tb) return ta - tb;
+      return a.candidate.localeCompare(b.candidate);
+    });
+
+    return reachable[0].candidate;
+  }
+
+  /**
+   * Build candidate base branches. Unlike the legacy hardcoded helper this
+   * considers ALL refs so a feature branched off another feature can win.
+   *
+   * On repos with many branches we cap to the 50 most-recently-active ones
+   * (sorted by committerdate). Bounded cost is more important than
+   * exhaustive coverage — old stale branches are extremely unlikely to be
+   * the right base, and we still cover the common cases plus current
+   * upstream.
+   */
+  async buildExpandedBaseBranchCandidates(
+    cwd: string,
+    currentBranch: string,
+    upstream: string,
+    branchNames: string[],
+  ): Promise<string[]> {
+    const normalizedCurrent = normalizeBranchName(currentBranch);
+    let pool: string[] = (branchNames || []).filter(Boolean);
+
+    if (pool.length > 50) {
+      try {
+        const result = await this.execGit(cwd, [
+          "for-each-ref",
+          "--format=%(refname:short)",
+          "--sort=-committerdate",
+          "--count=50",
+          "refs/heads",
+          "refs/remotes",
+        ]);
+        pool = String(result.stdout || "")
+          .split(/\r?\n/)
+          .map((s) => s.trim())
+          .filter(Boolean);
+      } catch {
+        pool = pool.slice(0, 50);
+      }
+    }
+
+    const seen = new Set<string>();
+    const result: string[] = [];
+    const add = (name: string): void => {
+      if (!name || name.endsWith("/HEAD")) return;
+      const norm = normalizeBranchName(name);
+      if (!norm || norm === normalizedCurrent || seen.has(norm)) return;
+      seen.add(norm);
+      result.push(name);
+    };
+
+    if (upstream) add(upstream);
+    for (const name of pool) add(name);
+    return result;
   }
 
   async getStashCount(cwd: string): Promise<number> {
@@ -2236,6 +2381,7 @@ export class GitManager extends EventEmitter {
       lastSubject: string;
       lastAuthor: string;
       lastRelativeDate: string;
+      lastCommitTimestamp: number;
       merged: boolean;
     }>;
     remotes: Array<{
@@ -2246,13 +2392,18 @@ export class GitManager extends EventEmitter {
       lastSubject: string;
       lastAuthor: string;
       lastRelativeDate: string;
+      lastCommitTimestamp: number;
+      isDefault: boolean;
     }>;
+    defaultBranch: string; // short name (no remote prefix), e.g. "master"
+    defaultRemote: string; // remote that supplied the symbolic HEAD, e.g. "origin"
     error?: string;
   }> {
     const cwd = rootPath || workspace?.cwd || "";
-    const empty = { ok: false, current: "", upstream: "", local: [], remotes: [] };
+    const empty = { ok: false, current: "", upstream: "", local: [], remotes: [], defaultBranch: "", defaultRemote: "" };
     if (!cwd) return { ...empty, error: "Missing rootPath" };
 
+    const startTime = Date.now();
     try {
       const fmt = [
         "%(refname)", // 0 full ref
@@ -2264,6 +2415,7 @@ export class GitManager extends EventEmitter {
         "%(contents:subject)", // 6 subject
         "%(authorname)", // 7 author
         "%(committerdate:relative)", // 8 relative date
+        "%(committerdate:unix)", // 9 epoch seconds (for date-range filter + sort)
       ].join("%09");
 
       const [localResult, remoteResult, currentBranchResult, upstreamResult] = await Promise.all([
@@ -2317,6 +2469,7 @@ export class GitManager extends EventEmitter {
           lastSubject: parts[6] || "",
           lastAuthor: parts[7] || "",
           lastRelativeDate: parts[8] || "",
+          lastCommitTimestamp: parseInt(parts[9] || "", 10) || 0,
           merged: false,
         };
       });
@@ -2372,13 +2525,73 @@ export class GitManager extends EventEmitter {
             lastSubject: parts[6] || "",
             lastAuthor: parts[7] || "",
             lastRelativeDate: parts[8] || "",
+            lastCommitTimestamp: parseInt(parts[9] || "", 10) || 0,
+            isDefault: false,
           };
         })
         .filter((entry) => entry.shortName && entry.shortName !== "HEAD");
 
-      return { ok: true, current, upstream, local, remotes };
+      // Resolve the default branch per remote via `git symbolic-ref
+      // refs/remotes/<remote>/HEAD --short`. Local read, one git call per
+      // unique remote (typically 1–2). Falls back to "" when the symbolic
+      // ref isn't set — e.g. for remotes added without `git remote set-head`.
+      const uniqueRemotes = Array.from(new Set(remotes.map((r) => r.remote))).filter(Boolean);
+      const defaultsByRemote = new Map<string, string>(); // remote → "<remote>/<branch>"
+      await Promise.all(
+        uniqueRemotes.map(async (remoteName) => {
+          try {
+            const result = await this.execGit(cwd, [
+              "symbolic-ref",
+              "--short",
+              `refs/remotes/${remoteName}/HEAD`,
+            ]);
+            const value = result.stdout.trim();
+            if (value) defaultsByRemote.set(remoteName, value);
+          } catch {
+            // No symbolic HEAD configured for this remote — skip.
+          }
+        }),
+      );
+      for (const entry of remotes) {
+        if (defaultsByRemote.get(entry.remote) === entry.name) entry.isDefault = true;
+      }
+      // Pick a primary default. origin wins when present; otherwise pick the
+      // first alphabetically. Only one is exposed at top level — multi-remote
+      // setups can still see per-entry `isDefault` for each one.
+      let primaryRemote = "";
+      if (defaultsByRemote.has("origin")) {
+        primaryRemote = "origin";
+      } else {
+        const sortedWithDefault = Array.from(defaultsByRemote.keys()).sort();
+        if (sortedWithDefault.length) primaryRemote = sortedWithDefault[0];
+      }
+      const primaryDefaultFull = primaryRemote ? defaultsByRemote.get(primaryRemote) || "" : "";
+      const defaultBranch = primaryDefaultFull
+        ? primaryDefaultFull.slice(primaryRemote.length + 1) // strip "origin/" → "master"
+        : "";
+
+      log.debug("git list-branches", {
+        cwd,
+        durationMs: Date.now() - startTime,
+        localCount: local.length,
+        remoteCount: remotes.length,
+        current,
+        defaultBranch,
+        defaultRemote: primaryRemote,
+      });
+      return {
+        ok: true,
+        current,
+        upstream,
+        local,
+        remotes,
+        defaultBranch,
+        defaultRemote: primaryRemote,
+      };
     } catch (error) {
-      return { ...empty, error: extractErrorMessage(error) };
+      const message = extractErrorMessage(error);
+      log.warn("git list-branches failed", { cwd, durationMs: Date.now() - startTime, err: message });
+      return { ...empty, error: message };
     }
   }
 
@@ -2537,6 +2750,7 @@ export class GitManager extends EventEmitter {
     const cwd = rootPath || workspace?.cwd || "";
     if (!cwd) return { ok: false, head: "", commits: [], refs: {}, error: "Missing rootPath" };
     const safeLimit = Math.max(1, Math.min(2000, Math.floor(limit)));
+    const startTime = Date.now();
 
     // Choose what to walk:
     //   - branch (string)            → just that ref
@@ -2648,9 +2862,24 @@ export class GitManager extends EventEmitter {
           // ignore
         }
       }
+      log.debug("git log-graph", {
+        cwd,
+        durationMs: Date.now() - startTime,
+        limit: safeLimit,
+        commitCount: commits.length,
+        branch: branch || "",
+        includeRemotes,
+        topoOrder,
+        sinceDate: sinceDate || "",
+        untilDate: untilDate || "",
+        author: author || "",
+        pathCount: pathArgs.length,
+      });
       return { ok: true, head, commits, refs };
     } catch (error) {
-      return { ok: false, head: "", commits: [], refs: {}, error: extractErrorMessage(error) };
+      const message = extractErrorMessage(error);
+      log.warn("git log-graph failed", { cwd, durationMs: Date.now() - startTime, err: message });
+      return { ok: false, head: "", commits: [], refs: {}, error: message };
     }
   }
 

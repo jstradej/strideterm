@@ -18,7 +18,9 @@ export interface BranchTreeNodeMeta {
   lastSubject?: string;
   lastAuthor?: string;
   lastRelativeDate?: string;
+  lastCommitTimestamp?: number;
   isCurrent?: boolean;
+  isDefault?: boolean;
   hasLocal?: boolean;
   count?: number;
   tag?: boolean;

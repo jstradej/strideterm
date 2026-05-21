@@ -47,6 +47,13 @@
       >
 
       <span
+        v-if="!compact && node.meta?.isDefault && node.kind === 'branch-remote'"
+        class="branch-node__pill branch-node__pill--default"
+        title="This is the default branch for the remote (origin/HEAD points here)."
+        >default</span
+      >
+
+      <span
         v-if="!compact && node.kind === 'section' && node.meta?.count != null"
         class="branch-node__count"
         :title="`${node.meta.count} item(s)`"
@@ -521,6 +528,13 @@ function runAction(id: string) {
 .branch-node__pill--merged {
   background: rgba(170, 95, 200, 0.18);
   color: #d09fd9;
+}
+
+.branch-node__pill--default {
+  background: rgba(76, 175, 80, 0.18);
+  color: #6dc070;
+  font-weight: 600;
+  letter-spacing: 0.3px;
 }
 
 .branch-node__count {

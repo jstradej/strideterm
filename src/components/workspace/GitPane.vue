@@ -237,6 +237,8 @@
           :show-merge-back="showMergeBack"
           :effective-base-branch="effectiveBaseBranch"
           :base-branch-options="baseBranchOptions"
+          :default-branch="defaultBranch"
+          :default-remote="defaultRemote"
           :switch-branch-options-list="switchBranchOptionsList"
         />
 
@@ -253,6 +255,8 @@
           :base-branch="effectiveBaseBranch"
           :compare="compare"
           :base-branch-options="baseBranchOptions"
+          :default-branch="defaultBranch"
+          :default-remote="defaultRemote"
         />
 
         <!-- ===== Changes tab ===== -->
@@ -276,6 +280,8 @@
           :compare="compare"
           :effective-base-branch="effectiveBaseBranch"
           :base-branch-options="baseBranchOptions"
+          :default-branch="defaultBranch"
+          :default-remote="defaultRemote"
           :active-root-path="activeRootPath"
         />
 
@@ -435,6 +441,8 @@ const allRootsSnapshots = computed(() => {
 const isLinkedWorktree = computed(() => snapshot.value?.isWorktree && !snapshot.value?.isMainWorktree);
 const operation = computed(() => snapshot.value?.operationState || {});
 const baseBranch = computed(() => snapshot.value?.baseBranch || snapshot.value?.compareWithBase?.baseBranch || "");
+const defaultBranch = computed(() => String(snapshot.value?.defaultBranch || ""));
+const defaultRemote = computed(() => String(snapshot.value?.defaultRemote || ""));
 const compare = computed(() => snapshot.value?.compareWithBase || {});
 // The legacy "graph" and "tags" tabs were folded into "branches" — anything
 // persisted with those ids is silently redirected so users don't land on a

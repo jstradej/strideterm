@@ -5,10 +5,15 @@ import {
   azureCommentSchema,
   azureVoteSchema,
   azureThreadStatusSchema,
+  gitBranchDeleteSchema,
+  gitBranchListSchema,
+  gitBranchRenameSchema,
+  gitCheckoutRemoteSchema,
   gitPayloadSchema,
   gitDiffPreviewSchema,
   gitLogPageSchema,
   gitLogGraphSchema,
+  gitRemoteBranchDeleteSchema,
   terminalResizeSchema,
   profileSchema,
   worktreeSchema,
@@ -227,6 +232,167 @@ describe("ipc-schemas", () => {
 
     test("clamps limit to <= 2000", () => {
       expect(() => validateIpc(gitLogGraphSchema, { workspaceId: "ws-1", limit: 9999 }, "test")).toThrow();
+    });
+  });
+
+  describe("gitBranchListSchema", () => {
+    test("accepts minimal payload", () => {
+      const result = validateIpc(gitBranchListSchema, { workspaceId: "ws-1" }, "git:list-branches");
+      expect(result.workspaceId).toBe("ws-1");
+    });
+
+    test("accepts rootPath when provided", () => {
+      const result = validateIpc(
+        gitBranchListSchema,
+        { workspaceId: "ws-1", rootPath: "/repo/sub" },
+        "git:list-branches",
+      );
+      expect(result.rootPath).toBe("/repo/sub");
+    });
+
+    test("rejects missing workspaceId", () => {
+      expect(() => validateIpc(gitBranchListSchema, {}, "test")).toThrow();
+    });
+
+    test("rejects empty workspaceId", () => {
+      expect(() => validateIpc(gitBranchListSchema, { workspaceId: "" }, "test")).toThrow();
+    });
+  });
+
+  describe("gitBranchDeleteSchema", () => {
+    test("accepts a normal branch name", () => {
+      const result = validateIpc(
+        gitBranchDeleteSchema,
+        { workspaceId: "ws-1", branch: "feature/foo" },
+        "git:delete-branch",
+      );
+      expect(result.branch).toBe("feature/foo");
+    });
+
+    test("force flag round-trips", () => {
+      const result = validateIpc(
+        gitBranchDeleteSchema,
+        { workspaceId: "ws-1", branch: "feature/foo", force: true },
+        "test",
+      );
+      expect(result.force).toBe(true);
+    });
+
+    test("rejects branch starting with '-' (flag-injection guard)", () => {
+      expect(() => validateIpc(gitBranchDeleteSchema, { workspaceId: "ws-1", branch: "-D" }, "test")).toThrow();
+    });
+
+    test("rejects missing branch field", () => {
+      expect(() => validateIpc(gitBranchDeleteSchema, { workspaceId: "ws-1" }, "test")).toThrow();
+    });
+  });
+
+  describe("gitRemoteBranchDeleteSchema", () => {
+    test("accepts a normal branch+remote pair", () => {
+      const result = validateIpc(
+        gitRemoteBranchDeleteSchema,
+        { workspaceId: "ws-1", branch: "feature/foo", remote: "origin" },
+        "git:delete-remote-branch",
+      );
+      expect(result.remote).toBe("origin");
+    });
+
+    test("remote is optional (defaults applied downstream)", () => {
+      const result = validateIpc(gitRemoteBranchDeleteSchema, { workspaceId: "ws-1", branch: "feature/foo" }, "test");
+      expect(result.remote).toBeUndefined();
+    });
+
+    test("rejects branch starting with '-' (flag-injection guard)", () => {
+      expect(() =>
+        validateIpc(gitRemoteBranchDeleteSchema, { workspaceId: "ws-1", branch: "-rf", remote: "origin" }, "test"),
+      ).toThrow();
+    });
+
+    test("rejects remote starting with '-' (flag-injection guard)", () => {
+      expect(() =>
+        validateIpc(
+          gitRemoteBranchDeleteSchema,
+          { workspaceId: "ws-1", branch: "feature/foo", remote: "--upload-pack=evil" },
+          "test",
+        ),
+      ).toThrow();
+    });
+  });
+
+  describe("gitBranchRenameSchema", () => {
+    test("accepts both old and new name", () => {
+      const result = validateIpc(
+        gitBranchRenameSchema,
+        { workspaceId: "ws-1", branch: "old-name", newName: "new-name" },
+        "git:rename-branch",
+      );
+      expect(result.newName).toBe("new-name");
+    });
+
+    test("old branch is optional (renaming current branch)", () => {
+      const result = validateIpc(gitBranchRenameSchema, { workspaceId: "ws-1", newName: "new-name" }, "test");
+      expect(result.branch).toBeUndefined();
+    });
+
+    test("rejects newName starting with '-' (flag-injection guard)", () => {
+      expect(() =>
+        validateIpc(gitBranchRenameSchema, { workspaceId: "ws-1", newName: "-D" }, "test"),
+      ).toThrow();
+    });
+
+    test("rejects old branch starting with '-' (flag-injection guard)", () => {
+      expect(() =>
+        validateIpc(
+          gitBranchRenameSchema,
+          { workspaceId: "ws-1", branch: "--config=core.fsmonitor=evil.sh", newName: "ok" },
+          "test",
+        ),
+      ).toThrow();
+    });
+
+    test("rejects missing newName", () => {
+      expect(() => validateIpc(gitBranchRenameSchema, { workspaceId: "ws-1", branch: "old" }, "test")).toThrow();
+    });
+  });
+
+  describe("gitCheckoutRemoteSchema", () => {
+    test("accepts remoteBranch and optional localBranch", () => {
+      const result = validateIpc(
+        gitCheckoutRemoteSchema,
+        { workspaceId: "ws-1", remoteBranch: "origin/feature", localBranch: "feature" },
+        "git:checkout-remote-branch",
+      );
+      expect(result.remoteBranch).toBe("origin/feature");
+      expect(result.localBranch).toBe("feature");
+    });
+
+    test("localBranch is optional (derived downstream)", () => {
+      const result = validateIpc(
+        gitCheckoutRemoteSchema,
+        { workspaceId: "ws-1", remoteBranch: "origin/feature" },
+        "test",
+      );
+      expect(result.localBranch).toBeUndefined();
+    });
+
+    test("rejects remoteBranch starting with '-' (flag-injection guard)", () => {
+      expect(() =>
+        validateIpc(gitCheckoutRemoteSchema, { workspaceId: "ws-1", remoteBranch: "-rf" }, "test"),
+      ).toThrow();
+    });
+
+    test("rejects localBranch starting with '-' (flag-injection guard)", () => {
+      expect(() =>
+        validateIpc(
+          gitCheckoutRemoteSchema,
+          { workspaceId: "ws-1", remoteBranch: "origin/feature", localBranch: "-D" },
+          "test",
+        ),
+      ).toThrow();
+    });
+
+    test("rejects missing remoteBranch", () => {
+      expect(() => validateIpc(gitCheckoutRemoteSchema, { workspaceId: "ws-1" }, "test")).toThrow();
     });
   });
 

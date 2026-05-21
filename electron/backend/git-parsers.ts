@@ -550,31 +550,6 @@ export function preferBaseBranch(currentBranch: string, upstream: string, branch
   return "";
 }
 
-export function buildBaseBranchCandidates(
-  currentBranch: string,
-  upstream: string,
-  branchNames: string[] = [],
-): string[] {
-  const normalizedCurrent = normalizeBranchName(currentBranch);
-  const seen = new Set<string>();
-  const candidates: string[] = [];
-
-  function add(name: string): void {
-    const norm = normalizeBranchName(name);
-    if (norm && norm !== normalizedCurrent && !seen.has(norm)) {
-      seen.add(norm);
-      candidates.push(name);
-    }
-  }
-
-  if (upstream) add(upstream);
-  for (const name of ["develop", "origin/develop", "main", "origin/main", "master", "origin/master"]) {
-    if (branchNames.includes(name)) add(name);
-  }
-
-  return candidates;
-}
-
 // --- Operation state helpers ---
 
 export function buildOperationState({ kind, conflicts = [] }: { kind?: string; conflicts?: string[] } = {}): {
