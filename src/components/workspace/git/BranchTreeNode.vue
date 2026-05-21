@@ -4,11 +4,12 @@
       :class="[
         'branch-node__row',
         isSelected && 'branch-node__row--selected',
+        isMultiSelected && 'branch-node__row--multi-selected',
         node.isCurrent && 'branch-node__row--current',
       ]"
       role="treeitem"
       :aria-expanded="hasChildren ? !!expanded[node.key] : undefined"
-      :aria-selected="isLeaf ? isSelected : undefined"
+      :aria-selected="isLeaf ? isSelected || isMultiSelected : undefined"
       :style="{ paddingLeft: `${depth * 12 + 6}px` }"
       tabindex="0"
       :title="rowTitle"
@@ -47,6 +48,13 @@
       >
 
       <span
+        v-if="!compact && node.meta?.worktreePath && node.kind === 'branch-local' && !node.isCurrent"
+        class="branch-node__pill branch-node__pill--worktree"
+        :title="`Checked out in worktree: ${node.meta.worktreePath}`"
+        >worktree</span
+      >
+
+      <span
         v-if="!compact && node.meta?.isDefault && node.kind === 'branch-remote'"
         class="branch-node__pill branch-node__pill--default"
         title="This is the default branch for the remote (origin/HEAD points here)."
@@ -80,8 +88,10 @@
         :expanded="expanded"
         :compact="compact"
         :can-create-pr="canCreatePr"
+        :multi-selected-refs="multiSelectedRefs"
         @select="(ref) => emit('select', ref)"
         @toggle="(k) => emit('toggle', k)"
+        @multi-toggle="(ref) => emit('multi-toggle', ref)"
         @checkout="(ref) => emit('checkout', ref)"
         @checkout-remote="(ref) => emit('checkout-remote', ref)"
         @new-from="(ref) => emit('new-from', ref)"
@@ -128,11 +138,13 @@ const props = defineProps<{
   expanded: Record<string, boolean>;
   compact: boolean;
   canCreatePr?: boolean;
+  multiSelectedRefs?: Set<string>;
 }>();
 
 const emit = defineEmits<{
   (e: "select", ref: string): void;
   (e: "toggle", key: string): void;
+  (e: "multi-toggle", ref: string): void;
   (e: "checkout", ref: string): void;
   (e: "checkout-remote", ref: string): void;
   (e: "new-from", ref: string): void;
@@ -154,6 +166,17 @@ const isSelected = computed(() => {
   if (!isLeaf.value) return false;
   return !!props.node.ref && props.node.ref === props.selectedRef;
 });
+
+// A branch row is "multi-selected" when the user has Ctrl/Cmd-clicked it
+// (or any other row in the same set). Only branch-local leaves can be
+// multi-selected — remote/tag rows aren't valid targets for bulk delete.
+const isMultiSelected = computed(() => {
+  if (props.node.kind !== "branch-local") return false;
+  if (!props.node.ref || !props.multiSelectedRefs) return false;
+  return props.multiSelectedRefs.has(props.node.ref);
+});
+
+const multiSelectedCount = computed(() => props.multiSelectedRefs?.size || 0);
 
 const iconKind = computed(() => {
   switch (props.node.kind) {
@@ -248,7 +271,16 @@ const actions = computed<MenuAction[]>(() => {
       list.push({ id: "create-pr", label: "Create pull request…", disabled: props.busy });
     }
     list.push({ id: "_div1", label: "", divider: true });
-    list.push({ id: "delete", label: "Delete branch", disabled: props.busy || !!props.node.isCurrent, danger: true });
+    // When the user has Ctrl/Cmd-clicked several branches and right-clicks
+    // one that's in the set, surface the bulk count so they understand
+    // they're operating on all of them. Outside the set: single delete.
+    const inMultiSet = isMultiSelected.value && multiSelectedCount.value > 1;
+    list.push({
+      id: "delete",
+      label: inMultiSet ? `Delete ${multiSelectedCount.value} branches` : "Delete branch",
+      disabled: props.busy || !!props.node.isCurrent,
+      danger: true,
+    });
   } else if (props.node.kind === "branch-remote" && props.node.ref) {
     list.push({ id: "checkout-remote", label: "Checkout (track locally)", disabled: props.busy });
     list.push({ id: "new-from", label: "New branch from this…", disabled: props.busy });
@@ -268,9 +300,22 @@ const actions = computed<MenuAction[]>(() => {
   return list;
 });
 
-function onRowClick() {
+function onRowClick(event?: MouseEvent | KeyboardEvent) {
   if (props.node.kind === "section" || props.node.kind === "folder") {
     emit("toggle", props.node.key);
+    return;
+  }
+  // Ctrl/Cmd+click toggles multi-selection for bulk operations on local
+  // branches. Skip the current branch (can't be deleted anyway) and
+  // anything that isn't a deletable local branch ref.
+  const isModifierClick = !!event && (event.ctrlKey || event.metaKey);
+  if (
+    isModifierClick &&
+    props.node.kind === "branch-local" &&
+    props.node.ref &&
+    !props.node.isCurrent
+  ) {
+    emit("multi-toggle", props.node.ref);
     return;
   }
   if (props.node.ref) emit("select", props.node.ref);
@@ -294,7 +339,7 @@ function onKeyDown(event: KeyboardEvent) {
     emit("toggle", props.node.key);
   } else if (event.key === "Enter" || event.key === " ") {
     event.preventDefault();
-    onRowClick();
+    onRowClick(event);
   } else if (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10")) {
     event.preventDefault();
     openMenu();
@@ -404,6 +449,21 @@ function runAction(id: string) {
 .branch-node__row--selected {
   background: rgba(255, 164, 36, 0.15);
   border-left-color: var(--accent);
+}
+
+/* Ctrl/Cmd-click multi-selection: distinct from the single-row highlight so
+   the user can see which rows will be hit by a bulk delete even while a
+   different row is focused for the commit view. */
+.branch-node__row--multi-selected {
+  background: rgba(70, 130, 200, 0.18);
+  border-left-color: #7fbcec;
+}
+.branch-node__row--multi-selected.branch-node__row--selected {
+  background: linear-gradient(
+    90deg,
+    rgba(70, 130, 200, 0.22) 0%,
+    rgba(255, 164, 36, 0.15) 100%
+  );
 }
 
 .branch-node__row--current {
@@ -528,6 +588,11 @@ function runAction(id: string) {
 .branch-node__pill--merged {
   background: rgba(170, 95, 200, 0.18);
   color: #d09fd9;
+}
+
+.branch-node__pill--worktree {
+  background: rgba(70, 130, 200, 0.18);
+  color: #7fbcec;
 }
 
 .branch-node__pill--default {

@@ -2397,6 +2397,7 @@ export class GitManager extends EventEmitter {
       lastRelativeDate: string;
       lastCommitTimestamp: number;
       merged: boolean;
+      worktreePath?: string;
     }>;
     remotes: Array<{
       name: string;
@@ -2432,7 +2433,7 @@ export class GitManager extends EventEmitter {
         "%(committerdate:unix)", // 9 epoch seconds (for date-range filter + sort)
       ].join("%09");
 
-      const [localResult, remoteResult, currentBranchResult, upstreamResult] = await Promise.all([
+      const [localResult, remoteResult, currentBranchResult, upstreamResult, worktreeListResult] = await Promise.all([
         this.execGit(cwd, ["for-each-ref", `--format=${fmt}`, "--sort=-committerdate", "refs/heads"]).catch(() => ({
           stdout: "",
           stderr: "",
@@ -2446,7 +2447,15 @@ export class GitManager extends EventEmitter {
           stdout: "",
           stderr: "",
         })),
+        this.execGit(cwd, ["worktree", "list", "--porcelain"]).catch(() => ({ stdout: "", stderr: "" })),
       ]);
+
+      // Map of branch shortname → worktree path so the UI can route "Delete
+      // branch" through the worktree-aware confirm flow when a checkout exists.
+      const worktreesByBranch = new Map<string, string>();
+      for (const entry of parseWorktreeList(worktreeListResult.stdout)) {
+        if (entry.branch && entry.path) worktreesByBranch.set(entry.branch, entry.path);
+      }
 
       const current = currentBranchResult.stdout.trim();
       const upstream = upstreamResult.stdout.trim();
@@ -2473,6 +2482,7 @@ export class GitManager extends EventEmitter {
         const behindMatch = /behind\s+(\d+)/.exec(track);
         if (aheadMatch) ahead = parseInt(aheadMatch[1], 10) || 0;
         if (behindMatch) behind = parseInt(behindMatch[1], 10) || 0;
+        const worktreePath = worktreesByBranch.get(shortName);
         return {
           name: shortName,
           isCurrent,
@@ -2485,6 +2495,7 @@ export class GitManager extends EventEmitter {
           lastRelativeDate: parts[8] || "",
           lastCommitTimestamp: parseInt(parts[9] || "", 10) || 0,
           merged: false,
+          ...(worktreePath ? { worktreePath } : {}),
         };
       });
 
@@ -2619,6 +2630,30 @@ export class GitManager extends EventEmitter {
     }
     if (name.startsWith("-")) {
       return createStructuredResult({ ok: false, summary: "Invalid branch name." });
+    }
+    // Preflight: refuse early if the branch is checked out in a worktree. Git
+    // itself rejects this with a generic stderr; we surface a structured
+    // `code` so the UI can offer the worktree-aware remove+delete flow instead.
+    const effectiveCwd = rootPath || String(workspace?.cwd || "");
+    if (effectiveCwd) {
+      try {
+        const result = await this.execGit(effectiveCwd, ["worktree", "list", "--porcelain"]);
+        const match = parseWorktreeList(result.stdout).find((entry) => entry.branch === name);
+        if (match && match.path) {
+          return {
+            ...createStructuredResult({
+              ok: false,
+              summary: `Branch ${name} is checked out in worktree ${match.path}. Remove the worktree first.`,
+            }),
+            code: "branch-in-worktree",
+            branch: name,
+            worktreePath: match.path,
+          };
+        }
+      } catch {
+        // Worktree probe is advisory — fall through to the real delete, which
+        // will surface git's own error if it does refuse.
+      }
     }
     return this.runWriteAction(workspace, {
       type: "delete-branch",

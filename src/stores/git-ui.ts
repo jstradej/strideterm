@@ -387,6 +387,26 @@ export const useGitUiStore = defineStore("git-ui", () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       (_api as any).gitDeleteBranch({ workspaceId, branch, force, rootPath }),
     );
+    // Race-net: branchList may have been stale (worktree created since the
+    // last refresh). When the backend rejects with the structured code, fall
+    // through to the worktree-aware confirm so the user has a one-click path
+    // forward instead of just a red error banner.
+    const last = state.value[workspaceId]?.lastResult as Record<string, unknown> | null | undefined;
+    if (
+      last &&
+      last.ok === false &&
+      last.code === "branch-in-worktree" &&
+      typeof last.worktreePath === "string"
+    ) {
+      confirmRemoveWorktreeDeleteBranch(workspaceId, {
+        worktreePath: last.worktreePath,
+        branch,
+        // force=true means the caller already knew the branch had unmerged
+        // commits; force=false means merged. Use that as the best-effort hint.
+        branchMerged: !force,
+      });
+      return;
+    }
     await gitListBranches(workspaceId);
   }
 

@@ -15,8 +15,10 @@
         :expanded="expanded"
         :compact="compact"
         :can-create-pr="canCreatePr"
+        :multi-selected-refs="multiSelectedRefs"
         @select="(ref) => emit('select', ref)"
         @toggle="onToggle"
+        @multi-toggle="(ref) => emit('multi-toggle', ref)"
         @checkout="(ref) => emit('checkout', ref)"
         @checkout-remote="(ref) => emit('checkout-remote', ref)"
         @new-from="(ref) => emit('new-from', ref)"
@@ -53,12 +55,14 @@ const props = withDefaults(
     isDirty?: boolean;
     compact?: boolean;
     canCreatePr?: boolean;
+    multiSelectedRefs?: Set<string>;
   }>(),
   { loading: false, selectedRef: "", head: "", busy: false, isDirty: false, compact: false, canCreatePr: false },
 );
 
 const emit = defineEmits<{
   (e: "select", ref: string): void;
+  (e: "multi-toggle", ref: string): void;
   (e: "checkout", ref: string): void;
   (e: "checkout-remote", ref: string): void;
   (e: "new-from", ref: string): void;

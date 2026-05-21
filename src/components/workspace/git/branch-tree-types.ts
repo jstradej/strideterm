@@ -24,6 +24,7 @@ export interface BranchTreeNodeMeta {
   hasLocal?: boolean;
   count?: number;
   tag?: boolean;
+  worktreePath?: string;
 }
 
 export type BranchTreeNodeKind = "section" | "folder" | "branch-local" | "branch-remote" | "tag";

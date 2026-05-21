@@ -1663,6 +1663,70 @@ describe("GitManager", () => {
       const merged = result.local.find((b) => b.name === "merged-feature")!;
       expect(merged.merged).toBe(true);
     });
+
+    test("local entries carry worktreePath when checked out in a worktree", async () => {
+      const cwd = "/repo";
+      const execGitImpl = createExecMock({
+        [`${cwd}::for-each-ref --format=${BRANCH_FMT} --sort=-committerdate refs/heads`]: {
+          stdout: [
+            "refs/heads/main\tmain\t*\t\t\tabc1234\tInit\tAlice\t2h\t1700000000",
+            "refs/heads/docker-view\tdocker-view\t \t\t\tdef5678\tWork\tBob\t3d\t1699900000",
+          ].join("\n"),
+          stderr: "",
+        },
+        [`${cwd}::for-each-ref --format=${BRANCH_FMT} --sort=-committerdate refs/remotes`]: {
+          stdout: "",
+          stderr: "",
+        },
+        [`${cwd}::rev-parse --abbrev-ref HEAD`]: { stdout: "main\n", stderr: "" },
+        [`${cwd}::rev-parse --abbrev-ref --symbolic-full-name @{upstream}`]: { stdout: "", stderr: "" },
+        [`${cwd}::rev-list --left-right --count main...docker-view`]: { stdout: "1\t2\n", stderr: "" },
+        [`${cwd}::worktree list --porcelain`]: {
+          stdout: [
+            "worktree /repo",
+            "HEAD abc1234",
+            "branch refs/heads/main",
+            "",
+            "worktree /repo/.strideterm/tree/docker-view",
+            "HEAD def5678",
+            "branch refs/heads/docker-view",
+            "",
+          ].join("\n"),
+          stderr: "",
+        },
+      });
+      const mgr = new GitManager({ execGitImpl });
+
+      const result = await mgr.listBranches({ id: "ws-1", cwd }, { rootPath: cwd });
+
+      const dockerView = result.local.find((b) => b.name === "docker-view")!;
+      expect(dockerView.worktreePath).toBe("/repo/.strideterm/tree/docker-view");
+      // Main is checked out in the main worktree — also reported so the UI
+      // could surface it if it ever wanted to (we don't currently).
+      const mainEntry = result.local.find((b) => b.name === "main")!;
+      expect(mainEntry.worktreePath).toBe("/repo");
+    });
+
+    test("local entries omit worktreePath when no worktree is associated", async () => {
+      const cwd = "/repo";
+      const execGitImpl = createExecMock({
+        [`${cwd}::for-each-ref --format=${BRANCH_FMT} --sort=-committerdate refs/heads`]: {
+          stdout: "refs/heads/main\tmain\t*\t\t\tabc1234\tInit\tAlice\t2h\t1700000000\n",
+          stderr: "",
+        },
+        [`${cwd}::for-each-ref --format=${BRANCH_FMT} --sort=-committerdate refs/remotes`]: {
+          stdout: "",
+          stderr: "",
+        },
+        [`${cwd}::rev-parse --abbrev-ref HEAD`]: { stdout: "main\n", stderr: "" },
+        [`${cwd}::rev-parse --abbrev-ref --symbolic-full-name @{upstream}`]: { stdout: "", stderr: "" },
+        // No worktree stub — call rejects, caught by .catch, returns empty map.
+      });
+      const mgr = new GitManager({ execGitImpl });
+      const result = await mgr.listBranches({ id: "ws-1", cwd }, { rootPath: cwd });
+      const mainEntry = result.local.find((b) => b.name === "main")!;
+      expect(mainEntry.worktreePath).toBeUndefined();
+    });
   });
 
   // ─── detectBestBaseBranch ───────────────────────────────────────────────
@@ -1792,6 +1856,79 @@ describe("GitManager", () => {
         expect(result.ok).toBe(false);
         expect(result.summary).toContain("Invalid");
         expect(calls.some((args) => args[0] === "branch")).toBe(false);
+      });
+
+      test("refuses with code 'branch-in-worktree' when branch is checked out in a worktree", async () => {
+        const calls: string[][] = [];
+        const execGitImpl = vi.fn(async (_cwd: string, args: string[]) => {
+          calls.push(args);
+          if (args[0] === "worktree" && args[1] === "list") {
+            return {
+              stdout: [
+                "worktree /repo",
+                "HEAD abc1234",
+                "branch refs/heads/main",
+                "",
+                "worktree /repo/.strideterm/tree/docker-view",
+                "HEAD def5678",
+                "branch refs/heads/docker-view",
+                "",
+              ].join("\n"),
+              stderr: "",
+            };
+          }
+          return { stdout: "", stderr: "" };
+        });
+        const mgr = new GitManager({ execGitImpl });
+        // No inspectWorkspace stub needed — we exit before runWriteAction.
+
+        const result = await mgr.deleteBranch(
+          { id: "ws-1", cwd: "/repo" },
+          { branch: "docker-view" },
+        );
+
+        expect(result.ok).toBe(false);
+        // Custom code field for the UI to dispatch on.
+        expect((result as Record<string, unknown>).code).toBe("branch-in-worktree");
+        expect((result as Record<string, unknown>).worktreePath).toBe(
+          "/repo/.strideterm/tree/docker-view",
+        );
+        expect((result as Record<string, unknown>).branch).toBe("docker-view");
+        // Crucially, no `git branch -d` was attempted.
+        expect(calls.some((args) => args[0] === "branch" && (args[1] === "-d" || args[1] === "-D"))).toBe(false);
+      });
+
+      test("proceeds to runWriteAction when branch is not in any worktree", async () => {
+        const calls: string[][] = [];
+        const execGitImpl = vi.fn(async (_cwd: string, args: string[]) => {
+          calls.push(args);
+          if (args[0] === "worktree" && args[1] === "list") {
+            return {
+              stdout: ["worktree /repo", "HEAD abc1234", "branch refs/heads/main", ""].join("\n"),
+              stderr: "",
+            };
+          }
+          return { stdout: "", stderr: "" };
+        });
+        const mgr = new GitManager({ execGitImpl });
+        mgr.inspectWorkspace = vi.fn().mockResolvedValue({
+          available: true,
+          branch: "main",
+          baseBranch: "main",
+          upstream: "origin/main",
+          dirty: false,
+          operationState: { kind: "idle", inProgress: false, conflicts: [] },
+          remotes: { origin: "https://example.com/repo.git" },
+        });
+
+        const result = await mgr.deleteBranch(
+          { id: "ws-1", cwd: "/repo" },
+          { branch: "feature/foo" },
+        );
+
+        expect(result.ok).toBe(true);
+        expect(calls).toContainEqual(["branch", "-d", "feature/foo"]);
+        expect((result as Record<string, unknown>).code).toBeUndefined();
       });
     });
 

@@ -154,7 +154,9 @@
             :busy="!!gitUi.busyAction"
             :is-dirty="isDirty"
             :can-create-pr="hasAzureConnection"
+            :multi-selected-refs="multiSelectedRefs"
             @select="onSelectRef"
+            @multi-toggle="onMultiToggleRef"
             @checkout="onCheckout"
             @checkout-remote="onCheckoutRemote"
             @new-from="onNewBranchFrom"
@@ -334,10 +336,10 @@
                 Include base updates
               </label>
               <button
-                v-if="hasActiveFilters"
                 type="button"
                 class="button button--ghost button--small"
-                title="Clear all commit filters"
+                :disabled="!hasActiveFilters"
+                :title="hasActiveFilters ? 'Clear all commit filters' : 'No active filters to clear'"
                 @click="resetFilters"
               >
                 Clear
@@ -637,6 +639,11 @@ const mobileView = ref<"tree" | "commits" | "diff">("tree");
 // Empty string = no filter (shows the full Log).
 const selectedRef = ref<string>("");
 
+// Ctrl/Cmd-click multi-selection of local branches for bulk delete.
+// A plain click clears this; Ctrl/Cmd-click toggles a ref in the set.
+// We keep the Set in a ref and replace it wholesale to ensure reactivity.
+const multiSelectedRefs = ref<Set<string>>(new Set());
+
 const branchesLoading = computed(() => props.gitUi?.branchesLoading === true);
 const branchesError = computed(() => String(props.gitUi?.branchesError || ""));
 
@@ -661,6 +668,7 @@ interface LocalBranch {
   lastRelativeDate: string;
   lastCommitTimestamp: number;
   merged: boolean;
+  worktreePath?: string;
 }
 interface RemoteBranch {
   name: string;
@@ -881,6 +889,7 @@ const branchTree = computed<BranchTreeNode[]>(() => {
           lastRelativeDate: b.lastRelativeDate,
           lastCommitTimestamp: b.lastCommitTimestamp,
           isCurrent: b.isCurrent,
+          ...(b.worktreePath ? { worktreePath: b.worktreePath } : {}),
         },
       }));
     const localTree = buildForest(locals, "local");
@@ -1297,10 +1306,23 @@ watch(
 
 function onSelectRef(ref: string) {
   selectedRef.value = ref;
+  // A plain (non-Ctrl/Cmd) click clears the multi-selection — Ctrl/Cmd-click
+  // emits "multi-toggle" instead, so reaching this handler means the user
+  // wants a single-focus selection.
+  if (multiSelectedRefs.value.size > 0) multiSelectedRefs.value = new Set();
   // Clear current commit selection so the diff pane doesn't show a commit
   // unrelated to the new branch view. Graph refresh fires via the watcher
   // tuple — no need to call refreshGraph() here.
   gitUiStore.gitSelectCommit(props.workspaceId, "");
+}
+
+function onMultiToggleRef(ref: string) {
+  // Toggle inclusion in the multi-selection set. Replace the Set reference
+  // so Vue picks up the change.
+  const next = new Set(multiSelectedRefs.value);
+  if (next.has(ref)) next.delete(ref);
+  else next.add(ref);
+  multiSelectedRefs.value = next;
 }
 
 function onMobileSelectRef(ref: string) {
@@ -1343,8 +1365,25 @@ async function onCheckoutRemote(remoteRef: string) {
 }
 
 function onDeleteLocal(ref: string) {
+  // Bulk path: Ctrl/Cmd-clicked one or more branches and the right-click
+  // target is in that set. Operate on the whole set instead of just `ref`.
+  if (multiSelectedRefs.value.size > 1 && multiSelectedRefs.value.has(ref)) {
+    onBulkDeleteLocal(Array.from(multiSelectedRefs.value));
+    return;
+  }
   const entry = branchList.value.local.find((b) => b.name === ref);
   if (!entry) return;
+  // Branch checked out in a worktree can't be deleted via `git branch -d`.
+  // Route through the worktree-aware confirm so the user can wipe the
+  // worktree directory and the branch ref in one step.
+  if (entry.worktreePath) {
+    gitUiStore.confirmRemoveWorktreeDeleteBranch(props.workspaceId, {
+      worktreePath: entry.worktreePath,
+      branch: entry.name,
+      branchMerged: entry.merged,
+    });
+    return;
+  }
   const force = !entry.merged;
   const verb = force ? "Force delete" : "Delete";
   appStore.openDialog("ConfirmDialog", {
@@ -1359,6 +1398,60 @@ function onDeleteLocal(ref: string) {
     onConfirm: async () => {
       appStore.closeDialog();
       await gitUiStore.gitDeleteBranch(props.workspaceId, entry.name, force);
+      refreshAll(true);
+    },
+  });
+}
+
+function onBulkDeleteLocal(refs: string[]) {
+  // Resolve each ref against the current branchList so we know which are
+  // checked out in a worktree (those go through `removeWorktree` instead
+  // of `branch -d`) and which have unmerged commits (those need -D / force).
+  const entries = refs
+    .map((r) => branchList.value.local.find((b) => b.name === r))
+    .filter((b): b is LocalBranch => !!b && !b.isCurrent);
+  if (!entries.length) return;
+  const worktreeEntries = entries.filter((b) => !!b.worktreePath);
+  const unmergedEntries = entries.filter((b) => !b.merged);
+
+  // One bulk confirm covers everything — no per-branch prompts during the
+  // loop. Mirrors how IDEA handles multi-branch delete.
+  const lines: string[] = entries.map((b) => {
+    const tags: string[] = [];
+    if (b.worktreePath) tags.push("worktree");
+    if (!b.merged) tags.push("unmerged");
+    return tags.length ? `• ${b.name} (${tags.join(", ")})` : `• ${b.name}`;
+  });
+  const extras: string[] = [];
+  if (worktreeEntries.length) {
+    extras.push(
+      `${worktreeEntries.length} worktree director${worktreeEntries.length === 1 ? "y" : "ies"} will also be removed.`,
+    );
+  }
+  if (unmergedEntries.length) {
+    extras.push(
+      `${unmergedEntries.length} branch${unmergedEntries.length === 1 ? " has" : "es have"} unmerged commits — they will be lost.`,
+    );
+  }
+  appStore.openDialog("ConfirmDialog", {
+    eyebrow: "Git",
+    title: `Delete ${entries.length} branches?`,
+    message: [...lines, ...(extras.length ? ["", ...extras] : [])].join("\n"),
+    confirmLabel: "Delete all",
+    danger: true,
+    onCancel: () => appStore.closeDialog(),
+    onConfirm: async () => {
+      appStore.closeDialog();
+      // Sequential — git on one repo serializes index writes anyway, and
+      // any per-branch failure leaves the rest in a known state.
+      for (const b of entries) {
+        if (b.worktreePath) {
+          await gitUiStore.gitRemoveWorktree(props.workspaceId, b.worktreePath, true);
+        } else {
+          await gitUiStore.gitDeleteBranch(props.workspaceId, b.name, !b.merged);
+        }
+      }
+      multiSelectedRefs.value = new Set();
       refreshAll(true);
     },
   });
