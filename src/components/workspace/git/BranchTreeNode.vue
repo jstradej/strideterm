@@ -325,8 +325,7 @@ function onRowClick(event?: MouseEvent | KeyboardEvent) {
   if (event && isMac && event.ctrlKey && !event.metaKey) {
     return;
   }
-  const isDeletableLocal =
-    props.node.kind === "branch-local" && !!props.node.ref && !props.node.isCurrent;
+  const isDeletableLocal = props.node.kind === "branch-local" && !!props.node.ref && !props.node.isCurrent;
   // Shift+click: range-select from anchor (current single selection) to
   // this row. Parent computes the actual range against branch ordering.
   if (event && "shiftKey" in event && event.shiftKey && isDeletableLocal) {
@@ -480,11 +479,7 @@ function runAction(id: string) {
   border-left-color: #7fbcec;
 }
 .branch-node__row--multi-selected.branch-node__row--selected {
-  background: linear-gradient(
-    90deg,
-    rgba(70, 130, 200, 0.22) 0%,
-    rgba(255, 164, 36, 0.15) 100%
-  );
+  background: linear-gradient(90deg, rgba(70, 130, 200, 0.22) 0%, rgba(255, 164, 36, 0.15) 100%);
 }
 
 .branch-node__row--current {

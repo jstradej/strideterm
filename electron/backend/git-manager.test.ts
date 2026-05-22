@@ -1495,10 +1495,7 @@ describe("GitManager", () => {
     test("drops paths starting with '-' (defense in depth even after schema validation)", async () => {
       const { mgr, calls } = captureLogArgs();
       // Bypassing the schema directly here to exercise the inner guard.
-      await mgr.logGraph(
-        { id: "ws1", cwd: "/repo" },
-        { rootPath: "/repo", paths: ["-rf", "src/ok.ts"] as string[] },
-      );
+      await mgr.logGraph({ id: "ws1", cwd: "/repo" }, { rootPath: "/repo", paths: ["-rf", "src/ok.ts"] as string[] });
       const logCall = calls.find((c) => c[0] === "log");
       const dashIdx = logCall!.indexOf("--");
       expect(logCall!.slice(dashIdx + 1)).toEqual(["src/ok.ts"]);
@@ -1771,13 +1768,9 @@ describe("GitManager", () => {
       });
       const mgr = new GitManager({ execGitImpl });
 
-      const result = await mgr.detectBestBaseBranch(
-        cwd,
-        "feature/brandnew",
-        "",
-        ["master", "origin/develop"],
-        { origin: "https://example.com/repo.git" },
-      );
+      const result = await mgr.detectBestBaseBranch(cwd, "feature/brandnew", "", ["master", "origin/develop"], {
+        origin: "https://example.com/repo.git",
+      });
       expect(result).toBe("origin/develop");
     });
 
@@ -1791,13 +1784,9 @@ describe("GitManager", () => {
       });
       const mgr = new GitManager({ execGitImpl });
 
-      const result = await mgr.detectBestBaseBranch(
-        cwd,
-        "orphan",
-        "",
-        ["master", "origin/master"],
-        { origin: "https://example.com/repo.git" },
-      );
+      const result = await mgr.detectBestBaseBranch(cwd, "orphan", "", ["master", "origin/master"], {
+        origin: "https://example.com/repo.git",
+      });
       expect(result).toBe("origin/master");
     });
   });
@@ -1835,10 +1824,7 @@ describe("GitManager", () => {
 
       test("uses -D when force=true", async () => {
         const { mgr, calls } = makeMgr();
-        const result = await mgr.deleteBranch(
-          { id: "ws-1", cwd: "/repo" },
-          { branch: "feature/foo", force: true },
-        );
+        const result = await mgr.deleteBranch({ id: "ws-1", cwd: "/repo" }, { branch: "feature/foo", force: true });
         expect(result.ok).toBe(true);
         expect(calls).toContainEqual(["branch", "-D", "feature/foo"]);
       });
@@ -1882,17 +1868,12 @@ describe("GitManager", () => {
         const mgr = new GitManager({ execGitImpl });
         // No inspectWorkspace stub needed — we exit before runWriteAction.
 
-        const result = await mgr.deleteBranch(
-          { id: "ws-1", cwd: "/repo" },
-          { branch: "docker-view" },
-        );
+        const result = await mgr.deleteBranch({ id: "ws-1", cwd: "/repo" }, { branch: "docker-view" });
 
         expect(result.ok).toBe(false);
         // Custom code field for the UI to dispatch on.
         expect((result as Record<string, unknown>).code).toBe("branch-in-worktree");
-        expect((result as Record<string, unknown>).worktreePath).toBe(
-          "/repo/.strideterm/tree/docker-view",
-        );
+        expect((result as Record<string, unknown>).worktreePath).toBe("/repo/.strideterm/tree/docker-view");
         expect((result as Record<string, unknown>).branch).toBe("docker-view");
         // Crucially, no `git branch -d` was attempted.
         expect(calls.some((args) => args[0] === "branch" && (args[1] === "-d" || args[1] === "-D"))).toBe(false);
@@ -1921,10 +1902,7 @@ describe("GitManager", () => {
           remotes: { origin: "https://example.com/repo.git" },
         });
 
-        const result = await mgr.deleteBranch(
-          { id: "ws-1", cwd: "/repo" },
-          { branch: "feature/foo" },
-        );
+        const result = await mgr.deleteBranch({ id: "ws-1", cwd: "/repo" }, { branch: "feature/foo" });
 
         expect(result.ok).toBe(true);
         expect(calls).toContainEqual(["branch", "-d", "feature/foo"]);
@@ -1952,10 +1930,7 @@ describe("GitManager", () => {
 
       test("rejects branch starting with '-'", async () => {
         const { mgr, calls } = makeMgr();
-        const result = await mgr.deleteRemoteBranch(
-          { id: "ws-1", cwd: "/repo" },
-          { branch: "-rf", remote: "origin" },
-        );
+        const result = await mgr.deleteRemoteBranch({ id: "ws-1", cwd: "/repo" }, { branch: "-rf", remote: "origin" });
         expect(result.ok).toBe(false);
         expect(calls.some((args) => args[0] === "push")).toBe(false);
       });
@@ -2022,13 +1997,7 @@ describe("GitManager", () => {
           { remoteBranch: "origin/feature/foo", localBranch: "origin-feature-foo" },
         );
         expect(result.ok).toBe(true);
-        expect(calls).toContainEqual([
-          "checkout",
-          "-b",
-          "origin-feature-foo",
-          "--track",
-          "origin/feature/foo",
-        ]);
+        expect(calls).toContainEqual(["checkout", "-b", "origin-feature-foo", "--track", "origin/feature/foo"]);
       });
 
       test("rejects empty remoteBranch", async () => {

@@ -13,7 +13,14 @@
         <span class="commit-ctx__hash">{{ shortHash }}</span>
         <span class="commit-ctx__subject">{{ subject || "—" }}</span>
       </div>
-      <button v-for="item in items" :key="item.id" type="button" class="commit-ctx__item" role="menuitem" @click="run(item.id)">
+      <button
+        v-for="item in items"
+        :key="item.id"
+        type="button"
+        class="commit-ctx__item"
+        role="menuitem"
+        @click="run(item.id)"
+      >
         <span class="commit-ctx__label">{{ item.label }}</span>
         <span v-if="item.shortcut" class="commit-ctx__shortcut">{{ item.shortcut }}</span>
       </button>

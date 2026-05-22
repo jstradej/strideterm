@@ -533,10 +533,7 @@ export const useNotificationStore = defineStore("notifications", () => {
     durationMs?: number;
   }): string {
     const id = crypto.randomUUID();
-    persistentToasts.value = [
-      ...persistentToasts.value,
-      { id, title, body, kind, at: new Date().toISOString() },
-    ];
+    persistentToasts.value = [...persistentToasts.value, { id, title, body, kind, at: new Date().toISOString() }];
     if (durationMs > 0) {
       setTimeout(() => dismissPersistentToast(id), durationMs);
     }

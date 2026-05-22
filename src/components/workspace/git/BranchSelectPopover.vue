@@ -26,7 +26,13 @@
           @keydown="onSearchKeydown"
         />
         <ul class="branch-picker__list" role="listbox" tabindex="-1">
-          <li v-if="offLabel" class="branch-picker__row" :class="rowClass(-1, offValue)" @mousedown.prevent="select(offValue)" @mouseenter="activeIndex = -1">
+          <li
+            v-if="offLabel"
+            class="branch-picker__row"
+            :class="rowClass(-1, offValue)"
+            @mousedown.prevent="select(offValue)"
+            @mouseenter="activeIndex = -1"
+          >
             <span class="branch-picker__indent" :style="indentStyle(0)" />
             <span class="branch-picker__icon branch-picker__icon--off">∅</span>
             <span class="branch-picker__label">{{ offLabel }}</span>
@@ -40,12 +46,9 @@
               @mouseenter="activeIndex = idx"
             >
               <span class="branch-picker__indent" :style="indentStyle(row.depth)" />
-              <span
-                v-if="row.isFolder"
-                class="branch-picker__toggle"
-                @mousedown.stop.prevent="toggleFolder(row.key)"
-                >{{ row.expanded ? "▾" : "▸" }}</span
-              >
+              <span v-if="row.isFolder" class="branch-picker__toggle" @mousedown.stop.prevent="toggleFolder(row.key)">{{
+                row.expanded ? "▾" : "▸"
+              }}</span>
               <span v-else class="branch-picker__toggle branch-picker__toggle--leaf" />
               <span :class="['branch-picker__icon', `branch-picker__icon--${row.iconKind}`]">{{ row.icon }}</span>
               <span class="branch-picker__label" :title="row.title">{{ row.label }}</span>
@@ -54,7 +57,9 @@
             </li>
           </template>
           <li v-if="visibleRows.length === 0 && !offLabel" class="branch-picker__empty">No matches</li>
-          <li v-else-if="visibleRows.length === 0 && offLabel && query.trim()" class="branch-picker__empty">No matches</li>
+          <li v-else-if="visibleRows.length === 0 && offLabel && query.trim()" class="branch-picker__empty">
+            No matches
+          </li>
         </ul>
       </div>
     </Teleport>
@@ -190,10 +195,7 @@ const sections = computed<SectionNode[]>(() => {
     }
   }
 
-  function buildForest(
-    entries: Array<{ fullRef: string; strippedPath: string }>,
-    prefix: string,
-  ): BuildNode[] {
+  function buildForest(entries: Array<{ fullRef: string; strippedPath: string }>, prefix: string): BuildNode[] {
     const root: BuildNode[] = [];
     const dirMap = new Map<string, BuildNode>();
     for (const { fullRef, strippedPath } of entries) {

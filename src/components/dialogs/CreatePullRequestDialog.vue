@@ -115,7 +115,9 @@ const targetOptions = computed(() => {
   return unique.map((b) => ({ value: b, label: b }));
 });
 
-const canSubmit = computed(() => !!title.value.trim() && !!targetBranch.value && targetBranch.value !== props.sourceBranch);
+const canSubmit = computed(
+  () => !!title.value.trim() && !!targetBranch.value && targetBranch.value !== props.sourceBranch,
+);
 
 function loadBranches() {
   emit("refreshBranches");

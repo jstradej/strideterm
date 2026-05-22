@@ -2415,7 +2415,15 @@ export class GitManager extends EventEmitter {
     error?: string;
   }> {
     const cwd = rootPath || workspace?.cwd || "";
-    const empty = { ok: false, current: "", upstream: "", local: [], remotes: [], defaultBranch: "", defaultRemote: "" };
+    const empty = {
+      ok: false,
+      current: "",
+      upstream: "",
+      local: [],
+      remotes: [],
+      defaultBranch: "",
+      defaultRemote: "",
+    };
     if (!cwd) return { ...empty, error: "Missing rootPath" };
 
     const startTime = Date.now();
@@ -2565,11 +2573,7 @@ export class GitManager extends EventEmitter {
       await Promise.all(
         uniqueRemotes.map(async (remoteName) => {
           try {
-            const result = await this.execGit(cwd, [
-              "symbolic-ref",
-              "--short",
-              `refs/remotes/${remoteName}/HEAD`,
-            ]);
+            const result = await this.execGit(cwd, ["symbolic-ref", "--short", `refs/remotes/${remoteName}/HEAD`]);
             const value = result.stdout.trim();
             if (value) defaultsByRemote.set(remoteName, value);
           } catch {

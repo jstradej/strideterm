@@ -177,10 +177,7 @@
                 <template v-else-if="selectedRef">Commits on {{ selectedRef }}</template>
                 <template v-else>All commits</template>
               </strong>
-              <span
-                v-if="loadedCount"
-                class="git-branches__pane-count"
-                :title="`${loadedCount} commit(s) shown`"
+              <span v-if="loadedCount" class="git-branches__pane-count" :title="`${loadedCount} commit(s) shown`"
                 >{{ loadedCount }} {{ loadedCount === 1 ? "commit" : "commits" }}</span
               >
               <template v-if="compareBase">
@@ -244,27 +241,12 @@
                 class="git-branches__cselect git-branches__cselect--date"
               />
               <template v-if="dateFilter === 'custom'">
-                <input
-                  v-model="customSince"
-                  type="date"
-                  class="git-branches__filter-date"
-                  title="Since (inclusive)"
-                />
+                <input v-model="customSince" type="date" class="git-branches__filter-date" title="Since (inclusive)" />
                 <span class="git-branches__filter-sep">→</span>
-                <input
-                  v-model="customUntil"
-                  type="date"
-                  class="git-branches__filter-date"
-                  title="Until (inclusive)"
-                />
+                <input v-model="customUntil" type="date" class="git-branches__filter-date" title="Until (inclusive)" />
               </template>
               <div class="git-branches__filter-paths">
-                <span
-                  v-for="p in pathsFilter"
-                  :key="p"
-                  class="git-branches__path-chip"
-                  :title="`Filtering on ${p}`"
-                >
+                <span v-for="p in pathsFilter" :key="p" class="git-branches__path-chip" :title="`Filtering on ${p}`">
                   {{ p }}
                   <button
                     type="button"
@@ -346,12 +328,7 @@
                 Clear
               </button>
             </div>
-            <div
-              v-if="showCompareEmptyState"
-              class="git-branches__compare-empty"
-              role="status"
-              aria-live="polite"
-            >
+            <div v-if="showCompareEmptyState" class="git-branches__compare-empty" role="status" aria-live="polite">
               <span class="git-branches__compare-empty-icon" aria-hidden="true">✓</span>
               <div class="git-branches__compare-empty-text">
                 <strong>No commits ahead of {{ compareBase }}.</strong>
@@ -955,9 +932,7 @@ const branchTree = computed<BranchTreeNode[]>(() => {
   }
 
   // ---- Tags ----
-  const tagNames = showTags.value
-    ? tags.value.map((t) => t.name).filter((n) => !q || n.toLowerCase().includes(q))
-    : [];
+  const tagNames = showTags.value ? tags.value.map((t) => t.name).filter((n) => !q || n.toLowerCase().includes(q)) : [];
   if (tagNames.length) {
     const mapped = tagNames.map((name) => ({
       shortName: name,
@@ -1137,7 +1112,9 @@ const branchSortSelectOptions = [
   { value: "oldest", label: "Sort: Oldest" },
 ];
 
-const limitSelectOptions = computed(() => limitOptions.map((n) => ({ value: n, label: `Limit: ${n.toLocaleString()}` })));
+const limitSelectOptions = computed(() =>
+  limitOptions.map((n) => ({ value: n, label: `Limit: ${n.toLocaleString()}` })),
+);
 
 // Server already filtered by --author, so the rendered commits ARE the raw
 // fetch result. No client-side filtering — that would re-fragment the chain.
@@ -1184,11 +1161,7 @@ function resetFilters() {
 }
 
 const hasActiveFilters = computed(
-  () =>
-    !!userFilter.value ||
-    dateFilter.value !== "all" ||
-    pathsFilter.value.length > 0 ||
-    topoOrder.value,
+  () => !!userFilter.value || dateFilter.value !== "all" || pathsFilter.value.length > 0 || topoOrder.value,
 );
 
 // User/Path filters drop commits from the middle of the chain, which leaves
@@ -1361,9 +1334,7 @@ function onMultiToggleRef(ref: string) {
   // current selectedRef. Without this the user would have to Ctrl-click the
   // already-focused branch too — matches VS Code / IntelliJ behaviour.
   if (next.size === 0 && selectedRef.value && selectedRef.value !== ref) {
-    const anchorIsLocal = branchList.value.local.some(
-      (b) => b.name === selectedRef.value && !b.isCurrent,
-    );
+    const anchorIsLocal = branchList.value.local.some((b) => b.name === selectedRef.value && !b.isCurrent);
     if (anchorIsLocal) next.add(selectedRef.value);
   }
   if (next.has(ref)) next.delete(ref);

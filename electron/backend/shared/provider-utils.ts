@@ -150,8 +150,7 @@ export function dedupePrSummaries<T extends PrSummaryDedupShape>(summaries: T[])
 
 function comparePrSummariesForDedup(a: PrSummaryDedupShape, b: PrSummaryDedupShape): number {
   if (!!a.hasAttention !== !!b.hasAttention) return a.hasAttention ? 1 : -1;
-  const rank = (r?: string): number =>
-    r === "reviewer" ? 3 : r === "author" ? 2 : r === "other" ? 1 : 0;
+  const rank = (r?: string): number => (r === "reviewer" ? 3 : r === "author" ? 2 : r === "other" ? 1 : 0);
   const diff = rank(a.role) - rank(b.role);
   if (diff !== 0) return diff;
   const ta = a.lastActivityAt ? Date.parse(a.lastActivityAt) : 0;

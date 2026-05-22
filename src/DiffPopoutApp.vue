@@ -88,7 +88,13 @@ onMounted(async () => {
   background: var(--surface, #1d2026);
   color: var(--text, #e8e8e8);
   font-family:
-    system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    system-ui,
+    -apple-system,
+    "Segoe UI",
+    Roboto,
+    "Helvetica Neue",
+    Arial,
+    sans-serif;
 }
 
 .diff-popout__header {

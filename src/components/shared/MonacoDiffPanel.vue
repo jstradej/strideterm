@@ -120,9 +120,9 @@ const canPopout = computed(() => {
   if (!props.popoutTitle) return false;
   if (!props.payload) return false;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const bridge = (typeof window !== "undefined" ? (window as any).strideterm : null) as
-    | { openDiffPopout?: (p: unknown) => Promise<unknown> }
-    | null;
+  const bridge = (typeof window !== "undefined" ? (window as any).strideterm : null) as {
+    openDiffPopout?: (p: unknown) => Promise<unknown>;
+  } | null;
   return typeof bridge?.openDiffPopout === "function";
 });
 

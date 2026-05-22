@@ -240,8 +240,7 @@ export const useGitUiStore = defineStore("git-ui", () => {
       // Failure (or success with warnings/conflicts the user must read) keeps
       // the full GitOperationCard banner so they can act on it.
       const hasReadworthyExtras =
-        !!result &&
-        ((result.warnings?.length ?? 0) > 0 || (result.conflicts?.length ?? 0) > 0);
+        !!result && ((result.warnings?.length ?? 0) > 0 || (result.conflicts?.length ?? 0) > 0);
       if (result && result.ok && !hasReadworthyExtras) {
         const { useNotificationStore } = await import("./notifications.js");
         useNotificationStore().pushEphemeralToast({
@@ -410,12 +409,7 @@ export const useGitUiStore = defineStore("git-ui", () => {
     // through to the worktree-aware confirm so the user has a one-click path
     // forward instead of just a red error banner.
     const last = state.value[workspaceId]?.lastResult as Record<string, unknown> | null | undefined;
-    if (
-      last &&
-      last.ok === false &&
-      last.code === "branch-in-worktree" &&
-      typeof last.worktreePath === "string"
-    ) {
+    if (last && last.ok === false && last.code === "branch-in-worktree" && typeof last.worktreePath === "string") {
       confirmRemoveWorktreeDeleteBranch(workspaceId, {
         worktreePath: last.worktreePath,
         branch,
@@ -1022,8 +1016,8 @@ export const useGitUiStore = defineStore("git-ui", () => {
     if (
       !opts.force &&
       ui.baseComparisonKey === cacheKey &&
-      (ui.baseComparisonLoading || (typeof ui.baseComparisonFetchedAt === "number" &&
-        now - (ui.baseComparisonFetchedAt as number) < FRESH_TTL_MS))
+      (ui.baseComparisonLoading ||
+        (typeof ui.baseComparisonFetchedAt === "number" && now - (ui.baseComparisonFetchedAt as number) < FRESH_TTL_MS))
     ) {
       return;
     }

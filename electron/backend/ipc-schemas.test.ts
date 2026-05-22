@@ -208,9 +208,7 @@ describe("ipc-schemas", () => {
     });
 
     test("rejects sinceDate starting with '-' (flag-injection guard)", () => {
-      expect(() =>
-        validateIpc(gitLogGraphSchema, { workspaceId: "ws-1", sinceDate: "--malicious" }, "test"),
-      ).toThrow();
+      expect(() => validateIpc(gitLogGraphSchema, { workspaceId: "ws-1", sinceDate: "--malicious" }, "test")).toThrow();
     });
 
     test("rejects path containing '..' (traversal guard)", () => {
@@ -335,9 +333,7 @@ describe("ipc-schemas", () => {
     });
 
     test("rejects newName starting with '-' (flag-injection guard)", () => {
-      expect(() =>
-        validateIpc(gitBranchRenameSchema, { workspaceId: "ws-1", newName: "-D" }, "test"),
-      ).toThrow();
+      expect(() => validateIpc(gitBranchRenameSchema, { workspaceId: "ws-1", newName: "-D" }, "test")).toThrow();
     });
 
     test("rejects old branch starting with '-' (flag-injection guard)", () => {
