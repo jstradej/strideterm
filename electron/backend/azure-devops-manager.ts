@@ -41,6 +41,7 @@ import {
   createEmptySnapshot,
   normalizeConnectionInput,
   exists,
+  dedupePrSummaries,
 } from "./azure-devops-utils.js";
 
 // ─── Local type aliases ──────────────────────────────────────────────────────
@@ -601,13 +602,18 @@ export class AzureDevOpsManager extends BaseProviderManager {
       await this.reviewStore.upsertTrackedPullRequest(key, tracked);
     }
 
-    const recentlyUpdated = visibleSummaries
+    // Collapse PRs that several connections fetched independently (e.g.
+    // 3 connections to the same Azure DevOps org → same PR 3× otherwise).
+    // The per-connection trackedPullRequests / detailMap are kept intact;
+    // dedup applies only to the inbox views the user sees.
+    const dedupedSummaries = dedupePrSummaries(visibleSummaries);
+    const recentlyUpdated = dedupedSummaries
       .slice()
       .sort((left, right) => parseDate(right.lastActivityAt) - parseDate(left.lastActivityAt));
     const snapshot = {
       connections: connectionSnapshots as unknown as typeof this.snapshot.connections,
       inbox: {
-        needsMyReview: visibleSummaries
+        needsMyReview: dedupedSummaries
           .filter((summary) => summary.role === "reviewer")
           .sort((left, right) => {
             if (left.hasAttention !== right.hasAttention) {
@@ -615,7 +621,7 @@ export class AzureDevOpsManager extends BaseProviderManager {
             }
             return parseDate(right.lastActivityAt) - parseDate(left.lastActivityAt);
           }),
-        myPullRequests: visibleSummaries
+        myPullRequests: dedupedSummaries
           .filter((summary) => summary.role === "author")
           .sort((left, right) => {
             if (left.hasAttention !== right.hasAttention) {
@@ -624,7 +630,7 @@ export class AzureDevOpsManager extends BaseProviderManager {
             return parseDate(right.lastActivityAt) - parseDate(left.lastActivityAt);
           }),
         recentlyUpdated,
-        needsAttention: visibleSummaries
+        needsAttention: dedupedSummaries
           .filter((summary) => summary.hasAttention)
           .sort((left, right) => parseDate(right.lastActivityAt) - parseDate(left.lastActivityAt)),
       },

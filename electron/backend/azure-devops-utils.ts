@@ -19,6 +19,7 @@ export {
   exists,
   createEmptySnapshot,
   extractErrorText,
+  dedupePrSummaries,
 } from "./shared/provider-utils.js";
 
 import { trimTrailingSlash, firstNonEmpty, parseDate } from "./shared/provider-utils.js";

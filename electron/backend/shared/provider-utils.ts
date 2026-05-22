@@ -98,6 +98,67 @@ export function extractErrorText(error: unknown): string {
   return firstNonEmpty(e?.stderr, e?.stdout, e?.error?.message, e?.message, String(error || ""));
 }
 
+/**
+ * Shape used by `dedupePrSummaries`. Both Azure and GitHub PR summaries
+ * satisfy this — we type-parameterise so the helper returns the input shape.
+ */
+export interface PrSummaryDedupShape {
+  orgUrl?: string;
+  repository?: { id?: string };
+  pullRequest?: { id?: string | number };
+  hasAttention?: boolean;
+  role?: string;
+  lastActivityAt?: string | null;
+  prKey?: string;
+}
+
+/**
+ * Collapse PR summaries that point at the same canonical PR but came from
+ * different connections. Triggered when the user has multiple connections
+ * with access to the same Azure DevOps / GitHub org — without dedup, each
+ * connection's poll appends its own copy and the inbox shows the same PR
+ * N times.
+ *
+ * Canonical key = `${orgUrl}|${repository.id}|${pullRequest.id}`. When
+ * duplicates collide, we keep the entry with the strongest signal so the
+ * surviving row is the most useful one for the user:
+ *   1. `hasAttention === true` wins (something needs the user's action)
+ *   2. role rank: reviewer > author > other > unknown
+ *   3. fresher `lastActivityAt` wins
+ *
+ * Entries we can't form a canonical key for (missing repo / PR id) are
+ * kept under a synthetic key so they never get silently dropped.
+ */
+export function dedupePrSummaries<T extends PrSummaryDedupShape>(summaries: T[]): T[] {
+  const byKey = new Map<string, T>();
+  for (const summary of summaries) {
+    const orgUrl = summary.orgUrl || "";
+    const repoId = summary.repository?.id || "";
+    const prId = summary.pullRequest?.id != null ? String(summary.pullRequest.id) : "";
+    if (!repoId || !prId) {
+      byKey.set(`__nokey__${summary.prKey || byKey.size}`, summary);
+      continue;
+    }
+    const key = `${orgUrl}|${repoId}|${prId}`;
+    const existing = byKey.get(key);
+    if (!existing || comparePrSummariesForDedup(summary, existing) > 0) {
+      byKey.set(key, summary);
+    }
+  }
+  return Array.from(byKey.values());
+}
+
+function comparePrSummariesForDedup(a: PrSummaryDedupShape, b: PrSummaryDedupShape): number {
+  if (!!a.hasAttention !== !!b.hasAttention) return a.hasAttention ? 1 : -1;
+  const rank = (r?: string): number =>
+    r === "reviewer" ? 3 : r === "author" ? 2 : r === "other" ? 1 : 0;
+  const diff = rank(a.role) - rank(b.role);
+  if (diff !== 0) return diff;
+  const ta = a.lastActivityAt ? Date.parse(a.lastActivityAt) : 0;
+  const tb = b.lastActivityAt ? Date.parse(b.lastActivityAt) : 0;
+  return ta - tb;
+}
+
 export function formatReviewWorkspaceError(error: unknown, reviewRoot: string, providerLabel = "connection"): string {
   const text = extractErrorText(error);
   if (!text) return "";
