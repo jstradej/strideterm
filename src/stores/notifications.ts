@@ -515,6 +515,34 @@ export const useNotificationStore = defineStore("notifications", () => {
     persistentToasts.value = persistentToasts.value.filter((t) => t.id !== id);
   }
 
+  /**
+   * Auto-dismissing toast for transient success confirmations. Shares the
+   * persistent toast stack so it appears in the same bottom-right slot,
+   * but isn't mirrored into the notification panel (each successful Git
+   * action would otherwise spam the dock).
+   */
+  function pushEphemeralToast({
+    title,
+    body,
+    kind = "info",
+    durationMs = 4000,
+  }: {
+    title: string;
+    body: string;
+    kind?: NotificationKind;
+    durationMs?: number;
+  }): string {
+    const id = crypto.randomUUID();
+    persistentToasts.value = [
+      ...persistentToasts.value,
+      { id, title, body, kind, at: new Date().toISOString() },
+    ];
+    if (durationMs > 0) {
+      setTimeout(() => dismissPersistentToast(id), durationMs);
+    }
+    return id;
+  }
+
   return {
     // State
     sessions,
@@ -547,6 +575,7 @@ export const useNotificationStore = defineStore("notifications", () => {
     requestFocus,
     showError,
     pushPersistentToast,
+    pushEphemeralToast,
     dismissPersistentToast,
   };
 });

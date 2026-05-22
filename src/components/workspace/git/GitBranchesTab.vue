@@ -157,6 +157,7 @@
             :multi-selected-refs="multiSelectedRefs"
             @select="onSelectRef"
             @multi-toggle="onMultiToggleRef"
+            @range-select="onRangeSelectRef"
             @checkout="onCheckout"
             @checkout-remote="onCheckoutRemote"
             @new-from="onNewBranchFrom"
@@ -1286,6 +1287,38 @@ watch(compareBase, () => {
   includeBaseUpdates.value = false;
 });
 
+// After any branch-list refresh, prune selections that point at refs which
+// no longer exist (e.g. user just deleted the branch they had selected, so
+// the graph would otherwise blow up with `fatal: ambiguous argument …
+// unknown revision`). The existing selectedRef watcher then re-runs the
+// graph against HEAD.
+watch(
+  () => [
+    branchList.value.local.map((b) => b.name).join("\n"),
+    branchList.value.remotes.map((r) => r.name).join("\n"),
+    tags.value.map((t) => t.name).join("\n"),
+  ],
+  () => {
+    const validRefs = new Set<string>();
+    for (const b of branchList.value.local) validRefs.add(b.name);
+    for (const r of branchList.value.remotes) validRefs.add(r.name);
+    for (const t of tags.value) validRefs.add(t.name);
+    if (selectedRef.value && !validRefs.has(selectedRef.value)) {
+      selectedRef.value = "";
+      gitUiStore.gitSelectCommit(props.workspaceId, "");
+    }
+    if (multiSelectedRefs.value.size > 0) {
+      let changed = false;
+      const next = new Set<string>();
+      for (const r of multiSelectedRefs.value) {
+        if (validRefs.has(r)) next.add(r);
+        else changed = true;
+      }
+      if (changed) multiSelectedRefs.value = next;
+    }
+  },
+);
+
 onBeforeUnmount(() => {
   if (filterDebounceTimer) {
     clearTimeout(filterDebounceTimer);
@@ -1317,12 +1350,54 @@ function onSelectRef(ref: string) {
 }
 
 function onMultiToggleRef(ref: string) {
-  // Toggle inclusion in the multi-selection set. Replace the Set reference
-  // so Vue picks up the change.
   const next = new Set(multiSelectedRefs.value);
+  // Seed: first Ctrl/Cmd-click after a single selection extends from the
+  // current selectedRef. Without this the user would have to Ctrl-click the
+  // already-focused branch too — matches VS Code / IntelliJ behaviour.
+  if (next.size === 0 && selectedRef.value && selectedRef.value !== ref) {
+    const anchorIsLocal = branchList.value.local.some(
+      (b) => b.name === selectedRef.value && !b.isCurrent,
+    );
+    if (anchorIsLocal) next.add(selectedRef.value);
+  }
   if (next.has(ref)) next.delete(ref);
   else next.add(ref);
   multiSelectedRefs.value = next;
+}
+
+// Flat, deduped list of deletable local refs in tree display order. Used as
+// the index space for shift-click range selection.
+function collectLocalFlat(nodes: BranchTreeNode[]): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  function walk(arr: BranchTreeNode[]) {
+    for (const n of arr) {
+      if (n.kind === "branch-local" && n.ref && !n.isCurrent && !seen.has(n.ref)) {
+        seen.add(n.ref);
+        out.push(n.ref);
+      }
+      if (n.children?.length) walk(n.children);
+    }
+  }
+  walk(nodes);
+  return out;
+}
+
+function onRangeSelectRef(ref: string) {
+  const flat = collectLocalFlat(branchTree.value);
+  const targetIdx = flat.indexOf(ref);
+  if (targetIdx < 0) return; // Target isn't a deletable local branch.
+  // Anchor: current single selection if it's a local non-current branch.
+  // No anchor (e.g. user shift-clicks first) → fall back to just selecting
+  // the clicked ref, so shift+click never silently does nothing.
+  const anchor = selectedRef.value;
+  const anchorIdx = anchor ? flat.indexOf(anchor) : -1;
+  if (anchorIdx < 0) {
+    multiSelectedRefs.value = new Set([ref]);
+    return;
+  }
+  const [lo, hi] = anchorIdx <= targetIdx ? [anchorIdx, targetIdx] : [targetIdx, anchorIdx];
+  multiSelectedRefs.value = new Set(flat.slice(lo, hi + 1));
 }
 
 function onMobileSelectRef(ref: string) {

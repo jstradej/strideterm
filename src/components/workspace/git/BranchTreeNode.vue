@@ -92,6 +92,7 @@
         @select="(ref) => emit('select', ref)"
         @toggle="(k) => emit('toggle', k)"
         @multi-toggle="(ref) => emit('multi-toggle', ref)"
+        @range-select="(ref) => emit('range-select', ref)"
         @checkout="(ref) => emit('checkout', ref)"
         @checkout-remote="(ref) => emit('checkout-remote', ref)"
         @new-from="(ref) => emit('new-from', ref)"
@@ -145,6 +146,7 @@ const emit = defineEmits<{
   (e: "select", ref: string): void;
   (e: "toggle", key: string): void;
   (e: "multi-toggle", ref: string): void;
+  (e: "range-select", ref: string): void;
   (e: "checkout", ref: string): void;
   (e: "checkout-remote", ref: string): void;
   (e: "new-from", ref: string): void;
@@ -155,6 +157,18 @@ const emit = defineEmits<{
   (e: "rebase", ref: string): void;
   (e: "create-pr", ref: string): void;
 }>();
+
+// Multi-select modifier differs across platforms:
+//   macOS:           Cmd (metaKey) — Ctrl+click is a right-click alias there,
+//                    so treating ctrlKey as multi-toggle would fight the
+//                    contextmenu handler.
+//   Windows / Linux: Ctrl (ctrlKey).
+// Detected once per module load — navigator.platform is fine here because
+// we only ever need a coarse "is this a Mac userAgent" answer.
+const isMac = typeof navigator !== "undefined" && /Mac|iPhone|iPad/i.test(navigator.platform || "");
+function isMultiSelectModifier(event: { ctrlKey?: boolean; metaKey?: boolean }): boolean {
+  return isMac ? !!event.metaKey : !!event.ctrlKey;
+}
 
 const menuOpen = ref(false);
 const menuRef = ref<HTMLElement | null>(null);
@@ -305,17 +319,24 @@ function onRowClick(event?: MouseEvent | KeyboardEvent) {
     emit("toggle", props.node.key);
     return;
   }
+  // macOS Ctrl+click === right-click. The contextmenu handler already
+  // covers it; reinterpreting it here would steal the click and corrupt
+  // the existing multi-selection.
+  if (event && isMac && event.ctrlKey && !event.metaKey) {
+    return;
+  }
+  const isDeletableLocal =
+    props.node.kind === "branch-local" && !!props.node.ref && !props.node.isCurrent;
+  // Shift+click: range-select from anchor (current single selection) to
+  // this row. Parent computes the actual range against branch ordering.
+  if (event && "shiftKey" in event && event.shiftKey && isDeletableLocal) {
+    emit("range-select", props.node.ref!);
+    return;
+  }
   // Ctrl/Cmd+click toggles multi-selection for bulk operations on local
-  // branches. Skip the current branch (can't be deleted anyway) and
-  // anything that isn't a deletable local branch ref.
-  const isModifierClick = !!event && (event.ctrlKey || event.metaKey);
-  if (
-    isModifierClick &&
-    props.node.kind === "branch-local" &&
-    props.node.ref &&
-    !props.node.isCurrent
-  ) {
-    emit("multi-toggle", props.node.ref);
+  // branches.
+  if (event && isMultiSelectModifier(event) && isDeletableLocal) {
+    emit("multi-toggle", props.node.ref!);
     return;
   }
   if (props.node.ref) emit("select", props.node.ref);

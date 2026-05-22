@@ -19,6 +19,7 @@
         @select="(ref) => emit('select', ref)"
         @toggle="onToggle"
         @multi-toggle="(ref) => emit('multi-toggle', ref)"
+        @range-select="(ref) => emit('range-select', ref)"
         @checkout="(ref) => emit('checkout', ref)"
         @checkout-remote="(ref) => emit('checkout-remote', ref)"
         @new-from="(ref) => emit('new-from', ref)"
@@ -63,6 +64,7 @@ const props = withDefaults(
 const emit = defineEmits<{
   (e: "select", ref: string): void;
   (e: "multi-toggle", ref: string): void;
+  (e: "range-select", ref: string): void;
   (e: "checkout", ref: string): void;
   (e: "checkout-remote", ref: string): void;
   (e: "new-from", ref: string): void;

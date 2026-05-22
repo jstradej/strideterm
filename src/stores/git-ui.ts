@@ -235,7 +235,25 @@ export const useGitUiStore = defineStore("git-ui", () => {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         appStore.payload = response.payload as any;
       }
-      ui.lastResult = response?.result ? { ...response.result, at: new Date().toISOString() } : null;
+      const result = response?.result;
+      // Success path: surface a transient toast and drop any prior banner.
+      // Failure (or success with warnings/conflicts the user must read) keeps
+      // the full GitOperationCard banner so they can act on it.
+      const hasReadworthyExtras =
+        !!result &&
+        ((result.warnings?.length ?? 0) > 0 || (result.conflicts?.length ?? 0) > 0);
+      if (result && result.ok && !hasReadworthyExtras) {
+        const { useNotificationStore } = await import("./notifications.js");
+        useNotificationStore().pushEphemeralToast({
+          title: "Git",
+          body: String(result.summary || "Action completed."),
+          kind: "info",
+          durationMs: 4000,
+        });
+        ui.lastResult = null;
+      } else {
+        ui.lastResult = result ? { ...result, at: new Date().toISOString() } : null;
+      }
 
       if (ui.selectedDiff?.path) {
         const rootPath = getActiveRoot(workspaceId);

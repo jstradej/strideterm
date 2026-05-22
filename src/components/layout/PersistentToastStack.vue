@@ -39,9 +39,11 @@ const notifStore = useNotificationStore();
 const copiedId = ref<string | null>(null);
 
 function iconFor(kind: string): string {
-  if (kind === "error") return "❌";
-  if (kind === "warning") return "⚠️";
-  return "ℹ️";
+  if (kind === "error") return "✕";
+  if (kind === "warning") return "!";
+  // Info is used for transient success confirmations (e.g. git action toasts) —
+  // a checkmark reads as "done", which is what the user just did.
+  return "✓";
 }
 
 async function copyPath(t: PersistentToast): Promise<void> {
@@ -76,25 +78,62 @@ async function copyPath(t: PersistentToast): Promise<void> {
   pointer-events: auto;
   display: grid;
   grid-template-columns: auto 1fr auto;
-  align-items: start;
+  align-items: center;
   gap: 10px;
   background: var(--surface, #1e2128);
   color: var(--text, #e8e8e8);
-  border: 1px solid color-mix(in srgb, #ff5959 70%, transparent);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-left: 3px solid rgba(255, 255, 255, 0.25);
   border-radius: 6px;
-  padding: 10px 12px;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
-  font-size: 13px;
+  padding: 8px 10px 8px 11px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
+  font-size: 12.5px;
+}
+
+/* Error (default for pushPersistentToast) — loud, must be noticed. */
+.persistent-toast--error {
+  border-color: color-mix(in srgb, #ff5959 70%, transparent);
+  border-left-color: #ff5959;
 }
 
 .persistent-toast--warning {
   border-color: color-mix(in srgb, #ffb43c 65%, transparent);
+  border-left-color: #ffb43c;
+}
+
+/* Info — transient success confirmations (git toasts, etc.). Subtle, won't
+   masquerade as a warning the way a red border did before. */
+.persistent-toast--info {
+  border-left-color: #7fbcec;
 }
 
 .persistent-toast__icon {
-  font-size: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  font-size: 11px;
+  font-weight: 700;
   line-height: 1;
-  padding-top: 2px;
+  background: rgba(255, 255, 255, 0.06);
+  color: rgba(255, 255, 255, 0.7);
+}
+
+.persistent-toast--error .persistent-toast__icon {
+  background: rgba(255, 89, 89, 0.18);
+  color: #ff8a8a;
+}
+
+.persistent-toast--warning .persistent-toast__icon {
+  background: rgba(255, 180, 60, 0.18);
+  color: #ffc870;
+}
+
+.persistent-toast--info .persistent-toast__icon {
+  background: rgba(127, 188, 236, 0.18);
+  color: #9ecdf3;
 }
 
 .persistent-toast__title {
