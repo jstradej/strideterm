@@ -760,8 +760,21 @@ function createDiffPopoutWindow(payload: DiffPopoutPayload): BrowserWindow {
   });
 
   const distIndexPath = path.join(app.getAppPath(), "dist", "index.html");
+  const popoutDevUrl = `${rendererUrl}?view=diff-popout`;
   if (isDev) {
-    win.loadURL(`${rendererUrl}?view=diff-popout`);
+    // Same fallback as createWindow: if the Vite dev URL refuses to load
+    // (process not running yet, port conflict, …) the popout window would
+    // sit on a blank page forever. Catch did-fail-load and recover with
+    // the prod dist build, keeping the ?view=diff-popout query so the
+    // renderer still mounts DiffPopoutApp instead of the full app.
+    let fellBackToDist = false;
+    win.webContents.on("did-fail-load", (_event, errorCode, errorDescription, validatedUrl, isMainFrame) => {
+      if (!isMainFrame || fellBackToDist || validatedUrl !== popoutDevUrl) return;
+      fellBackToDist = true;
+      log.warn("diff-popout: dev renderer failed, falling back to dist", { errorCode, errorDescription });
+      win.loadFile(distIndexPath, { query: { view: "diff-popout" } });
+    });
+    win.loadURL(popoutDevUrl);
   } else {
     win.loadFile(distIndexPath, { query: { view: "diff-popout" } });
   }
