@@ -525,6 +525,101 @@ export function createTerminalController({
           callback(links);
         },
       });
+
+      // file:// URL link provider. WebLinksAddon (above) only matches
+      // http(s); `shell:open-external` in the main process also rejects
+      // file:// for security. We get clickability without that risk by
+      // routing through the same terminal:open-path IPC the path
+      // provider uses — it resolves + stats the path and respects the
+      // user's externalPathOpener setting. Triggered when tools (Claude
+      // Code, build scripts, …) print `file:///…` URLs into the
+      // terminal — without this they'd just sit there as plain text.
+      //
+      // Trailing punctuation is stripped after the match so a path that
+      // ends a sentence ("…ale-report.html.") doesn't carry the period
+      // into the file lookup.
+      const FILE_URL_RE = /file:\/\/[^\s<>"`'(){}[\]]+/gi;
+      const FILE_URL_TRAILING_PUNCT_RE = /[.,;:!?'"]+$/;
+      term.registerLinkProvider({
+        provideLinks(bufferLineNumber, callback) {
+          const buffer = term.buffer.active;
+          const line = buffer.getLine(bufferLineNumber - 1);
+          const text = line ? line.translateToString(true) : "";
+          if (!text || !text.includes("file://")) {
+            callback(undefined);
+            return;
+          }
+          const workspaceCwd = resolveWorkspaceCwdForSession(sessionId, getPayload());
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const links: any[] = [];
+          FILE_URL_RE.lastIndex = 0;
+          let match: RegExpExecArray | null;
+          while ((match = FILE_URL_RE.exec(text)) !== null) {
+            let raw = match[0];
+            const trailing = FILE_URL_TRAILING_PUNCT_RE.exec(raw);
+            if (trailing) raw = raw.slice(0, raw.length - trailing[0].length);
+            if (raw.length <= "file://".length) continue;
+            let resolvedPath = "";
+            try {
+              const url = new URL(raw);
+              if (url.protocol !== "file:") continue;
+              // file:///C:/foo → pathname "/C:/foo"; strip the leading slash
+              // on Windows-style absolute paths so path.resolve in the
+              // backend gets the conventional "C:/foo" form.
+              let pathname = decodeURIComponent(url.pathname || "");
+              if (/^\/[A-Za-z]:/.test(pathname)) pathname = pathname.slice(1);
+              resolvedPath = pathname;
+            } catch {
+              continue;
+            }
+            if (!resolvedPath) continue;
+            const matchStart = match.index;
+            links.push({
+              range: {
+                start: { x: matchStart + 1, y: bufferLineNumber },
+                end: { x: matchStart + raw.length, y: bufferLineNumber },
+              },
+              text: raw,
+              activate: () => {
+                void openPath({ path: resolvedPath, workspaceCwd })
+                  .then(async (result) => {
+                    if (!result?.ok) {
+                      const [{ useNotificationStore }, { useAppStore }] = await Promise.all([
+                        import("../stores/notifications.js"),
+                        import("../stores/app.js"),
+                      ]);
+                      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                      const profileId = ((useAppStore() as any).activeProfile?.id as string) || "default";
+                      useNotificationStore().showError(
+                        "Open path failed",
+                        `Couldn't open ${resolvedPath}: ${result?.error || "unknown error"}`,
+                        { profileId },
+                      );
+                      return;
+                    }
+                    if (result.internal === true && result.absPath) {
+                      await openInInternalViewer(result.absPath);
+                    }
+                  })
+                  .catch(async (err: unknown) => {
+                    const [{ useNotificationStore }, { useAppStore }] = await Promise.all([
+                      import("../stores/notifications.js"),
+                      import("../stores/app.js"),
+                    ]);
+                    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                    const profileId = ((useAppStore() as any).activeProfile?.id as string) || "default";
+                    useNotificationStore().showError(
+                      "Open path failed",
+                      `Couldn't open ${resolvedPath}: ${(err as Error)?.message || String(err)}`,
+                      { profileId },
+                    );
+                  });
+              },
+            });
+          }
+          callback(links.length ? links : undefined);
+        },
+      });
     }
     term.attachCustomKeyEventHandler((event) => {
       // Mac: translate Cmd / Option + arrows and Backspace into the escape
