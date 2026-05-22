@@ -138,6 +138,27 @@ const windowFocusedAt = new Map<string, number>();
 // Per-window attention count (for flash logic)
 const windowAttentionCount = new Map<string, number>();
 
+// --- Diff popout windows ---
+// Lightweight secondary windows that just render MonacoDiffPanel for a single
+// payload. Keyed by webContents.id so a reload (DevTools, accidental refresh)
+// can re-fetch its init payload without us having to round-trip the parent.
+interface DiffPopoutPayload {
+  title?: string;
+  filePath?: string;
+  oldLabel?: string;
+  newLabel?: string;
+  language?: string;
+  leftLabel?: string;
+  rightLabel?: string;
+  leftContent?: string;
+  rightContent?: string;
+  leftMissing?: boolean;
+  rightMissing?: boolean;
+  [key: string]: unknown;
+}
+const diffPopoutPayloads = new Map<number, DiffPopoutPayload>();
+const diffPopoutWindows = new Set<BrowserWindow>();
+
 /** Return the window that had focus most recently (non-minimized preferred). */
 function getPrimaryWindow(): BrowserWindow | null {
   let best: BrowserWindow | null = null;
@@ -397,7 +418,10 @@ const distIndexUrl = new URL(`file://${path.join(app.getAppPath(), "dist", "inde
 function isRendererOrigin(target: string): boolean {
   if (!target) return false;
   if (target.startsWith("file://")) {
-    return target === distIndexUrl;
+    // Drop any query string / hash so the popout window (which appends
+    // ?view=diff-popout) still passes the navigation guard on reload.
+    const bare = target.split("?")[0].split("#")[0];
+    return bare === distIndexUrl;
   }
   try {
     const url = new URL(target);
@@ -671,6 +695,81 @@ function createWindow(windowId?: string, slot?: Partial<WindowSlot>): void {
 
   log.debug("createWindow: loadFile (prod/dist)", { windowId: id, file: distIndexPath });
   win.loadFile(distIndexPath);
+}
+
+/**
+ * Lightweight secondary window that renders just the Monaco diff for a
+ * single payload — same renderer bundle, but `?view=diff-popout` query
+ * makes src/main.ts mount `DiffPopoutApp` instead of the full app. Useful
+ * for parking a diff on a second monitor while you keep navigating in the
+ * main window.
+ */
+function createDiffPopoutWindow(payload: DiffPopoutPayload): BrowserWindow {
+  const windowIconPath =
+    process.platform === "win32"
+      ? path.join(app.getAppPath(), "assets", "icon.ico")
+      : path.join(app.getAppPath(), "assets", "icon.png");
+  const win = new BrowserWindow({
+    width: 1280,
+    height: 900,
+    minWidth: 640,
+    minHeight: 360,
+    title: payload.title || "Diff",
+    icon: windowIconPath,
+    backgroundColor: APP_CONFIG.electron.backgroundColor,
+    show: false,
+    autoHideMenuBar: true,
+    webPreferences: {
+      preload: path.join(app.getAppPath(), "dist-electron", "electron", "preload.cjs"),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+      backgroundThrottling: false,
+      spellcheck: false,
+      additionalArguments: [...(webglDisabled ? ["--strideterm-disable-webgl"] : []), "--strideterm-popout=diff"],
+    },
+  });
+
+  diffPopoutPayloads.set(win.webContents.id, payload);
+  diffPopoutWindows.add(win);
+  win.once("ready-to-show", () => win.show());
+  win.on("closed", () => {
+    diffPopoutPayloads.delete(win.webContents.id);
+    diffPopoutWindows.delete(win);
+  });
+
+  // Navigation safety: same guard as the main window — the popout must
+  // stay on the renderer origin.
+  win.webContents.on("will-navigate", (event, url) => {
+    if (!isRendererOrigin(url)) {
+      log.warn("blocked diff-popout navigation away from renderer origin", { url: url.slice(0, 200) });
+      event.preventDefault();
+    }
+  });
+  win.webContents.setWindowOpenHandler(({ url }) => {
+    let parsed: URL;
+    try {
+      parsed = new URL(url);
+    } catch {
+      return { action: "deny" };
+    }
+    if (parsed.protocol === "http:" || parsed.protocol === "https:") {
+      void import("electron").then(({ shell }) => shell.openExternal(parsed.toString()));
+    }
+    return { action: "deny" };
+  });
+
+  const distIndexPath = path.join(app.getAppPath(), "dist", "index.html");
+  if (isDev) {
+    win.loadURL(`${rendererUrl}?view=diff-popout`);
+  } else {
+    win.loadFile(distIndexPath, { query: { view: "diff-popout" } });
+  }
+  log.info("diff-popout window created", {
+    webContentsId: win.webContents.id,
+    title: payload.title || "",
+  });
+  return win;
 }
 
 function persistWindowSlot(windowId: string, win: BrowserWindow): void {
@@ -1109,6 +1208,30 @@ if (mcpMode) {
       const win = windowRegistry.get(windowId);
       win?.close();
     }
+  });
+
+  // IPC: renderer requests a new "diff popout" window. The payload is a
+  // self-contained MonacoDiffPanel.payload plus a title — we cache it
+  // keyed by the new window's webContents.id so the popout (which loads
+  // the same renderer bundle) can pull it via diff:popout:get-init.
+  ipcMain.handle("diff:popout:open", (event, payload: DiffPopoutPayload) => {
+    if (!payload || typeof payload !== "object") {
+      return { error: "payload required" };
+    }
+    try {
+      const win = createDiffPopoutWindow(payload);
+      return { ok: true, webContentsId: win.webContents.id };
+    } catch (err) {
+      log.error("diff:popout:open failed", { err: (err as Error)?.message });
+      return { error: (err as Error)?.message || "Failed to open diff popout" };
+    }
+  });
+
+  // IPC: the popout renderer asks for its initial payload. Returns the
+  // entry we stashed at create time (or null after the window has been
+  // closed and reopened from a stale handle).
+  ipcMain.handle("diff:popout:get-init", (event) => {
+    return diffPopoutPayloads.get(event.sender.id) ?? null;
   });
 
   app.on("second-instance", (_event, argv) => {

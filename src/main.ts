@@ -119,26 +119,38 @@ if (typeof window !== "undefined") {
   });
 }
 
-const api = createTransport();
+// Secondary "diff popout" window: a stripped-down Vue root that renders just
+// MonacoDiffPanel for one payload. Skips appStore / terminalStore / gitUiStore
+// init — the popout doesn't need workspaces, sessions, or git polling.
+const popoutView = new URL(window.location.href).searchParams.get("view");
+if (popoutView === "diff-popout") {
+  // eslint-disable-next-line @typescript-eslint/no-floating-promises
+  import("./DiffPopoutApp.vue").then((mod) => {
+    const popApp = createApp(mod.default);
+    popApp.mount("#app");
+  });
+} else {
+  const api = createTransport();
 
-const app = createApp(App);
-app.use(createPinia());
-app.provide("api", api);
-app.mount("#app");
+  const app = createApp(App);
+  app.use(createPinia());
+  app.provide("api", api);
+  app.mount("#app");
 
-// Init stores after Pinia is mounted
-const appStore = useAppStore();
-const terminalStore = useTerminalStore();
-const gitUiStore = useGitUiStore();
+  // Init stores after Pinia is mounted
+  const appStore = useAppStore();
+  const terminalStore = useTerminalStore();
+  const gitUiStore = useGitUiStore();
 
-terminalStore.init(api, APP_CONFIG, {
-  getActiveSessionId: () => appStore.activeSessionId,
-  getOverlay: () => appStore.overlay,
-  getPayload: () => appStore.payload,
-});
+  terminalStore.init(api, APP_CONFIG, {
+    getActiveSessionId: () => appStore.activeSessionId,
+    getOverlay: () => appStore.overlay,
+    getPayload: () => appStore.payload,
+  });
 
-appStore.init(api);
-gitUiStore.init(api);
+  appStore.init(api);
+  gitUiStore.init(api);
+}
 
 // Pre-render noise texture to PNG once — replaces runtime SVG feTurbulence filter
 // which otherwise forces the GPU to re-composite the overlay on every paint.

@@ -55,6 +55,15 @@
         >
           Inline
         </button>
+        <button
+          v-if="canPopout"
+          type="button"
+          class="mdp__btn mdp__btn--popout"
+          :title="`Pop this diff out into its own window (great for parking on a second monitor): ${popoutTitle}`"
+          @click="handlePopout"
+        >
+          ↗ Pop out
+        </button>
       </div>
     </div>
 
@@ -89,6 +98,12 @@ interface Props {
   loading?: boolean;
   hideLabels?: boolean;
   hideToolbar?: boolean;
+  // When set, the toolbar shows a "Pop out" button that opens this diff in
+  // a separate Electron window. The string becomes the window title and
+  // the popout's headline (e.g. "src/foo.ts @ 1a2b3c4"). No button shown
+  // when blank or when the Electron popout bridge isn't reachable
+  // (remote / web clients).
+  popoutTitle?: string;
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -96,7 +111,36 @@ const props = withDefaults(defineProps<Props>(), {
   loading: false,
   hideLabels: false,
   hideToolbar: false,
+  popoutTitle: "",
 });
+
+// Electron exposes `window.strideterm.openDiffPopout` via preload. In remote
+// web clients the bridge is undefined and the button stays hidden.
+const canPopout = computed(() => {
+  if (!props.popoutTitle) return false;
+  if (!props.payload) return false;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const bridge = (typeof window !== "undefined" ? (window as any).strideterm : null) as
+    | { openDiffPopout?: (p: unknown) => Promise<unknown> }
+    | null;
+  return typeof bridge?.openDiffPopout === "function";
+});
+
+async function handlePopout() {
+  if (!canPopout.value) return;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const bridge = (window as any).strideterm as { openDiffPopout: (p: unknown) => Promise<unknown> };
+  try {
+    await bridge.openDiffPopout({
+      title: props.popoutTitle,
+      filePath: props.popoutTitle,
+      ...(props.payload as Record<string, unknown>),
+    });
+  } catch {
+    // Popout is a best-effort UX feature — if the IPC fails the host UI
+    // still has the diff visible.
+  }
+}
 
 const containerRef = ref<HTMLDivElement | null>(null);
 const bodyRef = ref<HTMLDivElement | null>(null);
@@ -355,6 +399,19 @@ defineExpose({ goToChange });
   background: rgba(255, 164, 36, 0.15);
   color: var(--accent);
   border-color: var(--accent);
+}
+
+/* Popout is an "action" button, not a layout-mode toggle — separated with a
+   small margin and styled with a subtle accent border so it reads as a
+   distinct affordance. */
+.mdp__btn--popout {
+  margin-left: 8px;
+  border-color: rgba(127, 188, 236, 0.35);
+  color: #9ecdf3;
+}
+.mdp__btn--popout:hover:not(:disabled) {
+  background: rgba(127, 188, 236, 0.12);
+  border-color: rgba(127, 188, 236, 0.6);
 }
 
 .mdp__body {

@@ -405,6 +405,14 @@ export interface StridetermAPI {
   closeWindow: () => Promise<void>;
   onNewWindowShortcut: (handler: () => void) => void;
 
+  // Diff popout — open the current MonacoDiffPanel payload in its own Electron
+  // window so it can live on a second monitor independent of the host view.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  openDiffPopout: (payload: Record<string, any>) => Promise<{ ok?: boolean; webContentsId?: number; error?: string }>;
+  // Called from the popout window itself to fetch its initial payload.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  getDiffPopoutInit: () => Promise<Record<string, any> | null>;
+
   // File manager
   fileList: (p: FileList) => Promise<unknown>;
   fileTree: (p: FileList) => Promise<unknown>;

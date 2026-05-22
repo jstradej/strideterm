@@ -449,6 +449,7 @@
                     v-if="selectedCommitFile"
                     :payload="commitDiffPayload"
                     :loading="commitDiffLoading"
+                    :popout-title="`${selectedCommitFile} @ ${shortHashOf(selectedHash)}`"
                   />
                   <div v-else class="git-branches__placeholder">
                     {{ selectedHash ? "Pick a file to view its diff." : "" }}
@@ -539,7 +540,12 @@
           />
         </div>
         <div class="git-branches__commit-diff git-branches__commit-diff--mobile">
-          <MonacoDiffPanel v-if="selectedCommitFile" :payload="commitDiffPayload" :loading="commitDiffLoading" />
+          <MonacoDiffPanel
+            v-if="selectedCommitFile"
+            :payload="commitDiffPayload"
+            :loading="commitDiffLoading"
+            :popout-title="`${selectedCommitFile} @ ${shortHashOf(selectedHash)}`"
+          />
           <div v-else class="git-branches__placeholder">Tap a file to view its diff.</div>
         </div>
       </div>

@@ -220,6 +220,8 @@ contextBridge.exposeInMainWorld("strideterm", {
   focusWindow: () => ipcRenderer.invoke("window:focus-current"),
   createWindow: (profileId) => ipcRenderer.invoke("window:create", profileId),
   closeWindow: () => ipcRenderer.invoke("window:close"),
+  openDiffPopout: (payload) => ipcRenderer.invoke("diff:popout:open", payload),
+  getDiffPopoutInit: () => ipcRenderer.invoke("diff:popout:get-init"),
   onNewWindowShortcut: (handler) => ipcRenderer.on("shortcut:new-window", () => handler()),
   fileList: (p) => ipcRenderer.invoke("file:list", p),
   fileTree: (p) => ipcRenderer.invoke("file:tree", p),
