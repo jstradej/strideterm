@@ -164,4 +164,8 @@ export class DockerShellManager {
   hasSession(sessionId: string): boolean {
     return this.sessions.has(sessionId);
   }
+
+  hasAnySessions(): boolean {
+    return this.sessions.size > 0;
+  }
 }

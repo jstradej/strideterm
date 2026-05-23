@@ -3734,8 +3734,18 @@ export async function createRuntime({
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   function hasActiveDockerConsumer(state: any): boolean {
+    // Predicate 1: a docker workspace is the active workspace (globally or in any window slot).
+
+    const dockerIds = new Set<string>(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (state.workspaces ?? []).filter((w: any) => w.kind === "docker").map((w: any) => w.id),
+    );
+    if (dockerIds.size === 0) return false;
+    if (dockerIds.has(state.activeWorkspaceId)) return true;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    return (state.workspaces ?? []).some((w: any) => w.kind === "docker");
+    if ((state.windowSlots ?? []).some((s: any) => dockerIds.has(s.activeWorkspaceId))) return true;
+    // Predicate 2: an active docker log or shell stream exists.
+    return dockerLogManager.hasAnySessions() || dockerShellManager.hasAnySessions();
   }
 
   function ensureDockerPolling() {
@@ -4131,9 +4141,9 @@ export async function createRuntime({
       if (requestedPath === res(workspace.review.checkout.rootPath)) return requestedPath;
     }
 
-    // Quickfix
-    if (workspace.quickfix?.rootPath) {
-      if (requestedPath === res(workspace.quickfix.rootPath)) return requestedPath;
+    // Quickfix — cwd is the managed checkout directory (quickfix.rootPath is not persisted)
+    if (workspace.quickfix && workspace.cwd) {
+      if (requestedPath === res(workspace.cwd)) return requestedPath;
     }
 
     // Task worktree (cwd must lie under worktreeBase)
@@ -4318,9 +4328,8 @@ export async function createRuntime({
         );
       }
       ensureVisibleSession(workspaceId);
-      broadcastState();
-      // Refresh git/docker in the background so the IPC response returns
-      // immediately; fresh data arrives via their "updated" → broadcastState.
+      // Kick off refreshes BEFORE broadcastState so refresh() is already called
+      // when the first state:updated event fires (stale-data ordering guarantee).
       if (workspace?.kind === "docker") {
         ensureDockerPolling(); // switch to fast mode if not already
         refreshDocker().catch((err: unknown) => {
@@ -4330,6 +4339,7 @@ export async function createRuntime({
       refreshGit(workspaceId).catch((err: unknown) => {
         log.warn("activateWorkspace: git refresh failed", { err: (err as Error)?.message });
       });
+      broadcastState();
       return getPayload();
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -4587,9 +4597,8 @@ export async function createRuntime({
         );
       }
       ensureVisibleSession(workspaceId);
-      broadcastState();
-      // Refresh git/docker in the background so the IPC response returns
-      // immediately; fresh data arrives via their "updated" → broadcastState.
+      // Kick off refreshes BEFORE broadcastState so refresh() is already called
+      // when the first state:updated event fires (stale-data ordering guarantee).
       if (workspace?.kind === "docker") {
         ensureDockerPolling(); // switch to fast mode if not already
         refreshDocker().catch((err: unknown) => {
@@ -4599,6 +4608,7 @@ export async function createRuntime({
       refreshGit(workspaceId).catch((err: unknown) => {
         log.warn("activateWorkspaceInWindow: git refresh failed", { err: (err as Error)?.message });
       });
+      broadcastState();
       return getPayload();
     },
 
@@ -5246,6 +5256,11 @@ export async function createRuntime({
 
       // Reconfigure Telegram if integrations changed
       reconfigureTelegram(getState());
+
+      // Invalidate docker backend-detection cache on any settings change so that
+      // future docker-related settings (or any proxy/env change affecting docker)
+      // force a re-probe on the next docker refresh.
+      docker.invalidateBackendDetectionCache();
 
       broadcastState();
       return { payload: getPayload(), remoteAccessChanged };

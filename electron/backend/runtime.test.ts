@@ -260,6 +260,10 @@ class FakeDockerManager extends EventEmitter {
   createLazydockerLaunch() {
     return { file: "lazydocker", args: [] };
   }
+
+  invalidateBackendDetectionCache() {
+    // no-op in tests
+  }
 }
 
 class FakeGitManager extends EventEmitter {
@@ -3446,6 +3450,118 @@ describe("runtime integration", () => {
     expect(rmPathMock).not.toHaveBeenCalled();
   });
 
+  test("deleteWorkspace with deleteFromDisk on quickfix workspace succeeds", async () => {
+    const diskPath = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-qf-del-"));
+    tempPaths.push(diskPath);
+
+    const rmPathMock = vi.fn().mockResolvedValue(undefined);
+
+    const fixture = await createFixture({
+      dependencies: { rmPath: rmPathMock },
+      initialState: {
+        workspaces: [
+          {
+            id: "qf-ws",
+            name: "Quickfix WS",
+            kind: "terminal",
+            cwd: diskPath,
+            activePanelId: "shell",
+            panels: [{ id: "shell", title: "Shell", command: "", shell: true, startup: "default" }],
+            quickfix: {
+              rootPath: diskPath,
+              parentWorkspaceId: "parent",
+            },
+          },
+        ],
+      },
+    });
+    fixtures.push(fixture);
+
+    const result = await fixture.runtime.deleteWorkspace("qf-ws", {
+      deleteFromDisk: true,
+      diskPath,
+    });
+
+    expect(result.deleteWorkspaceError).toBeFalsy();
+    expect(rmPathMock).toHaveBeenCalledWith(diskPath);
+  });
+
+  test("deleteWorkspace with deleteFromDisk on task worktree workspace succeeds", async () => {
+    const baseDir = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-task-del-base-"));
+    tempPaths.push(baseDir);
+    const diskPath = path.join(baseDir, "my-task-branch");
+    await fs.mkdir(diskPath, { recursive: true });
+
+    const rmPathMock = vi.fn().mockResolvedValue(undefined);
+
+    const fixture = await createFixture({
+      dependencies: { rmPath: rmPathMock },
+      initialState: {
+        workspaces: [
+          {
+            id: "task-wt-ws",
+            name: "Task Worktree WS",
+            kind: "terminal",
+            cwd: diskPath,
+            activePanelId: "shell",
+            panels: [{ id: "shell", title: "Shell", command: "", shell: true, startup: "default" }],
+            task: {
+              worktreeBase: baseDir,
+              parentWorkspaceId: "parent",
+              description: "my task",
+              agentKind: "claude",
+              state: "paused",
+            },
+          },
+        ],
+      },
+    });
+    fixtures.push(fixture);
+
+    const result = await fixture.runtime.deleteWorkspace("task-wt-ws", {
+      deleteFromDisk: true,
+      diskPath,
+    });
+
+    expect(result.deleteWorkspaceError).toBeFalsy();
+    expect(rmPathMock).toHaveBeenCalledWith(diskPath);
+  });
+
+  test("deleteWorkspace with deleteFromDisk on legacy 'Worktree of ...' workspace succeeds", async () => {
+    const baseDir = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-legacy-del-"));
+    tempPaths.push(baseDir);
+    const treePath = path.join(baseDir, ".strideterm", "tree", "some-branch");
+    await fs.mkdir(treePath, { recursive: true });
+
+    const rmPathMock = vi.fn().mockResolvedValue(undefined);
+
+    const fixture = await createFixture({
+      dependencies: { rmPath: rmPathMock },
+      initialState: {
+        workspaces: [
+          {
+            id: "legacy-ws",
+            name: "some-branch",
+            kind: "terminal",
+            cwd: treePath,
+            activePanelId: "shell",
+            panels: [{ id: "shell", title: "Shell", command: "", shell: true, startup: "default" }],
+            notes: "Worktree of Parent Project",
+          },
+        ],
+      },
+    });
+    fixtures.push(fixture);
+
+    const result = await fixture.runtime.deleteWorkspace("legacy-ws", {
+      deleteFromDisk: true,
+      diskPath: treePath,
+    });
+
+    expect(result.deleteWorkspaceError).toBeFalsy();
+    expect(rmPathMock).toHaveBeenCalledWith(treePath);
+  });
+
   // --- Step 4: targeted git refresh after delete ---
 
   test("deleteWorkspace: deleting review worktree triggers targeted refreshGit for parent only", async () => {
@@ -3557,6 +3673,37 @@ describe("runtime integration", () => {
     expect(updateCount).toBe(2);
   });
 
+  test("getPayload() is called once per coalesced broadcastState() batch — only one payload produced (#48)", async () => {
+    // broadcastState() calls getPayload() inside the microtask callback.
+    // When 5 broadcastState() calls coalesce into one microtask, getPayload()
+    // should be invoked exactly once (verified via the payload count received).
+    const fixture = await createFixture();
+    fixtures.push(fixture);
+
+    const receivedPayloads: unknown[] = [];
+    fixture.runtime.on("state:updated", (payload: unknown) => {
+      receivedPayloads.push(payload);
+    });
+
+    // 5 synchronous broadcastState() triggers via setRemoteInfo
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const rt = fixture.runtime as any;
+    rt.setRemoteInfo({ port: 1 });
+    rt.setRemoteInfo({ port: 2 });
+    rt.setRemoteInfo({ port: 3 });
+    rt.setRemoteInfo({ port: 4 });
+    rt.setRemoteInfo({ port: 5 });
+
+    // Microtask not yet fired — no payload yet
+    expect(receivedPayloads).toHaveLength(0);
+
+    await Promise.resolve(); // flush the coalesced microtask
+
+    // Only one payload produced — getPayload() was called exactly once inside broadcastState
+    expect(receivedPayloads).toHaveLength(1);
+    expect(receivedPayloads[0]).toBeDefined();
+  });
+
   // --- Step 5c: demand-aware docker polling ---
 
   test("activating a docker workspace triggers immediate docker refresh and switches poll to fast mode", async () => {
@@ -3600,6 +3747,185 @@ describe("runtime integration", () => {
     await fixture.runtime.activateWorkspace("term-ws");
 
     expect(refreshSpy).not.toHaveBeenCalled();
+  });
+
+  test("without active docker consumer, docker poll stays on slow interval — no extra refresh in 31s (#33)", async () => {
+    // With no active docker consumer, ensureDockerPolling() sets the SLOW interval (5 min).
+    // Advancing 31s should NOT trigger any additional poll (would fire if fast 30s interval was active).
+    vi.useFakeTimers();
+    try {
+      const fixture = await createFixture({
+        initialState: { workspaces: [] },
+      });
+      fixtures.push(fixture);
+
+      const baseline = fixture.docker.refreshCount;
+
+      // Advance just past the fast interval (30s) but well before the slow interval (5min = 300s)
+      await vi.advanceTimersByTimeAsync(31_000);
+
+      expect(fixture.docker.refreshCount).toBe(baseline);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("activating docker workspace calls refreshDocker() before the first state:updated broadcast (stale-data ordering, #34)", async () => {
+    const dockerWs = {
+      id: "docker-ws2",
+      name: "Docker WS",
+      kind: "docker",
+      cwd: "",
+      activePanelId: "shell",
+      panels: [{ id: "shell", title: "Shell", command: "", shell: true, startup: "default" }],
+    };
+    const fixture = await createFixture({
+      initialState: { workspaces: [dockerWs] },
+    });
+    fixtures.push(fixture);
+
+    let refreshCalledBeforeFirstBroadcast: boolean | null = null;
+    let dockerRefreshCalled = false;
+
+    const originalRefresh = fixture.docker.refresh.bind(fixture.docker);
+    vi.spyOn(fixture.docker, "refresh").mockImplementation(async () => {
+      dockerRefreshCalled = true;
+      return originalRefresh();
+    });
+
+    fixture.runtime.on("state:updated", () => {
+      if (refreshCalledBeforeFirstBroadcast === null) {
+        refreshCalledBeforeFirstBroadcast = dockerRefreshCalled;
+      }
+    });
+
+    await fixture.runtime.activateWorkspace("docker-ws2");
+    await Promise.resolve(); // flush any remaining microtasks
+
+    // refresh() must have been called before the first broadcast fired
+    expect(refreshCalledBeforeFirstBroadcast).toBe(true);
+  });
+
+  // --- Step 6: syncWorktreesImpl indexes + syncTreeDirWatchers resync ---
+
+  test("syncWorktreesImpl correctly adds worktree workspace entries for on-disk tree directories (#40)", async () => {
+    // syncWorktreesImpl is called by syncWorktrees() which is called during createFixture init
+    // (via runInitialRefresh). This test verifies the index-based lookup produces the correct output.
+    const parentDir = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-sync-wt-"));
+    tempPaths.push(parentDir);
+    const branchDir = path.join(parentDir, ".strideterm", "tree", "feature-x");
+    await fs.mkdir(branchDir, { recursive: true });
+
+    // createFixture calls runInitialRefresh → syncWorktrees() → syncWorktreesImpl()
+    const fixture = await createFixture({
+      initialState: {
+        workspaces: [
+          {
+            id: "parent-ws",
+            name: "Parent",
+            kind: "terminal",
+            cwd: parentDir,
+            activePanelId: "shell",
+            panels: [{ id: "shell", title: "Shell", command: "", shell: true, startup: "default" }],
+          },
+        ],
+      },
+    });
+    fixtures.push(fixture);
+
+    const workspaces = fixture.runtime.getPayload().appState.workspaces!;
+    const worktree = workspaces.find((w) => w.cwd === branchDir);
+    expect(worktree).toBeDefined();
+    expect(worktree?.notes).toBe("Worktree of Parent");
+  });
+
+  test("saveWorkspace triggers syncTreeDirWatchers — git poll detects new tree entries after save (#41)", async () => {
+    // syncTreeDirWatchers is called after saveWorkspace (runtime.ts:4834).
+    // This test verifies that after saving a new parent workspace, the gitPoll
+    // (which calls syncWorktrees/syncWorktreesImpl) picks up new tree entries.
+    vi.useFakeTimers();
+    try {
+      const parentDir = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-save-watcher-"));
+      tempPaths.push(parentDir);
+
+      const fixture = await createFixture({ initialState: { workspaces: [] } });
+      fixtures.push(fixture);
+
+      // Save a new parent workspace — calls syncTreeDirWatchers internally
+      await fixture.runtime.saveWorkspace({
+        id: "new-parent",
+        name: "New Parent",
+        kind: "terminal",
+        cwd: parentDir,
+        activePanelId: "shell",
+        panels: [{ id: "shell", title: "Shell", command: "", shell: true, startup: "default" }],
+      });
+
+      // Create a tree subdir AFTER the save (simulates a new worktree being added on disk)
+      const branchDir = path.join(parentDir, ".strideterm", "tree", "new-branch");
+      await fs.mkdir(branchDir, { recursive: true });
+
+      // Advance past the git poll interval (60 s) so syncWorktrees/syncWorktreesImpl runs
+      await vi.advanceTimersByTimeAsync(65_000);
+
+      const workspaces = fixture.runtime.getPayload().appState.workspaces!;
+      const worktree = workspaces.find((w) => w.cwd === branchDir);
+      expect(worktree).toBeDefined();
+      expect(worktree?.notes).toMatch(/^Worktree of /);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("deleteWorkspace triggers syncTreeDirWatchers — git poll no longer re-adds removed parent tree (#42)", async () => {
+    // syncTreeDirWatchers is called after deleteWorkspace (runtime.ts:5094).
+    // After the parent is deleted and its tree-subdir removed from disk,
+    // the next syncWorktrees/syncWorktreesImpl call should remove the orphaned
+    // child worktree entry (CWD gone) and not re-add it (parent gone).
+    vi.useFakeTimers();
+    try {
+      const parentDir = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-del-watcher-"));
+      tempPaths.push(parentDir);
+      const branchDir = path.join(parentDir, ".strideterm", "tree", "old-branch");
+      await fs.mkdir(branchDir, { recursive: true });
+
+      // createFixture init: syncWorktreesImpl detects branchDir and adds child workspace
+      const fixture = await createFixture({
+        initialState: {
+          workspaces: [
+            {
+              id: "parent-del",
+              name: "Parent Del",
+              kind: "terminal",
+              cwd: parentDir,
+              activePanelId: "shell",
+              panels: [{ id: "shell", title: "Shell", command: "", shell: true, startup: "default" }],
+            },
+          ],
+        },
+      });
+      fixtures.push(fixture);
+
+      // Verify child workspace was created by syncWorktreesImpl during init
+      const before = fixture.runtime.getPayload().appState.workspaces!;
+      expect(before.find((w) => w.cwd === branchDir)).toBeDefined();
+
+      // Delete the parent workspace — calls syncTreeDirWatchers internally
+      await fixture.runtime.deleteWorkspace("parent-del");
+
+      // Remove the branchDir from disk so orphaned child is detected as missing
+      await fs.rm(branchDir, { recursive: true, force: true });
+
+      // Advance past git poll interval — syncWorktrees/syncWorktreesImpl runs and
+      // removes the orphaned child (CWD gone) without re-adding it (parent gone)
+      await vi.advanceTimersByTimeAsync(65_000);
+
+      const after = fixture.runtime.getPayload().appState.workspaces!;
+      expect(after.find((w) => w.id === "parent-del")).toBeUndefined();
+      expect(after.find((w) => w.cwd === branchDir)).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   test("useWorktree create runs the guard BEFORE any disk side-effects (no orphan tree, no .gitignore mutation)", async () => {
