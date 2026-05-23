@@ -3508,6 +3508,55 @@ describe("runtime integration", () => {
     expect(fixture.git.refreshArgs.length).toBeGreaterThan(0);
   });
 
+  // --- Step 7: broadcastState() microtask coalescing ---
+
+  test("multiple synchronous broadcastState() calls coalesce into one state:updated event", async () => {
+    const fixture = await createFixture();
+    fixtures.push(fixture);
+
+    let updateCount = 0;
+    fixture.runtime.on("state:updated", () => {
+      updateCount++;
+    });
+
+    // Trigger broadcastState indirectly via five rapid workspace activations —
+    // each calls broadcastState(), but they're all within the same microtask queue
+    // tick from the test's perspective (synchronous setup).
+    // Use setRemoteInfo which calls broadcastState() directly and is synchronous.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const rt = fixture.runtime as any;
+    // Call setRemoteInfo five times synchronously to trigger 5x broadcastState()
+    rt.setRemoteInfo({ port: 1 });
+    rt.setRemoteInfo({ port: 2 });
+    rt.setRemoteInfo({ port: 3 });
+    rt.setRemoteInfo({ port: 4 });
+    rt.setRemoteInfo({ port: 5 });
+
+    // Flush microtasks
+    await Promise.resolve();
+
+    expect(updateCount).toBe(1); // coalesced into one broadcast
+  });
+
+  test("broadcastState() in two separate async steps emits two events", async () => {
+    const fixture = await createFixture();
+    fixtures.push(fixture);
+
+    let updateCount = 0;
+    fixture.runtime.on("state:updated", () => {
+      updateCount++;
+    });
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const rt = fixture.runtime as any;
+    rt.setRemoteInfo({ port: 10 });
+    await Promise.resolve(); // flush first microtask → one broadcast
+    rt.setRemoteInfo({ port: 11 });
+    await Promise.resolve(); // flush second microtask → second broadcast
+
+    expect(updateCount).toBe(2);
+  });
+
   // --- Step 5c: demand-aware docker polling ---
 
   test("activating a docker workspace triggers immediate docker refresh and switches poll to fast mode", async () => {
