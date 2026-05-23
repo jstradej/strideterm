@@ -205,6 +205,15 @@ export class DockerManager extends EventEmitter {
   private lazydockerBackends: Map<DockerBackendId, DockerBackend>;
   // Log sessions (populated in Phase 2).
   logSessions: Map<string, unknown>;
+  // 5a: in-flight guard — concurrent refresh() callers share one Promise.
+  private refreshInFlight: Promise<DockerState> | null = null;
+  // 5b: backend/lazydocker detection cache (mutable, cleared on invalidate).
+  static readonly BACKEND_DETECTION_TTL_MS = 5 * 60 * 1000;
+  private backendDetectionCache: {
+    ts: number;
+    backends: DockerBackend[];
+    lazydockerBackends: Map<DockerBackendId, DockerBackend>;
+  } | null = null;
 
   constructor() {
     super();
@@ -212,6 +221,11 @@ export class DockerManager extends EventEmitter {
     this.backends = [];
     this.lazydockerBackends = new Map();
     this.logSessions = new Map();
+  }
+
+  /** Discard the backend/lazydocker detection cache. Next refresh() re-probes. */
+  invalidateBackendDetectionCache(): void {
+    this.backendDetectionCache = null;
   }
 
   getSnapshot(): DockerState {
@@ -356,6 +370,15 @@ export class DockerManager extends EventEmitter {
   // -----------------------------------------------------------------------
 
   async refresh(): Promise<DockerState> {
+    if (this.refreshInFlight) return this.refreshInFlight;
+    const p = this.#doRefreshImpl().finally(() => {
+      this.refreshInFlight = null;
+    });
+    this.refreshInFlight = p;
+    return p;
+  }
+
+  async #doRefreshImpl(): Promise<DockerState> {
     // Test/E2E hook: when STRIDETERM_DOCKER_MOCK_FILE points to a JSON file we
     // skip CLI detection entirely and return a canned snapshot. This lets the
     // Electron E2E exercise the Docker UI on CI runners that don't have docker
@@ -382,9 +405,21 @@ export class DockerManager extends EventEmitter {
     }
 
     try {
-      const detected = await this.detectAllBackends();
-      this.backends = await this.dedupeBackendsByServerId(detected);
-      await this.detectLazydocker();
+      // 5b: cache backend/lazydocker detection — re-probe only when cache is
+      // absent or expired. Container/image data always fetched fresh.
+      const now = Date.now();
+      const cacheValid =
+        this.backendDetectionCache !== null &&
+        now - this.backendDetectionCache.ts < DockerManager.BACKEND_DETECTION_TTL_MS;
+      if (cacheValid) {
+        this.backends = this.backendDetectionCache!.backends;
+        this.lazydockerBackends = this.backendDetectionCache!.lazydockerBackends;
+      } else {
+        const detected = await this.detectAllBackends();
+        this.backends = await this.dedupeBackendsByServerId(detected);
+        await this.detectLazydocker();
+        this.backendDetectionCache = { ts: now, backends: this.backends, lazydockerBackends: this.lazydockerBackends };
+      }
 
       if (this.backends.length === 0) {
         this.snapshot = createUnavailableState("Docker CLI was not found on Windows PATH or inside WSL.");

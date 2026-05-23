@@ -1,4 +1,4 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import { DockerManager, parseLabels, deriveHealth, sanitizeVolumePath, parsePruneOutput } from "./docker-manager.js";
 import type { DockerState } from "../shared/types/state.js";
 
@@ -521,5 +521,68 @@ describe("parsePruneOutput", () => {
   test("handles empty / whitespace-only stdout", () => {
     expect(parsePruneOutput("", "image").deletedNames).toEqual([]);
     expect(parsePruneOutput("   \n  \n", "volume").reclaimed).toBe("");
+  });
+});
+
+// -----------------------------------------------------------------------
+// Step 5: in-flight guard (5a) + backend detection cache (5b)
+// -----------------------------------------------------------------------
+
+class TrackingDockerManager extends DockerManager {
+  detectCalls = 0;
+
+  override async detectAllBackends() {
+    this.detectCalls++;
+    // Yield so a concurrent refresh() can see refreshInFlight before we resolve.
+    await Promise.resolve();
+    return [] as never[];
+  }
+
+  override async dedupeBackendsByServerId(backends: never[]) {
+    return backends;
+  }
+
+  override async detectLazydocker(): Promise<void> {
+    // no-op
+  }
+}
+
+describe("DockerManager in-flight guard (5a)", () => {
+  test("two concurrent refresh() calls share one Promise, detectAllBackends called once", async () => {
+    const mgr = new TrackingDockerManager();
+    const [a, b] = await Promise.all([mgr.refresh(), mgr.refresh()]);
+    expect(mgr.detectCalls).toBe(1);
+    expect(a).toBe(b);
+  });
+});
+
+describe("DockerManager backend detection cache (5b)", () => {
+  test("second refresh() within TTL skips detectAllBackends", async () => {
+    const mgr = new TrackingDockerManager();
+    await mgr.refresh();
+    await mgr.refresh();
+    expect(mgr.detectCalls).toBe(1); // cache hit on second call
+  });
+
+  test("invalidateBackendDetectionCache() forces re-detection on next refresh()", async () => {
+    const mgr = new TrackingDockerManager();
+    await mgr.refresh();
+    mgr.invalidateBackendDetectionCache();
+    await mgr.refresh();
+    expect(mgr.detectCalls).toBe(2);
+  });
+
+  test("cache expires after TTL and re-detects", async () => {
+    vi.useFakeTimers();
+    try {
+      const mgr = new TrackingDockerManager();
+      await mgr.refresh();
+      // Advance past TTL
+      vi.advanceTimersByTime(DockerManager.BACKEND_DETECTION_TTL_MS + 1);
+      await mgr.refresh();
+      expect(mgr.detectCalls).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

@@ -3508,6 +3508,51 @@ describe("runtime integration", () => {
     expect(fixture.git.refreshArgs.length).toBeGreaterThan(0);
   });
 
+  // --- Step 5c: demand-aware docker polling ---
+
+  test("activating a docker workspace triggers immediate docker refresh and switches poll to fast mode", async () => {
+    const dockerWs = {
+      id: "docker-ws",
+      name: "Docker WS",
+      kind: "docker",
+      cwd: "",
+      activePanelId: "shell",
+      panels: [{ id: "shell", title: "Shell", command: "", shell: true, startup: "default" }],
+    };
+    const fixture = await createFixture({
+      initialState: { workspaces: [dockerWs], activeWorkspaceId: "docker-ws" },
+    });
+    fixtures.push(fixture);
+
+    const refreshSpy = vi.spyOn(fixture.docker, "refresh");
+
+    // Activate the docker workspace — should trigger an immediate refresh
+    await fixture.runtime.activateWorkspace("docker-ws");
+
+    expect(refreshSpy).toHaveBeenCalled();
+  });
+
+  test("no docker workspaces: docker refresh is NOT called during activateWorkspace for non-docker workspace", async () => {
+    const terminalWs = {
+      id: "term-ws",
+      name: "Terminal WS",
+      kind: "terminal",
+      cwd: "/some/path",
+      activePanelId: "shell",
+      panels: [{ id: "shell", title: "Shell", command: "", shell: true, startup: "default" }],
+    };
+    const fixture = await createFixture({
+      initialState: { workspaces: [terminalWs] },
+    });
+    fixtures.push(fixture);
+
+    const refreshSpy = vi.spyOn(fixture.docker, "refresh");
+
+    await fixture.runtime.activateWorkspace("term-ws");
+
+    expect(refreshSpy).not.toHaveBeenCalled();
+  });
+
   test("useWorktree create runs the guard BEFORE any disk side-effects (no orphan tree, no .gitignore mutation)", async () => {
     // Regression: previously the gitignore write, parent mkdir and
     // `git worktree add` all ran first, so a same-cwd conflict in useWorktree

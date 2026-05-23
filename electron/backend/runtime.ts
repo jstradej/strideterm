@@ -659,6 +659,7 @@ export async function createRuntime({
   // behavior of runInitialRefresh.
   let autoTunnelBootstrapped = false;
   let dockerPoll: ReturnType<typeof setInterval> | null = null;
+  let dockerPollMode: "fast" | "slow" | null = null;
   let gitPoll: ReturnType<typeof setInterval> | null = null;
   const attentionContext = createAttentionContext();
   const terminalReplayBuffers = new Map<string, string>();
@@ -3714,16 +3715,31 @@ export async function createRuntime({
     return true;
   }
 
-  function ensureDockerPolling() {
-    if (dockerPoll) {
-      return;
-    }
+  // Slow interval when no docker workspaces exist; the normal fast interval
+  // resumes as soon as a docker workspace is active.
+  const DOCKER_POLL_SLOW_MS = 5 * 60 * 1000;
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  function hasActiveDockerConsumer(state: any): boolean {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return (state.workspaces ?? []).some((w: any) => w.kind === "docker");
+  }
+
+  function ensureDockerPolling() {
+    const targetMode = hasActiveDockerConsumer(getState()) ? "fast" : "slow";
+    if (dockerPollMode === targetMode && dockerPoll) return;
+
+    if (dockerPoll) {
+      clearInterval(dockerPoll);
+      dockerPoll = null;
+    }
+    dockerPollMode = targetMode;
+    const intervalMs = targetMode === "fast" ? APP_CONFIG.runtime.dockerPollMs : DOCKER_POLL_SLOW_MS;
     dockerPoll = setInterval(() => {
-      refreshDocker().catch((error) => {
+      refreshDocker().catch((error: Error) => {
         log.warn("docker poll error", { err: error.message });
       });
-    }, APP_CONFIG.runtime.dockerPollMs);
+    }, intervalMs);
   }
 
   function ensureGitPolling() {
@@ -4293,6 +4309,7 @@ export async function createRuntime({
       // Refresh git/docker in the background so the IPC response returns
       // immediately; fresh data arrives via their "updated" → broadcastState.
       if (workspace?.kind === "docker") {
+        ensureDockerPolling(); // switch to fast mode if not already
         refreshDocker().catch((err: unknown) => {
           log.warn("activateWorkspace: docker refresh failed", { err: (err as Error)?.message });
         });
@@ -4561,6 +4578,7 @@ export async function createRuntime({
       // Refresh git/docker in the background so the IPC response returns
       // immediately; fresh data arrives via their "updated" → broadcastState.
       if (workspace?.kind === "docker") {
+        ensureDockerPolling(); // switch to fast mode if not already
         refreshDocker().catch((err: unknown) => {
           log.warn("activateWorkspaceInWindow: docker refresh failed", { err: (err as Error)?.message });
         });
@@ -6376,6 +6394,7 @@ export async function createRuntime({
       if (dockerPoll) {
         clearInterval(dockerPoll);
         dockerPoll = null;
+        dockerPollMode = null;
       }
       if (gitPoll) {
         clearInterval(gitPoll);
