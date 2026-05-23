@@ -3259,6 +3259,112 @@ describe("runtime integration", () => {
     expect(result?.workspaceId).toBeTruthy();
   });
 
+  // --- Step 1: deleteWorkspace disk-delete double-failure ---
+
+  function makeReviewWorkspace(id: string, diskPath: string) {
+    return {
+      id,
+      name: "Review WS",
+      kind: "terminal",
+      cwd: diskPath,
+      activePanelId: "shell",
+      panels: [{ id: "shell", title: "Shell", command: "", shell: true, startup: "default" }],
+      review: {
+        checkout: {
+          mode: "managed-worktree",
+          rootPath: diskPath,
+          cacheRepoPath: diskPath,
+        },
+        parentWorkspaceId: "parent",
+        provider: "github",
+        prKey: "org/repo#1",
+      },
+    };
+  }
+
+  test("deleteWorkspace sets deleteWorkspaceError when rmPath AND git worktree remove --force both fail", async () => {
+    const diskPath = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-del-both-fail-"));
+    tempPaths.push(diskPath);
+
+    const execFileText = vi.fn().mockResolvedValue({ stdout: "", stderr: "" });
+    // Make git worktree remove --force throw
+    execFileText.mockImplementation(async (cmd: string, args: string[]) => {
+      if (Array.isArray(args) && args[0] === "worktree" && args[1] === "remove") {
+        throw new Error("git worktree remove failed");
+      }
+      return { stdout: "", stderr: "" };
+    });
+
+    const rmPathMock = vi.fn().mockRejectedValue(new Error("rmPath failed"));
+
+    const fixture = await createFixture({
+      execFileTextImpl: execFileText,
+      dependencies: { rmPath: rmPathMock },
+      initialState: { workspaces: [makeReviewWorkspace("ws-del", diskPath)] },
+    });
+    fixtures.push(fixture);
+
+    const result = await fixture.runtime.deleteWorkspace("ws-del", {
+      deleteFromDisk: true,
+      diskPath,
+    });
+
+    expect(result.deleteWorkspaceError).toBeTruthy();
+    expect(result.deleteWorkspaceError).toContain(diskPath);
+    // Workspace removed from state even on disk-delete failure
+    expect(fixture.runtime.getPayload().appState.workspaces!.find((w) => w.id === "ws-del")).toBeUndefined();
+  });
+
+  test("deleteWorkspace does NOT set deleteWorkspaceError when rmPath fails but git worktree remove --force succeeds", async () => {
+    const diskPath = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-del-git-ok-"));
+    tempPaths.push(diskPath);
+
+    const execFileText = vi.fn().mockResolvedValue({ stdout: "", stderr: "" });
+    const rmPathMock = vi.fn().mockRejectedValue(new Error("rmPath failed, git will rescue"));
+
+    const fixture = await createFixture({
+      execFileTextImpl: execFileText,
+      dependencies: { rmPath: rmPathMock },
+      initialState: { workspaces: [makeReviewWorkspace("ws-del2", diskPath)] },
+    });
+    fixtures.push(fixture);
+
+    const result = await fixture.runtime.deleteWorkspace("ws-del2", {
+      deleteFromDisk: true,
+      diskPath,
+    });
+
+    expect(result.deleteWorkspaceError).toBeFalsy();
+    expect(fixture.runtime.getPayload().appState.workspaces!.find((w) => w.id === "ws-del2")).toBeUndefined();
+  });
+
+  test("deleteWorkspace happy path: rmPath succeeds and git worktree remove --force is never called", async () => {
+    const diskPath = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-del-happy-"));
+    tempPaths.push(diskPath);
+
+    const execFileText = vi.fn().mockResolvedValue({ stdout: "", stderr: "" });
+    const rmPathMock = vi.fn().mockResolvedValue(undefined);
+
+    const fixture = await createFixture({
+      execFileTextImpl: execFileText,
+      dependencies: { rmPath: rmPathMock },
+      initialState: { workspaces: [makeReviewWorkspace("ws-del3", diskPath)] },
+    });
+    fixtures.push(fixture);
+
+    const result = await fixture.runtime.deleteWorkspace("ws-del3", {
+      deleteFromDisk: true,
+      diskPath,
+    });
+
+    expect(result.deleteWorkspaceError).toBeFalsy();
+
+    const worktreeRemoveCalls = execFileText.mock.calls.filter(
+      (c) => Array.isArray(c[1]) && c[1][0] === "worktree" && c[1][1] === "remove",
+    );
+    expect(worktreeRemoveCalls).toHaveLength(0);
+  });
+
   test("useWorktree create runs the guard BEFORE any disk side-effects (no orphan tree, no .gitignore mutation)", async () => {
     // Regression: previously the gitignore write, parent mkdir and
     // `git worktree add` all ran first, so a same-cwd conflict in useWorktree

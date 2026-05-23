@@ -256,6 +256,7 @@ interface RuntimeDependencies {
   createPluginManager?: (...args: any[]) => any;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   execFileText?: (...args: any[]) => any;
+  rmPath?: (dirPath: string) => Promise<void>;
   checkRemoteOrigin?: typeof checkRemoteOrigin;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   getTerminalEnvironment?: (...args: any[]) => any;
@@ -327,6 +328,7 @@ export async function createRuntime({
   const GitHubManagerImpl = dependencies.GitHubManager || GitHubManager;
   const createPluginManagerImpl = dependencies.createPluginManager || createPluginManager;
   const execFileTextImpl = dependencies.execFileText || execFileText;
+  const rmPathImpl = dependencies.rmPath ?? null;
 
   // Forward-declare plugin manager so getPayload() can read it safely even
   // when broadcastState() fires via queueMicrotask during the createRuntime
@@ -344,6 +346,7 @@ export async function createRuntime({
   // faster for large trees.  Falls back to fs.rm on other platforms and when
   // `rd` fails (e.g. path too long, permissions).
   async function rmPath(dirPath: string): Promise<void> {
+    if (rmPathImpl) return rmPathImpl(dirPath);
     // On Windows, try the fast native path first (once — if it fails due to
     // locked files, retrying it won't help; let the retry loop use fs.rm which
     // gives us proper EBUSY/EPERM error codes for the backoff logic).
@@ -4918,6 +4921,7 @@ export async function createRuntime({
                 });
               }
               if (gitCwd) {
+                let gitFallbackErr: unknown = null;
                 if (rmFailed) {
                   const tGit0 = Date.now();
                   try {
@@ -4928,6 +4932,7 @@ export async function createRuntime({
                       ms: Date.now() - tGit0,
                     });
                   } catch (err) {
+                    gitFallbackErr = err;
                     log.warn("deleteWorkspace: git worktree remove --force also failed", {
                       workspaceId,
                       diskPath,
@@ -4940,6 +4945,11 @@ export async function createRuntime({
                 // Prune the .git/worktrees admin entry. Doesn't need to block
                 // the response — it's just metadata cleanup.
                 execFileTextImpl("git", ["worktree", "prune"], { cwd: gitCwd }).catch(() => {});
+                if (rmFailed && gitFallbackErr) {
+                  const rmMsg = (rmErr as Error)?.message?.slice(0, 200) ?? String(rmErr);
+                  const gitMsg = (gitFallbackErr as Error)?.message?.slice(0, 200) ?? String(gitFallbackErr);
+                  throw new Error(`Failed to remove ${diskPath}: rm: ${rmMsg}; git: ${gitMsg}`);
+                }
               } else if (rmFailed) {
                 // No git cwd to prune from — surface the rm failure.
                 throw new Error(`Failed to remove ${diskPath}`);
