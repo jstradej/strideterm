@@ -31,6 +31,8 @@ import {
   taskUpdateDescriptionSchema,
   terminalSessionSchema,
   validateIpc,
+  workspaceDeleteOptionsSchema,
+  workspaceIdSchema,
   workspaceGridEnableSchema,
   workspaceGridSetCellSchema,
   workspaceGridSetLayoutSchema,
@@ -565,7 +567,17 @@ async function handleApiRequest(
       request.method === "POST" &&
       (url.pathname === "/api/workspace/delete" || url.pathname === "/api/project/delete")
     ) {
-      json(response, 200, await runtime.deleteWorkspace((body.workspaceId || body.projectId) as string, body));
+      const wsId = validateIpc(
+        workspaceIdSchema,
+        body.workspaceId || body.projectId,
+        "remote:workspace/delete.workspaceId",
+      );
+      const opts = validateIpc(
+        workspaceDeleteOptionsSchema,
+        { deleteFromDisk: body.deleteFromDisk, diskPath: body.diskPath },
+        "remote:workspace/delete.options",
+      );
+      json(response, 200, await runtime.deleteWorkspace(wsId, opts));
       return;
     }
 
@@ -1565,7 +1577,9 @@ async function handleApiRequest(
 
     json(response, 404, { error: "Not found" });
   } catch (error) {
-    json(response, 500, { error: (error as Error).message || "Remote API failed" });
+    const msg = (error as Error).message || "Remote API failed";
+    const statusCode = msg.startsWith("IPC validation failed") ? 400 : 500;
+    json(response, statusCode, { error: msg });
   }
 }
 
@@ -1773,10 +1787,32 @@ export async function startRemoteServer({
           runtime.activateWorkspace((body.workspaceId || body.projectId) as string, windowId),
         // Delete is irreversible — cross-profile delete is data loss in
         // another profile.
-        "/api/workspace/delete": (body, windowId) =>
-          runtime.deleteWorkspace((body.workspaceId || body.projectId) as string, body || {}, windowId),
-        "/api/project/delete": (body, windowId) =>
-          runtime.deleteWorkspace((body.workspaceId || body.projectId) as string, body || {}, windowId),
+        "/api/workspace/delete": (body, windowId) => {
+          const wsId = validateIpc(
+            workspaceIdSchema,
+            body.workspaceId || body.projectId,
+            "remote-slot:workspace/delete.workspaceId",
+          );
+          const opts = validateIpc(
+            workspaceDeleteOptionsSchema,
+            { deleteFromDisk: body.deleteFromDisk, diskPath: body.diskPath },
+            "remote-slot:workspace/delete.options",
+          );
+          return runtime.deleteWorkspace(wsId, opts, windowId);
+        },
+        "/api/project/delete": (body, windowId) => {
+          const wsId = validateIpc(
+            workspaceIdSchema,
+            body.workspaceId || body.projectId,
+            "remote-slot:project/delete.workspaceId",
+          );
+          const opts = validateIpc(
+            workspaceDeleteOptionsSchema,
+            { deleteFromDisk: body.deleteFromDisk, diskPath: body.diskPath },
+            "remote-slot:project/delete.options",
+          );
+          return runtime.deleteWorkspace(wsId, opts, windowId);
+        },
         // Connection save/delete pins connection.profileId to the bound
         // window's profile; without slot-aware routing a remote on profile
         // B that omits profileId silently lands the connection in
@@ -1928,7 +1964,13 @@ export async function startRemoteServer({
           });
           return;
         }
-        json(response, 200, await slotAwareHandler(body, windowId));
+        try {
+          json(response, 200, await slotAwareHandler(body, windowId));
+        } catch (err) {
+          const msg = (err as Error).message || "Slot operation failed";
+          const statusCode = msg.startsWith("IPC validation failed") ? 400 : 500;
+          json(response, statusCode, { error: msg });
+        }
         return;
       }
 

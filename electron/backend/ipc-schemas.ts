@@ -705,6 +705,17 @@ export type TaskRecoveryResolve = z.infer<typeof taskRecoveryResolveSchema>;
 export const workspaceReorderSchema = z.array(nonEmptyString);
 export type WorkspaceReorder = z.infer<typeof workspaceReorderSchema>;
 
+export const workspaceIdSchema = z.string().min(1);
+export type WorkspaceId = z.infer<typeof workspaceIdSchema>;
+
+export const workspaceDeleteOptionsSchema = z
+  .object({
+    deleteFromDisk: z.boolean().optional(),
+    diskPath: z.string().optional(),
+  })
+  .strict();
+export type WorkspaceDeleteOptions = z.infer<typeof workspaceDeleteOptionsSchema>;
+
 export const attentionSyncSchema = z.object({
   visibleSessionIds: z.array(z.string()).optional(),
   windowFocused: z.boolean().optional(),

@@ -363,3 +363,76 @@ describe("remote token client profile context", () => {
     }
   });
 });
+
+describe("workspace delete endpoint validation", () => {
+  function makeMinimalRuntime(auth: string, port: number) {
+    const payload = {
+      appState: {
+        settings: { remoteAccess: { enabled: true, host: "127.0.0.1", port, token: auth } },
+        profiles: [{ id: "default", name: "Default" }],
+        workspaces: [{ id: "ws-1", name: "WS1", profileId: "default", panels: [] }],
+        windowSlots: [{ id: "win-1", profileId: "default", activeWorkspaceId: "ws-1" }],
+      },
+    };
+    return {
+      getPayload: () => payload,
+      getInitialState: async () => payload,
+      setRemoteInfo: () => undefined,
+      listRemoteUrls: () => [],
+      on: () => () => undefined,
+      writeToSession: () => undefined,
+      resizeSession: () => undefined,
+      setRemoteClientRegistry: () => undefined,
+      deleteWorkspace: async () => payload,
+    };
+  }
+
+  // Uses the slot-aware delete route (requires a client-id to bind a window session).
+  const clientHeaders = (auth: string) => ({
+    Authorization: `Bearer ${auth}`,
+    "Content-Type": "application/json",
+    "X-Strideterm-Client-Id": "test-client",
+  });
+
+  test("POST /api/workspace/delete with invalid options (wrong type) returns 400", async () => {
+    const port = await getFreePort();
+    const auth = "test-token-del";
+    const runtime = makeMinimalRuntime(auth, port);
+    const server = await startRemoteServer({
+      runtime: runtime as Parameters<typeof startRemoteServer>[0]["runtime"],
+      staticRoot: process.cwd(),
+    });
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/api/workspace/delete`, {
+        method: "POST",
+        headers: clientHeaders(auth),
+        body: JSON.stringify({ workspaceId: "ws-1", diskPath: 123 }),
+      });
+      expect(res.status).toBe(400);
+      const body = (await res.json()) as { error?: string };
+      expect(body.error).toMatch(/IPC validation failed/);
+    } finally {
+      await server.close();
+    }
+  });
+
+  test("POST /api/workspace/delete with valid body returns 200", async () => {
+    const port = await getFreePort();
+    const auth = "test-token-del-ok";
+    const runtime = makeMinimalRuntime(auth, port);
+    const server = await startRemoteServer({
+      runtime: runtime as Parameters<typeof startRemoteServer>[0]["runtime"],
+      staticRoot: process.cwd(),
+    });
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/api/workspace/delete`, {
+        method: "POST",
+        headers: clientHeaders(auth),
+        body: JSON.stringify({ workspaceId: "ws-1" }),
+      });
+      expect(res.status).toBe(200);
+    } finally {
+      await server.close();
+    }
+  });
+});

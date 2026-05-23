@@ -102,6 +102,8 @@ import {
   taskUpdateDescriptionSchema,
   taskRecoveryResolveSchema,
   telegramConnectionSchema,
+  workspaceIdSchema,
+  workspaceDeleteOptionsSchema,
   workspaceGridEnableSchema,
   workspaceGridSetLayoutSchema,
   workspaceGridSetCellSchema,
@@ -302,8 +304,10 @@ export function registerIpc(
   });
   ipcMain.handle("workspace:delete", async (event, workspaceId, options) => {
     const windowId = getWindowIdByWebContentsId?.(event.sender.id) ?? "";
-    return withOperationPromise({ workspaceId: String(workspaceId || ""), opId: "workspace:delete" }, () =>
-      runtime.deleteWorkspace(workspaceId, options || {}, windowId),
+    const validId = validateIpc(workspaceIdSchema, workspaceId, "workspace:delete.workspaceId");
+    const validOpts = validateIpc(workspaceDeleteOptionsSchema, options ?? {}, "workspace:delete.options");
+    return withOperationPromise({ workspaceId: validId, opId: "workspace:delete" }, () =>
+      runtime.deleteWorkspace(validId, validOpts, windowId),
     );
   });
   ipcMain.handle("project:delete", async (event, projectId) => {

@@ -2,6 +2,8 @@ import { describe, expect, test } from "vitest";
 import {
   validateIpc,
   workspaceSchema,
+  workspaceIdSchema,
+  workspaceDeleteOptionsSchema,
   azureCommentSchema,
   azureVoteSchema,
   azureThreadStatusSchema,
@@ -484,6 +486,59 @@ describe("ipc-schemas", () => {
         "test",
       );
       expect(result.mode).toBe("shell");
+    });
+  });
+
+  describe("workspaceIdSchema", () => {
+    test("accepts non-empty string", () => {
+      expect(validateIpc(workspaceIdSchema, "ws-123", "test")).toBe("ws-123");
+    });
+
+    test("rejects empty string", () => {
+      expect(() => validateIpc(workspaceIdSchema, "", "test")).toThrow();
+    });
+
+    test("rejects non-string", () => {
+      expect(() => validateIpc(workspaceIdSchema, 42, "test")).toThrow();
+    });
+
+    test("rejects null/undefined", () => {
+      expect(() => validateIpc(workspaceIdSchema, null, "test")).toThrow();
+      expect(() => validateIpc(workspaceIdSchema, undefined, "test")).toThrow();
+    });
+  });
+
+  describe("workspaceDeleteOptionsSchema", () => {
+    test("accepts empty object (no disk delete)", () => {
+      const result = validateIpc(workspaceDeleteOptionsSchema, {}, "test");
+      expect(result.deleteFromDisk).toBeUndefined();
+      expect(result.diskPath).toBeUndefined();
+    });
+
+    test("accepts valid deleteFromDisk + diskPath", () => {
+      const result = validateIpc(
+        workspaceDeleteOptionsSchema,
+        { deleteFromDisk: true, diskPath: "/tmp/workspace" },
+        "test",
+      );
+      expect(result.deleteFromDisk).toBe(true);
+      expect(result.diskPath).toBe("/tmp/workspace");
+    });
+
+    test("accepts missing optional fields", () => {
+      expect(() => validateIpc(workspaceDeleteOptionsSchema, { deleteFromDisk: false }, "test")).not.toThrow();
+      expect(() => validateIpc(workspaceDeleteOptionsSchema, { diskPath: "/tmp/x" }, "test")).not.toThrow();
+    });
+
+    test("rejects extra keys (strict)", () => {
+      expect(() =>
+        validateIpc(workspaceDeleteOptionsSchema, { deleteFromDisk: true, unknownKey: "bad" }, "test"),
+      ).toThrow();
+    });
+
+    test("rejects wrong types", () => {
+      expect(() => validateIpc(workspaceDeleteOptionsSchema, { deleteFromDisk: "yes" }, "test")).toThrow();
+      expect(() => validateIpc(workspaceDeleteOptionsSchema, { diskPath: 123 }, "test")).toThrow();
     });
   });
 });
