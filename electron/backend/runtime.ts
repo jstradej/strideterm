@@ -4049,6 +4049,40 @@ export async function createRuntime({
     }
   }
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  function resolveManagedDeletePath(workspace: any, requestedPath: string): string | null {
+    if (!requestedPath || !path.isAbsolute(requestedPath)) return null;
+    const res = (p: unknown) => path.resolve(String(p || "").trim());
+
+    // Review managed-worktree
+    if (workspace.review?.checkout?.mode === "managed-worktree" && workspace.review.checkout.rootPath) {
+      if (requestedPath === res(workspace.review.checkout.rootPath)) return requestedPath;
+    }
+
+    // Quickfix
+    if (workspace.quickfix?.rootPath) {
+      if (requestedPath === res(workspace.quickfix.rootPath)) return requestedPath;
+    }
+
+    // Task worktree (cwd must lie under worktreeBase)
+    if (workspace.task && workspace.task.worktreeBase && workspace.cwd) {
+      const base = res(workspace.task.worktreeBase);
+      const cwd = res(workspace.cwd);
+      const underBase = cwd === base || cwd.startsWith(base + path.sep);
+      if (underBase && (requestedPath === cwd || requestedPath === base || requestedPath.startsWith(base + path.sep))) {
+        return requestedPath;
+      }
+    }
+
+    // Legacy "Worktree of ..." — cwd is always inside .strideterm/tree/
+    if ((workspace.notes || "").startsWith("Worktree of ") && workspace.cwd) {
+      const cwd = res(workspace.cwd);
+      if (requestedPath === cwd && cwd.includes(`.strideterm${path.sep}tree${path.sep}`)) return requestedPath;
+    }
+
+    return null;
+  }
+
   const returnObj = {
     ...providerHandlers,
     ...gitHandlers,
@@ -4730,8 +4764,9 @@ export async function createRuntime({
     async saveProject(project: any, windowId?: string) {
       return this.saveWorkspace(project, windowId);
     },
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
     async deleteWorkspace(workspaceId: any, options: any = {}, windowId?: string) {
+      // eslint-disable-line @typescript-eslint/no-explicit-any
       const state = getState();
       const workspace = findWorkspace(state, workspaceId);
       // Cross-profile delete is data loss in another profile. Refuse it.
@@ -4831,11 +4866,13 @@ export async function createRuntime({
         // Delete worktree files from disk if requested
         let diskDeleteError = "";
         if (options.deleteFromDisk && workspace) {
-          const allowedPaths = [workspace.review?.checkout?.rootPath, workspace.cwd, workspace.quickfix?.rootPath]
-            .map((p) => (p ? path.resolve(String(p).trim()) : ""))
-            .filter(Boolean);
-          const requestedPath = path.resolve(String(options.diskPath || allowedPaths[0] || "").trim());
-          const diskPath = allowedPaths.includes(requestedPath) ? requestedPath : "";
+          const primaryPath =
+            workspace.review?.checkout?.rootPath || workspace.cwd || workspace.quickfix?.rootPath || "";
+          const requestedPath = path.resolve(String(options.diskPath || primaryPath || "").trim());
+          const diskPath = resolveManagedDeletePath(workspace, requestedPath) ?? "";
+          if (!diskPath) {
+            diskDeleteError = `Refused to delete unmanaged workspace path: ${requestedPath || "(empty)"}`;
+          }
           if (diskPath && path.isAbsolute(diskPath)) {
             pendingWorktreeDeletions.add(diskPath);
             const tDelete0 = Date.now();

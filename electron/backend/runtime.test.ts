@@ -3365,6 +3365,87 @@ describe("runtime integration", () => {
     expect(worktreeRemoveCalls).toHaveLength(0);
   });
 
+  // --- Step 3: managed-path guard ---
+
+  test("deleteWorkspace with deleteFromDisk on plain (unmanaged) workspace sets deleteWorkspaceError and does not call rmPath", async () => {
+    const diskPath = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-plain-del-"));
+    tempPaths.push(diskPath);
+
+    const rmPathMock = vi.fn().mockResolvedValue(undefined);
+
+    const fixture = await createFixture({
+      dependencies: { rmPath: rmPathMock },
+      initialState: {
+        workspaces: [
+          {
+            id: "plain-ws",
+            name: "Plain",
+            kind: "terminal",
+            cwd: diskPath,
+            activePanelId: "shell",
+            panels: [{ id: "shell", title: "Shell", command: "", shell: true, startup: "default" }],
+          },
+        ],
+      },
+    });
+    fixtures.push(fixture);
+
+    const result = await fixture.runtime.deleteWorkspace("plain-ws", {
+      deleteFromDisk: true,
+      diskPath,
+    });
+
+    expect(result.deleteWorkspaceError).toBeTruthy();
+    expect(result.deleteWorkspaceError).toContain("Refused to delete");
+    expect(rmPathMock).not.toHaveBeenCalled();
+    // Workspace is still removed from state
+    expect(fixture.runtime.getPayload().appState.workspaces!.find((w) => w.id === "plain-ws")).toBeUndefined();
+  });
+
+  test("deleteWorkspace with deleteFromDisk on managed review worktree succeeds", async () => {
+    const diskPath = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-managed-del-"));
+    tempPaths.push(diskPath);
+
+    const rmPathMock = vi.fn().mockResolvedValue(undefined);
+
+    const fixture = await createFixture({
+      dependencies: { rmPath: rmPathMock },
+      initialState: { workspaces: [makeReviewWorkspace("rv-ws", diskPath)] },
+    });
+    fixtures.push(fixture);
+
+    const result = await fixture.runtime.deleteWorkspace("rv-ws", {
+      deleteFromDisk: true,
+      diskPath,
+    });
+
+    expect(result.deleteWorkspaceError).toBeFalsy();
+    expect(rmPathMock).toHaveBeenCalledWith(diskPath);
+  });
+
+  test("deleteWorkspace: path traversal outside managed path is denied", async () => {
+    const baseDir = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-traversal-"));
+    tempPaths.push(baseDir);
+    const diskPath = path.join(baseDir, "sub", "wt");
+
+    const rmPathMock = vi.fn().mockResolvedValue(undefined);
+
+    const fixture = await createFixture({
+      dependencies: { rmPath: rmPathMock },
+      initialState: { workspaces: [makeReviewWorkspace("rv-trav", diskPath)] },
+    });
+    fixtures.push(fixture);
+
+    // Try to delete a path outside the managed rootPath (traverse up to baseDir)
+    const result = await fixture.runtime.deleteWorkspace("rv-trav", {
+      deleteFromDisk: true,
+      diskPath: baseDir,
+    });
+
+    expect(result.deleteWorkspaceError).toBeTruthy();
+    expect(rmPathMock).not.toHaveBeenCalled();
+  });
+
   test("useWorktree create runs the guard BEFORE any disk side-effects (no orphan tree, no .gitignore mutation)", async () => {
     // Regression: previously the gitignore write, parent mkdir and
     // `git worktree add` all ran first, so a same-cwd conflict in useWorktree
