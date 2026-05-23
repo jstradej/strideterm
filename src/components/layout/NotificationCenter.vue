@@ -379,24 +379,55 @@ function scrollToTopAndClear() {
 }
 
 let tickTimer: ReturnType<typeof setInterval> | undefined;
-let snoozeTimer: ReturnType<typeof setInterval> | undefined;
 const tick = ref(0);
 // Snooze gate — hide sessions whose snoozedUntil hasn't elapsed.
 const now = ref(Date.now());
 
-onMounted(() => {
+// Run the 30-second tick only when something is actually visible or snoozed.
+// Avoids idle timers when the panel is closed and no sessions are snoozed.
+function hasSnoozedSession(): boolean {
+  return notifStore.sessions.some((s) => s.snoozedUntil && s.snoozedUntil > Date.now());
+}
+
+function needsTick(): boolean {
+  return notifStore.pinned || notifStore.panelOpen || hasSnoozedSession();
+}
+
+function startTick() {
+  if (tickTimer) return;
   tickTimer = setInterval(() => {
     tick.value++;
-  }, 30_000);
-  snoozeTimer = setInterval(() => {
     now.value = Date.now();
   }, 30_000);
+}
+
+function stopTick() {
+  if (tickTimer) {
+    clearInterval(tickTimer);
+    tickTimer = undefined;
+  }
+}
+
+onMounted(() => {
+  if (needsTick()) startTick();
 });
 
 onUnmounted(() => {
-  clearInterval(tickTimer);
-  clearInterval(snoozeTimer);
+  stopTick();
 });
+
+watch(
+  () => [notifStore.pinned, notifStore.panelOpen, hasSnoozedSession()] as const,
+  ([pinned, open, snoozed]) => {
+    if (pinned || open || snoozed) {
+      startTick();
+      // Immediately update now so panel opens on fresh data, not stale.
+      now.value = Date.now();
+    } else {
+      stopTick();
+    }
+  },
+);
 
 function isSnoozed(s: NotificationSession): boolean {
   return !!(s.snoozedUntil && s.snoozedUntil > now.value);
