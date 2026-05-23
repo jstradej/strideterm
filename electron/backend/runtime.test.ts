@@ -3446,6 +3446,68 @@ describe("runtime integration", () => {
     expect(rmPathMock).not.toHaveBeenCalled();
   });
 
+  // --- Step 4: targeted git refresh after delete ---
+
+  test("deleteWorkspace: deleting review worktree triggers targeted refreshGit for parent only", async () => {
+    const diskPath = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-del-target-"));
+    tempPaths.push(diskPath);
+
+    const rmPathMock = vi.fn().mockResolvedValue(undefined);
+    const parentWs = {
+      id: "parent",
+      name: "Parent WS",
+      kind: "terminal",
+      cwd: "/some/repo",
+      activePanelId: "shell",
+      panels: [{ id: "shell", title: "Shell", command: "", shell: true, startup: "default" }],
+    };
+    const fixture = await createFixture({
+      dependencies: { rmPath: rmPathMock },
+      initialState: { workspaces: [makeReviewWorkspace("rv-targeted", diskPath), parentWs] },
+    });
+    fixtures.push(fixture);
+
+    // Reset tracking arrays after startup to isolate the deleteWorkspace call
+    fixture.git.invalidateCalls = [];
+    fixture.git.refreshArgs = [];
+
+    await fixture.runtime.deleteWorkspace("rv-targeted", { deleteFromDisk: true });
+
+    // Targeted refresh: invalidateSnapshotCache called ONLY for parent, not null
+    expect(fixture.git.invalidateCalls.some((c: { workspaceId: string | null }) => c.workspaceId === "parent")).toBe(
+      true,
+    );
+    expect(fixture.git.invalidateCalls.every((c: { workspaceId: string | null }) => c.workspaceId !== null)).toBe(true);
+    // refreshArgs: each targeted call passes only the parent workspace
+    expect(fixture.git.refreshArgs.some((ids: string[]) => ids.length === 1 && ids[0] === "parent")).toBe(true);
+  });
+
+  test("deleteWorkspace: deleting plain workspace with no parent falls back to refreshGit(null, { useCache: true })", async () => {
+    const plainWs = {
+      id: "plain-ws",
+      name: "Plain WS",
+      kind: "terminal",
+      cwd: "/unrelated/path",
+      activePanelId: "shell",
+      panels: [{ id: "shell", title: "Shell", command: "", shell: true, startup: "default" }],
+    };
+    const fixture = await createFixture({
+      initialState: { workspaces: [plainWs] },
+    });
+    fixtures.push(fixture);
+
+    // Reset tracking arrays after startup to isolate the deleteWorkspace call
+    fixture.git.invalidateCalls = [];
+    fixture.git.refreshArgs = [];
+
+    await fixture.runtime.deleteWorkspace("plain-ws", {});
+
+    // Fallback: useCache=true means invalidateSnapshotCache is NOT called
+    expect(fixture.git.invalidateCalls).toHaveLength(0);
+    // refreshArgs receives at least one call (the fallback full refresh)
+    expect(fixture.git.refreshArgs.length).toBeGreaterThan(0);
+  });
+
   test("useWorktree create runs the guard BEFORE any disk side-effects (no orphan tree, no .gitignore mutation)", async () => {
     // Regression: previously the gitignore write, parent mkdir and
     // `git worktree add` all ran first, so a same-cwd conflict in useWorktree

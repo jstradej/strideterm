@@ -4050,6 +4050,49 @@ export async function createRuntime({
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  function resolveDeleteRefreshTargets(deletedWorkspace: any, allWorkspaces: any[]): string[] {
+    const targets = new Set<string>();
+
+    // Explicit parentWorkspaceId fields
+    for (const id of [
+      deletedWorkspace.review?.parentWorkspaceId,
+      deletedWorkspace.quickfix?.parentWorkspaceId,
+      deletedWorkspace.task?.parentWorkspaceId,
+    ]) {
+      if (id) targets.add(id);
+    }
+
+    // Legacy "Worktree of <name>" — find the workspace with the same name in the same profile
+    const notes = String(deletedWorkspace.notes || "");
+    if (notes.startsWith("Worktree of ")) {
+      const parentName = notes.slice("Worktree of ".length);
+      const profileId = deletedWorkspace.profileId || "default";
+      const parent = allWorkspaces.find(
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (w: any) => w.name === parentName && (w.profileId || "default") === profileId,
+      );
+      if (parent) targets.add(parent.id);
+    }
+
+    // Workspaces sharing the same parent git repo (same cwd as the derived gitCwd)
+    const cacheRepoPath = deletedWorkspace.review?.checkout?.cacheRepoPath || "";
+    const taskWorktreeBase = deletedWorkspace.task?.worktreeBase || "";
+    const mainWorktreePath = deletedWorkspace.cwd ? path.resolve(deletedWorkspace.cwd, "..", "..", "..") : "";
+    const deletedGitCwd = cacheRepoPath || taskWorktreeBase || mainWorktreePath;
+    if (deletedGitCwd) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      for (const ws of allWorkspaces as any[]) {
+        if (!ws.cwd || ws.kind === "azure") continue;
+        if (path.resolve(String(ws.cwd)) === deletedGitCwd) targets.add(ws.id);
+      }
+    }
+
+    // Filter to IDs that actually exist in the current workspace list
+    const existingIds = new Set(allWorkspaces.map((w: any) => w.id)); // eslint-disable-line @typescript-eslint/no-explicit-any
+    return [...targets].filter((id) => existingIds.has(id));
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   function resolveManagedDeletePath(workspace: any, requestedPath: string): string | null {
     if (!requestedPath || !path.isAbsolute(requestedPath)) return null;
     const res = (p: unknown) => path.resolve(String(p || "").trim());
@@ -4765,8 +4808,8 @@ export async function createRuntime({
       return this.saveWorkspace(project, windowId);
     },
 
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async deleteWorkspace(workspaceId: any, options: any = {}, windowId?: string) {
-      // eslint-disable-line @typescript-eslint/no-explicit-any
       const state = getState();
       const workspace = findWorkspace(state, workspaceId);
       // Cross-profile delete is data loss in another profile. Refuse it.
@@ -5006,7 +5049,14 @@ export async function createRuntime({
           }
         }
 
-        await refreshGit();
+        const refreshTargets = resolveDeleteRefreshTargets(workspace, getState().workspaces);
+        if (refreshTargets.length > 0) {
+          for (const targetId of refreshTargets) {
+            await refreshGit(targetId);
+          }
+        } else {
+          await refreshGit(null, { useCache: true });
+        }
         ensureVisibleSession();
         broadcastState();
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
