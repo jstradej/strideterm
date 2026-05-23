@@ -3610,6 +3610,17 @@ export async function createRuntime({
     const toRemove: string[] = [];
     const toRepair: Array<{ id: string; profileId: string }> = [];
 
+    // 6a: pre-build lookup indexes to avoid O(n²) find/some inside the scan loop.
+    const worktreeByProfileAndCwd = new Map<string, WorkspaceState>();
+    for (const wt of worktrees) {
+      worktreeByProfileAndCwd.set(`${wt.profileId || "default"}|${wt.cwd}`, wt);
+    }
+    const taskCwdSet = new Set<string>();
+    for (const ws of state.workspaces) {
+      if (ws.kind === "task" && ws.cwd) taskCwdSet.add(ws.cwd);
+    }
+    const toAddKeySet = new Set<string>();
+
     // Each parent is an independent observer of its own treeDir on disk.
     // When two profiles both have a workspace at the same cwd, both scan the
     // same directory and each gets its own worktree entries — profiles do
@@ -3633,7 +3644,7 @@ export async function createRuntime({
         if (!entry.isDirectory()) continue;
         const treePath = path.join(treeDir, entry.name);
         if (pendingWorktreeDeletions.has(path.resolve(treePath))) continue;
-        const existing = worktrees.find((w) => w.cwd === treePath && (w.profileId || "default") === parentProfileId);
+        const existing = worktreeByProfileAndCwd.get(`${parentProfileId}|${treePath}`);
         if (existing) {
           // Repair profileId if it drifted from parent
           if ((existing.profileId || "default") !== parentProfileId) {
@@ -3641,9 +3652,11 @@ export async function createRuntime({
           }
           continue;
         }
-        if (toAdd.some((w) => w.cwd === treePath && (w.profileId || "default") === parentProfileId)) continue;
+        const toAddKey = `${parentProfileId}|${treePath}`;
+        if (toAddKeySet.has(toAddKey)) continue;
         // Skip directories already owned by a task workspace — the task entry takes priority.
-        if (state.workspaces.some((w) => w.kind === "task" && w.cwd === treePath)) continue;
+        if (taskCwdSet.has(treePath)) continue;
+        toAddKeySet.add(toAddKey);
         toAdd.push(
           normalizeWorkspace({
             id: `workspace-${randomUUID()}`,
@@ -4818,6 +4831,7 @@ export async function createRuntime({
       await refreshGit(workspace.id || null);
       ensureVisibleSession();
       broadcastState();
+      syncTreeDirWatchers(); // 6b: keep watcher set consistent after workspace add/edit
       refreshAzure().catch(() => {});
       return getPayload();
     },
@@ -5077,6 +5091,7 @@ export async function createRuntime({
         }
         ensureVisibleSession();
         broadcastState();
+        syncTreeDirWatchers(); // 6b: remove watcher for deleted parent's tree dir
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const result: any = getPayload();
         if (diskDeleteError) {
