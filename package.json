@@ -153,7 +153,7 @@
     "pinia": "^3.0.4",
     "proper-lockfile": "4.1.2",
     "qrcode": "^1.5.4",
-    "splitpanes": "^4.0.4",
+    "splitpanes": "^4.1.2",
     "ssh-config": "^5.1.0",
     "ssh2": "^1.17.0",
     "sshpk": "^1.18.0",
