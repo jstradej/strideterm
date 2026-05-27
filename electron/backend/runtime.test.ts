@@ -686,14 +686,20 @@ async function createFixture({
 const fixtures: any[] = [];
 const tempPaths: string[] = [];
 
+// Windows holds file handles for a few ms after a watcher / log writer
+// closes, so a synchronous `fs.rm({ recursive: true, force: true })` right
+// after `runtime.stop()` often hits ENOTEMPTY / EBUSY. Node's `maxRetries`
+// + `retryDelay` is the canonical workaround.
+const RM_OPTS = { recursive: true, force: true, maxRetries: 5, retryDelay: 100 };
+
 afterEach(async () => {
   await Promise.all(
     fixtures.splice(0).map(async (fixture) => {
       await fixture.runtime.stop();
-      await fs.rm(fixture.userDataPath, { recursive: true, force: true });
+      await fs.rm(fixture.userDataPath, RM_OPTS);
     }),
   );
-  await Promise.all(tempPaths.splice(0).map((targetPath) => fs.rm(targetPath, { recursive: true, force: true })));
+  await Promise.all(tempPaths.splice(0).map((targetPath) => fs.rm(targetPath, RM_OPTS)));
 });
 
 describe("detectTerminalEnvironment", () => {
@@ -797,7 +803,7 @@ describe("runtime integration", () => {
     await fixture.runtime.stop();
 
     expect(fixture.reviewBridgeStore.close).toHaveBeenCalledTimes(1);
-    await fs.rm(fixture.userDataPath, { recursive: true, force: true });
+    await fs.rm(fixture.userDataPath, RM_OPTS);
   });
 
   test("includes review bridge context for active azure review workspaces", async () => {
