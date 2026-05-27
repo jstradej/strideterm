@@ -1,8 +1,13 @@
 import { mount } from "@vue/test-utils";
-import { describe, expect, test, vi } from "vitest";
+import { createPinia, setActivePinia } from "pinia";
+import { beforeEach, describe, expect, test, vi } from "vitest";
 import SettingsTelegramTab from "./SettingsTelegramTab.vue";
 
 describe("SettingsTelegramTab", () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+  });
+
   test("saves the selected profile id with a Telegram connection", async () => {
     const saveTelegramConnection = vi.fn(async () => ({
       payload: {

@@ -322,7 +322,12 @@ const detachingReview = ref(false);
 
 async function onDetachReview() {
   if (detachingReview.value) return;
-  if (!window.confirm("Detach this workspace from its PR review? Git operations will be re-enabled.")) return;
+  const confirmed = await appStore.confirmInApp({
+    title: "Detach from PR review?",
+    message: "Detach this workspace from its PR review? Git operations will be re-enabled.",
+    confirmLabel: "Detach",
+  });
+  if (!confirmed) return;
   detachingReview.value = true;
   try {
     await appStore.detachWorkspaceReview(props.workspaceId);

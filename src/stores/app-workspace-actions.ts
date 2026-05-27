@@ -103,13 +103,22 @@ export function createWorkspaceActions(ctx: WorkspaceActionsCtx) {
     cancelLabel?: string;
     danger?: boolean;
   }): Promise<boolean> {
+    // Preserve the currently-open overlay (e.g. SettingsDialog) so calls from
+    // inside a parent dialog don't lose its state on cancel/confirm.
+    const prevOverlay = ctx.overlay.value;
+    const prevOverlayProps = ctx.overlayProps.value;
     return new Promise((resolve) => {
       let done = false;
       const finish = (value: boolean) => {
         if (done) return;
         done = true;
-        ctx.overlay.value = null;
-        ctx.overlayProps.value = {};
+        if (prevOverlay && prevOverlay !== "ConfirmDialog") {
+          ctx.overlay.value = prevOverlay;
+          ctx.overlayProps.value = prevOverlayProps;
+        } else {
+          ctx.overlay.value = null;
+          ctx.overlayProps.value = {};
+        }
         resolve(value);
       };
       ctx.overlay.value = "ConfirmDialog";
@@ -674,6 +683,7 @@ export function createWorkspaceActions(ctx: WorkspaceActionsCtx) {
   }
 
   return {
+    confirmInApp,
     saveWorkspace,
     detachWorkspaceReview,
     deleteWorkspace,

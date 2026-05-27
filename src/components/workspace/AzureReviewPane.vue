@@ -913,9 +913,11 @@ async function handleCreatePr() {
   try {
     // Check for unpushed commits
     if (aheadCount.value > 0) {
-      const pushConfirmed = window.confirm(
-        `You have ${aheadCount.value} unpushed commit(s). Push to remote before creating the PR?`,
-      );
+      const pushConfirmed = await appStore.confirmInApp({
+        title: "Push commits before creating PR?",
+        message: `You have ${aheadCount.value} unpushed commit${aheadCount.value === 1 ? "" : "s"}. Push to remote before creating the PR?`,
+        confirmLabel: "Push and create",
+      });
       if (!pushConfirmed) {
         prFormResult.value = { ok: false, summary: "Push your commits to remote first, then try again." };
         return;

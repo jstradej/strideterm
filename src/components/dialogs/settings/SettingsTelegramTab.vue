@@ -122,6 +122,7 @@
 <script setup lang="ts">
 import { ref, reactive, inject, watch } from "vue";
 import type { Transport } from "../../../transport.js";
+import { useAppStore } from "../../../stores/app.js";
 
 interface TelegramConnection {
   id: string;
@@ -157,6 +158,7 @@ const props = withDefaults(defineProps<Props>(), {
 });
 
 const api = inject<Transport>("api");
+const appStore = useAppStore();
 
 const connections = ref<TelegramConnection[]>([...(props.telegramSettings?.connections || [])]);
 const profileOptions = ref<ProfileOption[]>([...(props.profiles || [])]);
@@ -405,7 +407,13 @@ async function saveConnection(draft: Draft) {
 }
 
 async function deleteConnection(id: string) {
-  if (!confirm("Delete this Telegram connection?")) return;
+  const confirmed = await appStore.confirmInApp({
+    title: "Delete Telegram connection?",
+    message: "This Telegram connection will be removed.",
+    confirmLabel: "Delete",
+    danger: true,
+  });
+  if (!confirmed) return;
   busy.value = true;
   errorMessage.value = "";
   try {

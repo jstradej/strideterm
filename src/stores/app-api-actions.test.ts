@@ -15,6 +15,7 @@ function makeCtx(payloadValue: AnyApi) {
     selectedLanUrl: ref(""),
     getApi: () => ({ isRemote: false }),
     withSuppressedBroadcast: async (fn: () => Promise<void>) => fn(),
+    confirmInApp: async () => true,
   } as AnyApi;
 }
 

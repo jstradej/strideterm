@@ -1172,6 +1172,7 @@ export const useAppStore = defineStore("app", () => {
     selectedLanUrl,
     getApi,
     withSuppressedBroadcast,
+    confirmInApp: workspaceActions.confirmInApp,
   });
 
   async function resolveTaskRecovery(decisions: Record<string, "continue" | "fresh" | "skip">): Promise<void> {

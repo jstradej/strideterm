@@ -138,7 +138,13 @@ const gitUiStore = useGitUiStore();
 const busyAction = ref<string>("");
 
 async function handleResetPrompts() {
-  if (!window.confirm("Reset all prompts to built-in defaults? Custom prompts will be lost.")) return;
+  const confirmed = await appStore.confirmInApp({
+    title: "Reset all prompts?",
+    message: "Reset all prompts to built-in defaults? Custom prompts will be lost.",
+    confirmLabel: "Reset",
+    danger: true,
+  });
+  if (!confirmed) return;
   busyAction.value = "reset-prompts";
   try {
     await appStore.resetAgentPrompts();

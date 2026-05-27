@@ -23,6 +23,16 @@ interface ApiActionsCtx {
   selectedLanUrl: Ref<string>;
   getApi: () => Transport;
   withSuppressedBroadcast: (fn: () => Promise<void>) => Promise<void>;
+  /** In-app ConfirmDialog helper — replaces native window.confirm so the
+   *  prompt is themed, non-blocking, and works in remote/mobile clients
+   *  where browser dialogs don't apply. Provided by createWorkspaceActions. */
+  confirmInApp: (opts: {
+    title: string;
+    message: string;
+    confirmLabel?: string;
+    cancelLabel?: string;
+    danger?: boolean;
+  }) => Promise<boolean>;
 }
 
 /**
@@ -113,7 +123,13 @@ export function createApiActions(ctx: ApiActionsCtx) {
 
   async function deleteAzureConnection(connectionId: string): Promise<void> {
     if (!connectionId) return;
-    if (!window.confirm("Delete this Azure DevOps connection?")) return;
+    const confirmed = await ctx.confirmInApp({
+      title: "Delete Azure DevOps connection?",
+      message: "This Azure DevOps connection will be removed.",
+      confirmLabel: "Delete",
+      danger: true,
+    });
+    if (!confirmed) return;
     ctx.payload.value = (await (ctx.getApi() as AnyApi).deleteAzureConnection(connectionId)) as StatePayload;
   }
 
@@ -130,7 +146,13 @@ export function createApiActions(ctx: ApiActionsCtx) {
 
   async function deleteReviewBridgeDraft(prKey: string, draftId: string): Promise<void> {
     if (!prKey || !draftId) return;
-    if (!window.confirm("Delete this draft? This cannot be undone.")) return;
+    const confirmed = await ctx.confirmInApp({
+      title: "Delete draft?",
+      message: "This draft will be removed. This cannot be undone.",
+      confirmLabel: "Delete",
+      danger: true,
+    });
+    if (!confirmed) return;
     ctx.payload.value = (await (ctx.getApi() as AnyApi).deleteReviewBridgeDraft({ prKey, draftId })) as StatePayload;
   }
 
@@ -145,7 +167,13 @@ export function createApiActions(ctx: ApiActionsCtx) {
 
   async function deleteReviewBridgeComment(prKey: string, commentKey: string): Promise<void> {
     if (!prKey || !commentKey) return;
-    if (!window.confirm("Delete this draft comment? This cannot be undone.")) return;
+    const confirmed = await ctx.confirmInApp({
+      title: "Delete draft comment?",
+      message: "This draft comment will be removed. This cannot be undone.",
+      confirmLabel: "Delete",
+      danger: true,
+    });
+    if (!confirmed) return;
     ctx.payload.value = (await (ctx.getApi() as AnyApi).deleteReviewBridgeComment({
       prKey,
       commentKey,
@@ -173,12 +201,13 @@ export function createApiActions(ctx: ApiActionsCtx) {
     );
     const totalCount = drafts.length + draftComments.length;
     if (!totalCount) return;
-    if (
-      !window.confirm(
-        `Delete ${drafts.length} draft${drafts.length !== 1 ? "s" : ""} and ${draftComments.length} draft comment${draftComments.length !== 1 ? "s" : ""}? This cannot be undone.`,
-      )
-    )
-      return;
+    const confirmed = await ctx.confirmInApp({
+      title: "Delete all drafts?",
+      message: `Delete ${drafts.length} draft${drafts.length !== 1 ? "s" : ""} and ${draftComments.length} draft comment${draftComments.length !== 1 ? "s" : ""}? This cannot be undone.`,
+      confirmLabel: "Delete all",
+      danger: true,
+    });
+    if (!confirmed) return;
     const api = ctx.getApi() as AnyApi;
     for (const comment of draftComments) {
       ctx.payload.value = (await api.deleteReviewBridgeComment({
@@ -266,7 +295,13 @@ export function createApiActions(ctx: ApiActionsCtx) {
 
   async function deleteGitHubConnection(connectionId: string): Promise<void> {
     if (!connectionId) return;
-    if (!window.confirm("Delete this GitHub connection?")) return;
+    const confirmed = await ctx.confirmInApp({
+      title: "Delete GitHub connection?",
+      message: "This GitHub connection will be removed.",
+      confirmLabel: "Delete",
+      danger: true,
+    });
+    if (!confirmed) return;
     ctx.payload.value = (await (ctx.getApi() as AnyApi).deleteGitHubConnection(connectionId)) as StatePayload;
   }
 
@@ -287,7 +322,13 @@ export function createApiActions(ctx: ApiActionsCtx) {
 
   async function deleteAgentPrompt(promptId: string): Promise<void> {
     if (!promptId) return;
-    if (!window.confirm("Delete this prompt?")) return;
+    const confirmed = await ctx.confirmInApp({
+      title: "Delete prompt?",
+      message: "This prompt will be removed.",
+      confirmLabel: "Delete",
+      danger: true,
+    });
+    if (!confirmed) return;
     ctx.payload.value = (await (ctx.getApi() as AnyApi).deleteAgentPrompt({ promptId })) as StatePayload;
   }
 
