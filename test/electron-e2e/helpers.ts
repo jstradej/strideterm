@@ -61,6 +61,9 @@ export async function launchApp(fixture: FixtureName = "empty", options: LaunchO
   env.STRIDETERM_FORCE_DIST = "1";
   env.STRIDETERM_SHELL_INTEGRATION = "0";
   env.ELECTRON_DISABLE_SECURITY_WARNINGS = "1";
+  // Playwright's app.close() can't respond to the renderer-side close-confirm
+  // dialog — bypass it so test teardown doesn't hang on workspaces / running tasks.
+  env.STRIDETERM_E2E_SKIP_CLOSE_CONFIRM = "1";
   // Pin window size for deterministic screenshots across the OS matrix.
   // Default (1560×940) is wider than some CI virtual displays — the
   // window then collapses to minWindowWidth and the sidebar ends up
@@ -121,6 +124,9 @@ export async function relaunchApp(dataDir: string, options: LaunchOptions = {}):
   env.STRIDETERM_FORCE_DIST = "1";
   env.STRIDETERM_SHELL_INTEGRATION = "0";
   env.ELECTRON_DISABLE_SECURITY_WARNINGS = "1";
+  // Playwright's app.close() can't respond to the renderer-side close-confirm
+  // dialog — bypass it so test teardown doesn't hang on workspaces / running tasks.
+  env.STRIDETERM_E2E_SKIP_CLOSE_CONFIRM = "1";
   env.STRIDETERM_WINDOW_WIDTH = String(width);
   env.STRIDETERM_WINDOW_HEIGHT = String(height);
   if (options.windowSize) {

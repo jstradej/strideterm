@@ -235,6 +235,14 @@ function confirmCloseFlow(): Promise<boolean> {
   if (closeFlowConfirmed) return Promise.resolve(true);
   if (closeFlowConfirmation) return closeFlowConfirmation;
 
+  // Playwright drives `app.close()` and has no path to respond to the
+  // renderer-side ConfirmDialog. Without this bypass, every e2e test
+  // that closes the app hangs until the 25 min job timeout.
+  if (process.env.STRIDETERM_E2E_SKIP_CLOSE_CONFIRM === "1") {
+    closeFlowConfirmed = true;
+    return Promise.resolve(true);
+  }
+
   const summary = summarizeCloseRisk();
   if (!summary) {
     closeFlowConfirmed = true;
