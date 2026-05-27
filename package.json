@@ -198,7 +198,9 @@
   "overrides": {
     "dompurify": "3.4.0",
     "uuid": "^14.0.0",
-    "fast-uri": ">=3.1.2"
+    "fast-uri": ">=3.1.2",
+    "tmp": "^0.2.6",
+    "qs": "^6.15.2"
   },
   "lint-staged": {
     "*.{js,ts,vue,mts}": [

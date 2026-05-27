@@ -30,7 +30,7 @@ jobs:
       - name: Security audit
         run: npm audit --audit-level=high
       - name: Check package publish age
-        run: npx tsx scripts/check-package-age.mts --allow=follow-redirects@1.16.0
+        run: npx tsx scripts/check-package-age.mts --allow=follow-redirects@1.16.0,tmp@0.2.6
       - name: Verify package signatures
         run: npm audit signatures
         continue-on-error: true
