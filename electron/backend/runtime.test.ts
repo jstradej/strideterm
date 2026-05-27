@@ -3489,7 +3489,7 @@ describe("runtime integration", () => {
   test("deleteWorkspace with deleteFromDisk on task worktree workspace succeeds", async () => {
     const baseDir = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-task-del-base-"));
     tempPaths.push(baseDir);
-    const diskPath = path.join(baseDir, "my-task-branch");
+    const diskPath = path.join(baseDir, ".strideterm", "tree", "my-task-branch");
     await fs.mkdir(diskPath, { recursive: true });
 
     const rmPathMock = vi.fn().mockResolvedValue(undefined);
@@ -3525,6 +3525,92 @@ describe("runtime integration", () => {
 
     expect(result.deleteWorkspaceError).toBeFalsy();
     expect(rmPathMock).toHaveBeenCalledWith(diskPath);
+  });
+
+  test("deleteWorkspace with deleteFromDisk on task worktree refuses worktreeBase", async () => {
+    const baseDir = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-task-del-refuse-base-"));
+    tempPaths.push(baseDir);
+    const diskPath = path.join(baseDir, ".strideterm", "tree", "my-task-branch");
+    await fs.mkdir(diskPath, { recursive: true });
+
+    const rmPathMock = vi.fn().mockResolvedValue(undefined);
+
+    const fixture = await createFixture({
+      dependencies: { rmPath: rmPathMock },
+      initialState: {
+        workspaces: [
+          {
+            id: "task-wt-refuse-base",
+            name: "Task Worktree WS",
+            kind: "terminal",
+            cwd: diskPath,
+            activePanelId: "shell",
+            panels: [{ id: "shell", title: "Shell", command: "", shell: true, startup: "default" }],
+            task: {
+              worktreeBase: baseDir,
+              parentWorkspaceId: "parent",
+              description: "my task",
+              agentKind: "claude",
+              state: "paused",
+            },
+          },
+        ],
+      },
+    });
+    fixtures.push(fixture);
+
+    const result = await fixture.runtime.deleteWorkspace("task-wt-refuse-base", {
+      deleteFromDisk: true,
+      diskPath: baseDir,
+    });
+
+    expect(result.deleteWorkspaceError).toContain("Refused to delete");
+    expect(rmPathMock).not.toHaveBeenCalled();
+  });
+
+  test("deleteWorkspace with deleteFromDisk on non-worktree task keeps cwd and cleans task files", async () => {
+    const baseDir = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-task-del-keep-cwd-"));
+    tempPaths.push(baseDir);
+    const taskDir = path.join(baseDir, ".strideterm", "tasks", "task-keep-cwd");
+    await fs.mkdir(taskDir, { recursive: true });
+    await fs.writeFile(path.join(taskDir, "TODO.md"), "task data", "utf8");
+
+    const rmPathMock = vi.fn().mockResolvedValue(undefined);
+
+    const fixture = await createFixture({
+      dependencies: { rmPath: rmPathMock },
+      initialState: {
+        workspaces: [
+          {
+            id: "task-keep-cwd-ws",
+            name: "Task In Existing CWD",
+            kind: "task",
+            cwd: baseDir,
+            activePanelId: "shell",
+            panels: [{ id: "shell", title: "Shell", command: "", shell: true, startup: "default" }],
+            task: {
+              taskId: "task-keep-cwd",
+              worktreeBase: "",
+              parentWorkspaceId: "parent",
+              description: "my task",
+              agentKind: "claude",
+              state: "paused",
+            },
+          },
+        ],
+      },
+    });
+    fixtures.push(fixture);
+
+    const result = await fixture.runtime.deleteWorkspace("task-keep-cwd-ws", {
+      deleteFromDisk: true,
+      diskPath: baseDir,
+    });
+
+    expect(result.deleteWorkspaceError).toContain("Refused to delete");
+    expect(rmPathMock).not.toHaveBeenCalled();
+    await expect(fs.access(baseDir)).resolves.toBeUndefined();
+    await expect(fs.access(taskDir)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   test("deleteWorkspace with deleteFromDisk on legacy 'Worktree of ...' workspace succeeds", async () => {
@@ -3762,6 +3848,41 @@ describe("runtime integration", () => {
       const baseline = fixture.docker.refreshCount;
 
       // Advance just past the fast interval (30s) but well before the slow interval (5min = 300s)
+      await vi.advanceTimersByTimeAsync(31_000);
+
+      expect(fixture.docker.refreshCount).toBe(baseline);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("switching away from docker workspace moves docker poll back to slow interval", async () => {
+    vi.useFakeTimers();
+    try {
+      const dockerWs = {
+        id: "docker-ws-slow-again",
+        name: "Docker WS",
+        kind: "docker",
+        cwd: "",
+        activePanelId: "shell",
+        panels: [{ id: "shell", title: "Shell", command: "", shell: true, startup: "default" }],
+      };
+      const terminalWs = {
+        id: "term-ws-after-docker",
+        name: "Terminal WS",
+        kind: "terminal",
+        cwd: "/some/path",
+        activePanelId: "shell",
+        panels: [{ id: "shell", title: "Shell", command: "", shell: true, startup: "default" }],
+      };
+      const fixture = await createFixture({
+        initialState: { workspaces: [dockerWs, terminalWs], activeWorkspaceId: "docker-ws-slow-again" },
+      });
+      fixtures.push(fixture);
+
+      await fixture.runtime.activateWorkspace("term-ws-after-docker");
+      const baseline = fixture.docker.refreshCount;
+
       await vi.advanceTimersByTimeAsync(31_000);
 
       expect(fixture.docker.refreshCount).toBe(baseline);

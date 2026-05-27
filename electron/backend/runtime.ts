@@ -3617,7 +3617,7 @@ export async function createRuntime({
     }
     const taskCwdSet = new Set<string>();
     for (const ws of state.workspaces) {
-      if (ws.kind === "task" && ws.cwd) taskCwdSet.add(ws.cwd);
+      if (ws.kind === "task" && ws.cwd) taskCwdSet.add(`${ws.profileId || "default"}|${ws.cwd}`);
     }
     const toAddKeySet = new Set<string>();
 
@@ -3655,7 +3655,7 @@ export async function createRuntime({
         const toAddKey = `${parentProfileId}|${treePath}`;
         if (toAddKeySet.has(toAddKey)) continue;
         // Skip directories already owned by a task workspace — the task entry takes priority.
-        if (taskCwdSet.has(treePath)) continue;
+        if (taskCwdSet.has(toAddKey)) continue;
         toAddKeySet.add(toAddKey);
         toAdd.push(
           normalizeWorkspace({
@@ -4146,12 +4146,13 @@ export async function createRuntime({
       if (requestedPath === res(workspace.cwd)) return requestedPath;
     }
 
-    // Task worktree (cwd must lie under worktreeBase)
+    // Task worktree: only the task's own checkout is managed. worktreeBase is
+    // the parent repo and must never be deleted by workspace cleanup.
     if (workspace.task && workspace.task.worktreeBase && workspace.cwd) {
       const base = res(workspace.task.worktreeBase);
       const cwd = res(workspace.cwd);
       const underBase = cwd === base || cwd.startsWith(base + path.sep);
-      if (underBase && (requestedPath === cwd || requestedPath === base || requestedPath.startsWith(base + path.sep))) {
+      if (underBase && requestedPath === cwd) {
         return requestedPath;
       }
     }
@@ -4328,10 +4329,10 @@ export async function createRuntime({
         );
       }
       ensureVisibleSession(workspaceId);
+      ensureDockerPolling();
       // Kick off refreshes BEFORE broadcastState so refresh() is already called
       // when the first state:updated event fires (stale-data ordering guarantee).
       if (workspace?.kind === "docker") {
-        ensureDockerPolling(); // switch to fast mode if not already
         refreshDocker().catch((err: unknown) => {
           log.warn("activateWorkspace: docker refresh failed", { err: (err as Error)?.message });
         });
@@ -4597,10 +4598,10 @@ export async function createRuntime({
         );
       }
       ensureVisibleSession(workspaceId);
+      ensureDockerPolling();
       // Kick off refreshes BEFORE broadcastState so refresh() is already called
       // when the first state:updated event fires (stale-data ordering guarantee).
       if (workspace?.kind === "docker") {
-        ensureDockerPolling(); // switch to fast mode if not already
         refreshDocker().catch((err: unknown) => {
           log.warn("activateWorkspaceInWindow: docker refresh failed", { err: (err as Error)?.message });
         });
@@ -5957,12 +5958,14 @@ export async function createRuntime({
         throw new Error(`Docker backend not found: ${backendId}`);
       }
       dockerLogManager.openSession(sessionId, backend, contextName, containerId, onData, onClose, options);
+      ensureDockerPolling();
     },
     dockerLogsUpdate(sessionId: string, options: { timestamps?: boolean; tail?: number | "all" }): boolean {
       return dockerLogManager.updateSession(sessionId, options);
     },
     dockerLogsClose(sessionId: string): void {
       dockerLogManager.closeSession(sessionId);
+      ensureDockerPolling();
     },
     async dockerShellOpen(
       sessionId: string,
@@ -5979,6 +5982,7 @@ export async function createRuntime({
         throw new Error(`Docker backend not found: ${backendId}`);
       }
       dockerShellManager.openSession(sessionId, backend, contextName, containerId, cols, rows, onData, onClose);
+      ensureDockerPolling();
     },
     dockerShellWrite(sessionId: string, data: string): void {
       dockerShellManager.writeSession(sessionId, data);
@@ -5988,6 +5992,7 @@ export async function createRuntime({
     },
     dockerShellClose(sessionId: string): void {
       dockerShellManager.closeSession(sessionId);
+      ensureDockerPolling();
     },
     async dockerInspect(containerId: string, backendId: string, contextName: string): Promise<string> {
       return docker.inspectContainer(containerId, backendId, contextName);
