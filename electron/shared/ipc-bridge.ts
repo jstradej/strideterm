@@ -403,7 +403,21 @@ export interface StridetermAPI {
   focusWindow: () => Promise<boolean>;
   createWindow: (profileId: string) => Promise<{ windowId?: string; error?: string }>;
   closeWindow: () => Promise<void>;
+  /** Renderer's reply to a `window:confirm-close-request` from main. */
+  respondConfirmClose: (confirmed: boolean) => Promise<void>;
   onNewWindowShortcut: (handler: () => void) => void;
+  /**
+   * Main asks the renderer to confirm closing the last main window because
+   * workspaces / running task agents would be lost. The renderer must reply
+   * via {@link respondConfirmClose}; until it does, the window stays open.
+   */
+  onConfirmCloseRequest: (
+    handler: (payload: {
+      workspaceCount: number;
+      runningTaskCount: number;
+      runningTaskWorkspaceNames: string[];
+    }) => void,
+  ) => void;
 
   // Diff popout — open the current MonacoDiffPanel payload in its own Electron
   // window so it can live on a second monitor independent of the host view.

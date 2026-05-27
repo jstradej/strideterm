@@ -542,6 +542,49 @@ onMounted(() => {
   (window as any).strideterm?.onNewWindowShortcut?.(() => {
     store.openNewWindowModal();
   });
+
+  // Main asks "really close the last window?" when workspaces or running
+  // task agents would be lost. Show our ConfirmDialog and reply via IPC —
+  // until we respond, the close stays prevented in main.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const api = (window as any).strideterm;
+  api?.onConfirmCloseRequest?.(
+    (payload: { workspaceCount: number; runningTaskCount: number; runningTaskWorkspaceNames: string[] }) => {
+      const lines: string[] = [];
+      if (payload.runningTaskCount > 0) {
+        const names = payload.runningTaskWorkspaceNames.slice(0, 5).join(", ");
+        const extra =
+          payload.runningTaskWorkspaceNames.length > 5 ? `, +${payload.runningTaskWorkspaceNames.length - 5} more` : "";
+        lines.push(
+          `${payload.runningTaskCount} task agent${payload.runningTaskCount === 1 ? "" : "s"} still running: ${names}${extra}.`,
+        );
+      }
+      if (payload.workspaceCount > 0) {
+        lines.push(
+          `${payload.workspaceCount} workspace${payload.workspaceCount === 1 ? "" : "s"} will be closed and any running terminals killed.`,
+        );
+      }
+      lines.push("Are you sure you want to quit strIDEterm?");
+      const respond = (confirmed: boolean) => {
+        store.closeDialog();
+        try {
+          void api?.respondConfirmClose?.(confirmed);
+        } catch {
+          // Best-effort — if IPC is torn down we drop silently.
+        }
+      };
+      store.openDialog("ConfirmDialog", {
+        eyebrow: "Quit",
+        title: "Close strIDEterm?",
+        message: lines.join("\n\n"),
+        confirmLabel: "Quit anyway",
+        cancelLabel: "Keep open",
+        danger: true,
+        onConfirm: () => respond(true),
+        onCancel: () => respond(false),
+      });
+    },
+  );
 });
 
 onUnmounted(() => {

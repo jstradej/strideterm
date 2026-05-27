@@ -13,7 +13,8 @@ import { createDefaultState, normalizeState } from "./backend/default-state.js";
 import { inheritShellPath } from "./backend/fix-path.js";
 import { APP_CONFIG, getRendererDevUrl } from "../config/app-config.js";
 import { getLogger, setLogDir, shutdownLogger } from "./backend/logger.js";
-import type { WindowSlot } from "./shared/types/state.js";
+import type { WindowSlot, WorkspaceState } from "./shared/types/state.js";
+import type { TaskExecutionState } from "./shared/types/task.js";
 
 // --- Custom data directory (--data-dir <path> or STRIDETERM_DATA_DIR env) ---
 function resolveDataDir(): string {
@@ -137,6 +138,138 @@ const webContentsToWindowId = new Map<number, string>();
 const windowFocusedAt = new Map<string, number>();
 // Per-window attention count (for flash logic)
 const windowAttentionCount = new Map<string, number>();
+
+// --- Close-confirmation flow ---
+// Global gate: once the user has approved closing/quitting via the in-app
+// ConfirmDialog, every subsequent close/quit path short-circuits to allow.
+// Stays true for the rest of the process lifetime — there's no "undo quit."
+let closeFlowConfirmed = false;
+// In-flight confirmation. Coalesces concurrent close paths (last-window close
+// races with Cmd+Q before-quit) onto a single dialog.
+let closeFlowConfirmation: Promise<boolean> | null = null;
+// Tracks the shutdown cleanup so it runs exactly once even if before-quit
+// fires multiple times (it does — the second re-entry after app.quit() from
+// the dialog callback would otherwise tear the runtime down twice).
+let shutdownCleanupPromise: Promise<void> | null = null;
+// `closingWindows` tracks windows whose `close` event has already fired in
+// the current quit cascade. We need this because Electron's app.quit() loops
+// over BrowserWindow.getAllWindows() calling .close() on each, and the
+// `closed` cleanup (which removes from windowRegistry) is async — so a naive
+// "is this the last window" check would see the still-undestroyed siblings
+// and skip the dialog. Each close handler marks itself first so the genuine
+// last window finds no unmarked peers.
+const closingWindows = new Set<string>();
+// Pending confirm-close promises keyed by windowId. The renderer's response
+// IPC resolves the matching entry. Cleared on cancel, on resolve, or when
+// the window vanishes (defensive — the close handler creates one only when
+// it's about to await it).
+const pendingCloseConfirmations = new Map<string, (confirmed: boolean) => void>();
+
+type CloseConfirmSummary = {
+  workspaceCount: number;
+  runningTaskCount: number;
+  runningTaskWorkspaceNames: string[];
+};
+
+// Task states that mean an agent is actively doing work and would be killed
+// by a runtime shutdown. Keep in sync with TaskExecutionState — the union is
+// open-ended so we enumerate the "live" states explicitly rather than
+// inverting a "finished" set.
+const RUNNING_TASK_STATES: ReadonlySet<TaskExecutionState> = new Set([
+  "running",
+  "evaluating",
+  "judge-evaluating",
+  "refreshing",
+  "showering",
+]);
+
+function summarizeCloseRisk(): CloseConfirmSummary | null {
+  const payload = runtimeState.runtime?.getPayload?.() as Record<string, unknown> | undefined;
+  const appState = payload?.appState as AppState | undefined;
+  const workspaces = (appState?.workspaces ?? []) as WorkspaceState[];
+  const workspaceCount = workspaces.length;
+  const runningTaskWorkspaceNames = workspaces
+    .filter((ws) => ws.task && RUNNING_TASK_STATES.has(ws.task.state))
+    .map((ws) => ws.name || ws.id);
+  const runningTaskCount = runningTaskWorkspaceNames.length;
+  if (workspaceCount === 0 && runningTaskCount === 0) return null;
+  return { workspaceCount, runningTaskCount, runningTaskWorkspaceNames };
+}
+
+function requestConfirmClose(windowId: string, win: BrowserWindow, summary: CloseConfirmSummary): Promise<boolean> {
+  return new Promise<boolean>((resolve) => {
+    // Defensive: if a stale resolver lingers, reject it as "cancel" so we
+    // never leak.
+    const stale = pendingCloseConfirmations.get(windowId);
+    if (stale) {
+      pendingCloseConfirmations.delete(windowId);
+      stale(false);
+    }
+    pendingCloseConfirmations.set(windowId, resolve);
+    try {
+      win.webContents.send("window:confirm-close-request", summary);
+    } catch (err) {
+      log.warn("requestConfirmClose: send failed", { windowId, err: (err as Error)?.message });
+      pendingCloseConfirmations.delete(windowId);
+      resolve(false);
+    }
+  });
+}
+
+/** Resolve windowId for a BrowserWindow by reverse-lookup in the registry. */
+function findWindowId(win: BrowserWindow): string | null {
+  for (const [wid, w] of windowRegistry) {
+    if (w === win) return wid;
+  }
+  return null;
+}
+
+/**
+ * Single confirmation entry point for both "close last window" and
+ * "before-quit". Returns true if it's safe to proceed with shutdown
+ * (either no risky state, or the user approved the dialog). Idempotent:
+ * once confirmed, future calls short-circuit to true; concurrent calls
+ * share the same in-flight promise.
+ */
+function confirmCloseFlow(): Promise<boolean> {
+  if (closeFlowConfirmed) return Promise.resolve(true);
+  if (closeFlowConfirmation) return closeFlowConfirmation;
+
+  const summary = summarizeCloseRisk();
+  if (!summary) {
+    closeFlowConfirmed = true;
+    return Promise.resolve(true);
+  }
+  const win = getPrimaryWindow();
+  const windowId = win ? findWindowId(win) : null;
+  if (!win || !windowId) {
+    // No window to host the dialog. Don't deadlock the app — let it close.
+    log.warn("confirmCloseFlow: no window available, allowing close", { summary });
+    closeFlowConfirmed = true;
+    return Promise.resolve(true);
+  }
+
+  closeFlowConfirmation = requestConfirmClose(windowId, win, summary).then((confirmed) => {
+    closeFlowConfirmation = null;
+    if (confirmed) closeFlowConfirmed = true;
+    return confirmed;
+  });
+  return closeFlowConfirmation;
+}
+
+async function runShutdownCleanupOnce(): Promise<void> {
+  if (shutdownCleanupPromise) return shutdownCleanupPromise;
+  shutdownCleanupPromise = (async () => {
+    log.info("app quitting", { quitTrigger: new Error("trigger-trace").stack });
+    runtimeState.unsubscribeStateUpdated?.();
+    runtimeState.unsubscribeRemoteConfig?.();
+    runtimeState.disposeIpc?.();
+    await runtimeState.remoteServer?.close?.();
+    (await runtimeState.runtime?.stop?.()) as Promise<void>;
+    await shutdownLogger();
+  })();
+  return shutdownCleanupPromise;
+}
 
 // --- Diff popout windows ---
 // Lightweight secondary windows that just render MonacoDiffPanel for a single
@@ -562,6 +695,50 @@ function createWindow(windowId?: string, slot?: Partial<WindowSlot>): void {
   win.on("unresponsive", () => log.warn("createWindow: window unresponsive", { windowId: id }));
   win.on("ready-to-show", () => log.debug("createWindow: ready-to-show", { windowId: id }));
 
+  // Intercept close to prompt "Really close?" when closing the LAST main
+  // window AND there are workspaces or running task agents that would be
+  // lost on app shutdown. Closing a non-last window is always safe (other
+  // windows + the shared runtime stay alive), so we let those through.
+  win.on("close", (event) => {
+    // Global flag short-circuits after the user has approved the flow.
+    if (closeFlowConfirmed) {
+      closingWindows.add(id);
+      return;
+    }
+    // Mark this window as in-progress for the cascading-close detection.
+    closingWindows.add(id);
+    // How many main windows remain that haven't been asked to close yet?
+    // (windowRegistry only holds main windows — diff popouts are tracked
+    // separately and aren't counted here.)
+    let othersOpen = 0;
+    for (const [wid, w] of windowRegistry) {
+      if (wid === id) continue;
+      if (closingWindows.has(wid)) continue;
+      if (w.isDestroyed()) continue;
+      othersOpen++;
+    }
+    if (othersOpen > 0) {
+      // Not the last → closing is harmless, allow through.
+      return;
+    }
+    if (process.platform === "darwin") {
+      // macOS keeps the app alive after the last window closes (see the
+      // window-all-closed handler below), so the runtime + work persist.
+      // The confirmation belongs on Cmd+Q (before-quit), not here.
+      return;
+    }
+    // Last window on Windows/Linux. Need confirmation if there's risky
+    // state; confirmCloseFlow resolves immediately when there isn't. Roll
+    // back our closingWindows mark so a cancel + retry path starts fresh.
+    event.preventDefault();
+    closingWindows.delete(id);
+    void confirmCloseFlow().then((confirmed) => {
+      if (!confirmed) return;
+      if (win.isDestroyed()) return;
+      win.close();
+    });
+  });
+
   win.on("closed", () => {
     const remaining = BrowserWindow.getAllWindows().filter((w) => !w.isDestroyed()).length;
     log.info("createWindow: window closed", {
@@ -573,6 +750,12 @@ function createWindow(windowId?: string, slot?: Partial<WindowSlot>): void {
     webContentsToWindowId.delete(webContentsId);
     windowFocusedAt.delete(id);
     windowAttentionCount.delete(id);
+    closingWindows.delete(id);
+    const pending = pendingCloseConfirmations.get(id);
+    if (pending) {
+      pendingCloseConfirmations.delete(id);
+      pending(false);
+    }
     // Remove slot from persistent state
     if (runtimeState.runtimeInteractive && runtimeState.runtime) {
       runtimeState.runtime.removeWindowSlot?.(id).catch(() => {});
@@ -1223,6 +1406,18 @@ if (mcpMode) {
     }
   });
 
+  // IPC: renderer responds to a confirm-close-request shown via ConfirmDialog.
+  // Resolves the pending promise so the close handler can decide whether to
+  // re-trigger win.close() with the closeConfirmed flag set.
+  ipcMain.handle("window:confirm-close-response", (event, confirmed: boolean) => {
+    const windowId = webContentsToWindowId.get(event.sender.id);
+    if (!windowId) return;
+    const resolver = pendingCloseConfirmations.get(windowId);
+    if (!resolver) return;
+    pendingCloseConfirmations.delete(windowId);
+    resolver(!!confirmed);
+  });
+
   // IPC: renderer requests a new "diff popout" window. The payload is a
   // self-contained MonacoDiffPanel.payload plus a title — we cache it
   // keyed by the new window's webContents.id so the popout (which loads
@@ -1386,12 +1581,22 @@ app.on("quit", (_event, exitCode) => {
   log.info("quit fired", { exitCode });
 });
 
-app.on("before-quit", async (_event) => {
-  log.info("app quitting", { quitTrigger: new Error("trigger-trace").stack });
-  runtimeState.unsubscribeStateUpdated?.();
-  runtimeState.unsubscribeRemoteConfig?.();
-  runtimeState.disposeIpc?.();
-  await runtimeState.remoteServer?.close?.();
-  (await runtimeState.runtime?.stop?.()) as Promise<void>;
-  await shutdownLogger();
+app.on("before-quit", (event) => {
+  // Cmd+Q / menubar Quit / OS shutdown all funnel through before-quit. If
+  // the user hasn't approved the close flow yet, gate cleanup behind the
+  // ConfirmDialog so a "Keep open" reply doesn't leave the app with a
+  // torn-down runtime while a window is still up.
+  if (!closeFlowConfirmed) {
+    event.preventDefault();
+    void confirmCloseFlow().then((confirmed) => {
+      if (!confirmed) return;
+      // closeFlowConfirmed is now true; re-entering will fall through to
+      // cleanup + natural shutdown.
+      app.quit();
+    });
+    return;
+  }
+  // Confirmed (or no risky state). Run cleanup exactly once and let the
+  // natural quit proceed.
+  void runShutdownCleanupOnce();
 });
