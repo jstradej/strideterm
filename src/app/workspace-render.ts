@@ -1,5 +1,6 @@
 import { attentionTitle, isFreshAttention, safeColor, tabAttentionTitle, isFreshAlert } from "./helpers.js";
 import type { WorkspaceState, GitSnapshot } from "../../electron/shared/types/state.js";
+import { formatWorkspaceDisplayName } from "../../electron/shared/workspace-display.js";
 
 // ---------------------------------------------------------------------------
 // Local structural types
@@ -35,6 +36,46 @@ interface LiveTask {
   state?: string;
   currentRound?: number;
   maxRounds?: number;
+}
+
+/**
+ * Short, human-readable age for a card chip. "5m", "2h", "3d", "1w". Empty
+ * string for missing / unparseable timestamps so the chip renders nothing
+ * rather than "Invalid Date". Future timestamps (clock skew) coalesce to "now".
+ */
+function formatRelativeAge(iso: string | undefined | null, now = Date.now()): string {
+  if (!iso) return "";
+  const then = Date.parse(iso);
+  if (Number.isNaN(then)) return "";
+  const seconds = Math.max(0, Math.round((now - then) / 1000));
+  if (seconds < 45) return "now";
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `${hours}h`;
+  const days = Math.round(hours / 24);
+  if (days < 7) return `${days}d`;
+  const weeks = Math.round(days / 7);
+  if (weeks < 8) return `${weeks}w`;
+  // Beyond ~2 months, fall back to a short locale date — at that point
+  // "10w" / "20w" stops being meaningful and a concrete date is clearer.
+  try {
+    return new Date(then).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  } catch {
+    return `${weeks}w`;
+  }
+}
+
+/**
+ * Trim a task description for a hover tooltip. We want enough text to actually
+ * tell two agents apart (one-liner descriptions don't cut it) but not so much
+ * that the native title tooltip becomes a wall of text that browsers truncate
+ * inconsistently. ~400 chars + ellipsis is a sweet spot.
+ */
+function truncateForTooltip(text: string, limit = 400): string {
+  const trimmed = (text || "").trim();
+  if (trimmed.length <= limit) return trimmed;
+  return trimmed.slice(0, limit - 1).trimEnd() + "…";
 }
 
 // ---------------------------------------------------------------------------
@@ -177,15 +218,33 @@ export function buildWorkspaceCards({
                   ? `${gitSnapshot.branch}${gitSnapshot.dirty ? ` \u00B7 ${gitSnapshot.dirtyCount} dirty` : ""}`
                   : `${workspace.panels.length} tabs`;
 
+    // Task-agent-specific affordances: stable "#N" suffix on the display name
+    // (via shared helper so Telegram alerts use the same string) and a
+    // relative-age chip so two agents on the same parent are visually
+    // distinct. Persisted name stays unchanged — these are render-only.
+    const isTask = workspace.kind === "task";
+    const displayName = formatWorkspaceDisplayName(workspace);
+    const relativeAge = isTask ? formatRelativeAge(workspace.task?.createdAt) : "";
+    const taskDescription = isTask ? truncateForTooltip(workspace.task?.description || "") : "";
+
+    const baseTitle = attention?.count ? attentionTooltip : displayName;
+    const mergeOrPrSegment = worktreeMerged
+      ? "\nBranch merged"
+      : prStatus && prStatus !== "active"
+        ? `\nPR ${prStatus}${prStatusInfo?.closedDate ? ` · ${new Date(prStatusInfo.closedDate).toLocaleDateString()}` : ""}`
+        : "";
+    const taskTooltipSegment = taskDescription ? `\n\n${taskDescription}` : "";
+    const shortcutSegment = index < 9 ? ` (Ctrl+${index + 1})` : "";
+
     return {
       id: workspace.id,
       index: index + 1,
       icon: workspace.icon,
-      name: workspace.name,
+      name: displayName,
       active,
       color: safeColor(workspace.color),
       summary,
-      title: `${attention?.count ? attentionTooltip : workspace.name}${worktreeMerged ? "\nBranch merged" : prStatus && prStatus !== "active" ? `\nPR ${prStatus}${prStatusInfo?.closedDate ? ` · ${new Date(prStatusInfo.closedDate).toLocaleDateString()}` : ""}` : ""}${index < 9 ? ` (Ctrl+${index + 1})` : ""}`,
+      title: `${baseTitle}${mergeOrPrSegment}${taskTooltipSegment}${shortcutSegment}`,
       attentionCount: attention?.count || 0,
       attentionFresh: isFreshAttention(attention),
       attentionTooltip,
@@ -196,6 +255,7 @@ export function buildWorkspaceCards({
       prStatus,
       taskState: taskState || null,
       starred: Boolean(workspace.starred),
+      relativeAge,
     };
   });
 }

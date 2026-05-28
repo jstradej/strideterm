@@ -1257,6 +1257,11 @@ body.platform-darwin .frame--sidebar-collapsed .sidebar__head {
   text-overflow: ellipsis;
 }
 
+.workspace-card__age {
+  margin-left: 4px;
+  opacity: 0.75;
+}
+
 .project__title-row,
 .workspace-card__title-row {
   display: flex;

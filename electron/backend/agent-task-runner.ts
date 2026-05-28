@@ -50,6 +50,7 @@ import {
 import { ensureGitRepo, getGitContext } from "./agent-task-git.js";
 import type { AppState, WorkspaceState, RecoveryCandidate } from "../shared/types/state.js";
 import type { TaskState } from "../shared/types/task.js";
+import { formatWorkspaceDisplayName } from "../shared/workspace-display.js";
 
 const log: Logger = getLogger("task-runner");
 const COPILOT_PROGRAMMATIC_JUDGE_PROMPT_FILE = "JUDGE_INPUT.md";
@@ -355,6 +356,31 @@ export class AgentTaskRunner {
         : description
       : "Task workspace";
 
+    // Stable per-parent ordinal: max sibling sequence + 1. "Siblings" are task
+    // workspaces with the same parentWorkspaceId (empty string buckets all
+    // parentless tasks together — fine, that's not a normal flow). Deletions
+    // don't renumber the survivors, which is the whole point — once you've
+    // referred to "mhub #3", deleting #2 must not silently turn #3 into #2.
+    //
+    // We also count *unnumbered* legacy siblings (created before this field
+    // existed) so the new task doesn't claim "#1" when there are already
+    // three unnumbered "mhub" siblings around — that would read as "the
+    // first one" rather than "the newest one". Taking max(numbered max,
+    // sibling count) handles both pure-legacy and post-feature populations
+    // and any mix of the two.
+    //
+    // Known limitation: two concurrent createTaskWorkspace calls that read
+    // the same state snapshot will both compute the same next ordinal —
+    // they'd race and produce two siblings with the same number. We accept
+    // this for now (rare; benign visual collision; not data loss); moving
+    // the assignment into store.mutate would close the race but expands the
+    // diff materially.
+    const siblings = (state.workspaces || []).filter(
+      (w) => w.kind === "task" && (w.task?.parentWorkspaceId || "") === (parentWorkspaceId || ""),
+    );
+    const maxSeq = siblings.reduce((max, w) => Math.max(max, w.task?.sequenceNumber || 0), 0);
+    const sequenceNumber = Math.max(maxSeq, siblings.length) + 1;
+
     // Resolve worker provider config: explicit workerProvider > parse workerCommand > Claude default
     const workerProviderConfig: ParsedProviderConfig =
       workerProvider ||
@@ -482,6 +508,8 @@ export class AgentTaskRunner {
         promptSent: false,
         pausedFromState: "",
         showerResumePrompt: "",
+        createdAt: new Date().toISOString(),
+        sequenceNumber,
       } as RuntimeTaskState,
     };
   }
@@ -2449,7 +2477,7 @@ Do NOT continue working on the task — only write the handoff summary.`;
       projectId: workspace.id,
       panelId: workspace.task.workerPanelId,
       sessionId: `${workspace.id}:${workspace.task.workerPanelId}`,
-      title: workspace.name,
+      title: formatWorkspaceDisplayName(workspace),
       kind: kind === "completed" ? "completed" : "waiting",
       tier: 1,
       urgency,

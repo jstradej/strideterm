@@ -37,6 +37,61 @@ describe("buildWorkspaceCards", () => {
     expect(reviewCard.depth).toBe(1);
   });
 
+  test("appends '#N' to a task workspace's display name and renders a relative-age chip", () => {
+    const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+    const [card] = buildWorkspaceCards({
+      workspaces: [
+        {
+          id: "ws-task",
+          name: "mhub",
+          kind: "task",
+          color: "#7C4DFF",
+          icon: "🤖",
+          panels: [],
+          task: {
+            sequenceNumber: 3,
+            createdAt: fiveMinutesAgo,
+            description: "Fix the flaky watcher test in syncTreeDirWatchers — it times out on Windows.",
+          },
+        } as unknown as WorkspaceState,
+      ],
+      activeWorkspaceId: "ws-task",
+      getGitSnapshot: () => null,
+      getWorkspaceAttention: () => null,
+    });
+
+    expect(card.name).toBe("mhub #3");
+    expect(card.relativeAge).toBe("5m");
+    // Description goes into the native title tooltip — confirm it lands there
+    // so two agents on the same parent can be disambiguated on hover.
+    expect(String(card.title)).toContain("Fix the flaky watcher test");
+  });
+
+  test("renders a task workspace without sequenceNumber / createdAt cleanly (backwards compat)", () => {
+    // Tasks created before this feature have neither field; the card should
+    // fall back to the plain name and produce no age chip rather than NaN /
+    // 'Invalid Date'.
+    const [card] = buildWorkspaceCards({
+      workspaces: [
+        {
+          id: "ws-legacy-task",
+          name: "legacy",
+          kind: "task",
+          color: "#7C4DFF",
+          icon: "🤖",
+          panels: [],
+          task: { description: "" },
+        } as unknown as WorkspaceState,
+      ],
+      activeWorkspaceId: "ws-legacy-task",
+      getGitSnapshot: () => null,
+      getWorkspaceAttention: () => null,
+    });
+
+    expect(card.name).toBe("legacy");
+    expect(card.relativeAge).toBe("");
+  });
+
   test("builds docker workspace card with Docker summary", () => {
     const [card] = buildWorkspaceCards({
       workspaces: [

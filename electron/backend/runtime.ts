@@ -103,6 +103,7 @@ import { initLogger, getLogger, setLogLevel, reconfigureLogger } from "./logger.
 import type { Logger } from "./logger.js";
 import { createRuntimeAttentionManager } from "./runtime-attention.js";
 import type { AppState, WorkspaceState } from "../shared/types/state.js";
+import { formatWorkspaceDisplayName } from "../shared/workspace-display.js";
 import type { NotifyServerHandle } from "./notify-server.js";
 
 const log = getLogger("runtime");
@@ -1512,7 +1513,7 @@ export async function createRuntime({
           alertId: opts.sessionId || `${opts.projectId}:${opts.panelId}`,
           workspaceId: opts.projectId || "",
           panelId: opts.panelId || "",
-          workspaceName: workspace?.name || opts.projectId || "",
+          workspaceName: formatWorkspaceDisplayName(workspace) || opts.projectId || "",
           panelTitle: panel?.title || opts.panelId || "",
           kind: opts.kind || "info",
           urgency: opts.urgency || "normal",

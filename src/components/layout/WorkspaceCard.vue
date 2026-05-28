@@ -63,7 +63,12 @@
           🔔<span class="workspace-card__attention-count">{{ workspace.attentionCount }}</span>
         </span>
       </span>
-      <small>{{ workspace.summary }}</small>
+      <small
+        >{{ workspace.summary
+        }}<span v-if="workspace.relativeAge" class="workspace-card__age" :title="`Created ${workspace.relativeAge} ago`"
+          >· {{ workspace.relativeAge }}</span
+        ></small
+      >
     </span>
     <span class="workspace-card__actions">
       <button
@@ -138,6 +143,7 @@ interface WorkspaceCardData {
   id: string;
   inGrid?: boolean;
   slotIndex?: number;
+  relativeAge?: string;
 }
 
 const props = defineProps<{

@@ -192,6 +192,42 @@ describe("createWorkspaceActions.deleteWorkspace (optimistic)", () => {
     expect(optimisticallyDeletedIds.value.has(idToDelete)).toBe(true);
   });
 
+  it("uses the formatted display name ('#N' suffix) in the delete prompt for task agents", async () => {
+    // Two "mhub" task agents under the same parent — without the formatted
+    // name, both delete prompts say "Delete task agent 'mhub'?" and the user
+    // can't tell which one is about to go. The sequence suffix in the prompt
+    // matches what the sidebar card and the Telegram notification show, so
+    // all three surfaces refer to the same task by the same string.
+    const initial = {
+      appState: {
+        workspaces: [
+          { id: "ws-parent", name: "mhub", cwd: "C:\\work\\mhub" },
+          {
+            id: "ws-mhub-2",
+            name: "mhub",
+            kind: "task",
+            cwd: "C:\\work\\mhub",
+            task: { parentWorkspaceId: "ws-parent", taskId: "t-2", sequenceNumber: 2 },
+          },
+        ],
+        activeWorkspaceId: "ws-mhub-2",
+      },
+    };
+    const { ctx, overlayProps } = makeCtx(initial);
+    const actions = createWorkspaceActions(ctx);
+
+    const finished = actions.deleteWorkspace("ws-mhub-2");
+    // Yield for confirmInApp to mount the dialog
+    await Promise.resolve();
+    expect(ctx.overlay.value).toBe("ConfirmDialog");
+    const props = overlayProps.value as AnyApi;
+    expect(String(props.title)).toBe("Delete task agent");
+    expect(String(props.message)).toContain('"mhub #2"');
+    // Decline so the rest of the suite isn't affected.
+    props.onCancel();
+    await finished;
+  });
+
   it("does nothing if the user declines the confirm prompt", async () => {
     const initial = {
       appState: { workspaces: makeWorkspaces(), activeWorkspaceId: "ws-A" },

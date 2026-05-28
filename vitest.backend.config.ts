@@ -3,7 +3,15 @@ import { defineConfig } from "vitest/config";
 export default defineConfig({
   test: {
     environment: "node",
-    include: ["electron/backend/**/*.test.js", "electron/backend/**/*.test.ts"],
+    include: [
+      "electron/backend/**/*.test.js",
+      "electron/backend/**/*.test.ts",
+      // Shared, framework-free helpers (e.g. workspace-display) — node env
+      // is fine since they don't touch DOM. Including them here avoids
+      // a separate vitest config for a handful of pure-function tests.
+      "electron/shared/**/*.test.js",
+      "electron/shared/**/*.test.ts",
+    ],
     // Windows CI runners hit the default 5000ms ceiling on a few runtime
     // tests that exercise the full createRuntime → stop lifecycle (e.g.
     // "does not rewrite the store during runtime stop" — body itself is

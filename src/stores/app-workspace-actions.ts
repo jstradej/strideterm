@@ -13,6 +13,7 @@ import {
 } from "../app/helpers.js";
 import type { Ref, ShallowRef, ComputedRef } from "vue";
 import type { StatePayload } from "../../electron/shared/types/state.js";
+import { formatWorkspaceDisplayName } from "../../electron/shared/workspace-display.js";
 import type { Transport } from "../transport.js";
 import { APP_CONFIG } from "../../config/app-config.js";
 
@@ -183,6 +184,11 @@ export function createWorkspaceActions(ctx: WorkspaceActionsCtx) {
     if (!ws) return;
     const isTaskAgent = (ws as AnyApi).kind === "task";
     const hasOwnWorktree = isTaskAgent && !!(ws as AnyApi).task?.worktreeBase;
+    // Use the formatted display name so the prompt matches the sidebar card
+    // and Telegram notification — without this, three "mhub" task agents
+    // would all confirm with "Delete task agent 'mhub'?" and you couldn't
+    // tell which one you're about to remove.
+    const displayName = formatWorkspaceDisplayName(ws as AnyApi);
     const firstTitle = isTaskAgent ? "Delete task agent" : "Delete workspace";
     // For a task agent without its own worktree, spell out exactly what's
     // touched on disk — only the agent's .strideterm/tasks/{taskId} folder.
@@ -191,9 +197,9 @@ export function createWorkspaceActions(ctx: WorkspaceActionsCtx) {
     // workspace directory was about to be removed.
     const firstMessage = isTaskAgent
       ? hasOwnWorktree
-        ? `Delete task agent "${(ws as AnyApi).name}"?`
-        : `Delete task agent "${(ws as AnyApi).name}"?\n\nOnly the agent's state under .strideterm/tasks is removed. Your project files in ${(ws as AnyApi).cwd || "the workspace directory"} are kept.`
-      : `Delete workspace "${(ws as AnyApi).name}"?`;
+        ? `Delete task agent "${displayName}"?`
+        : `Delete task agent "${displayName}"?\n\nOnly the agent's state under .strideterm/tasks is removed. Your project files in ${(ws as AnyApi).cwd || "the workspace directory"} are kept.`
+      : `Delete workspace "${displayName}"?`;
     const confirmed = await confirmInApp({
       title: firstTitle,
       message: firstMessage,
@@ -238,7 +244,7 @@ export function createWorkspaceActions(ctx: WorkspaceActionsCtx) {
     // We don't need to clone deeply — the components that consume this
     // payload only need the workspaces array to be a new reference for the
     // computed selectors to refresh.
-    const wsName = (ws as AnyApi).name || "";
+    const wsName = displayName || (ws as AnyApi).name || "";
     const wasActive = ctx.payload.value?.appState?.activeWorkspaceId === workspaceId;
     const before = ctx.payload.value;
     const remainingWorkspaces = (before?.appState?.workspaces || []).filter((w: AnyApi) => w.id !== workspaceId);
@@ -654,7 +660,7 @@ export function createWorkspaceActions(ctx: WorkspaceActionsCtx) {
   async function forceRemoveWorkspace(workspaceId: string): Promise<void> {
     const ws = (ctx.payload.value?.appState?.workspaces || []).find((w: AnyApi) => w.id === workspaceId);
     if (!ws) return;
-    const wsName = (ws as AnyApi).name || "";
+    const wsName = formatWorkspaceDisplayName(ws as AnyApi) || (ws as AnyApi).name || "";
     const confirmed = await confirmInApp({
       title: "Remove workspace",
       message: `Remove "${wsName}" from the sidebar?\n\nFiles on disk are kept untouched.`,

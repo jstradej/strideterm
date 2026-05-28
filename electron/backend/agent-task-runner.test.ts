@@ -139,6 +139,78 @@ describe("AgentTaskRunner", () => {
       expect(workspace.icon).toBe("\u{1F916}");
     });
 
+    test("assigns sequenceNumber 1 for first task under a parent", () => {
+      const ws = runner.createTaskWorkspace({
+        state: { workspaces: [{ id: "ws-parent", kind: "terminal" }] },
+        description: "First task",
+        cwd: "/tmp/test",
+        parentWorkspaceId: "ws-parent",
+      });
+      expect(ws.task.sequenceNumber).toBe(1);
+    });
+
+    test("assigns next sequenceNumber per parent and skips deleted siblings", () => {
+      // Pre-existing siblings under the same parent: #1 and #3 (the user
+      // deleted #2). Numbering must NOT renumber survivors, so the new task
+      // gets #4, not #3.
+      const parent = { id: "ws-parent", kind: "terminal" };
+      const existing = [
+        { id: "t1", kind: "task", task: { parentWorkspaceId: "ws-parent", sequenceNumber: 1 } },
+        { id: "t3", kind: "task", task: { parentWorkspaceId: "ws-parent", sequenceNumber: 3 } },
+      ];
+      const ws = runner.createTaskWorkspace({
+        state: { workspaces: [parent, ...existing] },
+        description: "Fourth task",
+        cwd: "/tmp/test",
+        parentWorkspaceId: "ws-parent",
+      });
+      expect(ws.task.sequenceNumber).toBe(4);
+    });
+
+    test("counts unnumbered legacy siblings so the new task doesn't claim '#1'", () => {
+      // A parent that pre-dates this feature has three unnumbered task
+      // siblings. The new task must not get #1 — that would read as "the
+      // first one" rather than "the newest one". Instead we count the
+      // siblings and pick max(numbered max, sibling count) + 1 = 4.
+      const parent = { id: "ws-parent", kind: "terminal" };
+      const legacy = [
+        { id: "tL1", kind: "task", task: { parentWorkspaceId: "ws-parent" } },
+        { id: "tL2", kind: "task", task: { parentWorkspaceId: "ws-parent" } },
+        { id: "tL3", kind: "task", task: { parentWorkspaceId: "ws-parent" } },
+      ];
+      const ws = runner.createTaskWorkspace({
+        state: { workspaces: [parent, ...legacy] },
+        description: "First post-feature task",
+        cwd: "/tmp/test",
+        parentWorkspaceId: "ws-parent",
+      });
+      expect(ws.task.sequenceNumber).toBe(4);
+    });
+
+    test("scopes sequenceNumber to parentWorkspaceId — different parents start at 1", () => {
+      const existing = [
+        { id: "t1", kind: "task", task: { parentWorkspaceId: "ws-parent-A", sequenceNumber: 1 } },
+        { id: "t2", kind: "task", task: { parentWorkspaceId: "ws-parent-A", sequenceNumber: 2 } },
+      ];
+      const ws = runner.createTaskWorkspace({
+        state: { workspaces: existing },
+        description: "First task under B",
+        cwd: "/tmp/test",
+        parentWorkspaceId: "ws-parent-B",
+      });
+      expect(ws.task.sequenceNumber).toBe(1);
+    });
+
+    test("sets createdAt as an ISO timestamp", () => {
+      const before = Date.now();
+      const ws = createTaskWorkspace(runner);
+      const after = Date.now();
+      expect(typeof ws.task.createdAt).toBe("string");
+      const parsed = Date.parse(ws.task.createdAt);
+      expect(parsed).toBeGreaterThanOrEqual(before);
+      expect(parsed).toBeLessThanOrEqual(after);
+    });
+
     test("uses custom color when provided", () => {
       const ws = runner.createTaskWorkspace({
         state: {},
@@ -937,6 +1009,18 @@ describe("AgentTaskRunner", () => {
       expect(alert.kind).toBe("waiting");
       expect(alert.urgency).toBe("urgent");
       expect(alert.tier).toBe(1);
+    });
+
+    test("alert title includes '#N' for task agents so Telegram notifications disambiguate siblings", () => {
+      // Without this, three "mhub" task agents on the same parent all produce
+      // identical "📍 mhub › Worker" Telegram alerts. The fix routes the
+      // formatted display name (name + " #N") into the alert title.
+      workspace.task.sequenceNumber = 3;
+      workspace.task.state = "running";
+      const sessionId = `${workspace.id}:${workspace.task.workerPanelId}`;
+      runner.onSessionExit(sessionId);
+      const alert = deps.alerts[deps.alerts.length - 1];
+      expect(alert.title).toBe(`${workspace.name} #3`);
     });
   });
 

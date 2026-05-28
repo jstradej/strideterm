@@ -73,6 +73,19 @@ export interface TaskState {
   // Cleared after the clears fire so Resume / mid-task starts don't wipe
   // running context.
   needsContextClear?: boolean;
+  // ISO timestamp of workspace creation (NOT first start). Used by the sidebar
+  // card to render a "2m / 1h / 3d" relative-age chip so multiple agents on
+  // the same parent can be told apart at a glance. Optional for backward
+  // compatibility with tasks created before this field existed — those just
+  // render without the chip.
+  createdAt?: string;
+  // Stable per-parent ordinal. Assigned at creation as max(siblings) + 1,
+  // siblings being other task workspaces with the same parentWorkspaceId.
+  // Rendered as " #N" appended to the workspace name in the sidebar. Stable
+  // across deletions: removing #2 leaves #1 and #3 unchanged so the user can
+  // refer to a task by its number without renumbering surprises. Optional
+  // for backward compat — pre-existing tasks render without the suffix.
+  sequenceNumber?: number;
 }
 
 export interface TaskWorkspace {
