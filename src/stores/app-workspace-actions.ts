@@ -181,9 +181,22 @@ export function createWorkspaceActions(ctx: WorkspaceActionsCtx) {
   async function deleteWorkspace(workspaceId: string): Promise<void> {
     const ws = (ctx.payload.value?.appState?.workspaces || []).find((w: AnyApi) => w.id === workspaceId);
     if (!ws) return;
+    const isTaskAgent = (ws as AnyApi).kind === "task";
+    const hasOwnWorktree = isTaskAgent && !!(ws as AnyApi).task?.worktreeBase;
+    const firstTitle = isTaskAgent ? "Delete task agent" : "Delete workspace";
+    // For a task agent without its own worktree, spell out exactly what's
+    // touched on disk — only the agent's .strideterm/tasks/{taskId} folder.
+    // The base directory and project files are left alone. The previous
+    // "Delete workspace 'mhub'?" wording made it sound like the entire
+    // workspace directory was about to be removed.
+    const firstMessage = isTaskAgent
+      ? hasOwnWorktree
+        ? `Delete task agent "${(ws as AnyApi).name}"?`
+        : `Delete task agent "${(ws as AnyApi).name}"?\n\nOnly the agent's state under .strideterm/tasks is removed. Your project files in ${(ws as AnyApi).cwd || "the workspace directory"} are kept.`
+      : `Delete workspace "${(ws as AnyApi).name}"?`;
     const confirmed = await confirmInApp({
-      title: "Delete workspace",
-      message: `Delete workspace "${(ws as AnyApi).name}"?`,
+      title: firstTitle,
+      message: firstMessage,
       confirmLabel: "Delete",
       danger: true,
     });
@@ -196,7 +209,7 @@ export function createWorkspaceActions(ctx: WorkspaceActionsCtx) {
       ((ws as AnyApi).notes || "").startsWith("Worktree of ") ||
       (ws as AnyApi).review?.checkout?.mode === "managed-worktree" ||
       !!(ws as AnyApi).quickfix?.parentWorkspaceId ||
-      !!(ws as AnyApi).task?.worktreeBase;
+      hasOwnWorktree;
     const worktreePath =
       (ws as AnyApi).review?.checkout?.mode === "managed-worktree" && (ws as AnyApi).review?.checkout?.rootPath
         ? (ws as AnyApi).review.checkout.rootPath
@@ -205,9 +218,13 @@ export function createWorkspaceActions(ctx: WorkspaceActionsCtx) {
 
     let deleteFromDisk = false;
     if (diskPath) {
+      const secondTitle = isTaskAgent ? "Delete agent worktree files?" : "Delete worktree files?";
+      const secondMessage = isTaskAgent
+        ? `Also delete the agent's worktree from disk?\n\n${diskPath}`
+        : `Also delete the worktree files from disk?\n\n${diskPath}`;
       deleteFromDisk = await confirmInApp({
-        title: "Delete worktree files?",
-        message: `Also delete the worktree files from disk?\n\n${diskPath}`,
+        title: secondTitle,
+        message: secondMessage,
         confirmLabel: "Delete files",
         cancelLabel: "Keep files",
         danger: true,
