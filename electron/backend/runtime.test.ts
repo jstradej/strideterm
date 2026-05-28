@@ -3970,38 +3970,36 @@ describe("runtime integration", () => {
     // syncTreeDirWatchers is called after saveWorkspace (runtime.ts:4834).
     // This test verifies that after saving a new parent workspace, the gitPoll
     // (which calls syncWorktrees/syncWorktreesImpl) picks up new tree entries.
-    vi.useFakeTimers();
-    try {
-      const parentDir = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-save-watcher-"));
-      tempPaths.push(parentDir);
+    //
+    // Driven via the exposed runtime.syncWorktrees() rather than
+    // vi.advanceTimersByTimeAsync — the timer-advance approach raced the
+    // real fs.readdir inside the poll callback on macOS / Ubuntu runners.
+    const parentDir = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-save-watcher-"));
+    tempPaths.push(parentDir);
 
-      const fixture = await createFixture({ initialState: { workspaces: [] } });
-      fixtures.push(fixture);
+    const fixture = await createFixture({ initialState: { workspaces: [] } });
+    fixtures.push(fixture);
 
-      // Save a new parent workspace — calls syncTreeDirWatchers internally
-      await fixture.runtime.saveWorkspace({
-        id: "new-parent",
-        name: "New Parent",
-        kind: "terminal",
-        cwd: parentDir,
-        activePanelId: "shell",
-        panels: [{ id: "shell", title: "Shell", command: "", shell: true, startup: "default" }],
-      });
+    // Save a new parent workspace — calls syncTreeDirWatchers internally
+    await fixture.runtime.saveWorkspace({
+      id: "new-parent",
+      name: "New Parent",
+      kind: "terminal",
+      cwd: parentDir,
+      activePanelId: "shell",
+      panels: [{ id: "shell", title: "Shell", command: "", shell: true, startup: "default" }],
+    });
 
-      // Create a tree subdir AFTER the save (simulates a new worktree being added on disk)
-      const branchDir = path.join(parentDir, ".strideterm", "tree", "new-branch");
-      await fs.mkdir(branchDir, { recursive: true });
+    // Create a tree subdir AFTER the save (simulates a new worktree being added on disk)
+    const branchDir = path.join(parentDir, ".strideterm", "tree", "new-branch");
+    await fs.mkdir(branchDir, { recursive: true });
 
-      // Advance past the git poll interval (60 s) so syncWorktrees/syncWorktreesImpl runs
-      await vi.advanceTimersByTimeAsync(65_000);
+    await fixture.runtime.syncWorktrees();
 
-      const workspaces = fixture.runtime.getPayload().appState.workspaces!;
-      const worktree = workspaces.find((w) => w.cwd === branchDir);
-      expect(worktree).toBeDefined();
-      expect(worktree?.notes).toMatch(/^Worktree of /);
-    } finally {
-      vi.useRealTimers();
-    }
+    const workspaces = fixture.runtime.getPayload().appState.workspaces!;
+    const worktree = workspaces.find((w) => w.cwd === branchDir);
+    expect(worktree).toBeDefined();
+    expect(worktree?.notes).toMatch(/^Worktree of /);
   });
 
   test("deleteWorkspace triggers syncTreeDirWatchers — git poll no longer re-adds removed parent tree (#42)", async () => {
@@ -4009,50 +4007,47 @@ describe("runtime integration", () => {
     // After the parent is deleted and its tree-subdir removed from disk,
     // the next syncWorktrees/syncWorktreesImpl call should remove the orphaned
     // child worktree entry (CWD gone) and not re-add it (parent gone).
-    vi.useFakeTimers();
-    try {
-      const parentDir = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-del-watcher-"));
-      tempPaths.push(parentDir);
-      const branchDir = path.join(parentDir, ".strideterm", "tree", "old-branch");
-      await fs.mkdir(branchDir, { recursive: true });
+    //
+    // Driven via the exposed runtime.syncWorktrees() rather than
+    // vi.advanceTimersByTimeAsync — the timer-advance approach raced the
+    // real fs.readdir inside the poll callback on macOS / Ubuntu runners.
+    const parentDir = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-del-watcher-"));
+    tempPaths.push(parentDir);
+    const branchDir = path.join(parentDir, ".strideterm", "tree", "old-branch");
+    await fs.mkdir(branchDir, { recursive: true });
 
-      // createFixture init: syncWorktreesImpl detects branchDir and adds child workspace
-      const fixture = await createFixture({
-        initialState: {
-          workspaces: [
-            {
-              id: "parent-del",
-              name: "Parent Del",
-              kind: "terminal",
-              cwd: parentDir,
-              activePanelId: "shell",
-              panels: [{ id: "shell", title: "Shell", command: "", shell: true, startup: "default" }],
-            },
-          ],
-        },
-      });
-      fixtures.push(fixture);
+    // createFixture init: syncWorktreesImpl detects branchDir and adds child workspace
+    const fixture = await createFixture({
+      initialState: {
+        workspaces: [
+          {
+            id: "parent-del",
+            name: "Parent Del",
+            kind: "terminal",
+            cwd: parentDir,
+            activePanelId: "shell",
+            panels: [{ id: "shell", title: "Shell", command: "", shell: true, startup: "default" }],
+          },
+        ],
+      },
+    });
+    fixtures.push(fixture);
 
-      // Verify child workspace was created by syncWorktreesImpl during init
-      const before = fixture.runtime.getPayload().appState.workspaces!;
-      expect(before.find((w) => w.cwd === branchDir)).toBeDefined();
+    // Verify child workspace was created by syncWorktreesImpl during init
+    const before = fixture.runtime.getPayload().appState.workspaces!;
+    expect(before.find((w) => w.cwd === branchDir)).toBeDefined();
 
-      // Delete the parent workspace — calls syncTreeDirWatchers internally
-      await fixture.runtime.deleteWorkspace("parent-del");
+    // Delete the parent workspace — calls syncTreeDirWatchers internally
+    await fixture.runtime.deleteWorkspace("parent-del");
 
-      // Remove the branchDir from disk so orphaned child is detected as missing
-      await fs.rm(branchDir, { recursive: true, force: true });
+    // Remove the branchDir from disk so orphaned child is detected as missing
+    await fs.rm(branchDir, { recursive: true, force: true });
 
-      // Advance past git poll interval — syncWorktrees/syncWorktreesImpl runs and
-      // removes the orphaned child (CWD gone) without re-adding it (parent gone)
-      await vi.advanceTimersByTimeAsync(65_000);
+    await fixture.runtime.syncWorktrees();
 
-      const after = fixture.runtime.getPayload().appState.workspaces!;
-      expect(after.find((w) => w.id === "parent-del")).toBeUndefined();
-      expect(after.find((w) => w.cwd === branchDir)).toBeUndefined();
-    } finally {
-      vi.useRealTimers();
-    }
+    const after = fixture.runtime.getPayload().appState.workspaces!;
+    expect(after.find((w) => w.id === "parent-del")).toBeUndefined();
+    expect(after.find((w) => w.cwd === branchDir)).toBeUndefined();
   });
 
   test("useWorktree create runs the guard BEFORE any disk side-effects (no orphan tree, no .gitignore mutation)", async () => {

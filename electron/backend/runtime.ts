@@ -4170,6 +4170,15 @@ export async function createRuntime({
     ...providerHandlers,
     ...gitHandlers,
     ...sshHandlers,
+    /**
+     * Re-scan parent workspaces for new/removed `.strideterm/tree/*` worktrees
+     * and reconcile workspace state. Normally called from the git poll timer;
+     * exposed so tests can drive the reconciliation deterministically instead
+     * of racing `vi.advanceTimersByTimeAsync` against real fs I/O.
+     */
+    syncWorktrees: async (): Promise<void> => {
+      await syncWorktrees();
+    },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     on(channel: any, handler: any) {
       events.on(channel, handler);
