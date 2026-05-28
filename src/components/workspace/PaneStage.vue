@@ -175,6 +175,14 @@ function terminalPaneActions(tab: Tab) {
       title: "Make this pane the active tab — same as left-clicking it in the tab bar.",
       label: "◉",
     },
+    {
+      className: "workspace-pane__icon-btn",
+      action: "find-in-terminal",
+      sessionId: tab.id,
+      title:
+        "Find text in this terminal's scrollback (Ctrl/Cmd+F). Searches the buffer xterm.js keeps in memory — older output that's scrolled past the limit isn't searchable.",
+      label: "🔍",
+    },
     ...(tab.persistent
       ? [
           {
@@ -383,6 +391,9 @@ function onPaneAction(
       break;
     case "export-terminal-transcript":
       termStore.exportTerminalTranscript(action.sessionId, { title: tab.title });
+      break;
+    case "find-in-terminal":
+      termStore.requestSearch(action.sessionId);
       break;
     case "clear-terminal":
       termStore.clearTerminalViewport(action.sessionId);

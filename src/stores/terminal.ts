@@ -1,5 +1,6 @@
 import { defineStore } from "pinia";
 import { shallowRef, watch } from "vue";
+import type { SearchAddon } from "@xterm/addon-search";
 import { createTerminalController } from "../app/terminal-controller.js";
 import type { TerminalView } from "../app/terminal-controller.js";
 import { openTerminalLink, getWindowsPtyOptions, downloadTextFile, safeFilenamePart } from "../app/helpers.js";
@@ -38,6 +39,19 @@ export const useTerminalStore = defineStore("terminal", () => {
     appConfig: AppConfig,
     { getActiveSessionId, getOverlay, getPayload }: InitOptions,
   ): void {
+    // The controller reads `api.onSearchRequested` from the key handler when
+    // the user presses Ctrl/Cmd+F inside a terminal. We don't want to bolt
+    // that onto the Transport interface (it has nothing to do with the
+    // wire), so we wrap the api here and add a renderer-only callback that
+    // re-broadcasts as a window CustomEvent. The corresponding TerminalPane
+    // listens for "strideterm:terminal-search" and shows its overlay —
+    // avoids threading refs through the layout tree.
+    const apiWithSearch = {
+      ...api,
+      onSearchRequested: (sessionId: string) => {
+        window.dispatchEvent(new CustomEvent("strideterm:terminal-search", { detail: { sessionId } }));
+      },
+    };
     controller = createTerminalController({
       views,
       buffers,
@@ -45,7 +59,7 @@ export const useTerminalStore = defineStore("terminal", () => {
       getOverlay,
       getPayload,
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      api: api as any,
+      api: apiWithSearch as any,
       appConfig,
       openTerminalLink,
       getWindowsPtyOptions,
@@ -159,6 +173,17 @@ export const useTerminalStore = defineStore("terminal", () => {
     controller?.syncFontSize(size);
   }
 
+  function getSearchAddon(sessionId: string): SearchAddon | null {
+    return controller?.getSearchAddon(sessionId) ?? null;
+  }
+
+  // Programmatic equivalent of pressing Ctrl/Cmd+F — used by the header
+  // button and the "Find in terminal" context-menu entry. Routes through
+  // the same window event so the overlay open path is single-sourced.
+  function requestSearch(sessionId: string): void {
+    window.dispatchEvent(new CustomEvent("strideterm:terminal-search", { detail: { sessionId } }));
+  }
+
   return {
     views,
     buffers,
@@ -175,5 +200,7 @@ export const useTerminalStore = defineStore("terminal", () => {
     disconnectHiddenPaneObservers,
     syncTheme,
     syncFontSize,
+    getSearchAddon,
+    requestSearch,
   };
 });

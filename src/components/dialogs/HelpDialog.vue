@@ -37,6 +37,8 @@
           <dd style="color: var(--muted)">New workspace</dd>
           <dt style="color: var(--accent); font-weight: 700">Ctrl/Cmd + R</dt>
           <dd style="color: var(--muted)">Restart active terminal</dd>
+          <dt style="color: var(--accent); font-weight: 700">Ctrl/Cmd + F</dt>
+          <dd style="color: var(--muted)">Find text in the terminal scrollback (per-pane search bar)</dd>
           <dt style="color: var(--accent); font-weight: 700">Ctrl + 1-9</dt>
           <dd style="color: var(--muted)">Switch to workspace 1-9</dd>
           <dt style="color: var(--accent); font-weight: 700">Ctrl + PageDown/PageUp</dt>

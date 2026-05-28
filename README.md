@@ -253,6 +253,7 @@ All providers share a single notification script (`~/.strideterm/hooks/notify.mj
 | `Ctrl+N`                      | Create a new workspace                                                                                  |
 | `Ctrl+W`                      | Cascading close: active tab → workspace (navigate to next) → window                                     |
 | `Ctrl+R`                      | Restart the active terminal session                                                                     |
+| `Ctrl+F`                      | Open the per-pane search bar (find text in the terminal scrollback)                                     |
 | `Ctrl+Shift+N`                | Open a new window (desktop) — picks a profile to pin. In the remote web UI: focus the notification dock |
 | `Ctrl+Shift+W`                | Close the current window (multi-window only)                                                            |
 | `Ctrl+Shift+G`                | Toggle the workspace grid (split panes across workspaces)                                               |

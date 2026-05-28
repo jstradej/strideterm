@@ -3,6 +3,7 @@ import type { ITheme } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { WebglAddon } from "@xterm/addon-webgl";
+import { SearchAddon } from "@xterm/addon-search";
 import type { Ref } from "vue";
 import type { APP_CONFIG } from "../../config/app-config.js";
 import type { StatePayload, WorkspaceState } from "../../electron/shared/types/state.js";
@@ -16,6 +17,7 @@ export interface TerminalView {
   mount: HTMLDivElement;
   term: Terminal;
   fitAddon: FitAddon;
+  searchAddon: SearchAddon;
   lastSizeKey: string | null;
   resizeFrame: number | null;
   resizeObserver: ResizeObserver | null;
@@ -58,6 +60,9 @@ interface TerminalControllerApi {
   };
   logRenderer?: (level: LogLevel, message: string, meta?: Record<string, unknown>) => void;
   updateSettings?: (settings: Record<string, unknown>) => void;
+  /** Fired when the user presses Ctrl/Cmd+F while a terminal is focused — the
+   * renderer is expected to surface the per-pane search overlay. */
+  onSearchRequested?: (sessionId: string) => void;
 }
 
 /**
@@ -438,6 +443,11 @@ export function createTerminalController({
       cursorBlink: false,
       allowTransparency: false,
       smoothScrollDuration: 0,
+      // SearchAddon (and its decoration manager) reads/writes APIs xterm.js
+      // still marks as "proposed" in v6; the addon throws on findNext until
+      // this flag is set. No actual proposed APIs are used in this file
+      // directly — the flag is only here for the addon's benefit.
+      allowProposedApi: true,
       ...(windowsPty ? { windowsPty } : {}),
       linkHandler: {
         activate: openTerminalLink,
@@ -448,8 +458,14 @@ export function createTerminalController({
     } as any);
     const fitAddon = new FitAddon();
     const webLinksAddon = new WebLinksAddon(openTerminalLink);
+    // Per-pane search. Each TerminalView owns one SearchAddon — the overlay
+    // component (TerminalSearchOverlay.vue) drives findNext/findPrevious and
+    // subscribes to onDidChangeResults for the match-count display. Decoration
+    // colors pick up the xterm theme automatically; we don't override them.
+    const searchAddon = new SearchAddon();
     term.loadAddon(fitAddon);
     term.loadAddon(webLinksAddon);
+    term.loadAddon(searchAddon);
     // File-path link provider: scans each visible line for path-shaped text
     // (Unix /abs/path, Windows C:\..., relative ./..., compiler refs like
     // foo.ts:42:5) and surfaces them as clickable links. The detector lives
@@ -659,6 +675,18 @@ export function createTerminalController({
         }
       }
       if (!(event.ctrlKey || event.metaKey)) return true;
+      // Ctrl+F (Windows/Linux) or Cmd+F (macOS) — open the per-pane search
+      // overlay. We intercept here so the keystroke never reaches the shell
+      // (which would otherwise see Ctrl+F as forward-char in readline, etc.).
+      // Mac requires Cmd without Ctrl; Win/Linux requires Ctrl without Meta —
+      // matches the platform-native shortcut convention.
+      if (!event.altKey && !event.shiftKey && event.key.toLowerCase() === "f" && event.type === "keydown") {
+        const findMod = IS_MAC ? event.metaKey && !event.ctrlKey : event.ctrlKey && !event.metaKey;
+        if (findMod) {
+          api.onSearchRequested?.(sessionId);
+          return false;
+        }
+      }
       if (
         !event.altKey &&
         !event.shiftKey &&
@@ -966,6 +994,7 @@ export function createTerminalController({
       mount,
       term,
       fitAddon,
+      searchAddon,
       lastSizeKey: null,
       resizeFrame: null,
       resizeObserver: null,
@@ -1200,6 +1229,10 @@ export function createTerminalController({
     }
   }
 
+  function getSearchAddon(sessionId: string): SearchAddon | null {
+    return views.value.get(sessionId)?.searchAddon ?? null;
+  }
+
   return {
     attachTerminalPane,
     clearTerminalViewport,
@@ -1208,6 +1241,7 @@ export function createTerminalController({
     ensureTerminal,
     exportTerminalTranscript,
     focusActiveTerminal,
+    getSearchAddon,
     handleTerminalData,
     handleTerminalExit,
     pruneTerminalViews,

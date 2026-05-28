@@ -32,6 +32,14 @@
         <button
           type="button"
           class="context-menu__item"
+          title="Open the search bar to find text in this terminal's scrollback (Ctrl/Cmd+F)."
+          @click="onFind"
+        >
+          <span class="context-menu__icon">&#x1F50D;</span><span>Find in terminal</span>
+        </button>
+        <button
+          type="button"
+          class="context-menu__item"
           title="Export the last 500 lines of this terminal's scrollback to a text file via the system save dialog."
           @click="onSaveTranscript"
         >
@@ -404,6 +412,12 @@ function onSaveTranscript() {
   const title = currentTab.value?.title || "";
   store.hideContextMenu();
   termStore.exportTerminalTranscript(id, { title });
+}
+
+function onFind() {
+  const id = viewId.value;
+  store.hideContextMenu();
+  termStore.requestSearch(id);
 }
 
 function onClear() {

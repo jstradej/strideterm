@@ -50,6 +50,15 @@ vi.mock("@xterm/addon-webgl", () => ({
     dispose = vi.fn();
   },
 }));
+vi.mock("@xterm/addon-search", () => ({
+  SearchAddon: class {
+    findNext = vi.fn(() => true);
+    findPrevious = vi.fn(() => true);
+    clearDecorations = vi.fn();
+    onDidChangeResults = vi.fn(() => ({ dispose: vi.fn() }));
+    dispose = vi.fn();
+  },
+}));
 
 function buildController({ getOverlay }: { getOverlay: () => unknown }) {
   const focus = vi.fn();
@@ -375,5 +384,103 @@ describe("terminal pane reattach", () => {
     } finally {
       resizeObserver.restore();
     }
+  });
+});
+
+// The mocked Terminal stores the registered custom key handler on the
+// attachCustomKeyEventHandler vi.fn(). Pull it out so we can synthesize
+// keyboard events without setting up a real xterm + DOM helper textarea.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function getKeyHandler(view: any): (event: Partial<KeyboardEvent>) => boolean {
+  const calls = view.term.attachCustomKeyEventHandler.mock.calls;
+  if (calls.length === 0) throw new Error("attachCustomKeyEventHandler was never called");
+  return calls[0][0];
+}
+
+describe("search addon wiring", () => {
+  test("ensureTerminal attaches a SearchAddon and getSearchAddon returns it", () => {
+    const { controller, views } = buildAttachController();
+    const sessionId = "workspace-1:shell-1";
+    controller.ensureTerminal(sessionId);
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const view = (views.value as any).get(sessionId);
+    expect(view.searchAddon).toBeDefined();
+    expect(view.searchAddon.findNext).toBeTypeOf("function");
+    expect(controller.getSearchAddon(sessionId)).toBe(view.searchAddon);
+  });
+
+  test("getSearchAddon returns null for an unknown session", () => {
+    const { controller } = buildAttachController();
+    expect(controller.getSearchAddon("does-not-exist")).toBeNull();
+  });
+});
+
+describe("Ctrl/Cmd+F key handler", () => {
+  test("Ctrl+F keydown fires onSearchRequested(sessionId) and swallows the event", () => {
+    const onSearchRequested = vi.fn();
+    const { controller, views } = buildAttachController({ onSearchRequested });
+    const sessionId = "workspace-1:shell-1";
+    controller.ensureTerminal(sessionId);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const view = (views.value as any).get(sessionId);
+    const handler = getKeyHandler(view);
+
+    const result = handler({
+      type: "keydown",
+      key: "f",
+      code: "KeyF",
+      ctrlKey: true,
+      metaKey: false,
+      altKey: false,
+      shiftKey: false,
+    });
+
+    expect(onSearchRequested).toHaveBeenCalledWith(sessionId);
+    expect(result).toBe(false);
+  });
+
+  test("Ctrl+Shift+F does NOT fire onSearchRequested (preserves shell binding)", () => {
+    const onSearchRequested = vi.fn();
+    const { controller, views } = buildAttachController({ onSearchRequested });
+    const sessionId = "workspace-1:shell-1";
+    controller.ensureTerminal(sessionId);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const view = (views.value as any).get(sessionId);
+    const handler = getKeyHandler(view);
+
+    handler({
+      type: "keydown",
+      key: "f",
+      code: "KeyF",
+      ctrlKey: true,
+      metaKey: false,
+      altKey: false,
+      shiftKey: true,
+    });
+
+    expect(onSearchRequested).not.toHaveBeenCalled();
+  });
+
+  test("plain 'f' (no modifier) does NOT fire onSearchRequested", () => {
+    const onSearchRequested = vi.fn();
+    const { controller, views } = buildAttachController({ onSearchRequested });
+    const sessionId = "workspace-1:shell-1";
+    controller.ensureTerminal(sessionId);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const view = (views.value as any).get(sessionId);
+    const handler = getKeyHandler(view);
+
+    handler({
+      type: "keydown",
+      key: "f",
+      code: "KeyF",
+      ctrlKey: false,
+      metaKey: false,
+      altKey: false,
+      shiftKey: false,
+    });
+
+    expect(onSearchRequested).not.toHaveBeenCalled();
   });
 });

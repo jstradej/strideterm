@@ -6,6 +6,8 @@ import { nextTick } from "vue";
 const syncFontSizeMock = vi.hoisted(() => vi.fn());
 const scheduleAllVisibleResizeMock = vi.hoisted(() => vi.fn());
 
+const getSearchAddonMock = vi.hoisted(() => vi.fn());
+
 vi.mock("../app/terminal-controller.js", () => ({
   createTerminalController: () => ({
     syncFontSize: syncFontSizeMock,
@@ -20,6 +22,7 @@ vi.mock("../app/terminal-controller.js", () => ({
     exportTerminalTranscript: vi.fn(),
     clearTerminalViewport: vi.fn(),
     disconnectHiddenPaneObservers: vi.fn(),
+    getSearchAddon: getSearchAddonMock,
   }),
 }));
 
@@ -124,5 +127,37 @@ describe("useTerminalStore — font size watch", () => {
     expect(scheduleAllVisibleResizeMock).toHaveBeenCalledTimes(1);
     vi.advanceTimersByTime(150);
     expect(scheduleAllVisibleResizeMock).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("useTerminalStore — search", () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    (window as AnyRecord).strideterm = { startupFlags: { windowId: "" } };
+    getSearchAddonMock.mockReset();
+  });
+
+  test("requestSearch dispatches strideterm:terminal-search with sessionId", () => {
+    const termStore = initStore(false);
+    const captured: AnyRecord[] = [];
+    const listener = (event: Event): void => {
+      const detail = (event as CustomEvent).detail;
+      if (detail) captured.push(detail);
+    };
+    window.addEventListener("strideterm:terminal-search", listener);
+    try {
+      termStore.requestSearch("workspace-1:shell-7");
+    } finally {
+      window.removeEventListener("strideterm:terminal-search", listener);
+    }
+    expect(captured).toEqual([{ sessionId: "workspace-1:shell-7" }]);
+  });
+
+  test("getSearchAddon forwards to the controller", () => {
+    const stub = { findNext: vi.fn() };
+    getSearchAddonMock.mockReturnValue(stub);
+    const termStore = initStore(false);
+    expect(termStore.getSearchAddon("workspace-1:shell-1")).toBe(stub);
+    expect(getSearchAddonMock).toHaveBeenCalledWith("workspace-1:shell-1");
   });
 });
