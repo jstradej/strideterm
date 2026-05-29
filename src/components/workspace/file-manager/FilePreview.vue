@@ -92,7 +92,8 @@
 
       <!-- Empty file -->
       <template v-else-if="preview?.kind === 'empty'">
-        <div class="file-preview__binary">
+        <FileEditor v-if="store.editMode" />
+        <div v-else class="file-preview__binary">
           <p>Empty file</p>
           <button
             v-if="isEditable"
