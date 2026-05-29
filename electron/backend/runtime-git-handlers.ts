@@ -160,7 +160,67 @@ export function createGitHandlers(ctx: GitHandlerCtx) {
     async gitStashPop(payload: any = {}, windowId?: string) {
       const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId, windowId);
       const rootPath = resolveRootPath(workspace, payload.rootPath);
-      return runGitWorkspaceAction(workspace, git.stashPop(workspace, { rootPath }));
+      return runGitWorkspaceAction(workspace, git.stashPop(workspace, { rootPath, ref: payload.ref }));
+    },
+    // --- Stash detail / lifecycle ---
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async gitListStashes(payload: any = {}, windowId?: string) {
+      const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId, windowId);
+      const rootPath = resolveRootPath(workspace, payload.rootPath);
+      return git.listStashes(workspace, { rootPath });
+    },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async gitStashFiles(payload: any = {}, windowId?: string) {
+      const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId, windowId);
+      const rootPath = resolveRootPath(workspace, payload.rootPath);
+      return git.stashFiles(workspace, { rootPath, ref: payload.ref });
+    },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async gitStashFileDiff(payload: any = {}, windowId?: string) {
+      const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId, windowId);
+      const rootPath = resolveRootPath(workspace, payload.rootPath);
+      return git.stashFileDiff(workspace, { rootPath, ref: payload.ref, relativePath: payload.relativePath });
+    },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async gitStashApply(payload: any = {}, windowId?: string) {
+      const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId, windowId);
+      const rootPath = resolveRootPath(workspace, payload.rootPath);
+      return runGitWorkspaceAction(workspace, git.stashApply(workspace, { rootPath, ref: payload.ref }));
+    },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async gitStashDrop(payload: any = {}, windowId?: string) {
+      const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId, windowId);
+      const rootPath = resolveRootPath(workspace, payload.rootPath);
+      return runGitWorkspaceAction(workspace, git.stashDrop(workspace, { rootPath, ref: payload.ref }));
+    },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async gitStashBranch(payload: any = {}, windowId?: string) {
+      const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId, windowId);
+      const rootPath = resolveRootPath(workspace, payload.rootPath);
+      return runGitWorkspaceAction(
+        workspace,
+        git.stashBranch(workspace, {
+          rootPath,
+          ref: payload.ref,
+          branchName: payload.branchName,
+          switchImmediately: payload.switchImmediately,
+        }),
+      );
+    },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async gitStashExport(payload: any = {}, windowId?: string) {
+      const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId, windowId);
+      const rootPath = resolveRootPath(workspace, payload.rootPath);
+      return git.stashExportPatch(workspace, { rootPath, ref: payload.ref });
+    },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async gitStashImport(payload: any = {}, windowId?: string) {
+      const workspace = resolveGitWorkspace(payload.workspaceId, payload.projectId, windowId);
+      const rootPath = resolveRootPath(workspace, payload.rootPath);
+      return runGitWorkspaceAction(
+        workspace,
+        git.stashImportPatch(workspace, { rootPath, patch: payload.patch, message: payload.message }),
+      );
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async gitLogPage(payload: any = {}, windowId?: string) {

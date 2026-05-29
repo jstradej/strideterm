@@ -893,17 +893,6 @@ export const useGitUiStore = defineStore("git-ui", () => {
     ensure(workspaceId).lastResult = null;
   }
 
-  async function gitStash(workspaceId: string, message: string): Promise<void> {
-    const rootPath = getActiveRoot(workspaceId);
-    await runGitAction(workspaceId, "stash", () =>
-      (_api as Transport & { gitStash: (p: unknown) => Promise<unknown> }).gitStash!({
-        workspaceId,
-        message: message || "",
-        rootPath,
-      }),
-    );
-  }
-
   async function gitStashPop(workspaceId: string): Promise<void> {
     const rootPath = getActiveRoot(workspaceId);
     await runGitAction(workspaceId, "stash-pop", () =>
@@ -1250,7 +1239,6 @@ export const useGitUiStore = defineStore("git-ui", () => {
     gitSwitchTab,
     gitClearResult,
     openLazygit,
-    gitStash,
     gitStashPop,
     gitSetBaseBranch,
     gitFetchBaseComparison,

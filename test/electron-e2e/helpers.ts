@@ -1,5 +1,5 @@
 import { _electron as electron, expect, test, type ElectronApplication, type Page } from "@playwright/test";
-import { mkdtemp, mkdir, copyFile } from "node:fs/promises";
+import { mkdtemp, mkdir, copyFile, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -15,7 +15,8 @@ export type FixtureName =
   | "two-workspaces"
   | "remote-multi-profile"
   | "docker-workspace"
-  | "docker-mock-workspace";
+  | "docker-mock-workspace"
+  | "git-stashes";
 
 export interface LaunchedApp {
   app: ElectronApplication;
@@ -41,13 +42,29 @@ export interface LaunchOptions {
    * `fixtures/docker-mock-state.json` for the canonical example).
    */
   dockerMockFile?: string;
+  /**
+   * Mutate the fixture state in-place before it is written to the temp
+   * data dir. Lets a test inject values that can only be known at runtime
+   * — e.g. the absolute path of a git repo seeded in a beforeAll — into an
+   * otherwise-static fixture. Receives the parsed fixture JSON; mutate it
+   * directly (return value is ignored).
+   */
+  patchState?: (state: Record<string, unknown>) => void;
 }
 
 export async function launchApp(fixture: FixtureName = "empty", options: LaunchOptions = {}): Promise<LaunchedApp> {
   const dataDir = await mkdtemp(path.join(tmpdir(), "strideterm-e2e-"));
   // eslint-disable-next-line security/detect-non-literal-fs-filename -- dataDir is mkdtemp output
   await mkdir(dataDir, { recursive: true });
-  await copyFile(path.join(__dirname, "fixtures", `${fixture}.json`), path.join(dataDir, "strideterm-state.json"));
+  const fixturePath = path.join(__dirname, "fixtures", `${fixture}.json`);
+  const statePath = path.join(dataDir, "strideterm-state.json");
+  if (options.patchState) {
+    const parsed = JSON.parse(await readFile(fixturePath, "utf8")) as Record<string, unknown>;
+    options.patchState(parsed);
+    await writeFile(statePath, JSON.stringify(parsed, null, 2), "utf8");
+  } else {
+    await copyFile(fixturePath, statePath);
+  }
 
   const width = options.windowSize?.width ?? 1100;
   const height = options.windowSize?.height ?? 720;

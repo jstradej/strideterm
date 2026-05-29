@@ -273,6 +273,14 @@
           :is-review-workspace="isReviewWorkspace"
         />
 
+        <!-- ===== Stashes tab ===== -->
+        <GitStashesTab
+          v-else-if="activeTab === 'stashes'"
+          :workspace-id="workspaceId"
+          :snapshot="snapshot"
+          :active-root-path="activeRootPath"
+        />
+
         <!-- ===== Pull Request tab ===== -->
         <GitPullRequestTab
           v-else-if="activeTab === 'pr'"
@@ -343,6 +351,7 @@ import PaneShell from "../layout/PaneShell.vue";
 import GitBranchTab from "./git/GitBranchTab.vue";
 import GitBranchesTab from "./git/GitBranchesTab.vue";
 import GitChangesTab from "./git/GitChangesTab.vue";
+import GitStashesTab from "./git/GitStashesTab.vue";
 import GitPullRequestTab from "./git/GitPullRequestTab.vue";
 import GitWorktreeList from "./git/GitWorktreeList.vue";
 import GitOperationCard from "./git/GitOperationCard.vue";
@@ -698,6 +707,11 @@ const tabs = computed(() => {
       id: "changes",
       label: "Changes",
       badge: (snapshot.value?.dirtyCount || 0) > 0 ? String(snapshot.value?.dirtyCount ?? 0) : "",
+    },
+    {
+      id: "stashes",
+      label: "Stashes",
+      badge: (snapshot.value?.stashCount || 0) > 0 ? String(snapshot.value?.stashCount) : "",
     },
     { id: "pr", label: "Pull Request", badge: "" },
     { id: "worktrees", label: "Worktrees", badge: "" },

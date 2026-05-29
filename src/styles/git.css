@@ -389,7 +389,8 @@
   align-items: center;
 }
 
-.git-commit-form input {
+.git-commit-form input,
+.git-stash-form__message {
   padding: 6px 8px;
   border: 1px solid var(--border);
   border-radius: 4px;
@@ -399,7 +400,8 @@
   font-family: inherit;
 }
 
-.git-commit-form input:focus {
+.git-commit-form input:focus,
+.git-stash-form__message:focus {
   border-color: var(--accent);
   outline: none;
 }
@@ -803,4 +805,22 @@
   .section-head {
     flex-wrap: wrap;
   }
+}
+
+/* Clickable stash-count header on the Git Overview card — switches to the
+   Stashes tab. Reset the button to look like the surrounding heading text. */
+.git-stash-count-link {
+  background: none;
+  border: none;
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  text-decoration: underline dotted;
+  text-underline-offset: 3px;
+}
+
+.git-stash-count-link:hover {
+  color: var(--accent);
 }

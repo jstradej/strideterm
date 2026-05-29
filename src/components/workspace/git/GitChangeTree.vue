@@ -10,8 +10,11 @@
         :selected-path="selectedPath"
         :selected-scope="selectedScope"
         :expanded-set="expandedSet"
+        :selectable="selectable"
+        :selected-set="selectedSet"
         @toggle="toggle"
         @select="(file) => $emit('select', file.path, file.scope)"
+        @toggle-select="(p) => $emit('toggle-select', p)"
       />
     </ul>
   </div>
@@ -28,11 +31,16 @@ const props = withDefaults(
     files?: any[];
     selectedPath?: string;
     selectedScope?: string;
+    selectable?: boolean;
+    selectedSet?: Set<string>;
   }>(),
-  { files: () => [], selectedPath: "", selectedScope: "" },
+  { files: () => [], selectedPath: "", selectedScope: "", selectable: false, selectedSet: () => new Set<string>() },
 );
 
-defineEmits<{ (e: "select", path: string, scope: string): void }>();
+defineEmits<{
+  (e: "select", path: string, scope: string): void;
+  (e: "toggle-select", path: string): void;
+}>();
 
 const expandedSet = ref(new Set<string>());
 

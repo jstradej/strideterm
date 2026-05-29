@@ -87,6 +87,7 @@ export async function startMockServer({
   fileContents = {},
   delayApiStateMs = 0,
   terminalOutput = {},
+  patchState,
 }: {
   fixture?: string;
   port?: number;
@@ -101,9 +102,17 @@ export async function startMockServer({
    * bootstrap behaviour.
    */
   delayApiStateMs?: number;
+  /**
+   * Mutate the cloned fixture payload before the server starts. Lets a single
+   * fixture be reshaped per-test (e.g. flip a workspace's git `dirty` flag) so
+   * tests don't need a near-duplicate fixture file on disk.
+   */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: fixture JSON is untyped server state blob
+  patchState?: (_payload: any) => void;
 } = {}): Promise<MockServerHandle> {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: fixture JSON is untyped server state blob
   const payload: any = JSON.parse(JSON.stringify(loadFixture(fixture)));
+  patchState?.(payload);
   // Remote-mode frontend resolves activeProfileId from appState.windowSlots
   // (see resolveRemoteProfileId in src/stores/app.ts). Production fills slots
   // via normalizeWindowSlots in electron/backend/default-state.ts; mock-server
@@ -248,6 +257,121 @@ export async function startMockServer({
             ids[b] = tmp;
             broadcast({ type: "state:updated", payload });
           }
+        }
+
+        // --- Git stash endpoints (data-driven from the fixture's __stash blob) ---
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: fixture JSON is untyped server state blob
+        const stash: any = (payload.__stash ||= { list: [], files: {}, diff: {} });
+        if (url.pathname.endsWith("/git/stash-list")) {
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ ok: true, stashes: stash.list, summary: `${stash.list.length} stash(es)` }));
+          return;
+        }
+        if (url.pathname.endsWith("/git/stash-files")) {
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ ok: true, files: stash.files[body.ref] || [], baseCommit: "", summary: "" }));
+          return;
+        }
+        if (url.pathname.endsWith("/git/stash-file-diff")) {
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(
+            JSON.stringify({
+              ok: true,
+              language: "typescript",
+              leftLabel: "base",
+              rightLabel: body.ref,
+              ...stash.diff,
+            }),
+          );
+          return;
+        }
+        if (url.pathname.endsWith("/git/stash-export")) {
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(
+            JSON.stringify({
+              ok: true,
+              patch: "# strideterm-stash-patch v1\ndiff --git a/x b/x\n",
+              suggestedFilename: "stash-0.patch",
+              summary: "ok",
+            }),
+          );
+          return;
+        }
+        if (url.pathname.endsWith("/git/stash-drop") || url.pathname.endsWith("/git/stash-pop")) {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT
+          stash.list = stash.list.filter((e: any) => e.ref !== body.ref);
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(
+            JSON.stringify({ payload, result: { ok: true, summary: "Stash removed.", warnings: [], conflicts: [] } }),
+          );
+          return;
+        }
+        // Prepend a new entry to the stash stack (re-indexing the rest), used by
+        // both "New stash…" (POST /git/stash) and patch import.
+        const prependStash = (customMessage: string, branch: string) => {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT
+          const shifted = stash.list.map((e: any, i: number) => ({ ...e, index: i + 1, ref: `stash@{${i + 1}}` }));
+          stash.list = [
+            {
+              index: 0,
+              ref: "stash@{0}",
+              date: new Date().toISOString(),
+              author: "Tester",
+              branch,
+              baseCommit: "",
+              baseSubject: "",
+              message: customMessage ? `On ${branch}: ${customMessage}` : `WIP on ${branch}`,
+              customMessage,
+              isWipDefault: !customMessage,
+              fileCount: 1,
+            },
+            ...shifted,
+          ];
+        };
+        if (url.pathname.endsWith("/git/stash")) {
+          const ws = payload.git?.workspaces?.[body.workspaceId];
+          prependStash(String(body.message || ""), String(ws?.branch || "master"));
+          // Creating a stash cleans the working tree.
+          if (ws) {
+            ws.dirty = false;
+            ws.dirtyCount = 0;
+            ws.stashCount = stash.list.length;
+          }
+          broadcast({ type: "state:updated", payload });
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(
+            JSON.stringify({
+              payload,
+              result: { ok: true, summary: "Saved working directory.", warnings: [], conflicts: [] },
+            }),
+          );
+          return;
+        }
+        if (url.pathname.endsWith("/git/stash-import")) {
+          const ws = payload.git?.workspaces?.[body.workspaceId];
+          prependStash(String(body.message || "Imported stash"), String(ws?.branch || "master"));
+          if (ws) ws.stashCount = stash.list.length;
+          broadcast({ type: "state:updated", payload });
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ payload, result: { ok: true, summary: "Imported.", warnings: [], conflicts: [] } }));
+          return;
+        }
+        if (url.pathname.endsWith("/git/stash-apply")) {
+          // Applying a stash drops its changes into the working tree, dirtying it.
+          const ws = payload.git?.workspaces?.[body.workspaceId];
+          if (ws) {
+            ws.dirty = true;
+            ws.dirtyCount = (ws.dirtyCount || 0) + 1;
+          }
+          broadcast({ type: "state:updated", payload });
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ payload, result: { ok: true, summary: "Applied.", warnings: [], conflicts: [] } }));
+          return;
+        }
+        if (url.pathname.endsWith("/git/stash-branch")) {
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ payload, result: { ok: true, summary: "Done.", warnings: [], conflicts: [] } }));
+          return;
         }
 
         // File read — return injected content if available

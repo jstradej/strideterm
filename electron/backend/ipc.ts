@@ -2,7 +2,7 @@
 import { ipcMain, dialog, BrowserWindow, shell, clipboard, Notification, app } from "electron";
 import path, { join } from "node:path";
 import { homedir } from "node:os";
-import { stat, mkdir, writeFile } from "node:fs/promises";
+import { stat, mkdir, writeFile, readFile } from "node:fs/promises";
 import { pathToFileURL, fileURLToPath } from "node:url";
 import type { createRuntime } from "./runtime.js";
 import { withOperationPromise } from "./effect/runtime.js";
@@ -48,6 +48,14 @@ import {
   gitLogPageSchema,
   gitCommitSchema,
   gitTagSchema,
+  gitStashListSchema,
+  gitStashFilesSchema,
+  gitStashFileDiffSchema,
+  gitStashApplySchema,
+  gitStashDropSchema,
+  gitStashBranchSchema,
+  gitStashExportSchema,
+  gitStashImportSchema,
   gitBranchListSchema,
   gitBranchDeleteSchema,
   gitRemoteBranchDeleteSchema,
@@ -1062,6 +1070,52 @@ export function registerIpc(
     const p = validateIpc(gitPayloadSchema, payload, "git:stash-pop");
     return withOperationPromise({ workspaceId: p.workspaceId, opId: "git:stash-pop" }, () => runtime.gitStashPop(p));
   });
+  ipcMain.handle("git:stash-list", async (_event, payload) => {
+    const p = validateIpc(gitStashListSchema, payload, "git:stash-list");
+    return withOperationPromise({ workspaceId: p.workspaceId, opId: "git:stash-list" }, () =>
+      runtime.gitListStashes(p),
+    );
+  });
+  ipcMain.handle("git:stash-files", async (_event, payload) => {
+    const p = validateIpc(gitStashFilesSchema, payload, "git:stash-files");
+    return withOperationPromise({ workspaceId: p.workspaceId, opId: "git:stash-files" }, () =>
+      runtime.gitStashFiles(p),
+    );
+  });
+  ipcMain.handle("git:stash-file-diff", async (_event, payload) => {
+    const p = validateIpc(gitStashFileDiffSchema, payload, "git:stash-file-diff");
+    return withOperationPromise({ workspaceId: p.workspaceId, opId: "git:stash-file-diff" }, () =>
+      runtime.gitStashFileDiff(p),
+    );
+  });
+  ipcMain.handle("git:stash-apply", async (_event, payload) => {
+    const p = validateIpc(gitStashApplySchema, payload, "git:stash-apply");
+    return withOperationPromise({ workspaceId: p.workspaceId, opId: "git:stash-apply" }, () =>
+      runtime.gitStashApply(p),
+    );
+  });
+  ipcMain.handle("git:stash-drop", async (_event, payload) => {
+    const p = validateIpc(gitStashDropSchema, payload, "git:stash-drop");
+    return withOperationPromise({ workspaceId: p.workspaceId, opId: "git:stash-drop" }, () => runtime.gitStashDrop(p));
+  });
+  ipcMain.handle("git:stash-branch", async (_event, payload) => {
+    const p = validateIpc(gitStashBranchSchema, payload, "git:stash-branch");
+    return withOperationPromise({ workspaceId: p.workspaceId, opId: "git:stash-branch" }, () =>
+      runtime.gitStashBranch(p),
+    );
+  });
+  ipcMain.handle("git:stash-export", async (_event, payload) => {
+    const p = validateIpc(gitStashExportSchema, payload, "git:stash-export");
+    return withOperationPromise({ workspaceId: p.workspaceId, opId: "git:stash-export" }, () =>
+      runtime.gitStashExport(p),
+    );
+  });
+  ipcMain.handle("git:stash-import", async (_event, payload) => {
+    const p = validateIpc(gitStashImportSchema, payload, "git:stash-import");
+    return withOperationPromise({ workspaceId: p.workspaceId, opId: "git:stash-import" }, () =>
+      runtime.gitStashImport(p),
+    );
+  });
   ipcMain.handle("git:commit-diff", async (_event, payload) =>
     withOperationPromise({ opId: "git:commit-diff" }, () =>
       runtime.gitCommitDiff(validateIpc(gitPayloadSchema, payload, "git:commit-diff")),
@@ -1745,7 +1799,7 @@ export function registerIpc(
 
   ipcMain.handle(
     "dialog:browse-file",
-    async (event, options: { defaultPath?: string; filters?: Electron.FileFilter[] } = {}) =>
+    async (event, options: { defaultPath?: string; filters?: Electron.FileFilter[]; readContent?: boolean } = {}) =>
       withOperationPromise({ opId: "dialog:browse-file" }, async () => {
         const win = BrowserWindow.fromWebContents(event.sender) ?? BrowserWindow.getFocusedWindow();
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -1754,7 +1808,38 @@ export function registerIpc(
           defaultPath: options.defaultPath || undefined,
           filters: options.filters || [],
         });
-        return result.canceled ? null : result.filePaths[0] || null;
+        const filePath = result.canceled ? null : result.filePaths[0] || null;
+        // When the caller asks for the content, read it here. The user picked
+        // the file via the native dialog, so it is intentionally NOT subject to
+        // the workspace-root allow-list that gates file:read (a patch is
+        // commonly opened from Downloads, outside any workspace).
+        if (filePath && options.readContent) {
+          const content = await readFile(filePath, "utf8");
+          return { path: filePath, content };
+        }
+        return filePath;
+      }),
+  );
+
+  ipcMain.handle(
+    "dialog:save-file",
+    async (event, options: { defaultPath?: string; filters?: Electron.FileFilter[]; content?: string } = {}) =>
+      withOperationPromise({ opId: "dialog:save-file" }, async () => {
+        const win = BrowserWindow.fromWebContents(event.sender) ?? BrowserWindow.getFocusedWindow();
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const result = await dialog.showSaveDialog(win as any, {
+          defaultPath: options.defaultPath || undefined,
+          filters: options.filters || [],
+        });
+        if (result.canceled || !result.filePath) return null;
+        // When the caller supplies `content`, write it to the chosen path here.
+        // The user explicitly picked this destination via the native dialog, so
+        // it is intentionally NOT subject to the workspace-root allow-list that
+        // gates file:write (the patch is commonly saved to Downloads).
+        if (typeof options.content === "string") {
+          await writeFile(result.filePath, options.content, "utf8");
+        }
+        return result.filePath;
       }),
   );
 
@@ -1943,6 +2028,14 @@ export function registerIpc(
     ipcMain.removeHandler("git:commit-all");
     ipcMain.removeHandler("git:stash");
     ipcMain.removeHandler("git:stash-pop");
+    ipcMain.removeHandler("git:stash-list");
+    ipcMain.removeHandler("git:stash-files");
+    ipcMain.removeHandler("git:stash-file-diff");
+    ipcMain.removeHandler("git:stash-apply");
+    ipcMain.removeHandler("git:stash-drop");
+    ipcMain.removeHandler("git:stash-branch");
+    ipcMain.removeHandler("git:stash-export");
+    ipcMain.removeHandler("git:stash-import");
     ipcMain.removeHandler("git:commit-diff");
     ipcMain.removeHandler("git:commit-info");
     ipcMain.removeHandler("git:log-page");
@@ -2004,6 +2097,7 @@ export function registerIpc(
     ipcMain.removeHandler("file:commit-diff");
     ipcMain.removeHandler("dialog:browse-directory");
     ipcMain.removeHandler("dialog:browse-file");
+    ipcMain.removeHandler("dialog:save-file");
     ipcMain.removeHandler("shell:open-external");
     ipcMain.removeHandler("terminal:open-path");
     ipcMain.removeHandler("task:recheck-claude");

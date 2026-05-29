@@ -245,6 +245,45 @@ export const gitTagSchema = z.object({
 });
 export type GitTag = z.infer<typeof gitTagSchema>;
 
+// --- Stash detail / lifecycle schemas ---
+// A strict `stash@{N}` regex on `ref` defends the IPC layer against
+// command-injection through the git CLI.
+const stashRefString = z.string().regex(/^stash@\{\d+\}$/);
+
+export const gitStashListSchema = z.object({
+  workspaceId: nonEmptyString,
+  projectId: z.string().optional(),
+  rootPath: z.string().optional(),
+});
+export type GitStashList = z.infer<typeof gitStashListSchema>;
+
+export const gitStashRefSchema = gitStashListSchema.extend({ ref: stashRefString });
+export type GitStashRef = z.infer<typeof gitStashRefSchema>;
+
+export const gitStashFilesSchema = gitStashRefSchema;
+export const gitStashFileDiffSchema = gitStashRefSchema.extend({ relativePath: z.string().min(1) });
+export type GitStashFileDiff = z.infer<typeof gitStashFileDiffSchema>;
+export const gitStashApplySchema = gitStashRefSchema;
+export const gitStashDropSchema = gitStashRefSchema;
+export const gitStashBranchSchema = gitStashRefSchema.extend({
+  branchName: z
+    .string()
+    .min(1)
+    .regex(/^[A-Za-z0-9._/-]+$/),
+  switchImmediately: z.boolean(),
+});
+export type GitStashBranch = z.infer<typeof gitStashBranchSchema>;
+export const gitStashExportSchema = gitStashRefSchema;
+export const gitStashImportSchema = gitStashListSchema.extend({
+  // 64 MiB cap — anything larger is almost certainly a mistake.
+  patch: z
+    .string()
+    .min(1)
+    .max(64 * 1024 * 1024),
+  message: z.string().optional(),
+});
+export type GitStashImport = z.infer<typeof gitStashImportSchema>;
+
 export const gitBranchListSchema = z.object({
   workspaceId: nonEmptyString,
   rootPath: z.string().optional(),

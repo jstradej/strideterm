@@ -1,0 +1,372 @@
+{
+  "meta": {
+    "appVersion": "1.3.1-test",
+    "repositoryUrl": "https://github.com/example/strideterm"
+  },
+  "appState": {
+    "activeWorkspaceId": "ws-app",
+    "activeProjectId": "ws-app",
+    "activeProfileId": "default",
+    "settings": {
+      "theme": "dark",
+      "sidebarWidth": 220,
+      "sidebarCollapsed": false,
+      "remoteAccess": {
+        "enabled": true,
+        "host": "127.0.0.1",
+        "port": 3999,
+        "token": "test-token",
+        "customPublicUrl": "",
+        "cloudflaredPath": ""
+      },
+      "integrations": {
+        "azureDevops": {
+          "enabled": false,
+          "connections": [],
+          "reviewRoot": "",
+          "defaultPollSeconds": 60
+        },
+        "github": {
+          "enabled": false,
+          "connections": [],
+          "reviewRoot": "",
+          "defaultPollSeconds": 60
+        }
+      },
+      "tabTemplates": [
+        {
+          "id": "shell",
+          "title": "Shell",
+          "command": "",
+          "icon": "terminal"
+        }
+      ]
+    },
+    "tabTemplates": [
+      {
+        "id": "shell",
+        "title": "Shell",
+        "command": "",
+        "icon": "terminal"
+      }
+    ],
+    "profiles": [
+      {
+        "id": "default",
+        "name": "Default",
+        "color": "",
+        "workspaceIds": ["ws-app"],
+        "projectIds": ["ws-app"]
+      }
+    ],
+    "workspaces": [
+      {
+        "id": "ws-app",
+        "name": "Web App",
+        "icon": "🔀",
+        "color": "#ff6b6b",
+        "kind": "terminal",
+        "source": "manual",
+        "pluginId": "",
+        "cwd": "/home/user/projects/web-app",
+        "notes": "",
+        "profileId": "default",
+        "connectionId": "",
+        "activePanelId": "panel-shell",
+        "panels": [
+          {
+            "id": "panel-shell",
+            "title": "Shell",
+            "command": "",
+            "launch": null,
+            "shell": true,
+            "startup": "default"
+          },
+          {
+            "id": "panel-claude",
+            "title": "Claude Code",
+            "command": "claude",
+            "launch": null,
+            "shell": true,
+            "startup": "default"
+          }
+        ],
+        "review": null,
+        "quickfix": null
+      }
+    ],
+    "projects": []
+  },
+  "workspace": {
+    "workspace": {
+      "id": "ws-app",
+      "name": "Web App",
+      "icon": "🔀",
+      "color": "#ff6b6b",
+      "kind": "terminal",
+      "panels": [
+        {
+          "id": "panel-shell",
+          "title": "Shell",
+          "command": "",
+          "launch": null,
+          "shell": true,
+          "startup": "default"
+        },
+        {
+          "id": "panel-claude",
+          "title": "Claude Code",
+          "command": "claude",
+          "launch": null,
+          "shell": true,
+          "startup": "default"
+        }
+      ]
+    },
+    "project": null,
+    "sessions": [
+      {
+        "sessionId": "ws-app:panel-shell",
+        "panelId": "panel-shell",
+        "title": "Shell",
+        "command": "",
+        "launch": null,
+        "startup": "default",
+        "status": "running"
+      },
+      {
+        "sessionId": "ws-app:panel-claude",
+        "panelId": "panel-claude",
+        "title": "Claude Code",
+        "command": "claude",
+        "launch": null,
+        "startup": "default",
+        "status": "running"
+      }
+    ]
+  },
+  "attention": {
+    "byWorkspace": {},
+    "byProject": {},
+    "activeWorkspace": null,
+    "activeProject": null
+  },
+  "docker": {
+    "containers": [],
+    "available": false,
+    "error": null
+  },
+  "git": {
+    "workspaces": {
+      "ws-app": {
+        "workspaceId": "ws-app",
+        "cwd": "/home/user/projects/web-app",
+        "available": true,
+        "root": "/home/user/projects/web-app",
+        "repository": "web-app",
+        "branch": "feature/auth-update",
+        "upstream": "origin/main",
+        "baseBranch": "main",
+        "remotes": {
+          "origin": "https://github.com/myorg/web-app.git"
+        },
+        "commitCount": 120,
+        "dirty": false,
+        "dirtyCount": 0,
+        "aheadCount": 3,
+        "behindCount": 1,
+        "status": [
+          {
+            "code": "UU",
+            "path": "src/database.js"
+          },
+          {
+            "code": "UU",
+            "path": "src/schema.sql"
+          }
+        ],
+        "staged": [],
+        "unstaged": [],
+        "untracked": [],
+        "changes": [],
+        "diffStat": {
+          "files": 2,
+          "insertions": 0,
+          "deletions": 0
+        },
+        "log": [
+          {
+            "shortHash": "a1b2c3d",
+            "relativeDate": "2 hours ago",
+            "author": "user@example.com",
+            "refs": "HEAD -> feature/auth-update",
+            "subject": "Add JWT token refresh logic"
+          },
+          {
+            "shortHash": "e4f5g6h",
+            "relativeDate": "1 day ago",
+            "author": "user@example.com",
+            "refs": "",
+            "subject": "Update auth middleware"
+          }
+        ],
+        "lazygit": {
+          "available": true,
+          "backend": "host",
+          "error": ""
+        },
+        "isWorktree": false,
+        "isMainWorktree": true,
+        "siblingWorktrees": [],
+        "compareWithBase": null,
+        "lastFetchAt": "2026-03-28T12:00:00.000Z",
+        "operationState": {
+          "kind": "",
+          "inProgress": false,
+          "conflicts": []
+        },
+        "error": "",
+        "lastUpdatedAt": "2026-03-28T14:30:00.000Z",
+        "stashCount": 3
+      }
+    },
+    "projects": {},
+    "activeWorkspace": null,
+    "activeProject": null
+  },
+  "azureDevops": {
+    "connections": [],
+    "inbox": {
+      "needsMyReview": [],
+      "myPullRequests": [],
+      "recentlyUpdated": [],
+      "needsAttention": []
+    },
+    "trackedPullRequests": {},
+    "pullRequests": {},
+    "sync": {
+      "running": false,
+      "lastStartedAt": null,
+      "lastCompletedAt": null
+    }
+  },
+  "github": {
+    "connections": [],
+    "inbox": {
+      "needsMyReview": [],
+      "myPullRequests": [],
+      "recentlyUpdated": [],
+      "needsAttention": []
+    },
+    "trackedPullRequests": {},
+    "pullRequests": {},
+    "sync": {
+      "running": false,
+      "lastStartedAt": null,
+      "lastCompletedAt": null
+    }
+  },
+  "reviewBridge": {
+    "pullRequests": {},
+    "agentPrompts": []
+  },
+  "plugins": [],
+  "environment": {
+    "platform": "win32",
+    "shell": "bash"
+  },
+  "themeSource": "dark",
+  "remoteAccess": {
+    "enabled": true,
+    "host": "127.0.0.1",
+    "port": 3999,
+    "urls": []
+  },
+  "__stash": {
+    "list": [
+      {
+        "index": 0,
+        "ref": "stash@{0}",
+        "date": "2026-05-28T17:32:37.881Z",
+        "author": "Tester",
+        "branch": "feature/auth-update",
+        "baseCommit": "a12bcd0",
+        "baseSubject": "previous commit",
+        "message": "On feature/auth-update: WIP fix race",
+        "customMessage": "WIP fix race",
+        "isWipDefault": false,
+        "fileCount": 3
+      },
+      {
+        "index": 1,
+        "ref": "stash@{1}",
+        "date": "2026-05-27T17:32:37.881Z",
+        "author": "Tester",
+        "branch": "feature/auth-update",
+        "baseCommit": "b34cde1",
+        "baseSubject": "earlier commit",
+        "message": "WIP on feature/auth-update: b34cde1 earlier commit",
+        "customMessage": "",
+        "isWipDefault": true,
+        "fileCount": 12
+      },
+      {
+        "index": 2,
+        "ref": "stash@{2}",
+        "date": "2026-05-25T19:32:37.881Z",
+        "author": "Tester",
+        "branch": "main",
+        "baseCommit": "c56def2",
+        "baseSubject": "main tip",
+        "message": "On main: experiment",
+        "customMessage": "experiment",
+        "isWipDefault": false,
+        "fileCount": 5
+      }
+    ],
+    "files": {
+      "stash@{0}": [
+        {
+          "path": "src/foo.ts",
+          "code": "M",
+          "status": "modified",
+          "additions": 12,
+          "deletions": 3,
+          "isBinary": false
+        },
+        {
+          "path": "src/bar.ts",
+          "code": "M",
+          "status": "modified",
+          "additions": 1,
+          "deletions": 1,
+          "isBinary": false
+        },
+        {
+          "path": "src/baz.test.ts",
+          "code": "A",
+          "status": "added",
+          "additions": 40,
+          "deletions": 0,
+          "isBinary": false
+        }
+      ],
+      "stash@{2}": [
+        {
+          "path": "README.md",
+          "code": "M",
+          "status": "modified",
+          "additions": 2,
+          "deletions": 0,
+          "isBinary": false
+        }
+      ]
+    },
+    "diff": {
+      "leftContent": "const a = 1;\nconst b = 2;\n",
+      "rightContent": "const a = 1;\nconst b = 3;\nconst c = 4;\n",
+      "leftMissing": false,
+      "rightMissing": false
+    }
+  }
+}

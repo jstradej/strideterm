@@ -27,7 +27,16 @@ import {
   gitBranchRenameSchema,
   gitCheckoutRemoteSchema,
   gitLogGraphSchema,
+  gitPayloadSchema,
   gitRemoteBranchDeleteSchema,
+  gitStashApplySchema,
+  gitStashBranchSchema,
+  gitStashDropSchema,
+  gitStashExportSchema,
+  gitStashFileDiffSchema,
+  gitStashFilesSchema,
+  gitStashImportSchema,
+  gitStashListSchema,
   taskUpdateDescriptionSchema,
   terminalSessionSchema,
   validateIpc,
@@ -1137,6 +1146,39 @@ async function handleApiRequest(
       return;
     }
 
+    if (request.method === "POST" && url.pathname === "/api/git/stash-list") {
+      json(response, 200, await runtime.gitListStashes(body));
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/api/git/stash-files") {
+      json(response, 200, await runtime.gitStashFiles(body));
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/api/git/stash-file-diff") {
+      json(response, 200, await runtime.gitStashFileDiff(body));
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/api/git/stash-apply") {
+      json(response, 200, await runtime.gitStashApply(body));
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/api/git/stash-drop") {
+      json(response, 200, await runtime.gitStashDrop(body));
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/api/git/stash-branch") {
+      json(response, 200, await runtime.gitStashBranch(body));
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/api/git/stash-export") {
+      json(response, 200, await runtime.gitStashExport(body));
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/api/git/stash-import") {
+      json(response, 200, await runtime.gitStashImport(body));
+      return;
+    }
+
     if (request.method === "POST" && url.pathname === "/api/git/commit-diff") {
       json(response, 200, await runtime.gitCommitDiff(body));
       return;
@@ -1867,8 +1909,37 @@ export async function startRemoteServer({
         "/api/git/merge-into-base": (body, windowId) => runtime.gitMergeCurrentIntoBase(body, windowId),
         "/api/git/remove-worktree": (body, windowId) => runtime.gitRemoveWorktree(body, windowId),
         "/api/git/commit-all": (body, windowId) => runtime.gitCommitAll(body, windowId),
-        "/api/git/stash": (body, windowId) => runtime.gitStash(body, windowId),
-        "/api/git/stash-pop": (body, windowId) => runtime.gitStashPop(body, windowId),
+        // Validate the same way the Electron IPC handlers do (ipc.ts) and the
+        // branch routes below: this slot-aware map is the LIVE remote path for
+        // stash ops (it intercepts before handleApiRequest), so without these
+        // the `stash@{N}` ref regex and the 64 MiB import cap would never run
+        // on the remote/mobile transport.
+        "/api/git/stash": (body, windowId) =>
+          runtime.gitStash(validateIpc(gitPayloadSchema, body, "POST /api/git/stash"), windowId),
+        "/api/git/stash-pop": (body, windowId) =>
+          runtime.gitStashPop(validateIpc(gitPayloadSchema, body, "POST /api/git/stash-pop"), windowId),
+        // Stash detail/lifecycle ops are slot-aware too: write actions mutate
+        // the workspace's working tree, and even the read actions expose file
+        // content, so both must refuse cross-profile workspace IDs.
+        "/api/git/stash-list": (body, windowId) =>
+          runtime.gitListStashes(validateIpc(gitStashListSchema, body, "POST /api/git/stash-list"), windowId),
+        "/api/git/stash-files": (body, windowId) =>
+          runtime.gitStashFiles(validateIpc(gitStashFilesSchema, body, "POST /api/git/stash-files"), windowId),
+        "/api/git/stash-file-diff": (body, windowId) =>
+          runtime.gitStashFileDiff(
+            validateIpc(gitStashFileDiffSchema, body, "POST /api/git/stash-file-diff"),
+            windowId,
+          ),
+        "/api/git/stash-apply": (body, windowId) =>
+          runtime.gitStashApply(validateIpc(gitStashApplySchema, body, "POST /api/git/stash-apply"), windowId),
+        "/api/git/stash-drop": (body, windowId) =>
+          runtime.gitStashDrop(validateIpc(gitStashDropSchema, body, "POST /api/git/stash-drop"), windowId),
+        "/api/git/stash-branch": (body, windowId) =>
+          runtime.gitStashBranch(validateIpc(gitStashBranchSchema, body, "POST /api/git/stash-branch"), windowId),
+        "/api/git/stash-export": (body, windowId) =>
+          runtime.gitStashExport(validateIpc(gitStashExportSchema, body, "POST /api/git/stash-export"), windowId),
+        "/api/git/stash-import": (body, windowId) =>
+          runtime.gitStashImport(validateIpc(gitStashImportSchema, body, "POST /api/git/stash-import"), windowId),
         "/api/git/commit-diff": (body, windowId) => runtime.gitCommitDiff(body, windowId),
         "/api/git/commit-info": (body, windowId) => runtime.gitCommitInfo(body, windowId),
         "/api/git/log-page": (body, windowId) => runtime.gitLogPage(body, windowId),

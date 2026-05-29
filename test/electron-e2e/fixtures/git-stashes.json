@@ -1,0 +1,61 @@
+{
+  "activeWorkspaceId": "ws-stash",
+  "activeProjectId": "ws-stash",
+  "activeProfileId": "default",
+  "settings": {
+    "theme": "dark",
+    "sidebarWidth": 220,
+    "sidebarCollapsed": false,
+    "remoteAccess": {
+      "enabled": false,
+      "host": "127.0.0.1",
+      "port": 0,
+      "token": "test-token",
+      "customPublicUrl": "",
+      "cloudflaredPath": ""
+    },
+    "integrations": {
+      "azureDevops": { "enabled": false, "connections": [], "reviewRoot": "", "defaultPollSeconds": 600 },
+      "github": { "enabled": false, "connections": [], "reviewRoot": "", "defaultPollSeconds": 600 },
+      "telegram": { "enabled": false, "defaultPollSeconds": 600, "connections": [] }
+    },
+    "tabTemplates": [
+      { "id": "shell", "title": "Shell", "command": "", "icon": "terminal" },
+      { "id": "claude", "title": "Claude Code", "command": "claude", "icon": "bot" }
+    ]
+  },
+  "tabTemplates": [
+    { "id": "shell", "title": "Shell", "command": "", "icon": "terminal" },
+    { "id": "claude", "title": "Claude Code", "command": "claude", "icon": "bot" }
+  ],
+  "profiles": [
+    {
+      "id": "default",
+      "name": "Default",
+      "color": "",
+      "workspaceIds": ["ws-stash"],
+      "projectIds": ["ws-stash"]
+    }
+  ],
+  "workspaces": [
+    {
+      "id": "ws-stash",
+      "name": "Stash Repo",
+      "icon": "ST",
+      "color": "#4a9eff",
+      "kind": "terminal",
+      "source": "manual",
+      "pluginId": "",
+      "cwd": "",
+      "notes": "",
+      "profileId": "default",
+      "connectionId": "",
+      "activeViewId": "git:ws-stash",
+      "activePanelId": "panel-shell",
+      "panels": [
+        { "id": "panel-shell", "title": "Shell", "command": "", "launch": null, "shell": true, "startup": "manual" }
+      ]
+    }
+  ],
+  "projects": []
+}

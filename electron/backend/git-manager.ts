@@ -44,7 +44,12 @@ import {
   trimDiffPreview,
   renderUntrackedDiffPreview,
   getFetchTimestamp,
+  parseStashNumstat,
+  parseStashNameStatus,
+  parseConflictPaths,
+  EMPTY_TREE_SHA,
 } from "./git-parsers.js";
+import type { StashEntry, StashFile } from "./git-parsers.js";
 
 const log = getLogger("git");
 
@@ -2100,15 +2105,61 @@ export class GitManager extends EventEmitter {
 
   async stash(
     workspace: WorkspaceRef | null,
-    { message = "", rootPath = "" }: { message?: string; rootPath?: string } = {},
+    {
+      message = "",
+      rootPath = "",
+      includeUntracked = true,
+      keepIndex = false,
+      paths = [],
+      allowEmptyInitialCommit = false,
+    }: {
+      message?: string;
+      rootPath?: string;
+      includeUntracked?: boolean;
+      keepIndex?: boolean;
+      paths?: string[];
+      allowEmptyInitialCommit?: boolean;
+    } = {},
   ): Promise<Record<string, unknown>> {
     const effectiveCwd = rootPath || workspace?.cwd;
     if (!effectiveCwd) {
       return createStructuredResult({ ok: false, summary: "Workspace has no working directory." });
     }
     try {
-      const args = ["stash", "push", "--include-untracked"];
+      // git stash needs a base commit to stash against. On an unborn HEAD (a
+      // freshly `git init`'d repo with no commits yet) every variant fails with
+      // the cryptic "You do not have the initial commit yet". Either signal the
+      // caller to offer a one-click fix (needsInitialCommit), or — when the user
+      // accepted it — create an empty root commit so the stash has a base.
+      const head = await this.execGit(effectiveCwd, ["rev-parse", "--verify", "--quiet", "HEAD"]).catch(() => ({
+        stdout: "",
+        stderr: "",
+      }));
+      if (!String(head.stdout || "").trim()) {
+        if (!allowEmptyInitialCommit) {
+          return {
+            ...createStructuredResult({
+              ok: false,
+              summary: "Cannot stash: the repository has no commits yet. Create an initial commit first.",
+            }),
+            needsInitialCommit: true,
+          };
+        }
+        await this.execGit(effectiveCwd, ["commit", "--allow-empty", "-m", "Initial commit"]);
+      }
+      const args = ["stash", "push"];
+      // Default ON to match the previous behaviour; callers may opt out.
+      if (includeUntracked !== false) args.push("--include-untracked");
+      if (keepIndex) args.push("--keep-index");
       if (message) args.push("-m", message);
+      // Path-scoped stash: only the listed files are stashed, the rest stay in
+      // the working tree. Everything after `--` is treated by git as a pathspec
+      // (no option injection possible), and execGit passes args as an array so
+      // there is no shell to escape. Drop empties/non-strings defensively.
+      const safePaths = (Array.isArray(paths) ? paths : []).filter(
+        (p): p is string => typeof p === "string" && p.length > 0,
+      );
+      if (safePaths.length) args.push("--", ...safePaths);
       const result = await this.execGit(effectiveCwd, args);
       const combined = joinRawOutput(result.stdout, result.stderr);
       if (/no local changes to save/i.test(combined)) {
@@ -2125,24 +2176,30 @@ export class GitManager extends EventEmitter {
       });
     } catch (error) {
       const err = error as { stdout?: string; stderr?: string };
+      const raw = joinRawOutput(err.stdout, err.stderr);
       return createStructuredResult({
         ok: false,
-        summary: "Stash failed.",
-        rawOutput: joinRawOutput(err.stdout, err.stderr),
+        // Surface the actual git error (e.g. "pathspec '…' did not match",
+        // "You do not have the initial commit yet") instead of a generic label,
+        // matching the sibling stash methods. Falls back when git wrote nothing.
+        summary: raw || "Stash failed.",
+        rawOutput: raw,
       });
     }
   }
 
   async stashPop(
     workspace: WorkspaceRef | null,
-    { rootPath = "" }: { rootPath?: string } = {},
+    { rootPath = "", ref = "" }: { rootPath?: string; ref?: string } = {},
   ): Promise<Record<string, unknown>> {
     const effectiveCwd = rootPath || workspace?.cwd;
     if (!effectiveCwd) {
       return createStructuredResult({ ok: false, summary: "Workspace has no working directory." });
     }
     try {
-      const result = await this.execGit(effectiveCwd, ["stash", "pop"]);
+      const args = ["stash", "pop"];
+      if (ref) args.push(ref);
+      const result = await this.execGit(effectiveCwd, args);
       return createStructuredResult({
         ok: true,
         summary: "Stash applied and removed.",
@@ -2150,11 +2207,483 @@ export class GitManager extends EventEmitter {
       });
     } catch (error) {
       const err = error as { stdout?: string; stderr?: string };
+      const combined = joinRawOutput(err.stdout, err.stderr);
+      // Modern git refuses to drop the entry on conflict — it stays in place.
+      if (/CONFLICT|conflict/i.test(combined)) {
+        return createStructuredResult({
+          ok: false,
+          summary: "Pop produced conflicts. Stash entry kept — resolve in the Changes tab and drop it manually.",
+          conflicts: parseConflictPaths(combined),
+          rawOutput: combined,
+        });
+      }
       return createStructuredResult({
         ok: false,
         summary: "Stash pop failed.",
+        rawOutput: combined,
+      });
+    }
+  }
+
+  // ─── Stash detail / lifecycle operations ──────────────────────────
+
+  async listStashes(
+    workspace: WorkspaceRef | null,
+    { rootPath = "" }: { rootPath?: string } = {},
+  ): Promise<{ ok: boolean; stashes: StashEntry[]; summary: string }> {
+    const effectiveCwd = rootPath || workspace?.cwd;
+    if (!effectiveCwd) {
+      return { ok: false, stashes: [], summary: "Workspace has no working directory." };
+    }
+    try {
+      const result = await this.execGit(effectiveCwd, ["stash", "list", "--format=%gd%x09%ct%x09%H%x09%gs%x09%an"]);
+      const lines = String(result.stdout || "")
+        .split(/\r?\n/)
+        .filter(Boolean);
+      const stashes: StashEntry[] = [];
+      for (const line of lines) {
+        const [ref, ct, hash, subject, author] = line.split("\t");
+        const idxMatch = /stash@\{(\d+)\}/.exec(ref || "");
+        const index = idxMatch ? parseInt(idxMatch[1], 10) : stashes.length;
+        const subj = subject || "";
+        const m = /^(WIP on |On )([^:]+): (.*)$/.exec(subj);
+        let branch = "";
+        let customMessage = "";
+        let isWipDefault = false;
+        if (m) {
+          branch = m[2];
+          if (m[1] === "WIP on ") {
+            customMessage = "";
+            isWipDefault = true;
+          } else {
+            customMessage = m[3];
+          }
+        } else {
+          customMessage = subj;
+        }
+        const date = ct ? new Date(parseInt(ct, 10) * 1000).toISOString() : "";
+
+        let baseCommit = "";
+        let baseSubject = "";
+        try {
+          const baseRes = await this.execGit(effectiveCwd, ["log", "-1", "--format=%h%x09%s", `${ref}^1`]);
+          const parts = String(baseRes.stdout || "")
+            .trim()
+            .split("\t");
+          baseCommit = parts[0] || "";
+          baseSubject = parts.slice(1).join("\t");
+        } catch {
+          // Detached or unborn base — leave blank.
+        }
+
+        const filePaths = await this.stashShowNameOnly(effectiveCwd, ref);
+        const fileCount = filePaths.length;
+
+        stashes.push({
+          index,
+          ref,
+          hash: hash || "",
+          date,
+          author: author || "",
+          branch,
+          baseCommit,
+          baseSubject,
+          message: subj,
+          customMessage,
+          isWipDefault,
+          fileCount,
+          filePaths,
+        });
+      }
+      return { ok: true, stashes, summary: `${stashes.length} stash(es) found.` };
+    } catch (error) {
+      const err = error as { stdout?: string; stderr?: string };
+      return {
+        ok: false,
+        stashes: [],
+        summary: joinRawOutput(err.stdout, err.stderr) || "Failed to list stashes.",
+      };
+    }
+  }
+
+  private async stashShowNameOnly(cwd: string, ref: string): Promise<string[]> {
+    try {
+      const res = await this.execGit(cwd, ["stash", "show", "--include-untracked", "--name-only", ref]);
+      return String(res.stdout || "")
+        .split(/\r?\n/)
+        .filter(Boolean);
+    } catch {
+      try {
+        const res = await this.execGit(cwd, ["stash", "show", "--name-only", ref]);
+        return String(res.stdout || "")
+          .split(/\r?\n/)
+          .filter(Boolean);
+      } catch {
+        return [];
+      }
+    }
+  }
+
+  async stashFiles(
+    workspace: WorkspaceRef | null,
+    { rootPath = "", ref = "" }: { rootPath?: string; ref?: string } = {},
+  ): Promise<{ ok: boolean; files: StashFile[]; baseCommit: string; summary: string }> {
+    const effectiveCwd = rootPath || workspace?.cwd;
+    if (!effectiveCwd) {
+      return { ok: false, files: [], baseCommit: "", summary: "Workspace has no working directory." };
+    }
+    if (!ref) {
+      return { ok: false, files: [], baseCommit: "", summary: "Stash ref is required." };
+    }
+    try {
+      let baseCommit = "";
+      try {
+        const baseRes = await this.execGit(effectiveCwd, ["rev-parse", "--short", `${ref}^1`]);
+        baseCommit = String(baseRes.stdout || "").trim();
+      } catch {
+        // ignore
+      }
+
+      // Tracked changes: name-status (codes + rename/copy paths).
+      const nameStatusRes = await this.execGit(effectiveCwd, ["stash", "show", "--name-status", ref]).catch(() => ({
+        stdout: "",
+        stderr: "",
+      }));
+      // Numbers per file: numstat ("-\t-" ⇒ binary).
+      const numstatRes = await this.execGit(effectiveCwd, ["stash", "show", "--numstat", ref]).catch(() => ({
+        stdout: "",
+        stderr: "",
+      }));
+
+      const numstat = parseStashNumstat(String(numstatRes.stdout || ""));
+      const files: StashFile[] = parseStashNameStatus(String(nameStatusRes.stdout || ""), numstat);
+
+      // Untracked files (only present when the stash was made with -u) live in
+      // the third parent. List them and diff against the empty tree for counts.
+      const hasUntracked = await this.refExists(effectiveCwd, `${ref}^3`);
+      if (hasUntracked) {
+        const untrackedNumstat = await this.execGit(effectiveCwd, [
+          "diff",
+          "--numstat",
+          EMPTY_TREE_SHA,
+          `${ref}^3`,
+        ]).catch(() => ({ stdout: "", stderr: "" }));
+        const counts = parseStashNumstat(String(untrackedNumstat.stdout || ""));
+        const seen = new Set(files.map((f) => f.path));
+        for (const [p, c] of counts) {
+          if (seen.has(p)) continue;
+          files.push({
+            path: p,
+            code: "?",
+            status: "untracked",
+            additions: c.binary ? 0 : c.additions,
+            deletions: 0,
+            isBinary: c.binary,
+          });
+        }
+      }
+
+      return { ok: true, files, baseCommit, summary: `${files.length} file(s) in ${ref}.` };
+    } catch (error) {
+      const err = error as { stdout?: string; stderr?: string };
+      return {
+        ok: false,
+        files: [],
+        baseCommit: "",
+        summary: joinRawOutput(err.stdout, err.stderr) || "Failed to read stash files.",
+      };
+    }
+  }
+
+  private async refExists(cwd: string, ref: string): Promise<boolean> {
+    try {
+      await this.execGit(cwd, ["rev-parse", "--verify", "--quiet", ref]);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  async stashApply(
+    workspace: WorkspaceRef | null,
+    { rootPath = "", ref = "" }: { rootPath?: string; ref?: string } = {},
+  ): Promise<Record<string, unknown>> {
+    const effectiveCwd = rootPath || workspace?.cwd;
+    if (!effectiveCwd) {
+      return createStructuredResult({ ok: false, summary: "Workspace has no working directory." });
+    }
+    try {
+      const args = ["stash", "apply"];
+      if (ref) args.push(ref);
+      const result = await this.execGit(effectiveCwd, args);
+      return createStructuredResult({
+        ok: true,
+        summary: "Stash applied. The stash entry was kept.",
+        rawOutput: joinRawOutput(result.stdout, result.stderr),
+      });
+    } catch (error) {
+      const err = error as { stdout?: string; stderr?: string };
+      const combined = joinRawOutput(err.stdout, err.stderr);
+      // `git stash apply` exits non-zero on conflicts but still writes the
+      // changes (with conflict markers) into the working tree.
+      if (/CONFLICT|conflict/i.test(combined)) {
+        return createStructuredResult({
+          ok: true,
+          summary: "Stash applied with conflicts. Resolve them in the Changes tab.",
+          warnings: ["Stash applied with conflicts. Resolve them in the Changes tab."],
+          conflicts: parseConflictPaths(combined),
+          rawOutput: combined,
+        });
+      }
+      return createStructuredResult({ ok: false, summary: "Stash apply failed.", rawOutput: combined });
+    }
+  }
+
+  async stashDrop(
+    workspace: WorkspaceRef | null,
+    { rootPath = "", ref = "" }: { rootPath?: string; ref?: string } = {},
+  ): Promise<Record<string, unknown>> {
+    const effectiveCwd = rootPath || workspace?.cwd;
+    if (!effectiveCwd) {
+      return createStructuredResult({ ok: false, summary: "Workspace has no working directory." });
+    }
+    try {
+      const args = ["stash", "drop"];
+      if (ref) args.push(ref);
+      const result = await this.execGit(effectiveCwd, args);
+      return createStructuredResult({
+        ok: true,
+        summary: "Stash dropped.",
+        rawOutput: joinRawOutput(result.stdout, result.stderr),
+      });
+    } catch (error) {
+      const err = error as { stdout?: string; stderr?: string };
+      return createStructuredResult({
+        ok: false,
+        summary: "Stash drop failed.",
         rawOutput: joinRawOutput(err.stdout, err.stderr),
       });
+    }
+  }
+
+  async stashBranch(
+    workspace: WorkspaceRef | null,
+    {
+      rootPath = "",
+      ref = "",
+      branchName = "",
+      switchImmediately = true,
+    }: { rootPath?: string; ref?: string; branchName?: string; switchImmediately?: boolean } = {},
+  ): Promise<Record<string, unknown>> {
+    const effectiveCwd = rootPath || workspace?.cwd;
+    if (!effectiveCwd) {
+      return createStructuredResult({ ok: false, summary: "Workspace has no working directory." });
+    }
+    const name = String(branchName || "").trim();
+    if (!name || !/^[A-Za-z0-9._/-]+$/.test(name)) {
+      return createStructuredResult({ ok: false, summary: "Invalid branch name." });
+    }
+    try {
+      if (switchImmediately) {
+        // Native path: create branch from the stash base, check it out, apply
+        // the stash, and drop the entry. Requires a clean working tree.
+        const status = await this.execGit(effectiveCwd, ["status", "--porcelain"]).catch(() => ({
+          stdout: "",
+          stderr: "",
+        }));
+        if (String(status.stdout || "").trim()) {
+          return createStructuredResult({
+            ok: false,
+            summary:
+              "Working tree has uncommitted changes. Commit or stash them first, or uncheck 'Switch immediately'.",
+          });
+        }
+        const result = await this.execGit(effectiveCwd, ["stash", "branch", name, ref]);
+        return createStructuredResult({
+          ok: true,
+          summary: `Created and switched to '${name}' from the stash.`,
+          rawOutput: joinRawOutput(result.stdout, result.stderr),
+        });
+      }
+      // Non-switching path: just create the branch ref at the stash base. The
+      // stash is kept intact and the current branch/working tree are untouched.
+      const result = await this.execGit(effectiveCwd, ["branch", name, `${ref}^1`]);
+      return createStructuredResult({
+        ok: true,
+        summary: `Created branch '${name}' from the stash base. The stash was kept.`,
+        rawOutput: joinRawOutput(result.stdout, result.stderr),
+      });
+    } catch (error) {
+      const err = error as { stdout?: string; stderr?: string };
+      return createStructuredResult({
+        ok: false,
+        summary: "Branch from stash failed.",
+        rawOutput: joinRawOutput(err.stdout, err.stderr),
+      });
+    }
+  }
+
+  async stashFileDiff(
+    workspace: WorkspaceRef | null,
+    { rootPath = "", ref = "", relativePath = "" }: { rootPath?: string; ref?: string; relativePath?: string } = {},
+  ): Promise<unknown> {
+    const effectiveCwd = rootPath || workspace?.cwd;
+    const { computeStashFileDiff } = await import("./file-manager.js");
+    return computeStashFileDiff(effectiveCwd || "", ref, relativePath);
+  }
+
+  async stashExportPatch(
+    workspace: WorkspaceRef | null,
+    { rootPath = "", ref = "" }: { rootPath?: string; ref?: string } = {},
+  ): Promise<{ ok: boolean; patch: string; suggestedFilename: string; summary: string }> {
+    const effectiveCwd = rootPath || workspace?.cwd;
+    if (!effectiveCwd) {
+      return { ok: false, patch: "", suggestedFilename: "", summary: "Workspace has no working directory." };
+    }
+    if (!ref) {
+      return { ok: false, patch: "", suggestedFilename: "", summary: "Stash ref is required." };
+    }
+    try {
+      const { composeStashPatch, suggestStashFilename } = await import("./git-stash-patch.js");
+      const listed = await this.listStashes(workspace, { rootPath });
+      const entry = listed.stashes.find((s) => s.ref === ref);
+
+      // Tracked + staged changes as a binary-safe unified diff.
+      const trackedRes = await this.execGit(effectiveCwd, ["stash", "show", "--binary", "--no-color", "-p", ref]);
+      let body = String(trackedRes.stdout || "");
+
+      // Untracked files (stash^3) — append a from-empty diff per file.
+      const includesUntracked = await this.refExists(effectiveCwd, `${ref}^3`);
+      if (includesUntracked) {
+        const untrackedRes = await this.execGit(effectiveCwd, [
+          "diff",
+          "--binary",
+          "--no-color",
+          EMPTY_TREE_SHA,
+          `${ref}^3`,
+        ]).catch(() => ({ stdout: "", stderr: "" }));
+        const untrackedBody = String(untrackedRes.stdout || "");
+        if (untrackedBody.trim()) {
+          body = body.trim() ? `${body.replace(/\s*$/, "")}\n${untrackedBody}` : untrackedBody;
+        }
+      }
+
+      const meta = {
+        baseCommit: entry?.baseCommit || "",
+        branch: entry?.branch || "",
+        message: entry?.customMessage || (entry?.isWipDefault ? "WIP" : ""),
+        includesUntracked,
+      };
+      const patch = composeStashPatch(meta, body);
+      const suggestedFilename = suggestStashFilename({
+        index: entry?.index ?? 0,
+        branch: entry?.branch || "",
+        customMessage: entry?.customMessage || "",
+        date: entry?.date || "",
+      });
+      return { ok: true, patch, suggestedFilename, summary: "Patch composed." };
+    } catch (error) {
+      const err = error as { stdout?: string; stderr?: string };
+      return {
+        ok: false,
+        patch: "",
+        suggestedFilename: "",
+        summary: joinRawOutput(err.stdout, err.stderr) || "Failed to export stash patch.",
+      };
+    }
+  }
+
+  async stashImportPatch(
+    workspace: WorkspaceRef | null,
+    { rootPath = "", patch = "", message = "" }: { rootPath?: string; patch?: string; message?: string } = {},
+  ): Promise<Record<string, unknown>> {
+    const effectiveCwd = rootPath || workspace?.cwd;
+    if (!effectiveCwd) {
+      return createStructuredResult({ ok: false, summary: "Workspace has no working directory." });
+    }
+    if (!patch || !patch.trim()) {
+      return createStructuredResult({ ok: false, summary: "Patch is empty." });
+    }
+
+    const { parseStashPatch, validatePatchPaths } = await import("./git-stash-patch.js");
+    const safety = validatePatchPaths(patch, effectiveCwd);
+    if (!safety.ok) {
+      return createStructuredResult({
+        ok: false,
+        summary: `Patch references a path outside the repository (${safety.badPath}). Import refused.`,
+      });
+    }
+
+    const parsed = parseStashPatch(patch);
+    const importMessage = (message || parsed.message || "Imported stash").trim();
+
+    const os = await import("node:os");
+    const fs = await import("node:fs/promises");
+    const crypto = await import("node:crypto");
+    const tmpFile = path.join(os.tmpdir(), `strideterm-stash-import-${crypto.randomUUID()}.patch`);
+
+    try {
+      await fs.writeFile(tmpFile, patch, "utf8");
+
+      const warnings: string[] = [];
+      // If the tree is dirty, set the user's current changes aside FIRST so the
+      // patch is checked and applied against a clean tree. Checking before the
+      // auto-stash would test the patch against the dirty tree it will never be
+      // applied to — an overlapping local edit could fail `--check` even when
+      // the patch applies fine once those edits are stashed away.
+      const status = await this.execGit(effectiveCwd, ["status", "--porcelain"]).catch(() => ({
+        stdout: "",
+        stderr: "",
+      }));
+      let autoStashed = false;
+      if (String(status.stdout || "").trim()) {
+        await this.execGit(effectiveCwd, [
+          "stash",
+          "push",
+          "--include-untracked",
+          "-m",
+          "strideterm: changes set aside before patch import",
+        ]);
+        autoStashed = true;
+        warnings.push("Your existing changes were stashed before importing.");
+      }
+
+      // Never write changes if the patch doesn't apply cleanly. If we already
+      // set the user's changes aside, restore them before bailing so a rejected
+      // import is a no-op from their point of view.
+      try {
+        await this.execGit(effectiveCwd, ["apply", "--check", tmpFile]);
+      } catch (checkErr) {
+        const err = checkErr as { stdout?: string; stderr?: string };
+        if (autoStashed) {
+          await this.execGit(effectiveCwd, ["stash", "pop"]).catch(() => {});
+        }
+        return createStructuredResult({
+          ok: false,
+          summary: "Patch does not apply cleanly to this branch.",
+          rawOutput: joinRawOutput(err.stdout, err.stderr),
+        });
+      }
+
+      await this.execGit(effectiveCwd, ["apply", tmpFile]);
+      const pushArgs = ["stash", "push", "--include-untracked", "-m", importMessage];
+      const result = await this.execGit(effectiveCwd, pushArgs);
+
+      return createStructuredResult({
+        ok: true,
+        summary: `Imported patch as a new stash: "${importMessage}".`,
+        warnings,
+        rawOutput: joinRawOutput(result.stdout, result.stderr),
+      });
+    } catch (error) {
+      const err = error as { stdout?: string; stderr?: string };
+      return createStructuredResult({
+        ok: false,
+        summary: "Failed to import patch.",
+        rawOutput: joinRawOutput(err.stdout, err.stderr),
+      });
+    } finally {
+      await fsRm(tmpFile, { force: true }).catch(() => {});
     }
   }
 

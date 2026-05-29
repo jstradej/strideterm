@@ -1237,3 +1237,61 @@ export async function computeCommitFileDiff(rootPath: string, relativePath: stri
     source: "commitRange",
   };
 }
+
+/**
+ * Diff a single file inside a stash against the commit the stash was based on.
+ *
+ * A stash is a commit with up to three parents:
+ *   - `<ref>^1` = base commit (left side of the diff)
+ *   - `<ref>`   = working-tree/index snapshot (right side)
+ *   - `<ref>^3` = untracked-files snapshot (only present when stashed with -u)
+ *
+ * Handles modified (both present), added (left missing), deleted (right
+ * missing), and untracked (content lives in `<ref>^3`, left is empty) files.
+ */
+export async function computeStashFileDiff(rootPath: string, ref: string, relativePath: string): Promise<DiffResult> {
+  const language = guessLanguageFromPath(relativePath);
+  const top = await resolveGitToplevel(path.resolve(rootPath));
+  if (!top || !ref) {
+    return errorDiff("Not a git repository or missing stash ref", "stash");
+  }
+
+  const base = `${ref}^1`;
+  let left = await readFileAtRevision(rootPath, relativePath, base);
+  let right = await readFileAtRevision(rootPath, relativePath, ref);
+
+  // Untracked files are not part of the stash's primary tree — they live in
+  // the third parent. When the file is absent from `<ref>` but present in
+  // `<ref>^3`, treat it as a from-empty addition. Guard on `<ref>^3` actually
+  // existing: a deleted tracked file is also absent from `<ref>`, but the stash
+  // may have no untracked snapshot at all (stashed without -u).
+  if (right.missing) {
+    const hasUntrackedParent = await execFileText("git", ["rev-parse", "--verify", "--quiet", `${ref}^3`], {
+      cwd: top,
+    })
+      .then(() => true)
+      .catch(() => false);
+    if (hasUntrackedParent) {
+      const untracked = await readFileAtRevision(rootPath, relativePath, `${ref}^3`);
+      if (untracked.ok && !untracked.missing) {
+        right = untracked;
+        left = { ok: true, content: "", missing: true, revision: "" };
+      }
+    }
+  }
+
+  return {
+    ok: !!(left && right),
+    leftContent: left.content || "",
+    rightContent: right.content || "",
+    leftLabel: `base ${ref}^`,
+    rightLabel: ref,
+    leftMissing: !!left.missing,
+    rightMissing: !!right.missing,
+    leftError: left.error || "",
+    rightError: right.error || "",
+    language,
+    revision: ref,
+    source: "stash",
+  };
+}

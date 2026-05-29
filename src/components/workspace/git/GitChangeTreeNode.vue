@@ -12,6 +12,15 @@
     >
       <span v-if="isDir" class="gct-node__chevron">{{ expanded ? "▾" : "▸" }}</span>
       <span v-else class="gct-node__chevron gct-node__chevron--leaf"></span>
+      <input
+        v-if="selectable && node.kind === 'file'"
+        type="checkbox"
+        class="gct-node__check"
+        :checked="isChecked"
+        :aria-label="`Select ${node.path} for stashing`"
+        @click.stop
+        @change="$emit('toggle-select', node.path)"
+      />
       <span class="gct-node__icon" aria-hidden="true">{{ isDir ? "📁" : "📄" }}</span>
       <span class="gct-node__name">{{ node.name }}</span>
       <span
@@ -32,8 +41,11 @@
         :selected-path="selectedPath"
         :selected-scope="selectedScope"
         :expanded-set="expandedSet"
+        :selectable="selectable"
+        :selected-set="selectedSet"
         @toggle="(p) => $emit('toggle', p)"
         @select="(file) => $emit('select', file)"
+        @toggle-select="(p) => $emit('toggle-select', p)"
       />
     </ul>
   </li>
@@ -51,14 +63,17 @@ const props = withDefaults(
     selectedPath?: string;
     selectedScope?: string;
     expandedSet: Set<string>;
+    selectable?: boolean;
+    selectedSet?: Set<string>;
   }>(),
-  { depth: 0, selectedPath: "", selectedScope: "" },
+  { depth: 0, selectedPath: "", selectedScope: "", selectable: false, selectedSet: () => new Set<string>() },
 );
 
 const emit = defineEmits<{
   (e: "toggle", path: string): void;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (e: "select", node: Record<string, any>): void;
+  (e: "toggle-select", path: string): void;
 }>();
 
 const isDir = computed(() => props.node.kind === "dir");
@@ -67,6 +82,7 @@ const isSelected = computed(
   () =>
     props.node.kind === "file" && props.selectedPath === props.node.path && props.selectedScope === props.node.scope,
 );
+const isChecked = computed(() => props.node.kind === "file" && !!props.selectedSet?.has(props.node.path as string));
 
 function onClick() {
   if (isDir.value) emit("toggle", props.node.path as string);
@@ -132,6 +148,13 @@ function onClick() {
 
 .gct-node__chevron--leaf {
   visibility: hidden;
+}
+
+.gct-node__check {
+  flex-shrink: 0;
+  width: auto;
+  margin: 0 2px 0 0;
+  cursor: pointer;
 }
 
 .gct-node__icon {

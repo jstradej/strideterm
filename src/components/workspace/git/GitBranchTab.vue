@@ -151,18 +151,27 @@
       <div class="section-head">
         <div>
           <p class="eyebrow">Stash</p>
-          <h3>{{ snapshot.stashCount || 0 }} stash{{ (snapshot.stashCount || 0) !== 1 ? "es" : "" }}</h3>
+          <h3>
+            <button
+              type="button"
+              class="git-stash-count-link"
+              title="Open the Stashes tab for full control over every entry."
+              @click="gitUiStore.gitSwitchTab(workspaceId, 'stashes')"
+            >
+              {{ snapshot.stashCount || 0 }} stash{{ (snapshot.stashCount || 0) !== 1 ? "es" : "" }}
+            </button>
+          </h3>
         </div>
       </div>
       <div class="git-operation-actions">
         <button
           type="button"
           class="button"
-          :disabled="!!(gitUi.busyAction || !snapshot.dirty || !!gitUi.pendingAction || operation.inProgress)"
-          title="Save uncommitted changes to the stash"
-          @click="gitUiStore.gitStash(workspaceId, '')"
+          :disabled="!snapshot.dirty || operation.inProgress"
+          title="Open the Changes tab to stash your working tree — pick specific files or stash everything."
+          @click="gitUiStore.gitSwitchTab(workspaceId, 'changes')"
         >
-          {{ gitUi.busyAction === "stash" ? "Stashing…" : "Stash" }}
+          Stash…
         </button>
         <button
           type="button"
@@ -170,7 +179,13 @@
           :disabled="
             !!(gitUi.busyAction || !(snapshot.stashCount > 0) || !!gitUi.pendingAction || operation.inProgress)
           "
-          :title="snapshot.dirty ? 'Pop may conflict with local changes' : 'Restore the most recent stash entry'"
+          :title="
+            (snapshot.stashCount || 0) > 1
+              ? 'Pops the top stash (stash@{0}). For other entries open the Stashes tab.'
+              : snapshot.dirty
+                ? 'Pop may conflict with local changes'
+                : 'Restore the most recent stash entry'
+          "
           @click="gitUiStore.gitStashPop(workspaceId)"
         >
           {{ gitUi.busyAction === "stash-pop" ? "Popping…" : "Unstash (pop)" }}

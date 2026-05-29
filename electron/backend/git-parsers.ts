@@ -779,3 +779,131 @@ export function getFetchTimestamp(gitCommonDir: string | null | undefined): stri
     return null;
   }
 }
+
+// --- Stash detail parsing ------------------------------------------------
+
+/**
+ * The well-known SHA-1 of git's empty tree object. Diffing the untracked-files
+ * snapshot (`<ref>^3`) against this yields a from-empty diff for each file.
+ */
+export const EMPTY_TREE_SHA = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+
+export interface StashEntry {
+  index: number;
+  ref: string;
+  /** Full SHA of the stash commit — used to detect a stash-stack reshuffle
+   *  (e.g. a `git stash drop` from a terminal) before acting on `stash@{N}`. */
+  hash: string;
+  date: string;
+  author: string;
+  branch: string;
+  baseCommit: string;
+  baseSubject: string;
+  message: string;
+  customMessage: string;
+  isWipDefault: boolean;
+  fileCount: number;
+  /** Repo-relative paths of the files this stash touches. Returned eagerly so
+   *  the client-side filter can match file paths without hydrating every entry. */
+  filePaths: string[];
+}
+
+export interface StashFile {
+  path: string;
+  code: string;
+  status: "modified" | "added" | "deleted" | "renamed" | "copied" | "unmerged" | "untracked";
+  additions: number;
+  deletions: number;
+  isBinary: boolean;
+  oldPath?: string;
+}
+
+const STASH_STATUS_MAP: Record<string, StashFile["status"]> = {
+  M: "modified",
+  A: "added",
+  D: "deleted",
+  R: "renamed",
+  C: "copied",
+  U: "unmerged",
+  T: "modified",
+};
+
+/**
+ * Parse `git diff/stash show --numstat` into a map keyed by the (new) path.
+ * Binary files report `-` for both counts.
+ */
+export function parseStashNumstat(raw: string): Map<string, { additions: number; deletions: number; binary: boolean }> {
+  const out = new Map<string, { additions: number; deletions: number; binary: boolean }>();
+  for (const line of String(raw || "").split(/\r?\n/)) {
+    if (!line.trim()) continue;
+    const parts = line.split("\t");
+    if (parts.length < 3) continue;
+    const [addRaw, delRaw, ...rest] = parts;
+    let pathPart = rest.join("\t");
+    // Renames: "old => new" or "dir/{old => new}/file" — keep the resolved path.
+    const arrow = pathPart.match(/\{(.*) => (.*)\}/);
+    if (arrow) {
+      pathPart = pathPart.replace(/\{.*? => (.*?)\}/, "$1");
+    } else if (pathPart.includes(" => ")) {
+      pathPart = pathPart.split(" => ")[1];
+    }
+    const binary = addRaw === "-" || delRaw === "-";
+    out.set(pathPart, {
+      additions: binary ? 0 : parseIntSafe(addRaw, 0),
+      deletions: binary ? 0 : parseIntSafe(delRaw, 0),
+      binary,
+    });
+  }
+  return out;
+}
+
+/**
+ * Parse `git stash show --name-status` into StashFile records, merging in the
+ * additions/deletions from a numstat map.
+ */
+export function parseStashNameStatus(
+  raw: string,
+  numstat: Map<string, { additions: number; deletions: number; binary: boolean }>,
+): StashFile[] {
+  const files: StashFile[] = [];
+  for (const line of String(raw || "").split(/\r?\n/)) {
+    if (!line.trim()) continue;
+    const parts = line.split("\t");
+    const codeRaw = parts[0] || "";
+    const letter = codeRaw[0] || "M";
+    let filePath = parts[1] || "";
+    let oldPath: string | undefined;
+    // Renames/copies carry two paths: "R100\told\tnew".
+    if ((letter === "R" || letter === "C") && parts.length >= 3) {
+      oldPath = parts[1];
+      filePath = parts[2];
+    }
+    if (!filePath) continue;
+    const counts = numstat.get(filePath);
+    files.push({
+      path: filePath,
+      code: letter,
+      status: STASH_STATUS_MAP[letter] || "modified",
+      additions: counts?.additions ?? 0,
+      deletions: counts?.deletions ?? 0,
+      isBinary: counts?.binary ?? false,
+      ...(oldPath ? { oldPath } : {}),
+    });
+  }
+  return files;
+}
+
+/**
+ * Extract conflicted file paths from a `git stash apply/pop` failure message.
+ */
+export function parseConflictPaths(raw: string): string[] {
+  const paths = new Set<string>();
+  const re = /CONFLICT\s*\([^)]*\):\s*(?:Merge conflict in|.*? in)\s+(.+?)\s*$/gim;
+  let m: RegExpExecArray | null;
+  for (const line of String(raw || "").split(/\r?\n/)) {
+    re.lastIndex = 0;
+    m = re.exec(line);
+    if (m && m[1]) paths.add(m[1].trim());
+  }
+  return [...paths];
+}

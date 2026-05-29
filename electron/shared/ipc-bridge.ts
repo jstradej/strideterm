@@ -22,6 +22,11 @@ import type {
   GitDiffPreview,
   GitCommit,
   GitTag,
+  GitStashList,
+  GitStashRef,
+  GitStashFileDiff,
+  GitStashBranch,
+  GitStashImport,
   DockerAction,
   DockerSession,
   WorktreePayload,
@@ -362,7 +367,15 @@ export interface StridetermAPI {
   gitRemoveWorktree: (payload: RemoveWorktree) => Promise<unknown>;
   gitCommitAll: (payload: GitCommit) => Promise<unknown>;
   gitStash: (payload: GitPayload) => Promise<unknown>;
-  gitStashPop: (payload: GitPayload) => Promise<unknown>;
+  gitStashPop: (payload: GitPayload & { ref?: string }) => Promise<unknown>;
+  gitListStashes: (payload: GitStashList) => Promise<unknown>;
+  gitStashFiles: (payload: GitStashRef) => Promise<unknown>;
+  gitStashFileDiff: (payload: GitStashFileDiff) => Promise<unknown>;
+  gitStashApply: (payload: GitStashRef) => Promise<unknown>;
+  gitStashDrop: (payload: GitStashRef) => Promise<unknown>;
+  gitStashBranch: (payload: GitStashBranch) => Promise<unknown>;
+  gitStashExport: (payload: GitStashRef) => Promise<unknown>;
+  gitStashImport: (payload: GitStashImport) => Promise<unknown>;
   gitCommitDiff: (payload: GitPayload) => Promise<unknown>;
   gitCommitInfo: (payload: GitPayload) => Promise<unknown>;
   gitLogPage: (payload: GitPayload & { skip?: number; limit?: number }) => Promise<unknown>;
@@ -450,6 +463,7 @@ export interface StridetermAPI {
   fileCommitDiff: (p: FileCommitDiff) => Promise<unknown>;
   browseDirectory: (defaultPath?: string) => Promise<unknown>;
   browseFile: (options?: Record<string, unknown>) => Promise<unknown>;
+  saveFile: (options?: Record<string, unknown>) => Promise<unknown>;
 
   // SSH
   sshHostsList: () => Promise<unknown>;
