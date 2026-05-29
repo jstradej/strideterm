@@ -24,7 +24,10 @@ afterEach(async () => {
 });
 
 async function makeStashRepo() {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-stash-"));
+  // realpath the tmp dir: on macOS os.tmpdir() is under /var/folders, and the
+  // un-resolved /var prefix trips file-manager's sensitive-path denylist that
+  // stashFileDiff routes through (/var → /private/var after realpath).
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-stash-")));
   tempPaths.push(root);
   const manager = new GitManager({});
   const g = (args: string[]) => manager.execGit(root, args);
@@ -53,7 +56,7 @@ describe("GitManager stash lifecycle (real git)", () => {
   });
 
   async function makeUnbornRepo() {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-stash-unborn-"));
+    const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "strideterm-stash-unborn-")));
     tempPaths.push(root);
     const manager = new GitManager({});
     const g = (args: string[]) => manager.execGit(root, args);

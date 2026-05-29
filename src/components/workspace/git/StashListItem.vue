@@ -26,12 +26,7 @@
         </div>
       </div>
       <div class="stash-item__kebab">
-        <button
-          type="button"
-          class="workspace-pane__icon-btn"
-          title="More actions for this stash"
-          @click.stop="menuOpen = !menuOpen"
-        >
+        <button type="button" class="workspace-pane__icon-btn" title="More actions" @click.stop="menuOpen = !menuOpen">
           ⋮
         </button>
         <div v-if="menuOpen" class="stash-item__menu" @click.stop>
