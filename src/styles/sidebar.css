@@ -1174,10 +1174,12 @@ body.platform-darwin .frame--sidebar-collapsed .sidebar__head {
 /* Slot index badge inside the workspace card (shown only when card is in
    grid; expressed via the workspace.slotIndex prop). The parent
    .workspace-card__badge is already position: relative — see further down
-   in this file — so absolute positioning anchors to the badge. */
+   in this file — so absolute positioning anchors to the badge. Anchored
+   top-right so it doesn't collide with the status dot (bottom-right) when a
+   grid workspace is also running/done — the index badge owns top-left. */
 .workspace-card__slot {
   position: absolute;
-  bottom: -2px;
+  top: -2px;
   right: -2px;
   font-size: 9px;
   font-weight: 700;
