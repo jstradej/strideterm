@@ -214,11 +214,12 @@ export const useAppStore = defineStore("app", () => {
       ((payload.value?.appState?.profiles as AnyApi[] | undefined)?.[0] as AnyApi)?.id ??
       "default";
     const result = workspaces.filter((ws: AnyApi) => (ws.profileId || "default") === activeProfileId);
-    // Include names and panel counts — these change on rename/add-tab/remove-tab
+    // Include names, panel counts, and badge/accent — these change on
+    // rename/add-tab/remove-tab and on editing the workspace icon/color.
     const key = result
       .map(
         (ws: AnyApi) =>
-          `${ws.id}:${ws.name}:${(ws.panels || []).length}:${ws.connectionId || ""}:${ws.starred ? 1 : 0}`,
+          `${ws.id}:${ws.name}:${(ws.panels || []).length}:${ws.connectionId || ""}:${ws.starred ? 1 : 0}:${ws.icon || ""}:${ws.color || ""}`,
       )
       .join(",");
     if (key === _prevFilteredWsKey) return _prevFilteredWs;
