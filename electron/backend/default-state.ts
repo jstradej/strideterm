@@ -857,8 +857,8 @@ export function normalizeWorkspaceGrid(
   return { layout: layout as WorkspaceGridLayout, cellWorkspaceIds };
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function normalizeState(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   rawState: any = {},
   options: { seedRestoreIdsFromSlots?: boolean } = {},
 ): AppState & { activeProjectId: string; projects: WorkspaceState[] } {
@@ -1235,7 +1235,8 @@ export function normalizeState(
     let lastWsId = profile.lastActiveWorkspaceId;
     if (lastWsId && !profileWsIds.has(lastWsId)) lastWsId = undefined;
 
-    // Validate lastActiveSessionId: must be "workspaceId:panelId" for a panel in this profile
+    // Validate lastActiveSessionId: must be "workspaceId:panelId" for a panel in this profile.
+    // If valid, it becomes the restore authority and the workspace id follows it.
     let lastSessionId = profile.lastActiveSessionId;
     if (lastSessionId) {
       const colonIdx = lastSessionId.indexOf(":");
@@ -1247,7 +1248,11 @@ export function normalizeState(
         const sessionWs = profileWorkspaces.find((w) => w.id === sessionWsId);
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const panelExists = sessionWs && (sessionWs as any).panels?.some((p: any) => p.id === sessionPanelId);
-        if (!panelExists) lastSessionId = undefined;
+        if (panelExists) {
+          lastWsId = sessionWsId;
+        } else {
+          lastSessionId = undefined;
+        }
       }
     }
 
@@ -1257,9 +1262,7 @@ export function normalizeState(
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const rawSlots = (rawState as Record<string, unknown>).windowSlots as any[] | undefined;
       if (Array.isArray(rawSlots)) {
-        const slot = rawSlots.find(
-          (s) => String((s as Record<string, unknown>)?.profileId || "") === profile.id,
-        );
+        const slot = rawSlots.find((s) => String((s as Record<string, unknown>)?.profileId || "") === profile.id);
         if (slot) {
           const slotWsId = String((slot as Record<string, unknown>).activeWorkspaceId || "");
           if (slotWsId && profileWsIds.has(slotWsId)) {
@@ -1270,7 +1273,6 @@ export function normalizeState(
               if (seedColonIdx >= 0) {
                 const seedWsId = slotSessionId.slice(0, seedColonIdx);
                 const seedPanelId = slotSessionId.slice(seedColonIdx + 1);
-                // eslint-disable-next-line @typescript-eslint/no-explicit-any
                 const seedWs = profileWorkspaces.find((w) => w.id === seedWsId);
                 // eslint-disable-next-line @typescript-eslint/no-explicit-any
                 const seedPanelExists = seedWs && (seedWs as any).panels?.some((p: any) => p.id === seedPanelId);

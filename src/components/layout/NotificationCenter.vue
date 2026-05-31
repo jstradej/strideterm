@@ -233,7 +233,8 @@
                   v-if="sessionProfileLabel(row.session)"
                   class="notification-item__profile-label"
                   :title="`Profile: ${sessionProfileLabel(row.session)}`"
-                >{{ sessionProfileLabel(row.session) }}</span>
+                  >{{ sessionProfileLabel(row.session) }}</span
+                >
                 <div v-if="row.session.state === 'waiting'" class="notification-item__quick-actions">
                   <button
                     class="quick-action"
@@ -754,13 +755,6 @@ function resolveJumpTarget(s: NotificationSession): { workspaceId: string; viewI
 }
 
 async function jump(s: NotificationSession): Promise<void> {
-  // Jump = user engaged with this session → dismissed=false (resets adaptive counter).
-  // Terminal alerts have a backend counterpart to clear; review events don't.
-  if (s.category !== "review") {
-    await notifStore.clearOnBackend(backendSessionId(s), { dismissed: false });
-  }
-  notifStore.setState(s.id, "resolved");
-
   const target = resolveJumpTarget(s);
   if (!target.workspaceId || !appStore.payload) {
     if (!notifStore.pinned) notifStore.closePanel();
@@ -771,7 +765,7 @@ async function jump(s: NotificationSession): Promise<void> {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const workspaces = (appStore.payload.appState?.workspaces || []) as any[];
   const targetWs = workspaces.find((w) => w.id === target.workspaceId);
-  const targetProfileId = targetWs ? (targetWs.profileId || "default") : null;
+  const targetProfileId = targetWs ? targetWs.profileId || "default" : null;
   const currentProfileId = appStore.myActiveProfileId || "default";
 
   if (targetProfileId && targetProfileId !== currentProfileId) {
@@ -805,6 +799,13 @@ async function jump(s: NotificationSession): Promise<void> {
   if (s.meta?.kind === "connection-error" && s.meta?.connectionId) {
     appStore.requestInboxConnectionFocus(s.meta.provider || "", s.meta.connectionId);
   }
+  // Jump = user engaged with this session → dismissed=false (resets adaptive counter).
+  // Clear only after any cross-profile confirmation and navigation succeeds; a
+  // cancelled switch must leave the notification actionable.
+  if (s.category !== "review") {
+    await notifStore.clearOnBackend(backendSessionId(s), { dismissed: false });
+  }
+  notifStore.setState(s.id, "resolved");
   // Pinned dock stays open — the item greys in place instead of the panel closing.
   if (!notifStore.pinned) notifStore.closePanel();
 }

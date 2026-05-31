@@ -421,7 +421,7 @@ function liveTerminalSessionIds(): Set<string> {
   // Remote: scope to the remote client's controllable profile only — remote clients
   // bind to a single desktop windowSlot and should not retain views for profiles
   // they cannot control.
-  const profileFilter = store.isRemoteTransport ? (store.myActiveProfileId || "default") : null;
+  const profileFilter = store.isRemoteTransport ? store.myActiveProfileId || "default" : null;
   for (const workspace of workspaces) {
     if (profileFilter && (workspace.profileId || "default") !== profileFilter) continue;
     for (const panel of workspace.panels || []) {
@@ -438,9 +438,10 @@ function liveTerminalSessionIds(): Set<string> {
 // Remote: also prune on profile change so remote clients don't accumulate views
 // for profiles they can't control.
 watch(
-  () => store.isRemoteTransport
-    ? [store.payload?.appState?.workspaces, store.myActiveProfileId]
-    : [store.payload?.appState?.workspaces],
+  () =>
+    store.isRemoteTransport
+      ? [store.payload?.appState?.workspaces, store.myActiveProfileId]
+      : [store.payload?.appState?.workspaces],
   () => {
     termStore.pruneTerminalViews(liveTerminalSessionIds());
   },

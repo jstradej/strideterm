@@ -143,7 +143,7 @@ function Get-LatestDistElectronWriteUtc {
     return $latest
 }
 
-function Wait-DistElectronQuiet([int]$QuietMs = 2500, [int]$TimeoutSeconds = 45) {
+function Wait-DistElectronQuiet([int]$QuietMs = 2500, [int]$TimeoutSeconds = 45, [int]$MinimumWaitMs = 0) {
     $watchPath = Join-Path $PSScriptRoot 'dist-electron'
     if (-not (Test-Path $watchPath)) {
         return
@@ -151,6 +151,7 @@ function Wait-DistElectronQuiet([int]$QuietMs = 2500, [int]$TimeoutSeconds = 45)
 
     Write-Step "Waiting for dist-electron watcher emit to settle (${QuietMs}ms quiet window)..."
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    $startedAt = Get-Date
     $latest = Get-LatestDistElectronWriteUtc
     $quietSince = Get-Date
     while ((Get-Date) -lt $deadline) {
@@ -161,7 +162,8 @@ function Wait-DistElectronQuiet([int]$QuietMs = 2500, [int]$TimeoutSeconds = 45)
             $quietSince = Get-Date
             continue
         }
-        if (((Get-Date) - $quietSince).TotalMilliseconds -ge $QuietMs) {
+        $elapsedMs = ((Get-Date) - $startedAt).TotalMilliseconds
+        if (((Get-Date) - $quietSince).TotalMilliseconds -ge $QuietMs -and $elapsedMs -ge $MinimumWaitMs) {
             Write-Ok 'dist-electron is quiet; starting Electron against a coherent backend build.'
             return
         }
@@ -495,7 +497,7 @@ else {
 # a missing named export. Wait for the watcher writes to go quiet before the
 # first Electron boot; the later FileSystemWatcher debounce handles rebuilds
 # after Electron is already running.
-Wait-DistElectronQuiet
+Wait-DistElectronQuiet -MinimumWaitMs 7000
 
 Write-Step 'Starting Electron...'
 $script:electronProc = Start-ElectronProcess

@@ -6131,8 +6131,20 @@ describe("profile view-state persistence — activateProfileInWindow", () => {
     const initialState = {
       ...makeProfileSwitchState(),
       profiles: [
-        { id: "profile-a", name: "Profile A", color: "#aaa", lastActiveWorkspaceId: "ws-a1", lastActiveSessionId: "ws-a1:shell" },
-        { id: "profile-b", name: "Profile B", color: "#bbb", lastActiveWorkspaceId: "ws-b1", lastActiveSessionId: "ws-b1:shell" },
+        {
+          id: "profile-a",
+          name: "Profile A",
+          color: "#aaa",
+          lastActiveWorkspaceId: "ws-a1",
+          lastActiveSessionId: "ws-a1:shell",
+        },
+        {
+          id: "profile-b",
+          name: "Profile B",
+          color: "#bbb",
+          lastActiveWorkspaceId: "ws-b1",
+          lastActiveSessionId: "ws-b1:shell",
+        },
       ],
       windowSlots: [
         {
@@ -6152,6 +6164,42 @@ describe("profile view-state persistence — activateProfileInWindow", () => {
 
     const slot = fixture.runtime.getPayload().appState.windowSlots!.find((s) => s.id === "win-1")!;
     expect(slot.profileId).toBe("profile-b");
+    expect(slot.activeWorkspaceId).toBe("ws-b1");
+    expect(slot.activeSessionId).toBe("ws-b1:shell");
+  });
+
+  test("restored session wins over stale saved workspace so slot remains consistent", async () => {
+    const initialState = {
+      ...makeProfileSwitchState(),
+      profiles: [
+        { id: "profile-a", name: "Profile A", color: "#aaa" },
+        {
+          id: "profile-b",
+          name: "Profile B",
+          color: "#bbb",
+          lastActiveWorkspaceId: "ws-b2",
+          lastActiveSessionId: "ws-b1:shell",
+        },
+      ],
+      projects: [
+        ...makeProfileSwitchState().projects,
+        {
+          id: "ws-b2",
+          name: "B2",
+          kind: "terminal",
+          profileId: "profile-b",
+          cwd: "/tmp/b2",
+          activePanelId: "shell",
+          panels: [{ id: "shell", title: "Shell", command: "", shell: true, startup: "default" }],
+        },
+      ],
+    };
+    const fixture = await createFixture({ initialState });
+    fixtures.push(fixture);
+
+    await fixture.runtime.activateProfileInWindow("profile-b", "win-1");
+
+    const slot = fixture.runtime.getPayload().appState.windowSlots!.find((s) => s.id === "win-1")!;
     expect(slot.activeWorkspaceId).toBe("ws-b1");
     expect(slot.activeSessionId).toBe("ws-b1:shell");
   });
@@ -6186,9 +6234,7 @@ describe("profile view-state persistence — activateWorkspaceInWindow", () => {
   test("updates profile lastActiveWorkspaceId on workspace activation", async () => {
     const initialState = {
       activeProjectId: "ws-a1",
-      profiles: [
-        { id: "profile-a", name: "Profile A", color: "#aaa" },
-      ],
+      profiles: [{ id: "profile-a", name: "Profile A", color: "#aaa" }],
       projects: [
         {
           id: "ws-a1",
@@ -6229,15 +6275,61 @@ describe("profile view-state persistence — activateWorkspaceInWindow", () => {
     const profileA = state.profiles.find((p) => p.id === "profile-a");
     expect(profileA?.lastActiveWorkspaceId).toBe("ws-a2");
   });
+
+  test("clears stale profile and slot session when activating a different workspace", async () => {
+    const initialState = {
+      activeProjectId: "ws-a1",
+      profiles: [{ id: "profile-a", name: "Profile A", color: "#aaa", lastActiveSessionId: "ws-a1:shell" }],
+      projects: [
+        {
+          id: "ws-a1",
+          name: "A1",
+          kind: "terminal",
+          profileId: "profile-a",
+          cwd: "/tmp/a1",
+          activePanelId: "shell",
+          panels: [{ id: "shell", title: "Shell", command: "" }],
+        },
+        {
+          id: "ws-a2",
+          name: "A2",
+          kind: "terminal",
+          profileId: "profile-a",
+          cwd: "/tmp/a2",
+          activePanelId: "shell",
+          panels: [{ id: "shell", title: "Shell", command: "" }],
+        },
+      ],
+      windowSlots: [
+        {
+          id: "win-1",
+          profileId: "profile-a",
+          activeWorkspaceId: "ws-a1",
+          activeSessionId: "ws-a1:shell",
+          bounds: { x: 0, y: 0, width: 1280, height: 800 },
+          lastFocusedAt: 1000,
+        },
+      ],
+    };
+    const fixture = await createFixture({ initialState });
+    fixtures.push(fixture);
+
+    await fixture.runtime.activateWorkspaceInWindow("ws-a2", "win-1");
+
+    const state = fixture.store.getState();
+    const profileA = state.profiles.find((p) => p.id === "profile-a");
+    const slot = state.windowSlots?.find((s) => s.id === "win-1");
+    expect(profileA?.lastActiveWorkspaceId).toBe("ws-a2");
+    expect(profileA?.lastActiveSessionId).toBeUndefined();
+    expect(slot?.activeSessionId).toBe("");
+  });
 });
 
 describe("profile view-state persistence — activateSessionInWindow", () => {
   test("updates profile lastActiveWorkspaceId and lastActiveSessionId on session activation", async () => {
     const initialState = {
       activeProjectId: "ws-a1",
-      profiles: [
-        { id: "profile-a", name: "Profile A", color: "#aaa" },
-      ],
+      profiles: [{ id: "profile-a", name: "Profile A", color: "#aaa" }],
       projects: [
         {
           id: "ws-a1",

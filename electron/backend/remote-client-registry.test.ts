@@ -445,10 +445,7 @@ describe("RemoteClientRegistry", () => {
       // unable to switch to it.
       const registry = new RemoteClientRegistry();
       const state = {
-        profiles: [
-          { id: "p1" },
-          { id: "p2", lastActiveWorkspaceId: "ws2", lastActiveSessionId: "ws2:shell" },
-        ],
+        profiles: [{ id: "p1" }, { id: "p2", lastActiveWorkspaceId: "ws2", lastActiveSessionId: "ws2:shell" }],
         workspaces: [
           { id: "ws1", profileId: "p1" },
           { id: "ws2", profileId: "p2" },

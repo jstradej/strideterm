@@ -494,8 +494,24 @@ export function createDialogActions(ctx: DialogActionsCtx) {
           ctx.suppressBroadcast.value = false;
           throw err;
         }
-        ctx.activeViewId.value = null;
-        ctx.activeSessionId.value = null;
+        // The backend chooses the restore target for this window/profile. Adopt
+        // its active session here so opening Profiles behaves like normal
+        // profile switching.
+        const nextPayload = ctx.payload.value as AnyApi;
+        const restoredSession = isRemote
+          ? nextPayload?.remoteClient?.activeSessionId || ""
+          : (() => {
+              const slots = nextPayload?.appState?.windowSlots as AnyApi[] | undefined;
+              const slot = myWindowId && slots ? slots.find((s: AnyApi) => s.id === myWindowId) : null;
+              return slot?.activeSessionId || "";
+            })();
+        if (restoredSession) {
+          ctx.activeSessionId.value = restoredSession;
+          ctx.activeViewId.value = restoredSession;
+        } else {
+          ctx.activeViewId.value = null;
+          ctx.activeSessionId.value = null;
+        }
         ctx.splitGroup.value = null;
         closeDialog();
         setTimeout(() => {

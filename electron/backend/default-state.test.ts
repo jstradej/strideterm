@@ -836,6 +836,42 @@ describe("normalizeState — profile lastActive restore id validation", () => {
     expect(profile?.lastActiveSessionId).toBeUndefined();
   });
 
+  test("valid lastActiveSessionId keeps lastActiveWorkspaceId consistent with the session workspace", () => {
+    const state = normalizeState({
+      profiles: [
+        {
+          id: "pa",
+          name: "A",
+          color: "#a",
+          workspaceIds: ["ws-a", "ws-b"],
+          lastActiveWorkspaceId: "ws-a",
+          lastActiveSessionId: "ws-b:shell",
+        },
+      ],
+      projects: [
+        {
+          id: "ws-a",
+          name: "A",
+          kind: "terminal",
+          profileId: "pa",
+          cwd: "/tmp/a",
+          panels: [{ id: "shell", title: "Shell", command: "" }],
+        },
+        {
+          id: "ws-b",
+          name: "B",
+          kind: "terminal",
+          profileId: "pa",
+          cwd: "/tmp/b",
+          panels: [{ id: "shell", title: "Shell", command: "" }],
+        },
+      ],
+    });
+    const profile = state.profiles.find((p) => p.id === "pa");
+    expect(profile?.lastActiveWorkspaceId).toBe("ws-b");
+    expect(profile?.lastActiveSessionId).toBe("ws-b:shell");
+  });
+
   test("seeds lastActiveWorkspaceId from matching WindowSlot when no existing restore ids", () => {
     const state = normalizeState({
       profiles: [{ id: "pa", name: "A", color: "#a", workspaceIds: ["ws-a"] }],
@@ -850,9 +886,7 @@ describe("normalizeState — profile lastActive restore id validation", () => {
           panels: [{ id: "shell", title: "Shell", command: "" }],
         },
       ],
-      windowSlots: [
-        { id: "slot-1", profileId: "pa", activeWorkspaceId: "ws-a", activeSessionId: "ws-a:shell" },
-      ],
+      windowSlots: [{ id: "slot-1", profileId: "pa", activeWorkspaceId: "ws-a", activeSessionId: "ws-a:shell" }],
     });
     const profile = state.profiles.find((p) => p.id === "pa");
     expect(profile?.lastActiveWorkspaceId).toBe("ws-a");
@@ -862,9 +896,7 @@ describe("normalizeState — profile lastActive restore id validation", () => {
   test("does not overwrite existing lastActiveWorkspaceId with WindowSlot value", () => {
     // Profile already has a saved restore id — the slot should not overwrite it.
     const state = normalizeState({
-      profiles: [
-        { id: "pa", name: "A", color: "#a", workspaceIds: ["ws-a", "ws-b"], lastActiveWorkspaceId: "ws-a" },
-      ],
+      profiles: [{ id: "pa", name: "A", color: "#a", workspaceIds: ["ws-a", "ws-b"], lastActiveWorkspaceId: "ws-a" }],
       projects: [
         {
           id: "ws-a",

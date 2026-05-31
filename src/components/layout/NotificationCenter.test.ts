@@ -2,7 +2,7 @@
  * Component test for NotificationCenter — verifies that the profile label
  * element renders when a notification session has a known meta.profileId.
  */
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import { mount } from "@vue/test-utils";
 import { setActivePinia, createPinia } from "pinia";
 import { nextTick } from "vue";
@@ -155,5 +155,68 @@ describe("NotificationCenter — sessionProfileLabel render", () => {
 
     // sessionProfileLabel returns "" when profile is not found
     expect(wrapper.find(".notification-item__profile-label").exists()).toBe(false);
+  });
+
+  it("does not clear or resolve a cross-profile notification when switch confirmation is cancelled", async () => {
+    const appStore = useAppStore();
+    const notifStore = useNotificationStore();
+
+    appStore.payload = makePayload({
+      appState: {
+        activeWorkspaceId: "ws-a",
+        profiles: [
+          { id: "p1", name: "Profile Alpha", color: "#fff", workspaceIds: ["ws-a"] },
+          { id: "p2", name: "Profile Beta", color: "#fff", workspaceIds: ["ws-b"] },
+        ],
+        workspaces: [
+          {
+            id: "ws-a",
+            name: "WsA",
+            profileId: "p1",
+            panels: [{ id: "sh", title: "Shell", command: "" }],
+            kind: "terminal",
+            cwd: "/tmp/a",
+          },
+          {
+            id: "ws-b",
+            name: "WsB",
+            profileId: "p2",
+            panels: [{ id: "sh", title: "Shell", command: "" }],
+            kind: "terminal",
+            cwd: "/tmp/b",
+          },
+        ],
+        windowSlots: [{ id: "slot1", profileId: "p1", activeWorkspaceId: "ws-a", activeSessionId: "" }],
+      },
+    }) as AnyApi;
+    notifStore.panelOpen = true;
+
+    notifStore.add({
+      title: "Needs input",
+      kind: "waiting",
+      workspaceId: "ws-b",
+      viewId: "ws-b:sh",
+      // Deliberately stale profile stamp so the row is visible in p1 while
+      // the target workspace resolves to p2. This exercises the cancel path
+      // without changing NotificationCenter's active-profile list filter.
+      meta: { profileId: "p1" },
+    });
+
+    (appStore as AnyApi).confirmInApp = vi.fn(() => Promise.resolve(false));
+    (appStore as AnyApi).activateProfile = vi.fn(() => Promise.resolve());
+    const clearSpy = vi.spyOn(notifStore, "clearOnBackend");
+
+    const wrapper = mount(NotificationCenter);
+    await nextTick();
+    await nextTick();
+
+    await wrapper.find(".quick-action").trigger("click");
+    await nextTick();
+    await Promise.resolve();
+
+    expect((appStore as AnyApi).confirmInApp).toHaveBeenCalled();
+    expect((appStore as AnyApi).activateProfile).not.toHaveBeenCalled();
+    expect(clearSpy).not.toHaveBeenCalled();
+    expect(notifStore.sessions[0].state).toBe("waiting");
   });
 });

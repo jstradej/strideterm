@@ -144,6 +144,47 @@ describe("createDialogActions.openProfilesDialog", () => {
     expect(activateProfile).toHaveBeenCalledWith("profile-b");
     expect(ctx.overlay.value).toBeNull();
   });
+
+  it("desktop profile activation adopts restored session from this window slot", async () => {
+    const serverPayload = {
+      appState: {
+        profiles: [
+          { id: "profile-a", name: "A", color: "#fff" },
+          { id: "profile-b", name: "B", color: "#fff" },
+        ],
+        workspaces: [
+          { id: "ws-a", profileId: "profile-a", panels: [] },
+          { id: "ws-b", profileId: "profile-b", panels: [{ id: "shell", command: "" }] },
+        ],
+        windowSlots: [
+          { id: "win-a", profileId: "profile-b", activeWorkspaceId: "ws-b", activeSessionId: "ws-b:shell" },
+        ],
+      },
+    };
+    const activateProfile = vi.fn(() => Promise.resolve(serverPayload));
+    const ctx = makeCtx({
+      appState: {
+        profiles: [
+          { id: "profile-a", name: "A", color: "#fff" },
+          { id: "profile-b", name: "B", color: "#fff" },
+        ],
+        workspaces: [
+          { id: "ws-a", profileId: "profile-a", panels: [] },
+          { id: "ws-b", profileId: "profile-b", panels: [{ id: "shell", command: "" }] },
+        ],
+        windowSlots: [{ id: "win-a", profileId: "profile-a", activeWorkspaceId: "ws-a", activeSessionId: "" }],
+      },
+    });
+    ctx.getApi = () => ({ isRemote: false, activateProfile });
+    const actions = createDialogActions(ctx);
+
+    actions.openProfilesDialog();
+    await (ctx.overlayProps.value.onActivate as (profileId: string) => Promise<void>)("profile-b");
+
+    expect(ctx.activeSessionId.value).toBe("ws-b:shell");
+    expect(ctx.activeViewId.value).toBe("ws-b:shell");
+    expect(ctx.overlay.value).toBeNull();
+  });
 });
 
 describe("createDialogActions profile-aware saves", () => {

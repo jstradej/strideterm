@@ -570,13 +570,33 @@ describe("useAppStore — activateProfile adopts restored session from payload",
           { id: "p2", name: "P2", color: "#fff", workspaceIds: ["ws2"] },
         ],
         workspaces: [
-          { id: "ws1", name: "W1", profileId: "p1", panels: [{ id: "sh", title: "S", command: "" }], kind: "terminal", cwd: "/tmp" },
-          { id: "ws2", name: "W2", profileId: "p2", panels: [{ id: "sh", title: "S", command: "" }], kind: "terminal", cwd: "/tmp" },
+          {
+            id: "ws1",
+            name: "W1",
+            profileId: "p1",
+            panels: [{ id: "sh", title: "S", command: "" }],
+            kind: "terminal",
+            cwd: "/tmp",
+          },
+          {
+            id: "ws2",
+            name: "W2",
+            profileId: "p2",
+            panels: [{ id: "sh", title: "S", command: "" }],
+            kind: "terminal",
+            cwd: "/tmp",
+          },
         ],
         windowSlots: [{ id: "slot1", profileId: "p2", activeWorkspaceId: "ws2", activeSessionId: "ws2:sh" }],
         settings: {},
         tabTemplates: [],
-        ssh: { hosts: [], keys: [], certificates: [], knownHosts: {}, settings: { defaultAgentMode: "inherit", importedSshConfig: false } },
+        ssh: {
+          hosts: [],
+          keys: [],
+          certificates: [],
+          knownHosts: {},
+          settings: { defaultAgentMode: "inherit", importedSshConfig: false },
+        },
       },
     });
     const transport = makeElectronTransport(initial);
@@ -607,7 +627,13 @@ describe("useAppStore — activateProfile adopts restored session from payload",
         windowSlots: [{ id: "slot1", profileId: "p2", activeWorkspaceId: "ws2", activeSessionId: "" }],
         settings: {},
         tabTemplates: [],
-        ssh: { hosts: [], keys: [], certificates: [], knownHosts: {}, settings: { defaultAgentMode: "inherit", importedSshConfig: false } },
+        ssh: {
+          hosts: [],
+          keys: [],
+          certificates: [],
+          knownHosts: {},
+          settings: { defaultAgentMode: "inherit", importedSshConfig: false },
+        },
       },
     });
     const transport = makeElectronTransport(initial);
@@ -643,11 +669,10 @@ describe("useAppStore — cross-profile notification jump confirmation logic", (
   ): Promise<{ confirmed: boolean; activateProfileCalled: boolean; activateWorkspaceCalled: boolean }> {
     const workspaces = (store.payload?.appState?.workspaces || []) as AnyApi[];
     const targetWs = workspaces.find((w: AnyApi) => w.id === targetWorkspaceId);
-    const targetProfileId = targetWs ? (targetWs.profileId || "default") : null;
+    const targetProfileId = targetWs ? targetWs.profileId || "default" : null;
     const currentProfileId = store.myActiveProfileId || "default";
 
     let activateProfileCalled = false;
-    let activateWorkspaceCalled = false;
 
     if (targetProfileId && targetProfileId !== currentProfileId) {
       const confirmed = await store.confirmInApp({
@@ -660,9 +685,8 @@ describe("useAppStore — cross-profile notification jump confirmation logic", (
       activateProfileCalled = true;
       await store.activateProfile(targetProfileId);
     }
-    activateWorkspaceCalled = true;
     await store.activateWorkspace(targetWorkspaceId);
-    return { confirmed: shouldConfirm, activateProfileCalled, activateWorkspaceCalled };
+    return { confirmed: shouldConfirm, activateProfileCalled, activateWorkspaceCalled: true };
   }
 
   it("same-profile jump does not call activateProfile", async () => {
@@ -677,7 +701,13 @@ describe("useAppStore — cross-profile notification jump confirmation logic", (
         windowSlots: [{ id: "slot1", profileId: "p1", activeWorkspaceId: "ws1", activeSessionId: "" }],
         settings: {},
         tabTemplates: [],
-        ssh: { hosts: [], keys: [], certificates: [], knownHosts: {}, settings: { defaultAgentMode: "inherit", importedSshConfig: false } },
+        ssh: {
+          hosts: [],
+          keys: [],
+          certificates: [],
+          knownHosts: {},
+          settings: { defaultAgentMode: "inherit", importedSshConfig: false },
+        },
       },
     });
     const transport = makeElectronTransport(payload);
@@ -690,7 +720,10 @@ describe("useAppStore — cross-profile notification jump confirmation logic", (
 
     // Set confirmInApp to always confirm (shouldn't be called for same-profile)
     let confirmCalled = false;
-    (store as AnyApi).confirmInApp = vi.fn(() => { confirmCalled = true; return Promise.resolve(true); });
+    (store as AnyApi).confirmInApp = vi.fn(() => {
+      confirmCalled = true;
+      return Promise.resolve(true);
+    });
 
     const result = await simulateCrossProfileJump(store, "ws2", true);
     expect(confirmCalled).toBe(false);
@@ -714,7 +747,13 @@ describe("useAppStore — cross-profile notification jump confirmation logic", (
         windowSlots: [{ id: "slot1", profileId: "p1", activeWorkspaceId: "ws1", activeSessionId: "" }],
         settings: {},
         tabTemplates: [],
-        ssh: { hosts: [], keys: [], certificates: [], knownHosts: {}, settings: { defaultAgentMode: "inherit", importedSshConfig: false } },
+        ssh: {
+          hosts: [],
+          keys: [],
+          certificates: [],
+          knownHosts: {},
+          settings: { defaultAgentMode: "inherit", importedSshConfig: false },
+        },
       },
     });
     const transport = makeElectronTransport(crossProfilePayload);
@@ -726,7 +765,10 @@ describe("useAppStore — cross-profile notification jump confirmation logic", (
     await Promise.resolve();
 
     let confirmCalled = false;
-    (store as AnyApi).confirmInApp = vi.fn(() => { confirmCalled = true; return Promise.resolve(true); });
+    (store as AnyApi).confirmInApp = vi.fn(() => {
+      confirmCalled = true;
+      return Promise.resolve(true);
+    });
 
     const result = await simulateCrossProfileJump(store, "ws2", true);
     expect(confirmCalled).toBe(true);
@@ -750,7 +792,13 @@ describe("useAppStore — cross-profile notification jump confirmation logic", (
         windowSlots: [{ id: "slot1", profileId: "p1", activeWorkspaceId: "ws1", activeSessionId: "" }],
         settings: {},
         tabTemplates: [],
-        ssh: { hosts: [], keys: [], certificates: [], knownHosts: {}, settings: { defaultAgentMode: "inherit", importedSshConfig: false } },
+        ssh: {
+          hosts: [],
+          keys: [],
+          certificates: [],
+          knownHosts: {},
+          settings: { defaultAgentMode: "inherit", importedSshConfig: false },
+        },
       },
     });
     const transport = makeElectronTransport(crossProfilePayload);

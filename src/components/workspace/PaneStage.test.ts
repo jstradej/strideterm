@@ -18,7 +18,9 @@ function makeTransport(initialPayload: AnyApi, isRemote = false) {
   return {
     isRemote,
     getState: vi.fn(() => Promise.resolve(initialPayload)),
-    onStateUpdated: (fn: (payload: AnyApi) => void) => { stateHandler = fn; },
+    onStateUpdated: (fn: (payload: AnyApi) => void) => {
+      stateHandler = fn;
+    },
     onConnectionState: vi.fn(),
     activateWorkspace: vi.fn(() => Promise.resolve(initialPayload)),
     activateProfile: vi.fn(() => Promise.resolve(initialPayload)),
@@ -37,18 +39,46 @@ function makePayload(overrides: AnyApi = {}): AnyApi {
         { id: "p2", name: "P2", color: "#fff", workspaceIds: ["ws-b"] },
       ],
       workspaces: [
-        { id: "ws-a", name: "WsA", profileId: "p1", panels: [{ id: "sh", title: "Shell", command: "" }], kind: "terminal", cwd: "/tmp/a" },
-        { id: "ws-b", name: "WsB", profileId: "p2", panels: [{ id: "sh", title: "Shell", command: "" }], kind: "terminal", cwd: "/tmp/b" },
+        {
+          id: "ws-a",
+          name: "WsA",
+          profileId: "p1",
+          panels: [{ id: "sh", title: "Shell", command: "" }],
+          kind: "terminal",
+          cwd: "/tmp/a",
+        },
+        {
+          id: "ws-b",
+          name: "WsB",
+          profileId: "p2",
+          panels: [{ id: "sh", title: "Shell", command: "" }],
+          kind: "terminal",
+          cwd: "/tmp/b",
+        },
       ],
       windowSlots: [{ id: "slot1", profileId: "p1", activeWorkspaceId: "ws-a", activeSessionId: "" }],
       settings: {},
       tabTemplates: [],
-      ssh: { hosts: [], keys: [], certificates: [], knownHosts: {}, settings: { defaultAgentMode: "inherit", importedSshConfig: false } },
+      ssh: {
+        hosts: [],
+        keys: [],
+        certificates: [],
+        knownHosts: {},
+        settings: { defaultAgentMode: "inherit", importedSshConfig: false },
+      },
       ...overrides.appState,
     },
     workspace: null,
     attention: { sessions: {}, alerts: [] },
-    docker: { available: false, backend: null, contexts: [], containers: [], lazydocker: { available: false, backend: null, error: "" }, error: "", lastUpdatedAt: null },
+    docker: {
+      available: false,
+      backend: null,
+      contexts: [],
+      containers: [],
+      lazydocker: { available: false, backend: null, error: "" },
+      error: "",
+      lastUpdatedAt: null,
+    },
     git: { workspaces: {}, activeWorkspace: null, connections: [] },
     azureDevops: { inboxItems: [], connections: [], lastUpdatedAt: null, error: "" },
     github: { inboxItems: [], connections: [], lastUpdatedAt: null, error: "" },
@@ -67,13 +97,9 @@ function makePayload(overrides: AnyApi = {}): AnyApi {
  * Mirrors the `liveTerminalSessionIds` logic from PaneStage.vue so we can
  * unit-test its behavior without mounting the component.
  */
-function computeLiveSessionIds(
-  workspaces: AnyApi[],
-  isRemote: boolean,
-  activeProfileId: string | null,
-): Set<string> {
+function computeLiveSessionIds(workspaces: AnyApi[], isRemote: boolean, activeProfileId: string | null): Set<string> {
   const ids = new Set<string>();
-  const profileFilter = isRemote ? (activeProfileId || "default") : null;
+  const profileFilter = isRemote ? activeProfileId || "default" : null;
   for (const workspace of workspaces) {
     if (profileFilter && (workspace.profileId || "default") !== profileFilter) continue;
     for (const panel of workspace.panels || []) {
@@ -207,9 +233,30 @@ describe("PaneStage — desktop live session IDs include all profiles", () => {
           { id: "p2", name: "P2", color: "#fff", workspaceIds: ["ws-b"] },
         ],
         workspaces: [
-          { id: "ws-a1", name: "A1", profileId: "p1", panels: [{ id: "sh", title: "Shell", command: "" }], kind: "terminal", cwd: "/tmp/a1" },
-          { id: "ws-a2", name: "A2", profileId: "p1", panels: [{ id: "sh", title: "Shell", command: "" }], kind: "terminal", cwd: "/tmp/a2" },
-          { id: "ws-b", name: "B",  profileId: "p2", panels: [{ id: "sh", title: "Shell", command: "" }], kind: "terminal", cwd: "/tmp/b" },
+          {
+            id: "ws-a1",
+            name: "A1",
+            profileId: "p1",
+            panels: [{ id: "sh", title: "Shell", command: "" }],
+            kind: "terminal",
+            cwd: "/tmp/a1",
+          },
+          {
+            id: "ws-a2",
+            name: "A2",
+            profileId: "p1",
+            panels: [{ id: "sh", title: "Shell", command: "" }],
+            kind: "terminal",
+            cwd: "/tmp/a2",
+          },
+          {
+            id: "ws-b",
+            name: "B",
+            profileId: "p2",
+            panels: [{ id: "sh", title: "Shell", command: "" }],
+            kind: "terminal",
+            cwd: "/tmp/b",
+          },
         ],
         windowSlots: [{ id: "slot1", profileId: "p1", activeWorkspaceId: "ws-a2", activeSessionId: "" }],
       },
@@ -221,34 +268,57 @@ describe("PaneStage — desktop live session IDs include all profiles", () => {
     await Promise.resolve();
 
     // Switch to p2
-    transport._push(makePayload({
-      appState: {
-        activeWorkspaceId: "ws-b",
-        profiles: [
-          {
-            id: "p1",
-            name: "P1",
-            color: "#fff",
-            workspaceIds: ["ws-a1", "ws-a2"],
-            workspaceGrid: { columns: 2, rows: 1, cellWorkspaceIds: ["ws-a1", "ws-a2"], focusedCellIndex: 1 },
-          },
-          { id: "p2", name: "P2", color: "#fff", workspaceIds: ["ws-b"] },
-        ],
-        workspaces: [
-          { id: "ws-a1", name: "A1", profileId: "p1", panels: [{ id: "sh", title: "Shell", command: "" }], kind: "terminal", cwd: "/tmp/a1" },
-          { id: "ws-a2", name: "A2", profileId: "p1", panels: [{ id: "sh", title: "Shell", command: "" }], kind: "terminal", cwd: "/tmp/a2" },
-          { id: "ws-b", name: "B",  profileId: "p2", panels: [{ id: "sh", title: "Shell", command: "" }], kind: "terminal", cwd: "/tmp/b" },
-        ],
-        windowSlots: [{ id: "slot1", profileId: "p2", activeWorkspaceId: "ws-b", activeSessionId: "" }],
-      },
-    }));
+    transport._push(
+      makePayload({
+        appState: {
+          activeWorkspaceId: "ws-b",
+          profiles: [
+            {
+              id: "p1",
+              name: "P1",
+              color: "#fff",
+              workspaceIds: ["ws-a1", "ws-a2"],
+              workspaceGrid: { columns: 2, rows: 1, cellWorkspaceIds: ["ws-a1", "ws-a2"], focusedCellIndex: 1 },
+            },
+            { id: "p2", name: "P2", color: "#fff", workspaceIds: ["ws-b"] },
+          ],
+          workspaces: [
+            {
+              id: "ws-a1",
+              name: "A1",
+              profileId: "p1",
+              panels: [{ id: "sh", title: "Shell", command: "" }],
+              kind: "terminal",
+              cwd: "/tmp/a1",
+            },
+            {
+              id: "ws-a2",
+              name: "A2",
+              profileId: "p1",
+              panels: [{ id: "sh", title: "Shell", command: "" }],
+              kind: "terminal",
+              cwd: "/tmp/a2",
+            },
+            {
+              id: "ws-b",
+              name: "B",
+              profileId: "p2",
+              panels: [{ id: "sh", title: "Shell", command: "" }],
+              kind: "terminal",
+              cwd: "/tmp/b",
+            },
+          ],
+          windowSlots: [{ id: "slot1", profileId: "p2", activeWorkspaceId: "ws-b", activeSessionId: "" }],
+        },
+      }),
+    );
     await Promise.resolve();
 
     // Desktop: ALL three sessions live — both grid cells from inactive profile A + active profile B
     const workspaces = (appStore.payload as AnyApi)?.appState?.workspaces || [];
     const liveIds = new Set<string>();
     for (const ws of workspaces) {
-      const profileFilter = appStore.isRemoteTransport ? (appStore.myActiveProfileId || "default") : null;
+      const profileFilter = appStore.isRemoteTransport ? appStore.myActiveProfileId || "default" : null;
       if (profileFilter && (ws.profileId || "default") !== profileFilter) continue;
       for (const panel of ws.panels || []) {
         const cmd = String(panel.command || "");
@@ -258,40 +328,85 @@ describe("PaneStage — desktop live session IDs include all profiles", () => {
     }
     expect(liveIds.has("ws-a1:sh")).toBe(true); // grid cell 1 — inactive profile
     expect(liveIds.has("ws-a2:sh")).toBe(true); // grid cell 2 — inactive profile
-    expect(liveIds.has("ws-b:sh")).toBe(true);  // active profile
+    expect(liveIds.has("ws-b:sh")).toBe(true); // active profile
   });
 
   it("returning to a profile includes its grid sessions in the live set", async () => {
     // Same setup as above but we switch back to p1 and confirm grid sessions are still live.
     const workspaces = [
-      { id: "ws-a1", name: "A1", profileId: "p1", panels: [{ id: "sh", title: "Shell", command: "" }], kind: "terminal", cwd: "/tmp/a1" },
-      { id: "ws-a2", name: "A2", profileId: "p1", panels: [{ id: "sh", title: "Shell", command: "" }], kind: "terminal", cwd: "/tmp/a2" },
-      { id: "ws-b",  name: "B",  profileId: "p2", panels: [{ id: "sh", title: "Shell", command: "" }], kind: "terminal", cwd: "/tmp/b" },
+      {
+        id: "ws-a1",
+        name: "A1",
+        profileId: "p1",
+        panels: [{ id: "sh", title: "Shell", command: "" }],
+        kind: "terminal",
+        cwd: "/tmp/a1",
+      },
+      {
+        id: "ws-a2",
+        name: "A2",
+        profileId: "p1",
+        panels: [{ id: "sh", title: "Shell", command: "" }],
+        kind: "terminal",
+        cwd: "/tmp/a2",
+      },
+      {
+        id: "ws-b",
+        name: "B",
+        profileId: "p2",
+        panels: [{ id: "sh", title: "Shell", command: "" }],
+        kind: "terminal",
+        cwd: "/tmp/b",
+      },
     ];
     const profiles = [
-      { id: "p1", name: "P1", color: "#fff", workspaceIds: ["ws-a1", "ws-a2"],
-        workspaceGrid: { columns: 2, rows: 1, cellWorkspaceIds: ["ws-a1", "ws-a2"], focusedCellIndex: 1 } },
+      {
+        id: "p1",
+        name: "P1",
+        color: "#fff",
+        workspaceIds: ["ws-a1", "ws-a2"],
+        workspaceGrid: { columns: 2, rows: 1, cellWorkspaceIds: ["ws-a1", "ws-a2"], focusedCellIndex: 1 },
+      },
       { id: "p2", name: "P2", color: "#fff", workspaceIds: ["ws-b"] },
     ];
 
-    const transport = makeTransport(makePayload({
-      appState: { workspaces, profiles, activeWorkspaceId: "ws-a2",
-        windowSlots: [{ id: "slot1", profileId: "p1", activeWorkspaceId: "ws-a2", activeSessionId: "" }] },
-    }));
+    const transport = makeTransport(
+      makePayload({
+        appState: {
+          workspaces,
+          profiles,
+          activeWorkspaceId: "ws-a2",
+          windowSlots: [{ id: "slot1", profileId: "p1", activeWorkspaceId: "ws-a2", activeSessionId: "" }],
+        },
+      }),
+    );
     const appStore = useAppStore();
     appStore.init(transport as AnyApi);
-    await Promise.resolve(); await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
 
     // Switch to p2 then back to p1
-    transport._push(makePayload({
-      appState: { workspaces, profiles, activeWorkspaceId: "ws-b",
-        windowSlots: [{ id: "slot1", profileId: "p2", activeWorkspaceId: "ws-b", activeSessionId: "" }] },
-    }));
+    transport._push(
+      makePayload({
+        appState: {
+          workspaces,
+          profiles,
+          activeWorkspaceId: "ws-b",
+          windowSlots: [{ id: "slot1", profileId: "p2", activeWorkspaceId: "ws-b", activeSessionId: "" }],
+        },
+      }),
+    );
     await Promise.resolve();
-    transport._push(makePayload({
-      appState: { workspaces, profiles, activeWorkspaceId: "ws-a2",
-        windowSlots: [{ id: "slot1", profileId: "p1", activeWorkspaceId: "ws-a2", activeSessionId: "" }] },
-    }));
+    transport._push(
+      makePayload({
+        appState: {
+          workspaces,
+          profiles,
+          activeWorkspaceId: "ws-a2",
+          windowSlots: [{ id: "slot1", profileId: "p1", activeWorkspaceId: "ws-a2", activeSessionId: "" }],
+        },
+      }),
+    );
     await Promise.resolve();
 
     // After returning to p1, both grid sessions are still live
