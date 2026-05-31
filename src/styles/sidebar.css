@@ -256,22 +256,17 @@ body.platform-darwin .frame--sidebar-collapsed .sidebar__head {
   color: #f5c542;
 }
 
-/* "New workspace" (+) is the primary call-to-action in the sidebar header —
-   without this it disappears between the star / settings / help glyphs.
-   Accent-tinted background + border make it pop without breaking the icon-
-   strip rhythm. */
+/* "New workspace" (+) is the primary call-to-action in the sidebar header.
+   It stays within the plain icon-strip rhythm (no border/background box) and
+   only leans on the accent color + a heavier glyph so it reads as primary
+   without breaking alignment with the neighbouring glyphs. */
 .sidebar__icon-btn--primary {
   color: var(--accent);
-  border: 1px solid color-mix(in srgb, var(--accent), transparent 55%);
-  background: color-mix(in srgb, var(--accent), transparent 85%);
-  font-weight: 700;
-  font-size: 18px;
+  font-weight: 800;
 }
 
 .sidebar__icon-btn--primary:hover {
-  background: color-mix(in srgb, var(--accent), transparent 60%);
   color: var(--accent);
-  border-color: var(--accent);
 }
 
 .button {
