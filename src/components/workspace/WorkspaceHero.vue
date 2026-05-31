@@ -41,6 +41,7 @@
           </span>
           <WorkspaceLayoutChip />
         </div>
+        <NotificationBell />
       </div>
     </template>
 
@@ -88,6 +89,7 @@
           </span>
           <WorkspaceLayoutChip />
         </div>
+        <NotificationBell />
       </div>
     </template>
   </section>
@@ -98,6 +100,7 @@ import { computed, inject, ref } from "vue";
 import { useAppStore } from "../../stores/app.js";
 import { safeColor, attentionTitle, isFreshAttention, isContainerRunning } from "../../app/helpers.js";
 import WorkspaceLayoutChip from "./WorkspaceLayoutChip.vue";
+import NotificationBell from "../layout/NotificationBell.vue";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const api = inject<any>("api");
