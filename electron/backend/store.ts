@@ -128,7 +128,7 @@ export async function createStore(statePath: string) {
     },
     async replace(nextState: AppState): Promise<AppState> {
       return enqueue(async () => {
-        state = normalizeState(nextState);
+        state = normalizeState(nextState, { seedRestoreIdsFromSlots: false });
         await persist();
         return state;
       });
@@ -137,7 +137,7 @@ export async function createStore(statePath: string) {
       return enqueue(async () => {
         const draft = structuredClone(state);
         const result = await mutator(draft);
-        state = normalizeState(result || draft);
+        state = normalizeState(result || draft, { seedRestoreIdsFromSlots: false });
         await persist();
         return state;
       });

@@ -858,7 +858,16 @@ export function normalizeWorkspaceGrid(
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-export function normalizeState(rawState: any = {}): AppState & { activeProjectId: string; projects: WorkspaceState[] } {
+export function normalizeState(
+  rawState: any = {},
+  options: { seedRestoreIdsFromSlots?: boolean } = {},
+): AppState & { activeProjectId: string; projects: WorkspaceState[] } {
+  // The windowSlot → profile restore-id seed is a one-time load-time migration
+  // for legacy state. It must NOT run on every normalize: after deleteWorkspace
+  // clears a profile's lastActive ids, the re-normalize inside store.mutate would
+  // otherwise re-seed them from the slot's still-present activeWorkspaceId. Live
+  // mutate/replace paths pass false; disk-load paths use the default (true).
+  const seedRestoreIdsFromSlots = options.seedRestoreIdsFromSlots ?? true;
   const defaults = createDefaultState();
   const rawWorkspaces = rawState.workspaces || rawState.projects || defaults.workspaces;
   const rawTemplates = rawState.tabTemplates;
@@ -1244,7 +1253,7 @@ export function normalizeState(rawState: any = {}): AppState & { activeProjectId
 
     // Migration seed: if no lastActiveWorkspaceId was saved, try to seed from the
     // matching WindowSlot in rawState (covers old state pre-dating per-profile restore ids).
-    if (!lastWsId) {
+    if (!lastWsId && seedRestoreIdsFromSlots) {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const rawSlots = (rawState as Record<string, unknown>).windowSlots as any[] | undefined;
       if (Array.isArray(rawSlots)) {

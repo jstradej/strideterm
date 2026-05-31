@@ -26,7 +26,7 @@ function createMemoryStore(initialState?: any) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async replace(nextState: any) {
       return enqueue(async () => {
-        state = normalizeState(nextState);
+        state = normalizeState(nextState, { seedRestoreIdsFromSlots: false });
         return state;
       });
     },
@@ -35,7 +35,7 @@ function createMemoryStore(initialState?: any) {
       return enqueue(async () => {
         const draft = structuredClone(state);
         const result = await mutator(draft);
-        state = normalizeState(result || draft);
+        state = normalizeState(result || draft, { seedRestoreIdsFromSlots: false });
         return state;
       });
     },
