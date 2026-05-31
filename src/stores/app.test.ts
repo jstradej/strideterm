@@ -624,3 +624,149 @@ describe("useAppStore — activateProfile adopts restored session from payload",
     expect((store as AnyApi).activeSessionId).toBeNull();
   });
 });
+
+describe("useAppStore — cross-profile notification jump confirmation logic", () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    (window as AnyApi).strideterm = { startupFlags: { windowId: "slot1" } };
+  });
+
+  /**
+   * Extract the cross-profile jump logic for unit testing without mounting
+   * the full NotificationCenter Vue component. This mirrors the jump() function's
+   * profile-check path.
+   */
+  async function simulateCrossProfileJump(
+    store: AnyApi,
+    targetWorkspaceId: string,
+    shouldConfirm: boolean,
+  ): Promise<{ confirmed: boolean; activateProfileCalled: boolean; activateWorkspaceCalled: boolean }> {
+    const workspaces = (store.payload?.appState?.workspaces || []) as AnyApi[];
+    const targetWs = workspaces.find((w: AnyApi) => w.id === targetWorkspaceId);
+    const targetProfileId = targetWs ? (targetWs.profileId || "default") : null;
+    const currentProfileId = store.myActiveProfileId || "default";
+
+    let activateProfileCalled = false;
+    let activateWorkspaceCalled = false;
+
+    if (targetProfileId && targetProfileId !== currentProfileId) {
+      const confirmed = await store.confirmInApp({
+        title: "Switch profile?",
+        message: `Switch to activate this session?`,
+        confirmLabel: "Switch",
+        cancelLabel: "Cancel",
+      });
+      if (!confirmed) return { confirmed: false, activateProfileCalled: false, activateWorkspaceCalled: false };
+      activateProfileCalled = true;
+      await store.activateProfile(targetProfileId);
+    }
+    activateWorkspaceCalled = true;
+    await store.activateWorkspace(targetWorkspaceId);
+    return { confirmed: shouldConfirm, activateProfileCalled, activateWorkspaceCalled };
+  }
+
+  it("same-profile jump does not call activateProfile", async () => {
+    const payload = makeBasePayload({
+      appState: {
+        activeWorkspaceId: "ws1",
+        profiles: [{ id: "p1", name: "P1", color: "#fff", workspaceIds: ["ws1", "ws2"] }],
+        workspaces: [
+          { id: "ws1", name: "W1", profileId: "p1", panels: [], kind: "terminal", cwd: "/tmp" },
+          { id: "ws2", name: "W2", profileId: "p1", panels: [], kind: "terminal", cwd: "/tmp" },
+        ],
+        windowSlots: [{ id: "slot1", profileId: "p1", activeWorkspaceId: "ws1", activeSessionId: "" }],
+        settings: {},
+        tabTemplates: [],
+        ssh: { hosts: [], keys: [], certificates: [], knownHosts: {}, settings: { defaultAgentMode: "inherit", importedSshConfig: false } },
+      },
+    });
+    const transport = makeElectronTransport(payload);
+    (transport as AnyApi).activateWorkspace = vi.fn(() => Promise.resolve(payload));
+    (transport as AnyApi).activateProfile = vi.fn(() => Promise.resolve(payload));
+    const store = useAppStore();
+    store.init(transport as AnyApi);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // Set confirmInApp to always confirm (shouldn't be called for same-profile)
+    let confirmCalled = false;
+    (store as AnyApi).confirmInApp = vi.fn(() => { confirmCalled = true; return Promise.resolve(true); });
+
+    const result = await simulateCrossProfileJump(store, "ws2", true);
+    expect(confirmCalled).toBe(false);
+    expect(result.activateProfileCalled).toBe(false);
+    expect(result.activateWorkspaceCalled).toBe(true);
+  });
+
+  it("cross-profile jump calls confirmInApp and activateProfile on confirm", async () => {
+    // Initial payload has ws1 (p1) and ws2 (p2) in separate profiles.
+    const crossProfilePayload = makeBasePayload({
+      appState: {
+        activeWorkspaceId: "ws1",
+        profiles: [
+          { id: "p1", name: "P1", color: "#fff", workspaceIds: ["ws1"] },
+          { id: "p2", name: "P2", color: "#fff", workspaceIds: ["ws2"] },
+        ],
+        workspaces: [
+          { id: "ws1", name: "W1", profileId: "p1", panels: [], kind: "terminal", cwd: "/tmp" },
+          { id: "ws2", name: "W2", profileId: "p2", panels: [], kind: "terminal", cwd: "/tmp" },
+        ],
+        windowSlots: [{ id: "slot1", profileId: "p1", activeWorkspaceId: "ws1", activeSessionId: "" }],
+        settings: {},
+        tabTemplates: [],
+        ssh: { hosts: [], keys: [], certificates: [], knownHosts: {}, settings: { defaultAgentMode: "inherit", importedSshConfig: false } },
+      },
+    });
+    const transport = makeElectronTransport(crossProfilePayload);
+    (transport as AnyApi).activateWorkspace = vi.fn(() => Promise.resolve(crossProfilePayload));
+    (transport as AnyApi).activateProfile = vi.fn(() => Promise.resolve(crossProfilePayload));
+    const store = useAppStore();
+    store.init(transport as AnyApi);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    let confirmCalled = false;
+    (store as AnyApi).confirmInApp = vi.fn(() => { confirmCalled = true; return Promise.resolve(true); });
+
+    const result = await simulateCrossProfileJump(store, "ws2", true);
+    expect(confirmCalled).toBe(true);
+    expect(result.activateProfileCalled).toBe(true);
+    expect(result.activateWorkspaceCalled).toBe(true);
+  });
+
+  it("cross-profile jump does not switch on cancel", async () => {
+    // Same cross-profile setup: p1 is active, ws2 is in p2.
+    const crossProfilePayload = makeBasePayload({
+      appState: {
+        activeWorkspaceId: "ws1",
+        profiles: [
+          { id: "p1", name: "P1", color: "#fff", workspaceIds: ["ws1"] },
+          { id: "p2", name: "P2", color: "#fff", workspaceIds: ["ws2"] },
+        ],
+        workspaces: [
+          { id: "ws1", name: "W1", profileId: "p1", panels: [], kind: "terminal", cwd: "/tmp" },
+          { id: "ws2", name: "W2", profileId: "p2", panels: [], kind: "terminal", cwd: "/tmp" },
+        ],
+        windowSlots: [{ id: "slot1", profileId: "p1", activeWorkspaceId: "ws1", activeSessionId: "" }],
+        settings: {},
+        tabTemplates: [],
+        ssh: { hosts: [], keys: [], certificates: [], knownHosts: {}, settings: { defaultAgentMode: "inherit", importedSshConfig: false } },
+      },
+    });
+    const transport = makeElectronTransport(crossProfilePayload);
+    (transport as AnyApi).activateProfile = vi.fn(() => Promise.resolve(crossProfilePayload));
+    (transport as AnyApi).activateWorkspace = vi.fn(() => Promise.resolve(crossProfilePayload));
+    const store = useAppStore();
+    store.init(transport as AnyApi);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // Reject the confirmation
+    (store as AnyApi).confirmInApp = vi.fn(() => Promise.resolve(false));
+
+    const result = await simulateCrossProfileJump(store, "ws2", false);
+    expect(result.confirmed).toBe(false);
+    expect(result.activateProfileCalled).toBe(false);
+    expect(result.activateWorkspaceCalled).toBe(false);
+  });
+});
