@@ -404,9 +404,35 @@ export interface AttentionState {
       lastActivity: string;
       alertKind: string | null;
       alertedAt: string | null;
+      activity?: "idle" | "running" | "done" | string;
+      agentLike?: boolean;
+      hasUserInput?: boolean;
+      lastExitCode?: number | null;
+      lastCommandFinishedAt?: number;
     }
   >;
-  alerts: Alert[];
+  byWorkspace?: Record<string, AttentionBucket>;
+  byProject?: Record<string, AttentionBucket>;
+  activeWorkspace?: AttentionBucket | null;
+  activeProject?: AttentionBucket | null;
+  alerts?: Alert[];
+}
+
+export interface AttentionBucket {
+  count: number;
+  latestAt: string | null;
+  alerts: Array<{
+    projectId: string;
+    panelId: string;
+    sessionId: string;
+    title: string;
+    exitCode: number | null;
+    kind: string;
+    tier: number;
+    urgency: string;
+    detail: string;
+    at: string;
+  }>;
 }
 
 export type DockerBackendId = string;

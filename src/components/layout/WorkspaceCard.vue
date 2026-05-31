@@ -72,14 +72,7 @@
     </span>
     <span class="workspace-card__actions">
       <button
-        v-if="
-          workspace.active &&
-          workspace.kind === 'task' &&
-          (workspace.taskState === 'running' ||
-            workspace.taskState === 'evaluating' ||
-            workspace.taskState === 'judge-evaluating' ||
-            workspace.taskState === 'refreshing')
-        "
+        v-if="workspace.active && workspace.kind === 'task' && isTaskRunningState(workspace.taskState)"
         class="workspace-card__action"
         type="button"
         title="Pause the agent task immediately — the Worker / Judge processes keep running but the runner stops sending new prompts. Click Continue (or Reset) afterwards from the Dashboard."
@@ -91,10 +84,7 @@
         v-if="
           workspace.active &&
           workspace.kind === 'task' &&
-          workspace.taskState !== 'running' &&
-          workspace.taskState !== 'evaluating' &&
-          workspace.taskState !== 'judge-evaluating' &&
-          workspace.taskState !== 'refreshing' &&
+          !isTaskRunningState(workspace.taskState) &&
           workspace.taskState !== 'idle'
         "
         class="workspace-card__action"
@@ -137,6 +127,8 @@ interface WorkspaceCardData {
   taskState?: string;
   starred?: boolean;
   checksState?: string;
+  agentActivityState?: string | null;
+  agentActivityLabel?: string;
   name: string;
   summary?: string;
   title?: string;
@@ -152,11 +144,15 @@ const props = defineProps<{
 
 const RUNNING_STATES = new Set(["running", "evaluating", "judge-evaluating", "refreshing", "showering"]);
 
+function isTaskRunningState(state: string | null | undefined): boolean {
+  return Boolean(state && RUNNING_STATES.has(state));
+}
+
 const statusDot = computed((): { state: string; label: string } | null => {
-  const { taskState, prStatus, kind } = props.workspace;
+  const { taskState, prStatus, kind, agentActivityState, agentActivityLabel } = props.workspace;
 
   if (kind === "task" && taskState) {
-    if (RUNNING_STATES.has(taskState)) return { state: "running", label: "Running…" };
+    if (isTaskRunningState(taskState)) return { state: "running", label: "Running…" };
     if (taskState === "failed") return { state: "failed", label: "Failed" };
     if (taskState === "stopped") return { state: "stopped", label: "Stopped" };
     if (taskState === "paused") return { state: "paused", label: "Paused" };
@@ -165,6 +161,9 @@ const statusDot = computed((): { state: string; label: string } | null => {
       return { state: "completed", label: "Completed" };
     }
   }
+
+  if (agentActivityState === "running") return { state: "running", label: agentActivityLabel || "Agent is working" };
+  if (agentActivityState === "done") return { state: "completed", label: agentActivityLabel || "Agent finished" };
 
   if (prStatus === "active") return { state: "pr-active", label: "PR open" };
   if (prStatus === "completed") return { state: "merged", label: "PR merged" };

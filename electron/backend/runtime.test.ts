@@ -1551,6 +1551,63 @@ describe("runtime integration", () => {
     expect(payload.agentNotifyHook.port).toBeNull();
   });
 
+  test("UserPromptSubmit marks agent session activity in attention snapshot", async () => {
+    const fixture = await createFixture({
+      initialState: {
+        activeProjectId: "backend",
+        projects: [
+          {
+            id: "backend",
+            name: "Backend",
+            kind: "terminal",
+            cwd: "/tmp/backend",
+            activePanelId: "codex",
+            panels: [{ id: "codex", title: "Codex", command: "codex", shell: true, startup: "default" }],
+          },
+        ],
+      },
+    });
+    fixtures.push(fixture);
+
+    fixture.runtime.notifyAgentHook("backend:codex", "", "UserPromptSubmit");
+
+    expect(fixture.runtime.getPayload().attention.sessions["backend:codex"]).toMatchObject({
+      workspaceId: "backend",
+      panelId: "codex",
+      activity: "running",
+      agentLike: true,
+      hasUserInput: true,
+    });
+  });
+
+  test("SubagentStop does not mark the main agent session done", async () => {
+    const fixture = await createFixture({
+      initialState: {
+        activeProjectId: "backend",
+        projects: [
+          {
+            id: "backend",
+            name: "Backend",
+            kind: "terminal",
+            cwd: "/tmp/backend",
+            activePanelId: "claude",
+            panels: [{ id: "claude", title: "Claude", command: "claude", shell: true, startup: "default" }],
+          },
+        ],
+      },
+    });
+    fixtures.push(fixture);
+
+    fixture.runtime.notifyAgentHook("backend:claude", "", "UserPromptSubmit");
+    fixture.runtime.notifyAgentHook("backend:claude", "", "SubagentStop");
+
+    expect(fixture.runtime.getPayload().attention.sessions["backend:claude"]).toMatchObject({
+      activity: "running",
+      agentLike: true,
+      hasUserInput: true,
+    });
+  });
+
   test("notifyAgentHook raises instant alert for idle_prompt", async () => {
     vi.useFakeTimers();
     try {

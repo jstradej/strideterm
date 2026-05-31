@@ -112,6 +112,194 @@ describe("buildWorkspaceCards", () => {
     expect(card.summary).toBe("Docker");
     expect(card.active).toBe(true);
   });
+
+  test("surfaces running agent activity for non-task workspaces", () => {
+    const [card] = buildWorkspaceCards({
+      workspaces: [
+        {
+          id: "ws-agent",
+          name: "admin-cli",
+          kind: "manual",
+          color: "#f0a020",
+          icon: "PR",
+          panels: [{ id: "codex", title: "Codex", command: "codex" }],
+        } as unknown as WorkspaceState,
+      ],
+      activeWorkspaceId: "ws-agent",
+      getGitSnapshot: () => null,
+      getWorkspaceAttention: () => null,
+      sessionActivities: {
+        "ws-agent:codex": {
+          workspaceId: "ws-agent",
+          panelId: "codex",
+          activity: "running",
+          agentLike: true,
+          hasUserInput: true,
+        },
+      },
+    });
+
+    expect(card.agentActivityState).toBe("running");
+    expect(card.agentActivityLabel).toBe("Codex is working");
+  });
+
+  test("surfaces just-finished agent activity for non-task workspaces", () => {
+    const [card] = buildWorkspaceCards({
+      workspaces: [
+        {
+          id: "ws-agent",
+          name: "admin-cli",
+          kind: "manual",
+          color: "#f0a020",
+          icon: "PR",
+          panels: [{ id: "codex", title: "Codex", command: "codex" }],
+        } as unknown as WorkspaceState,
+      ],
+      activeWorkspaceId: "ws-agent",
+      getGitSnapshot: () => null,
+      getWorkspaceAttention: () => null,
+      sessionActivities: {
+        "ws-agent:codex": {
+          workspaceId: "ws-agent",
+          panelId: "codex",
+          activity: "done",
+          agentLike: true,
+          hasUserInput: true,
+        },
+      },
+    });
+
+    expect(card.agentActivityState).toBe("done");
+    expect(card.agentActivityLabel).toBe("Codex finished");
+  });
+
+  test("aggregates multiple running agents in one workspace", () => {
+    const [card] = buildWorkspaceCards({
+      workspaces: [
+        {
+          id: "ws-agent",
+          name: "admin-cli",
+          kind: "manual",
+          color: "#f0a020",
+          icon: "PR",
+          panels: [
+            { id: "codex", title: "Codex", command: "codex" },
+            { id: "claude", title: "Claude", command: "claude" },
+            { id: "gemini", title: "Gemini", command: "gemini" },
+          ],
+        } as unknown as WorkspaceState,
+      ],
+      activeWorkspaceId: "ws-agent",
+      getGitSnapshot: () => null,
+      getWorkspaceAttention: () => null,
+      sessionActivities: {
+        "ws-agent:codex": {
+          workspaceId: "ws-agent",
+          panelId: "codex",
+          activity: "running",
+          agentLike: true,
+          hasUserInput: true,
+        },
+        "ws-agent:claude": {
+          workspaceId: "ws-agent",
+          panelId: "claude",
+          activity: "running",
+          agentLike: true,
+          hasUserInput: true,
+        },
+        "ws-agent:gemini": {
+          workspaceId: "ws-agent",
+          panelId: "gemini",
+          activity: "done",
+          agentLike: true,
+          hasUserInput: true,
+          lastCommandFinishedAt: 2_000,
+        },
+      },
+    });
+
+    expect(card.agentActivityState).toBe("running");
+    expect(card.agentActivityLabel).toBe("2 agents are working");
+  });
+
+  test("aggregates multiple finished agents in one workspace", () => {
+    const [card] = buildWorkspaceCards({
+      workspaces: [
+        {
+          id: "ws-agent",
+          name: "admin-cli",
+          kind: "manual",
+          color: "#f0a020",
+          icon: "PR",
+          panels: [
+            { id: "codex", title: "Codex", command: "codex" },
+            { id: "claude", title: "Claude", command: "claude" },
+          ],
+        } as unknown as WorkspaceState,
+      ],
+      activeWorkspaceId: "ws-agent",
+      getGitSnapshot: () => null,
+      getWorkspaceAttention: () => null,
+      sessionActivities: {
+        "ws-agent:codex": {
+          workspaceId: "ws-agent",
+          panelId: "codex",
+          activity: "done",
+          agentLike: true,
+          hasUserInput: true,
+          lastCommandFinishedAt: 1_000,
+        },
+        "ws-agent:claude": {
+          workspaceId: "ws-agent",
+          panelId: "claude",
+          activity: "done",
+          agentLike: true,
+          hasUserInput: true,
+          lastCommandFinishedAt: 2_000,
+        },
+      },
+    });
+
+    expect(card.agentActivityState).toBe("done");
+    expect(card.agentActivityLabel).toBe("2 agents finished");
+  });
+
+  test("does not surface generic or passive session activity as agent work", () => {
+    const [card] = buildWorkspaceCards({
+      workspaces: [
+        {
+          id: "ws-shell",
+          name: "admin-cli",
+          kind: "manual",
+          color: "#f0a020",
+          icon: "PR",
+          panels: [{ id: "shell", title: "Shell", command: "pwsh" }],
+        } as unknown as WorkspaceState,
+      ],
+      activeWorkspaceId: "ws-shell",
+      getGitSnapshot: () => null,
+      getWorkspaceAttention: () => null,
+      sessionActivities: {
+        "ws-shell:shell": {
+          workspaceId: "ws-shell",
+          panelId: "shell",
+          activity: "running",
+          agentLike: false,
+          hasUserInput: true,
+        },
+        "ws-shell:codex": {
+          workspaceId: "ws-shell",
+          panelId: "codex",
+          activity: "running",
+          agentLike: true,
+          hasUserInput: false,
+        },
+      },
+    });
+
+    expect(card.agentActivityState).toBeNull();
+    expect(card.agentActivityLabel).toBe("");
+  });
 });
 
 describe("buildTabStripModel", () => {

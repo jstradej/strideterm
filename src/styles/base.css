@@ -18,6 +18,16 @@
   --success-fg: #6edfb6;
   --danger: #ff6f8d;
   --danger-fg: #ff6f8d;
+  /* Shared state palette: running is active work, paused is waiting, stopped is cancelled/interrupted, review is an open PR, muted is inactive. */
+  --status-running: #ffa424;
+  --status-success: #4caf7e;
+  --status-success-soft: #6edfb6;
+  --status-failed: #ff6f8d;
+  --status-stopped: #c0392b;
+  --status-paused: #f0c028;
+  --status-review: #5b8dd9;
+  --status-merged: #9b59b6;
+  --status-muted: #888;
   --shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
   --tint: 255, 255, 255;
   --sidebar-width: 248px;
@@ -39,6 +49,15 @@
   --success-fg: #1b6e2e;
   --danger: #b7284c;
   --danger-fg: #a1213f;
+  --status-running: #cc8520;
+  --status-success: #2e7d32;
+  --status-success-soft: #1b6e2e;
+  --status-failed: #b7284c;
+  --status-stopped: #9f2f25;
+  --status-paused: #b7791f;
+  --status-review: #2b6cb0;
+  --status-merged: #7b3fa1;
+  --status-muted: #777;
   --shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
   --tint: 0, 0, 0;
   color-scheme: light;

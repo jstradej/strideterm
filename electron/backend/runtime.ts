@@ -1126,14 +1126,17 @@ export async function createRuntime({
     if (!signal) return;
     if (hook === "UserPromptSubmit") {
       // User started new work — prior idle state is stale.
+      signal.agentLike = true;
+      signal.hasUserInput = true;
       signal.lastPromptAt = Date.now();
+      signal.lastUserInteractionAt = signal.lastPromptAt;
       signal.busy = false;
       signal.outputBursts = 0;
       signal.waitingRaised = false;
       cancelPromptTimer(signal);
       setSessionActivity(signal, "running");
       log.trace("UserPromptSubmit: reset busy/waitingRaised", { sessionId: signal.sessionId });
-    } else if (hook === "Stop" || hook === "SubagentStop") {
+    } else if (hook === "Stop") {
       // Agent finished its turn — flash a "done" chip then fade to idle.
       setSessionActivity(signal, "done", { exitCode: 0 });
     }

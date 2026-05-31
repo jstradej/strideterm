@@ -39,6 +39,24 @@ interface LiveTask {
   maxRounds?: number;
 }
 
+interface SessionActivityLike {
+  workspaceId?: string;
+  panelId?: string;
+  activity?: string;
+  agentLike?: boolean;
+  hasUserInput?: boolean;
+  lastCommandFinishedAt?: number;
+  lastExitCode?: number | null;
+}
+
+interface WorkspaceAgentActivity {
+  state: "running" | "done";
+  panelTitle: string;
+  runningCount: number;
+  doneCount: number;
+  latestDoneAt: number;
+}
+
 /**
  * Trim a task description for a hover tooltip. We want enough text to actually
  * tell two agents apart (one-liner descriptions don't cut it) but not so much
@@ -138,6 +156,7 @@ export function buildWorkspaceCards({
   getChecks,
   getPrStatus,
   taskRunnerSnapshot,
+  sessionActivities,
 }: {
   workspaces: WorkspaceState[];
   activeWorkspaceId: string;
@@ -146,8 +165,39 @@ export function buildWorkspaceCards({
   getChecks?: ((workspace: WorkspaceState) => ChecksLike | null | undefined) | null;
   getPrStatus?: ((workspace: WorkspaceState) => PrStatusInfo | null | undefined) | null;
   taskRunnerSnapshot?: Record<string, LiveTask> | null;
+  sessionActivities?: Record<string, SessionActivityLike> | null;
 }): Array<Record<string, unknown>> {
   const byId = new Map(workspaces.map((w) => [w.id, w]));
+  const agentActivityByWorkspace = new Map<string, WorkspaceAgentActivity>();
+  for (const session of Object.values(sessionActivities || {})) {
+    if (!session?.workspaceId || !session.agentLike || !session.hasUserInput) continue;
+    if (session.activity !== "running" && session.activity !== "done") continue;
+    const workspace = byId.get(session.workspaceId);
+    const panelTitle =
+      workspace?.panels?.find((panel) => panel.id === session.panelId)?.title || session.panelId || "Agent";
+    const current = agentActivityByWorkspace.get(session.workspaceId);
+    if (session.activity === "running") {
+      agentActivityByWorkspace.set(session.workspaceId, {
+        state: "running",
+        panelTitle: current?.state === "running" ? current.panelTitle : panelTitle,
+        runningCount: (current?.runningCount || 0) + 1,
+        doneCount: current?.doneCount || 0,
+        latestDoneAt: current?.latestDoneAt || 0,
+      });
+    } else {
+      const finishedAt = Number(session.lastCommandFinishedAt || 0);
+      agentActivityByWorkspace.set(session.workspaceId, {
+        state: current?.state === "running" ? "running" : "done",
+        panelTitle:
+          !current || (current.state !== "running" && finishedAt >= current.latestDoneAt)
+            ? panelTitle
+            : current.panelTitle,
+        runningCount: current?.runningCount || 0,
+        doneCount: (current?.doneCount || 0) + 1,
+        latestDoneAt: Math.max(current?.latestDoneAt || 0, finishedAt),
+      });
+    }
+  }
   return workspaces.map((workspace, index) => {
     const active = workspace.id === activeWorkspaceId;
     const gitSnapshot = getGitSnapshot(workspace.id);
@@ -171,6 +221,8 @@ export function buildWorkspaceCards({
     const reviewProviderLabel = workspace.review?.provider === "github" ? "GitHub review" : "Azure review";
     const liveTask = taskRunnerSnapshot?.[workspace.id];
     const taskState = liveTask?.state || workspace.task?.state;
+    const agentActivity = agentActivityByWorkspace.get(workspace.id);
+    const workspaceAgentState = workspace.kind === "task" ? null : agentActivity?.state || null;
     const taskCurrentRound = liveTask?.currentRound ?? workspace.task?.currentRound ?? 0;
     const taskMaxRounds = liveTask?.maxRounds ?? workspace.task?.maxRounds ?? 10;
     const taskSummary = taskState
@@ -227,6 +279,17 @@ export function buildWorkspaceCards({
       checksState,
       prStatus,
       taskState: taskState || null,
+      agentActivityState: workspaceAgentState,
+      agentActivityLabel:
+        workspaceAgentState === "running"
+          ? (agentActivity?.runningCount || 0) > 1
+            ? `${agentActivity?.runningCount} agents are working`
+            : `${agentActivity?.panelTitle || "Agent"} is working`
+          : workspaceAgentState === "done"
+            ? (agentActivity?.doneCount || 0) > 1
+              ? `${agentActivity?.doneCount} agents finished`
+              : `${agentActivity?.panelTitle || "Agent"} finished`
+            : "",
       starred: Boolean(workspace.starred),
       relativeAge,
     };

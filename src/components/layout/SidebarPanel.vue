@@ -186,6 +186,14 @@ interface AttentionLike {
   latestAt?: string;
 }
 
+interface SessionActivityLike {
+  workspaceId?: string;
+  panelId?: string;
+  activity?: string;
+  agentLike?: boolean;
+  hasUserInput?: boolean;
+}
+
 interface PrEntry {
   pullRequest?: {
     status?: string;
@@ -255,6 +263,7 @@ const workspaceCards = computed((): WorkspaceCardData[] => {
     getGitSnapshot: (id) => store.getGitSnapshot(id) as GitSnapshot | null | undefined,
     getWorkspaceAttention: (id) => store.getWorkspaceAttentionForId(id) as AttentionLike | null | undefined,
     taskRunnerSnapshot: (payload.taskRunner as Record<string, LiveTask>) || null,
+    sessionActivities: (payload.attention as { sessions?: Record<string, SessionActivityLike> })?.sessions || null,
     getChecks: (workspace) => {
       const prKey = workspace.review?.prKey;
       if (!prKey) return null;

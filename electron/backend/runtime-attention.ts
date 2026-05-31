@@ -107,7 +107,34 @@ export function createRuntimeAttentionManager({
   const sessionSignals = new Map<string, SessionSignal>();
 
   function getAttentionSnapshot(state = getState()) {
+    const sessionsSnapshot: Record<string, unknown> = {};
+    for (const [sessionId, signal] of sessionSignals) {
+      const descriptor = parseSessionId(sessionId);
+      if (!descriptor) continue;
+      const workspaceAlerts = projectAlerts.get(descriptor.workspaceId)?.alerts || [];
+      const panelAlert = workspaceAlerts.find((alert) => alert.panelId === descriptor.panelId);
+      const lastActivityMs = Math.max(
+        signal.lastOutputAt || 0,
+        signal.lastPromptAt || 0,
+        signal.lastCommandFinishedAt || 0,
+        signal.lastUserInteractionAt || 0,
+      );
+      sessionsSnapshot[sessionId] = {
+        sessionId,
+        workspaceId: descriptor.workspaceId,
+        panelId: descriptor.panelId,
+        lastActivity: lastActivityMs ? new Date(lastActivityMs).toISOString() : "",
+        alertKind: panelAlert?.kind ?? null,
+        alertedAt: panelAlert?.at ?? null,
+        activity: signal.activity || "idle",
+        agentLike: Boolean(signal.agentLike),
+        hasUserInput: Boolean(signal.hasUserInput),
+        lastExitCode: signal.lastExitCode,
+        lastCommandFinishedAt: signal.lastCommandFinishedAt || 0,
+      };
+    }
     return {
+      sessions: sessionsSnapshot,
       byWorkspace: Object.fromEntries(projectAlerts.entries()),
       byProject: Object.fromEntries(projectAlerts.entries()),
       activeWorkspace: projectAlerts.get(state.activeWorkspaceId) || null,
