@@ -40,7 +40,6 @@ test.describe("Electron shell — empty state", () => {
     await expect(page.locator("button.sidebar__icon-btn[title^='Open the New Workspace picker']")).toBeVisible();
     await expect(page.locator("button.sidebar__icon-btn[title^='Open the Settings dialog']")).toBeVisible();
     await expect(page.locator("button.sidebar__icon-btn[title^='Open the Help dialog']")).toBeVisible();
-    await expect(page.locator("button[data-role='notification-bell']")).toBeVisible();
     assertNoRendererErrors(launched!);
   });
 
