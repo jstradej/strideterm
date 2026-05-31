@@ -670,6 +670,17 @@
   -webkit-box-orient: vertical;
 }
 
+.notification-item__profile-label {
+  display: inline-block;
+  margin-top: 3px;
+  font-size: 10px;
+  color: var(--muted);
+  background: var(--bg-secondary, rgba(255, 255, 255, 0.07));
+  border-radius: 3px;
+  padding: 1px 5px;
+  letter-spacing: 0.03em;
+}
+
 .notification-item__remove {
   border: none;
   background: transparent;

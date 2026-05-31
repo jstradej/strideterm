@@ -4589,6 +4589,9 @@ export async function createRuntime({
         const slot = (draft.windowSlots || []).find((s) => s.id === windowId);
         if (slot) {
           slot.activeWorkspaceId = workspaceId;
+          // Mirror to the owning profile so switching back restores this workspace.
+          const profile = draft.profiles.find((p) => p.id === slot.profileId);
+          if (profile) profile.lastActiveWorkspaceId = workspaceId;
         }
         // ALSO mirror to global activeWorkspaceId. `getPayload()` builds the
         // `payload.workspace` snapshot from `sessions.getWorkspace(state)`,
@@ -4641,6 +4644,12 @@ export async function createRuntime({
         if (slot) {
           slot.activeWorkspaceId = descriptor.workspaceId;
           slot.activeSessionId = sessionId;
+          // Mirror to the owning profile so switching back restores this session.
+          const profile = draft.profiles.find((p) => p.id === slot.profileId);
+          if (profile) {
+            profile.lastActiveWorkspaceId = descriptor.workspaceId;
+            profile.lastActiveSessionId = sessionId;
+          }
         } else {
           draft.activeWorkspaceId = descriptor.workspaceId;
         }
@@ -4669,14 +4678,46 @@ export async function createRuntime({
       await store.mutate((draft: AppState) => {
         const targetProfile = draft.profiles.find((p) => p.id === profileId);
         if (!targetProfile) return;
-        const profileWorkspaces = draft.workspaces.filter((w) => (w.profileId || "default") === profileId);
-        const firstWorkspaceId = profileWorkspaces[0]?.id || "";
         const slot = (draft.windowSlots || []).find((s) => s.id === windowId);
+
+        // Save current profile's view state before switching away.
+        if (slot) {
+          const currentProfile = draft.profiles.find((p) => p.id === slot.profileId);
+          if (currentProfile) {
+            currentProfile.lastActiveWorkspaceId = slot.activeWorkspaceId || undefined;
+            currentProfile.lastActiveSessionId = slot.activeSessionId || undefined;
+          }
+        }
+
+        // Resolve the target profile's restore candidate.
+        const profileWorkspaces = draft.workspaces.filter((w) => (w.profileId || "default") === profileId);
+        const profileWsIds = new Set(profileWorkspaces.map((w) => w.id));
+
+        // Validate lastActiveWorkspaceId belongs to this profile.
+        const savedWsId = targetProfile.lastActiveWorkspaceId && profileWsIds.has(targetProfile.lastActiveWorkspaceId)
+          ? targetProfile.lastActiveWorkspaceId
+          : (profileWorkspaces[0]?.id || "");
+
+        // Validate lastActiveSessionId belongs to savedWsId.
+        let savedSessionId = "";
+        if (targetProfile.lastActiveSessionId) {
+          const colonIdx = targetProfile.lastActiveSessionId.indexOf(":");
+          if (colonIdx >= 0) {
+            const sessionWsId = targetProfile.lastActiveSessionId.slice(0, colonIdx);
+            const sessionPanelId = targetProfile.lastActiveSessionId.slice(colonIdx + 1);
+            const sessionWs = profileWorkspaces.find((w) => w.id === sessionWsId);
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const panelExists = sessionWs && (sessionWs as any).panels?.some((p: any) => p.id === sessionPanelId);
+            if (panelExists) savedSessionId = targetProfile.lastActiveSessionId;
+          }
+        }
+
         if (slot) {
           slot.profileId = profileId;
-          slot.activeWorkspaceId = firstWorkspaceId;
+          slot.activeWorkspaceId = savedWsId;
+          slot.activeSessionId = savedSessionId;
         }
-        draft.activeWorkspaceId = firstWorkspaceId;
+        draft.activeWorkspaceId = savedWsId;
       });
       // PTY spawn must not wait on FS/network refreshes — otherwise the new
       // profile's active workspace sits at "0 running" while syncWorktrees
@@ -4717,15 +4758,41 @@ export async function createRuntime({
         width: 1280,
         height: 800,
       };
-      const newActiveWorkspaceId =
-        getState().workspaces.find((w) => (w.profileId || "default") === profileId)?.id || "";
+      const stateForCreate = getState();
+      const targetProfileForCreate = stateForCreate.profiles.find((p) => p.id === profileId);
+      const profileWorkspacesForCreate = stateForCreate.workspaces.filter((w) => (w.profileId || "default") === profileId);
+      const profileWsIdsForCreate = new Set(profileWorkspacesForCreate.map((w) => w.id));
+
+      // Restore from profile's last saved workspace, falling back to first.
+      const savedWsIdForCreate = (
+        targetProfileForCreate?.lastActiveWorkspaceId &&
+        profileWsIdsForCreate.has(targetProfileForCreate.lastActiveWorkspaceId)
+          ? targetProfileForCreate.lastActiveWorkspaceId
+          : profileWorkspacesForCreate[0]?.id
+      ) || "";
+
+      // Validate saved session.
+      let savedSessionIdForCreate = "";
+      if (targetProfileForCreate?.lastActiveSessionId) {
+        const colonIdx = targetProfileForCreate.lastActiveSessionId.indexOf(":");
+        if (colonIdx >= 0) {
+          const sessionWsId = targetProfileForCreate.lastActiveSessionId.slice(0, colonIdx);
+          const sessionPanelId = targetProfileForCreate.lastActiveSessionId.slice(colonIdx + 1);
+          const sessionWs = profileWorkspacesForCreate.find((w) => w.id === sessionWsId);
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const panelExists = sessionWs && (sessionWs as any).panels?.some((p: any) => p.id === sessionPanelId);
+          if (panelExists) savedSessionIdForCreate = targetProfileForCreate.lastActiveSessionId;
+        }
+      }
+
+      const newActiveWorkspaceId = savedWsIdForCreate;
       await store.mutate((draft: AppState) => {
         if (!Array.isArray(draft.windowSlots)) draft.windowSlots = [];
         draft.windowSlots.push({
           id: newId,
           profileId,
           activeWorkspaceId: newActiveWorkspaceId,
-          activeSessionId: "",
+          activeSessionId: savedSessionIdForCreate,
           bounds: { ...defaultBounds },
           lastFocusedAt: Date.now(),
         });
@@ -4932,8 +4999,14 @@ export async function createRuntime({
               slot.activeWorkspaceId = sibling?.id || "";
             }
           }
-          // Clear workspace from per-profile grids
+          // Clear workspace from per-profile grids and restore references
           for (const profile of draft.profiles) {
+            if (profile.lastActiveWorkspaceId === workspaceId) {
+              profile.lastActiveWorkspaceId = undefined;
+              profile.lastActiveSessionId = undefined;
+            } else if (profile.lastActiveSessionId?.startsWith(`${workspaceId}:`)) {
+              profile.lastActiveSessionId = undefined;
+            }
             if (!profile.workspaceGrid) continue;
             const ids = profile.workspaceGrid.cellWorkspaceIds;
             for (let i = 0; i < ids.length; i++) {

@@ -156,6 +156,7 @@ export function useNotificationCapture() {
           }
 
           const category = isRateLimitAlert ? "rate-limit" : isTaskAlert ? "task" : "terminal";
+          const wsProfileId = ws?.profileId || "default";
           const entry = notifStore.add({
             title,
             body,
@@ -167,6 +168,7 @@ export function useNotificationCapture() {
             tabName,
             viewId: alert.sessionId || "",
             category,
+            meta: { profileId: wsProfileId },
           });
 
           // Attach category on the toast payload so NotificationToast can pick

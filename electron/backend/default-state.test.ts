@@ -737,3 +737,102 @@ describe("normalizeWorkspaceGrid", () => {
     }
   });
 });
+
+describe("normalizeState — profile lastActive restore id validation", () => {
+  test("keeps valid lastActiveWorkspaceId and lastActiveSessionId", () => {
+    const state = normalizeState({
+      profiles: [
+        {
+          id: "pa",
+          name: "A",
+          color: "#a",
+          workspaceIds: ["ws-a"],
+          lastActiveWorkspaceId: "ws-a",
+          lastActiveSessionId: "ws-a:shell",
+        },
+      ],
+      projects: [
+        {
+          id: "ws-a",
+          name: "A",
+          kind: "terminal",
+          profileId: "pa",
+          cwd: "/tmp/a",
+          activePanelId: "shell",
+          panels: [{ id: "shell", title: "Shell", command: "" }],
+        },
+      ],
+    });
+    const profile = state.profiles.find((p) => p.id === "pa");
+    expect(profile?.lastActiveWorkspaceId).toBe("ws-a");
+    expect(profile?.lastActiveSessionId).toBe("ws-a:shell");
+  });
+
+  test("clears lastActiveWorkspaceId that belongs to another profile", () => {
+    const state = normalizeState({
+      profiles: [
+        {
+          id: "pa",
+          name: "A",
+          color: "#a",
+          workspaceIds: ["ws-a"],
+          lastActiveWorkspaceId: "ws-b",
+          lastActiveSessionId: "ws-b:shell",
+        },
+        { id: "pb", name: "B", color: "#b", workspaceIds: ["ws-b"] },
+      ],
+      projects: [
+        {
+          id: "ws-a",
+          name: "A",
+          kind: "terminal",
+          profileId: "pa",
+          cwd: "/tmp/a",
+          activePanelId: "shell",
+          panels: [{ id: "shell", title: "Shell", command: "" }],
+        },
+        {
+          id: "ws-b",
+          name: "B",
+          kind: "terminal",
+          profileId: "pb",
+          cwd: "/tmp/b",
+          activePanelId: "shell",
+          panels: [{ id: "shell", title: "Shell", command: "" }],
+        },
+      ],
+    });
+    const profileA = state.profiles.find((p) => p.id === "pa");
+    expect(profileA?.lastActiveWorkspaceId).toBeUndefined();
+    expect(profileA?.lastActiveSessionId).toBeUndefined();
+  });
+
+  test("clears lastActiveSessionId whose panel does not exist in the workspace", () => {
+    const state = normalizeState({
+      profiles: [
+        {
+          id: "pa",
+          name: "A",
+          color: "#a",
+          workspaceIds: ["ws-a"],
+          lastActiveWorkspaceId: "ws-a",
+          lastActiveSessionId: "ws-a:missing-panel",
+        },
+      ],
+      projects: [
+        {
+          id: "ws-a",
+          name: "A",
+          kind: "terminal",
+          profileId: "pa",
+          cwd: "/tmp/a",
+          activePanelId: "shell",
+          panels: [{ id: "shell", title: "Shell", command: "" }],
+        },
+      ],
+    });
+    const profile = state.profiles.find((p) => p.id === "pa");
+    expect(profile?.lastActiveWorkspaceId).toBe("ws-a");
+    expect(profile?.lastActiveSessionId).toBeUndefined();
+  });
+});

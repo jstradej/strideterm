@@ -553,3 +553,74 @@ describe("handleBroadcastPayload — optimistic-delete suppression", () => {
     expect(rebornEntry?.name).toBe("Reborn WS 2");
   });
 });
+
+describe("useAppStore — activateProfile adopts restored session from payload", () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    (window as AnyApi).strideterm = { startupFlags: { windowId: "slot1" } };
+  });
+
+  it("sets activeSessionId from slot when backend returns restored session", async () => {
+    const initial = makeBasePayload();
+    const restoredPayload = makeBasePayload({
+      appState: {
+        activeWorkspaceId: "ws2",
+        profiles: [
+          { id: "p1", name: "P1", color: "#fff", workspaceIds: ["ws1"] },
+          { id: "p2", name: "P2", color: "#fff", workspaceIds: ["ws2"] },
+        ],
+        workspaces: [
+          { id: "ws1", name: "W1", profileId: "p1", panels: [{ id: "sh", title: "S", command: "" }], kind: "terminal", cwd: "/tmp" },
+          { id: "ws2", name: "W2", profileId: "p2", panels: [{ id: "sh", title: "S", command: "" }], kind: "terminal", cwd: "/tmp" },
+        ],
+        windowSlots: [{ id: "slot1", profileId: "p2", activeWorkspaceId: "ws2", activeSessionId: "ws2:sh" }],
+        settings: {},
+        tabTemplates: [],
+        ssh: { hosts: [], keys: [], certificates: [], knownHosts: {}, settings: { defaultAgentMode: "inherit", importedSshConfig: false } },
+      },
+    });
+    const transport = makeElectronTransport(initial);
+    (transport as AnyApi).activateProfile = vi.fn(() => Promise.resolve(restoredPayload));
+    const store = useAppStore();
+    store.init(transport as AnyApi);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    await (store as AnyApi).activateProfile("p2");
+
+    expect((store as AnyApi).activeSessionId).toBe("ws2:sh");
+  });
+
+  it("clears activeSessionId when backend slot has no restored session", async () => {
+    const initial = makeBasePayload();
+    const restoredPayload = makeBasePayload({
+      appState: {
+        activeWorkspaceId: "ws2",
+        profiles: [
+          { id: "p1", name: "P1", color: "#fff", workspaceIds: ["ws1"] },
+          { id: "p2", name: "P2", color: "#fff", workspaceIds: ["ws2"] },
+        ],
+        workspaces: [
+          { id: "ws1", name: "W1", profileId: "p1", panels: [], kind: "terminal", cwd: "/tmp" },
+          { id: "ws2", name: "W2", profileId: "p2", panels: [], kind: "terminal", cwd: "/tmp" },
+        ],
+        windowSlots: [{ id: "slot1", profileId: "p2", activeWorkspaceId: "ws2", activeSessionId: "" }],
+        settings: {},
+        tabTemplates: [],
+        ssh: { hosts: [], keys: [], certificates: [], knownHosts: {}, settings: { defaultAgentMode: "inherit", importedSshConfig: false } },
+      },
+    });
+    const transport = makeElectronTransport(initial);
+    (transport as AnyApi).activateProfile = vi.fn(() => Promise.resolve(restoredPayload));
+    const store = useAppStore();
+    store.init(transport as AnyApi);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // Set a non-null activeSessionId before activating
+    (store as AnyApi).activeSessionId = "ws1:sh";
+    await (store as AnyApi).activateProfile("p2");
+
+    expect((store as AnyApi).activeSessionId).toBeNull();
+  });
+});

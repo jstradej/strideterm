@@ -176,6 +176,10 @@ export interface Profile {
   projectIds?: string[];
   /** Per-profile workspace grid layout (replaces global AppState.workspaceGrid). */
   workspaceGrid?: WorkspaceGridState | null;
+  /** Last workspace the user was viewing in this profile — restored on profile switch. */
+  lastActiveWorkspaceId?: string;
+  /** Last session the user was viewing in this profile — restored on profile switch. */
+  lastActiveSessionId?: string;
 }
 
 // ------- Window slot (per BrowserWindow persistent state) -------

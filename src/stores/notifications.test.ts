@@ -281,3 +281,30 @@ describe("notification store (session-grouped)", () => {
     await expect(store.clearOnBackend("ws1:panel3")).resolves.toBeUndefined();
   });
 });
+
+describe("notification store — profile label in session meta", () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    window.localStorage.removeItem("strideterm-notifications-v2");
+  });
+
+  it("stores profileId in meta when addEvent is called with meta.profileId", () => {
+    const store = useNotificationStore();
+    store.add({
+      title: "Done",
+      kind: "completed",
+      workspaceId: "ws1",
+      viewId: "ws1:shell",
+      meta: { profileId: "profile-a" },
+    });
+    expect(store.sessions[0].meta?.profileId).toBe("profile-a");
+  });
+
+  it("session without profileId in meta falls back to workspace-based resolution", () => {
+    const store = useNotificationStore();
+    store.add({ title: "Done", kind: "completed", workspaceId: "ws2", viewId: "ws2:shell" });
+    // No profileId in meta — resolveSessionProfileId will fall back to workspace map
+    expect(store.sessions[0].meta?.profileId).toBeUndefined();
+    expect(store.sessions[0].workspaceId).toBe("ws2");
+  });
+});

@@ -693,8 +693,21 @@ export function createApiActions(ctx: ApiActionsCtx) {
     await ctx.withSuppressedBroadcast(async () => {
       ctx.payload.value = (await ctx.getApi().activateProfile(profileId)) as StatePayload;
     });
-    ctx.activeViewId.value = null;
-    ctx.activeSessionId.value = null;
+    // Use restored session/view from the backend payload rather than blindly
+    // clearing. The backend now saves and restores lastActiveWorkspaceId/SessionId
+    // into the slot, so the payload reflects the correct selection after switching.
+    const newPayload = ctx.payload.value as AnyApi;
+    const windowId = typeof window !== "undefined" ? (window as AnyApi).strideterm?.startupFlags?.windowId : undefined;
+    const slots = newPayload?.appState?.windowSlots as AnyApi[] | undefined;
+    const mySlot = windowId && slots ? slots.find((s: AnyApi) => s.id === windowId) : null;
+    const restoredSession = mySlot?.activeSessionId || "";
+    if (restoredSession) {
+      ctx.activeSessionId.value = restoredSession;
+      ctx.activeViewId.value = restoredSession;
+    } else {
+      ctx.activeViewId.value = null;
+      ctx.activeSessionId.value = null;
+    }
     ctx.splitGroup.value = null;
   }
 

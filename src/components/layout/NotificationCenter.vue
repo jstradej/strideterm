@@ -229,6 +229,11 @@
                   </span>
                 </div>
                 <p class="notification-item__body">{{ sessionBody(row.session) }}</p>
+                <span
+                  v-if="sessionProfileLabel(row.session)"
+                  class="notification-item__profile-label"
+                  :title="`Profile: ${sessionProfileLabel(row.session)}`"
+                >{{ sessionProfileLabel(row.session) }}</span>
                 <div v-if="row.session.state === 'waiting'" class="notification-item__quick-actions">
                   <button
                     class="quick-action"
@@ -684,6 +689,16 @@ function sessionTitle(s: NotificationSession): string {
   return `${wsName} › ${tab}`;
 }
 
+/** Resolve the profile name for a notification session, returns "" for unknown. */
+function sessionProfileLabel(s: NotificationSession): string {
+  const profileId = s.meta?.profileId || "";
+  if (!profileId) return "";
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const profiles = (appStore.payload?.appState?.profiles || []) as any[];
+  const profile = profiles.find((p) => p.id === profileId);
+  return profile?.name || "";
+}
+
 function sessionBody(s: NotificationSession): string {
   const latest = s.events?.[0];
   if (!latest) return "";
@@ -751,7 +766,32 @@ async function jump(s: NotificationSession): Promise<void> {
     if (!notifStore.pinned) notifStore.closePanel();
     return;
   }
-  const activeWsId = appStore.payload.appState?.activeWorkspaceId;
+
+  // Resolve the target workspace's profile and compare with the active profile.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const workspaces = (appStore.payload.appState?.workspaces || []) as any[];
+  const targetWs = workspaces.find((w) => w.id === target.workspaceId);
+  const targetProfileId = targetWs ? (targetWs.profileId || "default") : null;
+  const currentProfileId = appStore.myActiveProfileId || "default";
+
+  if (targetProfileId && targetProfileId !== currentProfileId) {
+    // Target session lives in another profile — ask before switching.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const profiles = (appStore.payload.appState?.profiles || []) as any[];
+    const targetProfile = profiles.find((p) => p.id === targetProfileId);
+    const profileName = targetProfile?.name || targetProfileId;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const confirmed = await (appStore as any).confirmInApp({
+      title: "Switch profile?",
+      message: `This session is in profile "${profileName}". Switch to that profile to open it?`,
+      confirmLabel: "Switch",
+      cancelLabel: "Cancel",
+    });
+    if (!confirmed) return;
+    await appStore.activateProfile(targetProfileId);
+  }
+
+  const activeWsId = appStore.myActiveWorkspaceId;
   if (activeWsId !== target.workspaceId) {
     // Route through the grid-aware wrapper so jumping to a non-grid
     // workspace from a notification doesn't dissolve the user's split.

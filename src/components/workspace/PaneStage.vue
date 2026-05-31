@@ -414,11 +414,12 @@ function onPaneAction(
 
 function liveTerminalSessionIds(): Set<string> {
   const payload = store.payload as any; // eslint-disable-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: server state blob
-  const activeProfileId = store.myActiveProfileId || "default";
   const ids = new Set<string>();
   const workspaces = (payload?.appState?.workspaces || []) as any[]; // eslint-disable-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT
+  // Include terminal sessions from ALL workspaces regardless of profile so
+  // xterm buffers survive profile switches. Views for deleted workspaces/panels
+  // are pruned because they won't appear in this list at all.
   for (const workspace of workspaces) {
-    if ((workspace.profileId || "default") !== activeProfileId) continue;
     for (const panel of workspace.panels || []) {
       const command = String(panel.command || "");
       if (/^https?:\/\//i.test(command) || command === "__files__" || command === "__task-dashboard__") continue;
@@ -428,11 +429,11 @@ function liveTerminalSessionIds(): Set<string> {
   return ids;
 }
 
-// Prune terminal views only when sessions disappear from the active profile.
-// Workspace switches must keep xterm buffers alive; PTYs do not replay old
-// output when the renderer recreates a disposed terminal view.
+// Prune terminal views when workspace/panels are deleted — not on profile switch.
+// Including all-profile sessions means switching away from a profile keeps its
+// xterm buffers alive so returning shows output accumulated while hidden.
 watch(
-  () => [store.payload?.appState?.workspaces, store.myActiveProfileId],
+  () => store.payload?.appState?.workspaces,
   () => {
     termStore.pruneTerminalViews(liveTerminalSessionIds());
   },

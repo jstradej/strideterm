@@ -558,6 +558,13 @@ function normalizeProfiles(rawProfiles: any, defaults: { profiles: Profile[] }):
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           base.workspaceGrid = profile.workspaceGrid as any;
         }
+        // Preserve last-active restore ids — validated against workspaces later in normalizeState.
+        if (typeof profile.lastActiveWorkspaceId === "string" && profile.lastActiveWorkspaceId) {
+          base.lastActiveWorkspaceId = profile.lastActiveWorkspaceId;
+        }
+        if (typeof profile.lastActiveSessionId === "string" && profile.lastActiveSessionId) {
+          base.lastActiveSessionId = profile.lastActiveSessionId;
+        }
         return base;
       })
     : defaults.profiles;
@@ -1207,10 +1214,46 @@ export function normalizeState(rawState: any = {}): AppState & { activeProjectId
     },
   };
 
+  // Validate profile last-active restore ids against the normalised workspace list.
+  // Rules: lastActiveWorkspaceId must belong to the profile; lastActiveSessionId
+  // must parse as workspaceId:panelId where both workspace and panel exist in this
+  // profile. Clear any id that fails validation.
+  const profilesValidated: Profile[] = profiles.map((profile) => {
+    const profileWorkspaces = workspaces.filter((w) => (w.profileId || "default") === profile.id);
+    const profileWsIds = new Set(profileWorkspaces.map((w) => w.id));
+
+    // Validate lastActiveWorkspaceId
+    let lastWsId = profile.lastActiveWorkspaceId;
+    if (lastWsId && !profileWsIds.has(lastWsId)) lastWsId = undefined;
+
+    // Validate lastActiveSessionId: must be "workspaceId:panelId" for a panel in this profile
+    let lastSessionId = profile.lastActiveSessionId;
+    if (lastSessionId) {
+      const colonIdx = lastSessionId.indexOf(":");
+      if (colonIdx < 0) {
+        lastSessionId = undefined;
+      } else {
+        const sessionWsId = lastSessionId.slice(0, colonIdx);
+        const sessionPanelId = lastSessionId.slice(colonIdx + 1);
+        const sessionWs = profileWorkspaces.find((w) => w.id === sessionWsId);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const panelExists = sessionWs && (sessionWs as any).panels?.some((p: any) => p.id === sessionPanelId);
+        if (!panelExists) lastSessionId = undefined;
+      }
+    }
+
+    const result = { ...profile };
+    if (lastWsId !== undefined) result.lastActiveWorkspaceId = lastWsId;
+    else delete result.lastActiveWorkspaceId;
+    if (lastSessionId !== undefined) result.lastActiveSessionId = lastSessionId;
+    else delete result.lastActiveSessionId;
+    return result;
+  });
+
   // Per-profile workspace grids.
   // Migration: if profiles don't have workspaceGrid yet, move the global
   // workspaceGrid to the active profile so it is preserved.
-  const profilesWithGrid: Profile[] = profiles.map((profile) => {
+  const profilesWithGrid: Profile[] = profilesValidated.map((profile) => {
     if (profile.workspaceGrid !== undefined) {
       // Already migrated — just re-normalize the grid cells.
       return {
