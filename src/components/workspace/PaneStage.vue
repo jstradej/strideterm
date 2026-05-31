@@ -416,10 +416,14 @@ function liveTerminalSessionIds(): Set<string> {
   const payload = store.payload as any; // eslint-disable-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: server state blob
   const ids = new Set<string>();
   const workspaces = (payload?.appState?.workspaces || []) as any[]; // eslint-disable-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT
-  // Include terminal sessions from ALL workspaces regardless of profile so
-  // xterm buffers survive profile switches. Views for deleted workspaces/panels
-  // are pruned because they won't appear in this list at all.
+  // Desktop: include terminal sessions from ALL workspaces regardless of profile
+  // so xterm buffers survive profile switches (the key visual-profile-switch feature).
+  // Remote: scope to the remote client's controllable profile only — remote clients
+  // bind to a single desktop windowSlot and should not retain views for profiles
+  // they cannot control.
+  const profileFilter = store.isRemoteTransport ? (store.myActiveProfileId || "default") : null;
   for (const workspace of workspaces) {
+    if (profileFilter && (workspace.profileId || "default") !== profileFilter) continue;
     for (const panel of workspace.panels || []) {
       const command = String(panel.command || "");
       if (/^https?:\/\//i.test(command) || command === "__files__" || command === "__task-dashboard__") continue;
@@ -429,11 +433,14 @@ function liveTerminalSessionIds(): Set<string> {
   return ids;
 }
 
-// Prune terminal views when workspace/panels are deleted — not on profile switch.
-// Including all-profile sessions means switching away from a profile keeps its
-// xterm buffers alive so returning shows output accumulated while hidden.
+// Desktop: prune only when workspace/panels are deleted (not on profile switch) —
+// keeping inactive-profile buffers alive is the key visual-profile-switch feature.
+// Remote: also prune on profile change so remote clients don't accumulate views
+// for profiles they can't control.
 watch(
-  () => store.payload?.appState?.workspaces,
+  () => store.isRemoteTransport
+    ? [store.payload?.appState?.workspaces, store.myActiveProfileId]
+    : [store.payload?.appState?.workspaces],
   () => {
     termStore.pruneTerminalViews(liveTerminalSessionIds());
   },

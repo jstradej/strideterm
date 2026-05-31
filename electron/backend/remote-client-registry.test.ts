@@ -437,4 +437,51 @@ describe("RemoteClientRegistry", () => {
       }).not.toThrow();
     });
   });
+
+  describe("visual-profile-switch — remote semantics unchanged", () => {
+    test("activateProfile rejects profile with saved lastActiveWorkspaceId but no windowSlot", () => {
+      // A profile may have `lastActiveWorkspaceId` from visual profile switch
+      // persistence but no open desktop window. Remote clients must still be
+      // unable to switch to it.
+      const registry = new RemoteClientRegistry();
+      const state = {
+        profiles: [
+          { id: "p1" },
+          { id: "p2", lastActiveWorkspaceId: "ws2", lastActiveSessionId: "ws2:shell" },
+        ],
+        workspaces: [
+          { id: "ws1", profileId: "p1" },
+          { id: "ws2", profileId: "p2" },
+        ],
+        windowSlots: [{ id: "win-1", profileId: "p1", activeWorkspaceId: "ws1", activeSessionId: "" }],
+      };
+      registry.getOrCreate("session1", state);
+      expect(() => registry.activateProfile("session1", "p2", state)).toThrow("Profile is not open on desktop");
+    });
+
+    test("composePayload mirrors active workspace from desktop slot, not Profile.lastActiveWorkspaceId", () => {
+      // Even if the profile has a different lastActiveWorkspaceId stored,
+      // the remote payload should reflect the slot's actual active workspace.
+      const registry = new RemoteClientRegistry();
+      const state = makeState({
+        profiles: [{ id: "p1" }],
+        workspaces: [
+          { id: "ws-slot", profileId: "p1" },
+          { id: "ws-saved", profileId: "p1" },
+        ],
+        windowSlots: [{ id: "win-1", profileId: "p1", activeWorkspaceId: "ws-slot", activeSessionId: "" }],
+      });
+      registry.getOrCreate("session1", state);
+      const payload = {
+        appState: {
+          ...state,
+          profiles: [{ id: "p1", lastActiveWorkspaceId: "ws-saved" }],
+        },
+      };
+      const composed = registry.composePayload("session1", payload) as Record<string, unknown>;
+      const rc = composed.remoteClient as Record<string, unknown>;
+      // Remote client active workspace must be derived from the slot, not the saved id.
+      expect(rc.activeWorkspaceId).toBe("ws-slot");
+    });
+  });
 });

@@ -1229,6 +1229,7 @@ export const useAppStore = defineStore("app", () => {
     myActiveWorkspaceId,
     myActiveProfileId,
     myActiveSessionId,
+    isRemoteTransport,
     // Computed
     activeWorkspace,
     filteredWorkspaces,

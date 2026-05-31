@@ -4547,3 +4547,34 @@ describe("_handleMenuCommand — MarkdownV2 escape", () => {
     expect(text).not.toMatch(/_[^_]*[^\\]-[^_]*_/);
   });
 });
+
+describe("TelegramManager — visual-profile-switch: profile choices stay windowSlot-based", () => {
+  // Reuse the helper from the enclosing describe block scope.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  function makeCredentialStore(data: Record<string, string>): any {
+    return {
+      get: (key: string) => Promise.resolve(data[key] ?? null),
+      set: vi.fn(() => Promise.resolve()),
+      delete: vi.fn(() => Promise.resolve()),
+      list: vi.fn(() => Promise.resolve(Object.keys(data))),
+    };
+  }
+
+  test("profile with lastActiveWorkspaceId but no windowSlot is not listed in _profileChoices", () => {
+    const cred = makeCredentialStore({});
+    const manager = new TelegramManager({ credentialStore: cred });
+    // p2 has saved lastActiveWorkspaceId (from a prior visual switch) but no open window.
+    manager.setProfilesGetter(() => [
+      { id: "p1", name: "P1" },
+      { id: "p2", name: "P2", lastActiveWorkspaceId: "ws2" },
+    ]);
+    // Only p1 has a windowSlot.
+    manager.setWindowSlotsGetter(() => [{ id: "w1", profileId: "p1" }]);
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const choices = (manager as any)._profileChoices() as Array<{ id: string }>;
+    const ids = choices.map((c) => c.id);
+    expect(ids).toContain("p1");
+    expect(ids).not.toContain("p2");
+  });
+});
