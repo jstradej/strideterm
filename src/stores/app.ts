@@ -93,6 +93,18 @@ export const useAppStore = defineStore("app", () => {
   // --- Task recovery ---
   const recoveryCandidates = ref<RecoveryCandidate[]>([]);
 
+  // Deep-link request to focus a specific review connection inside its
+  // provider inbox pane — set when the user clicks a "connection error"
+  // notification so the pane can switch to its Connections tab and highlight
+  // the offending connection. Consumed (cleared) by the matching pane. `ts`
+  // guards against a stale request forcing the Connections tab much later
+  // when the user opens that inbox for unrelated reasons.
+  const inboxConnectionFocus = ref<{ provider: string; connectionId: string; ts: number } | null>(null);
+  function requestInboxConnectionFocus(provider: string, connectionId: string): void {
+    if (!connectionId) return;
+    inboxConnectionFocus.value = { provider: provider || "", connectionId, ts: Date.now() };
+  }
+
   // --- Race condition prevention ---
   const pendingWorkspaceActivationId = ref("");
   const pendingViewActivationId = ref("");
@@ -1209,6 +1221,8 @@ export const useAppStore = defineStore("app", () => {
     suppressBroadcast,
     lastError,
     recoveryCandidates,
+    inboxConnectionFocus,
+    requestInboxConnectionFocus,
     // Per-window identity
     myWindowId,
     myWindowSlot,

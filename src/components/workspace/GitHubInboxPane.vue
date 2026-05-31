@@ -117,16 +117,28 @@
                 <h3>{{ connections.length }} connection{{ connections.length !== 1 ? "s" : "" }}</h3>
               </div>
             </div>
-            <div class="docker-list azure-connection-list" style="gap: 8px">
+            <div ref="connectionListRef" class="docker-list azure-connection-list" style="gap: 8px">
               <article
                 v-for="conn in connections"
                 :key="conn.id"
-                class="docker-card"
-                :style="`border-left:3px solid ${conn.status === 'ok' ? '#238636' : 'var(--muted)'};`"
+                :data-connection-id="conn.id"
+                :class="[
+                  'docker-card',
+                  conn.status === 'error' && 'connection-card--error',
+                  highlightedConnectionId === conn.id && 'connection-card--focus',
+                ]"
+                :style="`border-left:3px solid ${conn.status === 'ok' ? '#238636' : conn.status === 'error' ? 'var(--danger)' : 'var(--muted)'};`"
               >
                 <div class="docker-card__head">
                   <div>
-                    <h4>{{ conn.label }}</h4>
+                    <h4>
+                      <span
+                        v-if="conn.status === 'error'"
+                        class="connection-card__alert"
+                        title="This connection has an error — see the details below."
+                        >❗</span
+                      >{{ conn.label }}
+                    </h4>
                     <p class="docker-card__meta">{{ conn.hostUrl }} · {{ conn.currentUserLogin || "unknown user" }}</p>
                   </div>
                   <span
@@ -239,7 +251,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed, ref, watch, nextTick } from "vue";
 import { useAppStore } from "../../stores/app.js";
 import { useIsNarrow } from "../../composables/useIsNarrow.js";
 import PaneShell from "../layout/PaneShell.vue";
@@ -326,6 +338,32 @@ const inbox = computed(() => {
 });
 const reviewRoot = computed(() => appStore.payload?.appState?.settings?.integrations?.github?.reviewRoot || "");
 
+// Deep-link from a "connection error" notification — mirror of AzureInboxPane:
+// switch to the Connections tab and highlight + scroll to the failing
+// connection. Matches on connection id membership so only the owning pane reacts.
+const connectionListRef = ref<HTMLElement | null>(null);
+const highlightedConnectionId = ref("");
+let highlightTimer: ReturnType<typeof setTimeout> | null = null;
+watch(
+  () => appStore.inboxConnectionFocus,
+  (req) => {
+    if (!req?.connectionId) return;
+    if (Date.now() - req.ts > 15000) return; // stale request — don't hijack a later visit
+    if (!myConnectionIds.value.has(req.connectionId)) return; // belongs to another pane
+    appStore.inboxConnectionFocus = null; // consume so it fires once
+    activeTab.value = "connections";
+    highlightedConnectionId.value = req.connectionId;
+    if (highlightTimer) clearTimeout(highlightTimer);
+    highlightTimer = setTimeout(() => (highlightedConnectionId.value = ""), 4000);
+    nextTick(() => {
+      connectionListRef.value
+        ?.querySelector(`[data-connection-id="${req.connectionId}"]`)
+        ?.scrollIntoView({ block: "center", behavior: "smooth" });
+    });
+  },
+  { immediate: true },
+);
+
 const inboxTabs = computed(() => [
   {
     id: "all",
@@ -355,7 +393,12 @@ const inboxTabs = computed(() => [
     alert: false,
     emptyMessage: "You have no active pull requests.",
   },
-  { id: "connections", label: "Connections", count: connections.value.length, alert: false },
+  {
+    id: "connections",
+    label: "Connections",
+    count: connections.value.length,
+    alert: connections.value.some((c) => c.status === "error"),
+  },
   { id: "activity", label: "Activity Log", count: null, alert: false },
 ]);
 

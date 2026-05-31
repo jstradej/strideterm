@@ -758,6 +758,13 @@ async function jump(s: NotificationSession): Promise<void> {
     await appStore.activateWorkspaceInGrid(target.workspaceId);
   }
   if (target.viewId) appStore.activateView(target.viewId);
+  // Connection-error notifications have no PR / review workspace to land on —
+  // resolveJumpTarget routed us to the provider inbox above. Ask that inbox to
+  // switch to its Connections tab and highlight the failing connection so the
+  // click leads to the actual problem instead of the default PR list.
+  if (s.meta?.kind === "connection-error" && s.meta?.connectionId) {
+    appStore.requestInboxConnectionFocus(s.meta.provider || "", s.meta.connectionId);
+  }
   // Pinned dock stays open — the item greys in place instead of the panel closing.
   if (!notifStore.pinned) notifStore.closePanel();
 }

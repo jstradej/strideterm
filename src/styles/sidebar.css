@@ -1043,6 +1043,22 @@ body.platform-darwin .frame--sidebar-collapsed .sidebar__head {
   margin-right: 4px;
 }
 
+/* A review connection whose poll is failing: red wash so it stands out among
+   several healthy connections (paired with the red left border + ❗ glyph and
+   "error" chip set inline on the card). */
+.connection-card--error {
+  background: rgba(255, 111, 141, 0.06);
+}
+.connection-card__alert {
+  margin-right: 5px;
+}
+/* Transient highlight when the user arrives here from a connection-error
+   notification — draws the eye to the exact connection that was clicked. */
+.connection-card--focus {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
 .docker-state {
   border-radius: 3px;
   padding: 5px 9px;
