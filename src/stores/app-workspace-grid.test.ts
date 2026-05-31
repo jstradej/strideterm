@@ -575,3 +575,54 @@ describe("workspace grid store — activateWorkspaceInGrid", () => {
     expect(api.setGridCell).toHaveBeenCalledWith(2, "ws-X");
   });
 });
+
+describe("workspace grid store — profile switch restores grid", () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    (window as AnyApi).strideterm = { startupFlags: { windowId: "win-1" } };
+  });
+
+  const p1Grid = { columns: 2, rows: 1, cellWorkspaceIds: ["ws-A", "ws-B"], focusedCellIndex: 1 };
+
+  function makeProfilePayload(activeProfileId: string): StatePayload {
+    return {
+      appState: {
+        workspaces: BASE_WORKSPACES,
+        activeWorkspaceId: activeProfileId === "p1" ? "ws-B" : "ws-C",
+        workspaceGrid: null,
+        profiles: [
+          { id: "p1", name: "P1", color: "#fff", workspaceIds: ["ws-A", "ws-B"], workspaceGrid: p1Grid },
+          { id: "p2", name: "P2", color: "#fff", workspaceIds: ["ws-C"], workspaceGrid: null },
+        ],
+        windowSlots: [
+          {
+            id: "win-1",
+            profileId: activeProfileId,
+            activeWorkspaceId: activeProfileId === "p1" ? "ws-B" : "ws-C",
+            activeSessionId: "",
+          },
+        ],
+      },
+    } as AnyApi;
+  }
+
+  it("switching profile back restores the original grid layout and focused workspace", () => {
+    const store = useAppStore();
+
+    // Start on profile p1 (has grid with ws-A / ws-B, ws-B focused)
+    store.payload = makeProfilePayload("p1");
+    expect(store.workspaceGrid?.cellWorkspaceIds).toEqual(["ws-A", "ws-B"]);
+    expect(store.workspaceGrid?.focusedCellIndex).toBe(1);
+    expect(store.myActiveWorkspaceId).toBe("ws-B");
+
+    // Switch to profile p2 (no grid)
+    store.payload = makeProfilePayload("p2");
+    expect(store.workspaceGrid).toBeNull();
+
+    // Switch back to profile p1 — grid and focused workspace must be restored
+    store.payload = makeProfilePayload("p1");
+    expect(store.workspaceGrid?.cellWorkspaceIds).toEqual(["ws-A", "ws-B"]);
+    expect(store.workspaceGrid?.focusedCellIndex).toBe(1);
+    expect(store.myActiveWorkspaceId).toBe("ws-B");
+  });
+});

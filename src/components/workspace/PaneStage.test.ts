@@ -143,42 +143,176 @@ describe("PaneStage — liveTerminalSessionIds logic", () => {
   });
 });
 
-describe("PaneStage — pruneTerminalViews integration with store", () => {
+describe("PaneStage — desktop live session IDs include all profiles", () => {
   beforeEach(() => {
     setActivePinia(createPinia());
     (window as AnyApi).strideterm = { startupFlags: { windowId: "slot1" } };
   });
 
-  it("profile switch on desktop does not cause inactive profile sessions to be pruned", async () => {
-    const initial = makePayload();
-    const transport = makeTransport(initial);
+  it("after profile switch, liveTerminalSessionIds covers sessions from the inactive profile", () => {
     const appStore = useAppStore();
-    const termStore = useTerminalStore();
+
+    // Start on p1, then switch to p2 by setting the payload directly.
+    const baseWorkspaces = [
+      { id: "ws-a", profileId: "p1", panels: [{ id: "sh", command: "" }] },
+      { id: "ws-b", profileId: "p2", panels: [{ id: "sh", command: "" }] },
+    ];
+    const profiles = [
+      { id: "p1", name: "P1", color: "#fff", workspaceIds: ["ws-a"] },
+      { id: "p2", name: "P2", color: "#fff", workspaceIds: ["ws-b"] },
+    ];
+
+    // Simulate a profile switch: slot now points to p2
+    appStore.payload = makePayload({
+      appState: {
+        activeWorkspaceId: "ws-b",
+        profiles,
+        workspaces: baseWorkspaces,
+        windowSlots: [{ id: "slot1", profileId: "p2", activeWorkspaceId: "ws-b", activeSessionId: "" }],
+      },
+    }) as AnyApi;
+
+    // Compute the live set the same way PaneStage.vue's liveTerminalSessionIds() does
+    // (desktop mode = no profile filter, all workspaces included).
+    const workspaces = (appStore.payload as AnyApi)?.appState?.workspaces || [];
+    const liveIds = new Set<string>();
+    for (const ws of workspaces) {
+      for (const panel of ws.panels || []) {
+        const cmd = String(panel.command || "");
+        if (/^https?:\/\//i.test(cmd) || cmd === "__files__" || cmd === "__task-dashboard__") continue;
+        liveIds.add(`${ws.id}:${panel.id}`);
+      }
+    }
+
+    // Both profiles' sessions must be in the valid set so pruning does NOT
+    // dispose the inactive profile's terminal view.
+    expect(liveIds.has("ws-a:sh")).toBe(true); // p1 (now inactive)
+    expect(liveIds.has("ws-b:sh")).toBe(true); // p2 (now active)
+  });
+
+  it("workspaceGrid: profile switch keeps all grid workspace sessions in the live set", async () => {
+    // Profile A has two workspaces in a grid (W1/W2). Profile B has one workspace.
+    // After switching to B, all three sessions must be in the live set on desktop.
+    const gridPayload = makePayload({
+      appState: {
+        activeWorkspaceId: "ws-a1",
+        profiles: [
+          {
+            id: "p1",
+            name: "P1",
+            color: "#fff",
+            workspaceIds: ["ws-a1", "ws-a2"],
+            workspaceGrid: { columns: 2, rows: 1, cellWorkspaceIds: ["ws-a1", "ws-a2"], focusedCellIndex: 1 },
+          },
+          { id: "p2", name: "P2", color: "#fff", workspaceIds: ["ws-b"] },
+        ],
+        workspaces: [
+          { id: "ws-a1", name: "A1", profileId: "p1", panels: [{ id: "sh", title: "Shell", command: "" }], kind: "terminal", cwd: "/tmp/a1" },
+          { id: "ws-a2", name: "A2", profileId: "p1", panels: [{ id: "sh", title: "Shell", command: "" }], kind: "terminal", cwd: "/tmp/a2" },
+          { id: "ws-b", name: "B",  profileId: "p2", panels: [{ id: "sh", title: "Shell", command: "" }], kind: "terminal", cwd: "/tmp/b" },
+        ],
+        windowSlots: [{ id: "slot1", profileId: "p1", activeWorkspaceId: "ws-a2", activeSessionId: "" }],
+      },
+    });
+    const transport = makeTransport(gridPayload);
+    const appStore = useAppStore();
     appStore.init(transport as AnyApi);
     await Promise.resolve();
     await Promise.resolve();
 
-    const pruneSpy = vi.spyOn(termStore, "pruneTerminalViews");
-
-    // Switch to profile p2 — push payload with slot now on p2
-    const switchedPayload = makePayload({
+    // Switch to p2
+    transport._push(makePayload({
       appState: {
         activeWorkspaceId: "ws-b",
+        profiles: [
+          {
+            id: "p1",
+            name: "P1",
+            color: "#fff",
+            workspaceIds: ["ws-a1", "ws-a2"],
+            workspaceGrid: { columns: 2, rows: 1, cellWorkspaceIds: ["ws-a1", "ws-a2"], focusedCellIndex: 1 },
+          },
+          { id: "p2", name: "P2", color: "#fff", workspaceIds: ["ws-b"] },
+        ],
+        workspaces: [
+          { id: "ws-a1", name: "A1", profileId: "p1", panels: [{ id: "sh", title: "Shell", command: "" }], kind: "terminal", cwd: "/tmp/a1" },
+          { id: "ws-a2", name: "A2", profileId: "p1", panels: [{ id: "sh", title: "Shell", command: "" }], kind: "terminal", cwd: "/tmp/a2" },
+          { id: "ws-b", name: "B",  profileId: "p2", panels: [{ id: "sh", title: "Shell", command: "" }], kind: "terminal", cwd: "/tmp/b" },
+        ],
         windowSlots: [{ id: "slot1", profileId: "p2", activeWorkspaceId: "ws-b", activeSessionId: "" }],
       },
-    });
-    transport._push(switchedPayload);
+    }));
     await Promise.resolve();
 
-    // pruneTerminalViews must have been called with BOTH workspaces' sessions
-    // (because desktop mode retains all profiles)
-    if (pruneSpy.mock.calls.length > 0) {
-      const lastCall = pruneSpy.mock.calls[pruneSpy.mock.calls.length - 1][0] as Set<string>;
-      // ws-a (inactive profile) and ws-b (active profile) are both present
-      expect(lastCall.has("ws-a:sh")).toBe(true);
-      expect(lastCall.has("ws-b:sh")).toBe(true);
+    // Desktop: ALL three sessions live — both grid cells from inactive profile A + active profile B
+    const workspaces = (appStore.payload as AnyApi)?.appState?.workspaces || [];
+    const liveIds = new Set<string>();
+    for (const ws of workspaces) {
+      const profileFilter = appStore.isRemoteTransport ? (appStore.myActiveProfileId || "default") : null;
+      if (profileFilter && (ws.profileId || "default") !== profileFilter) continue;
+      for (const panel of ws.panels || []) {
+        const cmd = String(panel.command || "");
+        if (/^https?:\/\//i.test(cmd) || cmd === "__files__" || cmd === "__task-dashboard__") continue;
+        liveIds.add(`${ws.id}:${panel.id}`);
+      }
     }
-    // If no call was made, the watch didn't fire which is also correct
-    // (the workspace list didn't change, only the profile)
+    expect(liveIds.has("ws-a1:sh")).toBe(true); // grid cell 1 — inactive profile
+    expect(liveIds.has("ws-a2:sh")).toBe(true); // grid cell 2 — inactive profile
+    expect(liveIds.has("ws-b:sh")).toBe(true);  // active profile
+  });
+
+  it("returning to a profile includes its grid sessions in the live set", async () => {
+    // Same setup as above but we switch back to p1 and confirm grid sessions are still live.
+    const workspaces = [
+      { id: "ws-a1", name: "A1", profileId: "p1", panels: [{ id: "sh", title: "Shell", command: "" }], kind: "terminal", cwd: "/tmp/a1" },
+      { id: "ws-a2", name: "A2", profileId: "p1", panels: [{ id: "sh", title: "Shell", command: "" }], kind: "terminal", cwd: "/tmp/a2" },
+      { id: "ws-b",  name: "B",  profileId: "p2", panels: [{ id: "sh", title: "Shell", command: "" }], kind: "terminal", cwd: "/tmp/b" },
+    ];
+    const profiles = [
+      { id: "p1", name: "P1", color: "#fff", workspaceIds: ["ws-a1", "ws-a2"],
+        workspaceGrid: { columns: 2, rows: 1, cellWorkspaceIds: ["ws-a1", "ws-a2"], focusedCellIndex: 1 } },
+      { id: "p2", name: "P2", color: "#fff", workspaceIds: ["ws-b"] },
+    ];
+
+    const transport = makeTransport(makePayload({
+      appState: { workspaces, profiles, activeWorkspaceId: "ws-a2",
+        windowSlots: [{ id: "slot1", profileId: "p1", activeWorkspaceId: "ws-a2", activeSessionId: "" }] },
+    }));
+    const appStore = useAppStore();
+    appStore.init(transport as AnyApi);
+    await Promise.resolve(); await Promise.resolve();
+
+    // Switch to p2 then back to p1
+    transport._push(makePayload({
+      appState: { workspaces, profiles, activeWorkspaceId: "ws-b",
+        windowSlots: [{ id: "slot1", profileId: "p2", activeWorkspaceId: "ws-b", activeSessionId: "" }] },
+    }));
+    await Promise.resolve();
+    transport._push(makePayload({
+      appState: { workspaces, profiles, activeWorkspaceId: "ws-a2",
+        windowSlots: [{ id: "slot1", profileId: "p1", activeWorkspaceId: "ws-a2", activeSessionId: "" }] },
+    }));
+    await Promise.resolve();
+
+    // After returning to p1, both grid sessions are still live
+    const currentWorkspaces = (appStore.payload as AnyApi)?.appState?.workspaces || [];
+    const liveIds = new Set<string>();
+    for (const ws of currentWorkspaces) {
+      for (const panel of ws.panels || []) {
+        const cmd = String(panel.command || "");
+        if (/^https?:\/\//i.test(cmd) || cmd === "__files__" || cmd === "__task-dashboard__") continue;
+        liveIds.add(`${ws.id}:${panel.id}`);
+      }
+    }
+    expect(liveIds.has("ws-a1:sh")).toBe(true);
+    expect(liveIds.has("ws-a2:sh")).toBe(true);
+
+    // Active workspace is w2 (p1's restored workspace)
+    expect(appStore.myActiveWorkspaceId).toBe("ws-a2");
+
+    // Profile A's workspaceGrid is preserved
+    const p1 = (appStore.payload as AnyApi)?.appState?.profiles?.find((p: AnyApi) => p.id === "p1");
+    expect(p1?.workspaceGrid?.cellWorkspaceIds).toEqual(["ws-a1", "ws-a2"]);
+    expect(p1?.workspaceGrid?.focusedCellIndex).toBe(1);
   });
 });

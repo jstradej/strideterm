@@ -179,7 +179,16 @@ export function useNotificationCapture() {
           if (!notifStore.pinned) {
             latestToast.value = { ...entry, category };
           }
-          fireNotificationAlert(entry.title, entry.body, {
+          // Include profile name in system notification body so the OS-level
+          // alert identifies which profile the event came from.
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const wsProfile = (appStore.payload?.appState as any)?.profiles?.find(
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            (p: any) => p.id === wsProfileId,
+          );
+          const profileLabel = wsProfile?.name && wsProfileId !== "default" ? wsProfile.name : null;
+          const systemBody = profileLabel ? `[${profileLabel}] ${entry.body}` : entry.body;
+          fireNotificationAlert(entry.title, systemBody, {
             tier: entry.tier,
             urgency: entry.urgency,
             sessionKey: `${wsId}:${alertViewId}`,

@@ -1,5 +1,17 @@
-import { describe, expect, test, vi, afterEach } from "vitest";
+import { describe, expect, test, vi, afterEach, beforeAll } from "vitest";
 import { createTerminalController } from "./terminal-controller.js";
+
+// jsdom doesn't implement ResizeObserver — stub it so attachTerminalPane tests pass.
+beforeAll(() => {
+  if (typeof globalThis.ResizeObserver === "undefined") {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (globalThis as any).ResizeObserver = class ResizeObserver {
+      observe = vi.fn();
+      unobserve = vi.fn();
+      disconnect = vi.fn();
+    };
+  }
+});
 
 // Mock xterm so ensureTerminal() can run in jsdom without a real canvas.
 // vi.fn() can't be used with `new`, so we use classes with instance-level spies.
@@ -482,5 +494,85 @@ describe("Ctrl/Cmd+F key handler", () => {
     });
 
     expect(onSearchRequested).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Visual profile switch — terminal view retention
+// ---------------------------------------------------------------------------
+
+describe("visual profile switch — handleTerminalData and pruneTerminalViews", () => {
+  test("detached (opened but DOM-removed) view still receives terminal:data via direct write", () => {
+    const { controller, views } = buildAttachController();
+    const sessionId = "ws-a:sh";
+    controller.ensureTerminal(sessionId);
+
+    const paneBody = document.createElement("div");
+    document.body.appendChild(paneBody);
+    controller.attachTerminalPane(sessionId, paneBody);
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const view = (views.value as any).get(sessionId);
+    const writeSpy = vi.spyOn(view.term, "write");
+
+    // Detach — simulates profile switch removing DOM node; view.opened stays true.
+    controller.detachTerminalPane(sessionId, paneBody);
+    expect(view.opened).toBe(true); // sanity: opened flag unchanged after detach
+
+    // Data arrives while hidden — must write directly to term (view.opened is true).
+    controller.handleTerminalData({ sessionId, data: "background output" });
+
+    expect(writeSpy).toHaveBeenCalledWith("background output");
+  });
+
+  test("unopened view buffers terminal:data and flushes it on attachTerminalPane", () => {
+    const { controller, views, buffers } = buildAttachController();
+    const sessionId = "ws-a:sh";
+    controller.ensureTerminal(sessionId);
+
+    // View exists but has not been opened yet — data must be buffered.
+    controller.handleTerminalData({ sessionId, data: "queued data" });
+    expect(buffers.value.get(sessionId)).toBe("queued data");
+
+    // Open/attach — should flush the buffer.
+    const paneBody = document.createElement("div");
+    document.body.appendChild(paneBody);
+    controller.attachTerminalPane(sessionId, paneBody);
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const view = (views.value as any).get(sessionId);
+    expect(view.term.write).toHaveBeenCalledWith("queued data");
+    // Buffer cleared after flush.
+    expect(buffers.value.get(sessionId)).toBeUndefined();
+  });
+
+  test("pruneTerminalViews does NOT dispose views whose session is in the valid set", () => {
+    const { controller, views } = buildAttachController();
+    controller.ensureTerminal("ws-a:sh");
+    controller.ensureTerminal("ws-b:sh");
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const viewA = (views.value as any).get("ws-a:sh");
+    const disposeSpy = vi.spyOn(viewA.term, "dispose");
+
+    // Both sessions are valid (desktop all-profile retention).
+    controller.pruneTerminalViews(new Set(["ws-a:sh", "ws-b:sh"]));
+
+    expect(disposeSpy).not.toHaveBeenCalled();
+  });
+
+  test("pruneTerminalViews DOES dispose views whose session is NOT in the valid set", () => {
+    const { controller, views } = buildAttachController();
+    controller.ensureTerminal("ws-a:sh");
+    controller.ensureTerminal("ws-b:sh");
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const viewA = (views.value as any).get("ws-a:sh");
+    const disposeSpy = vi.spyOn(viewA.term, "dispose");
+
+    // Only ws-b:sh is valid — ws-a:sh (deleted workspace) must be pruned.
+    controller.pruneTerminalViews(new Set(["ws-b:sh"]));
+
+    expect(disposeSpy).toHaveBeenCalled();
   });
 });

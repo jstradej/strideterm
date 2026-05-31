@@ -835,4 +835,60 @@ describe("normalizeState — profile lastActive restore id validation", () => {
     expect(profile?.lastActiveWorkspaceId).toBe("ws-a");
     expect(profile?.lastActiveSessionId).toBeUndefined();
   });
+
+  test("seeds lastActiveWorkspaceId from matching WindowSlot when no existing restore ids", () => {
+    const state = normalizeState({
+      profiles: [{ id: "pa", name: "A", color: "#a", workspaceIds: ["ws-a"] }],
+      projects: [
+        {
+          id: "ws-a",
+          name: "A",
+          kind: "terminal",
+          profileId: "pa",
+          cwd: "/tmp/a",
+          activePanelId: "shell",
+          panels: [{ id: "shell", title: "Shell", command: "" }],
+        },
+      ],
+      windowSlots: [
+        { id: "slot-1", profileId: "pa", activeWorkspaceId: "ws-a", activeSessionId: "ws-a:shell" },
+      ],
+    });
+    const profile = state.profiles.find((p) => p.id === "pa");
+    expect(profile?.lastActiveWorkspaceId).toBe("ws-a");
+    expect(profile?.lastActiveSessionId).toBe("ws-a:shell");
+  });
+
+  test("does not overwrite existing lastActiveWorkspaceId with WindowSlot value", () => {
+    // Profile already has a saved restore id — the slot should not overwrite it.
+    const state = normalizeState({
+      profiles: [
+        { id: "pa", name: "A", color: "#a", workspaceIds: ["ws-a", "ws-b"], lastActiveWorkspaceId: "ws-a" },
+      ],
+      projects: [
+        {
+          id: "ws-a",
+          name: "A",
+          kind: "terminal",
+          profileId: "pa",
+          cwd: "/tmp/a",
+          panels: [{ id: "sh", title: "Shell", command: "" }],
+        },
+        {
+          id: "ws-b",
+          name: "B",
+          kind: "terminal",
+          profileId: "pa",
+          cwd: "/tmp/b",
+          panels: [],
+        },
+      ],
+      windowSlots: [
+        // Slot points to ws-b — must NOT overwrite the saved ws-a.
+        { id: "slot-1", profileId: "pa", activeWorkspaceId: "ws-b", activeSessionId: "" },
+      ],
+    });
+    const profile = state.profiles.find((p) => p.id === "pa");
+    expect(profile?.lastActiveWorkspaceId).toBe("ws-a");
+  });
 });

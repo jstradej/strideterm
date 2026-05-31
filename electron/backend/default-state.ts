@@ -1242,6 +1242,37 @@ export function normalizeState(rawState: any = {}): AppState & { activeProjectId
       }
     }
 
+    // Migration seed: if no lastActiveWorkspaceId was saved, try to seed from the
+    // matching WindowSlot in rawState (covers old state pre-dating per-profile restore ids).
+    if (!lastWsId) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const rawSlots = (rawState as Record<string, unknown>).windowSlots as any[] | undefined;
+      if (Array.isArray(rawSlots)) {
+        const slot = rawSlots.find(
+          (s) => String((s as Record<string, unknown>)?.profileId || "") === profile.id,
+        );
+        if (slot) {
+          const slotWsId = String((slot as Record<string, unknown>).activeWorkspaceId || "");
+          if (slotWsId && profileWsIds.has(slotWsId)) {
+            lastWsId = slotWsId;
+            const slotSessionId = String((slot as Record<string, unknown>).activeSessionId || "");
+            if (slotSessionId && !lastSessionId) {
+              const seedColonIdx = slotSessionId.indexOf(":");
+              if (seedColonIdx >= 0) {
+                const seedWsId = slotSessionId.slice(0, seedColonIdx);
+                const seedPanelId = slotSessionId.slice(seedColonIdx + 1);
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                const seedWs = profileWorkspaces.find((w) => w.id === seedWsId);
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                const seedPanelExists = seedWs && (seedWs as any).panels?.some((p: any) => p.id === seedPanelId);
+                if (seedPanelExists) lastSessionId = slotSessionId;
+              }
+            }
+          }
+        }
+      }
+    }
+
     const result = { ...profile };
     if (lastWsId !== undefined) result.lastActiveWorkspaceId = lastWsId;
     else delete result.lastActiveWorkspaceId;

@@ -1,0 +1,159 @@
+/**
+ * Component test for NotificationCenter — verifies that the profile label
+ * element renders when a notification session has a known meta.profileId.
+ */
+import { describe, it, expect, beforeEach } from "vitest";
+import { mount } from "@vue/test-utils";
+import { setActivePinia, createPinia } from "pinia";
+import { nextTick } from "vue";
+import NotificationCenter from "./NotificationCenter.vue";
+import { useNotificationStore } from "../../stores/notifications.js";
+import { useAppStore } from "../../stores/app.js";
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type AnyApi = any;
+
+function makePayload(overrides: AnyApi = {}): AnyApi {
+  return {
+    meta: {
+      appVersion: "0.0.0",
+      platform: "test",
+      repositoryUrl: "",
+      versionCheck: {},
+      recoveryCandidates: [],
+    },
+    appState: {
+      activeWorkspaceId: "ws-a",
+      profiles: [{ id: "p1", name: "Profile Alpha", color: "#fff", workspaceIds: ["ws-a"] }],
+      workspaces: [
+        {
+          id: "ws-a",
+          name: "WsA",
+          profileId: "p1",
+          panels: [{ id: "sh", title: "Shell", command: "" }],
+          kind: "terminal",
+          cwd: "/tmp/a",
+        },
+      ],
+      windowSlots: [{ id: "slot1", profileId: "p1", activeWorkspaceId: "ws-a", activeSessionId: "" }],
+      settings: {},
+      tabTemplates: [],
+      ssh: {
+        hosts: [],
+        keys: [],
+        certificates: [],
+        knownHosts: {},
+        settings: { defaultAgentMode: "inherit", importedSshConfig: false },
+      },
+      ...overrides.appState,
+    },
+    workspace: null,
+    attention: { sessions: {}, alerts: [] },
+    docker: {
+      available: false,
+      backend: null,
+      contexts: [],
+      containers: [],
+      lazydocker: { available: false, backend: null, error: "" },
+      error: "",
+      lastUpdatedAt: null,
+    },
+    git: { workspaces: {}, activeWorkspace: null, connections: [] },
+    azureDevops: { inboxItems: [], connections: [], lastUpdatedAt: null, error: "" },
+    github: { inboxItems: [], connections: [], lastUpdatedAt: null, error: "" },
+    reviewBridge: { sessions: {}, enabled: false },
+    plugins: [],
+    environment: {},
+    themeSource: "light",
+    remoteAccess: { enabled: false, host: "", port: 0, tunnel: { active: false, url: null, error: null } },
+    agentNotifyHook: { enabled: false, port: 0 },
+    taskRunner: {},
+    ...overrides,
+  };
+}
+
+describe("NotificationCenter — sessionProfileLabel render", () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    window.localStorage.removeItem("strideterm-notifications-v2");
+    (window as AnyApi).strideterm = { startupFlags: { windowId: "slot1" } };
+  });
+
+  it("renders profile label span when session has a known meta.profileId", async () => {
+    const appStore = useAppStore();
+    const notifStore = useNotificationStore();
+
+    // Seed app store with a profile
+    appStore.payload = makePayload() as AnyApi;
+
+    // Open the panel so the aside renders
+    notifStore.panelOpen = true;
+
+    // Add a session stamped with the active profile id so it passes sessionInActiveProfile
+    notifStore.add({
+      title: "Task done",
+      kind: "completed",
+      workspaceId: "ws-a",
+      viewId: "ws-a:sh",
+      meta: { profileId: "p1" },
+    });
+
+    const wrapper = mount(NotificationCenter);
+    await nextTick();
+    await nextTick();
+
+    const label = wrapper.find(".notification-item__profile-label");
+    expect(label.exists()).toBe(true);
+    expect(label.text()).toBe("Profile Alpha");
+    expect(label.attributes("title")).toBe("Profile: Profile Alpha");
+  });
+
+  it("does not render profile label when meta.profileId is absent", async () => {
+    const appStore = useAppStore();
+    const notifStore = useNotificationStore();
+
+    appStore.payload = makePayload() as AnyApi;
+    notifStore.panelOpen = true;
+
+    // Session with no profileId — sessionProfileLabel returns ""
+    notifStore.add({
+      title: "Task done",
+      kind: "completed",
+      workspaceId: "ws-a",
+      viewId: "ws-a:sh2",
+    });
+
+    const wrapper = mount(NotificationCenter);
+    await nextTick();
+    await nextTick();
+
+    expect(wrapper.find(".notification-item__profile-label").exists()).toBe(false);
+  });
+
+  it("does not render profile label when profileId references a deleted/unknown profile", async () => {
+    const appStore = useAppStore();
+    const notifStore = useNotificationStore();
+
+    appStore.payload = makePayload() as AnyApi;
+    notifStore.panelOpen = true;
+
+    // Session has profileId that is not in appStore.payload.appState.profiles
+    notifStore.add({
+      title: "Old task",
+      kind: "completed",
+      workspaceId: "ws-a",
+      viewId: "ws-a:sh3",
+      meta: { profileId: "p1" }, // passes sessionInActiveProfile
+    });
+
+    // Mutate the payload to have an EMPTY profiles list (simulates deleted profile)
+    appStore.payload = makePayload({ appState: { profiles: [] } }) as AnyApi;
+
+    const wrapper = mount(NotificationCenter);
+    await nextTick();
+    await nextTick();
+
+    // sessionProfileLabel returns "" when profile is not found
+    expect(wrapper.find(".notification-item__profile-label").exists()).toBe(false);
+  });
+});
