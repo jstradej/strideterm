@@ -15,6 +15,7 @@
         @toggle="toggle"
         @select="(file) => $emit('select', file.path, file.scope)"
         @toggle-select="(p) => $emit('toggle-select', p)"
+        @context-menu="(p) => $emit('context-menu', p)"
       />
     </ul>
   </div>
@@ -40,6 +41,7 @@ const props = withDefaults(
 defineEmits<{
   (e: "select", path: string, scope: string): void;
   (e: "toggle-select", path: string): void;
+  (e: "context-menu", payload: { path: string; name: string; x: number; y: number }): void;
 }>();
 
 const expandedSet = ref(new Set<string>());

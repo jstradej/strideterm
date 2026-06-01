@@ -9,6 +9,7 @@
       :style="{ paddingLeft: depth * 14 + 6 + 'px' }"
       :title="node.kind === 'file' ? `${statusTitle(node.status)}: ${node.path}` : node.path"
       @click="onClick"
+      @contextmenu="onContextMenu"
     >
       <span v-if="isDir" class="gct-node__chevron">{{ expanded ? "▾" : "▸" }}</span>
       <span v-else class="gct-node__chevron gct-node__chevron--leaf"></span>
@@ -46,6 +47,7 @@
         @toggle="(p) => $emit('toggle', p)"
         @select="(file) => $emit('select', file)"
         @toggle-select="(p) => $emit('toggle-select', p)"
+        @context-menu="(p) => $emit('context-menu', p)"
       />
     </ul>
   </li>
@@ -74,6 +76,7 @@ const emit = defineEmits<{
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (e: "select", node: Record<string, any>): void;
   (e: "toggle-select", path: string): void;
+  (e: "context-menu", payload: { path: string; name: string; x: number; y: number }): void;
 }>();
 
 const isDir = computed(() => props.node.kind === "dir");
@@ -87,6 +90,19 @@ const isChecked = computed(() => props.node.kind === "file" && !!props.selectedS
 function onClick() {
   if (isDir.value) emit("toggle", props.node.path as string);
   else emit("select", props.node);
+}
+
+function onContextMenu(e: MouseEvent) {
+  // Only files can be deleted from the changes view — directories are
+  // synthetic tree groupings, not real change entries.
+  if (props.node.kind !== "file") return;
+  e.preventDefault();
+  emit("context-menu", {
+    path: props.node.path as string,
+    name: props.node.name as string,
+    x: e.clientX,
+    y: e.clientY,
+  });
 }
 </script>
 

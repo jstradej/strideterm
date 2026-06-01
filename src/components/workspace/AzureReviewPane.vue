@@ -68,7 +68,7 @@
         <!-- Commits -->
         <div v-if="hasCommits" style="margin-top: 20px">
           <p class="eyebrow">Commits ({{ gitSnapshot?.aheadCount || 0 }} ahead of base)</p>
-          <div style="margin-top: 6px">
+          <div class="review-commits-panel">
             <GitCommitLog
               :commits="recentCommits"
               :ahead-count="gitSnapshot?.aheadCount || 0"
@@ -1417,5 +1417,15 @@ function openAzureComment() {
   font-size: 16px;
   flex-shrink: 0;
   line-height: 1.2;
+}
+
+/* Bound the commit list so a long history scrolls inside a panel instead of
+   pushing the PR form far down the page. */
+.review-commits-panel {
+  margin-top: 6px;
+  max-height: 320px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
 }
 </style>

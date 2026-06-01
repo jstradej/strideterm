@@ -893,6 +893,12 @@ export const useGitUiStore = defineStore("git-ui", () => {
     ensure(workspaceId).lastResult = null;
   }
 
+  function gitClearSelectedDiff(workspaceId: string): void {
+    const ui = ensure(workspaceId);
+    ui.selectedDiff = null;
+    ui.diffPreview = null;
+  }
+
   async function gitStashPop(workspaceId: string): Promise<void> {
     const rootPath = getActiveRoot(workspaceId);
     await runGitAction(workspaceId, "stash-pop", () =>
@@ -1238,6 +1244,7 @@ export const useGitUiStore = defineStore("git-ui", () => {
     gitSelectDiff,
     gitSwitchTab,
     gitClearResult,
+    gitClearSelectedDiff,
     openLazygit,
     gitStashPop,
     gitSetBaseBranch,

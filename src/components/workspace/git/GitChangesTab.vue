@@ -32,6 +32,7 @@
                 :selected-set="selectedPaths"
                 @select="(p, s) => gitUiStore.gitSelectDiff(workspaceId, p, s)"
                 @toggle-select="toggleSelect"
+                @context-menu="onFileContextMenu"
               />
               <div v-if="snapshot.dirty && !isReviewWorkspace" class="git-commit-form" style="margin-top: 12px">
                 <input
@@ -152,11 +153,44 @@
         </Pane>
       </Splitpanes>
     </div>
+
+    <!-- File context menu (right-click a changed file) -->
+    <Teleport to="body">
+      <div
+        v-if="fileMenu"
+        ref="fileMenuRef"
+        class="context-menu"
+        :style="{ position: 'fixed', left: fileMenu.x + 'px', top: fileMenu.y + 'px', zIndex: 9999 }"
+        @click.stop
+      >
+        <button type="button" class="context-menu__item context-menu__item--danger" @click="onMenuDelete">
+          <span class="context-menu__icon">&#x2715;</span><span>Delete file</span>
+        </button>
+      </div>
+    </Teleport>
+
+    <!-- Delete confirm -->
+    <Teleport to="body">
+      <div v-if="deleteDialog" class="fm-dialog-backdrop" @mousedown.self="deleteDialog = null">
+        <div class="fm-dialog">
+          <h3>Delete file?</h3>
+          <p class="fm-dialog__text">
+            Permanently delete <strong>{{ deleteDialog.name }}</strong> from disk? This cannot be undone.
+          </p>
+          <div class="fm-dialog__actions">
+            <button type="button" class="button button--ghost" @click="deleteDialog = null">Cancel</button>
+            <button type="button" class="button" style="background: var(--danger)" @click="confirmDelete">
+              Delete
+            </button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, defineAsyncComponent, ref, watch } from "vue";
+import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { Splitpanes, Pane } from "splitpanes";
 import "splitpanes/dist/splitpanes.css";
 import { useAppStore } from "../../../stores/app.js";
@@ -384,6 +418,53 @@ async function onStashAll() {
   if (stashBusy.value) return;
   await runAllStash(false);
 }
+
+// --- Right-click delete ---
+const fileMenu = ref<{ x: number; y: number; path: string; name: string } | null>(null);
+const fileMenuRef = ref<HTMLElement | null>(null);
+const deleteDialog = ref<{ path: string; name: string } | null>(null);
+
+function onFileContextMenu(payload: { path: string; name: string; x: number; y: number }) {
+  // Review workspaces are read-only — no destructive file ops.
+  if (props.isReviewWorkspace) return;
+  fileMenu.value = { ...payload };
+}
+
+function onMenuDelete() {
+  const target = fileMenu.value;
+  fileMenu.value = null;
+  if (target) deleteDialog.value = { path: target.path, name: target.name };
+}
+
+async function confirmDelete() {
+  const target = deleteDialog.value;
+  deleteDialog.value = null;
+  if (!target || !props.activeRootPath) return;
+  const api = appStore.getApi() as any; // eslint-disable-line @typescript-eslint/no-explicit-any -- MIGRATION-EXEMPT: getApi() returns untyped API object
+  await api.fileDelete({ rootPath: props.activeRootPath, relativePath: target.path });
+  // Drop the diff preview if the deleted file was the one being viewed.
+  if (props.gitUi.selectedDiff?.path === target.path) gitUiStore.gitClearSelectedDiff(props.workspaceId);
+  selectedPaths.value = new Set([...selectedPaths.value].filter((p) => p !== target.path));
+  await gitUiStore.refreshGit(props.workspaceId);
+}
+
+function onDocClick(e: MouseEvent) {
+  if (fileMenuRef.value && !fileMenuRef.value.contains(e.target as Node)) fileMenu.value = null;
+}
+
+function onKeydownMenu(e: KeyboardEvent) {
+  if (e.key === "Escape") fileMenu.value = null;
+}
+
+onMounted(() => {
+  document.addEventListener("click", onDocClick);
+  document.addEventListener("keydown", onKeydownMenu);
+});
+
+onBeforeUnmount(() => {
+  document.removeEventListener("click", onDocClick);
+  document.removeEventListener("keydown", onKeydownMenu);
+});
 </script>
 
 <style scoped>
@@ -490,5 +571,44 @@ async function onStashAll() {
   align-items: center;
   gap: 6px;
   margin-left: auto;
+}
+
+/* Delete-confirm dialog — Teleported to body, but Vue keeps this component's
+   scoped attribute on the teleported nodes, so these rules still apply. */
+.fm-dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 9998;
+}
+
+.fm-dialog {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px 20px;
+  min-width: 320px;
+  box-shadow: var(--shadow);
+}
+
+.fm-dialog h3 {
+  margin: 0 0 12px;
+  font-size: 14px;
+}
+
+.fm-dialog__text {
+  margin: 0 0 12px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.fm-dialog__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 12px;
 }
 </style>
