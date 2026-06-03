@@ -14,9 +14,11 @@ import {
  *
  * Verifies the core invariants of multi-window mode:
  *  - Each window shows only its profile's workspaces
- *  - Profile exclusivity: a profile open in window 1 is not offered in window 2's picker
+ *  - Profiles are NOT exclusive to a window: the same profile may be open in
+ *    any number of windows; the new-window picker badges already-open
+ *    profiles but keeps them clickable
  *  - Opening a second window creates a second BrowserWindow
- *  - Closing window 2 releases the profile back for re-use
+ *  - Two windows on the same profile are independent viewers
  *
  * The test launches with the "multi-profile" fixture (two profiles, no
  * window slots) so that the normalization code creates the first slot and
@@ -135,7 +137,7 @@ test.describe("Multi-window — profile exclusivity and new-window flow", () => 
   });
 });
 
-test.describe("Multi-window — profile exclusivity enforcement", () => {
+test.describe("Multi-window — same profile in multiple windows", () => {
   let launched: LaunchedApp | undefined;
   let secondPage: Page | undefined;
 
@@ -162,7 +164,7 @@ test.describe("Multi-window — profile exclusivity enforcement", () => {
     await closeApp(launched);
   });
 
-  test("window 1 cannot open new-window modal for an already-occupied profile", async () => {
+  test("new-window modal keeps already-open profiles clickable with a window badge", async () => {
     const { page } = launched!;
 
     // Open the new-window modal from window 1
@@ -176,16 +178,25 @@ test.describe("Multi-window — profile exclusivity enforcement", () => {
       }
     });
 
-    // If modal opened, Work profile should be in the "already open" section
     const overlay = page.locator(".overlay");
-    if (await overlay.isVisible({ timeout: 3_000 }).catch(() => false)) {
-      await captureStep(launched!, "modal-with-occupied-profile");
-      // Close it
-      await page
-        .locator(".overlay .button--ghost", { hasText: "Close" })
-        .click()
-        .catch(() => {});
-    }
+    await expect(overlay).toBeVisible({ timeout: 5_000 });
+    await captureStep(launched!, "modal-with-open-profile-badge");
+
+    // Work is open in window 2 — it must still be a clickable button, with
+    // an informational badge instead of being moved to a disabled section.
+    const workItem = page.locator(".overlay button.profile-pick-item", { hasText: "Work" }).first();
+    await expect(workItem).toBeVisible({ timeout: 3_000 });
+    await expect(workItem).toBeEnabled();
+    await expect(page.locator(".overlay .profile-pick-badge", { hasText: /Already open in Window/ })).toBeVisible();
+
+    // "Duplicate current window" primary action is offered (modal opened from a window).
+    await expect(page.getByText("Duplicate current window", { exact: true })).toBeVisible();
+
+    // Close it
+    await page
+      .locator(".overlay .button--ghost", { hasText: "Close" })
+      .click()
+      .catch(() => {});
     assertNoRendererErrors(launched!);
   });
 
@@ -195,6 +206,33 @@ test.describe("Multi-window — profile exclusivity enforcement", () => {
     // Personal project must not appear in second window
     await expect(secondPage!.getByText("Personal Project", { exact: true }).first()).not.toBeVisible();
     assertNoRendererErrors(launched!);
+  });
+
+  test("opening a third window for an already-open profile succeeds", async () => {
+    const { app, page } = launched!;
+
+    const thirdPagePromise = app.waitForEvent("window", { timeout: 15_000 });
+    const result = await page.evaluate(async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      return await (window as any).strideterm?.createWindow?.("profile-work");
+    });
+    expect(result?.error).toBeUndefined();
+
+    const thirdPage = await thirdPagePromise;
+    await waitReady(thirdPage);
+    await captureStep(launched!, "same-profile-two-windows");
+
+    // Both Work windows show the Work workspace; window 1 stays on Personal.
+    await expect(thirdPage.getByText("Work Project", { exact: true }).first()).toBeVisible({ timeout: 15_000 });
+    await expect(secondPage!.getByText("Work Project", { exact: true }).first()).toBeVisible({ timeout: 5_000 });
+    await expect(page.getByText("Personal Project", { exact: true }).first()).toBeVisible({ timeout: 5_000 });
+    assertNoRendererErrors(launched!);
+
+    // Clean up the third window
+    await thirdPage.evaluate(() => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (window as any).strideterm?.closeWindow?.();
+    });
   });
 });
 

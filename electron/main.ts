@@ -1359,30 +1359,22 @@ if (mcpMode) {
     return true;
   });
 
-  // IPC: renderer creates a new window for a given profileId
-  ipcMain.handle("window:create", async (event, profileId: string) => {
+  // IPC: renderer creates a new window for a given profileId. A profile may
+  // be open in any number of windows — no exclusivity. Optional
+  // cloneFromWindowId makes the new window start with the caller window's
+  // workspace/session/grid ("Duplicate current window").
+  ipcMain.handle("window:create", async (event, profileId: string, options?: { cloneFromWindowId?: string }) => {
     log.info("window:create IPC received", { profileId, registrySize: windowRegistry.size });
     if (!profileId || typeof profileId !== "string") {
       log.warn("window:create: rejected, profileId required");
       return { error: "profileId required" };
     }
-    // Check exclusivity: refuse if profile already open
-    const appState = runtimeState.runtime?.getPayload?.()?.appState as Record<string, unknown> | undefined;
-    const windowSlots = (appState?.windowSlots as Array<{ id: string; profileId: string }> | undefined) || [];
-    const existing = windowSlots.find((s) => s.profileId === profileId);
-    if (existing && windowRegistry.has(existing.id)) {
-      const existingWin = windowRegistry.get(existing.id)!;
-      existingWin.focus();
-      log.info("window:create: profile already open, focusing existing", {
-        profileId,
-        existingWindowId: existing.id,
-      });
-      return { error: `Profile is already open in another window`, windowId: existing.id };
-    }
+    const cloneFromWindowId =
+      options && typeof options.cloneFromWindowId === "string" ? options.cloneFromWindowId : undefined;
     // Create the window slot in state first
     let newSlot: Awaited<ReturnType<typeof runtimeState.runtime.createWindowSlot>> | null = null;
     try {
-      newSlot = (await runtimeState.runtime?.createWindowSlot?.(profileId)) ?? null;
+      newSlot = (await runtimeState.runtime?.createWindowSlot?.(profileId, { cloneFromWindowId })) ?? null;
     } catch (err) {
       log.error("window:create: createWindowSlot threw", {
         profileId,

@@ -6230,6 +6230,197 @@ describe("profile view-state persistence — activateProfileInWindow", () => {
   });
 });
 
+describe("multiple windows per profile — viewer model", () => {
+  function makeTwoWindowState() {
+    const base = makeProfileSwitchState();
+    return {
+      ...base,
+      windowSlots: [
+        {
+          id: "win-1",
+          profileId: "profile-a",
+          activeWorkspaceId: "ws-a1",
+          activeSessionId: "ws-a1:shell",
+          bounds: { x: 0, y: 0, width: 1280, height: 800 },
+          lastFocusedAt: 1000,
+        },
+        {
+          id: "win-2",
+          profileId: "profile-b",
+          activeWorkspaceId: "ws-b1",
+          activeSessionId: "",
+          bounds: { x: 40, y: 40, width: 1280, height: 800 },
+          lastFocusedAt: 2000,
+        },
+      ],
+    };
+  }
+
+  test("activateProfileInWindow allows a profile already open in another window", async () => {
+    // No exclusivity: switching win-2 to profile-a while win-1 already shows
+    // profile-a must succeed and leave win-1 untouched.
+    const fixture = await createFixture({ initialState: makeTwoWindowState() });
+    fixtures.push(fixture);
+
+    const payload = await fixture.runtime.activateProfileInWindow("profile-a", "win-2");
+
+    const slots = payload.appState.windowSlots!;
+    expect(slots.find((s) => s.id === "win-2")?.profileId).toBe("profile-a");
+    // win-1 keeps its own view state — switching another window never touches it.
+    expect(slots.find((s) => s.id === "win-1")?.profileId).toBe("profile-a");
+    expect(slots.find((s) => s.id === "win-1")?.activeWorkspaceId).toBe("ws-a1");
+    expect(slots.find((s) => s.id === "win-1")?.activeSessionId).toBe("ws-a1:shell");
+  });
+
+  test("two windows on the same profile keep independent active workspaces", async () => {
+    const base = makeProfileSwitchState();
+    const initialState = {
+      ...base,
+      projects: [
+        ...base.projects,
+        {
+          id: "ws-a2",
+          name: "A2",
+          kind: "terminal",
+          profileId: "profile-a",
+          cwd: "/tmp/a2",
+          activePanelId: "shell",
+          panels: [{ id: "shell", title: "Shell", command: "", shell: true, startup: "default" }],
+        },
+      ],
+      windowSlots: [
+        {
+          id: "win-1",
+          profileId: "profile-a",
+          activeWorkspaceId: "ws-a1",
+          activeSessionId: "",
+          bounds: { x: 0, y: 0, width: 1280, height: 800 },
+          lastFocusedAt: 1000,
+        },
+        {
+          id: "win-2",
+          profileId: "profile-a",
+          activeWorkspaceId: "ws-a1",
+          activeSessionId: "",
+          bounds: { x: 40, y: 40, width: 1280, height: 800 },
+          lastFocusedAt: 2000,
+        },
+      ],
+    };
+    const fixture = await createFixture({ initialState });
+    fixtures.push(fixture);
+
+    await fixture.runtime.activateWorkspaceInWindow("ws-a2", "win-2");
+
+    const slots = fixture.runtime.getPayload().appState.windowSlots!;
+    expect(slots.find((s) => s.id === "win-2")?.activeWorkspaceId).toBe("ws-a2");
+    expect(slots.find((s) => s.id === "win-1")?.activeWorkspaceId).toBe("ws-a1");
+  });
+
+  test("createWindowSlot allows a second slot for an already-open profile", async () => {
+    const fixture = await createFixture({ initialState: makeProfileSwitchState() });
+    fixtures.push(fixture);
+
+    const created = await fixture.runtime.createWindowSlot("profile-a");
+
+    const slots = fixture.runtime.getPayload().appState.windowSlots!;
+    expect(slots.filter((s) => s.profileId === "profile-a")).toHaveLength(2);
+    expect(slots.find((s) => s.id === created.id)?.profileId).toBe("profile-a");
+  });
+
+  test("createWindowSlot with cloneFromWindowId copies the source window's view", async () => {
+    const base = makeProfileSwitchState();
+    const initialState = {
+      ...base,
+      projects: [
+        ...base.projects,
+        {
+          id: "ws-a2",
+          name: "A2",
+          kind: "terminal",
+          profileId: "profile-a",
+          cwd: "/tmp/a2",
+          activePanelId: "shell",
+          panels: [{ id: "shell", title: "Shell", command: "", shell: true, startup: "default" }],
+        },
+      ],
+      windowSlots: [
+        {
+          id: "win-1",
+          profileId: "profile-a",
+          activeWorkspaceId: "ws-a2",
+          activeSessionId: "ws-a2:shell",
+          workspaceGrid: { layout: "cols", cellWorkspaceIds: ["ws-a1", "ws-a2"] },
+          bounds: { x: 0, y: 0, width: 1280, height: 800 },
+          lastFocusedAt: 1000,
+        },
+      ],
+    };
+    const fixture = await createFixture({ initialState });
+    fixtures.push(fixture);
+
+    const created = await fixture.runtime.createWindowSlot("profile-a", { cloneFromWindowId: "win-1" });
+
+    const slots = fixture.runtime.getPayload().appState.windowSlots!;
+    const clone = slots.find((s) => s.id === created.id)!;
+    expect(clone.activeWorkspaceId).toBe("ws-a2");
+    expect(clone.activeSessionId).toBe("ws-a2:shell");
+    expect(clone.workspaceGrid).toEqual({ layout: "cols", cellWorkspaceIds: ["ws-a1", "ws-a2"] });
+    // Independent objects — mutating the clone's grid must not touch the source.
+    expect(clone.workspaceGrid).not.toBe(slots.find((s) => s.id === "win-1")!.workspaceGrid);
+  });
+
+  test("createWindowSlot ignores cloneFromWindowId from a different profile", async () => {
+    const fixture = await createFixture({ initialState: makeProfileSwitchState() });
+    fixtures.push(fixture);
+
+    // win-1 shows profile-a; ask for a profile-b window cloned from it.
+    const created = await fixture.runtime.createWindowSlot("profile-b", { cloneFromWindowId: "win-1" });
+
+    const slots = fixture.runtime.getPayload().appState.windowSlots!;
+    const slot = slots.find((s) => s.id === created.id)!;
+    expect(slot.profileId).toBe("profile-b");
+    // Falls back to the profile default, not the foreign window's view.
+    expect(slot.activeWorkspaceId).toBe("ws-b1");
+  });
+
+  test("switching one of two same-profile windows away saves the legacy mirror without touching the sibling", async () => {
+    const base = makeProfileSwitchState();
+    const initialState = {
+      ...base,
+      windowSlots: [
+        {
+          id: "win-1",
+          profileId: "profile-a",
+          activeWorkspaceId: "ws-a1",
+          activeSessionId: "ws-a1:shell",
+          bounds: { x: 0, y: 0, width: 1280, height: 800 },
+          lastFocusedAt: 1000,
+        },
+        {
+          id: "win-2",
+          profileId: "profile-a",
+          activeWorkspaceId: "ws-a1",
+          activeSessionId: "",
+          bounds: { x: 40, y: 40, width: 1280, height: 800 },
+          lastFocusedAt: 2000,
+        },
+      ],
+    };
+    const fixture = await createFixture({ initialState });
+    fixtures.push(fixture);
+
+    await fixture.runtime.activateProfileInWindow("profile-b", "win-2");
+
+    const slots = fixture.runtime.getPayload().appState.windowSlots!;
+    expect(slots.find((s) => s.id === "win-2")?.profileId).toBe("profile-b");
+    // The sibling window stays on profile-a, fully untouched.
+    expect(slots.find((s) => s.id === "win-1")?.profileId).toBe("profile-a");
+    expect(slots.find((s) => s.id === "win-1")?.activeWorkspaceId).toBe("ws-a1");
+    expect(slots.find((s) => s.id === "win-1")?.activeSessionId).toBe("ws-a1:shell");
+  });
+});
+
 describe("profile view-state persistence — activateWorkspaceInWindow", () => {
   test("updates profile lastActiveWorkspaceId on workspace activation", async () => {
     const initialState = {

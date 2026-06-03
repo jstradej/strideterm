@@ -174,7 +174,11 @@ export interface Profile {
   color: string;
   workspaceIds: string[];
   projectIds?: string[];
-  /** Per-profile workspace grid layout (replaces global AppState.workspaceGrid). */
+  /**
+   * @deprecated Legacy/default grid only. The authoritative grid is viewer-owned
+   * (WindowSlot.workspaceGrid / remote client). Kept as the default seed when a
+   * viewer opens this profile without its own grid, and for downgrade compat.
+   */
   workspaceGrid?: WorkspaceGridState | null;
   /** Last workspace the user was viewing in this profile — restored on profile switch. */
   lastActiveWorkspaceId?: string;
@@ -194,12 +198,14 @@ export interface WindowSlotBounds {
 export interface WindowSlot {
   /** Stable UUID assigned at window creation; survives app restarts. */
   id: string;
-  /** Exclusive profile for this window — no two slots share the same profileId. */
+  /** Profile shown in this window. NOT unique — multiple windows may show the same profile. */
   profileId: string;
   /** Workspace currently focused inside this window. */
   activeWorkspaceId: string;
   /** Session currently focused inside this window. */
   activeSessionId: string;
+  /** Per-window workspace grid — viewer-owned; two windows of the same profile keep independent grids. */
+  workspaceGrid?: WorkspaceGridState | null;
   /** Last persisted window bounds for restore. */
   bounds: WindowSlotBounds;
   /** Display ID for multi-monitor restore. */

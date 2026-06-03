@@ -980,10 +980,21 @@ export function createDialogActions(ctx: DialogActionsCtx) {
 
   function openNewWindowModal(): void {
     const appState = ctx.payload.value?.appState || ({} as AnyApi);
+    // Window context for "Duplicate current window" — desktop only; remote
+    // clients have no desktop window of their own.
+    const currentWindowId = ctx.getApi().isRemote
+      ? ""
+      : ((window as AnyApi).strideterm?.startupFlags?.windowId as string) || "";
+    const slots = ((appState as AnyApi).windowSlots || []) as Array<{ id: string; profileId?: string }>;
+    const currentWindowProfileId = currentWindowId
+      ? slots.find((slot) => slot.id === currentWindowId)?.profileId || ""
+      : "";
     openDialog("NewWindowModal", {
       profiles: JSON.parse(JSON.stringify((appState as AnyApi).profiles || [])) as unknown[],
       windowSlots: JSON.parse(JSON.stringify((appState as AnyApi).windowSlots || [])) as unknown[],
       workspaces: JSON.parse(JSON.stringify((appState as AnyApi).workspaces || [])) as unknown[],
+      currentWindowId,
+      currentProfileId: currentWindowProfileId,
       onCancel: closeDialog,
       "onCreate-and-open": async (profile: { id: string; name: string; color: string }) => {
         // Save the new profile, then open a window for it. saveProfile drives

@@ -34,24 +34,28 @@
               @blur="onRenameProfile(profile)"
               @keydown.enter="(e: Event) => (e.target as HTMLInputElement).blur()"
             />
-            <span v-if="profile.id === activeProfileId" class="profile-active-badge">(active)</span>
+            <span v-if="profile.id === activeProfileId" class="profile-active-badge">Current</span>
             <span
               v-if="isRemote && occupiedByOtherWindow.has(profile.id)"
               class="profile-desktop-badge"
               :title="`This profile is open on desktop Window ${occupiedByOtherWindow.get(profile.id)}`"
               >Window {{ occupiedByOtherWindow.get(profile.id) }}</span
             >
+            <span
+              v-else-if="!isRemote && profile.id !== activeProfileId && desktopWindowCount(profile.id) > 0"
+              class="profile-desktop-badge"
+              :title="`This profile is already shown in ${desktopWindowCount(profile.id)} window${desktopWindowCount(profile.id) === 1 ? '' : 's'} — switching here is still fine`"
+              >Open in {{ desktopWindowCount(profile.id) }} window{{
+                desktopWindowCount(profile.id) === 1 ? "" : "s"
+              }}</span
+            >
             <div class="profile-card__actions">
               <button
                 v-if="profile.id !== activeProfileId"
                 type="button"
                 class="button button--ghost"
-                :disabled="(!isRemote && occupiedByOtherWindow.has(profile.id)) || activatingProfileId !== null"
-                :title="
-                  !isRemote && occupiedByOtherWindow.has(profile.id)
-                    ? `Open in Window ${occupiedByOtherWindow.get(profile.id)}`
-                    : 'Switch to this profile — the sidebar will filter to show only its workspaces. Credentials and runtime managers are shared across all profiles in this install.'
-                "
+                :disabled="activatingProfileId !== null"
+                title="Switch to this profile — the sidebar will filter to show only its workspaces. Credentials and runtime managers are shared across all profiles in this install."
                 @click="handleActivate(profile.id)"
               >
                 {{ activatingProfileId === profile.id ? "Switching…" : "Activate" }}
@@ -151,22 +155,27 @@ const props = withDefaults(defineProps<Props>(), {
   desktopOccupancy: () => new Map(),
 });
 
-// Profiles occupied by another desktop window (not this viewer's active profile).
-// Maps profileId → 1-based window index.  Used differently in Electron vs remote:
-//   Electron → disable the Activate button
-//   Remote   → show "Open on desktop Window N" badge; button stays enabled
+// Remote mode: profiles open on the desktop, mapped profileId → 1-based
+// window index. Purely informational — a badge; activation stays enabled.
 const occupiedByOtherWindow = computed<Map<string, number>>(() => {
-  // In remote mode we get occupancy from the desktopOccupancy prop directly.
   if (props.isRemote) return props.desktopOccupancy || new Map();
+  return new Map();
+});
+
+// Desktop mode: how many windows currently show a profile. A profile may be
+// open in any number of windows, so this is an informational badge, never a
+// reason to disable activation.
+const desktopWindowCounts = computed<Map<string, number>>(() => {
   const map = new Map<string, number>();
-  const slots = props.windowSlots || [];
-  slots.forEach((slot, idx) => {
-    if (slot.profileId !== props.activeProfileId) {
-      map.set(slot.profileId, idx + 1);
-    }
-  });
+  for (const slot of props.windowSlots || []) {
+    map.set(slot.profileId, (map.get(slot.profileId) || 0) + 1);
+  }
   return map;
 });
+
+function desktopWindowCount(profileId: string): number {
+  return desktopWindowCounts.value.get(profileId) || 0;
+}
 
 const emit = defineEmits<{
   cancel: [];

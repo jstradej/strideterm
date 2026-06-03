@@ -924,3 +924,157 @@ describe("normalizeState — profile lastActive restore id validation", () => {
     expect(profile?.lastActiveWorkspaceId).toBe("ws-a");
   });
 });
+
+describe("normalizeWindowSlots — viewer model (multiple windows per profile)", () => {
+  function makeBaseState() {
+    return {
+      profiles: [
+        { id: "pa", name: "A", color: "#a", workspaceIds: ["ws-a1", "ws-a2"] },
+        { id: "pb", name: "B", color: "#b", workspaceIds: ["ws-b1"] },
+      ],
+      projects: [
+        {
+          id: "ws-a1",
+          name: "A1",
+          kind: "terminal",
+          profileId: "pa",
+          cwd: "/tmp/a1",
+          activePanelId: "shell",
+          panels: [{ id: "shell", title: "Shell", command: "" }],
+        },
+        {
+          id: "ws-a2",
+          name: "A2",
+          kind: "terminal",
+          profileId: "pa",
+          cwd: "/tmp/a2",
+          activePanelId: "shell",
+          panels: [{ id: "shell", title: "Shell", command: "" }],
+        },
+        {
+          id: "ws-b1",
+          name: "B1",
+          kind: "terminal",
+          profileId: "pb",
+          cwd: "/tmp/b1",
+          activePanelId: "shell",
+          panels: [{ id: "shell", title: "Shell", command: "" }],
+        },
+      ],
+    };
+  }
+
+  test("duplicate windowSlots with the same profileId survive normalize", () => {
+    const state = normalizeState({
+      ...makeBaseState(),
+      windowSlots: [
+        { id: "slot-1", profileId: "pa", activeWorkspaceId: "ws-a1", activeSessionId: "" },
+        { id: "slot-2", profileId: "pa", activeWorkspaceId: "ws-a2", activeSessionId: "" },
+        { id: "slot-3", profileId: "pb", activeWorkspaceId: "ws-b1", activeSessionId: "" },
+      ],
+    });
+    expect(state.windowSlots).toHaveLength(3);
+    expect(state.windowSlots.filter((s) => s.profileId === "pa")).toHaveLength(2);
+    expect(state.windowSlots.find((s) => s.id === "slot-1")?.activeWorkspaceId).toBe("ws-a1");
+    expect(state.windowSlots.find((s) => s.id === "slot-2")?.activeWorkspaceId).toBe("ws-a2");
+  });
+
+  test("cross-profile activeWorkspaceId in a slot is repaired to a profile workspace", () => {
+    const state = normalizeState({
+      ...makeBaseState(),
+      windowSlots: [
+        // Slot claims profile pa but points at pb's workspace — must be repaired.
+        { id: "slot-1", profileId: "pa", activeWorkspaceId: "ws-b1", activeSessionId: "ws-b1:shell" },
+      ],
+    });
+    const slot = state.windowSlots.find((s) => s.id === "slot-1");
+    expect(slot?.activeWorkspaceId).toBe("ws-a1");
+    // The stale session pointed at the foreign workspace — it must be cleared.
+    expect(slot?.activeSessionId).toBe("");
+  });
+
+  test("activeSessionId not belonging to the active workspace is cleared", () => {
+    const state = normalizeState({
+      ...makeBaseState(),
+      windowSlots: [{ id: "slot-1", profileId: "pa", activeWorkspaceId: "ws-a1", activeSessionId: "ws-a2:shell" }],
+    });
+    const slot = state.windowSlots.find((s) => s.id === "slot-1");
+    expect(slot?.activeWorkspaceId).toBe("ws-a1");
+    expect(slot?.activeSessionId).toBe("");
+  });
+
+  test("legacy profile grid is copied into multiple slots as independent objects", () => {
+    const base = makeBaseState();
+    const state = normalizeState({
+      ...base,
+      profiles: [
+        { ...base.profiles[0], workspaceGrid: { layout: "cols", cellWorkspaceIds: ["ws-a1", "ws-a2"] } },
+        base.profiles[1],
+      ],
+      windowSlots: [
+        // Neither slot carries its own grid — both inherit the profile grid.
+        { id: "slot-1", profileId: "pa", activeWorkspaceId: "ws-a1", activeSessionId: "" },
+        { id: "slot-2", profileId: "pa", activeWorkspaceId: "ws-a2", activeSessionId: "" },
+      ],
+    });
+    const slot1 = state.windowSlots.find((s) => s.id === "slot-1");
+    const slot2 = state.windowSlots.find((s) => s.id === "slot-2");
+    expect(slot1?.workspaceGrid).toEqual({ layout: "cols", cellWorkspaceIds: ["ws-a1", "ws-a2"] });
+    expect(slot2?.workspaceGrid).toEqual({ layout: "cols", cellWorkspaceIds: ["ws-a1", "ws-a2"] });
+    // Independent copies — one window's grid mutation must never leak into the other.
+    expect(slot1?.workspaceGrid).not.toBe(slot2?.workspaceGrid);
+    expect(slot1?.workspaceGrid?.cellWorkspaceIds).not.toBe(slot2?.workspaceGrid?.cellWorkspaceIds);
+  });
+
+  test("slot-owned grid wins over the legacy profile grid and is validated per profile", () => {
+    const base = makeBaseState();
+    const state = normalizeState({
+      ...base,
+      profiles: [
+        { ...base.profiles[0], workspaceGrid: { layout: "cols", cellWorkspaceIds: ["ws-a1", "ws-a2"] } },
+        base.profiles[1],
+      ],
+      windowSlots: [
+        {
+          id: "slot-1",
+          profileId: "pa",
+          activeWorkspaceId: "ws-a2",
+          activeSessionId: "",
+          // Slot grid references a foreign-profile workspace — that cell must be nulled.
+          workspaceGrid: { layout: "cols", cellWorkspaceIds: ["ws-a2", "ws-b1"] },
+        },
+      ],
+    });
+    const slot = state.windowSlots.find((s) => s.id === "slot-1");
+    expect(slot?.workspaceGrid).toEqual({ layout: "cols", cellWorkspaceIds: ["ws-a2", null] });
+  });
+
+  test("slot with explicit null grid keeps null even when the profile has a legacy grid", () => {
+    const base = makeBaseState();
+    const state = normalizeState({
+      ...base,
+      profiles: [
+        { ...base.profiles[0], workspaceGrid: { layout: "cols", cellWorkspaceIds: ["ws-a1", "ws-a2"] } },
+        base.profiles[1],
+      ],
+      windowSlots: [
+        // Explicit null = the user disabled the grid in this window; the
+        // migration copy must not resurrect it.
+        { id: "slot-1", profileId: "pa", activeWorkspaceId: "ws-a1", activeSessionId: "", workspaceGrid: null },
+      ],
+    });
+    expect(state.windowSlots.find((s) => s.id === "slot-1")?.workspaceGrid).toBeNull();
+  });
+
+  test("slot referencing an unknown profile is still dropped", () => {
+    const state = normalizeState({
+      ...makeBaseState(),
+      windowSlots: [
+        { id: "slot-1", profileId: "pa", activeWorkspaceId: "ws-a1", activeSessionId: "" },
+        { id: "slot-2", profileId: "gone", activeWorkspaceId: "ws-a1", activeSessionId: "" },
+      ],
+    });
+    expect(state.windowSlots).toHaveLength(1);
+    expect(state.windowSlots[0].id).toBe("slot-1");
+  });
+});

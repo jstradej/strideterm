@@ -414,7 +414,10 @@ export interface StridetermAPI {
   activateProfile: (profileId: string) => Promise<unknown>;
   getWindowId: () => string | Promise<string>;
   focusWindow: () => Promise<boolean>;
-  createWindow: (profileId: string) => Promise<{ windowId?: string; error?: string }>;
+  createWindow: (
+    profileId: string,
+    options?: { cloneFromWindowId?: string },
+  ) => Promise<{ windowId?: string; error?: string }>;
   closeWindow: () => Promise<void>;
   /** Renderer's reply to a `window:confirm-close-request` from main. */
   respondConfirmClose: (confirmed: boolean) => Promise<void>;

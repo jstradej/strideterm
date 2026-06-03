@@ -8,40 +8,35 @@
       <button type="button" class="button button--ghost" @click="emit('cancel')">Close</button>
     </div>
     <div class="form new-window-form">
-      <template v-if="availableProfiles.length > 0">
-        <p class="new-window-hint">Select a profile for the new window:</p>
-        <div class="profile-pick-list">
-          <button
-            v-for="profile in availableProfiles"
-            :key="profile.id"
-            type="button"
-            class="profile-pick-item"
-            :disabled="busy"
-            @click="openWindow(profile.id)"
-          >
-            <span class="profile-pick-swatch" :style="{ background: profile.color || '#ffa424' }"></span>
-            <span class="profile-pick-name">{{ profile.name }}</span>
-            <span class="profile-pick-count">{{ workspaceCount(profile.id) }}</span>
-          </button>
-        </div>
-      </template>
+      <button
+        v-if="currentWindowId && currentProfileId"
+        type="button"
+        class="profile-pick-item profile-pick-item--duplicate"
+        :disabled="busy"
+        title="Open another window showing the same profile, workspace and layout as this one."
+        @click="duplicateCurrentWindow"
+      >
+        <span class="profile-pick-name">Duplicate current window</span>
+        <span class="profile-pick-count">{{ currentProfileName }}</span>
+      </button>
 
-      <template v-if="occupiedProfiles.length > 0">
-        <p class="new-window-occupied-label">Already open:</p>
-        <div class="profile-pick-list profile-pick-list--occupied">
-          <div
-            v-for="entry in occupiedProfiles"
-            :key="entry.profile.id"
-            class="profile-pick-item profile-pick-item--disabled"
-            :title="`Open in window ${entry.windowIndex}`"
-          >
-            <span class="profile-pick-swatch" :style="{ background: entry.profile.color || '#ffa424' }"></span>
-            <span class="profile-pick-name">{{ entry.profile.name }}</span>
-            <span class="profile-pick-count">{{ workspaceCount(entry.profile.id) }}</span>
-            <span class="profile-pick-badge">Window {{ entry.windowIndex }}</span>
-          </div>
-        </div>
-      </template>
+      <p class="new-window-hint">Select a profile for the new window:</p>
+      <div class="profile-pick-list">
+        <button
+          v-for="entry in profileEntries"
+          :key="entry.profile.id"
+          type="button"
+          class="profile-pick-item"
+          :disabled="busy"
+          :title="entry.badge ? `${entry.badge} — opening another window is fine` : undefined"
+          @click="openWindow(entry.profile.id)"
+        >
+          <span class="profile-pick-swatch" :style="{ background: entry.profile.color || '#ffa424' }"></span>
+          <span class="profile-pick-name">{{ entry.profile.name }}</span>
+          <span class="profile-pick-count">{{ workspaceCount(entry.profile.id) }}</span>
+          <span v-if="entry.badge" class="profile-pick-badge">{{ entry.badge }}</span>
+        </button>
+      </div>
 
       <p class="new-window-occupied-label">Or create a new profile:</p>
       <div class="new-profile-row">
@@ -95,6 +90,10 @@ const props = defineProps<{
   profiles?: Profile[];
   windowSlots?: WindowSlot[];
   workspaces?: WorkspaceEntry[];
+  /** Window the modal was opened from — enables "Duplicate current window". */
+  currentWindowId?: string;
+  /** Profile of the window the modal was opened from. */
+  currentProfileId?: string;
 }>();
 
 const emit = defineEmits<{
@@ -106,23 +105,24 @@ const busy = ref(false);
 const errorMessage = ref("");
 const newProfileName = ref("");
 
-const occupiedProfileIds = computed<Set<string>>(() => {
+// Every profile is openable — a profile may be shown in any number of
+// windows. Profiles already open elsewhere just get an informational badge.
+const profileEntries = computed<{ profile: Profile; badge: string }[]>(() => {
   const slots = props.windowSlots || [];
-  return new Set(slots.map((s) => s.profileId));
+  return (props.profiles || []).map((profile) => {
+    const indexes = slots.map((slot, idx) => (slot.profileId === profile.id ? idx + 1 : 0)).filter((idx) => idx > 0);
+    const badge =
+      indexes.length === 0
+        ? ""
+        : indexes.length === 1
+          ? `Already open in Window ${indexes[0]}`
+          : `Open in ${indexes.length} windows`;
+    return { profile, badge };
+  });
 });
 
-const availableProfiles = computed<Profile[]>(() => {
-  return (props.profiles || []).filter((p) => !occupiedProfileIds.value.has(p.id));
-});
-
-const occupiedProfiles = computed<{ profile: Profile; windowIndex: number }[]>(() => {
-  const slots = props.windowSlots || [];
-  return (props.profiles || [])
-    .filter((p) => occupiedProfileIds.value.has(p.id))
-    .map((p) => {
-      const slotIdx = slots.findIndex((s) => s.profileId === p.id);
-      return { profile: p, windowIndex: slotIdx + 1 };
-    });
+const currentProfileName = computed<string>(() => {
+  return (props.profiles || []).find((p) => p.id === props.currentProfileId)?.name || "";
 });
 
 function workspaceCount(profileId: string): string {
@@ -130,12 +130,12 @@ function workspaceCount(profileId: string): string {
   return `${count} workspace${count === 1 ? "" : "s"}`;
 }
 
-async function openWindow(profileId: string): Promise<void> {
+async function openWindow(profileId: string, options?: { cloneFromWindowId?: string }): Promise<void> {
   busy.value = true;
   errorMessage.value = "";
   try {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const result = await (window as any).strideterm?.createWindow?.(profileId);
+    const result = await (window as any).strideterm?.createWindow?.(profileId, options);
     if (result?.error) {
       errorMessage.value = result.error;
     } else {
@@ -146,6 +146,11 @@ async function openWindow(profileId: string): Promise<void> {
   } finally {
     busy.value = false;
   }
+}
+
+async function duplicateCurrentWindow(): Promise<void> {
+  if (!props.currentProfileId || !props.currentWindowId) return;
+  await openWindow(props.currentProfileId, { cloneFromWindowId: props.currentWindowId });
 }
 
 async function createProfileAndOpen(): Promise<void> {
@@ -211,17 +216,16 @@ async function createProfileAndOpen(): Promise<void> {
   text-align: left;
   transition: background 0.1s;
 }
-.profile-pick-item:hover:not(:disabled):not(.profile-pick-item--disabled) {
+.profile-pick-item:hover:not(:disabled) {
   background: rgba(255, 255, 255, 0.07);
 }
-.profile-pick-item:disabled,
-.profile-pick-item--disabled {
+.profile-pick-item:disabled {
   opacity: 0.45;
   cursor: default;
   pointer-events: none;
 }
-.profile-pick-list--occupied .profile-pick-item--disabled {
-  pointer-events: auto;
+.profile-pick-item--duplicate {
+  border-color: var(--accent, #ffa424);
 }
 .profile-pick-swatch {
   width: 10px;

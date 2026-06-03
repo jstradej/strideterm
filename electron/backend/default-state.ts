@@ -574,7 +574,14 @@ const DEFAULT_BOUNDS = { x: 100, y: 100, width: 1280, height: 800 };
 
 /**
  * Normalise windowSlots:
- * - Ensure no two slots share the same profileId (drop duplicates, log warn).
+ * - Each slot is an independent viewer — duplicate profileIds are valid
+ *   (multiple windows showing the same profile).
+ * - Per-slot validation: profileId must exist; activeWorkspaceId must belong
+ *   to the slot's profile (fallback otherwise); activeSessionId must belong
+ *   to the active workspace (cleared otherwise); the per-window grid may only
+ *   reference workspaces of the slot's profile.
+ * - Migration: slots without their own workspaceGrid inherit an independent
+ *   copy of the profile's legacy grid.
  * - Fill missing fields with defaults.
  */
 function normalizeWindowSlots(
@@ -582,39 +589,68 @@ function normalizeWindowSlots(
   profiles: Profile[],
   activeProfileId: string,
   activeWorkspaceId: string,
+  workspaces: WorkspaceState[],
 ): WindowSlot[] {
+  const migrationSlot = (): WindowSlot => {
+    const profile = profiles.find((p) => p.id === activeProfileId);
+    return {
+      id: randomUUID(),
+      profileId: activeProfileId,
+      activeWorkspaceId,
+      activeSessionId: "",
+      workspaceGrid: profile?.workspaceGrid
+        ? normalizeWorkspaceGrid(profile.workspaceGrid, workspaces, activeProfileId)
+        : null,
+      bounds: { ...DEFAULT_BOUNDS },
+      lastFocusedAt: Date.now(),
+    };
+  };
   if (!Array.isArray(rawSlots) || rawSlots.length === 0) {
     // Migration: create one slot from the current global state
-    return [
-      {
-        id: randomUUID(),
-        profileId: activeProfileId,
-        activeWorkspaceId,
-        activeSessionId: "",
-        bounds: { ...DEFAULT_BOUNDS },
-        lastFocusedAt: Date.now(),
-      },
-    ];
+    return [migrationSlot()];
   }
 
-  const seen = new Set<string>();
   const result: WindowSlot[] = [];
   for (const raw of rawSlots as Record<string, unknown>[]) {
     const profileId = String(raw.profileId || activeProfileId);
-    if (seen.has(profileId)) {
-      console.warn("[default-state] duplicate profileId in windowSlots, dropping", { profileId });
-      continue;
-    }
-    if (!profiles.some((p) => p.id === profileId)) {
+    const profile = profiles.find((p) => p.id === profileId);
+    if (!profile) {
       console.warn("[default-state] windowSlot references unknown profile, dropping", { profileId });
       continue;
     }
-    seen.add(profileId);
+    const profileWorkspaces = workspaces.filter((ws) => (ws.profileId || "default") === profileId);
+    // activeWorkspaceId must belong to the slot's profile — otherwise fall back
+    // to the profile's last-active workspace, then the first profile workspace.
+    let slotActiveWorkspaceId = String(raw.activeWorkspaceId || "");
+    if (!slotActiveWorkspaceId || !profileWorkspaces.some((ws) => ws.id === slotActiveWorkspaceId)) {
+      slotActiveWorkspaceId =
+        profile.lastActiveWorkspaceId && profileWorkspaces.some((ws) => ws.id === profile.lastActiveWorkspaceId)
+          ? profile.lastActiveWorkspaceId
+          : profileWorkspaces[0]?.id || "";
+    }
+    // activeSessionId must belong to the active workspace — otherwise clear.
+    let slotActiveSessionId = String(raw.activeSessionId || "");
+    if (
+      slotActiveSessionId &&
+      (!slotActiveWorkspaceId || !slotActiveSessionId.startsWith(`${slotActiveWorkspaceId}:`))
+    ) {
+      slotActiveSessionId = "";
+    }
+    // Per-window grid: a slot that carries its own grid keeps it (re-normalized
+    // against the slot's profile); a slot without one inherits an independent
+    // copy of the profile's legacy grid so two windows never share layout state.
+    const slotGrid =
+      raw.workspaceGrid !== undefined
+        ? normalizeWorkspaceGrid(raw.workspaceGrid, workspaces, profileId)
+        : profile.workspaceGrid
+          ? normalizeWorkspaceGrid(profile.workspaceGrid, workspaces, profileId)
+          : null;
     result.push({
       id: String(raw.id || randomUUID()),
       profileId,
-      activeWorkspaceId: String(raw.activeWorkspaceId || ""),
-      activeSessionId: String(raw.activeSessionId || ""),
+      activeWorkspaceId: slotActiveWorkspaceId,
+      activeSessionId: slotActiveSessionId,
+      workspaceGrid: slotGrid,
       bounds:
         raw.bounds && typeof raw.bounds === "object"
           ? {
@@ -631,16 +667,7 @@ function normalizeWindowSlots(
   }
 
   if (result.length === 0) {
-    return [
-      {
-        id: randomUUID(),
-        profileId: activeProfileId,
-        activeWorkspaceId,
-        activeSessionId: "",
-        bounds: { ...DEFAULT_BOUNDS },
-        lastFocusedAt: Date.now(),
-      },
-    ];
+    return [migrationSlot()];
   }
 
   return result;
@@ -1323,6 +1350,7 @@ export function normalizeState(
     profilesWithGrid,
     activeProfileId,
     activeWorkspaceId,
+    workspaces,
   );
 
   // Drop activeProfileId from rawState so it is not re-serialized into the persisted file.

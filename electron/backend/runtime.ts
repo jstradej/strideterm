@@ -12,7 +12,13 @@ import { fileURLToPath } from "node:url";
 import { createStore } from "./store.js";
 import * as fm from "./file-manager.js";
 import { SessionManager } from "./session-manager.js";
-import { createAccessToken, createSessionId, normalizeWorkspace, parseSessionId } from "./default-state.js";
+import {
+  createAccessToken,
+  createSessionId,
+  normalizeWorkspace,
+  normalizeWorkspaceGrid,
+  parseSessionId,
+} from "./default-state.js";
 import { execFileText } from "./process-utils.js";
 import { DockerManager } from "./docker-manager.js";
 import { DockerLogManager } from "./docker-log-streamer.js";
@@ -4703,26 +4709,25 @@ export async function createRuntime({
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async activateProfileInWindow(profileId: any, windowId: string) {
-      const state = getState();
-      // Exclusivity check: refuse if profile is already in a DIFFERENT open window
-      const existing = (state.windowSlots || []).find((s) => s.profileId === profileId && s.id !== windowId);
-      if (existing) {
-        // Find window number for user-facing message (1-based creation order)
-        const slots = state.windowSlots || [];
-        const idx = slots.findIndex((s) => s.id === existing.id);
-        throw new Error(`Profile is already open in Window ${idx + 1}. Close that window first.`);
-      }
+      // No exclusivity: any number of windows may show the same profile.
+      // Switching only retargets THIS window's slot; other windows keep
+      // their own view state.
       await store.mutate((draft: AppState) => {
         const targetProfile = draft.profiles.find((p) => p.id === profileId);
         if (!targetProfile) return;
         const slot = (draft.windowSlots || []).find((s) => s.id === windowId);
 
-        // Save current profile's view state before switching away.
+        // Save current profile's view state before switching away. The
+        // profile fields are a legacy mirror of the last deactivation — they
+        // seed the default view when a viewer opens the profile next.
         if (slot) {
           const currentProfile = draft.profiles.find((p) => p.id === slot.profileId);
           if (currentProfile) {
             currentProfile.lastActiveWorkspaceId = slot.activeWorkspaceId || undefined;
             currentProfile.lastActiveSessionId = slot.activeSessionId || undefined;
+            if (slot.workspaceGrid !== undefined) {
+              currentProfile.workspaceGrid = slot.workspaceGrid;
+            }
           }
         }
 
@@ -4733,7 +4738,13 @@ export async function createRuntime({
           slot.profileId = profileId;
           slot.activeWorkspaceId = restoreTarget.workspaceId;
           slot.activeSessionId = restoreTarget.sessionId;
+          // Seed this window's grid from the profile's legacy/default grid —
+          // re-validated against the new profile so no foreign cells survive.
+          slot.workspaceGrid = targetProfile.workspaceGrid
+            ? normalizeWorkspaceGrid(targetProfile.workspaceGrid, draft.workspaces, profileId)
+            : null;
         }
+        // Legacy mirror of the last activation — viewers read their own slot.
         draft.activeWorkspaceId = restoreTarget.workspaceId;
       });
       // PTY spawn must not wait on FS/network refreshes — otherwise the new
@@ -4758,6 +4769,7 @@ export async function createRuntime({
 
     async createWindowSlot(
       profileId: string,
+      options?: { cloneFromWindowId?: string },
     ): Promise<{ id: string; profileId: string; bounds: { x: number; y: number; width: number; height: number } }> {
       const newId = randomUUID();
       // Cascade offset new windows so they don't stack exactly on top of
@@ -4775,15 +4787,27 @@ export async function createRuntime({
         width: 1280,
         height: 800,
       };
-      const restoreTarget = resolveProfileRestoreTarget(getState(), profileId);
+      // "Duplicate current window": when the source window shows the same
+      // profile, the new window starts on the same workspace/session/grid.
+      // The clone is a one-time copy — afterwards the two windows are
+      // independent viewers.
+      const cloneSource = options?.cloneFromWindowId
+        ? (getState().windowSlots || []).find((s) => s.id === options.cloneFromWindowId && s.profileId === profileId)
+        : undefined;
+      const restoreTarget = cloneSource
+        ? { workspaceId: cloneSource.activeWorkspaceId || "", sessionId: cloneSource.activeSessionId || "" }
+        : resolveProfileRestoreTarget(getState(), profileId);
       const newActiveWorkspaceId = restoreTarget.workspaceId;
       await store.mutate((draft: AppState) => {
         if (!Array.isArray(draft.windowSlots)) draft.windowSlots = [];
+        const profile = draft.profiles.find((p) => p.id === profileId);
+        const seedGrid = cloneSource ? cloneSource.workspaceGrid : profile?.workspaceGrid;
         draft.windowSlots.push({
           id: newId,
           profileId,
           activeWorkspaceId: newActiveWorkspaceId,
           activeSessionId: restoreTarget.sessionId,
+          workspaceGrid: seedGrid ? normalizeWorkspaceGrid(seedGrid, draft.workspaces, profileId) : null,
           bounds: { ...defaultBounds },
           lastFocusedAt: Date.now(),
         });

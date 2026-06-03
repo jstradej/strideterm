@@ -10,8 +10,9 @@
  *  - Closing a desktop window removes it from windowSlots; if that was the
  *    remote client's bound profile, composePayload lazy-falls-back to the
  *    first remaining open profile.
- *  - Desktop profile exclusivity is enforced against other desktop windows only;
- *    a remote client occupying a profile does not count as a window slot.
+ *  - Profiles are not exclusive: a profile may be open in several desktop
+ *    windows at once, and a remote client occupying a profile never blocks
+ *    desktop windows.
  *
  * The test uses the "remote-multi-profile" fixture (remote access enabled on
  * port 48891 with a fixed token) and makes HTTP requests directly to the remote
@@ -206,7 +207,7 @@ test.describe("Remote — per-client profile identity with two desktop windows",
   });
 });
 
-test.describe("Remote — desktop profile exclusivity is unaffected by remote client", () => {
+test.describe("Remote — desktop windows are not limited by remote clients or other windows", () => {
   let launched: LaunchedApp | undefined;
 
   test.beforeAll(async () => {
@@ -224,7 +225,7 @@ test.describe("Remote — desktop profile exclusivity is unaffected by remote cl
     await closeApp(launched);
   });
 
-  test("desktop refuses a duplicate window even when remote also has that profile", async () => {
+  test("desktop opens another window for a profile that is already open on desktop and remote", async () => {
     const { page } = launched!;
 
     // Open W2 with profile-work.
@@ -236,29 +237,35 @@ test.describe("Remote — desktop profile exclusivity is unaffected by remote cl
     const secondPage = await secondPagePromise;
     await waitReady(secondPage);
 
-    // Establish a remote session and also activate profile-work.
-    // This must NOT affect the desktop exclusivity guard.
+    // Establish a remote session and also activate profile-work — a remote
+    // viewer never blocks desktop windows.
     const cookie = await bootstrapRemoteSession(REMOTE_PORT, REMOTE_AUTH);
     await remotePost(REMOTE_PORT, cookie, "/api/remote-client/profile/activate", { profileId: "profile-work" });
 
-    // Attempt to create a THIRD window for profile-work (already in W2 on desktop).
+    // Create a THIRD window for profile-work (already in W2 on desktop) —
+    // profiles are not exclusive, so this must succeed.
+    const thirdPagePromise = launched!.app.waitForEvent("window", { timeout: 15_000 });
     const result = await page.evaluate(async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const res = await (window as any).strideterm?.createWindow?.("profile-work");
 
       return res as { error?: string; windowId?: string };
     });
+    expect(result?.error).toBeUndefined();
+    expect(result?.windowId).toBeTruthy();
 
-    await captureStep(launched!, "exclusivity-refused");
+    const thirdPage = await thirdPagePromise;
+    await waitReady(thirdPage);
+    await captureStep(launched!, "same-profile-third-window");
 
-    // The call must be refused — profile-work is already in W2.
-    expect(result?.error).toMatch(/already open/i);
+    // Both Work windows show the Work workspace.
+    await expect(thirdPage.getByText("Work Project", { exact: true }).first()).toBeVisible({ timeout: 15_000 });
+    await expect(secondPage.getByText("Work Project", { exact: true }).first()).toBeVisible({ timeout: 5_000 });
 
-    // Confirm no third window was created.
     const windowCount = await launched!.app.evaluate(
       ({ BrowserWindow }) => BrowserWindow.getAllWindows().filter((w) => !w.isDestroyed()).length,
     );
-    expect(windowCount).toBe(2);
+    expect(windowCount).toBe(3);
 
     assertNoRendererErrors(launched!);
   });

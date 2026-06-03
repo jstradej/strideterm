@@ -226,7 +226,7 @@ contextBridge.exposeInMainWorld("strideterm", {
   activateProfile: (profileId) => ipcRenderer.invoke("profile:activate", profileId),
   getWindowId: () => startupWindowId || ipcRenderer.invoke("window:get-id"),
   focusWindow: () => ipcRenderer.invoke("window:focus-current"),
-  createWindow: (profileId) => ipcRenderer.invoke("window:create", profileId),
+  createWindow: (profileId, options) => ipcRenderer.invoke("window:create", profileId, options),
   closeWindow: () => ipcRenderer.invoke("window:close"),
   respondConfirmClose: (confirmed) => ipcRenderer.invoke("window:confirm-close-response", confirmed),
   openDiffPopout: (payload) => ipcRenderer.invoke("diff:popout:open", payload),
