@@ -365,6 +365,12 @@ export interface AzureConnection {
   orgUrl: string;
   pat?: string;
   enabled: boolean;
+  /**
+   * Owning profile. Connections are profile-owned (the provider inbox, PR
+   * reviews and quickfix workspaces land in this profile); the credential
+   * secret itself stays global per install. Empty/missing = "default".
+   */
+  profileId?: string;
 }
 
 export interface GitHubConnection {
@@ -372,6 +378,8 @@ export interface GitHubConnection {
   label: string;
   token?: string;
   enabled: boolean;
+  /** Owning profile — see AzureConnection.profileId. */
+  profileId?: string;
 }
 
 // ------- Workspace grid -------

@@ -16,7 +16,7 @@ interface ReviewBridgeHandlerCtx {
   refreshGit: (workspaceId?: string | null) => Promise<void>;
   /** Throws when the workspace lives in a profile other than the caller
    * window's bound slot. No-op when windowId is missing (legacy / tests). */
-  assertWorkspaceInWindowProfile: (workspaceId: string, windowId: string | undefined) => void;
+  assertWorkspaceInViewerProfile: (workspaceId: string, windowId: string | undefined) => void;
 }
 
 /**
@@ -35,27 +35,27 @@ export function createReviewBridgeHandlers(ctx: ReviewBridgeHandlerCtx) {
     refreshAzure,
     refreshGitHub,
     refreshGit,
-    assertWorkspaceInWindowProfile,
+    assertWorkspaceInViewerProfile,
   } = ctx;
 
   return {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async createReviewBridgeDraftComment(payload: any, windowId?: string) {
-      if (payload?.workspaceId) assertWorkspaceInWindowProfile(String(payload.workspaceId), windowId);
+      if (payload?.workspaceId) assertWorkspaceInViewerProfile(String(payload.workspaceId), windowId);
       await reviewBridgeStore.createDraftComment(payload);
       broadcastState();
       return getPayload();
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async saveReviewBridgeDraft(payload: any, windowId?: string) {
-      if (payload?.workspaceId) assertWorkspaceInWindowProfile(String(payload.workspaceId), windowId);
+      if (payload?.workspaceId) assertWorkspaceInViewerProfile(String(payload.workspaceId), windowId);
       await reviewBridgeStore.saveDraftResponse(payload);
       broadcastState();
       return getPayload();
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async queueReviewBridgeDraft(payload: any, windowId?: string) {
-      if (payload?.workspaceId) assertWorkspaceInWindowProfile(String(payload.workspaceId), windowId);
+      if (payload?.workspaceId) assertWorkspaceInViewerProfile(String(payload.workspaceId), windowId);
       await reviewBridgeStore.queueDraftResponse(payload);
       broadcastState();
       return getPayload();
@@ -79,21 +79,21 @@ export function createReviewBridgeHandlers(ctx: ReviewBridgeHandlerCtx) {
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async replyWithCodeChanges(payload: any, windowId?: string) {
-      if (payload?.workspaceId) assertWorkspaceInWindowProfile(String(payload.workspaceId), windowId);
+      if (payload?.workspaceId) assertWorkspaceInViewerProfile(String(payload.workspaceId), windowId);
       await reviewBridgeStore.replyWithCodeChanges(payload);
       broadcastState();
       return getPayload();
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async deleteReviewBridgeComment(payload: any, windowId?: string) {
-      if (payload?.workspaceId) assertWorkspaceInWindowProfile(String(payload.workspaceId), windowId);
+      if (payload?.workspaceId) assertWorkspaceInViewerProfile(String(payload.workspaceId), windowId);
       await reviewBridgeStore.deleteComment(payload);
       broadcastState();
       return getPayload();
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async deleteReviewBridgeDraft(payload: any, windowId?: string) {
-      if (payload?.workspaceId) assertWorkspaceInWindowProfile(String(payload.workspaceId), windowId);
+      if (payload?.workspaceId) assertWorkspaceInViewerProfile(String(payload.workspaceId), windowId);
       await reviewBridgeStore.deleteDraft(payload);
       broadcastState();
       return getPayload();
@@ -140,7 +140,7 @@ export function createReviewBridgeHandlers(ctx: ReviewBridgeHandlerCtx) {
       // pushAndPublishReview hits the git remote AND posts comments to the
       // PR provider — both are externally visible side effects that must
       // never happen from a window bound to another profile.
-      assertWorkspaceInWindowProfile(workspaceId, windowId);
+      assertWorkspaceInViewerProfile(workspaceId, windowId);
       const state = getState();
       const workspace = (state.workspaces || []).find((ws) => ws.id === workspaceId);
       if (!workspace) {

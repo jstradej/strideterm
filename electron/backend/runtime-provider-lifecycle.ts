@@ -67,9 +67,12 @@ export function createProviderLifecycle(ctx: ProviderLifecycleCtx) {
 
   // --- Azure DevOps ---
 
-  function getAzureWorkspace(
-    profileId = (getState().windowSlots || [])[0]?.profileId || "default",
-  ): WorkspaceState | null {
+  // Inbox workspaces are PROFILE-owned (one per provider per profile, shared
+  // by every window/remote viewer of that profile). Callers always pass the
+  // owner profile explicitly (connection.profileId / caller viewer profile);
+  // "default" is only the legacy no-context fallback — never windowSlots[0],
+  // which is arbitrary in a multi-window install.
+  function getAzureWorkspace(profileId = "default"): WorkspaceState | null {
     return (
       getState().workspaces.find(
         (workspace) => workspace.kind === "azure" && (workspace.profileId || "default") === profileId,
@@ -77,13 +80,10 @@ export function createProviderLifecycle(ctx: ProviderLifecycleCtx) {
     );
   }
 
-  async function ensureAzureWorkspace(
-    profileId = (getState().windowSlots || [])[0]?.profileId || "default",
-  ): Promise<WorkspaceState> {
+  async function ensureAzureWorkspace(profileId = "default"): Promise<WorkspaceState> {
     const existing = getAzureWorkspace(profileId);
     log.debug("ensureAzureWorkspace: called", {
       requestedProfileId: profileId,
-      stateActiveProfileId: (getState().windowSlots || [])[0]?.profileId || null,
       existingId: existing?.id || null,
       existingProfileId: existing?.profileId || null,
     });
@@ -122,11 +122,14 @@ export function createProviderLifecycle(ctx: ProviderLifecycleCtx) {
 
   async function refreshAzure(): Promise<unknown> {
     const state = getState();
+    // No activeProfileId: each PR summary is owned by its connection's
+    // profile (connection.profileId, "default" for unmigrated legacy
+    // connections) — there is no single "active" profile in a multi-window
+    // install.
     await azure.sync({
       connections: getAzureConnections(state),
       workspaces: state.workspaces,
       gitSnapshots: git.getProjectMap(),
-      activeProfileId: (state.windowSlots || [])[0]?.profileId || "default",
     });
     await repairAzureReviewWorkspaceMetadata();
 
@@ -320,17 +323,14 @@ export function createProviderLifecycle(ctx: ProviderLifecycleCtx) {
 
   // --- GitHub ---
 
-  function getGitHubWorkspace(
-    profileId = (getState().windowSlots || [])[0]?.profileId || "default",
-  ): WorkspaceState | null {
+  // See getAzureWorkspace — profile-owned inbox, no windowSlots[0] fallback.
+  function getGitHubWorkspace(profileId = "default"): WorkspaceState | null {
     return (
       getState().workspaces.find((ws) => ws.kind === "github" && (ws.profileId || "default") === profileId) || null
     );
   }
 
-  async function ensureGitHubWorkspace(
-    profileId = (getState().windowSlots || [])[0]?.profileId || "default",
-  ): Promise<WorkspaceState> {
+  async function ensureGitHubWorkspace(profileId = "default"): Promise<WorkspaceState> {
     const existing = getGitHubWorkspace(profileId);
     if (existing) return existing;
     const panels = createAzureWorkspaceReviewPanels(getState().tabTemplates || []);
@@ -356,11 +356,11 @@ export function createProviderLifecycle(ctx: ProviderLifecycleCtx) {
 
   async function refreshGitHub(): Promise<unknown> {
     const state = getState();
+    // See refreshAzure — PR summaries are owned by connection.profileId.
     await github.sync({
       connections: getGitHubConnections(state),
       workspaces: state.workspaces,
       gitSnapshots: git.getProjectMap(),
-      activeProfileId: (state.windowSlots || [])[0]?.profileId || "default",
     });
 
     const refreshedState = getState();

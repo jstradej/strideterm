@@ -487,19 +487,47 @@ export const useFileManagerStore = defineStore("fileManager", () => {
       const msg = (err as Error).message || "Failed to paste";
       error.value = msg;
       try {
-        const [{ useNotificationStore }, { useAppStore }] = await Promise.all([
-          import("./notifications.js"),
-          import("./app.js"),
-        ]);
-        // Active-profile scope: the user clicked Paste in this window, so
-        // the failure belongs to whichever profile this window is showing.
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const profileId = ((useAppStore() as any).activeProfile?.id as string) || "default";
-        useNotificationStore().showError(op === "copy" ? "Copy failed" : "Move failed", msg, { profileId });
+        const { useNotificationStore } = await import("./notifications.js");
+        useNotificationStore().showError(op === "copy" ? "Copy failed" : "Move failed", msg, {
+          profileId: await resolveOwningProfileId(),
+        });
       } catch {
         // notifications store optional during isolated unit tests
       }
     }
+  }
+
+  /**
+   * Profile for error/notification scoping. The file operation belongs to
+   * the WORKSPACE whose root this pane is showing — not to "whatever profile
+   * this window happens to display" — so resolve the owner by rootPath. The
+   * same cwd may legitimately exist in several profiles; prefer a workspace
+   * in the caller viewer's profile, then any owner, then the viewer profile.
+   */
+  async function resolveOwningProfileId(): Promise<string> {
+    const { useAppStore } = await import("./app.js");
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const appStore = useAppStore() as any;
+    const viewerProfileId = (appStore.activeProfile?.id as string) || "default";
+    const normalize = (p: string) =>
+      String(p || "")
+        .replace(/\\/g, "/")
+        .replace(/\/+$/, "");
+    const root = normalize(rootPath.value);
+    if (root) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const workspaces: any[] = appStore.payload?.appState?.workspaces || [];
+      const owners = workspaces.filter(
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (ws: any) =>
+          normalize(ws.cwd) === root ||
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          (Array.isArray(ws.gitRoots) && ws.gitRoots.some((r: any) => normalize(String(r)) === root)),
+      );
+      const preferred = owners.find((ws) => (ws.profileId || "default") === viewerProfileId) || owners[0];
+      if (preferred) return preferred.profileId || "default";
+    }
+    return viewerProfileId;
   }
 
   /**

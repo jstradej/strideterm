@@ -486,6 +486,13 @@ export async function createRuntime({
     renameSync(tmpPath, notifyUrlsPath);
   }
 
+  // Hook events resolve PRIMARILY via the session id embedded in each notify
+  // URL (sid=workspaceId:panelId → workspace → profile). The cwd key below is
+  // only the lookup FALLBACK for hook processes that don't inherit env vars
+  // (Claude Code): notify.mjs resolves URLs by project dir and POSTs to each,
+  // but every URL still carries its own session id, so two workspaces with
+  // the same cwd in different profiles each route to their own workspace —
+  // never to the other profile's.
   function registerNotifyUrl(cwd: string, url: string): void {
     const key = normalizeCwd(cwd);
     const myPort = getUrlPort(url);
@@ -3541,11 +3548,9 @@ export async function createRuntime({
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   function resolveCallerProfileId(state: any, windowId: string | undefined, parentWorkspaceId?: string): string {
     if (windowId) {
-      const slot = (state.windowSlots || []).find(
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        (s: any) => s.id === windowId,
-      );
-      if (slot?.profileId) return slot.profileId;
+      // Viewer-aware: resolves desktop slot ids AND remote viewer ids.
+      const viewerProfileId = getWindowProfileId(windowId);
+      if (viewerProfileId) return viewerProfileId;
     }
     if (parentWorkspaceId) {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -3553,12 +3558,13 @@ export async function createRuntime({
       if (parent?.profileId) return parent.profileId;
     }
     // Last-resort fallback aligned with taskRunner.createTaskWorkspace: when
-    // neither windowId nor parentWorkspaceId resolves, the workspace ends up
-    // in (state.windowSlots || [])[0]?.profileId. The guard must check the
-    // same profile, otherwise a legacy/programmatic create (e.g. an internal
+    // neither windowId nor parentWorkspaceId resolves, the workspace lands
+    // deterministically in "default" (never windowSlots[0], which is
+    // arbitrary in a multi-window install). The guard must check the same
+    // profile, otherwise a legacy/programmatic create (e.g. an internal
     // caller without window context) would consult the wrong profile and
     // either false-allow or false-block.
-    return (state.windowSlots || [])[0]?.profileId || "default";
+    return "default";
   }
   // Same-cwd guard shared by createTaskWorkspace, startTask, and resumeTask.
   // Throws the user-facing message that bubbles up to the dialog's inline
@@ -4118,7 +4124,7 @@ export async function createRuntime({
     getAzureConnections,
     getGitHubSettings,
     getGitHubConnections,
-    assertWorkspaceInWindowProfile,
+    assertWorkspaceInViewerProfile,
     getViewerProfileId: getWindowProfileId,
     mirrorRemoteViewerWorkspace,
   });
@@ -4212,17 +4218,18 @@ export async function createRuntime({
 
   /**
    * Refuse an operation when its target workspace lives in a different
-   * profile than the calling window. Previously these handlers only
-   * skipped the slot mirror on cross-profile, but the side effect (new
-   * worktree on disk, new task workspace, etc.) still happened in the
-   * foreign profile. The remote/mobile contract is "operate on the
-   * profile your session is bound to" — silently writing to another one
-   * is a bug, not a UX issue.
+   * profile than the calling VIEWER (desktop window slot id or remote
+   * viewer id — both resolve through getWindowProfileId). Previously these
+   * handlers only skipped the slot mirror on cross-profile, but the side
+   * effect (new worktree on disk, new task workspace, etc.) still happened
+   * in the foreign profile. The viewer contract is "operate on the profile
+   * your viewer is bound to" — silently writing to another one is a bug,
+   * not a UX issue.
    *
-   * No-op when no windowId is supplied (legacy in-process callers / tests
+   * No-op when no viewer id is supplied (legacy in-process callers / tests
    * that don't model windows).
    */
-  function assertWorkspaceInWindowProfile(workspaceId: string, windowId: string | undefined): void {
+  function assertWorkspaceInViewerProfile(workspaceId: string, windowId: string | undefined): void {
     const slotProfileId = getWindowProfileId(windowId);
     if (!slotProfileId) return;
     const ws = getState().workspaces.find((w) => w.id === workspaceId);
@@ -4254,7 +4261,7 @@ export async function createRuntime({
   }
 
   /**
-   * Same as assertWorkspaceInWindowProfile but for provider connections
+   * Same as assertWorkspaceInViewerProfile but for provider connections
    * (Azure / GitHub). The connection's profileId determines which inbox
    * the PR review / quickfix workspace will land under; honouring a
    * request from a different-profile window means the caller is asking
@@ -4524,7 +4531,7 @@ export async function createRuntime({
       // internal code paths. Without the guard, a remote bound to
       // profile B can activate a profile-A workspace globally and the
       // primary slot also flips.
-      assertWorkspaceInWindowProfile(String(workspaceId), windowId);
+      assertWorkspaceInViewerProfile(String(workspaceId), windowId);
       const remoteCallerSessionId = parseRemoteViewerId(windowId);
       await store.mutate((draft: AppState) => {
         if (draft.workspaces.some((workspace) => workspace.id === workspaceId)) {
@@ -4602,7 +4609,7 @@ export async function createRuntime({
       }
       // Cross-profile guard: UI state mutations target a specific workspace
       // and must not be honoured from a window bound to another profile.
-      assertWorkspaceInWindowProfile(String(workspaceId), windowId);
+      assertWorkspaceInViewerProfile(String(workspaceId), windowId);
       const { activeViewId, splitLayout, splitViewIds, activeRootPath } = uiState;
       let changed = false;
       await store.mutate((draft: AppState) => {
@@ -4921,7 +4928,7 @@ export async function createRuntime({
       // Cross-profile refuse: the session belongs to a workspace, which has
       // a profile. A remote/IPC caller binding window B must not be able to
       // point slot-B at a session whose workspace lives in profile A.
-      assertWorkspaceInWindowProfile(descriptor.workspaceId, windowId);
+      assertWorkspaceInViewerProfile(descriptor.workspaceId, windowId);
       await store.mutate((draft: AppState) => {
         const workspace = findWorkspace(draft, descriptor.workspaceId);
         if (!workspace) return;
@@ -5122,7 +5129,7 @@ export async function createRuntime({
         name: workspace?.name,
         kind: workspace?.kind,
         incomingProfileId: workspace?.profileId || null,
-        stateActiveProfileId: (getState().windowSlots || [])[0]?.profileId || null,
+        callerProfileId: getWindowProfileId(windowId) || null,
         stateProfileIds: (getState().profiles || []).map((p) => p.id),
       });
 
@@ -5217,7 +5224,7 @@ export async function createRuntime({
       const state = getState();
       const workspace = findWorkspace(state, workspaceId);
       // Cross-profile delete is data loss in another profile. Refuse it.
-      assertWorkspaceInWindowProfile(String(workspaceId), windowId);
+      assertWorkspaceInViewerProfile(String(workspaceId), windowId);
 
       // For task workspaces, mark (profile, cwd) as "being deleted" so a
       // parallel createTaskWorkspace in the SAME profile over the same
@@ -6627,7 +6634,7 @@ export async function createRuntime({
       // Refuse upfront if the parent lives in a profile the caller's window
       // isn't bound to — a remote/mobile client must not be able to spawn
       // a worktree on disk in another profile just by passing its ID.
-      assertWorkspaceInWindowProfile(targetWorkspaceId, windowId);
+      assertWorkspaceInViewerProfile(targetWorkspaceId, windowId);
 
       // Multi-repo: a rootPath must be chosen. Single-repo: fall back to workspace cwd.
       const normalizePath = (p: string) =>
@@ -6708,7 +6715,7 @@ export async function createRuntime({
           draft.workspaces.push(newProject);
         }
         draft.activeWorkspaceId = newProject.id;
-        // Entry check (assertWorkspaceInWindowProfile) already refused any
+        // Entry check (assertWorkspaceInViewerProfile) already refused any
         // cross-profile request, so the mirror here is always in-profile.
         if (windowId) {
           const slot = (draft.windowSlots || []).find((s) => s.id === windowId);
@@ -6908,7 +6915,7 @@ export async function createRuntime({
       // workspace (and worktree on disk) under a profile-A parent just by
       // passing its ID — the old logic only suppressed the slot mirror.
       if (config.parentWorkspaceId) {
-        assertWorkspaceInWindowProfile(config.parentWorkspaceId, windowId);
+        assertWorkspaceInViewerProfile(config.parentWorkspaceId, windowId);
       }
 
       // Compute the *intended* effective cwd up-front so the same-cwd guard
@@ -7079,7 +7086,7 @@ export async function createRuntime({
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async startTask(workspaceId: any, windowId?: string) {
-      assertWorkspaceInWindowProfile(String(workspaceId), windowId);
+      assertWorkspaceInViewerProfile(String(workspaceId), windowId);
       // Close the loop: createTaskWorkspace allows multiple inert tasks at the
       // same cwd, so the user could end up with two paused tasks pointing at
       // the same directory. Starting one is fine; starting BOTH would put two
@@ -7096,19 +7103,19 @@ export async function createRuntime({
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     stopTask(workspaceId: any, windowId?: string) {
-      assertWorkspaceInWindowProfile(String(workspaceId), windowId);
+      assertWorkspaceInViewerProfile(String(workspaceId), windowId);
       const result = taskRunner.stopTask(workspaceId);
       return { ok: result, payload: getPayload() };
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     pauseTask(workspaceId: any, windowId?: string) {
-      assertWorkspaceInWindowProfile(String(workspaceId), windowId);
+      assertWorkspaceInViewerProfile(String(workspaceId), windowId);
       const result = taskRunner.pauseTask(workspaceId);
       return { ok: result, payload: getPayload() };
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     resumeTask(workspaceId: any, windowId?: string) {
-      assertWorkspaceInWindowProfile(String(workspaceId), windowId);
+      assertWorkspaceInViewerProfile(String(workspaceId), windowId);
       // Resume re-spawns worker/judge PTYs, so the same guard as startTask
       // applies — refuse if another task in this profile is already actively
       // touching the same cwd.
@@ -7122,13 +7129,13 @@ export async function createRuntime({
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async resetTask(workspaceId: any, windowId?: string) {
-      assertWorkspaceInWindowProfile(String(workspaceId), windowId);
+      assertWorkspaceInViewerProfile(String(workspaceId), windowId);
       const result = await taskRunner.resetTask(workspaceId);
       return { ok: result, payload: getPayload() };
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async updateTaskDescription(workspaceId: any, description: any, windowId?: string) {
-      assertWorkspaceInWindowProfile(String(workspaceId), windowId);
+      assertWorkspaceInViewerProfile(String(workspaceId), windowId);
       const id = String(workspaceId || "");
       const desc = String(description ?? "");
       const workspace = findWorkspace(getState(), id);

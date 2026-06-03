@@ -357,6 +357,12 @@ export class SessionManager extends EventEmitter {
     return true;
   }
 
+  // NOTE (multi-window audit): the state.activeWorkspaceId default below is
+  // the LEGACY single-window mirror ("last activation anywhere"). Every
+  // UI-triggered call path passes an explicit workspaceId resolved from the
+  // caller's viewer (window slot / remote client); the default only feeds
+  // the legacy payload.workspace snapshot, which multi-window renderers
+  // ignore in favor of their own slot-scoped selection.
   getWorkspace(
     state: AppState,
     workspaceId: string = state.activeWorkspaceId || state.activeProjectId || "",

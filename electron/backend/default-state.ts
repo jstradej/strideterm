@@ -1228,18 +1228,25 @@ export function normalizeState(
     ? requestedActiveWorkspaceId
     : profileWorkspaces[0]?.id || "";
 
-  // Migrate Azure connections without profileId: assign to the profile that owns
-  // the Azure workspace, or fallback to the active profile.
-  const azureConnections = normalizedSettings.integrations?.azureDevops?.connections || [];
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const hasUntaggedConnections = azureConnections.some((c: any) => !c.profileId);
-  if (hasUntaggedConnections) {
-    const azureWorkspaceProfile = workspaces.find((w) => w.kind === "azure")?.profileId || activeProfileId;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    normalizedSettings.integrations.azureDevops.connections = azureConnections.map((c: any) =>
-      c.profileId ? c : { ...c, profileId: azureWorkspaceProfile },
+  // Migration: legacy provider connections saved without a profileId inherit
+  // the profile of their provider's inbox workspace when that is UNAMBIGUOUS
+  // (exactly one profile has an inbox of that kind). With several inbox
+  // profiles, picking "the first azure workspace" would be arbitrary —
+  // leave the connection unassigned; every read site treats "" as the
+  // default profile, and the next save/edit pins the caller viewer's profile.
+  const migrateConnectionProfiles = (connections: Array<{ profileId?: string }>, inboxKind: string) => {
+    if (!connections.some((connection) => !connection.profileId)) return;
+    const inboxProfiles = new Set(
+      workspaces.filter((ws) => ws.kind === inboxKind).map((ws) => ws.profileId || "default"),
     );
-  }
+    if (inboxProfiles.size !== 1) return;
+    const [inboxProfileId] = inboxProfiles;
+    for (const connection of connections) {
+      if (!connection.profileId) connection.profileId = inboxProfileId;
+    }
+  };
+  migrateConnectionProfiles(normalizedSettings.integrations.azureDevops.connections, "azure");
+  migrateConnectionProfiles(normalizedSettings.integrations.github.connections, "github");
 
   const ssh = {
     ...defaults.ssh,

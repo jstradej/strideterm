@@ -7092,3 +7092,247 @@ describe("profile view-state persistence — workspace deletion cleanup", () => 
     expect(profileA?.lastActiveSessionId).toBeUndefined();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Provider connections are profile-owned (viewer-aware save/delete/open)
+// ---------------------------------------------------------------------------
+
+describe("provider connections — profile ownership across viewers", () => {
+  class ConnFakeAzureManager extends EventEmitter {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    declare opened: any[];
+    constructor() {
+      super();
+      this.opened = [];
+    }
+    async verifyConnection() {
+      return { ok: true, login: "me@example.com" };
+    }
+    getSnapshot() {
+      return {
+        connections: [],
+        inbox: { needsMyReview: [], myPullRequests: [], recentlyUpdated: [], needsAttention: [] },
+        trackedPullRequests: {},
+        pullRequests: {},
+        sync: { running: false, lastStartedAt: null, lastCompletedAt: null },
+      };
+    }
+    async sync() {
+      return this.getSnapshot();
+    }
+    stopPolling() {}
+    configurePolling() {}
+    async markPullRequestSeen() {}
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async openReviewWorkspace({ prKey, callerProfileId }: any) {
+      this.opened.push({ prKey, callerProfileId });
+      return {
+        workspace: {
+          id: "ws-review-1",
+          name: "web-app PR #123",
+          kind: "terminal",
+          cwd: "/tmp/review-pr-123",
+          profileId: "profile-a",
+          activePanelId: "shell",
+          panels: [{ id: "shell", title: "Shell", command: "", shell: true, startup: "default" }],
+          review: { provider: "azure-devops", prKey, connectionId: "ado-1", checkout: { mode: "managed-worktree" } },
+        },
+      };
+    }
+  }
+
+  function makeConnectionState() {
+    return {
+      activeProjectId: "ws-a1",
+      profiles: [
+        { id: "default", name: "Default", color: "#fff" },
+        { id: "profile-a", name: "A", color: "#aaa" },
+      ],
+      projects: [
+        {
+          id: "ws-default",
+          name: "D",
+          kind: "terminal",
+          profileId: "default",
+          cwd: "/tmp/d",
+          activePanelId: "shell",
+          panels: [{ id: "shell", title: "Shell", command: "", shell: true, startup: "default" }],
+        },
+        {
+          id: "ws-a1",
+          name: "A1",
+          kind: "terminal",
+          profileId: "profile-a",
+          cwd: "/tmp/a1",
+          activePanelId: "shell",
+          panels: [{ id: "shell", title: "Shell", command: "", shell: true, startup: "default" }],
+        },
+      ],
+      windowSlots: [
+        // windowSlots[0] is the DEFAULT profile — the regression these tests
+        // pin is "connection silently lands in windowSlots[0]'s profile".
+        {
+          id: "win-default",
+          profileId: "default",
+          activeWorkspaceId: "ws-default",
+          activeSessionId: "",
+          bounds: { x: 0, y: 0, width: 1280, height: 800 },
+          lastFocusedAt: 1000,
+        },
+        {
+          id: "win-a",
+          profileId: "profile-a",
+          activeWorkspaceId: "ws-a1",
+          activeSessionId: "",
+          bounds: { x: 40, y: 40, width: 1280, height: 800 },
+          lastFocusedAt: 2000,
+        },
+        {
+          id: "win-a2",
+          profileId: "profile-a",
+          activeWorkspaceId: "ws-a1",
+          activeSessionId: "",
+          bounds: { x: 80, y: 80, width: 1280, height: 800 },
+          lastFocusedAt: 3000,
+        },
+      ],
+    };
+  }
+
+  test("save connection from a profile-a window stores profileId=profile-a even though windowSlots[0] is default", async () => {
+    const fixture = await createFixture({
+      initialState: makeConnectionState(),
+      dependencies: { AzureDevOpsManager: ConnFakeAzureManager },
+    });
+    fixtures.push(fixture);
+
+    await fixture.runtime.saveAzureConnection(
+      { id: "ado-1", label: "Acme", orgUrl: "https://dev.azure.com/acme", pat: "secret" },
+      "win-a",
+    );
+
+    const state = fixture.store.getState();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const conn = (state.settings.integrations.azureDevops.connections as any[]).find((c) => c.id === "ado-1");
+    expect(conn?.profileId).toBe("profile-a");
+    // The inbox workspace landed in the SAME profile…
+    const inboxes = state.workspaces.filter((w) => w.kind === "azure");
+    expect(inboxes).toHaveLength(1);
+    expect(inboxes[0].profileId).toBe("profile-a");
+  });
+
+  test("saving from two windows of the same profile does not create a duplicate inbox workspace", async () => {
+    const fixture = await createFixture({
+      initialState: makeConnectionState(),
+      dependencies: { AzureDevOpsManager: ConnFakeAzureManager },
+    });
+    fixtures.push(fixture);
+
+    await fixture.runtime.saveAzureConnection(
+      { id: "ado-1", label: "Acme", orgUrl: "https://dev.azure.com/acme", pat: "secret" },
+      "win-a",
+    );
+    await fixture.runtime.saveAzureConnection(
+      { id: "ado-2", label: "Acme 2", orgUrl: "https://dev.azure.com/acme2", pat: "secret" },
+      "win-a2",
+    );
+
+    const inboxes = fixture.store.getState().workspaces.filter((w) => w.kind === "azure");
+    expect(inboxes).toHaveLength(1);
+    expect(inboxes[0].profileId).toBe("profile-a");
+  });
+
+  test("save connection from a remote viewer whose profile has NO desktop window still lands in that profile", async () => {
+    const base = makeConnectionState();
+    const initialState = {
+      ...base,
+      // Only the default-profile window is open; profile-a is desktop-less.
+      windowSlots: [base.windowSlots[0]],
+    };
+    const fixture = await createFixture({
+      initialState,
+      dependencies: { AzureDevOpsManager: ConnFakeAzureManager },
+    });
+    fixtures.push(fixture);
+
+    const registry = new RemoteClientRegistry();
+    fixture.runtime.setRemoteClientRegistry(registry);
+    registry.getOrCreate("mobile-1", fixture.store.getState(), "profile-a");
+
+    await fixture.runtime.saveAzureConnection(
+      { id: "ado-1", label: "Acme", orgUrl: "https://dev.azure.com/acme", pat: "secret" },
+      "remote:mobile-1",
+    );
+
+    const state = fixture.store.getState();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const conn = (state.settings.integrations.azureDevops.connections as any[]).find((c) => c.id === "ado-1");
+    expect(conn?.profileId).toBe("profile-a");
+    const inboxes = state.workspaces.filter((w) => w.kind === "azure");
+    expect(inboxes).toHaveLength(1);
+    expect(inboxes[0].profileId).toBe("profile-a");
+  });
+
+  test("delete connection from a viewer of another profile is refused", async () => {
+    const fixture = await createFixture({
+      initialState: makeConnectionState(),
+      dependencies: { AzureDevOpsManager: ConnFakeAzureManager },
+    });
+    fixtures.push(fixture);
+
+    await fixture.runtime.saveAzureConnection(
+      { id: "ado-1", label: "Acme", orgUrl: "https://dev.azure.com/acme", pat: "secret" },
+      "win-a",
+    );
+
+    await expect(fixture.runtime.deleteAzureConnection("ado-1", "win-default")).rejects.toThrow(
+      /Cross-profile refused/i,
+    );
+    // Still present.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const conns = fixture.store.getState().settings.integrations.azureDevops.connections as any[];
+    expect(conns.some((c) => c.id === "ado-1")).toBe(true);
+
+    // The owning profile's viewer can delete it.
+    await fixture.runtime.deleteAzureConnection("ado-1", "win-a");
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const after = fixture.store.getState().settings.integrations.azureDevops.connections as any[];
+    expect(after.some((c) => c.id === "ado-1")).toBe(false);
+  });
+
+  test("open PR review from window P activates only that window — the sibling window of P stays put", async () => {
+    const fixture = await createFixture({
+      initialState: makeConnectionState(),
+      dependencies: { AzureDevOpsManager: ConnFakeAzureManager },
+    });
+    fixtures.push(fixture);
+
+    await fixture.runtime.openAzurePullRequest({ prKey: "ado-1:repo:123" }, "win-a");
+
+    const slots = fixture.runtime.getPayload().appState.windowSlots!;
+    expect(slots.find((s) => s.id === "win-a")?.activeWorkspaceId).toBe("ws-review-1");
+    // The OTHER window of the same profile keeps its own view.
+    expect(slots.find((s) => s.id === "win-a2")?.activeWorkspaceId).toBe("ws-a1");
+    expect(slots.find((s) => s.id === "win-default")?.activeWorkspaceId).toBe("ws-default");
+  });
+
+  test("open PR review from remote P activates the remote viewer — desktop windows stay where they were", async () => {
+    const fixture = await createFixture({
+      initialState: makeConnectionState(),
+      dependencies: { AzureDevOpsManager: ConnFakeAzureManager },
+    });
+    fixtures.push(fixture);
+
+    const registry = new RemoteClientRegistry();
+    fixture.runtime.setRemoteClientRegistry(registry);
+    registry.getOrCreate("mobile-1", fixture.store.getState(), "profile-a");
+
+    await fixture.runtime.openAzurePullRequest({ prKey: "ado-1:repo:123" }, "remote:mobile-1");
+
+    expect(registry.get("mobile-1")!.activeWorkspaceId).toBe("ws-review-1");
+    const slots = fixture.runtime.getPayload().appState.windowSlots!;
+    expect(slots.find((s) => s.id === "win-a")?.activeWorkspaceId).toBe("ws-a1");
+    expect(slots.find((s) => s.id === "win-a2")?.activeWorkspaceId).toBe("ws-a1");
+    expect(slots.find((s) => s.id === "win-default")?.activeWorkspaceId).toBe("ws-default");
+  });
+});

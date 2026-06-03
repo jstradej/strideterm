@@ -170,7 +170,13 @@ function buildDestructiveConfirm({
 }
 
 export const useGitUiStore = defineStore("git-ui", () => {
-  // Per-workspace UI state indexed by workspaceId
+  // Per-workspace UI state indexed by workspaceId.
+  //
+  // VIEWER-LOCAL by design: this Pinia store lives in each renderer process,
+  // so two windows showing the same workspace keep independent active tabs,
+  // selected diffs/commits and active git roots — one window's clicks never
+  // flip the other's view. Durable git data (snapshots, branches, repo
+  // state) stays workspace-owned in the backend payload.
   const state = ref<Record<string, GitUiState>>({});
 
   let _api: Transport | null = null;
@@ -205,6 +211,11 @@ export const useGitUiStore = defineStore("git-ui", () => {
 
   function setActiveRoot(workspaceId: string, rootPath: string): void {
     const ui = ensure(workspaceId);
+    // The LIVE active root is viewer-local (this renderer only). The
+    // persisted workspace.activeRootPath below is just the durable DEFAULT
+    // used to seed a fresh viewer on reload/first open — sibling windows
+    // showing this workspace keep their own in-memory root and are never
+    // flipped by this write (see getActiveGitSnapshot in app.ts).
     ui.activeRootPath = rootPath || "";
     if (_api?.setWorkspaceUIState) {
       (_api.setWorkspaceUIState as (id: string, patch: Record<string, unknown>) => Promise<unknown>)(workspaceId, {

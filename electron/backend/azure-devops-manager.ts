@@ -1370,8 +1370,7 @@ export class AzureDevOpsManager extends BaseProviderManager {
         `Cross-profile refused: connection ${connection.id} is in profile ${connectionProfileId}, caller window is bound to ${callerProfileId}.`,
       );
     }
-    const activeProfile =
-      connectionProfileId || callerProfileId || (state.windowSlots || [])[0]?.profileId || "default";
+    const activeProfile = connectionProfileId || callerProfileId || "default";
     const profileWorkspaces = state.workspaces.filter((ws) => (ws.profileId || "default") === activeProfile);
     const existingWorkspace: ReviewWorkspace | null | undefined = workspaceId
       ? profileWorkspaces.find((workspace) => workspace.id === workspaceId)
@@ -1883,8 +1882,7 @@ export class AzureDevOpsManager extends BaseProviderManager {
         `Cross-profile refused: connection ${connection.id} is in profile ${connectionProfileId}, caller window is bound to ${callerProfileId}.`,
       );
     }
-    const activeProfile =
-      connectionProfileId || callerProfileId || (state.windowSlots || [])[0]?.profileId || "default";
+    const activeProfile = connectionProfileId || callerProfileId || "default";
     const parentAzureWorkspace: ReviewWorkspace | null =
       state.workspaces.find(
         (ws: ReviewWorkspace) => ws.kind === "azure" && (ws.profileId || "default") === activeProfile,

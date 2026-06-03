@@ -101,6 +101,8 @@ export const azureConnectionSchema = z
     organization: z.string().optional(),
     project: z.string().optional(),
     pat: z.string().optional(),
+    /** Owning profile — validated against the caller viewer's profile in saveAzureConnection. */
+    profileId: z.string().optional(),
   })
   .passthrough();
 export type AzureConnectionPayload = z.infer<typeof azureConnectionSchema>;
@@ -614,6 +616,8 @@ export const githubConnectionSchema = z
   .object({
     hostUrl: z.string().optional(),
     pat: z.string().optional(),
+    /** Owning profile — validated against the caller viewer's profile in saveGitHubConnection. */
+    profileId: z.string().optional(),
   })
   .passthrough();
 export type GithubConnectionPayload = z.infer<typeof githubConnectionSchema>;

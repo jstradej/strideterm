@@ -59,6 +59,11 @@ function makeTabId(kind: TabKind, backendId: string, contextName: string, id: st
 }
 
 export const useDockerDetail = defineStore("docker-detail", () => {
+  // VIEWER-LOCAL by design: this Pinia store lives in each renderer process,
+  // so two windows showing the same Docker workspace keep independent open
+  // tabs / active tab / sub-tab selection. The Docker daemon, containers and
+  // log/shell sessions stay global runtime state in the backend — viewers
+  // only subscribe to them.
   const appStore = useAppStore();
 
   // Tabs per workspace: Map<workspaceId, OpenTab[]>

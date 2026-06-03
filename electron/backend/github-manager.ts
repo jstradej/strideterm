@@ -1040,8 +1040,7 @@ export class GitHubManager extends BaseProviderManager {
         `Cross-profile refused: connection ${connection.id} is in profile ${connectionProfileId}, caller window is bound to ${callerProfileId}.`,
       );
     }
-    const activeProfile =
-      connectionProfileId || callerProfileId || (state.windowSlots || [])[0]?.profileId || "default";
+    const activeProfile = connectionProfileId || callerProfileId || "default";
     const profileWorkspaces = state.workspaces.filter((ws) => (ws.profileId || "default") === activeProfile);
     const existingWorkspace = workspaceId
       ? profileWorkspaces.find((ws) => ws.id === workspaceId)
@@ -1333,8 +1332,7 @@ export class GitHubManager extends BaseProviderManager {
         `Cross-profile refused: connection ${connection.id} is in profile ${connectionProfileId}, caller window is bound to ${callerProfileId}.`,
       );
     }
-    const activeProfile =
-      connectionProfileId || callerProfileId || (state.windowSlots || [])[0]?.profileId || "default";
+    const activeProfile = connectionProfileId || callerProfileId || "default";
     const parentGitHubWorkspace =
       state.workspaces.find((ws) => ws.kind === "github" && (ws.profileId || "default") === activeProfile) || null;
     const reviewRoot = parentGitHubWorkspace?.cwd || (connRec.reviewRoot as string) || getDefaultReviewRoot();

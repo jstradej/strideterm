@@ -442,14 +442,14 @@ export class AgentTaskRunner {
       activeRootPath: "",
       notes: notes?.trim() || "",
       // Inherit the parent workspace's profile when one is provided —
-      // otherwise use the calling window's profile. Falling back to
-      // windowSlots[0] silently lands the task on the wrong profile in
-      // multi-window setups (it picks the first window's profile, not the
-      // window the user actually clicked from).
+      // otherwise use the calling viewer's profile. Never windowSlots[0]:
+      // with multiple windows (possibly several per profile) the first slot
+      // is arbitrary and silently lands the task on the wrong profile. A
+      // context-less programmatic create deterministically lands in
+      // "default".
       profileId:
         (parentWorkspaceId && state.workspaces?.find((w) => w.id === parentWorkspaceId)?.profileId) ||
         callerProfileId ||
-        (state.windowSlots || [])[0]?.profileId ||
         "default",
       connectionId: "",
       activePanelId: dashboardPanelId,

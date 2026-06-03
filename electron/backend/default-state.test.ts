@@ -1078,3 +1078,120 @@ describe("normalizeWindowSlots — viewer model (multiple windows per profile)",
     expect(state.windowSlots[0].id).toBe("slot-1");
   });
 });
+
+describe("duplicate cwd/name across profiles (multi-profile fixtures)", () => {
+  test("worktree children group under the SAME-profile parent when two profiles share a cwd and name", () => {
+    // Two profiles each own a workspace named "repo" with the SAME cwd —
+    // a perfectly valid state under the viewer model. Each profile also has
+    // a worktree child; grouping must keep children with their own profile's
+    // parent, never the other profile's.
+    const state = normalizeState({
+      profiles: [
+        { id: "pa", name: "A", color: "#a", workspaceIds: [] },
+        { id: "pb", name: "B", color: "#b", workspaceIds: [] },
+      ],
+      projects: [
+        {
+          id: "parent-a",
+          name: "repo",
+          kind: "terminal",
+          profileId: "pa",
+          cwd: "C:/work/repo",
+          panels: [{ id: "shell", title: "Shell", command: "" }],
+        },
+        {
+          id: "child-b",
+          name: "repo / feature",
+          kind: "terminal",
+          profileId: "pb",
+          cwd: "C:/work/repo/.strideterm/tree/feature",
+          notes: "Worktree of repo",
+          panels: [{ id: "shell", title: "Shell", command: "" }],
+        },
+        {
+          id: "parent-b",
+          name: "repo",
+          kind: "terminal",
+          profileId: "pb",
+          cwd: "C:/work/repo",
+          panels: [{ id: "shell", title: "Shell", command: "" }],
+        },
+        {
+          id: "child-a",
+          name: "repo / bugfix",
+          kind: "terminal",
+          profileId: "pa",
+          cwd: "C:/work/repo/.strideterm/tree/bugfix",
+          notes: "Worktree of repo",
+          panels: [{ id: "shell", title: "Shell", command: "" }],
+        },
+      ],
+    });
+
+    const order = state.workspaces.map((w) => w.id);
+    // child-a follows parent-a; child-b follows parent-b — no cross-profile adoption.
+    expect(order.indexOf("child-a")).toBe(order.indexOf("parent-a") + 1);
+    expect(order.indexOf("child-b")).toBe(order.indexOf("parent-b") + 1);
+  });
+
+  test("legacy provider connection without profileId inherits the unambiguous inbox profile", () => {
+    const state = normalizeState({
+      profiles: [
+        { id: "pa", name: "A", color: "#a", workspaceIds: [] },
+        { id: "pb", name: "B", color: "#b", workspaceIds: [] },
+      ],
+      projects: [
+        {
+          id: "azure-inbox",
+          name: "Azure DevOps",
+          kind: "azure",
+          profileId: "pb",
+          cwd: "C:/reviews",
+          panels: [],
+        },
+      ],
+      settings: {
+        integrations: {
+          azureDevops: {
+            enabled: true,
+            connections: [
+              { id: "ado-legacy", label: "Legacy", orgUrl: "https://dev.azure.com/x", tokenRef: "cred:ado-legacy" },
+            ],
+          },
+        },
+      },
+    });
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const conn = (state.settings.integrations.azureDevops.connections as any[]).find((c) => c.id === "ado-legacy");
+    expect(conn?.profileId).toBe("pb");
+  });
+
+  test("legacy connection stays unassigned when several profiles have provider inboxes (ambiguous)", () => {
+    const state = normalizeState({
+      profiles: [
+        { id: "pa", name: "A", color: "#a", workspaceIds: [] },
+        { id: "pb", name: "B", color: "#b", workspaceIds: [] },
+      ],
+      projects: [
+        { id: "inbox-a", name: "Azure DevOps", kind: "azure", profileId: "pa", cwd: "C:/ra", panels: [] },
+        { id: "inbox-b", name: "Azure DevOps", kind: "azure", profileId: "pb", cwd: "C:/rb", panels: [] },
+      ],
+      settings: {
+        integrations: {
+          azureDevops: {
+            enabled: true,
+            connections: [
+              { id: "ado-legacy", label: "Legacy", orgUrl: "https://dev.azure.com/x", tokenRef: "cred:ado-legacy" },
+            ],
+          },
+        },
+      },
+    });
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const conn = (state.settings.integrations.azureDevops.connections as any[]).find((c) => c.id === "ado-legacy");
+    // Ambiguous — left empty; read sites treat "" as the default profile.
+    expect(conn?.profileId).toBe("");
+  });
+});
