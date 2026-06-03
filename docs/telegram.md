@@ -56,9 +56,9 @@ Each connection has its own filter, so different chats can subscribe to differen
 In a multi-profile install a Telegram connection's **Profile** setting controls which profile's alerts arrive in that chat:
 
 - **All profiles (global, default)** — the connection receives alerts from every profile. The profile name is shown on each Telegram message so you can tell at a glance where the alert came from. This is what you want when you have a single bot for everything.
-- **Specific profile** — strict isolation. Only alerts from workspaces in that profile reach the chat, and follow-up commands from this chat always target that profile's window.
+- **Specific profile** — strict isolation. Only alerts from workspaces in that profile reach the chat, and follow-up commands from this chat always target that profile/context. A profile may be open in several desktop windows at once: window-needing actions pick the window deterministically — a window already showing the target workspace wins, then the most recently focused window of the profile — and `/screenshot` of the "current" window asks you to pick when several windows qualify.
 
-When you click a Telegram action (Open PR review, Auto-review, New task, …) for a profile that isn't currently open in any desktop window, strIDEterm spawns a fresh window for that profile and runs the action there. You don't have to remember which profile lives in which window.
+When you click a Telegram action (Open PR review, workspace `/screenshot`, …) for a profile that isn't currently open in any desktop window, strIDEterm spawns a fresh window for that profile, runs the action there, and leaves the window open. Runtime-only commands (`/status`, `/workspaces`, `/task`, task lifecycle buttons) never need a desktop window at all. You don't have to remember which profile lives in which window.
 
 ### Bot commands
 

@@ -399,19 +399,55 @@ function getWindowProfileId(windowId: string): string {
   return windowSlots.find((s) => s.id === windowId)?.profileId || "default";
 }
 
-/** Find the live BrowserWindow currently bound to a profile, if any. */
-function findWindowForProfile(profileId: string): { windowId: string; win: BrowserWindow } | null {
+/** Find ALL live BrowserWindows currently showing a profile (a profile may be open in any number of windows). */
+function findWindowsForProfile(profileId: string): { windowId: string; win: BrowserWindow }[] {
+  const result: { windowId: string; win: BrowserWindow }[] = [];
   for (const [wid, win] of windowRegistry) {
     if (win.isDestroyed()) continue;
-    if (getWindowProfileId(wid) === profileId) return { windowId: wid, win };
+    if (getWindowProfileId(wid) === profileId) result.push({ windowId: wid, win });
   }
-  return null;
+  return result;
+}
+
+/**
+ * Pick the best window of a profile for a UI action:
+ *  1. explicit `opts.windowId` when it's a live window of the profile;
+ *  2. a window already showing `opts.workspaceId`;
+ *  3. the most recently focused non-minimized window of the profile;
+ *  4. any live window of the profile.
+ * Returns null when the profile has no live window — callers that truly need
+ * a desktop window create one via ensureWindowForProfile.
+ */
+function selectWindowForProfile(
+  profileId: string,
+  opts: { windowId?: string; workspaceId?: string } = {},
+): { windowId: string; win: BrowserWindow } | null {
+  const candidates = findWindowsForProfile(profileId);
+  if (candidates.length === 0) return null;
+  if (opts.windowId) {
+    const explicit = candidates.find((c) => c.windowId === opts.windowId);
+    if (explicit) return explicit;
+  }
+  const appState = runtimeState.runtime?.getPayload?.()?.appState as Record<string, unknown> | undefined;
+  const slots =
+    (appState?.windowSlots as Array<{ id: string; activeWorkspaceId?: string; lastFocusedAt?: number }> | undefined) ||
+    [];
+  const slotById = new Map(slots.map((s) => [s.id, s]));
+  if (opts.workspaceId) {
+    const visible = candidates.find((c) => slotById.get(c.windowId)?.activeWorkspaceId === opts.workspaceId);
+    if (visible) return visible;
+  }
+  const byFocus = [...candidates].sort(
+    (a, b) => (slotById.get(b.windowId)?.lastFocusedAt || 0) - (slotById.get(a.windowId)?.lastFocusedAt || 0),
+  );
+  return byFocus.find((c) => !c.win.isMinimized()) || byFocus[0];
 }
 
 /**
  * Ensure a desktop window exists for `profileId`. If one already does, focus
- * it and return its id. Otherwise create a new window slot in state, spawn a
- * BrowserWindow for it, and wait until the renderer is ready to receive IPC.
+ * the best candidate (selectWindowForProfile) and return its id. Otherwise
+ * create a new window slot in state, spawn a BrowserWindow for it, and wait
+ * until the renderer is ready to receive IPC.
  *
  * Used by the runtime (Telegram dispatch, alert navigation) so a click on a
  * notification for a closed profile just opens the right window. Returns
@@ -419,7 +455,7 @@ function findWindowForProfile(profileId: string): { windowId: string; win: Brows
  */
 async function ensureWindowForProfile(profileId: string): Promise<string | null> {
   if (!profileId) return null;
-  const existing = findWindowForProfile(profileId);
+  const existing = selectWindowForProfile(profileId);
   if (existing) {
     if (existing.win.isMinimized()) existing.win.restore();
     existing.win.focus();

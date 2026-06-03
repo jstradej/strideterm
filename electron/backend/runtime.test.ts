@@ -6556,6 +6556,210 @@ describe("multiple windows per profile — viewer model", () => {
     expect(slots.find((s) => s.id === "win-1")?.activeWorkspaceId).toBe("ws-a1");
   });
 
+  test("telegram screenshot-workspace prefers the window already showing the workspace", async () => {
+    const base = makeProfileSwitchState();
+    const initialState = {
+      ...base,
+      projects: [
+        ...base.projects,
+        {
+          id: "ws-a2",
+          name: "A2",
+          kind: "terminal",
+          profileId: "profile-a",
+          cwd: "/tmp/a2",
+          activePanelId: "shell",
+          panels: [{ id: "shell", title: "Shell", command: "", shell: true, startup: "default" }],
+        },
+      ],
+      windowSlots: [
+        {
+          id: "win-1",
+          profileId: "profile-a",
+          activeWorkspaceId: "ws-a1",
+          activeSessionId: "",
+          bounds: { x: 0, y: 0, width: 1280, height: 800 },
+          // win-1 shows ws-a2? No — ws-a1. win-2 shows ws-a2 and is NOT last-focused.
+          lastFocusedAt: 5000,
+        },
+        {
+          id: "win-2",
+          profileId: "profile-a",
+          activeWorkspaceId: "ws-a2",
+          activeSessionId: "",
+          bounds: { x: 40, y: 40, width: 1280, height: 800 },
+          lastFocusedAt: 1000,
+        },
+      ],
+    };
+    const captured: Array<string | undefined> = [];
+    const fixture = await createFixture({
+      initialState,
+      dependencies: {
+        captureMainWindowPng: vi.fn(async (windowId?: string) => {
+          captured.push(windowId);
+          return Buffer.from("png");
+        }),
+      },
+    });
+    fixtures.push(fixture);
+    const manager = fixture.runtime._telegramManagerForTest();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (manager as any).sendScreenshotPng = vi.fn(async () => undefined);
+
+    await fixture.runtime._dispatchTelegramCommandForTest({
+      type: "screenshot-workspace",
+      workspaceId: "ws-a2",
+      panelId: "",
+      chatId: "12345",
+      profileId: "profile-a",
+    });
+
+    // The window already showing ws-a2 wins over the last-focused window.
+    expect(captured).toEqual(["win-2"]);
+  });
+
+  test("telegram screenshot-current with several profile windows asks the user instead of guessing", async () => {
+    const base = makeProfileSwitchState();
+    const initialState = {
+      ...base,
+      windowSlots: [
+        {
+          id: "win-1",
+          profileId: "profile-a",
+          activeWorkspaceId: "ws-a1",
+          activeSessionId: "",
+          bounds: { x: 0, y: 0, width: 1280, height: 800 },
+          lastFocusedAt: 1000,
+        },
+        {
+          id: "win-2",
+          profileId: "profile-a",
+          activeWorkspaceId: "ws-a1",
+          activeSessionId: "",
+          bounds: { x: 40, y: 40, width: 1280, height: 800 },
+          lastFocusedAt: 2000,
+        },
+      ],
+    };
+    const captureMainWindowPng = vi.fn(async () => Buffer.from("png"));
+    const fixture = await createFixture({ initialState, dependencies: { captureMainWindowPng } });
+    fixtures.push(fixture);
+    const manager = fixture.runtime._telegramManagerForTest();
+    const windowPick = vi.fn(async () => undefined);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (manager as any).promptScreenshotWindowPick = windowPick;
+
+    await fixture.runtime._dispatchTelegramCommandForTest({
+      type: "screenshot-current",
+      workspaceId: "",
+      panelId: "",
+      chatId: "12345",
+      profileId: "profile-a",
+    });
+
+    // No capture happened; the user got a window menu instead.
+    expect(captureMainWindowPng).not.toHaveBeenCalled();
+    expect(windowPick).toHaveBeenCalledTimes(1);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const [, profileId, candidates] = windowPick.mock.calls[0] as any[];
+    expect(profileId).toBe("profile-a");
+    expect(candidates.map((c: { windowId: string }) => c.windowId)).toEqual(["win-1", "win-2"]);
+  });
+
+  test("telegram screenshot-current with NO profile window sends the no-window prompt (never windowSlots[0])", async () => {
+    const base = makeProfileSwitchState();
+    const initialState = {
+      ...base,
+      // Only profile-b has a window; profile-a (the command target) has none.
+      windowSlots: [
+        {
+          id: "win-b",
+          profileId: "profile-b",
+          activeWorkspaceId: "ws-b1",
+          activeSessionId: "",
+          bounds: { x: 0, y: 0, width: 1280, height: 800 },
+          lastFocusedAt: 1000,
+        },
+      ],
+    };
+    const captureMainWindowPng = vi.fn(async () => Buffer.from("png"));
+    const fixture = await createFixture({ initialState, dependencies: { captureMainWindowPng } });
+    fixtures.push(fixture);
+    const manager = fixture.runtime._telegramManagerForTest();
+    const noWindowPrompt = vi.fn(async () => undefined);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (manager as any).promptNoWindowForScreenshot = noWindowPrompt;
+
+    await fixture.runtime._dispatchTelegramCommandForTest({
+      type: "screenshot-current",
+      workspaceId: "",
+      panelId: "",
+      chatId: "12345",
+      profileId: "profile-a",
+    });
+
+    expect(captureMainWindowPng).not.toHaveBeenCalled();
+    expect(noWindowPrompt).toHaveBeenCalledWith("12345", "profile-a");
+  });
+
+  test("telegram screenshot-workspace with NO profile window creates one, captures, and keeps it open", async () => {
+    const base = makeProfileSwitchState();
+    const initialState = {
+      ...base,
+      windowSlots: [
+        {
+          id: "win-b",
+          profileId: "profile-b",
+          activeWorkspaceId: "ws-b1",
+          activeSessionId: "",
+          bounds: { x: 0, y: 0, width: 1280, height: 800 },
+          lastFocusedAt: 1000,
+        },
+      ],
+    };
+    const captured: Array<string | undefined> = [];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let fixtureRef: any = null;
+    const ensureWindowForProfile = vi.fn(async (profileId: string) => {
+      // Simulate main.ts: create a slot + window for the profile.
+      const created = await fixtureRef.runtime.createWindowSlot(profileId);
+      return created.id as string;
+    });
+    const fixture = await createFixture({
+      initialState,
+      dependencies: {
+        captureMainWindowPng: vi.fn(async (windowId?: string) => {
+          captured.push(windowId);
+          return Buffer.from("png");
+        }),
+        ensureWindowForProfile,
+      },
+    });
+    fixtureRef = fixture;
+    fixtures.push(fixture);
+    const manager = fixture.runtime._telegramManagerForTest();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (manager as any).sendScreenshotPng = vi.fn(async () => undefined);
+
+    await fixture.runtime._dispatchTelegramCommandForTest({
+      type: "screenshot-workspace",
+      workspaceId: "ws-a1",
+      panelId: "",
+      chatId: "12345",
+      profileId: "profile-a",
+    });
+
+    expect(ensureWindowForProfile).toHaveBeenCalledWith("profile-a");
+    expect(captured).toHaveLength(1);
+    // The new window still exists and shows the captured workspace — it is
+    // NOT closed or switched back after the capture.
+    const slots = fixture.runtime.getPayload().appState.windowSlots!;
+    const created = slots.find((s) => s.id === captured[0]);
+    expect(created?.profileId).toBe("profile-a");
+    expect(created?.activeWorkspaceId).toBe("ws-a1");
+  });
+
   test("removeWindowSlot mirrors the closing window's view and grid into the profile legacy defaults", async () => {
     const base = makeProfileSwitchState();
     const initialState = {

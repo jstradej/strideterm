@@ -290,6 +290,7 @@ interface PendingRequest {
     | "file-mode-selection"
     | "profile-selection"
     | "screenshot-mode-selection"
+    | "screenshot-window-pick"
     | "screenshot-workspace-pick"
     | "pr-selection";
   workspaceId: string;
@@ -300,6 +301,8 @@ interface PendingRequest {
   pendingCmd?: TelegramCommandEvent;
   /** For workspace-selection: ordered list of choices shown to the user */
   workspaceChoices?: TelegramWorkspaceInfo[];
+  /** For screenshot-window-pick: ordered list of same-profile windows shown to the user */
+  windowChoices?: { windowId: string; label: string; lastFocusedAt?: number }[];
   /** For screenshot-mode-selection / screenshot-workspace-pick: profile the
    *  user chose at the start of the flow. Carries through to emit time so the
    *  `ss:c` (current-workspace) button knows which window to capture. */
@@ -411,7 +414,9 @@ export class TelegramManager extends EventEmitter {
 
   /** Runtime-provided getter for current workspace list — used by /status and /task commands */
   private getWorkspaces: (() => TelegramWorkspaceInfo[]) | null = null;
-  private getWindowSlots: (() => { id: string; profileId: string }[]) | null = null;
+  private getWindowSlots:
+    | (() => { id: string; profileId: string; activeWorkspaceId?: string; lastFocusedAt?: number }[])
+    | null = null;
 
   /** Runtime-provided getter for the active profile id — used by /task to filter candidates */
   private getActiveProfileId: (() => string) | null = null;
@@ -457,8 +462,11 @@ export class TelegramManager extends EventEmitter {
     this.getProfiles = fn;
   }
 
-  /** Called by the runtime so /screenshot N can map window index to windowId. */
-  setWindowSlotsGetter(fn: () => { id: string; profileId: string }[]): void {
+  /** Called by the runtime so /screenshot N can map window index to windowId
+   *  and multi-window menus can label windows by their active workspace. */
+  setWindowSlotsGetter(
+    fn: () => { id: string; profileId: string; activeWorkspaceId?: string; lastFocusedAt?: number }[],
+  ): void {
     this.getWindowSlots = fn;
   }
 
@@ -488,49 +496,41 @@ export class TelegramManager extends EventEmitter {
   }
 
   private _profileChoices(): TelegramProfileInfo[] {
-    const slots = this.getWindowSlots?.();
+    // Commands are PROFILE-scoped, not window-scoped: every existing profile
+    // is a valid target, even one with no desktop window (runtime-only
+    // commands work headless; window-needing commands resolve/spawn a window
+    // separately via the window resolver). A profile open in several windows
+    // is still ONE choice.
     const profiles = this.getProfiles?.() ?? [];
-    const byId = new Map(profiles.map((profile) => [profile.id, profile]));
-    if (slots) {
-      return slots.map((slot, idx) => {
-        const profile = byId.get(slot.profileId);
-        const name = profile?.name || slot.profileId;
-        return {
-          id: slot.profileId,
-          name: slots.length > 1 ? `${name} (Window ${idx + 1})` : name,
-          color: profile?.color,
-        };
-      });
-    }
     if (profiles.length > 0) return profiles;
+    // Legacy fallbacks: distinct profiles from open window slots, then the
+    // active profile.
+    const slots = this.getWindowSlots?.();
+    if (slots && slots.length > 0) {
+      const seen = new Set<string>();
+      const result: TelegramProfileInfo[] = [];
+      for (const slot of slots) {
+        if (seen.has(slot.profileId)) continue;
+        seen.add(slot.profileId);
+        result.push({ id: slot.profileId, name: slot.profileId });
+      }
+      return result;
+    }
     const active = this.getActiveProfileId?.() || "default";
     return [{ id: active, name: active }];
   }
 
   private _resolveConnectionProfileId(conn: TelegramConnectionConfig, explicitProfileId?: string): string | null {
-    const slots = this.getWindowSlots?.();
-    if (slots) {
-      const openProfileIds = new Set(slots.map((slot) => slot.profileId));
-      if (explicitProfileId) return openProfileIds.has(explicitProfileId) ? explicitProfileId : null;
-      if (conn.profileId) return openProfileIds.has(conn.profileId) ? conn.profileId : null;
-      if (slots.length === 1) return slots[0].profileId;
-      return null;
-    }
-    if (explicitProfileId) return explicitProfileId;
     const profiles = this._profileChoices();
-    if (conn.profileId && profiles.some((profile) => profile.id === conn.profileId)) return conn.profileId;
-    if (conn.profileId && profiles.length === 0) return conn.profileId;
+    const profileExists = (id: string) => profiles.some((profile) => profile.id === id);
+    if (explicitProfileId) return profileExists(explicitProfileId) ? explicitProfileId : null;
+    if (conn.profileId) {
+      if (profileExists(conn.profileId)) return conn.profileId;
+      // Bound profile no longer exists — fall through to the picker.
+      return profiles.length === 0 ? conn.profileId : null;
+    }
     if (profiles.length <= 1) return profiles[0]?.id || this.getActiveProfileId?.() || "default";
     return null;
-  }
-
-  /**
-   * Returns the window slot ID for the given profileId, or undefined if the
-   * profile is not open in any desktop window.
-   */
-  private _windowIdForProfile(profileId: string): string | undefined {
-    const slots = this.getWindowSlots?.() ?? [];
-    return slots.find((s) => s.profileId === profileId)?.id;
   }
 
   private async _resolveProfileOrPrompt(
@@ -540,22 +540,15 @@ export class TelegramManager extends EventEmitter {
     command: PendingRequest["profileCommand"],
     explicitProfileId?: string,
   ): Promise<string | null> {
-    const slots = this.getWindowSlots?.();
-    if (!explicitProfileId && conn.profileId && slots && !slots.some((slot) => slot.profileId === conn.profileId)) {
-      await this._sendText(
-        token,
-        chatId,
-        `⚠️ Profile *${escapeMarkdown(conn.profileId)}* is not open in any desktop window\\. Open it on desktop or unbind this Telegram chat\\.`,
-        true,
-      );
-      return null;
-    }
+    // A profile bound to this connection is valid even when no desktop
+    // window shows it — commands are profile-scoped; window-needing actions
+    // resolve (or spawn) a window separately.
     const resolved = this._resolveConnectionProfileId(conn, explicitProfileId);
     if (resolved) return resolved;
 
     const choices = this._profileChoices();
     if (choices.length === 0) {
-      await this._sendText(token, chatId, "⚠️ No desktop profile is currently open\\.", true);
+      await this._sendText(token, chatId, "⚠️ No profile exists in this installation\\.", true);
       return null;
     }
     const lines = ["🧭 *Pick a profile*:", ""];
@@ -668,6 +661,146 @@ export class TelegramManager extends EventEmitter {
       return;
     }
     await this._sendText(token, chatId, text, true);
+  }
+
+  /**
+   * Audit a target-window resolution made by the runtime so "why did the
+   * screenshot/review land in window X?" is answerable from the audit log.
+   */
+  recordWindowResolution(entry: {
+    chatId?: string;
+    operation: string;
+    profileId?: string;
+    selectedWindowId?: string;
+    reason: string;
+    candidateWindowCount: number;
+  }): void {
+    this._audit({
+      chatId: entry.chatId || "",
+      operation: "windowResolution",
+      category: "read",
+      method: "RESOLVE",
+      url: "",
+      success: true,
+      resourceType: "window",
+      resourceId: entry.selectedWindowId || "",
+      summary:
+        `op=${entry.operation} profileId=${entry.profileId || ""} ` +
+        `selectedWindowId=${entry.selectedWindowId || ""} reason=${entry.reason} ` +
+        `candidateWindowCount=${entry.candidateWindowCount}`,
+      userInitiated: true,
+    });
+  }
+
+  /** Same-profile windows labeled by their 1-based index + active workspace name. */
+  private _screenshotWindowCandidates(
+    profileId: string,
+  ): { windowId: string; label: string; lastFocusedAt?: number }[] {
+    const slots = this.getWindowSlots?.() ?? [];
+    const workspaces = this.getWorkspaces?.() ?? [];
+    return slots
+      .map((slot, idx) => ({ slot, idx }))
+      .filter(({ slot }) => (slot.profileId || "default") === profileId)
+      .map(({ slot, idx }) => {
+        const wsName = workspaces.find((w) => w.id === slot.activeWorkspaceId)?.name || "—";
+        return { windowId: slot.id, label: `Window ${idx + 1}: ${wsName}`, lastFocusedAt: slot.lastFocusedAt };
+      });
+  }
+
+  /**
+   * Show the multi-window screenshot menu: current focused window, each
+   * same-profile window labeled by its active workspace, and a workspace
+   * picker. Never silently picks one of several windows.
+   */
+  private async _sendScreenshotWindowMenu(
+    token: string,
+    chatId: string,
+    profileId: string,
+    candidates: { windowId: string; label: string; lastFocusedAt?: number }[],
+  ): Promise<void> {
+    const workspaces = (this.getWorkspaces?.() ?? []).filter((w) => (w.profileId || "default") === profileId);
+    this.pendingRequests.set(chatId, {
+      type: "screenshot-window-pick",
+      workspaceId: "",
+      panelId: "",
+      createdAt: Date.now(),
+      windowChoices: candidates,
+      workspaceChoices: workspaces,
+      activeProfileId: profileId,
+    });
+    const rows: { text: string; callback_data: string }[][] = [
+      [{ text: "🪟 Current focused window", callback_data: "ssn:f" }],
+    ];
+    candidates.forEach((candidate, idx) => {
+      rows.push([{ text: `📸 ${candidate.label}`, callback_data: `ssn:${idx}` }]);
+    });
+    rows.push([{ text: "🗂 Pick workspace", callback_data: "ss:w" }]);
+    rows.push([{ text: "❌ Cancel", callback_data: "x" }]);
+    await this._apiCall(token, "sendMessage", {
+      chat_id: chatId,
+      text: "📸 *Several windows show this profile* — which one should I capture?",
+      parse_mode: "MarkdownV2",
+      reply_markup: { inline_keyboard: rows },
+    }).catch((err) => {
+      log.warn("telegram screenshot window menu send failed", { err: (err as Error).message });
+    });
+  }
+
+  /**
+   * Runtime → manager: the window resolver found several candidate windows
+   * for a current-window screenshot. Ask the user instead of guessing.
+   */
+  async promptScreenshotWindowPick(
+    chatId: string,
+    profileId: string,
+    candidates: { windowId: string; activeWorkspaceId?: string; lastFocusedAt?: number }[],
+  ): Promise<void> {
+    const conn = this.connections.find((c) => c.chatId === chatId);
+    const token = conn ? this.credentialStore.getSecret(conn.botTokenRef) : "";
+    if (!token) {
+      log.debug("telegram promptScreenshotWindowPick: no connection/token", { chatId });
+      return;
+    }
+    // Re-label from live slots; fall back to the resolver's candidate list.
+    const labeled = this._screenshotWindowCandidates(profileId);
+    const filtered = labeled.filter((candidate) => candidates.some((c) => c.windowId === candidate.windowId));
+    await this._sendScreenshotWindowMenu(token, chatId, profileId, filtered.length ? filtered : labeled);
+  }
+
+  /**
+   * Runtime → manager: a current-window screenshot was requested but the
+   * profile has NO desktop window. Tell the user plainly and offer the
+   * workspace picker (workspace screenshots can create a window).
+   */
+  async promptNoWindowForScreenshot(chatId: string, profileId: string): Promise<void> {
+    const conn = this.connections.find((c) => c.chatId === chatId);
+    const token = conn ? this.credentialStore.getSecret(conn.botTokenRef) : "";
+    if (!token) {
+      log.debug("telegram promptNoWindowForScreenshot: no connection/token", { chatId });
+      return;
+    }
+    const workspaces = (this.getWorkspaces?.() ?? []).filter((w) => (w.profileId || "default") === profileId);
+    this.pendingRequests.set(chatId, {
+      type: "screenshot-mode-selection",
+      workspaceId: "",
+      panelId: "",
+      createdAt: Date.now(),
+      workspaceChoices: workspaces,
+      activeProfileId: profileId,
+    });
+    await this._apiCall(token, "sendMessage", {
+      chat_id: chatId,
+      text: `⚠️ *No current desktop window exists* for profile *${escapeMarkdown(profileId)}*\\. Pick a workspace instead — that opens a window for it\\.`,
+      parse_mode: "MarkdownV2",
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: "🗂 Pick workspace", callback_data: "ss:w" }],
+          [{ text: "❌ Cancel", callback_data: "x" }],
+        ],
+      },
+    }).catch((err) => {
+      log.warn("telegram no-window prompt send failed", { err: (err as Error).message });
+    });
   }
 
   /**
@@ -2008,21 +2141,10 @@ export class TelegramManager extends EventEmitter {
     const activeProfile = await this._resolveProfileOrPrompt(chatId, token, conn, { type: "task" }, explicitProfileId);
     if (!activeProfile) return;
 
-    // Require the resolved profile to be open in a desktop window. If no
-    // window is showing it, there is no context to run a task in — reject
-    // instead of silently creating a workspace nobody can see.
-    const taskWindowId = this._windowIdForProfile(activeProfile);
-    const slots = this.getWindowSlots?.() ?? [];
-    if (slots.length > 0 && !taskWindowId) {
-      log.warn("telegram: /task rejected — profile not open on desktop", { profileId: activeProfile });
-      await this._sendText(
-        token,
-        chatId,
-        `⚠️ Profile *${escapeMarkdown(activeProfile)}* is not open in any desktop window\\.`,
-        true,
-      );
-      return;
-    }
+    // Task creation is a runtime-only operation: the task workspace lives in
+    // the profile regardless of desktop windows, runs headless, and any
+    // window of that profile (or a remote viewer) can show it later. No
+    // desktop window requirement here.
 
     // Rate-limit: prevent rapid-fire /task spam from creating many workspaces.
     const last = this.lastTaskCommandAt.get(chatId) ?? 0;
@@ -2115,32 +2237,36 @@ export class TelegramManager extends EventEmitter {
     arg?: string,
     explicitProfileId?: string,
   ): Promise<void> {
-    // Direct window targeting via /screenshot N or /screenshot workspace-name
+    // Direct targeting via /screenshot N or /screenshot workspace-name
     if (arg) {
       const slots = this.getWindowSlots?.() ?? [];
       const workspaces = this.getWorkspaces?.() ?? [];
-      let resolvedWindowId: string | undefined;
 
       const asNum = parseInt(arg, 10);
       if (!isNaN(asNum) && asNum >= 1 && asNum <= slots.length) {
-        // /screenshot 1 → first window slot by order
-        resolvedWindowId = slots[asNum - 1]?.id;
-      } else {
-        // /screenshot ws-name → find workspace by name, then its profile's window
-        const wsMatch = workspaces.find((w) => w.name.toLowerCase() === arg.toLowerCase());
-        if (wsMatch) {
-          const wsProfileId = wsMatch.profileId || "default";
-          const slotForProfile = slots.find((s) => s.profileId === wsProfileId);
-          resolvedWindowId = slotForProfile?.id;
-        }
+        // /screenshot 1 → explicit window by 1-based index — always wins.
+        const cmd: TelegramCommandEvent = {
+          type: "screenshot-current",
+          workspaceId: "",
+          panelId: "",
+          chatId,
+          windowId: slots[asNum - 1]?.id,
+        };
+        this.emit("command", cmd);
+        await this._sendText(token, chatId, "📸 Capturing screenshot…", false).catch(() => {});
+        return;
       }
 
+      // /screenshot ws-name → workspace screenshot; the runtime resolver
+      // picks the window already showing it, falls back to the profile's
+      // last-focused window, or creates one when the profile is closed.
+      const wsMatch = workspaces.find((w) => w.name.toLowerCase() === arg.toLowerCase());
       const cmd: TelegramCommandEvent = {
-        type: "screenshot-current",
-        workspaceId: "",
+        type: wsMatch ? "screenshot-workspace" : "screenshot-current",
+        workspaceId: wsMatch?.id || "",
         panelId: "",
         chatId,
-        windowId: resolvedWindowId,
+        profileId: wsMatch ? wsMatch.profileId || "default" : undefined,
       };
       this.emit("command", cmd);
       await this._sendText(token, chatId, "📸 Capturing screenshot…", false).catch(() => {});
@@ -2155,6 +2281,15 @@ export class TelegramManager extends EventEmitter {
       explicitProfileId,
     );
     if (!activeProfile) return;
+
+    // Several windows show this profile → window menu first. A "current"
+    // screenshot must never silently pick one of them.
+    const windowCandidates = this._screenshotWindowCandidates(activeProfile);
+    if (windowCandidates.length > 1) {
+      await this._sendScreenshotWindowMenu(token, chatId, activeProfile, windowCandidates);
+      return;
+    }
+
     const workspaces = this.getWorkspaces?.() ?? [];
     // For screenshots we WANT all workspaces — including children, tasks,
     // PR reviews — because a user might legitimately want a screenshot of
@@ -2838,6 +2973,13 @@ export class TelegramManager extends EventEmitter {
       return;
     }
 
+    // --- Screenshot window-pick callbacks (prefixed `ssn:`) — multi-window menu ---
+    // `ssn:f` = most recently focused window; `ssn:<idx>` = picked window.
+    if (data.startsWith("ssn:")) {
+      await this._handleScreenshotWindowCallback(data, chatId, token, query.message.message_id);
+      return;
+    }
+
     // --- Screenshot-mode callbacks (prefixed `ss:`) — for the /screenshot flow ---
     // `ss:c` = capture currently active workspace
     // `ss:w` = present workspace list to pick from (then numbered reply)
@@ -3512,7 +3654,10 @@ export class TelegramManager extends EventEmitter {
   ): Promise<void> {
     const op = data.split(":")[1] || "";
     const pending = this.pendingRequests.get(chatId);
-    if (!pending || pending.type !== "screenshot-mode-selection") {
+    // `ss:w` (workspace pick) is also offered from the multi-window menu and
+    // the no-window prompt — both carry workspaceChoices, so accept them too.
+    const validTypes = ["screenshot-mode-selection", "screenshot-window-pick"];
+    if (!pending || !validTypes.includes(pending.type)) {
       log.debug("telegram screenshot-mode callback: no matching pending", { chatId, op });
       await this._answerText(token, chatId, messageId, "⚠️ This option is no longer active\\.");
       return;
@@ -3524,6 +3669,13 @@ export class TelegramManager extends EventEmitter {
     }
 
     if (op === "c") {
+      // Several windows show the profile? Never pick one silently — ask.
+      const profileId = pending.activeProfileId || "";
+      const windowCandidates = profileId ? this._screenshotWindowCandidates(profileId) : [];
+      if (windowCandidates.length > 1) {
+        await this._sendScreenshotWindowMenu(token, chatId, profileId, windowCandidates);
+        return;
+      }
       this.pendingRequests.delete(chatId);
       const cmd: TelegramCommandEvent = {
         type: "screenshot-current",
@@ -3570,6 +3722,68 @@ export class TelegramManager extends EventEmitter {
     }
 
     log.debug("telegram screenshot-mode callback: unknown op", { op });
+  }
+
+  /**
+   * Handles the multi-window screenshot menu buttons (`ssn:` prefix):
+   *   - `ssn:f` → capture the most recently focused window of the profile
+   *   - `ssn:<idx>` → capture the picked window (explicit windowId)
+   */
+  private async _handleScreenshotWindowCallback(
+    data: string,
+    chatId: string,
+    token: string,
+    messageId: number,
+  ): Promise<void> {
+    const op = data.split(":")[1] || "";
+    const pending = this.pendingRequests.get(chatId);
+    if (!pending || pending.type !== "screenshot-window-pick") {
+      log.debug("telegram screenshot-window callback: no matching pending", { chatId, op });
+      await this._answerText(token, chatId, messageId, "⚠️ This option is no longer active\\.");
+      return;
+    }
+    if (Date.now() - pending.createdAt >= PENDING_TIMEOUT_MS) {
+      this.pendingRequests.delete(chatId);
+      await this._answerText(token, chatId, messageId, "⚠️ Option expired\\.");
+      return;
+    }
+
+    const choices = pending.windowChoices || [];
+    let windowId: string | undefined;
+    if (op === "f") {
+      windowId = [...choices].sort((a, b) => (b.lastFocusedAt || 0) - (a.lastFocusedAt || 0))[0]?.windowId;
+    } else {
+      const idx = parseInt(op, 10);
+      windowId = Number.isInteger(idx) ? choices[idx]?.windowId : undefined;
+    }
+    if (!windowId) {
+      this.pendingRequests.delete(chatId);
+      await this._answerText(token, chatId, messageId, "⚠️ That window is no longer available\\.");
+      return;
+    }
+
+    this.pendingRequests.delete(chatId);
+    const cmd: TelegramCommandEvent = {
+      type: "screenshot-current",
+      workspaceId: "",
+      panelId: "",
+      chatId,
+      windowId,
+      profileId: pending.activeProfileId,
+    };
+    this._audit({
+      chatId,
+      operation: "screenshotCurrent",
+      category: "read",
+      method: "BUTTON",
+      url: "",
+      success: true,
+      resourceType: "window",
+      resourceId: windowId,
+      userInitiated: true,
+    });
+    this.emit("command", cmd);
+    await this._answerText(token, chatId, messageId, "📸 Capturing screenshot…");
   }
 
   /**

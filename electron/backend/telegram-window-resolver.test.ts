@@ -1,65 +1,101 @@
-import { describe, test, expect } from "vitest";
-import { resolveWindowIdForTelegramCommand } from "./telegram-window-resolver.js";
+import { describe, expect, test } from "vitest";
+import { resolveTelegramWindow } from "./telegram-window-resolver.js";
 
-describe("resolveWindowIdForTelegramCommand", () => {
-  const slots = [
-    { id: "win-personal", profileId: "profile-personal" },
-    { id: "win-work", profileId: "profile-work" },
-    { id: "win-default", profileId: "default" },
-  ];
+const slots = [
+  { id: "win-1", profileId: "work", activeWorkspaceId: "ws-a", activeSessionId: "ws-a:shell", lastFocusedAt: 1_000 },
+  { id: "win-2", profileId: "work", activeWorkspaceId: "ws-b", activeSessionId: "", lastFocusedAt: 3_000 },
+  { id: "win-3", profileId: "personal", activeWorkspaceId: "ws-p", activeSessionId: "", lastFocusedAt: 2_000 },
+];
 
-  test("explicit windowId wins over everything else (direct /screenshot N path)", () => {
-    expect(resolveWindowIdForTelegramCommand({ windowId: "win-personal", profileId: "profile-work" }, slots)).toBe(
-      "win-personal",
+describe("resolveTelegramWindow", () => {
+  test("explicit windowId wins over everything", () => {
+    const resolution = resolveTelegramWindow(
+      { windowId: "win-explicit", profileId: "work", workspaceId: "ws-b" },
+      slots,
     );
+    expect(resolution).toEqual({ windowId: "win-explicit", reason: "explicit-window" });
   });
 
-  test("explicit windowId is returned even when it is not in windowSlots (caller decides validity)", () => {
-    // Caller falls back to getPrimaryWindow() if this windowId is stale; the
-    // resolver itself does not validate against the registry.
-    expect(resolveWindowIdForTelegramCommand({ windowId: "win-missing" }, slots)).toBe("win-missing");
+  test("runtime-only command resolves to no-window-required (never opens a window)", () => {
+    const resolution = resolveTelegramWindow({ profileId: "work", requiresDesktopWindow: false }, []);
+    expect(resolution.reason).toBe("no-window-required");
+    expect(resolution.windowId).toBeUndefined();
   });
 
-  test("resolves profileId to the slot owning that profile", () => {
-    expect(resolveWindowIdForTelegramCommand({ profileId: "profile-work" }, slots)).toBe("win-work");
-    expect(resolveWindowIdForTelegramCommand({ profileId: "profile-personal" }, slots)).toBe("win-personal");
+  test("no profileId resolves to no-window-required (legacy primary-window fallback)", () => {
+    expect(resolveTelegramWindow({}, slots).reason).toBe("no-window-required");
   });
 
-  test("'default' profileId matches slots with profileId='default' AND slots with no profileId", () => {
-    expect(resolveWindowIdForTelegramCommand({ profileId: "default" }, slots)).toBe("win-default");
-
-    // A slot without an explicit profileId is treated as the 'default' bucket —
-    // same convention the rest of the codebase uses (windowSlots.profileId || "default").
-    const slotsNoExplicitDefault = [{ id: "win-anon" }, { id: "win-work", profileId: "profile-work" }];
-    expect(resolveWindowIdForTelegramCommand({ profileId: "default" }, slotsNoExplicitDefault)).toBe("win-anon");
+  test("workspace-visible wins over last-focused", () => {
+    // win-2 is last-focused, but win-1 already shows ws-a.
+    const resolution = resolveTelegramWindow({ profileId: "work", workspaceId: "ws-a" }, slots);
+    expect(resolution.windowId).toBe("win-1");
+    expect(resolution.reason).toBe("workspace-visible");
   });
 
-  test("returns undefined when profileId has no matching slot (profile not open in any window)", () => {
-    expect(resolveWindowIdForTelegramCommand({ profileId: "profile-unknown" }, slots)).toBeUndefined();
+  test("session-visible wins as well", () => {
+    const resolution = resolveTelegramWindow({ profileId: "work", sessionId: "ws-a:shell" }, slots);
+    expect(resolution.windowId).toBe("win-1");
+    expect(resolution.reason).toBe("workspace-visible");
   });
 
-  test("returns undefined when neither windowId nor profileId is provided", () => {
-    expect(resolveWindowIdForTelegramCommand({}, slots)).toBeUndefined();
+  test("last-focused wins for targeted actions when the workspace is not visible (open review)", () => {
+    const resolution = resolveTelegramWindow({ profileId: "work", workspaceId: "ws-hidden" }, slots);
+    expect(resolution.windowId).toBe("win-2");
+    expect(resolution.reason).toBe("last-focused-profile-window");
+    expect(resolution.candidates).toHaveLength(2);
   });
 
-  test("returns undefined for empty windowSlots even with a profileId", () => {
-    expect(resolveWindowIdForTelegramCommand({ profileId: "profile-work" }, [])).toBeUndefined();
+  test("single profile window is used directly", () => {
+    const resolution = resolveTelegramWindow({ profileId: "personal" }, slots);
+    expect(resolution.windowId).toBe("win-3");
+    expect(resolution.reason).toBe("only-profile-window");
   });
 
-  test("empty-string profileId is treated as missing (not 'default')", () => {
-    // The Telegram emit sites always supply either a real profileId or
-    // omit the field; an empty string here would be a bug somewhere
-    // upstream and should NOT silently route to the default slot.
-    expect(resolveWindowIdForTelegramCommand({ profileId: "" }, slots)).toBeUndefined();
+  test("screenshot-current with multiple windows returns needs-user-choice with candidates", () => {
+    const resolution = resolveTelegramWindow({ profileId: "work", requireExplicitWindowWhenAmbiguous: true }, slots);
+    expect(resolution.reason).toBe("needs-user-choice");
+    expect(resolution.windowId).toBeUndefined();
+    expect(resolution.candidates?.map((c) => c.windowId)).toEqual(["win-1", "win-2"]);
   });
 
-  test("picks the FIRST matching slot when two slots share the same profileId", () => {
-    // Should never happen in practice (windowSlots are unique per profile),
-    // but lock in the precedence so a future regression is visible.
-    const duplicates = [
-      { id: "win-first", profileId: "profile-work" },
-      { id: "win-second", profileId: "profile-work" },
-    ];
-    expect(resolveWindowIdForTelegramCommand({ profileId: "profile-work" }, duplicates)).toBe("win-first");
+  test("no window + allowCreateWindow returns needs-new-window (workspace screenshot / open review)", () => {
+    const resolution = resolveTelegramWindow({ profileId: "closed-profile", allowCreateWindow: true }, slots);
+    expect(resolution.reason).toBe("needs-new-window");
+    expect(resolution.candidates).toEqual([]);
+  });
+
+  test("no window without allowCreateWindow returns needs-user-choice with empty candidates (screenshot current)", () => {
+    const resolution = resolveTelegramWindow(
+      { profileId: "closed-profile", requireExplicitWindowWhenAmbiguous: true },
+      slots,
+    );
+    expect(resolution.reason).toBe("needs-user-choice");
+    expect(resolution.candidates).toEqual([]);
+  });
+
+  test("'default' profileId matches slots without an explicit profileId", () => {
+    const resolution = resolveTelegramWindow({ profileId: "default" }, [
+      { id: "win-x" },
+      { id: "win-y", profileId: "default" },
+    ]);
+    // Both match "default"; ambiguity without targeting falls to last-focused
+    // (both lastFocusedAt undefined → first after stable sort).
+    expect(resolution.candidates).toHaveLength(2);
+    expect(resolution.reason).toBe("last-focused-profile-window");
+  });
+
+  test("empty-string profileId is treated as missing, not 'default'", () => {
+    const resolution = resolveTelegramWindow({ profileId: "" }, [{ id: "win-y", profileId: "default" }]);
+    expect(resolution.reason).toBe("no-window-required");
+  });
+
+  test("preferVisibleWorkspace=false skips the visibility shortcut", () => {
+    const resolution = resolveTelegramWindow(
+      { profileId: "work", workspaceId: "ws-a", preferVisibleWorkspace: false },
+      slots,
+    );
+    expect(resolution.windowId).toBe("win-2");
+    expect(resolution.reason).toBe("last-focused-profile-window");
   });
 });

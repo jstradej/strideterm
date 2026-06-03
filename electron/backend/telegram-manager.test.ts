@@ -3244,7 +3244,7 @@ describe("/screenshot flow", () => {
     expect(emitted[0].windowId).toBe("win-uuid-2");
   });
 
-  test("/screenshot ws-name resolves window via workspace profile", async () => {
+  test("/screenshot ws-name emits a workspace screenshot — the runtime resolver picks the window", async () => {
     const cred = makeCredentialStore({ "cred:tg-1": "token123" });
     const manager = new TelegramManager({ credentialStore: cred });
     manager.configure([makeConnection()]);
@@ -3263,14 +3263,19 @@ describe("/screenshot flow", () => {
     const emitted: Array<Record<string, unknown>> = [];
     manager.on("command", (cmd) => emitted.push(cmd as Record<string, unknown>));
 
-    // /screenshot work-project → workspace in profile-work → slot2 (win-uuid-2)
+    // /screenshot work-project → workspace screenshot with workspaceId +
+    // profileId. With multiple windows per profile, the manager no longer
+    // guesses a window — the runtime's window resolver prefers the window
+    // already showing the workspace, then last-focused, or creates one.
     const msg = { message_id: 303, chat: { id: 12345 }, text: "/screenshot work-project" };
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     await (manager as any)._handleMessage(msg, makeConnection(), "token123");
 
     expect(emitted).toHaveLength(1);
-    expect(emitted[0].type).toBe("screenshot-current");
-    expect(emitted[0].windowId).toBe("win-uuid-2");
+    expect(emitted[0].type).toBe("screenshot-workspace");
+    expect(emitted[0].workspaceId).toBe("ws-work");
+    expect(emitted[0].profileId).toBe("profile-work");
+    expect(emitted[0].windowId).toBeUndefined();
   });
 
   test("/screenshot with out-of-range index falls back to primary (no windowId set)", async () => {
@@ -3561,10 +3566,9 @@ describe("/screenshot flow", () => {
     expect(emitted[0].profileId).toBe("default");
   });
 
-  test("/screenshot <ws-name> direct path keeps explicit windowId (does NOT need profileId)", async () => {
-    // Regression guard: the direct /screenshot N | <name> path was correct
-    // before this fix, and the resolver gives windowId precedence over
-    // profileId. Make sure we didn't accidentally break it.
+  test("/screenshot N direct path keeps explicit windowId (does NOT need profileId)", async () => {
+    // Regression guard: the direct /screenshot N path stays explicit and the
+    // resolver gives windowId precedence over profileId.
     const cred = makeCredentialStore({ "cred:tg-1": "token123" });
     const manager = new TelegramManager({ credentialStore: cred });
     manager.configure([makeConnection()]);
@@ -3585,7 +3589,7 @@ describe("/screenshot flow", () => {
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     await (manager as any)._handleMessage(
-      { message_id: 407, chat: { id: 12345 }, text: "/screenshot work-project" },
+      { message_id: 407, chat: { id: 12345 }, text: "/screenshot 2" },
       makeConnection(),
       "token123",
     );
@@ -4267,10 +4271,10 @@ describe("/tunnel command", () => {
     expect(sentBodies).toHaveLength(1);
     const text = sentBodies[0].text as string;
     expect(text).toContain("Pick a profile");
+    // Choices are PROFILES, not windows — a profile open in several windows
+    // is one choice, and window selection is a separate concern.
     expect(text).toContain("Personal");
-    expect(text).toContain("Window 1");
     expect(text).toContain("Work");
-    expect(text).toContain("Window 2");
     expect(text).not.toContain("192.168.1.20");
   });
 
@@ -4682,7 +4686,10 @@ describe("TelegramManager windowSlot validation for /task", () => {
     };
   }
 
-  test("profile choices come only from open desktop windowSlots, not persisted profiles", () => {
+  test("profile choices are the existing profiles — desktop windows are not required", () => {
+    // Commands are profile-scoped: a profile with no desktop window is a
+    // perfectly valid target (runtime-only commands run headless; window-
+    // needing ones resolve/spawn a window separately).
     const cred = makeCredentialStore({});
     const manager = new TelegramManager({ credentialStore: cred });
     manager.setProfilesGetter(() => [
@@ -4692,10 +4699,29 @@ describe("TelegramManager windowSlot validation for /task", () => {
     manager.setWindowSlotsGetter(() => []);
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    expect((manager as any)._profileChoices()).toEqual([]);
+    const ids = ((manager as any)._profileChoices() as Array<{ id: string }>).map((c) => c.id);
+    expect(ids).toEqual(["p1", "p2"]);
   });
 
-  test("explicit profile choices are rejected when the profile is no longer open on desktop", () => {
+  test("a profile open in several windows is ONE profile choice, not one per window", () => {
+    const cred = makeCredentialStore({});
+    const manager = new TelegramManager({ credentialStore: cred });
+    manager.setProfilesGetter(() => [
+      { id: "p1", name: "P1" },
+      { id: "p2", name: "P2" },
+    ]);
+    manager.setWindowSlotsGetter(() => [
+      { id: "w1", profileId: "p1" },
+      { id: "w2", profileId: "p1" },
+      { id: "w3", profileId: "p2" },
+    ]);
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const ids = ((manager as any)._profileChoices() as Array<{ id: string }>).map((c) => c.id);
+    expect(ids).toEqual(["p1", "p2"]);
+  });
+
+  test("explicit profile choices resolve when the profile exists, even without a desktop window", () => {
     const cred = makeCredentialStore({});
     const manager = new TelegramManager({ credentialStore: cred });
     manager.setProfilesGetter(() => [
@@ -4705,7 +4731,10 @@ describe("TelegramManager windowSlot validation for /task", () => {
     manager.setWindowSlotsGetter(() => [{ id: "w2", profileId: "p2" }]);
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    expect((manager as any)._resolveConnectionProfileId(makeConnection(), "p1")).toBeNull();
+    expect((manager as any)._resolveConnectionProfileId(makeConnection(), "p1")).toBe("p1");
+    // A profile that doesn't exist at all is still rejected.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect((manager as any)._resolveConnectionProfileId(makeConnection(), "p-gone")).toBeNull();
   });
 
   test("proceeds when profile p1 is in windowSlot W2 (targets W2)", async () => {
@@ -4741,14 +4770,15 @@ describe("TelegramManager windowSlot validation for /task", () => {
     expect(rejectedByWindow).toBe(false);
   });
 
-  test("rejects with error when profile has no windowSlot (no-op + error result)", async () => {
+  test("/task proceeds when the profile has NO desktop window (task creation is runtime-only)", async () => {
     const cred = makeCredentialStore({ "cred:tg-1": "token123" });
     const manager = new TelegramManager({ credentialStore: cred });
     manager.setProfilesGetter(() => [
       { id: "p1", name: "P1" },
       { id: "p2", name: "P2" },
     ]);
-    // Only p2 has a window slot — p1 does not
+    // Only p2 has a window slot — p1 does not. /task must still work: the
+    // task workspace lives in the profile and runs headless.
     manager.setWindowSlotsGetter(() => [{ id: "w1", profileId: "p2" }]);
     manager.setWorkspacesGetter(() => [makeWorkspace("ws1", "p1")]);
 
@@ -4766,24 +4796,11 @@ describe("TelegramManager windowSlot validation for /task", () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     await (manager as any)._handleTaskCommand("12345", "token123", conn);
 
-    // Should reject with "not open" error
+    // No "not open in any desktop window" rejection — the flow proceeds to
+    // workspace selection for the profile.
     const rejectedByWindow = sentTexts.some((t) => t.toLowerCase().includes("not open"));
-    expect(rejectedByWindow).toBe(true);
-    // No command event should have been emitted
-    expect(commands).toHaveLength(0);
-  });
-
-  test("_windowIdForProfile returns slot id when profile is present", () => {
-    const cred = makeCredentialStore({});
-    const manager = new TelegramManager({ credentialStore: cred });
-    manager.setWindowSlotsGetter(() => [
-      { id: "w1", profileId: "p2" },
-      { id: "w2", profileId: "p1" },
-    ]);
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    expect((manager as any)._windowIdForProfile("p1")).toBe("w2");
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    expect((manager as any)._windowIdForProfile("p99")).toBeUndefined();
+    expect(rejectedByWindow).toBe(false);
+    expect(sentTexts.length).toBeGreaterThan(0);
   });
 });
 
@@ -4822,7 +4839,7 @@ describe("_handleMenuCommand — MarkdownV2 escape", () => {
   });
 });
 
-describe("TelegramManager — visual-profile-switch: profile choices stay windowSlot-based", () => {
+describe("TelegramManager — profiles without desktop windows are valid command targets", () => {
   // Reuse the helper from the enclosing describe block scope.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   function makeCredentialStore(data: Record<string, string>): any {
@@ -4834,10 +4851,11 @@ describe("TelegramManager — visual-profile-switch: profile choices stay window
     };
   }
 
-  test("profile with lastActiveWorkspaceId but no windowSlot is not listed in _profileChoices", () => {
+  test("profile with lastActiveWorkspaceId but no windowSlot IS listed in _profileChoices", () => {
     const cred = makeCredentialStore({});
     const manager = new TelegramManager({ credentialStore: cred });
-    // p2 has saved lastActiveWorkspaceId (from a prior visual switch) but no open window.
+    // p2 has saved lastActiveWorkspaceId (from a prior visual switch) but no
+    // open window. Commands are profile-scoped — it stays selectable.
     manager.setProfilesGetter(() => [
       { id: "p1", name: "P1" },
       { id: "p2", name: "P2", lastActiveWorkspaceId: "ws2" },
@@ -4849,6 +4867,232 @@ describe("TelegramManager — visual-profile-switch: profile choices stay window
     const choices = (manager as any)._profileChoices() as Array<{ id: string }>;
     const ids = choices.map((c) => c.id);
     expect(ids).toContain("p1");
-    expect(ids).not.toContain("p2");
+    expect(ids).toContain("p2");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Multi-window profile — forwarding dedupe and the screenshot window menu
+// ---------------------------------------------------------------------------
+
+describe("TelegramManager — multiple windows per profile", () => {
+  test("forwardAlert sends ONE message per matching connection even with two windows of the profile", async () => {
+    const cred = makeCredentialStore({ "cred:tg-1": "tok1" });
+    const manager = new TelegramManager({ credentialStore: cred });
+    manager.configure([makeConnection({ id: "tg-1", botTokenRef: "cred:tg-1", forwardKinds: [], profileId: "work" })]);
+    // The profile is open in TWO desktop windows — irrelevant to forwarding:
+    // Telegram messages are per connection+alert, never per window.
+    manager.setWindowSlotsGetter(() => [
+      { id: "win-1", profileId: "work" },
+      { id: "win-2", profileId: "work" },
+    ]);
+
+    const calledWith: string[] = [];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (manager as any)._sendAlertToConnection = async (conn: TelegramConnectionConfig) => {
+      calledWith.push(conn.id);
+    };
+
+    await manager.forwardAlert({
+      workspaceId: "ws-1",
+      panelId: "p-1",
+      kind: "completed",
+      title: "Done",
+      workspaceProfileId: "work",
+    });
+
+    expect(calledWith).toEqual(["tg-1"]);
+  });
+
+  test("/screenshot with a multi-window profile shows the window menu instead of guessing", async () => {
+    const cred = makeCredentialStore({ "cred:tg-1": "token123" });
+    const manager = new TelegramManager({ credentialStore: cred });
+    manager.configure([makeConnection({ profileId: "work" })]);
+    manager.setProfilesGetter(() => [{ id: "work", name: "Work" }]);
+    manager.setWindowSlotsGetter(() => [
+      { id: "win-1", profileId: "work", activeWorkspaceId: "ws-a", lastFocusedAt: 1000 },
+      { id: "win-2", profileId: "work", activeWorkspaceId: "ws-b", lastFocusedAt: 3000 },
+    ]);
+    manager.setWorkspacesGetter(() => [
+      makeWorkspace({ id: "ws-a", name: "Alpha", profileId: "work" }),
+      makeWorkspace({ id: "ws-b", name: "Beta", profileId: "work" }),
+    ]);
+
+    const sentBodies: Array<Record<string, unknown>> = [];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (manager as any)._apiCall = async (_t: string, _m: string, body: Record<string, unknown>) => {
+      sentBodies.push(body);
+      return { ok: true, result: { message_id: 9001 } };
+    };
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (manager as any)._handleMessage(
+      { message_id: 901, chat: { id: 12345 }, text: "/screenshot" },
+      makeConnection({ profileId: "work" }),
+      "token123",
+    );
+
+    expect(sentBodies).toHaveLength(1);
+    const markup = sentBodies[0].reply_markup as {
+      inline_keyboard: Array<Array<{ text: string; callback_data: string }>>;
+    };
+    const buttons = markup.inline_keyboard.flat();
+    expect(buttons.some((b) => b.callback_data === "ssn:f")).toBe(true);
+    expect(buttons.some((b) => b.callback_data === "ssn:0" && b.text.includes("Alpha"))).toBe(true);
+    expect(buttons.some((b) => b.callback_data === "ssn:1" && b.text.includes("Beta"))).toBe(true);
+    expect(buttons.some((b) => b.callback_data === "ss:w")).toBe(true);
+  });
+
+  test("ssn:<idx> picks the explicit window; ssn:f picks the most recently focused", async () => {
+    const cred = makeCredentialStore({ "cred:tg-1": "token123" });
+    const manager = new TelegramManager({ credentialStore: cred });
+    manager.configure([makeConnection({ profileId: "work" })]);
+    manager.setProfilesGetter(() => [{ id: "work", name: "Work" }]);
+    manager.setWindowSlotsGetter(() => [
+      { id: "win-1", profileId: "work", activeWorkspaceId: "ws-a", lastFocusedAt: 1000 },
+      { id: "win-2", profileId: "work", activeWorkspaceId: "ws-b", lastFocusedAt: 3000 },
+    ]);
+    manager.setWorkspacesGetter(() => [
+      makeWorkspace({ id: "ws-a", name: "Alpha", profileId: "work" }),
+      makeWorkspace({ id: "ws-b", name: "Beta", profileId: "work" }),
+    ]);
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (manager as any)._apiCall = async () => ({ ok: true, result: { message_id: 9002 } });
+
+    const emitted: Array<Record<string, unknown>> = [];
+    manager.on("command", (cmd) => emitted.push(cmd as Record<string, unknown>));
+
+    // Open the menu (sets the pending request), then pick window index 0.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (manager as any)._handleMessage(
+      { message_id: 902, chat: { id: 12345 }, text: "/screenshot" },
+      makeConnection({ profileId: "work" }),
+      "token123",
+    );
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (manager as any)._handleScreenshotWindowCallback("ssn:0", "12345", "token123", 9002);
+
+    expect(emitted).toHaveLength(1);
+    expect(emitted[0].type).toBe("screenshot-current");
+    expect(emitted[0].windowId).toBe("win-1");
+
+    // Re-open and pick "current focused" — win-2 has the highest lastFocusedAt.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (manager as any)._handleMessage(
+      { message_id: 903, chat: { id: 12345 }, text: "/screenshot" },
+      makeConnection({ profileId: "work" }),
+      "token123",
+    );
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (manager as any)._handleScreenshotWindowCallback("ssn:f", "12345", "token123", 9003);
+
+    expect(emitted).toHaveLength(2);
+    expect(emitted[1].windowId).toBe("win-2");
+  });
+
+  test("ss:c with several profile windows re-routes to the window menu instead of emitting", async () => {
+    const cred = makeCredentialStore({ "cred:tg-1": "token123" });
+    const manager = new TelegramManager({ credentialStore: cred });
+    manager.configure([makeConnection({ profileId: "work" })]);
+    manager.setProfilesGetter(() => [{ id: "work", name: "Work" }]);
+    manager.setWindowSlotsGetter(() => [
+      { id: "win-1", profileId: "work", activeWorkspaceId: "ws-a", lastFocusedAt: 1000 },
+      { id: "win-2", profileId: "work", activeWorkspaceId: "ws-b", lastFocusedAt: 3000 },
+    ]);
+    manager.setWorkspacesGetter(() => [
+      makeWorkspace({ id: "ws-a", name: "Alpha", profileId: "work" }),
+      makeWorkspace({ id: "ws-b", name: "Beta", profileId: "work" }),
+    ]);
+
+    const sentBodies: Array<Record<string, unknown>> = [];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (manager as any)._apiCall = async (_t: string, _m: string, body: Record<string, unknown>) => {
+      sentBodies.push(body);
+      return { ok: true, result: { message_id: 9004 } };
+    };
+    const emitted: Array<Record<string, unknown>> = [];
+    manager.on("command", (cmd) => emitted.push(cmd as Record<string, unknown>));
+
+    // Seed a screenshot-mode pending (single-window style) and then click
+    // "Current workspace" while the profile actually has two windows.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (manager as any).pendingRequests.set("12345", {
+      type: "screenshot-mode-selection",
+      workspaceId: "",
+      panelId: "",
+      createdAt: Date.now(),
+      workspaceChoices: [],
+      activeProfileId: "work",
+    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (manager as any)._handleScreenshotModeCallback("ss:c", "12345", "token123", 9004);
+
+    expect(emitted).toHaveLength(0);
+    expect(sentBodies).toHaveLength(1);
+    const markup = sentBodies[0].reply_markup as {
+      inline_keyboard: Array<Array<{ text: string; callback_data: string }>>;
+    };
+    expect(markup.inline_keyboard.flat().some((b) => b.callback_data === "ssn:0")).toBe(true);
+  });
+
+  test("promptNoWindowForScreenshot sends a clear error with a Pick workspace button", async () => {
+    const cred = makeCredentialStore({ "cred:tg-1": "token123" });
+    const manager = new TelegramManager({ credentialStore: cred });
+    manager.configure([makeConnection({ profileId: "work" })]);
+    manager.setWorkspacesGetter(() => [makeWorkspace({ id: "ws-a", name: "Alpha", profileId: "work" })]);
+
+    const sentBodies: Array<Record<string, unknown>> = [];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (manager as any)._apiCall = async (_t: string, _m: string, body: Record<string, unknown>) => {
+      sentBodies.push(body);
+      return { ok: true, result: { message_id: 9005 } };
+    };
+
+    await manager.promptNoWindowForScreenshot("12345", "work");
+
+    expect(sentBodies).toHaveLength(1);
+    expect(String(sentBodies[0].text)).toContain("No current desktop window exists");
+    const markup = sentBodies[0].reply_markup as {
+      inline_keyboard: Array<Array<{ text: string; callback_data: string }>>;
+    };
+    expect(markup.inline_keyboard.flat().some((b) => b.callback_data === "ss:w")).toBe(true);
+    // The pending request is primed so ss:w leads straight to the workspace list.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const pending = (manager as any).pendingRequests.get("12345");
+    expect(pending?.type).toBe("screenshot-mode-selection");
+    expect(pending?.activeProfileId).toBe("work");
+    expect(pending?.workspaceChoices?.map((w: { id: string }) => w.id)).toEqual(["ws-a"]);
+  });
+
+  test("recordWindowResolution writes profileId, window, reason and candidate count to the audit log", () => {
+    const cred = makeCredentialStore({});
+    const audits: Array<Record<string, unknown>> = [];
+    const auditLogStore = {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      logEntry: (entry: any) => {
+        audits.push(entry);
+      },
+    };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const manager = new TelegramManager({ credentialStore: cred, auditLogStore: auditLogStore as any });
+
+    manager.recordWindowResolution({
+      chatId: "12345",
+      operation: "screenshotWorkspace",
+      profileId: "work",
+      selectedWindowId: "win-2",
+      reason: "workspace-visible",
+      candidateWindowCount: 2,
+    });
+
+    expect(audits).toHaveLength(1);
+    expect(audits[0].operation).toBe("windowResolution");
+    const summary = String(audits[0].summary);
+    expect(summary).toContain("op=screenshotWorkspace");
+    expect(summary).toContain("profileId=work");
+    expect(summary).toContain("selectedWindowId=win-2");
+    expect(summary).toContain("reason=workspace-visible");
+    expect(summary).toContain("candidateWindowCount=2");
   });
 });

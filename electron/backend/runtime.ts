@@ -38,7 +38,7 @@ import { GitHubManager } from "./github-manager.js";
 import { createGitHubAuditLogStore } from "./github-audit-log-store.js";
 import { TelegramManager, escapeMarkdown } from "./telegram-manager.js";
 import { resolveTelegramTaskTarget } from "./telegram-task-resolution.js";
-import { resolveWindowIdForTelegramCommand } from "./telegram-window-resolver.js";
+import { resolveTelegramWindow, type TelegramWindowResolution } from "./telegram-window-resolver.js";
 import { createTelegramAuditLogStore } from "./telegram-audit-log-store.js";
 import { startNotifyServer, generateNotifySecret, buildNotifyUrl } from "./notify-server.js";
 import {
@@ -781,13 +781,25 @@ export async function createRuntime({
       };
     }),
   );
-  // Use first open window slot's profileId rather than the deprecated global activeProfileId.
-  telegramManager.setActiveProfileGetter(() => (getState().windowSlots || [])[0]?.profileId || "default");
+  // Last-resort default profile for unbound chats: the most recently focused
+  // window's profile (NOT blindly windowSlots[0] — slot order is creation
+  // order, while the user's "current" profile is the focused window's),
+  // falling back to the first existing profile.
+  telegramManager.setActiveProfileGetter(() => {
+    const slots = getState().windowSlots || [];
+    const lastFocused = [...slots].sort((a, b) => (b.lastFocusedAt || 0) - (a.lastFocusedAt || 0))[0];
+    return lastFocused?.profileId || (getState().profiles || [])[0]?.id || "default";
+  });
   telegramManager.setProfilesGetter(() =>
     (getState().profiles || []).map((p) => ({ id: p.id, name: p.name, color: p.color })),
   );
   telegramManager.setWindowSlotsGetter(() =>
-    (getState().windowSlots || []).map((s) => ({ id: s.id, profileId: s.profileId })),
+    (getState().windowSlots || []).map((s) => ({
+      id: s.id,
+      profileId: s.profileId,
+      activeWorkspaceId: s.activeWorkspaceId,
+      lastFocusedAt: s.lastFocusedAt,
+    })),
   );
   telegramManager.setPrInfosGetter(() => {
     const state = getState();
@@ -1906,53 +1918,78 @@ export async function createRuntime({
   // asynchronously (after first Telegram poll), so _rt is guaranteed set.
   //
   // Telegram passes `profileId` (the user-facing scope) on window-affecting
-  // commands; runtime resolves it to a `windowId` here so the rest of the
-  // dispatch joins the same windowId-based plumbing IPC and remote-server use.
-  // Resolution rules live in telegram-window-resolver (pure, unit-tested).
-  const resolveTelegramWindowId = (c: { windowId?: string; profileId?: string }): string | undefined =>
-    resolveWindowIdForTelegramCommand(c, getState().windowSlots || []);
+  // commands; runtime resolves it to a target-window DECISION here so the
+  // rest of the dispatch joins the same windowId-based plumbing IPC and
+  // remote-server use. Resolution rules live in telegram-window-resolver
+  // (pure, unit-tested) — this wrapper handles the side-effectful outcomes:
+  // window creation, user-choice prompts, and the audit trail.
 
   /**
-   * Resolve a Telegram command's target window. When the caller picked a
-   * specific profile that isn't currently in any desktop window, spawn a
-   * new window for that profile instead of aborting — the user clicked a
-   * Telegram button which is an unambiguous "go here" intent, and forcing
-   * them to manually open the right profile first defeats the point of
-   * remote control.
+   * Resolve a Telegram command's target window.
    *
-   * Spawn flow (via dependencies.ensureWindowForProfile):
-   *  1. Look for an existing window bound to the profile; focus it.
-   *  2. Otherwise create a new window slot + BrowserWindow and wait for
-   *     the renderer to load before returning the new windowId.
-   *
-   * Falls back to the legacy abort-with-chat-error path when the runtime
-   * was created without ensureWindowForProfile (headless build / tests).
-   *
-   * Returns:
-   *  - `undefined` when no profile binding was requested (legacy fallback)
-   *  - resolved `windowId` string on success (existing or freshly spawned)
-   *  - `null` when binding was requested but no window could be obtained
-   *    (caller MUST return — error was already messaged to the user)
+   * Outcomes:
+   *  - `{ windowId }` — use this window (may be freshly spawned for
+   *    "needs-new-window" when the command's policy allows it; `created`
+   *    is true in that case so screenshot flows can keep the window as-is).
+   *  - `{ windowId: undefined, aborted: false }` — no window required;
+   *    legacy primary-window fallback for commands without profile binding.
+   *  - `{ aborted: true }` — the caller MUST return; the user has already
+   *    been messaged (window picker, workspace picker, or an error).
    */
-  async function resolveTelegramWindowIdOrAbort(cmd: {
-    windowId?: string;
-    profileId?: string;
-    chatId?: string;
-  }): Promise<string | undefined | null> {
-    const resolved = resolveTelegramWindowId(cmd);
-    if (resolved) return resolved;
-    if (cmd.profileId) {
-      // Try to auto-spawn a window for the missing profile. This is the
-      // common path: a PR alert from a profile that's currently closed,
-      // user clicks "Open Review", we open the right window for them.
+  async function resolveTelegramWindowTarget(
+    cmd: {
+      windowId?: string;
+      profileId?: string;
+      workspaceId?: string;
+      sessionId?: string;
+      chatId?: string;
+    },
+    policy: {
+      operation: string;
+      requiresDesktopWindow?: boolean;
+      allowCreateWindow?: boolean;
+      requireExplicitWindowWhenAmbiguous?: boolean;
+    },
+  ): Promise<{ windowId?: string; aborted: boolean; created?: boolean; resolution: TelegramWindowResolution }> {
+    const resolution = resolveTelegramWindow(
+      {
+        windowId: cmd.windowId,
+        profileId: cmd.profileId,
+        workspaceId: cmd.workspaceId,
+        sessionId: cmd.sessionId,
+        requiresDesktopWindow: policy.requiresDesktopWindow,
+        allowCreateWindow: policy.allowCreateWindow,
+        requireExplicitWindowWhenAmbiguous: policy.requireExplicitWindowWhenAmbiguous,
+      },
+      getState().windowSlots || [],
+    );
+    // Audit every window decision so "why did the screenshot land in window
+    // 2?" is answerable later.
+    telegramManager.recordWindowResolution({
+      chatId: cmd.chatId,
+      operation: policy.operation,
+      profileId: cmd.profileId,
+      selectedWindowId: resolution.windowId,
+      reason: resolution.reason,
+      candidateWindowCount: resolution.candidates?.length ?? 0,
+    });
+
+    if (resolution.windowId) return { windowId: resolution.windowId, aborted: false, resolution };
+    if (resolution.reason === "no-window-required") return { windowId: undefined, aborted: false, resolution };
+
+    if (resolution.reason === "needs-new-window" && cmd.profileId) {
+      // The user clicked a Telegram button which is an unambiguous "go
+      // here" intent — spawn a normal desktop window for the profile and
+      // leave it open (via dependencies.ensureWindowForProfile).
       if (dependencies.ensureWindowForProfile) {
         log.info("telegram: profile not open — auto-spawning window", {
           profileId: cmd.profileId,
           chatId: cmd.chatId,
+          operation: policy.operation,
         });
         try {
           const newWindowId = await dependencies.ensureWindowForProfile(String(cmd.profileId));
-          if (newWindowId) return newWindowId;
+          if (newWindowId) return { windowId: newWindowId, aborted: false, created: true, resolution };
         } catch (err) {
           log.warn("telegram: ensureWindowForProfile threw", {
             profileId: cmd.profileId,
@@ -1972,12 +2009,29 @@ export async function createRuntime({
           )
           .catch(() => {});
       }
-      return null;
+      return { aborted: true, resolution };
     }
-    return undefined;
+
+    // needs-user-choice: never pick a window silently. With candidates,
+    // offer the window menu; with none (profile closed and creation not
+    // allowed — i.e. screenshot-current), tell the user and offer the
+    // workspace picker instead.
+    if (cmd.chatId && cmd.profileId) {
+      if ((resolution.candidates?.length ?? 0) > 0) {
+        await telegramManager
+          .promptScreenshotWindowPick(cmd.chatId, String(cmd.profileId), resolution.candidates || [])
+          .catch(() => {});
+      } else {
+        await telegramManager.promptNoWindowForScreenshot(cmd.chatId, String(cmd.profileId)).catch(() => {});
+      }
+    } else if (cmd.chatId) {
+      await telegramManager.notifyChat(cmd.chatId, "⚠️ No desktop window available for this action\\.").catch(() => {});
+    }
+    return { aborted: true, resolution };
   }
+  // Named so tests can await a full dispatch via _dispatchTelegramCommandForTest.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  telegramManager.on("command", async (cmd: any) => {
+  async function dispatchTelegramCommand(cmd: any): Promise<void> {
     log.info("telegram: command dispatch", {
       type: cmd.type,
       workspaceId: cmd.workspaceId,
@@ -2312,13 +2366,27 @@ export async function createRuntime({
           }
           return;
         }
-        // Scope to the user-selected profile's window. Without this the
-        // capture falls back to the primary BrowserWindow even when the user
-        // picked a different profile from the Telegram menu, so the screenshot
-        // is of the wrong window. See _windowIdForProfile / windowSlots.
-        const resolvedWindowId = await resolveTelegramWindowIdOrAbort(cmd);
-        if (resolvedWindowId === null) return; // explicit profile not open — already notified
-        const targetWindowId = resolvedWindowId;
+        // Scope to the user-selected profile's window. With multiple windows
+        // per profile, the resolver decides deterministically:
+        //  - workspace screenshots prefer the window already showing the
+        //    workspace, then the last-focused profile window, and may create
+        //    a new window for a closed profile (kept open after capture);
+        //  - current-window screenshots never pick one of several windows
+        //    silently — the user gets a window menu, and with no window at
+        //    all a clear error plus a "Pick workspace" button.
+        const target = await resolveTelegramWindowTarget(
+          cmd,
+          cmd.type === "screenshot-workspace"
+            ? { operation: "screenshotWorkspace", requiresDesktopWindow: true, allowCreateWindow: true }
+            : {
+                operation: "screenshotCurrent",
+                requiresDesktopWindow: true,
+                requireExplicitWindowWhenAmbiguous: true,
+              },
+        );
+        if (target.aborted) return; // user already messaged (picker or error)
+        const targetWindowId = target.windowId;
+        const windowWasCreated = target.created === true;
         const preState = getState();
         const slot = targetWindowId ? (preState.windowSlots || []).find((s) => s.id === targetWindowId) : undefined;
         // For per-window screenshots, originalActiveId is the workspace
@@ -2386,8 +2454,10 @@ export async function createRuntime({
 
         // Switch back to where the user was before. Best-effort — failures
         // are logged but not surfaced to the user (their original workspace
-        // is still selectable from the sidebar).
-        if (targetWsId && originalActiveId && targetWsId !== originalActiveId) {
+        // is still selectable from the sidebar). A freshly created window
+        // stays on the captured workspace ("leave the window open" UX) —
+        // there is no previous view to restore in it.
+        if (!windowWasCreated && targetWsId && originalActiveId && targetWsId !== originalActiveId) {
           const switchBack = targetWindowId
             ? _rt?.activateWorkspaceInWindow(originalActiveId, targetWindowId)
             : _rt?.activateWorkspace(originalActiveId);
@@ -2396,13 +2466,24 @@ export async function createRuntime({
           });
         }
       } else if (cmd.type === "open-pr-review" && cmd.prKey && cmd.provider) {
-        const resolvedWindowId = await resolveTelegramWindowIdOrAbort(cmd);
-        if (resolvedWindowId === null) return; // explicit profile not open
-        const targetWindowId = resolvedWindowId;
+        // Prefer the window that already shows this PR's review workspace,
+        // then the last-focused window of the profile; create a new window
+        // for a closed profile.
+        const reviewWs = getState().workspaces.find(
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          (w: any) => w.review?.prKey === cmd.prKey,
+        );
+        const target = await resolveTelegramWindowTarget(
+          { ...cmd, workspaceId: reviewWs?.id || cmd.workspaceId },
+          { operation: "openPrReview", requiresDesktopWindow: true, allowCreateWindow: true },
+        );
+        if (target.aborted) return; // user already messaged
+        const targetWindowId = target.windowId;
         log.info("telegram: opening PR review from command", {
           prKey: cmd.prKey,
           provider: cmd.provider,
           windowId: targetWindowId,
+          resolutionReason: target.resolution.reason,
         });
         if (cmd.provider === "github") {
           await _rt?.openGitHubPullRequest({ prKey: cmd.prKey }, targetWindowId);
@@ -2431,6 +2512,9 @@ export async function createRuntime({
     } catch (err) {
       log.warn("telegram: command dispatch error", { type: cmd.type, err: (err as Error).message });
     }
+  }
+  telegramManager.on("command", (cmd: unknown) => {
+    void dispatchTelegramCommand(cmd);
   });
 
   // --- Task runner init (needs broadcastState and sessions) ---
@@ -4356,6 +4440,17 @@ export async function createRuntime({
     /** Called by startRemoteServer to hand the registry handle to the runtime. */
     setRemoteClientRegistry(registry: RemoteClientRegistry): void {
       _remoteClientRegistry = registry;
+    },
+
+    /** Test hook: dispatch a Telegram command and await its full handling. */
+    _dispatchTelegramCommandForTest(cmd: unknown): Promise<void> {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      return dispatchTelegramCommand(cmd as any);
+    },
+
+    /** Test hook: the internal Telegram manager (for spying on prompts). */
+    _telegramManagerForTest() {
+      return telegramManager;
     },
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
