@@ -6,7 +6,7 @@ strIDEterm is a terminal-first workspace hub with a reusable backend runtime.
 
 Target shape:
 
-- one or more desktop windows, each pinned to a single profile (a profile is open in at most one window at a time)
+- one or more desktop windows, each showing a single profile at a time (the SAME profile may be open in any number of windows — every window is an independent viewer with its own active workspace/session and grid)
 - left workspace rail for switching and control inside each window
 - right workspace surface for the active workspace, optionally split into a workspace grid of up to four cells
 - terminal sessions running inside the app
@@ -123,7 +123,7 @@ Persisted data includes:
 
 - app settings (theme, cloudflared path)
 - remote access config and token
-- profiles with color, workspace bindings, and a per-profile `workspaceGrid` (layout + cell→workspace map)
+- profiles with color, workspace bindings, and a legacy/default `workspaceGrid` (the AUTHORITATIVE grid is per-window on the slot; the profile field only seeds a fresh viewer and keeps downgrade compat)
 - tab templates (user-editable presets)
 - ordered workspaces with profile assignment
 - per-workspace notes, path, color, and badge
@@ -131,7 +131,7 @@ Persisted data includes:
 - per-workspace tabs (terminal and browser), each with an optional `cwd` override to target a specific git root
 - per-workspace active tab
 - per-tab startup policy
-- `windowSlots`: one entry per opened window with `profileId` (exclusive), `activeWorkspaceId`, `activeSessionId`, last bounds, display ID, and `lastFocusedAt` for primary-window selection
+- `windowSlots`: one entry per opened window with `profileId` (NOT unique — the same profile may be open in any number of windows), `activeWorkspaceId`, `activeSessionId`, a per-window `workspaceGrid`, last bounds, display ID, and `lastFocusedAt` for window selection
 
 ### Runtime State
 
@@ -155,7 +155,7 @@ Files:
 Responsibilities:
 
 - own the in-process registry mapping `windowId` → `BrowserWindow`
-- enforce **profile exclusivity**: a profile can be open in at most one window. Requesting a window for an already-open profile focuses the existing one instead of duplicating.
+- treat every window as an independent **viewer**: a profile may be open in any number of windows at once (and in remote clients). Each window owns its view selection — active workspace, active session, workspace grid — while workspaces, sessions, and runtime managers stay shared per profile/install. Window selection for actions goes explicit-window → window already showing the target workspace → most recently focused profile window → any live profile window → create a new one (`findWindowsForProfile` / `selectWindowForProfile` / `ensureWindowForProfile`).
 - restore window bounds and target display from the previous session, with multi-monitor awareness (`screen.getDisplayNearestPoint`)
 - route attention/alert navigation to the window that owns the relevant profile (`navigateWindowToAlert`)
 - pick a "primary window" by `lastFocusedAt` for app-level events that don't belong to a specific window (legacy tray actions, global shortcuts triggered outside any window)
@@ -179,7 +179,7 @@ Responsibilities:
 - pin up to four workspaces visible simultaneously inside one window
 - five layouts: `cols`, `rows`, `top-split`, `left-split`, `grid` (2×2). Each layout dictates the cell count and shape.
 - `cellWorkspaceIds: (string | null)[]` maps each cell index to a workspace (or null for an empty cell)
-- per-profile state: `Profile.workspaceGrid` — switching profiles swaps the grid. A global `AppState.workspaceGrid` is kept only as a deprecated downgrade-compat field.
+- per-viewer state: the authoritative grid lives on the window slot (`WindowSlot.workspaceGrid`) / remote client context — two windows of the same profile keep independent layouts, and switching a window's profile swaps that window's grid. `Profile.workspaceGrid` is only the legacy/default seed for a fresh viewer; a global `AppState.workspaceGrid` is kept only as a deprecated downgrade-compat field.
 - focusing a cell activates the underlying workspace (and re-binds the active terminal); the per-workspace tab state is preserved when a workspace appears in the grid
 - driven by keyboard shortcuts (`Ctrl+Shift+G`, `Alt+1..4`, `Alt+Shift+1..4`, `Ctrl+\`) and drag-from-sidebar in the renderer
 
@@ -274,6 +274,7 @@ Current behavior:
 - workspace activation selects the workspace (per window — each window has its own `activeWorkspaceId` in its `WindowSlot`)
 - all tabs with `startup: "default"` are started on workspace activation
 - one visible tab is considered active per workspace; when the workspace grid is enabled, up to four workspaces can be visible at once in one window, each with its own active tab
+- any number of viewers (windows, remote clients) may WATCH the same PTY session; typed input has a single runtime-only lease owner (short TTL, renewed per keystroke). A second viewer's typing is blocked with a "Take control?" prompt instead of interleaving keystrokes — task dashboard buttons are never gated by the lease
 - browser panels (URL commands) do not create PTY sessions; they render as embedded webviews
 
 ## Remote Access Model
@@ -284,6 +285,7 @@ Current remote access is LAN-first and locally hosted:
 - when enabled, the runtime server binds to `0.0.0.0:43123` by default
 - a random token is persisted in the state file
 - desktop and remote clients talk to the same runtime core
+- each remote browser session is an independent VIEWER (`RemoteClientContext`): it owns its active profile, workspace, session and workspace grid, may open a profile that has no desktop window, and never flips a desktop window's view (nor vice versa). Runtime methods accept remote viewer ids (`remote:<sessionId>`) wherever they take a `windowId`, so cross-profile guards and per-viewer mutations work for remote callers too.
 - the desktop sidebar surfaces LAN URLs, token state, and a QR code
 - desktop can optionally prefer a custom public URL
 - desktop can optionally launch a Cloudflare Quick Tunnel when `cloudflared` is available

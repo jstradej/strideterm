@@ -515,9 +515,9 @@ export function createDialogActions(ctx: DialogActionsCtx) {
           ctx.suppressBroadcast.value = false;
         }, 200);
       },
-      onDelete: async (profileId: string) => {
+      onDelete: async (profileId: string, options?: { taskAction?: "pause" | "stop" }) => {
         try {
-          ctx.payload.value = (await (api as AnyApi).deleteProfile(profileId)) as StatePayload;
+          ctx.payload.value = (await (api as AnyApi).deleteProfile(profileId, options)) as StatePayload;
         } catch (err) {
           const msg = ((err as Error)?.message || String(err || ""))
             .replace(/^Error invoking remote method '[^']+':\s*/, "")

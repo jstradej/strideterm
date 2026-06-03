@@ -886,6 +886,21 @@ export const useAppStore = defineStore("app", () => {
     payload.value = maybeApplyMockFromUrl(scopePayloadToWindow(nextPayload) as AnyApi) as StatePayload;
     // Keep workspace cache fresh on every broadcast for the active workspace
     _cacheCurrentWorkspace();
+
+    // Recovery decisions are GLOBAL per task: when another window resolves a
+    // candidate, the backend drops it from meta.recoveryCandidates and
+    // broadcasts — reconcile our local list so this window's dialog doesn't
+    // offer an already-decided task again.
+    const incomingCandidates = (nextPayload as AnyApi)?.meta?.recoveryCandidates as
+      | Array<{ workspaceId: string }>
+      | undefined;
+    if (Array.isArray(incomingCandidates) && recoveryCandidates.value.length > 0) {
+      const liveIds = new Set(incomingCandidates.map((c) => c.workspaceId));
+      const reconciled = recoveryCandidates.value.filter((c) => liveIds.has(c.workspaceId));
+      if (reconciled.length !== recoveryCandidates.value.length) {
+        recoveryCandidates.value = reconciled;
+      }
+    }
   }
 
   // --- Actions ---

@@ -1427,8 +1427,10 @@ export function registerIpc(
       runtime.saveProfile(validateIpc(profileSchema, profile, "profile:save")),
     ),
   );
-  ipcMain.handle("profile:delete", async (_event, profileId) =>
-    withOperationPromise({ opId: "profile:delete" }, () => runtime.deleteProfile(profileId)),
+  ipcMain.handle("profile:delete", async (_event, profileId, options) =>
+    withOperationPromise({ opId: "profile:delete" }, () =>
+      runtime.deleteProfile(profileId, options && typeof options === "object" ? options : {}),
+    ),
   );
   ipcMain.handle("profile:activate", async (event, profileId) => {
     const windowId = getWindowIdByWebContentsId?.(event.sender.id) ?? "";
@@ -1857,10 +1859,26 @@ export function registerIpc(
     }
   });
 
-  ipcMain.on("terminal:input", (_event, sessionId, data) => {
+  ipcMain.on("terminal:input", (event, sessionId, data) => {
     if (typeof sessionId === "string" && typeof data === "string") {
-      runtime.writeToSession(sessionId, data);
+      // Pass the caller window as the viewer so the input lease can detect
+      // two windows typing into the same PTY. A blocked write notifies the
+      // sender, which shows the "Take control?" prompt.
+      const windowId = getWindowIdByWebContentsId?.(event.sender.id) ?? "";
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const result = runtime.writeToSession(sessionId, data, windowId || undefined) as any;
+      if (result?.blocked && windowId) {
+        emitToWindow?.(windowId, "terminal:input-blocked", {
+          sessionId,
+          ownerLabel: String(result.ownerLabel || "another window"),
+        });
+      }
     }
+  });
+
+  ipcMain.handle("session:take-control", (event, sessionId) => {
+    const windowId = getWindowIdByWebContentsId?.(event.sender.id) ?? "";
+    return runtime.takeSessionControl(String(sessionId || ""), windowId);
   });
 
   // Renderer-side diagnostics (e.g. WebGL pre-flight result) routed into the
@@ -2079,6 +2097,7 @@ export function registerIpc(
     ipcMain.removeHandler("profile:save");
     ipcMain.removeHandler("profile:delete");
     ipcMain.removeHandler("profile:activate");
+    ipcMain.removeHandler("session:take-control");
     ipcMain.removeHandler("notification:show-system");
     ipcMain.removeHandler("app:check-for-updates");
     ipcMain.removeHandler("app:check-command");

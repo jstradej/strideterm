@@ -324,6 +324,17 @@ export async function createRuntime({
   // Injected by startRemoteServer after the HTTP server starts.
   let _remoteClientRegistry: RemoteClientRegistry | null = null;
 
+  // --- Terminal input lease (multi-viewer sessions) ---
+  // A PTY session may be VIEWED by any number of windows / remote clients,
+  // but typed input has a single runtime-only owner: the last viewer that
+  // typed. The lease has a short TTL renewed on every meaningful keystroke;
+  // another viewer's typing is blocked (the UI offers "Take control?")
+  // instead of silently interleaving two users' keystrokes into the same
+  // terminal — which a task agent could misread as user intervention.
+  // Internal writers (task runner prompts) bypass the lease entirely.
+  const INPUT_LEASE_TTL_MS = 45_000;
+  const sessionInputLeases = new Map<string, { viewerId: string; expiresAt: number }>();
+
   const createStoreImpl = dependencies.createStore || createStore;
   const createCredentialStoreImpl = dependencies.createCredentialStore || createCredentialStore;
   const createAzureReviewStoreImpl = dependencies.createAzureReviewStore || createAzureReviewStore;
@@ -4242,6 +4253,32 @@ export async function createRuntime({
     }
   }
 
+  /** Human label for a viewer id — used in "controlled from …" prompts. */
+  function describeViewer(viewerId: string): string {
+    if (parseRemoteViewerId(viewerId)) return "a remote client";
+    const slots = getState().windowSlots || [];
+    const idx = slots.findIndex((s) => s.id === viewerId);
+    return idx >= 0 ? `Window ${idx + 1}` : "another window";
+  }
+
+  /**
+   * Acquire/renew the input lease for `viewerId` on `sessionId`. Returns
+   * ok:false with the current owner when a DIFFERENT viewer holds a live
+   * lease — the caller surfaces the take-control prompt instead of writing.
+   */
+  function acquireSessionInputLease(
+    sessionId: string,
+    viewerId: string,
+  ): { ok: true } | { ok: false; ownerViewerId: string; ownerLabel: string } {
+    const now = Date.now();
+    const lease = sessionInputLeases.get(sessionId);
+    if (lease && lease.viewerId !== viewerId && lease.expiresAt > now) {
+      return { ok: false, ownerViewerId: lease.viewerId, ownerLabel: describeViewer(lease.viewerId) };
+    }
+    sessionInputLeases.set(sessionId, { viewerId, expiresAt: now + INPUT_LEASE_TTL_MS });
+    return { ok: true };
+  }
+
   /**
    * Mirror an activation into a remote viewer's context: when a viewer-id
    * names a remote client and the workspace lives in its profile, the
@@ -5805,7 +5842,22 @@ export async function createRuntime({
       sessions.resizeSession(sessionId, size.cols, size.rows);
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    writeToSession(sessionId: any, data: any) {
+    writeToSession(sessionId: any, data: any, viewerId?: string) {
+      // Input lease: only viewer-originated MEANINGFUL typing participates —
+      // mouse-reporting escapes from a viewer that merely clicked to watch
+      // neither grab nor get blocked by the lease, and internal writers
+      // (no viewerId — task runner, tests) always pass through.
+      if (viewerId && hasMeaningfulUserInput(data)) {
+        const verdict = acquireSessionInputLease(String(sessionId), viewerId);
+        if (!verdict.ok) {
+          log.info("terminal input blocked by input lease", {
+            sessionId,
+            viewerId,
+            ownerViewerId: verdict.ownerViewerId,
+          });
+          return { blocked: true, ownerViewerId: verdict.ownerViewerId, ownerLabel: verdict.ownerLabel };
+        }
+      }
       resetSessionSignal(sessionId);
       const signal = sessionSignals.get(sessionId);
       if (signal && !signal.hasUserInput) {
@@ -5840,6 +5892,27 @@ export async function createRuntime({
         }
       }
       sessions.writeToSession(sessionId, data);
+      return { ok: true };
+    },
+
+    /**
+     * Explicit take-over of a session's input lease ("Take control?"
+     * confirmation). Task dashboard lifecycle buttons are NOT gated by the
+     * lease — only raw terminal typing is.
+     */
+    takeSessionControl(sessionId: string, viewerId: string): { ok: boolean } {
+      if (!sessionId || !viewerId) return { ok: false };
+      sessionInputLeases.set(String(sessionId), {
+        viewerId,
+        expiresAt: Date.now() + INPUT_LEASE_TTL_MS,
+      });
+      log.info("terminal input lease taken over", { sessionId, viewerId });
+      return { ok: true };
+    },
+
+    /** Test hook: raw input-lease map. */
+    _sessionInputLeasesForTest() {
+      return sessionInputLeases;
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     notifyAgentHook(sessionId: any, notificationType = "idle_prompt", hook = "Notification") {
@@ -6758,7 +6831,7 @@ export async function createRuntime({
       return getPayload();
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    async deleteProfile(profileId: any) {
+    async deleteProfile(profileId: any, options: { taskAction?: "pause" | "stop" } = {}) {
       const state = getState();
       // Refuse if profile is open in any window slot
       const openSlot = (state.windowSlots || []).find((s) => s.profileId === profileId);
@@ -6766,6 +6839,39 @@ export async function createRuntime({
         const slots = state.windowSlots || [];
         const idx = slots.findIndex((s) => s.id === openSlot.id);
         throw new Error(`Profile is open in Window ${idx + 1}. Close that window first.`);
+      }
+      // Tasks keep running when their profile is merely not shown anywhere —
+      // but DELETING the profile with live task agents must be an explicit
+      // decision: pause them, stop them, or cancel. No silent stop, no
+      // silent move to another profile.
+      const ACTIVE_TASK_STATES = new Set(["running", "evaluating", "judge-evaluating", "refreshing"]);
+      const activeTasks = state.workspaces.filter(
+        (w) =>
+          (w.profileId || "default") === profileId &&
+          w.kind === "task" &&
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          ACTIVE_TASK_STATES.has(String((w as any).task?.state || "")),
+      );
+      if (activeTasks.length > 0) {
+        const action = options?.taskAction;
+        if (action !== "pause" && action !== "stop") {
+          throw new Error(
+            `Profile has ${activeTasks.length} running task agent${activeTasks.length === 1 ? "" : "s"}. ` +
+              `Pass taskAction "pause" or "stop" to confirm what should happen to them.`,
+          );
+        }
+        for (const task of activeTasks) {
+          try {
+            if (action === "pause") taskRunner.pauseTask(task.id);
+            else taskRunner.stopTask(task.id);
+          } catch (err) {
+            log.warn("deleteProfile: task action failed, continuing", {
+              workspaceId: task.id,
+              action,
+              err: (err as Error)?.message,
+            });
+          }
+        }
       }
       await store.mutate((draft: AppState) => {
         draft.profiles = draft.profiles.filter((p) => p.id !== profileId);

@@ -153,7 +153,7 @@ interface Runtime {
   setRemoteInfo(info: { enabled: boolean; urls?: string[]; port?: number; host?: string; error?: string }): void;
   listRemoteUrls(): string[];
   on(channel: string, handler: AnyFn): () => void;
-  writeToSession(sessionId: string, data: string): void;
+  writeToSession(sessionId: string, data: string, viewerId?: string): unknown;
   resizeSession(sessionId: string, size: { cols: number; rows: number }): void;
   // All other methods accessed dynamically via string keys
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -1854,6 +1854,9 @@ export async function startRemoteServer({
         // Activation in window slot — same cross-profile rules as workspace.
         "/api/session/activate-in-window": (body, windowId) =>
           runtime.activateSessionInWindow(body.sessionId, windowId),
+        // Take over the per-session input lease ("Take control?" confirm).
+        "/api/session/take-control": (body, windowId) =>
+          Promise.resolve(runtime.takeSessionControl(String(body.sessionId || ""), windowId)),
         // Reorder must be slot-aware: the runtime's profile-safe branch only
         // activates when windowId is supplied. Without it, the legacy global
         // branch replaces the entire workspaces array with the caller's IDs
@@ -2196,7 +2199,20 @@ export async function startRemoteServer({
                 terminalSessionId: parsed.data.sessionId,
                 bytes: Buffer.byteLength(parsed.data.data || "", "utf8"),
               });
-              runtime.writeToSession(parsed.data.sessionId, parsed.data.data);
+              // The remote client is a viewer — its typing participates in
+              // the per-session input lease like a desktop window's.
+              const viewerId = wsSessionId ? remoteViewerId(wsSessionId) : undefined;
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              const result = runtime.writeToSession(parsed.data.sessionId, parsed.data.data, viewerId) as any;
+              if (result?.blocked) {
+                ws.send(
+                  JSON.stringify({
+                    type: "terminal:input-blocked",
+                    sessionId: parsed.data.sessionId,
+                    ownerLabel: String(result.ownerLabel || "another window"),
+                  }),
+                );
+              }
             } else {
               log.warn("WebSocket terminal input rejected: invalid payload", {
                 sessionRef: remoteSessionRef(wsSessionId),

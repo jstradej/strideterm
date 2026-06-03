@@ -523,6 +523,29 @@ onMounted(() => {
     store.openNewWindowModal();
   });
 
+  // Multi-viewer input lease: typing into a terminal another viewer is
+  // actively controlling gets blocked by the backend; offer a gentle
+  // take-over instead of silently interleaving two users' keystrokes.
+  const transportApi = store.getApi();
+  transportApi?.onTerminalInputBlocked?.(({ sessionId, ownerLabel }: { sessionId: string; ownerLabel: string }) => {
+    store.openDialog("ConfirmDialog", {
+      eyebrow: "Terminal",
+      title: "Terminal is controlled elsewhere",
+      message: `This terminal is being controlled from ${ownerLabel}. Take control?\n\nTask dashboard buttons (Pause/Resume/Stop) keep working from every window either way.`,
+      confirmLabel: "Take control",
+      cancelLabel: "Just watch",
+      onConfirm: async () => {
+        store.closeDialog();
+        try {
+          await transportApi?.takeSessionControl?.(sessionId);
+        } catch {
+          // Best-effort — the next keystroke re-prompts if it failed.
+        }
+      },
+      onCancel: () => store.closeDialog(),
+    });
+  });
+
   // Main asks "really close the last window?" when workspaces or running
   // task agents would be lost. Show our ConfirmDialog and reply via IPC —
   // until we respond, the close stays prevented in main.

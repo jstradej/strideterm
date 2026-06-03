@@ -7336,3 +7336,231 @@ describe("provider connections — profile ownership across viewers", () => {
     expect(slots.find((s) => s.id === "win-default")?.activeWorkspaceId).toBe("ws-default");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Terminal input lease — multiple viewers of one PTY session
+// ---------------------------------------------------------------------------
+
+describe("terminal input lease", () => {
+  function makeLeaseState() {
+    const base = makeProfileSwitchState();
+    return {
+      ...base,
+      windowSlots: [
+        {
+          id: "win-1",
+          profileId: "profile-a",
+          activeWorkspaceId: "ws-a1",
+          activeSessionId: "ws-a1:shell",
+          bounds: { x: 0, y: 0, width: 1280, height: 800 },
+          lastFocusedAt: 1000,
+        },
+        {
+          id: "win-2",
+          profileId: "profile-a",
+          activeWorkspaceId: "ws-a1",
+          activeSessionId: "ws-a1:shell",
+          bounds: { x: 40, y: 40, width: 1280, height: 800 },
+          lastFocusedAt: 2000,
+        },
+      ],
+    };
+  }
+
+  test("second viewer typing into a leased session is blocked with the owner label", async () => {
+    const fixture = await createFixture({ initialState: makeLeaseState() });
+    fixtures.push(fixture);
+
+    // Window 1 types — acquires the lease.
+    const first = fixture.runtime.writeToSession("ws-a1:shell", "ls\r", "win-1");
+    expect(first).toMatchObject({ ok: true });
+
+    // Window 2 types — blocked, owner identified for the prompt.
+    const second = fixture.runtime.writeToSession("ws-a1:shell", "echo hi\r", "win-2");
+    expect(second).toMatchObject({ blocked: true, ownerViewerId: "win-1", ownerLabel: "Window 1" });
+    // The blocked keystrokes never reached the PTY.
+    const written = fixture.sessionManager.writeCalls.filter(
+      (w: { sessionId: string }) => w.sessionId === "ws-a1:shell",
+    );
+    expect(written.map((w: { data: string }) => w.data)).toEqual(["ls\r"]);
+  });
+
+  test("same viewer keeps renewing its own lease", async () => {
+    const fixture = await createFixture({ initialState: makeLeaseState() });
+    fixtures.push(fixture);
+
+    expect(fixture.runtime.writeToSession("ws-a1:shell", "a", "win-1")).toMatchObject({ ok: true });
+    expect(fixture.runtime.writeToSession("ws-a1:shell", "b", "win-1")).toMatchObject({ ok: true });
+  });
+
+  test("expired lease lets another viewer take over silently", async () => {
+    const fixture = await createFixture({ initialState: makeLeaseState() });
+    fixtures.push(fixture);
+
+    fixture.runtime.writeToSession("ws-a1:shell", "ls\r", "win-1");
+    // Force-expire the lease.
+    const leases = fixture.runtime._sessionInputLeasesForTest();
+    const lease = leases.get("ws-a1:shell")!;
+    leases.set("ws-a1:shell", { ...lease, expiresAt: Date.now() - 1 });
+
+    const result = fixture.runtime.writeToSession("ws-a1:shell", "echo hi\r", "win-2");
+    expect(result).toMatchObject({ ok: true });
+    expect(leases.get("ws-a1:shell")?.viewerId).toBe("win-2");
+  });
+
+  test("takeSessionControl transfers the lease so the new owner can type", async () => {
+    const fixture = await createFixture({ initialState: makeLeaseState() });
+    fixtures.push(fixture);
+
+    fixture.runtime.writeToSession("ws-a1:shell", "ls\r", "win-1");
+    expect(fixture.runtime.writeToSession("ws-a1:shell", "x", "win-2")).toMatchObject({ blocked: true });
+
+    expect(fixture.runtime.takeSessionControl("ws-a1:shell", "win-2")).toEqual({ ok: true });
+    expect(fixture.runtime.writeToSession("ws-a1:shell", "x", "win-2")).toMatchObject({ ok: true });
+    // Now the ORIGINAL owner is the one that gets blocked.
+    expect(fixture.runtime.writeToSession("ws-a1:shell", "y", "win-1")).toMatchObject({
+      blocked: true,
+      ownerLabel: "Window 2",
+    });
+  });
+
+  test("mouse-reporting escapes neither grab nor get blocked by the lease (watch-only viewers)", async () => {
+    const fixture = await createFixture({ initialState: makeLeaseState() });
+    fixtures.push(fixture);
+
+    fixture.runtime.writeToSession("ws-a1:shell", "ls\r", "win-1");
+    // Window 2 clicks into the pane to watch — mouse escape sequence only.
+    const result = fixture.runtime.writeToSession("ws-a1:shell", "\x1b[<0;10;5M", "win-2");
+    expect(result).toMatchObject({ ok: true });
+    // Lease still belongs to win-1.
+    expect(fixture.runtime._sessionInputLeasesForTest().get("ws-a1:shell")?.viewerId).toBe("win-1");
+  });
+
+  test("internal writers (no viewerId — task runner) bypass the lease", async () => {
+    const fixture = await createFixture({ initialState: makeLeaseState() });
+    fixtures.push(fixture);
+
+    fixture.runtime.writeToSession("ws-a1:shell", "ls\r", "win-1");
+    const result = fixture.runtime.writeToSession("ws-a1:shell", "injected prompt\r");
+    expect(result).toMatchObject({ ok: true });
+  });
+
+  test("remote viewers participate in the lease with a friendly label", async () => {
+    const fixture = await createFixture({ initialState: makeLeaseState() });
+    fixtures.push(fixture);
+
+    const registry = new RemoteClientRegistry();
+    fixture.runtime.setRemoteClientRegistry(registry);
+    registry.getOrCreate("mobile-1", fixture.store.getState(), "profile-a");
+
+    fixture.runtime.writeToSession("ws-a1:shell", "ls\r", "remote:mobile-1");
+    const blocked = fixture.runtime.writeToSession("ws-a1:shell", "x", "win-1");
+    expect(blocked).toMatchObject({ blocked: true, ownerLabel: "a remote client" });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Profile delete with running task agents — explicit decision required
+// ---------------------------------------------------------------------------
+
+describe("deleteProfile with running tasks", () => {
+  function makeTaskProfileState() {
+    return {
+      activeProjectId: "ws-keep",
+      profiles: [
+        { id: "default", name: "Default", color: "#fff" },
+        { id: "profile-tasks", name: "Tasks", color: "#aaa" },
+      ],
+      projects: [
+        {
+          id: "ws-keep",
+          name: "Keep",
+          kind: "terminal",
+          profileId: "default",
+          cwd: "/tmp/keep",
+          activePanelId: "shell",
+          panels: [{ id: "shell", title: "Shell", command: "", shell: true, startup: "default" }],
+        },
+        {
+          id: "ws-task",
+          name: "Task agent",
+          kind: "task",
+          profileId: "profile-tasks",
+          cwd: "/tmp/task",
+          activePanelId: "dashboard",
+          panels: [{ id: "dashboard", title: "Dashboard", command: "__task-dashboard__", startup: "none" }],
+          task: {
+            taskId: "t1",
+            description: "Do work",
+            state: "running",
+            parentWorkspaceId: "",
+            workerPanelId: "worker",
+            judgePanelId: "judge",
+          },
+        },
+      ],
+      // profile-tasks is NOT open in any window (deletable at all).
+      windowSlots: [
+        {
+          id: "win-1",
+          profileId: "default",
+          activeWorkspaceId: "ws-keep",
+          activeSessionId: "",
+          bounds: { x: 0, y: 0, width: 1280, height: 800 },
+          lastFocusedAt: 1000,
+        },
+      ],
+    };
+  }
+
+  // Startup recovery flips active task states to "paused" when the runtime
+  // boots (crash-recovery semantics), so re-mark the task as running AFTER
+  // fixture startup — the way a live runner would.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  async function markTaskRunning(fixture: any) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await fixture.store.mutate((draft: any) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const ws = draft.workspaces.find((w: any) => w.id === "ws-task");
+      if (ws?.task) ws.task.state = "running";
+    });
+  }
+
+  test("refuses without an explicit taskAction", async () => {
+    const fixture = await createFixture({ initialState: makeTaskProfileState() });
+    fixtures.push(fixture);
+    await markTaskRunning(fixture);
+
+    await expect(fixture.runtime.deleteProfile("profile-tasks")).rejects.toThrow(/running task agent/i);
+    // Profile untouched.
+    expect(fixture.store.getState().profiles.some((p) => p.id === "profile-tasks")).toBe(true);
+  });
+
+  test("taskAction 'pause' pauses the tasks and deletes the profile", async () => {
+    const fixture = await createFixture({ initialState: makeTaskProfileState() });
+    fixtures.push(fixture);
+    await markTaskRunning(fixture);
+
+    await fixture.runtime.deleteProfile("profile-tasks", { taskAction: "pause" });
+
+    const state = fixture.store.getState();
+    expect(state.profiles.some((p) => p.id === "profile-tasks")).toBe(false);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const taskWs = state.workspaces.find((w) => w.id === "ws-task") as any;
+    // The runner pauses the agent (or it was already not running in this
+    // fixture environment); it must NOT be left in an active state.
+    expect(["paused", "stopped", "idle", "running"]).toContain(taskWs?.task?.state || "idle");
+    expect(taskWs?.task?.state === "running").toBe(false);
+  });
+
+  test("profile without running tasks deletes without options as before", async () => {
+    const base = makeTaskProfileState();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (base.projects[1] as any).task.state = "completed";
+    const fixture = await createFixture({ initialState: base });
+    fixtures.push(fixture);
+
+    await fixture.runtime.deleteProfile("profile-tasks");
+    expect(fixture.store.getState().profiles.some((p) => p.id === "profile-tasks")).toBe(false);
+  });
+});

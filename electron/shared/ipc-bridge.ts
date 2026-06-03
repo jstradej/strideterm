@@ -262,6 +262,10 @@ export interface StridetermAPI {
   getTerminalReplay: (sessionId: string) => Promise<TerminalReplayPayload>;
   resizeTerminal: (sessionId: string, size: TerminalSize) => void;
   writeTerminal: (sessionId: string, data: string) => void;
+  /** Take over the per-session input lease ("Take control?" confirmation). */
+  takeSessionControl: (sessionId: string) => Promise<{ ok: boolean }>;
+  /** Fired when typed input was blocked because another viewer holds the input lease. */
+  onTerminalInputBlocked: (handler: (payload: { sessionId: string; ownerLabel: string }) => void) => void;
 
   // Docker
   refreshDocker: () => Promise<unknown>;
@@ -410,7 +414,8 @@ export interface StridetermAPI {
   listPlugins: () => Promise<unknown>;
   getPluginWorkspaceTemplate: (pluginId: string) => Promise<unknown>;
   saveProfile: (profile: ProfilePayload) => Promise<unknown>;
-  deleteProfile: (profileId: string) => Promise<unknown>;
+  /** options.taskAction confirms what happens to running task agents in the profile. */
+  deleteProfile: (profileId: string, options?: { taskAction?: "pause" | "stop" }) => Promise<unknown>;
   activateProfile: (profileId: string) => Promise<unknown>;
   getWindowId: () => string | Promise<string>;
   focusWindow: () => Promise<boolean>;

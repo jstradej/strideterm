@@ -107,6 +107,31 @@
           + Add
         </button>
       </div>
+      <div v-if="pendingDeleteWithTasks" class="dialog__error profile-delete-tasks" role="alertdialog">
+        <span class="dialog__error-icon" aria-hidden="true">⚠</span>
+        <div class="profile-delete-tasks__body">
+          <span class="dialog__error-text">{{ pendingDeleteWithTasks.message }}</span>
+          <div class="profile-delete-tasks__actions">
+            <button type="button" class="button button--ghost" @click="cancelDeleteWithTasks">Cancel</button>
+            <button
+              type="button"
+              class="button button--ghost"
+              title="Pause the running task agents, then delete the profile. Paused tasks can be recovered later."
+              @click="handleDelete(pendingDeleteWithTasks.profileId, 'pause')"
+            >
+              Pause tasks &amp; delete
+            </button>
+            <button
+              type="button"
+              class="button button--ghost button--danger-text"
+              title="Stop the running task agents permanently, then delete the profile."
+              @click="handleDelete(pendingDeleteWithTasks.profileId, 'stop')"
+            >
+              Stop tasks &amp; delete
+            </button>
+          </div>
+        </div>
+      </div>
       <div v-if="errorMessage" class="dialog__error" role="alert">
         <span class="dialog__error-icon" aria-hidden="true">⚠</span>
         <span class="dialog__error-text">{{ errorMessage }}</span>
@@ -239,15 +264,34 @@ async function handleActivate(profileId: string) {
   }
 }
 
-async function handleDelete(profileId: string) {
+// Deleting a profile that still has RUNNING task agents requires an explicit
+// decision (pause them or stop them) — never a silent stop. The backend
+// refuses without a taskAction; we surface the three-way choice inline.
+const pendingDeleteWithTasks = ref<{ profileId: string; message: string } | null>(null);
+
+async function handleDelete(profileId: string, taskAction?: "pause" | "stop") {
   errorMessage.value = "";
+  pendingDeleteWithTasks.value = null;
   try {
-    await (attrs.onDelete as ((id: string) => Promise<void>) | undefined)?.(profileId);
+    await (
+      attrs.onDelete as ((id: string, options?: { taskAction?: "pause" | "stop" }) => Promise<void>) | undefined
+    )?.(profileId, taskAction ? { taskAction } : undefined);
     const idx = localProfiles.findIndex((p) => p.id === profileId);
     if (idx >= 0) localProfiles.splice(idx, 1);
   } catch (err) {
+    const raw = ((err as Error)?.message || String(err || ""))
+      .replace(/^Error invoking remote method '[^']+':\s*/, "")
+      .replace(/^Error:\s*/, "");
+    if (/running task agent/i.test(raw)) {
+      pendingDeleteWithTasks.value = { profileId, message: raw };
+      return;
+    }
     handleError(err);
   }
+}
+
+function cancelDeleteWithTasks() {
+  pendingDeleteWithTasks.value = null;
 }
 
 async function addProfile() {
@@ -456,6 +500,16 @@ onMounted(() => {
   color: inherit;
   font: inherit;
   font-size: 13px;
+}
+.profile-delete-tasks__body {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+.profile-delete-tasks__actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
 }
 
 @media (max-width: 520px) {

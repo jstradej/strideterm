@@ -1,4 +1,4 @@
-﻿import type {
+import type {
   StridetermAPI,
   StatePayload,
   TerminalSize,
@@ -35,6 +35,7 @@ interface EventHub {
   sshConnectionState: Set<Handler<SshConnectionState>>;
   dockerLogsWrite: Set<Handler<{ sessionId: string; data: string }>>;
   dockerLogsClose: Set<Handler<{ sessionId: string; code: number | null }>>;
+  terminalInputBlocked: Set<Handler<{ sessionId: string; ownerLabel: string }>>;
 }
 
 /** Extended transport interface covering both Electron and remote modes.
@@ -63,12 +64,16 @@ export interface Transport extends Partial<
   onTerminalExit: (handler: (payload: TerminalExitPayload) => void) => void;
   resizeTerminal: (sessionId: string, size: TerminalSize) => void;
   writeTerminal: (sessionId: string, data: string) => void;
+  /** Take over the per-session input lease ("Take control?" confirmation). */
+  takeSessionControl: (sessionId: string) => Promise<{ ok: boolean }>;
+  /** Fired when typed input was blocked because another viewer holds the input lease. */
+  onTerminalInputBlocked: (handler: Handler<{ sessionId: string; ownerLabel: string }>) => void;
   activateWorkspace: (workspaceId: string) => Promise<unknown>;
   restartTerminal: (sessionId: string) => Promise<unknown>;
   getTerminalReplay: (sessionId: string) => Promise<TerminalReplayPayload>;
   regenerateRemoteToken: () => Promise<unknown>;
   saveProfile: (profile: ProfilePayload) => Promise<unknown>;
-  deleteProfile: (profileId: string) => Promise<unknown>;
+  deleteProfile: (profileId: string, options?: { taskAction?: "pause" | "stop" }) => Promise<unknown>;
   activateProfile: (profileId: string) => Promise<unknown>;
 }
 
@@ -86,6 +91,7 @@ function createEventHub(): EventHub {
     sshConnectionState: new Set(),
     dockerLogsWrite: new Set(),
     dockerLogsClose: new Set(),
+    terminalInputBlocked: new Set(),
   };
 }
 
@@ -113,7 +119,8 @@ function bindElectronTransport(): Transport {
     setRemoteToken: () => {},
     regenerateRemoteToken: () => window.strideterm.regenerateRemoteToken(),
     saveProfile: (profile: ProfilePayload) => window.strideterm.saveProfile(profile),
-    deleteProfile: (profileId: string) => window.strideterm.deleteProfile(profileId),
+    deleteProfile: (profileId: string, options?: { taskAction?: "pause" | "stop" }) =>
+      window.strideterm.deleteProfile(profileId, options),
     activateProfile: (profileId: string) => window.strideterm.activateProfile(profileId),
     onConnectionState: () => {},
   };
@@ -298,6 +305,13 @@ export function createRemoteTransport(): Transport {
     if (message.type === "docker:logs:close") {
       listeners.dockerLogsClose.forEach((handler) =>
         handler(message.payload as { sessionId: string; code: number | null }),
+      );
+    }
+    if (message.type === "terminal:input-blocked") {
+      // Sent flat (no payload wrapper) — { type, sessionId, ownerLabel }.
+      const blocked = message as unknown as { sessionId: string; ownerLabel: string };
+      listeners.terminalInputBlocked.forEach((handler) =>
+        handler({ sessionId: blocked.sessionId || "", ownerLabel: blocked.ownerLabel || "another window" }),
       );
     }
   }
@@ -745,7 +759,7 @@ export function createRemoteTransport(): Transport {
     openLazygitSession: (payload) => fetchJson("/api/git/open-lazygit", payload),
     createWorktree: (payload) => fetchJson("/api/git/create-worktree", payload),
     saveProfile: (profile) => fetchJson("/api/profile/save", { profile }),
-    deleteProfile: (profileId) => fetchJson("/api/profile/delete", { profileId }),
+    deleteProfile: (profileId, options) => fetchJson("/api/profile/delete", { profileId, ...(options || {}) }),
     activateProfile: (profileId) => fetchJson("/api/remote-client/profile/activate", { profileId }),
     activateWorkspace: (workspaceId) => fetchJson("/api/remote-client/workspace/activate", { workspaceId }),
     fileList: (p) => fetchJson("/api/file/list", p),
@@ -793,6 +807,11 @@ export function createRemoteTransport(): Transport {
     resizeTerminal: (sessionId: string, size: TerminalSize) =>
       send({ type: "terminal:resize", sessionId, cols: size.cols, rows: size.rows }),
     writeTerminal: (sessionId: string, data: string) => send({ type: "terminal:input", sessionId, data }),
+    takeSessionControl: (sessionId: string) =>
+      fetchJson("/api/session/take-control", { sessionId }) as Promise<{ ok: boolean }>,
+    onTerminalInputBlocked: (handler: Handler<{ sessionId: string; ownerLabel: string }>) => {
+      listeners.terminalInputBlocked.add(handler);
+    },
     onStateUpdated: (handler: Handler<StatePayload>) => listeners.stateUpdated.add(handler),
     onTerminalData: (handler: Handler<TerminalDataPayload>) => listeners.terminalData.add(handler),
     onTerminalExit: (handler: Handler<TerminalExitPayload>) => listeners.terminalExit.add(handler),
