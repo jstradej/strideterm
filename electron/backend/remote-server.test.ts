@@ -265,6 +265,11 @@ describe("remote token client profile context", () => {
         ],
       },
     };
+    // Minimal runtime mock that mirrors the real activate-for-remote-client
+    // wiring: the server hands its registry over via setRemoteClientRegistry
+    // and the runtime mutates the client context through it.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let registryRef: any = null;
     const runtime = {
       getPayload: () => payload,
       getInitialState: async () => payload,
@@ -273,10 +278,17 @@ describe("remote token client profile context", () => {
       on: () => () => undefined,
       writeToSession: () => undefined,
       resizeSession: () => undefined,
-      setRemoteClientRegistry: () => undefined,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      setRemoteClientRegistry: (registry: any) => {
+        registryRef = registry;
+      },
+      async activateProfileForRemoteClient(clientId: string, profileId: string) {
+        registryRef.activateProfile(clientId, profileId, payload.appState);
+        return registryRef.composePayload(clientId, payload);
+      },
     };
     const server = await startRemoteServer({
-      runtime: runtime as Parameters<typeof startRemoteServer>[0]["runtime"],
+      runtime: runtime as unknown as Parameters<typeof startRemoteServer>[0]["runtime"],
       staticRoot: process.cwd(),
     });
     const baseUrl = `http://127.0.0.1:${port}`;

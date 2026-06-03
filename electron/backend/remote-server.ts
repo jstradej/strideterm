@@ -51,6 +51,7 @@ import {
 } from "./ipc-schemas.js";
 import { getLogger, createAuditLogger } from "./logger.js";
 import { RemoteClientRegistry } from "./remote-client-registry.js";
+import { remoteViewerId } from "./viewer-id.js";
 
 /**
  * Cookie carrying a per-session ID. Once the user has bootstrapped via the
@@ -1745,41 +1746,24 @@ export async function startRemoteServer({
         }
         const body = await readRequestBody(request);
         try {
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          const appState = (runtime.getPayload() as any).appState;
-          // Workspace/session activate go through runtime.activate*InWindow,
-          // which mutates the bound desktop windowSlot and broadcasts state to
-          // every socket — mobile mirrors the slot via composePayload, so it
-          // automatically picks up the new active workspace/session. Profile
-          // activate only changes per-client binding, so we push state to this
-          // session explicitly.
-          let runtimeBroadcastsForUs = false;
+          // The remote client is an independent viewer: activation mutates
+          // ONLY its own RemoteClientContext (profile/workspace/session) and
+          // never touches a desktop windowSlot. The runtime methods spawn
+          // PTYs for the newly viewed workspace and broadcast state — every
+          // socket gets a per-client composed payload with its own view.
           if (request.method === "POST" && url.pathname === "/api/remote-client/profile/activate") {
-            registry.activateProfile(apiSessionId, String(body.profileId ?? ""), appState);
+            await runtime.activateProfileForRemoteClient(apiSessionId, String(body.profileId ?? ""));
           } else if (request.method === "POST" && url.pathname === "/api/remote-client/workspace/activate") {
-            const workspaceId = String(body.workspaceId ?? "");
-            const { windowId } = registry.activateWorkspace(apiSessionId, workspaceId, appState);
-            await runtime.activateWorkspaceInWindow(workspaceId, windowId);
-            runtimeBroadcastsForUs = true;
+            await runtime.activateWorkspaceForRemoteClient(apiSessionId, String(body.workspaceId ?? ""));
           } else if (request.method === "POST" && url.pathname === "/api/remote-client/session/activate") {
-            const targetSessionId = String(body.sessionId ?? "");
-            const { windowId } = registry.activateSession(
+            await runtime.activateSessionForRemoteClient(
               apiSessionId,
               String(body.workspaceId ?? ""),
-              targetSessionId,
-              appState,
+              String(body.sessionId ?? ""),
             );
-            await runtime.activateSessionInWindow(targetSessionId, windowId);
-            runtimeBroadcastsForUs = true;
           } else {
             json(response, 404, { error: "Not found" });
             return;
-          }
-          if (!runtimeBroadcastsForUs) {
-            // Profile activate: no runtime mutation, push per-client state so
-            // mobile sees the new profile binding (and the bound slot's active
-            // workspace) in remoteClient.
-            broadcastToSession(apiSessionId, stripSecretsForRemote(runtime.getPayload()));
           }
           json(response, 200, registry.composePayload(apiSessionId, stripSecretsForRemote(runtime.getPayload())));
         } catch (err) {
@@ -2020,15 +2004,16 @@ export async function startRemoteServer({
       const slotAwareHandler = request.method === "POST" ? slotAwareRoute[url.pathname] : undefined;
       if (slotAwareHandler) {
         const body = await readRequestBody(request);
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const appState = (runtime.getPayload() as any).appState;
-        const windowId = apiSessionId ? registry.getBoundWindowId(apiSessionId, appState) : "";
-        // Slot-aware routes mutate state in the context of a specific window's
-        // profile. Without a resolvable windowId the runtime would either
-        // fall back to windowSlots[0] (wrong profile) or proceed without a
-        // profile scope (cross-profile leak). A token-only caller that
-        // skipped the session/client-id binding must NOT get to mutate.
-        if (!windowId) {
+        // Viewer-aware routes mutate state in the context of the caller's
+        // profile. The remote client IS the viewer: pass its viewer id
+        // (`remote:<sessionId>`) — the runtime resolves the profile through
+        // the registry, so these operations work even when the client's
+        // profile is not open in any desktop window, and per-viewer
+        // mutations (grid, activation mirror) land on the remote context
+        // instead of a desktop slot. A token-only caller that skipped the
+        // session/client-id binding must NOT get to mutate.
+        const viewerId = apiSessionId && registry.get(apiSessionId) ? remoteViewerId(apiSessionId) : "";
+        if (!viewerId) {
           json(response, 400, {
             error:
               "Slot-aware operation requires a bound session — include the strideterm cookie or X-Strideterm-Client-Id header so the server can resolve which profile to act on.",
@@ -2036,7 +2021,7 @@ export async function startRemoteServer({
           return;
         }
         try {
-          json(response, 200, await slotAwareHandler(body, windowId));
+          json(response, 200, await slotAwareHandler(body, viewerId));
         } catch (err) {
           const msg = (err as Error).message || "Slot operation failed";
           const statusCode = msg.startsWith("IPC validation failed") ? 400 : 500;

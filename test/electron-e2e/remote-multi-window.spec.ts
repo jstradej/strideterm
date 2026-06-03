@@ -5,11 +5,11 @@
  *  - A remote browser client has its own active profile / workspace, independent
  *    of desktop window slots.
  *  - Switching profiles via the remote API does not evict or affect desktop windows.
- *  - Desktop window slots are the source of "badge" data (profile already open on
- *    desktop Window N) — the remote client sees this via the composed payload.
- *  - Closing a desktop window removes it from windowSlots; if that was the
- *    remote client's bound profile, composePayload lazy-falls-back to the
- *    first remaining open profile.
+ *  - Desktop window slots are the source of "badge" data (profile open in N
+ *    desktop windows) — the remote client sees this via the composed payload.
+ *  - Closing a desktop window removes it from windowSlots; the remote client
+ *    is an independent viewer and KEEPS its profile as long as the profile
+ *    itself still exists.
  *  - Profiles are not exclusive: a profile may be open in several desktop
  *    windows at once, and a remote client occupying a profile never blocks
  *    desktop windows.
@@ -180,7 +180,7 @@ test.describe("Remote — per-client profile identity with two desktop windows",
     assertNoRendererErrors(launched!);
   });
 
-  test("closing desktop W2 lazy-falls-back remote to remaining open profile", async () => {
+  test("closing desktop W2 keeps the remote client on its profile (independent viewer)", async () => {
     // Remote is still on profile-work (from previous test). Close W2.
     await secondPage!.evaluate(() => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -192,17 +192,17 @@ test.describe("Remote — per-client profile identity with two desktop windows",
 
     const payload = await remoteGetState(REMOTE_PORT, remoteCookie);
 
-    // Lazy fallback: profile-work is no longer in any windowSlot, so the
-    // registry switches the remote client to the only remaining open profile
-    // (profile-personal, still in W1). See unit test "lazy-falls-back profile
-    // when its desktop slot closes" in remote-client-registry.test.ts.
-    expect(payload.remoteClient?.profileId).toBe("profile-personal");
+    // The remote client is an independent viewer: profile-work still exists
+    // as a profile, so the client keeps it even though no desktop window
+    // shows it anymore. See "client KEEPS its profile when the profile's
+    // desktop window closes" in remote-client-registry.test.ts.
+    expect(payload.remoteClient?.profileId).toBe("profile-work");
 
     // windowSlots no longer contains profile-work — badge data is gone.
     const slots: { profileId: string }[] = payload.appState?.windowSlots ?? [];
     expect(slots.some((s) => s.profileId === "profile-work")).toBe(false);
 
-    await captureStep(launched!, "w2-closed-falls-back");
+    await captureStep(launched!, "w2-closed-remote-keeps-profile");
     assertNoRendererErrors(launched!);
   });
 });

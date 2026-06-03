@@ -35,6 +35,10 @@ interface GitHubHandlerCtx {
   getGitHubSettings: (state?: AppState) => any;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   getGitHubConnections: (state?: AppState) => any[];
+  /** Viewer-aware profile resolution — accepts window slot ids and remote viewer ids. */
+  getViewerProfileId: (viewerId?: string) => string | null;
+  /** Mirror an activation into a remote viewer's context (no-op for desktop ids). */
+  mirrorRemoteViewerWorkspace: (viewerId: string | undefined, workspaceId: string) => void;
 }
 
 /**
@@ -63,6 +67,8 @@ export function createGitHubHandlers(ctx: GitHubHandlerCtx) {
     resolveGitRootPath,
     getGitHubSettings,
     getGitHubConnections,
+    getViewerProfileId,
+    mirrorRemoteViewerWorkspace,
   } = ctx;
 
   function resolveRootPath(workspace: WorkspaceState, rawRootPath: string): string {
@@ -86,22 +92,19 @@ export function createGitHubHandlers(ctx: GitHubHandlerCtx) {
       const tokenRef = connection.tokenRef || `cred:${connectionId}`;
       const pat = connection.pat || credentialStore.getSecret(tokenRef);
       const verification = await github.verifyConnection({ ...normalizedInput, pat });
-      // See saveAzureConnection — same cross-profile guard.
-      const callerWindowProfileId = windowId
-        ? // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          (getState().windowSlots || []).find((s: any) => s.id === windowId)?.profileId || ""
-        : "";
+      // See saveAzureConnection — same cross-profile guard, viewer-aware
+      // (window slot ids and remote viewer ids), no windowSlots[0] fallback.
+      const callerWindowProfileId = getViewerProfileId(windowId) || "";
       if (callerWindowProfileId && connection.profileId && connection.profileId !== callerWindowProfileId) {
         throw new Error(
           `Cross-profile refused: saveGitHubConnection payload targets profile ${connection.profileId}, window ${windowId} is bound to ${callerWindowProfileId}.`,
         );
       }
-      const resolvedProfileId =
-        connection.profileId || callerWindowProfileId || (getState().windowSlots || [])[0]?.profileId || "default";
+      const resolvedProfileId = connection.profileId || callerWindowProfileId || "default";
       log.debug("saveGitHubConnection: profile resolution", {
         connectionId,
         incomingProfileId: connection.profileId || null,
-        stateActiveProfileId: (getState().windowSlots || [])[0]?.profileId || null,
+        callerProfileId: callerWindowProfileId || null,
         resolvedProfileId,
       });
       const normalizedConnection = {
@@ -157,9 +160,7 @@ export function createGitHubHandlers(ctx: GitHubHandlerCtx) {
       const connection = getGitHubConnections().find((c: any) => c.id === connectionId);
       // Cross-profile refuse — see deleteAzureConnection for the rationale.
       if (windowId && connection) {
-        const callerProfileId =
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          (getState().windowSlots || []).find((s: any) => s.id === windowId)?.profileId || "";
+        const callerProfileId = getViewerProfileId(windowId) || "";
         const connProfileId = (connection as { profileId?: string }).profileId || "default";
         if (callerProfileId && callerProfileId !== connProfileId) {
           throw new Error(
@@ -206,10 +207,7 @@ export function createGitHubHandlers(ctx: GitHubHandlerCtx) {
       let result: any;
       try {
         const state = getState();
-        const callerProfileId = windowId
-          ? // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            (state.windowSlots || []).find((s: any) => s.id === windowId)?.profileId || ""
-          : "";
+        const callerProfileId = getViewerProfileId(windowId) || "";
         result = await github.openReviewWorkspace({
           state,
           prKey: payload.prKey,
@@ -249,6 +247,9 @@ export function createGitHubHandlers(ctx: GitHubHandlerCtx) {
           }
         }
       });
+      // Remote viewer: activate the review in the CALLER's remote context —
+      // desktop windows stay where they were.
+      mirrorRemoteViewerWorkspace(windowId, result.workspace.id);
       await refreshGit(result.workspace.id);
       await github.markPullRequestSeen(payload.prKey);
       await refreshGitHub();
@@ -431,10 +432,7 @@ export function createGitHubHandlers(ctx: GitHubHandlerCtx) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async githubQuickFixCreate(payload: any, windowId?: string) {
       const state = getState();
-      const callerProfileId = windowId
-        ? // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          (state.windowSlots || []).find((s: any) => s.id === windowId)?.profileId || ""
-        : "";
+      const callerProfileId = getViewerProfileId(windowId) || "";
       const result = await github.openQuickFixWorkspace({
         state,
         connectionId: payload.connectionId,
@@ -465,6 +463,8 @@ export function createGitHubHandlers(ctx: GitHubHandlerCtx) {
           }
         }
       });
+      // Remote viewer: activate the quickfix in the CALLER's remote context.
+      mirrorRemoteViewerWorkspace(windowId, result.workspace.id);
       await refreshGit(result.workspace.id);
       sessions.syncWithState(getState());
       ensureVisibleSession(result.workspace.id);

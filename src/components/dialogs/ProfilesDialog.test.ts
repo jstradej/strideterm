@@ -86,7 +86,7 @@ describe("ProfilesDialog", () => {
         workspaces: [],
         windowSlots: [],
         isRemote: true,
-        // profile-b is open on desktop Window 2
+        // profile-b is open in 2 desktop windows
         desktopOccupancy: new Map([["profile-b", 2]]),
       },
     });
@@ -100,8 +100,32 @@ describe("ProfilesDialog", () => {
     expect(activateBtn?.exists()).toBe(true);
     expect(activateBtn?.attributes("disabled")).toBeUndefined();
 
-    // Badge "Window 2" must appear somewhere in the card
-    expect(cardB.html()).toContain("Window 2");
+    // Badge with the desktop window count must appear somewhere in the card
+    expect(cardB.html()).toContain("Open on desktop: 2 windows");
+  });
+
+  it("remote mode shows profiles without any desktop window as plainly activatable (no badge)", () => {
+    // A remote viewer can open any existing profile — a profile with no
+    // desktop window has no badge and an enabled Activate button.
+    const wrapper = mount(ProfilesDialog, {
+      props: {
+        profiles: [
+          { id: "profile-a", name: "A", color: "#fff" },
+          { id: "profile-desktopless", name: "Headless", color: "#fff" },
+        ],
+        activeProfileId: "profile-a",
+        workspaces: [],
+        windowSlots: [],
+        isRemote: true,
+        desktopOccupancy: new Map([["profile-a", 1]]),
+      },
+    });
+
+    const cardB = wrapper.findAll(".profile-card")[1];
+    expect(cardB.find(".profile-desktop-badge").exists()).toBe(false);
+    const activateBtn = cardB.findAll("button").find((b) => b.text().includes("Activate"));
+    expect(activateBtn?.exists()).toBe(true);
+    expect(activateBtn?.attributes("disabled")).toBeUndefined();
   });
 
   it("calls remote activation without disabling profiles occupied by desktop windows", async () => {

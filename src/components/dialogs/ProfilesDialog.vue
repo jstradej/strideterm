@@ -38,8 +38,10 @@
             <span
               v-if="isRemote && occupiedByOtherWindow.has(profile.id)"
               class="profile-desktop-badge"
-              :title="`This profile is open on desktop Window ${occupiedByOtherWindow.get(profile.id)}`"
-              >Window {{ occupiedByOtherWindow.get(profile.id) }}</span
+              :title="`This profile is open in ${occupiedByOtherWindow.get(profile.id)} desktop window${occupiedByOtherWindow.get(profile.id) === 1 ? '' : 's'}`"
+              >Open on desktop: {{ occupiedByOtherWindow.get(profile.id) }} window{{
+                occupiedByOtherWindow.get(profile.id) === 1 ? "" : "s"
+              }}</span
             >
             <span
               v-else-if="!isRemote && profile.id !== activeProfileId && desktopWindowCount(profile.id) > 0"

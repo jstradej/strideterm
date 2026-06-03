@@ -37,6 +37,10 @@ interface AzureHandlerCtx {
   getAzureSettings: (state?: AppState) => any;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   getAzureConnections: (state?: AppState) => any[];
+  /** Viewer-aware profile resolution — accepts window slot ids and remote viewer ids. */
+  getViewerProfileId: (viewerId?: string) => string | null;
+  /** Mirror an activation into a remote viewer's context (no-op for desktop ids). */
+  mirrorRemoteViewerWorkspace: (viewerId: string | undefined, workspaceId: string) => void;
 }
 
 /**
@@ -64,6 +68,8 @@ export function createAzureHandlers(ctx: AzureHandlerCtx) {
     resolveGitRootPath,
     getAzureSettings,
     getAzureConnections,
+    getViewerProfileId,
+    mirrorRemoteViewerWorkspace,
   } = ctx;
 
   function resolveRootPath(workspace: WorkspaceState, rawRootPath: string): string {
@@ -89,25 +95,22 @@ export function createAzureHandlers(ctx: AzureHandlerCtx) {
         ...normalizedInput,
         pat,
       });
-      // When the caller's window is known (IPC / slot-aware remote), pin the
-      // connection's profile to the bound profile. Without this guard, a
-      // remote on profile B that omits profileId would silently bind the
-      // connection to windowSlots[0]'s profile (typically "default").
-      const callerWindowProfileId = windowId
-        ? // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          (getState().windowSlots || []).find((s: any) => s.id === windowId)?.profileId || ""
-        : "";
+      // When the caller's viewer is known (IPC window / remote client), pin
+      // the connection's profile to the viewer's profile. Works for remote
+      // clients whose profile has no desktop window — the viewer id resolves
+      // through the RemoteClientRegistry. No windowSlots[0] fallback: a
+      // caller without a viewer context lands in "default" explicitly.
+      const callerWindowProfileId = getViewerProfileId(windowId) || "";
       if (callerWindowProfileId && connection.profileId && connection.profileId !== callerWindowProfileId) {
         throw new Error(
           `Cross-profile refused: saveAzureConnection payload targets profile ${connection.profileId}, window ${windowId} is bound to ${callerWindowProfileId}.`,
         );
       }
-      const resolvedProfileId =
-        connection.profileId || callerWindowProfileId || (getState().windowSlots || [])[0]?.profileId || "default";
+      const resolvedProfileId = connection.profileId || callerWindowProfileId || "default";
       log.debug("saveAzureConnection: profile resolution", {
         connectionId,
         incomingProfileId: connection.profileId || null,
-        stateActiveProfileId: (getState().windowSlots || [])[0]?.profileId || null,
+        callerProfileId: callerWindowProfileId || null,
         resolvedProfileId,
         existingConnectionsForProfile: getAzureConnections(getState()).filter(
           (c: { profileId?: string }) => (c.profileId || "default") === resolvedProfileId,
@@ -175,9 +178,7 @@ export function createAzureHandlers(ctx: AzureHandlerCtx) {
       // Cross-profile refuse: the connection has a profileId; a remote/IPC
       // caller bound to another profile must not be able to delete it.
       if (windowId && connection) {
-        const callerProfileId =
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          (getState().windowSlots || []).find((s: any) => s.id === windowId)?.profileId || "";
+        const callerProfileId = getViewerProfileId(windowId) || "";
         const connProfileId = (connection as { profileId?: string }).profileId || "default";
         if (callerProfileId && callerProfileId !== connProfileId) {
           throw new Error(
@@ -223,10 +224,7 @@ export function createAzureHandlers(ctx: AzureHandlerCtx) {
       let result: any;
       try {
         const state = getState();
-        const callerProfileId = windowId
-          ? // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            (state.windowSlots || []).find((s: any) => s.id === windowId)?.profileId || ""
-          : "";
+        const callerProfileId = getViewerProfileId(windowId) || "";
         result = await azure.openReviewWorkspace({
           state,
           prKey: payload.prKey,
@@ -272,6 +270,9 @@ export function createAzureHandlers(ctx: AzureHandlerCtx) {
           }
         }
       });
+      // Remote viewer: activate the review in the CALLER's remote context —
+      // desktop windows stay where they were.
+      mirrorRemoteViewerWorkspace(windowId, result.workspace.id);
       await refreshGit(result.workspace.id);
       await azure.markPullRequestSeen(payload.prKey);
       await refreshAzure();
@@ -470,10 +471,7 @@ export function createAzureHandlers(ctx: AzureHandlerCtx) {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       let result: any;
       const state = getState();
-      const callerProfileId = windowId
-        ? // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          (state.windowSlots || []).find((s: any) => s.id === windowId)?.profileId || ""
-        : "";
+      const callerProfileId = getViewerProfileId(windowId) || "";
       try {
         result = await azure.openQuickFixWorkspace({
           state,
@@ -533,6 +531,8 @@ export function createAzureHandlers(ctx: AzureHandlerCtx) {
           }
         }
       });
+      // Remote viewer: activate the quickfix in the CALLER's remote context.
+      mirrorRemoteViewerWorkspace(windowId, result.workspace.id);
       await refreshGit(result.workspace.id);
       sessions.syncWithState(getState());
       ensureVisibleSession(result.workspace.id);

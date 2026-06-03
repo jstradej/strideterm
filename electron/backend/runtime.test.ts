@@ -5,6 +5,7 @@ import { EventEmitter } from "node:events";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { createRuntime, detectTerminalEnvironment, hasMeaningfulUserInput } from "./runtime.js";
 import { createSessionId, normalizeState } from "./default-state.js";
+import { RemoteClientRegistry } from "./remote-client-registry.js";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function createMemoryStore(initialState?: any) {
@@ -6459,6 +6460,100 @@ describe("multiple windows per profile — viewer model", () => {
       layout: "cols",
       cellWorkspaceIds: ["ws-a2", null],
     });
+  });
+
+  test("remote viewer grid ops mutate the remote client's grid, never a desktop slot", async () => {
+    const base = makeProfileSwitchState();
+    const initialState = {
+      ...base,
+      projects: [
+        ...base.projects,
+        {
+          id: "ws-a2",
+          name: "A2",
+          kind: "terminal",
+          profileId: "profile-a",
+          cwd: "/tmp/a2",
+          activePanelId: "shell",
+          panels: [{ id: "shell", title: "Shell", command: "", shell: true, startup: "default" }],
+        },
+      ],
+    };
+    const fixture = await createFixture({ initialState });
+    fixtures.push(fixture);
+
+    const registry = new RemoteClientRegistry();
+    fixture.runtime.setRemoteClientRegistry(registry);
+    registry.getOrCreate("mobile-1", fixture.store.getState(), "profile-a");
+
+    await fixture.runtime.enableWorkspaceGrid("cols", ["ws-a1", "ws-a2"], "remote:mobile-1");
+
+    // The remote client's own grid is set...
+    expect(registry.get("mobile-1")!.workspaceGrid).toEqual({
+      layout: "cols",
+      cellWorkspaceIds: ["ws-a1", "ws-a2"],
+    });
+    // ...and no desktop slot picked it up.
+    const slots = fixture.runtime.getPayload().appState.windowSlots!;
+    for (const slot of slots) {
+      expect(slot.workspaceGrid ?? null).toBeNull();
+    }
+
+    await fixture.runtime.setGridCell(1, null, "remote:mobile-1");
+    expect(registry.get("mobile-1")!.workspaceGrid).toEqual({
+      layout: "cols",
+      cellWorkspaceIds: ["ws-a1", null],
+    });
+
+    await fixture.runtime.disableWorkspaceGrid("remote:mobile-1");
+    expect(registry.get("mobile-1")!.workspaceGrid).toBeNull();
+  });
+
+  test("remote viewer grid ops refuse cross-profile workspaces", async () => {
+    const fixture = await createFixture({ initialState: makeProfileSwitchState() });
+    fixtures.push(fixture);
+
+    const registry = new RemoteClientRegistry();
+    fixture.runtime.setRemoteClientRegistry(registry);
+    registry.getOrCreate("mobile-1", fixture.store.getState(), "profile-a");
+
+    // ws-b1 lives in profile-b — the remote viewer on profile-a must be refused.
+    await expect(fixture.runtime.enableWorkspaceGrid("cols", ["ws-b1", null], "remote:mobile-1")).rejects.toThrow(
+      /Cross-profile refused/i,
+    );
+  });
+
+  test("legacy activateWorkspace with a remote viewer id never flips a desktop slot", async () => {
+    const base = makeProfileSwitchState();
+    const initialState = {
+      ...base,
+      projects: [
+        ...base.projects,
+        {
+          id: "ws-a2",
+          name: "A2",
+          kind: "terminal",
+          profileId: "profile-a",
+          cwd: "/tmp/a2",
+          activePanelId: "shell",
+          panels: [{ id: "shell", title: "Shell", command: "", shell: true, startup: "default" }],
+        },
+      ],
+    };
+    const fixture = await createFixture({ initialState });
+    fixtures.push(fixture);
+
+    const registry = new RemoteClientRegistry();
+    fixture.runtime.setRemoteClientRegistry(registry);
+    registry.getOrCreate("mobile-1", fixture.store.getState(), "profile-a");
+
+    await fixture.runtime.activateWorkspace("ws-a2", "remote:mobile-1");
+
+    // The remote client's own view moved...
+    expect(registry.get("mobile-1")!.activeWorkspaceId).toBe("ws-a2");
+    // ...the desktop slot did not.
+    const slots = fixture.runtime.getPayload().appState.windowSlots!;
+    expect(slots.find((s) => s.id === "win-1")?.activeWorkspaceId).toBe("ws-a1");
   });
 
   test("removeWindowSlot mirrors the closing window's view and grid into the profile legacy defaults", async () => {

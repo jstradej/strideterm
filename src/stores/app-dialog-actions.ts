@@ -123,16 +123,14 @@ export function createDialogActions(ctx: DialogActionsCtx) {
     const remoteProfileId = payload?.remoteClient?.profileId || "";
     const slots = (appState.windowSlots || []) as Array<{ id: string; profileId?: string }>;
     if (ctx.getApi().isRemote) {
-      const openProfileIds = new Set(slots.map((slot) => slot.profileId).filter(Boolean));
-      if (
-        remoteProfileId &&
-        openProfileIds.has(remoteProfileId) &&
-        profiles.some((profile) => profile.id === remoteProfileId)
-      ) {
+      // The remote client is an independent viewer — any EXISTING profile is
+      // a valid binding, even one with no desktop window.
+      if (remoteProfileId && profiles.some((profile) => profile.id === remoteProfileId)) {
         return remoteProfileId;
       }
       return (
         slots.find((slot) => slot.profileId && profiles.some((profile) => profile.id === slot.profileId))?.profileId ||
+        profiles[0]?.id ||
         ""
       );
     }
@@ -435,29 +433,28 @@ export function createDialogActions(ctx: DialogActionsCtx) {
     const profiles = ((appState as AnyApi).profiles || []) as AnyApi[];
 
     // Determine the current profile for THIS viewer (window slot in Electron,
-    // remoteClient context in remote mode).
+    // remoteClient context in remote mode). The remote client is an
+    // independent viewer — any EXISTING profile is a valid binding, no
+    // desktop window required.
     const myWindowId = (window as AnyApi).strideterm?.startupFlags?.windowId || "";
     const slots = ((appState as AnyApi).windowSlots || []) as Array<{ id: string; profileId: string }>;
-    const openProfileIds = new Set(slots.map((slot) => slot.profileId));
     const remoteProfileId = (ctx.payload.value as AnyApi)?.remoteClient?.profileId || "";
     const myCurrentProfileId = isRemote
-      ? (remoteProfileId &&
-        openProfileIds.has(remoteProfileId) &&
-        profiles.some((profile) => profile.id === remoteProfileId)
+      ? (remoteProfileId && profiles.some((profile) => profile.id === remoteProfileId)
           ? remoteProfileId
-          : slots[0]?.profileId) || null
+          : slots[0]?.profileId || profiles[0]?.id) || null
       : (myWindowId && slots.find((s) => s.id === myWindowId)?.profileId) || slots[0]?.profileId || null;
 
-    // Build desktopOccupancy map: profileId → 1-based window index.
-    // In remote mode this is info-only (no disable); in Electron it disables the button.
+    // Build desktopOccupancy map: profileId → number of desktop windows
+    // currently showing it. Info-only badge ("Open on desktop: N windows").
     const desktopOccupancy = new Map<string, number>();
-    slots.forEach((slot, idx) => {
-      if (slot.profileId !== myCurrentProfileId) {
-        desktopOccupancy.set(slot.profileId, idx + 1);
-      }
+    slots.forEach((slot) => {
+      desktopOccupancy.set(slot.profileId, (desktopOccupancy.get(slot.profileId) || 0) + 1);
     });
 
-    const visibleProfiles = isRemote ? profiles.filter((profile) => openProfileIds.has(profile.id)) : profiles;
+    // Every profile is selectable from remote — a remote viewer may open a
+    // profile that is not shown in any desktop window.
+    const visibleProfiles = profiles;
 
     openDialog("ProfilesDialog", {
       profiles: JSON.parse(JSON.stringify(visibleProfiles)) as unknown[],

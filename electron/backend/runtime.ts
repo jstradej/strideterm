@@ -19,6 +19,7 @@ import {
   normalizeWorkspaceGrid,
   parseSessionId,
 } from "./default-state.js";
+import { parseRemoteViewerId } from "./viewer-id.js";
 import { execFileText } from "./process-utils.js";
 import { DockerManager } from "./docker-manager.js";
 import { DockerLogManager } from "./docker-log-streamer.js";
@@ -4034,12 +4035,17 @@ export async function createRuntime({
     getGitHubSettings,
     getGitHubConnections,
     assertWorkspaceInWindowProfile,
+    getViewerProfileId: getWindowProfileId,
+    mirrorRemoteViewerWorkspace,
   });
 
   function resolveWorkspaceGridProfile(draft: AppState, windowId?: string) {
-    const profileId = windowId
-      ? (draft.windowSlots || []).find((s) => s.id === windowId)?.profileId
-      : (draft.windowSlots || [])[0]?.profileId || "default";
+    const remoteSessionId = parseRemoteViewerId(windowId);
+    const profileId = remoteSessionId
+      ? _remoteClientRegistry?.get(remoteSessionId)?.profileId || "default"
+      : windowId
+        ? (draft.windowSlots || []).find((s) => s.id === windowId)?.profileId
+        : (draft.windowSlots || [])[0]?.profileId || "default";
     return profileId ? draft.profiles.find((p) => p.id === profileId) || null : null;
   }
 
@@ -4050,6 +4056,17 @@ export async function createRuntime({
     const slots = draft.windowSlots || [];
     if (windowId) return slots.find((s) => s.id === windowId) || null;
     return slots[0] || null;
+  }
+
+  // Remote viewers own their grid in the RemoteClientRegistry (runtime-only,
+  // never persisted). Grid mutations from a remote client mutate that
+  // context instead of any desktop window slot.
+  function readRemoteViewerGrid(remoteSessionId: string): WorkspaceGridState | null {
+    return _remoteClientRegistry?.get(remoteSessionId)?.workspaceGrid ?? null;
+  }
+
+  function writeRemoteViewerGrid(remoteSessionId: string, grid: WorkspaceGridState | null): void {
+    _remoteClientRegistry?.setWorkspaceGrid(remoteSessionId, grid, getState());
   }
 
   // Read the authoritative grid for a slot. Slots normally carry their own
@@ -4092,12 +4109,19 @@ export async function createRuntime({
   }
 
   /**
-   * Return the profile a given window is bound to, or null when the window
-   * has no slot (legacy / pre-init callers). Helpers below use this to
-   * reject cross-profile slot-aware operations before any mutation runs.
+   * Return the profile a given VIEWER is bound to, or null when the id can't
+   * be resolved (legacy / pre-init callers). Accepts both viewer id forms:
+   * a desktop window slot id, or a remote client id (`remote:<sessionId>`)
+   * resolved through the RemoteClientRegistry — so every profile guard works
+   * for remote/mobile callers even when their profile has no desktop window.
    */
   function getWindowProfileId(windowId: string | undefined): string | null {
     if (!windowId) return null;
+    const remoteSessionId = parseRemoteViewerId(windowId);
+    if (remoteSessionId) {
+      const client = _remoteClientRegistry?.get(remoteSessionId);
+      return client ? client.profileId || "default" : null;
+    }
     const slot = (getState().windowSlots || []).find((s) => s.id === windowId);
     return slot ? slot.profileId : null;
   }
@@ -4124,6 +4148,24 @@ export async function createRuntime({
       throw new Error(
         `Cross-profile refused: workspace ${workspaceId} is in profile ${wsProfileId}, window ${windowId} is bound to ${slotProfileId}.`,
       );
+    }
+  }
+
+  /**
+   * Mirror an activation into a remote viewer's context: when a viewer-id
+   * names a remote client and the workspace lives in its profile, the
+   * client's own active workspace follows the operation (e.g. opening a PR
+   * review from mobile shows the review on mobile). Desktop window ids and
+   * cross-profile targets are a no-op — desktop slots have their own mirror
+   * path and never follow remote actions.
+   */
+  function mirrorRemoteViewerWorkspace(viewerId: string | undefined, workspaceId: string): void {
+    const remoteSessionId = parseRemoteViewerId(viewerId);
+    if (!remoteSessionId || !_remoteClientRegistry || !workspaceId) return;
+    try {
+      _remoteClientRegistry.activateWorkspace(remoteSessionId, workspaceId, getState());
+    } catch {
+      // Cross-profile or stale client — skip the mirror, same as the slot path.
     }
   }
 
@@ -4319,7 +4361,14 @@ export async function createRuntime({
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async activateProfileForRemoteClient(clientId: string, profileId: any): Promise<unknown> {
       if (!_remoteClientRegistry) throw new Error("Remote client registry not initialised");
+      // The remote client is an independent viewer — switching its profile
+      // mutates only its own context; desktop windows are untouched. Any
+      // EXISTING profile is valid, even one with no desktop window.
       _remoteClientRegistry.activateProfile(clientId, profileId, getState());
+      // Spawn PTYs for the workspace the client landed on so the remote UI
+      // paints live terminals instead of "0 running".
+      const restoredWorkspaceId = _remoteClientRegistry.get(clientId)?.activeWorkspaceId || "";
+      if (restoredWorkspaceId) ensureVisibleSession(restoredWorkspaceId);
       broadcastState();
       return _remoteClientRegistry.composePayload(clientId, getPayload());
     },
@@ -4328,6 +4377,7 @@ export async function createRuntime({
     async activateWorkspaceForRemoteClient(clientId: string, workspaceId: any): Promise<unknown> {
       if (!_remoteClientRegistry) throw new Error("Remote client registry not initialised");
       _remoteClientRegistry.activateWorkspace(clientId, workspaceId, getState());
+      if (workspaceId) ensureVisibleSession(String(workspaceId));
       broadcastState();
       return _remoteClientRegistry.composePayload(clientId, getPayload());
     },
@@ -4336,6 +4386,7 @@ export async function createRuntime({
     async activateSessionForRemoteClient(clientId: string, workspaceId: any, sessionId: any): Promise<unknown> {
       if (!_remoteClientRegistry) throw new Error("Remote client registry not initialised");
       _remoteClientRegistry.activateSession(clientId, workspaceId, sessionId, getState());
+      if (sessionId) sessions.ensureSession(getState(), String(sessionId));
       broadcastState();
       return _remoteClientRegistry.composePayload(clientId, getPayload());
     },
@@ -4379,14 +4430,21 @@ export async function createRuntime({
       // profile B can activate a profile-A workspace globally and the
       // primary slot also flips.
       assertWorkspaceInWindowProfile(String(workspaceId), windowId);
+      const remoteCallerSessionId = parseRemoteViewerId(windowId);
       await store.mutate((draft: AppState) => {
         if (draft.workspaces.some((workspace) => workspace.id === workspaceId)) {
           draft.activeWorkspaceId = workspaceId;
-          // Also update the first window slot (primary window compat)
-          const firstSlot = (draft.windowSlots || [])[0];
-          if (firstSlot) firstSlot.activeWorkspaceId = workspaceId;
+          // Also update the first window slot (primary window compat) — but
+          // never for remote viewers: a remote activation must not flip any
+          // desktop window's view.
+          if (!remoteCallerSessionId) {
+            const firstSlot = (draft.windowSlots || [])[0];
+            if (firstSlot) firstSlot.activeWorkspaceId = workspaceId;
+          }
         }
       });
+      // Remote viewer: the activation lands on the caller's own context.
+      if (remoteCallerSessionId) mirrorRemoteViewerWorkspace(windowId, String(workspaceId));
       // Proactively update visible sessions BEFORE starting terminals,
       // so terminal startup output doesn't trigger false alerts
       const workspace = findWorkspace(getState(), workspaceId);
@@ -4503,6 +4561,19 @@ export async function createRuntime({
           }
         }
       }
+      const remoteGridSessionId = parseRemoteViewerId(windowId);
+      if (remoteGridSessionId) {
+        const slots = { cols: 2, rows: 2, "top-split": 3, "left-split": 3, grid: 4 }[String(layout)] as
+          | number
+          | undefined;
+        if (slots) {
+          const ids: (string | null)[] = [];
+          for (let i = 0; i < slots; i++) ids.push(workspaceIds?.[i] ?? null);
+          writeRemoteViewerGrid(remoteGridSessionId, { layout, cellWorkspaceIds: ids });
+          broadcastState();
+        }
+        return getPayload();
+      }
       await store.mutate((draft: AppState) => {
         const slots = { cols: 2, rows: 2, "top-split": 3, "left-split": 3, grid: 4 }[String(layout)] as
           | number
@@ -4524,6 +4595,12 @@ export async function createRuntime({
     },
 
     async disableWorkspaceGrid(windowId?: string) {
+      const remoteGridSessionId = parseRemoteViewerId(windowId);
+      if (remoteGridSessionId) {
+        writeRemoteViewerGrid(remoteGridSessionId, null);
+        broadcastState();
+        return getPayload();
+      }
       await store.mutate((draft: AppState) => {
         const slot = resolveWorkspaceGridSlot(draft, windowId);
         if (slot) slot.workspaceGrid = null;
@@ -4535,6 +4612,22 @@ export async function createRuntime({
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async setGridLayout(layout: any, windowId?: string) {
+      const remoteGridSessionId = parseRemoteViewerId(windowId);
+      if (remoteGridSessionId) {
+        const grid = readRemoteViewerGrid(remoteGridSessionId);
+        const slots = { cols: 2, rows: 2, "top-split": 3, "left-split": 3, grid: 4 }[String(layout)] as
+          | number
+          | undefined;
+        if (grid && slots) {
+          const existing = grid.cellWorkspaceIds.filter((id) => id !== null);
+          const ids: (string | null)[] = [];
+          let taken = 0;
+          for (let i = 0; i < slots; i++) ids.push(taken < existing.length ? (existing[taken++] ?? null) : null);
+          writeRemoteViewerGrid(remoteGridSessionId, { layout, cellWorkspaceIds: ids });
+          broadcastState();
+        }
+        return getPayload();
+      }
       await store.mutate((draft: AppState) => {
         const slot = resolveWorkspaceGridSlot(draft, windowId);
         const grid = readSlotGrid(draft, slot);
@@ -4574,6 +4667,24 @@ export async function createRuntime({
           );
         }
       }
+      const remoteGridSessionId = parseRemoteViewerId(windowId);
+      if (remoteGridSessionId) {
+        const grid = readRemoteViewerGrid(remoteGridSessionId);
+        if (grid) {
+          const ids = [...grid.cellWorkspaceIds];
+          if (cellIndex >= 0 && cellIndex < ids.length) {
+            if (workspaceId) {
+              const existing = ids.indexOf(workspaceId);
+              if (existing >= 0 && existing !== cellIndex) ids[existing] = null;
+            }
+            ids[cellIndex] = workspaceId;
+            const allNull = ids.every((id) => id === null);
+            writeRemoteViewerGrid(remoteGridSessionId, allNull ? null : { ...grid, cellWorkspaceIds: ids });
+            broadcastState();
+          }
+        }
+        return getPayload();
+      }
       await store.mutate((draft: AppState) => {
         const slot = resolveWorkspaceGridSlot(draft, windowId);
         const grid = readSlotGrid(draft, slot);
@@ -4594,6 +4705,21 @@ export async function createRuntime({
     },
 
     async swapGridCells(a: number, b: number, windowId?: string) {
+      const remoteGridSessionId = parseRemoteViewerId(windowId);
+      if (remoteGridSessionId) {
+        const grid = readRemoteViewerGrid(remoteGridSessionId);
+        if (grid) {
+          const ids = [...grid.cellWorkspaceIds];
+          if (a >= 0 && a < ids.length && b >= 0 && b < ids.length && a !== b) {
+            const tmp = ids[a];
+            ids[a] = ids[b];
+            ids[b] = tmp;
+            writeRemoteViewerGrid(remoteGridSessionId, { ...grid, cellWorkspaceIds: ids });
+            broadcastState();
+          }
+        }
+        return getPayload();
+      }
       await store.mutate((draft: AppState) => {
         const slot = resolveWorkspaceGridSlot(draft, windowId);
         const grid = readSlotGrid(draft, slot);
@@ -4723,6 +4849,16 @@ export async function createRuntime({
           workspace.activeViewId = sessionId;
         }
       });
+      // Remote viewer: the session activation lands on the caller's own
+      // context — no desktop slot exists for a remote viewer id.
+      const remoteSessionViewerId = parseRemoteViewerId(windowId);
+      if (remoteSessionViewerId && _remoteClientRegistry) {
+        try {
+          _remoteClientRegistry.activateSession(remoteSessionViewerId, descriptor.workspaceId, sessionId, getState());
+        } catch {
+          // Cross-profile or stale client — already guarded above; skip.
+        }
+      }
       sessions.ensureSession(getState(), sessionId);
       broadcastState();
       return getPayload();
@@ -5272,13 +5408,13 @@ export async function createRuntime({
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async reorderWorkspaces(workspaceIds: any, windowId?: string) {
       await store.mutate((draft: AppState) => {
-        // Scope the reorder to the caller window's profile. The old logic
+        // Scope the reorder to the caller viewer's profile. The old logic
         // replaced the entire workspaces array with whatever IDs the caller
         // sent — a profile-scoped frontend or mobile client would then
         // accidentally drop every workspace in OTHER profiles whose IDs it
         // never knew about. Preserve other-profile workspaces in their
         // original positions and only reorder within the caller's profile.
-        const callerProfileId = windowId ? (draft.windowSlots || []).find((s) => s.id === windowId)?.profileId : null;
+        const callerProfileId = windowId ? getWindowProfileId(windowId) : null;
         if (!callerProfileId) {
           // Legacy fallback: no window context known — old global behavior.
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -5795,10 +5931,8 @@ export async function createRuntime({
       // callers that don't carry a window context.
       if (windowId !== null) {
         const state = getState();
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const slot = (state.windowSlots || []).find((s: any) => s.id === windowId);
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const scopeProfileId: string = slot ? (slot as any).profileId || "default" : "default";
+        // Viewer-aware: resolves desktop slot ids AND remote viewer ids.
+        const scopeProfileId: string = getWindowProfileId(windowId || undefined) || "default";
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const workspace = (state.workspaces || []).find((w: any) => w.id === descriptor.workspaceId);
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -5832,12 +5966,8 @@ export async function createRuntime({
       // preserved.
       const state = getState();
 
-      const slot = windowId
-        ? // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          (state.windowSlots || []).find((s: any) => s.id === windowId)
-        : null;
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const scopeProfileId: string | null = slot ? (slot as any).profileId || "default" : null;
+      // Viewer-aware: resolves desktop slot ids AND remote viewer ids.
+      const scopeProfileId: string | null = windowId ? getWindowProfileId(windowId) : null;
 
       log.debug("clearing all attention alerts", { windowId, scopeProfileId });
 
@@ -5904,10 +6034,8 @@ export async function createRuntime({
       // their alerts. Workspace deleted → no profile, no scope leak: keep
       // as a legacy/cleanup case (the alert can't surface anywhere).
       const state = getState();
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const slot = windowId ? (state.windowSlots || []).find((s: any) => s.id === windowId) : null;
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const scopeProfileId: string | null = slot ? (slot as any).profileId || "default" : null;
+      // Viewer-aware: resolves desktop slot ids AND remote viewer ids.
+      const scopeProfileId: string | null = windowId ? getWindowProfileId(windowId) : null;
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const wsList = (state.workspaces || []) as any[];
       const profileByWs = new Map<string, string>();
@@ -6492,6 +6620,8 @@ export async function createRuntime({
           if (slot) slot.activeWorkspaceId = newProject.id;
         }
       });
+      // Remote viewer: show the new worktree in the caller's remote context.
+      mirrorRemoteViewerWorkspace(windowId, newProject.id);
 
       sessions.syncWithState(getState());
       await refreshGit(newProject.id);
@@ -6515,7 +6645,9 @@ export async function createRuntime({
               : [],
         };
         if (index >= 0) {
-          draft.profiles[index] = normalized;
+          // Merge over the existing entry: rename/recolor must not wipe the
+          // profile's legacy grid seed or lastActive restore ids.
+          draft.profiles[index] = { ...draft.profiles[index], ...normalized };
         } else {
           draft.profiles.push(normalized);
         }

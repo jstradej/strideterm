@@ -249,9 +249,50 @@ describe("useAppStore — remote mode identity", () => {
     expect(store.filteredWorkspaces.map((ws: AnyApi) => ws.id)).toEqual(["ws3"]);
   });
 
-  it("myActiveProfileId ignores stale remote profile ids that are not open on desktop", async () => {
+  it("myActiveProfileId keeps the remote profile even when it has no desktop window (independent viewer)", async () => {
+    // p1 has no desktop window — the remote client is an independent viewer
+    // and its binding to p1 stays valid as long as the profile exists.
     const payload = makeBasePayload({
       remoteClient: { id: "sess1", profileId: "p1", activeWorkspaceId: "ws1", activeSessionId: "" },
+      appState: {
+        activeWorkspaceId: "",
+        profiles: [
+          { id: "p1", name: "P1", color: "#fff", workspaceIds: [] },
+          { id: "p2", name: "P2", color: "#fff", workspaceIds: [] },
+        ],
+        workspaces: [
+          { id: "ws1", name: "Workspace 1", profileId: "p1", panels: [], kind: "terminal", cwd: "/tmp" },
+          { id: "ws3", name: "Workspace 3", profileId: "p2", panels: [], kind: "terminal", cwd: "/tmp" },
+        ],
+        windowSlots: [{ id: "slot2", profileId: "p2", activeWorkspaceId: "ws3", activeSessionId: "" }],
+        settings: {},
+        tabTemplates: [],
+        ssh: {
+          hosts: [],
+          keys: [],
+          certificates: [],
+          knownHosts: {},
+          settings: { defaultAgentMode: "inherit", importedSshConfig: false },
+        },
+      },
+    });
+    const transport = makeRemoteTransport(payload);
+    const store = useAppStore();
+
+    store.init(transport as AnyApi);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(store.activeProfile.name).toBe("P1");
+    expect(store.myActiveProfileId).toBe("p1");
+    expect(store.filteredWorkspaces.map((ws: AnyApi) => ws.id)).toEqual(["ws1"]);
+  });
+
+  it("myActiveProfileId falls back when the remote profile id no longer exists", async () => {
+    // The bound profile was deleted — fall back to a profile open on the
+    // desktop (else the first existing profile).
+    const payload = makeBasePayload({
+      remoteClient: { id: "sess1", profileId: "p-deleted", activeWorkspaceId: "", activeSessionId: "" },
       appState: {
         activeWorkspaceId: "",
         profiles: [
@@ -286,7 +327,7 @@ describe("useAppStore — remote mode identity", () => {
     expect(store.filteredWorkspaces.map((ws: AnyApi) => ws.id)).toEqual(["ws3"]);
   });
 
-  it("has no remote profile context when no desktop profile is open", async () => {
+  it("remote profile context works even when no desktop window is open at all", async () => {
     const payload = makeBasePayload({
       remoteClient: { id: "sess1", profileId: "p1", activeWorkspaceId: "ws1", activeSessionId: "" },
       appState: {
@@ -318,9 +359,9 @@ describe("useAppStore — remote mode identity", () => {
     await Promise.resolve();
     await Promise.resolve();
 
-    expect(store.myActiveProfileId).toBeNull();
-    expect(store.myActiveWorkspaceId).toBe("");
-    expect(store.filteredWorkspaces).toEqual([]);
+    expect(store.myActiveProfileId).toBe("p1");
+    expect(store.myActiveWorkspaceId).toBe("ws1");
+    expect(store.filteredWorkspaces.map((ws: AnyApi) => ws.id)).toEqual(["ws1"]);
   });
 
   it("optimistic workspace activation in remote mode updates remoteClient but not windowSlots", async () => {

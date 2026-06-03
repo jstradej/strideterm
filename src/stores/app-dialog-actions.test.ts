@@ -72,10 +72,15 @@ describe("createDialogActions.openProfilesDialog", () => {
 
     expect(ctx.overlay.value).toBe("ProfilesDialog");
     expect(ctx.overlayProps.value.activeProfileId).toBe("profile-b");
-    expect(ctx.overlayProps.value.profiles).toEqual([{ id: "profile-b", name: "B", color: "#fff" }]);
+    // EVERY profile is selectable from remote — the viewer may open a
+    // profile with no desktop window.
+    expect(ctx.overlayProps.value.profiles).toEqual([
+      { id: "profile-a", name: "A", color: "#fff" },
+      { id: "profile-b", name: "B", color: "#fff" },
+    ]);
   });
 
-  it("uses the first open desktop profile as active in remote mode when remoteClient profile is stale", () => {
+  it("uses the first open desktop profile as active in remote mode when remoteClient profile is deleted", () => {
     const ctx = makeCtx({
       remoteClient: { id: "session-a", profileId: "deleted-profile", activeWorkspaceId: "", activeSessionId: "" },
       appState: {
@@ -94,7 +99,31 @@ describe("createDialogActions.openProfilesDialog", () => {
 
     expect(ctx.overlay.value).toBe("ProfilesDialog");
     expect(ctx.overlayProps.value.activeProfileId).toBe("profile-b");
-    expect(ctx.overlayProps.value.profiles).toEqual([{ id: "profile-b", name: "B", color: "#fff" }]);
+    expect(ctx.overlayProps.value.profiles).toEqual([
+      { id: "profile-a", name: "A", color: "#fff" },
+      { id: "profile-b", name: "B", color: "#fff" },
+    ]);
+  });
+
+  it("keeps the remote profile as active even when it has no desktop window (independent viewer)", () => {
+    const ctx = makeCtx({
+      remoteClient: { id: "session-a", profileId: "profile-a", activeWorkspaceId: "", activeSessionId: "" },
+      appState: {
+        profiles: [
+          { id: "profile-a", name: "A", color: "#fff" },
+          { id: "profile-b", name: "B", color: "#fff" },
+        ],
+        workspaces: [],
+        // profile-a has NO desktop window — the remote binding still wins.
+        windowSlots: [{ id: "win-b", profileId: "profile-b", activeWorkspaceId: "ws-b" }],
+      },
+    });
+    ctx.getApi = () => ({ isRemote: true });
+    const actions = createDialogActions(ctx);
+
+    actions.openProfilesDialog();
+
+    expect(ctx.overlayProps.value.activeProfileId).toBe("profile-a");
   });
 
   it("optimistically scopes remote profile activation to the browser client", async () => {
@@ -238,10 +267,35 @@ describe("createDialogActions profile-aware saves", () => {
     expect(saveGitHubConnection).toHaveBeenCalledWith(expect.objectContaining({ id: "gh-1", profileId: "profile-b" }));
   });
 
-  it("falls back to the first open desktop profile for remote saves when remoteClient is stale", async () => {
+  it("remote saves use the remote viewer's profile even when it has no desktop window", async () => {
+    // profile-b is the remote client's binding; no desktop window shows it.
+    // The connection must still land in profile-b — the remote client is an
+    // independent viewer.
     const saveGitHubConnection = vi.fn((draft: AnyApi) => Promise.resolve({ payload: { ok: true, draft } }));
     const ctx = makeCtx({
       remoteClient: { id: "remote-a", profileId: "profile-b", activeWorkspaceId: "ws-b", activeSessionId: "" },
+      appState: {
+        profiles: [
+          { id: "profile-a", name: "A", color: "#fff" },
+          { id: "profile-b", name: "B", color: "#fff" },
+        ],
+        settings: { integrations: { github: { connections: [] } } },
+        windowSlots: [{ id: "win-a", profileId: "profile-a", activeWorkspaceId: "ws-a" }],
+      },
+    });
+    ctx.getApi = () => ({ isRemote: true, saveGitHubConnection });
+    const actions = createDialogActions(ctx);
+
+    actions.openGitHubConnectionDialog();
+    await (ctx.overlayProps.value.onSave as (draft: AnyApi) => Promise<void>)({ id: "gh-1" });
+
+    expect(saveGitHubConnection).toHaveBeenCalledWith(expect.objectContaining({ id: "gh-1", profileId: "profile-b" }));
+  });
+
+  it("falls back to the first open desktop profile for remote saves when the remote profile was deleted", async () => {
+    const saveGitHubConnection = vi.fn((draft: AnyApi) => Promise.resolve({ payload: { ok: true, draft } }));
+    const ctx = makeCtx({
+      remoteClient: { id: "remote-a", profileId: "profile-deleted", activeWorkspaceId: "", activeSessionId: "" },
       appState: {
         profiles: [
           { id: "profile-a", name: "A", color: "#fff" },

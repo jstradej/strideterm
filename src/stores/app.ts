@@ -164,19 +164,23 @@ export const useAppStore = defineStore("app", () => {
   });
 
   function resolveRemoteProfileId(sourcePayload: StatePayload | null = payload.value): string | null {
+    // The remote client is an independent viewer: ANY existing profile is a
+    // valid binding — it does not need to be open in a desktop window.
     const appState = (sourcePayload as AnyApi)?.appState || {};
     const profiles = ((appState.profiles || []) as AnyApi[]).filter((profile) => profile?.id);
-    const slots = (appState.windowSlots || []) as AnyApi[];
-    const openProfileIds = slots.map((slot) => String(slot?.profileId || "")).filter(Boolean);
     const remoteProfileId = (sourcePayload as AnyApi)?.remoteClient?.profileId || "";
-    if (
-      remoteProfileId &&
-      openProfileIds.includes(remoteProfileId) &&
-      profiles.some((profile) => profile.id === remoteProfileId)
-    ) {
+    if (remoteProfileId && profiles.some((profile) => profile.id === remoteProfileId)) {
       return remoteProfileId;
     }
-    return openProfileIds.find((profileId) => profiles.some((profile) => profile.id === profileId)) || null;
+    // Fallback for stale payloads: prefer a profile open on the desktop,
+    // else the first existing profile.
+    const slots = (appState.windowSlots || []) as AnyApi[];
+    const openProfileIds = slots.map((slot) => String(slot?.profileId || "")).filter(Boolean);
+    return (
+      openProfileIds.find((profileId) => profiles.some((profile) => profile.id === profileId)) ||
+      profiles[0]?.id ||
+      null
+    );
   }
 
   function resolveRemoteWorkspaceId(sourcePayload: StatePayload | null = payload.value): string {
