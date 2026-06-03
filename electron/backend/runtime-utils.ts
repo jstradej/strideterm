@@ -411,3 +411,32 @@ export function detectTerminalEnvironment({
     },
   };
 }
+
+// --- Native attention (taskbar badge / title count) ---
+
+/**
+ * Per-profile attention summary used by updateNativeAttention (main.ts) to
+ * badge/flash desktop windows. Keyed by PROFILE, not by window slot: every
+ * window currently showing `profileId` — there may be several — gets the
+ * same count. Pure so multi-window routing is unit-testable.
+ */
+export function summarizeAttentionForProfile(
+  payload: {
+    appState?: { workspaces?: Array<{ id: string; profileId?: string }> };
+    attention?: { byWorkspace?: Record<string, { alerts?: Array<{ kind?: string }> }> };
+  },
+  profileId: string,
+): { count: number; waitingCount: number } {
+  const workspaces = payload?.appState?.workspaces || [];
+  const byWorkspace = payload?.attention?.byWorkspace || {};
+  const profileWsIds = new Set(workspaces.filter((ws) => (ws.profileId || "default") === profileId).map((ws) => ws.id));
+  let count = 0;
+  let waitingCount = 0;
+  for (const [wsId, bucket] of Object.entries(byWorkspace)) {
+    if (!profileWsIds.has(wsId)) continue;
+    const alerts = bucket?.alerts || [];
+    count += alerts.length;
+    waitingCount += alerts.filter((a) => a.kind === "waiting").length;
+  }
+  return { count, waitingCount };
+}

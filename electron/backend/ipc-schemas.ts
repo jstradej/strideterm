@@ -766,6 +766,8 @@ export const notificationShowSchema = z.object({
   body: z.string().optional(),
   urgency: z.enum(["normal", "urgent"]).optional(),
   requireInteraction: z.boolean().optional(),
+  /** Alert session key — dedupes identical OS popups fired by multiple windows of the same profile. */
+  dedupeKey: z.string().optional(),
 });
 export type NotificationShow = z.infer<typeof notificationShowSchema>;
 

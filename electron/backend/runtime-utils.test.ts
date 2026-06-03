@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { detectRateLimit } from "./runtime-utils.js";
+import { detectRateLimit, summarizeAttentionForProfile } from "./runtime-utils.js";
 
 // All "now" anchors in this file are local-time Dates; the detectors operate
 // in local time (Claude Code's clock-time format is the user's local zone).
@@ -192,5 +192,53 @@ describe("detectRateLimit", () => {
       expect(m!.providerHint).toBe("gemini");
       expect(m!.resetAt).not.toBeNull();
     });
+  });
+});
+
+describe("summarizeAttentionForProfile (native attention routing)", () => {
+  const payload = {
+    appState: {
+      workspaces: [
+        { id: "ws-a1", profileId: "profile-a" },
+        { id: "ws-a2", profileId: "profile-a" },
+        { id: "ws-b1", profileId: "profile-b" },
+        { id: "ws-legacy" }, // no profileId → "default"
+      ],
+    },
+    attention: {
+      byWorkspace: {
+        "ws-a1": { alerts: [{ kind: "waiting" }, { kind: "completed" }] },
+        "ws-a2": { alerts: [{ kind: "completed" }] },
+        "ws-b1": { alerts: [{ kind: "waiting" }] },
+        "ws-legacy": { alerts: [{ kind: "completed" }] },
+      },
+    },
+  };
+
+  test("counts only alerts in the requested profile's workspaces", () => {
+    expect(summarizeAttentionForProfile(payload, "profile-a")).toEqual({ count: 3, waitingCount: 1 });
+    expect(summarizeAttentionForProfile(payload, "profile-b")).toEqual({ count: 1, waitingCount: 1 });
+  });
+
+  test("workspaces without profileId count toward the default profile", () => {
+    expect(summarizeAttentionForProfile(payload, "default")).toEqual({ count: 1, waitingCount: 0 });
+  });
+
+  test("two window slots showing the same profile receive identical counts", () => {
+    // The summary is keyed by profile, not by window slot — duplicate slots
+    // for one profile (multi-window) each badge/flash with the same numbers.
+    const slots = [
+      { id: "win-1", profileId: "profile-a" },
+      { id: "win-2", profileId: "profile-a" },
+      { id: "win-3", profileId: "profile-b" },
+    ];
+    const perWindow = slots.map((slot) => summarizeAttentionForProfile(payload, slot.profileId));
+    expect(perWindow[0]).toEqual({ count: 3, waitingCount: 1 });
+    expect(perWindow[1]).toEqual(perWindow[0]);
+    expect(perWindow[2]).toEqual({ count: 1, waitingCount: 1 });
+  });
+
+  test("profile with no alerting workspaces reports zero", () => {
+    expect(summarizeAttentionForProfile(payload, "profile-empty")).toEqual({ count: 0, waitingCount: 0 });
   });
 });

@@ -10,6 +10,7 @@ import { registerIpc } from "./backend/ipc.js";
 import { startRemoteServer } from "./backend/remote-server.js";
 import { parseReviewBridgeMcpArgs, runReviewBridgeMcpServer } from "./backend/review-bridge-mcp.js";
 import { createDefaultState, normalizeState } from "./backend/default-state.js";
+import { summarizeAttentionForProfile } from "./backend/runtime-utils.js";
 import { inheritShellPath } from "./backend/fix-path.js";
 import { APP_CONFIG, getRendererDevUrl } from "../config/app-config.js";
 import { getLogger, setLogDir, shutdownLogger } from "./backend/logger.js";
@@ -479,10 +480,6 @@ function updateNativeAttention(payload: Record<string, unknown> | null | undefin
   const { count, waitingCount } = summarizeAttention(payload);
   const appState = payload.appState as Record<string, unknown> | undefined;
   const profiles = (appState?.profiles as Array<{ id: string; name: string }> | undefined) || [];
-  const workspaces = (appState?.workspaces as Array<{ id: string; profileId?: string }> | undefined) || [];
-  const byWorkspace = (payload.attention as Record<string, unknown> | undefined)?.byWorkspace as
-    | Record<string, { alerts?: { kind?: string }[] }>
-    | undefined;
   const dataDirSuffix = customDataDir ? ` (${path.basename(customDataDir)})` : "";
 
   // Global badge count = sum across all windows
@@ -490,27 +487,20 @@ function updateNativeAttention(payload: Record<string, unknown> | null | undefin
     app.setBadgeCount(count);
   }
 
-  // Per-window title + overlay icon + flash (§4.2: route to the window whose profile owns the alert)
+  // Per-window title + overlay icon + flash (§4.2: route to every window
+  // whose profile owns the alert — a profile may be open in several windows,
+  // and each of them gets the same badge/flash).
   for (const [windowId, win] of windowRegistry) {
     if (win.isDestroyed()) continue;
     const profileId = getWindowProfileId(windowId);
     const activeProfile = profiles.find((p) => p.id === profileId);
     const profileSuffix = activeProfile && profileId !== "default" ? ` [${activeProfile.name}]` : "";
 
-    // Compute alert count only for workspaces in this window's profile
-    const profileWsIds = new Set(
-      workspaces.filter((ws) => (ws.profileId || "default") === profileId).map((ws) => ws.id),
+    // Alert count for this window = alerts in the window's profile.
+    const { count: winCount, waitingCount: winWaitingCount } = summarizeAttentionForProfile(
+      payload as Parameters<typeof summarizeAttentionForProfile>[0],
+      profileId,
     );
-    let winCount = 0;
-    let winWaitingCount = 0;
-    if (byWorkspace) {
-      for (const [wsId, bucket] of Object.entries(byWorkspace)) {
-        if (!profileWsIds.has(wsId)) continue;
-        const alerts = bucket?.alerts || [];
-        winCount += alerts.length;
-        winWaitingCount += alerts.filter((a) => a.kind === "waiting").length;
-      }
-    }
 
     const baseTitle = APP_CONFIG.electron.title + profileSuffix + dataDirSuffix;
     const title = winCount > 0 ? `(${winCount}) ${baseTitle}` : baseTitle;

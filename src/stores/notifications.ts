@@ -17,6 +17,11 @@ import { ref, computed } from "vue";
 const STORAGE_KEY = "strideterm-notifications-v2";
 const LEGACY_KEY = "strideterm-notifications";
 const PINNED_KEY = "strideterm-notifications-pinned";
+// Cross-window sync channel. Only ack/read state (resolve, snooze, remove,
+// clear) is synchronized between windows of the same app — NEVER arrival:
+// each window captures its own arrivals/toasts, otherwise the first window
+// to see an alert would suppress the toast in its same-profile sibling.
+const SYNC_CHANNEL_NAME = "strideterm-notifications";
 const MAX_SESSIONS = 200;
 const MAX_EVENTS_PER_SESSION = 20;
 
@@ -85,6 +90,17 @@ interface AddEventPayload {
 
 type SessionFilter = (_s: NotificationSession) => boolean;
 
+/**
+ * Cross-window sync messages. Ack/read state only — arrival is intentionally
+ * absent (each window captures and toasts its own arrivals).
+ */
+type NotificationSyncMessage =
+  | { type: "set-state"; sessionIds: string[]; state: NotificationState }
+  | { type: "snooze"; sessionId: string; snoozedUntil: number }
+  | { type: "remove"; id: string }
+  | { type: "remove-by-view"; viewId: string }
+  | { type: "clear-sessions"; sessionIds: string[] };
+
 function threadId(workspaceId: string, viewId: string): string {
   return `${workspaceId || ""}:${viewId || ""}`;
 }
@@ -144,6 +160,79 @@ export const useNotificationStore = defineStore("notifications", () => {
   const sessions = ref<NotificationSession[]>(loadFromStorage());
   const panelOpen = ref(false);
   const pinned = ref(loadPinned());
+
+  // --- Cross-window ack sync (BroadcastChannel) ---------------------------
+  // Windows of the same profile show the same alerts; acknowledging in one
+  // window must resolve the entry in the others. Only ack/clear/snooze sync;
+  // arrival/toast stays per-window by design.
+  let syncChannel: BroadcastChannel | null = null;
+  try {
+    if (typeof BroadcastChannel !== "undefined") {
+      syncChannel = new BroadcastChannel(SYNC_CHANNEL_NAME);
+      syncChannel.onmessage = (event: MessageEvent) => {
+        try {
+          applySyncMessage(event.data as NotificationSyncMessage);
+        } catch {
+          // Malformed message from another (older/newer) window — ignore.
+        }
+      };
+    }
+  } catch {
+    syncChannel = null;
+  }
+
+  function broadcastSync(message: NotificationSyncMessage): void {
+    try {
+      syncChannel?.postMessage(message);
+    } catch {
+      // Channel closed or serialization failed — sync is best-effort.
+    }
+  }
+
+  /** Apply a sync message from another window — never re-broadcasts. */
+  function applySyncMessage(message: NotificationSyncMessage): void {
+    if (!message || typeof message !== "object") return;
+    switch (message.type) {
+      case "set-state": {
+        let changed = false;
+        for (const s of sessions.value) {
+          if (message.sessionIds.includes(s.id) && s.state !== message.state) {
+            s.state = message.state;
+            changed = true;
+          }
+        }
+        if (changed) {
+          sessions.value = [...sessions.value];
+          saveToStorage(sessions.value);
+        }
+        break;
+      }
+      case "snooze": {
+        const s = sessions.value.find((x) => x.id === message.sessionId);
+        if (s) {
+          s.snoozedUntil = message.snoozedUntil;
+          sessions.value = [...sessions.value];
+          saveToStorage(sessions.value);
+        }
+        break;
+      }
+      case "remove": {
+        removeInternal(message.id);
+        break;
+      }
+      case "remove-by-view": {
+        if (!message.viewId) return;
+        sessions.value = sessions.value.filter((s) => s.viewId !== message.viewId);
+        saveToStorage(sessions.value);
+        break;
+      }
+      case "clear-sessions": {
+        sessions.value = sessions.value.filter((s) => !message.sessionIds.includes(s.id));
+        saveToStorage(sessions.value);
+        break;
+      }
+    }
+  }
   // Incremented whenever something (e.g. a keyboard shortcut) explicitly
   // wants the dock focused. The component watches this counter and calls
   // focus() — a ref-bump is used so repeated requests retrigger even when
@@ -290,6 +379,7 @@ export const useNotificationStore = defineStore("notifications", () => {
     s.state = newState;
     sessions.value = [...sessions.value];
     saveToStorage(sessions.value);
+    broadcastSync({ type: "set-state", sessionIds: [s.id], state: newState });
   }
 
   function snooze(sessionId: string, ms = 600_000): void {
@@ -298,20 +388,22 @@ export const useNotificationStore = defineStore("notifications", () => {
     s.snoozedUntil = Date.now() + ms;
     sessions.value = [...sessions.value];
     saveToStorage(sessions.value);
+    broadcastSync({ type: "snooze", sessionId: s.id, snoozedUntil: s.snoozedUntil });
   }
 
   function markAllRead(filter?: SessionFilter): void {
-    let changed = false;
+    const changedIds: string[] = [];
     for (const s of sessions.value) {
       if (filter && !filter(s)) continue;
       if (s.state === "waiting" || s.state === "finished") {
         s.state = "resolved";
-        changed = true;
+        changedIds.push(s.id);
       }
     }
-    if (changed) {
+    if (changedIds.length > 0) {
       sessions.value = [...sessions.value];
       saveToStorage(sessions.value);
+      broadcastSync({ type: "set-state", sessionIds: changedIds, state: "resolved" });
     }
   }
 
@@ -334,7 +426,7 @@ export const useNotificationStore = defineStore("notifications", () => {
     setState(sessionId, "resolved");
   }
 
-  function remove(sessionIdOrEventId: string): void {
+  function removeInternal(sessionIdOrEventId: string): void {
     // Accept either a thread id or a legacy event id (back-compat with old UI).
     const before = sessions.value.length;
     sessions.value = sessions.value.filter((s) => {
@@ -350,19 +442,33 @@ export const useNotificationStore = defineStore("notifications", () => {
     saveToStorage(sessions.value);
   }
 
+  function remove(sessionIdOrEventId: string): void {
+    removeInternal(sessionIdOrEventId);
+    broadcastSync({ type: "remove", id: sessionIdOrEventId });
+  }
+
   function removeByViewId(viewId: string): void {
     if (!viewId) return;
     sessions.value = sessions.value.filter((s) => s.viewId !== viewId);
     saveToStorage(sessions.value);
+    broadcastSync({ type: "remove-by-view", viewId });
   }
 
   function clearAll(filter?: SessionFilter): void {
+    let removedIds: string[];
     if (filter) {
+      removedIds = sessions.value.filter((s) => filter(s)).map((s) => s.id);
       sessions.value = sessions.value.filter((s) => !filter(s));
     } else {
+      removedIds = sessions.value.map((s) => s.id);
       sessions.value = [];
     }
     saveToStorage(sessions.value);
+    // Broadcast explicit ids — a blanket "clear everything" would also wipe
+    // OTHER-profile sessions a sibling window holds that this window never saw.
+    if (removedIds.length > 0) {
+      broadcastSync({ type: "clear-sessions", sessionIds: removedIds });
+    }
     // Also clear backend attention alerts (bells on tabs/workspaces). The
     // server resolves which profile to clear from the caller's bound
     // session, so the request body stays empty regardless of `filter`.
@@ -574,5 +680,8 @@ export const useNotificationStore = defineStore("notifications", () => {
     pushPersistentToast,
     pushEphemeralToast,
     dismissPersistentToast,
+    // Test hook: apply a cross-window sync message as if it arrived via
+    // BroadcastChannel (which doesn't deliver within one JS context).
+    _applySyncMessageForTest: applySyncMessage,
   };
 });

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { setActivePinia, createPinia } from "pinia";
 import { useNotificationStore } from "./notifications.js";
 
@@ -306,5 +306,172 @@ describe("notification store — profile label in session meta", () => {
     // No profileId in meta — resolveSessionProfileId will fall back to workspace map
     expect(store.sessions[0].meta?.profileId).toBeUndefined();
     expect(store.sessions[0].workspaceId).toBe("ws2");
+  });
+});
+
+describe("notification store — cross-window ack sync (BroadcastChannel)", () => {
+  // Mock BroadcastChannel that routes messages between instances in the same
+  // JS context (the real one never delivers to the posting context, and jsdom
+  // may not provide it at all).
+  class MockBroadcastChannel {
+    static instances: MockBroadcastChannel[] = [];
+    static posted: unknown[] = [];
+    name: string;
+    onmessage: ((ev: { data: unknown }) => void) | null = null;
+    constructor(name: string) {
+      this.name = name;
+      MockBroadcastChannel.instances.push(this);
+    }
+    postMessage(data: unknown): void {
+      MockBroadcastChannel.posted.push(data);
+      for (const inst of MockBroadcastChannel.instances) {
+        if (inst !== this && inst.name === this.name) {
+          inst.onmessage?.({ data });
+        }
+      }
+    }
+    close(): void {
+      // no-op
+    }
+  }
+
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    window.localStorage.removeItem("strideterm-notifications");
+    window.localStorage.removeItem("strideterm-notifications-v2");
+    MockBroadcastChannel.instances = [];
+    MockBroadcastChannel.posted = [];
+    vi.stubGlobal("BroadcastChannel", MockBroadcastChannel);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function makeTwoWindows() {
+    // Two pinia contexts = two windows. Each store instance creates its own
+    // BroadcastChannel through the mocked global.
+    const piniaA = createPinia();
+    setActivePinia(piniaA);
+    const storeA = useNotificationStore();
+    const piniaB = createPinia();
+    setActivePinia(piniaB);
+    const storeB = useNotificationStore();
+    return { storeA, storeB };
+  }
+
+  const samePayload = {
+    title: "Waiting for input",
+    body: "Shell in Alpha is waiting.",
+    kind: "waiting",
+    workspaceId: "ws-1",
+    viewId: "ws-1:shell",
+    meta: { profileId: "profile-a" },
+  };
+
+  it("same alert arriving in two windows creates an unread session in both (arrival is per-window)", () => {
+    const { storeA, storeB } = makeTwoWindows();
+    storeA.add({ ...samePayload });
+    storeB.add({ ...samePayload });
+    expect(storeA.unreadCount).toBe(1);
+    expect(storeB.unreadCount).toBe(1);
+    // Arrival must NOT be broadcast — otherwise the first window would
+    // suppress the toast in its same-profile sibling.
+    const arrivalMessages = MockBroadcastChannel.posted.filter(
+      (m) => (m as { type?: string }).type === "add" || (m as { type?: string }).type === "arrival",
+    );
+    expect(arrivalMessages).toHaveLength(0);
+  });
+
+  it("ack (markRead) in one window resolves the session in the other", () => {
+    const { storeA, storeB } = makeTwoWindows();
+    storeA.add({ ...samePayload });
+    storeB.add({ ...samePayload });
+
+    storeA.markRead("ws-1:ws-1:shell");
+
+    expect(storeA.sessions[0].state).toBe("resolved");
+    expect(storeB.sessions[0].state).toBe("resolved");
+    expect(storeB.unreadCount).toBe(0);
+  });
+
+  it("markAllRead in one window resolves matching sessions in the other", () => {
+    const { storeA, storeB } = makeTwoWindows();
+    storeA.add({ ...samePayload });
+    storeB.add({ ...samePayload });
+
+    storeA.markAllRead();
+
+    expect(storeB.sessions[0].state).toBe("resolved");
+  });
+
+  it("snooze in one window propagates snoozedUntil to the other", () => {
+    const { storeA, storeB } = makeTwoWindows();
+    storeA.add({ ...samePayload });
+    storeB.add({ ...samePayload });
+
+    storeA.snooze("ws-1:ws-1:shell", 60_000);
+
+    expect(storeB.sessions[0].snoozedUntil).toBeGreaterThan(Date.now());
+  });
+
+  it("clearAll with a filter removes only the matching sessions in the other window", () => {
+    const { storeA, storeB } = makeTwoWindows();
+    storeA.add({ ...samePayload });
+    storeB.add({ ...samePayload });
+    // storeB also holds an alert from ANOTHER profile that storeA never saw.
+    storeB.add({
+      title: "Other profile",
+      kind: "waiting",
+      workspaceId: "ws-other",
+      viewId: "ws-other:shell",
+      meta: { profileId: "profile-b" },
+    });
+
+    storeA.clearAll((s) => s.meta?.profileId === "profile-a");
+
+    expect(storeA.sessions).toHaveLength(0);
+    // storeB lost the profile-a session but keeps its own profile-b session.
+    expect(storeB.sessions).toHaveLength(1);
+    expect(storeB.sessions[0].meta?.profileId).toBe("profile-b");
+  });
+
+  it("remove in one window removes the session in the other", () => {
+    const { storeA, storeB } = makeTwoWindows();
+    storeA.add({ ...samePayload });
+    storeB.add({ ...samePayload });
+
+    storeA.remove("ws-1:ws-1:shell");
+
+    expect(storeB.sessions).toHaveLength(0);
+  });
+
+  it("applying a sync message does not echo a broadcast back (no loops)", () => {
+    const { storeA } = makeTwoWindows();
+    storeA.add({ ...samePayload });
+    const postedBefore = MockBroadcastChannel.posted.length;
+
+    storeA._applySyncMessageForTest({ type: "set-state", sessionIds: ["ws-1:ws-1:shell"], state: "resolved" });
+
+    expect(storeA.sessions[0].state).toBe("resolved");
+    expect(MockBroadcastChannel.posted.length).toBe(postedBefore);
+  });
+
+  it("store works when BroadcastChannel is unavailable", () => {
+    vi.unstubAllGlobals();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const original = (globalThis as any).BroadcastChannel;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    delete (globalThis as any).BroadcastChannel;
+    try {
+      setActivePinia(createPinia());
+      const store = useNotificationStore();
+      store.add({ ...samePayload });
+      store.markRead("ws-1:ws-1:shell");
+      expect(store.sessions[0].state).toBe("resolved");
+    } finally {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      if (original !== undefined) (globalThis as any).BroadcastChannel = original;
+    }
   });
 });

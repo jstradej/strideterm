@@ -117,6 +117,7 @@ import {
   workspaceGridSetCellSchema,
   workspaceGridSwapCellsSchema,
 } from "./ipc-schemas.js";
+import { shouldShowSystemNotification } from "./notifications/system-notification-dedupe.js";
 
 type Runtime = Awaited<ReturnType<typeof createRuntime>>;
 
@@ -1440,6 +1441,10 @@ export function registerIpc(
     withOperationPromise({ opId: "notification:show-system" }, async () => {
       if (!Notification.isSupported()) return;
       const validated = validateIpc(notificationShowSchema, payload || {}, "notification:show-system");
+      // App-level dedupe: multiple unfocused windows of the same profile fire
+      // this for the same alert — only the first popup within the window wins.
+      // In-app toasts stay per-window; only the OS popup is deduped.
+      if (!shouldShowSystemNotification(validated.dedupeKey || "")) return;
       const urgent = validated.urgency === "urgent" || validated.requireInteraction === true;
       // Route click/flash back to the WINDOW THAT FIRED the notification.
       // Using BrowserWindow.getAllWindows()[0] (the previous behavior) sent

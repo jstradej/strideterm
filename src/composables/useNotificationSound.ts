@@ -79,8 +79,16 @@ export function playUrgentDing() {
  * Show an OS-level notification.
  * Electron → IPC to main process (Electron.Notification).
  * Browser  → Web Notification API (remote mode).
+ *
+ * `dedupeKey` (the alert's session key) lets the main process collapse
+ * identical popups fired by multiple windows of the same profile into one
+ * OS notification per app instance. In-app toasts stay per-window.
  */
-export function showSystemNotification(title: string, body: string, options: { urgency?: string } = {}) {
+export function showSystemNotification(
+  title: string,
+  body: string,
+  options: { urgency?: string; dedupeKey?: string } = {},
+) {
   const urgent = options?.urgency === "urgent";
 
   // Electron mode
@@ -90,6 +98,7 @@ export function showSystemNotification(title: string, body: string, options: { u
       body,
       urgency: urgent ? "urgent" : "normal",
       requireInteraction: urgent,
+      dedupeKey: options?.dedupeKey || "",
     });
     return;
   }
@@ -98,6 +107,9 @@ export function showSystemNotification(title: string, body: string, options: { u
   if ("Notification" in window) {
     const browserOpts: NotificationOptions = { body };
     if (urgent) browserOpts.requireInteraction = true;
+    // `tag` makes the browser replace an identical pending notification
+    // instead of stacking duplicates.
+    if (options?.dedupeKey) browserOpts.tag = options.dedupeKey;
     if (Notification.permission === "granted") {
       new Notification(title, browserOpts);
     } else if (Notification.permission !== "denied") {
@@ -157,7 +169,7 @@ export function fireNotificationAlert(
     // System notifications don't auto-play the ding themselves on all OSes,
     // but they're less spammy — fire one regardless unless coalesced.
     if (!coalesced) {
-      showSystemNotification(title, body, { urgency });
+      showSystemNotification(title, body, { urgency, dedupeKey: sessionKey });
       recordDing(sessionKey);
     }
   }
