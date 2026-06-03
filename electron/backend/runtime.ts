@@ -860,6 +860,9 @@ export async function createRuntime({
       remoteToken: remote.token || "",
       cloudflareStatus: tunnelSnap?.status || "idle",
       tunnelMode: APP_CONFIG.tunnel?.mode || "off",
+      // Telegram may only re-establish a tunnel the user already configured
+      // (remote access on + autoTunnel persisted) — never create new exposure.
+      canReconnect: !!remote.enabled && !!remote.autoTunnel,
     };
   });
 
@@ -7048,6 +7051,22 @@ export async function createRuntime({
       return { ok: true, payload: getPayload() };
     },
   };
+
+  // Telegram "Reconnect tunnel" (🔁 button / `/tunnel reconnect`). Re-uses the
+  // exact createCloudflareTunnel flow the desktop UI calls (bind-check, origin
+  // probe, error surfacing), but is additionally gated on autoTunnel so a chat
+  // can only re-establish a tunnel the user already had running — never turn
+  // on brand-new public exposure. The manager checks `canReconnect` from the
+  // tunnel-info getter before offering the button; this re-check covers stale
+  // buttons and the typed-command path.
+  telegramManager.setTunnelReconnectHandler(async () => {
+    const remoteConfig = getState().settings.remoteAccess;
+    if (!remoteConfig.enabled || !remoteConfig.autoTunnel) {
+      throw new Error("Tunnel reconnect is only available after a Cloudflare tunnel was started from the desktop.");
+    }
+    await returnObj.createCloudflareTunnel();
+  });
+
   _rt = returnObj;
   return returnObj;
 }

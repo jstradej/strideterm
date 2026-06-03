@@ -232,6 +232,11 @@ export interface TelegramTunnelInfo {
   cloudflareStatus: string;
   /** Configured tunnel mode (e.g. "off" | "cloudflare" | "lan-only") */
   tunnelMode: string;
+  /** Whether Telegram may (re)start the Cloudflare tunnel. The runtime sets
+   * this only when remote access is enabled AND a tunnel was previously
+   * started from the desktop (autoTunnel) — a chat can re-establish a dropped
+   * tunnel but never create brand-new public exposure. */
+  canReconnect?: boolean;
 }
 
 /** Minimal workspace info the manager needs for status/task commands */
@@ -418,6 +423,14 @@ export class TelegramManager extends EventEmitter {
   /** Runtime-provided getter for tunnel/remote-access info — used by /tunnel command */
   private getTunnelInfo: (() => TelegramTunnelInfo) | null = null;
 
+  /** Runtime-provided action that re-establishes the Cloudflare tunnel —
+   * used by the /tunnel "Reconnect" button and `/tunnel reconnect`. */
+  private reconnectTunnel: (() => Promise<void>) | null = null;
+
+  /** Guards against double-taps on the Reconnect button while a reconnect
+   * is still in flight (cloudflared restart takes several seconds). */
+  private tunnelReconnectInFlight = false;
+
   constructor({
     credentialStore,
     auditLogStore = null,
@@ -461,6 +474,17 @@ export class TelegramManager extends EventEmitter {
    */
   setTunnelInfoGetter(fn: () => TelegramTunnelInfo): void {
     this.getTunnelInfo = fn;
+  }
+
+  /**
+   * Called by the runtime so the /tunnel "Reconnect" button can re-establish
+   * a dropped Cloudflare quick tunnel. The runtime owns the policy (it only
+   * reconnects when remote access is enabled and the tunnel was previously
+   * configured); the manager only offers the button when `canReconnect` is
+   * true and re-checks it before invoking the handler.
+   */
+  setTunnelReconnectHandler(fn: () => Promise<void>): void {
+    this.reconnectTunnel = fn;
   }
 
   private _profileChoices(): TelegramProfileInfo[] {
@@ -1532,6 +1556,17 @@ export class TelegramManager extends EventEmitter {
       await this._handlePrsCommand(chatId, token, conn);
       return;
     }
+    {
+      // `/tunnel reconnect [force]` — `force` restarts a tunnel that still
+      // reports connected (zombie cloudflared holding a dead edge connection).
+      const reconnectMatch = lower.match(/^\/?(?:tunnel )?reconnect( force)?$/);
+      if (reconnectMatch) {
+        const force = !!reconnectMatch[1];
+        log.info("telegram command: /tunnel reconnect", { chatId, force });
+        await this._handleTunnelReconnect(chatId, token, conn, "COMMAND", force);
+        return;
+      }
+    }
     if (lower === "/tunnel" || lower === "tunnel" || lower === "/url" || lower === "url") {
       log.info("telegram command: /tunnel", { chatId });
       await this._handleTunnelCommand(chatId, token, conn);
@@ -1556,6 +1591,7 @@ export class TelegramManager extends EventEmitter {
           "`/task` — start a new task agent \\(workspace picker\\)",
           "`/prs` — list pull requests and start reviews",
           "`/tunnel` — get the strIDEterm remote URL \\(LAN / Cloudflare\\) on this phone",
+          "`/tunnel reconnect` — restart the Cloudflare tunnel when it drops",
           "`/screenshot` — capture a screenshot of the strIDEterm window",
           "",
           "Or reply to a specific notification using Telegram Reply and tap the inline buttons\\.",
@@ -2282,6 +2318,17 @@ export class TelegramManager extends EventEmitter {
       return;
     }
 
+    // Offer tunnel-restart actions only when the runtime allows it (remote
+    // access on + tunnel previously configured). When the tunnel is down we
+    // offer a plain Reconnect; when it reports connected we still offer a
+    // Restart — cloudflared can hold a dead edge connection while the process
+    // stays alive, so "connected" may be a lie. The restart path asks for
+    // confirmation before bouncing (a restart issues a new public URL).
+    const reconnectAllowed = !!info.canReconnect && !!this.reconnectTunnel;
+    const showReconnect =
+      reconnectAllowed && info.cloudflareStatus !== "connected" && info.cloudflareStatus !== "connecting";
+    const showRestart = reconnectAllowed && info.cloudflareStatus === "connected";
+
     const lines: string[] = ["🌐 *strIDEterm tunnel*", ""];
 
     if (cloudflareUrl) {
@@ -2292,6 +2339,11 @@ export class TelegramManager extends EventEmitter {
       lines.push("");
     } else if (info.cloudflareStatus === "connecting") {
       lines.push("⏳ Cloudflare tunnel is starting\\. Try `/tunnel` again in a few seconds\\.");
+      lines.push("");
+    } else if (showReconnect) {
+      // The inline keyboard can be dropped by the plain-text fallback below,
+      // so always mention the typed alias as well.
+      lines.push("⚠️ Cloudflare tunnel is *down*\\. Tap *Reconnect tunnel* below or type `/tunnel reconnect`\\.");
       lines.push("");
     }
 
@@ -2311,7 +2363,7 @@ export class TelegramManager extends EventEmitter {
     // Build an inline keyboard with up to four "Open" buttons. Telegram
     // requires the URL to be valid — we only build buttons for non-empty
     // entries so the API doesn't reject the message.
-    const buttons: Array<Array<{ text: string; url: string }>> = [];
+    const buttons: Array<Array<{ text: string; url?: string; callback_data?: string }>> = [];
     if (cloudflareUrl) {
       buttons.push([{ text: "🌍 Open public URL", url: cloudflareUrl }]);
     }
@@ -2324,6 +2376,13 @@ export class TelegramManager extends EventEmitter {
         // ignore; fall back to full URL
       }
       buttons.push([{ text: `📡 Open LAN: ${label}`, url }]);
+    }
+    if (showReconnect) {
+      buttons.push([{ text: "🔁 Reconnect tunnel", callback_data: "tn:r" }]);
+    } else if (showRestart) {
+      // Same callback as Reconnect — the handler sees status "connected" and
+      // routes through the force-restart confirmation instead of bouncing.
+      buttons.push([{ text: "🔁 Restart tunnel (if unreachable)", callback_data: "tn:r" }]);
     }
 
     if (buttons.length) {
@@ -2342,6 +2401,134 @@ export class TelegramManager extends EventEmitter {
       });
     } else {
       await this._sendText(token, chatId, lines.join("\n"), true);
+    }
+  }
+
+  /**
+   * `/tunnel reconnect` (or the 🔁 button, callback `tn:r`) — re-establish a
+   * dropped Cloudflare quick tunnel from chat. This exists because when the
+   * tunnel dies while the user is away from the desktop, Telegram is the only
+   * remaining channel to bring remote access back up.
+   *
+   * `force` covers the zombie-tunnel case: cloudflared is still running so
+   * the snapshot reports "connected", but the edge connection is actually
+   * dead and the public URL unreachable. Since restarting a genuinely
+   * healthy tunnel would invalidate its URL, a reconnect against a
+   * "connected" tunnel first asks for confirmation (`tn:f` button or typed
+   * `/tunnel reconnect force`) instead of bouncing it silently.
+   *
+   * Policy is re-checked at tap time via getTunnelInfo (the button on an old
+   * message may be stale — settings can have changed since it was sent), and
+   * enforced again inside the runtime handler. On success the fresh public
+   * URL is delivered the same way /tunnel does.
+   */
+  private async _handleTunnelReconnect(
+    chatId: string,
+    token: string,
+    conn: TelegramConnectionConfig,
+    method: "COMMAND" | "BUTTON",
+    force = false,
+  ): Promise<void> {
+    const info = this.getTunnelInfo?.();
+    if (!info?.canReconnect || !this.reconnectTunnel) {
+      log.warn("telegram tunnel reconnect refused", {
+        chatId,
+        canReconnect: !!info?.canReconnect,
+        hasHandler: !!this.reconnectTunnel,
+      });
+      await this._sendText(
+        token,
+        chatId,
+        "⚠️ Tunnel reconnect is not available\\. Start the Cloudflare tunnel once from *Settings → Remote access* on the desktop, then it can be reconnected from here\\.",
+        true,
+      );
+      return;
+    }
+
+    if (this.tunnelReconnectInFlight || info.cloudflareStatus === "connecting") {
+      await this._sendText(
+        token,
+        chatId,
+        "⏳ Tunnel reconnect already in progress\\. Run `/tunnel` in a few seconds to get the URL\\.",
+        true,
+      );
+      return;
+    }
+
+    if (info.cloudflareStatus === "connected" && !force) {
+      // The app believes the tunnel is up, but the user may know better
+      // (zombie cloudflared). Confirm before bouncing because a restart
+      // issues a brand-new public URL.
+      log.info("telegram tunnel reconnect: tunnel reports connected, offering force restart", { chatId, method });
+      await this._apiCall(token, "sendMessage", {
+        chat_id: chatId,
+        text: [
+          "✅ The tunnel currently reports *connected*\\.",
+          "",
+          "If it is actually unreachable, force a restart\\. This will issue a *new public URL*\\.",
+        ].join("\n"),
+        parse_mode: "MarkdownV2",
+        reply_markup: {
+          inline_keyboard: [
+            [
+              { text: "🔁 Force restart", callback_data: "tn:f" },
+              { text: "✗ Cancel", callback_data: "x" },
+            ],
+          ],
+        },
+      }).catch(async (err) => {
+        log.warn("telegram tunnel force-restart prompt failed, falling back to plain text", {
+          err: (err as Error).message,
+        });
+        await this._sendText(
+          token,
+          chatId,
+          "✅ The tunnel currently reports *connected*\\. If it is actually unreachable, type `/tunnel reconnect force` to restart it \\(issues a new public URL\\)\\.",
+          true,
+        );
+      });
+      return;
+    }
+
+    log.info("telegram tunnel reconnect requested", { chatId, method, force });
+    this.tunnelReconnectInFlight = true;
+    const startedAt = Date.now();
+    await this._sendText(token, chatId, "🔁 Reconnecting Cloudflare tunnel…", true);
+    try {
+      await this.reconnectTunnel();
+      this._audit({
+        chatId,
+        operation: "reconnect-tunnel",
+        category: "write",
+        method,
+        success: true,
+        durationMs: Date.now() - startedAt,
+        resourceType: "tunnel",
+        summary: force
+          ? "Cloudflare tunnel force-restarted from Telegram"
+          : "Cloudflare tunnel reconnected from Telegram",
+        userInitiated: true,
+      });
+      // Deliver the fresh URL (token + profile context) the same way /tunnel does.
+      await this._handleTunnelCommand(chatId, token, conn);
+    } catch (err) {
+      const message = (err as Error)?.message || String(err);
+      log.warn("telegram tunnel reconnect failed", { chatId, err: message });
+      this._audit({
+        chatId,
+        operation: "reconnect-tunnel",
+        category: "write",
+        method,
+        success: false,
+        errorMessage: message,
+        durationMs: Date.now() - startedAt,
+        resourceType: "tunnel",
+        summary: "Cloudflare tunnel reconnect failed",
+        userInitiated: true,
+      });
+      await this._sendText(token, chatId, `❌ Tunnel reconnect failed: ${escapeMarkdown(message)}`, true);
+    } finally {
+      this.tunnelReconnectInFlight = false;
     }
   }
 
@@ -2656,6 +2843,20 @@ export class TelegramManager extends EventEmitter {
     // `ss:w` = present workspace list to pick from (then numbered reply)
     if (data.startsWith("ss:")) {
       await this._handleScreenshotModeCallback(data, chatId, token, query.message.message_id);
+      return;
+    }
+
+    // --- Tunnel callbacks (prefixed `tn:`) — for the /tunnel message ---
+    // `tn:r` = reconnect the Cloudflare quick tunnel; `tn:f` = force-restart
+    // a tunnel that still reports connected (only offered when the runtime
+    // reports canReconnect; policy re-checked at tap time).
+    if (data.startsWith("tn:")) {
+      const op = data.split(":")[1] || "";
+      if (op === "r" || op === "f") {
+        await this._handleTunnelReconnect(chatId, token, conn, "BUTTON", op === "f");
+      } else {
+        log.debug("telegram tunnel callback: unknown op", { op });
+      }
       return;
     }
 

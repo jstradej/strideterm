@@ -4391,6 +4391,280 @@ describe("/tunnel command", () => {
 });
 
 // ---------------------------------------------------------------------------
+// /tunnel reconnect — restart a dropped Cloudflare tunnel from chat
+// ---------------------------------------------------------------------------
+
+describe("/tunnel reconnect", () => {
+  function makeTunnelInfo(overrides: Record<string, unknown> = {}) {
+    return {
+      remoteEnabled: true,
+      lanUrls: ["http://192.168.1.20:7333/?token=abc"],
+      cloudflareUrl: "",
+      remoteToken: "abc",
+      cloudflareStatus: "idle",
+      tunnelMode: "cloudflare",
+      canReconnect: true,
+      ...overrides,
+    };
+  }
+
+  function makeManager(info: Record<string, unknown>, reconnect?: () => Promise<void>) {
+    const cred = makeCredentialStore({ "cred:tg-1": "token123" });
+    const manager = new TelegramManager({ credentialStore: cred });
+    manager.configure([makeConnection()]);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    manager.setTunnelInfoGetter(() => info as any);
+    if (reconnect) {
+      manager.setTunnelReconnectHandler(reconnect);
+    }
+
+    const sentBodies: Array<Record<string, unknown>> = [];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (manager as any)._apiCall = async (_t: string, _m: string, body: Record<string, unknown>) => {
+      sentBodies.push(body);
+      return { ok: true, result: { message_id: 8100 } };
+    };
+    return { manager, sentBodies };
+  }
+
+  test("/tunnel offers a Reconnect button when the tunnel is down and reconnect is allowed", async () => {
+    const { manager, sentBodies } = makeManager(makeTunnelInfo(), async () => {});
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (manager as any)._handleMessage(
+      { message_id: 820, chat: { id: 12345 }, text: "/tunnel" },
+      makeConnection(),
+      "token123",
+    );
+
+    expect(sentBodies).toHaveLength(1);
+    expect(sentBodies[0].text as string).toContain("down");
+    const markup = sentBodies[0].reply_markup as {
+      inline_keyboard: Array<Array<{ text: string; callback_data?: string }>>;
+    };
+    const reconnectButton = markup.inline_keyboard.flat().find((b) => b.callback_data === "tn:r");
+    expect(reconnectButton).toBeTruthy();
+    expect(reconnectButton!.text).toContain("Reconnect");
+  });
+
+  test("/tunnel offers a Restart button when connected (zombie-tunnel escape hatch)", async () => {
+    const { manager, sentBodies } = makeManager(
+      makeTunnelInfo({ cloudflareUrl: "https://up.trycloudflare.com", cloudflareStatus: "connected" }),
+      async () => {},
+    );
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (manager as any)._handleMessage(
+      { message_id: 821, chat: { id: 12345 }, text: "/tunnel" },
+      makeConnection(),
+      "token123",
+    );
+
+    const markup = sentBodies[0].reply_markup as {
+      inline_keyboard: Array<Array<{ text: string; callback_data?: string }>>;
+    };
+    const restartButton = markup.inline_keyboard.flat().find((b) => b.callback_data === "tn:r");
+    expect(restartButton).toBeTruthy();
+    expect(restartButton!.text).toContain("Restart");
+  });
+
+  test("/tunnel hides the Reconnect button when the runtime forbids reconnect", async () => {
+    const { manager, sentBodies } = makeManager(makeTunnelInfo({ canReconnect: false }), async () => {});
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (manager as any)._handleMessage(
+      { message_id: 822, chat: { id: 12345 }, text: "/tunnel" },
+      makeConnection(),
+      "token123",
+    );
+
+    const markup = sentBodies[0].reply_markup as {
+      inline_keyboard: Array<Array<{ callback_data?: string }>>;
+    };
+    expect(markup.inline_keyboard.flat().some((b) => b.callback_data === "tn:r")).toBe(false);
+  });
+
+  test("tn:r button invokes the reconnect handler and re-sends the fresh tunnel URL", async () => {
+    const info = makeTunnelInfo();
+    const reconnect = vi.fn(async () => {
+      // Simulate the runtime bringing the tunnel back up.
+      info.cloudflareUrl = "https://fresh.trycloudflare.com";
+      info.cloudflareStatus = "connected";
+    });
+    const { manager, sentBodies } = makeManager(info, reconnect);
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (manager as any)._handleCallbackQuery(
+      { id: "cq", from: { id: 1 }, message: { message_id: 140, chat: { id: 12345 }, text: "" }, data: "tn:r" },
+      makeConnection(),
+      "token123",
+    );
+
+    expect(reconnect).toHaveBeenCalledTimes(1);
+    const texts = sentBodies.map((b) => String(b.text ?? ""));
+    expect(texts.some((t) => t.includes("Reconnecting"))).toBe(true);
+    expect(texts.some((t) => t.includes("fresh.trycloudflare.com"))).toBe(true);
+  });
+
+  test("typed '/tunnel reconnect' and bare 'reconnect' aliases invoke the handler", async () => {
+    for (const variant of ["/tunnel reconnect", "tunnel reconnect", "/reconnect", "reconnect"]) {
+      const info = makeTunnelInfo();
+      const reconnect = vi.fn(async () => {
+        info.cloudflareUrl = "https://fresh.trycloudflare.com";
+        info.cloudflareStatus = "connected";
+      });
+      const { manager } = makeManager(info, reconnect);
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      await (manager as any)._handleMessage(
+        { message_id: 823, chat: { id: 12345 }, text: variant },
+        makeConnection(),
+        "token123",
+      );
+
+      expect(reconnect).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  test("reconnect is refused (handler never called) when the runtime forbids it", async () => {
+    const reconnect = vi.fn(async () => {});
+    const { manager, sentBodies } = makeManager(makeTunnelInfo({ canReconnect: false }), reconnect);
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (manager as any)._handleCallbackQuery(
+      { id: "cq", from: { id: 1 }, message: { message_id: 141, chat: { id: 12345 }, text: "" }, data: "tn:r" },
+      makeConnection(),
+      "token123",
+    );
+
+    expect(reconnect).not.toHaveBeenCalled();
+    const texts = sentBodies.map((b) => String(b.text ?? ""));
+    expect(texts.some((t) => t.toLowerCase().includes("not available"))).toBe(true);
+  });
+
+  test("reconnect while the tunnel is already connecting is rejected without calling the handler", async () => {
+    const reconnect = vi.fn(async () => {});
+    const { manager, sentBodies } = makeManager(makeTunnelInfo({ cloudflareStatus: "connecting" }), reconnect);
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (manager as any)._handleMessage(
+      { message_id: 824, chat: { id: 12345 }, text: "/tunnel reconnect" },
+      makeConnection(),
+      "token123",
+    );
+
+    expect(reconnect).not.toHaveBeenCalled();
+    const texts = sentBodies.map((b) => String(b.text ?? ""));
+    expect(texts.some((t) => t.includes("already in progress"))).toBe(true);
+  });
+
+  test("reconnect against a connected tunnel asks for force confirmation instead of bouncing", async () => {
+    const reconnect = vi.fn(async () => {});
+    const { manager, sentBodies } = makeManager(
+      makeTunnelInfo({ cloudflareUrl: "https://up.trycloudflare.com", cloudflareStatus: "connected" }),
+      reconnect,
+    );
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (manager as any)._handleMessage(
+      { message_id: 825, chat: { id: 12345 }, text: "/tunnel reconnect" },
+      makeConnection(),
+      "token123",
+    );
+
+    expect(reconnect).not.toHaveBeenCalled();
+    const prompt = sentBodies.find((b) => String(b.text ?? "").includes("connected"));
+    expect(prompt).toBeTruthy();
+    const markup = prompt!.reply_markup as {
+      inline_keyboard: Array<Array<{ text: string; callback_data?: string }>>;
+    };
+    const forceButton = markup.inline_keyboard.flat().find((b) => b.callback_data === "tn:f");
+    expect(forceButton).toBeTruthy();
+    expect(forceButton!.text).toContain("Force restart");
+  });
+
+  test("tn:f force-restarts a tunnel that still reports connected", async () => {
+    const info = makeTunnelInfo({ cloudflareUrl: "https://stale.trycloudflare.com", cloudflareStatus: "connected" });
+    const reconnect = vi.fn(async () => {
+      info.cloudflareUrl = "https://fresh.trycloudflare.com";
+      info.cloudflareStatus = "connected";
+    });
+    const { manager, sentBodies } = makeManager(info, reconnect);
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (manager as any)._handleCallbackQuery(
+      { id: "cq", from: { id: 1 }, message: { message_id: 142, chat: { id: 12345 }, text: "" }, data: "tn:f" },
+      makeConnection(),
+      "token123",
+    );
+
+    expect(reconnect).toHaveBeenCalledTimes(1);
+    const texts = sentBodies.map((b) => String(b.text ?? ""));
+    expect(texts.some((t) => t.includes("Reconnecting"))).toBe(true);
+    expect(texts.some((t) => t.includes("fresh.trycloudflare.com"))).toBe(true);
+  });
+
+  test("typed '/tunnel reconnect force' restarts a connected tunnel without the button", async () => {
+    const info = makeTunnelInfo({ cloudflareUrl: "https://stale.trycloudflare.com", cloudflareStatus: "connected" });
+    const reconnect = vi.fn(async () => {
+      info.cloudflareUrl = "https://fresh.trycloudflare.com";
+    });
+    const { manager } = makeManager(info, reconnect);
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (manager as any)._handleMessage(
+      { message_id: 827, chat: { id: 12345 }, text: "/tunnel reconnect force" },
+      makeConnection(),
+      "token123",
+    );
+
+    expect(reconnect).toHaveBeenCalledTimes(1);
+  });
+
+  test("tn:f is still refused when the runtime forbids reconnect", async () => {
+    const reconnect = vi.fn(async () => {});
+    const { manager, sentBodies } = makeManager(
+      makeTunnelInfo({
+        canReconnect: false,
+        cloudflareUrl: "https://up.trycloudflare.com",
+        cloudflareStatus: "connected",
+      }),
+      reconnect,
+    );
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (manager as any)._handleCallbackQuery(
+      { id: "cq", from: { id: 1 }, message: { message_id: 143, chat: { id: 12345 }, text: "" }, data: "tn:f" },
+      makeConnection(),
+      "token123",
+    );
+
+    expect(reconnect).not.toHaveBeenCalled();
+    const texts = sentBodies.map((b) => String(b.text ?? ""));
+    expect(texts.some((t) => t.toLowerCase().includes("not available"))).toBe(true);
+  });
+
+  test("reconnect failure reports the error back to chat", async () => {
+    const reconnect = vi.fn(async () => {
+      throw new Error("origin probe failed");
+    });
+    const { manager, sentBodies } = makeManager(makeTunnelInfo(), reconnect);
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (manager as any)._handleMessage(
+      { message_id: 826, chat: { id: 12345 }, text: "/tunnel reconnect" },
+      makeConnection(),
+      "token123",
+    );
+
+    expect(reconnect).toHaveBeenCalledTimes(1);
+    const texts = sentBodies.map((b) => String(b.text ?? ""));
+    expect(texts.some((t) => t.includes("Tunnel reconnect failed"))).toBe(true);
+    expect(texts.some((t) => t.includes("origin probe failed"))).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Telegram dispatch — windowSlot validation (PR 3 audit)
 // ---------------------------------------------------------------------------
 
