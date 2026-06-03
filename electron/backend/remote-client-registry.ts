@@ -206,6 +206,7 @@ export class RemoteClientRegistry {
         profileId: client.profileId,
         activeWorkspaceId: String(boundSlot?.activeWorkspaceId || ""),
         activeSessionId: String(boundSlot?.activeSessionId || ""),
+        workspaceGrid: boundSlot?.workspaceGrid ?? null,
       },
     };
   }

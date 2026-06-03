@@ -261,13 +261,18 @@ export const useAppStore = defineStore("app", () => {
   // --- Workspace grid computed ---
 
   const workspaceGrid = computed(() => {
-    // Per-profile grid is authoritative once migration has run. `?? global`
-    // would leak the deprecated top-level grid (which the backend keeps in
-    // sync with the active profile) into OTHER profiles whose own grid is
-    // explicitly null — showing one profile's IN SPLIT cards while the user
-    // is in a different profile's window, and re-routing clicks into the
-    // wrong profile's workspaces. Only fall back when the profile field is
-    // truly absent (pre-migration).
+    // The grid is viewer-owned: each desktop window reads its own slot's
+    // grid, a remote client reads the grid from its remoteClient context.
+    // Two windows of the same profile therefore keep independent layouts.
+    // The legacy per-profile grid (and the deprecated global) are only
+    // fallbacks for pre-migration payloads where the viewer field is absent.
+    if (isRemoteTransport.value) {
+      const remoteGrid = (payload.value as AnyApi)?.remoteClient?.workspaceGrid;
+      if (remoteGrid !== undefined) return remoteGrid;
+    } else {
+      const slot = myWindowSlot.value as AnyApi | null;
+      if (slot && slot.workspaceGrid !== undefined) return slot.workspaceGrid;
+    }
     const profile = (payload.value?.appState?.profiles as AnyApi[] | undefined)?.find(
       (p: AnyApi) => p.id === myActiveProfileId.value,
     );

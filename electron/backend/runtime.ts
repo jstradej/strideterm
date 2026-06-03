@@ -108,7 +108,7 @@ import { createVersionChecker } from "./version-checker.js";
 import { initLogger, getLogger, setLogLevel, reconfigureLogger } from "./logger.js";
 import type { Logger } from "./logger.js";
 import { createRuntimeAttentionManager } from "./runtime-attention.js";
-import type { AppState, WorkspaceState } from "../shared/types/state.js";
+import type { AppState, WorkspaceGridState, WorkspaceState } from "../shared/types/state.js";
 import { formatWorkspaceDisplayName } from "../shared/workspace-display.js";
 import type { NotifyServerHandle } from "./notify-server.js";
 
@@ -4043,6 +4043,28 @@ export async function createRuntime({
     return profileId ? draft.profiles.find((p) => p.id === profileId) || null : null;
   }
 
+  // The grid is viewer-owned: mutations target the calling window's slot so
+  // two windows of the same profile keep independent layouts. Falls back to
+  // the first slot only for legacy payloads that carry no windowId.
+  function resolveWorkspaceGridSlot(draft: AppState, windowId?: string) {
+    const slots = draft.windowSlots || [];
+    if (windowId) return slots.find((s) => s.id === windowId) || null;
+    return slots[0] || null;
+  }
+
+  // Read the authoritative grid for a slot. Slots normally carry their own
+  // grid (normalize migrates the legacy profile grid in); the profile/global
+  // fallbacks only cover pre-migration in-memory state.
+  function readSlotGrid(
+    draft: AppState,
+    slot: { workspaceGrid?: WorkspaceGridState | null; profileId: string } | null,
+  ) {
+    if (!slot) return draft.workspaceGrid ?? null;
+    if (slot.workspaceGrid !== undefined) return slot.workspaceGrid;
+    const profile = draft.profiles.find((p) => p.id === slot.profileId);
+    return profile && profile.workspaceGrid !== undefined ? profile.workspaceGrid : (draft.workspaceGrid ?? null);
+  }
+
   // Restore invariant: a valid saved session is the authority, and the
   // workspace follows that session. This keeps windowSlots from restoring a
   // workspace/session pair that belongs to different workspaces.
@@ -4491,8 +4513,10 @@ export async function createRuntime({
           ids.push(workspaceIds?.[i] ?? null);
         }
         const grid = { layout, cellWorkspaceIds: ids };
-        const profile = resolveWorkspaceGridProfile(draft, windowId);
-        if (profile) profile.workspaceGrid = grid;
+        // Viewer-owned: only this window's slot gets the new grid. Sibling
+        // windows of the same profile keep their own layout.
+        const slot = resolveWorkspaceGridSlot(draft, windowId);
+        if (slot) slot.workspaceGrid = grid;
         draft.workspaceGrid = grid;
       });
       broadcastState();
@@ -4501,8 +4525,8 @@ export async function createRuntime({
 
     async disableWorkspaceGrid(windowId?: string) {
       await store.mutate((draft: AppState) => {
-        const profile = resolveWorkspaceGridProfile(draft, windowId);
-        if (profile) profile.workspaceGrid = null;
+        const slot = resolveWorkspaceGridSlot(draft, windowId);
+        if (slot) slot.workspaceGrid = null;
         draft.workspaceGrid = null;
       });
       broadcastState();
@@ -4512,8 +4536,8 @@ export async function createRuntime({
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async setGridLayout(layout: any, windowId?: string) {
       await store.mutate((draft: AppState) => {
-        const profile = resolveWorkspaceGridProfile(draft, windowId);
-        const grid = profile && profile.workspaceGrid !== undefined ? profile.workspaceGrid : draft.workspaceGrid;
+        const slot = resolveWorkspaceGridSlot(draft, windowId);
+        const grid = readSlotGrid(draft, slot);
         if (!grid) return;
         const slots = { cols: 2, rows: 2, "top-split": 3, "left-split": 3, grid: 4 }[String(layout)] as
           | number
@@ -4526,7 +4550,7 @@ export async function createRuntime({
           ids.push(taken < existing.length ? (existing[taken++] ?? null) : null);
         }
         const updated = { layout, cellWorkspaceIds: ids };
-        if (profile) profile.workspaceGrid = updated;
+        if (slot) slot.workspaceGrid = updated;
         draft.workspaceGrid = updated;
       });
       broadcastState();
@@ -4535,9 +4559,10 @@ export async function createRuntime({
 
     async setGridCell(cellIndex: number, workspaceId: string | null, windowId?: string) {
       // Validate workspace ↔ profile match BEFORE mutation. The grid is
-      // per-profile; a stale or crafted remote payload could try to place a
-      // workspace from profile A into profile B's grid (different cards
-      // would then show up in B's window with cwds the user didn't expect).
+      // per-viewer, scoped to the slot's profile; a stale or crafted remote
+      // payload could try to place a workspace from profile A into a window
+      // showing profile B (different cards would then show up in B's window
+      // with cwds the user didn't expect).
       if (workspaceId) {
         const state = getState();
         const gridProfile = resolveWorkspaceGridProfile(state, windowId);
@@ -4550,13 +4575,8 @@ export async function createRuntime({
         }
       }
       await store.mutate((draft: AppState) => {
-        const profile = resolveWorkspaceGridProfile(draft, windowId);
-        // `?? draft.workspaceGrid` would leak the deprecated global (which
-        // tracks the GLOBAL activeProfileId, not the slot's) into a window
-        // whose profile has its grid explicitly null — mutating the wrong
-        // profile's grid. Use the global only when the profile field is
-        // truly absent (pre-migration state).
-        const grid = profile && profile.workspaceGrid !== undefined ? profile.workspaceGrid : draft.workspaceGrid;
+        const slot = resolveWorkspaceGridSlot(draft, windowId);
+        const grid = readSlotGrid(draft, slot);
         if (!grid) return;
         const ids = grid.cellWorkspaceIds;
         if (cellIndex < 0 || cellIndex >= ids.length) return;
@@ -4566,7 +4586,7 @@ export async function createRuntime({
         }
         ids[cellIndex] = workspaceId;
         const allNull = ids.every((id) => id === null);
-        if (profile) profile.workspaceGrid = allNull ? null : grid;
+        if (slot) slot.workspaceGrid = allNull ? null : grid;
         draft.workspaceGrid = allNull ? null : grid;
       });
       broadcastState();
@@ -4575,14 +4595,15 @@ export async function createRuntime({
 
     async swapGridCells(a: number, b: number, windowId?: string) {
       await store.mutate((draft: AppState) => {
-        const profile = resolveWorkspaceGridProfile(draft, windowId);
-        const grid = profile && profile.workspaceGrid !== undefined ? profile.workspaceGrid : draft.workspaceGrid;
+        const slot = resolveWorkspaceGridSlot(draft, windowId);
+        const grid = readSlotGrid(draft, slot);
         if (!grid) return;
         const ids = grid.cellWorkspaceIds;
         if (a < 0 || a >= ids.length || b < 0 || b >= ids.length || a === b) return;
         const tmp = ids[a];
         ids[a] = ids[b];
         ids[b] = tmp;
+        if (slot) slot.workspaceGrid = grid;
         draft.workspaceGrid = grid;
       });
       broadcastState();
@@ -4829,6 +4850,20 @@ export async function createRuntime({
     async removeWindowSlot(windowId: string) {
       await store.mutate((draft: AppState) => {
         if (!Array.isArray(draft.windowSlots)) return;
+        const closing = draft.windowSlots.find((s) => s.id === windowId);
+        // Mirror the closing window's view into the profile's legacy/default
+        // fields so reopening the profile later restores where the user left
+        // off — the slot (and its viewer-owned grid) is gone after this.
+        if (closing) {
+          const profile = draft.profiles.find((p) => p.id === closing.profileId);
+          if (profile) {
+            profile.lastActiveWorkspaceId = closing.activeWorkspaceId || undefined;
+            profile.lastActiveSessionId = closing.activeSessionId || undefined;
+            if (closing.workspaceGrid !== undefined) {
+              profile.workspaceGrid = closing.workspaceGrid;
+            }
+          }
+        }
         draft.windowSlots = draft.windowSlots.filter((s) => s.id !== windowId);
       });
       broadcastState();

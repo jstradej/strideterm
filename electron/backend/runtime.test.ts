@@ -4764,7 +4764,10 @@ describe("runtime integration", () => {
     expect(payload.appState.activeWorkspaceId).toBe("ws-a2");
   });
 
-  test("workspace grid operations without windowId target the active profile", async () => {
+  test("workspace grid operations without windowId target the first slot (legacy path)", async () => {
+    // The grid is viewer-owned: mutations land on the window slot, never on
+    // the profile (the profile grid stays a legacy/default seed). Payloads
+    // without a windowId (old clients) fall back to the first slot.
     const fixture = await createFixture({
       initialState: {
         activeProfileId: "profile-b",
@@ -4807,34 +4810,39 @@ describe("runtime integration", () => {
     });
     fixtures.push(fixture);
 
+    const firstSlotGrid = (payload: Awaited<ReturnType<typeof fixture.runtime.getPayload>>) =>
+      payload.appState.windowSlots?.[0]?.workspaceGrid;
+
     let payload = await fixture.runtime.enableWorkspaceGrid("cols", ["ws-b1", "ws-b2"]);
-    expect(payload.appState.profiles.find((p) => p.id === "profile-a")?.workspaceGrid).toBeNull();
-    expect(payload.appState.profiles.find((p) => p.id === "profile-b")?.workspaceGrid).toEqual({
+    expect(firstSlotGrid(payload)).toEqual({
       layout: "cols",
       cellWorkspaceIds: ["ws-b1", "ws-b2"],
     });
+    // Profiles stay untouched — the grid is viewer state, not profile state.
+    expect(payload.appState.profiles.find((p) => p.id === "profile-a")?.workspaceGrid).toBeNull();
+    expect(payload.appState.profiles.find((p) => p.id === "profile-b")?.workspaceGrid).toBeNull();
 
     payload = await fixture.runtime.setGridCell(1, null);
-    expect(payload.appState.profiles.find((p) => p.id === "profile-b")?.workspaceGrid).toEqual({
+    expect(firstSlotGrid(payload)).toEqual({
       layout: "cols",
       cellWorkspaceIds: ["ws-b1", null],
     });
 
     payload = await fixture.runtime.setGridLayout("grid");
-    expect(payload.appState.profiles.find((p) => p.id === "profile-b")?.workspaceGrid).toEqual({
+    expect(firstSlotGrid(payload)).toEqual({
       layout: "grid",
       cellWorkspaceIds: ["ws-b1", null, null, null],
     });
 
     await fixture.runtime.setGridCell(2, "ws-b2");
     payload = await fixture.runtime.swapGridCells(0, 2);
-    expect(payload.appState.profiles.find((p) => p.id === "profile-b")?.workspaceGrid).toEqual({
+    expect(firstSlotGrid(payload)).toEqual({
       layout: "grid",
       cellWorkspaceIds: ["ws-b2", null, "ws-b1", null],
     });
 
     payload = await fixture.runtime.disableWorkspaceGrid();
-    expect(payload.appState.profiles.find((p) => p.id === "profile-b")?.workspaceGrid).toBeNull();
+    expect(firstSlotGrid(payload)).toBeNull();
   });
 
   // ---------------------------------------------------------------------------
@@ -6382,6 +6390,125 @@ describe("multiple windows per profile — viewer model", () => {
     expect(slot.profileId).toBe("profile-b");
     // Falls back to the profile default, not the foreign window's view.
     expect(slot.activeWorkspaceId).toBe("ws-b1");
+  });
+
+  test("grid change in one window does not change the sibling window's grid (same profile)", async () => {
+    const base = makeProfileSwitchState();
+    const initialState = {
+      ...base,
+      projects: [
+        ...base.projects,
+        {
+          id: "ws-a2",
+          name: "A2",
+          kind: "terminal",
+          profileId: "profile-a",
+          cwd: "/tmp/a2",
+          activePanelId: "shell",
+          panels: [{ id: "shell", title: "Shell", command: "", shell: true, startup: "default" }],
+        },
+      ],
+      windowSlots: [
+        {
+          id: "win-1",
+          profileId: "profile-a",
+          activeWorkspaceId: "ws-a1",
+          activeSessionId: "",
+          workspaceGrid: null,
+          bounds: { x: 0, y: 0, width: 1280, height: 800 },
+          lastFocusedAt: 1000,
+        },
+        {
+          id: "win-2",
+          profileId: "profile-a",
+          activeWorkspaceId: "ws-a2",
+          activeSessionId: "",
+          workspaceGrid: null,
+          bounds: { x: 40, y: 40, width: 1280, height: 800 },
+          lastFocusedAt: 2000,
+        },
+      ],
+    };
+    const fixture = await createFixture({ initialState });
+    fixtures.push(fixture);
+
+    await fixture.runtime.enableWorkspaceGrid("cols", ["ws-a1", "ws-a2"], "win-1");
+
+    let slots = fixture.runtime.getPayload().appState.windowSlots!;
+    expect(slots.find((s) => s.id === "win-1")?.workspaceGrid).toEqual({
+      layout: "cols",
+      cellWorkspaceIds: ["ws-a1", "ws-a2"],
+    });
+    expect(slots.find((s) => s.id === "win-2")?.workspaceGrid).toBeNull();
+
+    // Mutating cells / layout in win-1 must also stay local to win-1.
+    await fixture.runtime.setGridCell(1, null, "win-1");
+    slots = fixture.runtime.getPayload().appState.windowSlots!;
+    expect(slots.find((s) => s.id === "win-1")?.workspaceGrid).toEqual({
+      layout: "cols",
+      cellWorkspaceIds: ["ws-a1", null],
+    });
+    expect(slots.find((s) => s.id === "win-2")?.workspaceGrid).toBeNull();
+
+    // Disabling the grid in win-1 leaves win-2 untouched as well.
+    await fixture.runtime.enableWorkspaceGrid("cols", ["ws-a2", null], "win-2");
+    await fixture.runtime.disableWorkspaceGrid("win-1");
+    slots = fixture.runtime.getPayload().appState.windowSlots!;
+    expect(slots.find((s) => s.id === "win-1")?.workspaceGrid).toBeNull();
+    expect(slots.find((s) => s.id === "win-2")?.workspaceGrid).toEqual({
+      layout: "cols",
+      cellWorkspaceIds: ["ws-a2", null],
+    });
+  });
+
+  test("removeWindowSlot mirrors the closing window's view and grid into the profile legacy defaults", async () => {
+    const base = makeProfileSwitchState();
+    const initialState = {
+      ...base,
+      projects: [
+        ...base.projects,
+        {
+          id: "ws-a2",
+          name: "A2",
+          kind: "terminal",
+          profileId: "profile-a",
+          cwd: "/tmp/a2",
+          activePanelId: "shell",
+          panels: [{ id: "shell", title: "Shell", command: "", shell: true, startup: "default" }],
+        },
+      ],
+      windowSlots: [
+        {
+          id: "win-1",
+          profileId: "profile-a",
+          activeWorkspaceId: "ws-a2",
+          activeSessionId: "ws-a2:shell",
+          workspaceGrid: { layout: "cols", cellWorkspaceIds: ["ws-a1", "ws-a2"] },
+          bounds: { x: 0, y: 0, width: 1280, height: 800 },
+          lastFocusedAt: 1000,
+        },
+        {
+          id: "win-2",
+          profileId: "profile-b",
+          activeWorkspaceId: "ws-b1",
+          activeSessionId: "",
+          workspaceGrid: null,
+          bounds: { x: 40, y: 40, width: 1280, height: 800 },
+          lastFocusedAt: 2000,
+        },
+      ],
+    };
+    const fixture = await createFixture({ initialState });
+    fixtures.push(fixture);
+
+    await fixture.runtime.removeWindowSlot("win-1");
+
+    const state = fixture.store.getState();
+    expect(state.windowSlots.find((s) => s.id === "win-1")).toBeUndefined();
+    const profileA = state.profiles.find((p) => p.id === "profile-a");
+    expect(profileA?.lastActiveWorkspaceId).toBe("ws-a2");
+    expect(profileA?.lastActiveSessionId).toBe("ws-a2:shell");
+    expect(profileA?.workspaceGrid).toEqual({ layout: "cols", cellWorkspaceIds: ["ws-a1", "ws-a2"] });
   });
 
   test("switching one of two same-profile windows away saves the legacy mirror without touching the sibling", async () => {

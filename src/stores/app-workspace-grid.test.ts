@@ -241,6 +241,85 @@ describe("workspace grid store — per-profile grid resolution", () => {
   });
 });
 
+// The grid is viewer-owned: each desktop window renders its own slot's grid.
+// Two windows of the same profile must not share layout state — the slot
+// field wins over the legacy per-profile grid and the deprecated global.
+describe("workspace grid store — per-window (viewer-owned) grid resolution", () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    (window as AnyApi).strideterm = { startupFlags: { windowId: "win-1" } };
+  });
+
+  function makeTwoWindowPayload(): StatePayload {
+    return {
+      appState: {
+        workspaces: BASE_WORKSPACES,
+        activeWorkspaceId: "ws-A",
+        workspaceGrid: { layout: "cols", cellWorkspaceIds: ["ws-C", "ws-D"] },
+        profiles: [
+          {
+            id: "p1",
+            name: "P1",
+            color: "#fff",
+            workspaceIds: ["ws-A", "ws-B", "ws-C", "ws-D"],
+            workspaceGrid: { layout: "cols", cellWorkspaceIds: ["ws-C", "ws-D"] },
+          },
+        ],
+        windowSlots: [
+          {
+            id: "win-1",
+            profileId: "p1",
+            activeWorkspaceId: "ws-A",
+            activeSessionId: "",
+            workspaceGrid: { layout: "cols", cellWorkspaceIds: ["ws-A", "ws-B"] },
+          },
+          {
+            id: "win-2",
+            profileId: "p1",
+            activeWorkspaceId: "ws-C",
+            activeSessionId: "",
+            workspaceGrid: { layout: "cols", cellWorkspaceIds: ["ws-C", "ws-D"] },
+          },
+        ],
+      },
+    } as AnyApi;
+  }
+
+  it("reads this window's slot grid, not the sibling window's or the profile grid", () => {
+    const store = useAppStore();
+    store.payload = makeTwoWindowPayload();
+    expect(store.workspaceGrid).toEqual({ layout: "cols", cellWorkspaceIds: ["ws-A", "ws-B"] });
+  });
+
+  it("slot grid explicitly null does not fall back to the profile/global grid", () => {
+    const store = useAppStore();
+    const payload = makeTwoWindowPayload() as AnyApi;
+    payload.appState.windowSlots[0].workspaceGrid = null;
+    store.payload = payload;
+    expect(store.workspaceGrid).toBeNull();
+  });
+
+  it("remote client reads its own grid from remoteClient, not desktop slots", () => {
+    const store = useAppStore();
+    store.init(
+      makeApi({
+        isRemote: true,
+        getState: vi.fn(() => new Promise(() => undefined)),
+      }) as AnyApi,
+    );
+    const payload = makeTwoWindowPayload() as AnyApi;
+    payload.remoteClient = {
+      id: "remote-1",
+      profileId: "p1",
+      activeWorkspaceId: "ws-D",
+      activeSessionId: "",
+      workspaceGrid: { layout: "cols", cellWorkspaceIds: ["ws-D", null] },
+    };
+    store.payload = payload;
+    expect(store.workspaceGrid).toEqual({ layout: "cols", cellWorkspaceIds: ["ws-D", null] });
+  });
+});
+
 describe("app store — multi-window payload scoping", () => {
   beforeEach(() => {
     setActivePinia(createPinia());
