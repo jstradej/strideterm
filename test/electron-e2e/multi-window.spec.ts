@@ -29,6 +29,25 @@ async function waitReady(page: Page): Promise<void> {
   await page.waitForSelector("h1.brand, .bootstrap-error", { timeout: 20_000 }).catch(() => undefined);
 }
 
+/**
+ * Resolve to the first of `windows` where `text` becomes visible.
+ * Restored windows attach in nondeterministic order, so callers must not
+ * assume firstWindow() belongs to a particular profile — match content to
+ * window instead.
+ */
+async function windowShowing(windows: Page[], text: string): Promise<Page> {
+  try {
+    return await Promise.any(
+      windows.map(async (w) => {
+        await w.getByText(text, { exact: true }).first().waitFor({ state: "visible", timeout: 15_000 });
+        return w;
+      }),
+    );
+  } catch {
+    throw new Error(`No window shows "${text}" (checked ${windows.length} windows)`);
+  }
+}
+
 test.describe("Multi-window — profile exclusivity and new-window flow", () => {
   let launched: LaunchedApp | undefined;
 
@@ -217,22 +236,26 @@ test.describe("Multi-window — restart restores two windows", () => {
   test("restart opens two windows — one per persisted window slot", async () => {
     // Re-launch with the same data directory
     launched = await relaunchApp(dataDir);
-    const page = launched.page;
-    await page.waitForSelector("h1.brand, .bootstrap-error", { timeout: 20_000 }).catch(() => undefined);
+    const app = launched.app;
 
-    // Wait for the second window to appear (restored from windowSlots)
-    const secondPage = await launched.app.waitForEvent("window", { timeout: 20_000 }).catch(() => null);
-
-    // At least one window must show a workspace from the personal profile
-    await expect(page.getByText("Personal Project", { exact: true }).first()).toBeVisible({ timeout: 10_000 });
-
-    if (secondPage) {
-      await secondPage.waitForSelector("h1.brand, .bootstrap-error", { timeout: 15_000 }).catch(() => undefined);
-      // Second window should show the work profile workspace
-      await expect(secondPage.getByText("Work Project", { exact: true }).first()).toBeVisible({ timeout: 10_000 });
-      await captureStep(launched, "restart-second-window");
+    // Both persisted slots are recreated during startup, but which renderer
+    // attaches first is nondeterministic — launched.page may be either
+    // profile's window. waitForEvent("window") is no better: it only sees
+    // windows that attach AFTER the listener registers, so it misses one
+    // that won the race. Poll the live window list instead.
+    await expect.poll(() => app.windows().filter((w) => !w.isClosed()).length, { timeout: 20_000 }).toBe(2);
+    const windows = app.windows().filter((w) => !w.isClosed());
+    for (const win of windows) {
+      await win.waitForSelector("h1.brand, .bootstrap-error", { timeout: 20_000 }).catch(() => undefined);
     }
 
+    // Order-independent: one window must show the personal workspace, the
+    // other the work one — regardless of which attached first.
+    const personalWin = await windowShowing(windows, "Personal Project");
+    const workWin = await windowShowing(windows, "Work Project");
+    expect(personalWin).not.toBe(workWin);
+
+    await captureStep(launched, "restart-second-window");
     assertNoRendererErrors(launched);
   });
 });
